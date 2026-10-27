@@ -221,6 +221,11 @@ Records Railway asked for on 2026-10-27 (the targets are per-domain and stable; 
 | `api.bootr.fun` | `sender` | `CNAME` | `api` | `6tykq0qo.up.railway.app` |
 | `indexer.bootr.fun` | `indexer` | `CNAME` | `indexer` | `8rb2p9br.up.railway.app` |
 
+Railway-provided domains (created with the API's `serviceDomainCreate`; kept for smoke tests before DNS
+moves and as a fallback): `web-production-cf4e5.up.railway.app`, `sender-production-0670.up.railway.app`,
+`indexer-production-caef.up.railway.app`. The browser bundle points at the custom hosts, so the site is
+only fully functional once DNS resolves.
+
 Remove Namecheap's parking records first (`www` currently points at `parkingpage.namecheap.com`, and the
 apex has a URL-redirect record). If Railway reports `VALIDATING_OWNERSHIP` for long, it may additionally ask
 for a `TXT` record at `_railway-verify[.<sub>]` with the `railway-verify=…` token from `railway domain
