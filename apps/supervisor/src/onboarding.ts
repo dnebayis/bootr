@@ -7,10 +7,11 @@
  *      through ENABLE_MODE_BUNDLER_URL / BUNDLER_URL, or self-bundled by the admin signer via
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
-import { DEFAULT_POST_INTERVAL_MS, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi } from './abi.js';
+import { fetchCreatorIdentity } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
@@ -82,8 +83,14 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string, 
     .join('\n');
 }
 
-/** Config stored at launch; `xHandle`/`xUserId` are filled in once the creator connects X. */
-export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, token: { name: string; symbol: string }): Record<string, unknown> {
+/**
+ * Config stored at launch; `xHandle`/`xUserId` are filled in once the creator connects X.
+ *
+ * `creatorIdentity` is the creator's Identity text read from the agent card (`agentURI`, see agent-card.ts):
+ * a string (possibly '') when the card was read, null when it could not be reached yet. It leads
+ * `identityText`, ahead of the default lines; `completeOnboarding` retries a null one on later ticks.
+ */
+export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, token: { name: string; symbol: string }, creatorIdentity: string | null = null): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
   return {
@@ -94,7 +101,8 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
     xHandle: null,
     xUserId: null,
     model: launch.model || DEFAULT_MODEL,
-    identityText: defaultIdentity(token.name, token.symbol, launch.agentURI, platform),
+    identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform)),
+    creatorIdentity,
     platform,
     ownerRules: [],
     capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false },
@@ -105,6 +113,41 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
     revision: 0,
     agentURI: launch.agentURI,
   };
+}
+
+/** The stored config with the creator's identity text applied (see `buildLaunchConfig`). */
+export function withCreatorIdentity(config: Record<string, unknown>, creatorIdentity: string): Record<string, unknown> {
+  const token = (config.token ?? {}) as { name?: unknown; symbol?: unknown };
+  const agentURI = typeof config.agentURI === 'string' ? config.agentURI : '';
+  const defaults = defaultIdentity(String(token.name ?? 'Unknown'), String(token.symbol ?? 'TOKEN'), agentURI, config.platform === true);
+  return { ...config, identityText: composeIdentityText(creatorIdentity, defaults), creatorIdentity };
+}
+
+/** Reads the creator identity for a launch; null (retry later) when the card is unreachable. Never throws. */
+async function readCreatorIdentity(ctx: SupervisorContext, agentURI: string, log: SupervisorContext['log']): Promise<string | null> {
+  try {
+    const identity = await fetchCreatorIdentity(agentURI, { fetch: ctx.fetch, resolve: ctx.resolveHost });
+    if (identity === null) log.warn({ agentURI }, 'agent card unreachable; keeping the default identity and retrying later');
+    return identity;
+  } catch (err) {
+    log.warn({ agentURI, err }, 'agent card read failed; keeping the default identity and retrying later');
+    return null;
+  }
+}
+
+/** Retries the agent card for onboarding agents whose creator identity could not be read at registration. */
+async function backfillCreatorIdentities(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
+  for (const agent of pending) {
+    const { creatorIdentity, agentURI } = agent.config;
+    if (typeof creatorIdentity === 'string' || typeof agentURI !== 'string' || !agentURI) continue;
+    const log = ctx.log.child({ agentId: agent.agentId });
+    const identity = await readCreatorIdentity(ctx, agentURI, log);
+    if (identity === null) continue;
+    const config = withCreatorIdentity(agent.config, identity);
+    await ctx.db.update(agents).set({ config, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
+    agent.config = config;
+    if (identity) log.info('creator identity applied from the agent card');
+  }
 }
 
 /** Parses the stored config; `null` while the X account is not connected yet. */
@@ -227,7 +270,8 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'symbol' }).catch(() => 'TOKEN'),
   ]);
   const now = new Date(ctx.now());
-  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' });
+  const creatorIdentity = await readCreatorIdentity(ctx, launch.agentURI, ctx.log.child({ agentId }));
+  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity);
   const draftId = await readDraftId(ctx, launch.txHash, launch.token);
   const [row] = await ctx.db
     .insert(agents)
@@ -252,7 +296,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     .insert(runtimes)
     .values({ agentId, state: initialState() as unknown as Record<string, unknown>, cycle: 0, nextAt: now, status: 'ready', configRevision: 0, updatedAt: now })
     .onConflictDoNothing();
-  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId }, 'agent registered');
+  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
   // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
   const builderCode = await ensureBuilderCode(ctx, row);
   return builderCode ? { ...row, builderCode } : row;
@@ -431,6 +475,8 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
   // Decode every pending draft id first, so the earliest-launch check in adoptDraftAccount sees all claimants.
   await backfillDraftIds(ctx, pending);
+  // Creator identities whose agent card was unreachable at registration, before any agent goes active below.
+  await backfillCreatorIdentities(ctx, pending);
   for (const agent of pending) {
     const log = ctx.log.child({ agentId: agent.agentId });
     if (!agent.sessionKeyInstalledAt) {

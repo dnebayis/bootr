@@ -23,6 +23,7 @@ export function normalizeCreatorIdentity(input: unknown): string {
     .replace(/\r\n?/g, '\n')
     .replace(/\t/g, ' ')
     // C0/C1 controls except \n, plus bidi overrides, zero-width and byte-order marks.
+    // eslint-disable-next-line no-control-regex -- the C0 range is the point
     .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, '')
     .replace(/[ \u00a0]+/g, ' ')
     .replace(/ *\n */g, '\n')

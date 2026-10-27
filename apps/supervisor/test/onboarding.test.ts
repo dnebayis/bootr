@@ -3,11 +3,14 @@ import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, clankerTokenCreatedEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
-import { agentConfigOf, completeOnboarding, decodeDraftId, decodeLaunchLogs, draftIdFromContext, pollLaunches } from '../src/onboarding.js';
+import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
 import { ADDR, agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
 
-function fakeLaunchLog(agentId: bigint): Log {
-  const topics = encodeEventTopics({ abi: [agentLaunchedEvent], eventName: 'AgentLaunched', args: { token: TOKEN, kernel: KERNEL, creator: CREATOR } });
+const CARD_URI = 'https://bootr.fun/agents/7.json';
+
+function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Address } = {}): Log {
+  const creator = opts.creator ?? CREATOR;
+  const topics = encodeEventTopics({ abi: [agentLaunchedEvent], eventName: 'AgentLaunched', args: { token: TOKEN, kernel: KERNEL, creator } });
   const data = encodeAbiParameters(
     [
       { type: 'address' },
@@ -18,7 +21,7 @@ function fakeLaunchLog(agentId: bigint): Log {
       { type: 'string' },
       { type: 'address' },
     ],
-    ['0x0000000000000000000000000000000000000000', agentId, [10_000, 5000, 3000, 0, 2000, CREATOR, 20_000_000n, 90 * 86_400], pad('0x01', { size: 32 }), 'openai/gpt-4.1-mini', 'https://bootr.fun/agents/7.json', '0x0000000000000000000000000000000000000000'],
+    ['0x0000000000000000000000000000000000000000', agentId, [10_000, 5000, 3000, 0, 2000, creator, 20_000_000n, 90 * 86_400], pad('0x01', { size: 32 }), 'openai/gpt-4.1-mini', opts.agentURI ?? CARD_URI, '0x0000000000000000000000000000000000000000'],
   );
   return { address: LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: toHex(7, { size: 32 }), logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
@@ -34,6 +37,8 @@ describe('onboarding from AgentLaunched', () => {
       const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
       expect(agent).toMatchObject({ token: TOKEN, kernel: KERNEL, creator: CREATOR, status: 'onboarding', launchBlock: 42 });
       expect(agent!.config).toMatchObject({ agentId: '7', token: { symbol: 'TEST', name: 'Test Coin', chainId: 84532 }, model: 'openai/gpt-4.1-mini', xHandle: null });
+      // The mock card has no bootr.identity: default persona, nothing left to retry.
+      expect(agent!.config).toMatchObject({ creatorIdentity: '', identityText: defaultIdentity('Test Coin', 'TEST', CARD_URI) });
       expect(agentConfigOf(agent!)).toBeNull(); // X not connected yet
       const runtime = await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, '7') });
       expect(runtime!.state).toMatchObject({ phase: 'boot' });
@@ -220,6 +225,99 @@ describe('launch draft id -> X account rebind', () => {
       await completeOnboarding(world.ctx);
       expect((await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') }))!.draftId).toBe('');
       expect(world.state.calls.filter((c) => c.fn === 'getTransactionReceipt')).toHaveLength(2);
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+const IDENTITY = 'A patient onchain analyst for small Base coins.\nShort, plain, no hype, no emoji.';
+const cardJson = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+/** Serves the agent card at CARD_URI from `answer`; everything else goes to the world's default mock. */
+function serveCard(world: TestWorld, answer: () => Response) {
+  const calls: string[] = [];
+  const inner = world.ctx.fetch;
+  world.ctx.fetch = (async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === CARD_URI) {
+      calls.push(url);
+      return answer();
+    }
+    return inner(input, init);
+  }) as typeof fetch;
+  return calls;
+}
+
+describe('creator identity from the agent card', () => {
+  it('leads identityText with the creator text from bootr.identity, ahead of the default lines', async () => {
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n } });
+    try {
+      const calls = serveCard(world, () => cardJson({ type: 'registration', description: 'x', bootr: { identity: `  ${IDENTITY}  ` } }));
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      expect(calls).toEqual([CARD_URI]);
+      const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.creatorIdentity).toBe(IDENTITY);
+      expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI)}`);
+      // The persona reaches the parsed config the brain runs with, once X is connected.
+      await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      const active = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agentConfigOf(active!)!.identityText.startsWith(IDENTITY)).toBe(true);
+      expect(calls).toHaveLength(1); // nothing to retry
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('keeps the default identity while the card is unreachable and applies the text on a later tick', async () => {
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n } });
+    try {
+      let status = 503;
+      const calls = serveCard(world, () => (status === 200 ? cardJson({ bootr: { identity: IDENTITY } }) : cardJson({ error: 'down' }, status)));
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      let agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.creatorIdentity).toBeNull();
+      expect(agent!.config.identityText).toBe(defaultIdentity('Test Coin', 'TEST', CARD_URI));
+
+      // still down: retried, still pending
+      await completeOnboarding(world.ctx);
+      agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.creatorIdentity).toBeNull();
+      expect(calls).toHaveLength(2);
+
+      // back: applied, and the agent goes active with it in the same tick
+      status = 200;
+      await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.status).toBe('active');
+      expect(agent!.config.creatorIdentity).toBe(IDENTITY);
+      expect(agentConfigOf(agent!)!.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI)}`);
+      expect(calls).toHaveLength(3);
+
+      // active: no further card reads
+      await completeOnboarding(world.ctx);
+      expect(calls).toHaveLength(3);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('keeps the launchpad identity for the platform launch and adds the creator text in front of it', async () => {
+    const world = await makeWorld({ config: { PLATFORM_TREASURY_ADDRESS: CREATOR } });
+    try {
+      const [launch] = decodeLaunchLogs([fakeLaunchLog(9n)]) as [LaunchEvent];
+      const plain = buildLaunchConfig(world.ctx, launch, { name: 'Boot', symbol: 'BOOT' });
+      expect(plain.platform).toBe(true);
+      expect(plain.creatorIdentity).toBeNull();
+      expect(plain.identityText).toBe(defaultIdentity('Boot', 'BOOT', CARD_URI, true));
+      expect(String(plain.identityText)).toContain('voice of Bootr');
+
+      const withText = buildLaunchConfig(world.ctx, launch, { name: 'Boot', symbol: 'BOOT' }, IDENTITY);
+      expect(withText.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Boot', 'BOOT', CARD_URI, true)}`);
+      expect(withCreatorIdentity(plain, IDENTITY)).toEqual(withText);
+      expect(withCreatorIdentity(plain, '')).toEqual({ ...plain, creatorIdentity: '' });
     } finally {
       await world.close();
     }
