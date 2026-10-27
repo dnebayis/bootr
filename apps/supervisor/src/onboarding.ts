@@ -8,7 +8,7 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { DEFAULT_POST_INTERVAL_MS, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi } from './abi.js';
 import { ensureBuilderCode } from './builder-codes.js';
@@ -227,6 +227,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
       launchBlock: Number(launch.blockNumber),
       launchTxHash: launch.txHash,
       draftId,
+      spender: ctx.spenderFor({ agentId }).address,
       status: 'onboarding',
       createdAt: now,
       updatedAt: now,
@@ -275,28 +276,34 @@ export async function pollLaunches(ctx: SupervisorContext): Promise<number> {
 export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validUntilSec: number): SessionPolicyParams {
   const { addresses } = ctx.chain;
   const z = addresses.zerodev;
-  // The call allow-list is Bootr's own module (BootrCallPolicy); the other policies and the signer are ZeroDev's.
-  if (!addresses.bootr.callPolicy) throw new Error(`bootr.callPolicy address is not configured for chain ${ctx.chain.chainId}`);
-  const zerodevRequired = { gasPolicy: z.gasPolicy, rateLimitPolicy: z.rateLimitPolicy, timestampPolicy: z.timestampPolicy, signaturePolicy: z.signaturePolicy, ecdsaSigner: z.ecdsaSigner };
+  // The call allow-list and the ERC-1271 content policy are Bootr's own modules; gas / rate-limit / timestamp
+  // policies and the signer are ZeroDev's. Every address must be deployed: a missing one fails the install.
+  const bootrRequired = { callPolicy: addresses.bootr.callPolicy, swapHelper: addresses.bootr.swapHelper };
+  for (const [k, v] of Object.entries(bootrRequired)) if (!v) throw new Error(`bootr.${k} address is not configured for chain ${ctx.chain.chainId}`);
+  const zerodevRequired = { gasPolicy: z.gasPolicy, rateLimitPolicy: z.rateLimitPolicy, timestampPolicy: z.timestampPolicy, ecdsaSigner: z.ecdsaSigner };
   for (const [k, v] of Object.entries(zerodevRequired)) if (!v) throw new Error(`zerodev.${k} address is not configured for chain ${ctx.chain.chainId}`);
-  const required = { callPolicy: addresses.bootr.callPolicy, ...zerodevRequired };
-  const callers = ctx.config.SESSION_1271_CALLERS.trim();
-  const signatureCallers = callers === 'any' ? null : callers === 'usdc' ? [addresses.usdc] : callers.split(',').map((a) => getAddress(a.trim()));
   return {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
     feeLocker: addresses.clankerFeeLocker,
-    universalRouter: addresses.uniswap.universalRouter,
+    swapHelper: bootrRequired.swapHelper as Address,
     usdc: addresses.usdc,
     weth: addresses.weth,
-    inferencePayTo: getAddress(ctx.config.INFERENCE_PAYTO_ADDRESS),
+    spender: ctx.spenderFor(agent).address,
     usdcTransferCap: BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP),
+    usdcWindowSeconds: ctx.config.SESSION_USDC_WINDOW_SECONDS,
     gasAllowanceWei: BigInt(ctx.config.SESSION_GAS_ALLOWANCE_WEI),
     ratePerHour: ctx.config.SESSION_RATE_LIMIT_PER_HOUR,
     validUntil: validUntilSec,
-    signatureCallers,
+    signatureCallers: null,
     sessionSigner: ctx.sessionSigner.address,
-    policyAddresses: required as SessionPolicyParams['policyAddresses'],
+    policyAddresses: {
+      callPolicy: bootrRequired.callPolicy as Address,
+      gasPolicy: zerodevRequired.gasPolicy as Address,
+      rateLimitPolicy: zerodevRequired.rateLimitPolicy as Address,
+      timestampPolicy: zerodevRequired.timestampPolicy as Address,
+      ecdsaSigner: zerodevRequired.ecdsaSigner as Address,
+    },
   };
 }
 
@@ -344,7 +351,7 @@ export async function installSessionKey(ctx: SupervisorContext, agent: AgentRow,
     .set({ permissionId, validatorData, sessionPolicy: serializeSessionPolicy(policy) as unknown as Record<string, unknown>, sessionValidUntil: new Date(validUntil * 1000), updatedAt: new Date(ctx.now()) })
     .where(eq(agents.agentId, agent.agentId));
 
-  // First userOp in enable mode: an allow-listed no-op (USDC.transfer(payTo, 0)). Self-bundled (admin EOA calls
+  // First userOp in enable mode: an allow-listed no-op (USDC.transfer(spender, 0)). Self-bundled (admin EOA calls
   // EntryPoint.handleOps, no paymaster) when ENABLE_MODE_SELF_BUNDLE is on, else through the enable-mode bundler.
   const selfBundle = ctx.config.ENABLE_MODE_SELF_BUNDLE;
   const paymasterUrl = selfBundle ? undefined : enableModePaymaster(ctx);
@@ -360,9 +367,10 @@ export async function installSessionKey(ctx: SupervisorContext, agent: AgentRow,
     ...(paymasterUrl ? { paymasterUrl } : {}),
     ...(selfBundle ? { selfBundle: ctx.adminSigner } : {}),
     ...(ctx.config.BUILDER_CODES_ENABLED && agent.builderCode ? { builderCode: agent.builderCode } : {}),
+    now: ctx.now,
   });
   const prepared = await client.prepareUserOp([
-    { to: ctx.chain.addresses.usdc, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [policy.inferencePayTo, 0n] }) },
+    { to: ctx.chain.addresses.usdc, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [policy.spender, 0n] }) },
   ]);
   if (!prepared.enableMode) log.warn({ permissionId }, 'permission already installed; sending a regular userOp instead of enable mode');
   log.info({ permissionId, userOpHash: prepared.hash, enableMode: prepared.enableMode, selfBundled: prepared.selfBundled }, 'sending enable userOp');
@@ -396,7 +404,17 @@ export async function rotateSessionKey(ctx: SupervisorContext, agent: AgentRow):
  * Finishes onboarding: session key (needs ADMIN_PRIVATE_KEY) and the connected X account. The account is looked up
  * under the agent id, then under the launch draft id (rebound to the agent id by the sender when found).
  */
+/** Fills `sv_agents.spender` for agents registered before the column existed (idempotent, derived). */
+export async function backfillSpenders(ctx: SupervisorContext): Promise<number> {
+  const rows = await ctx.db.select({ agentId: agents.agentId }).from(agents).where(isNull(agents.spender));
+  for (const row of rows) {
+    await ctx.db.update(agents).set({ spender: ctx.spenderFor(row).address, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, row.agentId));
+  }
+  return rows.length;
+}
+
 export async function completeOnboarding(ctx: SupervisorContext): Promise<void> {
+  await backfillSpenders(ctx);
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
   // Decode every pending draft id first, so the earliest-launch check in adoptDraftAccount sees all claimants.
   await backfillDraftIds(ctx, pending);

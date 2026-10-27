@@ -8,8 +8,10 @@ import {BootrCallPolicy} from "../../src/BootrCallPolicy.sol";
 import {IKernel, KernelLib, PackedUserOperation} from "../../src/interfaces/IKernel.sol";
 import {SecurityForkBase} from "./SecurityForkBase.sol";
 
-/// @notice Property test for finding BOOTR-01: the permission *signature* path (ERC-1271) is not gated
-///         by BootrCallPolicy, nor by the AgentGuardian hook (pause / activity).
+/// @notice Regression proof for finding BOOTR-01 / C-01 on the LEGACY permission layout (BootrCallPolicy +
+///         ECDSA signer, no BootrAuthorizationPolicy): the permission *signature* path (ERC-1271) is not gated
+///         by BootrCallPolicy, nor by the AgentGuardian hook (pause / activity). The production layout now
+///         installs `BootrAuthorizationPolicy` on that path; see `AuthorizationPolicyFork.t.sol`.
 ///
 ///         BootrCallPolicy is installed `NOT_FOR_VALIDATE_SIG`, so `Kernel.isValidSignature` for the
 ///         session permission never runs it; the guardian is the kernel's root validator+hook, but
@@ -24,15 +26,14 @@ import {SecurityForkBase} from "./SecurityForkBase.sol";
 ///         inside the validity window" but do NOT restore the BootrCallPolicy cap/recipient or the
 ///         guardian pause/activity. This harness omits them to isolate the contract-level property.
 contract SessionKeySignaturePathTest is SecurityForkBase {
-    bytes4 constant ERC1271_MAGIC = 0x1626ba7e;
 
     function test_userOpPathEnforcesCapAndRecipient() public {
         (, address kernel) = _launch();
-        _installSession(kernel, _productionRules(kernel));
+        _installSession(kernel, _legacyPermissionData(kernel));
 
         // over the cap -> rejected by BootrCallPolicy (policy index 0)
         PackedUserOperation memory op = _userOp(
-            kernel, _permissionNonce(kernel, 0x00), USDC, abi.encodeCall(IERC20.transfer, (payTo, USDC_CAP + 1))
+            kernel, _permissionNonce(kernel, 0x00), USDC, abi.encodeCall(IERC20.transfer, (spender, USDC_CAP + 1))
         );
         op.signature = _signSession(op);
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
@@ -66,7 +67,7 @@ contract SessionKeySignaturePathTest is SecurityForkBase {
 
     function test_signaturePathUngatedByPolicyAndPauseAndActivity() public {
         (, address kernel) = _launch();
-        _installSession(kernel, _productionRules(kernel));
+        _installSession(kernel, _legacyPermissionData(kernel));
         uint64 activityAfterInstall = guardian.agentInfo(kernel).lastActivity;
 
         // the creator pauses: the userOp (execution) path is now blocked by the guardian hook

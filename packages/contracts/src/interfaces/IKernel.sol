@@ -110,6 +110,8 @@ library KernelLib {
     /// @dev ExecMode: callType (1 byte) | execType (1) | unused (4) | modeSelector (4) | payload (22).
     bytes32 internal constant EXEC_MODE_SINGLE = bytes32(0);
     bytes32 internal constant EXEC_MODE_BATCH = bytes32(uint256(0x01) << 248);
+    /// @dev callType batch (0x01) + execType try (0x01): failed calls emit `TryExecuteUnsuccessful` instead of reverting.
+    bytes32 internal constant EXEC_MODE_BATCH_TRY = bytes32((uint256(0x01) << 248) | (uint256(0x01) << 240));
 
     bytes1 internal constant VALIDATION_TYPE_VALIDATOR = 0x01;
     bytes1 internal constant VALIDATION_TYPE_PERMISSION = 0x02;

@@ -10,7 +10,11 @@
  *  - nonce         = mode ‖ 0x02 ‖ permissionId ‖ 16 zero bytes ‖ 2-byte key ‖ 8-byte seq
  *  - signature     = 0xff ‖ ecdsa(userOpHash)        (regular)
  *                  = guardian ‖ abi.encode(validatorData, 0x00, 0xe9ae5c53, "", 0xff ‖ ecdsa)   (enable mode)
- *  - ERC-1271      = 0x02 ‖ permissionId(4) ‖ 0xff ‖ ecdsa(EIP-712 Kernel(bytes32 hash) wrap)   (5-byte prefix)
+ *  - signature     = [0 ‖ 32 ‖ abi.encode(now)] ‖ 0xff ‖ ecdsa(userOpHash)   (regular; the BootrCallPolicy time slot)
+ *
+ * The kernel signs NOTHING through ERC-1271: its session permission is installed with SKIP_SIGNATURE, so
+ * `Kernel.isValidSignature` reverts for it, and this client refuses `signTypedData` / `signMessage` before any key
+ * is touched (`KernelSigningRefusedError`). x402 payments are signed by the per-agent spender EOA (spender.ts).
  *
  * With a `builderCode`, every userOp's callData is `encodeKernelCalls(calls) ‖ ERC-8021 suffix` (Base
  * Builder Codes attribution). The Kernel, BootrCallPolicy and the guardian hook decode from the head and
@@ -55,18 +59,17 @@ import {
 } from 'viem/account-abstraction';
 import { kernelAbi, KERNEL_EXECUTE_USER_OP_SELECTOR } from './abi.js';
 import type { AdminSigner } from './admin-signer.js';
+
+/** Thrown by every ERC-1271 signing entry point of the kernel client: the session key never signs messages. */
+export class KernelSigningRefusedError extends Error {
+  constructor(message: string) {
+    super(`kernel signing refused: ${message}`);
+    this.name = 'KernelSigningRefusedError';
+  }
+}
 import { attributionSuffix } from './builder-codes.js';
 import { describeRevertData, SELF_BUNDLE_GAS, SELF_BUNDLE_MAX_FEE_HEADROOM_BPS } from './entrypoint.js';
-import {
-  KERNEL_VERSION,
-  NONCE_MODE_DEFAULT,
-  NONCE_MODE_ENABLE,
-  encodeEnableSignature,
-  encodeErc1271Signature,
-  encodeSessionSignature,
-  nonceKey,
-  validationId,
-} from './session-key.js';
+import { NONCE_MODE_DEFAULT, NONCE_MODE_ENABLE, encodeEnableSignature, encodeSessionSignature, nonceKey, validationId } from './session-key.js';
 
 export interface KernelCall {
   to: Address;
@@ -120,6 +123,8 @@ export interface KernelClientOptions {
   entryPoint?: Address;
   /** Base Builder Code of this kernel; when set, every userOp callData carries its ERC-8021 suffix. */
   builderCode?: string | null;
+  /** Clock (ms) for the time slot of every userOp signature; defaults to `Date.now`. */
+  now?: () => number;
   /**
    * When set, enable-mode ops (permission not installed yet) are self-bundled through this sender instead of
    * `bundlerUrl`: fixed gas budget, no paymaster, `handleOps` from the admin EOA. Regular ops are unaffected.
@@ -154,13 +159,11 @@ export interface KernelClient {
   submitUserOp(prepared: PreparedUserOp): Promise<Hex>;
   waitForReceipt(hash: Hex, timeoutMs: number): Promise<UserOperationReceipt | null>;
   getReceipt(hash: Hex): Promise<UserOperationReceipt | null>;
-  /** ERC-1271 signature over EIP-712 typed data (the x402 EIP-3009 authorization). */
+  /** Always refused (`KernelSigningRefusedError`): the session permission has no ERC-1271 path. */
   signTypedData(typedData: Parameters<typeof hashTypedData>[0]): Promise<Hex>;
+  /** Always refused (`KernelSigningRefusedError`): the kernel signs no plain messages. */
   signMessage(message: Parameters<typeof hashMessage>[0]): Promise<Hex>;
-  /**
-   * Asks the kernel on-chain whether it accepts a signature (`isValidSignature`). `caller` is the
-   * `msg.sender` of the eth_call; SignatureCallerPolicy (if installed) only passes for allow-listed callers.
-   */
+  /** Asks the kernel on-chain whether it accepts a signature (`isValidSignature`); false on revert. */
   verifySignature(hash: Hex, signature: Hex, caller?: Address): Promise<boolean>;
 }
 
@@ -181,15 +184,10 @@ export async function createKernelClient(opts: KernelClientOptions): Promise<Ker
     return installed;
   };
 
-  const kernelDomain = { name: 'Kernel', version: KERNEL_VERSION, chainId, verifyingContract: kernel } as const;
-  const wrapAndSign = async (hash: Hex): Promise<Hex> => {
-    const sig = await sessionSigner.signTypedData({
-      domain: kernelDomain,
-      types: { Kernel: [{ name: 'hash', type: 'bytes32' }] },
-      primaryType: 'Kernel',
-      message: { hash },
-    });
-    return encodeErc1271Signature(permissionId, sig);
+  const now = opts.now ?? (() => Date.now());
+  const nowSec = () => Math.floor(now() / 1000);
+  const refuse = (what: string): never => {
+    throw new KernelSigningRefusedError(`the session key signs no ${what}: the permission has no ERC-1271 path (payments are signed by the agent's spender EOA)`);
   };
 
   let stubSig: Hex | null = null;
@@ -199,7 +197,7 @@ export async function createKernelClient(opts: KernelClientOptions): Promise<Ker
   };
 
   const signUserOpHash = (hash: Hex, userOpNonce: bigint, signerSig: Hex): Hex => {
-    const session = encodeSessionSignature(signerSig);
+    const session = encodeSessionSignature(signerSig, nowSec());
     if (nonceMode(userOpNonce) === NONCE_MODE_ENABLE) {
       if (!opts.validatorData) throw new Error('validatorData is required for an enable-mode userOp');
       return encodeEnableSignature(guardian, opts.validatorData, session);
@@ -238,11 +236,11 @@ export async function createKernelClient(opts: KernelClientOptions): Promise<Ker
       const signerSig = await sessionSigner.sign!({ hash });
       return signUserOpHash(hash, userOperation.nonce, signerSig);
     },
-    async signMessage({ message }) {
-      return wrapAndSign(hashMessage(message));
+    async signMessage() {
+      return refuse('messages');
     },
-    async signTypedData(typedData) {
-      return wrapAndSign(hashTypedData(typedData as Parameters<typeof hashTypedData>[0]));
+    async signTypedData() {
+      return refuse('typed data');
     },
   });
 
@@ -340,8 +338,8 @@ export async function createKernelClient(opts: KernelClientOptions): Promise<Ker
         return null;
       }
     },
-    signTypedData: (typedData) => wrapAndSign(hashTypedData(typedData)),
-    signMessage: (message) => wrapAndSign(hashMessage(message)),
+    signTypedData: async () => refuse('typed data'),
+    signMessage: async () => refuse('messages'),
     async verifySignature(hash, signature, caller) {
       try {
         const magic = await publicClient.readContract({ address: kernel, abi: kernelAbi, functionName: 'isValidSignature', args: [hash, signature], ...(caller ? { account: caller } : {}) });

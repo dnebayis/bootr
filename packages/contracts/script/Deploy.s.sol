@@ -114,8 +114,8 @@ contract Deploy is Script {
             }),
             BootrLauncher.LaunchDefaults({
                 lpFeeBps: lpFee,
-                agentBps: 2000,
-                creatorBps: 5000,
+                agentBps: 500,
+                creatorBps: 6500,
                 burnBps: 0,
                 platformBps: 3000,
                 platformRecipient: platformRecipient,
@@ -124,8 +124,8 @@ contract Deploy is Script {
             }),
             BootrLauncher.LaunchDefaults({
                 lpFeeBps: lpFee,
-                agentBps: 2000,
-                creatorBps: 3500,
+                agentBps: 500,
+                creatorBps: 5000,
                 burnBps: 1500,
                 platformBps: 3000,
                 platformRecipient: platformRecipient,

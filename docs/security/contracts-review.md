@@ -31,6 +31,8 @@ Counts: Critical 0, High 2, Medium 0, Low 3, Informational 3.
 
 ### BOOTR-01 — ERC-1271 / EIP-3009 signature path bypasses the session allow-list, the pause, and activity stamping (High)
 
+**Status: Fixed** by closing the signature path: the supervisor installs the ECDSASigner entry with `SKIP_SIGNATURE` (0x0002), which Kernel stores as the permission's `permissionFlag`, so `isValidSignature` reverts `PermissionNotAlllowedForSignature` for every Bootr session permission (no cap bypass, nothing for the pause / dormancy clock to miss). An EIP-3009-aware signature policy was implemented first and dropped: on the deployed Kernel v3.1 `_checkSignaturePolicy` re-reads the original signature after the policies, so any policy-signature slot reverts `SignerPrefixNotPresent` (`test/security/RevocationFork.t.sol::test_kernelRejectsAnyPolicySlotOnSignaturePath`). x402 is paid by a per-agent spender EOA funded through `USDC.transfer(spender, SUM_PER_WINDOW <= cap)` in `BootrCallPolicy` (`WindowedCapFork.t.sol`). `SESSION_1271_CALLERS` is gone.
+
 **Location:** `AgentGuardian.sol:328-360`, `BootrCallPolicy.sol:231-233`; driven by
 `apps/supervisor/src/{session-key.ts,kernel.ts,inference.ts}` and `apps/supervisor/src/api.ts:122-140`.
 
@@ -102,6 +104,8 @@ confirms the root validator/hook are never consulted on this path, and `session-
 
 ### BOOTR-02 — `approveSessionKey` does not constrain the session policy set; the platform admin can seize any treasury at will (High, trust/centralization)
 
+**Status: Open** (excluded from this batch by decision).
+
 **Location:** `AgentGuardian.sol:181-194` (`approveSessionKey`), with escalation via
 `Kernel.changeRootValidator` / `upgradeTo`.
 
@@ -158,6 +162,8 @@ repo's own `test/fork/BootrFork.t.sol::test_sessionKeyEnableActivityPauseRevoke`
 
 ### BOOTR-03 — `BuybackBurner.swapAndBurn` is permissionless with a caller-chosen `minOut` (Low)
 
+**Status: Fixed** in `src/BuybackBurner.sol`: `swapAndBurn` is restricted to the launcher's owner (`keeper()`), who supplies `minTokenOut` from an off-chain quote; `burn()` stays permissionless. A Chainlink-derived floor is not possible here (the feed prices ETH, not the agent token, and the pool spot price is what a sandwicher moves), hence the keeper. `initialize` gained a `launcher` argument (burner implementation + launcher redeploy).
+
 **Location:** `BuybackBurner.sol:87-93` and `_swapWethForToken` `111-142`.
 
 **Description.** `swapAndBurn(uint256 minTokenOut)` is external and unauthenticated; `minTokenOut` is
@@ -184,6 +190,8 @@ cannot force a 100%-slippage swap.
 
 ### BOOTR-04 — `claimDormant` only sweeps USDC/WETH/ETH/own-coin; other assets stranded; reverting treasury bricks the sweep (Low)
 
+**Status: Fixed** in `src/AgentGuardian.sol`: `claimDormant(kernel, address[] extraTokens)` sweeps the listed ERC-20s and sends the ETH leg in Kernel try mode (`EXEC_MODE_BATCH_TRY`), so a reverting token or treasury never blocks the sweep; `DormantExtraTokenSwept` events. The ERC-8004 NFT remains unrecoverable. Tests: `test/unit/AgentGuardian.t.sol`.
+
 **Location:** `AgentGuardian.sol:236-262`.
 
 **Description.** The dormant sweep enumerates exactly four assets (USDC, WETH, native ETH, and the
@@ -206,6 +214,8 @@ known receiver). Document the enumeration limit.
 ---
 
 ### BOOTR-05 — Dev-buy executes with zero minimum-out (Low)
+
+**Status: Open, documented** (`src/README.md`): with WETH as the paired token the `pairedTokenAmountOutMinimum` field is unused by Clanker's extension and the token leg's minimum is hard-coded to 1 there, so a launcher-side floor would have no effect without a Clanker change.
 
 **Location:** `BootrLauncher.sol:414-427` (`pairedTokenAmountOutMinimum: 0`), consumed by
 `ClankerUniv4EthDevBuy._performDevBuy` (which also swaps with `amountOutMinimum: 1`).
@@ -243,6 +253,8 @@ is never observable in an uninitialized state. At minimum, note the trust assump
 ---
 
 ### BOOTR-07 — Enable-digest approval lifetime and revocation semantics (Info)
+
+**Status: Fixed** (defence in depth): `revokeSessionKey` now withdraws the digest approved for the uninstalled permission (`approvedDigestOf`), `revokeAllSessionKeysBatch` added; `RevocationFork.t.sol` shows Kernel also rejects re-enabling an uninstalled ValidationId and that a nonce bump alone does not close the ERC-1271 path of a legacy permission (production permissions have none; see H-01 in the session-key review).
 
 **Location:** `AgentGuardian.sol:181-199`.
 

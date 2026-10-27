@@ -86,6 +86,9 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
     mapping(address kernel => bool) private _installed;
     /// @notice Enable-mode digests approved by the platform admin, per kernel.
     mapping(address kernel => mapping(bytes32 digest => bool)) public approvedEnableDigests;
+    /// @notice The last digest approved for a validation id on a kernel; cleared by `revokeSessionKey` so an
+    ///         uninstalled permission's approval cannot be replayed into a new enable (H-01 / BOOTR-07).
+    mapping(address kernel => mapping(bytes21 vId => bytes32 digest)) public approvedDigestOf;
 
     address private _rootCallKernel;
 
@@ -109,6 +112,8 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
     event DormantClaimed(
         address indexed kernel, uint256 usdcAmount, uint256 wethAmount, uint256 ethAmount, uint256 tokenBurned
     );
+    /// @dev One per `extraTokens` entry of `claimDormant`; `amount` is the balance the sweep attempted to move.
+    event DormantExtraTokenSwept(address indexed kernel, address indexed token, uint256 amount);
     event GuardianInstalled(address indexed kernel);
 
     error NotLauncher();
@@ -125,6 +130,7 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
     error CannotUninstall();
     error RootCallFailed(bytes reason);
     error UnauthorizedCaller(address sender);
+    error EmptyBatch();
 
     // ------------------------------------------------------------------
     // Constructor / admin
@@ -190,6 +196,7 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
         bytes21 vId = KernelLib.permissionId(permissionId);
         digest = _enableDigest(kernel, vId, nonce, validatorData);
         approvedEnableDigests[kernel][digest] = true;
+        approvedDigestOf[kernel][vId] = digest;
         emit SessionKeyApproved(kernel, vId, nonce, digest, validatorData);
     }
 
@@ -199,28 +206,53 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
     }
 
     /// @notice Uninstall a permission-type session key via root. `deinitData` is
-    ///         `abi.encode(bytes[] permissionDisableData)` with `policies.length + 1` entries.
+    ///         `abi.encode(bytes[] permissionDisableData)` with `policies.length + 1` entries (each entry may be
+    ///         empty: Kernel prefixes the permission id and every Bootr/ZeroDev module tolerates that).
+    ///         Also withdraws the enable digest approved for this permission, so the uninstalled set can never
+    ///         be re-enabled with the old approval. This is the only revocation that closes the ERC-1271 path
+    ///         of permissions installed WITHOUT `BootrAuthorizationPolicy` (Kernel.isValidSignature ignores
+    ///         `validNonceFrom`); with that policy `revokeAllSessionKeys` is enough.
     function revokeSessionKey(address kernel, bytes4 permissionId, bytes calldata deinitData) external onlyOwner {
         if (_agents[kernel].token == address(0)) revert NotRegistered();
         bytes21 vId = KernelLib.permissionId(permissionId);
+        _revokeApprovalOf(kernel, vId);
         _rootCall(kernel, abi.encodeCall(IKernel.uninstallValidation, (vId, deinitData, SESSION_HOOK_DATA)));
         emit SessionKeyUninstalled(kernel, vId);
     }
 
     /// @notice Revoke every non-root validation installed so far by bumping the kernel's valid nonce.
     ///         Root validation is unaffected (Kernel.sol line 240 skips the check for VALIDATION_TYPE_ROOT).
-    function revokeAllSessionKeys(address kernel) external onlyOwner returns (uint32 nonce) {
+    ///         Kills the userOp path of every permission and, through `BootrAuthorizationPolicy`'s own
+    ///         `validNonceFrom` check, the ERC-1271 path of every permission that carries it. Every digest
+    ///         approved before the bump is bound to an older nonce and can no longer enable anything.
+    function revokeAllSessionKeys(address kernel) public onlyOwner returns (uint32 nonce) {
         if (_agents[kernel].token == address(0)) revert NotRegistered();
         nonce = IKernel(kernel).currentNonce() + 1;
         _rootCall(kernel, abi.encodeCall(IKernel.invalidateNonce, (nonce)));
         emit SessionNonceInvalidated(kernel, nonce);
     }
 
+    /// @notice Fleet-wide panic switch: `revokeAllSessionKeys` for every kernel in one transaction.
+    function revokeAllSessionKeysBatch(address[] calldata kernels) external onlyOwner returns (uint32[] memory nonces) {
+        uint256 n = kernels.length;
+        if (n == 0) revert EmptyBatch();
+        nonces = new uint32[](n);
+        for (uint256 i; i < n; ++i) {
+            nonces[i] = revokeAllSessionKeys(kernels[i]);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Dormancy sweep (owner only)
     // ------------------------------------------------------------------
 
-    function claimDormant(address kernel)
+    /// @notice Sweeps a dormant kernel: USDC and WETH to `platformTreasury`, the agent's own coin to `DEAD`
+    ///         (one batch in revert mode), then every `extraTokens` entry (full `balanceOf(kernel)` to the
+    ///         treasury) and the ETH balance in Kernel "try" mode, so a reverting token or a treasury that
+    ///         rejects ETH never blocks the rest (BOOTR-04). ETH left behind is swept by a later call.
+    /// @param extraTokens Additional ERC-20s to move (anything the agent accumulated); duplicates of the
+    ///        core assets are harmless (their balance is already zero and the try call just fails).
+    function claimDormant(address kernel, address[] calldata extraTokens)
         external
         onlyOwner
         nonReentrant
@@ -238,7 +270,7 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
         ethAmount = kernel.balance;
         tokenBurned = IERC20(a.token).balanceOf(kernel);
 
-        Execution[] memory execs = new Execution[](4);
+        Execution[] memory execs = new Execution[](3);
         uint256 n;
         if (usdcAmount > 0) {
             execs[n++] = Execution(address(usdc), 0, abi.encodeCall(IERC20.transfer, (treasury, usdcAmount)));
@@ -249,15 +281,35 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
         if (tokenBurned > 0) {
             execs[n++] = Execution(a.token, 0, abi.encodeCall(IERC20.transfer, (DEAD, tokenBurned)));
         }
-        if (ethAmount > 0) {
-            execs[n++] = Execution(treasury, ethAmount, "");
-        }
         assembly ("memory-safe") {
             mstore(execs, n)
         }
         if (n > 0) {
             _rootCall(
                 kernel, abi.encodeCall(IKernel.execute, (KernelLib.EXEC_MODE_BATCH, KernelLib.encodeBatch(execs)))
+            );
+        }
+
+        // best-effort legs: extra tokens and ETH, each may fail without reverting the sweep
+        Execution[] memory tries = new Execution[](extraTokens.length + 1);
+        uint256 m;
+        for (uint256 i; i < extraTokens.length; ++i) {
+            address token = extraTokens[i];
+            uint256 amount = IERC20(token).balanceOf(kernel);
+            if (amount == 0) continue;
+            tries[m++] = Execution(token, 0, abi.encodeCall(IERC20.transfer, (treasury, amount)));
+            emit DormantExtraTokenSwept(kernel, token, amount);
+        }
+        if (ethAmount > 0) {
+            tries[m++] = Execution(treasury, ethAmount, "");
+        }
+        assembly ("memory-safe") {
+            mstore(tries, m)
+        }
+        if (m > 0) {
+            _rootCall(
+                kernel,
+                abi.encodeCall(IKernel.execute, (KernelLib.EXEC_MODE_BATCH_TRY, KernelLib.encodeBatch(tries)))
             );
         }
         emit DormantClaimed(kernel, usdcAmount, wethAmount, ethAmount, tokenBurned);
@@ -388,6 +440,16 @@ contract AgentGuardian is Ownable2Step, ReentrancyGuard, IERC7579Validator, IERC
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+
+    function _revokeApprovalOf(address kernel, bytes21 vId) internal {
+        bytes32 digest = approvedDigestOf[kernel][vId];
+        if (digest == bytes32(0)) return;
+        delete approvedDigestOf[kernel][vId];
+        if (approvedEnableDigests[kernel][digest]) {
+            approvedEnableDigests[kernel][digest] = false;
+            emit SessionKeyApprovalRevoked(kernel, digest);
+        }
+    }
 
     function _rootCall(address kernel, bytes memory data) internal {
         _rootCallKernel = kernel;

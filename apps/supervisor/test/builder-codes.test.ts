@@ -9,7 +9,7 @@ import { agents } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { createKernelClient, encodeKernelCalls } from '../src/kernel.js';
 import { registerAgent, type LaunchEvent } from '../src/onboarding.js';
-import { ADDR, AGENT_ID, CREATOR, GUARDIAN, KERNEL, makeWorld, PAYTO, SERVICE_KEY, SESSION_PK, seedAgent, TOKEN, type TestWorld } from './helpers.js';
+import { ADDR, AGENT_ID, CREATOR, GUARDIAN, KERNEL, makeWorld, PAYTO, SUPERVISOR_KEY, SESSION_PK, seedAgent, TOKEN, type TestWorld } from './helpers.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 const CODE = 'bc_a1b2c3d4';
@@ -76,10 +76,8 @@ describe('ERC-8021 suffix', () => {
       const without = await createKernelClient(base);
       expect(without.callDataSuffix).toBeNull();
       expect(await without.account.encodeCalls(calls)).toBe(plain);
-      // the ERC-1271 path does not carry the suffix
-      const sig = await withCode.signTypedData({ domain: { name: 'USD Coin', version: '2', chainId: 84532, verifyingContract: ADDR.usdc }, types: { Probe: [{ name: 'note', type: 'string' }] }, primaryType: 'Probe', message: { note: 'x' } });
-      expect(sig.startsWith('0x0211223344ff')).toBe(true);
-      expect(sig.endsWith(MARKER)).toBe(false);
+      // there is no ERC-1271 path: the kernel refuses to sign typed data at all
+      await expect(withCode.signTypedData({ domain: { name: 'USDC', version: '2', chainId: 84532, verifyingContract: ADDR.usdc }, types: { Probe: [{ name: 'to', type: 'address' }] }, primaryType: 'Probe', message: { to: PAYTO } })).rejects.toThrow(/kernel signing refused/);
     } finally {
       await world.close();
     }
@@ -163,9 +161,9 @@ describe('builder code registration', () => {
       // exposed by the admin API
       const nowSec = () => Math.floor(world.ctx.now() / 1000);
       const app = createApp(world.ctx, nowSec);
-      const list = (await (await app.request('/internal/agents', { headers: { authorization: signRequest(SERVICE_KEY, 'GET', '/internal/agents', '', nowSec()) } })).json()) as { agents: { agentId: string; builderCode: string | null }[] };
+      const list = (await (await app.request('/internal/agents', { headers: { authorization: signRequest(SUPERVISOR_KEY, 'GET', '/internal/agents', '', nowSec()) } })).json()) as { agents: { agentId: string; builderCode: string | null }[] };
       expect(list.agents.find((a) => a.agentId === '7')?.builderCode).toBe(CODE);
-      const one = (await (await app.request('/internal/agents/7', { headers: { authorization: signRequest(SERVICE_KEY, 'GET', '/internal/agents/7', '', nowSec()) } })).json()) as { agent: { builderCode: string | null } };
+      const one = (await (await app.request('/internal/agents/7', { headers: { authorization: signRequest(SUPERVISOR_KEY, 'GET', '/internal/agents/7', '', nowSec()) } })).json()) as { agent: { builderCode: string | null } };
       expect(one.agent.builderCode).toBe(CODE);
     } finally {
       await world.close();

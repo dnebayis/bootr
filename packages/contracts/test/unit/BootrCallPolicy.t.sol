@@ -36,14 +36,55 @@ contract BootrCallPolicyTest is Test {
     bytes32 constant EXEC_MODE_DELEGATECALL = bytes32(uint256(0xff) << 248);
     uint8 constant EQ = 1;
     uint8 constant LTE = 2;
+    uint8 constant WIN = 3;
+    uint32 constant WINDOW = 1 days;
+    bytes32 constant WIN_ID = bytes32(bytes4(0x5e550001));
+    uint256 constant T0 = 1_800_000_000;
 
     function setUp() public {
+        vm.warp(T0);
         policy = new BootrCallPolicy();
         assertEq(policy.OP_EQUAL(), EQ);
         assertEq(policy.OP_LESS_THAN_OR_EQUAL(), LTE);
+        assertEq(policy.OP_SUM_PER_WINDOW(), WIN);
         bytes memory initData = abi.encodePacked(ID, abi.encode(_rules()));
         vm.prank(kernel);
         policy.onInstall(initData);
+        // a second permission on the same kernel with the production funding rule: USDC.transfer(payTo, <= CAP per day)
+        bytes memory winData = abi.encodePacked(WIN_ID, abi.encode(_windowRules()));
+        vm.prank(kernel);
+        policy.onInstall(winData);
+    }
+
+    /// @dev The production money rule: `USDC.transfer(spender, SUM_PER_WINDOW <= CAP)` with a 1-day window.
+    function _windowRules() internal view returns (BootrCallPolicy.Rule[] memory rules) {
+        rules = new BootrCallPolicy.Rule[](2);
+        rules[0].target = usdc;
+        rules[0].selector = IERC20.transfer.selector;
+        rules[0].windowSeconds = WINDOW;
+        rules[0].args = new BootrCallPolicy.ArgRule[](2);
+        rules[0].args[0] = BootrCallPolicy.ArgRule(0, EQ, bytes32(uint256(uint160(payTo))));
+        rules[0].args[1] = BootrCallPolicy.ArgRule(1, WIN, bytes32(CAP));
+        rules[1].target = feeLocker;
+        rules[1].selector = IFeeLockerClaim.claim.selector;
+        rules[1].args = new BootrCallPolicy.ArgRule[](1);
+        rules[1].args[0] = BootrCallPolicy.ArgRule(0, EQ, bytes32(uint256(uint160(kernel))));
+    }
+
+    /// @dev `checkUserOpPolicy` on the windowed permission with the time slot in `userOp.signature`.
+    function _checkWin(bytes memory callData, uint256 claimedNow) internal returns (uint256) {
+        PackedUserOperation memory op = _op(callData);
+        op.signature = abi.encode(claimedNow);
+        vm.prank(kernel);
+        return policy.checkUserOpPolicy(WIN_ID, op);
+    }
+
+    function _packed(uint256 validAfter, uint256 validUntil) internal pure returns (uint256) {
+        return (validUntil << 160) | (validAfter << 208);
+    }
+
+    function _window() internal view returns (uint48 windowEnd, uint128 spent) {
+        (windowEnd, spent,,) = policy.windowOf(WIN_ID, kernel, 0, 1);
     }
 
     // ------------------------------------------------------------------
@@ -107,7 +148,7 @@ contract BootrCallPolicyTest is Test {
 
     function test_installStoresRulesAndFlags() public view {
         assertTrue(policy.installed(ID, kernel));
-        assertEq(policy.installedCount(kernel), 1);
+        assertEq(policy.installedCount(kernel), 2);
         assertTrue(policy.isInitialized(kernel));
         assertFalse(policy.isInitialized(otherKernel));
         assertTrue(policy.isModuleType(5));
@@ -121,6 +162,15 @@ contract BootrCallPolicyTest is Test {
         assertEq(stored[2].args[1].op, LTE);
         assertEq(stored[2].args[1].value, bytes32(CAP));
         assertEq(stored[1].args.length, 0);
+        assertEq(stored[2].windowSeconds, 0);
+        BootrCallPolicy.Rule[] memory win = policy.rulesOf(WIN_ID, kernel);
+        assertEq(win[0].windowSeconds, WINDOW);
+        assertEq(win[0].args[1].op, WIN);
+        (uint48 windowEnd, uint128 spent, uint32 windowSeconds, uint256 cap) = policy.windowOf(WIN_ID, kernel, 0, 1);
+        assertEq(windowEnd, T0 + WINDOW, "first window ends one window after install");
+        assertEq(spent, 0);
+        assertEq(windowSeconds, WINDOW);
+        assertEq(cap, CAP);
     }
 
     function test_installRejectsDuplicateEmptyAndBadOp() public {
@@ -135,18 +185,34 @@ contract BootrCallPolicyTest is Test {
         policy.onInstall(abi.encodePacked(ID, abi.encode(none)));
 
         BootrCallPolicy.Rule[] memory bad = _rules();
-        bad[0].args[0].op = 3;
+        bad[0].args[0].op = 4;
         bytes memory badData = abi.encodePacked(ID, abi.encode(bad));
         vm.prank(otherKernel);
-        vm.expectRevert(abi.encodeWithSelector(BootrCallPolicy.InvalidOp.selector, 3));
+        vm.expectRevert(abi.encodeWithSelector(BootrCallPolicy.InvalidOp.selector, 4));
         policy.onInstall(badData);
 
         vm.prank(otherKernel);
         vm.expectRevert(BootrCallPolicy.InvalidInstallData.selector);
         policy.onInstall(hex"1234");
+
+        // SUM_PER_WINDOW needs a window and a cap that fits uint128
+        BootrCallPolicy.Rule[] memory win = _windowRules();
+        win[0].windowSeconds = 0;
+        bytes memory noWindow = abi.encodePacked(ID, abi.encode(win));
+        vm.prank(otherKernel);
+        vm.expectRevert(abi.encodeWithSelector(BootrCallPolicy.WindowRequired.selector, 0));
+        policy.onInstall(noWindow);
+        win = _windowRules();
+        win[0].args[1].value = bytes32(uint256(type(uint128).max) + 1);
+        bytes memory bigCap = abi.encodePacked(ID, abi.encode(win));
+        vm.prank(otherKernel);
+        vm.expectRevert(abi.encodeWithSelector(BootrCallPolicy.CapTooLarge.selector, 0, 1));
+        policy.onInstall(bigCap);
     }
 
     function test_uninstallDeletesRulesAndIsIdempotent() public {
+        vm.prank(kernel);
+        policy.onUninstall(abi.encodePacked(WIN_ID));
         vm.prank(kernel);
         policy.onUninstall(abi.encodePacked(ID));
         assertFalse(policy.installed(ID, kernel));
@@ -310,6 +376,74 @@ contract BootrCallPolicyTest is Test {
     // ------------------------------------------------------------------
     // Malformed call data
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // M-02: LESS_THAN_OR_EQUAL bounds are cumulative per batch
+    // ------------------------------------------------------------------
+
+    function test_batchSumOfCappedTransfersEnforced() public {
+        // two transfers that each fit the cap but sum above it
+        Execution[] memory execs = new Execution[](2);
+        execs[0] = Execution(usdc, 0, _transfer(payTo, CAP));
+        execs[1] = Execution(usdc, 0, _transfer(payTo, 1));
+        assertEq(_check(_batch(execs)), 1, "sum over cap");
+        // exactly the cap in total passes
+        execs[0] = Execution(usdc, 0, _transfer(payTo, CAP - 1));
+        assertEq(_check(_batch(execs)), 0, "sum == cap");
+        // many small ones
+        Execution[] memory many = new Execution[](50);
+        for (uint256 i; i < 50; ++i) {
+            many[i] = Execution(usdc, 0, _transfer(payTo, CAP / 50));
+        }
+        assertEq(_check(_batch(many)), 0);
+        many[49] = Execution(usdc, 0, _transfer(payTo, CAP / 50 + 1));
+        assertEq(_check(_batch(many)), 1);
+        // zero-amount calls never add up
+        for (uint256 i; i < 50; ++i) {
+            many[i] = Execution(usdc, 0, _transfer(payTo, 0));
+        }
+        assertEq(_check(_batch(many)), 0);
+    }
+
+    function test_batchSumIsPerRuleAndDoesNotTouchEqualOrUnboundedRules() public {
+        // EQUAL-only rules (claim, weth transfer) and arg-less rules (router) are not summed
+        Execution[] memory execs = new Execution[](4);
+        execs[0] = Execution(weth, 0, _transfer(universalRouter, type(uint256).max));
+        execs[1] = Execution(weth, 0, _transfer(universalRouter, type(uint256).max));
+        execs[2] = Execution(feeLocker, 0, abi.encodeCall(IFeeLockerClaim.claim, (kernel, weth)));
+        execs[3] = Execution(usdc, 0, _transfer(payTo, CAP));
+        assertEq(_check(_batch(execs)), 0);
+    }
+
+    function test_batchSumSaturatesOnHugeWords() public {
+        // a rule with cap = max: two max words would wrap a naive sum back under the bound
+        BootrCallPolicy.Rule[] memory one = new BootrCallPolicy.Rule[](1);
+        one[0].target = usdc;
+        one[0].selector = IERC20.transfer.selector;
+        one[0].args = new BootrCallPolicy.ArgRule[](1);
+        one[0].args[0] = BootrCallPolicy.ArgRule(1, LTE, bytes32(type(uint256).max));
+        bytes memory data = abi.encodePacked(OTHER_ID, abi.encode(one));
+        vm.prank(otherKernel);
+        policy.onInstall(data);
+        Execution[] memory execs = new Execution[](2);
+        execs[0] = Execution(usdc, 0, _transfer(payTo, type(uint256).max));
+        execs[1] = Execution(usdc, 0, _transfer(payTo, 1));
+        vm.prank(otherKernel);
+        assertEq(policy.checkUserOpPolicy(OTHER_ID, _op(_batch(execs))), 1, "overflow must fail, not wrap");
+        execs[1] = Execution(usdc, 0, _transfer(payTo, 0));
+        vm.prank(otherKernel);
+        assertEq(policy.checkUserOpPolicy(OTHER_ID, _op(_batch(execs))), 0);
+    }
+
+    function test_fuzzBatchSum(uint64 a, uint64 b, uint64 c) public {
+        Execution[] memory execs = new Execution[](3);
+        execs[0] = Execution(usdc, 0, _transfer(payTo, a));
+        execs[1] = Execution(usdc, 0, _transfer(payTo, b));
+        execs[2] = Execution(usdc, 0, _transfer(payTo, c));
+        uint256 res = _check(_batch(execs));
+        bool ok = uint256(a) <= CAP && uint256(b) <= CAP && uint256(c) <= CAP && uint256(a) + b + c <= CAP;
+        assertEq(res, ok ? 0 : 1);
+    }
 
     function test_truncatedCallDataFails() public {
         assertEq(_check(""), 1, "empty");
@@ -536,20 +670,156 @@ contract BootrCallPolicyTest is Test {
         assertEq(policy.rulesOf(ID, otherKernel).length, 0);
     }
 
-    /// @dev Asserts the ERC-7562 property: during `checkUserOpPolicy` every storage slot read lies in
-    ///      `[base, base + 128)` with `base = keccak256(kernel ‖ keccak256(id ‖ slot))`, and nothing is written.
-    function _assertAssociatedReads(address k, bytes32 id, bytes memory callData, uint256 expected) internal {
+    /// @dev Asserts the ERC-7562 property: during `checkUserOpPolicy` every storage slot read or written lies in
+    ///      `[base, base + 128)` with `base = keccak256(kernel ‖ keccak256(id ‖ slot))` (writes happen only for
+    ///      `SUM_PER_WINDOW` accounting; ERC-7562 allows writes to the sender's associated storage).
+    function _assertAssociatedAccess(address k, bytes32 id, bytes memory callData, bytes memory slotSig, uint256 expected, bool expectWrites)
+        internal
+    {
         uint256 base = _base(id, k);
+        PackedUserOperation memory op = _op(callData);
+        op.signature = slotSig;
         vm.record();
         vm.prank(k);
-        uint256 res = policy.checkUserOpPolicy(id, _op(callData));
+        uint256 res = policy.checkUserOpPolicy(id, op);
         assertEq(res, expected);
         (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(address(policy));
-        assertEq(writes.length, 0, "validation must not write storage");
+        assertEq(writes.length > 0, expectWrites, "window accounting writes exactly when spending");
         assertGt(reads.length, 0, "the config was read");
         for (uint256 i; i < reads.length; ++i) {
             uint256 slot = uint256(reads[i]);
             assertTrue(slot >= base && slot < base + 128, "read outside the sender's associated storage");
+        }
+        for (uint256 i; i < writes.length; ++i) {
+            uint256 slot = uint256(writes[i]);
+            assertTrue(slot >= base && slot < base + 128, "write outside the sender's associated storage");
+        }
+    }
+
+    function _assertAssociatedReads(address k, bytes32 id, bytes memory callData, uint256 expected) internal {
+        _assertAssociatedAccess(k, id, callData, "", expected, false);
+    }
+
+    function test_validationTouchesOnlyAssociatedStorage() public {
+        // windowed spend: reads + writes, all inside the struct
+        _assertAssociatedAccess(kernel, WIN_ID, _single(usdc, 0, _transfer(payTo, 1e6)), abi.encode(T0), _packed(T0, T0 + WINDOW), true);
+        // a non-spending op on the windowed permission writes nothing
+        _assertAssociatedAccess(kernel, WIN_ID, _single(feeLocker, 0, abi.encodeCall(IFeeLockerClaim.claim, (kernel, weth))), abi.encode(T0), 0, false);
+        _assertAssociatedAccess(kernel, WIN_ID, _single(usdc, 0, _transfer(payTo, 0)), abi.encode(T0), 0, false);
+        // a rejected spend writes nothing either
+        _assertAssociatedAccess(kernel, WIN_ID, _single(usdc, 0, _transfer(payTo, CAP)), abi.encode(T0), 1, false);
+    }
+
+    // ------------------------------------------------------------------
+    // SUM_PER_WINDOW
+    // ------------------------------------------------------------------
+
+    function test_windowAccumulatesAndReturnsBounds() public {
+        bytes memory spend30 = _single(usdc, 0, _transfer(payTo, 30e6));
+        assertEq(_checkWin(spend30, T0 + 1), _packed(T0, T0 + WINDOW));
+        (uint48 windowEnd, uint128 spent) = _window();
+        assertEq(windowEnd, T0 + WINDOW);
+        assertEq(spent, 30e6);
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 20e6)), T0 + 2), _packed(T0, T0 + WINDOW));
+        (, spent) = _window();
+        assertEq(spent, CAP);
+        // exhausted: even 1 fails, state untouched
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), T0 + 3), 1);
+        (, spent) = _window();
+        assertEq(spent, CAP);
+        // zero spends never touch the window and carry no bound
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 0)), T0 + 3), 0);
+        // per-call bound still applies before any accounting (a single call over the cap)
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, CAP + 1)), T0 + WINDOW + 1), 1);
+    }
+
+    function test_windowRollsToTheGridWindowContainingTheClaimedTime() public {
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, CAP)), T0), _packed(T0, T0 + WINDOW));
+        // claiming a time inside the window does not roll; claiming the past neither
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), T0 + WINDOW - 1), 1);
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), 0), 1);
+        // the next window: budget back, bounds = that window
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 10e6)), T0 + WINDOW), _packed(T0 + WINDOW, T0 + 2 * WINDOW));
+        (uint48 windowEnd, uint128 spent) = _window();
+        assertEq(windowEnd, T0 + 2 * WINDOW);
+        assertEq(spent, 10e6);
+        // a long idle gap: the grid jumps straight to the window containing `now` (no catch-up burst)
+        uint256 later = T0 + 7 * WINDOW + 123;
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, CAP)), later), _packed(T0 + 7 * WINDOW, T0 + 8 * WINDOW));
+        (windowEnd, spent) = _window();
+        assertEq(windowEnd, T0 + 8 * WINDOW);
+        assertEq(spent, CAP);
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), later), 1);
+        // a claimed time at the exact window end belongs to the next window
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), T0 + 8 * WINDOW), _packed(T0 + 8 * WINDOW, T0 + 9 * WINDOW));
+        // an absurd claim that would overflow uint48 fails instead of corrupting the grid
+        assertEq(_checkWin(_single(usdc, 0, _transfer(payTo, 1)), type(uint256).max), 1);
+        (windowEnd,) = _window();
+        assertEq(windowEnd, T0 + 9 * WINDOW);
+    }
+
+    function test_windowWithoutTimeSlotKeepsTheCurrentWindow() public {
+        PackedUserOperation memory op = _op(_single(usdc, 0, _transfer(payTo, 5e6)));
+        vm.prank(kernel);
+        assertEq(policy.checkUserOpPolicy(WIN_ID, op), _packed(T0, T0 + WINDOW));
+        // a slot of the wrong length is ignored (treated as "no claim")
+        op.signature = hex"1234";
+        vm.prank(kernel);
+        assertEq(policy.checkUserOpPolicy(WIN_ID, op), _packed(T0, T0 + WINDOW));
+        (, uint128 spent) = _window();
+        assertEq(spent, 10e6);
+    }
+
+    function test_windowBatchSumsCountOnce() public {
+        Execution[] memory execs = new Execution[](3);
+        execs[0] = Execution(usdc, 0, _transfer(payTo, 20e6));
+        execs[1] = Execution(feeLocker, 0, abi.encodeCall(IFeeLockerClaim.claim, (kernel, weth)));
+        execs[2] = Execution(usdc, 0, _transfer(payTo, 20e6));
+        assertEq(_checkWin(_batch(execs), T0), _packed(T0, T0 + WINDOW));
+        (, uint128 spent) = _window();
+        assertEq(spent, 40e6);
+        execs[0] = Execution(usdc, 0, _transfer(payTo, 5e6));
+        execs[2] = Execution(usdc, 0, _transfer(payTo, 6e6));
+        assertEq(_checkWin(_batch(execs), T0), 1, "batch over the remaining budget fails as a whole");
+        (, spent) = _window();
+        assertEq(spent, 40e6);
+        execs[2] = Execution(usdc, 0, _transfer(payTo, 5e6));
+        assertEq(_checkWin(_batch(execs), T0), _packed(T0, T0 + WINDOW));
+        (, spent) = _window();
+        assertEq(spent, CAP);
+    }
+
+    function test_windowStateClearedOnUninstall() public {
+        _checkWin(_single(usdc, 0, _transfer(payTo, 5e6)), T0);
+        vm.prank(kernel);
+        policy.onUninstall(abi.encodePacked(WIN_ID));
+        (uint48 windowEnd, uint128 spent,,) = policy.windowOf(WIN_ID, kernel, 0, 1);
+        assertEq(windowEnd, 0);
+        assertEq(spent, 0);
+        uint256 base = _base(WIN_ID, kernel);
+        for (uint256 n; n < 128; ++n) {
+            assertEq(vm.load(address(policy), bytes32(base + n)), bytes32(0), "slot not cleared");
+        }
+    }
+
+    /// @dev Invariant: whatever the sequence of spends and claimed times, `spent` never exceeds the cap, the window
+    ///      end always sits on the install grid, and every accepted spend is bounded by its window.
+    function test_fuzzWindowInvariants(uint64[8] calldata amounts, uint32[8] calldata offsets) public {
+        uint256 claimed = T0;
+        for (uint256 i; i < 8; ++i) {
+            claimed += offsets[i];
+            uint256 amount = uint256(amounts[i]) % (CAP + 2);
+            uint256 res = _checkWin(_single(usdc, 0, _transfer(payTo, amount)), claimed);
+            (uint48 windowEnd, uint128 spent) = _window();
+            assertLe(spent, CAP, "spent over cap");
+            assertEq((uint256(windowEnd) - T0) % WINDOW, 0, "window off the grid");
+            if (res != 1 && amount > 0) {
+                uint256 validAfter = res >> 208;
+                uint256 validUntil = (res >> 160) & type(uint48).max;
+                assertEq(validUntil, windowEnd);
+                assertEq(validAfter, windowEnd - WINDOW);
+                assertTrue(claimed >= validAfter && claimed < validUntil, "accepted spend outside its window");
+            }
         }
     }
 

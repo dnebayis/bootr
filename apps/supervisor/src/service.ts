@@ -11,6 +11,7 @@ import { createKernelClient, type KernelClient } from './kernel.js';
 import { logger } from './log.js';
 import { MemoryStore } from './memories.js';
 import { SenderClient } from './sender-client.js';
+import { spenderAccount } from './spender.js';
 
 export function createContext(config: Config, db: Db, overrides: Partial<SupervisorContext> = {}): SupervisorContext {
   const chain = overrides.chain ?? createChainContext(config);
@@ -28,10 +29,11 @@ export function createContext(config: Config, db: Db, overrides: Partial<Supervi
     db,
     chain,
     sender: overrides.sender ?? new SenderClient(config.SENDER_URL, config.SENDER_SERVICE_KEY, fetchImpl),
-    indexer: overrides.indexer ?? new IndexerClient(config.INDEXER_URL, config.SENDER_SERVICE_KEY, fetchImpl),
+    indexer: overrides.indexer ?? new IndexerClient(config.INDEXER_URL, config.INDEXER_SERVICE_KEY, fetchImpl),
     memories: overrides.memories ?? new MemoryStore(db),
     sessionSigner,
     adminSigner,
+    spenderFor: overrides.spenderFor ?? ((agent) => spenderAccount(config.SPENDER_MASTER_KEY as Hex, agent.agentId)),
     fetch: fetchImpl,
     now: overrides.now ?? (() => Date.now()),
     log: overrides.log ?? logger,
@@ -56,6 +58,7 @@ export function createContext(config: Config, db: Db, overrides: Partial<Supervi
             // an op that still finds the permission uninstalled (enable mode) is self-bundled too
             ...(config.ENABLE_MODE_SELF_BUNDLE && adminSigner ? { selfBundle: adminSigner } : {}),
             ...(builderCode ? { builderCode } : {}),
+            now: ctx.now,
           });
           kernels.set(key, client);
         }

@@ -12,11 +12,25 @@
  * The call allow-list is Bootr's own module, `BootrCallPolicy` (`packages/contracts/src/BootrCallPolicy.sol`),
  * installed first with `abi.encode(Rule[])` init data (see `callPolicyRules` / `encodeCallPolicyData`).
  * ZeroDev's CallPolicy is not used: hooked permissions require `executeUserOp`-wrapped callData, which
- * that module cannot parse. ZeroDev SDK functions used: `toGasPolicy`, `toRateLimitPolicy`,
- * `toTimestampPolicy`, `toSignatureCallerPolicy` (policy init data), `toECDSASigner` and
- * `toPermissionValidator.getEnableData` (cross-checked against the local encoder in tests). The SDK's
- * own enable-mode wrapper (`getEncodedPluginsData`) cannot be used: it appends an action address and
+ * that module cannot parse. The permission has NO ERC-1271 path: the signer entry carries `SKIP_SIGNATURE`
+ * (`NOT_FOR_VALIDATE_SIG`, 0x0002), which Kernel stores as the permission's `permissionFlag` and makes
+ * `isValidSignature` revert `PermissionNotAlllowedForSignature`. x402 payments are signed by the per-agent
+ * spender EOA (`spender.ts`); the session key may only fund it (`USDC.transfer(spender, …)`, cumulative cap per
+ * window, see `SUM_PER_WINDOW`). A content policy on the signature path is not possible on Kernel v3.1:
+ * `_checkSignaturePolicy` re-reads the original signature after the policies, so any policy-signature slot reverts
+ * `SignerPrefixNotPresent` (proven in `packages/contracts/test/security/RevocationFork.t.sol`).
+ * ZeroDev SDK functions used: `toGasPolicy`, `toRateLimitPolicy`, `toTimestampPolicy` (policy init data),
+ * `toECDSASigner` and `toPermissionValidator.getEnableData` (cross-checked against the local encoder in tests).
+ * The SDK's own enable-mode wrapper (`getEncodedPluginsData`) cannot be used: it appends an action address and
  * init data to `selectorData`, while the guardian fixes `selectorData` to the bare 4-byte `execute` selector.
+ *
+ * Install order (policy index in brackets, the index a policy-signature slot addresses on the userOp path):
+ *   [0] BootrCallPolicy (NOT_FOR_VALIDATE_SIG) · [1] GasPolicy · [2] RateLimitPolicy (both NOT_FOR_VALIDATE_SIG)
+ *   · [3] TimestampPolicy · ECDSASigner (NOT_FOR_VALIDATE_SIG = SKIP_SIGNATURE).
+ * Every regular userOp signature carries BootrCallPolicy's time slot (`encodeSessionSignature(sig, now)`) so the
+ * windowed cap can roll its window without reading `block.timestamp` in validation.
+ * Legacy policies stored before this layout (`SignatureCallerPolicy`, Universal Router rules, payTo transfers)
+ * are only ever read back to build `deinitData` for their revocation (`policyModules`).
  */
 import { randomBytes } from 'node:crypto';
 import { toECDSASigner } from '@zerodev/permissions/signers';
@@ -28,6 +42,7 @@ import {
   encodeAbiParameters,
   getAddress,
   hashTypedData,
+  isAddress,
   keccak256,
   pad,
   parseAbiParameters,
@@ -37,7 +52,7 @@ import {
   type Hex,
   type LocalAccount,
 } from 'viem';
-import { KERNEL_EXECUTE_SELECTOR, UNIVERSAL_ROUTER_EXECUTE_SELECTOR } from './abi.js';
+import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, SWAP_HELPER_SWAP_SELECTOR } from './abi.js';
 
 export const KERNEL_VERSION = '0.3.1';
 export const SESSION_HOOK_DATA: Hex = '0x00';
@@ -54,20 +69,31 @@ export interface SessionPolicyParams {
   kernel: Address;
   token: Address;
   feeLocker: Address;
-  universalRouter: Address;
+  /** BootrSwapHelper (`addresses.bootr.swapHelper`): the only WETH sink a session may use. */
+  swapHelper: Address;
+  /** @deprecated Legacy field of policies installed before the swap helper; never used for new rules. */
+  universalRouter?: Address;
   usdc: Address;
   weth: Address;
-  inferencePayTo: Address;
-  /** Max per-transfer USDC amount (6 dp units) to the inference payTo. */
+  /** @deprecated Legacy recipient of the USDC rule (policies installed before the per-agent spender). */
+  inferencePayTo?: Address;
+  /** The agent's x402 spender EOA: the only USDC recipient the session key may fund. */
+  spender: Address;
+  /** Max USDC (6 dp units) moved to the spender per window (`SUM_PER_WINDOW`, summed per userOp and per window). */
   usdcTransferCap: bigint;
+  /** Window of the USDC cap in seconds (fixed grid anchored at install). */
+  usdcWindowSeconds: number;
   /** GasPolicy cumulative allowance in wei. */
   gasAllowanceWei: bigint;
   ratePerHour: number;
   /** Unix seconds. */
   validUntil: number;
   validAfter?: number;
-  /** ERC-1271 callers for SignatureCallerPolicy; `null` = no caller policy. */
-  signatureCallers: Address[] | null;
+  /**
+   * @deprecated ERC-1271 callers of the legacy SignatureCallerPolicy. Always `null` for new installs; only
+   * honoured so a legacy stored policy produces the right module list for its revocation.
+   */
+  signatureCallers?: Address[] | null;
   /** Session signer EOA address. */
   sessionSigner: Address;
   policyAddresses: {
@@ -76,7 +102,10 @@ export interface SessionPolicyParams {
     gasPolicy: Address;
     rateLimitPolicy: Address;
     timestampPolicy: Address;
-    signaturePolicy: Address;
+    /** @deprecated Legacy SignatureCallerPolicy; only present on policies stored before the spender layout. */
+    signaturePolicy?: Address;
+    /** @deprecated Never installed any more (Kernel v3.1 cannot run policy slots on the signature path); legacy rows only. */
+    authorizationPolicy?: Address;
     ecdsaSigner: Address;
   };
 }
@@ -105,8 +134,13 @@ export interface PolicyEntry {
 // BootrCallPolicy rules (packages/contracts/src/BootrCallPolicy.sol)
 // ---------------------------------------------------------------------------
 
-/** `ArgRule.op`: EQUAL compares the 32-byte word, LESS_THAN_OR_EQUAL compares it as uint256. */
-export const CallPolicyOp = { EQUAL: 1, LESS_THAN_OR_EQUAL: 2 } as const;
+/**
+ * `ArgRule.op`: EQUAL compares the 32-byte word, LESS_THAN_OR_EQUAL compares it as uint256 (summed per batch),
+ * SUM_PER_WINDOW additionally accumulates it on-chain per `Rule.windowSeconds` window.
+ */
+export const CallPolicyOp = { EQUAL: 1, LESS_THAN_OR_EQUAL: 2, SUM_PER_WINDOW: 3 } as const;
+/** Index of BootrCallPolicy in the permission (the `idx` byte of its policy-signature slot). */
+export const CALL_POLICY_INDEX = 0;
 
 export interface CallPolicyArgRule {
   /** Static argument index: the word at `4 + 32 * index` of the call data. */
@@ -118,40 +152,56 @@ export interface CallPolicyArgRule {
 export interface CallPolicyRule {
   target: Address;
   selector: Hex;
+  /** Window of the rule's SUM_PER_WINDOW arguments in seconds (0 when it has none). */
+  windowSeconds: number;
   args: CallPolicyArgRule[];
 }
 
 /** `abi.encode(Rule[])` as `BootrCallPolicy.onInstall` decodes it (after the 32-byte permission id). */
-export const CALL_POLICY_RULES_ABI = parseAbiParameters('(address target, bytes4 selector, (uint8 index, uint8 op, bytes32 value)[] args)[]');
+export const CALL_POLICY_RULES_ABI = parseAbiParameters('(address target, bytes4 selector, uint32 windowSeconds, (uint8 index, uint8 op, bytes32 value)[] args)[]');
+/** Position of the USDC funding rule in `callPolicyRules` (for `BootrCallPolicy.windowOf`). */
+export const FUNDING_RULE_INDEX = 3;
+/** Position of the SUM_PER_WINDOW amount argument inside that rule. */
+export const FUNDING_AMOUNT_ARG_INDEX = 1;
 
 export const FEE_LOCKER_CLAIM_SELECTOR: Hex = toFunctionSelector('claim(address,address)');
 export const ERC20_TRANSFER_SELECTOR: Hex = toFunctionSelector('transfer(address,uint256)');
 
 // Lower-case bytes32 values so rule data compares byte-for-byte with the lower-cased `validatorData`.
 const eqAddress = (index: number, value: Address): CallPolicyArgRule => ({ index, op: CallPolicyOp.EQUAL, value: pad(value, { size: 32 }).toLowerCase() as Hex });
-const lteUint = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.LESS_THAN_OR_EQUAL, value: toHex(value, { size: 32 }) });
+const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(value, { size: 32 }) });
 
-/** The four calls a session key may make, in this order. Every call must carry zero ETH value. */
+/**
+ * The four calls a session key may make, in this order. Every call must carry zero ETH value. The swap
+ * helper pulls WETH from the kernel and pays ALL output USDC back to the kernel at no worse than the
+ * Chainlink price minus 3%, so these rules can only ever turn the kernel's WETH into the kernel's USDC
+ * (finding C-02). The only USDC outflow is to the agent's own spender EOA, capped cumulatively per window
+ * on-chain (M-02 and the x402 exposure after C-01).
+ */
 export function callPolicyRules(p: SessionPolicyParams): CallPolicyRule[] {
+  if (!isAddress(p.swapHelper)) throw new Error('session policy has no swapHelper (bootr.swapHelper)');
+  if (!isAddress(p.spender)) throw new Error('session policy has no spender');
+  if (!Number.isInteger(p.usdcWindowSeconds) || p.usdcWindowSeconds <= 0) throw new Error('usdcWindowSeconds must be a positive integer');
+  if (p.usdcTransferCap <= 0n || p.usdcTransferCap > 2n ** 128n - 1n) throw new Error('usdcTransferCap must fit uint128');
   return [
     // FeeLocker.claim(kernel, *): anyone may trigger, funds always go to the kernel.
-    { target: p.feeLocker, selector: FEE_LOCKER_CLAIM_SELECTOR, args: [eqAddress(0, p.kernel)] },
-    // UniversalRouter.execute(bytes,bytes[],uint256): route encoding is validated off-chain by treasury.ts.
-    { target: p.universalRouter, selector: UNIVERSAL_ROUTER_EXECUTE_SELECTOR, args: [] },
-    // USDC.transfer(inferencePayTo, <= cap): direct model funding.
-    { target: p.usdc, selector: ERC20_TRANSFER_SELECTOR, args: [eqAddress(0, p.inferencePayTo), lteUint(1, p.usdcTransferCap)] },
-    // WETH.transfer(universalRouter, *): pays the router before a swap (payerIsUser = false).
-    { target: p.weth, selector: ERC20_TRANSFER_SELECTOR, args: [eqAddress(0, p.universalRouter)] },
+    { target: p.feeLocker, selector: FEE_LOCKER_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.kernel)] },
+    // WETH.approve(swapHelper, *): the helper only ever spends the allowance from msg.sender == kernel.
+    { target: p.weth, selector: ERC20_APPROVE_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.swapHelper)] },
+    // swapHelper.swapWethToUsdc(amountIn, maxSlippageBps): output to msg.sender, floor from Chainlink on-chain.
+    { target: p.swapHelper, selector: SWAP_HELPER_SWAP_SELECTOR, windowSeconds: 0, args: [] },
+    // USDC.transfer(spender, SUM_PER_WINDOW <= cap): the spender's float, at most `cap` per window.
+    { target: p.usdc, selector: ERC20_TRANSFER_SELECTOR, windowSeconds: p.usdcWindowSeconds, args: [eqAddress(0, p.spender), sumPerWindow(1, p.usdcTransferCap)] },
   ];
 }
 
 export function encodeCallPolicyData(rules: readonly CallPolicyRule[]): Hex {
-  return encodeAbiParameters(CALL_POLICY_RULES_ABI, [rules.map((r) => ({ target: r.target, selector: r.selector, args: r.args.map((a) => ({ index: a.index, op: a.op, value: a.value })) }))]).toLowerCase() as Hex;
+  return encodeAbiParameters(CALL_POLICY_RULES_ABI, [rules.map((r) => ({ target: r.target, selector: r.selector, windowSeconds: r.windowSeconds, args: r.args.map((a) => ({ index: a.index, op: a.op, value: a.value })) }))]).toLowerCase() as Hex;
 }
 
 export function decodeCallPolicyData(data: Hex): CallPolicyRule[] {
   const [rules] = decodeAbiParameters(CALL_POLICY_RULES_ABI, data);
-  return rules.map((r) => ({ target: getAddress(r.target), selector: r.selector, args: r.args.map((a) => ({ index: a.index, op: a.op as CallPolicyArgRule['op'], value: a.value })) }));
+  return rules.map((r) => ({ target: getAddress(r.target), selector: r.selector, windowSeconds: r.windowSeconds, args: r.args.map((a) => ({ index: a.index, op: a.op as CallPolicyArgRule['op'], value: a.value })) }));
 }
 
 /** The BootrCallPolicy entry: installed first, userOp-only (`NOT_FOR_VALIDATE_SIG`). */
@@ -161,8 +211,8 @@ export function callPolicyEntry(p: SessionPolicyParams): PolicyEntry {
 
 /**
  * ZeroDev policies in install order (after the call policy). Gas and rate-limit policies are flagged
- * `NOT_FOR_VALIDATE_SIG` so ERC-1271 (x402 payments) only passes the timestamp policy and, optionally,
- * the signature-caller policy, which in turn is flagged `NOT_FOR_VALIDATE_USEROP`.
+ * `NOT_FOR_VALIDATE_SIG`; the signature path is closed anyway by the signer's SKIP_SIGNATURE flag. The legacy
+ * signature-caller policy is only produced for stored legacy policies.
  */
 export function buildPolicies(p: SessionPolicyParams) {
   const gasPolicy = toGasPolicy({ policyAddress: p.policyAddresses.gasPolicy, policyFlag: PolicyFlags.NOT_FOR_VALIDATE_SIG, allowed: p.gasAllowanceWei });
@@ -180,6 +230,7 @@ export function buildPolicies(p: SessionPolicyParams) {
   });
   const policies = [gasPolicy, rateLimitPolicy, timestampPolicy];
   if (p.signatureCallers && p.signatureCallers.length) {
+    if (!p.policyAddresses.signaturePolicy) throw new Error('legacy signatureCallers without a signaturePolicy address');
     policies.push(
       toSignatureCallerPolicy({
         policyAddress: p.policyAddresses.signaturePolicy,
@@ -198,19 +249,47 @@ export function encodeValidatorData(entries: readonly PolicyEntry[]): Hex {
   return encodeAbiParameters(parseAbiParameters('bytes[]'), [packed]).toLowerCase() as Hex;
 }
 
-/** Entries built from the ZeroDev SDK policies, then the ECDSA signer (everything except the call policy). */
-export function zerodevEntries(p: SessionPolicyParams): PolicyEntry[] {
-  const entries: PolicyEntry[] = buildPolicies(p).map((policy) => {
+/** Entries built from the ZeroDev SDK policies (gas, rate-limit, timestamp, [legacy signature-caller]). */
+export function zerodevPolicyEntries(p: SessionPolicyParams): PolicyEntry[] {
+  return buildPolicies(p).map((policy) => {
     const info = policy.getPolicyInfoInBytes();
     return { flags: `0x${info.slice(2, 6)}` as Hex, module: getAddress(`0x${info.slice(6, 46)}`), data: policy.getPolicyData() };
   });
-  entries.push({ flags: PolicyFlags.FOR_ALL_VALIDATION, module: p.policyAddresses.ecdsaSigner, data: p.sessionSigner });
-  return entries;
 }
 
-/** All entries in install order: BootrCallPolicy, gas, rate-limit, timestamp, [signature-caller], signer. */
+/** Kernel `PassFlag` SKIP_SIGNATURE (= ZeroDev `NOT_FOR_VALIDATE_SIG`, 0x0002): on the signer it closes ERC-1271. */
+export const SIGNER_FLAGS = PolicyFlags.NOT_FOR_VALIDATE_SIG;
+
+/**
+ * The ECDSASigner entry (always last). Its flags become the permission's `permissionFlag`
+ * (`ValidationManager._installPermission`), so SKIP_SIGNATURE here makes `Kernel.isValidSignature` revert
+ * `PermissionNotAlllowedForSignature` for the whole permission: the session key has no ERC-1271 path.
+ */
+export function signerEntry(p: SessionPolicyParams): PolicyEntry {
+  return { flags: SIGNER_FLAGS, module: p.policyAddresses.ecdsaSigner, data: p.sessionSigner };
+}
+
+/** ZeroDev policies then the signer: what `toPermissionValidator(...).getEnableData()` encodes (tests cross-check it). */
+export function zerodevEntries(p: SessionPolicyParams): PolicyEntry[] {
+  return [...zerodevPolicyEntries(p), signerEntry(p)];
+}
+
+/** All entries in install order: BootrCallPolicy, gas, rate-limit, timestamp, signer (SKIP_SIGNATURE). */
 export function policyEntries(p: SessionPolicyParams): PolicyEntry[] {
-  return [callPolicyEntry(p), ...zerodevEntries(p)];
+  return [callPolicyEntry(p), ...zerodevPolicyEntries(p), signerEntry(p)];
+}
+
+/**
+ * Module addresses in install order for ANY stored policy, legacy or current, without building init data
+ * (a legacy policy has no swap helper / authorization policy and must still be revocable).
+ */
+export function policyModules(p: SessionPolicyParams): Address[] {
+  const a = p.policyAddresses;
+  const modules: Address[] = [a.callPolicy, a.gasPolicy, a.rateLimitPolicy, a.timestampPolicy];
+  if (p.signatureCallers && p.signatureCallers.length && a.signaturePolicy) modules.push(a.signaturePolicy);
+  if (a.authorizationPolicy) modules.push(a.authorizationPolicy); // legacy rows only
+  modules.push(a.ecdsaSigner);
+  return modules;
 }
 
 /** The complete `validatorData` for `guardian.approveSessionKey` and the enable userOp. */
@@ -231,6 +310,7 @@ export async function sdkValidatorData(p: SessionPolicyParams, signer: LocalAcco
     policies: buildPolicies(p),
     entryPoint: { address: entryPoint, version: '0.7' },
     kernelVersion: KERNEL_VERSION,
+    flag: SIGNER_FLAGS,
   });
   return validator.getEnableData(p.kernel);
 }
@@ -317,23 +397,63 @@ export function encodeEnableSignature(guardian: Address, validatorData: Hex, use
   ]);
 }
 
-/** Session signature for a regular userOp: `policySigs (none) ‖ 0xff ‖ signerSig`. */
-export function encodeSessionSignature(signerSig: Hex): Hex {
-  return concatHex([SIGNER_PREFIX, signerSig]);
+export interface PolicySig {
+  /** Index of the policy in the permission's policy list. */
+  index: number;
+  data: Hex;
+}
+
+/**
+ * `[idx(1) ‖ uint64 len(8) ‖ data]…` in ascending index order (Kernel v3.1 `_checkUserOpPolicy`; it reverts
+ * `PolicySignatureOrderError` otherwise). Usable on the userOp path only: on the ERC-1271 path the Kernel
+ * re-reads the original slice afterwards and reverts `SignerPrefixNotPresent` for any slot.
+ */
+export function encodePolicySigs(sigs: readonly PolicySig[]): Hex {
+  const sorted = [...sigs].sort((a, b) => a.index - b.index);
+  for (let i = 1; i < sorted.length; i++) if (sorted[i]!.index === sorted[i - 1]!.index) throw new Error(`duplicate policy signature index ${sorted[i]!.index}`);
+  return concatHex(
+    sorted.map((s) => {
+      if (!Number.isInteger(s.index) || s.index < 0 || s.index > 254) throw new Error(`policy index ${s.index} out of range`);
+      const len = (s.data.length - 2) / 2;
+      return concatHex([toHex(s.index, { size: 1 }), pad(toHex(len), { size: 8 }), s.data]);
+    }),
+  );
+}
+
+/** BootrCallPolicy's time slot: `abi.encode(uint256 nowSeconds)`, the signer's claim of the current time. */
+export function encodeTimeSlot(nowSeconds: number | bigint): PolicySig {
+  const now = BigInt(nowSeconds);
+  if (now < 0n || now > 2n ** 48n - 1n) throw new Error(`claimed time ${now} does not fit uint48`);
+  return { index: CALL_POLICY_INDEX, data: encodeAbiParameters(parseAbiParameters('uint256'), [now]) };
+}
+
+/**
+ * Session signature for a regular userOp: `[0 ‖ 32 ‖ abi.encode(now)] ‖ 0xff ‖ signerSig`. The time slot lets
+ * BootrCallPolicy's SUM_PER_WINDOW cap roll to the window containing `now` (see the contract NatSpec); without
+ * it a lapsed window would make every funding op expire (AA22). Pass `nowSeconds` for every op.
+ */
+export function encodeSessionSignature(signerSig: Hex, nowSeconds?: number | bigint): Hex {
+  const slots = nowSeconds === undefined ? [] : [encodeTimeSlot(nowSeconds)];
+  return concatHex([encodePolicySigs(slots), SIGNER_PREFIX, signerSig]);
 }
 
 /**
  * ERC-1271 signature as Kernel decodes it (`ValidatorLib.decodeSignature`, case 2):
- * `0x02 ‖ permissionId(4) ‖ policySigs (none) ‖ 0xff ‖ signerSig`. Only the 5-byte prefix is consumed for
- * permissions (unlike the 21-byte validator layout); the 16 zero bytes of the full ValidationId would be
- * parsed as policy-signature indexes and make Kernel revert `PolicySignatureOrderError`.
+ * `0x02 ‖ permissionId(4) ‖ 0xff ‖ signerSig`. Only the 5-byte prefix is consumed for permissions (unlike the
+ * 21-byte validator layout); the 16 zero bytes of the full ValidationId would be parsed as policy-signature
+ * indexes and make Kernel revert `PolicySignatureOrderError`. Production permissions reject every such
+ * signature (`PermissionNotAlllowedForSignature`); kept for tests and legacy tooling.
  */
 export function encodeErc1271Signature(permissionId: Hex, signerSig: Hex): Hex {
   return concatHex([VALIDATION_TYPE_PERMISSION, permissionId, SIGNER_PREFIX, signerSig]);
 }
 
-/** `abi.encode(bytes[] permissionDisableData)` for `guardian.revokeSessionKey` (policies.length + 1 entries). */
+/**
+ * `abi.encode(bytes[] permissionDisableData)` for `guardian.revokeSessionKey` (policies.length + 1 entries).
+ * Each entry is the module address (every module ignores it: Kernel prefixes the permission id), derived from
+ * `policyModules` so legacy stored policies revoke with the right entry count.
+ */
 export function buildDeinitData(p: SessionPolicyParams): Hex {
-  const entries = policyEntries(p).map((e) => e.module as Hex);
+  const entries = policyModules(p).map((m) => m as Hex);
   return encodeAbiParameters(parseAbiParameters('bytes[]'), [entries]);
 }

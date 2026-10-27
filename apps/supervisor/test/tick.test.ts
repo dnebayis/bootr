@@ -101,11 +101,25 @@ describe('wake -> inference -> action -> finish', () => {
       expect((runtime.state as { inferenceKey?: string }).inferenceKey).toMatch(/^inference:/);
       const rows = await w.db.select().from(inferenceTable);
       expect(rows[0]!.status).toBe('unknown');
-      // next tick: relay still says unknown -> no new POST, no new row
+      // next tick: no payment was ever signed for that key (the relay answered before any 402), so the relay can hold
+      // nothing of ours: the row is failed without asking the relay and the next cycle pays with a NEW key
       w.setNow(w.ctx.now() + 120_000);
       await tick(w.ctx);
-      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(1);
-      expect(await w.db.select().from(inferenceTable)).toHaveLength(1);
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/requests/'))).toHaveLength(0);
+      const after = await w.db.select().from(inferenceTable);
+      expect(after.find((r) => r.cycle === rows[0]!.cycle)?.status).toBe('failed');
+      expect(after.find((r) => r.cycle === rows[0]!.cycle)?.error).toBe('no_payment_signed');
+      // a signed payment on an unknown row is never re-bought: reconcile by key with the proof, no new POST
+      const [paid] = await w.db.update(inferenceTable).set({ status: 'unknown', error: null, receipt: { payment: { scheme: 'exact', network: 'eip155:84532', x402Version: 2, payload: { signature: '0x', authorization: {} } } } }).where(eq(inferenceTable.idempotencyKey, rows[0]!.idempotencyKey)).returning();
+      const current = await runtimeRow(w);
+      await w.db.update(runtimes).set({ state: { ...(current.state as Record<string, unknown>), inferenceKey: paid!.idempotencyKey }, cycle: paid!.cycle, status: 'waiting', nextAt: new Date(0) }).where(eq(runtimes.agentId, AGENT_ID));
+      const before = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+      w.setNow(w.ctx.now() + 120_000);
+      await tick(w.ctx);
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/requests/')).length).toBeGreaterThan(0);
+      expect(w.inference.calls.at(-1)!.headers.get('PAYMENT-SIGNATURE')).toBeTruthy();
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(before);
+      expect((await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, paid!.idempotencyKey) }))?.status).toBe('unknown');
     } finally {
       await w.close();
     }
@@ -147,8 +161,8 @@ describe('held money action', () => {
       expect(ops[0]!.status).toBe('unknown');
       expect(ops[0]!.userOpHash).toMatch(/^0x/);
       expect(w.kernel.submitted).toHaveLength(1);
-      // the swap op is WETH.transfer(router) + router.execute
-      expect(ops[0]!.calls.map((c) => c.to)).toEqual([w.ctx.chain.addresses.weth, w.ctx.chain.addresses.uniswap.universalRouter]);
+      // the swap op is WETH.approve(helper) + helper.swapWethToUsdc
+      expect(ops[0]!.calls.map((c) => c.to)).toEqual([w.ctx.chain.addresses.weth, w.ctx.chain.addresses.bootr.swapHelper]);
 
       // wake decision refuses to run while held
       expect(wakeDecision({ now: start, enabled: true, status: 'blocked', nextAt: 0, heldAction: true }).run).toBe(false);
@@ -204,7 +218,8 @@ describe('held money action', () => {
 
 describe('sleep rule', () => {
   it('sleeps below 1 USDC without buying inference and wakes on refuel', async () => {
-    const w = await makeWorld({ script: [finishResponse(Date.parse('2026-10-24T13:00:00Z'))], chain: { usdc: 500_000n } });
+    // kernel 0.5 USDC + spender 0.4 USDC: below 1 USDC in total (and below the 0.01 USDC top-up floor, so no fund op)
+    const w = await makeWorld({ script: [finishResponse(Date.parse('2026-10-24T13:00:00Z'))], chain: { usdc: 500_000n, spenderUsdc: 400_000n } });
     try {
       await seedAgent(w);
       const r = await tick(w.ctx);
@@ -234,6 +249,23 @@ describe('sleep rule', () => {
       w.state.paused = false;
       await tick(w.ctx);
       expect((await runtimeRow(w)).pausedBy).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('sleep rule', () => {
+  it('counts kernel + spender USDC as fuel', async () => {
+    const w = await makeWorld({ chain: { usdc: 0n, spenderUsdc: 3_000_000n }, script: [finishResponse(Date.parse('2026-10-24T13:00:00Z'))] });
+    try {
+      await seedAgent(w);
+      await tick(w.ctx);
+      expect((await runtimeRow(w)).status).not.toBe('sleeping');
+      w.state.spenderUsdc = 500_000n;
+      w.setNow(w.ctx.now() + 3_600_000);
+      await tick(w.ctx);
+      expect((await runtimeRow(w)).status).toBe('sleeping');
     } finally {
       await w.close();
     }

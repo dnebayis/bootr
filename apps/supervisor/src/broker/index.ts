@@ -21,10 +21,11 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, treasuryOps } from '../db/schema.js';
-import { SenderError, type SenderInboxItem } from '../sender-client.js';
-import { encodeSwapCalls, executeOp, minUsdcOut, opView, openOps, parseSwapRoute, prepareOp, readTreasuryOnChain, recentOps } from '../treasury.js';
+import { SenderError, type SenderInboxItem, type ReplyEligibility } from '../sender-client.js';
+import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fundingBudget, minUsdcOut, opView, openOps, prepareOp, readTreasuryOnChain, recentOps, swapHelperAddress } from '../treasury.js';
+import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
 import { readUrl, searchWeb } from '../web-reader.js';
-import { encodeFunctionData, erc20Abi } from 'viem';
+import { erc20Abi } from 'viem';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images are not wired). */
 export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig): ToolDefinition[] {
@@ -38,7 +39,17 @@ export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: A
 export interface BrokerEnv {
   /** Inbox snapshot of this turn: postId -> item (for replyAuthorId resolution and eligibility). */
   inbox: Map<string, SenderInboxItem>;
+  /** postId -> agent-core `replyEligibility` decision taken when the mention was observed; sent with every reply. */
+  eligibility: Map<string, ReplyEligibility>;
 }
+
+/** Records the eligibility decisions of `views` in `env` (what `publish_reply` sends to the sender). */
+export function recordEligibility(env: BrokerEnv, views: readonly InboxView[]): void {
+  for (const v of views) env.eligibility.set(v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) });
+}
+
+/** How long to wait before retrying a publish whose consent lookup could not reach X. */
+export const CONSENT_RETRY_MS = 5 * 60_000;
 
 export interface InboxView {
   postId: string;
@@ -83,6 +94,8 @@ export async function executeAction(ctx: SupervisorContext, agent: AgentRow, con
   } catch (err) {
     if (err instanceof SenderError) {
       if (err.code === 'storage_unavailable_after_send') return { kind: 'unknown', error: err.code };
+      // The consent check could not reach X: nothing was recorded or sent; retry the same action later.
+      if (err.code === 'consent_lookup_failed') return failed('sender:consent_lookup_failed', err.retryAt ?? ctx.now() + CONSENT_RETRY_MS);
       return failed(`sender:${err.code}`, err.retryAt);
     }
     if (isPolicyError(err)) return failed(err.message, err.retryAt);
@@ -100,6 +113,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const res = await ctx.sender.readMentions(agentId);
       for (const item of res.items) env.inbox.set(item.postId, item);
       const items = inboxViews(config, res.items, ctx.now());
+      recordEligibility(env, items);
       return { kind: 'completed', result: { throttled: res.throttled, nextReadAt: res.nextReadAt ?? null, items, instructionAuthority: false } };
     }
     case 'read_x_thread': {
@@ -131,12 +145,15 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
     }
     case 'publish_reply': {
       const item = env.inbox.get(action.input.postId);
+      // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
+      const eligibility: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now()).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
       const res = await ctx.sender.publish({
         agentId,
         actionId: pending.id,
         text: action.input.text,
         replyTo: action.input.postId,
         ...(item ? { replyAuthorId: item.authorId } : {}),
+        replyEligibility: eligibility,
         ...(action.input.attributions ? { attributions: action.input.attributions } : {}),
       });
       return publishOutcome(res, item?.authorId);
@@ -189,8 +206,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
           pending: open.map(opView),
           recent: recent.map(opView),
           policy: {
-            allowedOperations: ['swap (WETH -> USDC via Universal Router)', `transfer (USDC -> inference payTo ${ctx.config.INFERENCE_PAYTO_ADDRESS}, at most ${formatUnits(BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP), 6)} USDC per op)`],
-            automatic: `LP fees are claimed automatically above $${ctx.config.CLAIM_THRESHOLD_USD}; WETH is swapped to keep >= ${ctx.config.FUEL_TARGET_USDC} USDC of fuel.`,
+            allowedOperations: [`swap (WETH -> USDC via the Bootr swap helper; output floor from Chainlink ETH/USD, maxSlippageBps at most ${SWAP_MAX_SLIPPAGE_BPS})`, `transfer (USDC -> your own spender account ${onchain.spender}, which pays for inference; at most ${formatUnits(BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP), 6)} USDC per ${ctx.config.SESSION_USDC_WINDOW_SECONDS}s window in total)`],
+            automatic: `LP fees are claimed automatically above $${ctx.config.CLAIM_THRESHOLD_USD}; WETH is swapped to keep >= ${ctx.config.FUEL_TARGET_USDC} USDC of fuel; the spender is topped up to ${ctx.config.SPENDER_TARGET_USDC} USDC when it drops below ${ctx.config.SPENDER_MIN_USDC}.`,
             note: 'Only a confirmed transaction hash from treasury_execute proves execution.',
           },
         },
@@ -268,7 +285,6 @@ export function jsonSafe<T>(value: T): T {
 
 async function treasuryPrepare(ctx: SupervisorContext, agent: AgentRow, input: { operation: string; asset?: string; amount: string; to?: string; maxSlippageBps?: number; memo?: string }): Promise<ActionOutcome> {
   const { addresses } = ctx.chain;
-  const kernel = agent.kernel as Address;
   if (input.operation === 'swap') {
     // The treasury's ether arrives as WETH (LP fees), so 'ETH' is accepted as an alias for WETH here.
     const asset = input.asset && input.asset !== 'ETH' ? getAddress(input.asset) : addresses.weth;
@@ -277,21 +293,30 @@ async function treasuryPrepare(ctx: SupervisorContext, agent: AgentRow, input: {
     const snap = await readTreasuryOnChain(ctx, agent);
     if (amountIn <= 0n || amountIn > parseUnits(snap.balances.weth, 18)) return failed(`treasury_insufficient_balance: WETH balance ${snap.balances.weth}`);
     if (!snap.ethUsd) return failed('price_feed_unavailable');
-    const slippage = Math.min(input.maxSlippageBps ?? ctx.config.SWAP_SLIPPAGE_BPS, 500);
+    const slippage = clampSlippageBps(input.maxSlippageBps ?? ctx.config.SWAP_SLIPPAGE_BPS);
     const minOut = minUsdcOut(amountIn, snap.ethUsd, slippage);
-    const calls = encodeSwapCalls({ route: parseSwapRoute(ctx.config.SWAP_ROUTE), weth: addresses.weth, usdc: addresses.usdc, universalRouter: addresses.uniswap.universalRouter, kernel, amountIn, minOut, deadline: BigInt(Math.floor(ctx.now() / 1000) + 20 * 60) });
-    const op = await prepareOp(ctx, agent, { kind: 'swap', calls, description: `swap ${input.amount} WETH -> >= ${formatUnits(minOut, 6)} USDC${input.memo ? ` (${input.memo})` : ''}`, origin: 'model' });
+    let swapHelper: Address;
+    try {
+      swapHelper = swapHelperAddress(ctx);
+    } catch (err) {
+      return failed(`treasury_unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const calls = encodeSwapCalls({ weth: addresses.weth, swapHelper, amountIn, maxSlippageBps: slippage });
+    const op = await prepareOp(ctx, agent, { kind: 'swap', calls, description: `swap ${input.amount} WETH -> ~>= ${formatUnits(minOut, 6)} USDC via the swap helper (max slippage ${slippage} bps)${input.memo ? ` (${input.memo})` : ''}`, origin: 'model' });
     return { kind: 'completed', result: { preparedId: op.opId, expectedHash: op.callHash, description: op.description, simulated: true, note: 'Nothing moved. Call treasury_execute with preparedId and expectedHash to execute.' } };
   }
   if (input.operation === 'transfer') {
-    const payTo = getAddress(ctx.config.INFERENCE_PAYTO_ADDRESS);
-    if (!input.to || !isAddress(input.to) || getAddress(input.to) !== payTo) return failed(`treasury_operation_not_allowed: transfers may only fund the model at ${payTo}`);
+    const spender = ctx.spenderFor(agent).address;
+    if (input.to && (!isAddress(input.to) || getAddress(input.to) !== spender)) return failed(`treasury_operation_not_allowed: transfers may only fund your spender account ${spender}`);
     if (input.asset && input.asset !== 'ETH' && getAddress(input.asset) !== addresses.usdc) return failed('treasury_operation_not_allowed: only USDC transfers are allowed');
     if (input.asset === 'ETH') return failed('treasury_operation_not_allowed: only USDC transfers are allowed');
     const amount = parseUnits(input.amount, 6);
-    if (amount <= 0n || amount > BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP)) return failed(`treasury_policy_limit: at most ${formatUnits(BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP), 6)} USDC per transfer`);
-    const calls = [{ to: addresses.usdc, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [payTo, amount] }) }];
-    const op = await prepareOp(ctx, agent, { kind: 'fund_model', calls, description: `transfer ${input.amount} USDC to the inference payTo${input.memo ? ` (${input.memo})` : ''}`, origin: 'model' });
+    const cap = BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP);
+    if (amount <= 0n || amount > cap) return failed(`treasury_policy_limit: at most ${formatUnits(cap, 6)} USDC per ${ctx.config.SESSION_USDC_WINDOW_SECONDS}s window`);
+    const budget = await fundingBudget(ctx, agent);
+    if (budget && amount > budget.remaining) return failed(`treasury_policy_limit: only ${formatUnits(budget.remaining, 6)} USDC left in the current funding window (resets at ${new Date(budget.windowEnd * 1000).toISOString()})`);
+    const calls = [encodeFundSpenderCall(addresses.usdc, spender, amount)];
+    const op = await prepareOp(ctx, agent, { kind: 'fund_model', calls, description: `transfer ${input.amount} USDC to the spender ${spender}${input.memo ? ` (${input.memo})` : ''}`, origin: 'model' });
     return { kind: 'completed', result: { preparedId: op.opId, expectedHash: op.callHash, description: op.description, simulated: true, note: 'Nothing moved. Call treasury_execute with preparedId and expectedHash to execute.' } };
   }
   return failed(`treasury_operation_not_allowed: ${input.operation} is handled by the on-chain burner, not the agent`);

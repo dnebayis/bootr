@@ -38,17 +38,18 @@ guardian owner key used only to approve session-key installs.
 | `src/config.ts` | zod env schema (see below) |
 | `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_cursors` (migrations table `public.sv_migrations`) |
 | `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent`, `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
-| `src/session-key.ts` | policy set, `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and ERC-1271 signature encodings |
-| `src/admin-signer.ts` | `AdminSigner` interface (guardian owner: `approveSessionKey`, `revokeSessionKey`, `revokeAllSessionKeys`, `handleOps`) + local-key implementation; swap for KMS/hardware later |
-| `src/kernel.ts` | viem `toSmartAccount` implementation of the Kernel session account + bundler client (`prepareUserOp`, `submitUserOp`, `waitForReceipt`, `getReceipt`, `signTypedData`); appends the ERC-8021 builder-code suffix to every userOp callData; self-bundles enable-mode ops through `EntryPoint.handleOps` when given a `selfBundle` sender |
+| `src/session-key.ts` | policy set (BootrCallPolicy rules incl. the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
+| `src/spender.ts` | per-agent x402 spender EOA derived from `SPENDER_MASTER_KEY` (signs the EIP-3009 payments; the kernel only funds it) |
+| `src/admin-signer.ts` | `AdminSigner` interface (guardian owner: `approveSessionKey`, `revokeSessionKey`, `revokeAllSessionKeys`, `revokeAllSessionKeysBatch`, `handleOps`) + local-key implementation; swap for KMS/hardware later |
+| `src/kernel.ts` | viem `toSmartAccount` implementation of the Kernel session account + bundler client (`prepareUserOp`, `submitUserOp`, `waitForReceipt`, `getReceipt`; `signTypedData` / `signMessage` always refused: the kernel has no ERC-1271 path); every userOp signature carries BootrCallPolicy's time slot; appends the ERC-8021 builder-code suffix to every userOp callData; self-bundles enable-mode ops through `EntryPoint.handleOps` when given a `selfBundle` sender |
 | `src/entrypoint.ts` | EntryPoint v0.7 helpers: the fixed self-bundle gas budget and `FailedOp` / `FailedOpWithRevert` decoding (inner Kernel / guardian / BootrCallPolicy errors) |
 | `src/builder-codes.ts` | Base Builder Codes: per-kernel registration (`ensureBuilderCode`, `backfillBuilderCodes`) and the ERC-8021 calldata suffix (`attributionSuffix`) |
-| `src/treasury.ts` | on-chain reads, `prepareOp` / `executeOp` / `reconcileOps`, swap route encoding (Universal Router v3 or v4), deterministic fee-claim policy |
-| `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client`, idempotent per cycle, unknown-outcome reconciliation |
+| `src/treasury.ts` | on-chain reads (kernel + spender balances, Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
+| `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA, idempotent per cycle, unknown-outcome reconciliation with payment proof |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
 | `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn, social stats to the indexer |
-| `src/api.ts` | Hono admin API (HMAC) |
+| `src/api.ts` | Hono admin API (HMAC), including the fleet-wide `panic-revoke` |
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
 | `src/memories.ts` | `remember` / `recall` keyword search |
 | `src/sender-client.ts`, `src/indexer-client.ts`, `src/hmac.ts` | HMAC clients (same scheme as the sender) |
@@ -62,6 +63,14 @@ pnpm --filter supervisor build        # tsc --noEmit + esbuild bundle -> dist/in
 pnpm --filter supervisor start        # node dist/index.js
 pnpm --filter supervisor test         # vitest, PGlite in-memory Postgres, mocked chain/sender/relay/bundler
 pnpm --filter supervisor typecheck
+```
+
+Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)). Run exactly one instance:
+
+```sh
+docker build -f apps/supervisor/Dockerfile -t bootr-supervisor .
+docker run --rm --env-file .env bootr-supervisor node dist/db/migrate.js
+docker run --rm --env-file .env -e SUPERVISOR_PORT=3004 -p 3004:3004 bootr-supervisor
 ```
 
 After editing `src/db/schema.ts`: `pnpm --filter supervisor db:generate`.
@@ -80,32 +89,36 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `ENABLE_MODE_BUNDLER_URL` | no | `BUNDLER_URL` | bundler for session-key install/rotation (enable mode). Strict ERC-7562 bundlers such as CDP reject enable mode (`op code validation error`, policies run `onInstall` during validation); point this at ZeroDev and keep CDP for everything else |
 | `ENABLE_MODE_PAYMASTER_URL` | no | | paymaster for enable-mode userOps; unset = `PAYMASTER_URL` only when `ENABLE_MODE_BUNDLER_URL` is unset; ignored when self-bundling |
 | `ENABLE_MODE_SELF_BUNDLE` | no | `false` | `true` = enable-mode userOps are sent by the admin signer through `EntryPoint.handleOps([op], admin)` instead of any bundler (fixed gas budget, no paymaster, the kernel pays its prefund from its ETH balance / EntryPoint deposit). Requires `ADMIN_PRIVATE_KEY`. See "Bundlers" |
-| `SESSION_SIGNER_PRIVATE_KEY` | yes | | signs every agent userOp and ERC-1271 payment |
+| `SESSION_SIGNER_PRIVATE_KEY` | yes | | signs every agent userOp (never anything through ERC-1271) |
+| `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts |
 | `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
-| `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API |
-| `SUPERVISOR_SERVICE_KEY` | no | `SENDER_SERVICE_KEY` | HMAC key for this service's `/internal/*` |
+| `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
+| `SUPERVISOR_SERVICE_KEY` | yes | | HMAC key for this service's `/internal/*`; 32+ characters and different from the sender and indexer keys (no fallback: every holder of those keys would otherwise be a supervisor admin) |
+| `INDEXER_SERVICE_KEY` | yes | | HMAC key of the indexer's `/internal/agent/:kernel/social` (32+ characters, the indexer's own key) |
 | `INFERENCE_PROVIDER_URL`, `INFERENCE_PAYTO_ADDRESS` | yes | | apps/inference relay and its USDC recipient (the payer refuses any other payee) |
 | `INFERENCE_TIMEOUT_MS` | no | `150000` | |
 | `INFERENCE_MAX_OUTPUT_TOKENS` | no | `1024` | priced by the relay quote |
-| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/internal/agent/:kernel/social`) |
+| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) |
 | `SUPERVISOR_TICK_MS` | no | `60000` | |
 | `MAX_AGENTS_PER_TICK` | no | `10` | |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |
 | `SUPERVISOR_PORT` | no | `3004` | |
 | `CLAIM_THRESHOLD_USD` | no | `5` | fee policy: claim when claimable fees exceed this |
 | `FUEL_TARGET_USDC` | no | `20` | fee policy: swap WETH -> USDC up to this balance |
-| `SWAP_ROUTE` | no | `v3:500` | `v3:<fee>` or `v4:<fee>:<tickSpacing>:<hooks>` (WETH/USDC pool on the Universal Router) |
-| `SWAP_SLIPPAGE_BPS` | no | `100` | min-out derived from Chainlink ETH/USD |
+| `SWAP_SLIPPAGE_BPS` | no | `100` | max slippage vs Chainlink ETH/USD passed to `BootrSwapHelper` (hard cap 300 on-chain; the pool fee tier is fixed in the helper) |
+| `CHAINLINK_MAX_AGE_SECONDS` | no | `3600` | a Chainlink ETH/USD answer older than this is treated as unavailable: no swaps, no USD figures (the helper enforces the same 1 h bound on-chain) |
 | `SEARCH_API_URL`, `SEARCH_API_KEY` | no | | Exa or Brave; unset hides `search_web` from the model |
 | `SESSION_KEY_VALIDITY_DAYS` | no | `30` | TimestampPolicy `validUntil` |
 | `SESSION_ROTATE_BEFORE_DAYS` | no | `3` | rotate this long before expiry |
 | `SESSION_RATE_LIMIT_PER_HOUR` | no | `60` | RateLimitPolicy |
-| `SESSION_USDC_TRANSFER_CAP` | no | `50000000` | BootrCallPolicy cap for `USDC.transfer(payTo, <= cap)` (6 dp units) |
+| `SESSION_USDC_TRANSFER_CAP` | no | `50000000` | USDC (6 dp units) the session key may move to the agent's spender per window, enforced on-chain by BootrCallPolicy's `SUM_PER_WINDOW` (summed over batches and over the window) |
+| `SESSION_USDC_WINDOW_SECONDS` | no | `86400` | length of that window (fixed grid anchored at the permission install) |
+| `SPENDER_MIN_USDC` | no | `5` | the fee policy tops the spender up when its USDC drops below this |
+| `SPENDER_TARGET_USDC` | no | `20` | ...to this balance, bounded by the kernel's USDC and the remaining window budget |
 | `SESSION_GAS_ALLOWANCE_WEI` | no | `1e17` | GasPolicy cumulative allowance |
-| `SESSION_1271_CALLERS` | no | `usdc` | SignatureCallerPolicy allow-list: `usdc`, comma-separated addresses, or `any` (no caller policy). **x402 facilitators verify the EIP-3009 signature off-chain through ERC-6492 (the caller is not USDC), so production uses `any`**; the TimestampPolicy still bounds every signature |
 | `USER_OP_RECEIPT_TIMEOUT_MS` | no | `90000` | after this a sent op is `unknown` and reconciled by hash |
 | `BUILDER_CODES_ENABLED` | no | `true` | Base Builder Codes attribution; `false` disables both the registration and the calldata suffix |
 | `BUILDER_CODES_URL` | no | `https://api.base.dev/v1/agents/builder-codes` | unauthenticated registration endpoint (`POST {walletAddress}`), 10 s timeout |
@@ -123,16 +136,25 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
        `NOT_FOR_VALIDATE_SIG`, init data `abi.encode(Rule[])` built by `callPolicyRules` / `encodeCallPolicyData` in
-       `src/session-key.ts` with exactly four rules: `FeeLocker.claim(kernel, *)`, `UniversalRouter.execute(bytes,bytes[],uint256)`
-       (any args), `USDC.transfer(INFERENCE_PAYTO_ADDRESS, <= SESSION_USDC_TRANSFER_CAP)`, `WETH.transfer(universalRouter, *)`
-       (swap funding). Every call must carry zero ETH value; batches pass only if every call passes; delegatecall is rejected.
-       ZeroDev's CallPolicy is **not** used: hooked permissions force `executeUserOp`-wrapped callData, which it cannot parse
-       (it reverts in `checkUserOpPolicy`).
+       `src/session-key.ts` with exactly four rules: `FeeLocker.claim(kernel, *)`, `WETH.approve(bootr.swapHelper, *)`,
+       `swapHelper.swapWethToUsdc(*, *)`, `USDC.transfer(<agent spender>, SUM_PER_WINDOW <= SESSION_USDC_TRANSFER_CAP per
+       SESSION_USDC_WINDOW_SECONDS)`. The helper pulls WETH from the kernel and pays all USDC back to the kernel at no
+       worse than Chainlink minus 3%, so the session key can only turn the kernel's WETH into the kernel's USDC (no
+       Universal Router rule any more); the only USDC outflow is to the agent's own spender, cumulatively capped per
+       window on-chain. Every call must carry zero ETH value; batches pass only if every call passes and the USDC amounts
+       of a batch SUM to at most the remaining window budget; delegatecall is rejected. Every regular userOp signature is
+       `[0 ‖ uint64(32) ‖ abi.encode(now)] ‖ 0xff ‖ ecdsa` (the call policy's time slot, so the window can roll without
+       reading `block.timestamp`); see the contract README for the semantics. ZeroDev's CallPolicy is **not** used: hooked permissions force `executeUserOp`-wrapped
+       callData, which it cannot parse (it reverts in `checkUserOpPolicy`).
      - GasPolicy (cumulative wei allowance), RateLimitPolicy (`SESSION_RATE_LIMIT_PER_HOUR` per 3600 s), both ZeroDev
        modules flagged `NOT_FOR_VALIDATE_SIG` so they do not gate ERC-1271;
      - TimestampPolicy (`validUntil = now + SESSION_KEY_VALIDITY_DAYS`), for userOps and signatures;
-     - SignatureCallerPolicy (`SESSION_1271_CALLERS`, default the USDC contract), flagged `NOT_FOR_VALIDATE_USEROP`;
-     - ECDSASigner with the `SESSION_SIGNER_PRIVATE_KEY` address.
+     - ECDSASigner with the `SESSION_SIGNER_PRIVATE_KEY` address, flagged **SKIP_SIGNATURE** (`0x0002`): Kernel stores
+       the signer entry's flags as the permission's `permissionFlag` and then rejects every `isValidSignature` for it
+       (`PermissionNotAlllowedForSignature`). The session key therefore has **no ERC-1271 path**; `src/kernel.ts`
+       refuses `signTypedData` / `signMessage` (`KernelSigningRefusedError`). A content policy on that path is not
+       possible on Kernel v3.1 (any policy-signature slot reverts `SignerPrefixNotPresent`, see
+       `packages/contracts/src/README.md`), which is why payments moved to the spender EOA.
    - `validatorData = abi.encode(bytes[])`, entries `bytes2 flags || address module || initData`, signer last, exactly as
      `packages/contracts/src/README.md` describes (tests compare against the fork-test fixture, decode the call-policy rules
      back, and check the ZeroDev entries against the SDK's `getEnableData`).
@@ -194,7 +216,9 @@ it. The ERC-1271 signature path (x402 payments) is unchanged. `BUILDER_CODES_ENA
 client is cached per `(kernel, permissionId, builderCode)` so a code registered later is picked up on the next op.
 
 Admin shortcuts: `POST /internal/agents/:id/session/install` (optionally `{permissionId}` to retry a half-done install) and
-`POST /internal/agents/:id/session/check-1271` (asks the kernel's `isValidSignature` to accept a session-key signature).
+`POST /internal/agents/:id/session/check-spender` (the agent's spender address, whether it matches `sv_agents.spender`, its
+USDC balance, the remaining funding budget of the current window and a dry EIP-712 signature recovered back to it; nothing
+is sent anywhere).
 
 ## Rotating session keys
 
@@ -203,7 +227,59 @@ Admin shortcuts: `POST /internal/agents/:id/session/install` (optionally `{permi
 new validity window) through the same approve + enable-mode path, then calls `guardian.revokeSessionKey(kernel, oldPid,
 deinitData)` with `abi.encode(bytes[])` of the old module addresses. If the revoke fails it is logged and must be done
 by hand (`revokeSessionKey` or `revokeAllSessionKeys`, which bumps the kernel nonce and kills every non-root validation).
-To rotate the **signer EOA** itself, change `SESSION_SIGNER_PRIVATE_KEY` and rotate every agent.
+To rotate the **signer EOA** itself, change `SESSION_SIGNER_PRIVATE_KEY` and rotate every agent. Rotation also moves an
+agent from a legacy permission layout (Universal Router rules, `USDC.transfer(payTo)`, SignatureCallerPolicy, signer
+without SKIP_SIGNATURE) to the current one (swap helper, windowed spender funding, closed signature path); the old
+permission's deinit data is rebuilt from its stored `session_policy` (`policyModules`), so legacy permissions revoke
+cleanly.
+
+## Money: kernel, spender, windows
+
+```
+LP fees (WETH) -> kernel  --swap helper-->  kernel USDC  --USDC.transfer(spender) <= cap / window-->  spender EOA  --x402-->  relay
+```
+
+- The **kernel** is the reservoir: WETH from fees, USDC from swaps. Its session key can move USDC to exactly one
+  address, the agent's **spender**, and at most `SESSION_USDC_TRANSFER_CAP` per `SESSION_USDC_WINDOW_SECONDS`
+  (on-chain, `BootrCallPolicy` `SUM_PER_WINDOW`; the budget is read back with `windowOf` for `treasury_read` and the
+  `fund_model` checks). It signs nothing through ERC-1271.
+- The **spender** is a plain EOA derived per agent from `SPENDER_MASTER_KEY` (`spender.ts`:
+  `k = keccak256(master ‖ agentId) mod (n - 1) + 1`), stored in `sv_agents.spender` at registration (backfilled on later
+  ticks). It signs the EIP-3009 payments to the relay (settled by the facilitator, so it needs no ETH). The fee policy
+  keeps it between `SPENDER_MIN_USDC` and `SPENDER_TARGET_USDC` (`fund_model` ops of origin `policy`); the model's
+  `treasury_prepare {operation: "transfer"}` may top it up too (the only allowed recipient).
+- Exposure: a leaked session key moves at most `cap` per window into an account it does not control (plus the swap
+  slippage bound); a leaked master key exposes every spender's float (`SPENDER_TARGET_USDC` each). Rotate the master by
+  changing it, funding the new spenders and letting the old ones drain.
+- Sleep rule: the agent sleeps when kernel USDC + spender USDC < 1.
+
+## Runbook: session signer leak
+
+`SESSION_SIGNER_PRIVATE_KEY` is one EOA installed on every kernel. If it may have leaked (host compromise, `.env` in a
+log, backup, CI), the goal is minutes, not ticks:
+
+1. **Revoke fleet-wide, then stop the supervisor**: `POST /internal/agents/panic-revoke` (HMAC with
+   `SUPERVISOR_SERVICE_KEY`, needs `ADMIN_PRIVATE_KEY`; the process must be up for the API). It does, in order:
+   - one guardian transaction per 40 kernels: `revokeAllSessionKeysBatch(kernels)` bumps every kernel's valid nonce.
+     This kills the userOp path of every permission at once; production permissions have no ERC-1271 path, so for
+     them this is complete;
+   - unless the body says `{"uninstall": false}`, `revokeSessionKey` per agent (uninstall, best effort, reported per
+     agent). This is the only thing that closes the ERC-1271 path of **legacy** permissions whose signer was installed
+     without SKIP_SIGNATURE (Kernel's `isValidSignature` ignores the nonce bump), and it also withdraws their
+     enable-digest approvals. Retry failed ones by hand with
+     `guardian.revokeSessionKey(kernel, pid, abi.encode(bytes[](policies + 1)))`;
+   - every runtime is paused by the operator.
+   Response: `{nonceRevoked: [{kernels, txHash}], uninstalled: [{agentId, kernel, permissionId, txHash | null, error}],
+   paused: [agentId], errors: []}` (HTTP 207 when a batch failed). `{"agentIds": [...]}` limits the scope.
+2. Verify on-chain: `kernel.validNonceFrom()` moved; a session userOp now fails validation. The spenders are not
+   affected by a session-key leak (different key); if `SPENDER_MASTER_KEY` leaked too, move their floats and rotate
+   the master.
+3. Replace the key: new `SESSION_SIGNER_PRIVATE_KEY`, restart, then `POST /internal/agents/:id/session/install` (or let
+   `completeOnboarding` do it: agents whose permission was uninstalled need a fresh install; the approval is bound to the
+   new nonce) and `POST /internal/agents/:id/resume`.
+4. Review: `SessionKeyApproved` events for approvals you did not make, USDC `AuthorizationUsed` events of every kernel
+   between the leak and the revoke, the x402 relay's `refundDue` rows, and rotate `ADMIN_PRIVATE_KEY` if it shared the
+   host (it can still approve anything: C-03 is out of scope of this fix).
 
 ## The loop
 
@@ -215,8 +291,9 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
    op status (`agent-core.reconcile`); an `unknown` inference by `GET /v1/requests/:key`.
 4. Sleep rule: USDC < 1 -> runtime `sleeping`, no inference; refuel is detected on the next tick.
 5. Fee policy (no model): claimable fees (WETH at Chainlink ETH/USD + own token at the indexer price) >= `CLAIM_THRESHOLD_USD`
-   -> `claim_fees` userOp; then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap` WETH -> USDC (Universal Router, 1% slippage,
-   amount for the missing USDC + 2%). Each op is logged with `opId`, `userOpHash`, `txHash`.
+   -> `claim_fees` userOp; then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap` WETH -> USDC through `BootrSwapHelper`
+   (`SWAP_SLIPPAGE_BPS` vs the on-chain Chainlink floor, amount for the missing USDC + 2%). A stale Chainlink answer
+   (`CHAINLINK_MAX_AGE_SECONDS`) disables swaps. Each op is logged with `opId`, `userOpHash`, `txHash`.
 6. `wakeDecision` from: eligible pending mentions (`replyEligibility`), original-post schedule, continuation, config revision,
    scheduled `nextAt`, held action.
 7. Turn: observation (`buildObservation` with market, treasury, eligible mentions, schedule, last checkpoint, recent notes)
@@ -235,7 +312,7 @@ does not wake until the original effect is settled.
 | --- | --- | --- |
 | `sv_runtimes.status = held`, pending tool `treasury_execute` | `sv_treasury_ops` row with `status = unknown` and `user_op_hash` | the tick polls `eth_getUserOperationReceipt` every minute; `POST /internal/agents/:id/reconcile` forces it. If the bundler dropped the op (no receipt after the nonce moved on), set the op `failed` manually; the pending action then settles as failed on the next reconcile |
 | held, pending tool `publish_post` / `publish_reply` | sender `GET /internal/receipt/:actionId` | the sender's own reconciler reads the agent's timeline; once it reports `sent` or `rejected` the runtime unblocks |
-| `sv_inference.status = unknown`, `state.inferenceKey` set | `GET <INFERENCE_PROVIDER_URL>/v1/requests/:key` | the relay reconciles on-chain (`authorizationState`); `succeeded` replays the completion, `failed`/`retrySafe` releases the key. Never pay with a new key while it is unknown |
+| `sv_inference.status = unknown`, `state.inferenceKey` set | `GET <INFERENCE_PROVIDER_URL>/v1/requests/:key` with the persisted payment as `PAYMENT-SIGNATURE` (the relay scopes keys per payer and only answers the payer) | the relay reconciles on-chain (`authorizationState`); `succeeded` and `credit` (paid, completion still owed) replay the POST with the same key, body and proof at no new charge; `failed`/`retrySafe` releases the key, `failed` + `refundDue` is logged at error level (the operator owes a refund). A row without a stored payment was never paid and is failed without asking the relay. Never pay with a new key while it is unknown |
 | op `sent` for > 10 min | `sv_treasury_ops` | downgraded to `unknown` automatically; same as the first row |
 | guardian paused by the creator | `runtime.paused_by = guardian` | clears automatically when `unpauseAgent` is mined |
 | operator pause | `POST /internal/agents/:id/pause|resume` | `resume` restores `held` if a pending action is still held |
@@ -255,7 +332,8 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | POST | `/internal/agents/:id/pause` / `resume` | runtime-level pause (the guardian pause is on-chain, creator only) |
 | POST | `/internal/agents/:id/reconcile` | force reconciliation of ops, pending action and inference |
 | POST | `/internal/agents/:id/tick` | process one agent now |
-| POST | `/internal/agents/:id/session/install` / `rotate` / `check-1271` | session key operations |
+| POST | `/internal/agents/:id/session/install` / `rotate` / `check-spender` | session key operations / spender check |
+| POST | `/internal/agents/panic-revoke` | fleet-wide key-leak response (see the runbook); body `{uninstall?: boolean, agentIds?: string[]}` |
 
 ## Notes and known gaps
 
@@ -263,8 +341,15 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
   `selectorData` as `selector || action.address || hook || abi.encode(initData)`, while the guardian fixes `selectorData` to the
   bare 4-byte `execute` selector. The account in `src/kernel.ts` is built on viem's `toSmartAccount` with the exact encodings.
   The SDK is still used for the ZeroDev policy/signer init data (`toGasPolicy`, `toRateLimitPolicy`, `toTimestampPolicy`,
-  `toSignatureCallerPolicy`, `toECDSASigner`) and those entries are cross-checked against `toPermissionValidator(...).getEnableData`;
-  the call allow-list entry is BootrCallPolicy's and is encoded locally.
+  `toECDSASigner`) and those entries are cross-checked against `toPermissionValidator(...).getEnableData`;
+  the call allow-list and authorization-policy entries are Bootr's and are encoded locally.
+- Logging: every `err` / `error` field goes through `serializeError` (`src/log.ts`), which reduces every URL in the error
+  (viem's `url`, `details`, `metaMessages`, the composed message, nested `cause`s) to its origin, because RPC / bundler /
+  paymaster URLs embed API keys.
+- Replies: `publish_reply` always sends the agent-core `replyEligibility` decision recorded when the mention was observed
+  (`read_mentions` or the turn's observation; persisted in the turn); the sender rejects replies without it and replies to
+  opted-out users, and answers `consent_lookup_failed` (429/503) when X cannot be reached, which the broker turns into a
+  retryable failure (`retryAt`), never a final one.
   `serializePermissionAccount` needs an SDK account object, so the policy parameters are stored in `sv_agents.session_policy`
   instead and `validatorData` is stored verbatim.
 - `recall_conversation` is served from the supervisor's own action log and notes; the sender has no inbox-history endpoint.

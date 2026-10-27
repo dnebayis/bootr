@@ -38,8 +38,13 @@ export const configSchema = z
      * this removes the dependency on a lenient bundler. Requires ADMIN_PRIVATE_KEY.
      */
     ENABLE_MODE_SELF_BUNDLE: bool('false'),
-    /** Session key that signs every agent userOp and ERC-1271 payment. */
+    /** Session key that signs every agent userOp (never anything through ERC-1271). */
     SESSION_SIGNER_PRIVATE_KEY: hexKey,
+    /**
+     * Master secret from which every agent's x402 spender EOA is derived (spender.ts). Must differ from the
+     * session signer and the admin key. The spender signs the EIP-3009 payments; the kernel only funds it.
+     */
+    SPENDER_MASTER_KEY: hexKey,
     /** Guardian owner. Only used by AdminSigner for approveSessionKey / revokeSessionKey transactions. */
     ADMIN_PRIVATE_KEY: optionalHexKey,
     BOOTR_LAUNCHER_ADDRESS: address,
@@ -49,9 +54,12 @@ export const configSchema = z
     /** Max block range per eth_getLogs call when scanning AgentLaunched (public Base RPCs allow 200; archive RPCs 2000+). */
     LAUNCH_LOG_CHUNK_BLOCKS: int(2000, 1),
     SENDER_URL: z.string().url(),
-    SENDER_SERVICE_KEY: z.string().min(1),
-    /** HMAC key for this service's own /internal API; defaults to SENDER_SERVICE_KEY. */
-    SUPERVISOR_SERVICE_KEY: optionalString,
+    /** HMAC key of apps/sender's internal API (the sender requires 32+ characters). */
+    SENDER_SERVICE_KEY: z.string().min(32, 'SENDER_SERVICE_KEY must be at least 32 characters'),
+    /** HMAC key for this service's own /internal API. Required and distinct from the other service keys (M-03). */
+    SUPERVISOR_SERVICE_KEY: z.string().min(32, 'SUPERVISOR_SERVICE_KEY must be at least 32 characters'),
+    /** HMAC key of apps/indexer's internal API (`/internal/agent/:kernel/social`); its own key, not the sender's. */
+    INDEXER_SERVICE_KEY: z.string().min(32, 'INDEXER_SERVICE_KEY must be at least 32 characters'),
     INFERENCE_PROVIDER_URL: z.string().url(),
     INFERENCE_PAYTO_ADDRESS: address,
     INFERENCE_TIMEOUT_MS: int(150_000, 1000),
@@ -65,24 +73,27 @@ export const configSchema = z
     CLAIM_THRESHOLD_USD: num(5),
     /** USDC balance the fee policy tops the treasury up to by swapping WETH. */
     FUEL_TARGET_USDC: num(20),
-    /** `v3:<fee>` (Uniswap v3 WETH/USDC pool fee tier) or `v4:<fee>:<tickSpacing>:<hooks>`. */
-    SWAP_ROUTE: z.preprocess((v) => (v === '' || v === undefined ? 'v3:500' : v), z.string()),
+    /** Max slippage vs Chainlink ETH/USD passed to BootrSwapHelper (its hard cap is 300). */
     SWAP_SLIPPAGE_BPS: int(100, 1),
+    /** Chainlink ETH/USD answers older than this are treated as unavailable (no swap, no USD figures). */
+    CHAINLINK_MAX_AGE_SECONDS: int(3600, 1),
     /** Optional web search API (Exa or Brave). Without it `search_web` is hidden from the model. */
     SEARCH_API_URL: optionalUrl,
     SEARCH_API_KEY: optionalString,
     /** Session key policy knobs. */
     SESSION_KEY_VALIDITY_DAYS: int(30, 1),
     SESSION_RATE_LIMIT_PER_HOUR: int(60, 1),
-    /** Max USDC (6 dp units) per direct USDC.transfer to the inference payTo (fund_model op). */
+    /** Max USDC (6 dp units) the session key may move to the agent's spender per window (BootrCallPolicy SUM_PER_WINDOW). */
     SESSION_USDC_TRANSFER_CAP: int(50_000_000, 1),
+    /** Length of that window in seconds (fixed grid anchored at the permission install). */
+    SESSION_USDC_WINDOW_SECONDS: int(86_400, 60),
+    /** Fund the spender when its USDC balance drops below this (human USDC). */
+    SPENDER_MIN_USDC: num(5),
+    /** ...up to this balance (human USDC); never more than the remaining window budget. */
+    SPENDER_TARGET_USDC: num(20),
     /** Cumulative gas allowance (wei) enforced by GasPolicy. */
     SESSION_GAS_ALLOWANCE_WEI: z.preprocess((v) => (v === '' || v === undefined ? '100000000000000000' : v), z.string().regex(/^\d+$/)),
-    /**
-     * ERC-1271 callers allowed by SignatureCallerPolicy: comma separated addresses, `usdc`
-     * (default: the chain's USDC contract) or `any` (no caller policy at all).
-     */
-    SESSION_1271_CALLERS: z.preprocess((v) => (v === '' || v === undefined ? 'usdc' : v), z.string()),
+
     /** Rotate a session key this many days before its TimestampPolicy expires. */
     SESSION_ROTATE_BEFORE_DAYS: int(3, 0),
     USER_OP_RECEIPT_TIMEOUT_MS: int(90_000, 1000),
@@ -97,9 +108,13 @@ export const configSchema = z
   })
   .transform((c) => {
     const rpcUrl = c.CHAIN_ID === 84532 ? c.BASE_SEPOLIA_RPC_URL : c.BASE_RPC_URL;
-    return { ...c, RPC_URL: rpcUrl, SUPERVISOR_SERVICE_KEY: c.SUPERVISOR_SERVICE_KEY ?? c.SENDER_SERVICE_KEY };
+    return { ...c, RPC_URL: rpcUrl };
   })
   .refine((c) => !!c.RPC_URL, { message: 'BASE_SEPOLIA_RPC_URL (84532) or BASE_RPC_URL (8453) is required' })
+  .refine((c) => c.SUPERVISOR_SERVICE_KEY !== c.SENDER_SERVICE_KEY && c.SUPERVISOR_SERVICE_KEY !== c.INDEXER_SERVICE_KEY, { message: 'SUPERVISOR_SERVICE_KEY must differ from SENDER_SERVICE_KEY and INDEXER_SERVICE_KEY (every holder of those keys would be a supervisor admin)' })
+  .refine((c) => c.SWAP_SLIPPAGE_BPS <= 300, { message: 'SWAP_SLIPPAGE_BPS must be <= 300 (BootrSwapHelper.MAX_SLIPPAGE_BPS)' })
+  .refine((c) => c.SPENDER_MASTER_KEY.toLowerCase() !== c.SESSION_SIGNER_PRIVATE_KEY.toLowerCase() && (!c.ADMIN_PRIVATE_KEY || c.SPENDER_MASTER_KEY.toLowerCase() !== c.ADMIN_PRIVATE_KEY.toLowerCase()), { message: 'SPENDER_MASTER_KEY must differ from SESSION_SIGNER_PRIVATE_KEY and ADMIN_PRIVATE_KEY' })
+  .refine((c) => c.SPENDER_TARGET_USDC >= c.SPENDER_MIN_USDC, { message: 'SPENDER_TARGET_USDC must be >= SPENDER_MIN_USDC' })
   .refine((c) => !c.ENABLE_MODE_SELF_BUNDLE || !!c.ADMIN_PRIVATE_KEY, { message: 'ENABLE_MODE_SELF_BUNDLE=true requires ADMIN_PRIVATE_KEY (the admin signer sends handleOps)' });
 
 export type Config = z.infer<typeof configSchema>;

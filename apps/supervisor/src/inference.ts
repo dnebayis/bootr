@@ -1,8 +1,8 @@
 /**
  * Paid inference through apps/inference (x402). One idempotency key per (agent, cycle); the relay
- * replays stored results for a known key without charging again. The kernel pays with an
- * ERC-1271 EIP-3009 authorization signed by the session key (see kernel.ts). "Never buy a
- * replacement": a request whose outcome is unknown is reconciled by key, never re-paid.
+ * replays stored results for a known key without charging again. The agent's spender EOA pays with a
+ * plain EIP-712 EIP-3009 authorization (spender.ts); the kernel only funds the spender and signs nothing.
+ * "Never buy a replacement": a request whose outcome is unknown is reconciled by key, never re-paid.
  */
 import {
   buildInferenceRequest,
@@ -16,7 +16,8 @@ import {
   type InferenceRequest,
   type ToolDefinition,
 } from '@bootr/agent-core';
-import { createX402Payer, readReceipt, X402PaymentRefusedError, type BootrReceipt, type TypedDataPayload } from '@bootr/inference/client';
+import { createX402Payer, paymentProofHeaders, readReceipt, X402PaymentRefusedError, type BootrReceipt } from '@bootr/inference/client';
+import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
 import { eq } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -89,10 +90,10 @@ export async function runInference(ctx: SupervisorContext, agent: AgentRow, conf
 
   await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle, requestHash, request: request as unknown as Record<string, unknown>, status: 'pending', createdAt: now(), updatedAt: now() });
   const maxQuote = BigInt(maxQuoteFor(config.model));
-  const kernel = await ctx.kernelFor(agent);
+  const spender = ctx.spenderFor(agent);
   let paymentSigned = false;
   const payer = createX402Payer({
-    signer: { address: kernel.address, signTypedData: (td: TypedDataPayload) => kernel.signTypedData(td as unknown as Parameters<typeof kernel.signTypedData>[0]) },
+    signer: spender,
     maxPaymentMicroUsdc: maxQuote,
     networks: [`eip155:${ctx.chain.chainId}` as `eip155:${string}`],
     payTo: ctx.config.INFERENCE_PAYTO_ADDRESS as Address,
@@ -149,7 +150,20 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
   return { kind: 'failed', key, error: code };
 }
 
-/** `GET /v1/requests/:key`; on `succeeded` the request is replayed (same key, no payment) to fetch the completion. */
+/** The x402 payment persisted by `onPayment` (`receipt.payment`), or null when nothing was ever signed. */
+export function storedPayment(row: { receipt: Record<string, unknown> | null }): PaymentPayload | null {
+  const payment = (row.receipt as { payment?: unknown } | null)?.payment;
+  return payment && typeof payment === 'object' ? (payment as PaymentPayload) : null;
+}
+
+/**
+ * Reconciles a `pending` / `unknown` inference by its key. The relay scopes keys per payer and only reveals or
+ * replays a request to whoever presents the payment that opened it, so every call carries the persisted payload
+ * as `PAYMENT-SIGNATURE` (`paymentProofHeaders`). `succeeded` and `credit` (payment collected, completion still
+ * owed) both replay the POST with the same key, body and proof: the relay serves them without a new payment.
+ * `failed` with `refundDue` means the operator owes the agent a refund and is logged at error level. A row
+ * without a stored payment was never paid for and is simply failed.
+ */
 export async function reconcileInference(ctx: SupervisorContext, key: string): Promise<InferenceResult> {
   const row = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
   if (!row) return { kind: 'failed', key, error: 'unknown_key' };
@@ -158,20 +172,28 @@ export async function reconcileInference(ctx: SupervisorContext, key: string): P
     return { kind: 'ok', key, ...parsed, receipt: (row.receipt as { relay?: BootrReceipt } | null)?.relay ?? null, replayed: true };
   }
   if (row.status === 'failed') return { kind: 'failed', key, error: row.error ?? 'failed' };
-  let status: { status?: string; retrySafe?: boolean } | null = null;
+  const payment = storedPayment(row);
+  if (!payment) {
+    // nothing was signed for this key: the relay cannot hold anything of ours
+    await ctx.db.update(inference).set({ status: 'failed', error: 'no_payment_signed', updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'failed', key, error: 'no_payment_signed' };
+  }
+  const proof = paymentProofHeaders(payment);
+  let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null } | null = null;
   try {
-    const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { signal: AbortSignal.timeout(15_000) });
+    const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { headers: proof, signal: AbortSignal.timeout(15_000) });
     if (res.status === 404) status = { status: 'failed', retrySafe: true };
-    else if (res.ok) status = (await res.json()) as { status?: string; retrySafe?: boolean };
+    else if (res.ok) status = (await res.json()) as typeof status;
+    else ctx.log.warn({ key, status: res.status }, 'relay refused the reconcile read');
   } catch {
     status = null;
   }
   if (!status) return { kind: 'unknown', key, error: row.error ?? 'relay_unreachable' };
-  if (status.status === 'succeeded') {
+  if (status.status === 'succeeded' || status.status === 'credit') {
     try {
       const res = await ctx.fetch(new URL('/v1/chat/completions', ctx.config.INFERENCE_PROVIDER_URL).toString(), {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': '0' },
+        headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': '0', ...proof },
         body: JSON.stringify(row.request),
         signal: AbortSignal.timeout(ctx.config.INFERENCE_TIMEOUT_MS),
       });
@@ -181,8 +203,10 @@ export async function reconcileInference(ctx: SupervisorContext, key: string): P
     }
   }
   if (status.status === 'failed' || status.retrySafe === true) {
-    await ctx.db.update(inference).set({ status: 'failed', error: `relay_${status.status ?? 'failed'}`, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
-    return { kind: 'failed', key, error: `relay_${status.status ?? 'failed'}` };
+    const error = status.refundDue ? 'relay_failed_refund_due' : `relay_${status.status ?? 'failed'}`;
+    if (status.refundDue) ctx.log.error({ key, agentId: row.agentId, reason: status.statusReason ?? null }, 'paid inference failed at the relay: refund due to the agent');
+    await ctx.db.update(inference).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'failed', key, error };
   }
   return { kind: 'unknown', key, error: `relay_${status.status ?? 'unknown'}` };
 }

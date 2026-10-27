@@ -22,6 +22,12 @@ export const agents = pgTable('sv_agents', {
   validatorData: text('validator_data'),
   /** The policy parameters that produced validatorData (JSON, bigints as strings). */
   sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
+  /**
+   * The agent's x402 spender EOA (derived from SPENDER_MASTER_KEY and the agent id; see spender.ts): the only
+   * USDC recipient the session key may fund, and the account that signs EIP-3009 payments to the relay.
+   * null until derived (filled at registration, backfilled on later ticks).
+   */
+  spender: text('spender'),
   sessionValidUntil: ts('session_valid_until'),
   sessionKeyInstalledAt: ts('session_key_installed_at'),
   launchBlock: integer('launch_block'),

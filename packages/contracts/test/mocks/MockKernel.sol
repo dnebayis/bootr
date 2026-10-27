@@ -30,11 +30,19 @@ contract MockKernel {
         }
     }
 
+    event TryExecuteUnsuccessful(uint256 batchExecutionindex, bytes result);
+
     function execute(bytes32 mode, bytes calldata data) external payable onlyEntryPointOrSelfOrRoot {
-        if (mode == KernelLib.EXEC_MODE_BATCH) {
+        if (mode == KernelLib.EXEC_MODE_BATCH || mode == KernelLib.EXEC_MODE_BATCH_TRY) {
+            bool tryMode = mode == KernelLib.EXEC_MODE_BATCH_TRY;
             Execution[] memory execs = abi.decode(data, (Execution[]));
             for (uint256 i; i < execs.length; ++i) {
-                _call(execs[i].target, execs[i].value, execs[i].callData);
+                if (tryMode) {
+                    (bool ok, bytes memory ret) = execs[i].target.call{value: execs[i].value}(execs[i].callData);
+                    if (!ok) emit TryExecuteUnsuccessful(i, ret);
+                } else {
+                    _call(execs[i].target, execs[i].value, execs[i].callData);
+                }
             }
         } else {
             address target = address(bytes20(data[0:20]));

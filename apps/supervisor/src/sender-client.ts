@@ -60,6 +60,12 @@ export interface SenderRebind {
   handle: string | null;
 }
 
+/** agent-core `replyEligibility` outcome for a mention, as the sender expects it. */
+export interface ReplyEligibility {
+  eligible: boolean;
+  reason?: string;
+}
+
 export class SenderError extends Error {
   constructor(
     readonly status: number,
@@ -99,7 +105,22 @@ export class SenderClient {
     throw new SenderError(res.status, code, json, retryable, retryAt);
   }
 
-  publish(body: { agentId: string; actionId: string; text: string; replyTo?: string; replyAuthorId?: string; attributions?: { username: string; sourceUrl: string }[] }) {
+  /**
+   * Publishes an original post or a reply. A reply must carry the agent-core `replyEligibility` decision for
+   * `replyTo` (the sender rejects replies without it: `policy:reply_not_eligible:<reason>`); the sender also rejects
+   * replies whose target author or any @mentioned user opted out (`policy:mention_opted_out`,
+   * `policy:reply_target_unavailable`) and answers 429/503 `consent_lookup_failed` when X cannot be reached for the
+   * consent check (nothing sent; retryable with the same actionId).
+   */
+  publish(body: {
+    agentId: string;
+    actionId: string;
+    text: string;
+    replyTo?: string;
+    replyAuthorId?: string;
+    replyEligibility?: ReplyEligibility;
+    attributions?: { username: string; sourceUrl: string }[];
+  }) {
     return this.call<SenderPublishResponse>('POST', '/internal/publish', body);
   }
 

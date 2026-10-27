@@ -36,13 +36,15 @@ export interface ChainAddresses {
   weth: Address;
   /** Circle USDC. */
   usdc: Address;
-  /** Uniswap v4 + periphery. */
+  /** Uniswap v4 + periphery, plus the v3 SwapRouter02 used by BootrSwapHelper. */
   uniswap: {
     poolManager: Address;
     universalRouter: Address;
     permit2: Address;
     /** v4-core PoolSwapTest router (testnets only). */
     poolSwapTest: Address | null;
+    /** Uniswap v3 `SwapRouter02` (`swap-router-contracts`), the router behind `bootr.swapHelper`. */
+    swapRouter02: Address;
   };
   /** ERC-4337 EntryPoint v0.7. */
   entryPointV07: Address;
@@ -60,7 +62,10 @@ export interface ChainAddresses {
     timestampPolicy: Address | null;
     signaturePolicy: Address | null;
   };
-  /** Bootr contracts (filled in by `forge script script/Deploy.s.sol` and `script/DeployCallPolicy.s.sol`). */
+  /**
+   * Bootr contracts (filled in by `forge script script/Deploy.s.sol`, `script/DeployCallPolicy.s.sol` and
+   * `script/DeploySwapHelper.s.sol`).
+   */
   bootr: {
     launcher: Address | null;
     guardian: Address | null;
@@ -70,6 +75,11 @@ export interface ChainAddresses {
      * cannot parse the `executeUserOp`-wrapped callData that hooked Kernel permissions require.
      */
     callPolicy: Address | null;
+    /**
+     * BootrSwapHelper: the only WETH sink a session key may use (`WETH.approve(helper)` +
+     * `helper.swapWethToUsdc`), swapping through SwapRouter02 with a Chainlink floor and paying the caller.
+     */
+    swapHelper: Address | null;
   };
 }
 
@@ -97,6 +107,8 @@ export const addresses = {
       universalRouter: '0x6fF5693b99212Da76ad316178A184AB56D299b43',
       permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
       poolSwapTest: null,
+      // TODO(verify on-chain before mainnet deploy): docs.uniswap.org Base SwapRouter02
+      swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
     },
     entryPointV07: '0x0000000071727De22E5E9d8BAf0edAc6f37da032',
     zerodev: {
@@ -118,6 +130,7 @@ export const addresses = {
       guardian: null,
       burnerImplementation: null,
       callPolicy: null,
+      swapHelper: null,
     },
   },
   [BASE_SEPOLIA_CHAIN_ID]: {
@@ -140,6 +153,8 @@ export const addresses = {
       universalRouter: '0x492E6456D9528771018DeB9E87ef7750EF184104',
       permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
       poolSwapTest: '0x8B5bcC363ddE2614281aD875bad385E0A785D3B9',
+      // Verified 2026-10-27: factory() = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24, WETH9() = 0x4200...0006.
+      swapRouter02: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
     },
     entryPointV07: '0x0000000071727De22E5E9d8BAf0edAc6f37da032',
     zerodev: {
@@ -160,8 +175,10 @@ export const addresses = {
       launcher: '0xD4747d91BE6121eBa7602D9114B51d6C184084EF',
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
-      // TODO: fill after `forge script script/DeployCallPolicy.s.sol` (BootrCallPolicy).
+      // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
       callPolicy: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
+      // TODO: fill after `forge script script/DeploySwapHelper.s.sol`, then rotate every session key.
+      swapHelper: null,
     },
   },
 } as const satisfies Record<SupportedChainId, ChainAddresses>;

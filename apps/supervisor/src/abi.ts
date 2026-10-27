@@ -1,4 +1,4 @@
-import { parseAbi } from 'viem';
+import { parseAbi, toFunctionSelector } from 'viem';
 
 /** Hand-written minimal ABIs (kept in sync with packages/contracts/src). */
 
@@ -8,6 +8,8 @@ export const guardianAbi = parseAbi([
   'function revokeSessionKeyApproval(address kernel, bytes32 digest)',
   'function revokeSessionKey(address kernel, bytes4 permissionId, bytes deinitData)',
   'function revokeAllSessionKeys(address kernel) returns (uint32 nonce)',
+  'function revokeAllSessionKeysBatch(address[] kernels) returns (uint32[] nonces)',
+  'function approvedDigestOf(address kernel, bytes21 vId) view returns (bytes32)',
   'function enableDigest(address kernel, bytes4 permissionId, uint32 nonce, bytes validatorData) view returns (bytes32)',
   'function approvedEnableDigests(address kernel, bytes32 digest) view returns (bool)',
   'function agentInfo(address kernel) view returns (AgentInfo)',
@@ -52,7 +54,19 @@ export const feeLockerAbi = parseAbi([
   'function availableFees(address feeOwner, address token) view returns (uint256)',
 ]);
 
-export const universalRouterAbi = parseAbi(['function execute(bytes commands, bytes[] inputs, uint256 deadline) payable']);
+/** BootrSwapHelper (packages/contracts/src/BootrSwapHelper.sol). */
+export const swapHelperAbi = parseAbi([
+  'function swapWethToUsdc(uint256 amountIn, uint256 maxSlippageBps) returns (uint256 amountOut)',
+  'function minUsdcOut(uint256 amountIn, uint256 maxSlippageBps) view returns (uint256)',
+  'function ethUsdPrice() view returns (uint256)',
+  'function MAX_SLIPPAGE_BPS() view returns (uint256)',
+]);
+
+/** BootrCallPolicy (packages/contracts/src/BootrCallPolicy.sol): window state of a SUM_PER_WINDOW argument. */
+export const callPolicyAbi = parseAbi([
+  'function windowOf(bytes32 id, address kernel, uint256 ruleIndex, uint256 argIndex) view returns (uint48 windowEnd, uint128 spent, uint32 windowSeconds, uint256 cap)',
+  'function installed(bytes32 id, address kernel) view returns (bool)',
+]);
 
 export const chainlinkAggregatorAbi = parseAbi([
   'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
@@ -62,5 +76,9 @@ export const chainlinkAggregatorAbi = parseAbi([
 /** Kernel v3.1 selectors used in call data and policy allow-lists. */
 export const KERNEL_EXECUTE_SELECTOR = '0xe9ae5c53' as const;
 export const KERNEL_EXECUTE_USER_OP_SELECTOR = '0x8dd7712f' as const;
-/** UniversalRouter.execute(bytes,bytes[],uint256) */
-export const UNIVERSAL_ROUTER_EXECUTE_SELECTOR = '0x3593564c' as const;
+/** ERC20.approve(address,uint256) */
+export const ERC20_APPROVE_SELECTOR = '0x095ea7b3' as const;
+/** BootrSwapHelper.swapWethToUsdc(uint256,uint256) */
+export const SWAP_HELPER_SWAP_SELECTOR = toFunctionSelector('swapWethToUsdc(uint256,uint256)');
+/** BootrSwapHelper.MAX_SLIPPAGE_BPS: the contract refuses a higher requested slippage. */
+export const SWAP_MAX_SLIPPAGE_BPS = 300;

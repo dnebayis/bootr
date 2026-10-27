@@ -1,16 +1,81 @@
 /** Admin / ops HTTP API (Hono). `/internal/*` requires `Authorization: HMAC <ts>:<hex>` like the sender. */
 import { Hono } from 'hono';
-import { desc, eq } from 'drizzle-orm';
-import type { Hex } from 'viem';
-import type { SupervisorContext } from './context.js';
+import { desc, eq, inArray } from 'drizzle-orm';
+import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
+import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
 import { hmacAuth, type AuthEnv } from './hmac.js';
 import { installSessionKey, rotateSessionKey } from './onboarding.js';
 import { saveRuntime } from './runtime.js';
+import { buildDeinitData, deserializeSessionPolicy, type SerializedSessionPolicy } from './session-key.js';
+import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
 import { reconcileInference } from './inference.js';
 import type { AgentState } from './runtime.js';
+
+export interface PanicRevokeResult {
+  /** Kernels whose valid nonce was bumped (`revokeAllSessionKeysBatch`), by batch tx. */
+  nonceRevoked: { kernels: Address[]; txHash: Hex }[];
+  /** Per-agent `revokeSessionKey` (uninstall) results; `error` when the admin tx failed (retry by hand). */
+  uninstalled: { agentId: string; kernel: Address; permissionId: Hex; txHash: Hex | null; error: string | null }[];
+  /** Runtimes paused by the operator so the loop stops acting on dead keys. */
+  paused: string[];
+  errors: string[];
+}
+
+/** Chunk size for `revokeAllSessionKeysBatch` (each kernel is one root call inside the guardian tx). */
+const PANIC_BATCH = 40;
+
+/**
+ * Fleet-wide key-leak response (H-01): (1) one guardian tx per `PANIC_BATCH` kernels bumps every kernel's valid
+ * nonce, which kills the userOp path of every permission and the ERC-1271 path of every permission that carries
+ * BootrAuthorizationPolicy; (2) unless `uninstall: false`, every active permission is then uninstalled
+ * (`revokeSessionKey`), which is the only thing that closes the ERC-1271 path of legacy permissions and also
+ * withdraws their enable approvals; (3) every runtime is paused by the operator. Agents need a session install
+ * (`POST /internal/agents/:id/session/install`) after the signer key is replaced.
+ */
+export async function panicRevoke(ctx: SupervisorContext, opts: { uninstall?: boolean; agentIds?: string[] } = {}): Promise<PanicRevokeResult> {
+  if (!ctx.adminSigner) throw new Error('ADMIN_PRIVATE_KEY is not configured; cannot revoke session keys');
+  const result: PanicRevokeResult = { nonceRevoked: [], uninstalled: [], paused: [], errors: [] };
+  const rows = (await ctx.db.select().from(agents).where(inArray(agents.status, ['onboarding', 'active']))) as AgentRow[];
+  const targets = rows.filter((a) => a.permissionId && (!opts.agentIds || opts.agentIds.includes(a.agentId)));
+  const kernels = [...new Set(targets.map((a) => getAddress(a.kernel)))];
+  for (let i = 0; i < kernels.length; i += PANIC_BATCH) {
+    const chunk = kernels.slice(i, i + PANIC_BATCH);
+    try {
+      const { txHash } = await ctx.adminSigner.revokeAllSessionKeysBatch(chunk);
+      result.nonceRevoked.push({ kernels: chunk, txHash });
+      ctx.log.warn({ kernels: chunk, txHash }, 'panic revoke: nonce bumped');
+    } catch (err) {
+      const error = `nonce batch ${i / PANIC_BATCH} failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+      result.errors.push(error);
+      ctx.log.error({ err, kernels: chunk }, 'panic revoke: nonce batch failed');
+    }
+  }
+  for (const agent of targets) {
+    const runtime = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) });
+    if (runtime && runtime.status !== 'paused') {
+      await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'operator' });
+      result.paused.push(agent.agentId);
+    }
+    if (opts.uninstall === false) continue;
+    const kernel = getAddress(agent.kernel);
+    const permissionId = agent.permissionId as Hex;
+    try {
+      const policy = agent.sessionPolicy ? deserializeSessionPolicy(agent.sessionPolicy as unknown as SerializedSessionPolicy) : null;
+      if (!policy) throw new Error('no stored session policy (cannot build deinit data)');
+      const { txHash } = await ctx.adminSigner.revokeSessionKey(kernel, permissionId, buildDeinitData(policy));
+      result.uninstalled.push({ agentId: agent.agentId, kernel, permissionId, txHash, error: null });
+      ctx.log.warn({ agentId: agent.agentId, kernel, permissionId, txHash }, 'panic revoke: permission uninstalled');
+    } catch (err) {
+      const error = err instanceof Error ? err.message.split('\n')[0]! : String(err);
+      result.uninstalled.push({ agentId: agent.agentId, kernel, permissionId, txHash: null, error });
+      ctx.log.error({ err, agentId: agent.agentId, kernel }, 'panic revoke: uninstall failed');
+    }
+  }
+  return result;
+}
 
 export function createApp(ctx: SupervisorContext, nowSec: () => number = () => Math.floor(ctx.now() / 1000)) {
   const app = new Hono<AuthEnv>();
@@ -34,6 +99,17 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
         runtime: runtime ? { status: runtime.status, cycle: runtime.cycle, nextAt: runtime.nextAt, pausedBy: runtime.pausedBy, failures: runtime.failures } : null,
       })),
     });
+  });
+
+  /** Key-leak runbook step 1 (see README "Runbook: session signer leak"). Body: `{uninstall?: boolean, agentIds?: string[]}`. */
+  app.post('/internal/agents/panic-revoke', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { uninstall?: boolean; agentIds?: string[] };
+    try {
+      const result = await panicRevoke(ctx, { ...(body.uninstall !== undefined ? { uninstall: body.uninstall } : {}), ...(Array.isArray(body.agentIds) ? { agentIds: body.agentIds.map(String) } : {}) });
+      return c.json(result, result.errors.length ? 207 : 200);
+    } catch (err) {
+      return c.json({ error: 'panic_revoke_failed', message: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.get('/internal/agents/:id', async (c) => {
@@ -119,23 +195,35 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     }
   });
 
-  /** Live check of the ERC-1271 path the x402 payer depends on. */
-  app.post('/internal/agents/:id/session/check-1271', async (c) => {
+  /**
+   * Live check of the x402 spender the agent pays with: its address and USDC balance, the remaining funding budget
+   * of the current window, and a dry EIP-712 signature (never sent anywhere) recovered back to the spender.
+   */
+  app.post('/internal/agents/:id/session/check-spender', async (c) => {
     const id = c.req.param('id');
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
-    if (!agent || !agent.permissionId) return c.json({ error: 'not_found' }, 404);
-    const kernel = await ctx.kernelFor(agent);
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const spender = ctx.spenderFor(agent);
+    const usdc = await ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [spender.address] }).catch(() => null);
     const typedData = {
-      domain: { name: 'USD Coin', version: '2', chainId: ctx.chain.chainId, verifyingContract: ctx.chain.addresses.usdc },
-      types: { Probe: [{ name: 'note', type: 'string' }] },
-      primaryType: 'Probe',
-      message: { note: 'bootr erc1271 probe' },
-    } as const;
-    const { hashTypedData } = await import('viem');
-    const signature = await kernel.signTypedData(typedData);
-    // Called as USDC would call it (EIP-3009 settlement); with SESSION_1271_CALLERS=usdc any other caller fails by design.
-    const valid = await kernel.verifySignature(hashTypedData(typedData), signature, ctx.chain.addresses.usdc);
-    return c.json({ agentId: id, kernel: agent.kernel, permissionId: agent.permissionId, valid });
+      domain: { name: 'Bootr spender probe', version: '1', chainId: ctx.chain.chainId, verifyingContract: ctx.chain.addresses.usdc },
+      types: { Probe: [{ name: 'agentId', type: 'string' }, { name: 'at', type: 'uint256' }] },
+      primaryType: 'Probe' as const,
+      message: { agentId: id, at: BigInt(Math.floor(ctx.now() / 1000)) },
+    };
+    const signature = await spender.signTypedData(typedData);
+    const recovered = await recoverTypedDataAddress({ ...typedData, signature });
+    const budget = await fundingBudget(ctx, agent);
+    return c.json({
+      agentId: id,
+      kernel: agent.kernel,
+      spender: spender.address,
+      stored: agent.spender,
+      storedMatches: agent.spender ? getAddress(agent.spender) === spender.address : null,
+      usdc: usdc === null ? null : formatUnits(usdc, 6),
+      signatureOk: recovered === spender.address,
+      fundingBudget: budget ? { cap: formatUnits(budget.cap, 6), remaining: formatUnits(budget.remaining, 6), windowEnd: new Date(budget.windowEnd * 1000).toISOString(), windowSeconds: budget.windowSeconds } : null,
+    });
   });
 
   return app;

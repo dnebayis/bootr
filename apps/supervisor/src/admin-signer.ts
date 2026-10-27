@@ -1,6 +1,6 @@
 /**
  * The only module that holds the guardian owner's key. It signs exactly three kinds of transactions:
- * approveSessionKey, revokeSessionKey/revokeAllSessionKeys, and (with ENABLE_MODE_SELF_BUNDLE)
+ * approveSessionKey, revokeSessionKey/revokeAllSessionKeys(Batch), and (with ENABLE_MODE_SELF_BUNDLE)
  * `EntryPoint.handleOps` for enable-mode userOps that strict bundlers refuse. Swap the
  * implementation for a KMS/hardware signer without touching the rest of the supervisor.
  */
@@ -15,6 +15,8 @@ export interface AdminSigner {
   approveSessionKey(kernel: Address, permissionId: Hex, validatorData: Hex): Promise<{ txHash: Hex; digest: Hex; nonce: number }>;
   revokeSessionKey(kernel: Address, permissionId: Hex, deinitData: Hex): Promise<{ txHash: Hex }>;
   revokeAllSessionKeys(kernel: Address): Promise<{ txHash: Hex }>;
+  /** `guardian.revokeAllSessionKeysBatch(kernels)`: one transaction bumping every kernel's valid nonce (panic path). */
+  revokeAllSessionKeysBatch(kernels: readonly Address[]): Promise<{ txHash: Hex }>;
   /**
    * Self-bundles packed userOps: `EntryPoint.handleOps(ops, beneficiary)` sent from the admin EOA. The call is
    * simulated first and a `FailedOp` / `FailedOpWithRevert` reason is surfaced in the error; resolves once the
@@ -57,6 +59,12 @@ export function createLocalAdminSigner(args: {
     },
     async revokeAllSessionKeys(kernel) {
       const { request } = await publicClient.simulateContract({ account, address: guardian, abi: guardianAbi, functionName: 'revokeAllSessionKeys', args: [kernel] });
+      const txHash = await wallet.writeContract(request);
+      await publicClient.waitForTransactionReceipt({ hash: txHash });
+      return { txHash };
+    },
+    async revokeAllSessionKeysBatch(kernels) {
+      const { request } = await publicClient.simulateContract({ account, address: guardian, abi: guardianAbi, functionName: 'revokeAllSessionKeysBatch', args: [[...kernels]] });
       const txHash = await wallet.writeContract(request);
       await publicClient.waitForTransactionReceipt({ hash: txHash });
       return { txHash };

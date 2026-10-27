@@ -256,7 +256,9 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         // (c)+(d) Clanker deployment
         token = clanker.deployToken{value: p.devBuyWei}(_buildConfig(p, d, creator, kernel, burner, salt));
         if (burner != address(0)) {
-            BuybackBurner(burner).initialize(token, weth, feeLocker, poolKeyFor(token), universalRouter, permit2);
+            BuybackBurner(burner).initialize(
+                token, weth, feeLocker, poolKeyFor(token), universalRouter, permit2, address(this)
+            );
         }
 
         // (e) ERC-8004 identity: minted to this contract, handed to the kernel

@@ -22,6 +22,13 @@
       "when": 1793107891531,
       "tag": "0002_agent_draft_id",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793113273329,
+      "tag": "0003_agent_spender",
+      "breakpoints": true
     }
   ]
 }

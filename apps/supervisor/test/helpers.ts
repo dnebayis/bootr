@@ -20,17 +20,27 @@ import { MemoryStore } from '../src/memories.js';
 import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem } from '../src/sender-client.js';
 import type { IndexerClient } from '../src/indexer-client.js';
 import { initialState } from '../src/runtime.js';
+import { spenderAccount } from '../src/spender.js';
 
 export const SESSION_PK: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 export const ADMIN_PK: Hex = '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba';
+export const SPENDER_MASTER: Hex = '0x7a9c0f1e2d3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5';
 export const GUARDIAN: Address = '0x1000000000000000000000000000000000000001';
 export const LAUNCHER: Address = '0x1000000000000000000000000000000000000002';
 export const KERNEL: Address = '0x2000000000000000000000000000000000000002';
 export const TOKEN: Address = '0x3000000000000000000000000000000000000003';
 export const CREATOR: Address = '0x4000000000000000000000000000000000000004';
 export const PAYTO: Address = '0x5000000000000000000000000000000000000005';
+/** Placeholder deployment of the Bootr module that is still `null` in addresses.ts for the chain. */
+export const SWAP_HELPER: Address = '0x6000000000000000000000000000000000000006';
 export const SERVICE_KEY = 'test-service-key-0123456789abcdef0123456789';
-export const ADDR = getAddresses(84532);
+/** The supervisor's own admin-API key (must differ from the sender and indexer keys). */
+export const SUPERVISOR_KEY = 'test-supervisor-key-fedcba9876543210fedcba';
+export const INDEXER_KEY = 'test-indexer-key-00112233445566778899aabbcc';
+const base = getAddresses(84532);
+export const ADDR = { ...base, bootr: { ...base.bootr, swapHelper: base.bootr.swapHelper ?? SWAP_HELPER } };
+/** The spender EOA of the test agent (AGENT_ID = '7') under SPENDER_MASTER. */
+export const SPENDER: Address = spenderAccount(SPENDER_MASTER, '7').address;
 
 export function testConfig(overrides: Record<string, string> = {}): Config {
   return loadConfig({
@@ -39,11 +49,14 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     BASE_SEPOLIA_RPC_URL: 'http://rpc.test',
     BUNDLER_URL: 'http://bundler.test',
     SESSION_SIGNER_PRIVATE_KEY: SESSION_PK,
+    SPENDER_MASTER_KEY: SPENDER_MASTER,
     ADMIN_PRIVATE_KEY: ADMIN_PK,
     BOOTR_LAUNCHER_ADDRESS: LAUNCHER,
     BOOTR_GUARDIAN_ADDRESS: GUARDIAN,
     SENDER_URL: 'http://sender.test',
     SENDER_SERVICE_KEY: SERVICE_KEY,
+    SUPERVISOR_SERVICE_KEY: SUPERVISOR_KEY,
+    INDEXER_SERVICE_KEY: INDEXER_KEY,
     INFERENCE_PROVIDER_URL: 'http://inference.test',
     INFERENCE_PAYTO_ADDRESS: PAYTO,
     INDEXER_URL: 'http://indexer.test',
@@ -61,6 +74,10 @@ export async function testDb(): Promise<{ db: Db; close: () => Promise<void> }> 
 /** Controllable on-chain state for the mocked public client. */
 export interface ChainState {
   usdc: bigint;
+  /** USDC held by the agent's spender EOA. */
+  spenderUsdc: bigint;
+  /** `BootrCallPolicy.windowOf` state of the funding rule. */
+  fundingWindow: { windowEnd: bigint; spent: bigint; windowSeconds: number; cap: bigint };
   weth: bigint;
   eth: bigint;
   token: bigint;
@@ -80,11 +97,15 @@ export interface ChainState {
   receipts: Record<string, Log[]>;
   /** Unix seconds returned by `getBlock` for any block. */
   blockTimestamp: bigint;
+  /** Chainlink `updatedAt` (unix seconds); defaults to `blockTimestamp` (fresh). */
+  feedUpdatedAt?: bigint;
 }
 
 export function chainState(over: Partial<ChainState> = {}): ChainState {
   return {
     usdc: 50_000_000n,
+    spenderUsdc: 20_000_000n,
+    fundingWindow: { windowEnd: 1_792_843_200n + 86_400n, spent: 0n, windowSeconds: 86_400, cap: 50_000_000n },
     weth: 0n,
     eth: 0n,
     token: 0n,
@@ -111,14 +132,19 @@ export function mockChain(state: ChainState): ChainContext {
       state.calls.push({ fn: args.functionName, args: args.args ?? [] });
       const addr = getAddress(args.address);
       switch (args.functionName) {
-        case 'balanceOf':
-          if (addr === ADDR.usdc) return state.usdc;
+        case 'balanceOf': {
+          const holder = getAddress((args.args as Address[])[0]!);
+          if (addr === ADDR.usdc) return holder === KERNEL ? state.usdc : holder === SPENDER ? state.spenderUsdc : 0n;
           if (addr === ADDR.weth) return state.weth;
           return state.token;
+        }
+        case 'windowOf':
+          return [state.fundingWindow.windowEnd, state.fundingWindow.spent, state.fundingWindow.windowSeconds, state.fundingWindow.cap];
         case 'availableFees':
           return getAddress((args.args as Address[])[1]!) === ADDR.weth ? state.claimableWeth : state.claimableToken;
         case 'latestRoundData':
-          return [1n, state.ethUsd, 0n, 0n, 1n];
+          // a fresh answer: `updatedAt` = the mocked block time (= the world's `now`), same round
+          return [1n, state.ethUsd, state.blockTimestamp, state.feedUpdatedAt ?? state.blockTimestamp, 1n];
         case 'agentInfo':
           return { token: TOKEN, creator: CREATOR, lastActivity: 0n, dormancyPeriod: 1000, paused: state.paused };
         case 'isRegistered':
@@ -180,19 +206,30 @@ export interface MockSender {
   items: SenderInboxItem[];
   published: unknown[];
   publishStatus: 'sent' | 'held' | 'rejected';
+  /** When set, `publish` answers 503 `consent_lookup_failed` (X unreachable for the consent check) with this retryAt. */
+  consentLookupFails: string | null;
+  /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
+  optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
   client: SenderClient;
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', receipts: {}, client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
-    async publish(body: { actionId: string }) {
+    /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
+    async publish(body: { actionId: string; text: string; replyTo?: string; replyEligibility?: { eligible: boolean; reason?: string } }) {
+      if (m.consentLookupFails) throw new SenderError(503, 'consent_lookup_failed', { error: 'consent_lookup_failed', retryAt: m.consentLookupFails }, true, Date.parse(m.consentLookupFails));
       m.published.push(body);
-      const providerPostId = m.publishStatus === 'sent' ? String(++n) : null;
-      m.receipts[body.actionId] = { status: m.publishStatus, providerPostId };
-      return { status: m.publishStatus, providerPostId, receipt: { actionId: body.actionId, agentId: 'a', kind: 'post', status: m.publishStatus, providerPostId, error: m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null } };
+      const reasons: string[] = [];
+      if (body.replyTo && !body.replyEligibility?.eligible) reasons.push(`reply_not_eligible:${body.replyEligibility?.reason ?? 'missing_eligibility'}`);
+      for (const h of body.text.match(/@([A-Za-z0-9_]+)/g) ?? []) if (m.optedOutHandles.has(h.slice(1).toLowerCase())) reasons.push('mention_opted_out');
+      const status = reasons.length ? 'rejected' : m.publishStatus;
+      const error = reasons.length ? `policy:${reasons[0]}` : m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null;
+      const providerPostId = status === 'sent' ? String(++n) : null;
+      m.receipts[body.actionId] = { status, providerPostId, error };
+      return { status, providerPostId, receipt: { actionId: body.actionId, agentId: 'a', kind: body.replyTo ? 'reply' : 'post', status, providerPostId, error } };
     },
     async receipt(actionId: string) {
       const r = m.receipts[actionId];
@@ -288,10 +325,10 @@ export function mockKernel(): MockKernel {
       return m.receipt;
     },
     async signTypedData() {
-      return '0x02112233440000000000000000000000000000000000ff00' as Hex;
+      throw new Error('kernel signing refused: the session key signs no typed data');
     },
     async signMessage() {
-      return '0x00' as Hex;
+      throw new Error('kernel signing refused: the session key signs no messages');
     },
     async verifySignature() {
       return true;
@@ -323,6 +360,10 @@ export interface MockAdminSigner {
   signer: AdminSigner;
   approved: { kernel: Address; permissionId: Hex; validatorData: Hex }[];
   revoked: Hex[];
+  /** Kernels passed to `revokeAllSessionKeysBatch`, one entry per call. */
+  nonceRevoked: Address[][];
+  /** When set, `revokeSessionKey` throws for these permission ids (simulated failed admin tx). */
+  failRevoke: Set<Hex>;
   handled: { ops: readonly PackedUserOperation[]; beneficiary: Address }[];
   /** Outcome of the next `handleOps`: the op's `UserOperationEvent.success`, or an error thrown by the simulation. */
   outcome: 'success' | 'reverted' | Error;
@@ -333,7 +374,7 @@ export interface MockAdminSigner {
 /** Admin signer whose `handleOps` behaves like a mined EntryPoint tx: it emits one `UserOperationEvent` per op. */
 export function mockAdminSigner(): MockAdminSigner {
   const admin = privateKeyToAccount(ADMIN_PK);
-  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], handled: [], outcome: 'success', revertReason: '0x' };
+  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], nonceRevoked: [], failRevoke: new Set(), handled: [], outcome: 'success', revertReason: '0x' };
   let kernelNonce = 0;
   m.signer = {
     address: admin.address,
@@ -343,11 +384,17 @@ export function mockAdminSigner(): MockAdminSigner {
       return { txHash: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', digest: enableDigest({ kernel, chainId: 84532, guardian: GUARDIAN, permissionId, nonce, validatorData }), nonce };
     },
     async revokeSessionKey(_kernel, permissionId) {
+      if (m.failRevoke.has(permissionId)) throw new Error('execution reverted: RootCallFailed');
       m.revoked.push(permissionId);
       return { txHash: '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' };
     },
-    async revokeAllSessionKeys() {
+    async revokeAllSessionKeys(kernel) {
+      m.nonceRevoked.push([kernel]);
       return { txHash: '0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' };
+    },
+    async revokeAllSessionKeysBatch(kernels) {
+      m.nonceRevoked.push([...kernels]);
+      return { txHash: '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' };
     },
     async handleOps(ops, beneficiary) {
       m.handled.push({ ops, beneficiary });
@@ -381,6 +428,8 @@ export function mockAdminSigner(): MockAdminSigner {
 /** Scripted relay: each POST /v1/chat/completions consumes the next scripted response. */
 export function mockInference(script: (Response | (() => Response))[]) {
   const calls: { url: string; body: unknown; headers: Headers }[] = [];
+  /** What `GET /v1/requests/:key` answers (a relay `requestView` subset), or a function of the request headers. */
+  const state: { requests: Record<string, unknown> | ((headers: Headers) => Response) } = { requests: { status: 'unknown' } };
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const req = input instanceof Request ? input : null;
@@ -392,10 +441,13 @@ export function mockInference(script: (Response | (() => Response))[]) {
       if (!next) return new Response(JSON.stringify({ error: { code: 'script_exhausted' } }), { status: 500 });
       return typeof next === 'function' ? next() : next;
     }
-    if (url.includes('/v1/requests/')) return new Response(JSON.stringify({ status: 'unknown' }), { status: 200 });
+    if (url.includes('/v1/requests/')) {
+      if (typeof state.requests === 'function') return state.requests(headers);
+      return new Response(JSON.stringify(state.requests), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
   };
-  return { fetch: fetchImpl, calls };
+  return { fetch: fetchImpl, calls, state };
 }
 
 export function toolCallResponse(name: string, args: unknown, id = `call_${name}`): Response {
@@ -439,6 +491,7 @@ export async function makeWorld(opts: { chain?: Partial<ChainState>; script?: Re
     memories: new MemoryStore(db),
     sessionSigner: privateKeyToAccount(SESSION_PK),
     adminSigner: null,
+    spenderFor: (agent) => spenderAccount(SPENDER_MASTER, agent.agentId),
     kernelFor: async () => kernel.client,
     fetch: inference.fetch,
     now: () => now,

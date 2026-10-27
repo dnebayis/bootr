@@ -90,16 +90,18 @@ describe('self-bundled enable-mode userOp (kernel client)', () => {
     expect(packed.paymasterAndData).toBe('0x');
     expect(prepared.hash).toBe(entryPointUserOpHash(packed));
 
-    // enable-mode signature: guardian ‖ abi.encode(validatorData, 0x00, execute selector, "", 0xff ‖ ecdsa(hash))
+    // enable-mode signature: guardian ‖ abi.encode(validatorData, 0x00, execute selector, "", timeSlot ‖ 0xff ‖ ecdsa(hash))
     expect(slice(op.signature, 0, 20).toLowerCase()).toBe(GUARDIAN.toLowerCase());
     const [validatorData, hookData, selectorData, enableSig, userOpSig] = decodeAbiParameters(parseAbiParameters('bytes, bytes, bytes, bytes, bytes'), slice(op.signature, 20));
     expect(validatorData).toBe(VALIDATOR_DATA);
     expect(hookData).toBe('0x00');
     expect(selectorData).toBe('0xe9ae5c53');
     expect(enableSig).toBe('0x');
-    expect(slice(userOpSig, 0, 1)).toBe('0xff');
+    // [0 || uint64(32) || abi.encode(now)] || 0xff || ecdsa: BootrCallPolicy's time slot precedes the signer prefix
+    expect(slice(userOpSig, 0, 9)).toBe('0x000000000000000020');
+    expect(slice(userOpSig, 41, 42)).toBe('0xff');
     const { recoverAddress } = await import('viem');
-    expect((await recoverAddress({ hash: prepared.hash, signature: slice(userOpSig, 1) })).toLowerCase()).toBe(sessionSigner.address.toLowerCase());
+    expect((await recoverAddress({ hash: prepared.hash, signature: slice(userOpSig, 42) })).toLowerCase()).toBe(sessionSigner.address.toLowerCase());
     expect(state.calls.filter((c) => c.fn === 'getNonce')).toHaveLength(1);
   });
 

@@ -36,8 +36,8 @@ contract LaunchDefaultsTest is Test {
     function _standard() internal view returns (BootrLauncher.LaunchDefaults memory) {
         return BootrLauncher.LaunchDefaults({
             lpFeeBps: 10_000,
-            agentBps: 2000,
-            creatorBps: 5000,
+            agentBps: 500,
+            creatorBps: 6500,
             burnBps: 0,
             platformBps: 3000,
             platformRecipient: platform,
@@ -49,8 +49,8 @@ contract LaunchDefaultsTest is Test {
     function _buyback() internal view returns (BootrLauncher.LaunchDefaults memory) {
         return BootrLauncher.LaunchDefaults({
             lpFeeBps: 10_000,
-            agentBps: 2000,
-            creatorBps: 3500,
+            agentBps: 500,
+            creatorBps: 5000,
             burnBps: 1500,
             platformBps: 3000,
             platformRecipient: platform,
@@ -67,16 +67,16 @@ contract LaunchDefaultsTest is Test {
         (uint24 lp, uint16 a, uint16 c, uint16 b, uint16 p, address r, uint256 f, uint32 d) =
             launcher.standardDefaults();
         assertEq(lp, 10_000);
-        assertEq(a, 2000);
-        assertEq(c, 5000);
+        assertEq(a, 500);
+        assertEq(c, 6500);
         assertEq(b, 0);
         assertEq(p, 3000);
         assertEq(r, platform);
         assertEq(f, 25e6);
         assertEq(d, 90 days);
         (, a, c, b, p,,,) = launcher.buybackDefaults();
-        assertEq(a, 2000);
-        assertEq(c, 3500);
+        assertEq(a, 500);
+        assertEq(c, 5000);
         assertEq(b, 1500);
         assertEq(p, 3000);
         assertEq(uint256(a) + c + b + p, 10_000);
@@ -121,7 +121,7 @@ contract LaunchDefaultsTest is Test {
         vm.expectRevert(BootrLauncher.PlatformBpsBelowMinimum.selector);
         launcher.setDefaults(false, d);
         d.platformBps = 3500;
-        d.creatorBps = 4500;
+        d.creatorBps = 6000;
         launcher.setDefaults(false, d);
         vm.expectRevert(BootrLauncher.InvalidMinPlatformBps.selector);
         launcher.setMinPlatformBps(10_001);

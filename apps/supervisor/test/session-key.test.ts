@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { concatHex, decodeAbiParameters, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, keccak256, pad, parseAbiParameters, slice, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PolicyFlags } from '@zerodev/permissions';
-import { ADDR, GUARDIAN, KERNEL, PAYTO, SESSION_PK, TOKEN } from './helpers.js';
+import { ADDR, GUARDIAN, KERNEL, PAYTO, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
 import {
   buildDeinitData,
   buildValidatorData,
@@ -13,23 +13,29 @@ import {
   encodeEnableSignature,
   encodeErc1271Signature,
   encodeSessionSignature,
+  encodePolicySigs,
+  encodeTimeSlot,
   encodeValidatorData,
   enableDigest,
   enableDigestManual,
+  FUNDING_AMOUNT_ARG_INDEX,
+  FUNDING_RULE_INDEX,
   nonceKey,
   policyEntries,
+  policyModules,
   sdkValidatorData,
+  SIGNER_FLAGS,
   validationId,
   zerodevEntries,
   type SessionPolicyParams,
 } from '../src/session-key.js';
 import { EXEC_MODE_BATCH, EXEC_MODE_SINGLE, encodeKernelCalls, nonceMode } from '../src/kernel.js';
-import { KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR } from '../src/abi.js';
+import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, SWAP_HELPER_SWAP_SELECTOR } from '../src/abi.js';
 
 const signer = privateKeyToAccount(SESSION_PK);
 const PID: Hex = '0xdeadbeef';
-/** BootrCallPolicy is not deployed yet (`addresses.bootr.callPolicy` is null); any address will do for encoding. */
-const CALL_POLICY = (ADDR.bootr.callPolicy ?? '0x6000000000000000000000000000000000000006') as Address;
+const CALL_POLICY = ADDR.bootr.callPolicy as Address;
+const SWAP_HELPER = ADDR.bootr.swapHelper as Address;
 
 function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
   const z = ADDR.zerodev;
@@ -37,19 +43,26 @@ function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
     kernel: KERNEL,
     token: TOKEN,
     feeLocker: ADDR.clankerFeeLocker,
-    universalRouter: ADDR.uniswap.universalRouter,
+    swapHelper: SWAP_HELPER,
     usdc: ADDR.usdc,
     weth: ADDR.weth,
-    inferencePayTo: PAYTO,
+    spender: SPENDER,
     usdcTransferCap: 50_000_000n,
+    usdcWindowSeconds: 86_400,
     gasAllowanceWei: 10n ** 17n,
     ratePerHour: 60,
     validUntil: 1_800_000_000,
-    signatureCallers: [ADDR.usdc],
+    signatureCallers: null,
     sessionSigner: signer.address,
-    policyAddresses: { callPolicy: ADDR.bootr.callPolicy ?? CALL_POLICY, gasPolicy: z.gasPolicy!, rateLimitPolicy: z.rateLimitPolicy!, timestampPolicy: z.timestampPolicy!, signaturePolicy: z.signaturePolicy!, ecdsaSigner: z.ecdsaSigner! },
+    policyAddresses: { callPolicy: CALL_POLICY, gasPolicy: z.gasPolicy!, rateLimitPolicy: z.rateLimitPolicy!, timestampPolicy: z.timestampPolicy!, ecdsaSigner: z.ecdsaSigner! },
     ...over,
   };
+}
+
+/** A policy as stored by a supervisor that predates the swap helper / spender layout (router rules, payTo, caller policy). */
+function legacyParams(): SessionPolicyParams {
+  const p = params();
+  return { ...p, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
 }
 
 describe('validatorData layout (contracts/src/README.md)', () => {
@@ -63,16 +76,18 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(actual).toBe(expected.toLowerCase());
   });
 
-  it('production policy set: every entry is flags||address||initData, signer last, flags as designed', () => {
+  it('production policy set: every entry is flags||address||initData, signer last with SKIP_SIGNATURE, flags as designed', () => {
     const p = params();
     const data = buildValidatorData(p);
     const [entries] = decodeAbiParameters(parseAbiParameters('bytes[]'), data);
-    expect(entries).toHaveLength(6); // call, gas, rate, timestamp, signature-caller, signer
+    expect(entries).toHaveLength(5); // call, gas, rate, timestamp, signer
     const parsed = entries.map((e) => ({ flags: slice(e, 0, 2), module: getAddress(slice(e, 2, 22)), data: e.length > 46 ? slice(e, 22) : ('0x' as Hex) }));
-    expect(parsed.map((e) => e.module)).toEqual([p.policyAddresses.callPolicy, p.policyAddresses.gasPolicy, p.policyAddresses.rateLimitPolicy, p.policyAddresses.timestampPolicy, p.policyAddresses.signaturePolicy, p.policyAddresses.ecdsaSigner]);
-    expect(parsed.map((e) => e.flags)).toEqual([PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.FOR_ALL_VALIDATION, PolicyFlags.NOT_FOR_VALIDATE_USEROP, PolicyFlags.FOR_ALL_VALIDATION]);
+    expect(parsed.map((e) => e.module)).toEqual([p.policyAddresses.callPolicy, p.policyAddresses.gasPolicy, p.policyAddresses.rateLimitPolicy, p.policyAddresses.timestampPolicy, p.policyAddresses.ecdsaSigner]);
+    // the signer's flags become the permission's permissionFlag: SKIP_SIGNATURE closes ERC-1271 (C-01)
+    expect(parsed.map((e) => e.flags)).toEqual([PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.FOR_ALL_VALIDATION, PolicyFlags.NOT_FOR_VALIDATE_SIG]);
+    expect(SIGNER_FLAGS).toBe('0x0002');
     // signer init data is the 20-byte session key
-    expect(parsed[5]!.data.toLowerCase()).toBe(signer.address.toLowerCase());
+    expect(parsed[4]!.data.toLowerCase()).toBe(signer.address.toLowerCase());
     // timestamp policy init data = abi.encode(uint48 validAfter, uint48 validUntil)
     expect(parsed[3]!.data).toBe(encodeAbiParameters(parseAbiParameters('uint48, uint48'), [0, 1_800_000_000]));
     // rate limit: interval(6) || count(6) || startAt(6)
@@ -80,36 +95,50 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     // call policy init data = abi.encode(Rule[]) with the four allow-list rules (checked in detail below)
     expect(parsed[0]!.data).toBe(encodeCallPolicyData(callPolicyRules(p)));
     expect(parsed[0]!.module).toBe(CALL_POLICY);
+    // the module list used for revocation is the same, in the same order
+    expect(policyModules(p)).toEqual(policyEntries(p).map((e) => e.module));
   });
 
-  it('BootrCallPolicy rules: exactly FeeLocker.claim(kernel,*), Router.execute, USDC.transfer(payTo,<=cap), WETH.transfer(router,*)', () => {
+  it('BootrCallPolicy rules: exactly FeeLocker.claim(kernel,*), WETH.approve(helper,*), helper.swapWethToUsdc(*,*), USDC.transfer(spender, SUM_PER_WINDOW cap)', () => {
     const p = params();
     const rules = callPolicyRules(p);
     expect(rules).toEqual([
-      { target: ADDR.clankerFeeLocker, selector: '0x21c0b342', args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }) }] }, // claim(address,address)
-      { target: ADDR.uniswap.universalRouter, selector: '0x3593564c', args: [] }, // execute(bytes,bytes[],uint256)
+      { target: ADDR.clankerFeeLocker, selector: '0x21c0b342', windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }) }] }, // claim(address,address)
+      { target: ADDR.weth, selector: ERC20_APPROVE_SELECTOR, windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(SWAP_HELPER, { size: 32 }).toLowerCase() }] },
+      { target: SWAP_HELPER, selector: SWAP_HELPER_SWAP_SELECTOR, windowSeconds: 0, args: [] },
       {
         target: ADDR.usdc,
         selector: '0xa9059cbb', // transfer(address,uint256)
+        windowSeconds: 86_400,
         args: [
-          { index: 0, op: CallPolicyOp.EQUAL, value: pad(PAYTO, { size: 32 }) },
-          { index: 1, op: CallPolicyOp.LESS_THAN_OR_EQUAL, value: toHex(50_000_000n, { size: 32 }) },
+          { index: 0, op: CallPolicyOp.EQUAL, value: pad(SPENDER, { size: 32 }).toLowerCase() },
+          { index: 1, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(50_000_000n, { size: 32 }) },
         ],
       },
-      { target: ADDR.weth, selector: '0xa9059cbb', args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(ADDR.uniswap.universalRouter, { size: 32 }).toLowerCase() }] },
     ]);
+    expect(rules[FUNDING_RULE_INDEX]!.args[FUNDING_AMOUNT_ARG_INDEX]!.op).toBe(CallPolicyOp.SUM_PER_WINDOW);
+    // the payTo is never a recipient any more; the spender is the only USDC sink
+    expect(rules.some((r) => r.args.some((a) => a.value.toLowerCase() === pad(PAYTO, { size: 32 }).toLowerCase()))).toBe(false);
+    expect(() => callPolicyRules(params({ usdcWindowSeconds: 0 }))).toThrow(/usdcWindowSeconds/);
+    expect(() => callPolicyRules(params({ usdcTransferCap: 2n ** 128n }))).toThrow(/uint128/);
+    expect(ERC20_APPROVE_SELECTOR).toBe('0x095ea7b3');
+    expect(SWAP_HELPER_SWAP_SELECTOR).toBe(keccak256(toHex('swapWethToUsdc(uint256,uint256)')).slice(0, 10));
+    // nothing may ever reach the Universal Router or move WETH anywhere but the helper's allowance
+    expect(rules.some((r) => r.target === ADDR.uniswap.universalRouter)).toBe(false);
+    expect(rules.filter((r) => r.target === ADDR.weth).every((r) => r.selector === ERC20_APPROVE_SELECTOR)).toBe(true);
+    expect(() => callPolicyRules(legacyParams())).toThrow(/swapHelper/);
     // round-trips through the contract's `abi.encode(Rule[])` layout: (address, bytes4, (uint8, uint8, bytes32)[])[]
     const data = encodeCallPolicyData(rules);
     const decoded = decodeCallPolicyData(data);
     expect(decoded.map((r) => ({ ...r, args: r.args.map((a) => ({ ...a, value: a.value.toLowerCase() })) }))).toEqual(rules.map((r) => ({ ...r, args: r.args.map((a) => ({ ...a, value: a.value.toLowerCase() })) })));
     // same bytes as a hand-written abi.encode with the Solidity tuple layout
-    const manual = encodeAbiParameters(parseAbiParameters('(address, bytes4, (uint8, uint8, bytes32)[])[]'), [rules.map((r) => [r.target, r.selector, r.args.map((a) => [a.index, a.op, a.value] as const)] as const)]);
+    const manual = encodeAbiParameters(parseAbiParameters('(address, bytes4, uint32, (uint8, uint8, bytes32)[])[]'), [rules.map((r) => [r.target, r.selector, r.windowSeconds, r.args.map((a) => [a.index, a.op, a.value] as const)] as const)]);
     expect(data).toBe(manual.toLowerCase());
     // the Kernel prepends bytes32(permissionId) to the module init data; our data must start right after
     expect(slice(concatHex([pad(PID, { size: 32, dir: 'right' }), data]), 32)).toBe(data);
   });
 
-  it('the ZeroDev entries equal the SDK encoding (toPermissionValidator.getEnableData); the call policy is ours', async () => {
+  it('the ZeroDev entries equal the SDK encoding (toPermissionValidator.getEnableData with flag = SKIP_SIGNATURE); the call policy is ours', async () => {
     const p = params();
     const sdk = (await sdkValidatorData(p, signer, '0x0000000071727De22E5E9d8BAf0edAc6f37da032', 84532)).toLowerCase();
     expect(encodeValidatorData(zerodevEntries(p))).toBe(sdk);
@@ -120,10 +149,32 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(slice(all[0]!, 2, 22).toLowerCase()).toBe(CALL_POLICY.toLowerCase());
   });
 
-  it('omits the signature-caller policy when callers are unrestricted', () => {
-    expect(policyEntries(params({ signatureCallers: null }))).toHaveLength(5);
+  it('deinit data: one entry per installed module, also for a legacy stored policy (no helper, no spender, signature-caller policy)', () => {
     const [entries] = decodeAbiParameters(parseAbiParameters('bytes[]'), buildDeinitData(params()));
-    expect(entries).toHaveLength(6);
+    expect(entries).toHaveLength(5);
+    const legacy = legacyParams();
+    expect(policyModules(legacy)).toEqual([CALL_POLICY, ADDR.zerodev.gasPolicy, ADDR.zerodev.rateLimitPolicy, ADDR.zerodev.timestampPolicy, ADDR.zerodev.signaturePolicy, ADDR.zerodev.ecdsaSigner]);
+    const [legacyEntries] = decodeAbiParameters(parseAbiParameters('bytes[]'), buildDeinitData(legacy));
+    expect(legacyEntries).toHaveLength(6);
+    expect(() => callPolicyRules(legacy)).toThrow(/swapHelper/);
+  });
+});
+
+describe('userOp signature: BootrCallPolicy time slot', () => {
+  it('encodeSessionSignature = [0 || uint64(32) || abi.encode(now)] || 0xff || sig; without a time it is 0xff || sig', () => {
+    expect(encodeSessionSignature('0x1234')).toBe('0xff1234');
+    const at = encodeSessionSignature('0x1234', 1_800_000_000);
+    expect(at).toBe(concatHex(['0x00', '0x0000000000000020', toHex(1_800_000_000n, { size: 32 }), '0xff', '0x1234']));
+    expect(encodeTimeSlot(5n)).toEqual({ index: 0, data: toHex(5n, { size: 32 }) });
+    expect(() => encodeTimeSlot(2n ** 48n)).toThrow(/uint48/);
+    expect(() => encodeTimeSlot(-1)).toThrow(/uint48/);
+  });
+
+  it('policy slots are sorted by index; duplicates and out-of-range indexes are refused (Kernel: PolicySignatureOrderError)', () => {
+    expect(encodePolicySigs([{ index: 2, data: '0x01' }, { index: 1, data: '0x0203' }])).toBe(concatHex(['0x01', '0x0000000000000002', '0x0203', '0x02', '0x0000000000000001', '0x01']));
+    expect(() => encodePolicySigs([{ index: 1, data: '0x' }, { index: 1, data: '0x' }])).toThrow(/duplicate/);
+    expect(() => encodePolicySigs([{ index: 255, data: '0x' }])).toThrow(/out of range/);
+    expect(encodePolicySigs([])).toBe('0x');
   });
 });
 

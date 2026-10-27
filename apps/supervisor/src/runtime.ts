@@ -35,7 +35,7 @@ import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, ty
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
-import type { SenderInboxItem } from './sender-client.js';
+import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 
 export const LEASE_MS = 60_000;
@@ -65,6 +65,8 @@ export interface Turn {
   messages: ChatMessage[];
   /** postId -> inbox item used for replyAuthorId resolution. */
   inbox: Record<string, SenderInboxItem>;
+  /** postId -> agent-core reply eligibility decided when the mention was observed (sent with replies). */
+  eligibility?: Record<string, ReplyEligibility>;
   /** Short summaries of the steps so far (for continuation). */
   recentSteps: { tool: string; status: string; summary: string }[];
 }
@@ -193,6 +195,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
+    eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now()).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
     recentSteps: [],
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
@@ -211,7 +214,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
   const tools = availableTools(ctx, config);
-  const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)) };
+  const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})) };
 
   const persist = async (patch: RuntimePatch = {}) => {
     await saveRuntime(ctx, agent.agentId, {
@@ -395,6 +398,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     pending = recordOutcome(pending, outcome, ctx.now());
     broker.pending = pending;
     turn.inbox = Object.fromEntries(env.inbox);
+    turn.eligibility = Object.fromEntries(env.eligibility);
     if (pending.status === 'held') {
       await ctx.db.update(actions).set({ status: 'held', result: (pending.result as unknown as Record<string, unknown>) ?? null, updatedAt: new Date(ctx.now()) }).where(eq(actions.actionId, pending.id));
       log.warn({ actionId: pending.id, tool: action.tool, reason: pending.reason }, 'action held; runtime blocked until reconciled');

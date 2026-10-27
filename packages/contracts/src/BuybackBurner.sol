@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
@@ -13,10 +14,14 @@ import {IPermit2, IUniversalRouter, IV4Router, PoolKey, V4Constants} from "./int
 ///         registers it with `FeeIn.Clanker` in the ClankerLpLockerFeeConversion locker, so the
 ///         locker converts the burner's WETH share into the token on-chain before storing it in
 ///         the FeeLocker. `burn()` therefore only has to claim and send to 0x...dEaD.
-///         `swapAndBurn(minTokenOut)` is a permissionless fallback for stray WETH (anything sent
-///         directly to this contract): it swaps WETH -> token through the Uniswap v4 pool via the
-///         Universal Router with caller-supplied slippage protection and burns the proceeds.
-///         No owner, no parameters after `initialize`.
+///         `swapAndBurn(minTokenOut)` is a fallback for stray WETH (anything sent directly to this
+///         contract): it swaps WETH -> token through the Uniswap v4 pool via the Universal Router
+///         and burns the proceeds. It is restricted to the launcher's owner (the platform admin), who
+///         supplies `minTokenOut` from an off-chain quote: there is no trustworthy on-chain price for
+///         a fresh Clanker coin (Chainlink prices ETH, not the agent token, and the pool spot price is
+///         exactly what a sandwicher moves), so a permissionless `minOut` was a standing griefing
+///         primitive (BOOTR-03). `burn()` stays permissionless. No owner of its own, no parameters
+///         after `initialize`.
 contract BuybackBurner is ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
@@ -28,6 +33,8 @@ contract BuybackBurner is ReentrancyGuardTransient {
     IClankerFeeLocker public feeLocker;
     IUniversalRouter public universalRouter;
     IPermit2 public permit2;
+    /// @notice The BootrLauncher that created this clone; `Ownable(launcher).owner()` may `swapAndBurn`.
+    address public launcher;
     PoolKey private _poolKey;
 
     event Initialized(address indexed token, bytes32 poolId);
@@ -39,6 +46,7 @@ contract BuybackBurner is ReentrancyGuardTransient {
     error ZeroAddress();
     error InsufficientOutput(uint256 out, uint256 minOut);
     error NothingToSwap();
+    error NotKeeper(address caller);
 
     constructor() {
         // lock the implementation
@@ -51,12 +59,13 @@ contract BuybackBurner is ReentrancyGuardTransient {
         address feeLocker_,
         PoolKey calldata poolKey_,
         address universalRouter_,
-        address permit2_
+        address permit2_,
+        address launcher_
     ) external {
         if (initialized) revert AlreadyInitialized();
         if (
             token_ == address(0) || weth_ == address(0) || feeLocker_ == address(0) || universalRouter_ == address(0)
-                || permit2_ == address(0)
+                || permit2_ == address(0) || launcher_ == address(0)
         ) revert ZeroAddress();
         initialized = true;
         token = IERC20(token_);
@@ -64,6 +73,7 @@ contract BuybackBurner is ReentrancyGuardTransient {
         feeLocker = IClankerFeeLocker(feeLocker_);
         universalRouter = IUniversalRouter(universalRouter_);
         permit2 = IPermit2(permit2_);
+        launcher = launcher_;
         _poolKey = poolKey_;
         emit Initialized(token_, V4Constants.poolId(poolKey_));
     }
@@ -83,8 +93,15 @@ contract BuybackBurner is ReentrancyGuardTransient {
         burned = _burnAll();
     }
 
+    /// @notice The address allowed to call `swapAndBurn`: the launcher's current owner.
+    function keeper() public view returns (address) {
+        return Ownable(launcher).owner();
+    }
+
     /// @notice Claim, swap the whole WETH balance into the token (>= `minTokenOut`) and burn everything.
+    ///         Keeper only (see the contract NatSpec); `minTokenOut` must come from a fresh off-chain quote.
     function swapAndBurn(uint256 minTokenOut) external nonReentrant returns (uint256 bought, uint256 burned) {
+        if (msg.sender != keeper()) revert NotKeeper(msg.sender);
         _claimFees();
         uint256 wethBalance = weth.balanceOf(address(this));
         if (wethBalance == 0) revert NothingToSwap();

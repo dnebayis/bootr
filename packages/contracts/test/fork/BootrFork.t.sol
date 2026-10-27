@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AgentGuardian} from "../../src/AgentGuardian.sol";
 import {BootrCallPolicy} from "../../src/BootrCallPolicy.sol";
 import {BootrLauncher} from "../../src/BootrLauncher.sol";
+import {BootrSwapHelper} from "../../src/BootrSwapHelper.sol";
 import {BuybackBurner} from "../../src/BuybackBurner.sol";
 import {
     IClanker,
@@ -47,11 +48,14 @@ contract BootrForkTest is Test {
     address constant SUDO_POLICY = 0x67b436caD8a6D025DF6C82C5BB43fbF11fC5B9B7;
     address constant ECDSA_SIGNER = 0x6A6F069E2a08c2468e7724Ab3250CdBFBA14D4FF;
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
+    address constant SWAP_ROUTER_02 = 0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4;
+    address constant ETH_USD_FEED = 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1;
 
     AgentGuardian guardian;
     BuybackBurner burnerImpl;
     BootrLauncher launcher;
     BootrCallPolicy callPolicy;
+    BootrSwapHelper swapHelper;
     IEntryPoint entryPoint = IEntryPoint(ENTRY_POINT);
 
     address platformRecipient = makeAddr("platformRecipient");
@@ -74,6 +78,7 @@ contract BootrForkTest is Test {
         guardian = new AgentGuardian(address(this), ENTRY_POINT, USDC, WETH);
         burnerImpl = new BuybackBurner();
         callPolicy = new BootrCallPolicy();
+        swapHelper = new BootrSwapHelper(WETH, USDC, SWAP_ROUTER_02, ETH_USD_FEED, 500);
         launcher = new BootrLauncher(
             address(this),
             BootrLauncher.Deps({
@@ -108,8 +113,8 @@ contract BootrForkTest is Test {
     function _defaults(bool buyback) internal view returns (BootrLauncher.LaunchDefaults memory) {
         return BootrLauncher.LaunchDefaults({
             lpFeeBps: 10_000,
-            agentBps: 2000,
-            creatorBps: buyback ? 3500 : 5000,
+            agentBps: 500,
+            creatorBps: buyback ? 5000 : 6500,
             burnBps: buyback ? 1500 : 0,
             platformBps: 3000,
             platformRecipient: platformRecipient,
@@ -205,7 +210,9 @@ contract BootrForkTest is Test {
         assertTrue(b.initialized());
         PoolKey memory key = launcher.poolKeyFor(token);
         vm.expectRevert(BuybackBurner.AlreadyInitialized.selector);
-        b.initialize(token, WETH, FEE_LOCKER, key, UNIVERSAL_ROUTER, PERMIT2);
+        b.initialize(token, WETH, FEE_LOCKER, key, UNIVERSAL_ROUTER, PERMIT2, address(launcher));
+        assertEq(b.launcher(), address(launcher));
+        assertEq(b.keeper(), address(this), "launcher owner is the burner keeper");
     }
 
     function test_launchRefundsExcessEth() public {
@@ -263,9 +270,9 @@ contract BootrForkTest is Test {
         }
         assertEq(sum, 10_000);
         assertEq(r.rewardRecipients[0], kernel);
-        assertEq(r.rewardBps[0], 2000);
+        assertEq(r.rewardBps[0], 500);
         assertEq(r.rewardRecipients[1], creator);
-        assertEq(r.rewardBps[1], buyback ? 3500 : 5000);
+        assertEq(r.rewardBps[1], buyback ? 5000 : 6500);
         if (buyback) {
             assertEq(r.rewardRecipients[2], burner);
             assertEq(r.rewardBps[2], 1500);
@@ -327,8 +334,8 @@ contract BootrForkTest is Test {
         assertGt(lpTotal, 0);
 
         // ratio 20 / 50 / 30 of the LP share (dust goes to the last recipient)
-        assertApproxEqAbs(fKernel, lpTotal * 2000 / 10_000, 2);
-        assertApproxEqAbs(fCreator, lpTotal * 5000 / 10_000, 2);
+        assertApproxEqAbs(fKernel, lpTotal * 500 / 10_000, 2);
+        assertApproxEqAbs(fCreator, lpTotal * 6500 / 10_000, 2);
         assertApproxEqAbs(fPlatform, lpTotal * 3000 / 10_000, 2);
 
         // Clanker's hook adds a protocol fee equal to 20% of the LP fee (PROTOCOL_FEE_NUMERATOR = 200_000):
@@ -358,8 +365,8 @@ contract BootrForkTest is Test {
 
         // the non-swapped recipients keep the 20/35/30 ratio among themselves
         uint256 distributed = fKernel + fCreator + fPlatform;
-        assertApproxEqAbs(fKernel, distributed * 2000 / 8500, 2);
-        assertApproxEqAbs(fCreator, distributed * 3500 / 8500, 2);
+        assertApproxEqAbs(fKernel, distributed * 500 / 8500, 2);
+        assertApproxEqAbs(fCreator, distributed * 5000 / 8500, 2);
         assertApproxEqAbs(fPlatform, distributed * 3000 / 8500, 2);
 
         // burn it
@@ -380,6 +387,10 @@ contract BootrForkTest is Test {
         vm.deal(address(this), 1 ether);
         IWETH9(WETH).deposit{value: 0.05 ether}();
         IWETH9(WETH).transfer(burner, 0.05 ether);
+        // not the keeper (launcher owner): rejected before anything is claimed or swapped (BOOTR-03)
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(BuybackBurner.NotKeeper.selector, trader));
+        BuybackBurner(burner).swapAndBurn(1);
         vm.expectRevert(); // unrealistic minOut -> the Universal Router reverts with V4TooLittleReceived
         BuybackBurner(burner).swapAndBurn(type(uint128).max);
         uint256 deadBefore = IERC20(token).balanceOf(DEAD);
@@ -499,9 +510,11 @@ contract BootrForkTest is Test {
         });
     }
 
+    /// @dev `[0 ‖ uint64(32) ‖ abi.encode(now)] ‖ 0xff ‖ sig`: the supervisor's regular session signature. The
+    ///      slot addresses policy 0 (BootrCallPolicy's time claim for SUM_PER_WINDOW; ignored by SudoPolicy).
     function _signSession(PackedUserOperation memory op, uint256 pk) internal view returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, entryPoint.getUserOpHash(op));
-        return abi.encodePacked(bytes1(0xff), r, s, v); // 0xff = signer prefix (no policy signatures)
+        return abi.encodePacked(uint8(0), uint64(32), abi.encode(vm.getBlockTimestamp()), bytes1(0xff), r, s, v);
     }
 
     function _handle(PackedUserOperation memory op) internal returns (bool success) {
@@ -629,32 +642,34 @@ contract BootrForkTest is Test {
     bytes2 constant NOT_FOR_VALIDATE_SIG = 0x0002;
     uint256 constant USDC_CAP = 50e6;
 
-    /// @dev The exact four rules `apps/supervisor/src/session-key.ts` installs.
+    /// @dev The exact four rules `apps/supervisor/src/session-key.ts` installs (swap helper, not the router).
     function _callPolicyRules(address kernel) internal view returns (BootrCallPolicy.Rule[] memory rules) {
         rules = new BootrCallPolicy.Rule[](4);
         rules[0].target = FEE_LOCKER;
         rules[0].selector = IClankerFeeLocker.claim.selector;
         rules[0].args = new BootrCallPolicy.ArgRule[](1);
         rules[0].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(kernel))));
-        rules[1].target = UNIVERSAL_ROUTER;
-        rules[1].selector = bytes4(keccak256("execute(bytes,bytes[],uint256)"));
-        rules[1].args = new BootrCallPolicy.ArgRule[](0);
-        rules[2].target = USDC;
-        rules[2].selector = IERC20.transfer.selector;
-        rules[2].args = new BootrCallPolicy.ArgRule[](2);
-        rules[2].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(payTo))));
-        rules[2].args[1] = BootrCallPolicy.ArgRule(1, 2, bytes32(USDC_CAP));
-        rules[3].target = WETH;
+        rules[1].target = WETH;
+        rules[1].selector = IERC20.approve.selector;
+        rules[1].args = new BootrCallPolicy.ArgRule[](1);
+        rules[1].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(address(swapHelper)))));
+        rules[2].target = address(swapHelper);
+        rules[2].selector = BootrSwapHelper.swapWethToUsdc.selector;
+        rules[2].args = new BootrCallPolicy.ArgRule[](0);
+        // USDC.transfer(spender, SUM_PER_WINDOW <= USDC_CAP per day): `payTo` plays the per-agent spender here
+        rules[3].target = USDC;
         rules[3].selector = IERC20.transfer.selector;
-        rules[3].args = new BootrCallPolicy.ArgRule[](1);
-        rules[3].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(UNIVERSAL_ROUTER))));
+        rules[3].windowSeconds = 1 days;
+        rules[3].args = new BootrCallPolicy.ArgRule[](2);
+        rules[3].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(payTo))));
+        rules[3].args[1] = BootrCallPolicy.ArgRule(1, 3, bytes32(USDC_CAP));
     }
 
     function _callPolicyPermissionData(address kernel) internal view returns (bytes memory) {
         bytes[] memory enableData = new bytes[](2);
         enableData[0] =
             abi.encodePacked(NOT_FOR_VALIDATE_SIG, address(callPolicy), abi.encode(_callPolicyRules(kernel)));
-        enableData[1] = abi.encodePacked(bytes2(0), ECDSA_SIGNER, sessionKey);
+        enableData[1] = abi.encodePacked(NOT_FOR_VALIDATE_SIG, ECDSA_SIGNER, sessionKey); // SKIP_SIGNATURE: no ERC-1271
         return abi.encode(enableData);
     }
 
@@ -807,15 +822,19 @@ contract BootrForkTest is Test {
         uint256 claimable = IClankerFeeLocker(FEE_LOCKER).availableFees(kernel, WETH);
         assertGt(claimable, 0);
 
-        // (c) batch: claim fees, pay the router, fund inference
-        Execution[] memory execs = new Execution[](3);
+        // (c) batch: claim fees, approve the swap helper, swap WETH -> USDC into the kernel, fund inference
+        uint256 usdcBefore = IERC20(USDC).balanceOf(kernel);
+        Execution[] memory execs = new Execution[](4);
         execs[0] = Execution(FEE_LOCKER, 0, abi.encodeCall(IClankerFeeLocker.claim, (kernel, WETH)));
-        execs[1] = Execution(WETH, 0, abi.encodeCall(IERC20.transfer, (UNIVERSAL_ROUTER, 0.01 ether)));
-        execs[2] = Execution(USDC, 0, abi.encodeCall(IERC20.transfer, (payTo, 2e6)));
+        // the testnet 0.05% pool holds ~0.05 WETH and drifts ~1% from Chainlink: a tiny swap at 2% stays inside the floor
+        execs[1] = Execution(WETH, 0, abi.encodeCall(IERC20.approve, (address(swapHelper), 0.0005 ether)));
+        execs[2] = Execution(address(swapHelper), 0, abi.encodeCall(BootrSwapHelper.swapWethToUsdc, (0.0005 ether, 200)));
+        execs[3] = Execution(USDC, 0, abi.encodeCall(IERC20.transfer, (payTo, 2e6)));
         PackedUserOperation memory op = _batchUserOp(kernel, _permissionNonce(kernel, 0x00), execs);
         op.signature = _signSession(op, sessionPk);
         assertTrue(_handle(op), "batch executed");
-        assertEq(IERC20(WETH).balanceOf(kernel), 0.1 ether - 0.01 ether + claimable);
+        assertEq(IERC20(WETH).balanceOf(kernel), 0.1 ether - 0.0005 ether + claimable);
+        assertGe(IERC20(USDC).balanceOf(kernel), usdcBefore - 2e6 + swapHelper.minUsdcOut(0.0005 ether, 200), "swap paid the kernel");
         assertEq(IERC20(USDC).balanceOf(payTo), 2e6);
 
         // a batch with one disallowed call is rejected as a whole
@@ -826,6 +845,23 @@ contract BootrForkTest is Test {
         op.signature = _signSession(op, sessionPk);
         _sendExpectingPolicyFailed(op);
         assertEq(IERC20(USDC).balanceOf(payTo), 2e6);
+
+        // M-02: k allowed transfers whose SUM exceeds the cap are rejected as a whole
+        execs = new Execution[](2);
+        execs[0] = Execution(USDC, 0, abi.encodeCall(IERC20.transfer, (payTo, USDC_CAP)));
+        execs[1] = Execution(USDC, 0, abi.encodeCall(IERC20.transfer, (payTo, 1)));
+        op = _batchUserOp(kernel, _permissionNonce(kernel, 0x00), execs);
+        op.signature = _signSession(op, sessionPk);
+        _sendExpectingPolicyFailed(op);
+        assertEq(IERC20(USDC).balanceOf(payTo), 2e6);
+
+        // the old router rules are gone: paying WETH to the router is not allow-listed any more (C-02)
+        op = _userOp(kernel, _permissionNonce(kernel, 0x00), WETH, abi.encodeCall(IERC20.transfer, (UNIVERSAL_ROUTER, 1)));
+        op.signature = _signSession(op, sessionPk);
+        _sendExpectingPolicyFailed(op);
+        op = _userOp(kernel, _permissionNonce(kernel, 0x00), WETH, abi.encodeCall(IERC20.approve, (creator, 1)));
+        op.signature = _signSession(op, sessionPk);
+        _sendExpectingPolicyFailed(op);
     }
 
     /// @dev Base Builder Codes attribution: `Attribution.toDataSuffix({ codes: ['bc_a1b2c3d4'] })` from ox 0.14.57
@@ -915,11 +951,11 @@ contract BootrForkTest is Test {
         assertEq(dormantAfter, vm.getBlockTimestamp() + DORMANCY);
         vm.warp(dormantAfter - 1);
         vm.expectRevert(abi.encodeWithSelector(AgentGuardian.NotDormant.selector, dormantAfter));
-        guardian.claimDormant(kernel);
+        guardian.claimDormant(kernel, new address[](0));
 
         vm.warp(dormantAfter);
         uint256 deadBefore = IERC20(token).balanceOf(DEAD);
-        (uint256 u, uint256 w, uint256 e, uint256 b) = guardian.claimDormant(kernel);
+        (uint256 u, uint256 w, uint256 e, uint256 b) = guardian.claimDormant(kernel, new address[](0));
         assertEq(u, FUEL);
         assertEq(w, 0.3 ether);
         assertEq(e, 0.7 ether);
@@ -934,7 +970,7 @@ contract BootrForkTest is Test {
         // non-owner cannot sweep
         vm.prank(creator);
         vm.expectRevert();
-        guardian.claimDormant(kernel);
+        guardian.claimDormant(kernel, new address[](0));
     }
 
     function test_activityResetsDormancyClock() public {
@@ -945,9 +981,9 @@ contract BootrForkTest is Test {
         assertEq(guardian.dormantAt(kernel), t0 + 60 days + DORMANCY);
         vm.warp(t0 + DORMANCY + 1 days); // would have been dormant without the activity
         vm.expectRevert(abi.encodeWithSelector(AgentGuardian.NotDormant.selector, t0 + 60 days + DORMANCY));
-        guardian.claimDormant(kernel);
+        guardian.claimDormant(kernel, new address[](0));
         vm.warp(t0 + 60 days + DORMANCY);
-        (uint256 u,,,) = guardian.claimDormant(kernel);
+        (uint256 u,,,) = guardian.claimDormant(kernel, new address[](0));
         assertEq(u, FUEL);
         assertEq(IERC20(USDC).balanceOf(treasury), FUEL);
     }

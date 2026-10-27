@@ -24,6 +24,8 @@ export interface SupervisorContext {
   memories: MemoryStore;
   sessionSigner: LocalAccount;
   adminSigner: AdminSigner | null;
+  /** The agent's x402 spender EOA (derived from SPENDER_MASTER_KEY; spender.ts). */
+  spenderFor(agent: Pick<AgentRow, 'agentId'>): LocalAccount;
   /** Kernel client for an agent (cached per permissionId). */
   kernelFor(agent: AgentRow): Promise<KernelClient>;
   fetch: typeof fetch;

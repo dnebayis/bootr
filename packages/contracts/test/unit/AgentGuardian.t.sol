@@ -167,19 +167,19 @@ contract AgentGuardianTest is Test {
 
         vm.prank(attacker);
         vm.expectRevert();
-        guardian.claimDormant(address(kernel));
+        guardian.claimDormant(address(kernel), new address[](0));
 
         uint256 dormantAfter = guardian.dormantAt(address(kernel));
         assertEq(dormantAfter, uint256(guardian.agentInfo(address(kernel)).lastActivity) + DORMANCY);
         vm.warp(dormantAfter - 1);
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(AgentGuardian.NotDormant.selector, dormantAfter));
-        guardian.claimDormant(address(kernel));
+        guardian.claimDormant(address(kernel), new address[](0));
 
         vm.warp(dormantAfter);
         assertTrue(guardian.isDormant(address(kernel)));
         vm.prank(owner);
-        (uint256 u, uint256 w, uint256 e, uint256 b) = guardian.claimDormant(address(kernel));
+        (uint256 u, uint256 w, uint256 e, uint256 b) = guardian.claimDormant(address(kernel), new address[](0));
         assertEq(u, 500e6);
         assertEq(w, 2 ether);
         assertEq(e, 1 ether);
@@ -196,8 +196,47 @@ contract AgentGuardianTest is Test {
         guardian.pauseAgent(address(kernel));
         usdc.mint(address(kernel), 1e6);
         vm.prank(owner);
-        guardian.claimDormant(address(kernel));
+        guardian.claimDormant(address(kernel), new address[](0));
         assertEq(usdc.balanceOf(treasury), 501e6);
+    }
+
+    function test_claimDormantSweepsExtraTokensAndToleratesFailures() public {
+        _register();
+        MockERC20 airdrop = new MockERC20("AIR", "AIR", 18);
+        MockERC20 other = new MockERC20("OTH", "OTH", 6);
+        airdrop.mint(address(kernel), 123e18);
+        other.mint(address(kernel), 7e6);
+        usdc.mint(address(kernel), 5e6);
+        vm.deal(address(kernel), 0.5 ether);
+        RevertingReceiver badTreasury = new RevertingReceiver();
+        vm.prank(owner);
+        guardian.setPlatformTreasury(address(badTreasury));
+        vm.warp(guardian.dormantAt(address(kernel)));
+
+        address[] memory extras = new address[](4);
+        extras[0] = address(airdrop);
+        extras[1] = address(other);
+        extras[2] = address(usdc); // duplicate of a core asset: balance already 0 -> skipped
+        extras[3] = address(new RevertingToken()); // a token that reverts: try-mode, must not block
+        vm.prank(owner);
+        vm.expectEmit(true, true, false, true, address(guardian));
+        emit AgentGuardian.DormantExtraTokenSwept(address(kernel), address(airdrop), 123e18);
+        (uint256 u,, uint256 e,) = guardian.claimDormant(address(kernel), extras);
+        assertEq(u, 5e6);
+        assertEq(e, 0.5 ether);
+        assertEq(usdc.balanceOf(address(badTreasury)), 5e6, "core assets moved");
+        assertEq(airdrop.balanceOf(address(badTreasury)), 123e18, "extra token swept");
+        assertEq(other.balanceOf(address(badTreasury)), 7e6);
+        assertEq(airdrop.balanceOf(address(kernel)), 0);
+        // the ETH leg failed (treasury rejects ETH) without reverting the sweep; ETH stays on the kernel
+        assertEq(address(kernel).balance, 0.5 ether, "ETH left behind, sweep not blocked");
+        // once the treasury accepts ETH, a second call moves it
+        vm.prank(owner);
+        guardian.setPlatformTreasury(treasury);
+        vm.prank(owner);
+        guardian.claimDormant(address(kernel), new address[](0));
+        assertEq(treasury.balance, 0.5 ether);
+        assertEq(address(kernel).balance, 0);
     }
 
     function test_claimDormantRequiresTreasury() public {
@@ -212,7 +251,7 @@ contract AgentGuardianTest is Test {
         vm.warp(vm.getBlockTimestamp() + DORMANCY);
         vm.prank(owner);
         vm.expectRevert(AgentGuardian.TreasuryNotSet.selector);
-        g2.claimDormant(address(k2));
+        g2.claimDormant(address(k2), new address[](0));
     }
 
     // ---------------- session keys ----------------
@@ -280,9 +319,23 @@ contract AgentGuardianTest is Test {
     function test_revokeSessionKeysViaRoot() public {
         _register();
         bytes4 pid = bytes4(keccak256("perm"));
+        bytes21 vId = bytes21(abi.encodePacked(bytes1(0x02), pid, bytes16(0)));
+        // approve, then revoke: the approval is withdrawn together with the uninstall (H-01 / BOOTR-07)
         vm.prank(owner);
+        (bytes32 digest,) = guardian.approveSessionKey(address(kernel), pid, abi.encode(new bytes[](0)));
+        assertEq(guardian.approvedDigestOf(address(kernel), vId), digest);
+        assertTrue(guardian.approvedEnableDigests(address(kernel), digest));
+        vm.prank(owner);
+        vm.expectEmit(true, false, false, true, address(guardian));
+        emit AgentGuardian.SessionKeyApprovalRevoked(address(kernel), digest);
         guardian.revokeSessionKey(address(kernel), pid, abi.encode(new bytes[](1)));
-        assertEq(kernel.lastUninstalled(), bytes21(abi.encodePacked(bytes1(0x02), pid, bytes16(0))));
+        assertEq(kernel.lastUninstalled(), vId);
+        assertFalse(guardian.approvedEnableDigests(address(kernel), digest), "approval consumed on uninstall");
+        assertEq(guardian.approvedDigestOf(address(kernel), vId), bytes32(0));
+        assertEq(kernel.simulateEnableCheck(digest), bytes4(0xffffffff), "cannot re-enable with the old digest");
+        // revoking a never-approved permission is fine (no approval to withdraw)
+        vm.prank(owner);
+        guardian.revokeSessionKey(address(kernel), bytes4(keccak256("other")), abi.encode(new bytes[](1)));
         vm.prank(owner);
         uint32 n = guardian.revokeAllSessionKeys(address(kernel));
         assertEq(n, 2);
@@ -296,6 +349,36 @@ contract AgentGuardianTest is Test {
         assertEq(guardian.agentInfo(address(kernel)).lastActivity, before);
     }
 
+    function test_revokeAllSessionKeysBatch() public {
+        _register();
+        MockKernel k2 = new MockKernel(address(guardian));
+        vm.prank(address(k2));
+        guardian.onInstall("");
+        vm.prank(launcher);
+        guardian.registerAgent(address(k2), address(token), creator, DORMANCY);
+        address[] memory kernels = new address[](2);
+        kernels[0] = address(kernel);
+        kernels[1] = address(k2);
+        vm.prank(attacker);
+        vm.expectRevert();
+        guardian.revokeAllSessionKeysBatch(kernels);
+        vm.prank(owner);
+        vm.expectRevert(AgentGuardian.EmptyBatch.selector);
+        guardian.revokeAllSessionKeysBatch(new address[](0));
+        vm.prank(owner);
+        uint32[] memory nonces = guardian.revokeAllSessionKeysBatch(kernels);
+        assertEq(nonces.length, 2);
+        assertEq(nonces[0], 2);
+        assertEq(nonces[1], 2);
+        assertEq(kernel.validNonceFrom(), 2);
+        assertEq(k2.validNonceFrom(), 2);
+        // an unregistered kernel in the batch reverts the whole batch
+        kernels[1] = address(new MockKernel(address(guardian)));
+        vm.prank(owner);
+        vm.expectRevert(AgentGuardian.NotRegistered.selector);
+        guardian.revokeAllSessionKeysBatch(kernels);
+    }
+
     function test_adminSetters() public {
         vm.prank(attacker);
         vm.expectRevert();
@@ -306,5 +389,23 @@ contract AgentGuardianTest is Test {
         vm.expectRevert(AgentGuardian.ZeroAddress.selector);
         guardian.setPlatformTreasury(address(0));
         vm.stopPrank();
+    }
+}
+
+/// @dev A treasury that rejects ETH (BOOTR-04: must not brick the sweep).
+contract RevertingReceiver {
+    receive() external payable {
+        revert("no eth");
+    }
+}
+
+/// @dev An ERC-20 whose every call reverts (a broken airdrop token in `extraTokens`).
+contract RevertingToken {
+    function balanceOf(address) external pure returns (uint256) {
+        return 1;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        revert("broken token");
     }
 }

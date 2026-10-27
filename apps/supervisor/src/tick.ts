@@ -114,11 +114,13 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     });
     if (treasury) {
       await runFeePolicy(ctx, agent, treasury).catch((err) => log.warn({ err }, 'fee policy failed'));
-      const after = treasury.usd.usdc < SLEEP_USDC ? await readTreasuryOnChain(ctx, agent).catch(() => treasury) : treasury;
-      const sleeping = after.usd.usdc < SLEEP_USDC;
+      // fuel = kernel USDC (the reservoir) + spender USDC (what actually pays the relay)
+      const fuel = (t: typeof treasury) => t.usd.usdc + t.usd.spenderUsdc;
+      const after = fuel(treasury) < SLEEP_USDC ? await readTreasuryOnChain(ctx, agent).catch(() => treasury) : treasury;
+      const sleeping = fuel(after) < SLEEP_USDC;
       if (sleeping && runtime.status !== 'held') {
         if (runtime.status !== 'sleeping') {
-          log.info({ usdc: after.balances.usdc }, 'treasury below 1 USDC; sleeping');
+          log.info({ usdc: after.balances.usdc, spenderUsdc: after.balances.spenderUsdc }, 'kernel + spender below 1 USDC; sleeping');
           await saveRuntime(ctx, agent.agentId, { status: 'sleeping' });
         }
         await postSocial(ctx, agent, config, runtime, 'sleeping');

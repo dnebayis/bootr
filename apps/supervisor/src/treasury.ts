@@ -9,8 +9,9 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { concatHex, encodeAbiParameters, encodeFunctionData, erc20Abi, formatUnits, getAddress, pad, parseAbiParameters, parseUnits, toHex, type Address, type Hex } from 'viem';
-import { chainlinkAggregatorAbi, feeLockerAbi, universalRouterAbi } from './abi.js';
+import { encodeFunctionData, erc20Abi, formatUnits, getAddress, pad, parseUnits, type Address, type Hex } from 'viem';
+import { callPolicyAbi, chainlinkAggregatorAbi, feeLockerAbi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
+import { FUNDING_AMOUNT_ARG_INDEX, FUNDING_RULE_INDEX } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import type { KernelCall } from './kernel.js';
@@ -40,17 +41,31 @@ export function callsHash(calls: readonly SerializedCall[]): Hex {
 
 export interface TreasurySnapshot {
   kernel: Address;
+  /** The agent's x402 spender EOA (pays the relay; funded from the kernel under the windowed cap). */
+  spender: Address;
   observedAt: string;
-  balances: { eth: string; weth: string; usdc: string; token: string };
+  balances: { eth: string; weth: string; usdc: string; token: string; spenderUsdc: string };
   claimable: { weth: string; token: string };
   ethUsd: number | null;
-  usd: { usdc: number; weth: number; claimableWeth: number };
+  usd: { usdc: number; spenderUsdc: number; weth: number; claimableWeth: number };
 }
 
+/**
+ * Chainlink ETH/USD, or `null` when the feed is unavailable, non-positive, stale (`updatedAt` older than
+ * `CHAINLINK_MAX_AGE_SECONDS`) or answered in an older round (L-01). A `null` price disables swaps and the
+ * USD figures shown to the model; BootrSwapHelper applies the same staleness rule on-chain.
+ */
 export async function ethUsdPrice(ctx: SupervisorContext): Promise<number | null> {
   try {
-    const [, answer] = await ctx.chain.publicClient.readContract({ address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' });
-    return answer > 0n ? Number(answer) / 1e8 : null;
+    const [roundId, answer, , updatedAt, answeredInRound] = await ctx.chain.publicClient.readContract({ address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' });
+    if (answer <= 0n) return null;
+    const nowSec = BigInt(Math.floor(ctx.now() / 1000));
+    const maxAge = BigInt(ctx.config.CHAINLINK_MAX_AGE_SECONDS);
+    if (updatedAt === 0n || updatedAt + maxAge < nowSec || answeredInRound < roundId) {
+      ctx.log.warn({ roundId: roundId.toString(), updatedAt: updatedAt.toString(), answeredInRound: answeredInRound.toString() }, 'chainlink ETH/USD stale; price unavailable');
+      return null;
+    }
+    return Number(answer) / 1e8;
   } catch {
     return null;
   }
@@ -60,12 +75,14 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
   const { publicClient, addresses } = ctx.chain;
   const kernel = agent.kernel as Address;
   const token = agent.token as Address;
-  const bal = (asset: Address) => publicClient.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [kernel] });
+  const spender = ctx.spenderFor(agent).address;
+  const bal = (asset: Address, holder: Address = kernel) => publicClient.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
   const fees = (asset: Address) => publicClient.readContract({ address: addresses.clankerFeeLocker, abi: feeLockerAbi, functionName: 'availableFees', args: [kernel, asset] }).catch(() => 0n);
-  const [eth, weth, usdc, own, claimWeth, claimToken, price] = await Promise.all([
+  const [eth, weth, usdc, spenderUsdc, own, claimWeth, claimToken, price] = await Promise.all([
     publicClient.getBalance({ address: kernel }),
     bal(addresses.weth),
     bal(addresses.usdc),
+    bal(addresses.usdc, spender),
     bal(token).catch(() => 0n),
     fees(addresses.weth),
     fees(token),
@@ -74,16 +91,69 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
   const wethHuman = Number(formatUnits(weth, 18));
   return {
     kernel,
+    spender,
     observedAt: new Date(ctx.now()).toISOString(),
-    balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18) },
+    balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
     claimable: { weth: formatUnits(claimWeth, 18), token: formatUnits(claimToken, 18) },
     ethUsd: price,
     usd: {
       usdc: Number(formatUnits(usdc, 6)),
+      spenderUsdc: Number(formatUnits(spenderUsdc, 6)),
       weth: price ? wethHuman * price : 0,
       claimableWeth: price ? Number(formatUnits(claimWeth, 18)) * price : 0,
     },
   };
+}
+
+export interface FundingBudget {
+  /** `SESSION_USDC_TRANSFER_CAP` as installed (6 dp units). */
+  cap: bigint;
+  /** What the current window still allows (6 dp units). */
+  remaining: bigint;
+  /** End of the window the on-chain state refers to (unix seconds). */
+  windowEnd: number;
+  windowSeconds: number;
+}
+
+/**
+ * Remaining USDC the session key may still move to the spender in the current window, from
+ * `BootrCallPolicy.windowOf` (a window that already ended counts as fresh). Null when no session is installed.
+ */
+export async function fundingBudget(ctx: SupervisorContext, agent: AgentRow): Promise<FundingBudget | null> {
+  if (!agent.permissionId || !ctx.chain.addresses.bootr.callPolicy) return null;
+  const id = pad(agent.permissionId as Hex, { size: 32, dir: 'right' });
+  try {
+    const [windowEnd, spent, windowSeconds, cap] = await ctx.chain.publicClient.readContract({
+      address: ctx.chain.addresses.bootr.callPolicy,
+      abi: callPolicyAbi,
+      functionName: 'windowOf',
+      args: [id, agent.kernel as Address, BigInt(FUNDING_RULE_INDEX), BigInt(FUNDING_AMOUNT_ARG_INDEX)],
+    });
+    if (cap === 0n) return null; // legacy rule set without a windowed argument
+    const nowSec = BigInt(Math.floor(ctx.now() / 1000));
+    const remaining = nowSec >= windowEnd ? cap : cap > spent ? cap - spent : 0n;
+    return { cap, remaining, windowEnd: Number(windowEnd), windowSeconds };
+  } catch {
+    return null;
+  }
+}
+
+/** `USDC.transfer(spender, amount)`: the only USDC outflow the session key may make. */
+export function encodeFundSpenderCall(usdc: Address, spender: Address, amount: bigint): KernelCall {
+  return { to: usdc, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [spender, amount] }) };
+}
+
+/**
+ * How much to move to the spender now: nothing while its balance is at or above `SPENDER_MIN_USDC`; otherwise
+ * up to `SPENDER_TARGET_USDC`, bounded by the kernel's USDC and the remaining window budget.
+ */
+export function spenderTopUp(args: { spenderUsdc: bigint; kernelUsdc: bigint; minUsdc: number; targetUsdc: number; remaining: bigint }): bigint {
+  const min = parseUnits(args.minUsdc.toFixed(6), 6);
+  const target = parseUnits(args.targetUsdc.toFixed(6), 6);
+  if (args.spenderUsdc >= min) return 0n;
+  const want = target > args.spenderUsdc ? target - args.spenderUsdc : 0n;
+  const amount = [want, args.kernelUsdc, args.remaining].reduce((a, b) => (a < b ? a : b));
+  return amount > 0n ? amount : 0n;
 }
 
 export async function openOps(ctx: SupervisorContext, agentId: string): Promise<TreasuryOpRow[]> {
@@ -116,51 +186,34 @@ export function encodeClaimCalls(feeLocker: Address, kernel: Address, assets: re
   return assets.map((asset) => ({ to: feeLocker, value: 0n, data: encodeFunctionData({ abi: feeLockerAbi, functionName: 'claim', args: [kernel, asset] }) }));
 }
 
-export type SwapRoute = { kind: 'v3'; fee: number } | { kind: 'v4'; fee: number; tickSpacing: number; hooks: Address };
-
-export function parseSwapRoute(value: string): SwapRoute {
-  const parts = value.split(':');
-  if (parts[0] === 'v3' && parts.length === 2) return { kind: 'v3', fee: Number(parts[1]) };
-  if (parts[0] === 'v4' && parts.length === 4) return { kind: 'v4', fee: Number(parts[1]), tickSpacing: Number(parts[2]), hooks: getAddress(parts[3] as string) };
-  throw new Error(`invalid SWAP_ROUTE: ${value}`);
+/** Clamps a requested slippage to what BootrSwapHelper accepts (`MAX_SLIPPAGE_BPS`). */
+export function clampSlippageBps(bps: number): number {
+  if (!Number.isFinite(bps) || bps < 0) return 0;
+  return Math.min(Math.floor(bps), SWAP_MAX_SLIPPAGE_BPS);
 }
 
-const CMD_V3_SWAP_EXACT_IN = '0x00';
-const CMD_V4_SWAP = '0x10';
-const V4_SWAP_EXACT_IN_SINGLE = '0x06';
-const V4_SETTLE = '0x0b';
-const V4_TAKE_ALL = '0x0f';
-
 /**
- * WETH -> USDC through the Universal Router. The kernel first transfers WETH to the router
- * (allow-listed `WETH.transfer(router, *)`), then the router swaps with `payerIsUser = false`
- * and pays USDC out to the kernel. Both calls are in one batched userOp.
+ * WETH -> USDC through BootrSwapHelper: `WETH.approve(helper, amountIn)` then
+ * `helper.swapWethToUsdc(amountIn, maxSlippageBps)` in one batched userOp. The helper pulls the WETH from the
+ * kernel, swaps through SwapRouter02 with a floor derived on-chain from Chainlink (`price * (1 - bps)`, bps
+ * capped at 300) and pays all output USDC to the kernel. These are the only two swap-related calls the
+ * session key's BootrCallPolicy allow-lists (C-02).
  */
-export function encodeSwapCalls(args: { route: SwapRoute; weth: Address; usdc: Address; universalRouter: Address; kernel: Address; amountIn: bigint; minOut: bigint; deadline: bigint }): KernelCall[] {
-  const { route, weth, usdc, universalRouter, kernel, amountIn, minOut, deadline } = args;
-  let commands: Hex;
-  let input: Hex;
-  if (route.kind === 'v3') {
-    commands = CMD_V3_SWAP_EXACT_IN;
-    const path = concatHex([weth, pad(toHex(route.fee), { size: 3 }), usdc]);
-    input = encodeAbiParameters(parseAbiParameters('address, uint256, uint256, bytes, bool'), [kernel, amountIn, minOut, path, false]);
-  } else {
-    commands = CMD_V4_SWAP;
-    const zeroForOne = BigInt(weth) < BigInt(usdc);
-    const [currency0, currency1] = zeroForOne ? [weth, usdc] : [usdc, weth];
-    const actions = concatHex([V4_SWAP_EXACT_IN_SINGLE, V4_SETTLE, V4_TAKE_ALL]);
-    const swapParams = encodeAbiParameters(
-      parseAbiParameters('((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, bool zeroForOne, uint128 amountIn, uint128 amountOutMinimum, bytes hookData)'),
-      [{ poolKey: { currency0, currency1, fee: route.fee, tickSpacing: route.tickSpacing, hooks: route.hooks }, zeroForOne, amountIn, amountOutMinimum: minOut, hookData: '0x' }],
-    );
-    const settle = encodeAbiParameters(parseAbiParameters('address, uint256, bool'), [weth, amountIn, false]);
-    const take = encodeAbiParameters(parseAbiParameters('address, uint256'), [usdc, minOut]);
-    input = encodeAbiParameters(parseAbiParameters('bytes, bytes[]'), [actions, [swapParams, settle, take]]);
-  }
+export function encodeSwapCalls(args: { weth: Address; swapHelper: Address; amountIn: bigint; maxSlippageBps: number }): KernelCall[] {
+  const { weth, swapHelper, amountIn } = args;
+  const maxSlippageBps = clampSlippageBps(args.maxSlippageBps);
+  if (amountIn <= 0n) throw new Error('swap amount must be positive');
   return [
-    { to: weth, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [universalRouter, amountIn] }) },
-    { to: universalRouter, value: 0n, data: encodeFunctionData({ abi: universalRouterAbi, functionName: 'execute', args: [commands, [input], deadline] }) },
+    { to: weth, value: 0n, data: encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [swapHelper, amountIn] }) },
+    { to: swapHelper, value: 0n, data: encodeFunctionData({ abi: swapHelperAbi, functionName: 'swapWethToUsdc', args: [amountIn, BigInt(maxSlippageBps)] }) },
   ];
+}
+
+/** `addresses.bootr.swapHelper` or an error naming the missing deployment. */
+export function swapHelperAddress(ctx: SupervisorContext): Address {
+  const helper = ctx.chain.addresses.bootr.swapHelper;
+  if (!helper) throw new Error(`bootr.swapHelper address is not configured for chain ${ctx.chain.chainId}`);
+  return helper;
 }
 
 /** Human WETH amount needed to reach `targetUsdc` from `haveUsdc` at `ethUsd`, with a 2% buffer; capped at the balance. */
@@ -171,8 +224,9 @@ export function wethNeededFor(targetUsdc: number, haveUsdc: number, ethUsd: numb
   return wei < wethBalance ? wei : wethBalance;
 }
 
+/** Off-chain estimate of the helper's floor (for descriptions); the binding floor is computed on-chain. */
 export function minUsdcOut(amountInWei: bigint, ethUsd: number, slippageBps: number): bigint {
-  const usd = (Number(formatUnits(amountInWei, 18)) * ethUsd * (10_000 - slippageBps)) / 10_000;
+  const usd = (Number(formatUnits(amountInWei, 18)) * ethUsd * (10_000 - clampSlippageBps(slippageBps))) / 10_000;
   return parseUnits(usd.toFixed(6), 6);
 }
 
@@ -311,6 +365,8 @@ export interface FeePolicyOutcome {
   skipped?: string;
   claim?: ExecuteResult;
   swap?: ExecuteResult;
+  /** Top-up of the spender from the kernel's USDC (`fund_model`). */
+  fund?: ExecuteResult;
 }
 
 /** Price of the agent's own token in USD from the indexer, 0 when unknown. */
@@ -351,25 +407,39 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
   if (after.usd.usdc < config.FUEL_TARGET_USDC && wethBalance > 0n && after.ethUsd) {
     const amountIn = wethNeededFor(config.FUEL_TARGET_USDC, after.usd.usdc, after.ethUsd, wethBalance);
     if (amountIn > 0n) {
-      const minOut = minUsdcOut(amountIn, after.ethUsd, config.SWAP_SLIPPAGE_BPS);
+      const slippage = clampSlippageBps(config.SWAP_SLIPPAGE_BPS);
+      const minOut = minUsdcOut(amountIn, after.ethUsd, slippage);
       if (minOut >= 10_000n) {
         const op = await prepareOp(ctx, agent, {
           kind: 'swap',
-          calls: encodeSwapCalls({
-            route: parseSwapRoute(config.SWAP_ROUTE),
-            weth: chain.addresses.weth,
-            usdc: chain.addresses.usdc,
-            universalRouter: chain.addresses.uniswap.universalRouter,
-            kernel: agent.kernel as Address,
-            amountIn,
-            minOut,
-            deadline: BigInt(Math.floor(ctx.now() / 1000) + 20 * 60),
-          }),
-          description: `swap ${formatUnits(amountIn, 18)} WETH -> >= ${formatUnits(minOut, 6)} USDC (refuel to ${config.FUEL_TARGET_USDC})`,
+          calls: encodeSwapCalls({ weth: chain.addresses.weth, swapHelper: swapHelperAddress(ctx), amountIn, maxSlippageBps: slippage }),
+          description: `swap ${formatUnits(amountIn, 18)} WETH -> ~>= ${formatUnits(minOut, 6)} USDC via the swap helper (refuel to ${config.FUEL_TARGET_USDC})`,
           origin: 'policy',
         });
         out.swap = await executeOp(ctx, agent, op.opId);
+        if (out.swap.status !== 'confirmed') return out;
       }
+    }
+  }
+
+  // 3. Spender float: keep the x402 spender between SPENDER_MIN_USDC and SPENDER_TARGET_USDC, within the window cap.
+  const latest = out.swap ? await readTreasuryOnChain(ctx, agent) : after;
+  const spenderUsdc = parseUnits(latest.balances.spenderUsdc, 6);
+  const kernelUsdc = parseUnits(latest.balances.usdc, 6);
+  if (spenderUsdc < parseUnits(config.SPENDER_MIN_USDC.toFixed(6), 6) && kernelUsdc > 0n) {
+    const budget = await fundingBudget(ctx, agent);
+    if (!budget) return { ...out, skipped: out.skipped ?? 'no_funding_budget' };
+    const amount = spenderTopUp({ spenderUsdc, kernelUsdc, minUsdc: config.SPENDER_MIN_USDC, targetUsdc: config.SPENDER_TARGET_USDC, remaining: budget.remaining });
+    if (amount >= 10_000n) {
+      const op = await prepareOp(ctx, agent, {
+        kind: 'fund_model',
+        calls: [encodeFundSpenderCall(chain.addresses.usdc, latest.spender, amount)],
+        description: `fund the spender ${latest.spender} with ${formatUnits(amount, 6)} USDC (float ${latest.balances.spenderUsdc} -> target ${config.SPENDER_TARGET_USDC}; ${formatUnits(budget.remaining - amount, 6)} USDC left in this window)`,
+        origin: 'policy',
+      });
+      out.fund = await executeOp(ctx, agent, op.opId);
+    } else if (budget.remaining < 10_000n) {
+      out.skipped = 'funding_window_exhausted';
     }
   }
   return out;
