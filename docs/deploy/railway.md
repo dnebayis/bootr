@@ -136,7 +136,7 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 | --- | --- |
 | platform | `PORT=3000`; image defaults `HOSTNAME=::`, `ADMIN_CONFIG_PATH=/data/admin-config.json`, `NODE_ENV=production` |
 | secrets | `SESSION_SECRET`, `SENDER_SERVICE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` |
-| config | `ADMIN_CONSOLE_SLUG` (treat as secret: it hides the console), `ADMIN_ADDRESSES`, `SENDER_URL=http://sender.railway.internal:3002` |
+| config | `ADMIN_CONSOLE_SLUG` (treat as secret: it hides the console; a bare random slug, the URL is `/console-<slug>/signin`), `ADMIN_ADDRESSES`, `SENDER_URL=http://sender.railway.internal:3002` |
 | volume | `RAILWAY_RUN_UID=0` (see section 7) |
 
 **web** (build time, public, inlined into the browser bundle)
