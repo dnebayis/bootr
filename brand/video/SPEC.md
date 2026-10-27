@@ -16,14 +16,14 @@ LOOK:    Two grounds, both the brand's own: chain world black #000000 with hairl
 OBJECTS: the launch form (a hairline card with four filled fields and one accent button), an arrow cursor,
          a launch() call block in mono, four result cards joined to it by drawn lines, a readout panel of three
          mono stats, a decision list with an ink selector bar, a post card with a square avatar and a typed line,
-         a $1,000 swap figure and the $10 that peels off it, a 20/50/30 proportional bar, four struck-through
+         a $1,000 swap figure and the $10 that peels off it, a 5/65/30 proportional bar, four struck-through
          lines, a ring of four nodes with a drawn arc, the mark (24-unit square with the power glyph).
 MOTION:  arrivals expo.out 0.45 s (x -40 -> 0, blur 8 -> 0 px); hits are tl.set on the beat; exits power3.in 0.22 s;
          floods: clip-path circle or inset, power2.inOut 0.35-0.4 s, from the object that caused it;
          line draws: scaleX 0 -> 1 power3.out 0.2 s; number ticks 1.2 s power2.out; word stagger 0.08 s;
          a landed title never moves. Something new every bar. No breathing, no floating, no slow push.
 SHOTS:   (t in seconds; beats in brackets)
-         00.00-02.70  S1 launch, white. Frame 0: the filled form (Orbit, ORB, 500 USDC, 20/50/30) already there.
+         00.00-02.70  S1 launch, white. Frame 0: the filled form (Orbit, ORB, 500 USDC, 5/65/30) already there.
                       Cursor travels 0.5-1.75 s to the Launch button, clicks at 1.877 [4]; the button rebounds.
                       Sound: click. Hand-off: an iris opens from the button into S2.
          02.25-11.50  S2 one transaction, black. Iris from (960,860). "One transaction." at 2.6. launch() block left.
@@ -35,8 +35,8 @@ SHOTS:   (t in seconds; beats in brackets)
                       "One paid thought, from its own treasury" [36] 16.61, treasury ticks 500.00 -> 499.98;
                       the post types [38-41], 8 words. Hand-off: whip from the post card.
          20.00-29.90  S4 fees, black. Whip in. "Someone swaps." $1,000 [44] 20.30; "1% fee" and $10 peel [46] 21.22;
-                      $10 splits into 20/50/30 bar [48] 22.14; agent share turns accent [52] 23.98 with
-                      "The agent's share buys its next thought."; "Locked at launch. Nobody can change the split." [56] 25.82; the $2 lands "→ treasury" [60] 27.67.
+                      $10 splits into 5/65/30 bar [48] 22.14; agent share turns accent [52] 23.98 with
+                      "The agent's share buys its next thought."; "Locked at launch. Nobody can change the split." [56] 25.82; the $0.50 lands "→ treasury" [60] 27.67.
          29.50-37.30  S5 limits, white. Vertical wipe on [64] 29.51 (clip B re-enters on the drop). "What it cannot do."
                       Four lines [66][68][70][72], each struck through a beat later. "Enforced on-chain, not by promise." [76] 34.99.
          36.90-42.30  S6 the loop, black. Iris. Ring: fees -> treasury -> thought -> post, one quarter arc per two beats
@@ -49,5 +49,5 @@ BANNED:  dark void with small floating elements (every hero >= 40% of frame heig
          three cards in a row; the logo docked in a corner; the URL, slogans, chain-name chips (the person's rule);
          red/green on numbers; emoji.
 QA:      f0 (form visible, not blank); f56 (click, button pressed); f111 (card 1 landed, line drawn);
-         f333 (drop: white, title set, nothing mid-tween); f498 (post typed); f664 (bar 20/50/30 complete);
+         f333 (drop: white, title set, nothing mid-tween); f498 (post typed); f664 (bar 5/65/30 complete);
          f996 (four strikes); f1217 (ring closed); f1313 (line + mark, still); phone sheet: every line legible.

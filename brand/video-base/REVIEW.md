@@ -4,7 +4,7 @@ Delivered: `renders/built-on-base.mp4`. Spec: `SPEC.md`. Storylines: `STORYLINES
 
 ## Creative calls
 
-- Built storyline A: Base's own messaging frame "Base is for [ ]." opens the film and the bracket types "agents"; from there every object is a Base square (coin, agent, treasury, x account; the 20/50/30 split as three squares sized by share), dropping into rows the way Base's motion identifier stacks. The end lockup is Base's partnership form: Base square + Bootr mark, "bootr · built on base".
+- Built storyline A: Base's own messaging frame "Base is for [ ]." opens the film and the bracket types "agents"; from there every object is a Base square (coin, agent, treasury, x account; the 5/65/30 split as three squares sized by share), dropping into rows the way Base's motion identifier stacks. The end lockup is Base's partnership form: Base square + Bootr mark, "bootr · built on base".
 - Not built: B (one row of squares the camera travels along) and C (before/after split screen, silent coin vs. agent-run coin).
 - Base brand taken from the capture: Base Blue `#0000FF`, the rounded square, Base Sans (Black for display, Regular for lines, Mono for numbers), light grey `#F2F2F2` for the messaging frame, `#717886` for secondary text. Bootr's own accent is not used; blue belongs to Base in this film. Geist appears only in the Bootr wordmark.
 - Base's fonts are used as served by brand.base.org; the Base square is Base's trademark, used here in a "built on Base" partnership lockup as their brand page shows partnerships.

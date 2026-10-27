@@ -7,7 +7,7 @@ Brief: a second film "kneaded with the Base brand", Base logos allowed. Source f
 - **Device**: a question with the input. Base's messaging frame "Base is for [ ]." opens the film; the bracket fills with what Bootr puts on Base: "agents that run coins". Then the film shows what that means in four Base squares.
 - **Form**: one frame that rebuilds on Base Blue. Every object is a Base square: the coin, the agent, the treasury, the post. Squares drop in rows the way Base's motion identifier does; the last row becomes the Bootr mark next to the Base square.
 - **First two seconds**: light grey ground, "Base is for [" in Base Sans at 160 px, a blinking cursor inside the bracket; on beat 4 the ground floods Base Blue and the bracket fills.
-- **Beats**: Base is for [agents] → one transaction: four squares drop (coin · agent · treasury · x account) → the agent wakes and posts (a square becomes a post card) → fees refuel it (1% · 20/50/30, squares split) → limits on-chain (a square with a lock) → Bootr mark + Base square lockup, "built on Base".
+- **Beats**: Base is for [agents] → one transaction: four squares drop (coin · agent · treasury · x account) → the agent wakes and posts (a square becomes a post card) → fees refuel it (1% · 5/65/30, squares split) → limits on-chain (a square with a lock) → Bootr mark + Base square lockup, "built on Base".
 - **Look**: Base Blue `#0000FF` ground, white ink, Base Sans Black for display, Geist 600 only for the Bootr wordmark, Base Sans Mono for numbers. Flat, no shadows. The Bootr accent `#0070f3` is not used; blue belongs to Base here.
 - **Sound**: the same energetic bed as film one, locked to the 130.3 BPM grid, hits on each square landing.
 

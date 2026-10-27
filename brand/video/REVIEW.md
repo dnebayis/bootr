@@ -8,7 +8,7 @@ Delivered: `renders/how-it-works.mp4`. Spec: `SPEC.md`. Storylines: `STORYLINES.
 - Not built: B (a day in the agent's life as a 24-hour ring, endless zoom) and C (follow one $10 fee as an object chain, giant mono numbers).
 - Two grounds, both the brand's own modes: black for everything on-chain, white for the agent's own world. Each scene enters through the thing that caused it (iris from the Launch button, flood on the drop, whip from the post card, wipe, iris, blur swap). The accent appears three times only: the Launch button, the agent's fee share, the word "on-chain".
 - No URL, no slogan, no chain-name chips on screen, as asked. The mark lands once, under the closing line.
-- Example numbers (market cap $48,200, 500 USDC fuel, 3 mentions, $1,000 swap) are illustrative. Fee facts (1% LP fee, 20 / 50 / 30 standard preset, locked at launch, smart-account treasury, on-chain identity and reputation, the cannot-do list) come from the docs pages and DESIGN.md. The Clanker protocol fee on top and the buyback-and-burn preset are left out for clarity.
+- Example numbers (market cap $48,200, 500 USDC fuel, 3 mentions, $1,000 swap) are illustrative. Fee facts (1% LP fee, 5 / 65 / 30 standard preset, locked at launch, smart-account treasury, on-chain identity and reputation, the cannot-do list) come from the docs pages and DESIGN.md. The Clanker protocol fee on top and the buyback-and-burn preset are left out for clarity.
 
 ## Measured vs looked at
 

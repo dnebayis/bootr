@@ -37,7 +37,7 @@
     tl.fromTo("#b3-stage", { clipPath: "circle(0px at 790px 560px)" }, { clipPath: "circle(2200px at 790px 560px)", duration: 0.3, ease: "expo.out" }, 0.037);
     tl.fromTo("#b3-card-in", { scale: 0.25, x: 120, y: 90, transformOrigin: "0% 0%" }, { scale: 1, x: 0, y: 0, duration: 0.45, ease: "expo.out" }, 0.037);
     tl.fromTo("#b3-title-in .b3-w", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.13, ease: "power3.out", stagger: 0.23 }, 0.5);
-    const line = "orbit is live on base. split locked: 20 / 50 / 30.";
+    const line = "orbit is live on base. split locked: 5 / 65 / 30.";
     const typed = { n: 0 };
     tl.to(typed, { n: line.length, duration: 1.84, ease: "none", onUpdate: () => { document.getElementById("b3-typed").textContent = line.slice(0, Math.round(typed.n)); } }, 1.4);
     tl.fromTo("#b3-caret", { opacity: 1 }, { opacity: 1, duration: 1.84, ease: "none" }, 1.4);
