@@ -1,0 +1,34 @@
+<!doctype html>
+<html
+  lang="en"
+  data-composition-variables='[
+    {"id":"color-ground","type":"color","label":"Ground","default":"#000000"},
+    {"id":"color-ink","type":"color","label":"Mark and wordmark","default":"#ffffff"}
+  ]'
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--color-ground, #000000); }
+      #root { position: relative; width: 100%; height: 100%; background: var(--color-ground, #000000); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="4.3" data-width="1920" data-height="1080">
+      <div id="boot" data-composition-id="boot" data-composition-src="compositions/boot.html" data-start="0" data-duration="4.3" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <!-- Sound: a key tick when the stem draws, a soft click when the cup draws, the bass impact peaking on the fill (its peak sits 1.986 s into the file). -->
+      <audio id="sfx-key" class="clip" src="assets/sfx/key-press.mp3" data-start="0.857" data-duration="0.4" data-volume="0.7" data-track-index="2" data-audio-group="sfx"></audio>
+      <audio id="sfx-click" class="clip" src="assets/sfx/click-soft.mp3" data-start="1.11" data-duration="0.37" data-volume="0.7" data-track-index="3" data-audio-group="sfx"></audio>
+      <audio id="sfx-impact" class="clip" src="assets/sfx/impact-bass-2.mp3" data-start="0" data-duration="2.59" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>
