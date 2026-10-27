@@ -1,0 +1,16 @@
+# Paths excluded from `railway up` uploads (the Dockerfiles never read them).
+.git
+brand
+docs
+packages/contracts/out
+packages/contracts/cache
+packages/contracts/lib
+packages/contracts/broadcast
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/.ponder
+**/*.log
+**/*.mp4
+**/*.mov

@@ -2,15 +2,18 @@
 
 Runbook for running the five Bootr services on [Railway](https://railway.com) with the production
 domain `bootr.fun`. Every service is built from its own Dockerfile (`apps/<app>/Dockerfile`, build
-context = repository root) and configured by its own config-as-code file (`apps/<app>/railway.json`).
+context = repository root). The project itself (services, build and deploy settings, volumes) is declared
+as Railway **Infrastructure as Code** in [`.railway/railway.ts`](../../.railway/railway.ts) and applied with
+the CLI. Railway's older config-as-code files (`railway.json`) are deprecated and are not read for new
+services, so none exist in this repository any more.
 
 ## 1. Project layout
 
-One Railway project, one environment per network (for example `sepolia` and `production`), six services:
+One Railway project (`bootr`, workspace `someone`, environment `production` = Base mainnet), six services:
 
 | Service name (exact) | Source | Public domain | Listens on | Private address |
 | --- | --- | --- | --- | --- |
-| `web` | `apps/web/Dockerfile` | `bootr.fun` (and `www.bootr.fun`, optional) | `PORT=3000` | `http://web.railway.internal:3000` |
+| `web` | `apps/web/Dockerfile` | `bootr.fun`, `www.bootr.fun` | `PORT=3000` | `http://web.railway.internal:3000` |
 | `sender` | `apps/sender/Dockerfile` | `api.bootr.fun` | `PORT=3002` | `http://sender.railway.internal:3002` |
 | `inference` | `apps/inference/Dockerfile` | none (internal) | `INFERENCE_PORT=3003` | `http://inference.railway.internal:3003` |
 | `supervisor` | `apps/supervisor/Dockerfile` | none (internal) | `SUPERVISOR_PORT=3004` | `http://supervisor.railway.internal:3004` |
@@ -20,32 +23,55 @@ One Railway project, one environment per network (for example `sepolia` and `pro
 The service name is the private DNS name, so keep the names above (or adjust every `*.railway.internal`
 URL below).
 
-### Service settings (each app service)
+### Infrastructure as Code (`.railway/railway.ts`)
 
-1. **New service → GitHub repo** (this repository), branch `main`.
-2. **Settings → Source → Root directory**: leave empty (`/`). The Dockerfiles need the whole workspace.
-3. **Settings → Config-as-code → Railway config file**: `/apps/<app>/railway.json`. It sets the builder
-   (`DOCKERFILE`), `dockerfilePath`, watch paths, start command, pre-deploy command, healthcheck,
-   restart policy and draining time. Values in the file override the dashboard.
-4. **Variables**: see section 3. Set `PORT` on **every** service to the port in the table above, including
-   `inference` and `supervisor` (they listen on `INFERENCE_PORT` / `SUPERVISOR_PORT`, but Railway runs the
-   deploy healthcheck against `PORT`).
-5. **Networking**: generate/attach public domains only for `web`, `sender` and `indexer` (section 4). The
-   target port of each domain is the service's `PORT`.
+The file declares, per service: Dockerfile builder and path, watch patterns, start command, pre-deploy
+(release) command, healthcheck path and timeout, replicas (one each; the supervisor must never run twice),
+draining/overlap seconds and the restart policy, plus the `web-data` volume mounted at `/data` on `web`.
+Variables are **unmanaged** (`variables: { managed: false }`): they are set with `railway variable set`
+(section 3) and never written to the repository. Custom domains cannot be registered from IaC; attach them
+with `railway domain` (section 4).
 
-What each `railway.json` does:
+```sh
+pnpm install                 # the file imports the `railway` SDK (workspace dev dependency)
+railway link                 # once per checkout: project bootr, environment production
+railway config plan          # diff against Railway
+railway config apply --yes   # apply (add --confirm-destructive for destructive changes)
+railway config pull --variables=unmanaged   # re-import after dashboard edits
+```
+
+What the IaC gives each service:
 
 | Service | Pre-deploy (release) command | Healthcheck | Notes |
 | --- | --- | --- | --- |
 | `sender` | `node dist/db/migrate.js` | `/health`, 60 s | draining 20 s |
 | `inference` | `node scripts/migrate.mjs` | `/health`, 60 s | draining 30 s |
-| `supervisor` | `node dist/db/migrate.js` | `/health`, 60 s | `numReplicas: 1`, overlap 0 s, draining 40 s (the shutdown waits up to 30 s for the running tick) |
+| `supervisor` | `node dist/db/migrate.js` | `/health`, 60 s | 1 replica, overlap 0 s, draining 40 s (the shutdown waits up to 30 s for the running tick) |
 | `indexer` | none (Ponder owns its schema) | `/ready`, 3600 s | see section 6 |
-| `web` | none | `/api/health`, 60 s | `requiredMountPath: /data` (admin config volume) |
+| `web` | none | `/api/health`, 60 s | volume `web-data` at `/data` (admin config) |
 
 The pre-deploy command runs inside the freshly built image, with the service's variables and private
 networking, before the new deployment starts. If it fails, the deployment fails and the previous one keeps
 running.
+
+### Deploying code
+
+The repository has no GitHub remote, so services are deployed from a local checkout with `railway up`
+(the CLI uploads the working tree minus `.gitignore` and `.railwayignore` paths, Railway builds the
+Dockerfile):
+
+```sh
+railway up --service sender --detach --ci     # one upload + build per service
+railway up --service inference --detach --ci
+railway up --service indexer --detach --ci
+railway up --service web --detach --ci
+railway up --service supervisor --detach --ci
+railway service status                        # or: railway service logs --service <svc>
+```
+
+`.railwayignore` keeps `brand/`, `docs/`, Foundry artifacts and build output out of the upload. If the
+repository gets a GitHub remote later, connect it with `railway service source connect --repo <owner/repo>
+--branch main --service <svc>` and the watch patterns in the IaC file decide which pushes rebuild which service.
 
 ### Images
 
@@ -63,9 +89,9 @@ The web image needs the `NEXT_PUBLIC_*` values as build args (Railway passes ser
 
 ## 2. Order of first deployment
 
-1. Create the project and the `Postgres` service (Railway Postgres template). Enable backups.
-2. Create the five app services with the settings above and their variables (section 3). Do not attach
-   domains yet.
+1. `railway init --name bootr`, `railway add --database postgres`, then `railway add --service <name>` for
+   the five app services (empty services; the IaC file fills in their settings). Enable Postgres backups.
+2. `railway config apply`, then set the variables (section 3). Do not attach domains yet.
 3. Migrations. They run automatically as the pre-deploy command of `sender`, `inference` and `supervisor`.
    To apply them all at once before the first deploy (or by hand at any time), run from a checkout with
    `pnpm install` done:
@@ -80,8 +106,9 @@ The web image needs the `NEXT_PUBLIC_*` values as build args (Railway passes ser
    its own journal (`public.sender_migrations`, `drizzle.__drizzle_migrations`, `public.sv_migrations`), so
    re-running is a no-op. `*.railway.internal` is not reachable from a laptop, hence `DATABASE_PUBLIC_URL`.
    Inside a running container: `railway ssh --service <svc>` then the command from the table above.
-4. Deploy in dependency order: `sender`, `inference`, `indexer` (wait for `/ready`), `web`, `supervisor`
-   last (it calls all the others).
+4. Deploy with `railway up --service <svc>` in dependency order: `sender`, `inference`, `indexer` (wait for
+   `/ready`), `web`, `supervisor` last (it calls all the others). Builds are independent, so they can run
+   in parallel; the order only matters for the first healthchecks.
 5. Attach the domains (section 4), update the X app (section 5), then rebuild `web` if any `NEXT_PUBLIC_*`
    value changed.
 
@@ -174,15 +201,31 @@ over plain HTTP). `INDEXER_CORS_ORIGIN` defaults to `https://bootr.fun` when emp
 
 ## 4. Domains and DNS
 
-| Host | Service | DNS record |
-| --- | --- | --- |
-| `bootr.fun` | `web` | apex: `CNAME`/`ALIAS`/`ANAME` (CNAME flattening) to the target Railway shows, plus the `_railway-verify` TXT if requested |
-| `www.bootr.fun` (optional) | `web` | `CNAME` to the Railway target |
-| `api.bootr.fun` | `sender` | `CNAME` to the Railway target |
-| `indexer.bootr.fun` | `indexer` | `CNAME` to the Railway target |
+Attach each host with the CLI (IaC cannot register custom domains):
 
-Railway issues the TLS certificates once DNS resolves. With Cloudflare in front, use DNS-only (grey cloud)
-until the certificate is issued, then "Full (strict)" if proxying.
+```sh
+railway domain bootr.fun --service web --port 3000
+railway domain www.bootr.fun --service web --port 3000
+railway domain api.bootr.fun --service sender --port 3002
+railway domain indexer.bootr.fun --service indexer --port 42069
+railway domain status <host> --service <svc> --json   # required DNS records + certificate state
+```
+
+Records Railway asked for on 2026-10-27 (the targets are per-domain and stable; re-read them with
+`railway domain status` if a domain is ever deleted and re-added):
+
+| Host | Service | Type | Name (Namecheap) | Value |
+| --- | --- | --- | --- | --- |
+| `bootr.fun` | `web` | `ALIAS` (apex; `CNAME`/`ANAME` with flattening elsewhere) | `@` | `1nw3vc4e.up.railway.app` |
+| `www.bootr.fun` | `web` | `CNAME` | `www` | `3zsp2g23.up.railway.app` |
+| `api.bootr.fun` | `sender` | `CNAME` | `api` | `6tykq0qo.up.railway.app` |
+| `indexer.bootr.fun` | `indexer` | `CNAME` | `indexer` | `8rb2p9br.up.railway.app` |
+
+Remove Namecheap's parking records first (`www` currently points at `parkingpage.namecheap.com`, and the
+apex has a URL-redirect record). If Railway reports `VALIDATING_OWNERSHIP` for long, it may additionally ask
+for a `TXT` record at `_railway-verify[.<sub>]` with the `railway-verify=…` token from `railway domain
+status`. Railway issues the TLS certificates once DNS resolves. With Cloudflare in front, use DNS-only
+(grey cloud) until the certificate is issued, then "Full (strict)" if proxying.
 
 The sender is public because the browser needs `/oauth/start` and X needs `/oauth/callback`; its
 `/internal/*` routes are HMAC-authenticated (`SENDER_SERVICE_KEY`). The indexer is public because the browser
@@ -222,8 +265,7 @@ the schema:
 `/api/admin/config` stores the platform config in a JSON file (`ADMIN_CONFIG_PATH`, image default
 `/data/admin-config.json`). Without a volume, every redeploy resets it to the defaults.
 
-1. `web` → **Add volume**, mount path `/data` (`railway.json` declares `requiredMountPath: /data`, so a deploy
-   without it fails).
+1. The IaC file declares the `web-data` volume mounted at `/data` on `web` (`railway config apply` creates it).
 2. Railway mounts volumes owned by root, and the image runs as `node`; set `RAILWAY_RUN_UID=0` on `web` so the
    process can write the file (this runs the web process as root inside the container).
 3. A volume pins the service to one replica and adds a few seconds of downtime per deploy. The file store
@@ -267,6 +309,7 @@ the schema:
   deployment's schema (from `ponder db list`) if it still exists to avoid a reindex, otherwise it backfills
   again.
 - Web: `NEXT_PUBLIC_*` values are baked into each image, so a rollback also restores the old public values.
+- Service settings: `railway config plan` shows any drift between `.railway/railway.ts` and Railway.
 
 ## 11. Mainnet pre-flight checklist
 
