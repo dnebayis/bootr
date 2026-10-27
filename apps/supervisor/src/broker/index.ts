@@ -161,11 +161,12 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         replyEligibility: eligibility,
         ...(action.input.attributions ? { attributions: action.input.attributions } : {}),
         publicAddresses: publicAddressesOf(config),
+        xUserId: config.xUserId,
       });
       return publishOutcome(res, item?.authorId);
     }
     case 'publish_post': {
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), publicAddresses: publicAddressesOf(config) });
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
     case 'resolve_mention': {

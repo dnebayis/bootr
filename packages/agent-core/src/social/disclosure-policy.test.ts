@@ -63,6 +63,15 @@ describe('outgoingDisclosureRisk', () => {
     }
   });
 
+  it('rejects scientific notation, not ordinary numbers', () => {
+    expect(outgoingDisclosureRisk('10 billion tokens moved at $2.3e-7 per token')).toBe('social_unreadable_number_forbidden');
+    expect(outgoingDisclosureRisk('price 2.317e-7 USD')).toBe('social_unreadable_number_forbidden');
+    expect(outgoingDisclosureRisk('supply 1e18')).toBe('social_unreadable_number_forbidden');
+    for (const text of ['about $23k and 3 holders', 'up 2.5% today', 'see you at 7e, the cafe', 'version 2e released', '0.00000023 USD each']) {
+      expect(outgoingDisclosureRisk(text), text).toBeNull();
+    }
+  });
+
   it('rejects addresses outside the public set, and skips the check without a set', () => {
     expect(outgoingDisclosureRisk(`send questions, not funds: ${OTHER}`, { publicAddresses: [TOKEN, KERNEL] })).toBe('social_private_address_forbidden');
     expect(outgoingDisclosureRisk(`token ${TOKEN} treasury ${KERNEL}`, { publicAddresses: [TOKEN, KERNEL] })).toBeNull();

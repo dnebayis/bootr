@@ -122,6 +122,8 @@ export class SenderClient {
     attributions?: { username: string; sourceUrl: string }[];
     /** Addresses the text may name (own token, own treasury); the sender rejects any other. */
     publicAddresses?: string[];
+    /** The X user the agent config expects; the sender refuses to post as any other account (409 account_mismatch). */
+    xUserId?: string;
   }) {
     return this.call<SenderPublishResponse>('POST', '/internal/publish', body);
   }

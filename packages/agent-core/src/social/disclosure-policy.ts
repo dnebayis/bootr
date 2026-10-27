@@ -12,7 +12,8 @@ export type DisclosureCode =
   | 'social_secret_material_forbidden'
   | 'social_internal_reference_forbidden'
   | 'social_runtime_jargon_forbidden'
-  | 'social_private_address_forbidden';
+  | 'social_private_address_forbidden'
+  | 'social_unreadable_number_forbidden';
 
 /** Private keys, HMAC secrets, API keys, JWTs, verification tokens, PEM blocks. */
 const SECRET_MATERIAL = new RegExp(
@@ -76,6 +77,9 @@ const RUNTIME_JARGON = new RegExp(
 
 const EVM_ADDRESS = /0x[a-f0-9]{40}(?![a-f0-9])/g;
 
+/** Scientific notation ($2.3e-7, 1e18): a number nobody reads, round it instead. */
+const SCIENTIFIC_NOTATION = /(?<![a-z0-9.])\d+(?:\.\d+)?e[+-]?\d+(?![a-z0-9])/;
+
 export interface DisclosureContext {
   /**
    * Addresses the agent may name in public (its own token, its own treasury).
@@ -90,6 +94,7 @@ export function outgoingDisclosureRisk(value: unknown, context: DisclosureContex
   if (SECRET_MATERIAL.test(text)) return 'social_secret_material_forbidden';
   if (INTERNAL_REFERENCE.test(text)) return 'social_internal_reference_forbidden';
   if (RUNTIME_JARGON.test(text)) return 'social_runtime_jargon_forbidden';
+  if (SCIENTIFIC_NOTATION.test(text)) return 'social_unreadable_number_forbidden';
   if (context.publicAddresses) {
     const allowed = new Set(context.publicAddresses.map((a) => a.toLowerCase()));
     for (const match of text.matchAll(EVM_ADDRESS)) {

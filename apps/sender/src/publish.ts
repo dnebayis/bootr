@@ -54,6 +54,12 @@ export const publishSchema = z.object({
    * check. Not part of the body hash (a policy input, not content).
    */
   publicAddresses: z.array(z.string().regex(/^0x[0-9a-fA-F]{40}$/)).max(4).optional(),
+  /**
+   * The X user the supervisor expects to post as (its agent config). When the account currently bound
+   * to the agent is a different user, nothing is sent and nothing is recorded (409 `account_mismatch`):
+   * a reconnect to another account must be acknowledged in the agent config before it may publish.
+   */
+  xUserId: xId.optional(),
 });
 export type PublishInput = z.infer<typeof publishSchema>;
 
@@ -143,6 +149,16 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     return {
       http: tok.code === 'refresh_failed' ? 503 : 409,
       body: { error: tok.code, message: tok.message },
+    };
+  }
+  if (input.xUserId && tok.account.xUserId !== input.xUserId) {
+    return {
+      http: 409,
+      body: {
+        error: 'account_mismatch',
+        message: `agent ${input.agentId} is bound to @${tok.account.xHandle}, not the X user the agent config expects`,
+        boundHandle: tok.account.xHandle,
+      },
     };
   }
 
