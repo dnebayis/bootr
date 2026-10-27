@@ -55,7 +55,8 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=:: \
-    ADMIN_CONFIG_PATH=/data/admin-config.json
+    ADMIN_CONFIG_PATH=/data/admin-config.json \
+    LAUNCH_DRAFTS_DIR=/data/launch-drafts
 # HOSTNAME: Docker sets it to the container id, which Next would bind to; `::` listens on IPv6 and IPv4
 # (Railway private networking is IPv6). Use 0.0.0.0 on a host where IPv6 is unavailable.
 WORKDIR /app
@@ -64,7 +65,8 @@ WORKDIR /app
 COPY --from=build --chown=node:node /repo/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /repo/apps/web/.next/static apps/web/.next/static
 COPY --from=build --chown=node:node /repo/apps/web/public apps/web/public
-# Admin config store (lib/server/admin-config.ts). Mount a persistent volume here in production.
+# Admin config store (lib/server/admin-config.ts) and launch drafts (lib/server/launch-drafts.ts).
+# Mount a persistent volume here in production.
 RUN mkdir -p /data && chown node:node /data
 WORKDIR /app/apps/web
 USER node

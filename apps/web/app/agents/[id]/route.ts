@@ -2,12 +2,15 @@ import type { NextRequest } from 'next/server';
 import { agentCardUrl, buildRegistration, isLaunchId, pendingRegistration, type CardToken } from '@/lib/agent-card';
 import { env } from '@/lib/env';
 import { mockStore } from '@/lib/mock';
+import { readDraftIdentity } from '@/lib/server/launch-drafts';
 
 /**
  * GET /agents/<launchId>.json: the ERC-8004 registration file a Bootr agent was registered with.
  *
  * - known launch           -> 200, full document incl. the IdentityRegistry binding
  * - valid id, not indexed  -> 200, minimal document with `registrations: []` (right after launch)
+ * Both carry the creator's Identity text as `bootr.identity` when the launch form saved one
+ * (`POST /api/launch/draft`); the supervisor reads it from here.
  * - malformed id           -> 404
  * - indexer unreachable    -> 503, never cached
  */
@@ -52,6 +55,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext<'/agents/[id]'>) 
   } catch {
     return json({ error: 'Agent registry is temporarily unavailable' }, 503, 'no-store');
   }
-  if (!token) return json(pendingRegistration(), 200, 'public, max-age=10, s-maxage=10');
-  return json(buildRegistration(token), 200, 'public, max-age=60, s-maxage=60');
+  const identity = await readDraftIdentity(id);
+  if (!token) return json(pendingRegistration(identity), 200, 'public, max-age=10, s-maxage=10');
+  return json(buildRegistration(token, identity), 200, 'public, max-age=60, s-maxage=60');
 }
