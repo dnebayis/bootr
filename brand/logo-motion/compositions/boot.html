@@ -3,52 +3,67 @@
     @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
     #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
     #bt-ground { position: absolute; inset: 0; background: var(--color-ground, #000000); }
-    /* Lockup: mark 288 px, gap 110 px, wordmark 256 px (cap height 180 = mark / 1.6), centred as a group. */
-    #bt-mark-box { position: absolute; left: 434px; top: 396px; width: 288px; height: 288px; }
-    #bt-draw, #bt-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; }
-    #bt-mark-in { width: 288px; height: 288px; }
-    #bt-cursor { position: absolute; left: 563px; top: 453px; width: 30px; height: 87px; background: var(--color-ink, #ffffff); }
+    #bt-shake { position: absolute; inset: 0; }
+    /* Two hairlines, as on the OG image: a vertical at x=96 and a horizontal at 82.5% of the height. */
+    #bt-hair-h { position: absolute; left: 0; top: 890px; width: 1920px; height: 2px; background: var(--color-hair, #262626); }
+    #bt-hair-v { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: var(--color-hair, #262626); }
+    /* Lockup: mark 288 px, gap 110 px, wordmark 256 px (cap height 180 = mark / 1.6). Start centred, slide to the left. */
+    #bt-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #bt-mark-sq { position: relative; width: 288px; height: 288px; }
+    /* Ground-coloured backing, so the knocked-out glyph shows the ground and never the wordmark sliding out behind the mark. */
+    #bt-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: var(--color-ground, #000000); }
+    #bt-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
     #bt-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: var(--color-ink, #ffffff); white-space: nowrap; }
-    .bt-l { display: inline-block; }
+    #bt-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: var(--color-ink, #ffffff); }
   </style>
   <div id="root" data-composition-id="boot" data-width="1920" data-height="1080">
     <div id="bt-ground"></div>
-    <div id="bt-cursor" class="clip" data-start="0" data-duration="0.9" data-layout-ignore></div>
-    <div id="bt-mark-box" class="clip" data-start="0.9" data-duration="3.4" data-layout-ignore>
-      <!-- The glyph drawn as a line: the stem drops, then the open-topped cup draws as one stroke. -->
-      <svg id="bt-draw" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path id="bt-stem" d="M12 4.75V12" pathLength="1" style="stroke: var(--color-ink, #ffffff)" stroke-width="2.5" stroke-linecap="square" />
-        <path id="bt-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" style="stroke: var(--color-ink, #ffffff)" stroke-width="2.5" stroke-linecap="square" />
-      </svg>
-      <!-- The mark proper: the solid square with the glyph knocked out. Appears on the hit. -->
-      <svg id="bt-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
-        <mask id="bt-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-          <rect width="24" height="24" fill="#fff"></rect>
-          <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
-          <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
-        </mask>
-        <g id="bt-mark-in"><rect width="24" height="24" rx="5" style="fill: var(--color-ink, #ffffff)" mask="url(#bt-m)"></rect></g>
-      </svg>
-    </div>
-    <div id="bt-word" class="clip" data-start="2.0" data-duration="2.3">
-      <span class="bt-l">b</span><span class="bt-l">o</span><span class="bt-l">o</span><span class="bt-l">t</span><span class="bt-l">r</span>
+    <div id="bt-shake" data-layout-allow-overflow>
+      <div id="bt-hair-h" data-layout-ignore></div>
+      <div id="bt-hair-v" data-layout-ignore></div>
+      <div id="bt-word" class="clip" data-start="1.55" data-duration="2.85">bootr</div>
+      <div id="bt-cursor" class="clip" data-start="1.55" data-duration="1.6" data-layout-ignore></div>
+      <div id="bt-mark-box" class="clip" data-start="0" data-duration="4.4" data-layout-ignore>
+        <div id="bt-mark-sq">
+          <div id="bt-mark-bg"></div>
+          <svg id="bt-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="bt-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <!-- The glyph is knocked out of the square by two strokes drawn in the mask. -->
+              <path id="bt-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="bt-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" style="fill: var(--color-ink, #ffffff)" mask="url(#bt-m)"></rect>
+          </svg>
+        </div>
+      </div>
     </div>
   </div>
   <script>
     const tl = gsap.timeline({ paused: true });
-    // 0.0–0.9: the cursor blinks three times where the stem will be.
-    tl.fromTo("#bt-cursor", { opacity: 1 }, { opacity: 1, duration: 0.01 }, 0);
-    [0.15, 0.45, 0.75].forEach((t) => { tl.set("#bt-cursor", { opacity: 0 }, t); tl.set("#bt-cursor", { opacity: 1 }, t + 0.15); });
-    // 0.9: the cursor becomes the stem, which draws down; 1.15: the cup draws as one stroke.
-    tl.fromTo("#bt-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.25, ease: "power3.out" }, 0.9);
-    tl.fromTo("#bt-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.4, ease: "expo.out" }, 1.15);
-    tl.fromTo("#bt-mark", { opacity: 0 }, { opacity: 0, duration: 0.01 }, 0.9);
-    // 1.953: power on. The drawn line becomes the filled mark on the bass hit; it lands from 1.12.
-    tl.set("#bt-draw", { opacity: 0 }, 1.953);
-    tl.set("#bt-mark", { opacity: 1 }, 1.953);
-    tl.fromTo("#bt-mark-in", { scale: 1.12, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.3, ease: "expo.out" }, 1.953);
-    // 2.0–2.6: the wordmark, one letter at a time, opacity 0.3 -> 1 with a slight blur, no movement.
-    tl.fromTo("#bt-word .bt-l", { opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.25, ease: "power2.out", stagger: 0.1 }, 2.0);
+    tl.set("#bt-shake", { x: 0, y: 0 }, 0);
+    // 0.05: the two hairlines are drawn across the frame.
+    tl.fromTo("#bt-hair-h", { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.55, ease: "expo.out" }, 0.05);
+    tl.fromTo("#bt-hair-v", { scaleY: 0, transformOrigin: "50% 0%" }, { scaleY: 1, duration: 0.55, ease: "expo.out" }, 0.05);
+    // Frame 0: the solid square, nothing knocked out yet.
+    tl.set(["#bt-cup", "#bt-stem"], { opacity: 0 }, 0);
+    // 0.5: the open-topped cup is cut out of the square in one stroke.
+    tl.set("#bt-cup", { opacity: 1 }, 0.5);
+    tl.fromTo("#bt-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out" }, 0.5);
+    // 0.85–1.033: the stem drops into the cup, accelerating like something falling.
+    tl.set("#bt-stem", { opacity: 1 }, 0.85);
+    tl.fromTo("#bt-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in" }, 0.85);
+    // 1.033: impact. The square squashes from its base, rebounds with weight, the whole frame jolts for four frames.
+    tl.fromTo("#bt-mark-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out" }, 1.033);
+    tl.to("#bt-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, 1.093);
+    [[1.033, 7, -5], [1.066, -6, 4], [1.1, 4, -3], [1.133, -2, 2], [1.166, 0, 0]].forEach(([t, x, y]) => tl.set("#bt-shake", { x, y }, t));
+    // 1.5: the mark slides left into the lockup; the wordmark is typed out behind it, led by a block cursor.
+    tl.fromTo("#bt-mark-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut" }, 1.5);
+    tl.fromTo("#bt-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut" }, 1.55);
+    tl.fromTo("#bt-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut" }, 1.55);
+    // 2.55: the cursor blinks twice and is gone; the lockup holds.
+    [2.55, 2.85].forEach((t) => { tl.set("#bt-cursor", { opacity: 0 }, t); tl.set("#bt-cursor", { opacity: 1 }, t + 0.15); });
+    tl.set("#bt-cursor", { opacity: 0 }, 3.15);
     window.__timelines["boot"] = tl;
   </script>
 </template>

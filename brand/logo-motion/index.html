@@ -3,7 +3,8 @@
   lang="en"
   data-composition-variables='[
     {"id":"color-ground","type":"color","label":"Ground","default":"#000000"},
-    {"id":"color-ink","type":"color","label":"Mark and wordmark","default":"#ffffff"}
+    {"id":"color-ink","type":"color","label":"Mark and wordmark","default":"#ffffff"},
+    {"id":"color-hair","type":"color","label":"Hairlines","default":"#262626"}
   ]'
 >
   <head>
@@ -17,12 +18,18 @@
     </style>
   </head>
   <body>
-    <div id="root" data-composition-id="main" data-start="0" data-duration="4.3" data-width="1920" data-height="1080">
-      <div id="boot" data-composition-id="boot" data-composition-src="compositions/boot.html" data-start="0" data-duration="4.3" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
-      <!-- Sound: a key tick when the stem draws, a soft click when the cup draws, the bass impact peaking on the fill (its peak sits 1.986 s into the file). -->
-      <audio id="sfx-key" class="clip" src="assets/sfx/key-press.mp3" data-start="0.857" data-duration="0.4" data-volume="0.7" data-track-index="2" data-audio-group="sfx"></audio>
-      <audio id="sfx-click" class="clip" src="assets/sfx/click-soft.mp3" data-start="1.11" data-duration="0.37" data-volume="0.7" data-track-index="3" data-audio-group="sfx"></audio>
-      <audio id="sfx-impact" class="clip" src="assets/sfx/impact-bass-2.mp3" data-start="0" data-duration="2.59" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="4.4" data-width="1920" data-height="1080">
+      <div id="boot" data-composition-id="boot" data-composition-src="compositions/boot.html" data-start="0" data-duration="4.4" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+          <!-- Sound, peak-aligned one frame after its picture. Tick on the cup stroke; the bass impact starts mid-swell
+           (media 1.2 s, so its peak at 1.986 s lands on the stem hit at 1.033 s); whoosh on the slide; five key ticks as the wordmark types. -->
+      <audio id="sfx-tick" class="clip" src="assets/sfx/click-soft.mp3" data-start="0.46" data-duration="0.19" data-volume="0.7" data-track-index="2" data-audio-group="sfx"></audio>
+      <audio id="sfx-impact" class="clip" src="assets/sfx/impact-bass-2.mp3" data-start="0.28" data-media-start="1.2" data-duration="1.39" data-volume="0.9" data-track-index="3" data-audio-group="sfx"></audio>
+      <audio id="sfx-whoosh" class="clip" src="assets/sfx/whoosh.mp3" data-start="1.371" data-duration="0.57" data-volume="0.6" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio id="sfx-key-1" class="clip" src="assets/sfx/key-press.mp3" data-start="1.557" data-duration="0.17" data-volume="0.5" data-track-index="5" data-audio-group="sfx"></audio>
+      <audio id="sfx-key-2" class="clip" src="assets/sfx/key-press.mp3" data-start="1.707" data-duration="0.17" data-volume="0.5" data-track-index="6" data-audio-group="sfx"></audio>
+      <audio id="sfx-key-3" class="clip" src="assets/sfx/key-press.mp3" data-start="1.857" data-duration="0.17" data-volume="0.5" data-track-index="7" data-audio-group="sfx"></audio>
+      <audio id="sfx-key-4" class="clip" src="assets/sfx/key-press.mp3" data-start="2.007" data-duration="0.17" data-volume="0.5" data-track-index="5" data-audio-group="sfx"></audio>
+      <audio id="sfx-key-5" class="clip" src="assets/sfx/key-press.mp3" data-start="2.157" data-duration="0.17" data-volume="0.5" data-track-index="6" data-audio-group="sfx"></audio>
     </div>
     <script>
       window.__timelines = window.__timelines || {};
