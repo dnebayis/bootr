@@ -1,0 +1,1 @@
+ALTER TABLE "sv_agents" ADD COLUMN "builder_code" text;

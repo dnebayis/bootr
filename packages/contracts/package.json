@@ -1,0 +1,12 @@
+{
+  "name": "@bootr/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "setup": "forge install --no-git foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.7.0",
+    "build": "forge build",
+    "test": "forge test",
+    "typecheck": "echo \"n/a (solidity)\"",
+    "lint": "echo \"n/a (solidity)\""
+  }
+}

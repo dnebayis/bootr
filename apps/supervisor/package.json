@@ -1,0 +1,48 @@
+{
+  "name": "supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json --noEmit && node scripts/build.mjs",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@bootr/agent-core": "workspace:*",
+    "@bootr/inference": "workspace:*",
+    "@bootr/shared": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "@x402/core": "~2.28.0",
+    "@x402/evm": "~2.28.0",
+    "@x402/fetch": "~2.28.0",
+    "@zerodev/ecdsa-validator": "^5.4.9",
+    "@zerodev/permissions": "^5.6.4",
+    "@zerodev/sdk": "^5.5.11",
+    "drizzle-orm": "^0.45.0",
+    "hono": "^4.5.0",
+    "ox": "0.14.57",
+    "pg": "^8.23.1",
+    "pino": "^9.0.0",
+    "viem": "^2.35.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
