@@ -53,6 +53,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY` | Address passed as `supervisorSessionKey` in `launch()` (informational). |
 | `NEXT_PUBLIC_BOOT_X_URL` | Platform X profile link (hidden when empty). |
 | `NEXT_PUBLIC_WORKER_SOURCE_BASE` | Prefix for worker-hash source links (hash shown without link when empty). |
+| `NEXT_PUBLIC_IPFS_GATEWAY` | IPFS gateway origin for pinned token images, `<gateway>/ipfs/<cid>` (default `https://gateway.pinata.cloud`, which is rate limited: use a dedicated `https://<name>.mypinata.cloud` gateway in production). Also used to render `ipfs://` images. Changing it later does not change images already written on-chain. |
 
 Server only: `ADMIN_CONSOLE_SLUG`, `ADMIN_ADDRESSES`, `SESSION_SECRET` (≥ 16 chars, 32+ recommended),
 `SENDER_SERVICE_KEY` (≥ 32 chars; signs the sender's `/oauth/start`, the `/api/x/*` internal calls and the
@@ -61,7 +62,8 @@ While it is unset, `SENDER_SERVICE_KEY` signatures are still accepted there and 
 here and in the indexer, then the fallback is gone), `SENDER_URL` (optional server-to-server sender origin for
 `/api/x/status` and `/api/agents/:id/posts`; defaults to `NEXT_PUBLIC_SENDER_PUBLIC_URL`), `INFERENCE_URL` (optional
 server-to-server relay origin for `/api/models`; defaults to `NEXT_PUBLIC_INFERENCE_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature
-checks). Keys shorter than 32 characters are treated as unset. `instrumentation.ts` logs a `[web] config error` /
+checks), `PINATA_JWT` (Pinata API JWT with scope `org:files:write`, used by `POST /api/upload`; unset = uploads answer 503),
+`PINATA_MOCK` (`1` = never call Pinata, return a deterministic local CID; also implied in mock mode while `PINATA_JWT` is unset). Keys shorter than 32 characters are treated as unset. `instrumentation.ts` logs a `[web] config error` /
 `config warning` line at startup for a missing or short key (values are never logged). The web app does not call the
 supervisor, so it does not hold `SUPERVISOR_SERVICE_KEY`.
 
@@ -91,6 +93,28 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | `/docs`, `/docs/[slug]` | How it works, Fee math, Agent rules, Dormancy, Risks. |
 | `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH + per-coin, Claim), launched coins, holdings, fuel history. |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
+
+## Images on IPFS
+
+The launch form pins the coin image to public IPFS before launch; it never embeds a `data:` URI (bloated calldata,
+not rendered on clanker.world).
+
+1. The uploader (drag-and-drop or file picker, local preview, progress) sends the file to `POST /api/upload`
+   (multipart `file` + `draftId`). The route accepts PNG, JPG, WebP and SVG up to 2 MB, decides the type from the
+   magic bytes (a declared type that disagrees is refused), and refuses SVGs with `<script>`, `on*=` handlers,
+   `<foreignObject>`/embeds, DOCTYPE/entities, `javascript:` URLs or any non-`#fragment` `href`/`url()`.
+2. It pins through Pinata's v3 Files API (`POST https://uploads.pinata.cloud/v3/files`, `network=public`) as
+   `bootr/<draftId>/<sha256 prefix>` and returns `{cid, ipfsUri: "ipfs://<cid>", url: "<NEXT_PUBLIC_IPFS_GATEWAY>/ipfs/<cid>"}`.
+3. `launch()` writes the gateway `url` into the Clanker `image` (wallets and clanker.world need http(s)) and the
+   `ipfsUri` into the Clanker metadata as `imageIpfs`. The ERC-8004 agent card (`/agents/<id>.json`) takes its `image`
+   from the indexed token, so it carries the same gateway URL.
+
+The route is same-origin only (`Origin` = `NEXT_PUBLIC_SITE_URL`, or a browser `Sec-Fetch-Site: same-origin`), allows 10
+requests per minute per IP (in memory, per instance; IP from `X-Real-IP`, else the last `X-Forwarded-For` hop), and
+answers 503 without `PINATA_JWT`. `POST /api/upload?kind=json&draftId=<uuid>` pins a JSON object (≤ 64 kB) the same
+way, e.g. a registration file. In mock mode (`PINATA_MOCK=1`, or app mock mode without a JWT) nothing is pinned: the
+CID is a CIDv1 (raw, sha2-256) of the bytes, deterministic but not resolvable, so a mock launch keeps the local preview.
+`TokenImage` renders `ipfs://` sources through the gateway.
 
 ## Connecting X at launch
 

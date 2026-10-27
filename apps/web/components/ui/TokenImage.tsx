@@ -1,9 +1,11 @@
 /* eslint-disable @next/next/no-img-element */
+import { resolveImageSrc } from '@/lib/ipfs';
 import { cn } from './cn';
 
 /**
  * Square token image with a 1px hairline. Renders a neutral placeholder (first letter of the
- * symbol) when `src` is empty, so we never emit <img src="">.
+ * symbol) when `src` is empty, so we never emit <img src="">. `ipfs://` sources are rendered through
+ * the configured gateway (NEXT_PUBLIC_IPFS_GATEWAY).
  */
 export function TokenImage({ src, symbol, size, className }: { src: string | null | undefined; symbol?: string; size: number; className?: string }) {
   const base = cn('shrink-0 border border-hairline bg-canvas-sub', className);
@@ -18,5 +20,5 @@ export function TokenImage({ src, symbol, size, className }: { src: string | nul
       </span>
     );
   }
-  return <img src={src} alt="" width={size} height={size} loading="lazy" className={cn(base, 'object-cover')} style={{ width: size, height: size }} />;
+  return <img src={resolveImageSrc(src)} alt="" width={size} height={size} loading="lazy" className={cn(base, 'object-cover')} style={{ width: size, height: size }} />;
 }

@@ -34,6 +34,8 @@ export const env = {
   workerSourceBase: str(process.env.NEXT_PUBLIC_WORKER_SOURCE_BASE),
   /** Base Builder Code (ERC-8021). Appended as a calldata suffix to launch and fuel txs; empty = off. */
   builderCode: str(process.env.NEXT_PUBLIC_BUILDER_CODE),
+  /** IPFS gateway origin for pinned token images (`<gateway>/ipfs/<cid>`); a dedicated Pinata gateway in production. */
+  ipfsGateway: (str(process.env.NEXT_PUBLIC_IPFS_GATEWAY) || 'https://gateway.pinata.cloud').replace(/\/+$/, ''),
 } as const;
 
 export type AppChainId = 8453 | 84532;

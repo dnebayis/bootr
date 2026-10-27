@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useConnection, useReadContract, useWriteContract } from 'wagmi';
@@ -12,7 +12,7 @@ import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { bps as bpsLabel } from '@/lib/format';
-import { fetchModels, fetchPlatformFlags, fileToSquareDataUrl, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
+import { fetchModels, fetchPlatformFlags, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
 import { formatThoughtPrice, groupByProvider, RECOMMENDED_MODEL, THOUGHT } from '@/lib/models';
 import { Badge } from '@/components/ui/Badge';
 import { agentCardUrl } from '@/lib/agent-card';
@@ -22,12 +22,10 @@ import { useTxRunner } from '@/lib/tx';
 import { Button } from '@/components/ui/Button';
 import { Input, Label, Select, Switch, Textarea } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
-import { UploadIcon } from '@/components/ui/Icons';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { SplitBar } from '@/components/token/FeeSplit';
+import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
-
-/* eslint-disable @next/next/no-img-element */
 
 function Section({ n, title, description, children }: { n: number; title: string; description: string; children: ReactNode }) {
   return (
@@ -84,9 +82,7 @@ export function LaunchForm() {
   // 01 Coin
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
-  const [imageUrl, setImageUrl] = useState('');
-  const [imageData, setImageData] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [upload, setUpload] = useState<ImageUploadState>({ status: 'idle' });
 
   // 02 Agent
   const [identity, setIdentity] = useState('');
@@ -135,13 +131,15 @@ export function LaunchForm() {
   });
   const needsApproval = !env.useMock && fuelUnits != null && (allowance.data ?? 0n) < fuelUnits;
 
-  const image = imageData ?? imageUrl.trim();
+  // Pinned image: the gateway URL goes on-chain (renders on clanker.world and in wallets), the ipfs:// URI into metadata.
+  const pinned = upload.status === 'done' ? upload.result : null;
   const split = { agent: defaults.agentBps, creator: defaults.creatorBps, burn: defaults.burnBps, platform: defaults.platformBps };
 
   const errors: string[] = [];
   if (!name.trim()) errors.push('Name is required.');
   if (!/^[A-Za-z0-9]{2,10}$/.test(symbol)) errors.push('Symbol must be 2–10 letters or digits.');
-  if (!image) errors.push('Add an image (upload or URL).');
+  if (upload.status === 'uploading') errors.push('Wait for the image to finish uploading.');
+  else if (!pinned) errors.push('Upload an image.');
   if (identity.trim().length < 20) errors.push('Describe the agent in at least 20 characters.');
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
@@ -158,18 +156,6 @@ export function LaunchForm() {
   const workerTpl = WORKER_TEMPLATES.find((w) => w.id === worker)!;
   const thoughts = selectedModel?.pricePerThoughtUsd ? Math.floor(Number(fuel || 0) / selectedModel.pricePerThoughtUsd) : null;
 
-  async function onFile(f: File | undefined) {
-    if (!f) return;
-    if (!f.type.startsWith('image/')) return toast.error('Choose an image file.');
-    if (f.size > 5 * 1024 * 1024) return toast.error('Image must be under 5 MB.');
-    try {
-      setImageData(await fileToSquareDataUrl(f));
-      setImageUrl('');
-    } catch {
-      toast.error('Could not read that image.');
-    }
-  }
-
   async function approve() {
     if (!contracts.launcher || fuelUnits == null) return;
     const r = await run('Approve USDC', () =>
@@ -179,10 +165,11 @@ export function LaunchForm() {
   }
 
   async function launch() {
-    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || !draftId) return;
+    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || !draftId || !pinned || upload.status !== 'done') return;
     const modelId = selectedModel?.id ?? '';
     if (env.useMock) {
-      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image, model: modelId, buyback, xHandle });
+      // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
+      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle });
       toast.success(`Mock: $${symbol.toUpperCase()} launched`);
       sessionStorage.removeItem(DRAFT_KEY);
       router.push(`/token/${id}`);
@@ -191,14 +178,16 @@ export function LaunchForm() {
     const params = {
       name: name.trim(),
       symbol: symbol.toUpperCase(),
-      image,
+      image: pinned.url,
       // Clanker v4 metadata schema (shown on clanker.world): description, auditUrls, socialMediaUrls[{platform,url}].
+      // `imageIpfs` is ours: the gateway-independent ipfs:// URI of the same image.
       metadata: JSON.stringify({
         description: `${identity.trim().split('\n')[0]} — an autonomous agent coin launched on Bootr.`,
         socialMediaUrls: [
           ...(xHandle ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
           { platform: 'website', url: env.siteUrl },
         ],
+        imageIpfs: pinned.ipfsUri,
       }),
       context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
       salt: keccak256(toHex(draftId)),
@@ -256,41 +245,7 @@ export function LaunchForm() {
             />
           </div>
         </div>
-        <div className="flex items-start gap-4">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-sm border border-dashed border-hairline-strong bg-canvas-soft text-mute hover:text-ink"
-            aria-label="Upload image"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              void onFile(e.dataTransfer.files[0]);
-            }}
-          >
-            {image ? <img src={image} alt="Coin image preview" className="size-full object-cover" /> : <UploadIcon size={20} />}
-          </button>
-          <input ref={fileRef} type="file" accept="image/*" className="sr-only" onChange={(e) => void onFile(e.target.files?.[0])} />
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <Label htmlFor="image-url" hint="Square, at least 192 px">
-              Image
-            </Label>
-            <Input
-              id="image-url"
-              placeholder="https://… or ipfs://…"
-              value={imageData ? 'Uploaded file (resized to 192 px)' : imageUrl}
-              readOnly={!!imageData}
-              onChange={(e) => setImageUrl(e.target.value)}
-            />
-            {imageData ? (
-              <button type="button" className="self-start text-caption text-link hover:underline" onClick={() => setImageData(null)}>
-                Remove upload
-              </button>
-            ) : (
-              <span className="text-caption text-mute">Drop a file on the square or paste a URL.</span>
-            )}
-          </div>
-        </div>
+        <ImageUpload draftId={draftId} state={upload} onState={setUpload} />
       </Section>
 
       <Section n={2} title="Agent" description="Who the agent is, which model thinks for it, and what it works on.">

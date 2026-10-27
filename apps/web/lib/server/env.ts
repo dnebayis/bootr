@@ -55,6 +55,21 @@ export function adminConfigReadKey(): { key: string; source: 'INDEXER_SERVICE_KE
   return fallback ? { key: fallback, source: 'SENDER_SERVICE_KEY' } : null;
 }
 
+export type PinataServerEnv = {
+  /** Pinata API JWT (PINATA_JWT, scope `org:files:write`); null when unset. */
+  jwt: string | null;
+  /**
+   * Mock pinning: `/api/upload` returns a deterministic CID computed locally and pins nothing.
+   * On with PINATA_MOCK=1, or in app mock mode (NEXT_PUBLIC_USE_MOCK / no indexer) while PINATA_JWT is unset.
+   */
+  mock: boolean;
+};
+
+export function pinataEnv(): PinataServerEnv {
+  const jwt = str(process.env.PINATA_JWT) || null;
+  return { jwt, mock: str(process.env.PINATA_MOCK) === '1' || (env.useMock && !jwt) };
+}
+
 /**
  * Canonical site origin (`NEXT_PUBLIC_SITE_URL`, default https://bootr.fun). SIWE domain/URI and the
  * admin CSRF origin check compare against this, never against `Host` / `X-Forwarded-Host` (M-3).
@@ -101,6 +116,9 @@ export function configReport(): { errors: string[]; warnings: string[] } {
     } else {
       warnings.push('INDEXER_SERVICE_KEY is not set: the indexer cannot read /api/admin/config.');
     }
+  }
+  if (!pinataEnv().jwt && !pinataEnv().mock) {
+    warnings.push('PINATA_JWT is not set: image uploads (/api/upload) answer 503 and coins cannot be launched with an image.');
   }
   const session = str(process.env.SESSION_SECRET);
   if (session && session.length < 32) warnings.push('SESSION_SECRET is shorter than 32 characters; use a long random secret.');

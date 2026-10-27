@@ -1,4 +1,5 @@
 import { keccak256, toHex, type Hex } from 'viem';
+import { UPLOAD_IMAGE_TYPES, UPLOAD_MAX_BYTES, type UploadResult } from './ipfs';
 import { FALLBACK_MODELS, THOUGHT, type ModelsResponse } from './models';
 
 export { FALLBACK_MODELS, filterAllowedModels, type ModelOption } from './models';
@@ -61,15 +62,40 @@ export const WORKER_TEMPLATES: WorkerTemplate[] = [
   },
 ];
 
-/** Downscale an uploaded image to a small square data URL (calldata-friendly). TODO: upload to IPFS. */
-export async function fileToSquareDataUrl(file: File, size = 192): Promise<string> {
-  const bitmap = await createImageBitmap(file);
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas unavailable');
-  const s = Math.min(bitmap.width, bitmap.height);
-  ctx.drawImage(bitmap, (bitmap.width - s) / 2, (bitmap.height - s) / 2, s, s, 0, 0, size, size);
-  return canvas.toDataURL('image/webp', 0.82);
+/** Client-side pre-check for `/api/upload` (the server re-checks by magic bytes). Null when acceptable. */
+export function imageFileProblem(file: File): string | null {
+  if (!(UPLOAD_IMAGE_TYPES as readonly string[]).includes(file.type)) return 'Use a PNG, JPG, WebP or SVG image.';
+  if (file.size > UPLOAD_MAX_BYTES) return 'Image must be at most 2 MB.';
+  if (file.size === 0) return 'That file is empty.';
+  return null;
+}
+
+/**
+ * Pins a token image to IPFS via `POST /api/upload` (XHR, for upload progress). Rejects with a
+ * user-facing message. `signal` aborts the request.
+ */
+export function uploadImage(file: File, draftId: string, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const form = new FormData();
+    form.append('file', file);
+    form.append('draftId', draftId);
+    xhr.open('POST', '/api/upload');
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      const body = xhr.response as (Partial<UploadResult> & { message?: unknown }) | null;
+      if (xhr.status === 200 && typeof body?.url === 'string' && typeof body.ipfsUri === 'string' && typeof body.cid === 'string') {
+        resolve({ cid: body.cid, ipfsUri: body.ipfsUri, url: body.url, ...(body.mock ? { mock: true as const } : {}) });
+      } else {
+        reject(new Error(typeof body?.message === 'string' ? body.message : `Upload failed (${xhr.status}).`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed. Check your connection and try again.'));
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+    xhr.send(form);
+  });
 }
