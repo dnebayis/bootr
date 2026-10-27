@@ -1,7 +1,7 @@
 # Paths excluded from `railway up` uploads (the Dockerfiles never read them).
 .git
-brand
-docs
+/brand
+/docs
 packages/contracts/out
 packages/contracts/cache
 packages/contracts/lib
