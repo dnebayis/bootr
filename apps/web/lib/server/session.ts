@@ -1,6 +1,6 @@
 import { cookies, headers } from 'next/headers';
 import { isSessionRevoked } from './server-state';
-import { ADMIN_COOKIE, CONSOLE_HEADER, consoleSlug, verifyAdminCookie, type AdminSession } from './session-core';
+import { ADMIN_COOKIE, CONSOLE_HEADER, CONSOLE_PARAM, consoleSlug, verifyAdminCookie, type AdminSession } from './session-core';
 
 /** Signed, unexpired, allowlisted and not revoked at logout. */
 export async function verifyAdminSession(token: string | undefined | null): Promise<AdminSession | null> {
@@ -14,9 +14,18 @@ export async function getAdminSession(): Promise<AdminSession | null> {
 }
 
 /** True when the request came through proxy.ts with the correct slug. */
-export async function consoleRequestIsValid(): Promise<boolean> {
+export type SearchParams = Record<string, string | string[] | undefined>;
+
+/**
+ * True when the request came through proxy.ts for the configured slug: the proxy puts the slug in the
+ * rewritten URL (`searchParams`, works on the standalone server) and in a request header (`next start`).
+ * Either channel is enough; a direct request to the literal `/console-admin` route carries neither.
+ */
+export async function consoleRequestIsValid(searchParams?: SearchParams): Promise<boolean> {
   const slug = consoleSlug();
   if (!slug) return false;
+  const param = searchParams?.[CONSOLE_PARAM];
+  if (typeof param === 'string' && param === slug) return true;
   const h = await headers();
   const got = h.get(CONSOLE_HEADER);
   return !!got && got === slug;

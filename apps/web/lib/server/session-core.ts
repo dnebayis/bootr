@@ -8,6 +8,12 @@
 export const ADMIN_COOKIE = 'bootr_admin';
 export const NONCE_COOKIE = 'bootr_siwe_nonce';
 export const CONSOLE_HEADER = 'x-bootr-console-slug';
+/**
+ * Query parameter the proxy adds to the rewritten console URL. The standalone server (`node server.js`,
+ * the container) does not deliver request-header overrides from `NextResponse.rewrite` to `headers()`,
+ * while `next start` does; the parameter reaches the page in both.
+ */
+export const CONSOLE_PARAM = '__console';
 export const SESSION_TTL_S = 8 * 60 * 60;
 
 /** `s` is a random session id, so a single session can be revoked at logout (see server-state.ts). */

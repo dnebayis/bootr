@@ -71,7 +71,7 @@ test('/console-<slug> is a 404 without a session', async ({ page }) => {
 });
 
 test('literal route path is not reachable directly', async ({ page }) => {
-  const res = await page.goto('/console-[slug]');
+  const res = await page.goto('/console-admin');
   expect(res?.status()).toBe(404);
 });
 

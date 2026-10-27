@@ -138,7 +138,7 @@ already connected X account. "Disconnect" issues a new draft id, so the old conn
 
 ## Admin console and auth
 
-Next.js only treats whole-segment brackets as dynamic, so the page lives at the literal route `app/console-[slug]/` and
+Next.js only treats whole-segment brackets as dynamic, so the page lives at the literal route `app/console-admin/` and
 `proxy.ts` maps requests onto it:
 
 1. `/console-<x>` with `x !== ADMIN_CONSOLE_SLUG` (or the slug unset) → 404.
