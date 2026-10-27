@@ -172,13 +172,13 @@ export const addresses = {
     },
     bootr: {
       // Deployed 2026-10-24 (block 49367726), Sourcify exact match.
-      launcher: '0xD4747d91BE6121eBa7602D9114B51d6C184084EF',
-      guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
-      burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
+      launcher: '0xfDB1Fedbc6be32864D933Fba56805D9F4D52979b',
+      guardian: '0x386CBE5DD03C38a31e52d94105d5CA83A311e21d',
+      burnerImplementation: '0x52f8Ad63ad88a40199a81B39C333C158651caE90',
       // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
-      callPolicy: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
+      callPolicy: '0x7DcD91d4a1c520217F7258558Cf3560f93337802',
       // TODO: fill after `forge script script/DeploySwapHelper.s.sol`, then rotate every session key.
-      swapHelper: null,
+      swapHelper: '0x31d94A762a698fC1fD6502CFAcCB921088307569',
     },
   },
 } as const satisfies Record<SupportedChainId, ChainAddresses>;
