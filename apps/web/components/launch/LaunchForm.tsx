@@ -178,7 +178,14 @@ export function LaunchForm() {
       name: name.trim(),
       symbol: symbol.toUpperCase(),
       image,
-      metadata: JSON.stringify({ description: identity.trim().split('\n')[0], socialMediaUrls: xHandle ? [`https://x.com/${xHandle}`] : [] }),
+      // Clanker v4 metadata schema (shown on clanker.world): description, auditUrls, socialMediaUrls[{platform,url}].
+      metadata: JSON.stringify({
+        description: `${identity.trim().split('\n')[0]} — an autonomous agent coin launched on Bootr.`,
+        socialMediaUrls: [
+          ...(xHandle ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
+          { platform: 'website', url: env.siteUrl },
+        ],
+      }),
       context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
       salt: keccak256(toHex(draftId)),
       buybackBurn: buyback,
