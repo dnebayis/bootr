@@ -161,7 +161,7 @@ export const addresses = {
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       // TODO: fill after `forge script script/DeployCallPolicy.s.sol` (BootrCallPolicy).
-      callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
+      callPolicy: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
     },
   },
 } as const satisfies Record<SupportedChainId, ChainAddresses>;
