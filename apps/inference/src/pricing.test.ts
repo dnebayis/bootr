@@ -179,16 +179,17 @@ describe('usage-based charge (upto)', () => {
 describe('price table', () => {
   it('ships defaults for the required models', () => {
     for (const id of [
-      'anthropic/claude-sonnet-4.5',
+      'anthropic/claude-sonnet-4.6',
       'anthropic/claude-haiku-4.5',
       'openai/gpt-4.1-mini',
+      'openai/gpt-5.4-mini',
       'google/gemini-2.5-flash',
-      'deepseek/deepseek-chat',
-      'x-ai/grok-4',
+      'deepseek/deepseek-v3.2',
+      'x-ai/grok-4.7',
     ]) {
       expect(DEFAULT_PRICE_TABLE.models[id], id).toBeDefined();
     }
-    expect(Object.keys(DEFAULT_PRICE_TABLE.models).length).toBeGreaterThanOrEqual(10);
+    expect(Object.keys(DEFAULT_PRICE_TABLE.models).length).toBeGreaterThanOrEqual(20);
   });
 
   it('loads an override from JSON and validates it', () => {

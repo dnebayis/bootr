@@ -49,6 +49,13 @@ describe('inferenceIdempotencyKey', () => {
 });
 
 describe('maxQuoteFor', () => {
+  it('matches OpenRouter provider-prefixed ids on the bare model name', () => {
+    expect(maxQuoteFor('anthropic/claude-haiku-4.5')).toBe(MAX_QUOTE_MICRO_USDC['claude-haiku']);
+    expect(maxQuoteFor('anthropic/claude-opus-4.8')).toBe(MAX_QUOTE_MICRO_USDC['claude-opus']);
+    expect(maxQuoteFor('openai/gpt-5.6-terra')).toBe(MAX_QUOTE_MICRO_USDC['gpt-5.6-terra']);
+    expect(maxQuoteFor('google/gemini-3.5-flash-lite')).toBe(MAX_QUOTE_MICRO_USDC['gemini-3.5-flash-lite']);
+    expect(maxQuoteFor('vendor/unknown-model')).toBe(MAX_QUOTE_MICRO_USDC.default);
+  });
   it('uses the longest matching prefix and falls back to default', () => {
     expect(maxQuoteFor('gpt-5-mini-2026')).toBe(MAX_QUOTE_MICRO_USDC['gpt-5-mini']);
     expect(maxQuoteFor('gpt-5')).toBe(MAX_QUOTE_MICRO_USDC['gpt-5']);

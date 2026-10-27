@@ -36,7 +36,7 @@ export type ModelPrice = z.infer<typeof modelPriceSchema>;
 export type PriceTable = z.infer<typeof priceTableSchema>;
 
 /**
- * Defaults derived from OpenRouter list prices (USD per 1M tokens, Oct 2026). Re-verify against
+ * Defaults derived from OpenRouter list prices on 2026-10-27 (https://openrouter.ai/api/v1/models). Re-verify against
  * https://openrouter.ai/models before mainnet; override with INFERENCE_PRICE_TABLE_JSON.
  * Context limits are clamped to each model's base price tier where long-context pricing differs.
  */
@@ -45,72 +45,33 @@ export const DEFAULT_PRICE_TABLE: PriceTable = {
   marginFixedMicroUsdc: 100,
   minQuoteMicroUsdc: 1000,
   models: {
-    'anthropic/claude-sonnet-4.5': {
-      inputMicroUsdcPerKTokens: 3000,
-      outputMicroUsdcPerKTokens: 15000,
-      contextLength: 200_000,
-      maxOutputTokens: 64_000,
-    },
-    'anthropic/claude-haiku-4.5': {
-      inputMicroUsdcPerKTokens: 1000,
-      outputMicroUsdcPerKTokens: 5000,
-      contextLength: 200_000,
-      maxOutputTokens: 64_000,
-    },
-    'anthropic/claude-opus-4.5': {
-      inputMicroUsdcPerKTokens: 5000,
-      outputMicroUsdcPerKTokens: 25000,
-      contextLength: 200_000,
-      maxOutputTokens: 32_000,
-    },
-    'openai/gpt-4.1': {
-      inputMicroUsdcPerKTokens: 2000,
-      outputMicroUsdcPerKTokens: 8000,
-      contextLength: 1_047_576,
-      maxOutputTokens: 32_768,
-    },
-    'openai/gpt-4.1-mini': {
-      inputMicroUsdcPerKTokens: 400,
-      outputMicroUsdcPerKTokens: 1600,
-      contextLength: 1_047_576,
-      maxOutputTokens: 32_768,
-    },
-    'openai/gpt-5-mini': {
-      inputMicroUsdcPerKTokens: 250,
-      outputMicroUsdcPerKTokens: 2000,
-      contextLength: 400_000,
-      maxOutputTokens: 128_000,
-    },
-    'google/gemini-2.5-flash': {
-      inputMicroUsdcPerKTokens: 300,
-      outputMicroUsdcPerKTokens: 2500,
-      contextLength: 1_048_576,
-      maxOutputTokens: 65_535,
-    },
-    'google/gemini-2.5-pro': {
-      inputMicroUsdcPerKTokens: 1250,
-      outputMicroUsdcPerKTokens: 10000,
-      contextLength: 200_000,
-      maxOutputTokens: 65_536,
-    },
-    'deepseek/deepseek-chat': {
-      inputMicroUsdcPerKTokens: 300,
-      outputMicroUsdcPerKTokens: 1200,
-      contextLength: 163_840,
-      maxOutputTokens: 16_384,
-    },
-    'x-ai/grok-4': {
-      inputMicroUsdcPerKTokens: 3000,
-      outputMicroUsdcPerKTokens: 15000,
-      contextLength: 128_000,
-      maxOutputTokens: 64_000,
-    },
-    'meta-llama/llama-3.3-70b-instruct': {
-      inputMicroUsdcPerKTokens: 200,
-      outputMicroUsdcPerKTokens: 600,
-      contextLength: 131_072,
-      maxOutputTokens: 16_384,
-    },
+    'anthropic/claude-opus-4.8': { inputMicroUsdcPerKTokens: 5000, outputMicroUsdcPerKTokens: 25000, contextLength: 400000, maxOutputTokens: 32768 },
+    'anthropic/claude-sonnet-4.6': { inputMicroUsdcPerKTokens: 3000, outputMicroUsdcPerKTokens: 15000, contextLength: 400000, maxOutputTokens: 32768 },
+    'anthropic/claude-sonnet-4.5': { inputMicroUsdcPerKTokens: 3000, outputMicroUsdcPerKTokens: 15000, contextLength: 400000, maxOutputTokens: 32768 },
+    'anthropic/claude-haiku-4.5': { inputMicroUsdcPerKTokens: 1000, outputMicroUsdcPerKTokens: 5000, contextLength: 200000, maxOutputTokens: 32768 },
+    'openai/gpt-5.6-luna': { inputMicroUsdcPerKTokens: 200, outputMicroUsdcPerKTokens: 1200, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5.6-terra': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5.5': { inputMicroUsdcPerKTokens: 5000, outputMicroUsdcPerKTokens: 30000, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5.4': { inputMicroUsdcPerKTokens: 2500, outputMicroUsdcPerKTokens: 15000, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5.4-mini': { inputMicroUsdcPerKTokens: 750, outputMicroUsdcPerKTokens: 4500, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5.4-nano': { inputMicroUsdcPerKTokens: 200, outputMicroUsdcPerKTokens: 1250, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5-mini': { inputMicroUsdcPerKTokens: 250, outputMicroUsdcPerKTokens: 2000, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-5-nano': { inputMicroUsdcPerKTokens: 50, outputMicroUsdcPerKTokens: 400, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-4.1': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 8000, contextLength: 400000, maxOutputTokens: 32768 },
+    'openai/gpt-4.1-mini': { inputMicroUsdcPerKTokens: 400, outputMicroUsdcPerKTokens: 1600, contextLength: 400000, maxOutputTokens: 32768 },
+    'google/gemini-3.8-flash': { inputMicroUsdcPerKTokens: 825, outputMicroUsdcPerKTokens: 4125, contextLength: 400000, maxOutputTokens: 32768 },
+    'google/gemini-3.1-pro-preview': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, contextLength: 400000, maxOutputTokens: 32768 },
+    'google/gemini-3.5-flash-lite': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500, contextLength: 400000, maxOutputTokens: 32768 },
+    'google/gemini-2.5-flash': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500, contextLength: 400000, maxOutputTokens: 32768 },
+    'x-ai/grok-4.7': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 6000, contextLength: 400000, maxOutputTokens: 32768 },
+    'x-ai/grok-4.20': { inputMicroUsdcPerKTokens: 1250, outputMicroUsdcPerKTokens: 2500, contextLength: 400000, maxOutputTokens: 32768 },
+    'deepseek/deepseek-v3.2': { inputMicroUsdcPerKTokens: 280, outputMicroUsdcPerKTokens: 420, contextLength: 163840, maxOutputTokens: 32768 },
+    'moonshotai/kimi-k2.6': { inputMicroUsdcPerKTokens: 650, outputMicroUsdcPerKTokens: 3410, contextLength: 262144, maxOutputTokens: 32768 },
+    'minimax/minimax-m2.7': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 1200, contextLength: 204800, maxOutputTokens: 32768 },
+    'qwen/qwen3-235b-a22b-2507': { inputMicroUsdcPerKTokens: 90, outputMicroUsdcPerKTokens: 550, contextLength: 262144, maxOutputTokens: 16384 },
+    'meta-llama/llama-4-maverick': { inputMicroUsdcPerKTokens: 188, outputMicroUsdcPerKTokens: 652, contextLength: 400000, maxOutputTokens: 16384 },
+    'mistralai/mistral-medium-3.1': { inputMicroUsdcPerKTokens: 400, outputMicroUsdcPerKTokens: 2000, contextLength: 131072, maxOutputTokens: 32768 },
+    'z-ai/glm-4.6': { inputMicroUsdcPerKTokens: 550, outputMicroUsdcPerKTokens: 2200, contextLength: 204800, maxOutputTokens: 32768 },
   },
 };
 

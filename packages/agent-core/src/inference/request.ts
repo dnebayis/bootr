@@ -93,19 +93,47 @@ export function inferenceIdempotencyKey(agentId: string, cycle: number): string 
 /** Maximum quote (micro-USDC) accepted for one request, per model prefix. */
 export const MAX_QUOTE_MICRO_USDC: Readonly<Record<string, number>> = {
   default: 500_000,
+  // OpenAI
+  'gpt-5.6-terra': 2_500_000,
+  'gpt-5.6-luna': 400_000,
+  'gpt-5.5': 4_000_000,
+  'gpt-5.4': 2_500_000,
+  'gpt-5.4-mini': 800_000,
+  'gpt-5.4-nano': 300_000,
   'gpt-5': 2_000_000,
   'gpt-5-mini': 400_000,
+  'gpt-5-nano': 150_000,
   'gpt-4.1': 1_000_000,
   'gpt-4.1-mini': 300_000,
-  'claude-opus': 3_000_000,
+  // Anthropic
+  'claude-opus': 3_500_000,
   'claude-sonnet': 1_500_000,
-  'claude-haiku': 300_000,
+  'claude-haiku': 500_000,
+  // Google
+  'gemini-3.1-pro': 1_500_000,
+  'gemini-3.8-flash': 700_000,
+  'gemini-3.5-flash-lite': 400_000,
+  'gemini-2.5-flash': 400_000,
+  // Others
+  'grok-4.7': 1_000_000,
+  'grok-4.20': 600_000,
+  'deepseek': 200_000,
+  'kimi': 600_000,
+  'minimax': 300_000,
+  'qwen3': 200_000,
+  'llama-4': 200_000,
+  'mistral': 400_000,
+  'glm': 400_000,
 };
 
-/** Longest matching model prefix wins; unknown models fall back to `default`. */
+/**
+ * Longest matching model prefix wins; unknown models fall back to `default`. Prefixes are matched
+ * against the bare model name, so OpenRouter ids such as `anthropic/claude-haiku-4.5` match `claude-haiku`.
+ */
 export function maxQuoteFor(model: string, table: Readonly<Record<string, number>> = MAX_QUOTE_MICRO_USDC): number {
+  const bare = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
   const match = Object.keys(table)
-    .filter((prefix) => prefix !== 'default' && model.startsWith(prefix))
+    .filter((prefix) => prefix !== 'default' && (bare.startsWith(prefix) || model.startsWith(prefix)))
     .sort((a, b) => b.length - a.length)[0];
   return match !== undefined ? table[match]! : (table.default ?? MAX_QUOTE_MICRO_USDC.default!);
 }
