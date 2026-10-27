@@ -16,6 +16,11 @@ const base = {
 describe('deriveStatus', () => {
   it('awake when recently active and funded', () => expect(deriveStatus(base)).toBe('awake'));
   it('sleeping when USDC < 1', () => expect(deriveStatus({ ...base, treasuryUsdc: 999_999n })).toBe('sleeping'));
+  it('counts the spender float as fuel (kernel + spender >= 1 USDC)', () => {
+    expect(deriveStatus({ ...base, treasuryUsdc: 0n, spenderUsdc: 1_000_000n })).toBe('awake');
+    expect(deriveStatus({ ...base, treasuryUsdc: 600_000n, spenderUsdc: 400_000n })).toBe('awake');
+    expect(deriveStatus({ ...base, treasuryUsdc: 600_000n, spenderUsdc: 399_999n })).toBe('sleeping');
+  });
   it('sleeping when idle > 6h', () => expect(deriveStatus({ ...base, lastActivityAt: now - 7 * 3600 })).toBe('sleeping'));
   it('supervisor hints', () => {
     expect(deriveStatus({ ...base, supervisorHint: 'sleeping' })).toBe('sleeping');

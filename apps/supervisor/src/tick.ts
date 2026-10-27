@@ -227,6 +227,7 @@ async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHa
       lastPostAt: state.lastPostAt ? Math.floor(state.lastPostAt / 1000) : lastPostAt ? Math.floor(lastPostAt / 1000) : null,
       postsCount24h: count,
       status: runtime.status === 'paused' ? 'paused' : runtime.status === 'sleeping' ? 'sleeping' : status,
+      spender: agent.spender ?? null,
     });
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'social stats post failed');

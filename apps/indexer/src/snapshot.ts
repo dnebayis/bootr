@@ -8,6 +8,7 @@ import { Erc20Abi } from '../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../abis/Multicall3';
 import { PoolManagerAbi } from '../abis/PoolManager';
 import { fetchAdminConfig } from './lib/admin-config';
+import { decodeAgentBalances, type AgentBalances } from './lib/balances';
 import { indexerEnv } from './lib/env';
 import { decodeLiquidity, decodeSlot0, poolLiquiditySlot, poolStateSlot } from './lib/pool';
 import { toUnits, usd } from './lib/price';
@@ -33,8 +34,8 @@ import { dayId, dayStart } from './lib/time';
  * Periodic snapshot (every INDEXER_SNAPSHOT_INTERVAL blocks, default 30 ~ 60 s on Base).
  *
  * Near the chain tip ("live": block younger than 15 min) it also refreshes ETH/USD, pool state
- * (PoolManager.extsload), kernel balances (one multicall), the admin config and the supervisor's
- * social data. During historical backfill those RPC/HTTP reads are skipped (they would only
+ * (PoolManager.extsload), kernel balances plus each agent's spender USDC float (one multicall), the
+ * admin config and the supervisor's social data (which carries the spender address). During historical backfill those RPC/HTTP reads are skipped (they would only
  * describe the past and be overwritten at the tip); time-based fields (windows, status,
  * graduation) are still recomputed so the history stays coherent.
  */
@@ -42,9 +43,8 @@ const LIVE_WINDOW_SEC = 15 * 60;
 const KERNELS_PER_GETLOGS = 100;
 const usdcTransfer = getAbiItem({ abi: Erc20Abi, name: 'Transfer' });
 
-type Balances = { usdc: bigint; weth: bigint; eth: bigint; own: bigint };
-
-async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow[]) {
+/** `spenders`: kernel -> x402 spender EOA (null / missing = none known). */
+async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow[], spenders: Map<string, string | null>) {
   const env = indexerEnv();
   const pm = env.addresses.uniswap.poolManager;
   const calls = [
@@ -56,6 +56,7 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
     })),
     ...agents.flatMap((a) => {
       const t = tokens.find((x) => x.id === a.token);
+      const spender = spenders.get(a.id);
       return [
         { abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf' as const, args: [a.id] as const },
         { abi: Erc20Abi, address: env.addresses.weth, functionName: 'balanceOf' as const, args: [a.id] as const },
@@ -66,12 +67,14 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
           functionName: 'balanceOf' as const,
           args: [a.id] as const,
         },
+        ...(spender
+          ? [{ abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf' as const, args: [spender as Address] as const }]
+          : []),
       ];
     }),
   ];
   const pools = new Map<string, { sqrtPriceX96: bigint; tick: number; liquidity: bigint }>();
-  const balances = new Map<string, Balances>();
-  if (calls.length === 0) return { pools, balances };
+  if (calls.length === 0) return { pools, balances: new Map<string, AgentBalances>() };
   const res = await context.client.multicall({
     contracts: calls as never,
     multicallAddress: MULTICALL3_ADDRESS,
@@ -85,16 +88,7 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
     if (slot0.sqrtPriceX96 === 0n) return;
     pools.set(t.id, { sqrtPriceX96: slot0.sqrtPriceX96, tick: slot0.tick, liquidity: decodeLiquidity(r.result[1]!) });
   });
-  agents.forEach((a, j) => {
-    const base = tokens.length + j * 4;
-    const get = (k: number) => {
-      const r = res[base + k] as { status: string; result?: bigint };
-      return r?.status === 'success' && typeof r.result === 'bigint' ? r.result : undefined;
-    };
-    const [usdc, weth, eth, own] = [get(0), get(1), get(2), get(3)];
-    if (usdc === undefined || weth === undefined || eth === undefined || own === undefined) return;
-    balances.set(a.id, { usdc, weth, eth, own });
-  });
+  const balances = decodeAgentBalances(res as readonly { status: string; result?: unknown }[], tokens.length, agents, spenders);
   return { pools, balances };
 }
 
@@ -193,18 +187,20 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
 
   // ---- live reads
   let pools = new Map<string, { sqrtPriceX96: bigint; tick: number; liquidity: bigint }>();
-  let balances = new Map<string, Balances>();
+  let balances = new Map<string, AgentBalances>();
   let social: Map<string, AgentSocial> | null = null;
   if (live && tokens.length > 0) {
-    try {
-      ({ pools, balances } = await readChainState(context, tokens, agents));
-    } catch (err) {
-      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${(err as Error).message}`);
-    }
     try {
       social = await socialStore().all();
     } catch (err) {
       console.warn(`[indexer] social store read failed: ${(err as Error).message}`);
+    }
+    // spender address: the supervisor's latest push, else the last mirrored value
+    const spenders = new Map(agents.map((a) => [a.id, social?.has(a.id) ? social.get(a.id)!.spender : a.spender] as const));
+    try {
+      ({ pools, balances } = await readChainState(context, tokens, agents, spenders));
+    } catch (err) {
+      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${(err as Error).message}`);
     }
   }
 
@@ -253,13 +249,19 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
     const s = social?.get(a.id);
     const fuelIn = fuelPerKernel.get(a.id) ?? 0n;
     const patch: Partial<typeof schema.agent.$inferInsert> = {};
+    if (s && s.spender !== a.spender) patch.spender = s.spender as Hex | null;
     if (b && !a.claimed) {
+      // kernel balances; the spender float is kept apart (`spenderUsdc`) but counts in treasuryUsd
+      const spenderUsdc = b.spenderUsdc ?? a.spenderUsdc;
       patch.treasuryUsdc = b.usdc;
       patch.treasuryWeth = b.weth;
       patch.treasuryEth = b.eth;
       patch.treasuryOwnToken = b.own;
+      patch.spenderUsdc = spenderUsdc;
       patch.treasuryUsd = usd(
-        toUnits(b.usdc, 6) + (toUnits(b.weth, 18) + toUnits(b.eth, 18)) * ethUsd + toUnits(b.own, 18) * (t?.priceUsd ?? 0),
+        toUnits(b.usdc + spenderUsdc, 6) +
+          (toUnits(b.weth, 18) + toUnits(b.eth, 18)) * ethUsd +
+          toUnits(b.own, 18) * (t?.priceUsd ?? 0),
       );
       patch.balancesUpdatedAt = now;
     }
@@ -277,6 +279,7 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
       paused: merged.paused,
       claimed: merged.claimed,
       treasuryUsdc: merged.treasuryUsdc,
+      spenderUsdc: merged.spenderUsdc,
       supervisorHint: merged.supervisorStatus,
     });
     statuses.set(a.id, status);

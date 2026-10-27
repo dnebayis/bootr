@@ -193,7 +193,9 @@ app.get('/market/:token', async (c) => {
 
 /**
  * Treasury snapshot for `treasury_read`: live kernel balances (falls back to the last indexed
- * values) and claimable fees per recipient and asset from `ClankerFeeLocker.availableFees`.
+ * values), the agent's x402 spender and its USDC float (`spenderUsdc`, not part of `balances.usdc`
+ * but counted in `treasuryUsd`) and claimable fees per recipient and asset from
+ * `ClankerFeeLocker.availableFees`.
  * Note: creator/platform FeeLocker balances aggregate every coin they receive fees from.
  */
 app.get('/treasury/:kernel', async (c) => {
@@ -203,8 +205,13 @@ app.get('/treasury/:kernel', async (c) => {
   if (!t) return c.json({ error: 'not_found' }, 404);
   const [a] = await db.select().from(schema.agent).where(eq(schema.agent.id, t.kernel)).limit(1);
   if (!a) return c.json({ error: 'not_found' }, 404);
-  const [stats] = await db.select().from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1);
+  const [[stats], social] = await Promise.all([
+    db.select().from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1),
+    socialMap(),
+  ]);
   const ethUsd = stats?.ethPriceUsd ?? 0;
+  const s = social.get(a.id);
+  const spender = ((s ? s.spender : a.spender) ?? null) as Address | null;
   const kernel = t.kernel as Address;
   const weth = env.addresses.weth;
   const coin = t.id as Address;
@@ -225,6 +232,7 @@ app.get('/treasury/:kernel', async (c) => {
     eth: a.treasuryEth,
     ownToken: a.treasuryOwnToken,
   };
+  let spenderUsdc = spender && spender === a.spender ? a.spenderUsdc : 0n;
   let source: 'live' | 'indexed' = 'indexed';
   const claimable: {
     recipient: Address;
@@ -248,6 +256,7 @@ app.get('/treasury/:kernel', async (c) => {
           args: [r.recipient, x.asset],
         })),
       ),
+      ...(spender ? [{ abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf', args: [spender] }] : []),
     ];
     const res = await rpcClient().multicall({
       contracts: calls as never,
@@ -271,11 +280,12 @@ app.get('/treasury/:kernel', async (c) => {
         claimable.push({ ...r, ...x, amount, amountUsd: usd(toUnits(amount, 18) * price) });
       }
     }
+    if (spender) spenderUsdc = val(i) ?? spenderUsdc;
   } catch (err) {
     console.warn(`[indexer] /treasury live read failed: ${(err as Error).message}`);
   }
   const treasuryUsd = usd(
-    toUnits(balances.usdc, 6) +
+    toUnits(balances.usdc + spenderUsdc, 6) +
       (toUnits(balances.weth, 18) + toUnits(balances.eth, 18)) * ethUsd +
       toUnits(balances.ownToken, 18) * t.priceUsd,
   );
@@ -293,6 +303,8 @@ app.get('/treasury/:kernel', async (c) => {
       dormantSince: a.dormantSince,
       balances,
       balancesSource: source,
+      spender,
+      spenderUsdc,
       treasuryUsd,
       fuelReceivedUsdc: a.fuelReceivedUsdc,
       feesClaimedUsd: a.feesClaimedUsd,

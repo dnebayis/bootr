@@ -90,14 +90,16 @@ Derived:
   evaluated over the Clanker position range.
 * **Rolling windows**: hourly buckets (`tokenWindow`) → `volume24hUsd`, `volume7dUsd`,
   `fees24hUsd`, `change24hPct`.
-* **Status** (`src/lib/status.ts`): claimed > dormant > paused > sleeping (USDC < 1) > awake
+* **Status** (`src/lib/status.ts`): claimed > dormant > paused > sleeping (kernel + spender USDC < 1) > awake
   (activity < 6 h) > sleeping.
 * **Graduation**: sticky once `marketCapUsd >= platformConfig.graduationThresholdUsd`.
 * **Rollups**: `dailyStat`, `platformStats`.
 * **Snapshot handler**: near the tip it refreshes ETH/USD, pool state (`PoolManager.extsload`),
-  kernel balances (USDC, WETH, ETH via Multicall3 `getEthBalance`, own coin) in one multicall,
-  the admin config, the supervisor social data, and scans USDC `Transfer` logs into kernels
-  (eth_getLogs with an OR-list of kernel topics). During backfill the RPC/HTTP reads are skipped.
+  kernel balances (USDC, WETH, ETH via Multicall3 `getEthBalance`, own coin) plus the USDC float of
+  each agent's x402 spender EOA (`agent.spenderUsdc`; address from the supervisor's social push) in
+  one multicall, the admin config, the supervisor social data, and scans USDC `Transfer` logs into
+  kernels (eth_getLogs with an OR-list of kernel topics). During backfill the RPC/HTTP reads are
+  skipped. `treasuryUsdc` is the kernel only; `treasuryUsd` and the sleep rule count the spender too.
 
 ## Consumers
 
@@ -106,10 +108,11 @@ Derived:
   `/token/:id/fees`, `/holdings/:owner`, `/fuel/:from`, and SSE `/stream` hints
   (`{type: 'launch'|'trade'|'agent', tokenId}`; clients re-fetch).
 * **Supervisor**: `GET /market/:token` (coin or kernel address), `GET /treasury/:kernel` (live
-  balances + `ClankerFeeLocker.availableFees` per recipient and asset), and
+  kernel balances, `spender` + `spenderUsdc`, `ClankerFeeLocker.availableFees` per recipient and asset), and
   `POST /internal/agent/:kernel/social` signed like the sender
   (`Authorization: HMAC <ts>:<hex(HMAC-SHA256(SENDER_SERVICE_KEY, ts\nPOST\npath\nsha256(body)))>`)
-  with `{xHandle?, lastPostAt?, postsCount24h?, status?: 'awake'|'sleeping'}`.
+  with `{xHandle?, lastPostAt?, postsCount24h?, status?: 'awake'|'sleeping', spender?: hex|null}`
+  (stored in `bootr_offchain.agent_social` / `.ponder/agent-social.json`).
 
 ## Layout
 

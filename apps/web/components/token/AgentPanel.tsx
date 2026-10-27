@@ -19,6 +19,25 @@ function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
 }
 
+function baseUnits(raw: string | null | undefined): bigint {
+  try {
+    return raw ? BigInt(raw) : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+/**
+ * Treasury USDC as the agent can spend it: kernel + the float its x402 spender holds for inference
+ * (the indexer keeps them apart: `treasuryUsdc` is the kernel only).
+ */
+function usdcHoldings(a: Agent | null) {
+  if (!a) return { total: undefined, kernel: 0n, spender: 0n };
+  const kernel = baseUnits(a.treasuryUsdc);
+  const spender = baseUnits(a.spenderUsdc);
+  return { total: (kernel + spender).toString(), kernel, spender };
+}
+
 function Posts({ agentId, fallbackHandle, now }: { agentId: string; fallbackHandle: string | null; now: number }) {
   const posts = useAgentPosts(agentId || undefined);
   // The sender knows the live binding; the indexer's handle is only used while posts cannot be loaded.
@@ -95,6 +114,21 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   const registry = identityRegistry(token.chainId);
   const cardHref = /^https?:\/\//i.test(token.agentUri) ? token.agentUri : null;
   const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
+  const usdc = usdcHoldings(agent);
+  const balances: { label: string; value: string; note?: string; title?: string }[] = [
+    {
+      label: 'USDC',
+      value: units(usdc.total, 6, 2),
+      ...(usdc.spender > 0n
+        ? {
+            note: 'incl. spender float',
+            title: `Kernel ${units(usdc.kernel, 6, 2)} USDC + spender ${units(usdc.spender, 6, 2)} USDC (pays inference)`,
+          }
+        : {}),
+    },
+    { label: 'WETH', value: units(agent?.treasuryWeth, 18, 4) },
+    { label: `$${token.symbol}`, value: units(agent?.treasuryOwnToken, 18, 0) },
+  ];
 
   return (
     <Panel title="Agent" action={<StatusDot status={agent?.status} withLabel />}>
@@ -128,14 +162,15 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
           </a>
         </KV>
         <div className="grid grid-cols-3 gap-2 py-2">
-          {[
-            ['USDC', units(agent?.treasuryUsdc, 6, 2)],
-            ['WETH', units(agent?.treasuryWeth, 18, 4)],
-            [`$${token.symbol}`, units(agent?.treasuryOwnToken, 18, 0)],
-          ].map(([k, v]) => (
-            <div key={k} className="rounded-xs bg-canvas-soft px-2 py-1.5">
-              <div className="truncate text-micro text-mute">{k}</div>
-              <div className="truncate font-mono text-caption text-ink tabular">{v}</div>
+          {balances.map((b) => (
+            <div key={b.label} className="rounded-xs bg-canvas-soft px-2 py-1.5" title={b.title}>
+              <div className="truncate text-micro text-mute">{b.label}</div>
+              <div className="truncate font-mono text-caption text-ink tabular">{b.value}</div>
+              {b.note ? (
+                <div className="truncate text-micro text-mute" data-testid="usdc-spender-note">
+                  {b.note}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

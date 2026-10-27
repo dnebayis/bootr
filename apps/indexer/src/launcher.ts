@@ -161,6 +161,8 @@ if (enabledSources().BootrLauncher) {
       treasuryEth: 0n,
       treasuryOwnToken: 0n,
       treasuryUsd: 0,
+      spender: null,
+      spenderUsdc: 0n,
       balancesUpdatedAt: null,
       fuelReceivedUsdc: 0n,
       feesClaimedUsd: 0,

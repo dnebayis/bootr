@@ -107,7 +107,12 @@ export const agent = onchainTable(
     treasuryWeth: t.bigint().notNull(),
     treasuryEth: t.bigint().notNull(),
     treasuryOwnToken: t.bigint().notNull(),
+    /** Kernel balances plus the spender's USDC float (USDC + spenderUsdc + WETH + ETH + own coin, in USD). */
     treasuryUsd: t.doublePrecision().notNull(),
+    /** extra: the agent's x402 spender EOA (pushed by the supervisor with the social stats), null until known. */
+    spender: t.hex(),
+    /** extra: USDC float held by `spender` (base units, 6 dp); not part of `treasuryUsdc` (kernel only). */
+    spenderUsdc: t.bigint().notNull(),
     /** extra: block timestamp of the last balance refresh. */
     balancesUpdatedAt: t.integer(),
     fuelReceivedUsdc: t.bigint().notNull(),

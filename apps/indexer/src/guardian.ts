@@ -3,6 +3,7 @@ import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 
 import { enabledSources } from './lib/env';
+import { toUnits, usd } from './lib/price';
 import { lc, updateAgentStatus } from './lib/store';
 
 if (enabledSources().AgentGuardian) {
@@ -35,14 +36,15 @@ if (enabledSources().AgentGuardian) {
       timestamp: Number(event.block.timestamp),
       txHash: event.transaction.hash,
     });
-    // The sweep empties USDC/WETH/ETH and burns the agent's own coin.
+    // The sweep empties the kernel's USDC/WETH/ETH and burns the agent's own coin. The spender EOA is
+    // not a guardian-held account, so its USDC float (last indexed value) stays in `treasuryUsd`.
     await updateAgentStatus(context, a, Number(event.block.timestamp), {
       claimed: true,
       treasuryUsdc: 0n,
       treasuryWeth: 0n,
       treasuryEth: 0n,
       treasuryOwnToken: 0n,
-      treasuryUsd: 0,
+      treasuryUsd: usd(toUnits(a.spenderUsdc, 6)),
     });
   });
 

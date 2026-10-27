@@ -5,6 +5,8 @@ export interface SocialStats {
   lastPostAt?: number | null;
   postsCount24h?: number;
   status?: 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
+  /** The agent's x402 spender EOA (`sv_agents.spender`), or null until derived. The indexer reads its USDC float. */
+  spender?: string | null;
 }
 
 /** Read-side client for the Ponder indexer REST helpers (docs/data-contract.md). Every read is best effort. */

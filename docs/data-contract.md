@@ -44,8 +44,10 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 | `lastActivityAt` | int | from AgentGuardian activity hook |
 | `dormancyPeriod` | int (s) | |
 | `dormantSince` | int \| null | `lastActivityAt + dormancyPeriod` once passed |
-| `treasuryUsdc`, `treasuryWeth`, `treasuryEth`, `treasuryOwnToken` | string | base units, refreshed each block batch |
-| `treasuryUsd` | float | |
+| `treasuryUsdc`, `treasuryWeth`, `treasuryEth`, `treasuryOwnToken` | string | kernel balances, base units, refreshed each block batch |
+| `spender` | hex \| null | the agent's x402 spender EOA (pays inference; topped up from the kernel), pushed by the supervisor via REST |
+| `spenderUsdc` | string | USDC float held by `spender` (base units), refreshed with the kernel balances; not included in `treasuryUsdc` |
+| `treasuryUsd` | float | kernel USDC + `spenderUsdc` + WETH + ETH + own coin, in USD |
 | `fuelReceivedUsdc` | string | cumulative inbound USDC |
 | `feesClaimedUsd` | float | cumulative claimed from FeeLocker |
 | `reputationScore` | float \| null | from ERC-8004 feedback aggregate |
@@ -90,9 +92,9 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 - `GET /search?q=` → tokens by name/symbol/address/xHandle (ILIKE), limit 20.
 - `GET /token/:id/fees` → `{byKind: {agent, creator, burn, platform}: {accruedUsd, claimedUsd}}`.
 - `GET /stream` → SSE; emits `{type: 'launch'|'trade'|'agent', tokenId}` hints only. Clients re-fetch; never trust payloads.
-- `POST /internal/agent/:kernel/social` (HMAC with `INDEXER_SERVICE_KEY`, same scheme as the sender) → `{xHandle?, lastPostAt?, postsCount24h?, status?}` written by the supervisor.
+- `POST /internal/agent/:kernel/social` (HMAC with `INDEXER_SERVICE_KEY`, same scheme as the sender) → `{xHandle?, lastPostAt?, postsCount24h?, status?, spender?}` written by the supervisor (`spender`: 20-byte hex or null, stored lowercase).
 - `GET /market/:token` → compact snapshot for the supervisor's `read_market` (price, mcap, liquidity, vol24h, holders, fees24h, last 10 trades).
-- `GET /treasury/:kernel` → compact snapshot for `treasury_read` (balances, claimable fees per asset from FeeLocker view, lastActivityAt).
+- `GET /treasury/:kernel` → compact snapshot for `treasury_read` (kernel `balances`, `spender` (hex \| null) and `spenderUsdc` (base units, live with indexed fallback), `treasuryUsd` including the spender float, claimable fees per asset from FeeLocker view, lastActivityAt).
 - `GET /holdings/:owner` → Bootr coins the address currently holds, from the `balance` table: `[{token: {id,name,symbol,image,priceUsd,marketCapUsd}, balance, valueUsd}]`, sorted by `valueUsd` desc.
 - `GET /fuel/:from` → USDC transfers from that address into any agent kernel: `[{kernel, token, symbol, amount, amountUsdc, amountUsd, timestamp, txHash}]` (`amountUsdc` = `amount`, base units). The same transfers maintain `agent.fuelReceivedUsdc`.
 - Ponder built-ins: `/health`, `/ready`, `/status`, `/metrics` (reserved route names).
@@ -114,6 +116,7 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 - **Extra tables**: `pool`, `agentIdentity`, `tokenWindow` (hourly buckets for rolling windows), `balance`, `feeBalance`, `feeRecipient`, `burner`, `fuel`, `sessionKey`, `feedback`, `priceFeed`.
 - **Precision**: `*Usd` totals are rounded to 6 dp, but unit prices (`token.priceUsd`, `trade.priceUsd`, `platformStats.bootPriceUsd`) keep 12 significant digits, since a fresh coin trades around 1e-7 USD.
 - **Fee economics**: the Clanker hook charges a protocol fee of 20% of the LP fee on top (1% LP fee → 1.2% gross); recipients share 100% of the LP fee by `rewardBps` (so `agentBps…platformBps` are of the full LP fee). `trade.feeUsd` / `fees24hUsd` = `valueUsd × Swap.fee / 1e6`.
-- **Social data** (`xHandle`, `lastPostAt`, `postsCount24h`, supervisor `status`) is stored off-chain (Postgres schema `bootr_offchain` or `.ponder/agent-social.json` under PGlite) because Ponder tables are read-only from the API. REST responses merge it live; GraphQL `token.xHandle` / `agent.lastPostAt` / `agent.postsCount24h` lag by one snapshot (~60 s).
-- **Status**: `claimed` > `dormant` (now − lastActivityAt ≥ dormancyPeriod) > `paused` > `sleeping` (treasury USDC < 1) > `awake` (activity < 6 h, or supervisor reported `awake`) > `sleeping`.
+- **Social data** (`xHandle`, `lastPostAt`, `postsCount24h`, supervisor `status`, `spender`) is stored off-chain (Postgres schema `bootr_offchain` or `.ponder/agent-social.json` under PGlite) because Ponder tables are read-only from the API. REST responses merge it live; GraphQL `token.xHandle` / `agent.lastPostAt` / `agent.postsCount24h` / `agent.spender` lag by one snapshot (~60 s). The Postgres table gains its `spender` column with `ADD COLUMN IF NOT EXISTS`; file entries without it read as `spender: null`.
+- **Spender float**: each agent pays x402 inference from an off-chain-derived spender EOA that the kernel tops up, so part of its USDC lives outside the kernel. The live snapshot adds one USDC `balanceOf(spender)` per agent with a known spender to the same multicall as the kernel balances (skipped during backfill like the other live reads; a failed spender read keeps the last `spenderUsdc`). `treasuryUsdc` stays kernel only; `spenderUsdc` is separate; `treasuryUsd` and the sleep rule include both. A dormancy claim sweeps the kernel only, so a claimed agent's `treasuryUsd` keeps the last spender float.
+- **Status**: `claimed` > `dormant` (now − lastActivityAt ≥ dormancyPeriod) > `paused` > `sleeping` (kernel USDC + spender USDC < 1, same rule as the supervisor) > `awake` (activity < 6 h, or supervisor reported `awake`) > `sleeping`.
 - **Admin config**: `GET ${ADMIN_CONFIG_URL}` sends both `Authorization: HMAC <ts>:<sig>` (sender scheme) and `x-bootr-timestamp` / `x-bootr-signature` (web scheme). `graduationThresholdUsd` and optional `bootToken` are read; `BOOT_TOKEN_ADDRESS` is the env fallback.

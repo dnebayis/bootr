@@ -131,6 +131,9 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
       : Math.floor(Date.now() / 1000) - Math.floor(rand() * 3600 * 8);
   const graduated = mcap >= 50_000;
   const treasuryUsd = Math.round(5 + rand() * 900);
+  // x402 spender float (deterministic, no rand() draw so the rest of the mock stays stable):
+  // a few USDC carved out of the treasury's USDC share; every 4th agent's spender is empty.
+  const spenderUsdc = i % 4 === 3 ? 0 : Math.round(Math.min(treasuryUsd * 0.05, 4.5) * 1e6);
   const token: Token = {
     id,
     chainId: 84532,
@@ -173,10 +176,12 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
     lastActivityAt,
     dormancyPeriod: 90 * 86400,
     dormantSince: status === 'dormant' || status === 'claimed' ? lastActivityAt + 90 * 86400 : null,
-    treasuryUsdc: String(Math.round(treasuryUsd * 0.6 * 1e6)),
+    treasuryUsdc: String(Math.round(treasuryUsd * 0.6 * 1e6) - spenderUsdc),
     treasuryWeth: (BigInt(Math.round(treasuryUsd * 0.3 * 1e6)) * 10n ** 12n / 3000n).toString(),
     treasuryEth: (BigInt(Math.round(treasuryUsd * 0.02 * 1e6)) * 10n ** 12n / 3000n).toString(),
     treasuryOwnToken: (BigInt(Math.round(rand() * 5_000_000)) * 10n ** 18n).toString(),
+    spender: `0x${kernel.slice(2, 40)}5e` as Address,
+    spenderUsdc: String(spenderUsdc),
     treasuryUsd,
     fuelReceivedUsdc: String(Math.round((20 + rand() * 300) * 1e6)),
     feesClaimedUsd: Math.round(vol * 0.002 * 100) / 100,

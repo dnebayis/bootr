@@ -32,6 +32,27 @@ test('token page renders agent, fee split and trades', async ({ page }) => {
   await expect(page.getByText(/Inactive for \d+ days/)).toBeVisible();
 });
 
+test('agent panel counts the spender float in treasury USDC (mock mode)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('a[href^="/token/0x"]').first()).toBeVisible();
+  const hrefs = [...new Set(await page.locator('a[href^="/token/0x"]').evaluateAll((els) => els.map((e) => e.getAttribute('href') ?? '')))].slice(0, 4);
+  // three of every four mock agents hold a spender float, so one of the first four coins shows the caption
+  let shown = false;
+  for (const href of hrefs) {
+    await page.goto(href);
+    await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+    await expect(page.getByText('USDC', { exact: true }).first()).toBeVisible();
+    const note = page.getByTestId('usdc-spender-note');
+    if ((await note.count()) > 0) {
+      await expect(note).toHaveText('incl. spender float');
+      await expect(note.locator('..')).toHaveAttribute('title', /^Kernel .+ USDC \+ spender .+ USDC/);
+      shown = true;
+      break;
+    }
+  }
+  expect(shown).toBe(true);
+});
+
 test('docs fee math shows the on-top Clanker example', async ({ page }) => {
   await page.goto('/docs/fees');
   await expect(page.getByRole('heading', { level: 1, name: 'Fee math' })).toBeVisible();

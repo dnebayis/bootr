@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { wakeDecision } from '@bootr/agent-core';
 import { actions, runtimes, treasuryOps, inference as inferenceTable } from '../src/db/schema.js';
+import { verifyRequest } from '../src/hmac.js';
+import { IndexerClient } from '../src/indexer-client.js';
 import { acquireLease, releaseLease } from '../src/runtime.js';
 import { processAgent, reconcilePending, tick } from '../src/tick.js';
-import { AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse } from './helpers.js';
+import { AGENT_ID, finishResponse, INDEXER_KEY, KERNEL, makeWorld, seedAgent, SPENDER, toolCallResponse } from './helpers.js';
 
 async function runtimeRow(world: Awaited<ReturnType<typeof makeWorld>>) {
   return (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
@@ -80,7 +82,7 @@ describe('wake -> inference -> action -> finish', () => {
       expect((await w.ctx.memories.count(AGENT_ID))).toBe(1);
       // social stats posted to the indexer
       expect(w.indexer.posted.length).toBeGreaterThan(0);
-      expect(w.indexer.posted.at(-1)).toMatchObject({ xHandle: 'bootr_agent', status: 'awake' });
+      expect(w.indexer.posted.at(-1)).toMatchObject({ xHandle: 'bootr_agent', status: 'awake', spender: SPENDER });
 
       // not due anymore: next tick does not run a turn
       const second2 = await tick(w.ctx);
@@ -226,7 +228,7 @@ describe('sleep rule', () => {
       expect(r.ran).toEqual([]);
       expect((await runtimeRow(w)).status).toBe('sleeping');
       expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
-      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping' });
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping', spender: SPENDER });
       // refuel
       w.state.usdc = 25_000_000n;
       const r2 = await tick(w.ctx);
@@ -266,6 +268,48 @@ describe('sleep rule', () => {
       w.setNow(w.ctx.now() + 3_600_000);
       await tick(w.ctx);
       expect((await runtimeRow(w)).status).toBe('sleeping');
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('social push to the indexer', () => {
+  it('sends the spender in the signed social-stats body (mock indexer over the real client)', async () => {
+    const w = await makeWorld({ chain: { usdc: 0n, spenderUsdc: 3_000_000n }, script: [finishResponse(Date.parse('2026-10-24T13:00:00Z'))] });
+    const received: { path: string; body: Record<string, unknown> }[] = [];
+    const indexerFetch: typeof fetch = async (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      if (init?.method !== 'POST') return Response.json({ priceUsd: 0.01, marketCapUsd: 1000 });
+      const raw = String(init.body ?? '');
+      const auth = verifyRequest(INDEXER_KEY, new Headers(init.headers).get('authorization') ?? undefined, 'POST', url.pathname, raw, Math.floor(Date.now() / 1000));
+      if (!auth.ok) return Response.json({ error: 'unauthorized' }, { status: 401 });
+      received.push({ path: url.pathname, body: JSON.parse(raw) as Record<string, unknown> });
+      return Response.json({ ok: true });
+    };
+    w.ctx.indexer = new IndexerClient('http://indexer.test', INDEXER_KEY, indexerFetch);
+    try {
+      await seedAgent(w);
+      await tick(w.ctx);
+      expect(received.length).toBeGreaterThan(0);
+      const last = received.at(-1)!;
+      expect(last.path).toBe(`/internal/agent/${KERNEL}/social`);
+      expect(last.body).toMatchObject({ xHandle: 'bootr_agent', postsCount24h: expect.any(Number), spender: SPENDER });
+      expect(Object.keys(last.body).sort()).toEqual(['lastPostAt', 'postsCount24h', 'spender', 'status', 'xHandle']);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('sends spender: null while sv_agents.spender is not derived yet', async () => {
+    const w = await makeWorld({ chain: { usdc: 500_000n, spenderUsdc: 0n } });
+    try {
+      const agent = await seedAgent(w);
+      expect(agent.spender).toBeNull();
+      // processAgent directly: no onboarding pass, so the spender backfill does not run
+      const r = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(r?.skipped).toBe('sleeping');
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping', spender: null });
     } finally {
       await w.close();
     }

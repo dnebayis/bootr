@@ -12,10 +12,16 @@ export interface Agent {
   lastActivityAt: number;
   dormancyPeriod: number;
   dormantSince: number | null;
+  /** Kernel USDC only; the x402 spender float is `spenderUsdc`. */
   treasuryUsdc: string;
   treasuryWeth: string;
   treasuryEth: string;
   treasuryOwnToken: string;
+  /** The agent's x402 spender EOA (pays inference, topped up from the kernel); null until known. */
+  spender: Address | null;
+  /** USDC float held by `spender` (base units). */
+  spenderUsdc: string;
+  /** Kernel balances plus the spender's USDC float, in USD. */
   treasuryUsd: number;
   fuelReceivedUsdc: string;
   feesClaimedUsd: number;

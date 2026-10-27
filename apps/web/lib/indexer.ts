@@ -71,7 +71,7 @@ const TOKEN_FIELDS = /* GraphQL */ `
 
 const AGENT_FIELDS = /* GraphQL */ `
   id token status lastActivityAt dormancyPeriod dormantSince treasuryUsdc treasuryWeth treasuryEth
-  treasuryOwnToken treasuryUsd fuelReceivedUsdc feesClaimedUsd reputationScore reputationCount
+  treasuryOwnToken spender spenderUsdc treasuryUsd fuelReceivedUsdc feesClaimedUsd reputationScore reputationCount
   lastPostAt postsCount24h
 `;
 

@@ -287,6 +287,7 @@ export async function updateAgentStatus(
     paused: next.paused,
     claimed: next.claimed,
     treasuryUsdc: next.treasuryUsdc,
+    spenderUsdc: next.spenderUsdc,
     supervisorHint: next.supervisorStatus,
   });
   const changed = status !== a.status;

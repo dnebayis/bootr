@@ -13,6 +13,9 @@ import { indexerEnv } from './env';
  * when INDEXER_DATABASE_URL is set) or, in PGlite dev mode, in `.ponder/agent-social.json`.
  * The snapshot block handler mirrors it into `agent` / `token` for GraphQL; REST responses
  * merge it live.
+ *
+ * `spender` is the agent's x402 spender EOA (`sv_agents.spender`): the supervisor tops it up from the
+ * kernel and it pays inference, so the snapshot reads its USDC float alongside the kernel balances.
  */
 export type AgentSocial = {
   kernel: string;
@@ -20,10 +23,12 @@ export type AgentSocial = {
   lastPostAt: number | null;
   postsCount24h: number;
   status: 'awake' | 'sleeping' | null;
+  /** Lowercase hex address of the agent's x402 spender EOA, or null (unknown / not derived yet). */
+  spender: string | null;
   updatedAt: number;
 };
 
-export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'postsCount24h' | 'status'>>;
+export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'postsCount24h' | 'status' | 'spender'>>;
 
 interface Store {
   all(): Promise<Map<string, AgentSocial>>;
@@ -36,6 +41,7 @@ const empty = (kernel: string): AgentSocial => ({
   lastPostAt: null,
   postsCount24h: 0,
   status: null,
+  spender: null,
   updatedAt: 0,
 });
 
@@ -45,7 +51,7 @@ const merge = (prev: AgentSocial, patch: SocialPatch): AgentSocial => ({
   updatedAt: Math.floor(Date.now() / 1000),
 });
 
-class FileStore implements Store {
+export class FileStore implements Store {
   private cache = new Map<string, AgentSocial>();
   private mtime = -1;
   constructor(private file: string) {}
@@ -54,8 +60,9 @@ class FileStore implements Store {
     try {
       const s = await stat(this.file);
       if (s.mtimeMs === this.mtime) return;
-      const raw = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, AgentSocial>;
-      this.cache = new Map(Object.entries(raw));
+      const raw = JSON.parse(await readFile(this.file, 'utf8')) as Record<string, Partial<AgentSocial>>;
+      // entries written before a field existed get its default (e.g. `spender: null`)
+      this.cache = new Map(Object.entries(raw).map(([k, v]) => [k, { ...empty(k), ...v }]));
       this.mtime = s.mtimeMs;
     } catch {
       /* missing file = empty store */
@@ -97,8 +104,10 @@ class PgStore implements Store {
            last_post_at integer,
            posts_count_24h integer NOT NULL DEFAULT 0,
            status text,
+           spender text,
            updated_at integer NOT NULL
-         );`,
+         );
+         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS spender text;`,
       )
       .then(() => undefined);
     return this.ready;
@@ -111,6 +120,7 @@ class PgStore implements Store {
       lastPostAt: (r.last_post_at as number | null) ?? null,
       postsCount24h: Number(r.posts_count_24h ?? 0),
       status: (r.status as AgentSocial['status']) ?? null,
+      spender: (r.spender as string | null) ?? null,
       updatedAt: Number(r.updated_at ?? 0),
     };
   }
@@ -126,10 +136,10 @@ class PgStore implements Store {
     const prev = await this.pool.query('SELECT * FROM bootr_offchain.agent_social WHERE kernel = $1', [kernel]);
     const next = merge(prev.rows[0] ? this.row(prev.rows[0]) : empty(kernel), patch);
     await this.pool.query(
-      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, updated_at = $6`,
-      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.updatedAt],
+      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, spender, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, spender = $6, updated_at = $7`,
+      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.spender, next.updatedAt],
     );
     return next;
   }
@@ -170,6 +180,11 @@ export function parseSocialPatch(body: unknown): SocialPatch | string {
     if (o.status === null || o.status === 'awake' || o.status === 'sleeping') patch.status = o.status as AgentSocial['status'];
     else return "status must be 'awake', 'sleeping' or null";
   }
-  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, postsCount24h, status)';
+  if ('spender' in o) {
+    if (o.spender === null) patch.spender = null;
+    else if (typeof o.spender === 'string' && /^0x[0-9a-fA-F]{40}$/.test(o.spender)) patch.spender = o.spender.toLowerCase();
+    else return 'spender must be a 20-byte hex address or null';
+  }
+  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, postsCount24h, status, spender)';
   return patch;
 }
