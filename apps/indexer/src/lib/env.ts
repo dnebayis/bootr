@@ -65,6 +65,18 @@ export type IndexerEnv = {
   fuelScanMaxRange: number;
 };
 
+/**
+ * HMAC key for the indexer's own internal route and for signing the admin-config GET. Per-service keys:
+ * INDEXER_SERVICE_KEY is the only supported key; SENDER_SERVICE_KEY is accepted temporarily with a warning.
+ */
+function indexerServiceKey(): string {
+  const own = str(process.env.INDEXER_SERVICE_KEY);
+  if (own) return own;
+  const legacy = str(process.env.SENDER_SERVICE_KEY);
+  if (legacy) console.warn('[indexer] INDEXER_SERVICE_KEY is unset; falling back to SENDER_SERVICE_KEY (deprecated, set a dedicated key)');
+  return legacy;
+}
+
 let cached: IndexerEnv | undefined;
 
 export function indexerEnv(): IndexerEnv {
@@ -104,7 +116,7 @@ export function indexerEnv(): IndexerEnv {
     snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : defaultInterval,
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
     adminConfigUrl: str(process.env.ADMIN_CONFIG_URL),
-    serviceKey: str(process.env.SENDER_SERVICE_KEY),
+    serviceKey: indexerServiceKey(),
     cors: corsPolicy(process.env),
     databaseUrl: str(process.env.INDEXER_DATABASE_URL),
     fuelScanMaxRange: Number(str(process.env.FUEL_SCAN_MAX_RANGE) || 5000) || 5000,

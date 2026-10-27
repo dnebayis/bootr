@@ -10,7 +10,7 @@ let cache: { at: number; value: RemoteConfig | null } | undefined;
 let warned = false;
 
 /**
- * `GET ${ADMIN_CONFIG_URL}` (apps/web /api/admin/config), HMAC-signed with SENDER_SERVICE_KEY.
+ * `GET ${ADMIN_CONFIG_URL}` (apps/web /api/admin/config), HMAC-signed with INDEXER_SERVICE_KEY (legacy fallback: SENDER_SERVICE_KEY).
  * Cached for 60 s; returns null when unset or unreachable (callers keep the last stored value).
  */
 export async function fetchAdminConfig(): Promise<RemoteConfig | null> {

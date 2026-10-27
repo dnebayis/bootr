@@ -90,7 +90,7 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 - `GET /search?q=` → tokens by name/symbol/address/xHandle (ILIKE), limit 20.
 - `GET /token/:id/fees` → `{byKind: {agent, creator, burn, platform}: {accruedUsd, claimedUsd}}`.
 - `GET /stream` → SSE; emits `{type: 'launch'|'trade'|'agent', tokenId}` hints only. Clients re-fetch; never trust payloads.
-- `POST /internal/agent/:kernel/social` (HMAC with `SENDER_SERVICE_KEY` like the sender) → `{xHandle?, lastPostAt?, postsCount24h?, status?}` written by the supervisor.
+- `POST /internal/agent/:kernel/social` (HMAC with `INDEXER_SERVICE_KEY`, same scheme as the sender) → `{xHandle?, lastPostAt?, postsCount24h?, status?}` written by the supervisor.
 - `GET /market/:token` → compact snapshot for the supervisor's `read_market` (price, mcap, liquidity, vol24h, holders, fees24h, last 10 trades).
 - `GET /treasury/:kernel` → compact snapshot for `treasury_read` (balances, claimable fees per asset from FeeLocker view, lastActivityAt).
 - `GET /holdings/:owner` → Bootr coins the address currently holds, from the `balance` table: `[{token: {id,name,symbol,image,priceUsd,marketCapUsd}, balance, valueUsd}]`, sorted by `valueUsd` desc.
