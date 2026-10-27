@@ -10,7 +10,8 @@ export const NONCE_COOKIE = 'bootr_siwe_nonce';
 export const CONSOLE_HEADER = 'x-bootr-console-slug';
 export const SESSION_TTL_S = 8 * 60 * 60;
 
-export type AdminSession = { a: string; e: number; k: 'admin' };
+/** `s` is a random session id, so a single session can be revoked at logout (see server-state.ts). */
+export type AdminSession = { a: string; e: number; k: 'admin'; s: string };
 export type NonceToken = { n: string; e: number; k: 'nonce' };
 
 const enc = new TextEncoder();
@@ -92,7 +93,17 @@ export function consoleSlug(): string | null {
   return /^[A-Za-z0-9_-]{8,}$/.test(s) ? s : null;
 }
 
+/** A random id for a new admin session. */
+export function newSessionId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Stateless check (signature, expiry, allowlist, session id present). Used by proxy.ts; the console
+ * page and the admin API additionally reject revoked sessions (lib/server/session.ts).
+ */
 export async function verifyAdminCookie(token: string | undefined | null): Promise<AdminSession | null> {
   const s = await verifyToken<AdminSession>(token, 'admin');
-  return s && isAdminAddress(s.a) ? s : null;
+  return s && typeof s.s === 'string' && /^[0-9a-f]{32}$/.test(s.s) && isAdminAddress(s.a) ? s : null;
 }

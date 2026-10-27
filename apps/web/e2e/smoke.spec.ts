@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN_COOKIE, signToken } from '../lib/server/session-core';
+import { ADMIN_COOKIE, newSessionId, signToken } from '../lib/server/session-core';
 
 const SLUG = process.env.ADMIN_CONSOLE_SLUG!;
 const ADMIN = process.env.ADMIN_ADDRESSES!.split(',')[0]!;
@@ -61,7 +61,7 @@ test('/console-<slug>/signin renders the SIWE sign-in', async ({ page }) => {
 });
 
 test('/console-<slug> renders with a valid admin session', async ({ page, context, baseURL }) => {
-  const token = await signToken({ k: 'admin', a: ADMIN, e: Math.floor(Date.now() / 1000) + 600 });
+  const token = await signToken({ k: 'admin', a: ADMIN, e: Math.floor(Date.now() / 1000) + 600, s: newSessionId() });
   await context.addCookies([{ name: ADMIN_COOKIE, value: token, url: baseURL! }]);
   const res = await page.goto(`/console-${SLUG}`);
   expect(res?.status()).toBe(200);

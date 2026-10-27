@@ -1,46 +1,46 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { readConfig, validateConfig, writeConfig } from '@/lib/server/admin-config';
-import { ADMIN_COOKIE, hmacHex, safeEqual, verifyAdminCookie } from '@/lib/server/session-core';
+import { adminConfigReadKey, isAllowedOrigin } from '@/lib/server/env';
+import { verifyAdminSession } from '@/lib/server/session';
+import { ADMIN_COOKIE, hmacHex, safeEqual } from '@/lib/server/session-core';
 
 /**
  * Platform config.
- *   GET  — admin session cookie, OR service HMAC for the indexer/supervisor:
+ *   GET  — admin session cookie, OR service HMAC from the indexer:
  *          x-bootr-timestamp: unix seconds (±300 s)
- *          x-bootr-signature: hex HMAC-SHA256(SENDER_SERVICE_KEY, `${timestamp}.GET./api/admin/config`)
- *   POST — admin session cookie + same-origin request only.
+ *          x-bootr-signature: hex HMAC-SHA256(INDEXER_SERVICE_KEY, `${timestamp}.GET./api/admin/config`)
+ *          (SENDER_SERVICE_KEY is accepted only while INDEXER_SERVICE_KEY is unset; see lib/server/env.ts)
+ *   POST — admin session cookie + an Origin equal to the configured site origin.
  */
 const PATH = '/api/admin/config';
 
 async function serviceAuthorized(req: NextRequest): Promise<boolean> {
-  const key = process.env.SENDER_SERVICE_KEY ?? '';
+  const read = adminConfigReadKey();
   const ts = req.headers.get('x-bootr-timestamp') ?? '';
   const sig = (req.headers.get('x-bootr-signature') ?? '').toLowerCase();
-  if (key.length < 16 || !/^\d+$/.test(ts) || !/^[0-9a-f]{64}$/.test(sig)) return false;
+  if (!read || !/^\d{1,12}$/.test(ts) || !/^[0-9a-f]{64}$/.test(sig)) return false;
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  return safeEqual(await hmacHex(key, `${ts}.GET.${PATH}`), sig);
+  return safeEqual(await hmacHex(read.key, `${ts}.GET.${PATH}`), sig);
 }
 
+/** CSRF: the Origin must be the canonical site origin (never derived from Host / X-Forwarded-Host). */
 function sameOrigin(req: NextRequest): boolean {
   const origin = req.headers.get('origin');
-  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host');
-  if (!origin || !host) return false;
-  try {
-    return new URL(origin).host === host;
-  } catch {
-    return false;
-  }
+  return !!origin && isAllowedOrigin(origin);
 }
 
 export async function GET(req: NextRequest) {
-  const admin = await verifyAdminCookie(req.cookies.get(ADMIN_COOKIE)?.value);
+  const admin = await verifyAdminSession(req.cookies.get(ADMIN_COOKIE)?.value);
   if (!admin && !(await serviceAuthorized(req))) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   return NextResponse.json(await readConfig(), { headers: { 'Cache-Control': 'no-store' } });
 }
 
 export async function POST(req: NextRequest) {
-  const admin = await verifyAdminCookie(req.cookies.get(ADMIN_COOKIE)?.value);
+  const admin = await verifyAdminSession(req.cookies.get(ADMIN_COOKIE)?.value);
   if (!admin) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!sameOrigin(req)) return NextResponse.json({ error: 'Cross-origin request rejected' }, { status: 403 });
+  const length = Number(req.headers.get('content-length') ?? 0);
+  if (length > 64 * 1024) return NextResponse.json({ error: 'Payload too large' }, { status: 413 });
   let input: unknown;
   try {
     input = await req.json();

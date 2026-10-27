@@ -21,3 +21,14 @@ test('/api/x/start validates input and does not redirect in mock mode', async ({
   expect(res.status()).toBe(200);
   expect(await res.json()).toEqual({ mock: true, agentId: DRAFT });
 });
+
+test('/api/x/draft registers a draft (mock mode) and rejects bad ids', async ({ request, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
+  const bad = await request.post('/api/x/draft', { data: { agentId: '10388' }, headers: { origin } });
+  expect(bad.status()).toBe(403); // the e2e build's site origin is the default https://bootr.fun
+  const good = await request.post('/api/x/draft', { data: { agentId: DRAFT }, headers: { origin: 'https://bootr.fun' } });
+  expect(good.status()).toBe(200);
+  expect(await good.json()).toEqual({ ok: true, mock: true });
+  const invalid = await request.post('/api/x/draft', { data: { agentId: '10388' }, headers: { origin: 'https://bootr.fun' } });
+  expect(invalid.status()).toBe(400);
+});

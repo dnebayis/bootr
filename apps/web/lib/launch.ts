@@ -43,6 +43,38 @@ export async function fetchModels(): Promise<{ models: ModelOption[]; source: 'g
   }
 }
 
+export type PlatformFlags = { launchesPaused: boolean; allowedModels: string[] };
+
+/** Public platform switches set in the admin console (`/api/platform`). Null when unavailable. */
+export async function fetchPlatformFlags(): Promise<PlatformFlags | null> {
+  try {
+    const res = await fetch('/api/platform', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const j = (await res.json()) as Partial<PlatformFlags>;
+    return {
+      launchesPaused: j.launchesPaused === true,
+      allowedModels: Array.isArray(j.allowedModels) ? j.allowedModels.filter((m): m is string => typeof m === 'string') : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** `anthropic/claude-haiku-4.5` and `claude-haiku-4-5` name the same model. */
+function modelKey(id: string): string {
+  return id.trim().toLowerCase().replace(/^[^/]+\//, '').replace(/\./g, '-');
+}
+
+/**
+ * Models the admin allows (console `allowedModels`). An entry matches a model by full id or by its
+ * vendor-less, dot-insensitive form. An empty allowlist allows nothing.
+ */
+export function filterAllowedModels<T extends { id: string }>(models: readonly T[], allowed: readonly string[]): T[] {
+  const keys = new Set(allowed.map(modelKey));
+  const full = new Set(allowed.map((a) => a.trim().toLowerCase()));
+  return models.filter((m) => full.has(m.id.toLowerCase()) || keys.has(modelKey(m.id)));
+}
+
 export type WorkerTemplate = { id: 'trader' | 'researcher' | 'community'; label: string; description: string; hash: Hex };
 
 /** TODO(agent-core): replace placeholder hashes with the published worker bundle hashes. */

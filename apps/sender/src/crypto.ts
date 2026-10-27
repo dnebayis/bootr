@@ -60,6 +60,13 @@ export function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
+/** Constant-time comparison of two strings (any charset). */
+export function safeEqualStr(a: string, b: string): boolean {
+  const x = Buffer.from(a, 'utf8');
+  const y = Buffer.from(b, 'utf8');
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
 /** Deterministic JSON (sorted keys) for hashing and receipt signatures. */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);

@@ -50,6 +50,8 @@ Evidence gathered:
 
 ### H-1. One HMAC key authorizes every service
 
+**Status (2026-10-27):** Fixed in sender/web: `SENDER_SERVICE_KEY` (supervisor + web only) must be ≥ 32 chars or the sender refuses to start; the web verifies the admin-config GET with `INDEXER_SERVICE_KEY` (falls back to `SENDER_SERVICE_KEY` only while unset, with a startup warning); the supervisor fallback is removed on the supervisor side. The HMAC string is unchanged (no audience) to stay compatible with the supervisor/indexer signers; the indexer and the supervisor's `IndexerClient` must move to `INDEXER_SERVICE_KEY`.
+
 **Description.** `SENDER_SERVICE_KEY` is used for all of the following:
 
 - the sender's internal API (`/internal/publish`, `/internal/quota`, `/internal/inbox/resolve` and the read endpoints);
@@ -84,6 +86,8 @@ Two internet-facing services also hold the key: the Next.js web app (only to *ve
 
 ### H-2. OAuth state is not tied to the initiating browser or creator, and can be used more than once
 
+**Status (2026-10-27):** Fixed: HttpOnly SameSite=Lax binding cookie hashed into `state`, single-use states (`sender_oauth_states`), no overwrite of a different connected account without a signed `reconnect=1`; web drafts can only be connected from the browser that registered them. Not done: the pending/SIWE-confirm step and encrypting the state payload.
+
 **Description.** `buildAuthorizeUrl` produces `state = base64url({a: agentId, s, e, v: enc(verifier), n}) . HMAC`. `openState` checks only the HMAC, the expiry (15 min) and that the verifier decrypts. Nothing ties the state to:
 
 - the browser that started the flow (no cookie set by `/oauth/start` and checked in `/oauth/callback`);
@@ -107,6 +111,8 @@ The callback then upserts `sender_accounts` unconditionally (`onConflictDoUpdate
 
 ### H-3. The relay calls the paid upstream before it collects payment
 
+**Status (2026-10-27):** Fixed for `exact`: settle before the upstream call; upstream failures keep the payment as a per-(payer, key) credit (max 3 upstream calls, then `refundDue`); unique (payer, nonce); 1 MB body limit; upstream timeout + 90 s ≤ authorization window. `upto` still runs upstream first (unknown outcome settles the full quote as a credit); its H-3b window remains.
+
 **Description.** The flow is verify (no funds move) → claim key → call OpenRouter → settle. Payment is collected only when settlement succeeds. Two paths let a caller consume upstream spend without paying:
 
 - **(a) Upstream outcome "unknown".** On a timeout (`INFERENCE_UPSTREAM_TIMEOUT_MS`, default 120 s), a network error, a 5xx or an unparseable body, the row becomes `unknown` with `settlementAttempted=false` (`app.ts:315-321`). After `validBefore` the reconciler marks it `failed`: "nothing was charged" (`reconcile.ts:122,128`). OpenRouter still bills the relay for the generation; non-streaming requests are not cancelled upstream when the client disconnects. The PoC confirmed 0 settlements after an upstream timeout.
@@ -127,6 +133,8 @@ The callback then upserts `sender_accounts` unconditionally (`onConflictDoUpdate
 4. Cap `max_tokens × output rate` so the expected generation time stays well below the upstream timeout; prefer `stream: true` upstream so the relay can abort and read usage.
 
 ### H-4. The sender does not enforce reply consent or which post a reply may target
+
+**Status (2026-10-27):** Fixed in the sender: replies need `replyEligibility` (missing = ineligible), the `replyTo` author comes from the inbox or X (never the caller), opt-outs are enforced for that author and every @mention, and actions record `x_user_id`. Needs the supervisor to send `replyEligibility`.
 
 **Description.** `publish()` accepts any numeric `replyTo`. If that post is not in the agent's inbox, it sets `recipient = null`, and the opt-out check runs only when `replyAuthorId` is known. In that case `replyAuthorId` comes only from the caller (`publish.ts:128-157`). The supervisor sends `replyAuthorId` only when the post ID is in the current inbox snapshot (`broker/index.ts:139`). Reply eligibility (`replyEligibility`: addressed to the agent, verified audience, consent, owner-blocked) is computed for display but **never enforced** before `publish_reply`.
 
@@ -153,6 +161,8 @@ Two further gaps:
 
 ### M-1. Relay idempotency keys are global and predictable
 
+**Status (2026-10-27):** Fixed: keys are namespaced per payer ((payer, key) primary key); replays and `GET /v1/requests/:key` require the `PAYMENT-SIGNATURE` that opened the row. Needs the supervisor to send that proof when reconciling.
+
 **Description.** Keys are a single global namespace (`inference_requests.idempotency_key` PK). Neither replay (`handleExisting`) nor `GET /v1/requests/:key` checks who is asking. The supervisor derives keys as `inference:` + `sha256({agentId, cycle})[0:32]` (`agent-core/src/inference/request.ts:89-91`), where `agentId` is the public sequential ERC-8004 ID and `cycle` is a small counter. Anyone can compute every agent's next keys.
 
 **Exploit scenarios.**
@@ -171,6 +181,8 @@ On "can payer A replay payer B's key to read B's completion?": yes, provided A k
 
 ### M-2. Payment authorization is not unique per row, and the reconciler misattributes a used nonce
 
+**Status (2026-10-27):** Fixed: unique (payer, payment_nonce); a reused authorization gets `409 payment_authorization_reused`, so a used nonce can only belong to its own row.
+
 **Description.** Rows store `payment.authorization.{from, nonce}`, but nothing stops two rows from carrying the same authorization (H-3b). For an `unknown` row, the reconciler reads `authorizationState(from, nonce)`. If it is `true` and the row holds a completion, it marks the row `succeeded` / `reconciled_onchain_paid` (`reconcile.ts:95-108`). That nonce may have been consumed by a *different* row's settlement.
 
 **Exploit scenario.** The attacker sends request A (key k1) and request B (key k2) concurrently with one authorization. A settles. B's settlement returns an ambiguous error (timeout, "pending", or any facilitator message matching `/unknown|pending|timeout/`), so B goes `unknown`. Later the reconciler sees the nonce used and promotes B to `succeeded`; replaying k2 returns B's completion. Two completions for one payment.
@@ -178,6 +190,8 @@ On "can payer A replay payer B's key to read B's completion?": yes, provided A k
 **Fix.** Add a unique index on `(payment->>'payer', payment->'authorization'->>'nonce')` (or explicit columns), reject reuse at claim time, and in the reconciler also verify that the settlement transaction (`payment.transaction`) or a `Transfer`/`AuthorizationUsed` log belongs to this row.
 
 ### M-3. SIWE domain binding trusts `X-Forwarded-Host`
+
+**Status (2026-10-27):** Fixed: SIWE URI/domain and the admin CSRF origin come from `NEXT_PUBLIC_SITE_URL`; nonces are recorded server-side and single use; logout revokes the session id (in-process store, single instance).
 
 **Description.** `requestHost()` returns `x-forwarded-host ?? host`, and the SIWE `domain` and `uri` host must equal it. The admin POST CSRF check (`sameOrigin`) uses the same header. Whether this can be exploited depends on the edge. Vercel overwrites `X-Forwarded-Host`; a self-hosted `next start`, or a proxy that passes the client's value through, does not.
 
@@ -193,6 +207,8 @@ On "can payer A replay payer B's key to read B's completion?": yes, provided A k
 **Fix.** Compare against a configured canonical origin (`NEXT_PUBLIC_SITE_URL` or a server-only `SITE_ORIGIN`): `msg.domain === new URL(SITE_ORIGIN).host`, and `msg.uri` must start with `SITE_ORIGIN`. Use the same constant in `sameOrigin()`. Never derive security decisions from `X-Forwarded-*` unless the proxy is explicitly trusted.
 
 ### M-4. `/oauth/start` authorization model
+
+**Status (2026-10-27):** Partly fixed: drafts are bound to the registering browser (`POST /api/x/draft` cookie), `reconnect` is signed, and the sender binds the flow to the browser. The start signature is still a 5-minute bearer and drafts are not tied to a SIWE creator.
 
 **Description.**
 
@@ -214,6 +230,8 @@ Make the start signature single-use (store the `ts`/`state` pair) with a ~60 s l
 
 ### M-5. The input-token estimate can be gamed
 
+**Status (2026-10-27):** Fixed: o200k_base token count (`gpt-tokenizer`) with a UTF-8 bytes / 2 floor. Per-tier context limits and charging shortfalls remain open.
+
 **Description.** `estimateInputTokens` assumes 3 UTF-8 bytes per token. Byte-fallback tokenizers (Llama/DeepSeek SentencePiece-style) emit roughly one token per byte for rare Unicode (CJK extension blocks, symbols, emoji sequences), and JSON escaping adds more. Under `exact`, the relay always charges the quote. Under `upto`, the charge is capped at the quote (`actualChargeMicroUsdc` clamps). So under-estimated input is paid by the relay. The context check also uses the estimate, so real prompts can exceed `contextLength` and cross into a provider's higher price tier (Gemini 2.5 Pro above 200k).
 
 **Exploit scenario.** Prompts of 4-byte rare code points on `meta-llama/llama-3.3-70b-instruct` are billed upstream at about 4 tokens per code point while the quote counts 1.33. With a 10% margin, each request loses money.
@@ -224,6 +242,8 @@ Make the start signature single-use (store the `ts`/`state` pair) with a ~60 s l
 - Set `contextLength` per price tier.
 
 ### M-6. No body-size limits or rate limits on public endpoints
+
+**Status (2026-10-27):** Partly fixed: body limits (relay 1 MB, sender `/internal` 256 KB and `/oauth` 8 KB, admin POST 64 KB) and HMAC header/timestamp pre-check before the body is read. No rate limits, zod collection caps or verify-failure cache; indexer not in scope.
 
 **Description.** Neither Hono service sets a body limit:
 
@@ -244,6 +264,8 @@ Make the start signature single-use (store the `ts`/`state` pair) with a ~60 s l
 
 ### M-7. Admin console controls are not enforced
 
+**Status (2026-10-27):** Partly fixed: `launchesPaused` (notice + disabled Launch) and `allowedModels` (model list filter) are enforced in the launch form via `GET /api/platform`. `xQuotas`/`postIntervalMinutes` and relay/supervisor model enforcement are not wired; the config is still a file.
+
 **Description.** Only `graduationThresholdUsd` is consumed (by the indexer). Nothing reads `launchesPaused` (the LaunchForm does not check it), `allowedModels` (the relay uses its own price table; agent-core has its own list), `xQuotas` (never pushed to sender `/internal/quota`), or `postIntervalMinutes`. The store is `apps/web/data/admin-config.json` in the server's working directory, so with multiple web replicas or on serverless, writes are lost or diverge.
 
 **Impact.** False assurance during an incident: an admin "pauses launches" or "removes a model" and nothing changes.
@@ -255,6 +277,8 @@ Make the start signature single-use (store the `ts`/`state` pair) with a ~60 s l
 ## Low
 
 ### L-1. HMAC scheme hardening
+
+**Status (2026-10-27):** Partly fixed: 32-char minimum for sender/web keys and a pre-check before reading bodies. No nonce cache or audience field (kept compatible with existing signers).
 
 - **No nonce or replay cache.** A request captured on the wire (internal hops are not guaranteed to use TLS) can be replayed for 10 minutes (±5). Publish is idempotent, but these are not:
   - `/read/thread` (up to 8 paid X reads per replay) and `/read/account`;
@@ -282,6 +306,8 @@ The `inflight` refresh lock is per process. Two sender replicas refreshing at on
 
 ### L-3. SIWE nonce, session lifetime and RPC dependence
 
+**Status (2026-10-27):** Fixed: server-side single-use nonces and logout revocation. The RPC dependence for ERC-1271 checks remains.
+
 - The nonce is an HMAC-signed cookie, not a server-side record. Until it expires (10 min), replaying the same cookie + message + signature issues a new session; clearing the cookie on success does not invalidate a copy.
 - The admin session is a stateless 8-hour token with no server-side revocation. Logout only clears the cookie, and the only way to revoke all sessions is to remove the address or rotate `SESSION_SECRET`.
 - `verifyMessage` performs an `eth_call` against `BASE_RPC_URL`, or viem's public default when unset. A malicious or compromised RPC could affect ERC-1271/6492 verification.
@@ -293,17 +319,23 @@ The `inflight` refresh lock is per process. Two sender replicas refreshing at on
 
 ### L-4. Posting identity is not recorded
 
+**Status (2026-10-27):** Fixed in part: `sender_actions.x_user_id` is recorded and reconciliation skips actions whose agent is now bound to another account. No unique index on `sender_accounts.x_user_id`.
+
 `sender_actions` does not store the `xUserId` an action was posted from. After a re-bind, `readPublishedAction` reads the **new** account's timeline. An attacker who controls the new account could post matching text in the window and settle a held action as `sent` with their post ID. Nothing prevents one `xUserId` from being bound to many agents.
 
 **Fix.** Store `x_user_id` on each action and reconcile against that account's ID (skip if it no longer matches). Add a unique index on `sender_accounts.x_user_id`, or require explicit confirmation for shared accounts.
 
 ### L-5. Indexer exposure
 
+**Status (2026-10-27):** Not in this change (indexer owner): `/sql/*` is still public.
+
 - `app.use('/sql/*', client(...))` exposes Ponder's read-only SQL-over-HTTP, including up to 1000 live queries. Neither the web app nor the supervisor uses it. Remove it, or put it behind auth.
 - With `NEXT_PUBLIC_WEB_ORIGIN` empty, CORS is `*` and `authorization` is an allowed header. There is no ambient credential, so impact is low, but production should fail closed.
 - Social patch replay: see L-1.
 
 ### L-6. Dependency advisories (`pnpm audit --prod`, 2026-10-27)
+
+**Status (2026-10-27):** sender `drizzle-orm` bumped to 0.45.2. The zod advisory needs zod 4 (not a trivial bump); the relay's 1 MB body limit bounds it.
 
 - **sender: `drizzle-orm` 0.41.0** — GHSA-gpj5-g38j-94v9, SQL injection via improperly escaped identifiers. The sender uses only static identifiers, so this is not reachable today. Upgrade to ≥0.45.2.
 - **inference: zod** — GHSA-mrhx-c7xc-m3w5, memory exhaustion validating oversized constrained collections. Relevant together with M-6. Upgrade to a patched release.
@@ -315,6 +347,8 @@ The `inflight` refresh lock is per process. Two sender replicas refreshing at on
   Bump Ponder, or add pnpm `overrides`.
 
 ### L-7. Web hardening
+
+**Status (2026-10-27):** Partly fixed: CSP, `X-Frame-Options: DENY`, `Referrer-Policy`, `nosniff`, `Permissions-Policy` and production HSTS via `proxy.ts`. robots.txt, `__Host-` cookies and the `.gitignore` entry are open.
 
 - No `headers()` in `next.config.ts`. Add `Content-Security-Policy` (at least `frame-ancestors 'none'` for `/console-*`), `Strict-Transport-Security`, `X-Content-Type-Options` and `Referrer-Policy`.
 - `robots.txt` disallows `/console-*`, which tells scanners the prefix (the slug stays secret). Prefer only `noindex` headers, which are already present.

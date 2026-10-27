@@ -1,8 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { securityHeaders } from '@/lib/server/security-headers';
 import { ADMIN_COOKIE, CONSOLE_HEADER, consoleSlug, verifyAdminCookie } from '@/lib/server/session-core';
 
 /**
- * Hidden admin console gate.
+ * 1. Security headers (CSP, X-Frame-Options, Referrer-Policy, ...) on every page and API response.
+ * 2. Hidden admin console gate.
  *
  * Next.js only treats whole-segment brackets as dynamic, so the console lives at the literal
  * route `app/console-[slug]` and this proxy maps `/console-<slug>[/signin]` onto it:
@@ -12,12 +14,24 @@ import { ADMIN_COOKIE, CONSOLE_HEADER, consoleSlug, verifyAdminCookie } from '@/
  *   - /console-<slug> with session -> console, slug forwarded in a request header the page re-checks
  * Any client-supplied copy of that header is overwritten.
  */
+function withHeaders(res: NextResponse, pathname: string): NextResponse {
+  for (const [k, v] of Object.entries(securityHeaders(pathname))) res.headers.set(k, v);
+  return res;
+}
+
 function notFound(req: NextRequest) {
-  return NextResponse.rewrite(new URL('/__bootr_not_found', req.url));
+  return withHeaders(NextResponse.rewrite(new URL('/__bootr_not_found', req.url)), req.nextUrl.pathname);
 }
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  if (!pathname.startsWith('/console')) {
+    // Strip any client-supplied console header on every other route as well.
+    const headers = new Headers(req.headers);
+    headers.delete(CONSOLE_HEADER);
+    return withHeaders(NextResponse.next({ request: { headers } }), pathname);
+  }
+
   const m = /^\/console-([^/]+)(\/signin)?\/?$/.exec(pathname);
   const slug = consoleSlug();
   if (!m || !slug) return notFound(req);
@@ -43,9 +57,10 @@ export async function proxy(req: NextRequest) {
   const res = NextResponse.rewrite(target, { request: { headers } });
   res.headers.set('X-Robots-Tag', 'noindex, nofollow');
   res.headers.set('Cache-Control', 'no-store');
-  return res;
+  return withHeaders(res, pathname);
 }
 
 export const config = {
-  matcher: ['/(console.*)'],
+  // Everything except build assets; prefetches still get the headers (they are cheap to compute).
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

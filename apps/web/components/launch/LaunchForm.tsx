@@ -12,7 +12,7 @@ import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { bps as bpsLabel } from '@/lib/format';
-import { fetchModels, fileToSquareDataUrl, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
+import { fetchModels, fetchPlatformFlags, fileToSquareDataUrl, filterAllowedModels, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
 import { agentCardUrl } from '@/lib/agent-card';
 import { builderDataSuffix } from '@/lib/attribution';
 import { mockLaunch } from '@/lib/mock';
@@ -100,7 +100,12 @@ export function LaunchForm() {
   const [buyback, setBuyback] = useState(false);
 
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 5 * 60_000 });
-  const modelList = useMemo(() => models.data?.models ?? [], [models.data]);
+  // Admin console switches (M-7): paused launches and the model allowlist. Unavailable config = no filter.
+  const platform = useQuery({ queryKey: ['platform'], queryFn: fetchPlatformFlags, staleTime: 30_000 });
+  const modelList = useMemo(() => {
+    const all = models.data?.models ?? [];
+    return platform.data ? filterAllowedModels(all, platform.data.allowedModels) : all;
+  }, [models.data, platform.data]);
   const selectedModel = modelList.find((m) => m.id === model) ?? modelList[0];
 
   const onChain = !!contracts.launcher && !env.useMock;
@@ -139,7 +144,15 @@ export function LaunchForm() {
   if (identity.trim().length < 20) errors.push('Describe the agent in at least 20 characters.');
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
-  const blocked = !env.useMock && !contracts.launcher ? 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).' : pausedRead.data ? 'Launches are paused by the platform.' : null;
+  const blocked = platform.data?.launchesPaused
+    ? 'Launches are paused by the platform.'
+    : !env.useMock && !contracts.launcher
+      ? 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).'
+      : pausedRead.data
+        ? 'Launches are paused by the platform.'
+        : !models.isPending && modelList.length === 0
+          ? 'No model is available for new agents right now.'
+          : null;
 
   const workerTpl = WORKER_TEMPLATES.find((w) => w.id === worker)!;
   const thoughts = selectedModel?.pricePerThoughtUsd ? Math.floor(Number(fuel || 0) / selectedModel.pricePerThoughtUsd) : null;
@@ -218,6 +231,11 @@ export function LaunchForm() {
 
   return (
     <div className="pb-16">
+      {platform.data?.launchesPaused ? (
+        <div role="status" className="mb-6 rounded-sm border border-hairline-strong bg-canvas-soft px-4 py-3 text-sm text-ink">
+          Launches are paused by the platform. You can prepare a launch, but it cannot be sent until launches resume.
+        </div>
+      ) : null}
       <Section n={1} title="Coin" description="Name, ticker and image. These are permanent.">
         <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
           <div>

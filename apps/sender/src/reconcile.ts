@@ -12,7 +12,7 @@
  */
 import { pathToFileURL } from 'node:url';
 import { and, eq, inArray, isNull, lt, lte, or } from 'drizzle-orm';
-import { withToken } from './accounts.js';
+import { getAccount, withToken } from './accounts.js';
 import type { SenderContext } from './context.js';
 import { actions, type ActionRow } from './db/schema.js';
 import { log } from './log.js';
@@ -122,6 +122,15 @@ export async function readPublishedAction(
     ctx.now().getTime() - 10_000,
   );
   if (endMs <= startMs) return { kind: 'too_early' };
+
+  // Only the X account the action was sent from can settle it (L-4): after a re-bind, a post on the
+  // new account's timeline must never be taken as proof.
+  if (action.xUserId) {
+    const account = await getAccount(ctx, action.agentId);
+    if (account && account.xUserId !== action.xUserId) {
+      return { kind: 'error', message: 'account_rebound: the agent is bound to another X account' };
+    }
+  }
 
   const candidates: XTweet[] = [];
   let paginationToken: string | undefined;

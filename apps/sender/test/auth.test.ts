@@ -89,4 +89,25 @@ describe('HMAC auth', () => {
   it('does not protect /health', async () => {
     expect((await env.app.request('/health')).status).toBe(200);
   });
+
+  it('rejects oversized bodies and unsigned requests before buffering them', async () => {
+    const big = JSON.stringify({ agentId: 'agent-1', text: 'x'.repeat(300 * 1024) });
+    const auth = signRequest(SERVICE_KEY, 'POST', '/internal/publish', big, nowSec());
+    const tooBig = await env.app.request('/internal/publish', {
+      method: 'POST',
+      headers: { authorization: auth, 'content-type': 'application/json' },
+      body: big,
+    });
+    expect(tooBig.status).toBe(413);
+    const unsigned = await env.app.request('/internal/publish', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"a":1}',
+    });
+    expect(unsigned.status).toBe(401);
+    const publicBody = await env.app.request('/oauth/callback?state=x', {
+      method: 'GET',
+    });
+    expect(publicBody.status).toBe(400);
+  });
 });

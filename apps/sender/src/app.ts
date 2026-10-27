@@ -1,9 +1,11 @@
 import { Hono, type Context } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { getAccount, saveAccount } from './accounts.js';
 import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
 import { nowSec, type SenderContext } from './context.js';
-import { safeEqualHex } from './crypto.js';
+import { safeEqualHex, safeEqualStr } from './crypto.js';
 import {
   accountReadSchema,
   mentionsSchema,
@@ -16,11 +18,24 @@ import {
 } from './inbox.js';
 import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
-import { buildAuthorizeUrl, exchangeCode, oauthStartSignature, openState } from './oauth.js';
+import {
+  BINDING_COOKIE_PATH,
+  STATE_TTL_SEC,
+  bindingCookieName,
+  bindingHash,
+  buildAuthorizeUrl,
+  consumeState,
+  exchangeCode,
+  oauthStartSignature,
+  openState,
+} from './oauth.js';
 import { publish, publishSchema } from './publish.js';
 import { AGENT_ID_RE, rebindAccount, rebindSchema } from './rebind.js';
 import { getQuota, setQuota } from './quota.js';
 import { getAction, toReceipt } from './receipt.js';
+
+export const PUBLIC_BODY_LIMIT = 8 * 1024;
+export const INTERNAL_BODY_LIMIT = 256 * 1024;
 
 const quotaSchema = z
   .object({
@@ -67,46 +82,101 @@ export function createApp(ctx: SenderContext): Hono {
 
   app.get('/health', (c) => c.json({ ok: true, service: 'sender' }));
 
+  // Body limits: the browser-facing OAuth routes take no body; internal requests are small JSON
+  // (publish text is at most 25k chars). Oversized bodies get 413 before any parsing.
+  const tooLarge = (c: Context) => c.json({ error: 'payload_too_large' }, 413);
+  app.use('/oauth/*', bodyLimit({ maxSize: PUBLIC_BODY_LIMIT, onError: tooLarge }));
+  app.use('/internal/*', bodyLimit({ maxSize: INTERNAL_BODY_LIMIT, onError: tooLarge }));
+
   // ---------------- OAuth (browser-facing) ----------------
 
   /**
-   * GET /oauth/start?agentId=&state=&ts=&sig=[&redirect=1]
-   * `sig` = hex HMAC-SHA256(SENDER_SERVICE_KEY, "oauth-start\n"+agentId+"\n"+state+"\n"+ts), so only
-   * the Bootr web app can bind an X account to an agent. Alternatively call it server-to-server
-   * with the internal `Authorization: HMAC` header.
+   * GET /oauth/start?agentId=&state=&ts=&sig=[&reconnect=1][&redirect=1]
+   * `sig` = hex HMAC-SHA256(SENDER_SERVICE_KEY, "oauth-start\n"+agentId+"\n"+state+"\n"+ts[+"\nreconnect=1"]),
+   * so only the Bootr web app (or another SENDER_SERVICE_KEY holder) can start a binding, and only a
+   * start signed with `reconnect=1` may replace an agent's existing, different X account.
+   *
+   * The browser that opens this URL receives an HttpOnly, SameSite=Lax cookie holding a random secret
+   * whose hash is inside the OAuth `state`; `/oauth/callback` only completes in that same browser.
+   *
+   * A server-side caller may instead send the internal `Authorization: HMAC` header: it receives
+   * `{url}` pointing back at this endpoint (signed, `redirect=1`), so the user's browser still passes
+   * through here and gets the binding cookie.
    */
   app.get('/oauth/start', async (c) => {
     const agentId = c.req.query('agentId') ?? '';
     const state = c.req.query('state') ?? '';
-    if (!/^[\w:.-]{1,128}$/.test(agentId) || state.length > 512) {
+    const reconnectParam = c.req.query('reconnect');
+    if (
+      !/^[\w:.-]{1,128}$/.test(agentId) ||
+      state.length > 512 ||
+      (reconnectParam !== undefined && reconnectParam !== '1')
+    ) {
       return c.json({ error: 'invalid_request', message: 'agentId and state are required' }, 400);
     }
+    const reconnect = reconnectParam === '1';
     const now = nowSec(ctx);
-    let authorized = false;
     const ts = c.req.query('ts');
     const sig = c.req.query('sig');
     if (ts && sig && /^\d{1,12}$/.test(ts) && Math.abs(now - Number(ts)) <= MAX_SKEW_SEC) {
-      authorized = safeEqualHex(
-        oauthStartSignature(ctx.serviceKey, agentId, state, ts),
-        sig.toLowerCase(),
-      );
+      const expected = oauthStartSignature(ctx.serviceKey, agentId, state, ts, reconnect);
+      if (safeEqualHex(expected, sig.toLowerCase())) {
+        const start = buildAuthorizeUrl(ctx.oauth, agentId, state, now, { reconnect });
+        setCookie(c, bindingCookieName(start.nonce), start.bindingSecret, {
+          path: BINDING_COOKIE_PATH,
+          httpOnly: true,
+          secure: ctx.oauth.redirectUri.startsWith('https:'),
+          sameSite: 'Lax',
+          maxAge: STATE_TTL_SEC,
+        });
+        c.header('Cache-Control', 'no-store');
+        c.header('Referrer-Policy', 'no-referrer');
+        if (c.req.query('redirect') === '1') return c.redirect(start.url, 302);
+        return c.json({ url: start.url });
+      }
     }
-    if (!authorized && c.req.header('authorization')) {
+    if (c.req.header('authorization')) {
       let passed = false;
       await hmacAuth(ctx.serviceKey, () => now)(c as unknown as Context<AuthEnv>, async () => {
         passed = true;
       });
-      authorized = passed;
+      if (passed) {
+        const signedTs = String(now);
+        const q = new URLSearchParams({
+          agentId,
+          state,
+          ts: signedTs,
+          sig: oauthStartSignature(ctx.serviceKey, agentId, state, signedTs, reconnect),
+          ...(reconnect ? { reconnect: '1' } : {}),
+          redirect: '1',
+        });
+        return c.json({ url: `${new URL('/oauth/start', ctx.oauth.redirectUri).toString()}?${q}` });
+      }
     }
-    if (!authorized) return c.json({ error: 'unauthorized', reason: 'bad_start_signature' }, 401);
-    const url = buildAuthorizeUrl(ctx.oauth, agentId, state, now);
-    if (c.req.query('redirect') === '1') return c.redirect(url, 302);
-    return c.json({ url });
+    return c.json({ error: 'unauthorized', reason: 'bad_start_signature' }, 401);
   });
 
   app.get('/oauth/callback', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    c.header('Referrer-Policy', 'no-referrer');
     const opened = openState(ctx.oauth, c.req.query('state') ?? '', nowSec(ctx));
     if (!opened) return c.json({ error: 'invalid_state' }, 400);
+
+    // 1. Same browser as /oauth/start (OAuth CSRF / consent-phishing protection).
+    const cookieName = bindingCookieName(opened.nonce);
+    const secret = getCookie(c, cookieName);
+    if (!secret || !safeEqualStr(bindingHash(secret), opened.bindingHash)) {
+      log.warn('oauth callback without the binding cookie', { agentId: opened.agentId });
+      return c.json({ error: 'invalid_state', reason: 'browser_mismatch' }, 400);
+    }
+    deleteCookie(c, cookieName, { path: BINDING_COOKIE_PATH });
+
+    // 2. Single use: record the nonce before anything else happens.
+    if (!(await consumeState(ctx, opened))) {
+      log.warn('oauth state reused', { agentId: opened.agentId });
+      return c.json({ error: 'invalid_state', reason: 'state_reused' }, 400);
+    }
+
     const finish = (
       status: 'connected' | 'denied' | 'error',
       extra: Record<string, string> = {},
@@ -127,7 +197,7 @@ export function createApp(ctx: SenderContext): Hono {
     if (c.req.query('error'))
       return finish('denied', { reason: (c.req.query('error') ?? '').slice(0, 64) });
     const code = c.req.query('code');
-    if (!code) return finish('error', { reason: 'missing_code' });
+    if (!code || code.length > 2048) return finish('error', { reason: 'missing_code' });
 
     const tokens = await exchangeCode(ctx.oauth, code, opened.verifier, ctx.now().getTime());
     if (!tokens.ok) {
@@ -139,12 +209,26 @@ export function createApp(ctx: SenderContext): Hono {
       log.warn('oauth users/me failed', { agentId: opened.agentId });
       return finish('error', { reason: 'users_me_failed' });
     }
-    await saveAccount(ctx, opened.agentId, tokens.tokens, {
-      id: me.data.data.id,
-      username: me.data.data.username,
-    });
+    // 3. Never silently replace a connected binding to a different X account.
+    const saved = await saveAccount(
+      ctx,
+      opened.agentId,
+      tokens.tokens,
+      { id: me.data.data.id, username: me.data.data.username },
+      { replace: opened.reconnect },
+    );
     await meterRead(ctx, opened.agentId, 'users_me', 1);
-    log.info('x account connected', { agentId: opened.agentId, handle: me.data.data.username });
+    if (saved === 'conflict') {
+      log.warn('oauth callback refused: agent already bound to another X account', {
+        agentId: opened.agentId,
+      });
+      return finish('error', { reason: 'already_connected' });
+    }
+    log.info('x account connected', {
+      agentId: opened.agentId,
+      handle: me.data.data.username,
+      reconnect: opened.reconnect,
+    });
     return finish('connected', { handle: me.data.data.username });
   });
 
@@ -243,7 +327,9 @@ export function createApp(ctx: SenderContext): Hono {
     const body = parseBody(c, rebindSchema);
     if (!body.ok) return body.res;
     const res = await rebindAccount(ctx, from, body.data.to, {
-      ...(body.data.connectedBefore ? { connectedBefore: new Date(body.data.connectedBefore) } : {}),
+      ...(body.data.connectedBefore
+        ? { connectedBefore: new Date(body.data.connectedBefore) }
+        : {}),
     });
     if (!res.ok) return fail(c, res);
     return c.json({ from, to: res.agentId, status: res.status, handle: res.handle });

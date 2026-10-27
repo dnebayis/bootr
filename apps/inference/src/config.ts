@@ -7,6 +7,9 @@ export const BASE_MAINNET = 'eip155:8453';
 export const TESTNET_FACILITATOR_URL = 'https://x402.org/facilitator';
 export const CDP_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
 
+/** Timeout of every facilitator verify/settle call (see x402.ts). */
+export const FACILITATOR_TIMEOUT_MS = 60_000;
+
 const optionalString = z
   .string()
   .optional()
@@ -44,13 +47,17 @@ export const configSchema = z
     INFERENCE_PAYMENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(300),
   })
   .superRefine((cfg, ctx) => {
-    // Upstream + settlement must finish before the client's authorization expires.
-    if (cfg.INFERENCE_UPSTREAM_TIMEOUT_MS + 30_000 > cfg.INFERENCE_PAYMENT_TIMEOUT_SECONDS * 1000) {
+    // The upstream call plus a settlement (facilitator timeout, 60s) must finish well before the
+    // client's authorization expires, whichever order the scheme uses.
+    if (
+      cfg.INFERENCE_UPSTREAM_TIMEOUT_MS + FACILITATOR_TIMEOUT_MS + 30_000 >
+      cfg.INFERENCE_PAYMENT_TIMEOUT_SECONDS * 1000
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['INFERENCE_PAYMENT_TIMEOUT_SECONDS'],
         message:
-          'INFERENCE_PAYMENT_TIMEOUT_SECONDS must exceed INFERENCE_UPSTREAM_TIMEOUT_MS by at least 30s',
+          'INFERENCE_PAYMENT_TIMEOUT_SECONDS must exceed INFERENCE_UPSTREAM_TIMEOUT_MS + 60s (facilitator) by at least 30s',
       });
     }
     const facilitator = resolveFacilitatorUrl(cfg.X402_NETWORK, cfg.X402_FACILITATOR_URL);

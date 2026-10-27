@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { getAccessToken } from './accounts.js';
 import type { SenderContext } from './context.js';
 import { canonicalJson, sha256Hex } from './crypto.js';
-import { actions, inbox, optouts, type ActionRow } from './db/schema.js';
+import { isOptedOut, mentionsOptedOut, resolveReplyTarget } from './consent-gate.js';
+import { actions, inbox, type ActionRow } from './db/schema.js';
 import { log } from './log.js';
-import type { XPost } from './normalize.js';
-import { checkOutgoing } from './policy-shim.js';
+import { checkOutgoing, mentionedHandles } from './policy-shim.js';
 import { POST_WINDOW_MS, getQuota, postsInWindow } from './quota.js';
 import { getAction, toReceipt, type Receipt } from './receipt.js';
 import type { XError } from './x-client.js';
@@ -22,7 +22,23 @@ export const publishSchema = z.object({
     .regex(/^[A-Za-z0-9:_.-]+$/),
   text: z.string().min(1).max(25_000),
   replyTo: xId.nullish(),
+  /** Informational only: the author is always resolved by the sender (inbox, else X). */
   replyAuthorId: xId.nullish(),
+  /**
+   * The supervisor's agent-core `replyEligibility` decision for `replyTo`. Required for replies: a
+   * reply without it, or with `eligible: false`, is rejected (`policy:reply_not_eligible:<reason>`).
+   * Not part of the body hash (it is a policy input, not content).
+   */
+  replyEligibility: z
+    .object({
+      eligible: z.boolean(),
+      reason: z
+        .string()
+        .regex(/^[a-z0-9_]{1,48}$/)
+        .optional(),
+    })
+    .strict()
+    .optional(),
   /** Source credits required by agent-core `validatePost` for every @mention in the text. */
   attributions: z
     .array(
@@ -124,21 +140,29 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     };
   }
 
-  // ---- policy (deterministic for a given body, so a rejection is recorded) ----
-  let replyAuthorId = input.replyAuthorId ?? null;
+  // ---- policy and consent (a rejection is recorded and final for this actionId) ----
+  const reasons: string[] = [];
+  const replyReasons: string[] = [];
+  let replyAuthorId: string | null = null;
   let recipient: string | null = null;
   if (input.replyTo) {
-    const [row] = await ctx.db
-      .select({ authorId: inbox.authorId, post: inbox.post })
-      .from(inbox)
-      .where(and(eq(inbox.agentId, input.agentId), eq(inbox.postId, input.replyTo)))
-      .limit(1);
-    if (row) {
-      replyAuthorId ??= row.authorId;
-      recipient = (row.post as XPost | null)?.author?.username ?? null;
+    const eligibility = input.replyEligibility;
+    if (!eligibility?.eligible) {
+      replyReasons.push(`reply_not_eligible:${eligibility?.reason ?? 'missing_eligibility'}`);
+    }
+    // The author always comes from the inbox or X, never from the caller.
+    // An ineligible reply is rejected anyway, so it costs no X read.
+    const target = await resolveReplyTarget(ctx, input.agentId, input.replyTo, {
+      lookup: replyReasons.length === 0,
+    });
+    if (target.kind === 'transient') return transientFailure(target);
+    if (target.kind === 'found') {
+      replyAuthorId = target.authorId;
+      recipient = target.username;
+    } else if (target.kind === 'not_found') {
+      replyReasons.push('reply_target_unavailable');
     }
   }
-  const reasons: string[] = [];
   const decision = checkOutgoing({
     kind,
     text: input.text,
@@ -147,14 +171,18 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     ownHandle: tok.account.xHandle,
   });
   if (!decision.allowed) reasons.push(decision.code);
-  if (replyAuthorId) {
-    const [opt] = await ctx.db
-      .select({ enabled: optouts.enabled })
-      .from(optouts)
-      .where(and(eq(optouts.agentId, input.agentId), eq(optouts.authorId, replyAuthorId)))
-      .limit(1);
-    if (opt?.enabled) reasons.push('consent_opted_out');
+  if (replyAuthorId && (await isOptedOut(ctx, input.agentId, [replyAuthorId]))) {
+    reasons.push('consent_opted_out');
   }
+  if (reasons.length === 0 && replyReasons.length === 0) {
+    // Every @mention (originals and replies) must not target an opted-out author.
+    const skip = new Set([tok.account.xHandle.toLowerCase(), recipient?.toLowerCase()]);
+    const handles = mentionedHandles(input.text).filter((h) => !skip.has(h));
+    const mentioned = await mentionsOptedOut(ctx, input.agentId, handles);
+    if (mentioned.kind === 'transient') return transientFailure(mentioned);
+    if (mentioned.optedOut) reasons.push('mention_opted_out');
+  }
+  reasons.push(...replyReasons);
 
   const base = {
     actionId: input.actionId,
@@ -162,7 +190,8 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     kind,
     text: input.text,
     replyTo: input.replyTo ?? null,
-    replyAuthorId,
+    replyAuthorId: replyAuthorId ?? input.replyAuthorId ?? null,
+    xUserId: tok.account.xUserId,
     bodyHash: hash,
     createdAt: ctx.now(),
   } as const;
@@ -289,6 +318,22 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
   const row = await getAction(ctx, input.actionId).catch(() => undefined);
   if (!row) return heldFallback(ctx, input.actionId);
   return ok(ctx, row);
+}
+
+/** A consent lookup could not reach X: nothing is recorded, retry the same actionId later. */
+function transientFailure(t: {
+  status: 429 | 503;
+  message: string;
+  retryAt?: number;
+}): PublishResult {
+  return {
+    http: t.status,
+    body: {
+      error: 'consent_lookup_failed',
+      message: `could not verify the recipient on X (${t.message}); nothing was sent`,
+      ...(t.retryAt ? { retryAt: new Date(t.retryAt).toISOString() } : {}),
+    },
+  };
 }
 
 async function hold(ctx: SenderContext, input: PublishInput, error: XError): Promise<void> {

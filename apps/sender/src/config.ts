@@ -10,7 +10,13 @@ export const configSchema = z.object({
   X_CLIENT_ID: z.string().min(1),
   X_CLIENT_SECRET: z.string().min(1),
   X_REDIRECT_URI: z.string().url(),
-  SENDER_SERVICE_KEY: z.string().min(1),
+  /**
+   * HMAC key for the internal API, the `/oauth/start` signature, OAuth state and receipts. Held by the
+   * supervisor and the web app only (never by the indexer). At least 32 characters; no fallback.
+   */
+  SENDER_SERVICE_KEY: z
+    .string({ required_error: 'SENDER_SERVICE_KEY is required' })
+    .min(32, 'SENDER_SERVICE_KEY must be at least 32 characters (use `openssl rand -hex 32`)'),
   SENDER_ENCRYPTION_KEY: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, 'SENDER_ENCRYPTION_KEY must be 32 bytes of hex (64 chars)'),
@@ -33,4 +39,12 @@ export type Config = z.infer<typeof configSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return configSchema.parse(env);
+}
+
+/** One readable line per invalid variable, e.g. for a startup error log. Never echoes values. */
+export function describeConfigError(err: unknown): string {
+  if (err instanceof z.ZodError) {
+    return err.issues.map((i) => `${i.path.join('.') || 'config'}: ${i.message}`).join('; ');
+  }
+  return err instanceof Error ? err.message : String(err);
 }

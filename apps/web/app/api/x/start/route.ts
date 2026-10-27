@@ -1,22 +1,31 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
-import { isClientState, isDraftId, oauthStartUrl } from '@/lib/server/sender';
+import { DRAFT_COOKIE, isClientState, isDraftId, oauthStartUrl, ownsDraft } from '@/lib/server/sender';
 
 const NO_STORE = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' };
 
 /**
- * GET /api/x/start?agentId=<launch draft uuid>&state=<client state>
+ * GET /api/x/start?agentId=<launch draft uuid>&state=<client state>[&reconnect=1]
  * Signs the sender's `/oauth/start` server-side (SENDER_SERVICE_KEY never reaches the browser) and
- * redirects the popup there; the sender then redirects to X's consent screen.
+ * redirects the popup there; the sender then redirects to X's consent screen. Only for a draft this
+ * browser registered with `POST /api/x/draft`. `reconnect=1` (the form is replacing the handle it
+ * shows) is signed so the sender may replace the draft's existing X account.
  */
 export async function GET(req: NextRequest) {
   const agentId = req.nextUrl.searchParams.get('agentId') ?? '';
   const state = req.nextUrl.searchParams.get('state') ?? '';
-  if (!isDraftId(agentId) || !isClientState(state)) {
+  const reconnect = req.nextUrl.searchParams.get('reconnect');
+  if (!isDraftId(agentId) || !isClientState(state) || (reconnect !== null && reconnect !== '1')) {
     return NextResponse.json({ error: 'invalid_request', message: 'agentId must be a draft uuid and state ≤ 128 URL-safe chars' }, { status: 400, headers: NO_STORE });
   }
   if (env.useMock) return NextResponse.json({ mock: true, agentId }, { headers: NO_STORE });
-  const url = await oauthStartUrl(agentId, state);
+  if (!(await ownsDraft(req.cookies.get(DRAFT_COOKIE)?.value, agentId))) {
+    return NextResponse.json(
+      { error: 'draft_not_registered', message: 'Start X connect from the launch form in this browser.' },
+      { status: 403, headers: NO_STORE },
+    );
+  }
+  const url = await oauthStartUrl(agentId, state, { reconnect: reconnect === '1' });
   if (!url) {
     return NextResponse.json(
       { error: 'x_connect_unavailable', message: 'X connection is not configured (SENDER_SERVICE_KEY / sender URL missing).' },

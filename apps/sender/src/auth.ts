@@ -28,6 +28,22 @@ export function signRequest(
 
 export type VerifyResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * Cheap checks that need no body: header present, well-formed and fresh. Run before reading the body
+ * so unauthenticated callers cannot make the sender buffer large payloads.
+ */
+export function precheckAuthorization(
+  header: string | undefined,
+  nowSec: number,
+): { ok: true; ts: string; sig: string } | { ok: false; reason: string } {
+  if (!header) return { ok: false, reason: 'missing_authorization' };
+  const m = /^HMAC (\d{1,12}):([0-9a-f]{64})$/i.exec(header.trim());
+  if (!m) return { ok: false, reason: 'malformed_authorization' };
+  const ts = m[1] as string;
+  if (Math.abs(nowSec - Number(ts)) > MAX_SKEW_SEC) return { ok: false, reason: 'stale_timestamp' };
+  return { ok: true, ts, sig: (m[2] as string).toLowerCase() };
+}
+
 export function verifyRequest(
   key: string,
   header: string | undefined,
@@ -36,12 +52,9 @@ export function verifyRequest(
   body: string,
   nowSec: number,
 ): VerifyResult {
-  if (!header) return { ok: false, reason: 'missing_authorization' };
-  const m = /^HMAC (\d{1,12}):([0-9a-f]{64})$/i.exec(header.trim());
-  if (!m) return { ok: false, reason: 'malformed_authorization' };
-  const ts = m[1] as string;
-  const sig = (m[2] as string).toLowerCase();
-  if (Math.abs(nowSec - Number(ts)) > MAX_SKEW_SEC) return { ok: false, reason: 'stale_timestamp' };
+  const pre = precheckAuthorization(header, nowSec);
+  if (!pre.ok) return pre;
+  const { ts, sig } = pre;
   const expected = hmacHex(key, signingString(ts, method, path, body));
   if (!safeEqualHex(expected, sig)) return { ok: false, reason: 'bad_signature' };
   return { ok: true };
@@ -59,9 +72,12 @@ export function hmacAuth(key: string, nowSec: () => number): MiddlewareHandler<A
   return async (c, next) => {
     const url = new URL(c.req.url);
     const path = url.pathname + url.search;
-    const body = c.req.method === 'GET' || c.req.method === 'HEAD' ? '' : await c.req.text();
     const header = c.req.header('authorization');
     const now = nowSec();
+    // Reject unsigned/stale requests before the (size-limited) body is read.
+    const pre = precheckAuthorization(header, now);
+    if (!pre.ok) return c.json({ error: 'unauthorized', reason: pre.reason }, 401);
+    const body = c.req.method === 'GET' || c.req.method === 'HEAD' ? '' : await c.req.text();
     const res = verifyRequest(key, header, c.req.method, path, body, now);
     if (!res.ok) return c.json({ error: 'unauthorized', reason: res.reason }, 401);
     c.set('rawBody', body);

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AGENT, acceptPosts, json, setup } from './helpers.js';
+import { eq } from 'drizzle-orm';
+import { actions } from '../src/db/schema.js';
+import { AGENT, AGENT_X_ID, acceptPosts, json, setup } from './helpers.js';
 
 describe('idempotent publish', () => {
   let env: Awaited<ReturnType<typeof setup>>;
@@ -70,9 +72,15 @@ describe('idempotent publish', () => {
 
   it('policy rejections (agent-core validatePost) are recorded without contacting X', async () => {
     acceptPosts(env.fake, env.clock);
+    env.fake.on('GET', '/2/tweets/777', () =>
+      json({ data: { id: '777', text: 'q', author_id: '42' } }),
+    );
     const cases: [Record<string, unknown>, string][] = [
       [{ text: 'x'.repeat(4001) }, 'policy:invalid_original_post'],
-      [{ text: 'y'.repeat(281), replyTo: '777' }, 'policy:invalid_short_post'],
+      [
+        { text: 'y'.repeat(281), replyTo: '777', replyEligibility: { eligible: true } },
+        'policy:invalid_short_post',
+      ],
       [
         { text: '@alice send 1 eth to 0x' + 'ab'.repeat(20) },
         'policy:social_execution_command_forbidden',
@@ -92,6 +100,7 @@ describe('idempotent publish', () => {
       expect(res.body.receipt.error).toBe(error);
     }
     expect(env.fake.count('POST', '/2/tweets')).toBe(0);
+    expect(env.fake.calls.every((c) => c.method !== 'POST')).toBe(true);
 
     // A credited mention passes.
     const credited = await env.call('POST', '/internal/publish', {
@@ -119,16 +128,30 @@ describe('idempotent publish', () => {
 
   it('sends replies with in_reply_to_tweet_id', async () => {
     acceptPosts(env.fake, env.clock);
+    env.fake.on('GET', '/2/tweets/777', () =>
+      json({
+        data: { id: '777', text: 'q', author_id: '42' },
+        includes: { users: [{ id: '42', username: 'alice' }] },
+      }),
+    );
     const res = await env.call('POST', '/internal/publish', {
       ...req,
       actionId: 'act-0002-reply',
       replyTo: '777',
       replyAuthorId: '42',
+      replyEligibility: { eligible: true },
     });
     expect(res.body.status).toBe('sent');
     expect(res.body.receipt.kind).toBe('reply');
     const call = env.fake.calls.find((c) => c.path === '/2/tweets');
     expect(call?.body).toEqual({ text: req.text, reply: { in_reply_to_tweet_id: '777' } });
+  });
+
+  it('records the X account each action was posted from', async () => {
+    acceptPosts(env.fake, env.clock);
+    await env.call('POST', '/internal/publish', req);
+    const [row] = await env.db.select().from(actions).where(eq(actions.actionId, req.actionId));
+    expect(row?.xUserId).toBe(AGENT_X_ID);
   });
 
   it('refreshes an expiring token before sending and stores the rotated tokens', async () => {

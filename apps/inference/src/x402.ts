@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { createFacilitatorConfig } from '@coinbase/x402';
+import { decodePaymentSignatureHeader } from '@x402/core/http';
 import {
   HTTPFacilitatorClient,
   type FacilitatorClient,
@@ -17,8 +19,9 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { UptoEvmScheme } from '@x402/evm/upto/server';
 import { HonoAdapter, x402HTTPResourceServer, x402ResourceServer } from '@x402/hono';
 import type { Context } from 'hono';
-import { isCdpFacilitator } from './config.js';
+import { FACILITATOR_TIMEOUT_MS, isCdpFacilitator } from './config.js';
 import { microUsdcToDollarString } from './pricing.js';
+import { stableStringify } from './request.js';
 
 /**
  * x402 seller side, built on @x402/hono (adapter) + @x402/core (x402HTTPResourceServer).
@@ -213,9 +216,9 @@ export function createFacilitatorClient(
   if (isCdpFacilitator(url)) {
     if (!cdp) throw new Error('CDP facilitator requires CDP_API_KEY_ID / CDP_API_KEY_SECRET');
     const cfg = createFacilitatorConfig(cdp.keyId, cdp.keySecret);
-    return new HTTPFacilitatorClient({ ...cfg, url, timeoutMs: 60_000 });
+    return new HTTPFacilitatorClient({ ...cfg, url, timeoutMs: FACILITATOR_TIMEOUT_MS });
   }
-  return new HTTPFacilitatorClient({ url, timeoutMs: 60_000 });
+  return new HTTPFacilitatorClient({ url, timeoutMs: FACILITATOR_TIMEOUT_MS });
 }
 
 /** Extract the EIP-3009 authorization from an `exact` payload, if present. */
@@ -232,4 +235,52 @@ export function readEip3009Authorization(payload: PaymentPayload) {
     validBefore: auth.validBefore as string,
     nonce: auth.nonce as string,
   };
+}
+
+/**
+ * Who paid, with which authorization, and the proof hash of the signed payload. Works for EIP-3009
+ * (`exact`) and Permit2 (`exact` fallback, `upto`) payloads. Null when the payload has no
+ * recognisable payer.
+ */
+export interface PaymentIdentity {
+  /** Lower-case payer address. */
+  payer: string;
+  /** Lower-case authorization nonce. */
+  nonce: string;
+  /** sha256 hex of the canonical signed payload (authorization + signature). */
+  proofHash: string;
+}
+
+export function paymentIdentity(payload: PaymentPayload): PaymentIdentity | null {
+  const inner = payload.payload as Record<string, unknown> | undefined;
+  if (!inner || typeof inner !== 'object') return null;
+  const auth = (inner.authorization ?? inner.permit2Authorization) as
+    Record<string, unknown> | undefined;
+  const from = typeof auth?.from === 'string' ? auth.from.toLowerCase() : '';
+  const nonce =
+    typeof auth?.nonce === 'string' || typeof auth?.nonce === 'number'
+      ? String(auth.nonce).toLowerCase()
+      : '';
+  if (!/^0x[0-9a-f]{40}$/.test(from) || !nonce || nonce.length > 80) return null;
+  const proofHash = createHash('sha256').update(stableStringify(inner)).digest('hex');
+  return { payer: from, nonce, proofHash };
+}
+
+/**
+ * The x402 payment a caller presented (`PAYMENT-SIGNATURE`, or the v1 `X-PAYMENT`), decoded but NOT
+ * verified. Used as a possession proof for rows the caller opened: a stored row is only revealed or
+ * replayed when the presented payload hashes to the row's `proofHash`.
+ */
+export function presentedPayment(
+  header: (name: string) => string | undefined,
+): { payload: PaymentPayload; identity: PaymentIdentity } | null {
+  const raw = header('payment-signature') ?? header('x-payment');
+  if (!raw || raw.length > 16_384) return null;
+  try {
+    const payload = decodePaymentSignatureHeader(raw);
+    const identity = paymentIdentity(payload);
+    return identity ? { payload, identity } : null;
+  } catch {
+    return null;
+  }
 }

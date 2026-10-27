@@ -51,6 +51,8 @@ export const actions = pgTable(
     text: text('text').notNull(),
     replyTo: text('reply_to'),
     replyAuthorId: text('reply_author_id'),
+    /** X user id of the account the action was (or would have been) posted from (L-4). */
+    xUserId: text('x_user_id'),
     bodyHash: text('body_hash').notNull(),
     status: text('status', { enum: actionStatuses }).notNull(),
     providerPostId: text('provider_post_id'),
@@ -135,6 +137,22 @@ export const quotas = pgTable('sender_quotas', {
   mentionsSinceId: text('mentions_since_id'),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
+
+/**
+ * Consumed OAuth `state` nonces. A state is single-use: `/oauth/callback` inserts its nonce before
+ * exchanging the code and refuses a nonce that is already present. Rows are purged after `expiresAt`
+ * (the state itself is rejected by then).
+ */
+export const oauthStates = pgTable(
+  'sender_oauth_states',
+  {
+    nonce: text('nonce').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    usedAt: ts('used_at').notNull().defaultNow(),
+    expiresAt: ts('expires_at').notNull(),
+  },
+  (t) => [index('sender_oauth_states_expires_idx').on(t.expiresAt)],
+);
 
 export type AccountRow = typeof accounts.$inferSelect;
 export type ActionRow = typeof actions.$inferSelect;

@@ -15,6 +15,12 @@
  *    `parseQuoteRejection` to read the quote.
  *  - If a paid call ends in a network error or a `request_outcome_unknown` response, do NOT
  *    pay for a replacement: poll `GET /v1/requests/:key` until the status leaves `unknown`.
+ *  - Keys are namespaced per payer at the relay, and a stored request is only revealed or replayed
+ *    to whoever presents the signed payment that opened it. This payer remembers the payment it
+ *    signed per Idempotency-Key and sends it again on a repeated call (a replay, never a second
+ *    charge). Callers that persisted the payload (`onPayment`) send it with
+ *    {@link paymentProofHeaders} on `GET /v1/requests/:key` and on replays; a request that already
+ *    carries `PAYMENT-SIGNATURE` is passed through unsigned.
  *
  * ## Smart accounts (ZeroDev Kernel)
  *
@@ -28,6 +34,7 @@
  * The Kernel must already be deployed: facilitators reject ERC-6492 (counterfactual) signatures
  * unless the factory is allow-listed.
  */
+import { encodePaymentSignatureHeader } from '@x402/core/http';
 import type { Network, PaymentPayload, PaymentRequirements } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
 import { x402Client, x402HTTPClient } from '@x402/fetch';
@@ -36,6 +43,15 @@ import { getAddress, type Address, type Hex } from 'viem';
 export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 export const MAX_QUOTE_HEADER = 'X-Max-Quote-Micro-USDC';
 export const RECEIPT_HEADER = 'x-bootr-receipt';
+export const PAYMENT_SIGNATURE_HEADER = 'PAYMENT-SIGNATURE';
+
+/** Headers proving possession of the payment that opened a relay request (for GET and replays). */
+export function paymentProofHeaders(payload: PaymentPayload): Record<string, string> {
+  return { [PAYMENT_SIGNATURE_HEADER]: encodePaymentSignatureHeader(payload) };
+}
+
+/** Payments remembered per Idempotency-Key for replays from the same payer instance. */
+const REMEMBERED_PAYMENTS = 256;
 
 export interface TypedDataPayload {
   domain: Record<string, unknown>;
@@ -116,6 +132,13 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
       )
     : null;
 
+  const signed = new Map<string, PaymentPayload>();
+  const remember = (key: string, payload: PaymentPayload) => {
+    signed.delete(key);
+    signed.set(key, payload);
+    if (signed.size > REMEMBERED_PAYMENTS) signed.delete(signed.keys().next().value as string);
+  };
+
   return {
     async fetch(input, init) {
       const request = new Request(input, init);
@@ -124,6 +147,16 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
         throw new X402PaymentRefusedError(
           'Idempotency-Key header is required for paid inference requests',
         );
+      }
+      // Caller-supplied proof (a persisted payload): pass through, never sign a second payment.
+      if (request.headers.has(PAYMENT_SIGNATURE_HEADER)) return doFetch(request);
+      // Same key again from this payer: present the payment already signed for it.
+      const previous = signed.get(idempotencyKey);
+      if (previous) {
+        const replay = request.clone();
+        for (const [k, v] of Object.entries(paymentProofHeaders(previous)))
+          replay.headers.set(k, v);
+        return doFetch(replay);
       }
       if (!request.headers.has(MAX_QUOTE_HEADER)) {
         request.headers.set(MAX_QUOTE_HEADER, opts.maxPaymentMicroUsdc.toString());
@@ -175,6 +208,7 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
       }
 
       await opts.onPayment?.({ requirements: payload.accepted, payload, idempotencyKey });
+      remember(idempotencyKey, payload);
 
       const paid = request.clone();
       for (const [k, v] of Object.entries(http.encodePaymentSignatureHeader(payload)))

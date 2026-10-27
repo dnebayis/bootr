@@ -11,6 +11,17 @@ pnpm --filter web build
 pnpm --filter web test:e2e     # Playwright smoke tests (builds + starts on :3210, mock mode)
 ```
 
+Container (build from the repo root; `NEXT_PUBLIC_*` are build args, everything else is runtime env; Railway setup in
+[`docs/deploy/railway.md`](../../docs/deploy/railway.md)). The Dockerfile builds with `NEXT_OUTPUT=standalone` (see `next.config.ts`) and serves `apps/web/server.js`;
+`GET /api/health` is the liveness probe.
+
+```sh
+docker build -f apps/web/Dockerfile -t bootr-web \
+  --build-arg NEXT_PUBLIC_CHAIN_ID=84532 --build-arg NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun \
+  --build-arg NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun .
+docker run --rm --env-file .env -e PORT=3000 -v bootr-web-data:/data -p 3000:3000 bootr-web
+```
+
 First e2e run needs a browser: `pnpm --filter web exec playwright install chromium`.
 
 ## Mock mode
@@ -33,7 +44,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_USE_MOCK` | `1` to use fixtures. |
 | `NEXT_PUBLIC_WC_PROJECT_ID` | WalletConnect project id (connector hidden when empty). |
 | `NEXT_PUBLIC_RPC_URL` | Optional RPC for the primary chain (public RPC otherwise). |
-| `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). |
+| `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). Also the only origin accepted for SIWE sign-in (domain/URI) and for same-origin checks on admin and X-connect POSTs; `X-Forwarded-Host`/`Host` are never trusted. Under `next dev`, localhost origins are accepted too. Must be the exact origin users load (redirect `www.` to it), or admin sign-in and X connect are refused. |
 | `NEXT_PUBLIC_INFERENCE_URL` | Inference gateway; `/v1/models` feeds the model picker (static list otherwise). |
 | `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`; also `/public/posts/:kernel`. |
 | `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (Uniswap otherwise). |
@@ -43,10 +54,15 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_BOOT_X_URL` | Platform X profile link (hidden when empty). |
 | `NEXT_PUBLIC_WORKER_SOURCE_BASE` | Prefix for worker-hash source links (hash shown without link when empty). |
 
-Server only (already in the root `.env.example`): `ADMIN_CONSOLE_SLUG`, `ADMIN_ADDRESSES`, `SESSION_SECRET` (≥ 16 chars),
-`SENDER_SERVICE_KEY` (HMAC for service reads of the admin config, and for signing the sender's `/oauth/start` and
-internal API calls in `/api/x/*`), `SENDER_URL` (optional server-to-server sender origin for `/api/x/status`; defaults to
-`NEXT_PUBLIC_SENDER_PUBLIC_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature checks).
+Server only: `ADMIN_CONSOLE_SLUG`, `ADMIN_ADDRESSES`, `SESSION_SECRET` (≥ 16 chars, 32+ recommended),
+`SENDER_SERVICE_KEY` (≥ 32 chars; signs the sender's `/oauth/start`, the `/api/x/*` internal calls and the
+X-connect draft cookies), `INDEXER_SERVICE_KEY` (≥ 32 chars; verifies the indexer's signed `GET /api/admin/config`.
+While it is unset, `SENDER_SERVICE_KEY` signatures are still accepted there and a startup warning is logged: set it
+here and in the indexer, then the fallback is gone), `SENDER_URL` (optional server-to-server sender origin for
+`/api/x/status`; defaults to `NEXT_PUBLIC_SENDER_PUBLIC_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature
+checks). Keys shorter than 32 characters are treated as unset. `instrumentation.ts` logs a `[web] config error` /
+`config warning` line at startup for a missing or short key (values are never logged). The web app does not call the
+supervisor, so it does not hold `SUPERVISOR_SERVICE_KEY`.
 
 Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked split is read from
 `ClankerLpLockerFeeConversion.tokenRewards(token)`.
@@ -66,13 +82,22 @@ Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked 
 ## Connecting X at launch
 
 The launch form generates a draft uuid (`sessionStorage`), which is also the on-chain launch `context.id` and the agent
-card key. "Connect X" opens a popup on `GET /api/x/start?agentId=<draft>&state=<uuid>`: the route validates the
-input (lowercase uuid, state ≤ 128 URL-safe chars), signs `ts`/`sig` with `SENDER_SERVICE_KEY` and 302s to the sender's
-`/oauth/start?…&redirect=1`, which redirects to X. The form polls `GET /api/x/status?agentId=<draft>` every 2 s (5 min
-timeout), which calls the sender's HMAC `GET /internal/account/:agentId` server-side and returns only
-`{connected, handle}`. Both answer 503 when `SENDER_SERVICE_KEY` / the sender URL are missing; in mock mode `start`
-returns `{mock: true}` and `status` a fake handle. "Disconnect" issues a new draft id, so the old connection is never
-used. After launch the supervisor rebinds the account from the draft id to the ERC-8004 agent id.
+card key. "Connect X":
+
+1. `POST /api/x/draft {agentId}` (same-origin only) registers the draft to this browser: an HttpOnly, SameSite=Strict
+   cookie `bootr_x_drafts` (path `/api/x`, 24 h, up to 4 drafts) with an HMAC tag per draft id.
+2. A popup opens `GET /api/x/start?agentId=<draft>&state=<uuid>[&reconnect=1]`: the route validates the input
+   (lowercase uuid, state ≤ 128 URL-safe chars), requires the draft cookie (`403 draft_not_registered` otherwise, so a
+   link sent by someone else cannot bind the visitor's X account to their draft), signs `ts`/`sig` with
+   `SENDER_SERVICE_KEY` and 302s to the sender's `/oauth/start?…&redirect=1`. The sender sets its own binding cookie
+   and redirects to X; its callback only completes in the same browser, once.
+3. The form polls `GET /api/x/status?agentId=<draft>` every 2 s (5 min timeout; same draft cookie required), which
+   calls the sender's HMAC `GET /internal/account/:agentId` server-side and returns only `{connected, handle}`.
+
+"Change" next to a connected handle restarts the flow with `reconnect=1` (signed): the only way the sender replaces an
+already connected X account. "Disconnect" issues a new draft id, so the old connection is never used. The routes answer
+503 when `SENDER_SERVICE_KEY` / the sender URL are missing; in mock mode `draft` and `start` return `{mock: true}` and
+`status` a fake handle. After launch the supervisor rebinds the account from the draft id to the ERC-8004 agent id.
 
 ## Admin console and auth
 
@@ -86,14 +111,40 @@ Next.js only treats whole-segment brackets as dynamic, so the page lives at the 
    overwritten) and the page re-checks slug + session before rendering.
 
 SIWE flow (`siwe` package for the message; viem verifies the signature, including ERC-1271/6492 smart accounts):
-`POST /api/siwe/nonce` sets a signed, 10-minute nonce cookie → the wallet signs → `POST /api/siwe/verify` checks nonce,
-domain, URI, chain, issued/expiry times and `ADMIN_ADDRESSES`, then sets `bootr_admin`: an httpOnly, SameSite=Strict
-cookie, HMAC-SHA256-signed with `SESSION_SECRET`, valid 8 h. `POST /api/siwe/logout` clears it.
+`POST /api/siwe/nonce` records a 10-minute nonce server-side and sets a signed nonce cookie → the wallet signs →
+`POST /api/siwe/verify` consumes the nonce (single use, even on failure), requires the message URI to be the configured
+site origin (`NEXT_PUBLIC_SITE_URL`) and the domain to be that URI's host, checks chain, issued/expiry times and
+`ADMIN_ADDRESSES`, then sets `bootr_admin`: an httpOnly, SameSite=Strict cookie, HMAC-SHA256-signed with
+`SESSION_SECRET`, valid 8 h, carrying a random session id. `POST /api/siwe/logout` clears it and revokes that session id
+server-side; the console page and `/api/admin/config` reject revoked sessions. Nonces and revocations live in process
+memory (`lib/server/server-state.ts`): one web instance is assumed, and a restart forgets revocations (rotate
+`SESSION_SECRET` to end every session).
 (`siwe` requires `ethers`; `next.config.ts` aliases it to a tiny viem shim in `lib/siwe/ethers-shim.ts`.)
 
-Platform config: `GET/POST /api/admin/config`, stored in `data/admin-config.json` (TODO: Postgres). POST needs the admin
-cookie and a same-origin request. The indexer/supervisor read it with
-`x-bootr-timestamp: <unix s>` and `x-bootr-signature: hex(HMAC-SHA256(SENDER_SERVICE_KEY, "<ts>.GET./api/admin/config"))`.
+Platform config: `GET/POST /api/admin/config`, stored in `ADMIN_CONFIG_PATH` (default `data/admin-config.json` under the
+working directory; the Docker image uses `/data/admin-config.json`, which must be a persistent volume) (TODO: Postgres). POST needs the admin
+cookie and an `Origin` equal to the configured site origin. The indexer reads it with
+`x-bootr-timestamp: <unix s>` and `x-bootr-signature: hex(HMAC-SHA256(INDEXER_SERVICE_KEY, "<ts>.GET./api/admin/config"))`
+(`SENDER_SERVICE_KEY` only while `INDEXER_SERVICE_KEY` is unset).
+
+What the console switches do:
+
+- `launchesPaused`: the launch form shows a notice and disables Launch (via the public `GET /api/platform`). Launching is
+  a wallet transaction, so there is no server-side guard; the binding switch is the launcher's on-chain `pause()`.
+- `allowedModels`: the launch form only offers models on the list (an entry matches a relay id by full id or by its
+  vendor-less, dot-insensitive form: `claude-haiku-4-5` = `anthropic/claude-haiku-4.5`). The relay and the supervisor do
+  not read it yet.
+- `xQuotas`, `postIntervalMinutes`: not enforced by any service yet (the sender takes its budget from its own defaults
+  and `POST /internal/quota/:agentId`).
+
+## Security headers
+
+`proxy.ts` adds to every page and API response: a Content-Security-Policy without nonces (pages are prerendered:
+`script-src 'self' 'unsafe-inline'`; `connect-src 'self' https: wss:` for wallets, RPCs and WalletConnect;
+`frame-src` DexScreener and the WalletConnect/Coinbase wallet iframes; `img-src` https/data/blob; `object-src 'none'`;
+`base-uri`/`form-action 'self'`; `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: strict-origin-when-cross-origin` (`/api/x/*` sets `no-referrer`), a restrictive `Permissions-Policy`
+and, in production on https, HSTS. See `lib/server/security-headers.ts`.
 
 On-chain actions in the console use the connected wallet (must be the contract owner): `setDefaults(buyback, d)`,
 launcher `pause/unpause`, `AgentGuardian.revokeAllSessionKeys`, `AgentGuardian.claimDormant`, and "force refuel" (a USDC

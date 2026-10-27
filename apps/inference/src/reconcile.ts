@@ -8,11 +8,15 @@ import type { RequestStore } from './store.js';
  * While a row is `unknown`, the payer's signed authorization may still be settled by whoever
  * holds it (relay or facilitator), so the client must not pay for a replacement. A row leaves
  * `unknown` only on evidence:
- *  - on-chain: USDC `authorizationState(from, nonce)` is true -> funds moved. If the relay holds
- *    the completion, the row becomes `succeeded` and replays deliver it.
+ *  - on-chain: USDC `authorizationState(from, nonce)` is true -> funds moved. Because
+ *    `(payer, nonce)` is unique across rows, the used nonce can only belong to this row. If the
+ *    relay holds the completion, the row becomes `succeeded` and replays deliver it; otherwise it
+ *    becomes a `credit` and a replay with the same key runs the request without a new payment.
  *  - expiry: the authorization's `validBefore` has passed and the nonce is unused (or, without
  *    an RPC, the relay never submitted it) -> nobody can settle it any more -> `failed`, and the
  *    client may retry with a new Idempotency-Key.
+ * A stale `in_flight` row whose payment already settled (relay crashed during the upstream call)
+ * becomes a `credit` directly.
  */
 
 export interface AuthorizationChecker {
@@ -64,13 +68,17 @@ export function createReconciler(opts: ReconcilerOptions): Reconciler {
     let current = row;
 
     if (current.status === 'in_flight' && now() - current.updatedAt.getTime() > opts.staleAfterMs) {
+      const paid = current.payment?.settled === true;
       current =
         (await opts.store.update(
+          current.payer,
           current.idempotencyKey,
-          { status: 'unknown', statusReason: 'relay_interrupted' },
+          paid
+            ? { status: 'credit', statusReason: 'relay_interrupted_after_payment' }
+            : { status: 'unknown', statusReason: 'relay_interrupted' },
           'in_flight',
         )) ??
-        (await opts.store.get(current.idempotencyKey)) ??
+        (await opts.store.get(current.payer, current.idempotencyKey)) ??
         current;
     }
     if (current.status !== 'unknown' || !current.payment) return current;
@@ -93,31 +101,29 @@ export function createReconciler(opts: ReconcilerOptions): Reconciler {
         return current;
       }
       if (used) {
+        const paid = {
+          chargedMicroUsdc: Number(payment.amount),
+          payment: { ...payment, settled: true },
+        };
         if (current.response?.status === 200) {
           return (
             (await opts.store.update(
+              current.payer,
               current.idempotencyKey,
-              {
-                status: 'succeeded',
-                statusReason: 'reconciled_onchain_paid',
-                chargedMicroUsdc: Number(payment.amount),
-                payment: { ...payment, settled: true },
-              },
+              { status: 'succeeded', statusReason: 'reconciled_onchain_paid', ...paid },
               'unknown',
             )) ?? current
           );
         }
-        // Paid but the relay has no completion: needs an operator refund. Stays unknown.
-        if (current.statusReason !== 'paid_without_completion') {
-          return (
-            (await opts.store.update(
-              current.idempotencyKey,
-              { statusReason: 'paid_without_completion' },
-              'unknown',
-            )) ?? current
-          );
-        }
-        return current;
+        // Paid but no completion yet: the payment becomes a credit for this key.
+        return (
+          (await opts.store.update(
+            current.payer,
+            current.idempotencyKey,
+            { status: 'credit', statusReason: 'reconciled_onchain_paid', ...paid },
+            'unknown',
+          )) ?? current
+        );
       }
       if (expired) return markExpired(current);
       return current;
@@ -132,6 +138,7 @@ export function createReconciler(opts: ReconcilerOptions): Reconciler {
   async function markExpired(row: InferenceRequest): Promise<InferenceRequest> {
     return (
       (await opts.store.update(
+        row.payer,
         row.idempotencyKey,
         {
           status: 'failed',

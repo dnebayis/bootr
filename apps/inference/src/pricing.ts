@@ -1,3 +1,4 @@
+import { countTokens } from 'gpt-tokenizer/encoding/o200k_base';
 import { z } from 'zod';
 
 /**
@@ -133,8 +134,12 @@ export function priceMicroUsdc(
 // Input token estimation
 // ---------------------------------------------------------------------------------------------
 
-/** Conservative bytes-per-token ratio (real tokenizers average ~4 chars/token for English). */
-const BYTES_PER_TOKEN = 3;
+/**
+ * Floor: never estimate fewer than one token per 2 UTF-8 bytes. o200k is among the most efficient
+ * tokenizers; other families (Llama/DeepSeek SentencePiece byte-fallback, Claude, Gemini) emit more
+ * tokens for the same text, so the floor keeps the `exact` quote an upper bound across providers.
+ */
+const MIN_TOKENS_PER_BYTE_DIVISOR = 2;
 const PER_MESSAGE_OVERHEAD = 4;
 const PER_REQUEST_OVERHEAD = 16;
 
@@ -145,20 +150,24 @@ export interface EstimatableRequest {
 }
 
 /**
- * Upper-bound estimate of prompt tokens without a tokenizer: UTF-8 bytes / 3 of the serialized
- * messages and tools, plus per-message framing overhead. Overestimates for typical English text.
+ * Upper-bound estimate of prompt tokens (M-5): the larger of
+ *  - the o200k_base token count of the serialized messages, tools and tool_choice (a real BPE
+ *    tokenizer, so adversarial Unicode that expands to ~1 token per byte is counted as such), and
+ *  - UTF-8 bytes / 2 (cross-family floor),
+ * plus per-message framing overhead.
  */
 export function estimateInputTokens(req: EstimatableRequest): number {
+  const parts: string[] = req.messages.map((m) => JSON.stringify(m));
+  if (req.tools?.length) parts.push(JSON.stringify(req.tools));
+  if (req.tool_choice !== undefined) parts.push(JSON.stringify(req.tool_choice));
   let bytes = 0;
-  for (const m of req.messages) bytes += Buffer.byteLength(JSON.stringify(m), 'utf8');
-  if (req.tools?.length) bytes += Buffer.byteLength(JSON.stringify(req.tools), 'utf8');
-  if (req.tool_choice !== undefined)
-    bytes += Buffer.byteLength(JSON.stringify(req.tool_choice), 'utf8');
-  return (
-    Math.ceil(bytes / BYTES_PER_TOKEN) +
-    PER_MESSAGE_OVERHEAD * req.messages.length +
-    PER_REQUEST_OVERHEAD
-  );
+  let tokens = 0;
+  for (const part of parts) {
+    bytes += Buffer.byteLength(part, 'utf8');
+    tokens += countTokens(part);
+  }
+  const counted = Math.max(tokens, Math.ceil(bytes / MIN_TOKENS_PER_BYTE_DIVISOR));
+  return counted + PER_MESSAGE_OVERHEAD * req.messages.length + PER_REQUEST_OVERHEAD;
 }
 
 // ---------------------------------------------------------------------------------------------

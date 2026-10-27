@@ -9,23 +9,28 @@ completion that has not been paid for.
 
 ```
 agent (Kernel wallet)                    relay                               OpenRouter / facilitator
-  POST /v1/chat/completions  ───────────▶ validate body + Idempotency-Key
-  Idempotency-Key, X-Max-Quote            known key? -> replay / 409 (no payment)
+  POST /v1/chat/completions  ───────────▶ validate body (≤ 1 MB) + Idempotency-Key
+  Idempotency-Key, X-Max-Quote            PAYMENT-SIGNATURE of a known (payer, key)? -> replay (no payment)
                                           quote = ceil(in*estIn + out*max_tokens) + margin
                                           quote > X-Max-Quote? -> 402 {quote} (no PAYMENT-REQUIRED)
   ◀─────────── 402 PAYMENT-REQUIRED       x402 requirements: exact, amount = quote, USDC, payTo
   sign EIP-3009 transferWithAuthorization
   POST + PAYMENT-SIGNATURE  ────────────▶ facilitator /verify ─────────────────────────────▶
-                                          claim key in Postgres (status in_flight)
+                                          claim (payer, key) + unique (payer, nonce), in_flight
+                                          facilitator /settle (quote) ─────────────────────▶
                                           forward to OpenRouter ───────────────────────────▶
-                                          store completion, mark settlementAttempted
-                                          facilitator /settle ─────────────────────────────▶
-  ◀─────────── 200 completion             status succeeded
-               PAYMENT-RESPONSE, x-bootr-receipt
+                                          ok: store completion, succeeded
+                                          timeout/5xx/abort: keep the payment as a credit
+  ◀─────────── 200 completion             PAYMENT-RESPONSE, x-bootr-receipt
 ```
 
-The order is verify, then upstream, then settle (the standard x402 "authorization" flow). The
-client is only charged when a completion exists. If settlement fails, the completion is withheld.
+For `exact` the order is **verify, settle, then upstream** (H-3): the relay never spends on
+OpenRouter for a request that is not paid. If the upstream call then fails (timeout, network error,
+5xx, unparseable body, or a 4xx), the payment is kept as a **credit** for that payer +
+Idempotency-Key: a retry with the same key, body and `PAYMENT-SIGNATURE` runs the request again
+without a new payment (at most 3 upstream calls per payment; after that the row is `failed` with
+`refundDue: true`). For `upto` the charge depends on usage, so the upstream runs first; if its
+outcome is unknown, the full quote is settled and kept as a credit (the provider may have billed).
 
 ### x402 package and API
 
@@ -53,7 +58,7 @@ client is only charged when a completion exists. If settlement fails, the comple
 | ------ | ---------------------- | -------------------------------------------------------------------------- |
 | POST   | `/v1/chat/completions` | OpenAI-compatible subset, non-streaming, x402-paid                         |
 | GET    | `/v1/models`           | Allowed models, per-1K-token prices (micro-USDC), margin, network, schemes |
-| GET    | `/v1/requests/:key`    | Status and receipt of a request by Idempotency-Key (reconciles first)      |
+| GET    | `/v1/requests/:key`    | Status and receipt by Idempotency-Key, for the payer only (`PAYMENT-SIGNATURE` proof); reconciles first |
 | GET    | `/health`              | Liveness                                                                   |
 
 ### `POST /v1/chat/completions`
@@ -63,7 +68,8 @@ Request headers:
 - `Idempotency-Key` (required): one key per logical request. Reuse it on every retry.
 - `X-Max-Quote-Micro-USDC` (required): the most the client will pay, in micro-USDC (1 USDC =
   1,000,000).
-- `PAYMENT-SIGNATURE`: the x402 payment, sent on the retry after the 402.
+- `PAYMENT-SIGNATURE`: the x402 payment, sent on the retry after the 402. Sent again on a replay
+  of the same key, it is the proof that the caller is the payer (it is never settled twice).
 
 The body accepts `model`, `messages` (roles `system`, `developer`, `user`, `assistant` with
 `tool_calls`, and `tool`; content is a string or text parts), `tools` (functions),
@@ -77,8 +83,9 @@ Responses:
 | 200     | Upstream body passed through unchanged (incl. `usage`). Headers: `PAYMENT-RESPONSE`, `x-bootr-receipt`  |
 | 402     | With `PAYMENT-REQUIRED`: pay `amount` (= quote). Without it: `quote_exceeds_max` or `settlement_failed` |
 | 400     | Invalid body or headers, unknown model, `max_tokens` too large, context too long                        |
-| 409     | `idempotency_key_conflict` (same key, different body), `request_in_progress`, `request_outcome_unknown` |
-| 422/502 | `upstream_rejected` (nothing charged), `request_outcome_unknown`, `facilitator_unavailable`             |
+| 409     | `idempotency_key_conflict` (same key, different body), `request_in_progress`, `request_outcome_unknown`, `payment_authorization_reused` (the authorization already funded another key) |
+| 413     | `payload_too_large` (body over 1 MB)                                                                    |
+| 422/502 | `upstream_rejected` / `upstream_failed_credited` (paid; kept as a credit, retry the same key), `credit_exhausted` (refund due), `request_outcome_unknown`, `facilitator_unavailable` |
 
 `x-bootr-receipt` is a JSON header containing
 `{requestId, quoteMicroUsdc, chargedMicroUsdc, paymentTxOrId, network, usage}`.
@@ -87,30 +94,38 @@ reconciliation, it is `eip3009:<nonce>` instead.
 
 ### Idempotency, statuses, reconciliation
 
-Rows live in the Postgres table `inference_requests`, keyed by Idempotency-Key, with the columns
-request hash, status, quote, charge, payment (including the EIP-3009 authorization), the stored
-response and usage.
+Rows live in the Postgres table `inference_requests`, keyed by **(payer, Idempotency-Key)**: keys are
+namespaced per paying address (M-1), so nobody can occupy or read another payer's keys. Columns: request
+hash, status, quote, charge, payment (including the EIP-3009 authorization), payment nonce, proof hash
+(sha256 of the signed payload; the signature itself is never stored), upstream attempts, the stored
+response and usage. `(payer, payment_nonce)` is unique: one signed authorization funds one request, so
+replaying it under other keys returns `409 payment_authorization_reused` and never reaches the upstream
+(H-3b / M-2).
 
-- Same key and same body hash: the stored result is replayed and **no new payment is taken**.
-  Any payment header on a replay is ignored.
-- Same key and a different body hash: `409 idempotency_key_conflict`.
-- `in_flight`: being processed. Rows stuck for longer than the payment window plus 60s become
-  `unknown` (`relay_interrupted`).
+- A request presenting the `PAYMENT-SIGNATURE` that opened `(payer, key)`, with the same body hash:
+  the stored result is replayed and **no new payment is taken**. A fresh authorization from the same
+  payer for a used key is verified and then treated as a replay; it is never settled.
+- Same key and a different body hash (from the payer): `409 idempotency_key_conflict`.
+- Without a payment, or with someone else's, a known key is invisible: the request is simply quoted.
+- `in_flight`: being processed. Rows stuck for longer than the payment window plus 60s become `credit`
+  when the payment had settled, else `unknown` (`relay_interrupted`).
 - `succeeded`: paid and delivered. Replays return the completion.
-- `failed`: nothing was charged (upstream 4xx, settlement refused, or the authorization expired
-  unused). The error is replayed for that key. Retry with a **new** key.
-- `unknown`: the upstream call, or the settlement, has an uncertain outcome (timeout, network
-  error, 5xx, crash). The relay holds a signed authorization that someone could still settle,
-  so the client **must not pay for a replacement** (the supervisor's "never buy a replacement"
-  rule). Poll `GET /v1/requests/:key`. The relay resolves the row:
-  - With `INFERENCE_RPC_URL`: if USDC `authorizationState(from, nonce)` is true, the payment
-    happened, and the row becomes `succeeded` when the relay holds the completion. Replay the
-    POST with the same key to receive it. If the nonce is unused after `validBefore`, the row
-    becomes `failed`.
-  - Without an RPC, an authorization the relay never submitted becomes `failed` after
-    `validBefore`. A submitted but unconfirmed settlement stays `unknown` for an operator.
+- `credit`: paid, no completion yet (upstream failure, or reconciliation found the payment on-chain).
+  A replay runs the request without a new payment (`credit.attemptsLeft`).
+- `failed`: terminal for the key. Nothing was charged (settlement refused, authorization expired
+  unused, `upto` upstream 4xx; `retrySafe: true`), or a credit was exhausted (`refundDue: true`).
+- `unknown`: the settlement outcome is uncertain. The relay holds a signed authorization that someone
+  could still settle, so the client **must not pay for a replacement**. Poll `GET /v1/requests/:key`:
+  - With `INFERENCE_RPC_URL`: if USDC `authorizationState(from, nonce)` is true, the payment happened
+    (the nonce can only belong to this row) and the row becomes `succeeded` (completion held) or
+    `credit`. If the nonce is unused after `validBefore`, the row becomes `failed`.
+  - Without an RPC, an authorization the relay never submitted becomes `failed` after `validBefore`.
+    A submitted but unconfirmed settlement stays `unknown` for an operator.
 
-  `GET /v1/requests/:key` returns `retrySafe: true` only when a new key can safely be used.
+`GET /v1/requests/:key` needs `PAYMENT-SIGNATURE: <the payload that opened the request>` (401
+`payment_proof_required` without it; 404 for any key the proof does not match). It returns
+`retrySafe: true` only when a new key can safely be used, `credit` while a credit is open, and
+`refundDue` when a paid request ended without a completion.
 
 ## Payer helper (`@bootr/inference/client`)
 
@@ -133,6 +148,11 @@ const res = await payer.fetch(`${RELAY_URL}/v1/chat/completions`, {
 const rejection = await parseQuoteRejection(res); // { quoteMicroUsdc } when the cap was too low
 const receipt = readReceipt(res);
 ```
+
+The helper remembers the payment it signed per Idempotency-Key and presents it again when the same key
+is fetched twice (a replay, never a second signature). Callers that persist the payload (`onPayment`)
+pass `paymentProofHeaders(payload)` on `GET /v1/requests/:key` and on replays; a request that already
+carries `PAYMENT-SIGNATURE` is sent as is.
 
 The helper uses the x402 v2 client libraries: `x402Client` and `x402HTTPClient` from
 `@x402/fetch`, plus `ExactEvmScheme` from `@x402/evm`. It signs at most once per call, never
@@ -166,8 +186,8 @@ Names are in the root `.env.example`.
 | `INFERENCE_X402_SCHEMES`               | no       | `exact` (comma list in preference order, e.g. `upto,exact`)                                                                                                                                    |
 | `INFERENCE_PRICE_TABLE_JSON`           | no       | built-in table (`src/pricing.ts`); JSON `{marginBps?, marginFixedMicroUsdc?, models: {id: {inputMicroUsdcPerKTokens, outputMicroUsdcPerKTokens, contextLength, maxOutputTokens}}}` replaces it |
 | `INFERENCE_RPC_URL`                    | no       | Base RPC used for on-chain reconciliation of `unknown` rows                                                                                                                                    |
-| `INFERENCE_UPSTREAM_TIMEOUT_MS`        | no       | `120000`                                                                                                                                                                                       |
-| `INFERENCE_PAYMENT_TIMEOUT_SECONDS`    | no       | `300` (x402 `maxTimeoutSeconds`, i.e. authorization lifetime; must exceed the upstream timeout by 30s)                                                                                         |
+| `INFERENCE_UPSTREAM_TIMEOUT_MS`        | no       | `120000`; must be shorter than the authorization window minus the facilitator timeout (60s) and 30s of margin                                                                                  |
+| `INFERENCE_PAYMENT_TIMEOUT_SECONDS`    | no       | `300` (x402 `maxTimeoutSeconds`, i.e. authorization lifetime; must be ≥ upstream timeout + 90s)                                                                                                |
 
 Empty values are treated as unset. The supervisor can point its `INFERENCE_PROVIDER_URL` at this
 relay.
@@ -179,6 +199,14 @@ pnpm --filter inference db:migrate   # applies drizzle/ (needs DATABASE_URL)
 pnpm --filter inference dev          # tsx watch, port INFERENCE_PORT (3003)
 pnpm --filter inference test         # vitest (no network, no Postgres: PGlite + mocks)
 pnpm --filter inference typecheck
+```
+
+Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)):
+
+```sh
+docker build -f apps/inference/Dockerfile -t bootr-inference .
+docker run --rm --env-file .env -e INFERENCE_PORT=3003 -p 3003:3003 bootr-inference
+docker run --rm --env-file .env bootr-inference node scripts/migrate.mjs   # same journal as db:migrate
 ```
 
 After changing `src/db/schema.ts`, run `pnpm --filter inference db:generate`.
@@ -223,17 +251,24 @@ After changing `src/db/schema.ts`, run `pnpm --filter inference db:generate`.
 
 - Non-streaming only. Content is text only (image and audio parts are rejected because they
   are not priced).
-- `exact` charges the quote, which is an upper bound: the prompt is estimated at UTF-8 bytes / 3
-  and the output at the full `max_tokens`. Actual usage is reported in the receipt. Use `upto`
-  (Permit2) to be charged actual usage.
-- The prompt estimate is a heuristic with no tokenizer. If a provider bills more prompt tokens
-  than estimated, the relay absorbs the difference. The margin covers typical drift.
-- If settlement fails after a successful upstream call, the relay absorbs the OpenRouter cost.
-  Verification before the upstream call makes this rare.
+- `exact` charges the quote, which is an upper bound: the prompt is estimated with the o200k_base
+  tokenizer (`gpt-tokenizer`), floored at UTF-8 bytes / 2 for other tokenizer families (M-5), and
+  the output at the full `max_tokens`. Actual usage is reported in the receipt. Use `upto` (Permit2)
+  to be charged actual usage.
+- A payment whose upstream call fails is kept as a credit for its key, not refunded on-chain. After 3
+  failed upstream calls (or a deterministic upstream 4xx that will repeat), the operator owes a
+  refund (`refundDue`).
+- `upto` still calls the upstream before settling; concurrent requests with distinct Permit2
+  authorizations against one balance can each reach the upstream (only one settles). Keep `exact`
+  unless the payers are trusted.
 - `failed` is terminal for its key. Retries use a new key.
-- `GET /v1/requests/:key` is unauthenticated and returns metadata only, never the completion.
-  Use unguessable keys (UUIDs).
-- One network per deployment. There is no rate limiting or per-agent quota. The relay's
+- `GET /v1/requests/:key` returns metadata only, never the completion, and only to the payer.
+  After settlement the EIP-3009 signature is public on-chain, so the proof then only protects rows
+  from callers who do not know the payer, the key and (for replays) the exact request body.
+- Request bodies are limited to 1 MB (413).
+- One network per deployment. There is no rate limiting or per-agent quota.
+- Migration `0001_payer_scoped_keys` backfills `payer` and `payment_nonce` from stored payments;
+  rows created before it have proof hash `legacy` and can no longer be read or replayed through the API. The relay's
   OpenRouter credit balance must be funded separately.
 - Default prices in `src/pricing.ts` follow OpenRouter list prices. Re-verify them at
   `openrouter.ai/models` before mainnet. Context limits are clamped to each model's base price

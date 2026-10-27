@@ -6,7 +6,7 @@ import {
 import type { PaymentPayload } from '@x402/core/types';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { describe, expect, it, vi } from 'vitest';
-import { createX402Payer, readReceipt } from './client/x402-payer.js';
+import { createX402Payer, paymentProofHeaders, readReceipt } from './client/x402-payer.js';
 import { actualChargeMicroUsdc, computeQuote, DEFAULT_PRICE_TABLE } from './pricing.js';
 import {
   BASE_SEPOLIA_USDC,
@@ -19,6 +19,7 @@ import {
   TX_HASH,
   URL_BASE,
 } from './test/helpers.js';
+import { memoryRowKey } from './store.js';
 
 const CHAT_URL = `${URL_BASE}/v1/chat/completions`;
 
@@ -40,16 +41,24 @@ function post(
   });
 }
 
-function payerFor(t: ReturnType<typeof createTestApp>, onPayment = vi.fn()) {
+function payerFor(t: ReturnType<typeof createTestApp>) {
   const account = privateKeyToAccount(generatePrivateKey());
+  /** Payloads this payer signed, per Idempotency-Key (what the supervisor persists via onPayment). */
+  const payments = new Map<string, PaymentPayload>();
+  const onPayment = vi.fn(
+    ({ payload, idempotencyKey }: { payload: PaymentPayload; idempotencyKey: string }) => {
+      payments.set(idempotencyKey, payload);
+    },
+  );
   const payer = createX402Payer({
     signer: account,
     maxPaymentMicroUsdc: 1_000_000n,
     networks: [NETWORK],
     payTo: PAY_TO,
     fetch: t.appFetch,
+    onPayment,
   });
-  return { account, onPayment, payer };
+  return { account, onPayment, payer, payments };
 }
 
 function paidPost(payer: ReturnType<typeof createX402Payer>, body: unknown, key: string) {
@@ -58,6 +67,19 @@ function paidPost(payer: ReturnType<typeof createX402Payer>, body: unknown, key:
     headers: { 'content-type': 'application/json', 'Idempotency-Key': key },
     body: JSON.stringify(body),
   });
+}
+
+/** `GET /v1/requests/:key` presenting the payment that opened the request. */
+async function getRequest(
+  t: ReturnType<typeof createTestApp>,
+  key: string,
+  payload?: PaymentPayload,
+) {
+  const res = await t.app.request(`${URL_BASE}/v1/requests/${key}`, {
+    headers: payload ? paymentProofHeaders(payload) : {},
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- loose JSON in assertions
+  return { status: res.status, body: (await res.json()) as any };
 }
 
 describe('public endpoints', () => {
@@ -234,25 +256,23 @@ describe('x402 middleware', () => {
       success: true,
       transaction: TX_HASH,
     });
-    expect(t.store.rows.get('k-paid')).toMatchObject({
+    expect(t.store.byKey('k-paid')).toMatchObject({
       status: 'succeeded',
-      payer: account.address,
+      payer: account.address.toLowerCase(),
+      chargedMicroUsdc: Number(quote),
+      upstreamAttempts: 1,
     });
+    // H-3: the payment is collected before the paid upstream call.
+    expect(t.facilitator.settle.mock.invocationCallOrder[0]!).toBeLessThan(
+      t.upstreamFetch.mock.invocationCallOrder[0]!,
+    );
   });
 });
 
 describe('idempotency', () => {
   it('replays the stored response for the same key + body without a new payment', async () => {
     const t = createTestApp();
-    const onPayment = vi.fn();
-    const account = privateKeyToAccount(generatePrivateKey());
-    const payer = createX402Payer({
-      signer: account,
-      maxPaymentMicroUsdc: 1_000_000n,
-      networks: [NETWORK],
-      fetch: t.appFetch,
-      onPayment,
-    });
+    const { payer, onPayment } = payerFor(t);
     const body = chatBody();
 
     const first = await paidPost(payer, body, 'k-replay');
@@ -269,30 +289,105 @@ describe('idempotency', () => {
     expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores a payment header on replay (never settles twice)', async () => {
+  it('a stored result is only served to the payer that opened it (M-1 free replay)', async () => {
     const t = createTestApp();
-    const { payer } = payerFor(t);
+    const { payer, payments } = payerFor(t);
     const body = chatBody();
     await paidPost(payer, body, 'k-replay-2');
+
+    // Same key + body with no payment, or garbage: never served, just quoted.
+    const variants: Record<string, string>[] = [{}, { 'payment-signature': 'garbage' }];
+    for (const extra of variants) {
+      const res = await post(t, body, {
+        'idempotency-key': 'k-replay-2',
+        'x-max-quote-micro-usdc': '1000000',
+        ...extra,
+      });
+      expect(res.status).toBe(402);
+      expect(await res.json()).not.toHaveProperty('choices');
+    }
+
+    // The original signed payment is the proof: replayed, never settled twice.
     const res = await post(t, body, {
       'idempotency-key': 'k-replay-2',
-      'payment-signature': 'garbage',
+      ...paymentProofHeaders(payments.get('k-replay-2')!),
     });
     expect(res.status).toBe(200);
+    expect(res.headers.get('x-bootr-idempotent-replay')).toBe('true');
     expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 409 when the key is reused with a different body', async () => {
+  it('a fresh authorization from the same payer for a used key replays without settling it', async () => {
     const t = createTestApp();
-    const { payer } = payerFor(t);
+    const account = privateKeyToAccount(generatePrivateKey());
+    const body = chatBody();
+    // Same wallet, two payer instances (e.g. a restarted process that lost its payload).
+    const p1 = createX402Payer({
+      signer: account,
+      maxPaymentMicroUsdc: 1_000_000n,
+      networks: [NETWORK],
+      fetch: t.appFetch,
+    });
+    const p2 = createX402Payer({
+      signer: account,
+      maxPaymentMicroUsdc: 1_000_000n,
+      networks: [NETWORK],
+      fetch: t.appFetch,
+    });
+    expect((await paidPost(p1, body, 'k-same-payer')).status).toBe(200);
+    const again = await paidPost(p2, body, 'k-same-payer');
+    expect(again.status).toBe(200);
+    expect(again.headers.get('x-bootr-idempotent-replay')).toBe('true');
+    expect(t.facilitator.verify).toHaveBeenCalledTimes(2);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 409 when the payer reuses a key with a different body', async () => {
+    const t = createTestApp();
+    const { payer, payments } = payerFor(t);
     await paidPost(payer, chatBody(), 'k-conflict');
     const res = await post(t, chatBody({ messages: [{ role: 'user', content: 'different' }] }), {
       'idempotency-key': 'k-conflict',
       'x-max-quote-micro-usdc': '1000000',
+      ...paymentProofHeaders(payments.get('k-conflict')!),
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: { code: 'idempotency_key_conflict' } });
     expect(t.facilitator.verify).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys are namespaced per payer: another wallet cannot squat or read a key (M-1)', async () => {
+    const t = createTestApp();
+    const victim = payerFor(t);
+    const attacker = payerFor(t);
+    const body = chatBody();
+    // The attacker claims the victim's predictable next key first, with their own money.
+    expect(
+      (await paidPost(attacker.payer, chatBody({ max_tokens: 1 }), 'inference:predictable')).status,
+    ).toBe(200);
+    // The victim's request under the same key is unaffected.
+    const res = await paidPost(victim.payer, body, 'inference:predictable');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-bootr-idempotent-replay')).toBeNull();
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(2);
+
+    // Metadata needs the payment proof; another payer's proof does not open the victim's row.
+    expect((await getRequest(t, 'inference:predictable')).status).toBe(401);
+    const own = await getRequest(
+      t,
+      'inference:predictable',
+      victim.payments.get('inference:predictable'),
+    );
+    expect(own).toMatchObject({ status: 200, body: { status: 'succeeded' } });
+    expect(own.body.payment.payer).toBe(victim.account.address.toLowerCase());
+    const theirs = await getRequest(
+      t,
+      'inference:predictable',
+      attacker.payments.get('inference:predictable'),
+    );
+    expect(theirs.body.payment.payer).toBe(attacker.account.address.toLowerCase());
   });
 
   it('returns 409 in_progress for a concurrent duplicate and settles only once', async () => {
@@ -307,7 +402,8 @@ describe('idempotency', () => {
     const { payer } = payerFor(t);
     const body = chatBody();
     const firstP = paidPost(payer, body, 'k-concurrent');
-    await vi.waitFor(() => expect(t.store.rows.get('k-concurrent')?.status).toBe('in_flight'));
+    await vi.waitFor(() => expect(t.store.byKey('k-concurrent')?.status).toBe('in_flight'));
+    await vi.waitFor(() => expect(t.upstreamFetch).toHaveBeenCalledTimes(1));
     const dup = await paidPost(payer, body, 'k-concurrent');
     expect(dup.status).toBe(409);
     expect(await dup.json()).toMatchObject({ error: { code: 'request_in_progress' } });
@@ -317,142 +413,273 @@ describe('idempotency', () => {
   });
 });
 
-describe('unknown outcomes and reconciliation', () => {
-  it('keeps an uncertain upstream call as unknown, never re-charges, and resolves after expiry', async () => {
-    const checker = { isUsed: vi.fn(async () => false) };
+describe('one authorization funds one request (H-3b / M-2)', () => {
+  it('replaying a signed authorization under other keys never reaches the upstream', async () => {
+    const t = createTestApp();
+    const { payer, payments } = payerFor(t);
+    const body = chatBody();
+    expect((await paidPost(payer, body, 'k-auth-0')).status).toBe(200);
+    const proof = paymentProofHeaders(payments.get('k-auth-0')!);
+    const replays = await Promise.all(
+      [1, 2, 3, 4, 5].map((i) =>
+        post(t, body, {
+          'idempotency-key': `k-auth-${i}`,
+          'x-max-quote-micro-usdc': '1000000',
+          ...proof,
+        }),
+      ),
+    );
+    for (const r of replays) {
+      expect(r.status).toBe(409);
+      expect(await r.json()).toMatchObject({ error: { code: 'payment_authorization_reused' } });
+    }
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+  });
+
+  it('concurrent use of one authorization: exactly one request runs', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
     const t = createTestApp({
-      checker,
       upstreamFetch: async () => {
-        throw new TypeError('socket hang up');
+        await hold;
+        return jsonResponse(completionBody());
       },
     });
-    const { payer } = payerFor(t);
+    const { payer, payments } = payerFor(t);
     const body = chatBody();
+    const firstP = paidPost(payer, body, 'k-conc-0');
+    await vi.waitFor(() => expect(payments.get('k-conc-0')).toBeDefined());
+    const proof = paymentProofHeaders(payments.get('k-conc-0')!);
+    const others = await Promise.all(
+      [1, 2, 3].map((i) =>
+        post(t, body, {
+          'idempotency-key': `k-conc-${i}`,
+          'x-max-quote-micro-usdc': '1000000',
+          ...proof,
+        }),
+      ),
+    );
+    release();
+    expect((await firstP).status).toBe(200);
+    expect(others.map((r) => r.status)).toEqual([409, 409, 409]);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+  });
+});
 
-    const res = await paidPost(payer, body, 'k-unknown');
+describe('settle first, credit on upstream failure (H-3)', () => {
+  it('an upstream timeout after payment becomes a credit; the same key is served without a new payment', async () => {
+    let fail = true;
+    const t = createTestApp({
+      upstreamFetch: async () => {
+        if (fail)
+          throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        return jsonResponse(completionBody());
+      },
+    });
+    const { payer, payments, onPayment } = payerFor(t);
+    const body = chatBody();
+    const quote = quoteFor(body);
+
+    const res = await paidPost(payer, body, 'k-credit');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({
-      error: { code: 'request_outcome_unknown' },
-      status: 'unknown',
+      error: { code: 'upstream_failed_credited' },
+      status: 'credit',
+      credit: { microUsdc: quote.toString(), attemptsLeft: 2 },
     });
-    expect(t.facilitator.settle).not.toHaveBeenCalled();
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1); // the upstream spend was paid for
 
-    // a retry with the same key is refused without asking for a new payment
-    const retry = await paidPost(payer, body, 'k-unknown');
-    expect(retry.status).toBe(409);
-    expect(await retry.json()).toMatchObject({ error: { code: 'request_outcome_unknown' } });
-    expect(t.facilitator.verify).toHaveBeenCalledTimes(1);
-    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
-
-    // the supervisor reconciles by key
-    const view = (await (await t.app.request(`${URL_BASE}/v1/requests/k-unknown`)).json()) as {
-      payment: { authorization: { from: string; nonce: string } };
-    };
-    expect(view).toMatchObject({
-      status: 'unknown',
-      statusReason: 'upstream_network_error',
+    const view = await getRequest(t, 'k-credit', payments.get('k-credit'));
+    expect(view.body).toMatchObject({
+      status: 'credit',
+      statusReason: 'upstream_timeout',
+      chargedMicroUsdc: quote.toString(),
+      credit: { microUsdc: quote.toString(), attemptsLeft: 2 },
       retrySafe: false,
-      payment: { scheme: 'exact', settlementAttempted: false, settled: false, transaction: null },
+      refundDue: false,
+      payment: { settled: true, transaction: TX_HASH },
     });
-    expect(view.payment.authorization.nonce).toMatch(/^0x[0-9a-f]{64}$/);
 
-    // once the authorization expired unused, the request is definitively unpaid
-    t.clock.now += 301_000;
-    const resolved = await (await t.app.request(`${URL_BASE}/v1/requests/k-unknown`)).json();
-    expect(resolved).toMatchObject({
-      status: 'failed',
-      statusReason: 'authorization_expired_unsettled',
-      retrySafe: true,
+    fail = false;
+    const retry = await paidPost(payer, body, 'k-credit');
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(completionBody());
+    expect(readReceipt(retry)).toMatchObject({
+      chargedMicroUsdc: quote.toString(),
+      paymentTxOrId: TX_HASH,
     });
-    expect(checker.isUsed).toHaveBeenCalledWith({
-      asset: BASE_SEPOLIA_USDC,
-      authorizer: view.payment.authorization.from,
-      nonce: view.payment.authorization.nonce,
+    expect(onPayment).toHaveBeenCalledTimes(1);
+    expect(t.facilitator.verify).toHaveBeenCalledTimes(1);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(2);
+    expect((await getRequest(t, 'k-credit', payments.get('k-credit'))).body).toMatchObject({
+      status: 'succeeded',
+      credit: null,
     });
   });
 
-  it('settlement timeout -> unknown; on-chain evidence of payment releases the stored completion', async () => {
+  it('a credit funds at most 3 upstream calls, then the request fails with a refund due', async () => {
+    const t = createTestApp({
+      upstreamFetch: async () => jsonResponse({ error: { message: 'overloaded' } }, 503),
+    });
+    const { payer, payments } = payerFor(t);
+    const body = chatBody();
+    expect((await paidPost(payer, body, 'k-exhaust')).status).toBe(502);
+    expect((await paidPost(payer, body, 'k-exhaust')).status).toBe(502);
+    const last = await paidPost(payer, body, 'k-exhaust');
+    expect(await last.json()).toMatchObject({
+      error: { code: 'credit_exhausted' },
+      refundDue: true,
+    });
+    const after = await paidPost(payer, body, 'k-exhaust');
+    expect(await after.json()).toMatchObject({ error: { code: 'credit_exhausted' } });
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(3);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect((await getRequest(t, 'k-exhaust', payments.get('k-exhaust'))).body).toMatchObject({
+      status: 'failed',
+      refundDue: true,
+      retrySafe: false,
+    });
+  });
+
+  it('an upstream 4xx after payment keeps the payment as a credit (never a free call)', async () => {
+    const t = createTestApp({
+      upstreamFetch: async () => jsonResponse({ error: { message: 'tools not supported' } }, 400),
+    });
+    const { payer, payments } = payerFor(t);
+    const res = await paidPost(payer, chatBody(), 'k-reject');
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'upstream_rejected' },
+      upstreamStatus: 400,
+      status: 'credit',
+    });
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect((await getRequest(t, 'k-reject', payments.get('k-reject'))).body).toMatchObject({
+      status: 'credit',
+      statusReason: 'upstream_rejected_400',
+    });
+  });
+});
+
+describe('unknown outcomes and reconciliation', () => {
+  it('settlement timeout -> unknown, no upstream call; on-chain evidence turns it into a credit', async () => {
     const checker = { isUsed: vi.fn(async () => false) };
     const t = createTestApp({ checker });
     t.facilitator.settle.mockRejectedValueOnce(
       new Error('Facilitator settle request timed out after 60000ms'),
     );
-    const { payer } = payerFor(t);
+    const { payer, payments } = payerFor(t);
     const body = chatBody();
 
     const res = await paidPost(payer, body, 'k-settle-unknown');
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ error: { code: 'request_outcome_unknown' } });
-    expect(t.store.rows.get('k-settle-unknown')).toMatchObject({
+    expect(t.upstreamFetch).not.toHaveBeenCalled();
+    expect(t.store.byKey('k-settle-unknown')).toMatchObject({
       status: 'unknown',
       payment: { settlementAttempted: true },
     });
 
-    // still unknown while the nonce is unused and not expired
-    expect(
-      await (await t.app.request(`${URL_BASE}/v1/requests/k-settle-unknown`)).json(),
-    ).toMatchObject({ status: 'unknown' });
+    // still unknown while the nonce is unused and not expired; a retry is refused, never re-paid
+    const proof = payments.get('k-settle-unknown');
+    expect((await getRequest(t, 'k-settle-unknown', proof)).body).toMatchObject({
+      status: 'unknown',
+      retrySafe: false,
+    });
+    const early = await paidPost(payer, body, 'k-settle-unknown');
+    expect(early.status).toBe(409);
 
     checker.isUsed.mockResolvedValue(true);
+    expect((await getRequest(t, 'k-settle-unknown', proof)).body).toMatchObject({
+      status: 'credit',
+      statusReason: 'reconciled_onchain_paid',
+    });
     const replay = await paidPost(payer, body, 'k-settle-unknown');
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(completionBody());
     expect(readReceipt(replay)?.paymentTxOrId).toMatch(/^eip3009:0x[0-9a-f]{64}$/);
     expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
     expect(t.facilitator.verify).toHaveBeenCalledTimes(1);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unpaid authorization that expired becomes failed and retry-safe', async () => {
+    const checker = { isUsed: vi.fn(async () => false) };
+    const t = createTestApp({ checker });
+    t.facilitator.settle.mockRejectedValueOnce(new Error('fetch failed'));
+    const { payer, payments } = payerFor(t);
+    await paidPost(payer, chatBody(), 'k-expire');
+    t.clock.now += 301_000;
+    const view = await getRequest(t, 'k-expire', payments.get('k-expire'));
+    expect(view.body).toMatchObject({
+      status: 'failed',
+      statusReason: 'authorization_expired_unsettled',
+      retrySafe: true,
+    });
+    expect(checker.isUsed).toHaveBeenCalledWith({
+      asset: BASE_SEPOLIA_USDC,
+      authorizer: view.body.payment.authorization.from,
+      nonce: view.body.payment.authorization.nonce,
+    });
   });
 
   it('without an RPC, a submitted-but-unconfirmed settlement stays unknown even after expiry', async () => {
     const t = createTestApp();
     t.facilitator.settle.mockRejectedValueOnce(new Error('fetch failed'));
-    const { payer } = payerFor(t);
+    const { payer, payments } = payerFor(t);
     await paidPost(payer, chatBody(), 'k-no-rpc');
     t.clock.now += 3_600_000;
-    const view = await (await t.app.request(`${URL_BASE}/v1/requests/k-no-rpc`)).json();
-    expect(view).toMatchObject({ status: 'unknown', retrySafe: false });
+    const view = await getRequest(t, 'k-no-rpc', payments.get('k-no-rpc'));
+    expect(view.body).toMatchObject({ status: 'unknown', retrySafe: false });
   });
 
-  it('treats a stale in_flight row (relay crash) as unknown', async () => {
+  it('a stale in_flight row: paid -> credit; never submitted -> failed once expired', async () => {
     const t = createTestApp();
-    const { payer } = payerFor(t);
+    const { payer, payments } = payerFor(t);
     await paidPost(payer, chatBody(), 'k-stale');
-    t.store.rows.set('k-stale', {
-      ...t.store.rows.get('k-stale')!,
+    const paid = t.store.byKey('k-stale')!;
+    t.store.rows.set(memoryRowKey(paid.payer, 'k-stale'), {
+      ...paid,
       status: 'in_flight',
       updatedAt: new Date(t.clock.now),
     });
+    await paidPost(payer, chatBody({ max_tokens: 9 }), 'k-stale-unpaid');
+    const unpaid = t.store.byKey('k-stale-unpaid')!;
+    t.store.rows.set(memoryRowKey(unpaid.payer, 'k-stale-unpaid'), {
+      ...unpaid,
+      status: 'in_flight',
+      payment: { ...unpaid.payment!, settled: false, settlementAttempted: false },
+      updatedAt: new Date(t.clock.now),
+    });
     t.clock.now += 400_000;
-    const view = await (await t.app.request(`${URL_BASE}/v1/requests/k-stale`)).json();
-    expect(view).toMatchObject({ status: 'unknown', statusReason: 'relay_interrupted' });
+    expect((await getRequest(t, 'k-stale', payments.get('k-stale'))).body).toMatchObject({
+      status: 'credit',
+      statusReason: 'relay_interrupted_after_payment',
+    });
+    // relay_interrupted -> unknown; the authorization was never submitted and has expired -> failed
+    expect(
+      (await getRequest(t, 'k-stale-unpaid', payments.get('k-stale-unpaid'))).body,
+    ).toMatchObject({
+      status: 'failed',
+      statusReason: 'authorization_expired_unsettled',
+      retrySafe: true,
+    });
   });
 
-  it('GET /v1/requests/:key returns 404 for unknown keys', async () => {
+  it('GET /v1/requests/:key needs a payment proof and 404s for unknown keys', async () => {
     const t = createTestApp();
-    expect((await t.app.request(`${URL_BASE}/v1/requests/missing`)).status).toBe(404);
+    const { payer, payments } = payerFor(t);
+    await paidPost(payer, chatBody(), 'k-known');
+    expect((await getRequest(t, 'missing')).status).toBe(401);
+    expect((await getRequest(t, 'missing', payments.get('k-known'))).status).toBe(404);
   });
 });
 
 describe('definitive failures (nothing charged)', () => {
-  it('upstream 4xx -> failed, no settlement, replayed for the same key', async () => {
-    const t = createTestApp({
-      upstreamFetch: async () => jsonResponse({ error: { message: 'tools not supported' } }, 400),
-    });
-    const { payer } = payerFor(t);
-    const res = await paidPost(payer, chatBody(), 'k-reject');
-    expect(res.status).toBe(422);
-    expect(await res.json()).toMatchObject({
-      error: { code: 'upstream_rejected' },
-      upstreamStatus: 400,
-    });
-    expect(t.facilitator.settle).not.toHaveBeenCalled();
-    const replay = await paidPost(payer, chatBody(), 'k-reject');
-    expect(replay.status).toBe(422);
-    expect(replay.headers.get('x-bootr-idempotent-replay')).toBe('true');
-    const view = await (await t.app.request(`${URL_BASE}/v1/requests/k-reject`)).json();
-    expect(view).toMatchObject({ status: 'failed', retrySafe: true });
-  });
-
-  it('settlement refused -> 402 settlement_failed and the completion is withheld', async () => {
+  it('settlement refused -> 402 settlement_failed, no upstream call', async () => {
     const t = createTestApp();
     t.facilitator.settle.mockResolvedValueOnce({
       success: false,
@@ -466,11 +693,41 @@ describe('definitive failures (nothing charged)', () => {
     const json = await res.json();
     expect(json).toMatchObject({ error: { code: 'settlement_failed' } });
     expect(json).not.toHaveProperty('choices');
-    expect(t.store.rows.get('k-settle-fail')).toMatchObject({ status: 'failed' });
+    expect(t.upstreamFetch).not.toHaveBeenCalled();
+    expect(t.store.byKey('k-settle-fail')).toMatchObject({ status: 'failed' });
+  });
+});
+
+describe('request limits (M-6)', () => {
+  it('refuses bodies over 1 MB with 413 before parsing', async () => {
+    const t = createTestApp();
+    const res = await post(
+      t,
+      chatBody({ messages: [{ role: 'user', content: 'x'.repeat(1024 * 1024) }] }),
+      {
+        'idempotency-key': 'k-big',
+        'x-max-quote-micro-usdc': '100000000',
+      },
+    );
+    expect(res.status).toBe(413);
+    expect(t.facilitator.verify).not.toHaveBeenCalled();
   });
 });
 
 describe('upto scheme', () => {
+  const uptoPayload = (
+    required: ReturnType<typeof decodePaymentRequiredHeader>,
+    nonce: string,
+  ): PaymentPayload => ({
+    x402Version: 2,
+    resource: required.resource,
+    accepted: required.accepts[0]!,
+    payload: {
+      signature: '0x01',
+      permit2Authorization: { from: '0x00000000000000000000000000000000000000Ab', nonce },
+    },
+  });
+
   it('advertises upto and settles the actual usage cost (capped at the quote)', async () => {
     const t = createTestApp({ schemes: ['upto'] });
     const body = chatBody({ max_tokens: 4000 });
@@ -481,15 +738,9 @@ describe('upto scheme', () => {
     const required = decodePaymentRequiredHeader(first.headers.get('payment-required')!);
     expect(required.accepts[0]).toMatchObject({ scheme: 'upto', amount: quote.toString() });
 
-    const payload: PaymentPayload = {
-      x402Version: 2,
-      resource: required.resource,
-      accepted: required.accepts[0]!,
-      payload: { stub: true },
-    };
     const res = await post(t, body, {
       ...headers,
-      'payment-signature': encodePaymentSignatureHeader(payload),
+      'payment-signature': encodePaymentSignatureHeader(uptoPayload(required, '7')),
     });
     expect(res.status).toBe(200);
 
@@ -506,5 +757,28 @@ describe('upto scheme', () => {
       quoteMicroUsdc: quote.toString(),
       chargedMicroUsdc: expected.toString(),
     });
+  });
+
+  it('an unknown upstream outcome settles the full quote and keeps it as a credit', async () => {
+    const t = createTestApp({
+      schemes: ['upto'],
+      upstreamFetch: async () => {
+        throw new TypeError('socket hang up');
+      },
+    });
+    const body = chatBody({ max_tokens: 4000 });
+    const quote = quoteFor(body);
+    const headers = { 'idempotency-key': 'k-upto-unknown', 'x-max-quote-micro-usdc': '1000000' };
+    const required = decodePaymentRequiredHeader(
+      (await post(t, body, headers)).headers.get('payment-required')!,
+    );
+    const res = await post(t, body, {
+      ...headers,
+      'payment-signature': encodePaymentSignatureHeader(uptoPayload(required, '8')),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ status: 'credit' });
+    const [, settledRequirements] = t.facilitator.settle.mock.calls[0]!;
+    expect(settledRequirements.amount).toBe(quote.toString());
   });
 });

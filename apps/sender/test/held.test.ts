@@ -138,7 +138,14 @@ describe('ambiguous outcomes are held and reconciled', () => {
       text: 'thanks for asking',
       replyTo: '555',
       replyAuthorId: '42',
+      replyEligibility: { eligible: true },
     };
+    env.fake.on('GET', '/2/tweets/555', () =>
+      json({
+        data: { id: '555', text: 'q', author_id: '42' },
+        includes: { users: [{ id: '42', username: 'alice' }] },
+      }),
+    );
     expect((await env.call('POST', '/internal/publish', reply)).body.status).toBe('held');
     const base = {
       author_id: AGENT_X_ID,

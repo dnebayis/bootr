@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 /**
- * Prints an X OAuth authorize link for an agent (dev helper).
+ * Prints a signed X connect link for an agent (dev/ops helper).
  *
- *   set -a; source .env; set +a; node apps/sender/scripts/oauth-link.mjs <agentId> [state]
+ *   set -a; source .env; set +a; node apps/sender/scripts/oauth-link.mjs <agentId> [state] [--reconnect]
  *
- * Needs SENDER_SERVICE_KEY and SENDER_URL (default http://localhost:3002). The link embeds a
- * signed state that expires after a few minutes; generate a fresh one right before use.
+ * Needs SENDER_SERVICE_KEY and SENDER_URL (default http://localhost:3002). The printed link points
+ * at the sender's own `/oauth/start` (signed, valid for 5 minutes): open it in the browser that will
+ * complete the flow, because the sender binds the OAuth state to that browser with a cookie.
+ * `--reconnect` allows replacing an agent's existing, different X account.
  */
 /* global process, console, fetch */
 import { createHash, createHmac } from 'node:crypto';
 
-const [agentId, state = 'dev-connect'] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const reconnect = args.includes('--reconnect');
+const [agentId, state = 'dev-connect'] = args.filter((a) => a !== '--reconnect');
 if (!agentId) {
   console.error('usage: oauth-link.mjs <agentId> [state]');
   process.exit(1);
@@ -21,7 +25,7 @@ if (!key) {
   process.exit(1);
 }
 const base = process.env.SENDER_URL ?? 'http://localhost:3002';
-const path = `/oauth/start?agentId=${encodeURIComponent(agentId)}&state=${encodeURIComponent(state)}`;
+const path = `/oauth/start?agentId=${encodeURIComponent(agentId)}&state=${encodeURIComponent(state)}${reconnect ? '&reconnect=1' : ''}`;
 const ts = String(Math.floor(Date.now() / 1000));
 const sha = createHash('sha256').update('').digest('hex');
 const sig = createHmac('sha256', key).update(`${ts}\nGET\n${path}\n${sha}`).digest('hex');

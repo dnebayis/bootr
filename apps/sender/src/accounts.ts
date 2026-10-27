@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { SenderContext } from './context.js';
 import { decrypt, encrypt } from './crypto.js';
 import { accounts, type AccountRow } from './db/schema.js';
@@ -20,12 +20,19 @@ export async function getAccount(
   return rows[0];
 }
 
+/**
+ * Stores the tokens for `agentId`. An existing binding to a DIFFERENT X account that is still connected
+ * (not revoked) is only replaced when `replace` is set (a start signed with `reconnect=1`); otherwise
+ * nothing is written and `conflict` is returned. The check is part of the upsert, so two concurrent
+ * callbacks cannot both overwrite.
+ */
 export async function saveAccount(
   ctx: SenderContext,
   agentId: string,
   tokens: TokenSet,
   user: { id: string; username: string },
-): Promise<void> {
+  opts: { replace?: boolean } = { replace: true },
+): Promise<'saved' | 'conflict'> {
   const now = ctx.now();
   const values = {
     agentId,
@@ -41,10 +48,20 @@ export async function saveAccount(
     connectedAt: now,
     updatedAt: now,
   };
-  await ctx.db
+  const rows = await ctx.db
     .insert(accounts)
     .values(values)
-    .onConflictDoUpdate({ target: accounts.agentId, set: { ...values, agentId: undefined } });
+    .onConflictDoUpdate({
+      target: accounts.agentId,
+      set: { ...values, agentId: undefined },
+      ...(opts.replace
+        ? {}
+        : {
+            setWhere: sql`${accounts.xUserId} = ${user.id} or ${accounts.revokedAt} is not null`,
+          }),
+    })
+    .returning({ agentId: accounts.agentId });
+  return rows.length > 0 ? 'saved' : 'conflict';
 }
 
 export type TokenLookup =

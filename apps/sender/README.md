@@ -13,7 +13,8 @@ Design follows Claus Network's SOCIAL-BOUNDARY model:
   stays `rejected`. An ambiguous outcome (timeout, network error, 5xx, DB failure after send)
   stays `held` and is settled only by reconciliation. It is never resent.
 - Outgoing text passes the agent-core publish gate (`validatePost`, which runs
-  `outgoingActionRisk`) and the consent ledger (opted-out authors are never replied to).
+  `outgoingActionRisk`) and the consent ledger: opted-out authors are never replied to or
+  @mentioned, and a reply needs the supervisor's `replyEligibility` decision (see publish below).
 
 ## Running
 
@@ -23,6 +24,14 @@ pnpm --filter sender dev            # http://localhost:3002 (PORT)
 pnpm --filter sender reconcile      # one reconciliation pass (the server also runs it on an interval)
 pnpm --filter sender test           # vitest (PGlite in-memory Postgres + stubbed X)
 pnpm --filter sender typecheck
+```
+
+Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)):
+
+```sh
+docker build -f apps/sender/Dockerfile -t bootr-sender .
+docker run --rm --env-file .env bootr-sender node dist/db/migrate.js
+docker run --rm --env-file .env -e PORT=3002 -p 3002:3002 bootr-sender
 ```
 
 ### Migrations
@@ -41,7 +50,8 @@ with other services without clashing with their drizzle journals.
 | Table             | Purpose                                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------------------- |
 | `sender_accounts` | agentId -> X user id/handle, encrypted access/refresh tokens, scopes, expiry, revokedAt                  |
-| `sender_actions`  | one row per actionId: body hash, status `pending/sent/held/rejected`, provider post id, attempts, checks |
+| `sender_actions`  | one row per actionId: body hash, status `pending/sent/held/rejected`, provider post id, attempts, checks, `x_user_id` (the X account it was sent from) |
+| `sender_oauth_states` | consumed OAuth state nonces (single use) with their expiry; purged after expiry               |
 | `sender_reads`    | read metering: count per (agent, kind, UTC day)                                                          |
 | `sender_inbox`    | observed mentions per (agent, postId): status `pending/skipped/answered/retrying/delivery_blocked`       |
 | `sender_optouts`  | consent ledger per (agent, author): `enabled = true` means opted out; newer post wins                    |
@@ -52,7 +62,7 @@ with other services without clashing with their drizzle journals.
 | Variable                              | Required | Default                            | Notes                                                                    |
 | ------------------------------------- | -------- | ---------------------------------- | ------------------------------------------------------------------------ |
 | `DATABASE_URL`                        | yes      |                                    | Postgres connection string                                               |
-| `SENDER_SERVICE_KEY`                  | yes      |                                    | HMAC key shared with the supervisor and web app (use 32+ random chars)   |
+| `SENDER_SERVICE_KEY`                  | yes      |                                    | HMAC key for the internal API, `/oauth/start`, OAuth state and receipts. Held by the supervisor and the web app only (never the indexer). At least 32 chars (`openssl rand -hex 32`); the sender refuses to start otherwise |
 | `SENDER_ENCRYPTION_KEY`               | yes      |                                    | 32 bytes hex (`openssl rand -hex 32`). Rotating it orphans stored tokens |
 | `X_CLIENT_ID` / `X_CLIENT_SECRET`     | yes      |                                    | the platform's X app (confidential client)                               |
 | `X_REDIRECT_URI`                      | yes      |                                    | must point to `GET /oauth/callback` and be registered on X               |
@@ -98,13 +108,18 @@ There is no replay cache. A replay inside the window is harmless: publish is ide
 `actionId`, resolve and quota writes are idempotent, and reads are throttled. A cache would also
 reject legitimate byte-identical retries signed in the same second.
 
+The header format and timestamp are checked before the body is read, and bodies are limited
+(`/internal/*` 256 KB, `/oauth/*` 8 KB; larger requests get `413 payload_too_large`). The canonical
+string has no audience field: the supervisor and the web app sign it today, so separate keys per
+service (H-1) are the boundary rather than an audience string.
+
 ## Endpoints
 
 | Method | Path                                                 | Auth                    | Purpose                                                                 |
 | ------ | ---------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
 | GET    | `/health`                                            | none                    | liveness                                                                |
-| GET    | `/oauth/start?agentId=&state=&ts=&sig=[&redirect=1]` | start signature or HMAC | returns `{url}` (X authorize URL), or a 302 with `redirect=1`           |
-| GET    | `/oauth/callback?code=&state=`                       | signed state            | exchanges the code, stores tokens, records `users/me` id and handle     |
+| GET    | `/oauth/start?agentId=&state=&ts=&sig=[&reconnect=1][&redirect=1]` | start signature or HMAC | sets the browser binding cookie; returns `{url}` (X authorize URL), or a 302 with `redirect=1`. With HMAC: `{url}` of a signed start link |
+| GET    | `/oauth/callback?code=&state=`                       | signed state + cookie   | same browser, single use; exchanges the code, stores tokens, records `users/me` id and handle; never replaces another connected account without `reconnect=1` |
 | POST   | `/internal/publish`                                  | HMAC                    | idempotent post or reply                                                |
 | GET    | `/internal/receipt/:actionId`                        | HMAC                    | stored receipt                                                          |
 | POST   | `/internal/read/mentions`                            | HMAC                    | fetch new mentions, apply consent, return eligible inbox items          |
@@ -120,17 +135,32 @@ reject legitimate byte-identical retries signed in the same second.
 ### OAuth (creator connects the agent's X account)
 
 1. The web app (`apps/web/app/api/x/start`, server-side) sends the creator's browser to
-   `GET /oauth/start?agentId=<id>&state=<web state>&ts=<unix s>&sig=<hex>&redirect=1` where
-   `sig = HMAC-SHA256(SENDER_SERVICE_KEY, "oauth-start\n" + agentId + "\n" + state + "\n" + ts)`.
-   The signature stops anyone else from binding an X account to an agent. A server-side caller can
-   instead send the internal `Authorization: HMAC` header and read `{url}` from the JSON.
+   `GET /oauth/start?agentId=<id>&state=<web state>&ts=<unix s>&sig=<hex>[&reconnect=1]&redirect=1` where
+   `sig = HMAC-SHA256(SENDER_SERVICE_KEY, "oauth-start\n" + agentId + "\n" + state + "\n" + ts)`, with
+   `+ "\nreconnect=1"` appended when `reconnect=1` is sent (a connect signature does not authorize a
+   reconnect). The signature is valid for ±5 minutes and stops anyone else from starting a binding.
+   A server-side caller may instead send the internal `Authorization: HMAC` header; it gets `{url}`
+   pointing back at this endpoint (signed, `redirect=1`), so the user's browser still passes through
+   `/oauth/start` (`scripts/oauth-link.mjs` prints such a link).
 2. The sender builds a PKCE (S256) authorize URL with scopes
-   `tweet.read tweet.write users.read offline.access`. The `state` sent to X is
-   `base64url(payload).HMAC(SENDER_SERVICE_KEY)`, valid for 15 minutes, and carries the agentId,
-   the web app's state and the **encrypted** PKCE verifier, so no server-side session is needed.
-3. `GET /oauth/callback` verifies the state, exchanges the code (HTTP Basic client auth), calls
-   `GET /2/users/me` and upserts `sender_accounts` (clearing `revokedAt`). It then redirects to
-   `SENDER_OAUTH_RETURN_URL?agentId=&status=connected|denied|error&state=<web state>[&handle=]`,
+   `tweet.read tweet.write users.read offline.access` and sets an **HttpOnly, SameSite=Lax** cookie
+   `bootr_xoauth_<nonce>` (path `/oauth/callback`, 10 minutes, `Secure` when `X_REDIRECT_URI` is https)
+   holding a random secret. The `state` sent to X is `base64url(payload).HMAC(SENDER_SERVICE_KEY)`,
+   valid for 10 minutes, and carries the agentId, the web app's state, the **encrypted** PKCE verifier,
+   a nonce, `sha256(cookie secret)` and the `reconnect` flag.
+3. `GET /oauth/callback`:
+   - verifies the state and that the browser holds the matching cookie (`400 invalid_state`,
+     `reason: browser_mismatch` otherwise), so a callback URL or authorize link used in another
+     browser never completes (OAuth CSRF / consent phishing);
+   - records the nonce in `sender_oauth_states` before anything else; a second use answers
+     `400 invalid_state`, `reason: state_reused` (a denied consent also consumes it);
+   - exchanges the code (HTTP Basic client auth) and calls `GET /2/users/me`;
+   - stores the tokens (clearing `revokedAt`) unless the agent is already bound to a **different**,
+     non-revoked X account and the start was not signed with `reconnect=1`; then nothing changes and
+     the result is `status=error&reason=already_connected`. The check is part of the upsert, so
+     concurrent callbacks cannot race past it. Re-connecting the same X account is always allowed.
+   It then redirects to
+   `SENDER_OAUTH_RETURN_URL?agentId=&status=connected|denied|error&state=<web state>[&handle=|&reason=]`,
    or returns the same fields as JSON when that variable is unset.
 
 The launch form connects X **before** the agent exists, so `agentId` there is the form's draft
@@ -175,10 +205,29 @@ must reconnect.
   "actionId": "a1:2026-10-24:reply:1888...", // 8-128 chars [A-Za-z0-9:_.-], unique per intended publication
   "text": "...",
   "replyTo": "1888...", // optional: makes it a reply (280-char "short" format); else an original post (4000)
-  "replyAuthorId": "42", // optional: author of replyTo; taken from the inbox when omitted
+  "replyAuthorId": "42", // optional, informational: the sender resolves the author itself
+  "replyEligibility": { "eligible": true }, // required for replies: agent-core replyEligibility for replyTo
   "attributions": [{ "username": "alice", "sourceUrl": "https://..." }], // optional, required by validatePost for @mentions
 }
 ```
+
+Consent checks (H-4), in addition to the policy gate:
+
+- **Replies** need `replyEligibility` (the supervisor's agent-core `replyEligibility` result for that
+  post). Missing or `eligible: false` is rejected as `policy:reply_not_eligible:<reason>`
+  (`missing_eligibility` when absent). It is not part of the body hash.
+- The **author of `replyTo`** comes from the agent's inbox, else from X (`GET /2/tweets/:id`, metered
+  as `thread`). A caller-supplied `replyAuthorId` is never trusted. A post X reports as missing or
+  forbidden is rejected as `policy:reply_target_unavailable`. If that author opted out:
+  `policy:consent_opted_out`.
+- Every **@mention** (posts and replies, except the agent itself and the reply recipient) is resolved
+  to a user id, through the inbox and then `GET /2/users/by/username` (metered as `account`), and
+  rejected as `policy:mention_opted_out` when that user opted out. Skipped entirely while the agent
+  has no opt-outs.
+- A lookup that cannot reach X records nothing and answers `503` (or `429` with `retryAt`)
+  `consent_lookup_failed`: retry the same actionId later.
+- Each action stores the X user id it is sent from (`x_user_id`); reconciliation only settles a held
+  action against that account, never against an account bound later (L-4).
 
 Response `200` for every **recorded** outcome:
 `{ status: "sent" | "held" | "rejected" | "pending", providerPostId?, receipt, duplicate? }`.
@@ -195,13 +244,14 @@ createdAt, sentAt, lastCheckedAt, nextCheckAt` plus `signature`, which is
 | same actionId, different body             | 409  | -        | `action_id_conflict`: caller bug                                 |
 | `not_connected` / `revoked`               | 409  | no       | retry the same actionId after the creator reconnects             |
 | `quota_exceeded`                          | 429  | no       | retry the same actionId after `retryAt`                          |
+| `consent_lookup_failed`                   | 503/429 | no    | X could not be asked who the recipient is; retry the same actionId |
 | `storage_unavailable` / `refresh_failed`  | 503  | no       | nothing was sent; retry the same actionId                        |
 | `storage_unavailable_after_send`          | 503  | maybe    | treat as `held`; never resend                                    |
 
 Policy rejections carry `error: "policy:<code>"` with an agent-core code
 (`invalid_short_post`, `invalid_original_post`, `x_post_requires_at_most_one_cashtag`,
-`mentions_require_source_credit`, `invalid_source_credit`, `social_*_forbidden`) or
-`policy:consent_opted_out`.
+`mentions_require_source_credit`, `invalid_source_credit`, `social_*_forbidden`) or a consent code
+(`consent_opted_out`, `mention_opted_out`, `reply_not_eligible:<reason>`, `reply_target_unavailable`).
 
 A reply to an inbox item marks it `answered` (with `replyId`) once sent, `retrying` while held,
 and `delivery_blocked` when X definitively refuses it with 403 or 404.
@@ -280,7 +330,8 @@ Every tick (and on `pnpm --filter sender reconcile`):
      tolerated);
    - same `replied_to` parent, and the same `in_reply_to_user_id` when the recipient is known;
    - `created_at` inside the window;
-   - authored by the agent, and not already bound to another action.
+   - authored by the agent, and not already bound to another action;
+   - only while the agent is still bound to the X account the action was sent from (`x_user_id`).
 4. Otherwise the action stays `held`. Checks happen 15 minutes after holding, then hourly, then
    daily after 24 checks. Held actions are never resent and never auto-rejected; an operator can
    inspect them through `sender_actions`.
@@ -294,10 +345,12 @@ Every tick (and on `pnpm --filter sender reconcile`):
    for the next cycle.
 3. Treat `rejected` as final and surface `receipt.error` to the brain (policy codes match
    agent-core's `PolicyError` codes).
-4. Read mentions at most once per interval. A throttled response still returns the eligible
+4. Send `replyEligibility` with every reply: the agent-core `replyEligibility` result computed for
+   that inbox item. Without it the reply is rejected.
+5. Read mentions at most once per interval. A throttled response still returns the eligible
    items. Resolve every item it decides not to answer (`skip`, `opt_out`, `defer`) so that it
    leaves the queue.
-5. Never forward X tokens, raw provider errors or anything from `sender_accounts` to the model.
+6. Never forward X tokens, raw provider errors or anything from `sender_accounts` to the model.
 
 ## Known gaps
 
@@ -307,6 +360,11 @@ Every tick (and on `pnpm --filter sender reconcile`):
   `test/policy-parity.test.ts` loads the real package at runtime and fails if the copies drift.
   Replace the copies with re-exports once agent-core is NodeNext-clean.
 - Media uploads are not supported (text posts and replies only).
+- The admin console's `xQuotas` are not read by the sender (it has no admin-config client). The
+  budget comes from `SENDER_DEFAULT_POSTS_PER_DAY` and per-agent `POST /internal/quota/:agentId`;
+  pushing the console value there is the supervisor's job. There is no separate reply quota.
+- One X account may still be bound to several agents (no unique index on `x_user_id`).
+- Rejected reconnects do not revoke the freshly issued X tokens (they are discarded, not stored).
 - `node dist/index.js` works today. Once the shim re-exports from `@bootr/agent-core` (a raw `.ts`
   package), production must run through `tsx` or a bundler, or agent-core must ship compiled
   output.

@@ -71,6 +71,7 @@ describe('consent stop/resume', () => {
       actionId: 'act-reply-alice',
       text: 'here you go',
       replyTo: '101',
+      replyEligibility: { eligible: true },
     });
     expect(reply.body.status).toBe('rejected');
     expect(reply.body.receipt.error).toBe('policy:consent_opted_out');
@@ -134,6 +135,7 @@ describe('consent stop/resume', () => {
       actionId: 'act-reply-bob-1',
       text: 'gm bob',
       replyTo: '201',
+      replyEligibility: { eligible: true },
     });
     expect(res.body.status).toBe('sent');
     const [row] = await env.db.select().from(inbox).where(eq(inbox.postId, '201'));

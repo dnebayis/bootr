@@ -65,7 +65,11 @@ describe('token cost', () => {
 describe('computeQuote', () => {
   it('raises the margin so the quote never falls under minQuoteMicroUsdc (CDP facilitator minimum)', () => {
     const floored: PriceTable = { ...table, minQuoteMicroUsdc: 1000 };
-    const req = { model: 'test/cheap', messages: [{ role: 'user' as const, content: 'hi' }], max_tokens: 1 };
+    const req = {
+      model: 'test/cheap',
+      messages: [{ role: 'user' as const, content: 'hi' }],
+      max_tokens: 1,
+    };
     const base = computeQuote(table, req);
     const res = computeQuote(floored, req);
     if (!base.ok || !res.ok) throw new Error('quote failed');
@@ -215,5 +219,22 @@ describe('price table', () => {
   it('formats micro-USDC as an exact dollar string', () => {
     expect(microUsdcToDollarString(1n)).toBe('$0.000001');
     expect(microUsdcToDollarString(12_345_678n)).toBe('$12.345678');
+  });
+});
+
+describe('input token estimate (M-5)', () => {
+  it('counts adversarial Unicode with a real tokenizer (not bytes / 3)', () => {
+    const rare = '\u{20000}\u{20001}\u{2A6D6}'.repeat(500); // CJK extension B, 4 UTF-8 bytes each
+    const est = estimateInputTokens({ messages: [{ role: 'user', content: rare }] });
+    const bytes = Buffer.byteLength(JSON.stringify({ role: 'user', content: rare }), 'utf8');
+    expect(est).toBeGreaterThan(Math.ceil(bytes / 2));
+    expect(est).toBeGreaterThan(1500); // >= one token per code point
+  });
+
+  it('never estimates fewer than one token per 2 bytes', () => {
+    const english = 'the quick brown fox jumps over the lazy dog '.repeat(200);
+    const msg = { role: 'user', content: english };
+    const bytes = Buffer.byteLength(JSON.stringify(msg), 'utf8');
+    expect(estimateInputTokens({ messages: [msg] })).toBeGreaterThanOrEqual(Math.ceil(bytes / 2));
   });
 });

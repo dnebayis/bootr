@@ -7,10 +7,13 @@ import {
   NONCE_COOKIE,
   SESSION_TTL_S,
   isAdminAddress,
+  newSessionId,
   signToken,
   verifyToken,
   type NonceToken,
 } from '@/lib/server/session-core';
+import { isAllowedOrigin } from '@/lib/server/env';
+import { consumeNonce } from '@/lib/server/server-state';
 import { cookieBase } from '@/lib/server/session';
 
 function fail(status: number, error: string) {
@@ -19,15 +22,12 @@ function fail(status: number, error: string) {
   return res;
 }
 
-function requestHost(req: NextRequest) {
-  return req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? '';
-}
-
 /**
  * Verifies a SIWE message + signature:
- *   nonce matches the signed cookie, domain/uri match this host, times are valid,
- *   the address is in ADMIN_ADDRESSES, and the signature verifies on-chain-aware
- *   (viem: EOA, ERC-1271 and ERC-6492 smart accounts).
+ *   nonce matches the signed cookie and was issued by this server (single use), domain/uri match the
+ *   configured site origin (NEXT_PUBLIC_SITE_URL; request headers such as X-Forwarded-Host are never
+ *   trusted), times are valid, the address is in ADMIN_ADDRESSES, and the signature verifies
+ *   on-chain-aware (viem: EOA, ERC-1271 and ERC-6492 smart accounts).
  */
 export async function POST(req: NextRequest) {
   const nonce = await verifyToken<NonceToken>(req.cookies.get(NONCE_COOKIE)?.value, 'nonce');
@@ -50,15 +50,18 @@ export async function POST(req: NextRequest) {
     return fail(400, 'Malformed SIWE message');
   }
 
-  const host = requestHost(req);
   const now = Date.now();
   if (msg.nonce !== nonce.n) return fail(401, 'Nonce mismatch');
-  if (msg.domain !== host) return fail(401, 'Domain mismatch');
+  // Consume first: a nonce is spent by any verification attempt, successful or not.
+  if (!consumeNonce(nonce.n, now)) return fail(401, 'Sign-in expired. Request a new nonce.');
+  let uri: URL;
   try {
-    if (new URL(msg.uri).host !== host) return fail(401, 'URI mismatch');
+    uri = new URL(msg.uri);
   } catch {
     return fail(400, 'Invalid URI');
   }
+  if (!isAllowedOrigin(uri)) return fail(401, 'URI mismatch');
+  if (msg.domain !== uri.host) return fail(401, 'Domain mismatch');
   if (msg.chainId !== 8453 && msg.chainId !== 84532) return fail(401, 'Unsupported chain');
   if (msg.expirationTime && Date.parse(msg.expirationTime) < now) return fail(401, 'Message expired');
   if (msg.notBefore && Date.parse(msg.notBefore) > now) return fail(401, 'Message not yet valid');
@@ -77,7 +80,7 @@ export async function POST(req: NextRequest) {
   }
   if (!valid) return fail(401, 'Invalid signature');
 
-  const token = await signToken({ k: 'admin', a: msg.address.toLowerCase(), e: Math.floor(now / 1000) + SESSION_TTL_S });
+  const token = await signToken({ k: 'admin', a: msg.address.toLowerCase(), e: Math.floor(now / 1000) + SESSION_TTL_S, s: newSessionId() });
   const res = NextResponse.json({ ok: true, address: msg.address });
   res.cookies.set(ADMIN_COOKIE, token, { ...cookieBase, maxAge: SESSION_TTL_S });
   res.cookies.set(NONCE_COOKIE, '', { ...cookieBase, path: '/api/siwe', maxAge: 0 });

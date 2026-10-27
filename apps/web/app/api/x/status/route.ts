@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
-import { isDraftId, senderAccount, SenderUnavailable } from '@/lib/server/sender';
+import { DRAFT_COOKIE, isDraftId, ownsDraft, senderAccount, SenderUnavailable } from '@/lib/server/sender';
 import { senderEnv } from '@/lib/server/env';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -11,7 +11,7 @@ const MOCK_HANDLE = 'mock_agent';
 /**
  * GET /api/x/status?agentId=<launch draft uuid> -> { connected, handle }
  * Server-side HMAC call to the sender's internal `GET /internal/account/:agentId`; scopes and token
- * expiry are not exposed.
+ * expiry are not exposed. Only for a draft this browser registered (`POST /api/x/draft`).
  */
 export async function GET(req: NextRequest) {
   const agentId = req.nextUrl.searchParams.get('agentId') ?? '';
@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
   const cfg = senderEnv();
   if (!cfg.serviceKey || !cfg.internalUrl) {
     return NextResponse.json({ error: 'x_connect_unavailable', message: 'X connection is not configured.' }, { status: 503, headers: NO_STORE });
+  }
+  if (!(await ownsDraft(req.cookies.get(DRAFT_COOKIE)?.value, agentId))) {
+    return NextResponse.json({ error: 'draft_not_registered' }, { status: 403, headers: NO_STORE });
   }
   try {
     return NextResponse.json(await senderAccount(agentId), { headers: NO_STORE });
