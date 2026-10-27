@@ -1,0 +1,52 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-mock",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "web",
+        "dev",
+        "--port",
+        "3000"
+      ],
+      "port": 3000,
+      "env": {
+        "NEXT_PUBLIC_USE_MOCK": "1",
+        "NEXT_PUBLIC_CHAIN_ID": "84532"
+      }
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "web",
+        "dev",
+        "--port",
+        "3000"
+      ],
+      "port": 3000,
+      "env": {
+        "NEXT_PUBLIC_USE_MOCK": "0",
+        "NEXT_PUBLIC_CHAIN_ID": "84532",
+        "NEXT_PUBLIC_INDEXER_URL": "http://localhost:42069"
+      }
+    },
+    {
+      "name": "indexer",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "indexer",
+        "dev"
+      ],
+      "port": 42069,
+      "env": {
+        "BASE_SEPOLIA_RPC_URL": "https://base-sepolia.gateway.tenderly.co,https://base-sepolia-rpc.publicnode.com",
+        "BOOTR_START_BLOCK": "49367726"
+      }
+    }
+  ]
+}

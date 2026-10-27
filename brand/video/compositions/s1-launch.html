@@ -1,0 +1,58 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 400; src: url('assets/fonts/GeistMono-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; background: #ffffff; color: #171717; font-family: 'Geist', sans-serif; }
+    #s1-card { position: absolute; left: 360px; top: 150px; width: 1200px; height: 780px; border: 2px solid #ebebeb; border-radius: 12px; padding: 56px 64px; }
+    #s1-head { display: flex; justify-content: space-between; align-items: baseline; }
+    #s1-title { font-size: 64px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+    #s1-example { font-family: 'Geist Mono', monospace; font-size: 32px; color: #737373; }
+    .s1-row { display: flex; justify-content: space-between; align-items: center; height: 108px; border-bottom: 2px solid #ebebeb; }
+    .s1-label { font-size: 36px; font-weight: 500; color: #737373; letter-spacing: -0.01em; }
+    .s1-value { font-size: 48px; font-weight: 500; color: #171717; letter-spacing: -0.02em; }
+    .s1-mono { font-family: 'Geist Mono', monospace; font-variant-numeric: tabular-nums; }
+    #s1-rows { margin-top: 40px; }
+    #s1-button { position: absolute; right: 64px; bottom: 56px; width: 320px; height: 88px; background: #0070f3; color: #ffffff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 40px; font-weight: 600; letter-spacing: -0.02em; }
+    #s1-cursor { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+  </style>
+  <div data-hf-id="hf-3pu3" id="root" data-composition-id="s1" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-jd5w" id="s1-card" class="clip" data-start="0" data-duration="2.7">
+      <div data-hf-id="hf-ihdk" id="s1-head">
+        <div data-hf-id="hf-fxmd" id="s1-title">Launch a coin</div>
+        <div data-hf-id="hf-dw8m" id="s1-example">example</div>
+      </div>
+      <div data-hf-id="hf-68kp" id="s1-rows">
+        <div data-hf-id="hf-6enb" class="s1-row"><span data-hf-id="hf-m3k7" class="s1-label">Name</span><span data-hf-id="hf-2upp" class="s1-value" id="s1-v-name" data-var-text="token-name">Orbit</span></div>
+        <div data-hf-id="hf-uf5z" class="s1-row"><span data-hf-id="hf-6ylk" class="s1-label">Symbol</span><span data-hf-id="hf-u3bj" class="s1-value s1-mono" id="s1-v-symbol" data-var-text="token-symbol">ORB</span></div>
+        <div data-hf-id="hf-u0uy" class="s1-row"><span data-hf-id="hf-q0p1" class="s1-label">Fuel for the agent</span><span data-hf-id="hf-dibp" class="s1-value s1-mono" id="s1-v-fuel">500 USDC</span></div>
+        <div data-hf-id="hf-tmjx" class="s1-row"><span data-hf-id="hf-97do" class="s1-label">Fee split</span><span data-hf-id="hf-ba3p" class="s1-value s1-mono">20 / 50 / 30</span></div>
+      </div>
+      <div data-hf-id="hf-7vzx" id="s1-button">Launch</div>
+    </div>
+    <svg data-hf-id="hf-gj9x" id="s1-cursor" class="clip" data-start="0" data-duration="2.7" viewBox="0 0 1920 1080" aria-hidden="true" data-layout-ignore>
+      <path data-hf-id="hf-j8mt" id="s1-cursor-path" d="M4 2 L4 40 L14 31 L21 48 L29 45 L22 28 L36 28 Z" fill="#171717" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" />
+    </svg>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Cursor: idle at lower right, travels to the Launch button (centre 1336, 822), clicks on beat 4 (1.877 s).
+    tl.fromTo("#s1-cursor-path", { x: 1560, y: 1000 }, { x: 1560, y: 1000, duration: 0.5, ease: "none" }, 0);
+    tl.to("#s1-cursor-path", { x: 1330, y: 826, duration: 0.75, ease: "power3.inOut" }, 1.0);
+    tl.to("#s1-cursor-path", { x: 1330, y: 826, duration: 0.9, ease: "none" }, 1.75);
+    // The three values type in, one per beat, before the click.
+    [["#s1-v-name", 0.3], ["#s1-v-symbol", 0.76], ["#s1-v-fuel", 1.22]].forEach(([sel, at]) => {
+      const el = document.querySelector(sel);
+      const full = el.textContent;
+      const st = { n: 0 };
+      tl.fromTo(st, { n: 0 }, { n: full.length, duration: 0.3, ease: "none", onUpdate: () => { el.textContent = full.slice(0, Math.round(st.n)); } }, at);
+    });
+    // The button presses and rebounds on the click.
+    tl.fromTo("#s1-button", { scale: 1, transformOrigin: "50% 50%" }, { scale: 1, duration: 1.877, ease: "none" }, 0);
+    tl.to("#s1-button", { scale: 0.94, duration: 0.08, ease: "power3.in" }, 1.877);
+    tl.to("#s1-button", { scale: 1, duration: 0.3, ease: "expo.out" }, 1.957);
+    window.__timelines["s1"] = tl;
+  </script>
+</template>

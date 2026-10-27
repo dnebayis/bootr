@@ -1,0 +1,247 @@
+@import 'tailwindcss';
+
+/*
+ * Bootr design tokens. See DESIGN.md -> "## Bootr".
+ * Raw values live on :root / .dark; @theme inline maps them to Tailwind utilities
+ * (bg-canvas, text-ink, border-hairline, text-mute, bg-accent, font-mono, ...).
+ */
+
+@custom-variant dark (&:where(.dark, .dark *, [data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  color-scheme: light;
+  --canvas: #ffffff;
+  --canvas-soft: #fafafa;
+  --canvas-sub: #f2f2f2;
+  --ink: #171717;
+  --on-ink: #ffffff;
+  --body: #4d4d4d;
+  --mute: #737373;
+  --hairline: #ebebeb;
+  --hairline-strong: #d4d4d4;
+  --accent: #0070f3;
+  --accent-hover: #0761d1;
+  --link: #0070f3;
+  --on-accent: #ffffff;
+  --danger: #d00e17;
+  --selection-bg: #171717;
+  --selection-fg: #f2f2f2;
+  --chart-ink: #171717;
+  --chart-2: #5c5c5c;
+  --chart-3: #a3a3a3;
+  --chart-4: #d4d4d4;
+}
+
+.dark,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: #000000;
+  --canvas-soft: #0a0a0a;
+  --canvas-sub: #141414;
+  --ink: #ffffff;
+  --on-ink: #000000;
+  --body: #a1a1a1;
+  --mute: #8f8f8f;
+  --hairline: #262626;
+  --hairline-strong: #3d3d3d;
+  --accent: #0070f3;
+  --accent-hover: #1f82ff;
+  --link: #3291ff;
+  --on-accent: #ffffff;
+  --danger: #ff5c5c;
+  --selection-bg: #ffffff;
+  --selection-fg: #000000;
+  --chart-ink: #ffffff;
+  --chart-2: #a3a3a3;
+  --chart-3: #5c5c5c;
+  --chart-4: #333333;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-canvas-soft: var(--canvas-soft);
+  --color-canvas-sub: var(--canvas-sub);
+  --color-ink: var(--ink);
+  --color-on-ink: var(--on-ink);
+  --color-body: var(--body);
+  --color-mute: var(--mute);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-link: var(--link);
+  --color-on-accent: var(--on-accent);
+  --color-danger: var(--danger);
+  --color-chart-ink: var(--chart-ink);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@theme {
+  /* 4px base grid (Tailwind's default spacing unit, stated explicitly). */
+  --spacing: 0.25rem;
+
+  /* Radii: small and square-ish. No pills except status chips. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Type scale. Display sizes carry tight tracking. */
+  --text-display-xl: 3rem;
+  --text-display-xl--line-height: 1;
+  --text-display-xl--letter-spacing: -0.05em;
+  --text-display-lg: 2rem;
+  --text-display-lg--line-height: 2.5rem;
+  --text-display-lg--letter-spacing: -0.04em;
+  --text-display-md: 1.5rem;
+  --text-display-md--line-height: 2rem;
+  --text-display-md--letter-spacing: -0.04em;
+  --text-display-sm: 1.25rem;
+  --text-display-sm--line-height: 1.75rem;
+  --text-display-sm--letter-spacing: -0.03em;
+  /* UI copy. Named sm/base (not "body") so they never collide with the `body` colour token. */
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-sm--letter-spacing: -0.01em;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 0.875rem;
+
+  --tracking-wordmark: -0.04em;
+
+  /* Motion. */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
+  --duration-slow: 400ms;
+
+  --animate-flash: flash 900ms var(--ease-out-quint);
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-enter: enter 250ms var(--ease-out-quint) both;
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+
+  @keyframes flash {
+    0% {
+      box-shadow: 0 0 0 1px var(--ink);
+    }
+    100% {
+      box-shadow: 0 0 0 1px transparent;
+    }
+  }
+  @keyframes shimmer {
+    0% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0.55;
+    }
+  }
+}
+
+@layer base {
+  html {
+    background: var(--canvas);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    font-feature-settings: 'ss01' on;
+  }
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--selection-fg);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  * {
+    border-color: var(--hairline);
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+ * Chart draw-in. CSS keyframes, not JS: the end state is reached from the animation timeline
+ * whenever a frame is produced, so charts are never stuck at zero size in a background tab
+ * (where requestAnimationFrame does not run). Colours come from tokens via the utility classes,
+ * so they follow the theme at paint time without a re-render.
+ */
+@keyframes chart-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+@keyframes chart-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes chart-grow-y {
+  from {
+    transform: scaleY(0);
+  }
+}
+@keyframes chart-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+.chart-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: chart-draw 400ms var(--ease-out-quint) both;
+}
+.chart-fade {
+  animation: chart-fade 400ms var(--ease-out-quint) both;
+}
+.chart-grow-y {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: chart-grow-y 350ms var(--ease-out-quint) both;
+  animation-delay: var(--chart-delay, 0ms);
+}
+.chart-grow-x {
+  transform-origin: left center;
+  animation: chart-grow-x 400ms var(--ease-out-quint) both;
+  animation-delay: var(--chart-delay, 0ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules"]
+}

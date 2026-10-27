@@ -1,0 +1,2 @@
+/** Runs before first paint (inlined in <head> by app/layout.tsx) so there is no theme flash. */
+export const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);var e=document.documentElement;e.classList.remove('light','dark');e.classList.add(d?'dark':'light');e.style.colorScheme=d?'dark':'light'}catch(_){}})()`;

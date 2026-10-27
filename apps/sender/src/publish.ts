@@ -1,0 +1,360 @@
+import { and, eq, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { getAccessToken } from './accounts.js';
+import type { SenderContext } from './context.js';
+import { canonicalJson, sha256Hex } from './crypto.js';
+import { actions, inbox, optouts, type ActionRow } from './db/schema.js';
+import { log } from './log.js';
+import type { XPost } from './normalize.js';
+import { checkOutgoing } from './policy-shim.js';
+import { POST_WINDOW_MS, getQuota, postsInWindow } from './quota.js';
+import { getAction, toReceipt, type Receipt } from './receipt.js';
+import type { XError } from './x-client.js';
+
+const xId = z.string().regex(/^\d{1,25}$/, 'must be a numeric X id');
+
+export const publishSchema = z.object({
+  agentId: z.string().min(1).max(128),
+  actionId: z
+    .string()
+    .min(8)
+    .max(128)
+    .regex(/^[A-Za-z0-9:_.-]+$/),
+  text: z.string().min(1).max(25_000),
+  replyTo: xId.nullish(),
+  replyAuthorId: xId.nullish(),
+  /** Source credits required by agent-core `validatePost` for every @mention in the text. */
+  attributions: z
+    .array(
+      z
+        .object({ username: z.string().regex(/^\w{1,15}$/), sourceUrl: z.string().max(2000) })
+        .strict(),
+    )
+    .max(3)
+    .optional(),
+});
+export type PublishInput = z.infer<typeof publishSchema>;
+
+/** First reconciliation check after an ambiguous outcome. */
+export const FIRST_CHECK_DELAY_MS = 15 * 60 * 1000;
+
+export type PublishResult =
+  | {
+      http: 200;
+      body: {
+        status: ActionRow['status'];
+        providerPostId?: string;
+        receipt: Receipt;
+        duplicate?: boolean;
+      };
+    }
+  | { http: 400 | 409 | 429 | 503; body: Record<string, unknown> };
+
+export function bodyHash(input: PublishInput): string {
+  return sha256Hex(
+    canonicalJson({
+      agentId: input.agentId,
+      kind: input.replyTo ? 'reply' : 'post',
+      text: input.text,
+      replyTo: input.replyTo ?? null,
+      replyAuthorId: input.replyAuthorId ?? null,
+      attributions: input.attributions ?? [],
+    }),
+  );
+}
+
+function ok(ctx: SenderContext, row: ActionRow, duplicate = false): PublishResult {
+  return {
+    http: 200,
+    body: {
+      status: row.status,
+      ...(row.providerPostId ? { providerPostId: row.providerPostId } : {}),
+      receipt: toReceipt(ctx, row),
+      ...(duplicate ? { duplicate: true } : {}),
+    },
+  };
+}
+
+function existing(
+  ctx: SenderContext,
+  row: ActionRow,
+  input: PublishInput,
+  hash: string,
+): PublishResult {
+  if (row.agentId !== input.agentId) {
+    return {
+      http: 409,
+      body: { error: 'action_id_conflict', message: 'actionId belongs to another agent' },
+    };
+  }
+  if (row.bodyHash !== hash) {
+    return {
+      http: 409,
+      body: {
+        error: 'action_id_conflict',
+        message: 'actionId was used with a different body',
+        receipt: toReceipt(ctx, row),
+      },
+    };
+  }
+  return ok(ctx, row, true);
+}
+
+/**
+ * Idempotent publication. Invariants:
+ *  - at most one X write per actionId, ever (the claim row is committed before X is contacted);
+ *  - a repeated request returns the stored receipt;
+ *  - definite provider rejections are final (`rejected`);
+ *  - ambiguous outcomes (timeout, 5xx, DB failure after send) become `held` and are only ever
+ *    settled by reconciliation, never resent.
+ */
+export async function publish(ctx: SenderContext, input: PublishInput): Promise<PublishResult> {
+  const hash = bodyHash(input);
+  const kind = input.replyTo ? 'reply' : 'post';
+
+  const prior = await getAction(ctx, input.actionId);
+  if (prior) return existing(ctx, prior, input, hash);
+
+  // Token first: if it is unavailable nothing is recorded and the caller may retry the same actionId.
+  const tok = await getAccessToken(ctx, input.agentId);
+  if (!tok.ok) {
+    return {
+      http: tok.code === 'refresh_failed' ? 503 : 409,
+      body: { error: tok.code, message: tok.message },
+    };
+  }
+
+  // ---- policy (deterministic for a given body, so a rejection is recorded) ----
+  let replyAuthorId = input.replyAuthorId ?? null;
+  let recipient: string | null = null;
+  if (input.replyTo) {
+    const [row] = await ctx.db
+      .select({ authorId: inbox.authorId, post: inbox.post })
+      .from(inbox)
+      .where(and(eq(inbox.agentId, input.agentId), eq(inbox.postId, input.replyTo)))
+      .limit(1);
+    if (row) {
+      replyAuthorId ??= row.authorId;
+      recipient = (row.post as XPost | null)?.author?.username ?? null;
+    }
+  }
+  const reasons: string[] = [];
+  const decision = checkOutgoing({
+    kind,
+    text: input.text,
+    attributions: input.attributions,
+    recipient,
+    ownHandle: tok.account.xHandle,
+  });
+  if (!decision.allowed) reasons.push(decision.code);
+  if (replyAuthorId) {
+    const [opt] = await ctx.db
+      .select({ enabled: optouts.enabled })
+      .from(optouts)
+      .where(and(eq(optouts.agentId, input.agentId), eq(optouts.authorId, replyAuthorId)))
+      .limit(1);
+    if (opt?.enabled) reasons.push('consent_opted_out');
+  }
+
+  const base = {
+    actionId: input.actionId,
+    agentId: input.agentId,
+    kind,
+    text: input.text,
+    replyTo: input.replyTo ?? null,
+    replyAuthorId,
+    bodyHash: hash,
+    createdAt: ctx.now(),
+  } as const;
+
+  if (reasons.length > 0) {
+    await ctx.db
+      .insert(actions)
+      .values({ ...base, status: 'rejected', error: `policy:${reasons.join(',')}`, attempts: 0 })
+      .onConflictDoNothing();
+    const row = await getAction(ctx, input.actionId);
+    return row!.bodyHash === hash ? ok(ctx, row!) : existing(ctx, row!, input, hash);
+  }
+
+  // ---- quota + claim, serialised per agent ----
+  type Claim =
+    | { kind: 'claimed'; row: ActionRow }
+    | { kind: 'exists' }
+    | { kind: 'quota'; limit: number; retryAt: Date };
+  let claim: Claim;
+  try {
+    claim = await ctx.db.transaction(async (tx): Promise<Claim> => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${'sender_publish:' + input.agentId}))`,
+      );
+      const quota = await getQuota(ctx, input.agentId, tx);
+      const used = await postsInWindow(
+        tx,
+        input.agentId,
+        new Date(ctx.now().getTime() - POST_WINDOW_MS),
+      );
+      if (used.count >= quota.postsPerDay) {
+        const retryAt = new Date((used.oldest ?? ctx.now()).getTime() + POST_WINDOW_MS);
+        return { kind: 'quota', limit: quota.postsPerDay, retryAt };
+      }
+      const inserted = await tx
+        .insert(actions)
+        .values({ ...base, status: 'pending', attempts: 1 })
+        .onConflictDoNothing()
+        .returning();
+      return inserted[0] ? { kind: 'claimed', row: inserted[0] } : { kind: 'exists' };
+    });
+  } catch (err) {
+    // Nothing was sent: X is only contacted after the claim commits.
+    log.error('publish claim failed', { actionId: input.actionId, err: errMsg(err) });
+    return {
+      http: 503,
+      body: {
+        error: 'storage_unavailable',
+        message: 'could not record the action; nothing was sent',
+      },
+    };
+  }
+
+  if (claim.kind === 'quota') {
+    return {
+      http: 429,
+      body: {
+        error: 'quota_exceeded',
+        limit: claim.limit,
+        window: '24h',
+        retryAt: claim.retryAt.toISOString(),
+      },
+    };
+  }
+  if (claim.kind === 'exists') {
+    const row = await getAction(ctx, input.actionId);
+    return existing(ctx, row!, input, hash);
+  }
+
+  // ---- contact X ----
+  let res = await ctx.x.createPost(tok.token, { text: input.text, replyTo: input.replyTo });
+  if (!res.ok && res.error.status === 401) {
+    // 401 is a definite non-creation; refresh and make exactly one more attempt, recorded first.
+    const again = await getAccessToken(ctx, input.agentId, { force: true });
+    if (again.ok) {
+      const bumped = await safeUpdate(ctx, input.actionId, { attempts: 2 });
+      if (bumped)
+        res = await ctx.x.createPost(again.token, { text: input.text, replyTo: input.replyTo });
+    }
+  }
+
+  const now = ctx.now();
+  if (res.ok) {
+    const id = res.data.data?.id;
+    if (id && /^\d+$/.test(id)) {
+      const settled = await safeUpdate(ctx, input.actionId, {
+        status: 'sent',
+        providerPostId: id,
+        sentAt: now,
+        error: null,
+      });
+      if (!settled) {
+        log.error('post sent but receipt write failed; action left for reconciliation', {
+          actionId: input.actionId,
+          providerPostId: id,
+        });
+        await safeUpdate(ctx, input.actionId, {
+          status: 'held',
+          error: 'db_write_failed_after_send',
+          nextCheckAt: now,
+        });
+        return heldFallback(ctx, input.actionId);
+      }
+      await markInbox(ctx, input, { status: 'answered', replyId: id, reason: null });
+    } else {
+      await hold(ctx, input, {
+        definite: false,
+        code: 'malformed_response',
+        message: 'no post id in 2xx',
+      });
+    }
+  } else if (res.error.definite) {
+    await safeUpdate(ctx, input.actionId, {
+      status: 'rejected',
+      error: describe(res.error),
+    });
+    if (res.error.status === 403 || res.error.status === 404) {
+      await markInbox(ctx, input, { status: 'delivery_blocked', reason: describe(res.error) });
+    }
+  } else {
+    await hold(ctx, input, res.error);
+  }
+
+  const row = await getAction(ctx, input.actionId).catch(() => undefined);
+  if (!row) return heldFallback(ctx, input.actionId);
+  return ok(ctx, row);
+}
+
+async function hold(ctx: SenderContext, input: PublishInput, error: XError): Promise<void> {
+  const now = ctx.now();
+  log.warn('ambiguous publish outcome; action held', {
+    actionId: input.actionId,
+    code: error.code,
+  });
+  await safeUpdate(ctx, input.actionId, {
+    status: 'held',
+    error: describe(error),
+    checks: 0,
+    nextCheckAt: new Date(now.getTime() + FIRST_CHECK_DELAY_MS),
+  });
+  await markInbox(ctx, input, { status: 'retrying', reason: 'reply_held' });
+}
+
+/** Used when the DB is failing after X was contacted: report `held` without a stored row. */
+function heldFallback(_ctx: SenderContext, actionId: string): PublishResult {
+  return {
+    http: 503,
+    body: {
+      status: 'held',
+      error: 'storage_unavailable_after_send',
+      message: 'outcome recorded as held (or will be by the reconciler); do not resend',
+      actionId,
+    },
+  };
+}
+
+async function safeUpdate(
+  ctx: SenderContext,
+  actionId: string,
+  set: Partial<typeof actions.$inferInsert>,
+): Promise<boolean> {
+  try {
+    await ctx.db.update(actions).set(set).where(eq(actions.actionId, actionId));
+    return true;
+  } catch (err) {
+    log.error('action update failed', { actionId, err: errMsg(err) });
+    return false;
+  }
+}
+
+async function markInbox(
+  ctx: SenderContext,
+  input: Pick<PublishInput, 'agentId' | 'replyTo'>,
+  set: Partial<typeof inbox.$inferInsert>,
+): Promise<void> {
+  if (!input.replyTo) return;
+  try {
+    await ctx.db
+      .update(inbox)
+      .set(set)
+      .where(and(eq(inbox.agentId, input.agentId), eq(inbox.postId, input.replyTo)));
+  } catch (err) {
+    log.warn('inbox update failed', { agentId: input.agentId, err: errMsg(err) });
+  }
+}
+
+export { markInbox };
+
+function describe(e: XError): string {
+  return `${e.code}${e.status ? `(${e.status})` : ''}: ${e.message}`.slice(0, 500);
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

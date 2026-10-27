@@ -1,0 +1,90 @@
+<!doctype html>
+<html
+  lang="en"
+  data-composition-variables='[
+    {"id":"color-white","type":"color","label":"Light ground","default":"#ffffff"},
+    {"id":"color-black","type":"color","label":"Dark ground","default":"#000000"},
+    {"id":"color-ink","type":"color","label":"Ink on light","default":"#171717"},
+    {"id":"color-accent","type":"color","label":"Accent","default":"#0070f3"},
+    {"id":"token-name","type":"string","label":"Example coin name","default":"Orbit"},
+    {"id":"token-symbol","type":"string","label":"Example coin symbol","default":"ORB"}
+  ]'
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--color-white, #ffffff);
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        background: var(--color-white, #ffffff);
+      }
+      #s1 { z-index: 1; }
+      #s2 { z-index: 2; }
+      #s3 { z-index: 3; }
+      #s4 { z-index: 4; }
+      #s5 { z-index: 5; }
+      #s6 { z-index: 6; }
+      #s7 { z-index: 7; }
+    </style>
+  </head>
+  <body>
+    <div data-hf-id="hf-82k7" id="root" data-composition-id="main" data-start="0" data-duration="46.5" data-width="1920" data-height="1080">
+      <div data-hf-id="hf-gtjd" id="s1" data-composition-id="s1" data-composition-src="compositions/s1-launch.html" data-start="0" data-duration="2.55" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-l9gx" id="s2" data-composition-id="s2" data-composition-src="compositions/s2-transaction.html" data-start="2.25" data-duration="9.25" data-track-index="2" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-2pw5" id="s3" data-composition-id="s3" data-composition-src="compositions/s3-agent.html" data-start="11.05" data-duration="9.35" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-booj" id="s4" data-composition-id="s4" data-composition-src="compositions/s4-fees.html" data-start="20" data-duration="9.9" data-track-index="2" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-1gwt" id="s5" data-composition-id="s5" data-composition-src="compositions/s5-limits.html" data-start="29.5" data-duration="7.8" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-qhnl" id="s6" data-composition-id="s6" data-composition-src="compositions/s6-loop.html" data-start="36.9" data-duration="5.4" data-track-index="2" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div data-hf-id="hf-1evs" id="s7" data-composition-id="s7" data-composition-src="compositions/s7-line.html" data-start="41.9" data-duration="4.6" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+
+      <!-- Music bed: catalog track "energetic fast-paced electronic" (127.7 BPM) played at 1.0206x so its beat equals the film grid (0.4605 s). Its strong section (media 7.655 s = beat 16) loops on bar lines at film beats 0, 40, 80. -->
+      <audio id="bed-a" class="clip" src="assets/audio/bed-energetic.wav" data-start="0" data-media-start="7.619" data-duration="18.455" data-playback-rate="1.0206" data-volume="0.9" data-fade-in="0.03" data-fade-out="0.03" data-track-index="3" data-audio-group="music"></audio>
+      <audio id="bed-b" class="clip" src="assets/audio/bed-energetic.wav" data-start="18.455" data-media-start="7.655" data-duration="18.42" data-playback-rate="1.0206" data-volume="0.9" data-fade-in="0.03" data-fade-out="0.03" data-track-index="3" data-audio-group="music"></audio>
+      <audio id="bed-c" class="clip" src="assets/audio/bed-energetic.wav" data-start="36.875" data-media-start="7.655" data-duration="9.625" data-playback-rate="1.0206" data-volume="0.9" data-fade-in="0.03" data-fade-out="2.0" data-track-index="3" data-audio-group="music"></audio>
+
+      <!-- Sound on visible actions. Each start = picture time + 1 frame - the file's measured peak. -->
+      <audio id="sfx-type-1" class="clip" src="assets/sfx/key-press.mp3" data-start="0.257" data-duration="0.4" data-volume="0.6" data-track-index="6" data-audio-group="sfx"></audio>
+      <audio id="sfx-type-2" class="clip" src="assets/sfx/key-press.mp3" data-start="0.717" data-duration="0.4" data-volume="0.6" data-track-index="6" data-audio-group="sfx"></audio>
+      <audio id="sfx-type-3" class="clip" src="assets/sfx/key-press.mp3" data-start="1.177" data-duration="0.4" data-volume="0.6" data-track-index="6" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-kh4j" id="sfx-click" class="clip" src="assets/sfx/click.mp3" data-start="1.837" data-duration="0.37" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-l5wv" id="sfx-whoosh-1" class="clip" src="assets/sfx/whoosh.mp3" data-start="2.121" data-duration="0.57" data-volume="0.7" data-track-index="5" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-rkfu" id="sfx-pop-1" class="clip" src="assets/sfx/pop.mp3" data-start="2.711" data-duration="0.72" data-volume="0.85" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-vgsd" id="sfx-key-1" class="clip" src="assets/sfx/key-press.mp3" data-start="4.597" data-duration="0.4" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-x0rr" id="sfx-pop-2" class="clip" src="assets/sfx/pop.mp3" data-start="6.395" data-duration="0.72" data-volume="0.85" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-rwxm" id="sfx-key-2" class="clip" src="assets/sfx/key-press.mp3" data-start="8.281" data-duration="0.4" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-orrx" id="sfx-impact" class="clip" src="assets/sfx/impact-bass-2.mp3" data-start="9.134" data-duration="2.59" data-volume="0.8" data-track-index="5" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-nzpg" id="sfx-whoosh-2" class="clip" src="assets/sfx/whoosh-short.mp3" data-start="19.921" data-duration="0.57" data-volume="0.7" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-rrxk" id="sfx-pop-3" class="clip" src="assets/sfx/pop.mp3" data-start="22.052" data-duration="0.72" data-volume="0.85" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-u14x" id="sfx-ping" class="clip" src="assets/sfx/ping.mp3" data-start="23.69" data-duration="1.32" data-volume="0.7" data-track-index="5" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-n7pw" id="sfx-whoosh-3" class="clip" src="assets/sfx/whoosh.mp3" data-start="29.371" data-duration="0.57" data-volume="0.7" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-i2o9" id="sfx-strike-1" class="clip" src="assets/sfx/click-soft.mp3" data-start="30.849" data-duration="0.37" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-umgo" id="sfx-strike-2" class="clip" src="assets/sfx/pop.mp3" data-start="31.723" data-duration="0.72" data-volume="0.8" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-t5v6" id="sfx-strike-3" class="clip" src="assets/sfx/click-soft.mp3" data-start="32.691" data-duration="0.37" data-volume="0.9" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-1cmo" id="sfx-strike-4" class="clip" src="assets/sfx/pop.mp3" data-start="33.565" data-duration="0.72" data-volume="0.8" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-5xk2" id="sfx-whoosh-4" class="clip" src="assets/sfx/whoosh-short.mp3" data-start="36.771" data-duration="0.57" data-volume="0.7" data-track-index="4" data-audio-group="sfx"></audio>
+      <audio data-hf-id="hf-d52o" id="sfx-pop-4" class="clip" src="assets/sfx/pop.mp3" data-start="43.696" data-duration="0.72" data-volume="0.85" data-track-index="4" data-audio-group="sfx"></audio>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

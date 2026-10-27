@@ -1,0 +1,73 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 400; src: url('assets/fonts/GeistMono-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #ffffff; }
+    #s4-stage { position: absolute; inset: 0; background: #000000; }
+    #s4-title { position: absolute; left: 120px; top: 110px; font-size: 96px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+    .s4-num { font-family: 'Geist Mono', monospace; font-size: 200px; font-weight: 500; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+    .s4-cap { font-size: 40px; font-weight: 500; color: #a1a1a1; letter-spacing: -0.01em; line-height: 1; }
+    #s4-swap { position: absolute; left: 120px; top: 300px; }
+    #s4-swap-cap { position: absolute; left: 120px; top: 250px; }
+    #s4-fee { position: absolute; left: 1000px; top: 300px; }
+    #s4-fee-cap { position: absolute; left: 1000px; top: 250px; }
+    #s4-bar { position: absolute; left: 120px; top: 600px; width: 1680px; height: 220px; display: flex; }
+    .s4-seg { height: 220px; border: 2px solid #3d3d3d; border-radius: 8px; padding: 0 32px; display: flex; flex-direction: column; justify-content: center; gap: 10px; margin-right: 12px; background: #000000; }
+    .s4-seg:last-child { margin-right: 0; }
+    #s4-seg-1 { width: 324px; } #s4-seg-2 { width: 828px; } #s4-seg-3 { width: 504px; }
+    .s4-seg-label { font-size: 36px; font-weight: 500; color: #a1a1a1; letter-spacing: -0.01em; }
+    .s4-seg-value { font-family: 'Geist Mono', monospace; font-size: 64px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
+    #s4-line { position: absolute; left: 120px; top: 900px; width: 1680px; }
+    .s4-line-text { position: absolute; left: 0; top: 0; font-size: 44px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; white-space: nowrap; }
+  </style>
+  <div data-hf-id="hf-2tvg" id="root" data-composition-id="s4" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-d4r4" id="s4-stage" data-layout-allow-overflow>
+      <div data-hf-id="hf-drxq" id="s4-title" class="clip" data-start="0.1" data-duration="9.8"><div data-hf-id="hf-ycod" id="s4-title-in">Someone swaps.</div></div>
+      <div data-hf-id="hf-ze7r" id="s4-swap-cap" class="s4-cap clip" data-start="0.297" data-duration="9.6"><div data-hf-id="hf-5qu8" id="s4-swap-cap-in">a swap of</div></div>
+      <div data-hf-id="hf-lpc0" id="s4-swap" class="s4-num clip" data-start="0.297" data-duration="9.6"><div data-hf-id="hf-78kn" id="s4-swap-in">$1,000</div></div>
+      <div data-hf-id="hf-7e31" id="s4-fee-cap" class="s4-cap clip" data-start="1.218" data-duration="8.68"><div data-hf-id="hf-okg6" id="s4-fee-cap-in">pays a 1% fee</div></div>
+      <div data-hf-id="hf-nm8y" id="s4-fee" class="s4-num clip" data-start="1.218" data-duration="8.68"><div data-hf-id="hf-r1pe" id="s4-fee-in">$10</div></div>
+
+      <div data-hf-id="hf-a4c1" id="s4-bar" class="clip" data-start="2.0" data-duration="7.9">
+        <div data-hf-id="hf-03qk" id="s4-seg-1" class="s4-seg"><div data-hf-id="hf-ghan" class="s4-seg-in"><div data-hf-id="hf-avqc" class="s4-seg-label">Agent 20%</div><div data-hf-id="hf-c31z" class="s4-seg-value">$2</div><div data-hf-id="hf-x4mx" id="s4-seg-note" class="s4-seg-label" style="color:#ffffff">→ treasury</div></div></div>
+        <div data-hf-id="hf-8rmf" id="s4-seg-2" class="s4-seg"><div data-hf-id="hf-m01b" class="s4-seg-in"><div data-hf-id="hf-ayko" class="s4-seg-label">Creator 50%</div><div data-hf-id="hf-d9z2" class="s4-seg-value">$5</div></div></div>
+        <div data-hf-id="hf-4tie" id="s4-seg-3" class="s4-seg"><div data-hf-id="hf-llqa" class="s4-seg-in"><div data-hf-id="hf-w87p" class="s4-seg-label">Platform 30%</div><div data-hf-id="hf-chd0" class="s4-seg-value">$3</div></div></div>
+      </div>
+
+      <div data-hf-id="hf-5nf8" id="s4-line" class="clip" data-start="3.9" data-duration="6" data-layout-allow-overlap>
+        <div data-hf-id="hf-c3u0" id="s4-line-1" class="s4-line-text">The agent's share buys its next thought.</div>
+        <div data-hf-id="hf-fyip" id="s4-line-2" class="s4-line-text">Locked at launch. Nobody can change the split.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Whip in from the right, caused by the post card leaving.
+    tl.fromTo("#s4-stage", { clipPath: "inset(0px 0px 0px 1920px)" }, { clipPath: "inset(0px 0px 0px 0px)", duration: 0.28, ease: "power3.inOut" }, 0.05);
+    tl.fromTo("#s4-title-in", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 0.1);
+    // $1,000 lands on the bar.
+    tl.fromTo("#s4-swap-cap-in", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 0.297);
+    tl.fromTo("#s4-swap-in", { scale: 1.4, opacity: 0, filter: "blur(12px)", transformOrigin: "0% 100%" }, { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.32, ease: "expo.out" }, 0.297);
+    // The $10 peels off it to the right.
+    tl.fromTo("#s4-fee-cap-in", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 1.218);
+    tl.fromTo("#s4-fee-in", { x: -700, opacity: 0, filter: "blur(10px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.5, ease: "expo.out" }, 1.1);
+    // The $10 splits into the three shares, one segment per beat.
+    [2.139, 2.6, 3.06].forEach((b, i) => {
+      tl.fromTo(`#s4-seg-${i + 1}`, { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.3, ease: "expo.out" }, b);
+      tl.fromTo(`#s4-seg-${i + 1} .s4-seg-in`, { opacity: 0 }, { opacity: 1, duration: 0.2 }, b + 0.12);
+    });
+    // The agent's share turns accent on the beat; the line explains it.
+    tl.fromTo("#s4-seg-1", { backgroundColor: "#000000", borderColor: "#3d3d3d" }, { backgroundColor: "#000000", borderColor: "#3d3d3d", duration: 0.01 }, 2.0);
+    tl.set("#s4-seg-1", { backgroundColor: "#0070f3", borderColor: "#0070f3" }, 3.981);
+    tl.set("#s4-seg-1 .s4-seg-label", { color: "#ffffff" }, 3.981);
+    tl.fromTo("#s4-line-1", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 3.981);
+    tl.to("#s4-line-1", { opacity: 0, filter: "blur(8px)", duration: 0.2, ease: "power3.in" }, 5.6);
+    tl.fromTo("#s4-line-2", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 5.823);
+    // Two beats later the share lands in the treasury.
+    tl.fromTo("#s4-seg-note", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.3, ease: "expo.out" }, 7.665);
+    window.__timelines["s4"] = tl;
+  </script>
+</template>

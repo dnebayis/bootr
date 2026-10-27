@@ -1,0 +1,45 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #171717; }
+    #s7-stage { position: absolute; inset: 0; background: #ffffff; }
+    #s7-line { position: absolute; left: 160px; top: 330px; width: 1600px; font-size: 112px; font-weight: 600; letter-spacing: -0.04em; line-height: 1.1; }
+    .s7-w { display: inline-block; margin-right: 0.22em; }
+    #s7-mark { position: absolute; left: 160px; top: 760px; display: flex; align-items: center; gap: 20px; }
+    #s7-word { font-size: 56px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+  </style>
+  <div data-hf-id="hf-6yl5" id="root" data-composition-id="s7" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-k2vi" id="s7-stage">
+      <div data-hf-id="hf-hfyz" id="s7-line" class="clip" data-start="0.3" data-duration="4.3">
+        <div data-hf-id="hf-fhr2" id="s7-line-in">
+          <span data-hf-id="hf-1wem" class="s7-w">Fees</span><span data-hf-id="hf-hxlg" class="s7-w">fund</span><span data-hf-id="hf-0iha" class="s7-w">the</span><span data-hf-id="hf-drcy" class="s7-w">agent.</span><br data-hf-id="hf-x5px" />
+          <span data-hf-id="hf-beb2" class="s7-w">The</span><span data-hf-id="hf-wifs" class="s7-w">agent</span><span data-hf-id="hf-0ft9" class="s7-w">runs</span><span data-hf-id="hf-lzf6" class="s7-w">the</span><span data-hf-id="hf-j28w" class="s7-w">coin.</span>
+        </div>
+      </div>
+      <div data-hf-id="hf-00hd" id="s7-mark" class="clip" data-start="1.8" data-duration="2.8">
+        <div data-hf-id="hf-wphf" id="s7-mark-in" style="display:flex;align-items:center;gap:20px">
+          <svg data-hf-id="hf-pw0k" width="64" height="64" viewBox="0 0 24 24" fill="none" role="img" aria-label="mark">
+            <mask data-hf-id="hf-pvs9" id="s7-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect data-hf-id="hf-bymw" width="24" height="24" fill="#fff"></rect>
+              <path data-hf-id="hf-jzlr" d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path data-hf-id="hf-rbwa" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect data-hf-id="hf-d8si" width="24" height="24" rx="5" fill="#171717" mask="url(#s7-m)"></rect>
+          </svg>
+          <span data-hf-id="hf-8685" id="s7-word">bootr</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#s7-stage", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power2.out" }, 0.04);
+    // Words go from light grey to ink, 0.08 s apart, no position change.
+    tl.fromTo("#s7-line-in .s7-w", { color: "#d4d4d4" }, { color: "#171717", duration: 0.25, ease: "power2.out", stagger: 0.08 }, 0.3);
+    // The mark lands on a beat and holds.
+    tl.fromTo("#s7-mark-in", { opacity: 0, scale: 0.7, transformOrigin: "0% 50%" }, { opacity: 1, scale: 1, duration: 0.35, ease: "back.out(1.4)" }, 1.883);
+    window.__timelines["s7"] = tl;
+  </script>
+</template>

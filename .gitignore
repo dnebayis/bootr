@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+# deps / build
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+.ponder/
+generated/
+# foundry
+packages/contracts/out/
+packages/contracts/cache/
+packages/contracts/broadcast/
+# misc
+.DS_Store
+*.log
+.vercel
+
+# foundry libs are installed via `pnpm --filter @bootr/contracts setup` (no submodules)
+packages/contracts/lib/

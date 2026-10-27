@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none">
+  <style>
+    .m { fill: #171717; }
+    @media (prefers-color-scheme: dark) { .m { fill: #ffffff; } }
+  </style>
+  <mask id="g" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+    <rect width="24" height="24" fill="#fff"/>
+    <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"/>
+    <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"/>
+  </mask>
+  <rect class="m" width="24" height="24" rx="5" mask="url(#g)"/>
+</svg>

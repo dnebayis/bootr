@@ -1,0 +1,44 @@
+{
+  "name": "@bootr/inference",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client/x402-payer.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@coinbase/x402": "^2.1.0",
+    "@hono/node-server": "^1.13.0",
+    "@x402/core": "~2.28.0",
+    "@x402/evm": "~2.28.0",
+    "@x402/fetch": "~2.28.0",
+    "@x402/hono": "~2.28.0",
+    "drizzle-orm": "^0.45.0",
+    "hono": "^4.5.0",
+    "postgres": "^3.4.0",
+    "viem": "^2.35.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,114 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 400; src: url('assets/fonts/GeistMono-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #171717; }
+    #s3-stage { position: absolute; inset: 0; background: #ffffff; }
+    #s3-title { position: absolute; left: 120px; top: 110px; font-size: 120px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+    .s3-head { font-size: 36px; font-weight: 500; color: #737373; letter-spacing: -0.01em; height: 60px; border-bottom: 2px solid #ebebeb; }
+    #s3-reads { position: absolute; left: 120px; top: 320px; width: 760px; }
+    .s3-stat { position: absolute; left: 0; width: 760px; height: 150px; border-bottom: 2px solid #ebebeb; display: flex; justify-content: space-between; align-items: center; }
+    .s3-stat-label { font-size: 36px; font-weight: 500; color: #4d4d4d; letter-spacing: -0.01em; }
+    .s3-stat-value { font-family: 'Geist Mono', monospace; font-size: 64px; font-weight: 500; font-variant-numeric: tabular-nums; }
+    #s3-stat-1 { top: 60px; } #s3-stat-2 { top: 210px; } #s3-stat-3 { top: 360px; }
+    #s3-thought { position: absolute; left: 120px; top: 860px; width: 760px; font-size: 36px; font-weight: 500; color: #4d4d4d; letter-spacing: -0.01em; line-height: 1.2; }
+    #s3-decides { position: absolute; left: 980px; top: 320px; width: 820px; }
+    #s3-options { position: absolute; left: 0; top: 76px; width: 820px; }
+    #s3-selector { position: absolute; left: 0; top: 0; width: 820px; height: 84px; background: #f2f2f2; border-radius: 8px; }
+    .s3-opt { position: relative; height: 84px; display: flex; align-items: center; padding: 0 28px; font-size: 48px; font-weight: 500; color: #737373; letter-spacing: -0.02em; }
+    #s3-post { position: absolute; left: 980px; top: 320px; width: 820px; height: 440px; border: 2px solid #ebebeb; border-radius: 12px; padding: 40px; background: #ffffff; }
+    #s3-post-head { display: flex; align-items: center; gap: 20px; }
+    #s3-avatar { width: 72px; height: 72px; border-radius: 8px; background: #171717; color: #ffffff; font-family: 'Geist Mono', monospace; font-size: 28px; font-weight: 500; display: flex; align-items: center; justify-content: center; }
+    #s3-post-name { font-size: 40px; font-weight: 600; letter-spacing: -0.03em; }
+    #s3-post-handle { font-family: 'Geist Mono', monospace; font-size: 32px; color: #737373; margin-left: 12px; }
+    #s3-post-text { margin-top: 36px; font-size: 44px; line-height: 1.3; letter-spacing: -0.02em; color: #171717; min-height: 180px; }
+    #s3-post-caret { display: inline-block; width: 4px; height: 44px; background: #171717; vertical-align: -6px; margin-left: 4px; }
+  </style>
+  <div data-hf-id="hf-3xc5" id="root" data-composition-id="s3" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-wqb7" id="s3-stage" data-layout-allow-overflow>
+      <div data-hf-id="hf-0wgw" id="s3-title" class="clip" data-start="0.037" data-duration="9.31"><div data-hf-id="hf-jayp" id="s3-title-in">The agent wakes.</div></div>
+
+      <div data-hf-id="hf-ule8" id="s3-reads" class="clip" data-start="0.7" data-duration="8.65">
+        <div data-hf-id="hf-qwt9" id="s3-reads-in">
+          <div data-hf-id="hf-strx" class="s3-head">It reads</div>
+          <div data-hf-id="hf-xi82" id="s3-stat-1" class="s3-stat"><span data-hf-id="hf-0hy7" class="s3-stat-label">Market cap</span><span data-hf-id="hf-jio0" class="s3-stat-value" id="s3-mcap">$48,200</span></div>
+          <div data-hf-id="hf-tk41" id="s3-stat-2" class="s3-stat"><span data-hf-id="hf-klmm" class="s3-stat-label">Treasury</span><span data-hf-id="hf-q0jc" class="s3-stat-value" id="s3-treasury">500.00 USDC</span></div>
+          <div data-hf-id="hf-ssg8" id="s3-stat-3" class="s3-stat"><span data-hf-id="hf-wma4" class="s3-stat-label">Mentions</span><span data-hf-id="hf-8ysv" class="s3-stat-value" id="s3-mentions">3</span></div>
+        </div>
+      </div>
+      <div data-hf-id="hf-akh5" id="s3-thought" class="clip" data-start="5.56" data-duration="3.79"><div data-hf-id="hf-75mu" id="s3-thought-in">Each decision is one paid thought, funded from its own treasury.</div></div>
+
+      <div data-hf-id="hf-whjg" id="s3-decides" class="clip" data-start="3.72" data-duration="2.55">
+        <div data-hf-id="hf-705l" id="s3-decides-in">
+          <div data-hf-id="hf-yolt" class="s3-head">It decides</div>
+          <div data-hf-id="hf-3dbu" id="s3-options">
+            <div data-hf-id="hf-bbrz" id="s3-selector"></div>
+            <div data-hf-id="hf-d4j7" class="s3-opt" id="s3-opt-post">post</div>
+            <div data-hf-id="hf-gvfa" class="s3-opt">reply to a mention</div>
+            <div data-hf-id="hf-4zc3" class="s3-opt">claim fees</div>
+            <div data-hf-id="hf-2mce" class="s3-opt">swap, within limits</div>
+            <div data-hf-id="hf-1qlf" class="s3-opt">go back to sleep</div>
+          </div>
+        </div>
+      </div>
+
+      <div data-hf-id="hf-6vum" id="s3-post" class="clip" data-start="6.3" data-duration="3.05">
+        <div data-hf-id="hf-y78a" id="s3-post-in">
+          <div data-hf-id="hf-uhxl" id="s3-post-head">
+            <div data-hf-id="hf-oyt4" id="s3-avatar">ORB</div>
+            <div data-hf-id="hf-yeow"><span data-hf-id="hf-t5gf" id="s3-post-name">Orbit</span><span data-hf-id="hf-yvsa" id="s3-post-handle">@orbit</span></div>
+          </div>
+          <div data-hf-id="hf-lcve" id="s3-post-text"><span data-hf-id="hf-c01c" id="s3-post-typed"></span><span data-hf-id="hf-ppo1" id="s3-post-caret"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // The drop: white floods from the centre, the title is set on the hit (no ease on a hit).
+    tl.fromTo("#s3-stage", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1200px at 960px 540px)", duration: 0.3, ease: "expo.out" }, 0.037);
+    tl.fromTo("#s3-title-in", { scale: 1.08, opacity: 1, transformOrigin: "0% 50%" }, { scale: 1, duration: 0.35, ease: "expo.out" }, 0.037);
+    // Readouts land one per beat.
+    tl.fromTo("#s3-reads-in .s3-head", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 0.7);
+    [0.958, 1.4185, 1.879].forEach((b, i) => {
+      tl.fromTo(`#s3-stat-${i + 1}`, { opacity: 0, x: -30 }, { opacity: 1, x: 0, duration: 0.3, ease: "expo.out" }, b - 0.04);
+    });
+    // Each number counts up over its beat.
+    const mcap = { v: 0 };
+    tl.to(mcap, { v: 48200, duration: 0.42, ease: "power2.out", onUpdate: () => { document.getElementById("s3-mcap").textContent = "$" + Math.round(mcap.v).toLocaleString("en-US"); } }, 0.958);
+    const tre = { v: 0 };
+    tl.to(tre, { v: 500, duration: 0.42, ease: "power2.out", onUpdate: () => { document.getElementById("s3-treasury").textContent = tre.v.toFixed(2) + " USDC"; } }, 1.4185);
+    const men = { v: 0 };
+    tl.to(men, { v: 3, duration: 0.3, ease: "power2.out", onUpdate: () => { document.getElementById("s3-mentions").textContent = String(Math.round(men.v)); } }, 1.879);
+    // It decides: the selector scans up the list and stops on "post".
+    tl.fromTo("#s3-decides-in", { opacity: 0, x: 40, filter: "blur(8px)" }, { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, 3.72);
+    tl.fromTo("#s3-selector", { y: 336 }, { y: 336, duration: 0.9, ease: "none" }, 3.72);
+    tl.to("#s3-selector", { y: 252, duration: 0.18, ease: "power3.out" }, 4.642);
+    tl.to("#s3-selector", { y: 168, duration: 0.18, ease: "power3.out" }, 4.87);
+    tl.to("#s3-selector", { y: 84, duration: 0.18, ease: "power3.out" }, 5.1);
+    tl.to("#s3-selector", { y: 0, duration: 0.22, ease: "expo.out" }, 5.33);
+    tl.fromTo("#s3-opt-post", { color: "#737373", fontWeight: 500 }, { color: "#171717", duration: 0.2 }, 5.4);
+    tl.to("#s3-decides-in", { opacity: 0, filter: "blur(8px)", duration: 0.22, ease: "power3.in" }, 6.0);
+    // One paid thought: the treasury ticks down by the cost of the inference call.
+    tl.fromTo("#s3-thought-in", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 5.56);
+    const treasury = { v: 500 };
+    tl.to(treasury, {
+      v: 499.98, duration: 1.2, ease: "power2.out",
+      onUpdate: () => { document.getElementById("s3-treasury").textContent = treasury.v.toFixed(2) + " USDC"; }
+    }, 5.6);
+    // The post composes: the card arrives, then the line types over four beats.
+    tl.fromTo("#s3-post-in", { opacity: 0, x: 40, filter: "blur(8px)" }, { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, 6.3);
+    const line = "Orbit is live. Split locked: 20 / 50 / 30.";
+    const typed = { n: 0 };
+    tl.to(typed, {
+      n: line.length, duration: 1.38, ease: "none",
+      onUpdate: () => { document.getElementById("s3-post-typed").textContent = line.slice(0, Math.round(typed.n)); }
+    }, 6.4);
+    tl.fromTo("#s3-post-caret", { opacity: 1 }, { opacity: 1, duration: 1.38, ease: "none" }, 6.4);
+    tl.to("#s3-post-caret", { opacity: 0, duration: 0.1 }, 7.9);
+    window.__timelines["s3"] = tl;
+  </script>
+</template>

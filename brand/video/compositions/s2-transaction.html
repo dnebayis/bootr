@@ -1,0 +1,75 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 400; src: url('assets/fonts/GeistMono-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #ffffff; }
+    #s2-stage { position: absolute; inset: 0; background: #000000; }
+    #s2-title { position: absolute; left: 120px; top: 110px; font-size: 96px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+    #s2-hash { position: absolute; left: 120px; top: 230px; font-family: 'Geist Mono', monospace; font-size: 32px; color: #8f8f8f; }
+    #s2-call { position: absolute; left: 120px; top: 318px; width: 560px; height: 604px; }
+    #s2-call-in { width: 560px; height: 604px; border: 2px solid #3d3d3d; border-radius: 8px; padding: 40px 44px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 72px; color: #ffffff; white-space: pre; }
+    .s2-dim { color: #8f8f8f; }
+    .s2-card { position: absolute; left: 800px; width: 1000px; height: 136px; }
+    .s2-card-in { width: 1000px; height: 136px; border: 2px solid #3d3d3d; border-radius: 8px; padding: 0 40px; display: flex; flex-direction: column; justify-content: center; gap: 6px; background: #000000; }
+    .s2-card-title { font-size: 44px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+    .s2-card-sub { font-size: 32px; color: #a1a1a1; letter-spacing: -0.01em; line-height: 1.1; }
+    .s2-card-sub b { font-family: 'Geist Mono', monospace; font-weight: 500; color: #ffffff; }
+    .s2-line { position: absolute; left: 682px; width: 118px; height: 2px; background: #ffffff; }
+    #s2-card-1 { top: 318px; } #s2-line-1 { top: 385px; }
+    #s2-card-2 { top: 474px; } #s2-line-2 { top: 541px; }
+    #s2-card-3 { top: 630px; } #s2-line-3 { top: 697px; }
+    #s2-card-4 { top: 786px; } #s2-line-4 { top: 853px; }
+  </style>
+  <div data-hf-id="hf-u16y" id="root" data-composition-id="s2" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-iz6u" id="s2-stage" data-layout-allow-overflow>
+      <div data-hf-id="hf-nzoi" id="s2-title" class="clip" data-start="0.2" data-duration="9.05"><div data-hf-id="hf-q30r" id="s2-title-in">One transaction.</div></div>
+      <div data-hf-id="hf-vos5" id="s2-hash" class="clip" data-start="0.4" data-duration="8.85"><div data-hf-id="hf-szz6" id="s2-hash-in">0x7f3a4c…9e41 · Launch sent</div></div>
+      <div data-hf-id="hf-brmr" id="s2-call" class="clip" data-start="0.3" data-duration="8.95"><div data-hf-id="hf-mxzw" id="s2-call-in">launch(
+  <span data-hf-id="hf-f41a" class="s2-dim">name:</span>    Orbit,
+  <span data-hf-id="hf-nsg3" class="s2-dim">symbol:</span>  ORB,
+  <span data-hf-id="hf-7e73" class="s2-dim">fuel:</span>    500 USDC,
+  <span data-hf-id="hf-swg1" class="s2-dim">split:</span>   20/50/30
+)</div></div>
+
+      <div data-hf-id="hf-r24s" id="s2-line-1" class="s2-line clip" data-start="0.38" data-duration="8.87"><div data-hf-id="hf-45wo" class="s2-line-in" style="width:100%;height:100%;background:#fff"></div></div>
+      <div data-hf-id="hf-4yy4" id="s2-card-1" class="s2-card clip" data-start="0.38" data-duration="8.87">
+        <div data-hf-id="hf-25vm" class="s2-card-in"><div data-hf-id="hf-wt80" class="s2-card-title">Coin deployed</div><div data-hf-id="hf-q7z4" class="s2-card-sub">with its own liquidity pool, paired against ETH</div></div>
+      </div>
+      <div data-hf-id="hf-7ld5" id="s2-line-2" class="s2-line clip" data-start="2.22" data-duration="7.03"><div data-hf-id="hf-9cyo" class="s2-line-in" style="width:100%;height:100%;background:#fff"></div></div>
+      <div data-hf-id="hf-e11x" id="s2-card-2" class="s2-card clip" data-start="2.22" data-duration="7.03">
+        <div data-hf-id="hf-0ckm" class="s2-card-in"><div data-hf-id="hf-n9hl" class="s2-card-title">Agent treasury created</div><div data-hf-id="hf-dugk" class="s2-card-sub">a smart account the agent signs from · <b data-hf-id="hf-r4bd">500 USDC</b> moves in</div></div>
+      </div>
+      <div data-hf-id="hf-ssmd" id="s2-line-3" class="s2-line clip" data-start="4.06" data-duration="5.19"><div data-hf-id="hf-861l" class="s2-line-in" style="width:100%;height:100%;background:#fff"></div></div>
+      <div data-hf-id="hf-8nc1" id="s2-card-3" class="s2-card clip" data-start="4.06" data-duration="5.19">
+        <div data-hf-id="hf-0qvn" class="s2-card-in"><div data-hf-id="hf-4qsk" class="s2-card-title">Registered on-chain</div><div data-hf-id="hf-rf6a" class="s2-card-sub">an identity with a public reputation record</div></div>
+      </div>
+      <div data-hf-id="hf-bc6a" id="s2-line-4" class="s2-line clip" data-start="5.9" data-duration="3.35"><div data-hf-id="hf-8kcm" class="s2-line-in" style="width:100%;height:100%;background:#fff"></div></div>
+      <div data-hf-id="hf-eume" id="s2-card-4" class="s2-card clip" data-start="5.9" data-duration="3.35">
+        <div data-hf-id="hf-156o" class="s2-card-in"><div data-hf-id="hf-5f2l" class="s2-card-title">Fee split locked</div><div data-hf-id="hf-61ek" class="s2-card-sub"><b data-hf-id="hf-krnt">20 / 50 / 30</b> · nobody can change it</div></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Iris from the Launch button the viewer just clicked (centre 1336, 822 in the previous scene).
+    tl.fromTo("#s2-stage", { clipPath: "circle(0px at 1336px 830px)" }, { clipPath: "circle(2300px at 1336px 830px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    tl.fromTo("#s2-title-in", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 0.2);
+    tl.fromTo("#s2-hash-in", { opacity: 0 }, { opacity: 1, duration: 0.25, ease: "power2.out" }, 0.4);
+    tl.fromTo("#s2-call-in", { opacity: 0, x: -24 }, { opacity: 1, x: 0, duration: 0.45, ease: "expo.out" }, 0.3);
+    // The call block flashes white on each beat a part lands.
+    const beats = [0.548, 2.39, 4.232, 6.074];
+    tl.fromTo("#s2-call-in", { borderColor: "#3d3d3d" }, { borderColor: "#3d3d3d", duration: 0.01 }, 0);
+    beats.forEach((b, i) => {
+      tl.set("#s2-call-in", { borderColor: "#ffffff" }, b);
+      tl.to("#s2-call-in", { borderColor: "#3d3d3d", duration: 0.35, ease: "power2.out" }, b + 0.02);
+      // Line draws from the call block to the card, then the card arrives.
+      tl.fromTo(`#s2-line-${i + 1} .s2-line-in`, { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.16, ease: "power3.out" }, b - 0.16);
+      tl.fromTo(`#s2-card-${i + 1} .s2-card-in`, { opacity: 0, x: -90, filter: "blur(12px)" }, { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.34, ease: "expo.out" }, b - 0.04);
+      tl.fromTo(`#s2-card-${i + 1} .s2-card-in`, { borderColor: "#ffffff" }, { borderColor: "#3d3d3d", duration: 0.5, ease: "power2.out" }, b);
+    });
+    window.__timelines["s2"] = tl;
+  </script>
+</template>

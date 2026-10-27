@@ -1,0 +1,327 @@
+import { z } from 'zod';
+
+// ---------------------------------------------------------------------------
+// Primitive formats
+// ---------------------------------------------------------------------------
+
+export const evmAddressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'expected a 20-byte address');
+export const txHashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'expected a 32-byte transaction hash');
+/** X (Twitter) snowflake ids are decimal strings up to 19 digits. */
+export const xIdSchema = z.string().regex(/^[1-9][0-9]{0,18}$/, 'expected an X id');
+export const xHandleSchema = z.string().regex(/^[a-zA-Z0-9_]{1,15}$/, 'expected an X handle without @');
+export const isoDateSchema = z.string().refine((v) => Number.isFinite(Date.parse(v)), 'expected an ISO date');
+export const httpsUrlSchema = z
+  .string()
+  .max(2000)
+  .refine((v) => {
+    try {
+      const url = new URL(v);
+      return url.protocol === 'https:' && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, 'expected a public https url');
+
+// ---------------------------------------------------------------------------
+// Agent configuration
+// ---------------------------------------------------------------------------
+
+export const ownerRuleSchema = z.object({
+  id: z.string().regex(/^[a-z0-9-]{1,64}$/),
+  text: z.string().trim().min(1).max(4000),
+  enabled: z.boolean(),
+});
+export type OwnerRule = z.infer<typeof ownerRuleSchema>;
+
+export const CAPABILITIES = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images'] as const;
+export type Capability = (typeof CAPABILITIES)[number];
+
+export const capabilitiesSchema = z.object({
+  xRead: z.boolean().default(false),
+  xReply: z.boolean().default(false),
+  xPublish: z.boolean().default(false),
+  research: z.boolean().default(false),
+  memory: z.boolean().default(false),
+  treasury: z.boolean().default(false),
+  images: z.boolean().default(false),
+});
+export type Capabilities = z.infer<typeof capabilitiesSchema>;
+
+export const DEFAULT_POST_INTERVAL_MS = 2 * 60 * 60 * 1000;
+export const DEFAULT_DORMANCY_PERIOD_MS = 90 * 24 * 60 * 60 * 1000;
+
+export const agentConfigSchema = z
+  .object({
+    agentId: z.string().min(1).max(128),
+    token: z.object({
+      address: evmAddressSchema,
+      symbol: z.string().min(1).max(32),
+      name: z.string().min(1).max(128),
+      chainId: z.union([z.literal(8453), z.literal(84532)]),
+    }),
+    kernel: z.object({ address: evmAddressSchema }),
+    creator: z.object({ address: evmAddressSchema, xHandle: xHandleSchema.optional(), xUserId: xIdSchema.optional() }),
+    xHandle: xHandleSchema,
+    xUserId: xIdSchema,
+    model: z.string().min(1).max(128),
+    identityText: z.string().max(20000),
+    ownerRules: z.array(ownerRuleSchema).max(64).default([]),
+    capabilities: capabilitiesSchema.default({}),
+    /** Minimum spacing between original posts. */
+    postIntervalMs: z.number().int().min(60_000).max(7 * 24 * 60 * 60 * 1000).default(DEFAULT_POST_INTERVAL_MS),
+    /** How long without any activity before the agent is considered dormant. */
+    dormancyPeriodMs: z.number().int().min(60_000).default(DEFAULT_DORMANCY_PERIOD_MS),
+    /** When the social loop started; original-post scheduling anchors here. */
+    socialStartedAt: isoDateSchema.optional(),
+    /** Stable X author ids allowed to receive replies without a verified badge. */
+    replyAuthorIds: z.array(xIdSchema).max(16).default([]),
+    /** Stable X author ids the owner never wants answered. */
+    blockedAuthorIds: z.array(xIdSchema).max(64).default([]),
+    /** Bumped by the control plane whenever anything above changes. */
+    revision: z.number().int().min(0).default(0),
+  })
+  .superRefine((config, ctx) => {
+    const ids = new Set<string>();
+    for (const rule of config.ownerRules) {
+      if (ids.has(rule.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `duplicate owner rule id ${rule.id}`, path: ['ownerRules'] });
+      ids.add(rule.id);
+    }
+    if (new Set(config.replyAuthorIds).size !== config.replyAuthorIds.length)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'duplicate reply author id', path: ['replyAuthorIds'] });
+  });
+export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type AgentConfigInput = z.input<typeof agentConfigSchema>;
+
+export function parseAgentConfig(value: unknown): AgentConfig {
+  return agentConfigSchema.parse(value);
+}
+
+// ---------------------------------------------------------------------------
+// X posts as the brain sees them (already normalised by the X adapter)
+// ---------------------------------------------------------------------------
+
+export const xAuthorSchema = z.object({
+  id: xIdSchema,
+  username: xHandleSchema.optional(),
+  verified: z.boolean().optional(),
+  verifiedType: z.enum(['blue', 'business', 'government', 'none']).optional(),
+});
+export type XAuthor = z.infer<typeof xAuthorSchema>;
+
+export const xPostSchema = z.object({
+  id: xIdSchema,
+  text: z.string(),
+  authorId: xIdSchema,
+  createdAt: isoDateSchema.optional(),
+  conversationId: xIdSchema.optional(),
+  inReplyToUserId: xIdSchema.nullable().optional(),
+  referencedPosts: z.array(z.object({ type: z.enum(['replied_to', 'quoted', 'retweeted']), id: xIdSchema })).optional(),
+  mentions: z.array(z.object({ username: xHandleSchema, id: xIdSchema.optional() })).optional(),
+  urls: z.array(z.object({ url: z.string(), expandedUrl: z.string() })).optional(),
+  mediaKeys: z.array(z.string()).optional(),
+  author: xAuthorSchema.optional(),
+});
+export type XPost = z.infer<typeof xPostSchema>;
+
+export const attributionSchema = z.object({
+  username: xHandleSchema,
+  sourceUrl: httpsUrlSchema,
+});
+export type Attribution = z.infer<typeof attributionSchema>;
+
+export const INBOX_STATUSES = ['pending', 'skipped', 'answered', 'retrying', 'delivery_blocked'] as const;
+export type InboxStatus = (typeof INBOX_STATUSES)[number];
+
+export interface InboxEntry {
+  postId: string;
+  authorId: string;
+  conversationId: string;
+  status: InboxStatus;
+  reason?: string | null;
+  /** Epoch ms when the entry was last shown to the model. */
+  seenAt?: number | null;
+  /** Epoch ms before which the entry must not be presented again. */
+  deferredUntil?: number | null;
+  observedAt: number;
+  post: XPost;
+}
+
+// ---------------------------------------------------------------------------
+// Tool inputs (one zod schema per tool; the catalog lives in tools.ts)
+// ---------------------------------------------------------------------------
+
+const text = (max: number) => z.string().trim().min(1).max(max);
+
+export const toolInputSchemas = {
+  read_mentions: z.object({}).strict(),
+  read_x_thread: z.object({ postId: xIdSchema }).strict(),
+  read_x_account: z
+    .object({
+      username: xHandleSchema,
+      originalsOnly: z.boolean().optional(),
+      paginationToken: z.string().max(2000).optional(),
+    })
+    .strict(),
+  recall_conversation: z
+    .object({ authorId: xIdSchema, query: z.string().max(200).optional(), beforePostId: xIdSchema.optional() })
+    .strict(),
+  publish_reply: z
+    .object({
+      postId: xIdSchema,
+      text: text(280),
+      attributions: z.array(attributionSchema).max(3).optional(),
+      imageId: z.string().max(128).optional(),
+    })
+    .strict(),
+  resolve_mention: z
+    .object({
+      postId: xIdSchema,
+      outcome: z.enum(['skip', 'opt_out', 'defer']),
+      reason: text(1000),
+      reviewAt: isoDateSchema.optional(),
+    })
+    .strict(),
+  publish_post: z
+    .object({
+      text: text(4000),
+      attributions: z.array(attributionSchema).max(3).optional(),
+      imageId: z.string().max(128).optional(),
+    })
+    .strict(),
+  remember: z
+    .object({
+      text: text(8000),
+      sources: z.array(httpsUrlSchema).max(8).optional(),
+      tags: z.array(z.string().regex(/^[a-z0-9-]{1,32}$/)).max(8).optional(),
+    })
+    .strict(),
+  recall: z
+    .object({ query: z.string().max(200).optional(), id: z.string().max(128).optional(), offset: z.number().int().min(0).optional() })
+    .strict(),
+  finish: z
+    .object({
+      memory: z.string().max(16000),
+      agenda: z.string().max(12000),
+      summary: z.string().max(4000),
+      nextAt: isoDateSchema,
+    })
+    .strict(),
+  read_url: z.object({ url: httpsUrlSchema, render: z.boolean().optional() }).strict(),
+  search_web: z.object({ query: text(400) }).strict(),
+  read_market: z.object({ tokenAddress: evmAddressSchema.optional(), pairId: z.string().max(80).optional() }).strict(),
+  read_chain: z
+    .object({
+      method: z.enum(['balance', 'contract_call', 'transaction', 'block']),
+      address: evmAddressSchema.optional(),
+      signature: z.string().max(400).optional(),
+      args: z.array(z.union([z.string(), z.number(), z.boolean()])).max(16).optional(),
+      txHash: txHashSchema.optional(),
+      blockNumber: z.number().int().min(0).optional(),
+    })
+    .strict(),
+  treasury_read: z.object({}).strict(),
+  treasury_prepare: z
+    .object({
+      operation: z.enum(['transfer', 'swap', 'burn', 'buyback']),
+      asset: z.union([z.literal('ETH'), evmAddressSchema]).optional(),
+      amount: z.string().regex(/^\d+(\.\d+)?$/, 'decimal amount as string'),
+      to: evmAddressSchema.optional(),
+      maxSlippageBps: z.number().int().min(0).max(5000).optional(),
+      memo: z.string().max(280).optional(),
+    })
+    .strict(),
+  treasury_execute: z
+    .object({
+      preparedId: z.string().min(1).max(128),
+      /** Hash of the prepared call data the model observed; the executor refuses mismatches. */
+      expectedHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    })
+    .strict(),
+  generate_image: z.object({ prompt: text(2000), altText: text(1000) }).strict(),
+} as const;
+
+export type ToolName = keyof typeof toolInputSchemas;
+export const TOOL_NAMES = Object.keys(toolInputSchemas) as ToolName[];
+
+export type ToolInput<N extends ToolName = ToolName> = z.infer<(typeof toolInputSchemas)[N]>;
+
+/** Discriminated union of every tool call the model may request. */
+export type Action = { [N in ToolName]: { tool: N; input: ToolInput<N> } }[ToolName];
+
+export const actionSchema: z.ZodType<Action> = z.discriminatedUnion(
+  'tool',
+  TOOL_NAMES.map((name) => z.object({ tool: z.literal(name), input: toolInputSchemas[name] })) as unknown as [
+    z.ZodDiscriminatedUnionOption<'tool'>,
+    ...z.ZodDiscriminatedUnionOption<'tool'>[],
+  ],
+) as unknown as z.ZodType<Action>;
+
+export function parseAction(value: unknown): Action {
+  return actionSchema.parse(value);
+}
+
+// ---------------------------------------------------------------------------
+// Action lifecycle
+// ---------------------------------------------------------------------------
+
+export const ACTION_STATUSES = ['sending', 'sent', 'held', 'completed', 'failed'] as const;
+export type ActionStatus = (typeof ACTION_STATUSES)[number];
+
+export interface ActionReceipt {
+  txHash?: string;
+  postId?: string;
+  [key: string]: unknown;
+}
+
+export type ActionOutcome =
+  | { kind: 'completed'; result: unknown; receipt?: ActionReceipt }
+  | { kind: 'failed'; error: string; retryAt?: number }
+  | { kind: 'unknown'; error: string };
+
+export interface ActionResult {
+  actionId: string;
+  tool: ToolName;
+  status: 'completed' | 'failed' | 'unknown';
+  result?: unknown;
+  error?: string;
+  receipt?: ActionReceipt;
+}
+
+export interface PendingAction {
+  id: string;
+  cycleKey: string;
+  action: Action;
+  status: ActionStatus;
+  createdAt: number;
+  /** Number of times the same original request was (re)sent. */
+  attempts: number;
+  /** Earliest time a resumable action may be resent. */
+  nextAt?: number;
+  /** Why the action is held or failed. */
+  reason?: string;
+  result?: ActionResult;
+  /** Set when the worker said `done: true` together with this action. */
+  completeAfter?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Worker contract
+// ---------------------------------------------------------------------------
+
+export interface WorkerInput<State = unknown, Observation = unknown> {
+  state: State;
+  observation: Observation | null;
+  cycle: number;
+}
+
+export interface WorkerOutput<State = unknown> {
+  state: State;
+  action?: Action;
+  done?: boolean;
+}
+
+export const workerOutputSchema = z.object({
+  state: z.unknown(),
+  action: actionSchema.optional(),
+  done: z.boolean().optional(),
+});

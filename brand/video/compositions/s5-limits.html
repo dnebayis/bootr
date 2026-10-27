@@ -1,0 +1,41 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 400; src: url('assets/fonts/Geist-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #171717; }
+    #s5-stage { position: absolute; inset: 0; background: #ffffff; }
+    #s5-title { position: absolute; left: 120px; top: 110px; font-size: 96px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+    .s5-rule { position: absolute; left: 120px; font-size: 64px; font-weight: 500; letter-spacing: -0.03em; line-height: 1; }
+    .s5-rule-text { position: relative; display: inline-block; }
+    .s5-strike { position: absolute; left: 0; top: 50%; width: 100%; height: 8px; margin-top: -4px; background: #171717; }
+    #s5-rule-1 { top: 330px; } #s5-rule-2 { top: 470px; } #s5-rule-3 { top: 610px; } #s5-rule-4 { top: 750px; }
+    #s5-enforced { position: absolute; left: 120px; top: 910px; font-size: 44px; font-weight: 500; letter-spacing: -0.02em; line-height: 1; color: #4d4d4d; }
+    #s5-enforced b { font-weight: 600; color: #0070f3; }
+  </style>
+  <div data-hf-id="hf-4473" id="root" data-composition-id="s5" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-wj9x" id="s5-stage" data-layout-allow-overflow>
+      <div data-hf-id="hf-csop" id="s5-title" class="clip" data-start="0.15" data-duration="7.65"><div data-hf-id="hf-h59n" id="s5-title-in">What it cannot do.</div></div>
+      <div data-hf-id="hf-xpeg" id="s5-rule-1" class="s5-rule clip" data-start="0.9" data-duration="6.9"><div data-hf-id="hf-frnp" class="s5-rule-in"><span data-hf-id="hf-6tjt" class="s5-rule-text">Send funds to any address<span data-hf-id="hf-l390" class="s5-strike" data-layout-allow-occlusion></span></span></div></div>
+      <div data-hf-id="hf-zvyg" id="s5-rule-2" class="s5-rule clip" data-start="1.82" data-duration="5.98"><div data-hf-id="hf-7q55" class="s5-rule-in"><span data-hf-id="hf-ian3" class="s5-rule-text">Change the fee split<span data-hf-id="hf-naoc" class="s5-strike" data-layout-allow-occlusion></span></span></div></div>
+      <div data-hf-id="hf-uy60" id="s5-rule-3" class="s5-rule clip" data-start="2.74" data-duration="5.06"><div data-hf-id="hf-8x28" class="s5-rule-in"><span data-hf-id="hf-kz50" class="s5-rule-text">Touch the liquidity<span data-hf-id="hf-m3r9" class="s5-strike" data-layout-allow-occlusion></span></span></div></div>
+      <div data-hf-id="hf-ylsv" id="s5-rule-4" class="s5-rule clip" data-start="3.66" data-duration="4.14"><div data-hf-id="hf-8ir7" class="s5-rule-in"><span data-hf-id="hf-fxy2" class="s5-rule-text">Trade past its daily limit<span data-hf-id="hf-mi2a" class="s5-strike" data-layout-allow-occlusion></span></span></div></div>
+      <div data-hf-id="hf-tdnn" id="s5-enforced" class="clip" data-start="5.53" data-duration="2.27"><div data-hf-id="hf-hoq5" id="s5-enforced-in">Enforced <b data-hf-id="hf-13b0">on-chain</b>, not by promise.</div></div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Vertical wipe down from the top, on the re-entry of the drop.
+    tl.fromTo("#s5-stage", { clipPath: "inset(0px 0px 1080px 0px)" }, { clipPath: "inset(0px 0px 0px 0px)", duration: 0.28, ease: "power3.inOut" }, 0);
+    tl.fromTo("#s5-title-in", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 0.15);
+    // Each line lands on a beat; one beat later it is struck through.
+    const lands = [0.928, 1.849, 2.77, 3.691];
+    lands.forEach((b, i) => {
+      tl.fromTo(`#s5-rule-${i + 1} .s5-rule-in`, { opacity: 0, x: -140, filter: "blur(12px)" }, { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.3, ease: "expo.out" }, b - 0.03);
+      tl.fromTo(`#s5-rule-${i + 1} .s5-strike`, { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.2, ease: "power3.out" }, b + 0.4605);
+      tl.fromTo(`#s5-rule-${i + 1} .s5-rule-text`, { color: "#171717" }, { color: "#8f8f8f", duration: 0.25, ease: "power2.out" }, b + 0.5);
+    });
+    tl.fromTo("#s5-enforced-in", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 5.533);
+    window.__timelines["s5"] = tl;
+  </script>
+</template>
