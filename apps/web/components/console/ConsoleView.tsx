@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useConnection, useReadContract, useWriteContract } from 'wagmi';
-import { formatUnits, isAddress, parseUnits, type Address } from 'viem';
+import { formatEther, formatUnits, isAddress, parseEther, parseUnits, type Address } from 'viem';
 import { toast } from 'sonner';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { guardianAbi } from '@/lib/abi/guardian';
@@ -257,6 +257,55 @@ function PlatformConfigPanel({ initial }: { initial: PlatformConfig }) {
   );
 }
 
+// ------------------------------------------------------------------ launch fee
+
+/** Flat ETH fee per launch (`BootrLauncher.launchFeeWei`), owner-settable without a redeploy. */
+function LaunchFeePanel() {
+  const launcher = contracts.launcher;
+  const enabled = !!launcher && !env.useMock;
+  const owner = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'owner', chainId: appChain.id, query: { enabled } });
+  const fee = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'launchFeeWei', chainId: appChain.id, query: { enabled } });
+  const [draft, setDraft] = useState<string | null>(null);
+  const write = useWriteContract();
+  const { run, pending } = useTxRunner();
+  const current = fee.data == null ? '' : formatEther(fee.data);
+  const value = draft ?? current;
+  const valid = /^\d+(\.\d{0,18})?$/.test(value);
+  const changed = valid && fee.data != null && parseEther(value) !== fee.data;
+
+  const submit = async () => {
+    if (!valid) return;
+    if (env.useMock) return void toast.success('Mock: setLaunchFee sent');
+    if (!launcher) return;
+    const r = await run('setLaunchFee', () => write.mutateAsync({ address: launcher, abi: launcherAbi, functionName: 'setLaunchFee', args: [parseEther(value)], chainId: appChain.id }));
+    if (r) {
+      void fee.refetch();
+      setDraft(null);
+    }
+  };
+
+  return (
+    <Panel title="Launch fee" action={<OwnerNote owner={owner.data} label="Launcher" />}>
+      {!launcher && !env.useMock ? (
+        <p className="text-sm text-mute">NEXT_PUBLIC_LAUNCHER_ADDRESS is not set.</p>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          <div>
+            <Label htmlFor="launch-fee" hint={fee.data != null ? `on-chain: ${current} ETH` : undefined}>
+              Flat fee per launch
+            </Label>
+            <Input id="launch-fee" mono suffix="ETH" inputMode="decimal" placeholder="0" value={value} onChange={(e) => setDraft(e.target.value.trim())} aria-invalid={!valid} />
+            <p className="mt-1 text-caption text-mute">Charged on top of the dev buy and sent to the preset&apos;s platform recipient. 0 disables it. Applies to future launches only.</p>
+          </div>
+          <Button variant="ink" onClick={submit} disabled={!changed} loading={pending === 'setLaunchFee'}>
+            Send setLaunchFee
+          </Button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ------------------------------------------------------------------ agents
 
 function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: boolean }) {
@@ -477,6 +526,7 @@ export function ConsoleView({ admin, initialConfig }: { admin: string; initialCo
         Splits of existing tokens are locked on-chain; defaults apply to future launches only.
       </div>
       <LauncherDefaultsPanel />
+      <LaunchFeePanel />
       <PlatformConfigPanel initial={initialConfig} />
       <AgentsPanel agents={list} loading={agents.isPending} />
       <DormantPanel agents={list} loading={agents.isPending} />

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useConnection, useReadContract, useWriteContract } from 'wagmi';
-import { formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, zeroAddress, type Address } from 'viem';
+import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, type Address, zeroAddress } from 'viem';
 import { toast } from 'sonner';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
@@ -109,6 +109,9 @@ export function LaunchForm() {
   const standardRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: onChain } });
   const buybackRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'buybackDefaults', chainId: appChain.id, query: { enabled: onChain } });
   const pausedRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'paused', chainId: appChain.id, query: { enabled: onChain } });
+  // Flat ETH launch fee (0 when unset). Added to msg.value next to the dev buy; the contract forwards it to the platform.
+  const launchFeeRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'launchFeeWei', chainId: appChain.id, query: { enabled: onChain } });
+  const launchFeeWei = launchFeeRead.data ?? 0n;
   const defaults: LaunchDefaults = buyback
     ? buybackRead.data
       ? defaultsFromTuple(buybackRead.data)
@@ -228,7 +231,7 @@ export function LaunchForm() {
         abi: launcherAbi,
         functionName: 'launch',
         args: [params],
-        value: devBuyWei,
+        value: devBuyWei + launchFeeWei,
         chainId: appChain.id,
         dataSuffix: builderDataSuffix,
       }),
@@ -395,6 +398,7 @@ export function LaunchForm() {
             ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
             ['Fuel', `${fuel || 0} USDC`],
             ['Dev buy', devBuy ? `${devBuy} ETH` : 'None'],
+            ['Launch fee', launchFeeWei > 0n ? `${formatEther(launchFeeWei)} ETH` : 'None'],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-2">
               <dt className="text-mute">{k}</dt>

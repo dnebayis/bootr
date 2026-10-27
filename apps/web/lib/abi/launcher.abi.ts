@@ -531,6 +531,19 @@ export const launcherAbi = [
   },
   {
     "type": "function",
+    "name": "launchFeeWei",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "lpLocker",
     "inputs": [],
     "outputs": [
@@ -817,6 +830,19 @@ export const launcherAbi = [
             "internalType": "uint32"
           }
         ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setLaunchFee",
+    "inputs": [
+      {
+        "name": "launchFeeWei_",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -1121,6 +1147,44 @@ export const launcherAbi = [
             "internalType": "uint32"
           }
         ]
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LaunchFeePaid",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LaunchFeeUpdated",
+    "inputs": [
+      {
+        "name": "launchFeeWei",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
