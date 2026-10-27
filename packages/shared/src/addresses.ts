@@ -206,7 +206,7 @@ export const addresses = {
     },
     bootr: {
       // Deployed 2026-10-24 (block 49367726), Sourcify exact match.
-      launcher: '0xfDB1Fedbc6be32864D933Fba56805D9F4D52979b',
+      launcher: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
       guardian: '0x386CBE5DD03C38a31e52d94105d5CA83A311e21d',
       burnerImplementation: '0x52f8Ad63ad88a40199a81B39C333C158651caE90',
       // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
