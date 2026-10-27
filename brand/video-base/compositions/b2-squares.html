@@ -1,0 +1,42 @@
+<template>
+  <style>
+    @font-face { font-family: 'Base Sans'; font-weight: 900; src: url('assets/fonts/BaseSans-Black.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans'; font-weight: 400; src: url('assets/fonts/BaseSans-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans Mono'; font-weight: 400; src: url('assets/fonts/BaseSansMono-Regular.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Base Sans', sans-serif; color: #ffffff; }
+    #b2-stage { position: absolute; inset: 0; background: #0000FF; }
+    #b2-title { position: absolute; left: 120px; top: 120px; font-size: 96px; font-weight: 900; letter-spacing: -0.02em; line-height: 1; }
+    .b2-sq { position: absolute; top: 420px; width: 280px; height: 280px; }
+    .b2-sq-in { width: 280px; height: 280px; background: #ffffff; border-radius: 40px; position: relative; }
+    .b2-label { position: absolute; left: 28px; bottom: 24px; font-size: 40px; font-weight: 900; color: #0000FF; letter-spacing: -0.02em; line-height: 1; }
+    #b2-sq-1 { left: 310px; } #b2-sq-2 { left: 650px; } #b2-sq-3 { left: 990px; } #b2-sq-4 { left: 1330px; }
+    #b2-cap { position: absolute; left: 310px; top: 780px; font-family: 'Base Sans Mono', monospace; font-size: 40px; color: #ffffff; line-height: 1; }
+  </style>
+  <div id="root" data-composition-id="b2" data-width="1920" data-height="1080">
+    <div id="b2-stage" data-layout-allow-overflow>
+      <div id="b2-title" class="clip" data-start="0.2" data-duration="6.7"><div id="b2-title-in">one transaction.</div></div>
+      <div id="b2-sq-1" class="b2-sq clip" data-start="0.8" data-duration="6.1"><div class="b2-sq-in"><span class="b2-label">coin</span></div></div>
+      <div id="b2-sq-2" class="b2-sq clip" data-start="1.7" data-duration="5.2"><div class="b2-sq-in"><span class="b2-label">agent</span></div></div>
+      <div id="b2-sq-3" class="b2-sq clip" data-start="2.6" data-duration="4.3"><div class="b2-sq-in"><span class="b2-label">treasury</span></div></div>
+      <div id="b2-sq-4" class="b2-sq clip" data-start="3.5" data-duration="3.4"><div class="b2-sq-in"><span class="b2-label">x account</span></div></div>
+      <div id="b2-cap" class="clip" data-start="4.15" data-duration="2.75"><div id="b2-cap-in">split locked at launch · 20 / 50 / 30</div></div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // Wipe down from the top: the squares are about to drop.
+    tl.fromTo("#b2-stage", { clipPath: "inset(0px 0px 1080px 0px)" }, { clipPath: "inset(0px 0px 0px 0px)", duration: 0.28, ease: "power3.inOut" }, 0);
+    tl.fromTo("#b2-title-in", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 0.2);
+    // Each square drops from above and lands with a squash on its beat (host starts at 4.6 s).
+    const lands = [0.961, 1.882, 2.803, 3.724];
+    lands.forEach((b, i) => {
+      const sel = `#b2-sq-${i + 1} .b2-sq-in`;
+      tl.fromTo(sel, { y: -700, scaleY: 1, transformOrigin: "50% 100%" }, { y: 0, duration: 0.32, ease: "power3.in" }, b - 0.32);
+      tl.to(sel, { scaleY: 0.86, duration: 0.07, ease: "power2.out" }, b);
+      tl.to(sel, { scaleY: 1, duration: 0.33, ease: "back.out(1.6)" }, b + 0.07);
+      tl.fromTo(`#b2-sq-${i + 1} .b2-label`, { opacity: 0 }, { opacity: 1, duration: 0.15 }, b + 0.08);
+    });
+    tl.fromTo("#b2-cap-in", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 4.185);
+    window.__timelines["b2"] = tl;
+  </script>
+</template>

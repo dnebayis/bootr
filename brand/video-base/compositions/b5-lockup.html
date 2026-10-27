@@ -1,0 +1,51 @@
+<template>
+  <style>
+    @font-face { font-family: 'Base Sans'; font-weight: 900; src: url('assets/fonts/BaseSans-Black.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans'; font-weight: 400; src: url('assets/fonts/BaseSans-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Base Sans', sans-serif; color: #0A0B0D; }
+    #b5-stage { position: absolute; inset: 0; background: #ffffff; }
+    #b5-lockup { position: absolute; left: 0; top: 330px; width: 1920px; height: 200px; display: flex; align-items: center; justify-content: center; gap: 56px; }
+    #b5-base { width: 200px; height: 200px; }
+    #b5-plus { font-size: 120px; font-weight: 400; line-height: 1; color: #0A0B0D; width: 90px; text-align: center; }
+    #b5-mark { width: 200px; height: 200px; }
+    #b5-names { position: absolute; left: 0; top: 600px; width: 1920px; text-align: center; }
+    #b5-bootr { font-family: 'Geist', sans-serif; font-size: 72px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #0A0B0D; }
+    #b5-built { margin-top: 20px; font-size: 44px; font-weight: 400; color: #717886; line-height: 1; letter-spacing: -0.01em; }
+    #b5-built b { font-weight: 900; color: #0000FF; }
+  </style>
+  <div id="root" data-composition-id="b5" data-width="1920" data-height="1080">
+    <div id="b5-stage">
+      <div id="b5-lockup" class="clip" data-start="0" data-duration="5.9">
+        <svg id="b5-base" viewBox="0 0 23 24" fill="none" role="img" aria-label="Base">
+          <path d="M1.35433 23.24C0.451444 23.24 0 22.7899 0 21.8898V2.08683C0 1.1867 0.451444 0.736633 1.35433 0.736633H21.2178C22.1207 0.736633 22.5722 1.1867 22.5722 2.08683V21.8898C22.5722 22.7899 22.1207 23.24 21.2178 23.24H1.35433Z" fill="#0000FF"></path>
+        </svg>
+        <div id="b5-plus">+</div>
+        <svg id="b5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="b5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#0A0B0D" mask="url(#b5-m)"></rect>
+        </svg>
+      </div>
+      <div id="b5-names" class="clip" data-start="2.1" data-duration="3.8">
+        <div id="b5-names-in">
+          <div id="b5-bootr">bootr</div>
+          <div id="b5-built">built on <b>base</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#b5-stage", { clipPath: "inset(0px 0px 1080px 0px)" }, { clipPath: "inset(0px 0px 0px 0px)", duration: 0.28, ease: "power3.inOut" }, 0);
+    // Base square from the left on beat 53, plus and the Bootr mark from the right on beat 55, names on beat 57.
+    tl.fromTo("#b5-base", { x: -500, opacity: 0 }, { x: 0, opacity: 1, duration: 0.4, ease: "expo.out" }, 0.05);
+    tl.fromTo("#b5-plus", { opacity: 0, scale: 0.6, transformOrigin: "50% 50%" }, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(1.6)" }, 1.26);
+    tl.fromTo("#b5-mark", { x: 500, opacity: 0 }, { x: 0, opacity: 1, duration: 0.4, ease: "expo.out" }, 1.26);
+    tl.fromTo("#b5-names-in", { opacity: 0, y: 16, filter: "blur(6px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.3, ease: "expo.out" }, 2.18);
+    window.__timelines["b5"] = tl;
+  </script>
+</template>

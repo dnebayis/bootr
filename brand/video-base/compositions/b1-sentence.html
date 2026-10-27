@@ -1,0 +1,37 @@
+<template>
+  <style>
+    @font-face { font-family: 'Base Sans'; font-weight: 900; src: url('assets/fonts/BaseSans-Black.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans'; font-weight: 400; src: url('assets/fonts/BaseSans-Regular.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Base Sans', sans-serif; }
+    #b1-ground { position: absolute; inset: 0; background: #F2F2F2; }
+    #b1-blue { position: absolute; inset: 0; background: #0000FF; }
+    #b1-line { position: absolute; left: 120px; top: 400px; font-size: 150px; font-weight: 900; letter-spacing: -0.02em; line-height: 1; color: #0A0B0D; white-space: nowrap; display: flex; align-items: center; }
+    #b1-cursor { display: inline-block; width: 14px; height: 130px; background: #0A0B0D; margin: 0 10px; }
+    #b1-word { display: inline-block; min-width: 0; }
+    #b1-sub { position: absolute; left: 120px; top: 600px; font-size: 48px; font-weight: 400; color: #ffffff; letter-spacing: -0.01em; line-height: 1.2; }
+  </style>
+  <div id="root" data-composition-id="b1" data-width="1920" data-height="1080">
+    <div id="b1-ground"></div>
+    <div id="b1-blue" data-layout-ignore></div>
+    <div id="b1-line" class="clip" data-start="0" data-duration="4.8" data-layout-allow-overflow>
+      <span>Base is for [</span><span id="b1-word">agents</span><span id="b1-cursor"></span><span>].</span>
+    </div>
+    <div id="b1-sub" class="clip" data-start="2.8" data-duration="2"><div id="b1-sub-in">agents that run their own coins.</div></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // The word types in between beats 2 and 4; the cursor blinks on the beat until then.
+    const wordEl = document.getElementById("b1-word");
+    const full = wordEl.textContent;
+    const st = { n: 0 };
+    tl.fromTo(st, { n: 0 }, { n: full.length, duration: 0.7, ease: "none", onUpdate: () => { wordEl.textContent = full.slice(0, Math.round(st.n)); } }, 0.956);
+    tl.fromTo("#b1-cursor", { opacity: 1 }, { opacity: 1, duration: 0.01 }, 0);
+    [0.23, 0.69].forEach((t) => { tl.set("#b1-cursor", { opacity: 0 }, t); tl.set("#b1-cursor", { opacity: 1 }, t + 0.23); });
+    // On beat 4 the ground floods Base Blue from the bracket; the sentence turns white.
+    tl.fromTo("#b1-blue", { clipPath: "circle(0px at 1180px 470px)" }, { clipPath: "circle(2200px at 1180px 470px)", duration: 0.32, ease: "expo.out" }, 1.877);
+    tl.set("#b1-line", { color: "#ffffff" }, 1.9);
+    tl.set("#b1-cursor", { backgroundColor: "#ffffff" }, 1.9);
+    tl.fromTo("#b1-sub-in", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 2.8);
+    window.__timelines["b1"] = tl;
+  </script>
+</template>

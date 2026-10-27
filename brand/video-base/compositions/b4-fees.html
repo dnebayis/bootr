@@ -1,0 +1,60 @@
+<template>
+  <style>
+    @font-face { font-family: 'Base Sans'; font-weight: 900; src: url('assets/fonts/BaseSans-Black.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans'; font-weight: 400; src: url('assets/fonts/BaseSans-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Base Sans Mono'; font-weight: 400; src: url('assets/fonts/BaseSansMono-Regular.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Base Sans', sans-serif; color: #ffffff; }
+    #b4-stage { position: absolute; inset: 0; background: #0000FF; }
+    #b4-title { position: absolute; left: 120px; top: 120px; font-size: 96px; font-weight: 900; letter-spacing: -0.02em; line-height: 1; }
+    .b4-num { position: absolute; top: 290px; font-family: 'Base Sans Mono', monospace; font-size: 150px; line-height: 1; letter-spacing: -0.03em; }
+    .b4-numcap { position: absolute; top: 240px; font-size: 40px; font-weight: 400; line-height: 1; }
+    #b4-swap { left: 120px; } #b4-swap-cap { left: 120px; }
+    #b4-fee { left: 1000px; } #b4-fee-cap { left: 1000px; }
+    #b4-row { position: absolute; left: 120px; top: 530px; width: 1680px; height: 240px; display: flex; gap: 24px; }
+    .b4-sq { height: 240px; position: relative; }
+    .b4-sq-in { width: 100%; height: 240px; background: #ffffff; border-radius: 36px; position: relative; }
+    .b4-label { position: absolute; left: 28px; bottom: 24px; font-size: 40px; font-weight: 900; color: #0000FF; letter-spacing: -0.02em; line-height: 1; white-space: nowrap; }
+    .b4-val { position: absolute; left: 28px; top: 26px; font-family: 'Base Sans Mono', monospace; font-size: 56px; color: #0000FF; line-height: 1; }
+    #b4-sq-1 { width: 326px; } #b4-sq-2 { width: 816px; } #b4-sq-3 { width: 490px; }
+    #b4-lines { position: absolute; left: 120px; top: 880px; width: 1680px; }
+    .b4-line { position: absolute; left: 0; top: 0; font-size: 44px; font-weight: 400; line-height: 1; letter-spacing: -0.01em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="b4" data-width="1920" data-height="1080">
+    <div id="b4-stage" data-layout-allow-overflow>
+      <div id="b4-title" class="clip" data-start="0.1" data-duration="6.4"><div id="b4-title-in">fees refuel it.</div></div>
+      <div id="b4-swap-cap" class="b4-numcap clip" data-start="0.655" data-duration="5.85"><div class="b4-in">a swap of</div></div>
+      <div id="b4-swap" class="b4-num clip" data-start="0.655" data-duration="5.85"><div class="b4-in">$1,000</div></div>
+      <div id="b4-fee-cap" class="b4-numcap clip" data-start="1.116" data-duration="5.39"><div class="b4-in">pays a 1% fee</div></div>
+      <div id="b4-fee" class="b4-num clip" data-start="1.116" data-duration="5.39"><div class="b4-in">$10</div></div>
+      <div id="b4-row" class="clip" data-start="1.5" data-duration="5">
+        <div id="b4-sq-1" class="b4-sq"><div class="b4-sq-in"><span class="b4-val">$2</span><span class="b4-label">agent 20%</span></div></div>
+        <div id="b4-sq-2" class="b4-sq"><div class="b4-sq-in"><span class="b4-val">$5</span><span class="b4-label">creator 50%</span></div></div>
+        <div id="b4-sq-3" class="b4-sq"><div class="b4-sq-in"><span class="b4-val">$3</span><span class="b4-label">platform 30%</span></div></div>
+      </div>
+      <div id="b4-lines" class="clip" data-start="3.4" data-duration="3.1">
+        <div id="b4-line-1" class="b4-line">the agent's share buys its next thought.</div>
+        <div id="b4-line-2" class="b4-line" style="top: 64px">limits enforced on-chain.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#b4-stage", { clipPath: "inset(0px 0px 0px 1920px)" }, { clipPath: "inset(0px 0px 0px 0px)", duration: 0.28, ease: "power3.inOut" }, 0.02);
+    tl.fromTo("#b4-title-in", { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 0.1);
+    tl.fromTo("#b4-swap-cap .b4-in", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 0.655);
+    tl.fromTo("#b4-swap .b4-in", { scale: 1.4, opacity: 0, filter: "blur(12px)", transformOrigin: "0% 100%" }, { scale: 1, opacity: 1, filter: "blur(0px)", duration: 0.32, ease: "expo.out" }, 0.655);
+    tl.fromTo("#b4-fee-cap .b4-in", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 1.116);
+    tl.fromTo("#b4-fee .b4-in", { x: -700, opacity: 0, filter: "blur(10px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.5, ease: "expo.out" }, 1.0);
+    // The $10 splits into three squares, dropping in on consecutive beats.
+    [1.576, 2.037, 2.497].forEach((b, i) => {
+      const sel = `#b4-sq-${i + 1} .b4-sq-in`;
+      tl.fromTo(sel, { y: -600, scaleY: 1, transformOrigin: "50% 100%" }, { y: 0, duration: 0.3, ease: "power3.in" }, b - 0.3);
+      tl.to(sel, { scaleY: 0.86, duration: 0.07, ease: "power2.out" }, b);
+      tl.to(sel, { scaleY: 1, duration: 0.33, ease: "back.out(1.6)" }, b + 0.07);
+      tl.fromTo(`#b4-sq-${i + 1} .b4-label, #b4-sq-${i + 1} .b4-val`, { opacity: 0 }, { opacity: 1, duration: 0.15 }, b + 0.08);
+    });
+    tl.fromTo("#b4-line-1", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 3.418);
+    tl.fromTo("#b4-line-2", { opacity: 0, filter: "blur(6px)" }, { opacity: 1, filter: "blur(0px)", duration: 0.2, ease: "power4.out" }, 4.339);
+    window.__timelines["b4"] = tl;
+  </script>
+</template>
