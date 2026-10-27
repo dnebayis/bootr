@@ -16,4 +16,5 @@ export * from './runtime/backoff.js';
 export * from './runtime/checkpoint.js';
 export * from './runtime/broker.js';
 export * from './prompt/system-prompt.js';
+export * from './prompt/creator-identity.js';
 export * from './inference/request.js';
