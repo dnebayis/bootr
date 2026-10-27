@@ -83,7 +83,7 @@ contract Deploy is Script {
         require(c.identity != address(0), "ERC8004_IDENTITY required");
     }
 
-    function run() external {
+    function run() external virtual {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
         address admin = vm.envOr("PLATFORM_ADMIN", deployer);

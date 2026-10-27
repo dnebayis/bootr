@@ -154,7 +154,41 @@ contract LaunchDefaultsTest is Test {
         vm.expectRevert();
         launcher.setMinPlatformBps(1);
         vm.expectRevert();
+        launcher.setLaunchFee(1);
+        vm.expectRevert();
         launcher.pause();
+    }
+
+    function test_launchFeeStoredAndRequired() public {
+        assertEq(launcher.launchFeeWei(), 0);
+        vm.prank(owner);
+        vm.expectEmit(true, true, true, true);
+        emit BootrLauncher.LaunchFeeUpdated(0.0005 ether);
+        launcher.setLaunchFee(0.0005 ether);
+        assertEq(launcher.launchFeeWei(), 0.0005 ether);
+
+        BootrLauncher.LaunchParams memory p;
+        p.name = "A";
+        p.symbol = "A";
+        p.devBuyWei = 0.01 ether;
+        // dev buy alone is no longer enough
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(BootrLauncher.InsufficientValue.selector);
+        launcher.launch{value: 0.01 ether}(p);
+        vm.expectRevert(BootrLauncher.InsufficientValue.selector);
+        launcher.launch{value: 0.0005 ether + 0.01 ether - 1}(p);
+        // with dev buy + fee the value check passes and the next check (empty name) is reached
+        p.name = "";
+        vm.expectRevert(BootrLauncher.EmptyNameOrSymbol.selector);
+        launcher.launch{value: 0.0005 ether + 0.01 ether}(p);
+        // fee 0 restores the old behaviour
+        vm.prank(owner);
+        launcher.setLaunchFee(0);
+        p.name = "A";
+        p.devBuyWei = 0;
+        p.fuelUsdc = 1e6;
+        vm.expectRevert(BootrLauncher.InsufficientFuel.selector);
+        launcher.launch(p);
     }
 
     function test_pauseBlocksLaunch() public {

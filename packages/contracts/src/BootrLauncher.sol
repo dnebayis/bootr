@@ -129,6 +129,9 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     LaunchDefaults public standardDefaults;
     LaunchDefaults public buybackDefaults;
     uint16 public minPlatformBps;
+    /// @notice Flat ETH fee charged per launch on top of the dev buy, paid to the preset's platformRecipient.
+    ///         Owner-settable for future launches; 0 disables it.
+    uint256 public launchFeeWei;
 
     // ------------------------------------------------------------------
     // Events / errors
@@ -148,6 +151,8 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     );
     event DefaultsUpdated(bool indexed buyback, LaunchDefaults defaults);
     event MinPlatformBpsUpdated(uint16 minPlatformBps);
+    event LaunchFeeUpdated(uint256 launchFeeWei);
+    event LaunchFeePaid(address indexed token, address indexed recipient, uint256 amount);
 
     error ZeroAddress();
     error InvalidBpsSum();
@@ -218,6 +223,13 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         emit MinPlatformBpsUpdated(minPlatformBps_);
     }
 
+    /// @notice Flat ETH launch fee for FUTURE launches (0 disables it). No upper bound is enforced on-chain;
+    ///         the console shows the value in ETH before the owner signs.
+    function setLaunchFee(uint256 launchFeeWei_) external onlyOwner {
+        launchFeeWei = launchFeeWei_;
+        emit LaunchFeeUpdated(launchFeeWei_);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -237,7 +249,8 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         whenNotPaused
         returns (address token, address kernel, address burner, uint256 agentId)
     {
-        if (msg.value < p.devBuyWei) revert InsufficientValue();
+        uint256 fee = launchFeeWei;
+        if (msg.value < p.devBuyWei + fee) revert InsufficientValue();
         if (bytes(p.name).length == 0 || bytes(p.symbol).length == 0) revert EmptyNameOrSymbol();
         LaunchDefaults memory d = p.buybackBurn ? buybackDefaults : standardDefaults;
         if (p.fuelUsdc < d.minFuelUsdc) revert InsufficientFuel();
@@ -278,7 +291,12 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
             token, kernel, creator, burner, agentId, d, p.workerHash, p.model, p.agentURI, p.supervisorSessionKey
         );
 
-        uint256 refund = msg.value - p.devBuyWei;
+        // (i) launch fee to the platform, excess back to the creator
+        if (fee > 0) {
+            Address.sendValue(payable(d.platformRecipient), fee);
+            emit LaunchFeePaid(token, d.platformRecipient, fee);
+        }
+        uint256 refund = msg.value - p.devBuyWei - fee;
         if (refund > 0) {
             Address.sendValue(payable(creator), refund);
         }
