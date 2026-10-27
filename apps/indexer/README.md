@@ -16,7 +16,16 @@ INDEXER_URL=http://localhost:42069 pnpm --filter indexer smoke   # queries platf
 
 # production (Postgres)
 INDEXER_DATABASE_URL=postgres://... DATABASE_SCHEMA=bootr_v1 pnpm --filter indexer start
+
+# container (build from the repo root); PORT must be the indexer's own, not the sender's from .env
+docker build -f apps/indexer/Dockerfile -t bootr-indexer .
+docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_v1 -p 42069:42069 bootr-indexer
 ```
+
+The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; on Railway, without
+`DATABASE_SCHEMA`, one schema per deployment named after `RAILWAY_DEPLOYMENT_ID`). Ponder refuses to
+reuse a schema that was built by different indexing code, so a fixed `DATABASE_SCHEMA` must be bumped
+(`bootr_v2`, ...) whenever the indexer changes. See [`docs/deploy/railway.md`](../../docs/deploy/railway.md).
 
 Ponder only auto-loads `apps/indexer/.env.local`; export the variables (or use your usual env
 loader) to point it at the root `.env`. When sourcing the root `.env`, override `PORT` (it holds the
@@ -48,7 +57,7 @@ after `forge script script/Deploy.s.sol`, then delete `.ponder/` to reindex.
 | `SENDER_SERVICE_KEY` | for REST writes | HMAC key for `POST /internal/agent/:kernel/social` and for signing `ADMIN_CONFIG_URL` requests. |
 | `ADMIN_CONFIG_URL` | no | e.g. `https://bootr.fun/api/admin/config`; supplies `graduationThresholdUsd` (default 50000). |
 | `BOOT_TOKEN_ADDRESS` | no | Platform BOOT coin (fallback when admin config has no `bootToken`). |
-| `NEXT_PUBLIC_WEB_ORIGIN` | prod | Comma-separated CORS origins. Empty = `*` (dev). |
+| `INDEXER_CORS_ORIGIN` | no | Comma-separated CORS origins for browser reads. Empty = `https://bootr.fun`; outside `NODE_ENV=production` any `localhost` / `127.0.0.1` origin is accepted too; `*` = any origin. `NEXT_PUBLIC_WEB_ORIGIN` (older name) is used when this is empty. Ponder answers preflights itself with `*`, so the policy is enforced on the actual response (`src/lib/cors.ts`). |
 | `CHAINLINK_ETH_USD_FEED` | no | Override the ETH/USD aggregator. |
 | `FUEL_SCAN_MAX_RANGE` | no | eth_getLogs block range for the USDC fuel scan (default 5000). |
 

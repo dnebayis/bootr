@@ -1,0 +1,46 @@
+# Build context for apps/*/Dockerfile (docker build -f apps/<app>/Dockerfile .).
+# Keep secrets, local state and build output out of every image.
+
+# secrets: never send any env file to the builder
+.env
+.env.*
+**/.env
+**/.env.*
+
+# VCS / tooling
+.git
+.github
+.claude
+.vscode
+.idea
+**/.DS_Store
+**/*.log
+
+# dependencies and build output (rebuilt inside the image)
+**/node_modules
+**/.next
+**/dist
+**/out
+**/.turbo
+**/*.tsbuildinfo
+**/coverage
+
+# local runtime state
+**/.ponder
+apps/indexer/generated
+apps/web/data/*.json
+apps/web/test-results
+apps/web/playwright-report
+
+# not needed by any service image
+docs
+brand
+**/*.md
+!apps/*/README.md
+# Foundry project: only its manifest (a workspace member listed in pnpm-lock.yaml); the apps embed copied ABIs.
+packages/contracts/*
+!packages/contracts/package.json
+
+# the Dockerfiles themselves are not needed inside the image
+apps/*/Dockerfile
+apps/*/railway.json

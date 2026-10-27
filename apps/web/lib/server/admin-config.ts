@@ -27,11 +27,19 @@ export const DEFAULT_CONFIG: PlatformConfig = {
   updatedBy: null,
 };
 
-const FILE = path.join(process.cwd(), 'data', 'admin-config.json');
+/**
+ * `ADMIN_CONFIG_PATH` (absolute path to the JSON file) points the store at a persistent volume in
+ * production, e.g. `/data/admin-config.json` on Railway. Unset = `<cwd>/data/admin-config.json`.
+ * Read at call time so the value comes from the runtime environment, not the build.
+ */
+function configFile(): string {
+  const configured = (process.env.ADMIN_CONFIG_PATH ?? '').trim();
+  return configured ? path.resolve(configured) : path.join(process.cwd(), 'data', 'admin-config.json');
+}
 
 export async function readConfig(): Promise<PlatformConfig> {
   try {
-    const raw = JSON.parse(await readFile(FILE, 'utf8')) as Partial<PlatformConfig>;
+    const raw = JSON.parse(await readFile(configFile(), 'utf8')) as Partial<PlatformConfig>;
     return { ...DEFAULT_CONFIG, ...raw, xQuotas: { ...DEFAULT_CONFIG.xQuotas, ...raw.xQuotas }, postIntervalMinutes: { ...DEFAULT_CONFIG.postIntervalMinutes, ...raw.postIntervalMinutes } };
   } catch {
     return DEFAULT_CONFIG;
@@ -68,9 +76,10 @@ export function validateConfig(input: unknown): Omit<PlatformConfig, 'updatedAt'
 
 export async function writeConfig(next: Omit<PlatformConfig, 'updatedAt' | 'updatedBy'>, by: string): Promise<PlatformConfig> {
   const full: PlatformConfig = { ...next, updatedAt: Math.floor(Date.now() / 1000), updatedBy: by };
-  await mkdir(path.dirname(FILE), { recursive: true });
-  const tmp = `${FILE}.${process.pid}.tmp`;
+  const file = configFile();
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, JSON.stringify(full, null, 2) + '\n', 'utf8');
-  await rename(tmp, FILE);
+  await rename(tmp, file);
   return full;
 }

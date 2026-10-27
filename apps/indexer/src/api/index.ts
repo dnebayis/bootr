@@ -1,7 +1,6 @@
 import { db } from 'ponder:api';
 import schema from 'ponder:schema';
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
 import { and, client, desc, eq, graphql, gt, ilike, inArray, or, sql } from 'ponder';
 import { isAddress, type Address } from 'viem';
@@ -10,6 +9,7 @@ import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
 import { ClankerTokenAbi } from '../../abis/ClankerToken';
 import { Erc20Abi } from '../../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../../abis/Multicall3';
+import { corsMiddleware } from '../lib/cors';
 import { indexerEnv } from '../lib/env';
 import { RECIPIENT_KINDS, type RecipientKind } from '../lib/fees';
 import { verifyRequest } from '../lib/hmac';
@@ -23,18 +23,14 @@ const app = new Hono();
 
 // ------------------------------------------------------------------ CORS
 
-if (env.webOrigins.length === 0) {
-  console.warn('[indexer] NEXT_PUBLIC_WEB_ORIGIN is empty: CORS allows any origin (dev only).');
-}
-app.use(
-  '*',
-  cors({
-    origin: env.webOrigins.length ? env.webOrigins : '*',
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['content-type', 'authorization'],
-    maxAge: 600,
-  }),
+console.info(
+  `[indexer] CORS origins (${env.cors.source}): ${env.cors.origins.join(', ')}${env.cors.allowLocalhost ? ' + localhost (NODE_ENV is not production)' : ''}`,
 );
+if (env.cors.origins.includes('*')) {
+  console.warn('[indexer] INDEXER_CORS_ORIGIN=* : CORS allows any origin.');
+}
+// Ponder's server already answers preflights with `*`; this narrows the actual responses.
+app.use('*', corsMiddleware(env.cors));
 
 // ------------------------------------------------------------------ Ponder built-ins
 

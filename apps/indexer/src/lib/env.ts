@@ -1,6 +1,8 @@
 import { getAddresses, type ChainAddresses } from '@bootr/shared/addresses';
 import { getAddress, isAddress, type Address } from 'viem';
 
+import { corsPolicy, type CorsPolicy } from './cors';
+
 /**
  * Indexer environment, shared by ponder.config.ts, the indexing functions and the API.
  * Empty strings count as unset (values copied from .env.example).
@@ -57,7 +59,8 @@ export type IndexerEnv = {
   bootToken: Address | null;
   adminConfigUrl: string;
   serviceKey: string;
-  webOrigins: string[];
+  /** CORS for the public API: INDEXER_CORS_ORIGIN (default https://bootr.fun), see ./cors.ts. */
+  cors: CorsPolicy;
   databaseUrl: string;
   fuelScanMaxRange: number;
 };
@@ -102,10 +105,7 @@ export function indexerEnv(): IndexerEnv {
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
     adminConfigUrl: str(process.env.ADMIN_CONFIG_URL),
     serviceKey: str(process.env.SENDER_SERVICE_KEY),
-    webOrigins: str(process.env.NEXT_PUBLIC_WEB_ORIGIN)
-      .split(',')
-      .map((s) => s.trim().replace(/\/$/, ''))
-      .filter(Boolean),
+    cors: corsPolicy(process.env),
     databaseUrl: str(process.env.INDEXER_DATABASE_URL),
     fuelScanMaxRange: Number(str(process.env.FUEL_SCAN_MAX_RANGE) || 5000) || 5000,
   };
