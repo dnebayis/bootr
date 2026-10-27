@@ -48,3 +48,41 @@ test('agent card with a malformed id is a JSON 404', async ({ request }) => {
   expect(res.headers()['content-type']).toContain('application/json');
   expect(await res.json()).toEqual({ error: 'Unknown agent' });
 });
+
+test('the creator identity saved for a draft id is served by its agent card (mock mode)', async ({ request, playwright, baseURL }) => {
+  const draftId = crypto.randomUUID();
+  const identity = 'A patient onchain analyst for small Base coins.\nShort, plain, no hype.';
+  const origin = 'https://bootr.fun'; // NEXT_PUBLIC_SITE_URL default; the route is same-origin only
+
+  const cross = await request.post('/api/launch/draft', { data: { draftId, identity }, headers: { origin: 'https://evil.example' } });
+  expect(cross.status()).toBe(403);
+  const short = await request.post('/api/launch/draft', { data: { draftId, identity: 'too short' }, headers: { origin } });
+  expect(short.status()).toBe(400);
+  const badId = await request.post('/api/launch/draft', { data: { draftId: '10388', identity }, headers: { origin } });
+  expect(badId.status()).toBe(400);
+
+  const saved = await request.post('/api/launch/draft', { data: { draftId, identity: `  ${identity}  ` }, headers: { origin } });
+  expect(saved.status()).toBe(200);
+  expect(await saved.json()).toEqual({ ok: true, identity });
+  expect(saved.headers()['set-cookie']).toContain('bootr_launch_drafts=');
+
+  const card = await request.get(`/agents/${draftId}.json`);
+  expect(card.status()).toBe(200);
+  const doc = await card.json();
+  expect(doc.type).toBe(TYPE);
+  expect(doc.registrations).toEqual([]);
+  expect(doc.bootr).toEqual({ identity });
+  expect(doc.description.startsWith(identity)).toBe(true);
+
+  // Another browser (a fresh cookie jar) cannot replace the text; the owner (this jar) can.
+  const stranger = await playwright.request.newContext({ baseURL });
+  try {
+    const refused = await stranger.post('/api/launch/draft', { data: { draftId, identity: 'Someone else trying to replace this persona text.' }, headers: { origin } });
+    expect(refused.status()).toBe(409);
+  } finally {
+    await stranger.dispose();
+  }
+  const changed = await request.post('/api/launch/draft', { data: { draftId, identity: 'The owner changed their mind about the persona.' }, headers: { origin } });
+  expect(changed.status()).toBe(200);
+  expect((await (await request.get(`/agents/${draftId}.json`)).json()).bootr).toEqual({ identity: 'The owner changed their mind about the persona.' });
+});

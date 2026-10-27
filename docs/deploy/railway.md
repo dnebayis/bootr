@@ -48,7 +48,7 @@ What the IaC gives each service:
 | `inference` | `node scripts/migrate.mjs` | `/health`, 60 s | draining 30 s |
 | `supervisor` | `node dist/db/migrate.js` | `/health`, 60 s | 1 replica, overlap 0 s, draining 40 s (the shutdown waits up to 30 s for the running tick) |
 | `indexer` | none (Ponder owns its schema) | `/ready`, 3600 s | see section 6 |
-| `web` | none | `/api/health`, 60 s | volume `web-data` at `/data` (admin config) |
+| `web` | none | `/api/health`, 60 s | volume `web-data` at `/data` (admin config, launch drafts) |
 
 The pre-deploy command runs inside the freshly built image, with the service's variables and private
 networking, before the new deployment starts. If it fails, the deployment fails and the previous one keeps
@@ -134,7 +134,7 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 
 | Kind | Variables |
 | --- | --- |
-| platform | `PORT=3000`; image defaults `HOSTNAME=::`, `ADMIN_CONFIG_PATH=/data/admin-config.json`, `NODE_ENV=production` |
+| platform | `PORT=3000`; image defaults `HOSTNAME=::`, `ADMIN_CONFIG_PATH=/data/admin-config.json`, `LAUNCH_DRAFTS_DIR=/data/launch-drafts`, `NODE_ENV=production` |
 | secrets | `SESSION_SECRET`, `SENDER_SERVICE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` |
 | config | `ADMIN_CONSOLE_SLUG` (treat as secret: it hides the console), `ADMIN_ADDRESSES`, `SENDER_URL=http://sender.railway.internal:3002` |
 | volume | `RAILWAY_RUN_UID=0` (see section 7) |
@@ -265,10 +265,13 @@ the schema:
 
 `/health` (process up) is the Docker liveness check; `/ready` (backfill complete) is the Railway deploy gate.
 
-## 7. Web admin config volume
+## 7. Web data volume (admin config, launch drafts)
 
 `/api/admin/config` stores the platform config in a JSON file (`ADMIN_CONFIG_PATH`, image default
-`/data/admin-config.json`). Without a volume, every redeploy resets it to the defaults.
+`/data/admin-config.json`). Without a volume, every redeploy resets it to the defaults. The same volume holds
+the launch drafts (`LAUNCH_DRAFTS_DIR`, image default `/data/launch-drafts`): the creator's Identity text per
+launch, which the agent card serves to the supervisor (`docs/agent-identity.md`). Without a volume, a redeploy
+between a launch and the supervisor's first card read leaves that agent with the default persona.
 
 1. The IaC file declares the `web-data` volume mounted at `/data` on `web` (`railway config apply` creates it).
 2. Railway mounts volumes owned by root, and the image runs as `node`; set `RAILWAY_RUN_UID=0` on `web` so the
@@ -342,7 +345,7 @@ the schema:
 - [ ] `NEXT_PUBLIC_BUILDER_CODE` registered for the mainnet platform wallet; `BUILDER_CODES_ENABLED` as intended.
 - [ ] X app callback `https://api.bootr.fun/oauth/callback`, `X_REDIRECT_URI`, `SENDER_OAUTH_RETURN_URL=https://bootr.fun/launch`.
 - [ ] `INDEXER_CORS_ORIGIN=https://bootr.fun` (and `www` if used); `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`.
-- [ ] Web volume mounted at `/data`, `RAILWAY_RUN_UID=0`, admin config saved once from the console.
+- [ ] Web volume mounted at `/data`, `RAILWAY_RUN_UID=0`, admin config saved once from the console; `/data/launch-drafts` is created on the first launch.
 - [ ] Postgres backups enabled; migrations applied (`railway-migrate.sh` or pre-deploy logs show "migrations applied").
 - [ ] Smoke: `https://bootr.fun/api/health`, `https://api.bootr.fun/health`, `https://indexer.bootr.fun/ready`,
       supervisor logs show ticks, a test launch end to end on a small amount.
