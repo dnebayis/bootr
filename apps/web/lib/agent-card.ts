@@ -49,6 +49,18 @@ export interface RegistrationFile {
   services: { name: string; endpoint: string }[];
   registrations: { agentRegistry: string; agentId: number }[];
   supportedTrust?: string[];
+  /** Bootr extension: what the creator wrote about the agent at launch (see docs/agent-identity.md). */
+  bootr?: { identity: string };
+}
+
+/**
+ * `description` with the creator's identity text ahead of Bootr's own sentence, plus the `bootr.identity`
+ * extension the supervisor reads. Without a creator text the document is unchanged.
+ */
+function withIdentity(doc: RegistrationFile, identity: string | null | undefined): RegistrationFile {
+  const text = (identity ?? '').trim();
+  if (!text) return doc;
+  return { ...doc, description: `${text}\n\n${doc.description}`, bootr: { identity: text } };
 }
 
 export type CardToken = {
@@ -68,14 +80,14 @@ function chainName(chainId: number) {
   return chainId === 8453 ? 'Base' : chainId === 84532 ? 'Base Sepolia' : `chain ${chainId}`;
 }
 
-export function buildRegistration(t: CardToken): RegistrationFile {
+export function buildRegistration(t: CardToken, identity?: string | null): RegistrationFile {
   const registry = identityRegistry(t.chainId);
   const agentId = Number(t.agentId);
   const services = [
     ...(t.xHandle ? [{ name: 'X', endpoint: `https://x.com/${t.xHandle}` }] : []),
     { name: 'web', endpoint: `${env.siteUrl}/token/${t.id}` },
   ];
-  return {
+  return withIdentity({
     type: REGISTRATION_TYPE,
     name: `${t.name} agent`,
     description: `The agent of ${t.name} ($${t.symbol}), a coin launched on Bootr on ${chainName(t.chainId)}. It runs from its own smart account ${t.kernel}, is paid by its share of the coin's LP fees and by fuel, and ${t.xHandle ? `posts on X as @${t.xHandle}` : 'has no X account connected yet'}.`,
@@ -86,18 +98,25 @@ export function buildRegistration(t: CardToken): RegistrationFile {
         ? [{ agentRegistry: `eip155:${t.chainId}:${registry}`, agentId }]
         : [],
     ...(reputationRegistry(t.chainId) ? { supportedTrust: ['reputation'] } : {}),
-  };
+  }, identity);
 }
 
-/** Served right after launch, before the indexer has the token. Same type, no binding yet. */
-export function pendingRegistration(): RegistrationFile {
-  return {
-    type: REGISTRATION_TYPE,
-    name: 'Bootr agent',
-    description: 'A Bootr agent whose launch has not been indexed yet. This file fills in once the launch transaction is indexed.',
-    services: [{ name: 'web', endpoint: env.siteUrl }],
-    registrations: [],
-  };
+/**
+ * Served right after launch, before the indexer has the token. Same type, no binding yet. The creator's
+ * identity is already here: the supervisor registers the launch from the on-chain event, often before
+ * the indexer has caught up.
+ */
+export function pendingRegistration(identity?: string | null): RegistrationFile {
+  return withIdentity(
+    {
+      type: REGISTRATION_TYPE,
+      name: 'Bootr agent',
+      description: 'A Bootr agent whose launch has not been indexed yet. This file fills in once the launch transaction is indexed.',
+      services: [{ name: 'web', endpoint: env.siteUrl }],
+      registrations: [],
+    },
+    identity,
+  );
 }
 
 /** Deterministic UUID v4-shaped launch id from a seed hex string (mock fixtures only). */

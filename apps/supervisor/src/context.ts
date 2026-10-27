@@ -29,6 +29,8 @@ export interface SupervisorContext {
   /** Kernel client for an agent (cached per permissionId). */
   kernelFor(agent: AgentRow): Promise<KernelClient>;
   fetch: typeof fetch;
+  /** DNS lookup used by the public-host check of outbound reads (agent cards); tests inject one. Unset = node:dns. */
+  resolveHost?: (host: string) => Promise<{ address: string }[]>;
   now(): number;
   log: Logger;
 }

@@ -494,6 +494,8 @@ export async function makeWorld(opts: { chain?: Partial<ChainState>; script?: Re
     spenderFor: (agent) => spenderAccount(SPENDER_MASTER, agent.agentId),
     kernelFor: async () => kernel.client,
     fetch: inference.fetch,
+    // Every outbound host resolves to a public address: no real DNS in tests (private-host checks still run).
+    resolveHost: async () => [{ address: '93.184.216.34' }],
     now: () => now,
     log: pino({ level: 'silent' }),
   };

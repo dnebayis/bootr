@@ -164,9 +164,31 @@ export function LaunchForm() {
     if (r) void allowance.refetch();
   }
 
+  /**
+   * Saves the Identity text under the draft id before the launch tx, so the hosted agent card
+   * (`agentURI`) can publish it and the supervisor can give the agent that persona. False when it
+   * could not be saved: launching anyway would hand the agent the generic default persona.
+   */
+  async function saveIdentity(id: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/launch/draft', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ draftId: id, identity: identity.trim() }),
+      });
+      if (res.ok) return true;
+      const body = (await res.json().catch(() => ({}))) as { message?: string };
+      toast.error(body.message ?? `Could not save the agent identity (${res.status}).`);
+    } catch {
+      toast.error('Could not save the agent identity. Check your connection and try again.');
+    }
+    return false;
+  }
+
   async function launch() {
     if (errors.length || blocked || fuelUnits == null || devBuyWei == null || !draftId || !pinned || upload.status !== 'done') return;
     const modelId = selectedModel?.id ?? '';
+    if (!(await saveIdentity(draftId))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
       const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle });
