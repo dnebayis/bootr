@@ -26,6 +26,15 @@ export const launcherAbi = parseAbi([
 
 export const agentLaunchedEvent = launcherAbi[0];
 
+/**
+ * Clanker v4 `TokenCreated` (apps/indexer/abis/Clanker.ts, generated from clanker v4-contracts). Emitted by the
+ * Clanker factory inside the launch tx; `tokenContext` carries the Bootr launch form's
+ * `{"interface":"Bootr","platform":"bootr.fun","id":"<draft uuid>"}`.
+ */
+export const clankerTokenCreatedEvent = parseAbi([
+  'event TokenCreated(address msgSender, address indexed tokenAddress, address indexed tokenAdmin, string tokenImage, string tokenName, string tokenSymbol, string tokenMetadata, string tokenContext, int24 startingTick, address poolHook, bytes32 poolId, address pairedToken, address locker, address mevModule, uint256 extensionsSupply, address[] extensions)',
+])[0];
+
 export const kernelAbi = parseAbi([
   'struct ValidationConfig { uint32 nonce; address hook; }',
   'function currentNonce() view returns (uint32)',

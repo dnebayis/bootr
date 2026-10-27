@@ -112,13 +112,14 @@ reject legitimate byte-identical retries signed in the same second.
 | POST   | `/internal/read/account`                             | HMAC                    | look up a user by username                                              |
 | POST   | `/internal/inbox/resolve`                            | HMAC                    | mark a mention `skip`, `opt_out` or `defer`                             |
 | GET    | `/internal/metering/:agentId?month=YYYY-MM`          | HMAC                    | post and read counts for charge-back                                    |
-| GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt}`     |
+| GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt}` |
+| POST   | `/internal/account/:agentId/rebind`                  | HMAC                    | `{to, connectedBefore?}`: move a draft-id account to the real agent id  |
 | GET    | `/internal/quota/:agentId`                           | HMAC                    | effective rate budget                                                   |
 | POST   | `/internal/quota/:agentId`                           | HMAC                    | `{postsPerDay?, mentionReadIntervalSec?}`; `null` resets to the default |
 
 ### OAuth (creator connects the agent's X account)
 
-1. The web app sends the creator's browser to
+1. The web app (`apps/web/app/api/x/start`, server-side) sends the creator's browser to
    `GET /oauth/start?agentId=<id>&state=<web state>&ts=<unix s>&sig=<hex>&redirect=1` where
    `sig = HMAC-SHA256(SENDER_SERVICE_KEY, "oauth-start\n" + agentId + "\n" + state + "\n" + ts)`.
    The signature stops anyone else from binding an X account to an agent. A server-side caller can
@@ -131,6 +132,35 @@ reject legitimate byte-identical retries signed in the same second.
    `GET /2/users/me` and upserts `sender_accounts` (clearing `revokedAt`). It then redirects to
    `SENDER_OAUTH_RETURN_URL?agentId=&status=connected|denied|error&state=<web state>[&handle=]`,
    or returns the same fields as JSON when that variable is unset.
+
+The launch form connects X **before** the agent exists, so `agentId` there is the form's draft
+uuid (also written into the Clanker `tokenContext` as `{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`).
+The web app polls `GET /internal/account/<draft uuid>` server-side (`/api/x/status`). After launch the
+supervisor moves the account to the ERC-8004 agent id with `POST /internal/account/:draftId/rebind`.
+
+### `POST /internal/account/:agentId/rebind` `{to, connectedBefore?}`
+
+Moves the account under `:agentId` (the draft id) to `to`, in one transaction:
+
+- `sender_accounts`: the row moves; access/refresh tokens are decrypted and re-encrypted because their
+  AES-GCM AAD (`access:<agentId>` / `refresh:<agentId>`) binds the agent id.
+- `sender_quotas`: moved when `to` has no row (an existing row for `to` wins).
+- `sender_reads`: metering counts merged into `to` (the `users_me` read made at connect time).
+- `sender_actions`, `sender_inbox`, `sender_optouts` are **not** moved: a draft id never publishes or
+  reads mentions (only the supervisor does, with real agent ids), and history is never rewritten.
+
+`connectedBefore` (ISO time, optional) refuses the move with 409 `connected_after_cutoff` when the
+account was (re)connected after it; the supervisor passes the launch block time, so nobody can bind
+their own X account to a draft id once it is public on-chain.
+
+| Case                                  | HTTP | Body                                                 |
+| ------------------------------------- | ---- | ---------------------------------------------------- |
+| moved                                 | 200  | `{from, to, status: "moved", handle}`                |
+| `from` gone, `to` present (retry)     | 200  | `{from, to, status: "already", handle}`              |
+| neither has an account                | 404  | `{error: "not_found"}`                               |
+| `to` already has an account           | 409  | `{error: "conflict"}`                                |
+| connected after `connectedBefore`     | 409  | `{error: "connected_after_cutoff"}`                  |
+| bad ids / body, `from == to`          | 400  | `{error: "invalid_request"}`                         |
 
 Access tokens are refreshed automatically when less than 2 minutes remain, and once after a 401.
 Refreshes are serialised per agent because X rotates refresh tokens. If the refresh endpoint

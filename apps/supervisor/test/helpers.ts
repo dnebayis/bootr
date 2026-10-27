@@ -17,7 +17,7 @@ import type { AdminSigner } from '../src/admin-signer.js';
 import type { KernelClient } from '../src/kernel.js';
 import { enableDigest } from '../src/session-key.js';
 import { MemoryStore } from '../src/memories.js';
-import type { SenderClient, SenderInboxItem } from '../src/sender-client.js';
+import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem } from '../src/sender-client.js';
 import type { IndexerClient } from '../src/indexer-client.js';
 import { initialState } from '../src/runtime.js';
 
@@ -76,6 +76,10 @@ export interface ChainState {
   /** EntryPoint nonce sequence returned by `getNonce` (the key is taken from the call). */
   nonceSeq: bigint;
   fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint };
+  /** Logs returned by `getTransactionReceipt`, keyed by lowercase tx hash. */
+  receipts: Record<string, Log[]>;
+  /** Unix seconds returned by `getBlock` for any block. */
+  blockTimestamp: bigint;
 }
 
 export function chainState(over: Partial<ChainState> = {}): ChainState {
@@ -94,6 +98,8 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
     sessionInstalled: true,
     nonceSeq: 0n,
     fees: { maxFeePerGas: 1_000_000n, maxPriorityFeePerGas: 100_000n },
+    receipts: {},
+    blockTimestamp: 1_792_843_200n, // 2026-10-24T12:00:00Z
     ...over,
   };
 }
@@ -154,11 +160,23 @@ export function mockChain(state: ChainState): ChainContext {
       state.logs = [];
       return out;
     },
+    async getTransactionReceipt({ hash }: { hash: Hex }) {
+      state.calls.push({ fn: 'getTransactionReceipt', args: [hash] });
+      const logs = state.receipts[hash.toLowerCase()];
+      if (!logs) throw new Error(`receipt ${hash} not found`);
+      return { transactionHash: hash, status: 'success', logs };
+    },
+    async getBlock({ blockNumber }: { blockNumber: bigint }) {
+      return { number: blockNumber, timestamp: state.blockTimestamp };
+    },
   } as unknown as ChainContext['publicClient'];
   return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1' };
 }
 
 export interface MockSender {
+  /** X accounts by agent id; null = every agent id reports the default connected account. */
+  accounts: Record<string, SenderAccount & { connectedAt?: string }> | null;
+  rebinds: { from: string; to: string; connectedBefore?: string }[];
   items: SenderInboxItem[];
   published: unknown[];
   publishStatus: 'sent' | 'held' | 'rejected';
@@ -167,7 +185,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { items: [], published: [], publishStatus: 'sent', receipts: {}, client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', receipts: {}, client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     async publish(body: { actionId: string }) {
@@ -194,7 +212,24 @@ export function mockSender(): MockSender {
       return {};
     },
     async account(agentId: string) {
-      return { agentId, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000' };
+      if (!m.accounts) return { agentId, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000' };
+      return m.accounts[agentId] ?? { agentId, connected: false, revoked: false, handle: null, xUserId: null };
+    },
+    /** Mirrors apps/sender rebind semantics (src/rebind.ts). */
+    async rebind(from: string, to: string, connectedBefore?: string) {
+      m.rebinds.push({ from, to, ...(connectedBefore ? { connectedBefore } : {}) });
+      const accounts = m.accounts ?? {};
+      const src = accounts[from];
+      const dst = accounts[to];
+      if (!src && dst) return { from, to, status: 'already', handle: dst.handle ?? null };
+      if (!src) throw new SenderError(404, 'not_found', { error: 'not_found' }, false);
+      if (dst) throw new SenderError(409, 'conflict', { error: 'conflict' }, false);
+      if (connectedBefore && src.connectedAt && Date.parse(src.connectedAt) > Date.parse(connectedBefore)) {
+        throw new SenderError(409, 'connected_after_cutoff', { error: 'connected_after_cutoff' }, false);
+      }
+      delete accounts[from];
+      accounts[to] = { ...src, agentId: to };
+      return { from, to, status: 'moved', handle: src.handle ?? null };
     },
     async metering() {
       return {};

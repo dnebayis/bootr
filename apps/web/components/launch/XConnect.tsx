@@ -9,8 +9,10 @@ import { XLogoIcon } from '@/components/ui/Icons';
 type Status = { connected: boolean; handle?: string | null };
 
 /**
- * Opens the sender service's OAuth flow in a popup and polls /oauth/status until the
- * handle is linked to this draft agent id.
+ * Opens the X OAuth flow in a popup and polls until the handle is linked to this draft agent id.
+ * `/api/x/start` signs the sender's `/oauth/start` server-side and redirects to X; `/api/x/status`
+ * asks the sender (HMAC, server-side) whether the draft id has a connected account. After launch the
+ * supervisor rebinds the account from the draft id to the ERC-8004 agent id.
  */
 export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: string | null; handle: string | null; onHandle: (h: string | null) => void; symbol: string }) {
   const [pending, setPending] = useState(false);
@@ -21,6 +23,22 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
   }, []);
 
   const configured = !!env.senderPublicUrl || env.useMock;
+
+  // After a reload the draft id survives (sessionStorage) but the handle does not: restore it once.
+  useEffect(() => {
+    if (!draftId || handle || env.useMock || !env.senderPublicUrl) return;
+    let cancelled = false;
+    fetch(`/api/x/status?agentId=${encodeURIComponent(draftId)}`, { cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<Status>) : null))
+      .then((s) => {
+        if (!cancelled && s?.connected && s.handle) onHandle(s.handle.replace(/^@/, ''));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per draft id
+  }, [draftId]);
 
   const start = () => {
     if (!draftId) return;
@@ -34,7 +52,7 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
       return;
     }
     const state = crypto.randomUUID();
-    const url = `${env.senderPublicUrl}/oauth/start?agentId=${encodeURIComponent(draftId)}&state=${encodeURIComponent(state)}`;
+    const url = `/api/x/start?agentId=${encodeURIComponent(draftId)}&state=${encodeURIComponent(state)}`;
     const popup = window.open(url, 'bootr-x-oauth', 'width=520,height=720,noopener=no');
     if (!popup) {
       toast.error('Allow popups for bootr.fun to connect X.');
@@ -43,18 +61,25 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
     setPending(true);
     const started = Date.now();
     if (poll.current) clearInterval(poll.current);
+    const stop = () => {
+      if (poll.current) clearInterval(poll.current);
+      poll.current = null;
+      setPending(false);
+    };
     poll.current = setInterval(async () => {
       try {
-        const res = await fetch(
-          `${env.senderPublicUrl}/oauth/status?agentId=${encodeURIComponent(draftId)}&state=${encodeURIComponent(state)}`,
-          { cache: 'no-store' },
-        );
+        const res = await fetch(`/api/x/status?agentId=${encodeURIComponent(draftId)}`, { cache: 'no-store' });
+        if (res.status === 503) {
+          stop();
+          popup.close();
+          toast.error('X connection is not configured on this deployment.');
+          return;
+        }
         if (res.ok) {
           const s = (await res.json()) as Status;
           if (s.connected && s.handle) {
             onHandle(s.handle.replace(/^@/, ''));
-            setPending(false);
-            if (poll.current) clearInterval(poll.current);
+            stop();
             popup.close();
             return;
           }
@@ -62,10 +87,7 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
       } catch {
         /* keep polling */
       }
-      if (Date.now() - started > 5 * 60_000 || popup.closed) {
-        if (poll.current) clearInterval(poll.current);
-        setPending(false);
-      }
+      if (Date.now() - started > 5 * 60_000 || popup.closed) stop();
     }, 2000);
   };
 

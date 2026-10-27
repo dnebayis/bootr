@@ -50,6 +50,14 @@ export interface SenderAccount {
   xUserId?: string | null;
   scopes?: string;
   expiresAt?: string;
+  connectedAt?: string | null;
+}
+
+export interface SenderRebind {
+  from: string;
+  to: string;
+  status: 'moved' | 'already';
+  handle: string | null;
 }
 
 export class SenderError extends Error {
@@ -119,6 +127,17 @@ export class SenderClient {
 
   account(agentId: string) {
     return this.call<SenderAccount>('GET', `/internal/account/${encodeURIComponent(agentId)}`);
+  }
+
+  /**
+   * Moves the X account connected under a launch draft id to the real agent id. Idempotent; 404 when neither id
+   * has an account, 409 when the target already has one or (with `connectedBefore`) the account is newer.
+   */
+  rebind(fromAgentId: string, toAgentId: string, connectedBefore?: string) {
+    return this.call<SenderRebind>('POST', `/internal/account/${encodeURIComponent(fromAgentId)}/rebind`, {
+      to: toAgentId,
+      ...(connectedBefore ? { connectedBefore } : {}),
+    });
   }
 
   metering(agentId: string, month: string) {

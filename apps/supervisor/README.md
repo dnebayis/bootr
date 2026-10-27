@@ -115,7 +115,10 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 
 1. `pollLaunches` reads `BootrLauncher.AgentLaunched` logs after the stored cursor (2000-block chunks) and calls
    `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents` (status `onboarding`, config with
-   `xHandle`/`xUserId` still `null`) and `sv_runtimes` (state `{phase: 'boot'}`, cycle 0).
+   `xHandle`/`xUserId` still `null`) and `sv_runtimes` (state `{phase: 'boot'}`, cycle 0). It also reads the launch
+   tx receipt, decodes Clanker v4 `TokenCreated` (emitted by `addresses.clanker` for this token) and stores the `id`
+   of its JSON `tokenContext` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`) in `sv_agents.draft_id`
+   (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
@@ -146,9 +149,19 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
      `EntryPoint.handleOps([op], admin)`; the `UserOperationEvent` of the mined tx (`success`, gas) is the receipt and the
      kernel's `validationConfig` is re-read afterwards. A `FailedOp` / `FailedOpWithRevert(…, PolicyFailed(i))` from the
      simulation is raised with its decoded reason and the install stays retryable with the same permissionId.
-3. The creator connects the agent's X account through the sender's OAuth flow. `completeOnboarding` polls
-   `GET /internal/account/:agentId`; once connected it fills `xHandle`/`xUserId`/`socialStartedAt`, parses the full
-   agent-core `AgentConfig`, sets the agent `active` and the runtime `waiting`.
+3. The creator connects the agent's X account in the launch form, **before** the agent id exists, so the sender
+   stores it under the form's draft uuid. `completeOnboarding` first fills a `null` `draft_id` for pending agents
+   (agents registered before the column existed; same receipt decode), then asks the sender
+   `GET /internal/account/:agentId`. When that is not connected and `draft_id` is set, it checks
+   `GET /internal/account/:draftId` and, if connected, calls `POST /internal/account/:draftId/rebind
+   {to: agentId, connectedBefore: <launch block time>}` and re-reads the account under the agent id. Guards:
+   - only the earliest launch (lowest `launch_block`, then agent id) carrying a draft id may adopt it, since a
+     later launch can copy a public `tokenContext`;
+   - `connectedBefore` makes the sender refuse an account (re)connected after the launch block, so nobody can bind
+     their own X account to a draft id once it is visible on-chain (409, the agent stays in `onboarding`);
+   - draft ids must be lowercase uuids, never numeric agent ids.
+   Once connected it fills `xHandle`/`xUserId`/`socialStartedAt`, parses the full agent-core `AgentConfig`, sets the
+   agent `active` and the runtime `waiting`.
 
 ## Bundlers
 

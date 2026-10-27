@@ -35,7 +35,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_RPC_URL` | Optional RPC for the primary chain (public RPC otherwise). |
 | `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). |
 | `NEXT_PUBLIC_INFERENCE_URL` | Inference gateway; `/v1/models` feeds the model picker (static list otherwise). |
-| `NEXT_PUBLIC_SENDER_PUBLIC_URL` | X sender service: `/oauth/start`, `/oauth/status`, `/public/posts/:kernel`. |
+| `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`; also `/public/posts/:kernel`. |
 | `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (Uniswap otherwise). |
 | `NEXT_PUBLIC_LAUNCHER_ADDRESS` | `BootrLauncher`. |
 | `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` | `AgentGuardian`. |
@@ -44,7 +44,9 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_WORKER_SOURCE_BASE` | Prefix for worker-hash source links (hash shown without link when empty). |
 
 Server only (already in the root `.env.example`): `ADMIN_CONSOLE_SLUG`, `ADMIN_ADDRESSES`, `SESSION_SECRET` (≥ 16 chars),
-`SENDER_SERVICE_KEY` (HMAC for service reads of the admin config), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature checks).
+`SENDER_SERVICE_KEY` (HMAC for service reads of the admin config, and for signing the sender's `/oauth/start` and
+internal API calls in `/api/x/*`), `SENDER_URL` (optional server-to-server sender origin for `/api/x/status`; defaults to
+`NEXT_PUBLIC_SENDER_PUBLIC_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature checks).
 
 Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked split is read from
 `ClankerLpLockerFeeConversion.tokenRewards(token)`.
@@ -60,6 +62,17 @@ Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked 
 | `/docs`, `/docs/[slug]` | How it works, Fee math, Agent rules, Dormancy, Risks. |
 | `/profile` | Wallet-gated: your agents (pause/unpause), launched coins, holdings, fuel history. |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
+
+## Connecting X at launch
+
+The launch form generates a draft uuid (`sessionStorage`), which is also the on-chain launch `context.id` and the agent
+card key. "Connect X" opens a popup on `GET /api/x/start?agentId=<draft>&state=<uuid>`: the route validates the
+input (lowercase uuid, state ≤ 128 URL-safe chars), signs `ts`/`sig` with `SENDER_SERVICE_KEY` and 302s to the sender's
+`/oauth/start?…&redirect=1`, which redirects to X. The form polls `GET /api/x/status?agentId=<draft>` every 2 s (5 min
+timeout), which calls the sender's HMAC `GET /internal/account/:agentId` server-side and returns only
+`{connected, handle}`. Both answer 503 when `SENDER_SERVICE_KEY` / the sender URL are missing; in mock mode `start`
+returns `{mock: true}` and `status` a fake handle. "Disconnect" issues a new draft id, so the old connection is never
+used. After launch the supervisor rebinds the account from the draft id to the ERC-8004 agent id.
 
 ## Admin console and auth
 

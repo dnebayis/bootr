@@ -42,28 +42,39 @@ function Section({ n, title, description, children }: { n: number; title: string
 
 const DRAFT_KEY = 'bootr.launch.draftId';
 
-function useDraftId() {
+function freshDraftId(): string {
+  const v = crypto.randomUUID();
+  try {
+    sessionStorage.setItem(DRAFT_KEY, v);
+  } catch {
+    /* private mode: id lives in memory only */
+  }
+  return v;
+}
+
+/**
+ * Client-side launch id: the on-chain `context.id`, the agent card key, and the id the X account is
+ * connected under before launch (the supervisor rebinds it to the ERC-8004 agent id afterwards).
+ * `reset()` issues a new one, so a disconnected X account is never picked up by this launch.
+ */
+function useDraftId(): [string | null, () => void] {
   const [id, setId] = useState<string | null>(null);
   useEffect(() => {
     let v: string | null = null;
     try {
       v = sessionStorage.getItem(DRAFT_KEY);
-      if (!v) {
-        v = crypto.randomUUID();
-        sessionStorage.setItem(DRAFT_KEY, v);
-      }
     } catch {
-      v = crypto.randomUUID();
+      v = null;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only id, must not render on the server
-    setId(v);
+    setId(v || freshDraftId());
   }, []);
-  return id;
+  return [id, () => setId(freshDraftId())];
 }
 
 export function LaunchForm() {
   const router = useRouter();
-  const draftId = useDraftId();
+  const [draftId, resetDraftId] = useDraftId();
   const { address, isConnected } = useConnection();
   const write = useWriteContract();
   const { run, pending } = useTxRunner();
@@ -307,7 +318,16 @@ export function LaunchForm() {
       </Section>
 
       <Section n={3} title="X account" description="The agent posts from its own account. Connect it here.">
-        <XConnect draftId={draftId} handle={xHandle} onHandle={setXHandle} symbol={symbol} />
+        <XConnect
+          draftId={draftId}
+          handle={xHandle}
+          onHandle={(h) => {
+            // Disconnect: drop the draft id the account was bound to, so it is not rebound after launch.
+            if (!h && xHandle && !env.useMock) resetDraftId();
+            setXHandle(h);
+          }}
+          symbol={symbol}
+        />
       </Section>
 
       <Section n={4} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">

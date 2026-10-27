@@ -65,7 +65,7 @@ test('/console-<slug> renders with a valid admin session', async ({ page, contex
   await context.addCookies([{ name: ADMIN_COOKIE, value: token, url: baseURL! }]);
   const res = await page.goto(`/console-${SLUG}`);
   expect(res?.status()).toBe(200);
-  await expect(page.getByText('Splits of existing tokens are locked on-chain; defaults apply to future launches only.')).toBeVisible();
+  await expect(page.getByText('Splits of existing tokens are locked on-chain; defaults apply to future launches only.').first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Launcher defaults' })).toBeVisible();
 });
 

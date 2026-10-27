@@ -28,6 +28,11 @@ export const agents = pgTable('sv_agents', {
   launchTxHash: text('launch_tx_hash'),
   /** Base Builder Code registered for the kernel address (ERC-8021 suffix on every session userOp); null until registered. */
   builderCode: text('builder_code'),
+  /**
+   * Launch-form draft id (`id` of the JSON `tokenContext` in Clanker's TokenCreated): the X account is connected
+   * under it before launch and rebound to `agentId` during onboarding. null = not decoded yet; '' = decoded, none.
+   */
+  draftId: text('draft_id'),
   status: text('status', { enum: agentStatuses }).notNull().default('onboarding'),
   createdAt: ts('created_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),

@@ -9,8 +9,8 @@ import type { XResult } from './x-client.js';
 /** Refresh when the access token has less than this left. */
 const REFRESH_MARGIN_MS = 2 * 60 * 1000;
 
-const aadAccess = (agentId: string) => `access:${agentId}`;
-const aadRefresh = (agentId: string) => `refresh:${agentId}`;
+export const aadAccess = (agentId: string) => `access:${agentId}`;
+export const aadRefresh = (agentId: string) => `refresh:${agentId}`;
 
 export async function getAccount(
   ctx: SenderContext,

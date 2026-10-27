@@ -8,14 +8,16 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { DEFAULT_POST_INTERVAL_MS, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
-import { eq } from 'drizzle-orm';
-import { encodeFunctionData, erc20Abi, getAddress, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, guardianAbi } from './abi.js';
+import { and, eq, ne } from 'drizzle-orm';
+import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
+import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi } from './abi.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
 import { initialState } from './runtime.js';
+import type { SenderAccount } from './sender-client.js';
+import { SenderError } from './sender-client.js';
 import {
   buildDeinitData,
   buildValidatorData,
@@ -103,6 +105,105 @@ export function agentConfigOf(agent: AgentRow): AgentConfig | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Launch draft id (X account connected before launch)
+// ---------------------------------------------------------------------------
+
+/**
+ * The launch form generates `crypto.randomUUID()` and connects X under it before the agent id exists. Only a
+ * lowercase uuid is accepted: never a numeric ERC-8004 id, so a crafted context cannot point at another live
+ * agent's account.
+ */
+export const DRAFT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** `id` of the Bootr launch context `{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`, else null. */
+export function draftIdFromContext(context: string): string | null {
+  try {
+    const parsed = JSON.parse(context) as unknown;
+    const id = parsed && typeof parsed === 'object' ? (parsed as { id?: unknown }).id : undefined;
+    return typeof id === 'string' && DRAFT_ID_RE.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Draft id from Clanker's `TokenCreated` for `token` among the launch tx logs; '' when absent or unparseable. */
+export function decodeDraftId(logs: Log[], clanker: Address, token: Address): string {
+  const events = parseEventLogs({ abi: [clankerTokenCreatedEvent], logs, strict: true });
+  for (const ev of events) {
+    if (!isAddressEqual(ev.address, clanker) || !isAddressEqual(ev.args.tokenAddress, token)) continue;
+    return draftIdFromContext(ev.args.tokenContext) ?? '';
+  }
+  return '';
+}
+
+/** Reads the launch tx receipt and decodes the draft id; null when the RPC call fails (retried on a later tick). */
+export async function readDraftId(ctx: SupervisorContext, txHash: string, token: string): Promise<string | null> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return '';
+  try {
+    const receipt = await ctx.chain.publicClient.getTransactionReceipt({ hash: txHash as Hex });
+    return decodeDraftId(receipt.logs, ctx.chain.addresses.clanker, getAddress(token));
+  } catch (err) {
+    ctx.log.warn({ txHash, err }, 'could not read the launch receipt for the draft id; will retry');
+    return null;
+  }
+}
+
+/** Fills `sv_agents.draft_id` for agents registered before it existed (lazy, onboarding agents only). */
+async function backfillDraftIds(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
+  for (const agent of pending) {
+    if (agent.draftId !== null || !agent.launchTxHash) continue;
+    const draftId = await readDraftId(ctx, agent.launchTxHash, agent.token);
+    if (draftId === null) continue;
+    await ctx.db.update(agents).set({ draftId, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
+    agent.draftId = draftId;
+  }
+}
+
+const isConnected = (a: SenderAccount): boolean => a.connected && !a.revoked && !!a.handle && !!a.xUserId;
+
+/**
+ * When the agent id has no X account but its draft id does, move that account onto the agent id. Guards:
+ *   - only the earliest launch claiming a draft id may adopt it (a later launch can copy a public context id)
+ *   - the account must have been connected no later than the launch block (`connectedBefore`, checked by the
+ *     sender atomically), so nobody can bind their own X account to the draft id once it is public on-chain
+ * Returns the agent's account after the rebind, or null.
+ */
+async function adoptDraftAccount(ctx: SupervisorContext, agent: AgentRow, log: SupervisorContext['log']): Promise<SenderAccount | null> {
+  const draftId = agent.draftId;
+  if (!draftId || !DRAFT_ID_RE.test(draftId)) return null;
+  if (agent.launchBlock == null) {
+    log.warn({ draftId }, 'no launch block recorded; cannot adopt the draft X account');
+    return null;
+  }
+  const rivals = await ctx.db
+    .select({ agentId: agents.agentId, launchBlock: agents.launchBlock })
+    .from(agents)
+    .where(and(eq(agents.draftId, draftId), ne(agents.agentId, agent.agentId)));
+  const earlier = rivals.find(
+    (r) => r.launchBlock == null || r.launchBlock < agent.launchBlock! || (r.launchBlock === agent.launchBlock && BigInt(r.agentId) < BigInt(agent.agentId)),
+  );
+  if (earlier) {
+    log.warn({ draftId, claimedBy: earlier.agentId }, 'draft id already claimed by an earlier launch; not adopting its X account');
+    return null;
+  }
+  const draft = await ctx.sender.account(draftId);
+  if (!isConnected(draft)) return null;
+  const block = await ctx.chain.publicClient.getBlock({ blockNumber: BigInt(agent.launchBlock) });
+  const connectedBefore = new Date(Number(block.timestamp) * 1000).toISOString();
+  try {
+    const res = await ctx.sender.rebind(draftId, agent.agentId, connectedBefore);
+    log.info({ draftId, status: res.status, xHandle: res.handle }, 'X account rebound from the launch draft id');
+  } catch (err) {
+    if (err instanceof SenderError && (err.status === 404 || err.status === 409)) {
+      log.warn({ draftId, code: err.code }, 'sender refused to rebind the draft X account');
+      return null;
+    }
+    throw err;
+  }
+  return ctx.sender.account(agent.agentId);
+}
+
 export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent): Promise<AgentRow | null> {
   const agentId = launch.agentId.toString();
   const existing = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agentId) });
@@ -114,6 +215,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   ]);
   const now = new Date(ctx.now());
   const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' });
+  const draftId = await readDraftId(ctx, launch.txHash, launch.token);
   const [row] = await ctx.db
     .insert(agents)
     .values({
@@ -124,6 +226,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
       config,
       launchBlock: Number(launch.blockNumber),
       launchTxHash: launch.txHash,
+      draftId,
       status: 'onboarding',
       createdAt: now,
       updatedAt: now,
@@ -135,7 +238,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     .insert(runtimes)
     .values({ agentId, state: initialState() as unknown as Record<string, unknown>, cycle: 0, nextAt: now, status: 'ready', configRevision: 0, updatedAt: now })
     .onConflictDoNothing();
-  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString() }, 'agent registered');
+  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId }, 'agent registered');
   // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
   const builderCode = await ensureBuilderCode(ctx, row);
   return builderCode ? { ...row, builderCode } : row;
@@ -289,9 +392,14 @@ export async function rotateSessionKey(ctx: SupervisorContext, agent: AgentRow):
   return result;
 }
 
-/** Finishes onboarding: session key (needs ADMIN_PRIVATE_KEY) and the connected X account. */
+/**
+ * Finishes onboarding: session key (needs ADMIN_PRIVATE_KEY) and the connected X account. The account is looked up
+ * under the agent id, then under the launch draft id (rebound to the agent id by the sender when found).
+ */
 export async function completeOnboarding(ctx: SupervisorContext): Promise<void> {
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
+  // Decode every pending draft id first, so the earliest-launch check in adoptDraftAccount sees all claimants.
+  await backfillDraftIds(ctx, pending);
   for (const agent of pending) {
     const log = ctx.log.child({ agentId: agent.agentId });
     if (!agent.sessionKeyInstalledAt) {
@@ -307,8 +415,9 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
       }
     }
     try {
-      const account = await ctx.sender.account(agent.agentId);
-      if (!account.connected || account.revoked || !account.handle || !account.xUserId) {
+      let account = await ctx.sender.account(agent.agentId);
+      if (!isConnected(account) && agent.draftId) account = (await adoptDraftAccount(ctx, agent, log)) ?? account;
+      if (!isConnected(account) || !account.handle || !account.xUserId) {
         log.debug('X account not connected yet');
         continue;
       }

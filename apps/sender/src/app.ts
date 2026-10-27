@@ -18,6 +18,7 @@ import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
 import { buildAuthorizeUrl, exchangeCode, oauthStartSignature, openState } from './oauth.js';
 import { publish, publishSchema } from './publish.js';
+import { AGENT_ID_RE, rebindAccount, rebindSchema } from './rebind.js';
 import { getQuota, setQuota } from './quota.js';
 import { getAction, toReceipt } from './receipt.js';
 
@@ -228,7 +229,24 @@ export function createApp(ctx: SenderContext): Hono {
       xUserId: a?.xUserId ?? null,
       scopes: a?.scopes ?? null,
       expiresAt: a?.expiresAt.toISOString() ?? null,
+      connectedAt: a?.connectedAt.toISOString() ?? null,
     });
+  });
+
+  /**
+   * POST /internal/account/:agentId/rebind {to, connectedBefore?}
+   * Moves the account connected under a launch draft id to the real agent id (see src/rebind.ts).
+   */
+  internal.post('/account/:agentId/rebind', async (c) => {
+    const from = c.req.param('agentId');
+    if (!AGENT_ID_RE.test(from)) return c.json({ error: 'invalid_request' }, 400);
+    const body = parseBody(c, rebindSchema);
+    if (!body.ok) return body.res;
+    const res = await rebindAccount(ctx, from, body.data.to, {
+      ...(body.data.connectedBefore ? { connectedBefore: new Date(body.data.connectedBefore) } : {}),
+    });
+    if (!res.ok) return fail(c, res);
+    return c.json({ from, to: res.agentId, status: res.status, handle: res.handle });
   });
 
   internal.get('/quota/:agentId', async (c) => {

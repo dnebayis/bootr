@@ -7,6 +7,7 @@
  * Needs SENDER_SERVICE_KEY and SENDER_URL (default http://localhost:3002). The link embeds a
  * signed state that expires after a few minutes; generate a fresh one right before use.
  */
+/* global process, console, fetch */
 import { createHash, createHmac } from 'node:crypto';
 
 const [agentId, state = 'dev-connect'] = process.argv.slice(2);
