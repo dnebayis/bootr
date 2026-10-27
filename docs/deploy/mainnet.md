@@ -291,14 +291,31 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
 6. **Paymaster exposure.** Sponsored ops are capped by the CDP policy, not by Bootr. Set the daily USD cap before
    the first launch.
 
-## Deployed (2026-10-27, Base mainnet, block 53164454)
+## Deployed (2026-10-27, Base mainnet, block 53172831)
 
 | Contract | Address |
 | --- | --- |
 | AgentGuardian | `0x799Ab875294E37839883D12084aB4BE3f7633630` |
-| BootrLauncher (Agent 5 / Creator 65 / Platform 30; buyback 5/50/15/30; min fuel 20 USDC) | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` |
+| BootrLauncher (Agent 5 / Creator 65 / Platform 30; buyback 5/50/15/30; min fuel 20 USDC) | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` |
 | BuybackBurner implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` |
 | BootrCallPolicy | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` |
 | BootrSwapHelper | `0x5723152f21ed7E305312fd90a2Bb94864BA9D80d` |
 
 Owner of guardian and launcher: ADMIN `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3` (accepted). All five verified on Basescan. $BOOT is not launched yet (planned from PLATFORM_TREASURY, buyback preset, no dev buy, 20 USDC fuel at launch time).
+
+## Launcher redeploy (2026-10-28): flat launch fee
+
+`BootrLauncher` gained an owner-settable flat ETH launch fee (`launchFeeWei`, `setLaunchFee`), charged on top of the
+dev buy and forwarded to the preset's `platformRecipient`. Contracts are immutable, so the launcher was redeployed
+once with `script/DeployLauncher.s.sol` (copies the live presets and `minPlatformBps` from the old launcher, hands
+ownership to the admin, `guardian.setLauncher(new)`, pauses the old launcher). Guardian, burner implementation and
+registered agents are untouched.
+
+| | address / block |
+| --- | --- |
+| new `BootrLauncher` | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` (block 53172831, fee 0.0005 ETH) |
+| old `BootrLauncher` | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` (paused; `guardian.registerAgent` rejects it) |
+
+The fee is changed from the admin console ("Launch fee" panel, `setLaunchFee`) without a redeploy. After a launcher
+redeploy update `BOOTR_LAUNCHER_ADDRESS` / `NEXT_PUBLIC_LAUNCHER_ADDRESS` and `LAUNCHER_START_BLOCK` /
+`BOOTR_START_BLOCK` on web, supervisor and indexer and redeploy the three services.
