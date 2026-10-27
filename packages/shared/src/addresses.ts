@@ -3,8 +3,9 @@ import type { Address } from 'viem';
 /**
  * Per-chain contract addresses used by Bootr.
  *
- * IMPORTANT: every address in this file (and in particular the Base-mainnet ERC-8004
- * registries) MUST be re-verified on-chain before any mainnet deploy.
+ * The Base mainnet block was verified on-chain and against primary sources on 2026-10-27 (sources in the
+ * comments; `packages/contracts/test/fork/MainnetDryRun.t.sol` exercises the whole set on a mainnet fork).
+ * Re-run that dry-run before the mainnet deploy and whenever Clanker rotates a module.
  */
 
 export const BASE_MAINNET_CHAIN_ID = 8453 as const;
@@ -85,47 +86,80 @@ export interface ChainAddresses {
 
 export const addresses = {
   [BASE_MAINNET_CHAIN_ID]: {
+    // Every entry verified 2026-10-27 against Base mainnet (`cast code` / `cast call` through
+    // https://mainnet.base.org and https://base-rpc.publicnode.com) and the primary source named next to it.
+    // `packages/contracts/test/fork/MainnetDryRun.t.sol` launches through this exact set on a mainnet fork.
+    //
+    // Clanker v4: github.com/clanker-devco/v4-contracts README (Base mainnet table) + clanker-sdk
+    // `src/utils/clankers.ts` (chainId 8453, type clanker_v4). Factory `deprecated() == false`; bytecode identical
+    // to the Base Sepolia factory (same keccak).
     clanker: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
+    // README "ClankerFeeLocker"; `allowedDepositors(clankerLpLockerFeeConversion) == true`.
     clankerFeeLocker: '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68',
+    // README "ClankerLpLocker" (v4.0, V1 hooks only; not used by Bootr).
     clankerLpLocker: '0x29d17C1A8D851d7d4cA97FAe97AcAdb398D9cCE0',
+    // README "ClankerHookStaticFeeV2" (v4.1); `factory() == clanker`, `poolManager() == uniswap.poolManager`,
+    // `weth() == weth`, `MAX_LP_FEE() == 100_000`; the hook of every current clanker.world launch.
     clankerHookStaticFeeV2: '0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC',
+    // README "ClankerHookDynamicFeeV2" (v4.1).
     clankerHookDynamicFeeV2: '0xd60D6B218116cFd801E28F78d011a203D2b068Cc',
+    // README "ClankerUniv4EthDevBuy" (v4.0), Sourcify exact match; `factory() == clanker`,
+    // `universalRouter() == uniswap.universalRouter`, `weth() == weth`. Accepted by the factory in the fork dry-run.
     clankerUniv4EthDevBuy: '0x1331f0788F9c08C8F38D52c7a1152250A9dE00be',
+    // README "ClankerMevBlockDelay" (v4.0). Still enabled on mainnet: the fork dry-run deploys through it.
+    // (clanker.world itself now launches with ClankerSniperAuctionV2 0xebB25BB797D82CB78E1bc70406b13233c0854413.)
     clankerMevBlockDelay: '0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2',
-    // TODO(verify on-chain before mainnet deploy): from clanker v4-contracts README
-    clankerLpLockerFeeConversion: '0x63D2DfEA64b3433F4071A98665bcD7Ca14d93496',
+    // NOT the README's "ClankerLpLockerFeeConversion" 0x63D2DfEA64b3433F4071A98665bcD7Ca14d93496 (v4.0): on mainnet
+    // `clanker.enabledLockers(0x63D2..., hookStaticFeeV2) == false`, so a launch through it reverts
+    // `LockerNotEnabled`. This is the live locker: clanker-sdk `related.locker` for 8453, `tokenDeploymentInfo`
+    // of every recent launch, `enabledLockers(locker, hookStaticFeeV2) == true` (and for the dynamic V2 hook),
+    // `factory() == clanker`, `feeLocker() == clankerFeeLocker`, `poolManager() == uniswap.poolManager`,
+    // `owner()` == the Clanker owner, same ABI as Sepolia's 0x824b... (tokenRewards / feePreferences /
+    // collectRewards / updateReward*). Not source-verified on Sourcify (the SDK and the chain are the sources).
+    clankerLpLockerFeeConversion: '0xffA37784D619F228D8B379d287a4D7282e500762',
     erc8004: {
-      // Same pair on every ERC-8004 mainnet (github.com/erc-8004/erc-8004-contracts README, Oct 2026).
+      // github.com/erc-8004/erc-8004-contracts README (same pair on every ERC-8004 mainnet, Base listed);
+      // `name() == "AgentIdentity"`, `symbol() == "AGENT"`, `reputation.getIdentityRegistry() == identity`.
       identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
       reputationRegistry: '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63',
     },
+    // OP-stack predeploy (docs.base.org base-contracts "WETH9"); `symbol() == "WETH"`.
     weth: '0x4200000000000000000000000000000000000006',
+    // Circle native USDC on Base (circle.com/multi-chain-usdc); `symbol() == "USDC"`, `decimals() == 6`.
     usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     uniswap: {
-      // TODO(verify on-chain before mainnet deploy)
+      // developers.uniswap.org/docs/protocols/v4/deployments, Base mainnet row.
       poolManager: '0x498581fF718922c3f8e6A244956aF099B2652b2b',
       universalRouter: '0x6fF5693b99212Da76ad316178A184AB56D299b43',
       permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+      // v4-core PoolSwapTest is not deployed on Base mainnet (testnets only).
       poolSwapTest: null,
-      // TODO(verify on-chain before mainnet deploy): docs.uniswap.org Base SwapRouter02
+      // docs.base.org Base contracts "swapRouter" (Uniswap v3 SwapRouter02); `factory() == 0x33128a8fC17869897dcE68Ed026d694621f6FDfD`
+      // (UniswapV3Factory on Base), `WETH9() == weth`. WETH/USDC 0.05% pool: 0xd0b53D9277642d899DF5C87A3966A349A798F224.
       swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
     },
+    // Canonical ERC-4337 EntryPoint v0.7 (eth-infinitism/account-abstraction v0.7.0, same on every chain).
     entryPointV07: '0x0000000071727De22E5E9d8BAf0edAc6f37da032',
     zerodev: {
-      // ZeroDev deploys deterministically to the same addresses on every chain; verify before use.
+      // @zerodev/sdk constants.js `KernelVersionToAddressesMap["0.3.1"]` and @zerodev/permissions constants.js
+      // (deterministic deploys); bytecode present on 8453 for every entry. `kernelFactory.implementation() ==
+      // kernelV31Implementation`, `metaFactory.approved(kernelFactory) == true`, implementation
+      // `eip712Domain() == ("Kernel", "0.3.1")`, `entrypoint() == entryPointV07`.
       kernelV31Implementation: '0xBAC849bB641841b44E965fB01A4Bf5F074f84b4D',
       kernelFactory: '0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419',
       metaFactory: '0xd703aaE79538628d27099B8c4f621bE4CCd142d5',
       ecdsaValidator: '0x845ADb2C711129d4f3966735eD98a9F09fC4cE57',
-      ecdsaSigner: null,
+      ecdsaSigner: '0x6A6F069E2a08c2468e7724Ab3250CdBFBA14D4FF',
+      // ZeroDev CallPolicy v0.0.5; not used by Bootr (see bootr.callPolicy).
       callPolicy: '0x85770b902D1e503D5f5141d9eaC16d0d08eEaDd2',
-      gasPolicy: null,
-      rateLimitPolicy: null,
-      sudoPolicy: null,
-      timestampPolicy: null,
-      signaturePolicy: null,
+      gasPolicy: '0xaeFC5AbC67FfD258abD0A3E54f65E70326F84b23',
+      rateLimitPolicy: '0xf63d4139B25c836334edD76641356c6b74C86873',
+      sudoPolicy: '0x67b436caD8a6D025DF6C82C5BB43fbF11fC5B9B7',
+      timestampPolicy: '0xB9f8f524bE6EcD8C945b1b87f9ae5C192FdCE20F',
+      signaturePolicy: '0xF6A936c88D97E6fad13b98d2FD731Ff17eeD591d',
     },
     bootr: {
+      // Not deployed yet: filled by the cutover (docs/deploy/mainnet.md).
       launcher: null,
       guardian: null,
       burnerImplementation: null,

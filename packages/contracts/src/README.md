@@ -251,7 +251,7 @@ neither moves funds nor resets the clock.
 
 * `script/Deploy.s.sol` - deploys guardian, burner implementation, launcher; wires `setLauncher`,
   `setPlatformTreasury`, defaults from env; `transferOwnership(PLATFORM_ADMIN)` (admin must `acceptOwnership`).
-  Chain config by `block.chainid` (84532 verified; 8453 from the Clanker README - re-verify).
+  Chain config by `block.chainid` (84532 verified; 8453 verified on-chain and against clanker-sdk (see packages/shared/src/addresses.ts)).
 * `script/DeployCallPolicy.s.sol` - deploys `BootrCallPolicy` (stateless, no wiring) and logs the address.
 * `script/DeploySwapHelper.s.sol` - deploys `BootrSwapHelper` (WETH, USDC, SwapRouter02, Chainlink ETH/USD per
   chain; `SWAP_POOL_FEE` default 500). Mainnet addresses must be re-verified before deploying.

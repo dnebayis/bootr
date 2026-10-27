@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.mainnet.example
 # deps / build
 node_modules/
 .next/

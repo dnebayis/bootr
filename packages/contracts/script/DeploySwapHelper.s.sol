@@ -31,7 +31,9 @@ contract DeploySwapHelper is Script {
                 ethUsdFeed: 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1
             });
         } else if (block.chainid == 8453) {
-            // Base mainnet - RE-VERIFY ON-CHAIN BEFORE DEPLOYING (docs.uniswap.org / docs.chain.link).
+            // Base mainnet - verified on-chain 2026-10-27: SwapRouter02.factory() = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD,
+            // WETH9() = 0x4200...0006 (Base docs "swapRouter"); feed description() = "ETH / USD", 8 decimals, live
+            // (docs.chain.link Base). The WETH/USDC 0.05% pool is 0xd0b53D9277642d899DF5C87A3966A349A798F224.
             c = ChainDeps({
                 weth: 0x4200000000000000000000000000000000000006,
                 usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,

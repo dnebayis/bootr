@@ -16,6 +16,9 @@ import {BootrLauncher} from "../src/BootrLauncher.sol";
 ///   DEV_BUY_WEI           default 0
 ///   BUYBACK               default false
 ///   SALT                  bytes32, default keccak(name, timestamp)
+///   AGENT_CONTEXT         Clanker token context JSON (default {"interface":"Bootr","platform":"bootr.fun"})
+///   AGENT_METADATA        Clanker token metadata JSON (description, socialMediaUrls, auditUrls)
+///   WORKER_HASH           bytes32, default 0
 ///   SUPERVISOR_KEY        optional session-key address (informational)
 contract Launch is Script {
     function run() external {
@@ -33,14 +36,15 @@ contract Launch is Script {
             symbol: symbol,
             image: vm.envOr("AGENT_IMAGE", string("")),
             metadata: vm.envOr("AGENT_METADATA", string("{}")),
-            context: vm.envOr("AGENT_CONTEXT", string('{"interface":"bootr","platform":"bootr"}')),
+            // the supervisor decodes `tokenContext` as `{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`
+            context: vm.envOr("AGENT_CONTEXT", string('{"interface":"Bootr","platform":"bootr.fun"}')),
             salt: salt,
             buybackBurn: buyback,
             fuelUsdc: fuel,
             devBuyWei: devBuy,
             workerHash: vm.envOr("WORKER_HASH", bytes32(0)),
             model: vm.envOr("AGENT_MODEL", string("claude-sonnet-4-5")),
-            agentURI: vm.envOr("AGENT_URI", string("https://bootr.example/agents/test.json")),
+            agentURI: vm.envOr("AGENT_URI", string("https://bootr.fun/agents/test.json")),
             supervisorSessionKey: vm.envOr("SUPERVISOR_KEY", address(0))
         });
 
