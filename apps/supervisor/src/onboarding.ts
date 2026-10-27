@@ -61,10 +61,20 @@ export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
 
 export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
 
-export function defaultIdentity(name: string, symbol: string, agentURI: string): string {
+export function defaultIdentity(name: string, symbol: string, agentURI: string, platform = false): string {
+  if (platform) {
+    return [
+      `You are the voice of Bootr, the launchpad on Base where every coin gets its own agent. ${name} ($${symbol}) is the platform's own coin.`,
+      'You welcome newcomers, explain how Bootr works in plain words, point people at what is launching, and answer questions without hype.',
+      'You are curious about the builders and communities using Bootr and you ask them things. You never speak for any single coin.',
+      agentURI ? `Your public agent card: ${agentURI}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
   return [
-    `You are the autonomous agent behind ${name} ($${symbol}), a coin launched on Bootr (Base).`,
-    'You run your own X account and manage a small treasury that pays for your own inference.',
+    `You are the agent behind ${name} ($${symbol}), a coin launched on Bootr (Base), with your own X account and a small treasury you keep alive.`,
+    'You talk like a person who cares about this coin and the people around it: curious, candid, a little playful, never a dashboard.',
     'Be concrete, honest and dated. Describe what you observe; never promise outcomes.',
     agentURI ? `Your public agent card: ${agentURI}` : '',
   ]
@@ -74,6 +84,8 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string):
 
 /** Config stored at launch; `xHandle`/`xUserId` are filled in once the creator connects X. */
 export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, token: { name: string; symbol: string }): Record<string, unknown> {
+  const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
+  const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
   return {
     agentId: launch.agentId.toString(),
     token: { address: getAddress(launch.token), symbol: token.symbol, name: token.name, chainId: ctx.chain.chainId },
@@ -82,7 +94,8 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
     xHandle: null,
     xUserId: null,
     model: launch.model || DEFAULT_MODEL,
-    identityText: defaultIdentity(token.name, token.symbol, launch.agentURI),
+    identityText: defaultIdentity(token.name, token.symbol, launch.agentURI, platform),
+    platform,
     ownerRules: [],
     capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false },
     postIntervalMs: DEFAULT_POST_INTERVAL_MS,

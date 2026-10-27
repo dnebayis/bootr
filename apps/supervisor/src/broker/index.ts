@@ -61,6 +61,11 @@ export interface InboxView {
   observedAt: string | number;
 }
 
+/** Addresses the agent may name in public: its own token and its own treasury. */
+export function publicAddressesOf(config: AgentConfig): string[] {
+  return [config.token.address, config.kernel.address];
+}
+
 export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number): InboxView[] {
   return items.map((item) => {
     const e = replyEligibility(item.post, {
@@ -155,11 +160,12 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         ...(item ? { replyAuthorId: item.authorId } : {}),
         replyEligibility: eligibility,
         ...(action.input.attributions ? { attributions: action.input.attributions } : {}),
+        publicAddresses: publicAddressesOf(config),
       });
       return publishOutcome(res, item?.authorId);
     }
     case 'publish_post': {
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}) });
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), publicAddresses: publicAddressesOf(config) });
       return publishOutcome(res);
     }
     case 'resolve_mention': {

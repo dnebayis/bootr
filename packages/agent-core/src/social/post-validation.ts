@@ -1,5 +1,6 @@
 import { PolicyError } from '../errors.js';
 import { outgoingActionRisk, type RiskContext } from './communication-policy.js';
+import { outgoingDisclosureRisk, type DisclosureContext } from './disclosure-policy.js';
 import type { Attribution } from '../types.js';
 
 export type PostFormat = 'short' | 'original';
@@ -23,6 +24,7 @@ export function mentionedHandles(text: string): string[] {
 /**
  * Deterministic publish gate. Throws PolicyError with one of:
  * - any outgoingActionRisk code
+ * - any outgoingDisclosureRisk code (secrets, internal references, runtime jargon, foreign addresses)
  * - invalid_short_post / invalid_original_post (type, empty, length, attribution count)
  * - x_post_requires_at_most_one_cashtag
  * - invalid_source_credit (bad handle, non-https url, credentials in url, duplicate)
@@ -33,10 +35,12 @@ export function validatePost(
   attributions: unknown = [],
   format: PostFormat = 'short',
   hasMedia = false,
-  risk: RiskContext = {},
+  risk: RiskContext & DisclosureContext = {},
 ): asserts text is string {
   const riskCode = outgoingActionRisk(text, risk);
   if (riskCode) throw new PolicyError(riskCode);
+  const disclosure = outgoingDisclosureRisk(text, risk);
+  if (disclosure) throw new PolicyError(disclosure);
   const invalid = format === 'original' ? 'invalid_original_post' : 'invalid_short_post';
   if (typeof text !== 'string') throw new PolicyError(invalid);
   if (!text.trim() && !hasMedia) throw new PolicyError(invalid);
@@ -72,7 +76,7 @@ export function postValidation(
   attributions: unknown = [],
   format: PostFormat = 'short',
   hasMedia = false,
-  risk: RiskContext = {},
+  risk: RiskContext & DisclosureContext = {},
 ): { ok: true } | { ok: false; code: string } {
   try {
     validatePost(text, attributions, format, hasMedia, risk);

@@ -120,6 +120,8 @@ export class SenderClient {
     replyAuthorId?: string;
     replyEligibility?: ReplyEligibility;
     attributions?: { username: string; sourceUrl: string }[];
+    /** Addresses the text may name (own token, own treasury); the sender rejects any other. */
+    publicAddresses?: string[];
   }) {
     return this.call<SenderPublishResponse>('POST', '/internal/publish', body);
   }

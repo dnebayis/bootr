@@ -48,6 +48,12 @@ export const publishSchema = z.object({
     )
     .max(3)
     .optional(),
+  /**
+   * Addresses the agent may name in public (its own token and treasury), from the supervisor. Any
+   * other 0x address in the text is rejected (`social_private_address_forbidden`). Absent: no address
+   * check. Not part of the body hash (a policy input, not content).
+   */
+  publicAddresses: z.array(z.string().regex(/^0x[0-9a-fA-F]{40}$/)).max(4).optional(),
 });
 export type PublishInput = z.infer<typeof publishSchema>;
 
@@ -169,6 +175,7 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     attributions: input.attributions,
     recipient,
     ownHandle: tok.account.xHandle,
+    publicAddresses: input.publicAddresses,
   });
   if (!decision.allowed) reasons.push(decision.code);
   if (replyAuthorId && (await isOptedOut(ctx, input.agentId, [replyAuthorId]))) {

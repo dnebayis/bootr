@@ -65,6 +65,8 @@ export const agentConfigSchema = z
     xUserId: xIdSchema,
     model: z.string().min(1).max(128),
     identityText: z.string().max(20000),
+    /** True for the platform's own account (the launchpad's voice), false for a coin's agent. */
+    platform: z.boolean().default(false),
     ownerRules: z.array(ownerRuleSchema).max(64).default([]),
     capabilities: capabilitiesSchema.default({}),
     /** Minimum spacing between original posts. */

@@ -6,6 +6,7 @@ const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'expected a 20-byte addr
 const optionalString = z.preprocess((v) => (v === '' ? undefined : v), z.string().optional());
 const optionalUrl = z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional());
 const optionalHexKey = z.preprocess((v) => (v === '' ? undefined : v), hexKey.optional());
+const optionalAddress = z.preprocess((v) => (v === '' ? undefined : v), address.optional());
 const int = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().int().min(min));
 const num = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().min(min));
 const bool = (def: 'true' | 'false') => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.enum(['true', 'false']).transform((v) => v === 'true'));
@@ -51,6 +52,8 @@ export const configSchema = z
     ADMIN_PRIVATE_KEY: optionalHexKey,
     BOOTR_LAUNCHER_ADDRESS: address,
     BOOTR_GUARDIAN_ADDRESS: address,
+    /** Launches whose creator is the platform treasury run as the platform's own voice (`config.platform`). */
+    PLATFORM_TREASURY_ADDRESS: optionalAddress,
     /** Block to start scanning AgentLaunched events from when no cursor exists yet. */
     LAUNCHER_START_BLOCK: int(0),
     /** Max block range per eth_getLogs call when scanning AgentLaunched (public Base RPCs allow 200; archive RPCs 2000+). */

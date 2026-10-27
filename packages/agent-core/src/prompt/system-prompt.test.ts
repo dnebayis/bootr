@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOOTR_RULES, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
+import { BOOTR_RULES, PLATFORM_RULES, VOICE_RULES, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
 import { parseAgentConfig } from '../types.js';
 import { baseConfig } from '../test/fixtures.js';
 
@@ -36,6 +36,23 @@ describe('buildSystemPrompt', () => {
   });
   it('prints (none) when no owner rule is enabled', () => {
     expect(buildSystemPrompt(parseAgentConfig(baseConfig))).toContain('OWNER RULES\n(none)');
+  });
+  it('carries the voice rules between the role text and the Bootr rules', () => {
+    for (const rule of VOICE_RULES) expect(prompt).toContain(rule);
+    expect(prompt.indexOf('VOICE\n')).toBeGreaterThan(prompt.indexOf('@bootragent'));
+    expect(prompt.indexOf('BOOTR RULES\n')).toBeGreaterThan(prompt.indexOf('VOICE\n'));
+    expect(prompt).not.toContain('PLATFORM ACCOUNT');
+    expect(prompt).toMatch(/Never narrate your own machinery/);
+    expect(prompt).toMatch(/Private stays private/);
+  });
+  it('speaks as the launchpad with platform conduct when config.platform is set', () => {
+    const platform = buildSystemPrompt(parseAgentConfig({ ...baseConfig, xHandle: 'bootrfun', platform: true }));
+    expect(platform).toContain('You are @bootrfun, the official voice of Bootr, the launchpad itself');
+    expect(platform).toContain('PLATFORM ACCOUNT\n1. ');
+    for (const rule of PLATFORM_RULES) expect(platform).toContain(rule);
+    expect(platform.indexOf('PLATFORM ACCOUNT')).toBeGreaterThan(platform.indexOf('VOICE\n'));
+    expect(platform.indexOf('BOOTR RULES')).toBeGreaterThan(platform.indexOf('PLATFORM ACCOUNT'));
+    expect(parseAgentConfig(baseConfig).platform).toBe(false);
   });
 });
 
