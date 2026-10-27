@@ -165,6 +165,13 @@ describe('local admin signer: handleOps', () => {
     const calls: unknown[] = [];
     const publicClient = {
       chain: baseSepolia,
+      // The sender's EntryPoint deposit already covers the prefund, so handleOps is simulated without a top-up.
+      async readContract() {
+        return 10n ** 18n;
+      },
+      async getBalance() {
+        return 0n;
+      },
       async simulateContract(req: { address: Address; functionName: string; args: unknown[]; account: { address: Address } }) {
         calls.push(req);
         const data = encodeErrorResult({ abi: entryPoint07Abi, errorName, args: args as never });

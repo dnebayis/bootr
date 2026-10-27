@@ -32,11 +32,14 @@ export function createLocalAdminSigner(args: {
   guardian: Address;
   publicClient: PublicClient<Transport, Chain>;
   entryPoint?: Address;
+  /** Max ETH (wei) deposited into the EntryPoint for a sender before a self-bundled op. Default 0.005 ETH. */
+  maxPrefundWei?: bigint;
 }): AdminSigner {
   const account = privateKeyToAccount(args.privateKey);
   const wallet = createWalletClient({ account, chain: args.chain, transport: http(args.rpcUrl) });
-  const { publicClient, guardian } = args;
+  const { publicClient, guardian, chain } = args;
   const entryPoint = args.entryPoint ?? entryPoint07Address;
+  const maxPrefundWei = args.maxPrefundWei ?? 5_000_000_000_000_000n;
   return {
     address: account.address,
     async approveSessionKey(kernel, permissionId, validatorData) {
@@ -70,6 +73,24 @@ export function createLocalAdminSigner(args: {
       return { txHash };
     },
     async handleOps(ops, beneficiary) {
+      // Self-bundled ops have no paymaster: the sender pays its prefund from its EntryPoint deposit or ETH
+      // balance. Fresh kernels hold neither, so top up the deposit (bounded by maxPrefundWei) before sending.
+      for (const op of ops) {
+        const verification = BigInt(`0x${op.accountGasLimits.slice(2, 34)}`);
+        const call = BigInt(`0x${op.accountGasLimits.slice(34, 66)}`);
+        const maxFee = BigInt(`0x${op.gasFees.slice(34, 66)}`);
+        const required = (verification + call + op.preVerificationGas) * maxFee;
+        const [deposit, balance] = await Promise.all([
+          publicClient.readContract({ address: entryPoint, abi: entryPoint07Abi, functionName: 'balanceOf', args: [op.sender] }),
+          publicClient.getBalance({ address: op.sender }),
+        ]);
+        const shortfall = required - deposit - balance;
+        if (shortfall <= 0n) continue;
+        const topUp = (shortfall * 11n) / 10n;
+        if (topUp > maxPrefundWei) throw new Error(`self-bundle prefund ${topUp} wei for ${op.sender} exceeds ENABLE_MODE_MAX_PREFUND_WEI (${maxPrefundWei})`);
+        const depositHash = await wallet.writeContract({ account, address: entryPoint, abi: entryPoint07Abi, functionName: 'depositTo', args: [op.sender], value: topUp, chain });
+        await publicClient.waitForTransactionReceipt({ hash: depositHash });
+      }
       let request: Parameters<typeof wallet.writeContract>[0];
       try {
         ({ request } = await publicClient.simulateContract({

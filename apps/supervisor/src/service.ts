@@ -21,7 +21,7 @@ export function createContext(config: Config, db: Db, overrides: Partial<Supervi
     overrides.adminSigner !== undefined
       ? overrides.adminSigner
       : config.ADMIN_PRIVATE_KEY
-        ? createLocalAdminSigner({ privateKey: config.ADMIN_PRIVATE_KEY as Hex, chain: chain.chain, rpcUrl: config.RPC_URL as string, guardian: chain.guardian, publicClient: chain.publicClient })
+        ? createLocalAdminSigner({ privateKey: config.ADMIN_PRIVATE_KEY as Hex, chain: chain.chain, rpcUrl: config.RPC_URL as string, guardian: chain.guardian, publicClient: chain.publicClient, maxPrefundWei: BigInt(config.ENABLE_MODE_MAX_PREFUND_WEI) })
         : null;
   const kernels = new Map<string, Promise<KernelClient>>();
   const ctx: SupervisorContext = {

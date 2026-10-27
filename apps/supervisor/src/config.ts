@@ -38,6 +38,8 @@ export const configSchema = z
      * this removes the dependency on a lenient bundler. Requires ADMIN_PRIVATE_KEY.
      */
     ENABLE_MODE_SELF_BUNDLE: bool('false'),
+    /** Max wei the admin deposits into the EntryPoint for a kernel's prefund before a self-bundled op (default 0.005 ETH). */
+    ENABLE_MODE_MAX_PREFUND_WEI: z.preprocess((v) => (v === '' || v === undefined ? '5000000000000000' : v), z.string().regex(/^\d+$/)),
     /** Session key that signs every agent userOp (never anything through ERC-1271). */
     SESSION_SIGNER_PRIVATE_KEY: hexKey,
     /**
