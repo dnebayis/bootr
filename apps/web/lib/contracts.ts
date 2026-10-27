@@ -9,6 +9,8 @@ export const contracts = {
   weth: a.weth as Address,
   // ClankerLpLockerFeeConversion: the locker enabled for the V2 hooks BootrLauncher uses.
   lpLocker: a.clankerLpLockerFeeConversion as Address,
+  // ClankerFeeLocker: where LP fees wait per (recipient, fee token) until `claim`.
+  feeLocker: a.clankerFeeLocker as Address,
   launcher: env.launcherAddress,
   guardian: env.guardianAddress,
 };

@@ -30,6 +30,14 @@ import {
   openState,
 } from './oauth.js';
 import { publish, publishSchema } from './publish.js';
+import {
+  clientIp,
+  DEFAULT_PUBLIC_API,
+  parseLimit,
+  PUBLIC_CACHE_CONTROL,
+  publicPosts,
+  RateLimiter,
+} from './public-posts.js';
 import { AGENT_ID_RE, rebindAccount, rebindSchema } from './rebind.js';
 import { getQuota, setQuota } from './quota.js';
 import { getAction, toReceipt } from './receipt.js';
@@ -230,6 +238,32 @@ export function createApp(ctx: SenderContext): Hono {
       reconnect: opened.reconnect,
     });
     return finish('connected', { handle: me.data.data.username });
+  });
+
+  // ---------------- Public read API (no auth) ----------------
+
+  const publicApi = ctx.publicApi ?? DEFAULT_PUBLIC_API;
+  const limiter = new RateLimiter(publicApi.ratePerMinute, () => ctx.now().getTime());
+  app.use('/public/*', async (c, next) => {
+    const retryAfter = limiter.check(clientIp(c, publicApi.trustProxy));
+    if (retryAfter > 0) {
+      c.header('Retry-After', String(retryAfter));
+      c.header('Cache-Control', 'no-store');
+      return c.json({ error: 'rate_limited' }, 429);
+    }
+    await next();
+  });
+
+  /**
+   * GET /public/posts/:agentId?limit=3 (1..10)
+   * The agent's latest published posts and replies: {agentId, handle, items[{id, kind, text, postId,
+   * url, createdAt}]}. 404 for an agent the sender has never seen. Cacheable for 60 s.
+   */
+  app.get('/public/posts/:agentId', async (c) => {
+    const res = await publicPosts(ctx, c.req.param('agentId'), parseLimit(c.req.query('limit')));
+    c.header('Cache-Control', PUBLIC_CACHE_CONTROL);
+    if (!res) return c.json({ error: 'not_found' }, 404);
+    return c.json(res);
   });
 
   // ---------------- Internal API (HMAC) ----------------

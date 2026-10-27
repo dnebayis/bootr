@@ -19,39 +19,58 @@ function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
 }
 
-function Posts({ kernel, handle, now }: { kernel: string; handle: string | null; now: number }) {
-  const posts = useAgentPosts(kernel);
-  if (!handle) return <p className="text-caption text-mute">The agent has not connected an X account yet.</p>;
-  const profile = `https://x.com/${handle}`;
+function Posts({ agentId, fallbackHandle, now }: { agentId: string; fallbackHandle: string | null; now: number }) {
+  const posts = useAgentPosts(agentId || undefined);
+  // The sender knows the live binding; the indexer's handle is only used while posts cannot be loaded.
+  const handle = posts.data ? posts.data.handle : fallbackHandle;
+  const items = posts.data?.items ?? [];
+
   return (
-    <div className="flex flex-col gap-3">
-      <a href={profile} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-ink hover:text-link">
-        <XLogoIcon /> <span className="font-mono">@{handle}</span>
-      </a>
-      {posts.isPending ? (
+    <section aria-labelledby="agent-posts" className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 id="agent-posts" className="text-caption font-medium text-ink">
+          Latest posts
+        </h3>
+        {handle ? (
+          <a href={`https://x.com/${handle}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-caption text-body hover:text-link">
+            <XLogoIcon size={12} /> <span className="font-mono">@{handle}</span>
+          </a>
+        ) : null}
+      </div>
+      {agentId && posts.isPending ? (
         <div className="flex flex-col gap-2">
-          <Skeleton className="h-10" />
-          <Skeleton className="h-10" />
+          <Skeleton className="h-14" />
+          <Skeleton className="h-14" />
         </div>
-      ) : posts.data && posts.data.length > 0 ? (
-        <ul className="flex flex-col divide-y divide-hairline rounded-sm border border-hairline">
-          {posts.data.map((p) => (
-            <li key={p.id} className="px-3 py-2.5">
-              <p className="text-sm text-body">{p.text}</p>
-              <span className="mt-1 block font-mono text-micro text-mute">
-                {p.url ? (
-                  <a href={p.url} target="_blank" rel="noopener noreferrer" className="hover:text-link">
-                    {ago(p.createdAt, now)}
-                  </a>
-                ) : (
-                  ago(p.createdAt, now)
-                )}
-              </span>
+      ) : items.length > 0 ? (
+        <ul className="flex flex-col gap-2">
+          {items.map((p) => (
+            <li key={p.id}>
+              <a
+                href={p.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block rounded-sm border border-hairline px-3 py-2.5 transition-colors duration-150 hover:border-hairline-strong"
+              >
+                <p className="whitespace-pre-line break-words text-sm text-body">{p.text}</p>
+                <span className="mt-1.5 flex items-center gap-1.5 font-mono text-micro text-mute">
+                  {p.kind === 'reply' ? <span>Reply ·</span> : null}
+                  <span>{ago(p.createdAt, now)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>View on X</span>
+                </span>
+              </a>
             </li>
           ))}
         </ul>
-      ) : null}
-    </div>
+      ) : !handle ? (
+        <p className="text-caption text-mute">The agent has not connected an X account yet.</p>
+      ) : posts.data === null || posts.isError ? (
+        <p className="text-caption text-mute">Posts are unavailable right now.</p>
+      ) : (
+        <p className="text-caption text-mute">No posts yet.</p>
+      )}
+    </section>
   );
 }
 
@@ -140,7 +159,7 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
         {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
       </div>
       <div className="mt-5 border-t border-hairline pt-4">
-        <Posts kernel={token.kernel} handle={token.xHandle} now={now} />
+        <Posts agentId={token.agentId} fallbackHandle={token.xHandle} now={now} />
       </div>
     </Panel>
   );

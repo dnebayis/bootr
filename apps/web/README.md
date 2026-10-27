@@ -45,8 +45,8 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_WC_PROJECT_ID` | WalletConnect project id (connector hidden when empty). |
 | `NEXT_PUBLIC_RPC_URL` | Optional RPC for the primary chain (public RPC otherwise). |
 | `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). Also the only origin accepted for SIWE sign-in (domain/URI) and for same-origin checks on admin and X-connect POSTs; `X-Forwarded-Host`/`Host` are never trusted. Under `next dev`, localhost origins are accepted too. Must be the exact origin users load (redirect `www.` to it), or admin sign-in and X connect are refused. |
-| `NEXT_PUBLIC_INFERENCE_URL` | Inference gateway; `/v1/models` feeds the model picker (static list otherwise). |
-| `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`; also `/public/posts/:kernel`. |
+| `NEXT_PUBLIC_INFERENCE_URL` | Inference relay origin. Only read server-side by `/api/models` when `INFERENCE_URL` is unset; the browser never calls the relay. |
+| `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`. |
 | `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (Uniswap otherwise). |
 | `NEXT_PUBLIC_LAUNCHER_ADDRESS` | `BootrLauncher`. |
 | `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` | `AgentGuardian`. |
@@ -59,13 +59,26 @@ Server only: `ADMIN_CONSOLE_SLUG`, `ADMIN_ADDRESSES`, `SESSION_SECRET` (≥ 16 c
 X-connect draft cookies), `INDEXER_SERVICE_KEY` (≥ 32 chars; verifies the indexer's signed `GET /api/admin/config`.
 While it is unset, `SENDER_SERVICE_KEY` signatures are still accepted there and a startup warning is logged: set it
 here and in the indexer, then the fallback is gone), `SENDER_URL` (optional server-to-server sender origin for
-`/api/x/status`; defaults to `NEXT_PUBLIC_SENDER_PUBLIC_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature
+`/api/x/status` and `/api/agents/:id/posts`; defaults to `NEXT_PUBLIC_SENDER_PUBLIC_URL`), `INFERENCE_URL` (optional
+server-to-server relay origin for `/api/models`; defaults to `NEXT_PUBLIC_INFERENCE_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature
 checks). Keys shorter than 32 characters are treated as unset. `instrumentation.ts` logs a `[web] config error` /
 `config warning` line at startup for a missing or short key (values are never logged). The web app does not call the
 supervisor, so it does not hold `SUPERVISOR_SERVICE_KEY`.
 
 Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked split is read from
-`ClankerLpLockerFeeConversion.tokenRewards(token)`.
+`ClankerLpLockerFeeConversion.tokenRewards(token)`. Claimable fees are `ClankerFeeLocker.availableFees(owner, feeToken)`
+(WETH is one pooled balance per recipient; fees taken in a coin are per coin) and `claim(owner, feeToken)` is
+permissionless and always pays `owner`. Claims carry the ERC-8021 `dataSuffix`.
+
+Wallets: Base Account ("Sign in with Base", passkey smart wallet; `lib/connectors/base-account.ts` loads
+`@base-org/account/browser` so the SSR bundle never pulls the SDK's Node entry), Coinbase Wallet (EOA only), the
+injected browser wallet, WalletConnect. The Builder Code suffix is passed to both SDKs as `preference.attribution` so a
+smart wallet also suffixes its outer `executeBatch` calldata.
+
+Server API used by the app itself: `GET /api/models` (relay `/v1/models` read server-side, cached 60 s, priced per
+thought = 4,000 prompt + 1,024 output tokens at the relay's margin, filtered by the console `allowedModels`; built-in
+list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (proxy to the sender's public
+`/public/posts/:agentId`, cached 60 s; 404 = the sender never saw the agent).
 
 ## Routes
 
@@ -76,7 +89,7 @@ Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked 
 | `/launch` | Coin, Agent, X account, Fuel & options; USDC approve then `BootrLauncher.launch`. |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/[slug]` | How it works, Fee math, Agent rules, Dormancy, Risks. |
-| `/profile` | Wallet-gated: your agents (pause/unpause), launched coins, holdings, fuel history. |
+| `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH + per-coin, Claim), launched coins, holdings, fuel history. |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
 
 ## Connecting X at launch
@@ -149,6 +162,9 @@ and, in production on https, HSTS. See `lib/server/security-headers.ts`.
 On-chain actions in the console use the connected wallet (must be the contract owner): `setDefaults(buyback, d)`,
 launcher `pause/unpause`, `AgentGuardian.revokeAllSessionKeys`, `AgentGuardian.claimDormant`, and "force refuel" (a USDC
 transfer to the kernel). `pauseAgent/unpauseAgent` are creator-only on-chain, so they live on `/profile`.
+"Platform fees" lists, per coin from the indexer's agent list, the platform recipient (last reward recipient in
+`tokenRewards`) and its claimable balances, with per-balance Claim and a sequential "Claim all"; any wallet may send
+these (`claim` is permissionless and pays the recipient).
 
 ## Rendering notes
 

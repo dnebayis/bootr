@@ -34,6 +34,14 @@ export function senderEnv(): SenderServerEnv {
 }
 
 /**
+ * Inference relay origin for server-side reads (`/api/models`): INFERENCE_URL (the internal relay
+ * address), else NEXT_PUBLIC_INFERENCE_URL. Empty when neither is set.
+ */
+export function inferenceUrl(): string {
+  return (str(process.env.INFERENCE_URL) || str(process.env.NEXT_PUBLIC_INFERENCE_URL)).replace(/\/$/, '');
+}
+
+/**
  * Key that authenticates the indexer's signed `GET /api/admin/config` (INDEXER_SERVICE_KEY).
  * Migration only: while INDEXER_SERVICE_KEY is unset, SENDER_SERVICE_KEY is accepted (a warning is
  * logged at startup). An INDEXER_SERVICE_KEY that is set but too short disables service reads.

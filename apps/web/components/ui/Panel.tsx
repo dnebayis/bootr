@@ -24,7 +24,7 @@ export function Panel({
           {action}
         </header>
       ) : null}
-      <div className={cn('p-5', bodyClassName)}>{children}</div>
+      <div className={cn(/(^|\s)p[xy]?-\S+/.test(bodyClassName ?? '') ? '' : 'p-5', bodyClassName)}>{children}</div>
     </section>
   );
 }

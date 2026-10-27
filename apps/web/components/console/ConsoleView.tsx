@@ -24,6 +24,7 @@ import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
+import { PlatformFeesPanel } from './PlatformFees';
 
 const th = 'px-4 py-2 text-left text-caption font-normal text-mute';
 const td = 'px-4 py-2.5 align-middle';
@@ -479,6 +480,7 @@ export function ConsoleView({ admin, initialConfig }: { admin: string; initialCo
       <PlatformConfigPanel initial={initialConfig} />
       <AgentsPanel agents={list} loading={agents.isPending} />
       <DormantPanel agents={list} loading={agents.isPending} />
+      <PlatformFeesPanel agents={list} loading={agents.isPending} />
     </div>
   );
 }

@@ -139,11 +139,21 @@ export interface Holding {
   valueUsd: number;
 }
 
+/** A post or reply the agent published on X (sender `GET /public/posts/:agentId`, via /api/agents/:id/posts). */
 export interface AgentPost {
   id: string;
+  kind: 'post' | 'reply';
   text: string;
+  postId: string;
+  url: string;
+  /** Unix seconds. */
   createdAt: number;
-  url?: string;
+}
+
+export interface AgentPosts {
+  /** Connected X handle; null when the agent has no (or a revoked) X account. */
+  handle: string | null;
+  items: AgentPost[];
 }
 
 export type StreamHint = { type: 'launch' | 'trade' | 'agent'; tokenId?: string };

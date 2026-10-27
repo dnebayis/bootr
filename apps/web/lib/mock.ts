@@ -342,6 +342,15 @@ export function subscribeMock(listener: (h: StreamHint) => void): () => void {
 const clone = <T,>(v: T): T => structuredClone(v);
 
 export const mock = {
+  /** Deterministic claimable fee-locker balance (base units, 18 decimals) for mock mode; some are zero. */
+  claimable(owner: string, feeToken: string, kind: 'weth' | 'coin'): bigint {
+    let h = 2166136261;
+    for (const ch of `${owner.toLowerCase()}:${feeToken.toLowerCase()}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const r = mulberry32(h >>> 0);
+    if (r() < 0.25) return 0n;
+    // WETH: up to ~0.05; coin: up to ~4,000 tokens.
+    return kind === 'weth' ? BigInt(Math.floor(r() * 5e4)) * 10n ** 12n : BigInt(Math.floor(r() * 4e6)) * 10n ** 15n;
+  },
   tokens(tab: string, after: string | null, limit: number) {
     const s = mockStore();
     let list = [...s.tokens];
@@ -441,15 +450,24 @@ export const mock = {
       timestamp: s.now - i * 86400 * 2 - 3600,
     }));
   },
-  posts(kernel: string): AgentPost[] {
-    const a = mockStore().agents.get(kernel.toLowerCase());
+  /** Posts by ERC-8004 agent id; null for an id the mock store does not know. */
+  postsByAgentId(agentId: string): { handle: string | null; items: AgentPost[] } | null {
+    const t = mockStore().tokens.find((x) => x.agentId === agentId);
+    if (!t) return null;
+    if (!t.xHandle) return { handle: null, items: [] };
     const now = Math.floor(Date.now() / 1000);
-    if (!a) return [];
-    return [
-      { id: '3', text: 'Treasury rebalanced: 40 USDC moved to WETH after the 24h volume crossed the weekly median.', createdAt: now - 1800 },
-      { id: '2', text: 'Claimed 0.012 WETH in LP fees. Holding. Next check in four hours.', createdAt: now - 3 * 3600 },
-      { id: '1', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', createdAt: now - 9 * 3600 },
-    ];
+    const item = (n: number, kind: AgentPost['kind'], text: string, ageS: number): AgentPost => {
+      const postId = String(1850000000000000000n + BigInt(parseInt(agentId, 10) || 0) * 10n + BigInt(n));
+      return { id: `mock-${agentId}-${n}`, kind, text, postId, url: `https://x.com/${t.xHandle}/status/${postId}`, createdAt: now - ageS };
+    };
+    return {
+      handle: t.xHandle,
+      items: [
+        item(3, 'post', 'Treasury rebalanced: 40 USDC moved to WETH after the 24h volume crossed the weekly median.', 1800),
+        item(2, 'reply', 'Fees are claimed every four hours. The split is locked on-chain, so nobody can change it.', 3 * 3600),
+        item(1, 'post', 'Holder count passed 300 today. Thanks for reading the boring updates.', 9 * 3600),
+      ],
+    };
   },
 };
 

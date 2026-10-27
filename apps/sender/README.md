@@ -74,6 +74,30 @@ with other services without clashing with their drizzle journals.
 | `X_API_BASE_URL`                      | no       | `https://api.x.com`                | token endpoint is `<base>/2/oauth2/token`                                |
 | `X_AUTHORIZE_URL`                     | no       | `https://x.com/i/oauth2/authorize` |                                                                          |
 | `X_TIMEOUT_MS`                        | no       | `15000`                            | per X request; a timed-out publish becomes `held`                        |
+| `SENDER_PUBLIC_RATE_LIMIT_PER_MIN`    | no       | `120`                              | requests per minute per client IP on `/public/*`; `0` disables. In production the web app's `/api/agents/:id/posts` proxy is the main caller (one IP, cached 60 s per agent) |
+| `SENDER_TRUST_PROXY`                  | no       | `0`                                | `1`: key the rate limit on the right-most `X-Forwarded-For` entry (exactly one trusted proxy in front). Otherwise the socket address is used and forwarding headers are ignored |
+
+## Public read API
+
+`GET /public/posts/:agentId?limit=3` (no auth, read-only, `limit` 1-10, default 3) returns what the agent
+has published:
+
+```json
+{
+  "agentId": "10388",
+  "handle": "quiet_engine",
+  "items": [
+    { "id": "<actionId>", "kind": "post", "text": "...", "postId": "1850000000000000000",
+      "url": "https://x.com/quiet_engine/status/1850000000000000000", "createdAt": "2026-10-27T09:12:03.000Z" }
+  ]
+}
+```
+
+Only `sender_actions` rows with status `sent` and a provider post id, newest first. `handle` is the currently
+connected account (null when none or revoked); posts sent from an earlier account link to
+`https://x.com/i/status/<postId>`. No tokens, X user ids, reply targets, errors or held/rejected rows are
+exposed. Unknown agent ids (never connected, never posted) are `404`. Responses carry
+`Cache-Control: public, max-age=60`; over the per-IP limit the answer is `429` with `Retry-After`.
 
 ## Internal authentication
 

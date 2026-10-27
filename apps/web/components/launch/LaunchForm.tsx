@@ -12,7 +12,9 @@ import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { bps as bpsLabel } from '@/lib/format';
-import { fetchModels, fetchPlatformFlags, fileToSquareDataUrl, filterAllowedModels, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
+import { fetchModels, fetchPlatformFlags, fileToSquareDataUrl, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
+import { formatThoughtPrice, groupByProvider, RECOMMENDED_MODEL, THOUGHT } from '@/lib/models';
+import { Badge } from '@/components/ui/Badge';
 import { agentCardUrl } from '@/lib/agent-card';
 import { builderDataSuffix } from '@/lib/attribution';
 import { mockLaunch } from '@/lib/mock';
@@ -99,14 +101,13 @@ export function LaunchForm() {
   const [devBuy, setDevBuy] = useState('');
   const [buyback, setBuyback] = useState(false);
 
-  const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 5 * 60_000 });
-  // Admin console switches (M-7): paused launches and the model allowlist. Unavailable config = no filter.
+  // Priced, admin-filtered list from /api/models (the relay itself is internal).
+  const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
+  // Admin console switches (M-7): paused launches. The model allowlist is applied by /api/models.
   const platform = useQuery({ queryKey: ['platform'], queryFn: fetchPlatformFlags, staleTime: 30_000 });
-  const modelList = useMemo(() => {
-    const all = models.data?.models ?? [];
-    return platform.data ? filterAllowedModels(all, platform.data.allowedModels) : all;
-  }, [models.data, platform.data]);
-  const selectedModel = modelList.find((m) => m.id === model) ?? modelList[0];
+  const modelList = useMemo(() => models.data?.models ?? [], [models.data]);
+  const modelGroups = useMemo(() => groupByProvider(modelList), [modelList]);
+  const selectedModel = modelList.find((m) => m.id === model) ?? modelList.find((m) => m.id === RECOMMENDED_MODEL) ?? modelGroups[0]?.models[0];
 
   const onChain = !!contracts.launcher && !env.useMock;
   const standardRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: onChain } });
@@ -307,17 +308,35 @@ export function LaunchForm() {
           />
         </div>
         <div>
-          <Label htmlFor="model" hint={models.data?.source === 'fallback' ? 'Estimated prices' : undefined}>
+          <Label htmlFor="model" hint={models.data?.source === 'fallback' ? 'Estimated prices' : 'Price per thought'}>
             Model
           </Label>
-          <Select id="model" value={selectedModel?.id ?? ''} onChange={(e) => setModel(e.target.value)} disabled={models.isPending}>
-            {modelList.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-                {m.pricePerThoughtUsd != null ? ` — $${m.pricePerThoughtUsd} per thought` : ''}
-              </option>
+          <Select id="model" value={selectedModel?.id ?? ''} onChange={(e) => setModel(e.target.value)} disabled={models.isPending || modelList.length === 0}>
+            {models.isPending ? <option value="">Loading models…</option> : null}
+            {modelGroups.map((g) => (
+              <optgroup key={g.provider} label={g.provider}>
+                {g.models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label} · {formatThoughtPrice(m.pricePerThoughtUsd)}
+                    {m.id === RECOMMENDED_MODEL ? ' · Recommended' : ''}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </Select>
+          {selectedModel ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-mute" data-testid="model-summary">
+              <span className="text-ink">{selectedModel.label}</span>
+              <span>{selectedModel.provider}</span>
+              <span className="font-mono tabular text-ink">{formatThoughtPrice(selectedModel.pricePerThoughtUsd)}</span>
+              <span>per thought</span>
+              {selectedModel.id === RECOMMENDED_MODEL ? <Badge>Recommended</Badge> : null}
+            </div>
+          ) : null}
+          <p className="mt-1 text-caption text-mute">
+            A thought is one model call: the agent reads its context (about {THOUGHT.promptTokens.toLocaleString('en-US')} tokens) and decides what to do next (up to{' '}
+            {THOUGHT.outputTokens.toLocaleString('en-US')} tokens). Each one is paid in USDC from the agent&rsquo;s fuel.
+          </p>
         </div>
         <fieldset>
           <legend className="mb-1.5 text-caption font-medium text-ink">Worker template</legend>

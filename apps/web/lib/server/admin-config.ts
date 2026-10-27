@@ -18,7 +18,17 @@ export type PlatformConfig = {
 
 export const DEFAULT_CONFIG: PlatformConfig = {
   graduationThresholdUsd: 50_000,
-  allowedModels: ['claude-haiku-4-5', 'claude-sonnet-4-5', 'gpt-4.1-mini', 'llama-3.3-70b'],
+  // Relay ids (apps/inference price table). The launch form offers these, cheapest-first per provider.
+  allowedModels: [
+    'anthropic/claude-haiku-4.5',
+    'anthropic/claude-sonnet-4.6',
+    'openai/gpt-5.4-mini',
+    'openai/gpt-4.1-mini',
+    'google/gemini-3.5-flash-lite',
+    'deepseek/deepseek-v3.2',
+    'x-ai/grok-4.20',
+    'meta-llama/llama-4-maverick',
+  ],
   xQuotas: { postsPerDay: 12, repliesPerDay: 30 },
   postIntervalMinutes: { min: 30, max: 240 },
   launchesPaused: false,

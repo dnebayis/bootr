@@ -33,6 +33,10 @@ export function buildContext(config: Config = loadConfig()): {
     },
     oauthReturnUrl: config.SENDER_OAUTH_RETURN_URL,
     xTimeoutMs: config.X_TIMEOUT_MS,
+    publicApi: {
+      ratePerMinute: config.SENDER_PUBLIC_RATE_LIMIT_PER_MIN,
+      trustProxy: config.SENDER_TRUST_PROXY,
+    },
   };
   return { ctx, config, close };
 }

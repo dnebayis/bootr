@@ -18,7 +18,7 @@ import { env } from './env';
 import { mock, subscribeMock } from './mock';
 import type {
   Agent,
-  AgentPost,
+  AgentPosts,
   AgentWithToken,
   DailyStat,
   FeesByKind,
@@ -253,17 +253,17 @@ export async function fetchFuelHistory(from: string): Promise<FuelEvent[]> {
   }
 }
 
-/** Last posts from the sender service's public endpoint; null when not configured. */
-export async function fetchAgentPosts(kernel: string): Promise<AgentPost[] | null> {
-  if (env.useMock) {
-    await delay();
-    return mock.posts(kernel);
-  }
-  if (!env.senderPublicUrl) return null;
-  const res = await fetch(`${env.senderPublicUrl}/public/posts/${kernel.toLowerCase()}`);
+/**
+ * Latest posts of an agent (by ERC-8004 agent id) through this app's `/api/agents/:id/posts`, which
+ * proxies the internal sender. 404 = the sender never saw the agent (no X account). Null when the
+ * posts cannot be loaded (sender unset or down).
+ */
+export async function fetchAgentPosts(agentId: string): Promise<AgentPosts | null> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/posts?limit=3`);
+  if (res.status === 404) return { handle: null, items: [] };
   if (!res.ok) return null;
-  const json = (await res.json()) as AgentPost[] | { items: AgentPost[] };
-  return (Array.isArray(json) ? json : json.items).slice(0, 3);
+  const json = (await res.json()) as Partial<AgentPosts>;
+  return { handle: typeof json.handle === 'string' ? json.handle : null, items: Array.isArray(json.items) ? json.items.slice(0, 3) : [] };
 }
 
 // ---------------------------------------------------------------- query keys
@@ -354,8 +354,8 @@ export function useFuelHistory(addr: string | undefined) {
   return useQuery({ queryKey: qk.fuel(addr ?? ''), queryFn: () => fetchFuelHistory(addr!), enabled: !!addr });
 }
 
-export function useAgentPosts(kernel: string | undefined) {
-  return useQuery({ queryKey: qk.posts(kernel ?? ''), queryFn: () => fetchAgentPosts(kernel!), enabled: !!kernel, staleTime: 60_000 });
+export function useAgentPosts(agentId: string | undefined) {
+  return useQuery({ queryKey: qk.posts(agentId ?? ''), queryFn: () => fetchAgentPosts(agentId!), enabled: !!agentId, staleTime: 60_000 });
 }
 
 // ---------------------------------------------------------------- live stream

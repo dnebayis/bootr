@@ -56,8 +56,8 @@ function Fees() {
       <Table
         head={['Recipient', 'Share of LP fee', 'Standard (of volume)', 'Buyback & burn (of volume)']}
         rows={[
-          ['Agent treasury', '20%', '0.20%', '0.20%'],
-          ['Creator', '50% / 35%', '0.50%', '0.35%'],
+          ['Agent treasury', '5%', '0.05%', '0.05%'],
+          ['Creator', '65% / 50%', '0.65%', '0.50%'],
           ['Burn (bought back and burned)', '— / 15%', '—', '0.15%'],
           ['Platform', '30%', '0.30%', '0.30%'],
           ['Clanker protocol fee, on top', '+20%', '0.20%', '0.20%'],
@@ -72,12 +72,12 @@ function Fees() {
 swappers pay (1.2%)      $1,200
   Clanker (on top)         $200
   LP fee (1%)            $1,000
-    Agent    20%           $200
-    Creator  50%           $500
+    Agent     5%            $50
+    Creator  65%           $650
     Platform 30%           $300`}</Pre>
       <Pre label="buyback & burn preset">{`LP fee (1%)            $1,000
-  Agent    20%             $200
-  Creator  35%             $350
+  Agent     5%              $50
+  Creator  50%             $500
   Burn     15%             $150   -> converted to the coin and burned
   Platform 30%             $300`}</Pre>
       <H2>How fees move</H2>

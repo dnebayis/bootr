@@ -12,6 +12,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@base-org/account": "^2.5.13",
     "@bootr/shared": "workspace:*",
     "@coinbase/wallet-sdk": "^4.4.0",
     "@number-flow/react": "^0.6.2",

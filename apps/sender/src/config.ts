@@ -33,6 +33,16 @@ export const configSchema = z.object({
   X_TIMEOUT_MS: num(z.coerce.number().int().positive(), 15_000),
   SENDER_DEFAULT_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 24),
   SENDER_DEFAULT_MENTION_INTERVAL_SEC: num(z.coerce.number().int().nonnegative(), 300),
+  /** Requests per minute per client IP on the public read API (`GET /public/posts/:agentId`); 0 = off. */
+  SENDER_PUBLIC_RATE_LIMIT_PER_MIN: num(z.coerce.number().int().nonnegative(), 120),
+  /** `1`/`true`: rate-limit by the right-most X-Forwarded-For entry (one trusted proxy in front). */
+  SENDER_TRUST_PROXY: z.preprocess(
+    blank,
+    z
+      .enum(['0', '1', 'true', 'false'])
+      .default('0')
+      .transform((v) => v === '1' || v === 'true'),
+  ),
 });
 
 export type Config = z.infer<typeof configSchema>;

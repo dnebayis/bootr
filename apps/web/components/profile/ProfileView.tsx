@@ -20,6 +20,7 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { TokenImage } from '@/components/ui/TokenImage';
+import { CreatorFees } from './CreatorFees';
 
 function Rows({ n = 3 }: { n?: number }) {
   return (
@@ -147,6 +148,8 @@ export function ProfileView() {
           </div>
         )}
       </Panel>
+
+      <CreatorFees owner={address} tokens={launched.data ?? []} loading={launched.isPending} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Tokens you launched" bodyClassName="p-0">

@@ -1,5 +1,6 @@
 import type { Db } from './db/client.js';
 import type { OAuthSettings } from './oauth.js';
+import type { PublicApiOptions } from './public-posts.js';
 import type { XClient } from './x-client.js';
 
 export interface SenderContext {
@@ -14,6 +15,8 @@ export interface SenderContext {
   oauthReturnUrl?: string;
   /** X request timeout; used to decide when a `pending` row is stale. */
   xTimeoutMs: number;
+  /** `/public/*` rate limit and client-IP source; defaults to DEFAULT_PUBLIC_API. */
+  publicApi?: PublicApiOptions;
 }
 
 export const nowSec = (ctx: SenderContext): number => Math.floor(ctx.now().getTime() / 1000);
