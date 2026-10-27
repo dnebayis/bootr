@@ -24,6 +24,10 @@ sender's port there; Ponder reads `PORT` too): `PORT=42069 pnpm --filter indexer
 `SENDER_SERVICE_KEY` the `/internal/agent/:kernel/social` route answers `401 not_configured` and the
 web shows agents without an X handle.
 
+`ponder dev` hot-reloads on any change under `apps/indexer`; with PGlite that reload can abort in-flight
+queries ("PGlite is closed", exit code 75). Restart it after editing, or run `ponder start` for long
+backfills. `INDEXER_MAX_RPS` (default 50) caps the JSON-RPC rate across all configured urls.
+
 Until the Bootr contracts are deployed (`BOOTR_LAUNCHER_ADDRESS` empty), the indexer boots with a
 warning and only runs the snapshot block handler (ETH/USD, empty platform rollups). Set
 `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` and `BOOTR_START_BLOCK` (launcher deploy block)
