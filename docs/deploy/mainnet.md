@@ -290,3 +290,15 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
    *Default: keep the block delay; re-run the dry-run on deploy day.*
 6. **Paymaster exposure.** Sponsored ops are capped by the CDP policy, not by Bootr. Set the daily USD cap before
    the first launch.
+
+## Deployed (2026-10-27, Base mainnet, block 53164454)
+
+| Contract | Address |
+| --- | --- |
+| AgentGuardian | `0x799Ab875294E37839883D12084aB4BE3f7633630` |
+| BootrLauncher (Agent 5 / Creator 65 / Platform 30; buyback 5/50/15/30; min fuel 20 USDC) | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` |
+| BuybackBurner implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` |
+| BootrCallPolicy | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` |
+| BootrSwapHelper | `0x5723152f21ed7E305312fd90a2Bb94864BA9D80d` |
+
+Owner of guardian and launcher: ADMIN `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3` (accepted). All five verified on Basescan. $BOOT is not launched yet (planned from PLATFORM_TREASURY, buyback preset, no dev buy, 20 USDC fuel at launch time).

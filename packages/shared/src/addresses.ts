@@ -160,11 +160,11 @@ export const addresses = {
     },
     bootr: {
       // Not deployed yet: filled by the cutover (docs/deploy/mainnet.md).
-      launcher: null,
-      guardian: null,
-      burnerImplementation: null,
-      callPolicy: null,
-      swapHelper: null,
+      launcher: '0xD4747d91BE6121eBa7602D9114B51d6C184084EF',
+      guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
+      burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
+      callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
+      swapHelper: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
     },
   },
   [BASE_SEPOLIA_CHAIN_ID]: {
