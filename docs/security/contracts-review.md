@@ -3,6 +3,27 @@
 > **Historical (2026-10-27).** This review covers launcher v1 and v1.1, which launch through Clanker v4. Launcher v2
 > launches through RWAGMI v3 (see `docs/rwagmi-migration.md`); the Clanker-specific findings below do not apply to
 > it, and v2 needs its own review before mainnet use.
+>
+> **Status update (2026-10-29, checked against the code and Base mainnet).** The text below is kept as written; it
+> mentions Clanker contracts, a Base Sepolia deployment and test runs that no longer exist. What changed for the
+> items a reader is most likely to look up:
+>
+> - *Launch backend:* `BootrLauncher` v2 (`0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`) calls
+>   `RwagmiB20LauncherV3.launchB20`; the Clanker-specific findings (fee conversion locker, MEV module, `TokenCreated`)
+>   apply to the paused v1 / v1.1 launchers only.
+> - *Dev buy (BOOTR-05):* v2 passes `minOut = 1` to `RwagmiEthDevBuyV3` inside the launch transaction that creates the
+>   pool, so there is no earlier pool price to sandwich; the amount is bounded by `devBuyWei`.
+> - *Burner window (BOOTR-06):* unchanged in shape: the burner clone is created before `launchB20` and initialized
+>   right after it, so it is uninitialized across the RWAGMI call (RWAGMI's launcher is the trusted external party).
+> - *Mainnet addresses (BOOTR-08):* `packages/shared/src/addresses.ts` `[8453]` was verified on-chain on 2026-10-27
+>   and the contracts are deployed; `Deploy.s.sol` `chainConfig()` reverts on Base Sepolia (no RWAGMI v3 there).
+> - *Guardian owner (BOOTR-02 context):* on mainnet the launcher owner `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3`
+>   has no code (`cast code` = `0x`, 2026-10-29), i.e. an EOA, not a multisig. The single-key custody concern stands.
+> - *Tests:* the security suites under `test/security` now run on a Base mainnet fork with `base-forge` (see
+>   `packages/contracts/README.md`); the "Base Sepolia fork" and "51 passing" figures below are the 2026-10-27 state.
+> - *Not verified:* `SessionKeySignaturePath.t.sol` points at an `AuthorizationPolicyFork.t.sol` and comments in
+>   `AgentGuardian.sol` mention `BootrAuthorizationPolicy`; neither exists in the tree (C-01 was closed with
+>   `SKIP_SIGNATURE` instead, see `packages/contracts/src/README.md`). TODO(verify): clean those comments up.
 
 Scope: `packages/contracts/src/{BootrLauncher,AgentGuardian,BootrCallPolicy,BuybackBurner}.sol`,
 `src/lib/MinimalClones.sol`, `src/interfaces/*`, `script/*.s.sol`, and the trust model in `src/README.md`.
