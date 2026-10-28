@@ -391,10 +391,10 @@ components:
 
 ## Bootr
 
-> Product brand for **bootr.fun** — a launchpad on Base where every coin gets an autonomous agent that runs its own X account. This section is the source of truth for the web app (`app/globals.css`, `components/brand/*`). Everything below it is the Vercel-inspired base the brand was derived from; where they disagree, this section wins.
+> Product brand for **bootr.fun** — a launchpad on Base where every coin gets an autonomous agent that runs its own X account. This section is the source of truth for the web app (`app/globals.css`, `components/brand/*`). Everything below it, including the colour values in the front matter, is the Vercel-inspired base the layout was derived from; its colours are superseded by the Base palette here. Where they disagree, this section wins.
 
 ### Positioning in one line
-A trading-terminal-grade product, not a marketing site. Black and white, hairlines, mono numbers. The Vercel base minus its mesh gradient: Bootr has **no decorative system at all** — data is the decoration.
+A trading-terminal-grade product on Base, not a marketing site. Black, white and Base grays, hairlines, mono numbers, one Base Blue accent. The Vercel base minus its mesh gradient: Bootr has **no decorative system at all** — data is the decoration, and the few colours it uses are Base's and carry meaning.
 
 ### Identity
 
@@ -410,27 +410,110 @@ A trading-terminal-grade product, not a marketing site. Black and white, hairlin
 
 ### Color tokens
 
-One neutral ladder per mode, one accent. Token names map 1:1 to Tailwind utilities (`bg-canvas`, `text-ink`, `border-hairline`, ...).
+Bootr on Base: the palette is Base's own ([brand.base.org](https://brand.base.org), HEX section). One gray ladder per mode, one hero accent (Base Blue), and a few secondary colours that only carry meaning. Token names map 1:1 to Tailwind utilities (`bg-canvas`, `text-ink`, `border-hairline`, `bg-accent`, `text-positive-text`, `fill-chart-1`, ...). Raw values live on `:root` / `.dark` in `app/globals.css`; this table is the source of truth and the CSS must match it.
+
+**Base palette used**
+
+| Name | Hex | | Name | Hex |
+|---|---|---|---|---|
+| Base Blue | `#0000ff` | | Gray 0 | `#ffffff` |
+| Cerulean | `#3c8aff` | | Gray 10 | `#eef0f3` |
+| Green | `#66c800` | | Gray 15 | `#dee1e7` |
+| Lime Green | `#b6f569` | | Gray 30 | `#b1b7c3` |
+| Red | `#fc401f` | | Gray 50 | `#717886` |
+| Yellow | `#ffd12f` | | Gray 60 | `#5b616e` |
+| Tan (muted) | `#b8a581` | | Gray 80 | `#32353d` |
+| | | | Gray 100 | `#0a0b0d` |
+
+Pink `#fea8cd` is not used. Values marked *derived* are straight sRGB mixes of two Base colours, made only where no Base step passes AA; they are never used as brand colours on their own.
+
+**Neutrals**
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `canvas` | `#ffffff` | `#000000` | Page and card background. Cards are the same colour as the page; hairlines separate them. |
-| `canvas-soft` | `#fafafa` | `#0a0a0a` | Inset regions: table headers, code blocks, input wells. |
-| `canvas-sub` | `#f2f2f2` | `#141414` | Hover fill for rows, ghost buttons, skeletons. |
-| `ink` | `#171717` | `#ffffff` | Headlines, numbers, primary text, ink buttons, "awake" status. |
-| `on-ink` | `#ffffff` | `#000000` | Text on ink fills. |
-| `body` | `#4d4d4d` | `#a1a1a1` | Paragraph copy. |
-| `mute` | `#737373` | `#8f8f8f` | Labels, captions, secondary metadata. (Darker than the base `#888` so 12px labels pass WCAG AA at 4.7:1 on white.) |
-| `hairline` | `#ebebeb` | `#262626` | Every 1px border and divider. |
-| `hairline-strong` | `#d4d4d4` | `#3d3d3d` | Input borders on hover, focused table rows, outline status dots. |
-| `accent` | `#0070f3` | `#0070f3` | Fill for the one primary action per view (Launch, Fuel, Trade), focus rings. |
-| `link` | `#0070f3` | `#3291ff` | Link text. Dark mode lifts the same hue for 4.5:1 on black. |
-| `danger` | `#d00e17` | `#ff5c5c` | Form validation and failed transactions only. Never for price moves. |
+| `canvas` | `#ffffff` Gray 0 | `#0a0b0d` Gray 100 | Page and card background. Cards are the same colour as the page; hairlines separate them. |
+| `canvas-soft` | `#eef0f3` Gray 10 | `#141619` *derived* (Gray 100 → Gray 80, 25%) | Inset regions: table headers, code blocks, input wells, the DexChart well. |
+| `canvas-sub` | `#dee1e7` Gray 15 | `#1e2025` *derived* (Gray 100 → Gray 80, 50%) | Hover fill for rows and ghost buttons, the ⌘K selection, skeletons. |
+| `ink` | `#0a0b0d` Gray 100 | `#ffffff` Gray 0 | Headlines, numbers, primary text, ink buttons. |
+| `on-ink` | `#ffffff` | `#0a0b0d` | Text on ink fills. |
+| `body` | `#32353d` Gray 80 | `#b1b7c3` Gray 30 | Paragraph copy. |
+| `mute` | `#5b616e` Gray 60 | `#818895` *derived* (Gray 50 → Gray 30, 25%) | Labels, captions, secondary metadata. Gray 50 is 4.44:1 on both white and Gray 100, just under AA, so it is not used for text. |
+| `hairline` | `#dee1e7` Gray 15 | `#32353d` Gray 80 | Every 1px border and divider. |
+| `hairline-strong` | `#b1b7c3` Gray 30 | `#5b616e` Gray 60 | Input borders on hover, outline status dots, the RWAGMI (context) segment of the fee bar. |
+| `selection-bg` / `selection-fg` | `#0a0b0d` / `#eef0f3` | `#ffffff` / `#0a0b0d` | `::selection`. |
+
+**Accent (Base Blue)**
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `accent` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Fill of the one primary action per view (Launch, Fuel, Trade), focus rings, the active primary-nav underline, the ⌘K selection bar, the 2px rule on the `$BOOT` box. Base Blue is 2.29:1 on Gray 100, so dark mode uses Cerulean. |
+| `accent-hover` | `#3c8aff` Cerulean | `#6da7ff` *derived* (Cerulean → white, 25%) | Hover fill of primary buttons. |
+| `on-accent` | `#ffffff` | `#0a0b0d` | Label on `accent`. White on Cerulean is 3.35:1, so Cerulean always carries Gray 100 text. |
+| `on-accent-hover` | `#0a0b0d` | `#0a0b0d` | Label on `accent-hover`. |
+| `link` | `#0000ff` | `#3c8aff` | Link text, and the hover colour of ink/mute links. A `text-link` link hovers with an underline, never with Cerulean text on white (3.35:1). |
+
+**Secondary (semantic only)**
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `positive` | `#66c800` Green | `#66c800` | Fills: the agent "awake" dot. |
+| `positive-text` | `#3d7306` *derived* (Green → Gray 100, 45%) | `#66c800` | Text: positive 24h change, "Pinned" (image upload), "connected" (X account). Green itself is 2.14:1 on white. |
+| `negative` | `#fc401f` Red | `#fc401f` | Fills that signal failure (none today; reserved). |
+| `negative-text` (alias `danger`) | `#b3301a` *derived* (Red → Gray 100, 30%) | `#fc401f` | Text and borders: negative 24h change, validation and transaction errors, the wrong-network chip, `aria-invalid` inputs, the failed upload box. Red itself is 3.56:1 on white. |
+| `warning` | `#ffd12f` Yellow | `#ffd12f` | Text of the "Graduated" / "Grad" badge. Only ever on `warning-surface`. |
+| `warning-surface` | `#0a0b0d` Gray 100 | `#32353d` Gray 80 | Badge fill under `warning` (Yellow on dark ink). |
+| `tan` | `#b8a581` Tan | `#b8a581` | The one muted colour; used as `chart-4`. |
+
+**Charts**
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `chart-1` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Primary series: single-series lines, areas (8% fill), bars, ranked bars; `agent` in the fee split. |
+| `chart-2` | `#3c8aff` Cerulean | `#0000ff` Base Blue | Second stacked series; `creator`. |
+| `chart-3` | `#b6f569` Lime Green | `#b6f569` | Third stacked series; `burn`. |
+| `chart-4` | `#b8a581` Tan | `#b8a581` | Fourth stacked series; `platform`. |
+| context | `hairline-strong`, `hairline`, `mute` | same | RWAGMI share, baselines, crosshair, axis labels. |
+
+The hovered datum switches to `ink` (the series is already blue). Axis text stays `mute`.
 
 **Rules**
-- Price change is **colour-neutral**: `+4.2%` / `−3.1%` in `ink`, sign does the work. No red/green fills or text anywhere in market data.
-- Accent appears at most once per viewport as a fill. Everything else that is clickable is ink or ghost.
-- Charts: `chart-ink` (= ink) for the primary series, then `chart-2`, `chart-3`, `chart-4` grays for stacked series; accent only for the hovered/selected datum and the crosshair readout.
+- **Monochrome leads.** Black, white and the Base grays carry every surface, border and almost all text. Colour is the exception a reader notices.
+- **One hero accent.** Base Blue appears as a fill at most once per viewport (the primary button). Its other uses are thin and functional: focus ring, active nav underline, ⌘K selection bar, the 2px rule on the `$BOOT` box, link text, chart series 1. Never on headings, icons, the mark or wordmark, or as a background wash. No gradients.
+- **At most three vibrant secondaries plus one muted on a page.** Green (awake / up), Red (down / error) and Yellow (graduated) are the vibrant three; Tan is the muted one. Lime appears only inside charts, and a chart page shows no Yellow. Pink is unused.
+- **Secondaries carry meaning, never decoration.** Green = positive or alive; Red = negative or failed; Yellow = graduated. Every coloured mark is paired with text (a label, a sign, a legend value), so colour is never the only signal.
+- **24h change is coloured:** `+4.2%` in `positive-text`, `−3.1%` in `negative-text`, `0.0%` and missing values in `ink`. The sign stays, so the number reads without colour. Only the 24h change is coloured; prices, caps and volumes stay `ink`.
+- **AA in both themes.** Text pairings must reach 4.5:1 (12–14px is all "normal" text here); non-text UI that is the only signal (focus ring, active underline) must reach 3:1. Where a Base colour fails, use the documented *derived* shade, never a new hue. Measured ratios are in the Contrast table; add a row for every new pairing.
+
+**Contrast** (WCAG 2.x relative luminance, computed from the hex values and re-checked against computed styles in the running app, both themes)
+
+| Pairing | Light | Dark |
+|---|---|---|
+| `ink` on `canvas` | 19.69 | 19.69 |
+| `body` on `canvas` | 12.26 | 9.78 |
+| `mute` on `canvas` | 6.21 | 5.52 |
+| `mute` on `canvas-soft` | 5.44 | 5.08 |
+| `mute` on `canvas-sub` | 4.74 | 4.57 |
+| `link` on `canvas` | 8.59 | 5.88 |
+| `link` on `canvas-soft` | 7.53 | 5.41 |
+| `on-accent` on `accent` (primary button) | 8.59 | 5.88 |
+| `on-accent-hover` on `accent-hover` | 5.88 | 8.08 |
+| `on-ink` on `ink` | 19.69 | 19.69 |
+| `positive-text` on `canvas` | 5.75 | 9.21 |
+| `positive-text` on `canvas-soft` | 5.03 | 8.48 |
+| `negative-text` on `canvas` | 6.26 | 5.52 |
+| `negative-text` on `canvas-soft` | 5.48 | 5.09 |
+| `warning` on `warning-surface` (badge) | 13.51 | 8.42 |
+| `accent` focus ring / nav underline / ⌘K bar on `canvas` (non-text, ≥3) | 8.59 | 5.88 |
+| `accent` ⌘K bar on `canvas-sub` (non-text, ≥3) | 6.56 | 4.87 |
+| `positive` awake dot on `canvas` (non-text, paired with a label) | 2.14 | 9.21 |
+| `chart-1` on `canvas` (non-text) | 8.59 | 5.88 |
+| `chart-2` on `canvas` (non-text) | 3.35 | 2.29 |
+| `chart-3` on `canvas` (non-text) | 1.29 | 15.24 |
+| `chart-4` on `canvas` (non-text) | 2.40 | 8.19 |
+
+Light `positive-text` is 4.39:1 on `canvas-sub` (Gray 15), so coloured change text never sits on a hover fill or skeleton; keep it on `canvas` or `canvas-soft`.
+
+Chart series under 3:1 (light Lime and Tan, dark Base Blue) are acceptable only because every series is labelled in text beside it (legend with value, tooltip with value) and stacked segments are split by a 1px `canvas` gap; never use them for a series without a text value. The light-mode awake dot is under 3:1 for the same reason: it always sits next to the status text ("Awake" in the card footer and agent panel, an sr-only label otherwise).
 
 ### Typography
 
@@ -469,18 +552,18 @@ New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animat
 
 | Component | Rules |
 |---|---|
-| `Button` | Heights 28 (sm) / 32 (md) / 40 (lg); radius `sm`. Variants: `primary` (accent fill, white text — one per view), `ink` (ink fill), `secondary` (canvas + hairline, ink text), `ghost` (no border, `canvas-sub` on hover). Disabled = 50% opacity, `cursor-not-allowed`. Loading keeps width, swaps label for "Confirming…". |
+| `Button` | Heights 28 (sm) / 32 (md) / 40 (lg); radius `sm`. Variants: `primary` (`accent` fill with `on-accent` label, `accent-hover` + `on-accent-hover` on hover — one per view), `ink` (ink fill), `secondary` (canvas + hairline, ink text), `ghost` (no border, `canvas-sub` on hover). Disabled = 50% opacity, `cursor-not-allowed`. Loading keeps width, swaps label for "Confirming…". |
 | `Input` / `Textarea` / `Select` | 32px (md) or 40px (lg) tall, hairline border, `hairline-strong` on hover, accent focus ring. Mono for numeric inputs with a right-aligned unit suffix (`USDC`, `ETH`). |
-| `Tabs` | Text tabs with a 1px ink underline on the active item; driven by the URL (`?tab=`). Counts in mono `mute`. |
-| `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `hairline-strong`. |
-| `StatusDot` | 8px circle. `awake` = solid ink; `sleeping` = solid mute; `paused` / `dormant` / `claimed` = 1px `hairline-strong` outline, no fill. Always paired with a text label for screen readers. |
-| `Badge` | Micro text, radius `xs`, hairline border, `canvas-soft` fill. "Graduated" is ink fill / on-ink text — the only filled badge. |
-| `Stat tile` | Caption label, `display-md` mono value ticking with number-flow, optional delta in caption. Tiles sit in a hairline-divided row, not separate cards. |
+| `Tabs` | Text tabs with a 1px ink underline on the active item; driven by the URL (`?tab=`). Counts in mono `mute`. The primary nav is the one exception: its active item is underlined in `accent`. |
+| `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. Agent status dot top right (Green awake, gray sleeping). 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `hairline-strong`. |
+| `StatusDot` | 8px circle. `awake` = solid `positive` (Green); `sleeping` = solid `mute` (gray); `paused` / `dormant` / `claimed` = 1px `hairline-strong` outline, no fill. Always paired with a text label for screen readers. |
+| `Badge` | Micro text, radius `xs`, hairline border, `canvas-soft` fill. "Graduated" (and the card's "Grad") is `warning` (Yellow) text on `warning-surface` — the only filled badge. |
+| `Stat tile` | Caption label, `display-md` mono value ticking with number-flow, optional delta in caption. The 24h change is `positive-text` / `negative-text` by sign. Tiles sit in a hairline-divided row, not separate cards. |
 | `Table` | Header row `canvas-soft`, caption `mute`; rows 36px, hairline separators, mono right-aligned numbers, hover `canvas-sub`. |
 | `Panel` | Section with a `display-sm` title, hairline border, radius `md`, 20px padding. |
 | `Empty state` | One sentence in `mute`, optionally one ghost action. No illustration. |
 | `Skeleton` | `canvas-sub` blocks at the final layout size, slow opacity pulse. |
-| Command palette | cmdk in a `lg` radius dialog, 560px wide, floating shadow, mono result metadata, `⌘K` hint in nav. |
+| Command palette | cmdk in a `lg` radius dialog, 560px wide, floating shadow, mono result metadata, `⌘K` hint in nav. Selected row: `canvas-sub` fill plus a 2px inset `accent` bar on the left (a shadow, so no size change). |
 
 ### Voice
 Short, literal, sentence case. "Launch a coin with an agent that runs it." Not "Revolutionize", not "Unleash", no exclamation marks, no emoji. Numbers over adjectives. Empty states are one sentence. Errors say what happened and what to do.
@@ -489,8 +572,10 @@ Short, literal, sentence case. "Launch a coin with an agent that runs it." Not "
 | Do | Don't |
 |---|---|
 | Let hairlines and whitespace carry structure. | Add gradients, glass, blur, glow or colour blobs. |
-| Use mono + `tabular-nums` for every live number. | Colour price changes red/green. |
-| Keep one accent fill per view. | Use the accent for decoration, icons or headings. |
+| Use mono + `tabular-nums` for every live number. | Colour prices, caps or volumes; only the 24h change gets Green/Red. |
+| Keep one Base Blue fill per view. | Use the accent for decoration, icons, headings or the mark. |
+| Use Base palette values, or their documented *derived* shades. | Introduce a hue outside the Base palette, or use Pink. |
+| Check AA in both themes for every new pairing and add it to the Contrast table. | Put white text on Cerulean, or Base Blue text on the dark canvas. |
 | Use radius ≤ 12px. | Round everything to 24px+. |
 | Animate to explain change (reorder, new item, value tick). | Animate for decoration (floating, pulsing logos, confetti). |
 

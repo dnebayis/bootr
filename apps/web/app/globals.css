@@ -4,57 +4,81 @@
  * Bootr design tokens. See DESIGN.md -> "## Bootr".
  * Raw values live on :root / .dark; @theme inline maps them to Tailwind utilities
  * (bg-canvas, text-ink, border-hairline, text-mute, bg-accent, font-mono, ...).
+ * Palette is Base's (brand.base.org); usage rules and contrast ratios are in DESIGN.md.
  */
 
 @custom-variant dark (&:where(.dark, .dark *, [data-theme='dark'], [data-theme='dark'] *));
 
 :root {
   color-scheme: light;
+  /* Base gray scale (brand.base.org): Gray 0 / 10 / 15 / 30 / 60 / 80 / 100. */
   --canvas: #ffffff;
-  --canvas-soft: #fafafa;
-  --canvas-sub: #f2f2f2;
-  --ink: #171717;
+  --canvas-soft: #eef0f3;
+  --canvas-sub: #dee1e7;
+  --ink: #0a0b0d;
   --on-ink: #ffffff;
-  --body: #4d4d4d;
-  --mute: #737373;
-  --hairline: #ebebeb;
-  --hairline-strong: #d4d4d4;
-  --accent: #0070f3;
-  --accent-hover: #0761d1;
-  --link: #0070f3;
+  --body: #32353d;
+  --mute: #5b616e;
+  --hairline: #dee1e7;
+  --hairline-strong: #b1b7c3;
+  /* Base Blue is the one hero accent; Cerulean is its hover (dark text, white fails AA on it). */
+  --accent: #0000ff;
+  --accent-hover: #3c8aff;
   --on-accent: #ffffff;
-  --danger: #d00e17;
-  --selection-bg: #171717;
-  --selection-fg: #f2f2f2;
-  --chart-ink: #171717;
-  --chart-2: #5c5c5c;
-  --chart-3: #a3a3a3;
-  --chart-4: #d4d4d4;
+  --on-accent-hover: #0a0b0d;
+  --link: #0000ff;
+  /* Semantic. Fills use the Base hue; *-text is the same hue darkened toward Gray 100 until it passes AA on white. */
+  --positive: #66c800;
+  --positive-text: #3d7306;
+  --negative: #fc401f;
+  --negative-text: #b3301a;
+  --danger: var(--negative-text);
+  --warning: #ffd12f;
+  --warning-surface: #0a0b0d;
+  --tan: #b8a581;
+  --selection-bg: #0a0b0d;
+  --selection-fg: #eef0f3;
+  /* Chart series: Base Blue, Cerulean, Lime Green, Tan. Grays (hairline-strong, mute) are context. */
+  --chart-1: #0000ff;
+  --chart-2: #3c8aff;
+  --chart-3: #b6f569;
+  --chart-4: #b8a581;
 }
 
 .dark,
 [data-theme='dark'] {
   color-scheme: dark;
-  --canvas: #000000;
-  --canvas-soft: #0a0a0a;
-  --canvas-sub: #141414;
+  /* Gray 100 canvas. soft/sub are Gray 100 mixed 25% / 50% toward Gray 80; mute is Gray 50 mixed 25% toward Gray 30
+     (Gray 50 itself is 4.44:1 on Gray 100, just under AA). */
+  --canvas: #0a0b0d;
+  --canvas-soft: #141619;
+  --canvas-sub: #1e2025;
   --ink: #ffffff;
-  --on-ink: #000000;
-  --body: #a1a1a1;
-  --mute: #8f8f8f;
-  --hairline: #262626;
-  --hairline-strong: #3d3d3d;
-  --accent: #0070f3;
-  --accent-hover: #1f82ff;
-  --link: #3291ff;
-  --on-accent: #ffffff;
-  --danger: #ff5c5c;
+  --on-ink: #0a0b0d;
+  --body: #b1b7c3;
+  --mute: #818895;
+  --hairline: #32353d;
+  --hairline-strong: #5b616e;
+  /* Base Blue is 2.29:1 on Gray 100, so Cerulean takes the accent role in dark mode. */
+  --accent: #3c8aff;
+  --accent-hover: #6da7ff;
+  --on-accent: #0a0b0d;
+  --on-accent-hover: #0a0b0d;
+  --link: #3c8aff;
+  --positive: #66c800;
+  --positive-text: #66c800;
+  --negative: #fc401f;
+  --negative-text: #fc401f;
+  --danger: var(--negative-text);
+  --warning: #ffd12f;
+  --warning-surface: #32353d;
+  --tan: #b8a581;
   --selection-bg: #ffffff;
-  --selection-fg: #000000;
-  --chart-ink: #ffffff;
-  --chart-2: #a3a3a3;
-  --chart-3: #5c5c5c;
-  --chart-4: #333333;
+  --selection-fg: #0a0b0d;
+  --chart-1: #3c8aff;
+  --chart-2: #0000ff;
+  --chart-3: #b6f569;
+  --chart-4: #b8a581;
 }
 
 @theme inline {
@@ -71,8 +95,16 @@
   --color-accent-hover: var(--accent-hover);
   --color-link: var(--link);
   --color-on-accent: var(--on-accent);
+  --color-on-accent-hover: var(--on-accent-hover);
+  --color-positive: var(--positive);
+  --color-positive-text: var(--positive-text);
+  --color-negative: var(--negative);
+  --color-negative-text: var(--negative-text);
   --color-danger: var(--danger);
-  --color-chart-ink: var(--chart-ink);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+  --color-tan: var(--tan);
+  --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
