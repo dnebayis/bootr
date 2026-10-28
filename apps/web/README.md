@@ -67,10 +67,12 @@ checks), `PINATA_JWT` (Pinata API JWT with scope `org:files:write`, used by `POS
 `config warning` line at startup for a missing or short key (values are never logged). The web app does not call the
 supervisor, so it does not hold `SUPERVISOR_SERVICE_KEY`.
 
-Clanker / USDC / WETH addresses come from `@bootr/shared/addresses`. The locked split is read from
-`ClankerLpLockerFeeConversion.tokenRewards(token)`. Claimable fees are `ClankerFeeLocker.availableFees(owner, feeToken)`
-(WETH is one pooled balance per recipient; fees taken in a coin are per coin) and `claim(owner, feeToken)` is
-permissionless and always pays `owner`. Claims carry the ERC-8021 `dataSuffix`.
+RWAGMI v3 / USDC / WETH addresses come from `@bootr/shared/addresses` (RWAGMI v3 is mainnet only; on Base Sepolia the
+fee panels show the indexer's split and no claimables). The locked split is read from
+`RwagmiLpLockerV3.launchInfo(token).rewards`: Bootr's slots total 9000 bps of the 1% WETH swap fee and RWAGMI's 1000-bps
+slot follows them. Claimable fees are WETH only: `claimableQuote(recipient, WETH)` (settled, one balance per recipient)
+plus `pendingQuote(poolId, recipient)` per coin (unsettled). `settleAndClaim(poolIds, WETH, to)` / `claimQuote(WETH, to)`
+pay `msg.sender`'s balance, so only the recipient's own wallet can claim. Claims carry the ERC-8021 `dataSuffix`.
 
 Wallets: Base Account ("Sign in with Base", passkey smart wallet; `lib/connectors/base-account.ts` loads
 `@base-org/account/browser` so the SSR bundle never pulls the SDK's Node entry), Coinbase Wallet (EOA only), the
@@ -91,13 +93,14 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | `/launch` | Coin, Agent, X account, Fuel & options; USDC approve then `BootrLauncher.launch`. |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/[slug]` | How it works, Fee math, Agent rules, Dormancy, Risks. |
-| `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH + per-coin, Claim), launched coins, holdings, fuel history. |
+| `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH, unsettled WETH per coin, Claim), launched coins, holdings, fuel history. |
+| `/tokens/[id].json` | ERC-7572 contract URI of the coin launched under draft id `id` (name, symbol, description, image, external_link, socialMediaUrls). |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
 
 ## Images on IPFS
 
 The launch form pins the coin image to public IPFS before launch; it never embeds a `data:` URI (bloated calldata,
-not rendered on clanker.world).
+not rendered by most wallets).
 
 1. The uploader (drag-and-drop or file picker, local preview, progress) sends the file to `POST /api/upload`
    (multipart `file` + `draftId`). The route accepts PNG, JPG, WebP and SVG up to 2 MB, decides the type from the
@@ -105,8 +108,9 @@ not rendered on clanker.world).
    `<foreignObject>`/embeds, DOCTYPE/entities, `javascript:` URLs or any non-`#fragment` `href`/`url()`.
 2. It pins through Pinata's v3 Files API (`POST https://uploads.pinata.cloud/v3/files`, `network=public`) as
    `bootr/<draftId>/<sha256 prefix>` and returns `{cid, ipfsUri: "ipfs://<cid>", url: "<NEXT_PUBLIC_IPFS_GATEWAY>/ipfs/<cid>"}`.
-3. `launch()` writes the gateway `url` into the Clanker `image` (wallets and clanker.world need http(s)) and the
-   `ipfsUri` into the Clanker metadata as `imageIpfs`. The ERC-8004 agent card (`/agents/<id>.json`) takes its `image`
+3. `launch()` writes the gateway `url` into `LaunchParams.image` and saves it with the draft (`POST /api/launch/draft`,
+   field `coin`), so the hosted ERC-7572 contract URI (`/tokens/<id>.json`, passed as `LaunchParams.metadata` and set as
+   the B20 `contractURI`) carries it as `image` and the `ipfsUri` as `imageIpfs`. The ERC-8004 agent card (`/agents/<id>.json`) takes its `image`
    from the indexed token, so it carries the same gateway URL.
 
 The route is same-origin only (`Origin` = `NEXT_PUBLIC_SITE_URL`, or a browser `Sec-Fetch-Site: same-origin`), allows 10

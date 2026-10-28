@@ -1,9 +1,9 @@
 /**
  * IPFS helpers shared by the browser and the server (no Node or DOM APIs).
  *
- * Token images are pinned through `/api/upload` (Pinata). The launch writes the gateway URL into the
- * on-chain Clanker `image` (clanker.world and most wallets only render http(s) images) and the
- * `ipfs://<cid>` URI into the Clanker metadata as `imageIpfs`.
+ * Token images are pinned through `/api/upload` (Pinata). The launch writes the gateway URL into
+ * `LaunchParams.image` and the hosted ERC-7572 contract URI's `image` (most wallets only render http(s)
+ * images), and the `ipfs://<cid>` URI into that contract URI as `imageIpfs`.
  */
 import { env } from './env';
 

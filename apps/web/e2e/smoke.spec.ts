@@ -53,10 +53,11 @@ test('agent panel counts the spender float in treasury USDC (mock mode)', async 
   expect(shown).toBe(true);
 });
 
-test('docs fee math shows the on-top Clanker example', async ({ page }) => {
+test('docs fee math shows the 1% WETH fee with the RWAGMI share', async ({ page }) => {
   await page.goto('/docs/fees');
   await expect(page.getByRole('heading', { level: 1, name: 'Fee math' })).toBeVisible();
-  await expect(page.getByText('$1,200').first()).toBeVisible();
+  await expect(page.getByText('swappers pay (1%)        $1,000').first()).toBeVisible();
+  await expect(page.getByText('RWAGMI (10% of the fee)')).toBeVisible();
 });
 
 test('/console-wrong is a 404', async ({ page }) => {
