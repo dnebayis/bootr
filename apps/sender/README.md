@@ -188,7 +188,7 @@ service (H-1) are the boundary rather than an audience string.
    or returns the same fields as JSON when that variable is unset.
 
 The launch form connects X **before** the agent exists, so `agentId` there is the form's draft
-uuid (also written into the Clanker `tokenContext` as `{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`).
+uuid (also the `id` of the launch `context` string `{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`, which `BootrLauncher` emits as `LaunchContext(token, context)` in the launch tx).
 The web app polls `GET /internal/account/<draft uuid>` server-side (`/api/x/status`). After launch the
 supervisor moves the account to the ERC-8004 agent id with `POST /internal/account/:draftId/rebind`.
 
