@@ -6,7 +6,8 @@ import { cn } from '@/components/ui/cn';
 
 /**
  * Bootr chart kit (visx + CSS keyframes, see .chart-* in globals.css).
- * Palette comes from CSS tokens (fill-chart-1..4 = Base Blue, Cerulean, Lime, Tan; ink for the hovered datum)
+ * Palette comes from CSS tokens: single series in ink (monochrome leads), categorical series in fill-chart-1..4
+ * (Base Blue, Cerulean, Lime, Tan), accent for the hovered datum
  * so light/dark switch at paint time without re-rendering. No gridlines: one baseline, three x labels, a max label.
  */
 
@@ -153,7 +154,7 @@ function SeriesInner({
                 y={(d) => y(d.y)}
                 yScale={y}
                 curve={Curve.curveMonotoneX}
-                className="chart-fade fill-chart-1"
+                className="chart-fade fill-ink"
                 fillOpacity={0.08}
               />
             ) : null}
@@ -162,7 +163,7 @@ function SeriesInner({
               x={(_, i) => x(i)}
               y={(d) => y(d.y)}
               curve={Curve.curveMonotoneX}
-              className="chart-draw stroke-chart-1"
+              className="chart-draw stroke-ink"
               strokeWidth={1.5}
               fill="none"
               pathLength={1}
@@ -172,7 +173,7 @@ function SeriesInner({
           {hover && h ? (
             <g pointerEvents="none">
               <line x1={x(hover.i)} x2={x(hover.i)} y1={0} y2={innerH} className="stroke-hairline-strong" strokeDasharray="2 2" />
-              <circle cx={x(hover.i)} cy={y(h.y)} r={3.5} className="fill-ink stroke-canvas" strokeWidth={2} />
+              <circle cx={x(hover.i)} cy={y(h.y)} r={3.5} className="fill-accent stroke-canvas" strokeWidth={2} />
             </g>
           ) : null}
           <rect width={innerW} height={innerH} fill="transparent" onPointerMove={onMove} onPointerLeave={onLeave} />
@@ -202,7 +203,7 @@ export function BarsChart({ data, height = 200, format, labelFormat = (x) => x, 
             innerW={innerW}
             innerH={innerH}
             rows={data.map((d) => ({ x: d.x, parts: [d.y] }))}
-            seriesClass={['fill-chart-1']}
+            seriesClass={['fill-ink']}
             seriesLabels={[label]}
             format={format}
             labelFormat={labelFormat}
@@ -305,7 +306,7 @@ function StackInner({
                   const hgt = y(acc) - top;
                   acc += v;
                   if (hgt <= 0) return null;
-                  return <rect key={k} x={x0} y={top} width={bw} height={hgt} className={hover?.i === i && r.parts.length === 1 ? 'fill-ink' : seriesClass[k]} />;
+                  return <rect key={k} x={x0} y={top} width={bw} height={hgt} className={hover?.i === i && r.parts.length === 1 ? 'fill-accent' : seriesClass[k]} />;
                 })}
               </g>
             );
@@ -367,7 +368,7 @@ export function HBarsChart({ items, format, max: maxProp }: { items: { label: st
           </span>
           <span className="h-2 overflow-hidden rounded-[2px] bg-canvas-sub">
             <span
-              className={cn('chart-grow-x block h-full transition-colors duration-150', hover === i ? 'bg-ink' : 'bg-chart-1')}
+              className={cn('chart-grow-x block h-full transition-colors duration-150', hover === i ? 'bg-accent' : 'bg-ink')}
               style={{ transform: `scaleX(${Math.max(0, Math.min(1, it.value / max))})`, ['--chart-delay' as string]: `${i * 20}ms` }}
             />
           </span>

@@ -468,17 +468,17 @@ Pink `#fea8cd` is not used. Values marked *derived* are straight sRGB mixes of t
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `chart-1` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Primary series: single-series lines, areas (8% fill), bars, ranked bars; `agent` in the fee split. |
-| `chart-2` | `#3c8aff` Cerulean | `#0000ff` Base Blue | Second stacked series; `creator`. |
-| `chart-3` | `#b6f569` Lime Green | `#b6f569` | Third stacked series; `burn`. |
-| `chart-4` | `#b8a581` Tan | `#b8a581` | Fourth stacked series; `platform`. |
+| `chart-1` | `#0000ff` Base Blue | `#3c8aff` Cerulean | First categorical series: `agent` in the fee split and in Fees by recipient. |
+| `chart-2` | `#3c8aff` Cerulean | `#0000ff` Base Blue | Second categorical series; `creator`. |
+| `chart-3` | `#b6f569` Lime Green | `#b6f569` | Third categorical series; `burn`. |
+| `chart-4` | `#b8a581` Tan | `#b8a581` | Fourth categorical series; `platform`. |
 | context | `hairline-strong`, `hairline`, `mute` | same | RWAGMI share, baselines, crosshair, axis labels. |
 
-The hovered datum switches to `ink` (the series is already blue). Axis text stays `mute`.
+Single-series charts (volume line and area at 8% fill, launches per day, awake agents, BOOT burned, the reputation bars) stay `ink`: monochrome leads, and a page of saturated blue lines would make Base Blue the background instead of the highlight. The chart palette is only for series that need telling apart. The hovered datum (dot, bar, ranked bar) switches to `accent`. Axis text stays `mute`.
 
 **Rules**
 - **Monochrome leads.** Black, white and the Base grays carry every surface, border and almost all text. Colour is the exception a reader notices.
-- **One hero accent.** Base Blue appears as a fill at most once per viewport (the primary button). Its other uses are thin and functional: focus ring, active nav underline, ⌘K selection bar, the 2px rule on the `$BOOT` box, link text, chart series 1. Never on headings, icons, the mark or wordmark, or as a background wash. No gradients.
+- **One hero accent.** Base Blue appears as a fill at most once per viewport (the primary button). Its other uses are thin and functional: focus ring, active nav underline, ⌘K selection bar, the 2px rule on the `$BOOT` box, link text, the hovered chart datum, the first categorical chart series. Never on headings, icons, the mark or wordmark, or as a background wash. No gradients.
 - **At most three vibrant secondaries plus one muted on a page.** Green (awake / up), Red (down / error) and Yellow (graduated) are the vibrant three; Tan is the muted one. Lime appears only inside charts, and a chart page shows no Yellow. Pink is unused.
 - **Secondaries carry meaning, never decoration.** Green = positive or alive; Red = negative or failed; Yellow = graduated. Every coloured mark is paired with text (a label, a sign, a legend value), so colour is never the only signal.
 - **24h change is coloured:** `+4.2%` in `positive-text`, `−3.1%` in `negative-text`, `0.0%` and missing values in `ink`. The sign stays, so the number reads without colour. Only the 24h change is coloured; prices, caps and volumes stay `ink`.
