@@ -1,10 +1,7 @@
-import type { Metadata } from 'next';
-import { DOC_CONTENT } from '@/components/docs/content';
-import { docMetadata } from '@/components/docs/pages';
+import { permanentRedirect } from 'next/navigation';
+import { DOC_REDIRECTS } from '@/components/docs/pages';
 
-export const metadata: Metadata = docMetadata('dormancy');
-
-export default function DocPage() {
-  const Content = DOC_CONTENT['dormancy'];
-  return <Content />;
+/** Retired slug: see DOC_REDIRECTS. */
+export default function MovedDocPage() {
+  permanentRedirect(DOC_REDIRECTS['dormancy']!);
 }

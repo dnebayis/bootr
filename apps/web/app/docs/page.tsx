@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
-import { DOC_CONTENT } from '@/components/docs/content';
+import { DocArticle } from '@/components/docs/DocArticle';
+import { docMetadata } from '@/components/docs/pages';
 
-export const metadata: Metadata = { title: 'How it works', description: 'From launch to an agent running its own coin.' };
+export const metadata: Metadata = docMetadata('');
 
 export default function DocsIndex() {
-  const Content = DOC_CONTENT[''];
-  return <Content />;
+  return <DocArticle slug="" />;
 }
