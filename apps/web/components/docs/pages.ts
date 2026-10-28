@@ -35,7 +35,11 @@ export function docPage(slug: string): DocPageMeta | undefined {
   return DOC_PAGES.find((p) => p.slug === slug);
 }
 
+/** `<link rel="alternate" type="text/plain" href="/llms.txt">` on every docs page. */
+export const DOCS_ALTERNATES = { types: { 'text/plain': '/llms.txt' } };
+
 export function docMetadata(slug: DocSlug) {
   const page = docPage(slug)!;
-  return { title: page.title, description: page.description, alternates: { canonical: docPath(slug) } };
+  // Page metadata replaces the layout's `alternates` as a whole, so the text/plain link is repeated here.
+  return { title: page.title, description: page.description, alternates: { canonical: docPath(slug), ...DOCS_ALTERNATES } };
 }

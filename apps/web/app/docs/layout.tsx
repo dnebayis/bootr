@@ -1,5 +1,10 @@
+import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import { DocsNav, DocsNavView } from '@/components/docs/DocsNav';
+import { DOCS_ALTERNATES } from '@/components/docs/pages';
+
+/** Points language models at the plain-text docs (/llms.txt, generated from the same content). */
+export const metadata: Metadata = { alternates: DOCS_ALTERNATES };
 
 export default function DocsLayout({ children }: LayoutProps<'/docs'>) {
   return (
