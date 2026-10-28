@@ -8,6 +8,7 @@ import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseU
 import { toast } from 'sonner';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
+import { ofVolume, pctLabel } from '@/lib/fee-split';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
@@ -22,7 +23,7 @@ import { Button } from '@/components/ui/Button';
 import { Input, Label, Select, Switch, Textarea } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
 import { ConnectButton } from '@/components/shell/ConnectButton';
-import { ofVolume, pctLabel, SplitBar } from '@/components/token/FeeSplit';
+import { SplitBar } from '@/components/token/FeeSplit';
 import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
 

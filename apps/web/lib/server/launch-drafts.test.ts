@@ -6,11 +6,13 @@ import {
   MAX_IDENTITY_CHARS,
   draftsDir,
   isDraftId,
+  normalizeCoin,
   normalizeIdentity,
   ownerCookieValue,
   ownerTagFromCookie,
   parseOwnerCookie,
   readDraftIdentity,
+  readLaunchDraft,
   saveDraftIdentity,
 } from './launch-drafts';
 
@@ -101,6 +103,13 @@ describe('draft store', () => {
     expect(file).toMatchObject({ createdAt: 1, updatedAt: 2 });
   });
 
+  it('stores the coin metadata next to the identity text', async () => {
+    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null };
+    await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin });
+    expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
+  });
+
   it('rejects a malformed draft id instead of writing outside the directory', async () => {
     await expect(saveDraftIdentity('../x', TEXT, null, { dir })).rejects.toThrow(/draft id/);
     expect(await readdir(dir)).toEqual([]);
@@ -125,5 +134,22 @@ describe('owner cookie', () => {
     const again = ownerCookieValue(v, '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e64', 'c'.repeat(32));
     expect(parseOwnerCookie(again)).toHaveLength(4);
     expect(ownerTagFromCookie(again, '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e64')).toBe('c'.repeat(32));
+  });
+});
+
+describe('normalizeCoin', () => {
+  const ok = { name: ' Quiet Engine ', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent' };
+  it('accepts the launch form fields, trimmed', () => {
+    expect(normalizeCoin(ok)).toEqual({ ...ok, name: 'Quiet Engine' });
+    expect(normalizeCoin({ ...ok, imageIpfs: null, xHandle: null })).toMatchObject({ imageIpfs: null, xHandle: null });
+  });
+  it('rejects bad symbols, non-http images, bad handles and oversized names', () => {
+    expect(normalizeCoin(null)).toBeNull();
+    expect(normalizeCoin({ ...ok, symbol: 'qeng' })).toBeNull();
+    expect(normalizeCoin({ ...ok, image: 'javascript:alert(1)' })).toBeNull();
+    expect(normalizeCoin({ ...ok, image: 'data:image/png;base64,AAAA' })).toBeNull();
+    expect(normalizeCoin({ ...ok, imageIpfs: 'https://x' })).toBeNull();
+    expect(normalizeCoin({ ...ok, xHandle: 'bad handle' })).toBeNull();
+    expect(normalizeCoin({ ...ok, name: 'x'.repeat(49) })).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import type { Address, Hex } from 'viem';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
+import { platformSlot, type Slot } from '@/lib/fee-split';
 import { appChain, explorer } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
@@ -22,8 +23,6 @@ const td = 'px-4 py-2.5 align-middle';
 
 /** Mock-mode platform recipient (no on-chain reads). */
 const MOCK_RECIPIENT = '0x00000000000000000000000000000000000b0075' as Address;
-/** Bootr's reward slots total 9000 bps; the last of them is the platform's (RWAGMI's slot follows). */
-const SLOTS_BPS = 9000;
 /** Pools settled per `settleAndClaim` transaction. */
 const CHUNK = 50;
 
@@ -62,14 +61,9 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
     if (!live) return { recipient: MOCK_RECIPIENT, poolIds: [coins[i]!.token.toLowerCase().padEnd(66, '0') as Hex] };
     const r = infos.data?.[i];
     if (r?.status !== 'success') return null;
-    const { rewards, poolIds } = r.result as { rewards: readonly { recipient: Address; bps: number }[]; poolIds: readonly Hex[] };
-    let sum = 0;
-    for (const slot of rewards) {
-      sum += Number(slot.bps);
-      if (sum === SLOTS_BPS) return { recipient: slot.recipient, poolIds };
-      if (sum > SLOTS_BPS) break;
-    }
-    return null;
+    const { rewards, poolIds } = r.result as { rewards: readonly Slot[]; poolIds: readonly Hex[] };
+    const platform = platformSlot(rewards);
+    return platform ? { recipient: platform.recipient, poolIds } : null;
   };
   const launches = coins.map((_, i) => launchOf(i));
   const distinct = [...new Set(launches.filter((l) => !!l).map((l) => l.recipient.toLowerCase()))] as Address[];
