@@ -1,5 +1,5 @@
 /**
- * Price math. Every Clanker coin and WETH use 18 decimals, so no decimal adjustment is needed
+ * Price math. Every Bootr coin (B20, 18 decimals) and WETH use 18 decimals, so no decimal adjustment is needed
  * between the two pool currencies. Results are floats (USD values are display-grade, 6 dp).
  */
 const Q96 = 2 ** 96;
@@ -23,7 +23,7 @@ export function usd(v: number): number {
 }
 
 /**
- * Unit prices keep 12 significant digits instead of 6 dp: a fresh Clanker coin trades around
+ * Unit prices keep 12 significant digits instead of 6 dp: a fresh Bootr coin trades around
  * 1e-7 USD, which `usd()` would round to 0.
  */
 export function unitPrice(v: number): number {
@@ -69,7 +69,7 @@ export function positionAmounts(
 }
 
 /**
- * Liquidity of the single Clanker position, from the coin amount deposited one-sided at launch
+ * Liquidity of the single launch LP position, from the coin amount deposited one-sided at launch
  * (`poolSupply`, base units). The locked position never changes, so this is computed once.
  * Coin = currency0: the range sits above the start price (all currency0). Coin = currency1: the
  * range sits below it (all currency1).

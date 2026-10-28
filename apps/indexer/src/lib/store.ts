@@ -190,8 +190,9 @@ export async function bumpDaily(context: Ctx, ts: number, d: DailyDelta) {
     }));
 }
 
+/** Per-kind daily fee column for a Bootr slot's share (the gross fee goes to `feesUsd` separately). */
 export function feeKindDelta(kind: RecipientKind, amountUsd: number): DailyDelta {
-  const d: DailyDelta = { feesUsd: amountUsd };
+  const d: DailyDelta = {};
   if (kind === 'agent') d.feesAgentUsd = amountUsd;
   if (kind === 'creator') d.feesCreatorUsd = amountUsd;
   if (kind === 'burn') d.feesBurnUsd = amountUsd;

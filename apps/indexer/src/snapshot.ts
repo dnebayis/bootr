@@ -3,7 +3,7 @@ import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 import { getAbiItem, type Address, type Hex } from 'viem';
 
-import { ClankerTokenAbi } from '../abis/ClankerToken';
+import { B20TokenAbi } from '../abis/B20Token';
 import { Erc20Abi } from '../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../abis/Multicall3';
 import { PoolManagerAbi } from '../abis/PoolManager';
@@ -62,7 +62,7 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
         { abi: Erc20Abi, address: env.addresses.weth, functionName: 'balanceOf' as const, args: [a.id] as const },
         { abi: Multicall3Abi, address: MULTICALL3_ADDRESS, functionName: 'getEthBalance' as const, args: [a.id] as const },
         {
-          abi: ClankerTokenAbi,
+          abi: B20TokenAbi,
           address: (t?.id ?? a.token) as Address,
           functionName: 'balanceOf' as const,
           args: [a.id] as const,

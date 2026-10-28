@@ -1,10 +1,13 @@
 import { encodeAbiParameters, hexToBigInt, keccak256, pad, toHex, type Address, type Hex } from 'viem';
 
-/** Uniswap v4 `LPFeeLibrary.DYNAMIC_FEE_FLAG`. Clanker V2 hooks always use dynamic-fee pools. */
-export const DYNAMIC_FEE_FLAG = 0x800000;
-/** `BootrLauncher.TICK_SPACING`. */
+/**
+ * RWAGMI v3 pools carry a native LP fee of 0 in their key: the hook charges the swap fee itself
+ * (`PoolFeeTakenV3`), in the paired asset.
+ */
+export const RWAGMI_POOL_FEE = 0;
+/** Launch tick spacing (`LaunchConfigV3.pools[0].tickSpacing`, docs/rwagmi-migration.md). */
 export const TICK_SPACING = 200;
-/** `BootrLauncher.STARTING_TICK` / `POSITION_TICK_UPPER`, expressed as if the coin is currency0. */
+/** `tickIfToken0IsB20` / the single position's upper tick, expressed as if the coin is currency0. */
 export const STARTING_TICK = -230_400;
 export const POSITION_TICK_UPPER = -120_000;
 /** `PoolManager` storage slot of `mapping(PoolId => Pool.State) _pools` (StateLibrary.POOLS_SLOT). */
@@ -20,13 +23,13 @@ export type PoolKey = {
   hooks: Address;
 };
 
-/** Mirrors `BootrLauncher.poolKeyFor(token)`. */
-export function poolKeyFor(token: Address, weth: Address, hook: Address): PoolKey {
-  const coinIsToken0 = BigInt(token) < BigInt(weth);
+/** The pool key RWAGMI v3 builds for a coin and its paired token (`LaunchPoolCreatedV3.key`). */
+export function poolKeyFor(token: Address, paired: Address, hook: Address): PoolKey {
+  const coinIsToken0 = BigInt(token) < BigInt(paired);
   return {
-    currency0: coinIsToken0 ? token : weth,
-    currency1: coinIsToken0 ? weth : token,
-    fee: DYNAMIC_FEE_FLAG,
+    currency0: coinIsToken0 ? token : paired,
+    currency1: coinIsToken0 ? paired : token,
+    fee: RWAGMI_POOL_FEE,
     tickSpacing: TICK_SPACING,
     hooks: hook,
   };
@@ -52,7 +55,11 @@ export function isCoinToken0(token: Address, weth: Address): boolean {
   return BigInt(token) < BigInt(weth);
 }
 
-/** Tick range of the single Clanker LP position (flipped when the coin is currency1). */
+/**
+ * Tick range of the single launch LP position (flipped when the coin is currency1). B20 addresses
+ * (0xB20...) sort above WETH, so Bootr coins are currency1 and the mirrored range applies. The launch
+ * handler prefers the exact range from `LiquidityPlacedV3`.
+ */
 export function positionTicks(coinIsToken0: boolean): { tickLower: number; tickUpper: number } {
   return coinIsToken0
     ? { tickLower: STARTING_TICK, tickUpper: POSITION_TICK_UPPER }

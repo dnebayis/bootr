@@ -36,8 +36,9 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   const next: TokenRow = { ...t, sqrtPriceX96: s.sqrtPriceX96, poolLiquidity: s.liquidity, tick: s.tick };
   const market = marketFields(next, ethUsd);
   const valueUsd = usd(toUnits(view.amountPaired, 18) * ethUsd);
-  // `fee` is the LP fee in pips (1e6 = 100%) applied by the hook; recipients share all of it.
-  const feeUsd = usd((valueUsd * s.fee) / 1e6);
+  // Swap fee in pips (1e6 = 100%): the native LP fee (0 on RWAGMI pools) plus the hook's fee, which
+  // RWAGMI takes in WETH and splits over the reward slots (exact amounts come from PoolFeeTakenV3).
+  const feeUsd = usd((valueUsd * (s.fee + t.lpFeeBps)) / 1e6);
 
   await context.db.insert(schema.trade).values({
     id,
