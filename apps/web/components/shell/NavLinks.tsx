@@ -21,7 +21,7 @@ export function NavLinksView({ pathname }: { pathname: string | null }) {
             )}
           >
             {item.label}
-            {active ? <span className="absolute inset-x-2.5 -bottom-[13px] h-px bg-ink" aria-hidden="true" /> : null}
+            {active ? <span className="absolute inset-x-2.5 -bottom-[13px] h-px bg-accent" aria-hidden="true" /> : null}
           </Link>
         );
       })}

@@ -123,7 +123,7 @@ export function ImageUpload({ draftId, state, onState }: { draftId: string | nul
             <span className="font-mono tabular text-mute">Pinning to IPFS… {Math.round(state.progress * 100)}%</span>
           ) : state.status === 'done' ? (
             <span className="flex min-w-0 items-center gap-2">
-              <span className="text-ink">Pinned</span>
+              <span className="text-positive-text">Pinned</span>
               <a href={state.result.url} target="_blank" rel="noreferrer" className="truncate font-mono text-mute hover:text-ink" title={state.result.ipfsUri}>
                 {state.result.ipfsUri}
               </a>

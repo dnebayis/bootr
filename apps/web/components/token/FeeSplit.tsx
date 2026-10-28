@@ -12,7 +12,7 @@ import { Panel } from '@/components/ui/Panel';
 
 const ORDER: RecipientKind[] = ['agent', 'creator', 'burn', 'platform'];
 const LABEL: Record<RecipientKind, string> = { agent: 'Agent', creator: 'Creator', burn: 'Burn', platform: 'Platform' };
-const FILL: Record<RecipientKind, string> = { agent: 'bg-chart-ink', creator: 'bg-chart-2', burn: 'bg-chart-3', platform: 'bg-chart-4' };
+const FILL: Record<RecipientKind, string> = { agent: 'bg-chart-1', creator: 'bg-chart-2', burn: 'bg-chart-3', platform: 'bg-chart-4' };
 
 function fromToken(t: Token): Split {
   return { agent: t.agentBps, creator: t.creatorBps, burn: t.burnBps, platform: t.platformBps };

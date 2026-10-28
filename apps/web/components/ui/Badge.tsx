@@ -2,12 +2,16 @@ import type { ReactNode } from 'react';
 import { cn } from './cn';
 import type { AgentStatus } from '@/lib/types';
 
-export function Badge({ children, tone = 'default', className }: { children: ReactNode; tone?: 'default' | 'ink' | 'mono'; className?: string }) {
+export function Badge({ children, tone = 'default', className }: { children: ReactNode; tone?: 'default' | 'ink' | 'mono' | 'graduated'; className?: string }) {
   return (
     <span
       className={cn(
         'inline-flex h-5 items-center gap-1 rounded-xs border px-1.5 text-micro font-medium',
-        tone === 'ink' ? 'border-ink bg-ink text-on-ink' : 'border-hairline bg-canvas-soft text-body',
+        tone === 'ink'
+          ? 'border-ink bg-ink text-on-ink'
+          : tone === 'graduated'
+            ? 'border-warning-surface bg-warning-surface text-warning'
+            : 'border-hairline bg-canvas-soft text-body',
         tone === 'mono' && 'font-mono uppercase tracking-wide',
         className,
       )}
@@ -29,7 +33,7 @@ export function StatusDot({ status, withLabel = false, className }: { status: Ag
   const s = status ?? 'sleeping';
   const dot =
     s === 'awake'
-      ? 'bg-ink'
+      ? 'bg-positive'
       : s === 'sleeping'
         ? 'bg-mute'
         : 'border border-hairline-strong bg-transparent';

@@ -19,12 +19,18 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
+/** The home page's one Base Blue element: a 2px rule inside the top edge (absolute, so the box keeps its size). */
+function BlueRule() {
+  return <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-accent" />;
+}
+
 export function BootBox() {
   const { data, isPending, isError } = usePlatformStats();
 
   if (isPending) {
     return (
-      <section aria-label="BOOT token" className="rounded-md border border-hairline">
+      <section aria-label="BOOT token" className="relative overflow-hidden rounded-md border border-hairline">
+        <BlueRule />
         <div className="flex items-center justify-between border-b border-hairline px-5 py-3">
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-24" />
@@ -43,7 +49,8 @@ export function BootBox() {
 
   if (isError || !data?.bootToken) {
     return (
-      <section aria-label="BOOT token" className="flex items-center justify-between gap-4 rounded-md border border-hairline px-5 py-4">
+      <section aria-label="BOOT token" className="relative flex items-center justify-between gap-4 overflow-hidden rounded-md border border-hairline px-5 py-4">
+        <BlueRule />
         <div className="flex items-baseline gap-3">
           <span className="font-mono text-sm font-medium text-ink">$BOOT</span>
           <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOT launches with the platform.'}</span>
@@ -56,7 +63,8 @@ export function BootBox() {
   const dex = dexscreenerUrl(data.bootToken);
 
   return (
-    <section aria-label="BOOT token" className="overflow-hidden rounded-md border border-hairline">
+    <section aria-label="BOOT token" className="relative overflow-hidden rounded-md border border-hairline">
+      <BlueRule />
       <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-hairline px-4 py-3 md:px-5">
         <div className="flex items-center gap-3">
           <span className="font-mono text-sm font-semibold text-ink">$BOOT</span>
@@ -79,7 +87,7 @@ export function BootBox() {
           <Usd value={data.bootMarketCapUsd} />
         </Cell>
         <Cell label="24h">
-          <Pct value={data.bootChange24hPct} />
+          <Pct value={data.bootChange24hPct} tone />
         </Cell>
         <Cell label="Total burned">
           <Num value={burned} suffix=" BOOT" />

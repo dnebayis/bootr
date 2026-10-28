@@ -106,7 +106,7 @@ export function AnalyticsView() {
             legend={
               <Legend
                 items={[
-                  { label: 'Agent', className: 'bg-chart-ink' },
+                  { label: 'Agent', className: 'bg-chart-1' },
                   { label: 'Creator', className: 'bg-chart-2' },
                   { label: 'Burn', className: 'bg-chart-3' },
                   { label: 'Platform', className: 'bg-chart-4' },

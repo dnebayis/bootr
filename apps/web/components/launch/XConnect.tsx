@@ -112,7 +112,7 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
       <div className="flex items-center justify-between gap-3 rounded-sm border border-hairline px-3 py-2.5">
         <span className="inline-flex items-center gap-2 text-sm text-ink">
           <XLogoIcon /> <span className="font-mono">@{handle}</span>
-          <span className="text-caption text-mute">connected</span>
+          <span className="text-caption text-positive-text">connected</span>
         </span>
         <span className="flex items-center gap-1">
           {!env.useMock ? (

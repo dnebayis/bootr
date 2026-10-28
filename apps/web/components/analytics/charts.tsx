@@ -6,7 +6,8 @@ import { cn } from '@/components/ui/cn';
 
 /**
  * Bootr chart kit (visx + CSS keyframes, see .chart-* in globals.css).
- * Palette comes from CSS tokens (fill-chart-ink, fill-chart-2..4, accent for the hovered datum)
+ * Palette comes from CSS tokens: single series in ink (monochrome leads), categorical series in fill-chart-1..4
+ * (Base Blue, Cerulean, Lime, Tan), accent for the hovered datum
  * so light/dark switch at paint time without re-rendering. No gridlines: one baseline, three x labels, a max label.
  */
 
@@ -153,7 +154,7 @@ function SeriesInner({
                 y={(d) => y(d.y)}
                 yScale={y}
                 curve={Curve.curveMonotoneX}
-                className="chart-fade fill-chart-ink"
+                className="chart-fade fill-ink"
                 fillOpacity={0.08}
               />
             ) : null}
@@ -162,7 +163,7 @@ function SeriesInner({
               x={(_, i) => x(i)}
               y={(d) => y(d.y)}
               curve={Curve.curveMonotoneX}
-              className="chart-draw stroke-chart-ink"
+              className="chart-draw stroke-ink"
               strokeWidth={1.5}
               fill="none"
               pathLength={1}
@@ -202,7 +203,7 @@ export function BarsChart({ data, height = 200, format, labelFormat = (x) => x, 
             innerW={innerW}
             innerH={innerH}
             rows={data.map((d) => ({ x: d.x, parts: [d.y] }))}
-            seriesClass={['fill-chart-ink']}
+            seriesClass={['fill-ink']}
             seriesLabels={[label]}
             format={format}
             labelFormat={labelFormat}
@@ -232,7 +233,7 @@ export function StackedBarsChart<K extends string>({
   labelFormat?: (x: string) => string;
   label: string;
 }) {
-  const classes = ['fill-chart-ink', 'fill-chart-2', 'fill-chart-3', 'fill-chart-4'];
+  const classes = ['fill-chart-1', 'fill-chart-2', 'fill-chart-3', 'fill-chart-4'];
   return (
     <Frame height={height}>
       {(width) => (
@@ -367,7 +368,7 @@ export function HBarsChart({ items, format, max: maxProp }: { items: { label: st
           </span>
           <span className="h-2 overflow-hidden rounded-[2px] bg-canvas-sub">
             <span
-              className={cn('chart-grow-x block h-full transition-colors duration-150', hover === i ? 'bg-accent' : 'bg-chart-ink')}
+              className={cn('chart-grow-x block h-full transition-colors duration-150', hover === i ? 'bg-accent' : 'bg-ink')}
               style={{ transform: `scaleX(${Math.max(0, Math.min(1, it.value / max))})`, ['--chart-delay' as string]: `${i * 20}ms` }}
             />
           </span>
