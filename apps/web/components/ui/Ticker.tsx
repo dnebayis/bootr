@@ -21,14 +21,20 @@ export function Num({ value, compact = true, className, suffix }: { value: numbe
   return <NumberFlow value={value} format={format} locales="en-US" className={className} suffix={suffix} />;
 }
 
-export function Pct({ value, className }: { value: number | null | undefined; className?: string }) {
+/** 24h change colour by sign (DESIGN.md: the only market number that is coloured). Zero and missing stay ink. */
+export function changeClass(value: number | null | undefined): string | undefined {
+  if (value == null || !Number.isFinite(value) || value === 0) return undefined;
+  return value > 0 ? 'text-positive-text' : 'text-negative-text';
+}
+
+export function Pct({ value, className, tone = false }: { value: number | null | undefined; className?: string; tone?: boolean }) {
   if (value == null || !Number.isFinite(value)) return <span className={className}>—</span>;
   return (
     <NumberFlow
       value={value / 100}
       format={{ style: 'percent', maximumFractionDigits: 1, minimumFractionDigits: 1, signDisplay: 'always' }}
       locales="en-US"
-      className={className}
+      className={[className, tone ? changeClass(value) : undefined].filter(Boolean).join(' ') || undefined}
     />
   );
 }

@@ -9,7 +9,7 @@ const base =
   'inline-flex shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors duration-150 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50';
 
 const variants: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-on-accent hover:bg-accent-hover',
+  primary: 'bg-accent text-on-accent hover:bg-accent-hover hover:text-on-accent-hover',
   ink: 'bg-ink text-on-ink hover:opacity-85',
   secondary: 'border border-hairline bg-canvas text-ink hover:border-hairline-strong hover:bg-canvas-sub',
   ghost: 'text-body hover:bg-canvas-sub hover:text-ink',

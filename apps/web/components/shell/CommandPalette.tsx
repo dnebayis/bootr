@@ -78,7 +78,7 @@ export function CommandPalette() {
                 key={t.id}
                 value={t.id}
                 onSelect={() => go(`/token/${t.id}`)}
-                className="flex cursor-pointer items-center gap-3 rounded-sm px-2 py-2 data-[selected=true]:bg-canvas-sub"
+                className="flex cursor-pointer items-center gap-3 rounded-sm px-2 py-2 data-[selected=true]:bg-canvas-sub data-[selected=true]:shadow-[inset_2px_0_0_var(--accent)]"
               >
                 <TokenImage src={t.image} symbol={t.symbol} size={24} className="rounded-xs" />
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">
@@ -98,7 +98,7 @@ export function CommandPalette() {
                 key={n.href}
                 value={n.href}
                 onSelect={() => go(n.href)}
-                className="flex cursor-pointer items-center rounded-sm px-2 py-2 text-sm text-ink data-[selected=true]:bg-canvas-sub"
+                className="flex cursor-pointer items-center rounded-sm px-2 py-2 text-sm text-ink data-[selected=true]:bg-canvas-sub data-[selected=true]:shadow-[inset_2px_0_0_var(--accent)]"
               >
                 {n.label}
               </Command.Item>

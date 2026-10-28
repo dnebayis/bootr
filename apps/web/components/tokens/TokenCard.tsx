@@ -31,7 +31,7 @@ export function TokenCard({ token, now, flash }: { token: Token; now: number; fl
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium text-ink">{token.name}</span>
-            {token.graduated ? <span className="shrink-0 rounded-xs bg-ink px-1 text-micro font-medium text-on-ink">Grad</span> : null}
+            {token.graduated ? <span className="shrink-0 rounded-xs bg-warning-surface px-1 text-micro font-medium text-warning">Grad</span> : null}
           </div>
           <div className="mt-0.5 flex items-center gap-2 font-mono text-caption text-mute">
             <span>${token.symbol}</span>

@@ -11,7 +11,7 @@ import { CopyButton } from '@/components/ui/CopyButton';
 import { LinkButton } from '@/components/ui/Button';
 import { Panel, Empty } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { Usd } from '@/components/ui/Ticker';
+import { changeClass, Usd } from '@/components/ui/Ticker';
 import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { DexChart } from './DexChart';
 import { TokenImage } from '@/components/ui/TokenImage';
@@ -85,7 +85,7 @@ export function TokenView({ address }: { address: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-display-md font-semibold text-ink">{token.name}</h1>
               <span className="font-mono text-base text-mute">${token.symbol}</span>
-              {token.graduated ? <Badge tone="ink">Graduated</Badge> : null}
+              {token.graduated ? <Badge tone="graduated">Graduated</Badge> : null}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-caption text-mute">
               <a href={explorer.token(token.id)} target="_blank" rel="noopener noreferrer" className="hover:text-link">
@@ -111,7 +111,9 @@ export function TokenView({ address }: { address: string }) {
         <Stat label="Market cap">
           <Usd value={token.marketCapUsd} />
         </Stat>
-        <Stat label="24h">{pct(token.change24hPct)}</Stat>
+        <Stat label="24h">
+          <span className={changeClass(token.change24hPct)}>{pct(token.change24hPct)}</span>
+        </Stat>
         <Stat label="Volume 24h">{usd(token.volume24hUsd)}</Stat>
         <Stat label="Liquidity">{usd(token.liquidityUsd)}</Stat>
         <Stat label="Holders">{num(token.holders)}</Stat>
