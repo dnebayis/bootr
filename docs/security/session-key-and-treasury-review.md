@@ -1,5 +1,8 @@
 # Bootr agent-wallet layer: session key and treasury security review
 
+> **Historical (2026-10-27).** Written against the Clanker v4 fee locker. Fee claims now go through the RWAGMI v3
+> locker (`settleAndClaim` / `claimQuote`, `to` = kernel); see `docs/rwagmi-migration.md`.
+
 - Scope: `apps/supervisor` (session-key construction, onboarding, kernel client, treasury, inference, broker, runtime, tick, web reader, admin API, HMAC, admin signer, entrypoint helpers), `packages/agent-core` (tools, types, prompt, broker, checkpoint, eligibility), `apps/inference/src/client/x402-payer.ts` plus the relay side it talks to (`apps/inference/src/{app,x402,reconcile,request}.ts`), `packages/shared/src/addresses.ts`, and the on-chain modules the supervisor depends on (`packages/contracts/src/{AgentGuardian,BootrCallPolicy}.sol`, `packages/contracts/src/README.md`).
 - Reviewed at commit `f0b2f4c` (branch `main`), 2026-10-27. Static review only; no code was changed, no keys were read. While this review was being written the working tree gained uncommitted changes (X-account draft-id onboarding in `onboarding.ts`, `sender-client.ts`, `abi.ts`, `db/schema.ts`, and sender/web files); they touch the X-connect flow, not the session-key, treasury or inference paths, and were not reviewed.
 - Kernel v3.1 and the ZeroDev policy contracts are not vendored in the repository. Statements about their behaviour are from the published sources as I know them and are marked "verify" where the conclusion depends on them. Every such point is listed again under "Open questions".

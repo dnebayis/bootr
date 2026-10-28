@@ -11,15 +11,15 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 |---|---|---|
 | `id` | hex address | token address (PK) |
 | `chainId` | int | |
-| `name`, `symbol`, `image` | string | from Clanker TokenCreated / launcher event |
+| `name`, `symbol`, `image` | string | from the launcher event / RWAGMI `B20LaunchCreatedV3` (Clanker `TokenCreated` for coins launched before 2026-10-29) |
 | `creator` | hex | |
 | `kernel` | hex | agent treasury (ZeroDev Kernel) |
 | `burner` | hex \| null | BuybackBurner clone if buyback preset |
 | `agentId` | bigint | ERC-8004 id |
 | `poolId` | hex (bytes32) | Uniswap v4 pool id |
 | `pairedToken` | hex | WETH |
-| `lpFeeBps` | int | 1e6-based (10000 = 1%) |
-| `agentBps`, `creatorBps`, `burnBps`, `platformBps` | int | of the 80% remainder, sum 10000 |
+| `lpFeeBps` | int | 1e6-based (10000 = 1%); the static swap fee, charged in WETH |
+| `agentBps`, `creatorBps`, `burnBps`, `platformBps` | int | locker slot bps, sum 9000 on RWAGMI coins (the remaining 10% is RWAGMI's slot); of the 80% remainder, sum 10000, on Clanker coins |
 | `workerHash` | hex | |
 | `model` | string | |
 | `agentUri` | string | |
@@ -59,10 +59,10 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 `id` (txhash-logindex), `token`, `trader`, `side` (`buy`\|`sell`), `amountToken`, `amountPaired`, `priceUsd`, `valueUsd`, `timestamp`, `txHash`.
 
 ### `feeAccrual`
-`id`, `token`, `recipient`, `recipientKind` (`agent`\|`creator`\|`burn`\|`platform`), `asset` (hex), `amount`, `amountUsd`, `timestamp`, `txHash`. Written from `ClankerLpLockerFeeConversion.ClaimedRewards(token, amount0, amount1, rewards0[], rewards1[])`, which is emitted right after the locker's `FeeLocker.storeFees` calls and is the only fee event that names the coin (`StoreTokens` only names the fee asset). Amounts are post-conversion (the burner's share arrives as the coin).
+`id`, `token`, `recipient`, `recipientKind` (`agent`\|`creator`\|`burn`\|`platform`), `asset` (hex), `amount`, `amountUsd`, `timestamp`, `txHash`. RWAGMI coins: written from `RwagmiLpLockerV3.PoolFeesSettledV3(poolId, currency, slot, recipient, amount)`; `asset` is always WETH. Clanker coins (launched before 2026-10-29): `ClankerLpLockerFeeConversion.ClaimedRewards(token, amount0, amount1, rewards0[], rewards1[])`, emitted right after the locker's `FeeLocker.storeFees` calls; amounts are post-conversion (the burner's share arrives as the coin).
 
 ### `feeClaim`
-`id`, `token`, `recipient`, `recipientKind`, `asset`, `amount`, `amountUsd`, `timestamp`, `txHash`. From `ClankerFeeLocker.ClaimTokens` / `ClaimTokensPermissioned`; a claim pays the whole (recipient, asset) balance, so it is split over the per-coin outstanding balances (one row per coin).
+`id`, `token`, `recipient`, `recipientKind`, `asset`, `amount`, `amountUsd`, `timestamp`, `txHash`. RWAGMI coins: `RwagmiLpLockerV3.QuoteRewardsClaimedV3(recipient, currency, to, amount)`. Clanker coins: `ClankerFeeLocker.ClaimTokens` / `ClaimTokensPermissioned`; a claim pays the whole (recipient, asset) balance, so it is split over the per-coin outstanding balances (one row per coin).
 
 ### `burn`
 `id`, `token`, `amountToken`, `amountWethSpent`, `timestamp`, `txHash` (BuybackBurner events).
@@ -94,16 +94,16 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 - `GET /stream` → SSE; emits `{type: 'launch'|'trade'|'agent', tokenId}` hints only. Clients re-fetch; never trust payloads.
 - `POST /internal/agent/:kernel/social` (HMAC with `INDEXER_SERVICE_KEY`, same scheme as the sender) → `{xHandle?, lastPostAt?, postsCount24h?, status?, spender?}` written by the supervisor (`spender`: 20-byte hex or null, stored lowercase).
 - `GET /market/:token` → compact snapshot for the supervisor's `read_market` (price, mcap, liquidity, vol24h, holders, fees24h, last 10 trades).
-- `GET /treasury/:kernel` → compact snapshot for `treasury_read` (kernel `balances`, `spender` (hex \| null) and `spenderUsdc` (base units, live with indexed fallback), `treasuryUsd` including the spender float, claimable fees per asset from FeeLocker view, lastActivityAt).
+- `GET /treasury/:kernel` → compact snapshot for `treasury_read` (kernel `balances`, `spender` (hex \| null) and `spenderUsdc` (base units, live with indexed fallback), `treasuryUsd` including the spender float, claimable fees (WETH on RWAGMI coins: `pendingQuote` + `claimableQuote`; per asset from the FeeLocker view on Clanker coins), lastActivityAt).
 - `GET /holdings/:owner` → Bootr coins the address currently holds, from the `balance` table: `[{token: {id,name,symbol,image,priceUsd,marketCapUsd}, balance, valueUsd}]`, sorted by `valueUsd` desc.
 - `GET /fuel/:from` → USDC transfers from that address into any agent kernel: `[{kernel, token, symbol, amount, amountUsdc, amountUsd, timestamp, txHash}]` (`amountUsdc` = `amount`, base units). The same transfers maintain `agent.fuelReceivedUsdc`.
 - Ponder built-ins: `/health`, `/ready`, `/status`, `/metrics` (reserved route names).
 
-## Events the indexer consumes (ABIs from `packages/contracts/out` and Clanker v4)
+## Events the indexer consumes (ABIs from `packages/contracts/out`, RWAGMI v3 and Clanker v4)
 - `BootrLauncher.AgentLaunched(token, kernel, creator, burner, agentId, defaults..., workerHash, model, agentURI)`
-- `Clanker.TokenCreated` (decoded from the launch tx receipt in the `AgentLaunched` handler; it carries name/symbol/image/metadata/poolId)
+- `RwagmiB20LauncherV3.B20LaunchCreatedV3` and `LaunchPoolCreatedV3` (pool key and id, starting tick) for coins launched from 2026-10-29; `Clanker.TokenCreated` (decoded from the launch tx receipt in the `AgentLaunched` handler; it carries name/symbol/image/metadata/poolId) for earlier coins
 - Uniswap v4 `PoolManager.Swap(id, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee)` for our pool ids
-- `ClankerLpLockerFeeConversion.ClaimedRewards` (accruals) and `ClankerFeeLocker.ClaimTokens` / `ClaimTokensPermissioned` (claims)
+- `RwagmiHookV3.PoolFeeTakenV3` (fee taken per swap), `RwagmiLpLockerV3.PoolFeesSettledV3` (accruals) and `QuoteRewardsClaimedV3` (claims); for Clanker coins `ClankerLpLockerFeeConversion.ClaimedRewards` and `ClankerFeeLocker.ClaimTokens` / `ClaimTokensPermissioned`
 - `AgentGuardian.Activity(kernel, timestamp)`, `AgentPaused/Unpaused`, `DormantClaimed`
 - `BuybackBurner.Burned`
 - ERC-8004 `ReputationRegistry` feedback events for our agentIds
@@ -115,7 +115,7 @@ Chain: Base Sepolia (84532) during development, Base (8453) in production. All a
 - **Extra columns** (additive, safe to ignore): `token.{metadata, coinIsToken0, platformRecipient, supervisorSessionKey, launchTx, totalSupply, sqrtPriceX96, tick, poolLiquidity, positionLiquidity, priceWeth, trades24h, volumeTotalUsd, feesTotalUsd, burnedTotal, lastTradeAt, agentStatus}`, `agent.{agentId, creator, statusChangedAt, paused, claimed, balancesUpdatedAt, reputationSum, supervisorStatus}`, `trade.{sender, feeUsd, blockNumber}`, `burn.{burner, amountUsd}`, `dailyStat.{timestamp, trades}`, `platformStats.{agentsTotal, fees24hUsd, ethPriceUsd}`, `platformConfig.{source, fuelScannedTo, updatedAt}`.
 - **Extra tables**: `pool`, `agentIdentity`, `tokenWindow` (hourly buckets for rolling windows), `balance`, `feeBalance`, `feeRecipient`, `burner`, `fuel`, `sessionKey`, `feedback`, `priceFeed`.
 - **Precision**: `*Usd` totals are rounded to 6 dp, but unit prices (`token.priceUsd`, `trade.priceUsd`, `platformStats.bootPriceUsd`) keep 12 significant digits, since a fresh coin trades around 1e-7 USD.
-- **Fee economics**: the Clanker hook charges a protocol fee of 20% of the LP fee on top (1% LP fee → 1.2% gross); recipients share 100% of the LP fee by `rewardBps` (so `agentBps…platformBps` are of the full LP fee). `trade.feeUsd` / `fees24hUsd` = `valueUsd × Swap.fee / 1e6`.
+- **Fee economics**: RWAGMI coins pay a static 1% swap fee in WETH; 90% goes to the reward slots (`agentBps…platformBps`, sum 9000) and 10% to RWAGMI, so recipients get `bps / 10000` of the fee and no protocol fee comes on top. Clanker coins: the hook charges a protocol fee of 20% of the LP fee on top (1% LP fee → 1.2% gross) and recipients share 100% of the LP fee by `rewardBps`. `trade.feeUsd` / `fees24hUsd` = `valueUsd × Swap.fee / 1e6`.
 - **Social data** (`xHandle`, `lastPostAt`, `postsCount24h`, supervisor `status`, `spender`) is stored off-chain (Postgres schema `bootr_offchain` or `.ponder/agent-social.json` under PGlite) because Ponder tables are read-only from the API. REST responses merge it live; GraphQL `token.xHandle` / `agent.lastPostAt` / `agent.postsCount24h` / `agent.spender` lag by one snapshot (~60 s). The Postgres table gains its `spender` column with `ADD COLUMN IF NOT EXISTS`; file entries without it read as `spender: null`.
 - **Spender float**: each agent pays x402 inference from an off-chain-derived spender EOA that the kernel tops up, so part of its USDC lives outside the kernel. The live snapshot adds one USDC `balanceOf(spender)` per agent with a known spender to the same multicall as the kernel balances (skipped during backfill like the other live reads; a failed spender read keeps the last `spenderUsdc`). `treasuryUsdc` stays kernel only; `spenderUsdc` is separate; `treasuryUsd` and the sleep rule include both. A dormancy claim sweeps the kernel only, so a claimed agent's `treasuryUsd` keeps the last spender float.
 - **Status**: `claimed` > `dormant` (now − lastActivityAt ≥ dormancyPeriod) > `paused` > `sleeping` (kernel USDC + spender USDC < 1, same rule as the supervisor) > `awake` (activity < 6 h, or supervisor reported `awake`) > `sleeping`.

@@ -1,5 +1,9 @@
 # Bootr contracts — security review
 
+> **Historical (2026-10-27).** This review covers launcher v1 and v1.1, which launch through Clanker v4. Launcher v2
+> launches through RWAGMI v3 (see `docs/rwagmi-migration.md`); the Clanker-specific findings below do not apply to
+> it, and v2 needs its own review before mainnet use.
+
 Scope: `packages/contracts/src/{BootrLauncher,AgentGuardian,BootrCallPolicy,BuybackBurner}.sol`,
 `src/lib/MinimalClones.sol`, `src/interfaces/*`, `script/*.s.sol`, and the trust model in `src/README.md`.
 Toolchain: Foundry, solc 0.8.26, via-IR, optimizer 200. Live checks on Base Sepolia
