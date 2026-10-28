@@ -291,7 +291,7 @@ export async function prepareOp(ctx: SupervisorContext, agent: AgentRow, args: P
     try {
       await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
     } catch (err) {
-      throw new PolicyError('treasury_simulation_failed', { message: `treasury_simulation_failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}` });
+      throw new PolicyError('treasury_simulation_failed', { message: `treasury_simulation_failed: ${rpcErrorText(err)}` });
     }
   }
   const calls = serializeCalls(args.calls);
@@ -314,6 +314,25 @@ export type ExecuteResult =
  * Re-simulates, sends the userOp and records the hash before awaiting inclusion. A receipt
  * timeout leaves the op `unknown` for `reconcileOps`; it is never resent.
  */
+/**
+ * One line that keeps the RPC's own reason: viem wraps bundler and paymaster rejections in `BaseError`s whose
+ * `message` starts with a generic "RPC Request failed." while the server's text sits in `details` / the cause chain.
+ */
+export function rpcErrorText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur instanceof Error && depth < 6; depth++) {
+    const e = cur as Error & { shortMessage?: string; details?: string; cause?: unknown };
+    for (const text of [e.shortMessage ?? e.message.split('\n')[0], e.details]) {
+      const t = (text ?? '').trim();
+      if (t && !parts.includes(t)) parts.push(t);
+    }
+    cur = e.cause;
+  }
+  return parts.join(' | ').slice(0, 600);
+}
+
 export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: string, expectedHash?: Hex): Promise<ExecuteResult> {
   const op = await ctx.db.query.treasuryOps.findFirst({ where: and(eq(treasuryOps.opId, opId), eq(treasuryOps.agentId, agent.agentId)) });
   if (!op) throw new PolicyError('treasury_op_not_found');
@@ -328,7 +347,7 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
     try {
       await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
     } catch (err) {
-      const error = `simulation_failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+      const error = `simulation_failed: ${rpcErrorText(err)}`;
       await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
       ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
       return { status: 'failed', opId, error };
@@ -340,7 +359,7 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
   try {
     prepared = await client.prepareUserOp(calls);
   } catch (err) {
-    const error = `prepare_failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+    const error = `prepare_failed: ${rpcErrorText(err)}`;
     await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
     ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
     return { status: 'failed', opId, error };
@@ -353,7 +372,7 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
     if (sent.toLowerCase() !== prepared.hash.toLowerCase()) ctx.log.warn({ opId, expected: prepared.hash, got: sent }, 'bundler returned a different userOp hash');
   } catch (err) {
     // Submission errored: the bundler may or may not have accepted the op. Unknown, reconcile by hash.
-    const error = `submit_error: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+    const error = `submit_error: ${rpcErrorText(err)}`;
     await ctx.db.update(treasuryOps).set({ status: 'unknown', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
     ctx.log.warn({ agentId: agent.agentId, opId, userOpHash: prepared.hash, error }, 'treasury op outcome unknown');
     return { status: 'unknown', opId, userOpHash: prepared.hash };
