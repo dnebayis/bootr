@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { decodeFunctionData, erc20Abi, parseUnits } from 'viem';
-import { swapHelperAbi } from '../src/abi.js';
+import { decodeFunctionData, erc20Abi, parseUnits, type Hex } from 'viem';
+import { rwagmiLpLockerV3Abi, swapHelperAbi } from '../src/abi.js';
 import { treasuryOps } from '../src/db/schema.js';
-import { clampSlippageBps, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
-import { ADDR, KERNEL, makeWorld, seedAgent, SPENDER, TOKEN } from './helpers.js';
+import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
+import { clampSlippageBps, encodeClaimCall, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
+import { ADDR, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER } from './helpers.js';
+
+const claimOf = (data: string) => decodeFunctionData({ abi: rwagmiLpLockerV3Abi, data: data as Hex });
 
 describe('fee claim policy', () => {
   it('claims above the USD threshold, then swaps WETH to refuel USDC up to the target', async () => {
@@ -18,8 +21,12 @@ describe('fee claim policy', () => {
       expect(ops.map((o) => o.kind).sort()).toEqual(['claim_fees', 'swap']);
       expect(ops.every((o) => o.origin === 'policy' && o.status === 'confirmed' && o.userOpHash && o.txHash)).toBe(true);
       const claim = ops.find((o) => o.kind === 'claim_fees')!;
+      // one call, by the kernel, on the RWAGMI locker: settle the coin's pool and pay the kernel's WETH to the kernel
       expect(claim.calls).toHaveLength(1);
-      expect(claim.calls[0]!.to).toBe(ADDR.clankerFeeLocker);
+      expect(claim.calls[0]!.to).toBe(RWAGMI_LP_LOCKER);
+      expect(claim.calls[0]!.value).toBe('0');
+      expect(claimOf(claim.calls[0]!.data)).toEqual({ functionName: 'settleAndClaim', args: [[POOL_ID], ADDR.weth, KERNEL] });
+      expect(claim.description).toContain('settleAndClaim');
       const swap = ops.find((o) => o.kind === 'swap')!;
       expect(swap.calls.map((c) => c.to)).toEqual([ADDR.weth, ADDR.bootr.swapHelper]);
       const approve = decodeFunctionData({ abi: erc20Abi, data: swap.calls[0]!.data as `0x${string}` });
@@ -53,22 +60,80 @@ describe('fee claim policy', () => {
     }
   });
 
-  it('claims the agent token fees too and leaves USDC alone when already fuelled', async () => {
-    const w = await makeWorld({ chain: { claimableWeth: parseUnits('0.01', 18), claimableToken: parseUnits('1000', 18), usdc: 50_000_000n, weth: parseUnits('1', 18) } });
+  it('counts pending (unsettled) plus settled WETH, settles through the pool, and leaves USDC alone when already fuelled', async () => {
+    // 0.006 WETH still on the pool + 0.004 WETH settled = 0.01 WETH = $30; fees are WETH only (no token leg)
+    const w = await makeWorld({ chain: { pendingWeth: parseUnits('0.006', 18), claimableWeth: parseUnits('0.004', 18), usdc: 50_000_000n, weth: parseUnits('1', 18) } });
     try {
       const agent = await seedAgent(w);
-      const out = await runFeePolicy(w.ctx, agent);
-      expect(out.claim?.status).toBe('confirmed');
-      expect(out.swap).toBeUndefined();
-      const [claim] = await w.db.select().from(treasuryOps);
-      expect(claim!.calls).toHaveLength(2);
       const snap = await readTreasuryOnChain(w.ctx, agent);
       expect(snap.kernel).toBe(KERNEL);
       expect(snap.balances.token).toBe('0');
-      expect(claim!.calls.map((c) => decodeFunctionData({ abi: [{ type: 'function', name: 'claim', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [], stateMutability: 'nonpayable' }], data: c.data as `0x${string}` }).args[1])).toEqual([ADDR.weth, TOKEN]);
+      expect(snap.claimable).toEqual({ weth: '0.01', pending: '0.006', settled: '0.004', poolId: POOL_ID });
+      expect(snap.usd.claimableWeth).toBeCloseTo(30, 6);
+      expect(await poolIdFor(w.ctx, agent)).toBe(POOL_ID);
+      const out = await runFeePolicy(w.ctx, agent, snap);
+      expect(out.claim?.status).toBe('confirmed');
+      expect(out.swap).toBeUndefined();
+      const [claim] = await w.db.select().from(treasuryOps);
+      expect(claim!.calls).toHaveLength(1);
+      expect(claimOf(claim!.calls[0]!.data)).toEqual({ functionName: 'settleAndClaim', args: [[POOL_ID], ADDR.weth, KERNEL] });
+      expect(claim!.description).toContain('0.006 pending + 0.004 settled');
     } finally {
       await w.close();
     }
+  });
+
+  it('a coin without an RWAGMI pool (not launched through the launcher) only pays its settled balance with claimQuote', async () => {
+    // deploymentInfo answers zeros: nothing pending can be settled, whatever the pool mock would report
+    const w = await makeWorld({ chain: { poolId: null, pendingWeth: parseUnits('5', 18), claimableWeth: parseUnits('0.01', 18), usdc: 50_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      const snap = await readTreasuryOnChain(w.ctx, agent);
+      expect(snap.claimable).toEqual({ weth: '0.01', pending: '0', settled: '0.01', poolId: null });
+      const out = await runFeePolicy(w.ctx, agent, snap);
+      expect(out.claim?.status).toBe('confirmed');
+      const [claim] = await w.db.select().from(treasuryOps);
+      expect(claim!.calls[0]!.to).toBe(RWAGMI_LP_LOCKER);
+      expect(claimOf(claim!.calls[0]!.data)).toEqual({ functionName: 'claimQuote', args: [ADDR.weth, KERNEL] });
+      expect(claim!.description).toContain('claimQuote');
+      // nothing settled and no pool: nothing to claim, even above the threshold
+      w.state.claimableWeth = 0n;
+      expect((await runFeePolicy(w.ctx, agent)).claim).toBeUndefined();
+      expect(await w.db.select().from(treasuryOps)).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('falls back to the indexer pool id when deploymentInfo cannot be read', async () => {
+    const w = await makeWorld({ chain: { pendingWeth: parseUnits('0.01', 18) } });
+    try {
+      const agent = await seedAgent(w);
+      const pc = w.ctx.chain.publicClient as unknown as { readContract: (a: { functionName: string }) => Promise<unknown> };
+      const inner = pc.readContract.bind(pc);
+      pc.readContract = async (a) => {
+        if (a.functionName === 'deploymentInfo') throw new Error('rpc down');
+        return inner(a);
+      };
+      (w.indexer.client as unknown as { market: () => Promise<unknown> }).market = async () => ({ poolId: POOL_ID, priceUsd: 0.01 });
+      expect(await poolIdFor(w.ctx, agent)).toBe(POOL_ID);
+      expect((await readTreasuryOnChain(w.ctx, agent)).claimable).toEqual({ weth: '0.01', pending: '0.01', settled: '0', poolId: POOL_ID });
+      // an indexer without a pool id (or a malformed one) means no pool
+      (w.indexer.client as unknown as { market: () => Promise<unknown> }).market = async () => ({ poolId: '0x1234' });
+      expect(await poolIdFor(w.ctx, agent)).toBeNull();
+      (w.indexer.client as unknown as { market: () => Promise<unknown> }).market = async () => null;
+      expect(await poolIdFor(w.ctx, agent)).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('encodeClaimCall: settleAndClaim([poolId], WETH, kernel) with a pool, claimQuote(WETH, kernel) without', () => {
+    const withPool = encodeClaimCall({ lpLocker: RWAGMI_LP_LOCKER, kernel: KERNEL, weth: ADDR.weth, poolId: POOL_ID });
+    expect([withPool.to, withPool.value]).toEqual([RWAGMI_LP_LOCKER, 0n]);
+    expect(claimOf(withPool.data!)).toEqual({ functionName: 'settleAndClaim', args: [[POOL_ID], ADDR.weth, KERNEL] });
+    const settledOnly = encodeClaimCall({ lpLocker: RWAGMI_LP_LOCKER, kernel: KERNEL, weth: ADDR.weth, poolId: null });
+    expect(claimOf(settledOnly.data!)).toEqual({ functionName: 'claimQuote', args: [ADDR.weth, KERNEL] });
   });
 });
 
@@ -135,6 +200,25 @@ describe('spender float (x402 payer funding)', () => {
       w.state.fundingWindow.windowEnd = 1_792_843_200n - 1n;
       expect((await fundingBudget(w.ctx, agent))?.remaining).toBe(50_000_000n);
       expect((await runFeePolicy(w.ctx, agent)).fund?.status).toBe('confirmed');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('reads the funding window from the rule index of the installed layout (legacy keys keep index 3 until rotated)', async () => {
+    const w = await makeWorld();
+    try {
+      const windowRule = () => w.state.calls.filter((c) => c.fn === 'windowOf').map((c) => c.args[2]);
+      const legacyPolicy = { kernel: KERNEL, feeLocker: ADDR.clankerFeeLocker, usdcTransferCap: '50000000', gasAllowanceWei: '1' };
+      const legacy = await seedAgent(w, { agent: { sessionPolicy: legacyPolicy } });
+      expect((await fundingBudget(w.ctx, legacy))?.remaining).toBe(50_000_000n);
+      expect(windowRule()).toEqual([3n]);
+      await w.db.update((await import('../src/db/schema.js')).agents).set({ sessionPolicy: { ...legacyPolicy, feeLocker: RWAGMI_LP_LOCKER, rulesVersion: CALL_POLICY_RULES_VERSION } });
+      const current = { ...legacy, sessionPolicy: { ...legacyPolicy, feeLocker: RWAGMI_LP_LOCKER, rulesVersion: CALL_POLICY_RULES_VERSION } } as typeof legacy;
+      expect((await fundingBudget(w.ctx, current))?.remaining).toBe(50_000_000n);
+      // no stored policy at all: the current layout
+      expect((await fundingBudget(w.ctx, { ...legacy, sessionPolicy: null } as typeof legacy))?.remaining).toBe(50_000_000n);
+      expect(windowRule()).toEqual([3n, 4n, 4n]);
     } finally {
       await w.close();
     }
