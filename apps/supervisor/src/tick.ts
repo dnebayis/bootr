@@ -5,14 +5,15 @@
 import { randomUUID } from 'node:crypto';
 import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
 import { and, asc, eq, gt, inArray, ne } from 'drizzle-orm';
-import type { Address } from 'viem';
-import { guardianAbi } from './abi.js';
+import { zeroAddress, type Address, type Hex } from 'viem';
+import { guardianAbi, kernelAbi } from './abi.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
+import { validationId } from './session-key.js';
 import type { SenderInboxItem } from './sender-client.js';
 import { readTreasuryOnChain, reconcileOps, runFeePolicy } from './treasury.js';
 
@@ -100,6 +101,19 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     if (info && !info.paused && runtime.pausedBy === 'guardian') {
       await saveRuntime(ctx, agent.agentId, { status: 'waiting', pausedBy: null });
       runtime = { ...runtime, status: 'waiting', pausedBy: null };
+    }
+
+    // Admin revoke is the platform's kill switch: `guardian.revokeAllSessionKeys` bumps the kernel's valid nonce
+    // (and `revokeSessionKey` uninstalls the permission), which leaves the stored session key dead. Mirror that
+    // into a sticky operator pause so the agent stops ticking instead of failing every minute; a fresh install
+    // through the admin API clears it.
+    if (agent.permissionId && agent.sessionKeyInstalledAt && runtime.pausedBy !== 'operator') {
+      const revoked = await sessionKeyRevokedOnChain(ctx, agent.kernel as Address, agent.permissionId as Hex);
+      if (revoked) {
+        await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'operator' });
+        log.warn({ permissionId: agent.permissionId, reason: revoked }, 'session keys revoked on-chain; agent paused (operator)');
+        return { ran: false, reasons: ['keys_revoked'], skipped: 'keys_revoked' };
+      }
     }
 
     // 1. Reconcile money and pending effects (never re-send).
@@ -231,5 +245,25 @@ async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHa
     });
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'social stats post failed');
+  }
+}
+
+/**
+ * `'nonce_bumped'` when the kernel's valid nonce passed the permission's install nonce (admin
+ * `revokeAllSessionKeys`), `'uninstalled'` when the permission has no hook any more (`revokeSessionKey`),
+ * `null` when the permission is live or the chain could not be read (never pause on a read error).
+ */
+export async function sessionKeyRevokedOnChain(ctx: SupervisorContext, kernel: Address, permissionId: Hex): Promise<'nonce_bumped' | 'uninstalled' | null> {
+  try {
+    const vId = validationId(permissionId);
+    const [config, nonce] = await Promise.all([
+      ctx.chain.publicClient.readContract({ address: kernel, abi: kernelAbi, functionName: 'validationConfig', args: [vId] }),
+      ctx.chain.publicClient.readContract({ address: kernel, abi: kernelAbi, functionName: 'currentNonce' }),
+    ]);
+    if (config.hook === zeroAddress) return 'uninstalled';
+    if (config.nonce < nonce) return 'nonce_bumped';
+    return null;
+  } catch {
+    return null;
   }
 }

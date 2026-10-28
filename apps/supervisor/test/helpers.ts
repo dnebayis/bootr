@@ -101,6 +101,8 @@ export interface ChainState {
   calls: { fn: string; args: unknown[] }[];
   /** `validationConfig(vId).hook == guardian` (false = the permission is not installed: enable mode). */
   sessionInstalled: boolean;
+  /** Kernel `currentNonce()` (valid nonce); a permission installed at nonce 1 is dead once this passes 1. */
+  kernelNonce?: number;
   /** EntryPoint nonce sequence returned by `getNonce` (the key is taken from the call). */
   nonceSeq: bigint;
   fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint };
@@ -182,6 +184,8 @@ export function mockChain(state: ChainState): ChainContext {
           return 'TEST';
         case 'validationConfig':
           return { nonce: 1, hook: state.sessionInstalled ? GUARDIAN : '0x0000000000000000000000000000000000000000' };
+        case 'currentNonce':
+          return state.kernelNonce ?? 1;
         case 'getNonce': {
           const [, key] = args.args as [Address, bigint];
           return (key << 64n) | state.nonceSeq;

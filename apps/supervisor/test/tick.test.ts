@@ -315,3 +315,30 @@ describe('social push to the indexer', () => {
     }
   });
 });
+
+describe('admin revoke is the kill switch', () => {
+  it('pauses an agent (operator) once the kernel nonce passed its permission, and leaves a live one alone', async () => {
+    const world = await makeWorld({ chain: { kernelNonce: 2 } });
+    try {
+      const agent = await seedAgent(world);
+      const r = await processAgent(world.ctx, agent, await runtimeRow(world));
+      expect(r?.skipped).toBe('keys_revoked');
+      const rt = await runtimeRow(world);
+      expect(rt.status).toBe('paused');
+      expect(rt.pausedBy).toBe('operator');
+      // sticky: the next tick does not touch it either
+      expect((await processAgent(world.ctx, agent, rt))?.skipped).toBe('paused');
+    } finally {
+      await world.close();
+    }
+    const live = await makeWorld({ chain: { kernelNonce: 1 } });
+    try {
+      const agent = await seedAgent(live);
+      const r = await processAgent(live.ctx, agent, await runtimeRow(live));
+      expect(r?.skipped).not.toBe('keys_revoked');
+      expect((await runtimeRow(live)).status).not.toBe('paused');
+    } finally {
+      await live.close();
+    }
+  });
+});
