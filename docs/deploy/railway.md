@@ -44,11 +44,11 @@ What the IaC gives each service:
 
 | Service | Pre-deploy (release) command | Healthcheck | Notes |
 | --- | --- | --- | --- |
-| `sender` | `node dist/db/migrate.js` | `/health`, 60 s | draining 20 s |
-| `inference` | `node scripts/migrate.mjs` | `/health`, 60 s | draining 30 s |
-| `supervisor` | `node dist/db/migrate.js` | `/health`, 60 s | 1 replica, overlap 0 s, draining 40 s (the shutdown waits up to 30 s for the running tick) |
+| `sender` | `node dist/db/migrate.js` | `/health`, 300 s | draining 20 s |
+| `inference` | `node scripts/migrate.mjs` | `/health`, 300 s | draining 30 s |
+| `supervisor` | `node dist/db/migrate.js` | `/health`, 300 s | 1 replica, overlap 0 s, draining 40 s (the shutdown waits up to 30 s for the running tick) |
 | `indexer` | none (Ponder owns its schema) | `/ready`, 3600 s | see section 6 |
-| `web` | none | `/api/health`, 60 s | volume `web-data` at `/data` (admin config, launch drafts) |
+| `web` | none | `/api/health`, 300 s | volume `web-data` at `/data` (admin config, launch drafts) |
 
 The pre-deploy command runs inside the freshly built image, with the service's variables and private
 networking, before the new deployment starts. If it fails, the deployment fails and the previous one keeps
@@ -118,6 +118,11 @@ Use Railway **shared variables** (`${{shared.NAME}}`) for values that several se
 variables for Postgres and private URLs. Never paste a secret into a `NEXT_PUBLIC_*` variable, a build arg
 or a log line. `.env.example` is the authoritative list; every variable is described there.
 
+The RWAGMI v3 launcher, hook, locker and dev-buy addresses (names above) exist on **Base mainnet only**. There
+is no RWAGMI v3 deployment on Base Sepolia, so on a Sepolia environment those variables stay empty and
+launching a coin is not possible there (see "Local development" below). Coins launched before 2026-10-29 are on
+Clanker v4; the services keep reading them from their original contracts.
+
 ### Shared (project-level shared variables)
 
 | Variable | Used by | Value |
@@ -126,6 +131,7 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 | `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` | supervisor, indexer, web (SIWE checks) | CDP Node URL (secret: the key is in the path). Indexer accepts a comma-separated list |
 | `SENDER_SERVICE_KEY` | sender, supervisor, web, indexer | secret, ≥ 32 chars (`openssl rand -hex 32`) |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | supervisor, indexer | deployed contracts |
+| `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` | supervisor, indexer | RWAGMI v3 launch stack on Base mainnet (`.env.mainnet.example` has the verified values) |
 | `INFERENCE_PAYTO_ADDRESS` | inference, supervisor | relay revenue address |
 
 ### Per service
@@ -144,7 +150,7 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 `NEXT_PUBLIC_CHAIN_ID`, `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`,
 `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`,
 `NEXT_PUBLIC_BUILDER_CODE`, `NEXT_PUBLIC_INFERENCE_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
-`NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`,
+`NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`,
 `NEXT_PUBLIC_WORKER_SOURCE_BASE`, `NEXT_PUBLIC_USE_MOCK` (empty in production).
 
 - `NEXT_PUBLIC_RPC_URL` is shipped to every browser: use a public endpoint (or leave it empty), never the
@@ -179,7 +185,7 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 | platform | `PORT=3004`, `SUPERVISOR_PORT=3004`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
 | secrets | `SESSION_SIGNER_PRIVATE_KEY`, `ADMIN_PRIVATE_KEY` (only if the supervisor approves session keys), `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`, `BUNDLER_URL`, `PAYMASTER_URL`, `ENABLE_MODE_BUNDLER_URL`, `ENABLE_MODE_PAYMASTER_URL`, `SEARCH_API_KEY` |
 | private URLs | `SENDER_URL=http://sender.railway.internal:3002`, `INFERENCE_PROVIDER_URL=http://inference.railway.internal:3003`, `INDEXER_URL=http://indexer.railway.internal:42069` |
-| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `INFERENCE_PAYTO_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
+| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (claims go through the locker, the launch is decoded from the launcher), `INFERENCE_PAYTO_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
 | optional | `LAUNCH_LOG_CHUNK_BLOCKS`, `SUPERVISOR_TICK_MS`, `MAX_AGENTS_PER_TICK`, `MAX_TOOL_STEPS`, `CLAIM_THRESHOLD_USD`, `FUEL_TARGET_USDC`, `SWAP_ROUTE`, `SWAP_SLIPPAGE_BPS`, `SEARCH_API_URL`, `SESSION_KEY_VALIDITY_DAYS`, `SESSION_ROTATE_BEFORE_DAYS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_USDC_TRANSFER_CAP`, `SESSION_GAS_ALLOWANCE_WEI`, `SESSION_1271_CALLERS`, `INFERENCE_TIMEOUT_MS`, `INFERENCE_MAX_OUTPUT_TOKENS`, `USER_OP_RECEIPT_TIMEOUT_MS`, `LOG_LEVEL` |
 
 Nothing calls the supervisor's admin API from another service today; there is no `SUPERVISOR_URL` consumer.
@@ -192,12 +198,28 @@ Reach it with `railway ssh` or a temporary private-network client (`http://super
 | platform | `PORT=42069` (must be set here: the root `.env` uses `PORT` for the sender), `INDEXER_DATABASE_URL=${{Postgres.DATABASE_URL}}` (the indexer deliberately ignores `DATABASE_URL`) |
 | schema | `DATABASE_SCHEMA` — leave unset on Railway for one schema per deployment (section 6), or a fixed name |
 | secrets | `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`, `SENDER_SERVICE_KEY` |
-| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK`, `INDEXER_CORS_ORIGIN=https://bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `BOOT_TOKEN_ADDRESS` |
+| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `RWAGMI_HOOK_V3_ADDRESS`, `RWAGMI_DEV_BUY_V3_ADDRESS`, `INDEXER_CORS_ORIGIN=https://bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `BOOT_TOKEN_ADDRESS` |
 | optional | `INDEXER_MAX_RPS` (~25 when sharing a CDP key with the supervisor), `INDEXER_SNAPSHOT_INTERVAL`, `CHAINLINK_ETH_USD_FEED`, `FUEL_SCAN_MAX_RANGE` |
 
 `ADMIN_CONFIG_URL` stays on the public HTTPS origin (the response is trusted as-is, so it should not travel
 over plain HTTP). `INDEXER_CORS_ORIGIN` defaults to `https://bootr.fun` when empty; add
 `https://www.bootr.fun` if that host serves the app.
+
+### Local development
+
+Launching a coin needs the RWAGMI v3 stack, which only exists on Base mainnet. Local development against Base
+Sepolia is therefore no longer possible for launches; Sepolia still works for everything that does not launch
+(sender, inference, x402, web shell). The dev path for the launch flow is a **Base mainnet fork**:
+
+```sh
+anvil --fork-url "$BASE_RPC_URL" --chain-id 8453 --port 8545   # base-anvil: forks mainnet at the latest block
+```
+
+Run the contract tests with `forge test --fork-url http://127.0.0.1:8545` (or a `base-anvil` profile that does
+the same), and point a local stack at the fork with `BASE_RPC_URL=http://127.0.0.1:8545`, `CHAIN_ID=8453`,
+the mainnet `RWAGMI_*_V3_ADDRESS` values from `.env.mainnet.example` and the addresses of a Bootr launcher
+deployed onto the fork. The fork keeps its state in memory: redeploy the Bootr contracts and restart the indexer
+on a fresh schema after each restart. End to end against real infrastructure, test with a small coin on mainnet.
 
 ## 4. Domains and DNS
 
@@ -284,7 +306,7 @@ between a launch and the supervisor's first card read leaves that agent with the
 
 - One CDP project provides the RPC (`BASE_*_RPC_URL`), bundler/paymaster (`BUNDLER_URL` = `PAYMASTER_URL`)
   and the x402 facilitator (`CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`).
-- Paymaster policy allow-list: `BootrLauncher`, `AgentGuardian`, the Clanker fee locker, Universal Router,
+- Paymaster policy allow-list: `BootrLauncher`, `AgentGuardian`, the `RwagmiLpLockerV3` (`settleAndClaim` / `claimQuote`), Universal Router,
   USDC and WETH on the target chain (mainnet addresses differ from Sepolia).
 - Railway egress IPs are not static by default. If the CDP secret API key (or any provider) uses an IP
   allow-list, enable **Static Outbound IPs** on `supervisor`, `inference` and `indexer` and allow-list those
@@ -324,9 +346,12 @@ between a launch and the supervisor's first card read leaves that agent with the
 - [ ] `CHAIN_ID=8453` on supervisor and indexer; `NEXT_PUBLIC_CHAIN_ID=8453` and a rebuilt `web`.
 - [ ] `BASE_RPC_URL` set (CDP mainnet Node URL), archive-capable for the indexer backfill; `NEXT_PUBLIC_RPC_URL`
       public or empty.
-- [ ] `packages/shared/src/addresses.ts` mainnet entries re-verified on-chain (Clanker v4, fee lockers,
-      PoolManager, USDC, WETH, Universal Router, ERC-8004 registries — currently `null` on mainnet, so
+- [ ] `packages/shared/src/addresses.ts` mainnet entries re-verified on-chain (RWAGMI v3 launcher, hook,
+      locker and dev buy; Clanker v4 contracts kept for the older coins; PoolManager, USDC, WETH, Universal Router, ERC-8004 registries — currently `null` on mainnet, so
       reputation indexing is skipped), and the Bootr mainnet launcher/guardian/burner recorded.
+- [ ] `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer), `RWAGMI_HOOK_V3_ADDRESS`,
+      `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer) and `NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS` (web) match the verified
+      contracts on Basescan.
 - [ ] `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK` (indexer) and `LAUNCHER_START_BLOCK`
       (supervisor) set to the mainnet deployment; `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
       `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY` match.
