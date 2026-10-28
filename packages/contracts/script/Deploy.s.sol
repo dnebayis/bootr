@@ -24,12 +24,11 @@ contract Deploy is Script {
     address constant ENTRY_POINT_V07 = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
 
     struct ChainDeps {
-        address clanker;
-        address feeLocker;
-        address lpLockerFeeConversion;
-        address hookStaticFeeV2;
-        address devBuy;
-        address mevBlockDelay;
+        address rwagmiLauncher; // RwagmiB20LauncherV3
+        address rwagmiLocker; // RwagmiLpLockerV3
+        address rwagmiHook; // RwagmiHookV3
+        address rwagmiDevBuy; // RwagmiEthDevBuyV3
+        address b20Factory; // Base B20Factory precompile
         address weth;
         address usdc;
         address identity;
@@ -40,32 +39,19 @@ contract Deploy is Script {
 
     function chainConfig() public view returns (ChainDeps memory c) {
         if (block.chainid == 84532) {
-            c = ChainDeps({
-                clanker: 0xE85A59c628F7d27878ACeB4bf3b35733630083a9,
-                feeLocker: 0x42A95190B4088C88Dd904d930c79deC1158bF09D,
-                lpLockerFeeConversion: 0x824bB048a5EC6e06a09aEd115E9eEA4618DC2c8f,
-                hookStaticFeeV2: 0x11b51DBC2f7F683b81CeDa83DC0078D57bA328cc,
-                devBuy: 0x691f97752E91feAcD7933F32a1FEdCeDae7bB59c,
-                mevBlockDelay: 0x71DB365E93e170ba3B053339A917c11024e7a9d4,
-                weth: 0x4200000000000000000000000000000000000006,
-                usdc: 0x036CbD53842c5426634e7929541eC2318f3dCF7e,
-                identity: 0x8004A818BFB912233c491871b3d84c89A494BD9e,
-                kernelFactory: 0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419,
-                universalRouter: 0x492E6456D9528771018DeB9E87ef7750EF184104,
-                permit2: 0x000000000022D473030F116dDEE9F6B43aC78BA3
-            });
+            // RWAGMI v3 has no Base Sepolia deployment (only the v2 single-pool launcher, with no launchable
+            // pair). Launches are tested on a Base mainnet fork (`base-anvil`), see test/fork/BootrFork.t.sol.
+            revert("RWAGMI v3 is not deployed on Base Sepolia");
         } else if (block.chainid == 8453) {
             // Base mainnet - verified on-chain 2026-10-27 (see packages/shared/src/addresses.ts for the sources and
             // test/fork/MainnetDryRun.t.sol for the fork dry-run that launches through this exact configuration).
             c = ChainDeps({
-                clanker: 0xE85A59c628F7d27878ACeB4bf3b35733630083a9,
-                feeLocker: 0xF3622742b1E446D92e45E22923Ef11C2fcD55D68,
-                // NOT the README's 0x63D2...3496 (v4.0 locker; `enabledLockers(0x63D2, hookStaticFeeV2) == false` on
-                // mainnet): the live ClankerLpLockerFeeConversion that clanker-sdk and every current launch use.
-                lpLockerFeeConversion: 0xffA37784D619F228D8B379d287a4D7282e500762,
-                hookStaticFeeV2: 0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC,
-                devBuy: 0x1331f0788F9c08C8F38D52c7a1152250A9dE00be,
-                mevBlockDelay: 0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2,
+                // RWAGMI v3 stack (docs/rwagmi-migration.md), verified on Basescan; launcher created at block 52,861,401
+                rwagmiLauncher: 0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20,
+                rwagmiLocker: 0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20,
+                rwagmiHook: 0xB20B00367E37F826a0652c85a6DF375D784B20Ec,
+                rwagmiDevBuy: 0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20,
+                b20Factory: 0xB20f000000000000000000000000000000000000,
                 weth: 0x4200000000000000000000000000000000000006,
                 usdc: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
                 // ERC-8004 IdentityRegistry, same address on every ERC-8004 mainnet (erc-8004-contracts README);
@@ -102,12 +88,11 @@ contract Deploy is Script {
         BootrLauncher launcher = new BootrLauncher(
             deployer,
             BootrLauncher.Deps({
-                clanker: c.clanker,
-                feeLocker: c.feeLocker,
-                lpLocker: c.lpLockerFeeConversion,
-                staticHook: c.hookStaticFeeV2,
-                devBuyExtension: c.devBuy,
-                mevModule: c.mevBlockDelay,
+                rwagmiLauncher: c.rwagmiLauncher,
+                rwagmiLocker: c.rwagmiLocker,
+                rwagmiHook: c.rwagmiHook,
+                rwagmiDevBuy: c.rwagmiDevBuy,
+                b20Factory: c.b20Factory,
                 weth: c.weth,
                 usdc: c.usdc,
                 identityRegistry: c.identity,

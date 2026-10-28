@@ -16,12 +16,11 @@ contract LaunchDefaultsTest is Test {
 
     function _deps() internal returns (BootrLauncher.Deps memory d) {
         d = BootrLauncher.Deps({
-            clanker: makeAddr("clanker"),
-            feeLocker: makeAddr("feeLocker"),
-            lpLocker: makeAddr("lpLocker"),
-            staticHook: makeAddr("hook"),
-            devBuyExtension: makeAddr("devBuy"),
-            mevModule: makeAddr("mev"),
+            rwagmiLauncher: makeAddr("rwagmiLauncher"),
+            rwagmiLocker: makeAddr("rwagmiLocker"),
+            rwagmiHook: makeAddr("rwagmiHook"),
+            rwagmiDevBuy: makeAddr("rwagmiDevBuy"),
+            b20Factory: makeAddr("b20Factory"),
             weth: makeAddr("weth"),
             usdc: makeAddr("usdc"),
             identityRegistry: makeAddr("identity"),

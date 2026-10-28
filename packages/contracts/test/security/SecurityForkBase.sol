@@ -37,21 +37,20 @@ interface IUsdcEip3009 {
 ///      Policy-signature slots are unusable on Kernel v3.1's ERC-1271 path (`_checkSignaturePolicy` re-reads the
 ///      original slice after the policies and reverts `SignerPrefixNotPresent`); `RevocationFork.t.sol` proves it.
 abstract contract SecurityForkBase is Test {
-    address constant CLANKER = 0xE85A59c628F7d27878ACeB4bf3b35733630083a9;
-    address constant FEE_LOCKER = 0x42A95190B4088C88Dd904d930c79deC1158bF09D;
-    address constant LP_LOCKER = 0x824bB048a5EC6e06a09aEd115E9eEA4618DC2c8f;
-    address constant HOOK = 0x11b51DBC2f7F683b81CeDa83DC0078D57bA328cc;
-    address constant DEV_BUY = 0x691f97752E91feAcD7933F32a1FEdCeDae7bB59c;
-    address constant MEV = 0x71DB365E93e170ba3B053339A917c11024e7a9d4;
+    address constant RWAGMI_LAUNCHER = 0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20;
+    address constant RWAGMI_LOCKER = 0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20;
+    address constant RWAGMI_HOOK = 0xB20B00367E37F826a0652c85a6DF375D784B20Ec;
+    address constant RWAGMI_DEV_BUY = 0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20;
+    address constant B20_FACTORY = 0xB20f000000000000000000000000000000000000;
     address constant WETH = 0x4200000000000000000000000000000000000006;
-    address constant USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
-    address constant IDENTITY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+    address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address constant IDENTITY = 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432;
     address constant KERNEL_FACTORY = 0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419;
     address constant ENTRY_POINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
-    address constant UNIVERSAL_ROUTER = 0x492E6456D9528771018DeB9E87ef7750EF184104;
+    address constant UNIVERSAL_ROUTER = 0x6fF5693b99212Da76ad316178A184AB56D299b43;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
-    address constant SWAP_ROUTER_02 = 0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4;
-    address constant ETH_USD_FEED = 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1;
+    address constant SWAP_ROUTER_02 = 0x2626664c2603336E57B271c5C0b26F421741e481;
+    address constant ETH_USD_FEED = 0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70;
     // ZeroDev permission modules (packages/shared/src/addresses.ts, Base Sepolia)
     address constant ECDSA_SIGNER = 0x6A6F069E2a08c2468e7724Ab3250CdBFBA14D4FF;
     address constant GAS_POLICY = 0xaeFC5AbC67FfD258abD0A3E54f65E70326F84b23;
@@ -98,7 +97,8 @@ abstract contract SecurityForkBase is Test {
     address creator = vm.addr(creatorPk);
 
     function setUp() public virtual {
-        vm.createSelectFork(vm.envOr("BASE_SEPOLIA_RPC_URL", string("https://sepolia.base.org")));
+        vm.createSelectFork(vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org")));
+        require(block.chainid == 8453, "not a Base mainnet fork");
         guardian = new AgentGuardian(address(this), ENTRY_POINT, USDC, WETH);
         BuybackBurner burnerImpl = new BuybackBurner();
         callPolicy = new BootrCallPolicy();
@@ -127,12 +127,11 @@ abstract contract SecurityForkBase is Test {
         launcher = new BootrLauncher(
             address(this),
             BootrLauncher.Deps({
-                clanker: CLANKER,
-                feeLocker: FEE_LOCKER,
-                lpLocker: LP_LOCKER,
-                staticHook: HOOK,
-                devBuyExtension: DEV_BUY,
-                mevModule: MEV,
+                rwagmiLauncher: RWAGMI_LAUNCHER,
+                rwagmiLocker: RWAGMI_LOCKER,
+                rwagmiHook: RWAGMI_HOOK,
+                rwagmiDevBuy: RWAGMI_DEV_BUY,
+                b20Factory: B20_FACTORY,
                 weth: WETH,
                 usdc: USDC,
                 identityRegistry: IDENTITY,
@@ -234,10 +233,11 @@ abstract contract SecurityForkBase is Test {
     /// @dev The four production rules from `apps/supervisor/src/session-key.ts` (swap helper, not the router).
     function _productionRules(address kernel) internal view returns (BootrCallPolicy.Rule[] memory rules) {
         rules = new BootrCallPolicy.Rule[](4);
-        rules[0].target = FEE_LOCKER;
-        rules[0].selector = bytes4(keccak256("claim(address,address)"));
+        // RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): `to` (arg 2) must be the kernel
+        rules[0].target = RWAGMI_LOCKER;
+        rules[0].selector = bytes4(keccak256("settleAndClaim(bytes32[],address,address)"));
         rules[0].args = new BootrCallPolicy.ArgRule[](1);
-        rules[0].args[0] = BootrCallPolicy.ArgRule(0, 1, bytes32(uint256(uint160(kernel))));
+        rules[0].args[0] = BootrCallPolicy.ArgRule(2, 1, bytes32(uint256(uint160(kernel))));
         rules[1].target = WETH;
         rules[1].selector = IERC20.approve.selector;
         rules[1].args = new BootrCallPolicy.ArgRule[](1);

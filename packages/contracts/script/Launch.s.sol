@@ -16,8 +16,8 @@ import {BootrLauncher} from "../src/BootrLauncher.sol";
 ///   DEV_BUY_WEI           default 0
 ///   BUYBACK               default false
 ///   SALT                  bytes32, default keccak(name, timestamp)
-///   AGENT_CONTEXT         Clanker token context JSON (default {"interface":"Bootr","platform":"bootr.fun"})
-///   AGENT_METADATA        Clanker token metadata JSON (description, socialMediaUrls, auditUrls)
+///   AGENT_CONTEXT         launch context JSON, emitted as LaunchContext (default {"interface":"Bootr","platform":"bootr.fun"})
+///   AGENT_METADATA        ERC-7572 contract URI (https URL) set on the B20 token at creation
 ///   WORKER_HASH           bytes32, default 0
 ///   SUPERVISOR_KEY        optional session-key address (informational)
 contract Launch is Script {

@@ -105,10 +105,13 @@ contract WindowedCapForkTest is SecurityForkBase {
         // ops that do not spend carry no time bound at all: a claim with a stale claimed time validates fine
         vm.warp(t0 + 3 * FUND_WINDOW);
         PackedUserOperation memory claim = _userOp(
-            kernel, _permissionNonce(kernel, 0x00), FEE_LOCKER, abi.encodeWithSignature("claim(address,address)", kernel, WETH)
+            kernel,
+            _permissionNonce(kernel, 0x00),
+            RWAGMI_LOCKER,
+            abi.encodeWithSignature("settleAndClaim(bytes32[],address,address)", new bytes32[](0), WETH, kernel)
         );
         claim.signature = _signSessionAt(claim, t0);
-        _handle(claim); // validation passes (execution may fail inside the FeeLocker with nothing to claim)
+        _handle(claim); // validation passes (nothing to claim: the locker pays 0)
     }
 
     function test_otherRecipientsAndBatchesOverCapFail() public {

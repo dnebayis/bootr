@@ -37,12 +37,11 @@ contract DeployLauncher is Deploy {
         BootrLauncher launcher = new BootrLauncher(
             deployer,
             BootrLauncher.Deps({
-                clanker: c.clanker,
-                feeLocker: c.feeLocker,
-                lpLocker: c.lpLockerFeeConversion,
-                staticHook: c.hookStaticFeeV2,
-                devBuyExtension: c.devBuy,
-                mevModule: c.mevBlockDelay,
+                rwagmiLauncher: c.rwagmiLauncher,
+                rwagmiLocker: c.rwagmiLocker,
+                rwagmiHook: c.rwagmiHook,
+                rwagmiDevBuy: c.rwagmiDevBuy,
+                b20Factory: c.b20Factory,
                 weth: c.weth,
                 usdc: c.usdc,
                 identityRegistry: c.identity,

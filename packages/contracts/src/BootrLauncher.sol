@@ -12,13 +12,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {AgentGuardian} from "./AgentGuardian.sol";
 import {BuybackBurner} from "./BuybackBurner.sol";
-import {
-    IClanker,
-    IClankerHookStaticFee,
-    IClankerHookV2,
-    IClankerLpLockerFeeConversion,
-    IClankerUniv4EthDevBuy
-} from "./interfaces/IClanker.sol";
+import {IB20Factory, IRwagmiB20Launcher, IRwagmiB20LauncherV3, IRwagmiLpLockerV3} from "./interfaces/IRwagmi.sol";
 import {IERC8004IdentityRegistry} from "./interfaces/IERC8004IdentityRegistry.sol";
 import {IKernel, IKernelFactory, KernelLib} from "./interfaces/IKernel.sol";
 import {PoolKey, V4Constants} from "./interfaces/IUniswapV4.sol";
@@ -26,16 +20,16 @@ import {PoolKey, V4Constants} from "./interfaces/IUniswapV4.sol";
 /// @title BootrLauncher
 /// @notice One-transaction launch of an AI-agent coin on Base:
 ///         Kernel v3.1 treasury (root = AgentGuardian) -> optional BuybackBurner clone ->
-///         Clanker v4 token + Uniswap v4 pool (static-fee hook V2, locked LP in the
-///         ClankerLpLockerFeeConversion locker) -> ERC-8004 identity transferred to the kernel ->
-///         USDC fuel pulled into the kernel -> guardian registration.
+///         Base B20 Asset token + Uniswap v4 pool through the RWAGMI v3 launcher (1% swap fee taken by
+///         the RWAGMI hook in WETH, LP locked for good in RwagmiLpLockerV3) -> ERC-8004 identity
+///         transferred to the kernel -> USDC fuel pulled into the kernel -> guardian registration.
 ///
-///         Immutability of the fee split: every `rewardAdmins[i]` is this contract, and this
-///         contract exposes NO function that calls `updateRewardRecipient`, `updateRewardAdmin`
-///         or `updateFeePreference` on the locker, so recipients, bps and fee preferences can never
-///         change after launch. The same holds for the token: `tokenAdmin` is this contract and no
-///         function calls `updateAdmin` / `updateImage` / `updateMetadata` on the token, so the
-///         creator (or anyone) cannot rewrite the coin's metadata after launch.
+///         Immutability of the fee split: every reward slot's `admin` is this contract, and this
+///         contract exposes NO function that calls `updateRewardRecipient` / `updateRewardAdmin` on the
+///         locker, so recipients and bps can never change after launch. The token is launched in
+///         RWAGMI's immutable mode (`initialAdmin = 0`): nobody holds admin, mint or metadata powers.
+///         RWAGMI appends its own 10% slot to every launch; Bootr's presets are expressed over the
+///         remaining 9000 bps (see `_slotBps`).
 contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
 
@@ -44,7 +38,7 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     // ------------------------------------------------------------------
 
     struct LaunchDefaults {
-        uint24 lpFeeBps; // 1e6-based like Clanker (10_000 = 1%)
+        uint24 lpFeeBps; // hook swap fee in hundredths of a bip (10_000 = 1%)
         uint16 agentBps;
         uint16 creatorBps;
         uint16 burnBps;
@@ -71,12 +65,11 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     }
 
     struct Deps {
-        address clanker;
-        address feeLocker;
-        address lpLocker; // ClankerLpLockerFeeConversion
-        address staticHook; // ClankerHookStaticFeeV2
-        address devBuyExtension; // ClankerUniv4EthDevBuy
-        address mevModule; // ClankerMevBlockDelay
+        address rwagmiLauncher; // RwagmiB20LauncherV3
+        address rwagmiLocker; // RwagmiLpLockerV3
+        address rwagmiHook; // RwagmiHookV3
+        address rwagmiDevBuy; // RwagmiEthDevBuyV3
+        address b20Factory; // Base B20Factory precompile
         address weth;
         address usdc;
         address identityRegistry; // ERC-8004
@@ -88,15 +81,21 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     }
 
     // ------------------------------------------------------------------
-    // Constants: Clanker pool parameters (clanker.world "Standard" preset)
+    // Constants: pool parameters (one WETH pool, 1% static hook fee, one-sided position)
     // ------------------------------------------------------------------
 
     uint16 public constant BPS = 10_000;
-    uint24 public constant MAX_LP_FEE = 100_000; // hook cap, 10%
+    uint24 public constant MAX_LP_FEE = 100_000; // RWAGMI hook cap, 10% (hundredths of a bip)
+    /// @dev Fixed supply, all of it placed as liquidity (RWAGMI mints exactly `liquiditySupply`).
+    uint256 public constant TOTAL_SUPPLY = 100_000_000_000e18;
+    /// @dev Bootr presets sum to 10_000; RWAGMI reserves 1_000 for itself, so slots are scaled to 9_000.
+    uint16 public constant CREATOR_SLOT_BPS = 9_000;
+    uint8 public constant TOKEN_DECIMALS = 18;
+    uint8 public constant B20_PARAMS_VERSION = 1;
     uint32 public constant MIN_DORMANCY_PERIOD = 30 days;
     int24 public constant TICK_SPACING = 200;
     /// @dev Starting tick as if the coin is token0: price 1.0001^-230400 ~= 9.9e-11 WETH per token,
-    ///      i.e. ~10 ETH fully diluted for the 100B supply (what clanker.world launches at).
+    ///      i.e. ~10 ETH fully diluted for the 100B supply.
     int24 public constant STARTING_TICK = -230_400;
     /// @dev Single position from the starting tick up to -120_000 (~62,000x). Liquidity is 100% coin
     ///      (one-sided) at launch, so no tick below the starting tick is needed.
@@ -106,12 +105,11 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     // Immutables
     // ------------------------------------------------------------------
 
-    IClanker public immutable clanker;
-    address public immutable feeLocker;
-    address public immutable lpLocker;
-    address public immutable staticHook;
-    address public immutable devBuyExtension;
-    address public immutable mevModule;
+    IRwagmiB20LauncherV3 public immutable rwagmiLauncher;
+    IRwagmiLpLockerV3 public immutable rwagmiLocker;
+    address public immutable rwagmiHook;
+    address public immutable rwagmiDevBuy;
+    IB20Factory public immutable b20Factory;
     address public immutable weth;
     IERC20 public immutable usdc;
     IERC8004IdentityRegistry public immutable identityRegistry;
@@ -153,6 +151,9 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     event MinPlatformBpsUpdated(uint16 minPlatformBps);
     event LaunchFeeUpdated(uint256 launchFeeWei);
     event LaunchFeePaid(address indexed token, address indexed recipient, uint256 amount);
+    /// @notice The launch form's context string (`{"interface":"Bootr","platform":"bootr.fun","id":<draft>}`),
+    ///         emitted in the launch tx so the supervisor can bind the draft's X account to the agent.
+    event LaunchContext(address indexed token, string context);
 
     error ZeroAddress();
     error InvalidBpsSum();
@@ -178,20 +179,18 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         uint16 minPlatformBps_
     ) Ownable(owner_) {
         if (
-            deps.clanker == address(0) || deps.feeLocker == address(0) || deps.lpLocker == address(0)
-                || deps.staticHook == address(0) || deps.devBuyExtension == address(0) || deps.mevModule == address(0)
-                || deps.weth == address(0) || deps.usdc == address(0) || deps.identityRegistry == address(0)
+            deps.rwagmiLauncher == address(0) || deps.rwagmiLocker == address(0) || deps.rwagmiHook == address(0)
+                || deps.rwagmiDevBuy == address(0) || deps.b20Factory == address(0) || deps.weth == address(0) || deps.usdc == address(0) || deps.identityRegistry == address(0)
                 || deps.kernelFactory == address(0) || deps.guardian == address(0)
                 || deps.burnerImplementation == address(0) || deps.universalRouter == address(0)
                 || deps.permit2 == address(0)
         ) revert ZeroAddress();
 
-        clanker = IClanker(deps.clanker);
-        feeLocker = deps.feeLocker;
-        lpLocker = deps.lpLocker;
-        staticHook = deps.staticHook;
-        devBuyExtension = deps.devBuyExtension;
-        mevModule = deps.mevModule;
+        rwagmiLauncher = IRwagmiB20LauncherV3(deps.rwagmiLauncher);
+        rwagmiLocker = IRwagmiLpLockerV3(deps.rwagmiLocker);
+        rwagmiHook = deps.rwagmiHook;
+        rwagmiDevBuy = deps.rwagmiDevBuy;
+        b20Factory = IB20Factory(deps.b20Factory);
         weth = deps.weth;
         usdc = IERC20(deps.usdc);
         identityRegistry = IERC8004IdentityRegistry(deps.identityRegistry);
@@ -266,11 +265,11 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
             burner = MinimalClones.cloneDeterministic(burnerImplementation, salt);
         }
 
-        // (c)+(d) Clanker deployment
-        token = clanker.deployToken{value: p.devBuyWei}(_buildConfig(p, d, creator, kernel, burner, salt));
+        // (c)+(d) B20 token + v4 pool through the RWAGMI v3 launcher
+        (token,) = rwagmiLauncher.launchB20{value: p.devBuyWei}(_buildConfig(p, d, creator, kernel, burner, salt));
         if (burner != address(0)) {
             BuybackBurner(burner).initialize(
-                token, weth, feeLocker, poolKeyFor(token), universalRouter, permit2, address(this)
+                token, weth, address(rwagmiLocker), poolKeyFor(token), universalRouter, permit2, address(this)
             );
         }
 
@@ -290,6 +289,7 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         emit AgentLaunched(
             token, kernel, creator, burner, agentId, d, p.workerHash, p.model, p.agentURI, p.supervisorSessionKey
         );
+        emit LaunchContext(token, p.context);
 
         // (i) launch fee to the platform, excess back to the creator
         if (fee > 0) {
@@ -316,15 +316,18 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         );
     }
 
+    /// @notice The v4 pool key RWAGMI creates for `token`: currencies sorted, LP fee 0 (the hook charges the
+    ///         swap fee itself), tick spacing 200, hook = RwagmiHookV3.
     function poolKeyFor(address token) public view returns (PoolKey memory key) {
         (address c0, address c1) = token < weth ? (token, weth) : (weth, token);
-        key = PoolKey({
-            currency0: c0,
-            currency1: c1,
-            fee: V4Constants.DYNAMIC_FEE_FLAG,
-            tickSpacing: TICK_SPACING,
-            hooks: staticHook
-        });
+        key = PoolKey({currency0: c0, currency1: c1, fee: 0, tickSpacing: TICK_SPACING, hooks: rwagmiHook});
+    }
+
+    /// @notice The B20 address a launch by `creator` with `salt` creates (deterministic per RWAGMI launcher).
+    function predictToken(address creator, bytes32 salt) public view returns (address) {
+        return b20Factory.getB20Address(
+            uint8(IRwagmiB20Launcher.B20Variant.Asset), address(rwagmiLauncher), keccak256(abi.encode(creator, salt))
+        );
     }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
@@ -356,6 +359,12 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
             );
     }
 
+    /// @dev Bootr preset bps (sum 10_000) -> RWAGMI slot bps (sum 9_000). The platform slot takes the
+    ///      rounding remainder so the slots always sum to exactly 9_000.
+    function _slotBps(uint16 bps) internal pure returns (uint16) {
+        return uint16((uint256(bps) * CREATOR_SLOT_BPS) / BPS);
+    }
+
     function _buildConfig(
         LaunchParams calldata p,
         LaunchDefaults memory d,
@@ -363,88 +372,94 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         address kernel,
         address burner,
         bytes32 salt
-    ) internal view returns (IClanker.DeploymentConfig memory cfg) {
-        cfg.tokenConfig = IClanker.TokenConfig({
-            tokenAdmin: address(this),
+    ) internal view returns (IRwagmiB20LauncherV3.LaunchConfigV3 memory cfg) {
+        // (1) B20 Asset token, immutable mode: no admin, metadata set once at creation (ERC-7572 contract URI)
+        bytes[] memory initCalls;
+        if (bytes(p.metadata).length > 0) {
+            initCalls = new bytes[](1);
+            initCalls[0] = abi.encodeWithSignature("updateContractURI(string)", p.metadata);
+        } else {
+            initCalls = new bytes[](0);
+        }
+        cfg.b20Config = IRwagmiB20Launcher.B20Config({
+            variant: IRwagmiB20Launcher.B20Variant.Asset,
+            salt: salt,
+            params: abi.encode(
+                B20AssetParams({
+                    version: B20_PARAMS_VERSION,
+                    name: p.name,
+                    symbol: p.symbol,
+                    initialAdmin: address(0),
+                    decimals: TOKEN_DECIMALS
+                })
+            ),
+            initCalls: initCalls,
             name: p.name,
             symbol: p.symbol,
-            salt: salt,
-            image: p.image,
-            metadata: p.metadata,
-            context: p.context,
+            decimals: TOKEN_DECIMALS,
+            initialAdmin: address(0),
             originatingChainId: block.chainid
         });
+        cfg.adminMode = IRwagmiB20Launcher.AdminMode.Immutable;
+        cfg.liquiditySupply = TOTAL_SUPPLY;
 
-        cfg.poolConfig = IClanker.PoolConfig({
-            hook: staticHook,
-            pairedToken: weth,
-            tickIfToken0IsClanker: STARTING_TICK,
-            tickSpacing: TICK_SPACING,
-            poolData: abi.encode(
-                IClankerHookV2.PoolInitializationData({
-                    extension: address(0),
-                    extensionData: "",
-                    feeData: abi.encode(
-                        IClankerHookStaticFee.PoolStaticConfigVars({clankerFee: d.lpFeeBps, pairedFee: d.lpFeeBps})
-                    )
-                })
-            )
-        });
-
+        // (2) reward slots, admin = this contract (no rotation path exists here): locked for good
         uint256 n = burner == address(0) ? 3 : 4;
-        address[] memory admins = new address[](n);
-        address[] memory recipients = new address[](n);
-        uint16[] memory bps = new uint16[](n);
-        IClankerLpLockerFeeConversion.FeeIn[] memory prefs = new IClankerLpLockerFeeConversion.FeeIn[](n);
-        recipients[0] = kernel;
-        bps[0] = d.agentBps;
-        recipients[1] = creator;
-        bps[1] = d.creatorBps;
+        cfg.creatorRewards = new IRwagmiB20LauncherV3.RewardSlotConfig[](n);
+        cfg.creatorRewards[0] = IRwagmiB20LauncherV3.RewardSlotConfig(address(this), kernel, _slotBps(d.agentBps));
+        cfg.creatorRewards[1] = IRwagmiB20LauncherV3.RewardSlotConfig(address(this), creator, _slotBps(d.creatorBps));
+        uint16 used = cfg.creatorRewards[0].bps + cfg.creatorRewards[1].bps;
         if (burner != address(0)) {
-            recipients[2] = burner;
-            bps[2] = d.burnBps;
-            prefs[2] = IClankerLpLockerFeeConversion.FeeIn.Clanker; // locker converts WETH share -> token
+            cfg.creatorRewards[2] = IRwagmiB20LauncherV3.RewardSlotConfig(address(this), burner, _slotBps(d.burnBps));
+            used += cfg.creatorRewards[2].bps;
         }
-        recipients[n - 1] = d.platformRecipient;
-        bps[n - 1] = d.platformBps;
-        for (uint256 i; i < n; ++i) {
-            admins[i] = address(this);
-        }
+        cfg.creatorRewards[n - 1] =
+            IRwagmiB20LauncherV3.RewardSlotConfig(address(this), d.platformRecipient, CREATOR_SLOT_BPS - used);
 
-        int24[] memory tickLower = new int24[](1);
-        int24[] memory tickUpper = new int24[](1);
-        uint16[] memory positionBps = new uint16[](1);
-        tickLower[0] = STARTING_TICK;
-        tickUpper[0] = POSITION_TICK_UPPER;
-        positionBps[0] = BPS;
-
-        cfg.lockerConfig = IClanker.LockerConfig({
-            locker: lpLocker,
-            rewardAdmins: admins,
-            rewardRecipients: recipients,
-            rewardBps: bps,
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            positionBps: positionBps,
-            lockerData: abi.encode(IClankerLpLockerFeeConversion.LpFeeConversionInfo({feePreference: prefs}))
+        // (3) one WETH pool, static hook fee, one one-sided position. Positions are given in the pool's real
+        //     orientation: mirrored when the coin sorts as currency1 (the launcher validates them that way).
+        bool is0 = predictToken(creator, p.salt) < weth;
+        IRwagmiB20LauncherV3.PositionConfig[] memory positions = new IRwagmiB20LauncherV3.PositionConfig[](1);
+        positions[0] = is0
+            ? IRwagmiB20LauncherV3.PositionConfig(STARTING_TICK, POSITION_TICK_UPPER, BPS)
+            : IRwagmiB20LauncherV3.PositionConfig(-POSITION_TICK_UPPER, -STARTING_TICK, BPS);
+        cfg.pools = new IRwagmiB20LauncherV3.PoolAllocation[](1);
+        cfg.pools[0] = IRwagmiB20LauncherV3.PoolAllocation({
+            pairedToken: weth,
+            allocationBps: BPS,
+            tickIfToken0IsB20: STARTING_TICK,
+            tickSpacing: TICK_SPACING,
+            fee: IRwagmiB20LauncherV3.HookFeeConfig({
+                mode: IRwagmiB20LauncherV3.FeeMode.Static,
+                staticFee: d.lpFeeBps,
+                dynamicConfig: IRwagmiB20LauncherV3.DynamicFeeConfig(0, 0, 0, 0, 0, 0)
+            }),
+            positions: positions
         });
+        cfg.primaryPoolIndex = 0;
 
-        cfg.mevModuleConfig = IClanker.MevModuleConfig({mevModule: mevModule, mevModuleData: ""});
-
+        // (4) optional dev buy through RWAGMI's ETH extension (coin delivered to the creator). The launch
+        //     transaction creates the pool, so nothing can front-run it: minimumOut = 1 is safe here.
         if (p.devBuyWei > 0) {
-            cfg.extensionConfigs = new IClanker.ExtensionConfig[](1);
-            cfg.extensionConfigs[0] = IClanker.ExtensionConfig({
-                extension: devBuyExtension,
+            cfg.extensions = new IRwagmiB20LauncherV3.ExtensionConfigV3[](1);
+            cfg.extensions[0] = IRwagmiB20LauncherV3.ExtensionConfigV3({
+                extension: rwagmiDevBuy,
+                poolIndex: 0,
                 msgValue: p.devBuyWei,
-                extensionBps: 0,
-                extensionData: abi.encode(
-                    IClankerUniv4EthDevBuy.Univ4EthDevBuyExtensionData({
-                        pairedTokenPoolKey: PoolKey(address(0), address(0), 0, 0, address(0)),
-                        pairedTokenAmountOutMinimum: 0,
-                        recipient: creator
-                    })
-                )
+                data: abi.encode(creator, uint128(1))
             });
+        } else {
+            cfg.extensions = new IRwagmiB20LauncherV3.ExtensionConfigV3[](0);
         }
+        cfg.deadline = block.timestamp + 1 hours;
+    }
+
+    /// @dev B20 Asset `createB20` params (`RwagmiB20BootstrapV3.AssetParams`), ABI-encoded as one tuple.
+    struct B20AssetParams {
+        uint8 version;
+        string name;
+        string symbol;
+        address initialAdmin;
+        uint8 decimals;
     }
 }
