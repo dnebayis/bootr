@@ -84,16 +84,16 @@ abstract contract SecurityForkBase is Test {
     BootrSwapHelper swapHelper;
     IEntryPoint entryPoint = IEntryPoint(ENTRY_POINT);
 
-    address platformRecipient = makeAddr("platformRecipient");
-    address treasury = makeAddr("treasury");
-    address bundler = makeAddr("bundler");
-    address payTo = makeAddr("inferencePayTo");
+    address platformRecipient = makeAddr("bootr.security.platformRecipient");
+    address treasury = makeAddr("bootr.security.treasury");
+    address bundler = makeAddr("bootr.security.bundler");
+    address payTo = makeAddr("bootr.security.inferencePayTo");
     /// @dev The agent's per-agent x402 spender EOA (the only USDC recipient of the session key).
-    address spender = makeAddr("spender");
-    address thirdParty = makeAddr("thirdParty");
+    address spender = makeAddr("bootr.security.spender");
+    address thirdParty = makeAddr("bootr.security.thirdParty");
     uint256 sessionPk = 0xA11CE;
     address sessionKey = vm.addr(sessionPk);
-    uint256 creatorPk = 0xC0FFEE;
+    uint256 creatorPk = uint256(keccak256("bootr.security.creator.pk"));
     address creator = vm.addr(creatorPk);
 
     function setUp() public virtual {

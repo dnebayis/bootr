@@ -45,15 +45,16 @@ contract BootrForkTest is Test {
     BootrSwapHelper swapHelper;
     IEntryPoint entryPoint = IEntryPoint(ENTRY_POINT);
 
-    address platformRecipient = makeAddr("platformRecipient");
-    address treasury = makeAddr("treasury");
-    address creator = makeAddr("creator");
-    address bundler = makeAddr("bundler");
-    address trader = makeAddr("trader");
-    address payTo = makeAddr("inferencePayTo");
+    // Labels are namespaced: generic labels (and vm.addr(0xC0FFEE)) resolve to contracts on mainnet that forward ETH.
+    address platformRecipient = makeAddr("bootr.fork.platformRecipient");
+    address treasury = makeAddr("bootr.fork.treasury");
+    address creator = makeAddr("bootr.fork.creator");
+    address bundler = makeAddr("bootr.fork.bundler");
+    address trader = makeAddr("bootr.fork.trader");
+    address payTo = makeAddr("bootr.fork.inferencePayTo");
     uint256 sessionPk = 0xA11CE;
     address sessionKey = vm.addr(sessionPk);
-    uint256 creatorPk = 0xC0FFEE;
+    uint256 creatorPk = uint256(keccak256("bootr.fork.creator.pk"));
 
     uint256 constant FUEL = 100e6;
     uint32 constant DORMANCY = 90 days;
@@ -382,8 +383,11 @@ contract BootrForkTest is Test {
         assertGe(burned, bought);
         assertEq(IERC20(token).balanceOf(DEAD) - deadBefore, burned);
         assertEq(IERC20(WETH).balanceOf(burner), 0);
-        vm.expectRevert(BuybackBurner.NothingToSwap.selector);
-        BuybackBurner(burner).swapAndBurn(1);
+        // the burn swap itself paid the hook fee, and the burner owns a slot of it: a second pass burns far less
+        (uint256 bought2, uint256 burned2) = BuybackBurner(burner).swapAndBurn(1);
+        assertGt(bought2, 0);
+        assertEq(burned2, bought2);
+        assertLt(bought2, bought / 20, "second pass only recycles the burner's own fee share");
         // stray coins are burnable by anyone
         vm.prank(trader);
         assertEq(BuybackBurner(burner).burn(), 0);

@@ -133,12 +133,13 @@ contract SwapHelperForkTest is SecurityForkBase {
         op.signature = _signSession(op);
         assertFalse(_handle(op), "slippage over MAX_SLIPPAGE_BPS reverts");
         assertEq(IERC20(WETH).balanceOf(kernel), 0.0095 ether);
-        // (6) a swap the thin pool cannot fill inside the floor reverts at execution too (funds stay)
+        // (6) a swap the pool cannot fill inside the floor reverts at execution too (funds stay)
+        deal(WETH, kernel, 4_000 ether);
         op = _userOp(
-            kernel, _permissionNonce(kernel, 0x00), address(swapHelper), abi.encodeCall(BootrSwapHelper.swapWethToUsdc, (0.009 ether, 100))
+            kernel, _permissionNonce(kernel, 0x00), address(swapHelper), abi.encodeCall(BootrSwapHelper.swapWethToUsdc, (4_000 ether, 100))
         );
         op.signature = _signSession(op);
         assertFalse(_handle(op), "pool worse than the oracle floor reverts");
-        assertEq(IERC20(WETH).balanceOf(kernel), 0.0095 ether);
+        assertEq(IERC20(WETH).balanceOf(kernel), 4_000 ether);
     }
 }
