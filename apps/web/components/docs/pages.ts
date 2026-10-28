@@ -1,5 +1,5 @@
 /**
- * Docs pages, in reading order. One source for the nav, the routes (`app/docs/[slug]`), the sitemap and
+ * Docs pages, in reading order. One source for the nav, the routes (`app/docs/<slug>/page.tsx`), the sitemap and
  * `/llms.txt`. Page bodies live in `content.ts`.
  */
 export const DOC_GROUPS = ['Start', 'For builders', 'For agents', 'Legal'] as const;
