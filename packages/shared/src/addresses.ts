@@ -5,7 +5,7 @@ import type { Address } from 'viem';
  *
  * The Base mainnet block was verified on-chain and against primary sources on 2026-10-27 (sources in the
  * comments; `packages/contracts/test/fork/MainnetDryRun.t.sol` exercises the whole set on a mainnet fork).
- * Re-run that dry-run before the mainnet deploy and whenever Clanker rotates a module.
+ * Re-run that dry-run before the mainnet deploy and whenever RWAGMI rotates a module.
  */
 
 export const BASE_MAINNET_CHAIN_ID = 8453 as const;
@@ -14,20 +14,17 @@ export const BASE_SEPOLIA_CHAIN_ID = 84532 as const;
 export type SupportedChainId = typeof BASE_MAINNET_CHAIN_ID | typeof BASE_SEPOLIA_CHAIN_ID;
 
 export interface ChainAddresses {
-  /** Clanker v4 core contracts. */
-  clanker: Address;
-  clankerFeeLocker: Address;
-  clankerLpLocker: Address;
-  clankerHookStaticFeeV2: Address;
-  clankerHookDynamicFeeV2: Address;
-  clankerUniv4EthDevBuy: Address;
-  clankerMevBlockDelay: Address;
   /**
-   * ClankerLpLockerFeeConversion - the LP locker Clanker enables for the V2 hooks
-   * (`enabledLockers(lpLockerFeeConversion, hookStaticFeeV2) == true`; the plain `clankerLpLocker`
-   * above is only enabled for the V1 hooks). BootrLauncher uses this one.
+   * RWAGMI v3 (B20) token launcher stack: BootrLauncher launches every coin through `rwagmiLauncherV3` into a
+   * Uniswap v4 pool behind `rwagmiHookV3`; `rwagmiLockerV3` holds the LP, the locked reward slots and the WETH
+   * fee ledger (`launchInfo`, `pendingQuote`, `claimableQuote`, `settleAndClaim`, `claimQuote`). `null` where
+   * RWAGMI has no deployment (see docs/rwagmi-migration.md).
    */
-  clankerLpLockerFeeConversion: Address;
+  rwagmiLauncherV3: Address | null;
+  rwagmiHookV3: Address | null;
+  rwagmiLockerV3: Address | null;
+  /** Optional ETH creator buy extension (WETH pool only). */
+  rwagmiDevBuyV3: Address | null;
   /** ERC-8004 registries. `null` when not yet verified for the chain. */
   erc8004: {
     identityRegistry: Address | null;
@@ -90,33 +87,12 @@ export const addresses = {
     // https://mainnet.base.org and https://base-rpc.publicnode.com) and the primary source named next to it.
     // `packages/contracts/test/fork/MainnetDryRun.t.sol` launches through this exact set on a mainnet fork.
     //
-    // Clanker v4: github.com/clanker-devco/v4-contracts README (Base mainnet table) + clanker-sdk
-    // `src/utils/clankers.ts` (chainId 8453, type clanker_v4). Factory `deprecated() == false`; bytecode identical
-    // to the Base Sepolia factory (same keccak).
-    clanker: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
-    // README "ClankerFeeLocker"; `allowedDepositors(clankerLpLockerFeeConversion) == true`.
-    clankerFeeLocker: '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68',
-    // README "ClankerLpLocker" (v4.0, V1 hooks only; not used by Bootr).
-    clankerLpLocker: '0x29d17C1A8D851d7d4cA97FAe97AcAdb398D9cCE0',
-    // README "ClankerHookStaticFeeV2" (v4.1); `factory() == clanker`, `poolManager() == uniswap.poolManager`,
-    // `weth() == weth`, `MAX_LP_FEE() == 100_000`; the hook of every current clanker.world launch.
-    clankerHookStaticFeeV2: '0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC',
-    // README "ClankerHookDynamicFeeV2" (v4.1).
-    clankerHookDynamicFeeV2: '0xd60D6B218116cFd801E28F78d011a203D2b068Cc',
-    // README "ClankerUniv4EthDevBuy" (v4.0), Sourcify exact match; `factory() == clanker`,
-    // `universalRouter() == uniswap.universalRouter`, `weth() == weth`. Accepted by the factory in the fork dry-run.
-    clankerUniv4EthDevBuy: '0x1331f0788F9c08C8F38D52c7a1152250A9dE00be',
-    // README "ClankerMevBlockDelay" (v4.0). Still enabled on mainnet: the fork dry-run deploys through it.
-    // (clanker.world itself now launches with ClankerSniperAuctionV2 0xebB25BB797D82CB78E1bc70406b13233c0854413.)
-    clankerMevBlockDelay: '0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2',
-    // NOT the README's "ClankerLpLockerFeeConversion" 0x63D2DfEA64b3433F4071A98665bcD7Ca14d93496 (v4.0): on mainnet
-    // `clanker.enabledLockers(0x63D2..., hookStaticFeeV2) == false`, so a launch through it reverts
-    // `LockerNotEnabled`. This is the live locker: clanker-sdk `related.locker` for 8453, `tokenDeploymentInfo`
-    // of every recent launch, `enabledLockers(locker, hookStaticFeeV2) == true` (and for the dynamic V2 hook),
-    // `factory() == clanker`, `feeLocker() == clankerFeeLocker`, `poolManager() == uniswap.poolManager`,
-    // `owner()` == the Clanker owner, same ABI as Sepolia's 0x824b... (tokenRewards / feePreferences /
-    // collectRewards / updateReward*). Not source-verified on Sourcify (the SDK and the chain are the sources).
-    clankerLpLockerFeeConversion: '0xffA37784D619F228D8B379d287a4D7282e500762',
+    // RWAGMI v3: @rwagmi/token-launcher-sdk 0.3.0 (github.com/RWAGMI/token-launcher-sdk) and the verified contracts
+    // on Basescan; launcher creation block 52,861,401 (SDK `DEFAULT_LAUNCHER_V3`). Listed in docs/rwagmi-migration.md.
+    rwagmiLauncherV3: '0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20',
+    rwagmiHookV3: '0xB20B00367E37F826a0652c85a6DF375D784B20Ec',
+    rwagmiLockerV3: '0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20',
+    rwagmiDevBuyV3: '0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20',
     erc8004: {
       // github.com/erc-8004/erc-8004-contracts README (same pair on every ERC-8004 mainnet, Base listed);
       // `name() == "AgentIdentity"`, `symbol() == "AGENT"`, `reputation.getIdentityRegistry() == identity`.
@@ -168,14 +144,12 @@ export const addresses = {
     },
   },
   [BASE_SEPOLIA_CHAIN_ID]: {
-    clanker: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
-    clankerFeeLocker: '0x42A95190B4088C88Dd904d930c79deC1158bF09D',
-    clankerLpLocker: '0x33e2Eda238edcF470309b8c6D228986A1204c8f9',
-    clankerHookStaticFeeV2: '0x11b51DBC2f7F683b81CeDa83DC0078D57bA328cc',
-    clankerHookDynamicFeeV2: '0xBF4983dC0f2F8FE78C5cf8Fc621f294A993728Cc',
-    clankerUniv4EthDevBuy: '0x691f97752E91feAcD7933F32a1FEdCeDae7bB59c',
-    clankerMevBlockDelay: '0x71DB365E93e170ba3B053339A917c11024e7a9d4',
-    clankerLpLockerFeeConversion: '0x824bB048a5EC6e06a09aEd115E9eEA4618DC2c8f',
+    // RWAGMI v3 has no Base Sepolia deployment: contract tests use a Base mainnet fork, the web e2e suite runs in
+    // mock mode.
+    rwagmiLauncherV3: null,
+    rwagmiHookV3: null,
+    rwagmiLockerV3: null,
+    rwagmiDevBuyV3: null,
     erc8004: {
       identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
       reputationRegistry: '0x8004B663056A597Dffe9eCcC1965A193B7388713',
