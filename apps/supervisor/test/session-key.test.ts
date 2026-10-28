@@ -65,13 +65,15 @@ function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
 
 /** A policy as stored by a supervisor that predates the swap helper / spender layout (router rules, payTo, caller policy). */
 function legacyParams(): SessionPolicyParams {
-  const { rulesVersion: _v, ...p } = params();
+  const p = params();
+  delete p.rulesVersion;
   return { ...p, feeLocker: ADDR.clankerFeeLocker, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
 }
 
 /** A policy installed with the Clanker-era layout (one `FeeLocker.claim` rule in front, funding rule at index 3). */
 function clankerEraParams(): SessionPolicyParams {
-  const { rulesVersion: _v, ...p } = params();
+  const p = params();
+  delete p.rulesVersion;
   return { ...p, feeLocker: ADDR.clankerFeeLocker };
 }
 

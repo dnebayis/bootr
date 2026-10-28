@@ -37,14 +37,15 @@ guardian owner key used only to approve session-key installs.
 | --- | --- |
 | `src/config.ts` | zod env schema (see below) |
 | `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_cursors` (migrations table `public.sv_migrations`) |
-| `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent`, `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
-| `src/session-key.ts` | policy set (BootrCallPolicy rules incl. the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
+| `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent` (draft id from `BootrLauncher.LaunchContext` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
+| `src/session-key.ts` | policy set (BootrCallPolicy rules: the two RWAGMI locker claims with `to == kernel`, the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
 | `src/spender.ts` | per-agent x402 spender EOA derived from `SPENDER_MASTER_KEY` (signs the EIP-3009 payments; the kernel only funds it) |
 | `src/admin-signer.ts` | `AdminSigner` interface (guardian owner: `approveSessionKey`, `revokeSessionKey`, `revokeAllSessionKeys`, `revokeAllSessionKeysBatch`, `handleOps`) + local-key implementation; swap for KMS/hardware later |
 | `src/kernel.ts` | viem `toSmartAccount` implementation of the Kernel session account + bundler client (`prepareUserOp`, `submitUserOp`, `waitForReceipt`, `getReceipt`; `signTypedData` / `signMessage` always refused: the kernel has no ERC-1271 path); every userOp signature carries BootrCallPolicy's time slot; appends the ERC-8021 builder-code suffix to every userOp callData; self-bundles enable-mode ops through `EntryPoint.handleOps` when given a `selfBundle` sender |
 | `src/entrypoint.ts` | EntryPoint v0.7 helpers: the fixed self-bundle gas budget and `FailedOp` / `FailedOpWithRevert` decoding (inner Kernel / guardian / BootrCallPolicy errors) |
 | `src/builder-codes.ts` | Base Builder Codes: per-kernel registration (`ensureBuilderCode`, `backfillBuilderCodes`) and the ERC-8021 calldata suffix (`attributionSuffix`) |
-| `src/treasury.ts` | on-chain reads (kernel + spender balances, Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
+| `src/treasury.ts` | on-chain reads (kernel + spender balances, pending + settled WETH fees from `RwagmiLpLockerV3`, Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, the claim call (`settleAndClaim` / `claimQuote`), swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
+| `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
 | `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA, idempotent per cycle, unknown-outcome reconciliation with payment proof |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
@@ -94,6 +95,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts |
+| `RWAGMI_LAUNCHER_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
+| `RWAGMI_LP_LOCKER_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
 | `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
@@ -107,7 +110,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `MAX_AGENTS_PER_TICK` | no | `10` | |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |
 | `SUPERVISOR_PORT` | no | `3004` | |
-| `CLAIM_THRESHOLD_USD` | no | `5` | fee policy: claim when claimable fees exceed this |
+| `CLAIM_THRESHOLD_USD` | no | `5` | fee policy: claim when the kernel's pending + settled WETH fees (at Chainlink ETH/USD) reach this |
 | `FUEL_TARGET_USDC` | no | `20` | fee policy: swap WETH -> USDC up to this balance |
 | `SWAP_SLIPPAGE_BPS` | no | `100` | max slippage vs Chainlink ETH/USD passed to `BootrSwapHelper` (hard cap 300 on-chain; the pool fee tier is fixed in the helper) |
 | `CHAINLINK_MAX_AGE_SECONDS` | no | `3600` | a Chainlink ETH/USD answer older than this is treated as unavailable: no swaps, no USD figures (the helper enforces the same 1 h bound on-chain) |
@@ -130,16 +133,19 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 1. `pollLaunches` reads `BootrLauncher.AgentLaunched` logs after the stored cursor (2000-block chunks) and calls
    `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents` (status `onboarding`, config with
    `xHandle`/`xUserId` still `null`) and `sv_runtimes` (state `{phase: 'boot'}`, cycle 0). It also reads the launch
-   tx receipt, decodes Clanker v4 `TokenCreated` (emitted by `addresses.clanker` for this token) and stores the `id`
-   of its JSON `tokenContext` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`) in `sv_agents.draft_id`
+   tx receipt, decodes `BootrLauncher.LaunchContext(token, context)` (emitted by our launcher for this token right
+   after `AgentLaunched`; the RWAGMI `B20LaunchCreatedV3` event carries no context) and stores the `id` of its JSON
+   `context` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`) in `sv_agents.draft_id`
    (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
        `NOT_FOR_VALIDATE_SIG`, init data `abi.encode(Rule[])` built by `callPolicyRules` / `encodeCallPolicyData` in
-       `src/session-key.ts` with exactly four rules: `FeeLocker.claim(kernel, *)`, `WETH.approve(bootr.swapHelper, *)`,
-       `swapHelper.swapWethToUsdc(*, *)`, `USDC.transfer(<agent spender>, SUM_PER_WINDOW <= SESSION_USDC_TRANSFER_CAP per
-       SESSION_USDC_WINDOW_SECONDS)`. The helper pulls WETH from the kernel and pays all USDC back to the kernel at no
+       `src/session-key.ts` with exactly five rules: `RwagmiLpLockerV3.settleAndClaim(*, *, to == kernel)`,
+       `RwagmiLpLockerV3.claimQuote(*, to == kernel)`, `WETH.approve(bootr.swapHelper, *)`, `swapHelper.swapWethToUsdc(*, *)`,
+       `USDC.transfer(<agent spender>, SUM_PER_WINDOW <= SESSION_USDC_TRANSFER_CAP per SESSION_USDC_WINDOW_SECONDS)`. The
+       locker pays `msg.sender`'s (the kernel's) balance to `to`, and `to` is pinned to the kernel, so a claim can only
+       move fees into the kernel. The helper pulls WETH from the kernel and pays all USDC back to the kernel at no
        worse than Chainlink minus 3%, so the session key can only turn the kernel's WETH into the kernel's USDC (no
        Universal Router rule any more); the only USDC outflow is to the agent's own spender, cumulatively capped per
        window on-chain. Every call must carry zero ETH value; batches pass only if every call passes and the USDC amounts
@@ -291,8 +297,8 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
 3. Reconcile: `sv_treasury_ops` in `sent`/`unknown` by userOp hash; a pending `held`/`sent` action by sender receipt or
    op status (`agent-core.reconcile`); an `unknown` inference by `GET /v1/requests/:key`.
 4. Sleep rule: USDC < 1 -> runtime `sleeping`, no inference; refuel is detected on the next tick.
-5. Fee policy (no model): claimable fees (WETH at Chainlink ETH/USD + own token at the indexer price) >= `CLAIM_THRESHOLD_USD`
-   -> `claim_fees` userOp; then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap` WETH -> USDC through `BootrSwapHelper`
+5. Fee policy (no model): pending + settled WETH fees on the RWAGMI locker (at Chainlink ETH/USD) >= `CLAIM_THRESHOLD_USD`
+   -> `claim_fees` userOp (`settleAndClaim`, see "Fee claims" below); then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap` WETH -> USDC through `BootrSwapHelper`
    (`SWAP_SLIPPAGE_BPS` vs the on-chain Chainlink floor, amount for the missing USDC + 2%). A stale Chainlink answer
    (`CHAINLINK_MAX_AGE_SECONDS`) disables swaps. Each op is logged with `opId`, `userOpHash`, `txHash`.
 6. `wakeDecision` from: eligible pending mentions (`replyEligibility`), original-post schedule, continuation, config revision,
@@ -303,6 +309,36 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
    `MAX_TOOL_STEPS`. State is persisted with `boundedState` (12 KB); the in-flight conversation is persisted in
    `sv_runtimes.turn` so a crash resumes it. Errors use `interruptionPlan`.
 8. Social stats to the indexer (`xHandle`, `lastPostAt`, `postsCount24h`, `status`).
+
+## Fee claims (RWAGMI v3)
+
+Coins launch through `RwagmiB20LauncherV3` into a Uniswap v4 pool paired with WETH (`docs/rwagmi-migration.md`). The
+RWAGMI hook takes the 1% swap fee in WETH only and credits it to the pool; `RwagmiLpLockerV3` settles a pool's credits
+into per-recipient, per-currency balances and pays them out. The kernel is the agent's reward recipient, so the
+kernel itself claims, with the supervisor's session key:
+
+1. **Read** (`readTreasuryOnChain`): `poolId = RwagmiB20LauncherV3.deploymentInfo(token).primaryPoolId` (the indexer's
+   `/market/:token` `poolId` only when that read fails; `null` when the coin was not launched through the RWAGMI
+   launcher, e.g. a Clanker-era coin). Claimable WETH = `pendingQuote(poolId, kernel)` (credited to the pool, not
+   settled yet) + `claimableQuote(kernel, WETH)` (settled). The snapshot exposes `claimable.{weth, pending, settled,
+   poolId}`; there is no claimable token amount any more. USD value at Chainlink ETH/USD.
+2. **Claim** (`runFeePolicy`, kind `claim_fees`): when the USD value reaches `CLAIM_THRESHOLD_USD`, one call from the
+   kernel to `RWAGMI_LP_LOCKER_ADDRESS`: `settleAndClaim([poolId], WETH, kernel)`, which settles the pool and pays the
+   kernel's whole WETH balance to the kernel in one go. Without a pool id only the settled balance can move:
+   `claimQuote(WETH, kernel)` (nothing is sent when there is nothing settled). Both calls are simulated as the kernel,
+   persisted as `prepared`, then sent like every treasury op (`executeOp`, hash stored before the send, `unknown` on
+   timeout, reconciled by hash).
+3. **Policy**: BootrCallPolicy allows exactly those two selectors on the locker, with the `to` argument pinned to the
+   kernel (`settleAndClaim` word 2, `claimQuote` word 1); currency and pools are free. The locker pays
+   `msg.sender`'s balance, so the session key can only ever move the kernel's own fees into the kernel.
+4. **After the claim** the WETH sits in the kernel and the unchanged swap / spender-funding steps take over (WETH ->
+   USDC via `BootrSwapHelper`, USDC -> spender within the window cap).
+
+Session keys installed before this layout (Clanker-era rules, `rulesVersion` unset in `sv_agents.session_policy`) keep
+working for swaps and funding; their claim rule points at the Clanker fee locker, which the supervisor no longer calls,
+and their funding rule stays at index 3 for `windowOf` until the key is rotated (`rotateSessionKey` installs the new
+five-rule layout). Clanker-era coins report `poolId: null` and no pending fees; their old Clanker fees are not
+claimed by the supervisor any more.
 
 ## Runbook: `held` states
 

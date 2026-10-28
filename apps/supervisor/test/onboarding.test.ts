@@ -4,7 +4,7 @@ import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type 
 import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
-import { ADDR, agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
+import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 
