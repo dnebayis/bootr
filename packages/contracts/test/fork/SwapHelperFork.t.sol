@@ -15,17 +15,20 @@ import {SecurityForkBase} from "../security/SecurityForkBase.sol";
 contract SwapHelperForkTest is SecurityForkBase {
     function test_directSwapPaysCallerAboveOracleFloor() public {
         vm.deal(address(this), 1 ether);
-        // ~0.05 WETH of liquidity in the testnet pool, drifting ~1% from Chainlink: 0.0005 WETH (~1.15 USDC) at 2%
+        // the mainnet WETH/USDC 0.05% pool is deep: a small swap lands well inside the 2% Chainlink floor
         IWETH9(WETH).deposit{value: 0.0005 ether}();
         IWETH9(WETH).approve(address(swapHelper), 0.0005 ether);
         uint256 price = swapHelper.ethUsdPrice();
         assertGt(price, 100e8, "feed is live");
         uint256 floor = swapHelper.minUsdcOut(0.0005 ether, 200);
         assertEq(floor, (0.0005 ether * price * 9800) / (10_000 * 1e20));
+        // deltas: the default test address may already hold USDC dust on mainnet
+        uint256 usdcBefore = IERC20(USDC).balanceOf(address(this));
+        uint256 wethBefore = IERC20(WETH).balanceOf(address(this));
         uint256 out = swapHelper.swapWethToUsdc(0.0005 ether, 200);
         assertGe(out, floor);
-        assertEq(IERC20(USDC).balanceOf(address(this)), out);
-        assertEq(IERC20(WETH).balanceOf(address(this)), 0);
+        assertEq(IERC20(USDC).balanceOf(address(this)) - usdcBefore, out);
+        assertEq(wethBefore - IERC20(WETH).balanceOf(address(this)), 0.0005 ether);
         assertEq(IERC20(WETH).balanceOf(address(swapHelper)), 0);
         assertEq(IERC20(USDC).balanceOf(address(swapHelper)), 0);
     }
@@ -61,11 +64,12 @@ contract SwapHelperForkTest is SecurityForkBase {
         IWETH9(WETH).approve(address(swapHelper), 0.001 ether);
         vm.expectRevert(abi.encodeWithSelector(BootrSwapHelper.SlippageTooHigh.selector, 301, 300));
         swapHelper.swapWethToUsdc(0.001 ether, 301);
-        // a swap large enough to push the thin testnet pool past 3% is refused by the router floor
-        IWETH9(WETH).deposit{value: 0.5 ether}();
-        IWETH9(WETH).approve(address(swapHelper), 0.5 ether);
+        // a swap large enough to push even the deep mainnet pool past 3% is refused by the router floor
+        vm.deal(address(this), 5_000 ether);
+        IWETH9(WETH).deposit{value: 4_000 ether}();
+        IWETH9(WETH).approve(address(swapHelper), 4_000 ether);
         vm.expectRevert(bytes("Too little received"));
-        swapHelper.swapWethToUsdc(0.5 ether, 300);
+        swapHelper.swapWethToUsdc(4_000 ether, 300);
     }
 
     function test_sessionKeyCanOnlyTurnKernelWethIntoKernelUsdc() public {

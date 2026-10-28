@@ -1,13 +1,14 @@
 # Bootr contracts
 
-Solidity 0.8.26 / Foundry. Targets Base (Sepolia first). Everything is built on live third-party
-infrastructure: Clanker v4, Uniswap v4, ZeroDev Kernel v3.1, ERC-4337 EntryPoint v0.7, ERC-8004.
+Solidity 0.8.26 / Foundry. Targets Base mainnet. Everything is built on live third-party
+infrastructure: RWAGMI v3 launcher (Base B20 Asset tokens), Uniswap v4, ZeroDev Kernel v3.1, ERC-4337
+EntryPoint v0.7, ERC-8004. RWAGMI v3 has no Base Sepolia deployment, so launches are tested on a mainnet fork.
 
 | Contract | Role |
 | --- | --- |
-| `BootrLauncher` | One-tx launch: Kernel treasury -> optional `BuybackBurner` clone -> Clanker token + v4 pool -> ERC-8004 identity -> USDC fuel -> guardian registration. `Ownable2Step`, `Pausable`, `ReentrancyGuard`. |
+| `BootrLauncher` | One-tx launch: Kernel treasury -> optional `BuybackBurner` clone -> B20 token + v4 pool (RWAGMI v3) -> ERC-8004 identity -> USDC fuel -> guardian registration. `Ownable2Step`, `Pausable`, `ReentrancyGuard`. |
 | `AgentGuardian` | ERC-7579 root **validator + hook** of every agent Kernel. Tracks activity, enforces creator pause, approves session-key installs, sweeps dormant treasuries. `Ownable2Step` (platform admin). |
-| `BuybackBurner` | EIP-1167 clone per buyback-enabled coin. LP-fee recipient; `burn()` claims and burns (anyone), `swapAndBurn(minOut)` handles stray WETH (launcher owner only: there is no on-chain price for a fresh coin, so a caller-chosen `minOut` was a griefing primitive, BOOTR-03). No owner of its own. |
+| `BuybackBurner` | EIP-1167 clone per buyback-enabled coin. Reward-slot recipient in the RWAGMI locker; `claim()` pulls its WETH (anyone), `burn()` burns stray coin (anyone), `swapAndBurn(minOut)` swaps WETH -> coin and burns (launcher owner only: there is no on-chain price for a fresh coin, so a caller-chosen `minOut` was a griefing primitive, BOOTR-03). No owner of its own. |
 | `BootrCallPolicy` | ERC-7579 **policy** (module type 5) for Kernel v3.1 session permissions: call allow-list over `Kernel.execute` (target, selector, static-arg rules; `<=` rules are summed per batch; `SUM_PER_WINDOW` rules are capped cumulatively per rolling window on-chain), understands the `executeUserOp` wrapper. No owner, no external calls. |
 | `BootrSwapHelper` | Immutable WETH -> USDC helper: pulls `amountIn` from `msg.sender`, swaps through Uniswap v3 `SwapRouter02` on a fixed fee tier with a floor derived on-chain from Chainlink ETH/USD (max 3% below, feed at most 1 h old) and pays all output to `msg.sender`. The only WETH sink a session key may use. Closes C-02. |
 
@@ -15,23 +16,36 @@ infrastructure: Clanker v4, Uniswap v4, ZeroDev Kernel v3.1, ERC-4337 EntryPoint
 
 1. `kernelFactory.createAccount(initialize(rootValidator = 0x01‖guardian, hook = guardian, "", 0x00, []), keccak(creator, salt))`
 2. if `buybackBurn`: `MinimalClones.cloneDeterministic(burnerImplementation, keccak(creator, salt))`
-3. `clanker.deployToken{value: devBuyWei}(config)` with:
-   * `tokenAdmin = launcher` (no metadata-mutating function exists on the launcher, so image/metadata/admin are frozen)
-   * `tokenConfig.salt = keccak(creator, params.salt)` (Clanker derives the CREATE2 salt from `(tokenAdmin, salt)`, so this namespaces salts per creator; vanity-address mining must use this derivation)
-   * pool: `ClankerHookStaticFeeV2`, paired = WETH, `tickIfToken0IsClanker = -230400`, `tickSpacing = 200`,
-     `poolData = abi.encode(PoolInitializationData{extension: 0, extensionData: "", feeData: abi.encode(PoolStaticConfigVars{lpFeeBps, lpFeeBps})})`
-   * one LP position `[-230400, -120000]`, 100% of the pool supply (clanker.world "Standard" preset: launch at ~10 ETH FDV for the 100B supply, liquidity up to ~62,000x)
-   * locker: `ClankerLpLockerFeeConversion` (the locker Clanker enables for the V2 hooks). `rewardRecipients = [kernel, creator, (burner), platformRecipient]`, `rewardBps = [agent, creator, (burn), platform]`, **every `rewardAdmins[i] = launcher`**, `lockerData = abi.encode(LpFeeConversionInfo{[Both, Both, (Clanker), Both]})`. The launcher has no function calling `updateRewardRecipient`, `updateRewardAdmin` or `updateFeePreference`, so the split is immutable.
-   * MEV module `ClankerMevBlockDelay` (data `""`), extension `ClankerUniv4EthDevBuy` with `msg.value = devBuyWei`, recipient = creator (only when `devBuyWei > 0`).
+3. `rwagmiLauncher.launchB20{value: devBuyWei}(config)` with:
+   * `b20Config`: variant Asset, `salt = keccak(creator, params.salt)` (the B20 address is
+     `B20Factory.getB20Address(0, rwagmiLauncher, salt)`, see `predictToken`), `params = abi.encode(AssetParams{1, name,
+     symbol, initialAdmin = 0, decimals = 18})`, `initCalls = [updateContractURI(params.metadata)]` when a URI is given,
+     `initialAdmin = 0`, `adminMode = Immutable`: nobody holds admin, mint or metadata powers afterwards.
+   * `liquiditySupply = 100_000_000_000e18`, all of it placed as liquidity (RWAGMI mints exactly that).
+   * `creatorRewards = [kernel, creator, (burner), platformRecipient]` with `admin = launcher` on every slot and bps
+     scaled from the preset to the 9000 creator bps (`_slotBps`: 500 -> 450, 6500 -> 5850, 1500 -> 1350, platform takes
+     the remainder). RWAGMI appends its own `(protocolAdmin, protocolRecipient, 1000)` slot. No function on the launcher
+     calls `updateRewardRecipient` / `updateRewardAdmin`, so the split is locked for the coin's life.
+   * one pool: paired = WETH, `allocationBps = 10000`, `tickIfToken0IsB20 = -230400`, `tickSpacing = 200`, static hook
+     fee `lpFeeBps` (10_000 = 1%, cap 100_000), one one-sided position `[-230400, -120000]` (mirrored to
+     `[120000, 230400]` when the coin sorts as currency1: the launcher validates positions in the pool's real
+     orientation). ~10 ETH FDV for the 100B supply, liquidity up to ~62,000x.
+   * `extensions = [RwagmiEthDevBuyV3 {poolIndex 0, msgValue = devBuyWei, data = abi.encode(creator, uint128(1))}]`
+     only when `devBuyWei > 0` (the pool is created in the same tx, so nothing can front-run the buy).
+   * `deadline = block.timestamp + 1 hours`.
 4. `identityRegistry.register(agentURI)` (mints to the launcher) then `transferFrom(launcher, kernel, agentId)`
 5. `usdc.transferFrom(creator, kernel, fuelUsdc)` (`fuelUsdc >= minFuelUsdc`)
 6. `guardian.registerAgent(kernel, token, creator, dormancyPeriod)`
-7. `AgentLaunched(...)` with a snapshot of the `LaunchDefaults` used; excess ETH refunded.
+7. `AgentLaunched(...)` with a snapshot of the `LaunchDefaults` used, then `LaunchContext(token, params.context)`;
+   launch fee (`launchFeeWei`) to the platform recipient; excess ETH refunded.
 
-Fee path: the hook keeps 20% of every LP fee (protocol fee, swept to the Clanker factory); the
-remaining 80% is distributed by the locker into `ClankerFeeLocker` per recipient on the next swap
-or on `lpLocker.collectRewards(token)` (anyone). Recipients pull with `feeLocker.claim(recipient, token)`
-(anyone may trigger; funds always go to the recipient).
+Fee path: the RWAGMI hook charges the swap fee **in the paired asset (WETH)** on every swap (the pool's native LP fee
+is 0) and records it per pool (`hook.cumulativeFees(poolId)`). The locker credits each reward slot its share on
+`settle(poolId)` (`PoolFeesSettledV3`) and pays **the caller's** balance on `claimQuote(currency, to)` /
+`settleAndClaim(ids, currency, to)` (`QuoteRewardsClaimedV3`). A recipient therefore claims for itself: the kernel
+through its session key (`BootrCallPolicy` allows `settleAndClaim` with `to == kernel`), the burner through `claim()`,
+the creator and the platform from their wallets. Unsettled fees are visible as `pendingQuote(poolId, recipient)`,
+settled ones as `claimableQuote(recipient, WETH)`.
 
 ## AgentGuardian - how root authority works in Kernel v3.1
 
@@ -251,15 +265,13 @@ neither moves funds nor resets the clock.
 
 * `script/Deploy.s.sol` - deploys guardian, burner implementation, launcher; wires `setLauncher`,
   `setPlatformTreasury`, defaults from env; `transferOwnership(PLATFORM_ADMIN)` (admin must `acceptOwnership`).
-  Chain config by `block.chainid` (84532 verified; 8453 verified on-chain and against clanker-sdk (see packages/shared/src/addresses.ts)).
+  Chain config by `block.chainid`: 8453 only (RWAGMI v3 stack verified on Basescan, see docs/rwagmi-migration.md); 84532 reverts.
 * `script/DeployCallPolicy.s.sol` - deploys `BootrCallPolicy` (stateless, no wiring) and logs the address.
 * `script/DeploySwapHelper.s.sol` - deploys `BootrSwapHelper` (WETH, USDC, SwapRouter02, Chainlink ETH/USD per
   chain; `SWAP_POOL_FEE` default 500). Mainnet addresses must be re-verified before deploying.
 
-Dev buy (BOOTR-05): the launcher passes `pairedTokenAmountOutMinimum = 0` to `ClankerUniv4EthDevBuy`. That
-field only bounds the ETH -> paired-token leg, which does not exist here (the paired token is WETH, so
-`pairedTokenPoolKey` is empty); the token leg's minimum is hard-coded to 1 by Clanker's extension and cannot
-be set from the launcher. The MEV block-delay module blocks same-block sandwiching of the launch. Left as is.
+Dev buy (BOOTR-05): the launcher passes `minimumOut = 1` to `RwagmiEthDevBuyV3`. The launch transaction creates the
+pool and buys in the same call, so no sandwich is possible; the amount is bounded by `devBuyWei`.
 * `script/Launch.s.sol` - example launch from `CREATOR_PRIVATE_KEY` (approves USDC first).
 
 ## Tests
@@ -282,7 +294,7 @@ be set from the launcher. The MEV block-delay module blocks same-block sandwichi
 * `test/fork/SwapHelperFork.t.sol` - real SwapRouter02 / pool / Chainlink: floor honoured, stale feed and zero
   answer revert, slippage cap, session key can only turn kernel WETH into kernel USDC.
 * `test/fork/BootrFork.t.sol` - Base Sepolia fork (`BASE_SEPOLIA_RPC_URL` or https://sepolia.base.org):
-  real Clanker deploy (both presets, with/without dev buy), reward immutability, swap -> fee ratio,
+  real RWAGMI v3 launch on a mainnet fork (both presets, with/without dev buy), reward immutability, swap -> fee ratio,
   buyback burn, Kernel access control (direct + userOp), enable-mode session key through the live
   EntryPoint (SudoPolicy fixture and the production `BootrCallPolicy` + ECDSA signer set: allowed
   no-op, rejected calls with `PolicyFailed`, batch, non-zero value, an ERC-8021 builder-code suffix on the
