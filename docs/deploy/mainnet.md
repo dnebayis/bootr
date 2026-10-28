@@ -272,7 +272,7 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
 ## 8. Rollback
 
 - The contracts are immutable and un-upgradeable. Stop intake with `launcher.pause()` (admin); existing agents keep
-  running (fees accrue in the RWAGMI locker, or the Clanker locker for older coins, regardless of Bootr). A broken launcher is replaced by a new deploy
+  running (fees accrue in the RWAGMI locker, or the Clanker locker for coins launched before 2026-10-29, regardless of Bootr). A broken launcher is replaced by a new deploy
   (`Deploy.s.sol` again, new guardian + launcher, new address book entry); old kernels stay bound to the old guardian
   and keep working with the old supervisor config.
 - Session keys: `POST /internal/agents/panic-revoke` (fleet-wide nonce bump + uninstall), see the supervisor README.
