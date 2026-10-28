@@ -136,7 +136,7 @@ export const addresses = {
     },
     bootr: {
       // Not deployed yet: filled by the cutover (docs/deploy/mainnet.md).
-      launcher: '0x386CBE5DD03C38a31e52d94105d5CA83A311e21d',
+      launcher: '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3',
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
@@ -181,7 +181,7 @@ export const addresses = {
     bootr: {
       // Deployed 2026-10-24 (block 49367726), Sourcify exact match.
       launcher: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
-      guardian: '0x386CBE5DD03C38a31e52d94105d5CA83A311e21d',
+      guardian: '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3',
       burnerImplementation: '0x52f8Ad63ad88a40199a81B39C333C158651caE90',
       // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
       callPolicy: '0x7DcD91d4a1c520217F7258558Cf3560f93337802',

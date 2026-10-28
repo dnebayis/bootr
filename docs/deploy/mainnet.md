@@ -300,12 +300,12 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
 6. **Paymaster exposure.** Sponsored ops are capped by the CDP policy, not by Bootr. Set the daily USD cap before
    the first launch.
 
-## Deployed (2026-10-27, Base mainnet, block 53172831)
+## Deployed (2026-10-27, Base mainnet, block 53219209)
 
 | Contract | Address |
 | --- | --- |
 | AgentGuardian | `0x799Ab875294E37839883D12084aB4BE3f7633630` |
-| BootrLauncher (Agent 5 / Creator 65 / Platform 30; buyback 5/50/15/30; min fuel 20 USDC) | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` |
+| BootrLauncher (Agent 5 / Creator 65 / Platform 30; buyback 5/50/15/30; min fuel 20 USDC) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` |
 | BuybackBurner implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` |
 | BootrCallPolicy | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` |
 | BootrSwapHelper | `0x5723152f21ed7E305312fd90a2Bb94864BA9D80d` |
@@ -322,7 +322,7 @@ registered agents are untouched.
 
 | | address / block |
 | --- | --- |
-| new `BootrLauncher` | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` (block 53172831, fee 0.0005 ETH) |
+| new `BootrLauncher` | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` (block 53219209, fee 0.0005 ETH) |
 | old `BootrLauncher` | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` (paused; `guardian.registerAgent` rejects it) |
 
 The fee is changed from the admin console ("Launch fee" panel, `setLaunchFee`) without a redeploy. After a launcher
@@ -421,8 +421,24 @@ destroyed), then revert the variables. Coins already launched on v2 keep working
 
 | Launcher | Backend | Address | Block | Status |
 | --- | --- | --- | --- | --- |
-| v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | before 53172831 | paused 2026-10-28 |
-| v1.1 (flat launch fee) | Clanker v4 | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` | 53172831 | paused when v2 is wired |
+| v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | before 53219209 | paused 2026-10-28 |
+| v1.1 (flat launch fee) | Clanker v4 | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | paused when v2 is wired |
 | v2 | RWAGMI v3 (B20) | filled in after step 2 | filled in after step 2 | current |
 
 The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
+
+## Launcher redeploy (2026-10-29): RWAGMI v3 (B20) instead of Clanker v4
+
+`BootrLauncher` now launches through `RwagmiB20LauncherV3` (docs/rwagmi-migration.md). Deployed with
+`script/DeployLauncher.s.sol` (presets and `minPlatformBps` copied from the previous launcher, launch fee 0.0005 ETH,
+ownership to the admin, `guardian.setLauncher(new)`, previous launcher paused). Guardian, burner implementation and
+registered agents untouched.
+
+| | address / block |
+| --- | --- |
+| new `BootrLauncher` (RWAGMI v3) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` (block 53219209, Sourcify verified) |
+| previous `BootrLauncher` (Clanker v4, launch fee) | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` (paused) |
+| first `BootrLauncher` (Clanker v4) | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` (paused) |
+
+Coins launched before this block live on Clanker v4 with their own locked split; the indexer and supervisor only
+follow RWAGMI launches from `BOOTR_START_BLOCK` / `LAUNCHER_START_BLOCK` = 53219209 onwards.
