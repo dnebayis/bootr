@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { concatHex, decodeAbiParameters, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, keccak256, pad, parseAbiParameters, slice, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PolicyFlags } from '@zerodev/permissions';
-import { ADDR, GUARDIAN, KERNEL, PAYTO, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
+import { ADDR, GUARDIAN, KERNEL, PAYTO, POOL_ID, RWAGMI_LP_LOCKER, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
 import {
   buildDeinitData,
   buildValidatorData,
+  CALL_POLICY_RULES_VERSION,
   callPolicyRules,
   CallPolicyOp,
   decodeCallPolicyData,
@@ -20,6 +21,8 @@ import {
   enableDigestManual,
   FUNDING_AMOUNT_ARG_INDEX,
   FUNDING_RULE_INDEX,
+  fundingRuleIndex,
+  LEGACY_FUNDING_RULE_INDEX,
   nonceKey,
   policyEntries,
   policyModules,
@@ -30,7 +33,7 @@ import {
   type SessionPolicyParams,
 } from '../src/session-key.js';
 import { EXEC_MODE_BATCH, EXEC_MODE_SINGLE, encodeKernelCalls, nonceMode } from '../src/kernel.js';
-import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, SWAP_HELPER_SWAP_SELECTOR } from '../src/abi.js';
+import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR } from '../src/abi.js';
 
 const signer = privateKeyToAccount(SESSION_PK);
 const PID: Hex = '0xdeadbeef';
@@ -42,7 +45,8 @@ function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
   return {
     kernel: KERNEL,
     token: TOKEN,
-    feeLocker: ADDR.clankerFeeLocker,
+    feeLocker: RWAGMI_LP_LOCKER,
+    rulesVersion: CALL_POLICY_RULES_VERSION,
     swapHelper: SWAP_HELPER,
     usdc: ADDR.usdc,
     weth: ADDR.weth,
@@ -61,8 +65,14 @@ function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
 
 /** A policy as stored by a supervisor that predates the swap helper / spender layout (router rules, payTo, caller policy). */
 function legacyParams(): SessionPolicyParams {
-  const p = params();
-  return { ...p, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
+  const { rulesVersion: _v, ...p } = params();
+  return { ...p, feeLocker: ADDR.clankerFeeLocker, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
+}
+
+/** A policy installed with the Clanker-era layout (one `FeeLocker.claim` rule in front, funding rule at index 3). */
+function clankerEraParams(): SessionPolicyParams {
+  const { rulesVersion: _v, ...p } = params();
+  return { ...p, feeLocker: ADDR.clankerFeeLocker };
 }
 
 describe('validatorData layout (contracts/src/README.md)', () => {
@@ -92,18 +102,21 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(parsed[3]!.data).toBe(encodeAbiParameters(parseAbiParameters('uint48, uint48'), [0, 1_800_000_000]));
     // rate limit: interval(6) || count(6) || startAt(6)
     expect(parsed[2]!.data).toBe(`0x${(3600).toString(16).padStart(12, '0')}${(60).toString(16).padStart(12, '0')}${'0'.repeat(12)}`);
-    // call policy init data = abi.encode(Rule[]) with the four allow-list rules (checked in detail below)
+    // call policy init data = abi.encode(Rule[]) with the five allow-list rules (checked in detail below)
     expect(parsed[0]!.data).toBe(encodeCallPolicyData(callPolicyRules(p)));
     expect(parsed[0]!.module).toBe(CALL_POLICY);
     // the module list used for revocation is the same, in the same order
     expect(policyModules(p)).toEqual(policyEntries(p).map((e) => e.module));
   });
 
-  it('BootrCallPolicy rules: exactly FeeLocker.claim(kernel,*), WETH.approve(helper,*), helper.swapWethToUsdc(*,*), USDC.transfer(spender, SUM_PER_WINDOW cap)', () => {
+  it('BootrCallPolicy rules: exactly locker.settleAndClaim(*,*,kernel), locker.claimQuote(*,kernel), WETH.approve(helper,*), helper.swapWethToUsdc(*,*), USDC.transfer(spender, SUM_PER_WINDOW cap)', () => {
     const p = params();
     const rules = callPolicyRules(p);
     expect(rules).toEqual([
-      { target: ADDR.clankerFeeLocker, selector: '0x21c0b342', windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }) }] }, // claim(address,address)
+      // settleAndClaim(bytes32[] ids, address currency, address to): word 0 is the offset of `ids`, `to` is word 2
+      { target: RWAGMI_LP_LOCKER, selector: LOCKER_SETTLE_AND_CLAIM_SELECTOR, windowSeconds: 0, args: [{ index: 2, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }) }] },
+      // claimQuote(address currency, address to): `to` is word 1
+      { target: RWAGMI_LP_LOCKER, selector: LOCKER_CLAIM_QUOTE_SELECTOR, windowSeconds: 0, args: [{ index: 1, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }) }] },
       { target: ADDR.weth, selector: ERC20_APPROVE_SELECTOR, windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(SWAP_HELPER, { size: 32 }).toLowerCase() }] },
       { target: SWAP_HELPER, selector: SWAP_HELPER_SWAP_SELECTOR, windowSeconds: 0, args: [] },
       {
@@ -116,7 +129,25 @@ describe('validatorData layout (contracts/src/README.md)', () => {
         ],
       },
     ]);
+    expect(rules).toHaveLength(5);
+    expect(FUNDING_RULE_INDEX).toBe(4);
     expect(rules[FUNDING_RULE_INDEX]!.args[FUNDING_AMOUNT_ARG_INDEX]!.op).toBe(CallPolicyOp.SUM_PER_WINDOW);
+    expect(LOCKER_SETTLE_AND_CLAIM_SELECTOR).toBe(keccak256(toHex('settleAndClaim(bytes32[],address,address)')).slice(0, 10));
+    expect(LOCKER_CLAIM_QUOTE_SELECTOR).toBe(keccak256(toHex('claimQuote(address,address)')).slice(0, 10));
+    // the pinned argument word is where `to` really sits in the ABI encoding of each claim call (word = 4 + 32 * index)
+    const word = (data: Hex, index: number) => slice(data, 4 + 32 * index, 4 + 32 * (index + 1));
+    const settle = encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'settleAndClaim', args: [[POOL_ID], ADDR.weth, KERNEL] });
+    expect(slice(settle, 0, 4)).toBe(LOCKER_SETTLE_AND_CLAIM_SELECTOR);
+    expect(word(settle, 2).toLowerCase()).toBe(pad(KERNEL, { size: 32 }).toLowerCase());
+    expect(word(settle, 2).toLowerCase()).not.toBe(word(settle, 1).toLowerCase()); // word 1 is the currency
+    const claim = encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'claimQuote', args: [ADDR.weth, KERNEL] });
+    expect(slice(claim, 0, 4)).toBe(LOCKER_CLAIM_QUOTE_SELECTOR);
+    expect(word(claim, 1).toLowerCase()).toBe(pad(KERNEL, { size: 32 }).toLowerCase());
+    // a claim with any other `to` fails the EQUAL rule
+    expect(word(encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'claimQuote', args: [ADDR.weth, SPENDER] }), 1).toLowerCase()).not.toBe(pad(KERNEL, { size: 32 }).toLowerCase());
+    // the locker rules never pin the currency or the pool: fees are WETH today, the kernel is the only payout address
+    expect(rules.filter((r) => r.target === RWAGMI_LP_LOCKER).every((r) => r.args.length === 1 && r.args[0]!.value.toLowerCase() === pad(KERNEL, { size: 32 }).toLowerCase())).toBe(true);
+    expect(rules.some((r) => r.target === ADDR.clankerFeeLocker)).toBe(false);
     // the payTo is never a recipient any more; the spender is the only USDC sink
     expect(rules.some((r) => r.args.some((a) => a.value.toLowerCase() === pad(PAYTO, { size: 32 }).toLowerCase()))).toBe(false);
     expect(() => callPolicyRules(params({ usdcWindowSeconds: 0 }))).toThrow(/usdcWindowSeconds/);
@@ -126,7 +157,9 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     // nothing may ever reach the Universal Router or move WETH anywhere but the helper's allowance
     expect(rules.some((r) => r.target === ADDR.uniswap.universalRouter)).toBe(false);
     expect(rules.filter((r) => r.target === ADDR.weth).every((r) => r.selector === ERC20_APPROVE_SELECTOR)).toBe(true);
-    expect(() => callPolicyRules(legacyParams())).toThrow(/swapHelper/);
+    expect(() => callPolicyRules(legacyParams())).toThrow(/legacy rule layout/);
+    expect(() => callPolicyRules(clankerEraParams())).toThrow(/legacy rule layout/);
+    expect(() => callPolicyRules(params({ feeLocker: undefined as unknown as Address }))).toThrow(/feeLocker/);
     // round-trips through the contract's `abi.encode(Rule[])` layout: (address, bytes4, (uint8, uint8, bytes32)[])[]
     const data = encodeCallPolicyData(rules);
     const decoded = decodeCallPolicyData(data);
@@ -156,7 +189,20 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(policyModules(legacy)).toEqual([CALL_POLICY, ADDR.zerodev.gasPolicy, ADDR.zerodev.rateLimitPolicy, ADDR.zerodev.timestampPolicy, ADDR.zerodev.signaturePolicy, ADDR.zerodev.ecdsaSigner]);
     const [legacyEntries] = decodeAbiParameters(parseAbiParameters('bytes[]'), buildDeinitData(legacy));
     expect(legacyEntries).toHaveLength(6);
-    expect(() => callPolicyRules(legacy)).toThrow(/swapHelper/);
+    expect(() => callPolicyRules(legacy)).toThrow(/legacy rule layout/);
+    // a Clanker-era policy (five modules, four rules) still revokes and still reports its funding rule at index 3
+    const [clankerEraEntries] = decodeAbiParameters(parseAbiParameters('bytes[]'), buildDeinitData(clankerEraParams()));
+    expect(clankerEraEntries).toHaveLength(5);
+  });
+
+  it('fundingRuleIndex: 4 for the RWAGMI layout (and when no policy is stored), 3 for keys installed with the Clanker-era layout', () => {
+    expect(fundingRuleIndex(params())).toBe(FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex(undefined)).toBe(FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex(null)).toBe(FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex(clankerEraParams())).toBe(LEGACY_FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex(legacyParams())).toBe(LEGACY_FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex({ rulesVersion: 1 })).toBe(3);
+    expect(fundingRuleIndex({ rulesVersion: 3 })).toBe(4);
   });
 });
 

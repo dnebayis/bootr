@@ -22,6 +22,7 @@ import { SenderError } from './sender-client.js';
 import {
   buildDeinitData,
   buildValidatorData,
+  CALL_POLICY_RULES_VERSION,
   deserializeSessionPolicy,
   enableDigest,
   randomPermissionId,
@@ -342,7 +343,8 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
   return {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
-    feeLocker: addresses.clankerFeeLocker,
+    feeLocker: ctx.chain.rwagmi.lpLocker,
+    rulesVersion: CALL_POLICY_RULES_VERSION,
     swapHelper: bootrRequired.swapHelper as Address,
     usdc: addresses.usdc,
     weth: addresses.weth,
