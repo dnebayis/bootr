@@ -7,6 +7,7 @@ const optionalString = z.preprocess((v) => (v === '' ? undefined : v), z.string(
 const optionalUrl = z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional());
 const optionalHexKey = z.preprocess((v) => (v === '' ? undefined : v), hexKey.optional());
 const optionalAddress = z.preprocess((v) => (v === '' ? undefined : v), address.optional());
+const addressWithDefault = (def: string) => z.preprocess((v) => (v === '' || v === undefined ? def : v), address);
 const int = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().int().min(min));
 const num = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().min(min));
 const bool = (def: 'true' | 'false') => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.enum(['true', 'false']).transform((v) => v === 'true'));
@@ -52,6 +53,14 @@ export const configSchema = z
     ADMIN_PRIVATE_KEY: optionalHexKey,
     BOOTR_LAUNCHER_ADDRESS: address,
     BOOTR_GUARDIAN_ADDRESS: address,
+    /**
+     * RWAGMI v3 stack (docs/rwagmi-migration.md). Defaults are the Base mainnet deployment; there is no deployment on
+     * Base Sepolia (services are tested with fixtures and, end to end, on mainnet with a test coin).
+     * `RwagmiB20LauncherV3`: `deploymentInfo(token).primaryPoolId` is the coin's fee pool.
+     */
+    RWAGMI_LAUNCHER_ADDRESS: addressWithDefault('0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20'),
+    /** `RwagmiLpLockerV3`: the kernel's WETH fee ledger (`pendingQuote` / `claimableQuote`) and the session key's only claim target. */
+    RWAGMI_LP_LOCKER_ADDRESS: addressWithDefault('0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20'),
     /** Launches whose creator is the platform treasury run as the platform's own voice (`config.platform`). */
     PLATFORM_TREASURY_ADDRESS: optionalAddress,
     /** Block to start scanning AgentLaunched events from when no cursor exists yet. */

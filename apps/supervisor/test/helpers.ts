@@ -33,6 +33,9 @@ export const CREATOR: Address = '0x4000000000000000000000000000000000000004';
 export const PAYTO: Address = '0x5000000000000000000000000000000000000005';
 /** Placeholder deployment of the Bootr module that is still `null` in addresses.ts for the chain. */
 export const SWAP_HELPER: Address = '0x6000000000000000000000000000000000000006';
+/** RWAGMI v3 placeholders (no deployment on Base Sepolia; `RWAGMI_*_ADDRESS` in the test config). */
+export const RWAGMI_LAUNCHER: Address = '0x7000000000000000000000000000000000000007';
+export const RWAGMI_LP_LOCKER: Address = '0x8000000000000000000000000000000000000008';
 export const SERVICE_KEY = 'test-service-key-0123456789abcdef0123456789';
 /** The supervisor's own admin-API key (must differ from the sender and indexer keys). */
 export const SUPERVISOR_KEY = 'test-supervisor-key-fedcba9876543210fedcba';
@@ -53,6 +56,8 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     ADMIN_PRIVATE_KEY: ADMIN_PK,
     BOOTR_LAUNCHER_ADDRESS: LAUNCHER,
     BOOTR_GUARDIAN_ADDRESS: GUARDIAN,
+    RWAGMI_LAUNCHER_ADDRESS: RWAGMI_LAUNCHER,
+    RWAGMI_LP_LOCKER_ADDRESS: RWAGMI_LP_LOCKER,
     SENDER_URL: 'http://sender.test',
     SENDER_SERVICE_KEY: SERVICE_KEY,
     SUPERVISOR_SERVICE_KEY: SUPERVISOR_KEY,
@@ -196,7 +201,7 @@ export function mockChain(state: ChainState): ChainContext {
       return { number: blockNumber, timestamp: state.blockTimestamp };
     },
   } as unknown as ChainContext['publicClient'];
-  return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1' };
+  return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1', rwagmi: { launcher: RWAGMI_LAUNCHER, lpLocker: RWAGMI_LP_LOCKER } };
 }
 
 export interface MockSender {
