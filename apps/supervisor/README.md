@@ -95,8 +95,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts |
-| `RWAGMI_LAUNCHER_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
-| `RWAGMI_LP_LOCKER_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
+| `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
+| `RWAGMI_LOCKER_V3_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
 | `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
@@ -323,7 +323,7 @@ kernel itself claims, with the supervisor's session key:
    settled yet) + `claimableQuote(kernel, WETH)` (settled). The snapshot exposes `claimable.{weth, pending, settled,
    poolId}`; there is no claimable token amount any more. USD value at Chainlink ETH/USD.
 2. **Claim** (`runFeePolicy`, kind `claim_fees`): when the USD value reaches `CLAIM_THRESHOLD_USD`, one call from the
-   kernel to `RWAGMI_LP_LOCKER_ADDRESS`: `settleAndClaim([poolId], WETH, kernel)`, which settles the pool and pays the
+   kernel to `RWAGMI_LOCKER_V3_ADDRESS`: `settleAndClaim([poolId], WETH, kernel)`, which settles the pool and pays the
    kernel's whole WETH balance to the kernel in one go. Without a pool id only the settled balance can move:
    `claimQuote(WETH, kernel)` (nothing is sent when there is nothing settled). Both calls are simulated as the kernel,
    persisted as `prepared`, then sent like every treasury op (`executeOp`, hash stored before the send, `unknown` on
