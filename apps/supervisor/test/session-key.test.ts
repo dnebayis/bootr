@@ -35,6 +35,9 @@ import {
 import { EXEC_MODE_BATCH, EXEC_MODE_SINGLE, encodeKernelCalls, nonceMode } from '../src/kernel.js';
 import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR } from '../src/abi.js';
 
+/** Clanker's mainnet FeeLocker: the claim target of session keys installed before the RWAGMI v3 cutover. */
+const LEGACY_CLANKER_FEE_LOCKER = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
+
 const signer = privateKeyToAccount(SESSION_PK);
 const PID: Hex = '0xdeadbeef';
 const CALL_POLICY = ADDR.bootr.callPolicy as Address;
@@ -67,14 +70,14 @@ function params(over: Partial<SessionPolicyParams> = {}): SessionPolicyParams {
 function legacyParams(): SessionPolicyParams {
   const p = params();
   delete p.rulesVersion;
-  return { ...p, feeLocker: ADDR.clankerFeeLocker, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
+  return { ...p, feeLocker: LEGACY_CLANKER_FEE_LOCKER, swapHelper: undefined as unknown as Address, spender: undefined as unknown as Address, inferencePayTo: PAYTO, universalRouter: ADDR.uniswap.universalRouter, signatureCallers: [ADDR.usdc], policyAddresses: { ...p.policyAddresses, signaturePolicy: ADDR.zerodev.signaturePolicy! } };
 }
 
 /** A policy installed with the Clanker-era layout (one `FeeLocker.claim` rule in front, funding rule at index 3). */
 function clankerEraParams(): SessionPolicyParams {
   const p = params();
   delete p.rulesVersion;
-  return { ...p, feeLocker: ADDR.clankerFeeLocker };
+  return { ...p, feeLocker: LEGACY_CLANKER_FEE_LOCKER };
 }
 
 describe('validatorData layout (contracts/src/README.md)', () => {
@@ -149,7 +152,7 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(word(encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'claimQuote', args: [ADDR.weth, SPENDER] }), 1).toLowerCase()).not.toBe(pad(KERNEL, { size: 32 }).toLowerCase());
     // the locker rules never pin the currency or the pool: fees are WETH today, the kernel is the only payout address
     expect(rules.filter((r) => r.target === RWAGMI_LP_LOCKER).every((r) => r.args.length === 1 && r.args[0]!.value.toLowerCase() === pad(KERNEL, { size: 32 }).toLowerCase())).toBe(true);
-    expect(rules.some((r) => r.target === ADDR.clankerFeeLocker)).toBe(false);
+    expect(rules.some((r) => r.target === LEGACY_CLANKER_FEE_LOCKER)).toBe(false);
     // the payTo is never a recipient any more; the spender is the only USDC sink
     expect(rules.some((r) => r.args.some((a) => a.value.toLowerCase() === pad(PAYTO, { size: 32 }).toLowerCase()))).toBe(false);
     expect(() => callPolicyRules(params({ usdcWindowSeconds: 0 }))).toThrow(/usdcWindowSeconds/);

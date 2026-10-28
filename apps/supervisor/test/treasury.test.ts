@@ -6,6 +6,9 @@ import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
 import { clampSlippageBps, encodeClaimCall, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
 import { ADDR, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER } from './helpers.js';
 
+/** Clanker's mainnet FeeLocker: the claim target of session keys installed before the RWAGMI v3 cutover. */
+const LEGACY_CLANKER_FEE_LOCKER = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
+
 const claimOf = (data: string) => decodeFunctionData({ abi: rwagmiLpLockerV3Abi, data: data as Hex });
 
 describe('fee claim policy', () => {
@@ -209,7 +212,7 @@ describe('spender float (x402 payer funding)', () => {
     const w = await makeWorld();
     try {
       const windowRule = () => w.state.calls.filter((c) => c.fn === 'windowOf').map((c) => c.args[2]);
-      const legacyPolicy = { kernel: KERNEL, feeLocker: ADDR.clankerFeeLocker, usdcTransferCap: '50000000', gasAllowanceWei: '1' };
+      const legacyPolicy = { kernel: KERNEL, feeLocker: LEGACY_CLANKER_FEE_LOCKER, usdcTransferCap: '50000000', gasAllowanceWei: '1' };
       const legacy = await seedAgent(w, { agent: { sessionPolicy: legacyPolicy } });
       expect((await fundingBudget(w.ctx, legacy))?.remaining).toBe(50_000_000n);
       expect(windowRule()).toEqual([3n]);
