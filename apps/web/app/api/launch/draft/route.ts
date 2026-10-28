@@ -26,7 +26,9 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  */
 export async function POST(req: NextRequest) {
   const origin = req.headers.get('origin');
-  if (!origin || !isAllowedOrigin(origin)) {
+  // Same-origin: the configured site origin, or the host this request was served from (same scheme-less host
+  // as the Origin header, so a preview or e2e server on another port qualifies while evil.com never does).
+  if (!origin || !(isAllowedOrigin(origin) || sameHost(origin, req.headers.get('host')))) {
     return NextResponse.json({ error: 'forbidden', message: 'cross-origin request rejected' }, { status: 403, headers: NO_STORE });
   }
   if (Number(req.headers.get('content-length') ?? 0) > 8192) {
@@ -71,4 +73,13 @@ export async function POST(req: NextRequest) {
     maxAge: OWNER_TTL_S,
   });
   return res;
+}
+
+function sameHost(origin: string, host: string | null): boolean {
+  if (!host) return false;
+  try {
+    return new URL(origin).host.toLowerCase() === host.toLowerCase();
+  } catch {
+    return false;
+  }
 }
