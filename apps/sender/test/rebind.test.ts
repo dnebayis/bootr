@@ -103,3 +103,24 @@ describe('POST /internal/account/:agentId/rebind', () => {
     expect(unsigned.status).toBe(401);
   });
 });
+
+describe('POST /internal/account/:agentId/revoke', () => {
+  let env: Awaited<ReturnType<typeof setup>>;
+  beforeEach(async () => {
+    env = await setup({ connect: true });
+  });
+  afterEach(async () => env.close());
+
+  it('retires the bound account: tokens unusable, status revoked, idempotent, 404 for unknown ids', async () => {
+    expect((await env.call('GET', `/internal/account/${AGENT}`)).body).toMatchObject({ connected: true, revoked: false });
+    const res = await env.call('POST', `/internal/account/${AGENT}/revoke`, {});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ agentId: AGENT, revoked: true, alreadyRevoked: false });
+    expect(await getAccessToken(env.ctx, AGENT)).toMatchObject({ ok: false, code: 'revoked' });
+    expect((await env.call('GET', `/internal/account/${AGENT}`)).body).toMatchObject({ connected: false, revoked: true });
+    const again = await env.call('POST', `/internal/account/${AGENT}/revoke`, {});
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ alreadyRevoked: true });
+    expect((await env.call('POST', `/internal/account/nobody-here/revoke`, {})).status).toBe(404);
+  });
+});

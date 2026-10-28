@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
-import { getAccount, saveAccount } from './accounts.js';
+import { getAccount, revokeAccount, saveAccount } from './accounts.js';
 import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
 import { nowSec, type SenderContext } from './context.js';
 import { safeEqualHex, safeEqualStr } from './crypto.js';
@@ -367,6 +367,19 @@ export function createApp(ctx: SenderContext): Hono {
     });
     if (!res.ok) return fail(c, res);
     return c.json({ from, to: res.agentId, status: res.status, handle: res.handle });
+  });
+
+  /**
+   * POST /internal/account/:agentId/revoke
+   * Retires the agent's X authorization (operator action): nothing is read or published for it again until
+   * the creator reconnects. 404 when no account is bound.
+   */
+  internal.post('/account/:agentId/revoke', async (c) => {
+    const agentId = c.req.param('agentId');
+    if (!AGENT_ID_RE.test(agentId)) return c.json({ error: 'invalid_request' }, 400);
+    const res = await revokeAccount(ctx, agentId);
+    if (!res.found) return c.json({ error: 'not_found' }, 404);
+    return c.json({ agentId, revoked: true, alreadyRevoked: res.alreadyRevoked });
   });
 
   internal.get('/quota/:agentId', async (c) => {

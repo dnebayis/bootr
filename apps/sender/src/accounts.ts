@@ -173,3 +173,17 @@ export async function withToken<T>(
   }
   return { ok: true, data: res.data, account: t.account };
 }
+
+/**
+ * Marks the agent's X authorization revoked: the tokens stay encrypted at rest but are never used again
+ * (`getAccessToken` answers `revoked`, reads and publishes are refused). Used when an agent is retired or
+ * its X account is being taken away; reconnecting later overwrites the row.
+ */
+export async function revokeAccount(ctx: SenderContext, agentId: string): Promise<{ found: boolean; alreadyRevoked: boolean }> {
+  const account = await getAccount(ctx, agentId);
+  if (!account) return { found: false, alreadyRevoked: false };
+  if (account.revokedAt) return { found: true, alreadyRevoked: true };
+  await ctx.db.update(accounts).set({ revokedAt: ctx.now(), updatedAt: ctx.now() }).where(eq(accounts.agentId, agentId));
+  log.warn('x account revoked by the operator', { agentId, handle: account.xHandle });
+  return { found: true, alreadyRevoked: false };
+}
