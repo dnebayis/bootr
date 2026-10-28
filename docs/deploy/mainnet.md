@@ -8,6 +8,12 @@ Related: `packages/shared/src/addresses.ts` (the mainnet address book, every ent
 `packages/contracts/test/fork/MainnetDryRun.t.sol` (the fork dry-run of this exact cutover),
 `.env.mainnet.example` (every variable with its mainnet value or a placeholder).
 
+> **Status (2026-10-29).** New launches go through the RWAGMI v3 launcher (BootrLauncher v2). Sections 0-9 are the
+> original Base Sepolia -> mainnet cutover of 2026-10-27, written for the Clanker v4 launcher; they stay the runbook
+> for the guardian, call policy, swap helper, keys and services. Where a step depends on the launch backend it is
+> marked *(Clanker era)* and superseded by [Launcher v2 on RWAGMI](#launcher-v2-on-rwagmi-2026-10-29) at the end of
+> this file, which also holds the fee model and the launcher history. Design: [`docs/rwagmi-migration.md`](../rwagmi-migration.md).
+
 ## 0. Dry-run first (no keys, no gas)
 
 ```sh
@@ -15,6 +21,7 @@ cd packages/contracts
 MAINNET_FORK=1 BASE_RPC_URL=https://base-rpc.publicnode.com forge test --match-contract MainnetDryRun -vv
 ```
 
+*(Clanker era; for v2 the same test file launches through RWAGMI v3 on a `base-anvil` fork, see the v2 section.)*
 Six tests must pass. They deploy the stack with the scripts' own `chainConfig()`, launch through the live Clanker
 v4 (0.01 ETH dev buy, 20 USDC fuel, both presets), check the reward slots / bps / admins in the mainnet LP locker,
 the kernel's root validator, the ERC-8004 identity owner, install the production session permission through the
@@ -39,8 +46,8 @@ live one is 0xffA3...).
   | `BootrLauncher` | filled in step 3 | creators launching through a sponsored smart wallet (`launch`) |
   | `AgentGuardian` | filled in step 3 | creators (`pauseAgent`, `unpauseAgent`) |
   | `BootrSwapHelper` | filled in step 3 | session keys (`swapWethToUsdc`) |
-  | `ClankerFeeLocker` | `0xF3622742b1E446D92e45E22923Ef11C2fcD55D68` | session keys (`claim(kernel, token)`) |
-  | `ClankerLpLockerFeeConversion` (live) | `0xffA37784D619F228D8B379d287a4D7282e500762` | anyone (`collectRewards`), if the web triggers it |
+  | `RwagmiLpLockerV3` | `0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20` | session keys (`settleAndClaim(ids, WETH, kernel)`, `claimQuote(WETH, kernel)`) |
+  | Clanker v4 `ClankerFeeLocker` (coins launched before 2026-10-29) | `0xF3622742b1E446D92e45E22923Ef11C2fcD55D68` | session keys (`claim(kernel, token)`); keep until those agents are retired |
   | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | session keys (`transfer(spender, amount)`), creators (`approve(launcher)`) |
   | WETH | `0x4200000000000000000000000000000000000006` | session keys (`approve(swapHelper, amount)`) |
   | Uniswap v3 `SwapRouter02` | `0x2626664c2603336E57B271c5C0b26F421741e481` | internal call of the swap helper (`exactInputSingle`); add it if the policy inspects inner calls |
@@ -59,7 +66,7 @@ live one is 0xffA3...).
 | --- | --- | --- |
 | DEPLOYER | `PRIVATE_KEY` (forge only, never on Railway) | **~0.02 ETH** (five deployments, ~8M gas, leaves headroom for a Base fee spike) |
 | PLATFORM_ADMIN | `ADMIN_PRIVATE_KEY` (supervisor) | **~0.05 ETH + 20 USDC** (two `acceptOwnership`, `setDefaults`, `approveSessionKey` + a 0.005 ETH prefund per agent install / rotation, dormancy sweeps; the USDC is for an admin test launch) |
-| PLATFORM_RECIPIENT | address only | none (receives the 30% LP share) |
+| PLATFORM_RECIPIENT | address only | none (receives the platform slot: 27% of the 1% swap fee, 30% on pre-v2 Clanker coins) |
 | PLATFORM_TREASURY | address + key on the operator's machine | **gas (~0.01 ETH) + the $BOOT dev buy + 20 USDC fuel** (step 6; also receives dormant sweeps and inference revenue as `INFERENCE_PAYTO_ADDRESS`) |
 | SESSION_SIGNER | `SESSION_SIGNER_PRIVATE_KEY` | **none** (kernels pay their own gas through the paymaster / EntryPoint deposit) |
 | SPENDER_MASTER | `SPENDER_MASTER_KEY` | **none** (spenders are funded by their kernels; EIP-3009 needs no ETH) |
@@ -87,15 +94,15 @@ Also fresh: `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `INDEXER_SERVICE_KEY
 | Env | Value | Why |
 | --- | --- | --- |
 | `PLATFORM_ADMIN` | admin address (multisig or EOA, see section 9) | final owner of guardian + launcher (`Ownable2Step`) |
-| `PLATFORM_RECIPIENT` | platform fee address | 30% LP share recipient of every launch |
+| `PLATFORM_RECIPIENT` | platform fee address | platform slot recipient of every launch |
 | `PLATFORM_TREASURY` | treasury address | dormant sweeps |
 | `MIN_FUEL_USDC` | `20000000` | 20 USDC minimum fuel per launch |
 | `DORMANCY_PERIOD` | `7776000` | 90 days |
 | `MIN_PLATFORM_BPS` | `1000` | floor for `setDefaults` |
-| `LP_FEE_BPS` | `10000` | 1% LP fee (hook keeps 20% of it as Clanker protocol fee) |
+| `LP_FEE_BPS` | `10000` | *(Clanker era; ignored by launcher v2)* 1% LP fee, the hook kept 20% of it as protocol fee |
 | `SWAP_POOL_FEE` | `500` | WETH/USDC 0.05% pool `0xd0b53D9277642d899DF5C87A3966A349A798F224` (deploy helper) |
 
-Presets baked by the script: standard 5 / 65 / 30 (agent / creator / platform), buyback 5 / 50 / 15 / 30. Chain
+Presets baked by the script *(Clanker era)*: standard 5 / 65 / 30 (agent / creator / platform), buyback 5 / 50 / 15 / 30. Launcher v2 uses 4.5 / 58.5 / 27 and 4.5 / 45 / 13.5 / 27 of the swap fee, see the v2 section. Chain
 addresses are hard-coded in `chainConfig()` for 8453 and were verified on 2026-10-27 (`addresses.ts` has the sources).
 
 ## 3. Deploy order
@@ -156,6 +163,7 @@ cast call <launcher> "standardDefaults()(uint24,uint16,uint16,uint16,uint16,addr
 ### 3.6 Sanity reads
 
 ```sh
+# Clanker era (launcher v1); launcher v2 checks are in the v2 section
 cast call <launcher> "lpLocker()(address)" --rpc-url base   # 0xffA37784D619F228D8B379d287a4D7282e500762
 cast call 0xE85A59c628F7d27878ACeB4bf3b35733630083a9 "enabledLockers(address,address)(bool)" \
   0xffA37784D619F228D8B379d287a4D7282e500762 0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC --rpc-url base   # true
@@ -180,7 +188,7 @@ bootr: {
 
 Then `pnpm --filter @bootr/shared typecheck`, commit, and redeploy every service (the supervisor reads
 `bootr.callPolicy` / `bootr.swapHelper` from the address book when it builds session permissions; the web reads the
-Clanker addresses from it).
+RWAGMI v3 and Clanker v4 addresses from it).
 
 ## 5. Services: environment switch
 
@@ -193,6 +201,7 @@ Shared variables (Railway `production` environment), from `.env.mainnet.example`
 | `NEXT_PUBLIC_RPC_URL` | `https://mainnet.base.org` or empty (never the keyed URL) |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | from step 3; same values in `NEXT_PUBLIC_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` |
 | `LAUNCHER_START_BLOCK` (supervisor), `BOOTR_START_BLOCK` (indexer) | the launcher's deploy block |
+| `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer), `RWAGMI_HOOK_V3_ADDRESS`, `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer), `NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS` (web) | the verified RWAGMI v3 stack, values in `.env.mainnet.example` |
 | `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY` | address of `SESSION_SIGNER_PRIVATE_KEY` |
 | `X402_NETWORK` | `eip155:8453` |
 | `X402_FACILITATOR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` + `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` |
@@ -230,12 +239,13 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
 ```
 
    `DEV_BUY_WEI` is the treasury's own first buy (sets the first price impression; 0.05-0.1 ETH is typical).
-   Use a `SALT` if a vanity address was mined (Clanker derives it from `(launcher, keccak(creator, salt))`).
+   Use a `SALT` if a vanity address was mined (the launcher derives the B20 salt from `keccak(creator, salt)`; the address is `B20Factory.getB20Address(0, rwagmiLauncher, salt)`).
 3. Connect the `@bootrfun` X account to the agent from the launch form **before** launching if the agent should
    post (the draft id rebind in `apps/supervisor/README.md`), or leave it a silent treasury coin.
 4. Record the token: `BOOT_TOKEN_ADDRESS` on the indexer, `bootToken` in the admin console, pin it on the site.
-5. Verify: `cast call 0xffA3...0762 "tokenRewards(address)" <token>` shows 4 slots (kernel 500, treasury 5000,
-   burner 1500, platform 3000), every admin = launcher; `guardian.agentInfo(kernel)`; the supervisor log shows
+5. Verify: `cast call 0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20 "launchInfo(address)" <token>` (the RWAGMI locker)
+   shows the buyback slots (kernel 450, treasury 4500, burner 1350, platform 2700 of 9000; RWAGMI's 10% is the
+   appended slot), every admin = launcher; `guardian.agentInfo(kernel)`; the supervisor log shows
    `registerAgent` and, with `ADMIN_PRIVATE_KEY` set, the session install.
 
 ## 7. Smoke tests
@@ -246,7 +256,7 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
   `onboarding` with a clear "no X account" reason), `POST /internal/agents/:id/session/check-spender` returns the
   spender with a matching dry signature.
 - One **small test launch** from a normal wallet through the web (standard preset, 20 USDC, no dev buy), then:
-  `FeeLocker.availableFees(kernel, WETH)` after a trade, a sponsored `claim_fees` op in `sv_treasury_ops` with a
+  `RwagmiLpLockerV3.claimableQuote(kernel, WETH)` (after `pendingQuote` settles) after a trade, a sponsored `claim_fees` op in `sv_treasury_ops` with a
   `txHash`, and the paymaster dashboard showing the sponsorship.
 - A single swap through the helper with the session key (`FUEL_TARGET_USDC` below the kernel's USDC triggers it
   once WETH is claimed): `Swapped` event, output >= Chainlink - 1%.
@@ -255,7 +265,7 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
 ## 8. Rollback
 
 - The contracts are immutable and un-upgradeable. Stop intake with `launcher.pause()` (admin); existing agents keep
-  running (fees accrue in the Clanker locker regardless of Bootr). A broken launcher is replaced by a new deploy
+  running (fees accrue in the RWAGMI locker, or the Clanker locker for older coins, regardless of Bootr). A broken launcher is replaced by a new deploy
   (`Deploy.s.sol` again, new guardian + launcher, new address book entry); old kernels stay bound to the old guardian
   and keep working with the old supervisor config.
 - Session keys: `POST /internal/agents/panic-revoke` (fleet-wide nonce bump + uninstall), see the supervisor README.
@@ -282,12 +292,11 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
    `SESSION_USDC_TRANSFER_CAP` x agents per window (to spenders the attacker does not control) plus swap slippage.
    Go/no-go: accept the single signer with the panic-revoke runbook, or derive one signer per agent (like the
    spenders) before launch? *Default: single signer, cap 50 USDC/day, panic-revoke tested on Sepolia.*
-4. **Dev-buy minimum (BOOTR-05).** The launcher passes `pairedTokenAmountOutMinimum = 0`; the MEV block delay
-   covers same-block sandwiching. *Default: accept.*
-5. **MEV module.** The dry-run deploys through `ClankerMevBlockDelay` (still enabled on mainnet); clanker.world
-   launches now use `ClankerSniperAuctionV2`. If Clanker disables the block-delay module, `deployToken` reverts
-   `MevModuleNotEnabled` and the launcher must be redeployed with the auction module (different `mevModuleData`).
-   *Default: keep the block delay; re-run the dry-run on deploy day.*
+4. **Dev-buy minimum (BOOTR-05).** *(Clanker era)* The launcher passed `pairedTokenAmountOutMinimum = 0`, the MEV
+   block delay covered same-block sandwiching. Launcher v2 passes `minOut` in the dev-buy extension data; the
+   web computes it per launch. *Default: accept the pool-creation price for a creator's own first buy.*
+5. **MEV module** *(Clanker era; not applicable to launcher v2)*. The dry-run deployed through `ClankerMevBlockDelay`;
+   RWAGMI v3 has no such module, the pool is one-sided and the dev buy is part of the launch transaction.
 6. **Paymaster exposure.** Sponsored ops are capped by the CDP policy, not by Bootr. Set the daily USD cap before
    the first launch.
 
@@ -319,3 +328,101 @@ registered agents are untouched.
 The fee is changed from the admin console ("Launch fee" panel, `setLaunchFee`) without a redeploy. After a launcher
 redeploy update `BOOTR_LAUNCHER_ADDRESS` / `NEXT_PUBLIC_LAUNCHER_ADDRESS` and `LAUNCHER_START_BLOCK` /
 `BOOTR_START_BLOCK` on web, supervisor and indexer and redeploy the three services.
+
+## Launcher v2 on RWAGMI (2026-10-29)
+
+Coins are launched through the RWAGMI v3 launcher (Base B20 Asset tokens in Uniswap v4 pools) instead of Clanker v4.
+`BootrLauncher.launch(LaunchParams)` and the `AgentLaunched` event keep their signatures; internally the launcher
+builds a `LaunchConfigV3` and calls `RwagmiB20LauncherV3.launchB20`. Contracts are immutable, so this is a new
+`BootrLauncher` (plus a new `BuybackBurner` implementation and, where the call-policy changes, a new
+`BootrCallPolicy`), not an upgrade. Guardian, swap helper and registered agents stay. Design and file ownership:
+[`docs/rwagmi-migration.md`](../rwagmi-migration.md).
+
+### RWAGMI v3 stack (Base mainnet, verified on Basescan)
+
+| Contract | Address | Used by |
+| --- | --- | --- |
+| `RwagmiB20LauncherV3` | `0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20` | `BootrLauncher` (`launchB20`), indexer, supervisor |
+| `RwagmiHookV3` | `0xB20B00367E37F826a0652c85a6DF375D784B20Ec` | indexer (`PoolFeeTakenV3`) |
+| `RwagmiLpLockerV3` | `0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20` | supervisor (claims), indexer (ledger), web (`launchInfo`), `BuybackBurner` |
+| `RwagmiEthDevBuyV3` | `0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20` | `BootrLauncher` (optional creator dev buy) |
+
+There is no v3 deployment on Base Sepolia: the dry-run and the contract tests run on a Base mainnet fork
+(`base-anvil`, railway.md "Local development"), and the end-to-end check is a small test coin on mainnet.
+
+### Fee model
+
+- Swappers pay a static **1.00%** fee, charged by `RwagmiHookV3` **in WETH** (the paired asset); the native LP fee is 0.
+  The old model charged 1.20% (1% LP fee plus a 20% Clanker protocol fee on top), paid in either asset.
+- Of every fee **90% goes to the coin's reward slots and 10% to RWAGMI** (an 11th slot appended by the launcher).
+- Slots are 1-6 entries whose bps total 9000, `admin` = `BootrLauncher` for every slot. The launcher exposes no
+  recipient or bps update, so the split is **locked for the coin's life**.
+
+| Preset | Agent | Creator | Burn | Platform | RWAGMI | slot bps (of 9000) |
+| --- | --- | --- | --- | --- | --- | --- |
+| standard | 0.045% | 0.585% | - | 0.27% | 0.10% | 450 / 5850 / 2700 |
+| buyback | 0.045% | 0.45% | 0.135% | 0.27% | 0.10% | 450 / 4500 / 1350 / 2700 |
+
+(Percentages are shares of the swapped amount, i.e. of the 1% fee.) Fees settle per pool and are claimed per
+currency by the recipient: the agent's kernel claims its own WETH through its session key (`settleAndClaim` /
+`claimQuote`, `to` must be the kernel), the burner claims its own and swaps it into the coin before sending it to
+`0x...dEaD`, the platform claims from the console. Every fee figure the services show is in WETH (and its USD value).
+
+Coins launched before 2026-10-29 are on Clanker v4 and keep their own split (agent 5 / creator 65 / platform 30 of
+the LP fee, burn variant 5 / 50 / 15 / 30, paid in WETH or the coin).
+
+### Redeploy steps
+
+1. **Fork rehearsal.** On a `base-anvil` fork run the fork test-suite of the contracts package and the
+   `DeployLauncher` script against the fork: launch with both presets, assert `launchInfo` slots (recipients, bps,
+   admin = launcher), swap, claim as kernel and burner, `burn()`, dormancy sweep. Do not broadcast before it is green.
+2. **Deploy.** From `packages/contracts` with the deployer key exported for the command only, run the
+   `DeployLauncher` script with the RWAGMI addresses above and the live guardian, burner and treasury addresses (its
+   header documents the env). Deploy a new `BootrCallPolicy` (`script/DeployCallPolicy.s.sol`) if the contracts hand-over
+   says its allow-list changed (RWAGMI locker instead of `ClankerFeeLocker`). Record the new addresses and the
+   deployment block.
+3. **Wire.** As the guardian owner: `guardian.setLauncher(<new launcher>)` and `acceptOwnership()` on the new launcher
+   (admin = `PLATFORM_ADMIN`). Read back:
+
+   ```sh
+   cast call <guardian> "launcher()(address)" --rpc-url base            # == new launcher
+   cast call <new launcher> "owner()(address)" --rpc-url base           # == admin
+   cast call <new launcher> "paused()(bool)" --rpc-url base             # false
+   ```
+
+   After `setLauncher`, `guardian.registerAgent` rejects the old launcher, so old-launcher launches can no longer
+   complete; step 4 makes that explicit.
+4. **Pause the old launcher.** `cast send <old launcher> "pause()" --rpc-url base --private-key <admin>`. Existing
+   agents keep running; fees keep accruing in their own lockers.
+5. **Paymaster.** Allow-list the new launcher (and policy, burner implementation if called) and the RWAGMI locker in
+   the CDP policy (section 1 table). Keep the old entries until the last Clanker-era agent is retired.
+6. **Variables.** Set the new launcher address and block: `BOOTR_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
+   `LAUNCHER_START_BLOCK` (supervisor), `BOOTR_START_BLOCK` (indexer), plus `BOOTR_BURNER_IMPL_ADDRESS` if it
+   changed. Add `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer),
+   `RWAGMI_HOOK_V3_ADDRESS`, `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer) and `NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS` (web,
+   build arg); the values are in `.env.mainnet.example`. Update `packages/shared/src/addresses.ts` `[8453].bootr`
+   and commit it.
+7. **Redeploy** in the usual order (railway.md section 2): `indexer` on a **new schema** (it indexes the RWAGMI
+   events; wait for `/ready`), then `web` (rebuild), then `supervisor`. If a new `BootrCallPolicy` was deployed, the
+   supervisor rotates the session keys of active agents onto it (`SESSION_ROTATE_BEFORE_DAYS` does not apply:
+   trigger the rotation explicitly and check `sv_treasury_ops`).
+8. **Verify on Sourcify.** Verify every new contract (`forge verify-contract --verifier sourcify`, or `--verify
+   --verifier sourcify` on the script), then open each address on Sourcify / Basescan and confirm an exact match.
+   Check `launcher.rwagmiLauncher()` (or the equivalent getter) equals `0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20`.
+9. **Smoke.** One small test coin per preset from a normal wallet: the web shows 1.00% with the 90/10 split, the
+   locker `launchInfo(token)` matches, the indexer lists the token, a swap produces `PoolFeeTakenV3` and
+   `PoolFeesSettledV3` rows, the kernel's `claimQuote` op appears in `sv_treasury_ops` with a `txHash`, and
+   `burn()` sends the coin to `0x...dEaD`.
+
+Rollback: `guardian.setLauncher(<previous launcher>)` and `unpause()` the previous launcher (it is paused, not
+destroyed), then revert the variables. Coins already launched on v2 keep working either way.
+
+### Launcher history
+
+| Launcher | Backend | Address | Block | Status |
+| --- | --- | --- | --- | --- |
+| v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | before 53172831 | paused 2026-10-28 |
+| v1.1 (flat launch fee) | Clanker v4 | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` | 53172831 | paused when v2 is wired |
+| v2 | RWAGMI v3 (B20) | filled in after step 2 | filled in after step 2 | current |
+
+The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
