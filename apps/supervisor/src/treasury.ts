@@ -9,9 +9,9 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { encodeFunctionData, erc20Abi, formatUnits, getAddress, pad, parseUnits, type Address, type Hex } from 'viem';
-import { callPolicyAbi, chainlinkAggregatorAbi, feeLockerAbi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
-import { FUNDING_AMOUNT_ARG_INDEX, FUNDING_RULE_INDEX } from './session-key.js';
+import { encodeFunctionData, erc20Abi, formatUnits, getAddress, isHex, pad, parseUnits, size, type Address, type Hex } from 'viem';
+import { callPolicyAbi, chainlinkAggregatorAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
+import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import type { KernelCall } from './kernel.js';
@@ -45,7 +45,13 @@ export interface TreasurySnapshot {
   spender: Address;
   observedAt: string;
   balances: { eth: string; weth: string; usdc: string; token: string; spenderUsdc: string };
-  claimable: { weth: string; token: string };
+  /**
+   * Swap fees the kernel can claim from `RwagmiLpLockerV3`, WETH only (the hook charges fees in the paired asset):
+   * `weth` = `pending` (credited to the pool, not settled to the kernel yet: `pendingQuote(poolId, kernel)`) +
+   * `settled` (`claimableQuote(kernel, WETH)`). `poolId` is the coin's primary RWAGMI pool, or null when the coin
+   * was not launched through the RWAGMI launcher (nothing pending can be settled then).
+   */
+  claimable: { weth: string; pending: string; settled: string; poolId: Hex | null };
   ethUsd: number | null;
   usd: { usdc: number; spenderUsdc: number; weth: number; claimableWeth: number };
 }
@@ -71,30 +77,54 @@ export async function ethUsdPrice(ctx: SupervisorContext): Promise<number | null
   }
 }
 
+const ZERO_BYTES32: Hex = `0x${'0'.repeat(64)}`;
+
+const isPoolId = (v: unknown): v is Hex => typeof v === 'string' && isHex(v) && size(v) === 32 && v !== ZERO_BYTES32;
+
+/**
+ * The coin's primary RWAGMI v3 pool id: `RwagmiB20LauncherV3.deploymentInfo(token).primaryPoolId`, falling back to
+ * the indexer's `/market/:token` `poolId` only when the chain read fails. Null when the coin is not an RWAGMI launch
+ * (the launcher answers zeros; a Clanker-era coin keeps nothing to settle on this locker).
+ */
+export async function poolIdFor(ctx: SupervisorContext, agent: Pick<AgentRow, 'token'>): Promise<Hex | null> {
+  try {
+    const info = await ctx.chain.publicClient.readContract({ address: ctx.chain.rwagmi.launcher, abi: rwagmiLauncherV3Abi, functionName: 'deploymentInfo', args: [agent.token as Address] });
+    return isPoolId(info.primaryPoolId) ? info.primaryPoolId : null;
+  } catch (err) {
+    ctx.log.warn({ token: agent.token, err }, 'deploymentInfo read failed; using the indexer pool id');
+    const market = await ctx.indexer.market(agent.token);
+    return isPoolId(market?.poolId) ? market.poolId : null;
+  }
+}
+
 export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRow): Promise<TreasurySnapshot> {
-  const { publicClient, addresses } = ctx.chain;
+  const { publicClient, addresses, rwagmi } = ctx.chain;
   const kernel = agent.kernel as Address;
   const token = agent.token as Address;
   const spender = ctx.spenderFor(agent).address;
   const bal = (asset: Address, holder: Address = kernel) => publicClient.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
-  const fees = (asset: Address) => publicClient.readContract({ address: addresses.clankerFeeLocker, abi: feeLockerAbi, functionName: 'availableFees', args: [kernel, asset] }).catch(() => 0n);
-  const [eth, weth, usdc, spenderUsdc, own, claimWeth, claimToken, price] = await Promise.all([
+  const poolId = await poolIdFor(ctx, agent);
+  // Unsettled fees sit on the pool (`pendingQuote`); settled ones on the kernel's per-currency balance (`claimableQuote`).
+  const pending = poolId ? publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'pendingQuote', args: [poolId, kernel] }).catch(() => 0n) : Promise.resolve(0n);
+  const settled = publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'claimableQuote', args: [kernel, addresses.weth] }).catch(() => 0n);
+  const [eth, weth, usdc, spenderUsdc, own, pendingWeth, settledWeth, price] = await Promise.all([
     publicClient.getBalance({ address: kernel }),
     bal(addresses.weth),
     bal(addresses.usdc),
     bal(addresses.usdc, spender),
     bal(token).catch(() => 0n),
-    fees(addresses.weth),
-    fees(token),
+    pending,
+    settled,
     ethUsdPrice(ctx),
   ]);
+  const claimWeth = pendingWeth + settledWeth;
   const wethHuman = Number(formatUnits(weth, 18));
   return {
     kernel,
     spender,
     observedAt: new Date(ctx.now()).toISOString(),
     balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
-    claimable: { weth: formatUnits(claimWeth, 18), token: formatUnits(claimToken, 18) },
+    claimable: { weth: formatUnits(claimWeth, 18), pending: formatUnits(pendingWeth, 18), settled: formatUnits(settledWeth, 18), poolId },
     ethUsd: price,
     usd: {
       usdc: Number(formatUnits(usdc, 6)),
@@ -118,16 +148,19 @@ export interface FundingBudget {
 /**
  * Remaining USDC the session key may still move to the spender in the current window, from
  * `BootrCallPolicy.windowOf` (a window that already ended counts as fresh). Null when no session is installed.
+ * The funding rule's index comes from the stored policy's rule layout (`fundingRuleIndex`): a key installed with the
+ * Clanker-era layout keeps its rule at index 3 until it is rotated.
  */
 export async function fundingBudget(ctx: SupervisorContext, agent: AgentRow): Promise<FundingBudget | null> {
   if (!agent.permissionId || !ctx.chain.addresses.bootr.callPolicy) return null;
   const id = pad(agent.permissionId as Hex, { size: 32, dir: 'right' });
+  const ruleIndex = fundingRuleIndex(agent.sessionPolicy ? deserializeSessionPolicy(agent.sessionPolicy as unknown as SerializedSessionPolicy) : undefined);
   try {
     const [windowEnd, spent, windowSeconds, cap] = await ctx.chain.publicClient.readContract({
       address: ctx.chain.addresses.bootr.callPolicy,
       abi: callPolicyAbi,
       functionName: 'windowOf',
-      args: [id, agent.kernel as Address, BigInt(FUNDING_RULE_INDEX), BigInt(FUNDING_AMOUNT_ARG_INDEX)],
+      args: [id, agent.kernel as Address, BigInt(ruleIndex), BigInt(FUNDING_AMOUNT_ARG_INDEX)],
     });
     if (cap === 0n) return null; // legacy rule set without a windowed argument
     const nowSec = BigInt(Math.floor(ctx.now() / 1000));
@@ -182,8 +215,18 @@ export function opView(op: TreasuryOpRow) {
 // Call builders
 // ---------------------------------------------------------------------------
 
-export function encodeClaimCalls(feeLocker: Address, kernel: Address, assets: readonly Address[]): KernelCall[] {
-  return assets.map((asset) => ({ to: feeLocker, value: 0n, data: encodeFunctionData({ abi: feeLockerAbi, functionName: 'claim', args: [kernel, asset] }) }));
+/**
+ * The fee claim on `RwagmiLpLockerV3`, sent by the kernel itself (the locker pays `msg.sender`'s balance to `to`,
+ * and BootrCallPolicy only allows `to == kernel`): `settleAndClaim([poolId], WETH, kernel)` settles the pool's pending
+ * fees into the kernel's balance and pays it out in one call; without a pool id only the already settled balance can
+ * be paid (`claimQuote(WETH, kernel)`).
+ */
+export function encodeClaimCall(args: { lpLocker: Address; kernel: Address; weth: Address; poolId: Hex | null }): KernelCall {
+  const { lpLocker, kernel, weth, poolId } = args;
+  const data = poolId
+    ? encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'settleAndClaim', args: [[poolId], weth, kernel] })
+    : encodeFunctionData({ abi: rwagmiLpLockerV3Abi, functionName: 'claimQuote', args: [weth, kernel] });
+  return { to: lpLocker, value: 0n, data };
 }
 
 /** Clamps a requested slippage to what BootrSwapHelper accepts (`MAX_SLIPPAGE_BPS`). */
@@ -371,13 +414,6 @@ export interface FeePolicyOutcome {
   fund?: ExecuteResult;
 }
 
-/** Price of the agent's own token in USD from the indexer, 0 when unknown. */
-async function tokenPriceUsd(ctx: SupervisorContext, agent: AgentRow): Promise<number> {
-  const market = await ctx.indexer.market(agent.token);
-  const price = market && typeof market.priceUsd === 'number' ? market.priceUsd : 0;
-  return price;
-}
-
 export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snapshot?: TreasurySnapshot): Promise<FeePolicyOutcome> {
   const { config, chain } = ctx;
   const open = await openOps(ctx, agent.agentId);
@@ -388,16 +424,14 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
 
   const snap = snapshot ?? (await readTreasuryOnChain(ctx, agent));
   const out: FeePolicyOutcome = {};
-  const claimableToken = Number(snap.claimable.token) * (await tokenPriceUsd(ctx, agent));
-  const claimableUsd = snap.usd.claimableWeth + claimableToken;
-  if (claimableUsd >= config.CLAIM_THRESHOLD_USD) {
-    const assets: Address[] = [];
-    if (Number(snap.claimable.weth) > 0) assets.push(chain.addresses.weth);
-    if (Number(snap.claimable.token) > 0) assets.push(agent.token as Address);
+  // 1. Claim: fees are WETH only (RWAGMI hook), valued at Chainlink ETH/USD; pending fees need the pool id to settle.
+  const claimableUsd = snap.usd.claimableWeth;
+  if (claimableUsd >= config.CLAIM_THRESHOLD_USD && (snap.claimable.poolId || Number(snap.claimable.settled) > 0)) {
+    const poolId = snap.claimable.poolId;
     const op = await prepareOp(ctx, agent, {
       kind: 'claim_fees',
-      calls: encodeClaimCalls(chain.addresses.clankerFeeLocker, agent.kernel as Address, assets),
-      description: `claim LP fees (~$${claimableUsd.toFixed(2)}) for ${assets.length} asset(s)`,
+      calls: [encodeClaimCall({ lpLocker: chain.rwagmi.lpLocker, kernel: agent.kernel as Address, weth: chain.addresses.weth, poolId })],
+      description: poolId ? `claim ${snap.claimable.weth} WETH of swap fees (~$${claimableUsd.toFixed(2)}; ${snap.claimable.pending} pending + ${snap.claimable.settled} settled) via settleAndClaim` : `claim ${snap.claimable.settled} WETH of settled swap fees (~$${claimableUsd.toFixed(2)}) via claimQuote`,
       origin: 'policy',
     });
     out.claim = await executeOp(ctx, agent, op.opId);

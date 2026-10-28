@@ -33,6 +33,11 @@ export const CREATOR: Address = '0x4000000000000000000000000000000000000004';
 export const PAYTO: Address = '0x5000000000000000000000000000000000000005';
 /** Placeholder deployment of the Bootr module that is still `null` in addresses.ts for the chain. */
 export const SWAP_HELPER: Address = '0x6000000000000000000000000000000000000006';
+/** RWAGMI v3 placeholders (no deployment on Base Sepolia; `RWAGMI_*_ADDRESS` in the test config). */
+export const RWAGMI_LAUNCHER: Address = '0x7000000000000000000000000000000000000007';
+export const RWAGMI_LP_LOCKER: Address = '0x8000000000000000000000000000000000000008';
+/** Primary RWAGMI pool id of the test coin (`deploymentInfo(TOKEN).primaryPoolId`). */
+export const POOL_ID: Hex = '0x9000000000000000000000000000000000000000000000000000000000000009';
 export const SERVICE_KEY = 'test-service-key-0123456789abcdef0123456789';
 /** The supervisor's own admin-API key (must differ from the sender and indexer keys). */
 export const SUPERVISOR_KEY = 'test-supervisor-key-fedcba9876543210fedcba';
@@ -53,6 +58,8 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     ADMIN_PRIVATE_KEY: ADMIN_PK,
     BOOTR_LAUNCHER_ADDRESS: LAUNCHER,
     BOOTR_GUARDIAN_ADDRESS: GUARDIAN,
+    RWAGMI_LAUNCHER_ADDRESS: RWAGMI_LAUNCHER,
+    RWAGMI_LP_LOCKER_ADDRESS: RWAGMI_LP_LOCKER,
     SENDER_URL: 'http://sender.test',
     SENDER_SERVICE_KEY: SERVICE_KEY,
     SUPERVISOR_SERVICE_KEY: SUPERVISOR_KEY,
@@ -81,8 +88,12 @@ export interface ChainState {
   weth: bigint;
   eth: bigint;
   token: bigint;
+  /** `RwagmiLpLockerV3.pendingQuote(poolId, kernel)`: fees credited to the pool, not settled to the kernel yet. */
+  pendingWeth: bigint;
+  /** `RwagmiLpLockerV3.claimableQuote(kernel, WETH)`: settled, payable balance. */
   claimableWeth: bigint;
-  claimableToken: bigint;
+  /** `RwagmiB20LauncherV3.deploymentInfo(token).primaryPoolId`; null = not an RWAGMI launch (zero pool id). */
+  poolId: Hex | null;
   ethUsd: bigint; // 8 dp
   paused: boolean;
   logs: unknown[];
@@ -109,8 +120,9 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
     weth: 0n,
     eth: 0n,
     token: 0n,
+    pendingWeth: 0n,
     claimableWeth: 0n,
-    claimableToken: 0n,
+    poolId: POOL_ID,
     ethUsd: 3000_00000000n,
     paused: false,
     logs: [],
@@ -140,8 +152,23 @@ export function mockChain(state: ChainState): ChainContext {
         }
         case 'windowOf':
           return [state.fundingWindow.windowEnd, state.fundingWindow.spent, state.fundingWindow.windowSeconds, state.fundingWindow.cap];
-        case 'availableFees':
-          return getAddress((args.args as Address[])[1]!) === ADDR.weth ? state.claimableWeth : state.claimableToken;
+        case 'deploymentInfo': {
+          const zero = '0x0000000000000000000000000000000000000000' as const;
+          const zeroId = `0x${'0'.repeat(64)}` as const;
+          if (addr !== RWAGMI_LAUNCHER) throw new Error('deploymentInfo on an unexpected address');
+          const launched = state.poolId !== null && getAddress((args.args as Address[])[0]!) === TOKEN;
+          return { token: launched ? TOKEN : zero, creator: launched ? CREATOR : zero, hook: zero, locker: launched ? RWAGMI_LP_LOCKER : zero, primaryPoolId: launched ? state.poolId : zeroId, poolIds: launched ? [state.poolId] : [], adminMode: 0, state: launched ? 1 : 0 };
+        }
+        case 'pendingQuote': {
+          if (addr !== RWAGMI_LP_LOCKER) throw new Error('pendingQuote on an unexpected address');
+          const [id, recipient] = args.args as [Hex, Address];
+          return id === state.poolId && getAddress(recipient) === KERNEL ? state.pendingWeth : 0n;
+        }
+        case 'claimableQuote': {
+          if (addr !== RWAGMI_LP_LOCKER) throw new Error('claimableQuote on an unexpected address');
+          const [recipient, currency] = args.args as [Address, Address];
+          return getAddress(recipient) === KERNEL && getAddress(currency) === ADDR.weth ? state.claimableWeth : 0n;
+        }
         case 'latestRoundData':
           // a fresh answer: `updatedAt` = the mocked block time (= the world's `now`), same round
           return [1n, state.ethUsd, state.blockTimestamp, state.feedUpdatedAt ?? state.blockTimestamp, 1n];
@@ -196,7 +223,7 @@ export function mockChain(state: ChainState): ChainContext {
       return { number: blockNumber, timestamp: state.blockTimestamp };
     },
   } as unknown as ChainContext['publicClient'];
-  return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1' };
+  return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1', rwagmi: { launcher: RWAGMI_LAUNCHER, lpLocker: RWAGMI_LP_LOCKER } };
 }
 
 export interface MockSender {

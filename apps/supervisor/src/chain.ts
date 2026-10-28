@@ -16,13 +16,15 @@ export interface ChainContext {
   launcher: Address;
   guardian: Address;
   ethUsdFeed: Address;
+  /** RWAGMI v3 launcher and LP locker (`RWAGMI_LAUNCHER_ADDRESS`, `RWAGMI_LP_LOCKER_ADDRESS`). */
+  rwagmi: { launcher: Address; lpLocker: Address };
 }
 
 export function chainFor(chainId: number): Chain {
   return chainId === 8453 ? base : baseSepolia;
 }
 
-export function createChainContext(config: Pick<Config, 'CHAIN_ID' | 'RPC_URL' | 'BOOTR_LAUNCHER_ADDRESS' | 'BOOTR_GUARDIAN_ADDRESS'>): ChainContext {
+export function createChainContext(config: Pick<Config, 'CHAIN_ID' | 'RPC_URL' | 'BOOTR_LAUNCHER_ADDRESS' | 'BOOTR_GUARDIAN_ADDRESS' | 'RWAGMI_LAUNCHER_ADDRESS' | 'RWAGMI_LP_LOCKER_ADDRESS'>): ChainContext {
   const chain = chainFor(config.CHAIN_ID);
   const publicClient = createPublicClient({ chain, transport: http(config.RPC_URL) });
   return {
@@ -33,5 +35,6 @@ export function createChainContext(config: Pick<Config, 'CHAIN_ID' | 'RPC_URL' |
     launcher: config.BOOTR_LAUNCHER_ADDRESS as Address,
     guardian: config.BOOTR_GUARDIAN_ADDRESS as Address,
     ethUsdFeed: CHAINLINK_ETH_USD[config.CHAIN_ID] as Address,
+    rwagmi: { launcher: config.RWAGMI_LAUNCHER_ADDRESS as Address, lpLocker: config.RWAGMI_LP_LOCKER_ADDRESS as Address },
   };
 }

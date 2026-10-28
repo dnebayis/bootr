@@ -10,7 +10,7 @@
 import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi, kernelAbi } from './abi.js';
+import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { fetchCreatorIdentity } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -22,6 +22,7 @@ import { SenderError } from './sender-client.js';
 import {
   buildDeinitData,
   buildValidatorData,
+  CALL_POLICY_RULES_VERSION,
   deserializeSessionPolicy,
   enableDigest,
   randomPermissionId,
@@ -183,12 +184,17 @@ export function draftIdFromContext(context: string): string | null {
   }
 }
 
-/** Draft id from Clanker's `TokenCreated` for `token` among the launch tx logs; '' when absent or unparseable. */
-export function decodeDraftId(logs: Log[], clanker: Address, token: Address): string {
-  const events = parseEventLogs({ abi: [clankerTokenCreatedEvent], logs, strict: true });
+/**
+ * Draft id from `BootrLauncher.LaunchContext(token, context)` for `token` among the launch tx logs; '' when absent
+ * or unparseable. Only logs emitted by our launcher count: a token's own logs or another contract's cannot plant a
+ * context. (Clanker's `TokenCreated.tokenContext` used to carry the same string; the RWAGMI launcher emits no
+ * context, so BootrLauncher v2 emits this event right after `AgentLaunched`, see docs/rwagmi-migration.md.)
+ */
+export function decodeDraftId(logs: Log[], launcher: Address, token: Address): string {
+  const events = parseEventLogs({ abi: [launchContextEvent], logs, strict: true });
   for (const ev of events) {
-    if (!isAddressEqual(ev.address, clanker) || !isAddressEqual(ev.args.tokenAddress, token)) continue;
-    return draftIdFromContext(ev.args.tokenContext) ?? '';
+    if (!isAddressEqual(ev.address, launcher) || !isAddressEqual(ev.args.token, token)) continue;
+    return draftIdFromContext(ev.args.context) ?? '';
   }
   return '';
 }
@@ -198,7 +204,7 @@ export async function readDraftId(ctx: SupervisorContext, txHash: string, token:
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return '';
   try {
     const receipt = await ctx.chain.publicClient.getTransactionReceipt({ hash: txHash as Hex });
-    return decodeDraftId(receipt.logs, ctx.chain.addresses.clanker, getAddress(token));
+    return decodeDraftId(receipt.logs, ctx.chain.launcher, getAddress(token));
   } catch (err) {
     ctx.log.warn({ txHash, err }, 'could not read the launch receipt for the draft id; will retry');
     return null;
@@ -342,7 +348,8 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
   return {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
-    feeLocker: addresses.clankerFeeLocker,
+    feeLocker: ctx.chain.rwagmi.lpLocker,
+    rulesVersion: CALL_POLICY_RULES_VERSION,
     swapHelper: bootrRequired.swapHelper as Address,
     usdc: addresses.usdc,
     weth: addresses.weth,

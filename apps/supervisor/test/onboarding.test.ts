@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerTokenCreatedEvent } from '../src/abi.js';
+import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
-import { ADDR, agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
+import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 
@@ -84,14 +84,11 @@ const LAUNCH_TX = toHex(7, { size: 32 });
 const LAUNCH_TS = 1_792_000_000n;
 const iso = (sec: bigint) => new Date(Number(sec) * 1000).toISOString();
 
-function tokenCreatedLog(context: string, opts: { token?: Address; address?: Address } = {}): Log {
-  const topics = encodeEventTopics({ abi: [clankerTokenCreatedEvent], eventName: 'TokenCreated', args: { tokenAddress: opts.token ?? TOKEN, tokenAdmin: KERNEL } });
-  const zero = '0x0000000000000000000000000000000000000000' as const;
-  const data = encodeAbiParameters(
-    clankerTokenCreatedEvent.inputs.filter((i) => !('indexed' in i && i.indexed)),
-    [LAUNCHER, 'ipfs://img', 'Test Coin', 'TEST', '{}', context, -230_400, zero, pad('0x02', { size: 32 }), ADDR.weth, zero, zero, 0n, []],
-  );
-  return { address: opts.address ?? ADDR.clanker, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: LAUNCH_TX, logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
+/** `BootrLauncher.LaunchContext(token, context)` as emitted in the launch tx (BootrLauncher v2, after `AgentLaunched`). */
+function launchContextLog(context: string, opts: { token?: Address; address?: Address } = {}): Log {
+  const topics = encodeEventTopics({ abi: [launchContextEvent], eventName: 'LaunchContext', args: { token: opts.token ?? TOKEN } });
+  const data = encodeAbiParameters([{ type: 'string' }], [context]);
+  return { address: opts.address ?? LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: LAUNCH_TX, logIndex: 1, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
 
 const bootrContext = (id: string) => JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id });
@@ -117,21 +114,23 @@ async function seedOnboarding(world: TestWorld, agentId: string, over: { draftId
 }
 
 describe('launch draft id -> X account rebind', () => {
-  it('parses only Bootr uuid draft ids from the Clanker TokenCreated context', () => {
+  it('parses only Bootr uuid draft ids from the launcher LaunchContext event', () => {
     expect(draftIdFromContext(bootrContext(DRAFT))).toBe(DRAFT);
     expect(draftIdFromContext(bootrContext('10388'))).toBeNull(); // never a numeric agent id
     expect(draftIdFromContext(bootrContext(DRAFT.toUpperCase()))).toBeNull();
     expect(draftIdFromContext('not json')).toBeNull();
     expect(draftIdFromContext('{"id":5}')).toBeNull();
 
-    expect(decodeDraftId([tokenCreatedLog(bootrContext(DRAFT))], ADDR.clanker, TOKEN)).toBe(DRAFT);
-    expect(decodeDraftId([tokenCreatedLog(bootrContext(DRAFT), { address: LAUNCHER })], ADDR.clanker, TOKEN)).toBe('');
-    expect(decodeDraftId([tokenCreatedLog(bootrContext(DRAFT), { token: CREATOR })], ADDR.clanker, TOKEN)).toBe('');
-    expect(decodeDraftId([tokenCreatedLog('')], ADDR.clanker, TOKEN)).toBe('');
+    expect(decodeDraftId([fakeLaunchLog(7n), launchContextLog(bootrContext(DRAFT))], LAUNCHER, TOKEN)).toBe(DRAFT);
+    // only our launcher's event counts: the same event from another contract (the token itself, say) is ignored
+    expect(decodeDraftId([launchContextLog(bootrContext(DRAFT), { address: TOKEN })], LAUNCHER, TOKEN)).toBe('');
+    expect(decodeDraftId([launchContextLog(bootrContext(DRAFT), { token: CREATOR })], LAUNCHER, TOKEN)).toBe('');
+    expect(decodeDraftId([launchContextLog('')], LAUNCHER, TOKEN)).toBe('');
+    expect(decodeDraftId([fakeLaunchLog(7n)], LAUNCHER, TOKEN)).toBe('');
   });
 
   it('registerAgent stores the draft id decoded from the launch receipt', async () => {
-    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n, receipts: { [LAUNCH_TX]: [tokenCreatedLog(bootrContext(DRAFT)), fakeLaunchLog(7n)] } } });
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n, receipts: { [LAUNCH_TX]: [fakeLaunchLog(7n), launchContextLog(bootrContext(DRAFT))] } } });
     try {
       expect(await pollLaunches(world.ctx)).toBe(1);
       const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
@@ -209,7 +208,7 @@ describe('launch draft id -> X account rebind', () => {
   });
 
   it('backfills the draft id lazily for agents registered before the column existed', async () => {
-    const world = await makeWorld({ chain: { blockTimestamp: LAUNCH_TS, receipts: { [LAUNCH_TX]: [tokenCreatedLog(bootrContext(DRAFT))] } } });
+    const world = await makeWorld({ chain: { blockTimestamp: LAUNCH_TS, receipts: { [LAUNCH_TX]: [launchContextLog(bootrContext(DRAFT))] } } });
     try {
       world.sender.accounts = { [DRAFT]: connected(DRAFT, iso(LAUNCH_TS - 600n)) };
       await seedOnboarding(world, '7', { draftId: null });
@@ -219,7 +218,7 @@ describe('launch draft id -> X account rebind', () => {
       expect(agent!.status).toBe('active');
 
       // Decoded once: '' (no Bootr context) is final and not re-read every tick.
-      world.state.receipts[LAUNCH_TX] = [tokenCreatedLog('{}')];
+      world.state.receipts[LAUNCH_TX] = [launchContextLog('{}')];
       await seedOnboarding(world, '8', { draftId: null, kernel: '0x2000000000000000000000000000000000000008' });
       await completeOnboarding(world.ctx);
       await completeOnboarding(world.ctx);
