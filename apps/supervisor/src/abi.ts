@@ -1,6 +1,11 @@
 import { parseAbi, toFunctionSelector } from 'viem';
 
-/** Hand-written minimal ABIs (kept in sync with packages/contracts/src). */
+/**
+ * Hand-written minimal ABIs (kept in sync with packages/contracts/src), plus the RWAGMI v3 ABIs vendored verbatim
+ * from the SDK (`src/abis/`, see docs/rwagmi-migration.md).
+ */
+export { rwagmiLauncherV3Abi } from './abis/rwagmi-launcher-v3.js';
+export { rwagmiLpLockerV3Abi } from './abis/rwagmi-lp-locker-v3.js';
 
 export const guardianAbi = parseAbi([
   'struct AgentInfo { address token; address creator; uint64 lastActivity; uint32 dormancyPeriod; bool paused; }',
@@ -29,13 +34,11 @@ export const launcherAbi = parseAbi([
 export const agentLaunchedEvent = launcherAbi[0];
 
 /**
- * Clanker v4 `TokenCreated` (apps/indexer/abis/Clanker.ts, generated from clanker v4-contracts). Emitted by the
- * Clanker factory inside the launch tx; `tokenContext` carries the Bootr launch form's
- * `{"interface":"Bootr","platform":"bootr.fun","id":"<draft uuid>"}`.
+ * `BootrLauncher.LaunchContext` (BootrLauncher v2): emitted in the launch tx right after `AgentLaunched`; `context`
+ * is the Bootr launch form's `{"interface":"Bootr","platform":"bootr.fun","id":"<draft uuid>"}` string (it used to
+ * travel in Clanker's `TokenCreated.tokenContext`; the RWAGMI `B20LaunchCreatedV3` event carries no context).
  */
-export const clankerTokenCreatedEvent = parseAbi([
-  'event TokenCreated(address msgSender, address indexed tokenAddress, address indexed tokenAdmin, string tokenImage, string tokenName, string tokenSymbol, string tokenMetadata, string tokenContext, int24 startingTick, address poolHook, bytes32 poolId, address pairedToken, address locker, address mevModule, uint256 extensionsSupply, address[] extensions)',
-])[0];
+export const launchContextEvent = parseAbi(['event LaunchContext(address indexed token, string context)'])[0];
 
 export const kernelAbi = parseAbi([
   'struct ValidationConfig { uint32 nonce; address hook; }',
@@ -47,11 +50,6 @@ export const kernelAbi = parseAbi([
   'function execute(bytes32 execMode, bytes executionCalldata) payable',
   'function executeUserOp((address sender, uint256 nonce, bytes initCode, bytes callData, bytes32 accountGasLimits, uint256 preVerificationGas, bytes32 gasFees, bytes paymasterAndData, bytes signature) userOp, bytes32 userOpHash) payable',
   'function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4)',
-]);
-
-export const feeLockerAbi = parseAbi([
-  'function claim(address feeOwner, address token)',
-  'function availableFees(address feeOwner, address token) view returns (uint256)',
 ]);
 
 /** BootrSwapHelper (packages/contracts/src/BootrSwapHelper.sol). */
@@ -80,5 +78,9 @@ export const KERNEL_EXECUTE_USER_OP_SELECTOR = '0x8dd7712f' as const;
 export const ERC20_APPROVE_SELECTOR = '0x095ea7b3' as const;
 /** BootrSwapHelper.swapWethToUsdc(uint256,uint256) */
 export const SWAP_HELPER_SWAP_SELECTOR = toFunctionSelector('swapWethToUsdc(uint256,uint256)');
+/** RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): settles the pools' fees and pays `to`. */
+export const LOCKER_SETTLE_AND_CLAIM_SELECTOR = toFunctionSelector('settleAndClaim(bytes32[],address,address)');
+/** RwagmiLpLockerV3.claimQuote(address currency, address to): pays the caller's already settled balance to `to`. */
+export const LOCKER_CLAIM_QUOTE_SELECTOR = toFunctionSelector('claimQuote(address,address)');
 /** BootrSwapHelper.MAX_SLIPPAGE_BPS: the contract refuses a higher requested slippage. */
 export const SWAP_MAX_SLIPPAGE_BPS = 300;
