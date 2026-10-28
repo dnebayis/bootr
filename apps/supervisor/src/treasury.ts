@@ -287,6 +287,7 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
     } catch (err) {
       const error = `simulation_failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
       await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
+      ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
       return { status: 'failed', opId, error };
     }
   }
@@ -298,6 +299,7 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
   } catch (err) {
     const error = `prepare_failed: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
     await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
+    ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
     return { status: 'failed', opId, error };
   }
   // The hash is persisted before the op leaves the process: a crash from here on is reconcilable.
