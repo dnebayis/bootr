@@ -4,7 +4,9 @@ export { launcherAbi } from './launcher.abi';
 
 /**
  * BootrLauncher.LaunchDefaults (packages/contracts/src/BootrLauncher.sol).
- * Bps fields split the full LP fee (sum 10_000). Clanker's 20% protocol fee is charged on top.
+ * Bps fields are out of 10_000; the launcher scales them to RWAGMI reward slots that total 9000 bps of the 1% swap
+ * fee (RWAGMI takes the other 10%): agent 500 -> slot 450 -> 0.045% of volume. `lpFeeBps` is not used by the RWAGMI
+ * hook, whose swap fee is a static 1%.
  * The launcher keeps two copies: `standardDefaults()` and `buybackDefaults()`.
  */
 export type LaunchDefaults = {
@@ -39,8 +41,8 @@ const ZERO = '0x0000000000000000000000000000000000000000' as Address;
 /** Used when the launcher is not configured (mock mode). Mirrors the documented presets. */
 export const FALLBACK_STANDARD: LaunchDefaults = {
   lpFeeBps: 10_000,
-  agentBps: 2000,
-  creatorBps: 5000,
+  agentBps: 500,
+  creatorBps: 6500,
   burnBps: 0,
   platformBps: 3000,
   platformRecipient: ZERO,
@@ -48,4 +50,4 @@ export const FALLBACK_STANDARD: LaunchDefaults = {
   dormancyPeriod: 90 * 86400,
 };
 
-export const FALLBACK_BUYBACK: LaunchDefaults = { ...FALLBACK_STANDARD, creatorBps: 3500, burnBps: 1500 };
+export const FALLBACK_BUYBACK: LaunchDefaults = { ...FALLBACK_STANDARD, creatorBps: 5000, burnBps: 1500 };

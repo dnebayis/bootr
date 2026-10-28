@@ -24,6 +24,11 @@ export function agentCardUrl(launchId: string): string {
   return `${env.siteUrl}/agents/${launchId}.json`;
 }
 
+/** Hosted ERC-7572 contract URI of the coin launched under `launchId`; the launch form passes it as `metadata`. */
+export function contractUriUrl(launchId: string): string {
+  return `${env.siteUrl}/tokens/${launchId}.json`;
+}
+
 /** ERC-8004 IdentityRegistry for a chain, or null when the address is not verified yet. */
 export function identityRegistry(chainId: number): Address | null {
   try {

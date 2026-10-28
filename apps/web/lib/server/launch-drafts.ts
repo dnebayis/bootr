@@ -1,13 +1,15 @@
 /**
- * Launch drafts: the creator's "Identity" text, stored per launch draft id before the launch transaction.
+ * Launch drafts: the creator's "Identity" text and the coin's display metadata, stored per launch draft id
+ * before the launch transaction.
  *
- * The launch form posts `{draftId, identity}` to `POST /api/launch/draft` right before it sends the
- * launch tx. The text is kept here, one small JSON file per draft id, and published in the hosted
+ * The launch form posts `{draftId, identity, coin}` to `POST /api/launch/draft` right before it sends the
+ * launch tx. Both are kept here, one small JSON file per draft id. The text is published in the hosted
  * ERC-8004 agent card (`/agents/<draftId>.json`, field `bootr.identity`), where the supervisor reads it
- * when it registers the launch (apps/supervisor/src/agent-card.ts). See docs/agent-identity.md.
+ * when it registers the launch (apps/supervisor/src/agent-card.ts; see docs/agent-identity.md). The coin
+ * metadata backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`).
  *
  * Ownership: the first write of a draft id answers with a random owner tag that the route sets as an
- * HttpOnly cookie. The draft id becomes public on-chain at launch (Clanker `TokenCreated` context), so
+ * HttpOnly cookie. The draft id becomes public on-chain at launch (BootrLauncher `LaunchContext` event), so
  * a later write needs the matching tag; without it the stored text cannot be replaced by someone who
  * only knows the id. The browser that wrote it can still change the text until it launches.
  *
@@ -65,7 +67,27 @@ export function draftsDir(): string {
   return path.join(process.cwd(), 'data', 'launch-drafts');
 }
 
-type DraftFile = { identity: string; ownerTag: string; createdAt: number; updatedAt: number };
+/** What the contract URI shows for a coin: entered in the launch form, written with the identity text. */
+export type DraftCoin = { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null };
+
+/** Validates the form's coin metadata (same bounds as the form); null when anything is off. */
+export function normalizeCoin(input: unknown): DraftCoin | null {
+  if (!input || typeof input !== 'object') return null;
+  const c = input as Record<string, unknown>;
+  const name = typeof c.name === 'string' ? c.name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, '').trim() : '';
+  const symbol = typeof c.symbol === 'string' ? c.symbol : '';
+  const image = typeof c.image === 'string' ? c.image : '';
+  const imageIpfs = c.imageIpfs == null ? null : typeof c.imageIpfs === 'string' ? c.imageIpfs : undefined;
+  const xHandle = c.xHandle == null ? null : typeof c.xHandle === 'string' ? c.xHandle : undefined;
+  if (!name || name.length > 48) return null;
+  if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return null;
+  if (image.length > 512 || !/^https?:\/\/[^\s"<>]+$/.test(image)) return null;
+  if (imageIpfs === undefined || (imageIpfs !== null && !/^ipfs:\/\/[A-Za-z0-9./_-]{1,200}$/.test(imageIpfs))) return null;
+  if (xHandle === undefined || (xHandle !== null && !/^[A-Za-z0-9_]{1,15}$/.test(xHandle))) return null;
+  return { name, symbol, image, imageIpfs, xHandle };
+}
+
+type DraftFile = { identity: string; coin: DraftCoin | null; ownerTag: string; createdAt: number; updatedAt: number };
 
 function fileFor(dir: string, draftId: string): string {
   if (!isDraftId(draftId)) throw new Error('not a draft id');
@@ -76,7 +98,13 @@ async function readDraft(dir: string, draftId: string): Promise<DraftFile | null
   try {
     const raw = JSON.parse(await readFile(fileFor(dir, draftId), 'utf8')) as Partial<DraftFile>;
     if (typeof raw.identity !== 'string' || typeof raw.ownerTag !== 'string') return null;
-    return { identity: raw.identity, ownerTag: raw.ownerTag, createdAt: Number(raw.createdAt) || 0, updatedAt: Number(raw.updatedAt) || 0 };
+    return {
+      identity: raw.identity,
+      coin: normalizeCoin(raw.coin),
+      ownerTag: raw.ownerTag,
+      createdAt: Number(raw.createdAt) || 0,
+      updatedAt: Number(raw.updatedAt) || 0,
+    };
   } catch {
     return null;
   }
@@ -87,6 +115,13 @@ export async function readDraftIdentity(draftId: string, opts: { dir?: string } 
   if (!isDraftId(draftId)) return null;
   const draft = await readDraft(opts.dir ?? draftsDir(), draftId);
   return draft ? draft.identity : null;
+}
+
+/** The stored identity text and coin metadata for a draft id, or null when none was saved. Never throws. */
+export async function readLaunchDraft(draftId: string, opts: { dir?: string } = {}): Promise<{ identity: string; coin: DraftCoin | null } | null> {
+  if (!isDraftId(draftId)) return null;
+  const draft = await readDraft(opts.dir ?? draftsDir(), draftId);
+  return draft ? { identity: draft.identity, coin: draft.coin } : null;
 }
 
 function randomTag(): string {
@@ -105,18 +140,23 @@ function timingSafeEqual(a: string, b: string): boolean {
 export type SaveResult = { ok: true; ownerTag: string } | { ok: false; reason: 'owned' };
 
 /**
- * Stores `identity` (already normalized) under `draftId`. A new draft id gets a fresh owner tag; an existing
+ * Stores `identity` (already normalized) and `opts.coin` under `draftId`. A new draft id gets a fresh owner tag; an existing
  * one is only replaced when `ownerTag` matches the stored tag, else `{ok: false, reason: 'owned'}`.
  * Writes are atomic (temp file + rename).
  */
-export async function saveDraftIdentity(draftId: string, identity: string, ownerTag: string | null, opts: { dir?: string; now?: number } = {}): Promise<SaveResult> {
+export async function saveDraftIdentity(
+  draftId: string,
+  identity: string,
+  ownerTag: string | null,
+  opts: { dir?: string; now?: number; coin?: DraftCoin | null } = {},
+): Promise<SaveResult> {
   const dir = opts.dir ?? draftsDir();
   const now = opts.now ?? Math.floor(Date.now() / 1000);
   const file = fileFor(dir, draftId);
   const existing = await readDraft(dir, draftId);
   if (existing && !(ownerTag && OWNER_TAG.test(ownerTag) && timingSafeEqual(ownerTag, existing.ownerTag))) return { ok: false, reason: 'owned' };
   const tag = existing ? existing.ownerTag : randomTag();
-  const next: DraftFile = { identity, ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
+  const next: DraftFile = { identity, coin: opts.coin ?? null, ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
   await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomTag().slice(0, 8)}.tmp`;
   await writeFile(tmp, JSON.stringify(next) + '\n', 'utf8');
