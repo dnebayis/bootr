@@ -150,7 +150,7 @@ Clanker v4; the services keep reading them from their original contracts.
 `NEXT_PUBLIC_CHAIN_ID`, `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`,
 `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`,
 `NEXT_PUBLIC_BUILDER_CODE`, `NEXT_PUBLIC_INFERENCE_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
-`NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`,
+`NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`,
 `NEXT_PUBLIC_WORKER_SOURCE_BASE`, `NEXT_PUBLIC_USE_MOCK` (empty in production).
 
 - `NEXT_PUBLIC_RPC_URL` is shipped to every browser: use a public endpoint (or leave it empty), never the
@@ -350,7 +350,7 @@ between a launch and the supervisor's first card read leaves that agent with the
       locker and dev buy; Clanker v4 contracts kept for the older coins; PoolManager, USDC, WETH, Universal Router, ERC-8004 registries — currently `null` on mainnet, so
       reputation indexing is skipped), and the Bootr mainnet launcher/guardian/burner recorded.
 - [ ] `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer), `RWAGMI_HOOK_V3_ADDRESS`,
-      `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer) and `NEXT_PUBLIC_RWAGMI_LOCKER_V3_ADDRESS` (web) match the verified
+      `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer) match the verified
       contracts on Basescan.
 - [ ] `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK` (indexer) and `LAUNCHER_START_BLOCK`
       (supervisor) set to the mainnet deployment; `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
