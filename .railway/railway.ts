@@ -37,7 +37,7 @@ export default defineRailway(() => {
     start: "node dist/index.js",
     preDeploy: "node dist/db/migrate.js",
     healthcheck: "/health",
-    healthcheckTimeout: 60,
+    healthcheckTimeout: 300,
     replicas: { [REGION]: 1 },
     deploy: { drainingSeconds: 20, ...RESTART },
   });
@@ -51,7 +51,7 @@ export default defineRailway(() => {
     start: "node dist/main.js",
     preDeploy: "node scripts/migrate.mjs",
     healthcheck: "/health",
-    healthcheckTimeout: 60,
+    healthcheckTimeout: 300,
     replicas: { [REGION]: 1 },
     deploy: { drainingSeconds: 30, ...RESTART },
   });
@@ -71,7 +71,7 @@ export default defineRailway(() => {
     start: "node dist/index.js",
     preDeploy: "node dist/db/migrate.js",
     healthcheck: "/health",
-    healthcheckTimeout: 60,
+    healthcheckTimeout: 300,
     // One replica only: the tick loop must not run twice.
     replicas: { [REGION]: 1 },
     deploy: { drainingSeconds: 40, overlapSeconds: 0, ...RESTART },
@@ -99,7 +99,7 @@ export default defineRailway(() => {
     },
     start: "node server.js",
     healthcheck: "/api/health",
-    healthcheckTimeout: 60,
+    healthcheckTimeout: 300,
     replicas: { [REGION]: 1 },
     deploy: { drainingSeconds: 15, ...RESTART },
     volumeMounts: { "/data": webData },
