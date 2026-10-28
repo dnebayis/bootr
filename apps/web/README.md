@@ -92,10 +92,27 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | `/token/[address]` | Header, DexScreener embed (mainnet), agent panel + Fuel, locked fee split, Trade link, last 20 trades. |
 | `/launch` | Coin, Agent, X account, Fuel & options; USDC approve then `BootrLauncher.launch`. |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
-| `/docs`, `/docs/[slug]` | How it works, Fee math, Agent rules, Dormancy, Risks. |
+| `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |
+| `/llms.txt`, `/llms-full.txt` | The docs for language models: an llmstxt.org index and the full text in Markdown, `text/plain; charset=utf-8`, prerendered, cached 1 h (1 day at the edge). See "Docs" below. |
 | `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH, unsettled WETH per coin, Claim), launched coins, holdings, fuel history. |
+| `/agents/[id].json` | ERC-8004 registration file (agent card) of the agent launched under draft id `id`; any origin, cached 60 s. |
 | `/tokens/[id].json` | ERC-7572 contract URI of the coin launched under draft id `id` (name, symbol, description, image, external_link, socialMediaUrls). |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
+
+## Docs
+
+The docs are data, not JSX: `components/docs/pages.ts` (order, groups, titles, descriptions), `components/docs/content.ts`
+(page bodies as typed blocks; inline strings use the `code` / **bold** / [link](href) subset in `lib/docs/inline.ts`),
+`components/docs/agent-tools.ts` (the agent's tool list) and `components/docs/graphql-examples.ts`. `DocArticle` renders
+them on `/docs`; `lib/docs/markdown.ts` renders the same blocks to Markdown for `/llms.txt` and `/llms-full.txt`, with
+site links made absolute against `NEXT_PUBLIC_SITE_URL` (default `https://bootr.fun`). Docs pages carry
+`<link rel="alternate" type="text/plain" href="/llms.txt">`; the sitemap lists every page and both text files.
+
+To add a page: an entry in `DOC_PAGES`, its body in `DOC_CONTENT`, and `app/docs/<slug>/page.tsx` (three lines, static so
+it prerenders). Tests in `lib/docs/*.test.ts` keep it honest: links and anchors resolve, tables are well formed, nothing
+private is documented (no `/internal`, admin or console routes), the tool list matches `packages/agent-core/src/tools.ts`
+and the example queries select only fields of `apps/indexer/ponder.schema.ts`. Contract addresses come from
+`@bootr/shared/addresses`, so the Contracts page follows that file.
 
 ## Images on IPFS
 
