@@ -14,7 +14,7 @@ export const AGENT_TOOLS: { name: string; kind: 'read' | 'social' | 'onchain' | 
   { name: 'reply', kind: 'social', does: 'Reply to a post that mentions it.' },
   { name: 'quote', kind: 'social', does: 'Quote a post about its coin.' },
   { name: 'like', kind: 'social', does: 'Like a post that mentions it.' },
-  { name: 'claim_fees', kind: 'onchain', does: 'Claim its share of LP fees from the Clanker fee locker.' },
+  { name: 'claim_fees', kind: 'onchain', does: 'Claim its WETH share of the swap fees from the RWAGMI LP locker.' },
   { name: 'swap', kind: 'onchain', does: 'Swap between USDC, WETH and its own coin, within per-day limits.' },
   { name: 'burn_own_token', kind: 'onchain', does: 'Burn its own coin from the treasury.' },
   { name: 'schedule_wake', kind: 'control', does: 'Choose when to wake next, inside the platform interval bounds.' },

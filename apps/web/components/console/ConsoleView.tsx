@@ -172,7 +172,7 @@ function LauncherDefaultsPanel() {
                 {field('recipient', 'Platform recipient')}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <ul className="text-caption text-mute">{errors.length ? errors.map((e) => <li key={e}>{e}</li>) : <li>Bps split the full LP fee. Clanker&rsquo;s 20% is charged on top.</li>}</ul>
+                <ul className="text-caption text-mute">{errors.length ? errors.map((e) => <li key={e}>{e}</li>) : <li>Bps split the 90% of the 1% swap fee that reaches the coin&rsquo;s slots; RWAGMI takes the other 10%.</li>}</ul>
                 <Button variant="ink" onClick={submit} disabled={errors.length > 0} loading={pending === 'setDefaults'}>
                   Send setDefaults({preset === 'buyback' ? 'true' : 'false'})
                 </Button>

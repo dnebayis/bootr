@@ -1,12 +1,12 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useReadContracts, useWriteContract } from 'wagmi';
+import { useConnection, useReadContracts, useWriteContract } from 'wagmi';
 import { toast } from 'sonner';
-import type { Address } from 'viem';
-import { feeLockerAbi } from '@/lib/abi/feeLocker';
-import { lpLockerAbi } from '@/lib/abi/lpLocker';
+import type { Address, Hex } from 'viem';
+import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
+import { platformSlot, type Slot } from '@/lib/fee-split';
 import { appChain, explorer } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
@@ -23,17 +23,22 @@ const td = 'px-4 py-2.5 align-middle';
 
 /** Mock-mode platform recipient (no on-chain reads). */
 const MOCK_RECIPIENT = '0x00000000000000000000000000000000000b0075' as Address;
+/** Pools settled per `settleAndClaim` transaction. */
+const CHUNK = 50;
 
-type Claim = { recipient: Address; feeToken: Address; amount: bigint; label: string };
+type Claim = { recipient: Address; poolIds: Hex[]; amount: bigint; label: string };
 
 /**
- * Platform share of LP fees waiting in Clanker's fee locker. The platform recipient of each coin is
- * the last reward recipient in the LP locker (BootrLauncher puts it there); WETH is one pooled
- * balance per recipient, fees taken in a coin are per coin. `claim` is permissionless and always
- * pays the recipient, so any connected wallet (the admin's) can trigger it.
+ * Platform share of the WETH swap fees in RWAGMI's LP locker. Each coin's platform recipient and pool ids come
+ * from `launchInfo(token)` (the last Bootr slot, before RWAGMI's appended one). A recipient's claimable WETH is
+ * its settled balance (`claimableQuote`) plus each coin's unsettled share (`pendingQuote`). Claims pay
+ * `msg.sender`'s own balance, so only the connected platform recipient wallet can claim:
+ * `settleAndClaim(poolIds, WETH, me)` when pools have unsettled fees, else `claimQuote(WETH, me)`.
  */
 export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[]; loading: boolean }) {
-  const live = !env.useMock;
+  const locker = contracts.lpLocker;
+  const live = !env.useMock && !!locker;
+  const { address: me } = useConnection();
   const write = useWriteContract();
   const { run, pending } = useTxRunner();
   const [allRunning, setAllRunning] = useState(false);
@@ -46,33 +51,29 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
     return [...seen.values()];
   }, [agents]);
 
-  const rewards = useReadContracts({
+  const infos = useReadContracts({
     allowFailure: true,
-    contracts: coins.map((c) => ({ address: contracts.lpLocker, abi: lpLockerAbi, functionName: 'tokenRewards' as const, args: [c.token] as const, chainId: appChain.id })),
+    contracts: coins.map((c) => ({ address: locker ?? undefined, abi: rwagmiLpLockerV3Abi, functionName: 'launchInfo' as const, args: [c.token] as const, chainId: appChain.id })),
     query: { enabled: live && coins.length > 0 },
   });
 
-  const recipientOf = (i: number): Address | null => {
-    if (!live) return MOCK_RECIPIENT;
-    const r = rewards.data?.[i];
+  const launchOf = (i: number): { recipient: Address; poolIds: readonly Hex[] } | null => {
+    if (!live) return { recipient: MOCK_RECIPIENT, poolIds: [coins[i]!.token.toLowerCase().padEnd(66, '0') as Hex] };
+    const r = infos.data?.[i];
     if (r?.status !== 'success') return null;
-    const list = (r.result as { rewardRecipients: readonly Address[] }).rewardRecipients;
-    return list.length ? list[list.length - 1]! : null;
+    const { rewards, poolIds } = r.result as { rewards: readonly Slot[]; poolIds: readonly Hex[] };
+    const platform = platformSlot(rewards);
+    return platform ? { recipient: platform.recipient, poolIds } : null;
   };
-  const recipients = coins.map((_, i) => recipientOf(i));
-  const distinct = [...new Set(recipients.filter((r): r is Address => !!r).map((r) => r.toLowerCase()))] as Address[];
+  const launches = coins.map((_, i) => launchOf(i));
+  const distinct = [...new Set(launches.filter((l) => !!l).map((l) => l.recipient.toLowerCase()))] as Address[];
+  const pairs = launches.flatMap((l, i) => (l ? l.poolIds.map((poolId) => ({ coin: i, poolId, recipient: l.recipient })) : []));
 
   const fees = useReadContracts({
     allowFailure: true,
     contracts: [
-      ...distinct.map((r) => ({ address: contracts.feeLocker, abi: feeLockerAbi, functionName: 'availableFees' as const, args: [r, contracts.weth] as const, chainId: appChain.id })),
-      ...coins.map((c, i) => ({
-        address: contracts.feeLocker,
-        abi: feeLockerAbi,
-        functionName: 'availableFees' as const,
-        args: [recipients[i] ?? contracts.feeLocker, c.token] as const,
-        chainId: appChain.id,
-      })),
+      ...distinct.map((r) => ({ address: locker ?? undefined, abi: rwagmiLpLockerV3Abi, functionName: 'claimableQuote' as const, args: [r, contracts.weth] as const, chainId: appChain.id })),
+      ...pairs.map((p) => ({ address: locker ?? undefined, abi: rwagmiLpLockerV3Abi, functionName: 'pendingQuote' as const, args: [p.poolId, p.recipient] as const, chainId: appChain.id })),
     ],
     query: { enabled: live && distinct.length > 0 },
   });
@@ -81,24 +82,56 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
     const r = fees.data?.[i];
     return r?.status === 'success' ? (r.result as bigint) : null;
   };
-  const wethOf = (k: number): bigint | null => (live ? read(k) : mock.claimable(distinct[k]!, contracts.weth, 'weth'));
-  const coinOf = (i: number): bigint | null => {
-    if (!recipients[i]) return null;
-    return live ? read(distinct.length + i) : mock.claimable(MOCK_RECIPIENT, coins[i]!.token, 'coin');
+  const settledOf = (k: number): bigint | null => (live ? read(k) : mock.claimable(distinct[k]!, 'settled'));
+  const pendingOf = (j: number): bigint | null => (live ? read(distinct.length + j) : mock.claimable(MOCK_RECIPIENT, pairs[j]!.poolId));
+  /** Unsettled WETH of coin `i` for its platform recipient (summed over its pools). */
+  const coinPending = (i: number): bigint | null => {
+    let sum = 0n;
+    for (const [j, p] of pairs.entries()) {
+      if (p.coin !== i) continue;
+      const v = pendingOf(j);
+      if (v == null) return null;
+      sum += v;
+    }
+    return launches[i] ? sum : null;
   };
+  const pendingPoolsOf = (recipient: Address): Hex[] =>
+    pairs.filter((p, j) => p.recipient.toLowerCase() === recipient.toLowerCase() && (pendingOf(j) ?? 0n) > 0n).map((p) => p.poolId);
+  const totalOf = (k: number): bigint | null => {
+    const settled = settledOf(k);
+    if (settled == null) return null;
+    let sum = settled;
+    for (const [j, p] of pairs.entries()) if (p.recipient.toLowerCase() === distinct[k]) sum += pendingOf(j) ?? 0n;
+    return sum;
+  };
+  /** Claims pay the caller's own balance: only the recipient's wallet can claim (any wallet in mock mode). */
+  const canClaim = (recipient: Address) => !live || (!!me && me.toLowerCase() === recipient.toLowerCase());
 
-  const claims: Claim[] = [
-    ...distinct.map((r, k) => ({ recipient: r, feeToken: contracts.weth, amount: wethOf(k) ?? 0n, label: `Claim WETH for ${shortAddr(r, 6, 4)}` })),
-    ...coins.map((c, i) => ({ recipient: recipients[i]!, feeToken: c.token, amount: coinOf(i) ?? 0n, label: `Claim $${c.symbol} platform fees` })),
-  ].filter((c) => c.recipient && c.amount > 0n);
+  // One transaction per CHUNK pools with unsettled fees; a recipient with only a settled balance gets one claimQuote.
+  const claims: Claim[] = distinct.flatMap((r, k) => {
+    const amount = totalOf(k) ?? 0n;
+    if (amount === 0n || !canClaim(r)) return [];
+    const pools = pendingPoolsOf(r);
+    if (pools.length === 0) return [{ recipient: r, poolIds: [], amount, label: `Claim WETH for ${shortAddr(r, 6, 4)}` }];
+    const out: Claim[] = [];
+    for (let at = 0; at < pools.length; at += CHUNK) {
+      out.push({ recipient: r, poolIds: pools.slice(at, at + CHUNK), amount, label: `Claim WETH for ${shortAddr(r, 6, 4)} (${at / CHUNK + 1})` });
+    }
+    return out;
+  });
 
   const claimOne = async (c: Claim): Promise<boolean> => {
     if (!live) {
       toast.success(`Mock: ${c.label} sent`);
       return true;
     }
+    if (!locker || !me) return false;
     const r = await run(c.label, () =>
-      write.mutateAsync({ address: contracts.feeLocker, abi: feeLockerAbi, functionName: 'claim', args: [c.recipient, c.feeToken], chainId: appChain.id, dataSuffix: builderDataSuffix }),
+      write.mutateAsync(
+        c.poolIds.length > 0
+          ? { address: locker, abi: rwagmiLpLockerV3Abi, functionName: 'settleAndClaim', args: [c.poolIds, contracts.weth, me], chainId: appChain.id, dataSuffix: builderDataSuffix }
+          : { address: locker, abi: rwagmiLpLockerV3Abi, functionName: 'claimQuote', args: [contracts.weth, me], chainId: appChain.id, dataSuffix: builderDataSuffix },
+      ),
     );
     return !!r;
   };
@@ -123,7 +156,7 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
     if (done < claims.length) toast(`Claimed ${done} of ${claims.length}.`);
   };
 
-  const reading = live && (rewards.isPending || fees.isPending) && coins.length > 0;
+  const reading = live && (infos.isPending || fees.isPending) && coins.length > 0;
 
   return (
     <Panel
@@ -136,8 +169,8 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
       }
     >
       <p className="border-b border-hairline px-4 py-2 text-caption text-mute">
-        Claiming is permissionless and always pays the platform recipient, so the connected wallet only pays gas. Claim all sends one transaction per
-        balance, in order.
+        Fees are paid in WETH. A claim pays the caller&rsquo;s own balance, so connect the platform recipient&rsquo;s wallet to claim. Each claim settles the
+        coins&rsquo; unsettled fees first; Claim all sends one transaction per {CHUNK} coins, in order.
       </p>
       {loading || reading ? (
         <div className="p-4">
@@ -149,8 +182,8 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
         <>
           <div className="divide-y divide-hairline border-b border-hairline">
             {distinct.map((r, k) => {
-              const amount = wethOf(k);
-              const c = { recipient: r, feeToken: contracts.weth, amount: amount ?? 0n, label: `Claim WETH for ${shortAddr(r, 6, 4)}` };
+              const amount = totalOf(k);
+              const c: Claim = { recipient: r, poolIds: pendingPoolsOf(r).slice(0, CHUNK), amount: amount ?? 0n, label: `Claim WETH for ${shortAddr(r, 6, 4)}` };
               return (
                 <div key={r} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                   <div>
@@ -164,7 +197,11 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
                       {amount == null ? '—' : `${units(amount, 18, 6)} WETH`}
                     </div>
                   </div>
-                  <Button size="sm" variant="secondary" onClick={() => void claimSingle(c)} disabled={!amount || !!pending || allRunning} loading={!allRunning && pending === c.label}>
+                  <Button size="sm" variant="secondary" onClick={() => void claimSingle(c)}
+                    disabled={!amount || !canClaim(r) || !!pending || allRunning}
+                    loading={!allRunning && pending === c.label}
+                    title={canClaim(r) ? undefined : 'Connect this recipient wallet to claim'}
+                  >
                     Claim WETH
                   </Button>
                 </div>
@@ -177,7 +214,7 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
                 <tr>
                   <th className={th}>Coin</th>
                   <th className={th}>Recipient</th>
-                  <th className={`${th} text-right`}>Claimable in coin</th>
+                  <th className={`${th} text-right`}>Unsettled WETH</th>
                   <th className={`${th} text-right`}>
                     <span className="sr-only">Action</span>
                   </th>
@@ -185,9 +222,10 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
               </thead>
               <tbody>
                 {coins.map((coin, i) => {
-                  const amount = coinOf(i);
-                  const recipient = recipients[i];
-                  const c = { recipient: recipient!, feeToken: coin.token, amount: amount ?? 0n, label: `Claim $${coin.symbol} platform fees` };
+                  const amount = coinPending(i);
+                  const launch = launches[i];
+                  const recipient = launch?.recipient;
+                  const c: Claim = { recipient: recipient!, poolIds: [...(launch?.poolIds ?? [])], amount: amount ?? 0n, label: `Claim $${coin.symbol} platform fees` };
                   return (
                     <tr key={coin.token} className="border-t border-hairline">
                       <td className={td}>
@@ -196,9 +234,9 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
                         </a>
                       </td>
                       <td className={`${td} font-mono text-caption text-body`}>{recipient ? shortAddr(recipient, 6, 4) : '—'}</td>
-                      <td className={`${td} text-right font-mono text-sm tabular`}>{amount == null ? '—' : `${units(amount, 18, 2)} ${coin.symbol}`}</td>
+                      <td className={`${td} text-right font-mono text-sm tabular`}>{amount == null ? '—' : `${units(amount, 18, 6)} WETH`}</td>
                       <td className={`${td} text-right`}>
-                        <Button size="sm" variant="secondary" onClick={() => void claimSingle(c)} disabled={!amount || !recipient || !!pending || allRunning} loading={!allRunning && pending === c.label}>
+                        <Button size="sm" variant="secondary" onClick={() => void claimSingle(c)} disabled={!amount || !recipient || !canClaim(recipient) || !!pending || allRunning} loading={!allRunning && pending === c.label}>
                           Claim
                         </Button>
                       </td>

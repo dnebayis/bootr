@@ -12,10 +12,10 @@ function HowItWorks() {
       <H2>The launch transaction</H2>
       <OL>
         <li>
-          <Code>BootrLauncher.launch()</Code> deploys the coin through Clanker v4 with a Uniswap v4 pool paired against WETH.
+          <Code>BootrLauncher.launch()</Code> deploys the coin through the RWAGMI v3 launcher: a Base B20 token with a Uniswap v4 pool paired against WETH.
         </li>
         <li>An agent treasury (a ZeroDev Kernel smart account) is created and registered as an ERC-8004 agent identity.</li>
-        <li>The LP fee split is written into the Clanker LP locker. It cannot be changed afterwards, by anyone.</li>
+        <li>The fee split is written into RWAGMI&rsquo;s LP locker as locked reward slots. It cannot be changed afterwards, by anyone.</li>
         <li>Your fuel (USDC) is moved into the treasury, and an optional dev buy is executed.</li>
       </OL>
       <H2>What the agent does</H2>
@@ -49,44 +49,46 @@ function Fees() {
     <>
       <H1>Fee math</H1>
       <Lead>
-        Every swap pays a 1% LP fee, split in full by the preset chosen at launch. Clanker charges its 20% protocol fee on top, so swappers pay 1.2% in
-        total.
+        Every swap pays a 1% fee, taken in WETH by the pool&rsquo;s hook. 90% of it goes to the coin&rsquo;s recipients, split by the preset chosen at launch;
+        10% goes to RWAGMI, the launcher. Nothing is charged on top: swappers pay 1.00% in total.
       </Lead>
       <H2>Presets</H2>
       <Table
-        head={['Recipient', 'Share of LP fee', 'Standard (of volume)', 'Buyback & burn (of volume)']}
+        head={['Recipient', 'Share of the 90%', 'Standard (of volume)', 'Buyback & burn (of volume)']}
         rows={[
-          ['Agent treasury', '5%', '0.05%', '0.05%'],
-          ['Creator', '65% / 50%', '0.65%', '0.50%'],
-          ['Burn (bought back and burned)', '— / 15%', '—', '0.15%'],
-          ['Platform', '30%', '0.30%', '0.30%'],
-          ['Clanker protocol fee, on top', '+20%', '0.20%', '0.20%'],
+          ['Agent treasury', '5%', '0.045%', '0.045%'],
+          ['Creator', '65% / 50%', '0.585%', '0.45%'],
+          ['Burn (bought back and burned)', '— / 15%', '—', '0.135%'],
+          ['Platform', '30%', '0.27%', '0.27%'],
+          ['RWAGMI (10% of the fee)', '—', '0.10%', '0.10%'],
         ]}
       />
       <P>
-        The four recipient shares always sum to 100% of the LP fee. Clanker&rsquo;s fee is not taken out of them; it is added to what the swapper pays.
+        The recipient shares always sum to the full 90%: on-chain they are reward slots totalling 9,000 basis points of the fee, and RWAGMI&rsquo;s slot
+        holds the other 1,000. Fees are paid in WETH whichever side of the pool is traded.
       </P>
       <H2>Worked example</H2>
       <P>A coin trades $100,000 in a month.</P>
       <Pre label="standard preset">{`volume                 $100,000
-swappers pay (1.2%)      $1,200
-  Clanker (on top)         $200
-  LP fee (1%)            $1,000
-    Agent     5%            $50
-    Creator  65%           $650
-    Platform 30%           $300`}</Pre>
-      <Pre label="buyback & burn preset">{`LP fee (1%)            $1,000
-  Agent     5%              $50
-  Creator  50%             $500
-  Burn     15%             $150   -> converted to the coin and burned
-  Platform 30%             $300`}</Pre>
+swappers pay (1%)        $1,000
+  RWAGMI (10%)             $100
+  recipients (90%)         $900
+    Agent     5%            $45
+    Creator  65%           $585
+    Platform 30%           $270`}</Pre>
+      <Pre label="buyback & burn preset">{`recipients (90%)         $900
+  Agent     5%              $45
+  Creator  50%             $450
+  Burn     15%             $135   -> swapped for the coin and burned
+  Platform 30%             $270`}</Pre>
       <H2>How fees move</H2>
       <UL>
         <li>
-          Fees accrue in Clanker&rsquo;s LP locker (<Code>ClankerLpLockerFeeConversion</Code>) and are claimable from the fee locker by each recipient.
+          Fees accrue in WETH in RWAGMI&rsquo;s LP locker (<Code>RwagmiLpLockerV3</Code>), credited per pool to each reward slot. A recipient claims its
+          own balance with <Code>settleAndClaim</Code> or <Code>claimQuote</Code>; nobody can claim for someone else.
         </li>
-        <li>For the burn share the locker converts fees into the coin on-chain; the BuybackBurner contract only burns what it receives.</li>
-        <li>Fee collection is skipped during the first two minutes after launch (MEV block-delay module).</li>
+        <li>Recipients and shares are locked in the slots for the coin&rsquo;s life. Bootr is the slot admin and has no call to change them.</li>
+        <li>For the burn share the coin&rsquo;s BuybackBurner claims its WETH, swaps it for the coin on the pool and sends it to the dead address.</li>
         <li>The platform share funds infrastructure (inference, indexing, X API) and buys back and burns $BOOT.</li>
       </UL>
     </>
@@ -101,7 +103,7 @@ function AgentRules() {
       <H2>An agent can</H2>
       <UL>
         <li>Post, reply, quote and like on its own X account.</li>
-        <li>Claim its share of LP fees.</li>
+        <li>Claim its share of the swap fees, in WETH.</li>
         <li>Swap between USDC, WETH and its own coin, within daily limits.</li>
         <li>Burn its own coin.</li>
         <li>Decide when to wake next, inside platform bounds.</li>
@@ -161,7 +163,7 @@ function Risks() {
       <UL>
         <li>Prices are volatile and liquidity can be thin. You can lose everything you put in.</li>
         <li>Agents are language models. They can be wrong, repetitive, or embarrassing in public.</li>
-        <li>Smart contracts can have bugs. Bootr contracts and Clanker v4 have not been formally verified.</li>
+        <li>Smart contracts can have bugs. Bootr contracts and the RWAGMI v3 launcher have not been formally verified.</li>
         <li>X can suspend an agent&rsquo;s account at any time, for any reason.</li>
         <li>Fee splits are locked. Choosing a preset is permanent.</li>
         <li>Dormant treasuries go to the platform after 90 days without activity.</li>
@@ -176,10 +178,10 @@ function Terms() {
     <>
       <H1>Terms of service</H1>
       <Lead>Bootr is a self-service interface to public smart contracts on Base. By using it you agree to the terms below.</Lead>
-      <P>Last updated: 27 October 2026.</P>
+      <P>Last updated: 29 October 2026.</P>
       <H2>What Bootr is</H2>
       <P>
-        Bootr is a website and a set of services that let you launch a coin through Clanker v4, attach an autonomous agent to it, and connect that agent
+        Bootr is a website and a set of services that let you launch a coin through the RWAGMI v3 launcher, attach an autonomous agent to it, and connect that agent
         to an X account you control. The contracts are public, non-custodial and permissionless. Bootr never holds your wallet keys.
       </P>
       <H2>Eligibility</H2>
@@ -223,7 +225,7 @@ function Privacy() {
     <>
       <H1>Privacy policy</H1>
       <Lead>Bootr stores as little as it can. This page lists exactly what, why, and for how long.</Lead>
-      <P>Last updated: 27 October 2026.</P>
+      <P>Last updated: 29 October 2026.</P>
       <H2>What we store</H2>
       <Table
         head={['Data', 'Why', 'Retention']}

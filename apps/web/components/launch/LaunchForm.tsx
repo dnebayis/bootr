@@ -8,14 +8,14 @@ import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseU
 import { toast } from 'sonner';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
+import { ofVolume, pctLabel } from '@/lib/fee-split';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
-import { bps as bpsLabel } from '@/lib/format';
 import { fetchModels, fetchPlatformFlags, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
 import { formatThoughtPrice, groupByProvider, RECOMMENDED_MODEL, THOUGHT } from '@/lib/models';
 import { Badge } from '@/components/ui/Badge';
-import { agentCardUrl } from '@/lib/agent-card';
+import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
 import { builderDataSuffix } from '@/lib/attribution';
 import { mockLaunch } from '@/lib/mock';
 import { useTxRunner } from '@/lib/tx';
@@ -134,9 +134,13 @@ export function LaunchForm() {
   });
   const needsApproval = !env.useMock && fuelUnits != null && (allowance.data ?? 0n) < fuelUnits;
 
-  // Pinned image: the gateway URL goes on-chain (renders on clanker.world and in wallets), the ipfs:// URI into metadata.
+  // Pinned image: the gateway URL goes on-chain (renders in wallets and explorers), the ipfs:// URI into metadata.
   const pinned = upload.status === 'done' ? upload.result : null;
+  // The launcher's presets are out of 10000; the locker stores them as 9000-bps slots of the 1% swap fee (RWAGMI takes
+  // the other 10%), so agent 500 -> slot 450 -> 0.045% of volume.
   const split = { agent: defaults.agentBps, creator: defaults.creatorBps, burn: defaults.burnBps, platform: defaults.platformBps };
+  const buybackDefaults = buybackRead.data ? defaultsFromTuple(buybackRead.data) : FALLBACK_BUYBACK;
+  const burnPct = ofVolume({ agent: buybackDefaults.agentBps, creator: buybackDefaults.creatorBps, burn: buybackDefaults.burnBps, platform: buybackDefaults.platformBps }, 'burn');
 
   const errors: string[] = [];
   if (!name.trim()) errors.push('Name is required.');
@@ -168,16 +172,17 @@ export function LaunchForm() {
   }
 
   /**
-   * Saves the Identity text under the draft id before the launch tx, so the hosted agent card
-   * (`agentURI`) can publish it and the supervisor can give the agent that persona. False when it
-   * could not be saved: launching anyway would hand the agent the generic default persona.
+   * Saves the Identity text and the coin metadata under the draft id before the launch tx, so the hosted
+   * agent card (`agentURI`) can publish the text (the supervisor gives the agent that persona) and the hosted
+   * contract URI (`metadata`) can describe the coin. False when it could not be saved: launching anyway would
+   * hand the agent the generic default persona and the coin an empty contract URI.
    */
-  async function saveIdentity(id: string): Promise<boolean> {
+  async function saveDraft(id: string, coin: { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null }): Promise<boolean> {
     try {
       const res = await fetch('/api/launch/draft', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ draftId: id, identity: identity.trim() }),
+        body: JSON.stringify({ draftId: id, identity: identity.trim(), coin }),
       });
       if (res.ok) return true;
       const body = (await res.json().catch(() => ({}))) as { message?: string };
@@ -191,7 +196,8 @@ export function LaunchForm() {
   async function launch() {
     if (errors.length || blocked || fuelUnits == null || devBuyWei == null || !draftId || !pinned || upload.status !== 'done') return;
     const modelId = selectedModel?.id ?? '';
-    if (!(await saveIdentity(draftId))) return;
+    const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle };
+    if (!(await saveDraft(draftId, coin))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
       const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle });
@@ -204,16 +210,9 @@ export function LaunchForm() {
       name: name.trim(),
       symbol: symbol.toUpperCase(),
       image: pinned.url,
-      // Clanker v4 metadata schema (shown on clanker.world): description, auditUrls, socialMediaUrls[{platform,url}].
-      // `imageIpfs` is ours: the gateway-independent ipfs:// URI of the same image.
-      metadata: JSON.stringify({
-        description: `${identity.trim().split('\n')[0]} — an autonomous agent coin launched on Bootr.`,
-        socialMediaUrls: [
-          ...(xHandle ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
-          { platform: 'website', url: env.siteUrl },
-        ],
-        imageIpfs: pinned.ipfsUri,
-      }),
+      // Hosted ERC-7572 contract URI (app/tokens/[id]/route.ts, from the draft saved above); BootrLauncher sets it
+      // as the B20 token's `contractURI`.
+      metadata: contractUriUrl(draftId),
       context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
       salt: keccak256(toHex(draftId)),
       buybackBurn: buyback,
@@ -376,7 +375,10 @@ export function LaunchForm() {
             <label htmlFor="buyback" className="text-sm font-medium text-ink">
               Buyback & burn
             </label>
-            <p className="mt-0.5 text-caption text-mute">Sends {bpsLabel(buybackRead.data ? defaultsFromTuple(buybackRead.data).burnBps : FALLBACK_BUYBACK.burnBps)} of the LP fee to buy this coin back and burn it, taken from the creator share. The locker converts it on-chain.</p>
+            <p className="mt-0.5 text-caption text-mute">
+              Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share. The coin&rsquo;s burner claims it in WETH,
+              swaps it for the coin and burns it.
+            </p>
           </div>
           <Switch id="buyback" checked={buyback} onChange={setBuyback} label="Buyback and burn" />
         </div>
@@ -384,10 +386,10 @@ export function LaunchForm() {
           <div className="mb-3 flex items-baseline justify-between">
             <span className="text-sm font-medium text-ink">Split preview</span>
             <span className="font-mono text-caption text-mute">
-              {[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')} of the LP fee
+              {[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')} of the 90% share
             </span>
           </div>
-          <SplitBar split={split} lpFeeBps={defaults.lpFeeBps} />
+          <SplitBar split={split} />
         </div>
 
         <dl className="grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-sm sm:grid-cols-2">
@@ -399,6 +401,8 @@ export function LaunchForm() {
             ['Fuel', `${fuel || 0} USDC`],
             ['Dev buy', devBuy ? `${devBuy} ETH` : 'None'],
             ['Launch fee', launchFeeWei > 0n ? `${formatEther(launchFeeWei)} ETH` : 'None'],
+            ['Swap fee', `${pctLabel(1)} in WETH`],
+            ['Your share', `${pctLabel(ofVolume(split, 'creator'))} of volume`],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-2">
               <dt className="text-mute">{k}</dt>

@@ -7,10 +7,9 @@ const a = chainAddresses();
 export const contracts = {
   usdc: a.usdc as Address,
   weth: a.weth as Address,
-  // ClankerLpLockerFeeConversion: the locker enabled for the V2 hooks BootrLauncher uses.
-  lpLocker: a.clankerLpLockerFeeConversion as Address,
-  // ClankerFeeLocker: where LP fees wait per (recipient, fee token) until `claim`.
-  feeLocker: a.clankerFeeLocker as Address,
+  // RwagmiLpLockerV3: locked reward slots (`launchInfo`) and the WETH fee ledger every recipient claims from.
+  // `null` on Base Sepolia (no RWAGMI v3 deployment there).
+  lpLocker: a.rwagmiLockerV3 as Address | null,
   launcher: env.launcherAddress,
   guardian: env.guardianAddress,
 };

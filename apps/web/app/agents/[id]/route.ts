@@ -1,8 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { agentCardUrl, buildRegistration, isLaunchId, pendingRegistration, type CardToken } from '@/lib/agent-card';
-import { env } from '@/lib/env';
-import { mockStore } from '@/lib/mock';
+import { buildRegistration, isLaunchId, pendingRegistration, type CardToken } from '@/lib/agent-card';
 import { readDraftIdentity } from '@/lib/server/launch-drafts';
+import { findTokenByLaunchId } from '@/lib/server/token-lookup';
 
 /**
  * GET /agents/<launchId>.json: the ERC-8004 registration file a Bootr agent was registered with.
@@ -15,33 +14,11 @@ import { readDraftIdentity } from '@/lib/server/launch-drafts';
  * - indexer unreachable    -> 503, never cached
  */
 
-const CARD_FIELDS = 'id chainId name symbol image kernel agentId xHandle';
-
 function json(body: unknown, status: number, cache: string) {
   return Response.json(body, {
     status,
     headers: { 'Cache-Control': cache, 'Access-Control-Allow-Origin': '*' },
   });
-}
-
-/** If two launches ever claim the same URI, the earliest one owns the card. */
-async function findByAgentUri(uri: string): Promise<CardToken | null> {
-  if (env.useMock) {
-    return mockStore().tokens.find((t) => t.agentUri === uri) ?? null;
-  }
-  const res = await fetch(`${env.indexerUrl}/graphql`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      query: `query AgentCard($where: tokenFilter) { tokens(where: $where, orderBy: "launchedAt", orderDirection: "asc", limit: 1) { items { ${CARD_FIELDS} } } }`,
-      variables: { where: { agentUri: uri } },
-    }),
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) throw new Error(`Indexer responded ${res.status}`);
-  const body = (await res.json()) as { data?: { tokens: { items: CardToken[] } }; errors?: { message: string }[] };
-  if (body.errors?.length || !body.data) throw new Error(body.errors?.map((e) => e.message).join('; ') || 'Empty indexer response');
-  return body.data.tokens.items[0] ?? null;
 }
 
 export async function GET(_req: NextRequest, ctx: RouteContext<'/agents/[id]'>) {
@@ -51,7 +28,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext<'/agents/[id]'>) 
 
   let token: CardToken | null;
   try {
-    token = await findByAgentUri(agentCardUrl(id));
+    token = await findTokenByLaunchId(id);
   } catch {
     return json({ error: 'Agent registry is temporarily unavailable' }, 503, 'no-store');
   }

@@ -7,6 +7,7 @@ import {
   OWNER_COOKIE_PATH,
   OWNER_TTL_S,
   isDraftId,
+  normalizeCoin,
   normalizeIdentity,
   ownerCookieValue,
   ownerTagFromCookie,
@@ -16,9 +17,10 @@ import {
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
- * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>}
+ * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle}}
  * Stores the creator's Identity text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
- * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts).
+ * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
+ * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`).
  * Same-origin only. The first write owns the draft id (HttpOnly cookie); a write without the owner's
  * cookie for an id that already has a text answers 409.
  */
@@ -30,7 +32,7 @@ export async function POST(req: NextRequest) {
   if (Number(req.headers.get('content-length') ?? 0) > 8192) {
     return NextResponse.json({ error: 'payload_too_large' }, { status: 413, headers: NO_STORE });
   }
-  let body: { draftId?: unknown; identity?: unknown } = {};
+  let body: { draftId?: unknown; identity?: unknown; coin?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -46,10 +48,14 @@ export async function POST(req: NextRequest) {
       { status: 400, headers: NO_STORE },
     );
   }
+  const coin = body.coin === undefined ? null : normalizeCoin(body.coin);
+  if (body.coin !== undefined && coin === null) {
+    return NextResponse.json({ error: 'invalid_request', message: 'coin must carry a valid name, symbol and image URL' }, { status: 400, headers: NO_STORE });
+  }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;
   try {
-    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId));
+    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin });
   } catch {
     return NextResponse.json({ error: 'store_unavailable', message: 'The launch draft store is not writable.' }, { status: 503, headers: NO_STORE });
   }
