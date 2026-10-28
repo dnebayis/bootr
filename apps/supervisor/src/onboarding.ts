@@ -10,7 +10,7 @@
 import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi } from './abi.js';
+import { agentLaunchedEvent, clankerTokenCreatedEvent, guardianAbi, kernelAbi } from './abi.js';
 import { fetchCreatorIdentity } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -385,28 +385,56 @@ export async function installSessionKey(ctx: SupervisorContext, agent: AgentRow,
   const log = ctx.log.child({ agentId: agent.agentId, kernel: agent.kernel });
   const { publicClient } = ctx.chain;
   const kernel = agent.kernel as Address;
-  const validUntil = Math.floor(ctx.now() / 1000) + ctx.config.SESSION_KEY_VALIDITY_DAYS * 86_400;
-  const policy = sessionPolicyFor(ctx, agent, validUntil);
+  // A retry for a stored permissionId reuses the stored policy and validatorData, so the digest is the one the
+  // admin already approved; a fresh install builds a new policy with a fresh validity window.
+  const reuse = !!opts.permissionId && opts.permissionId === agent.permissionId && !!agent.validatorData && !!agent.sessionPolicy;
+  const policy = reuse ? deserializeSessionPolicy(agent.sessionPolicy as unknown as SerializedSessionPolicy) : sessionPolicyFor(ctx, agent, Math.floor(ctx.now() / 1000) + ctx.config.SESSION_KEY_VALIDITY_DAYS * 86_400);
+  const validUntil = Number(policy.validUntil);
   const permissionId = opts.permissionId ?? randomPermissionId();
-  const validatorData = buildValidatorData(policy);
+  const validatorData = reuse ? (agent.validatorData as Hex) : buildValidatorData(policy);
 
   const registered = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'isRegistered', args: [kernel] });
   if (!registered) throw new Error('kernel is not registered with the guardian');
 
-  const { txHash: approveTxHash, digest, nonce: kernelNonce } = await ctx.adminSigner.approveSessionKey(kernel, permissionId, validatorData);
-  const local = enableDigest({ kernel, chainId: ctx.chain.chainId, guardian: ctx.chain.guardian, permissionId, nonce: kernelNonce, validatorData });
-  const onchain = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'enableDigest', args: [kernel, permissionId, kernelNonce, validatorData] });
-  if (local.toLowerCase() !== onchain.toLowerCase() || digest.toLowerCase() !== onchain.toLowerCase()) {
-    throw new Error(`enable digest mismatch: local ${local} onchain ${onchain} approved ${digest}`);
+  // Skip the admin transaction when this exact digest is already approved (a previous tick paid for it but its
+  // confirmation read failed, see below).
+  let approveTxHash: Hex = '0x';
+  let digest: Hex = '0x';
+  let kernelNonce = 0;
+  let alreadyApproved = false;
+  if (reuse) {
+    kernelNonce = Number(await publicClient.readContract({ address: kernel, abi: kernelAbi, functionName: 'currentNonce' }));
+    digest = enableDigest({ kernel, chainId: ctx.chain.chainId, guardian: ctx.chain.guardian, permissionId, nonce: kernelNonce, validatorData });
+    alreadyApproved = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'approvedEnableDigests', args: [kernel, digest] });
   }
-  const approved = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'approvedEnableDigests', args: [kernel, digest] });
-  if (!approved) throw new Error('enable digest is not approved on-chain after approveSessionKey');
-  log.info({ permissionId, digest, approveTxHash, nonce: kernelNonce }, 'session key approved by admin');
-
+  if (alreadyApproved) {
+    log.info({ permissionId, digest, nonce: kernelNonce }, 'enable digest already approved; skipping approveSessionKey');
+  } else {
+    const approvedTx = await ctx.adminSigner.approveSessionKey(kernel, permissionId, validatorData);
+    approveTxHash = approvedTx.txHash;
+    digest = approvedTx.digest;
+    kernelNonce = approvedTx.nonce;
+    const local = enableDigest({ kernel, chainId: ctx.chain.chainId, guardian: ctx.chain.guardian, permissionId, nonce: kernelNonce, validatorData });
+    const onchain = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'enableDigest', args: [kernel, permissionId, kernelNonce, validatorData] });
+    if (local.toLowerCase() !== onchain.toLowerCase() || digest.toLowerCase() !== onchain.toLowerCase()) {
+      throw new Error(`enable digest mismatch: local ${local} onchain ${onchain} approved ${digest}`);
+    }
+  }
+  // Store the approved permission before confirming it, so a failed read below retries the same digest next tick
+  // instead of paying for another approval.
   await ctx.db
     .update(agents)
     .set({ permissionId, validatorData, sessionPolicy: serializeSessionPolicy(policy) as unknown as Record<string, unknown>, sessionValidUntil: new Date(validUntil * 1000), updatedAt: new Date(ctx.now()) })
     .where(eq(agents.agentId, agent.agentId));
+
+  // Load-balanced RPCs can answer eth_call from a node that has not seen the receipt's block yet: poll briefly.
+  let approved = alreadyApproved;
+  for (let attempt = 0; !approved && attempt < 10; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    approved = await publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'approvedEnableDigests', args: [kernel, digest] });
+  }
+  if (!approved) throw new Error('enable digest is not approved on-chain after approveSessionKey');
+  log.info({ permissionId, digest, approveTxHash, nonce: kernelNonce }, 'session key approved by admin');
 
   // First userOp in enable mode: an allow-listed no-op (USDC.transfer(spender, 0)). Self-bundled (admin EOA calls
   // EntryPoint.handleOps, no paymaster) when ENABLE_MODE_SELF_BUNDLE is on, else through the enable-mode bundler.
