@@ -1,4 +1,5 @@
 export { AgentGuardianAbi } from './AgentGuardian';
+export { B20TokenAbi } from './B20Token';
 export { BootrLauncherAbi } from './BootrLauncher';
 export { BuybackBurnerAbi } from './BuybackBurner';
 export { ChainlinkAggregatorAbi } from './ChainlinkAggregator';
