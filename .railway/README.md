@@ -6,12 +6,23 @@ This project defines its Railway infrastructure in code.
 .railway/railway.ts
 ```
 
+## Bootr
+
+`railway.ts` declares the Bootr project (`bootr`, environment `production` = Base mainnet): the services `sender`
+(public `api.bootr.fun`), `inference` (internal), `supervisor` (internal, one replica), `indexer` (public
+`indexer.bootr.fun`) and `web` (public `bootr.fun`, volume `web-data` at `/data`), plus the `Postgres` database and its
+volume. It owns build and deploy settings, healthchecks, replicas and volumes. Variables are **unmanaged**
+(`variables: { managed: false }`): they are set with `railway variable set` and never written to this repository, and
+custom domains are attached with `railway domain`. The full runbook (variable matrix per service, domains, deploy order,
+rollback) is [`docs/deploy/railway.md`](../docs/deploy/railway.md); the contract-side cutover and launcher history are in
+[`docs/deploy/mainnet.md`](../docs/deploy/mainnet.md). The rest of this file is the generic Railway IaC reference.
+
 Use this file to describe the Railway project you want: services, databases, buckets, custom domains, replicas, groups, and environment variables.
 
-The TypeScript file imports `railway/iac`. Install the SDK from the repository root:
+The TypeScript file imports `railway/iac`. The SDK is a dev dependency of the workspace root, so install from the repository root:
 
 ```bash
-npm install railway
+pnpm install
 ```
 
 ## Common commands
