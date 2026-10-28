@@ -5,113 +5,112 @@ import type { Address, Hex } from 'viem';
 
 import { enabledSources } from './lib/env';
 import { allocateClaim } from './lib/fees';
+import { applyFeeTaken } from './lib/ledger';
 import { toUnits, usd } from './lib/price';
-import {
-  assetUsd,
-  bumpDaily,
-  bumpPlatform,
-  feeKindDelta,
-  getEthUsd,
-  getPlatformConfig,
-  lc,
-  recipientKindOf,
-  type Ctx,
-} from './lib/store';
+import { assetUsd, bumpDaily, bumpPlatform, getEthUsd, getPlatformConfig, lc, recipientKindOf, type Ctx } from './lib/store';
 
-if (enabledSources().ClankerLpLocker) {
-  /**
-   * `ClankerLpLockerFeeConversion._collectRewards` stores every recipient's share in the
-   * FeeLocker and then emits ClaimedRewards(token, amount0, amount1, rewards0[], rewards1[]) with
-   * per-reward-index amounts *after* fee-preference conversion (the burner's WETH share arrives
-   * as the coin). This is the only fee event that names the coin, so accruals come from here
-   * rather than from `ClankerFeeLocker.StoreTokens` (which only names the fee asset).
-   * Reward index order is fixed by BootrLauncher: [kernel, creator, (burner), platform].
-   */
-  ponder.on('ClankerLpLocker:ClaimedRewards', async ({ event, context }) => {
-    const t = await context.db.find(schema.token, { id: lc(event.args.token) });
-    if (!t) return;
-    const ts = Number(event.block.timestamp);
-    const ethUsd = await getEthUsd(context, event.block.number);
-    const recipients: Address[] = t.burner
-      ? [t.kernel, t.creator, t.burner, t.platformRecipient]
-      : [t.kernel, t.creator, t.platformRecipient];
-    const currency0 = t.coinIsToken0 ? t.id : t.pairedToken;
-    const currency1 = t.coinIsToken0 ? t.pairedToken : t.id;
-    const cfg = await getPlatformConfig(context);
-
-    for (let i = 0; i < recipients.length; i++) {
-      const recipient = recipients[i]!;
-      const kind = recipientKindOf(recipient, t);
-      if (!kind) continue;
-      for (const [side, asset, amount] of [
-        [0, currency0, event.args.rewards0[i] ?? 0n],
-        [1, currency1, event.args.rewards1[i] ?? 0n],
-      ] as const) {
-        if (amount === 0n) continue;
-        const amountUsd = assetUsd(asset, amount, t, ethUsd);
-        await context.db.insert(schema.feeAccrual).values({
-          id: `${event.transaction.hash}-${event.log.logIndex}-${i}-${side}`,
-          token: t.id,
-          recipient: lc(recipient),
-          recipientKind: kind,
-          asset: lc(asset),
-          amount,
-          amountUsd,
-          timestamp: ts,
-          txHash: event.transaction.hash,
-        });
-        await context.db
-          .insert(schema.feeBalance)
-          .values({
-            id: `${lc(recipient)}-${lc(asset)}-${t.id}`,
-            recipient: lc(recipient),
-            asset: lc(asset),
-            token: t.id,
-            recipientKind: kind,
-            accrued: amount,
-            claimed: 0n,
-            outstanding: amount,
-            accruedUsd: amountUsd,
-            claimedUsd: 0,
-          })
-          .onConflictDoUpdate((r) => ({
-            accrued: r.accrued + amount,
-            outstanding: r.outstanding + amount,
-            accruedUsd: usd(r.accruedUsd + amountUsd),
-          }));
-        await context.db
-          .update(schema.token, { id: t.id })
-          .set((r) => ({ feesTotalUsd: usd(r.feesTotalUsd + amountUsd) }));
-        await bumpDaily(context, ts, feeKindDelta(kind, amountUsd));
-        await bumpPlatform(context, ts, {
-          feesTotalUsd: amountUsd,
-          ...(kind === 'burn' && cfg.bootToken === t.id ? { bootFeesToBurnUsd: amountUsd } : {}),
-        });
-      }
-    }
+/**
+ * RWAGMI v3 fee flow (docs/rwagmi-migration.md), all in WETH:
+ *   RwagmiHookV3.PoolFeeTakenV3          gross swap fee per swap -> feeAccrual per Bootr slot (bps share)
+ *   RwagmiLpLockerV3.PoolFeesSettledV3   the locker credits a slot's recipient -> feeCredit, feeBalance.settled
+ *   RwagmiLpLockerV3.QuoteRewardsClaimedV3  a recipient claims its settled balance -> feeClaim
+ * Events of non-Bootr pools and recipients are dropped.
+ */
+if (enabledSources().RwagmiHookV3) {
+  ponder.on('RwagmiHookV3:PoolFeeTakenV3', async ({ event, context }) => {
+    const p = await context.db.find(schema.pool, { id: lc(event.args.poolId) });
+    if (!p) return;
+    const t = await context.db.find(schema.token, { id: p.token });
+    if (!t || t.launchTx === event.transaction.hash) return; // launch tx is replayed by AgentLaunched
+    await applyFeeTaken(context, t, event.args.quote, event.args.amount, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: Number(event.block.timestamp),
+    });
   });
 }
 
-/**
- * `ClankerFeeLocker.claim(feeOwner, asset)` pays the full (feeOwner, asset) balance. Split it
- * over the per-coin outstanding balances (see `allocateClaim`) and record one feeClaim per coin.
- */
+if (enabledSources().RwagmiLpLockerV3) {
+  /** Settlement moves a pool's pending fees into each slot recipient's claimable balance. */
+  ponder.on('RwagmiLpLockerV3:PoolFeesSettledV3', async ({ event, context }) => {
+    const p = await context.db.find(schema.pool, { id: lc(event.args.poolId) });
+    if (!p) return;
+    const t = await context.db.find(schema.token, { id: p.token });
+    if (!t) return;
+    const amount = event.args.amount;
+    if (amount === 0n) return;
+    const slot = Number(event.args.slot);
+    const recipient = lc(event.args.recipient);
+    const row = await context.db.find(schema.feeSlot, { id: `${t.id}-${slot}` });
+    const kind = row && row.recipient === recipient ? row.recipientKind : recipientKindOf(recipient, t);
+    if (!kind || kind === 'protocol') return;
+    const asset = lc(event.args.currency);
+    const ethUsd = await getEthUsd(context, event.block.number);
+    const amountUsd = assetUsd(asset, amount, t, ethUsd);
+    await context.db.insert(schema.feeCredit).values({
+      id: `${event.transaction.hash}-${event.log.logIndex}`,
+      token: t.id,
+      poolId: p.id,
+      slot,
+      recipient,
+      recipientKind: kind,
+      asset,
+      amount,
+      amountUsd,
+      timestamp: Number(event.block.timestamp),
+      txHash: event.transaction.hash,
+    });
+    await context.db
+      .insert(schema.feeBalance)
+      .values({
+        id: `${recipient}-${asset}-${t.id}`,
+        recipient,
+        asset,
+        token: t.id,
+        recipientKind: kind,
+        accrued: 0n,
+        settled: amount,
+        claimed: 0n,
+        outstanding: 0n,
+        accruedUsd: 0,
+        claimedUsd: 0,
+      })
+      .onConflictDoUpdate((r) => ({ settled: r.settled + amount }));
+  });
+
+  /**
+   * `claimQuote(currency, to)` / `settleAndClaim(ids, currency, to)` pay the recipient's whole settled
+   * balance in `currency`, across every coin it receives fees from. Split it over the per-coin claimable
+   * balances (`settled - claimed`, see `allocateClaim`) and record one feeClaim per coin.
+   */
+  ponder.on('RwagmiLpLockerV3:QuoteRewardsClaimedV3', async ({ event, context }) => {
+    await recordClaim(context, event.args.recipient, event.args.currency, event.args.amount, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      ts: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+    });
+  });
+}
+
 async function recordClaim(
   context: Ctx,
-  feeOwner: Address,
+  recipient: Address,
   asset: Address,
   amount: bigint,
   meta: { txHash: Hex; logIndex: number; ts: number; blockNumber: bigint },
 ) {
-  if (!(await context.db.find(schema.feeRecipient, { id: lc(feeOwner) }))) return;
+  if (amount === 0n) return;
+  if (!(await context.db.find(schema.feeRecipient, { id: lc(recipient) }))) return;
   const rows = await context.db.sql
     .select()
     .from(schema.feeBalance)
-    .where(and(eq(schema.feeBalance.recipient, lc(feeOwner)), eq(schema.feeBalance.asset, lc(asset))));
+    .where(and(eq(schema.feeBalance.recipient, lc(recipient)), eq(schema.feeBalance.asset, lc(asset))));
   if (rows.length === 0) return;
   rows.sort((a, b) => (a.id < b.id ? -1 : 1));
   const parts = allocateClaim(
-    rows.map((r) => r.outstanding),
+    rows.map((r) => r.settled - r.claimed),
     amount,
   );
   const ethUsd = await getEthUsd(context, meta.blockNumber);
@@ -147,26 +146,6 @@ async function recordClaim(
       }
     }
   }
-}
-
-if (enabledSources().ClankerFeeLocker) {
-  ponder.on('ClankerFeeLocker:ClaimTokens', async ({ event, context }) => {
-    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
-      txHash: event.transaction.hash,
-      logIndex: event.log.logIndex,
-      ts: Number(event.block.timestamp),
-      blockNumber: event.block.number,
-    });
-  });
-
-  ponder.on('ClankerFeeLocker:ClaimTokensPermissioned', async ({ event, context }) => {
-    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
-      txHash: event.transaction.hash,
-      logIndex: event.log.logIndex,
-      ts: Number(event.block.timestamp),
-      blockNumber: event.block.number,
-    });
-  });
 }
 
 if (enabledSources().BuybackBurner) {

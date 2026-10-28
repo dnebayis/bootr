@@ -17,7 +17,7 @@ describe('sqrtPriceX96 math', () => {
     expect(coinPriceInWeth(0n, true)).toBe(0);
   });
 
-  it('matches the Clanker starting tick (~1e-10 WETH per coin, ~10 ETH FDV for 100B)', () => {
+  it('matches the launch starting tick (tickIfToken0IsB20 -230400) (~1e-10 WETH per coin, ~10 ETH FDV for 100B)', () => {
     const sqrt = BigInt(Math.floor(Math.sqrt(1.0001 ** -230400) * 2 ** 96));
     const p = coinPriceInWeth(sqrt, true);
     expect(p).toBeGreaterThan(9e-11);

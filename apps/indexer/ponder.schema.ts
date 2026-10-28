@@ -7,6 +7,11 @@ import { index, onchainTable, relations } from 'ponder';
  * Conventions: addresses / hashes are lowercase hex; integer amounts are `bigint` (GraphQL
  * `BigInt`, serialized as base-unit strings); `*Usd` are floats rounded to 6 dp; timestamps
  * are unix seconds (int).
+ *
+ * Coins launch through RWAGMI v3 (docs/rwagmi-migration.md): one Uniswap v4 pool per coin, paired
+ * with WETH; the RWAGMI hook takes the swap fee in WETH only, so every fee row's `asset` is WETH.
+ * "Fees" on token / daily / platform rows are the gross swap fee (`PoolFeeTakenV3`); the per-kind
+ * splits cover Bootr's reward slots (90%), the rest is RWAGMI's protocol slot (10%).
  */
 
 // ------------------------------------------------------------------ token / agent
@@ -19,7 +24,7 @@ export const token = onchainTable(
     name: t.text().notNull(),
     symbol: t.text().notNull(),
     image: t.text().notNull(),
-    /** extra: Clanker token metadata JSON string. */
+    /** extra: launch metadata (`LaunchParams.metadata`, else the B20 `contractURI()`). */
     metadata: t.text().notNull(),
     creator: t.hex().notNull(),
     kernel: t.hex().notNull(),
@@ -29,12 +34,20 @@ export const token = onchainTable(
     pairedToken: t.hex().notNull(),
     /** extra: true when the coin is currency0 of the v4 pool. */
     coinIsToken0: t.boolean().notNull(),
+    /** Swap fee in hundredths of a bip (1e6 = 100%; 10_000 = 1%): the RWAGMI hook's static fee for the pool. */
     lpFeeBps: t.integer().notNull(),
+    /**
+     * Locked reward split from `RwagmiLpLockerV3.launchInfo(token).rewards`, in bps of the whole swap fee:
+     * agent + creator + burn + platform = 9000, `protocolBps` (RWAGMI) = 1000.
+     */
     agentBps: t.integer().notNull(),
     creatorBps: t.integer().notNull(),
     burnBps: t.integer().notNull(),
     platformBps: t.integer().notNull(),
-    /** extra: platform LP-fee recipient from the AgentLaunched defaults snapshot. */
+    /** extra: RWAGMI's reward slot (bps of the swap fee) and its recipient. */
+    protocolBps: t.integer().notNull(),
+    protocolRecipient: t.hex(),
+    /** extra: platform reward-slot recipient. */
     platformRecipient: t.hex().notNull(),
     workerHash: t.hex().notNull(),
     model: t.text().notNull(),
@@ -52,7 +65,7 @@ export const token = onchainTable(
     sqrtPriceX96: t.bigint().notNull(),
     tick: t.integer().notNull(),
     poolLiquidity: t.bigint().notNull(),
-    /** extra: liquidity of the locked Clanker position (constant), used for `liquidityUsd`. */
+    /** extra: liquidity of the locked launch position (`LiquidityPlacedV3`, constant), used for `liquidityUsd`. */
     positionLiquidity: t.bigint().notNull(),
     /** extra: coin price in WETH. */
     priceWeth: t.doublePrecision().notNull(),
@@ -132,14 +145,75 @@ export const agent = onchainTable(
   }),
 );
 
-/** extra: Uniswap v4 pools of Bootr coins (Swap events of other pools are ignored). */
-export const pool = onchainTable('pool', (t) => ({
+/**
+ * extra: Uniswap v4 pools of Bootr coins, from `RwagmiLauncherV3.LaunchPoolCreatedV3` (Swap and fee
+ * events of other pools are ignored). One pool per coin, paired with WETH.
+ */
+export const pool = onchainTable(
+  'pool',
+  (t) => ({
+    id: t.hex().primaryKey(),
+    token: t.hex().notNull(),
+    coinIsToken0: t.boolean().notNull(),
+    /** Position range: `LiquidityPlacedV3` once the launch is indexed, the expected launch range before. */
+    tickLower: t.integer().notNull(),
+    tickUpper: t.integer().notNull(),
+    /** v4 PoolKey (`LaunchPoolCreatedV3.key`; native fee 0, the hook charges the swap fee). */
+    currency0: t.hex().notNull(),
+    currency1: t.hex().notNull(),
+    fee: t.integer().notNull(),
+    tickSpacing: t.integer().notNull(),
+    hooks: t.hex().notNull(),
+    pairedToken: t.hex().notNull(),
+    poolIndex: t.integer().notNull(),
+    /** Hook fee mode (0 static, 1 dynamic) and static fee in hundredths of a bip. */
+    feeMode: t.integer().notNull(),
+    staticFee: t.integer().notNull(),
+    startingTick: t.integer().notNull(),
+    depositedSupply: t.bigint().notNull(),
+    launchTx: t.hex().notNull(),
+  }),
+  (table) => ({ tokenIdx: index().on(table.token) }),
+);
+
+/**
+ * extra: `RwagmiLauncherV3.B20LaunchCreatedV3` of launches made by BootrLauncher. Emitted inside the
+ * launch tx before `AgentLaunched`, which turns it (with the pool) into the token row.
+ */
+export const rwagmiLaunch = onchainTable('rwagmi_launch', (t) => ({
   id: t.hex().primaryKey(),
-  token: t.hex().notNull(),
-  coinIsToken0: t.boolean().notNull(),
-  tickLower: t.integer().notNull(),
-  tickUpper: t.integer().notNull(),
+  name: t.text().notNull(),
+  symbol: t.text().notNull(),
+  decimals: t.integer().notNull(),
+  totalSupply: t.bigint().notNull(),
+  liquiditySupply: t.bigint().notNull(),
+  extensionSupply: t.bigint().notNull(),
+  primaryPoolId: t.hex().notNull(),
+  poolCount: t.integer().notNull(),
+  hook: t.hex().notNull(),
+  locker: t.hex().notNull(),
+  rewardConfigurationHash: t.hex().notNull(),
+  launchTx: t.hex().notNull(),
+  blockNumber: t.bigint().notNull(),
 }));
+
+/**
+ * extra: locked reward slots of a coin (`RwagmiLpLockerV3.launchInfo(token).rewards`, read at launch).
+ * `recipientKind`: agent | creator | burn | platform | protocol (RWAGMI's appended slot).
+ */
+export const feeSlot = onchainTable(
+  'fee_slot',
+  (t) => ({
+    id: t.text().primaryKey(),
+    token: t.hex().notNull(),
+    slot: t.integer().notNull(),
+    recipient: t.hex().notNull(),
+    admin: t.hex().notNull(),
+    bps: t.integer().notNull(),
+    recipientKind: t.text().notNull(),
+  }),
+  (table) => ({ tokenIdx: index().on(table.token) }),
+);
 
 /** extra: ERC-8004 agentId -> kernel. */
 export const agentIdentity = onchainTable('agent_identity', (t) => ({
@@ -163,7 +237,7 @@ export const trade = onchainTable(
     amountPaired: t.bigint().notNull(),
     priceUsd: t.doublePrecision().notNull(),
     valueUsd: t.doublePrecision().notNull(),
-    /** extra: LP fee paid to recipients (valueUsd * lpFee). */
+    /** extra: swap fee charged by the RWAGMI hook (valueUsd × (Swap.fee + token.lpFeeBps) / 1e6). */
     feeUsd: t.doublePrecision().notNull(),
     timestamp: t.integer().notNull(),
     /** extra */
@@ -201,6 +275,10 @@ export const balance = onchainTable(
 
 // ------------------------------------------------------------------ fees / burns / treasury
 
+/**
+ * Fee earned per Bootr reward slot, booked when the hook takes the fee (`PoolFeeTakenV3`):
+ * gross × slot bps / 10_000, like the locker's per-slot credit. `asset` is WETH.
+ */
 export const feeAccrual = onchainTable(
   'fee_accrual',
   (t) => ({
@@ -239,7 +317,11 @@ export const feeClaim = onchainTable(
   }),
 );
 
-/** extra: per (recipient, asset, coin) accrued/claimed/outstanding, used to attribute claims. */
+/**
+ * extra: per (recipient, asset, coin) accrued/settled/claimed/outstanding. `settled` is what the locker
+ * credited (`PoolFeesSettledV3`); a claim (`QuoteRewardsClaimedV3`) pays out a recipient's settled balance
+ * across coins and is attributed by `settled - claimed`. `outstanding = accrued - claimed`.
+ */
 export const feeBalance = onchainTable(
   'fee_balance',
   (t) => ({
@@ -249,6 +331,7 @@ export const feeBalance = onchainTable(
     token: t.hex().notNull(),
     recipientKind: t.text().notNull(),
     accrued: t.bigint().notNull(),
+    settled: t.bigint().notNull(),
     claimed: t.bigint().notNull(),
     outstanding: t.bigint().notNull(),
     accruedUsd: t.doublePrecision().notNull(),
@@ -260,7 +343,32 @@ export const feeBalance = onchainTable(
   }),
 );
 
-/** extra: every address that receives LP fees of a Bootr coin (cheap filter for FeeLocker claims). */
+/**
+ * extra: `RwagmiLpLockerV3.PoolFeesSettledV3` for Bootr reward slots: the exact WETH the locker credited to
+ * a recipient when a pool was settled (RWAGMI's protocol slot is skipped).
+ */
+export const feeCredit = onchainTable(
+  'fee_credit',
+  (t) => ({
+    id: t.text().primaryKey(),
+    token: t.hex().notNull(),
+    poolId: t.hex().notNull(),
+    slot: t.integer().notNull(),
+    recipient: t.hex().notNull(),
+    recipientKind: t.text().notNull(),
+    asset: t.hex().notNull(),
+    amount: t.bigint().notNull(),
+    amountUsd: t.doublePrecision().notNull(),
+    timestamp: t.integer().notNull(),
+    txHash: t.hex().notNull(),
+  }),
+  (table) => ({
+    tokenIdx: index().on(table.token),
+    recipientIdx: index().on(table.recipient),
+  }),
+);
+
+/** extra: every address that receives swap fees of a Bootr coin (cheap filter for locker claims). */
 export const feeRecipient = onchainTable('fee_recipient', (t) => ({
   id: t.hex().primaryKey(),
   firstToken: t.hex().notNull(),
@@ -431,6 +539,8 @@ export const tokenRelations = relations(token, ({ one, many }) => ({
   trades: many(trade),
   feeAccruals: many(feeAccrual),
   feeClaims: many(feeClaim),
+  feeCredits: many(feeCredit),
+  feeSlots: many(feeSlot),
   burns: many(burn),
   balances: many(balance),
 }));
@@ -452,6 +562,14 @@ export const feeAccrualRelations = relations(feeAccrual, ({ one }) => ({
 
 export const feeClaimRelations = relations(feeClaim, ({ one }) => ({
   tokenRef: one(token, { fields: [feeClaim.token], references: [token.id] }),
+}));
+
+export const feeCreditRelations = relations(feeCredit, ({ one }) => ({
+  tokenRef: one(token, { fields: [feeCredit.token], references: [token.id] }),
+}));
+
+export const feeSlotRelations = relations(feeSlot, ({ one }) => ({
+  tokenRef: one(token, { fields: [feeSlot.token], references: [token.id] }),
 }));
 
 export const burnRelations = relations(burn, ({ one }) => ({

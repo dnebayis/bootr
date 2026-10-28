@@ -35,6 +35,22 @@ const PUBLIC_RPC: Record<number, string> = {
   84532: 'https://base-sepolia.gateway.tenderly.co',
 };
 
+/**
+ * RWAGMI v3 launch stack per chain (docs/rwagmi-migration.md, @rwagmi/token-launcher-sdk 0.3.0). Base mainnet
+ * only: there is no v3 deployment on Base Sepolia. `startBlock` is the launcher creation block (SDK
+ * `DEFAULT_LAUNCHER_V3`); RWAGMI sources never start before it.
+ */
+export type RwagmiStack = { launcher: Address; hook: Address; locker: Address; startBlock: number };
+export const RWAGMI_V3: Record<number, RwagmiStack | null> = {
+  8453: {
+    launcher: '0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20',
+    hook: '0xB20B00367E37F826a0652c85a6DF375D784B20Ec',
+    locker: '0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20',
+    startBlock: 52_861_401,
+  },
+  84532: null,
+};
+
 /** Deploy blocks of the Bootr launcher per chain (used when BOOTR_START_BLOCK is empty). */
 const BOOTR_DEPLOY_BLOCK: Record<number, number | null> = { 8453: null, 84532: 49_367_726 };
 
@@ -53,7 +69,12 @@ export type IndexerEnv = {
   addresses: ChainAddresses;
   launcher: Address | null;
   guardian: Address | null;
+  /** RWAGMI v3 launcher / hook / locker (env overrides the per-chain defaults); null when the chain has none. */
+  rwagmi: RwagmiStack | null;
+  /** BootrLauncher (and every Bootr source) start block: BOOTR_START_BLOCK, else the recorded deploy block. */
   startBlock: number | 'latest';
+  /** Start block of the RWAGMI sources: the Bootr start block, never before the RWAGMI launcher's creation. */
+  rwagmiStartBlock: number | 'latest';
   ethUsdFeed: Address;
   snapshotInterval: number;
   bootToken: Address | null;
@@ -100,6 +121,7 @@ export function indexerEnv(): IndexerEnv {
   // Default: one snapshot per ~60 s of chain time.
   const defaultInterval = Math.round(60 / BLOCK_TIME_SEC[chainId]!);
   const addresses = getAddresses(chainId);
+  const rwagmi = rwagmiStack(chainId);
   const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || defaultInterval);
   cached = {
     chainId,
@@ -111,7 +133,9 @@ export function indexerEnv(): IndexerEnv {
     // Env wins; otherwise the deployment recorded in @bootr/shared (null until deployed).
     launcher: optAddress('BOOTR_LAUNCHER_ADDRESS') ?? addresses.bootr.launcher,
     guardian: optAddress('BOOTR_GUARDIAN_ADDRESS') ?? addresses.bootr.guardian,
+    rwagmi,
     startBlock,
+    rwagmiStartBlock: typeof startBlock === 'number' && rwagmi ? Math.max(startBlock, rwagmi.startBlock) : startBlock,
     ethUsdFeed: optAddress('CHAINLINK_ETH_USD_FEED') ?? CHAINLINK_ETH_USD[chainId]!,
     snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : defaultInterval,
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
@@ -124,15 +148,29 @@ export function indexerEnv(): IndexerEnv {
   return cached;
 }
 
-/** Which Ponder sources are registered (handlers check the same flags). */
+/** RWAGMI_{LAUNCHER,HOOK,LOCKER}_V3_ADDRESS override the chain defaults; all three are needed. */
+function rwagmiStack(chainId: number): RwagmiStack | null {
+  const d = RWAGMI_V3[chainId] ?? null;
+  const launcher = optAddress('RWAGMI_LAUNCHER_V3_ADDRESS') ?? d?.launcher ?? null;
+  const hook = optAddress('RWAGMI_HOOK_V3_ADDRESS') ?? d?.hook ?? null;
+  const locker = optAddress('RWAGMI_LOCKER_V3_ADDRESS') ?? d?.locker ?? null;
+  if (!launcher || !hook || !locker) return null;
+  return { launcher, hook, locker, startBlock: d?.startBlock ?? 0 };
+}
+
+/**
+ * Which Ponder sources are registered (handlers check the same flags). Every launch-derived source needs both
+ * the Bootr launcher and the RWAGMI v3 stack it launches through.
+ */
 export function enabledSources(env: IndexerEnv = indexerEnv()) {
-  const launcher = !!env.launcher;
+  const launcher = !!env.launcher && !!env.rwagmi;
   return {
     BootrLauncher: launcher,
     BootrToken: launcher,
     BuybackBurner: launcher,
-    ClankerLpLocker: launcher,
-    ClankerFeeLocker: launcher,
+    RwagmiLauncherV3: launcher,
+    RwagmiLpLockerV3: launcher,
+    RwagmiHookV3: launcher,
     PoolManager: launcher,
     AgentGuardian: launcher && !!env.guardian,
     ReputationRegistry: launcher && !!env.addresses.erc8004.reputationRegistry,

@@ -4,13 +4,13 @@ import { encodeAbiParameters, keccak256, pad, toHex } from 'viem';
 import {
   decodeLiquidity,
   decodeSlot0,
-  DYNAMIC_FEE_FLAG,
   isCoinToken0,
   poolIdOf,
   poolKeyFor,
   poolLiquiditySlot,
   poolStateSlot,
   positionTicks,
+  RWAGMI_POOL_FEE,
 } from './pool';
 
 const WETH = '0x4200000000000000000000000000000000000006';
@@ -19,11 +19,11 @@ const LOW = '0x0000000000000000000000000000000000000abc';
 const HIGH = '0xfffffffffffffffffffffffffffffffffffffabc';
 
 describe('poolKeyFor / poolIdOf', () => {
-  it('orders currencies like BootrLauncher.poolKeyFor', () => {
+  it('orders currencies like RWAGMI v3 (fee 0: the hook charges the swap fee)', () => {
     expect(poolKeyFor(LOW, WETH, HOOK)).toEqual({
       currency0: LOW,
       currency1: WETH,
-      fee: DYNAMIC_FEE_FLAG,
+      fee: RWAGMI_POOL_FEE,
       tickSpacing: 200,
       hooks: HOOK,
     });
@@ -34,12 +34,22 @@ describe('poolKeyFor / poolIdOf', () => {
     expect(isCoinToken0(HIGH, WETH)).toBe(false);
   });
 
+  it('matches a Base mainnet RWAGMI v3 pool id (LaunchPoolCreatedV3 / locker poolRecord)', () => {
+    // Pool 0xf376... of B20 0xB200...0b20, read from the RWAGMI v3 LP locker `poolRecord` on 2026-10-29.
+    const coin = '0xB2000000000000000000005871AD5fF4ED690b20';
+    const hook = '0xB20B00367E37F826a0652c85a6DF375D784B20Ec';
+    expect(isCoinToken0(coin, WETH)).toBe(false);
+    expect(poolIdOf(poolKeyFor(coin, WETH, hook))).toBe(
+      '0xf3768ba9695707d6eae29fe886935e727906159f3192b068824b9e2b38ec84b4',
+    );
+  });
+
   it('is keccak256(abi.encode(PoolKey))', () => {
     const key = poolKeyFor(LOW, WETH, HOOK);
     const manual = keccak256(
       encodeAbiParameters(
         [{ type: 'address' }, { type: 'address' }, { type: 'uint24' }, { type: 'int24' }, { type: 'address' }],
-        [LOW, WETH, 0x800000, 200, HOOK],
+        [LOW, WETH, 0, 200, HOOK],
       ),
     );
     expect(poolIdOf(key)).toBe(manual);

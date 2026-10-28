@@ -5,10 +5,10 @@ import { streamSSE } from 'hono/streaming';
 import { and, client, desc, eq, graphql, gt, ilike, inArray, or, sql } from 'ponder';
 import { isAddress, type Address } from 'viem';
 
-import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
-import { ClankerTokenAbi } from '../../abis/ClankerToken';
+import { B20TokenAbi } from '../../abis/B20Token';
 import { Erc20Abi } from '../../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../../abis/Multicall3';
+import { RwagmiLpLockerV3Abi } from '../../abis/RwagmiLpLockerV3';
 import { corsMiddleware } from '../lib/cors';
 import { indexerEnv } from '../lib/env';
 import { RECIPIENT_KINDS, type RecipientKind } from '../lib/fees';
@@ -194,9 +194,12 @@ app.get('/market/:token', async (c) => {
 /**
  * Treasury snapshot for `treasury_read`: live kernel balances (falls back to the last indexed
  * values), the agent's x402 spender and its USDC float (`spenderUsdc`, not part of `balances.usdc`
- * but counted in `treasuryUsd`) and claimable fees per recipient and asset from
- * `ClankerFeeLocker.availableFees`.
- * Note: creator/platform FeeLocker balances aggregate every coin they receive fees from.
+ * but counted in `treasuryUsd`) and claimable fees per recipient from the RWAGMI v3 LP locker:
+ * `amount = pending + settled`, with `pending = pendingQuote(poolId, recipient)` (this coin's
+ * unsettled share) and `settled = claimableQuote(recipient, WETH)` (already credited, claimable now).
+ * Fees are WETH only, so `claimable` has one WETH row per recipient (the coin-asset rows are gone).
+ * Note: `settled` is per recipient across every RWAGMI pool it is paid from (creator / platform
+ * balances aggregate all their coins).
  */
 app.get('/treasury/:kernel', async (c) => {
   const id = c.req.param('kernel');
@@ -221,10 +224,8 @@ app.get('/treasury/:kernel', async (c) => {
     ...(t.burner ? [{ recipient: t.burner as Address, recipientKind: 'burn' as const }] : []),
     { recipient: t.platformRecipient as Address, recipientKind: 'platform' },
   ];
-  const assets: { asset: Address; symbol: string }[] = [
-    { asset: weth, symbol: 'WETH' },
-    { asset: coin, symbol: t.symbol },
-  ];
+  const locker = env.rwagmi?.locker ?? null;
+  const poolId = t.poolId as `0x${string}`;
 
   let balances = {
     usdc: a.treasuryUsdc,
@@ -241,21 +242,23 @@ app.get('/treasury/:kernel', async (c) => {
     symbol: string;
     amount: bigint;
     amountUsd: number;
+    /** extra: unsettled share of this coin's pool (`pendingQuote`). */
+    pending: bigint;
+    /** extra: settled balance claimable now (`claimableQuote`, across all the recipient's pools). */
+    settled: bigint;
   }[] = [];
   try {
     const calls = [
       { abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf', args: [kernel] },
       { abi: Erc20Abi, address: weth, functionName: 'balanceOf', args: [kernel] },
       { abi: Multicall3Abi, address: MULTICALL3_ADDRESS, functionName: 'getEthBalance', args: [kernel] },
-      { abi: ClankerTokenAbi, address: coin, functionName: 'balanceOf', args: [kernel] },
-      ...recipients.flatMap((r) =>
-        assets.map((x) => ({
-          abi: ClankerFeeLockerAbi,
-          address: env.addresses.clankerFeeLocker,
-          functionName: 'availableFees',
-          args: [r.recipient, x.asset],
-        })),
-      ),
+      { abi: B20TokenAbi, address: coin, functionName: 'balanceOf', args: [kernel] },
+      ...(locker
+        ? recipients.flatMap((r) => [
+            { abi: RwagmiLpLockerV3Abi, address: locker, functionName: 'pendingQuote', args: [poolId, r.recipient] },
+            { abi: RwagmiLpLockerV3Abi, address: locker, functionName: 'claimableQuote', args: [r.recipient, weth] },
+          ])
+        : []),
       ...(spender ? [{ abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf', args: [spender] }] : []),
     ];
     const res = await rpcClient().multicall({
@@ -273,11 +276,20 @@ app.get('/treasury/:kernel', async (c) => {
       source = 'live';
     }
     let i = 4;
-    for (const r of recipients) {
-      for (const x of assets) {
-        const amount = val(i++) ?? 0n;
-        const price = x.asset === weth ? ethUsd : t.priceUsd;
-        claimable.push({ ...r, ...x, amount, amountUsd: usd(toUnits(amount, 18) * price) });
+    if (locker) {
+      for (const r of recipients) {
+        const pending = val(i++) ?? 0n;
+        const settled = val(i++) ?? 0n;
+        const amount = pending + settled;
+        claimable.push({
+          ...r,
+          asset: weth,
+          symbol: 'WETH',
+          amount,
+          amountUsd: usd(toUnits(amount, 18) * ethUsd),
+          pending,
+          settled,
+        });
       }
     }
     if (spender) spenderUsdc = val(i) ?? spenderUsdc;
