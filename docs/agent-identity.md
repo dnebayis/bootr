@@ -24,7 +24,7 @@ agent-core: prompt/system-prompt.ts                      identity, then OWNER RU
    draft id (the browser-generated uuid that is also the on-chain `context.id`, the X draft id and the agent
    card key) to `POST /api/launch/draft`. If that save fails the launch is stopped with an error, because the
    agent would otherwise run with the generic default persona. The first line of the text also goes into the
-   Clanker metadata `description`, as before.
+   token metadata `description`, as before.
 2. **Draft store** (`apps/web/lib/server/launch-drafts.ts`, route `apps/web/app/api/launch/draft/route.ts`).
    Same-origin only. The text is normalized to plain text (line endings, tabs, control / zero-width / bidi
    characters, whitespace runs) and must still be 20 to 600 characters. It is written atomically to
