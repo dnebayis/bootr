@@ -213,6 +213,11 @@ After changing `src/db/schema.ts`, run `pnpm --filter inference db:generate`.
 
 ## Base Sepolia test flow
 
+Production runs on Base mainnet (`X402_NETWORK=eip155:8453`, CDP facilitator) as an internal Railway service with
+no public host (`http://inference.railway.internal:3003`, called by the supervisor). The flow below exercises the
+relay on its own with testnet USDC; it does not involve a launcher (RWAGMI v3 has no Base Sepolia deployment, so no
+coin can be launched there).
+
 1. Set `X402_NETWORK=eip155:84532` and leave `X402_FACILITATOR_URL` empty to use
    `https://x402.org/facilitator`, which needs no API key and pays the gas. Also set
    `INFERENCE_PAYTO_ADDRESS`, `OPENROUTER_API_KEY` (funded with OpenRouter credits) and
