@@ -2,7 +2,7 @@
 
 Scope: `apps/sender`, `apps/web` (admin console, SIWE, `app/api/**`, `app/agents/[id]`, launch and fuel flows), `apps/inference` (x402 relay), `apps/indexer` internal routes, and cross-cutting concerns (shared HMAC, CORS, rate limits, SSRF, validation, logging, cookies, CSRF, dependencies, `.env.example`, deployment assumptions).
 
-Reviewed at commit `f0b2f4c` (2026-10-27). This was a code review only. No source files were changed. The root `.env` was not read.
+Reviewed at commit `f0b2f4c` (2026-10-27), before the move to the RWAGMI v3 launcher on 2026-10-29. This was a code review only. No source files were changed. The root `.env` was not read. The findings concern the services, not the launch backend, and are kept as written; one fact moved: the sender now has the read-only `GET /public/posts/:agentId` route that finding I-1 listed as missing (the web reads it through its own `/api/agents/:id/posts` proxy). TODO(verify): the status of each other finding was not re-checked in this pass.
 
 Evidence gathered:
 

@@ -25,7 +25,7 @@ guardian owner key used only to approve session-key installs.
                  |  runtime.ts      | ----------> |  broker/index.ts (one executor   |
                  |  inference.ts    | <---------- |  per agent-core tool)            |
                  +------------------+   result    +----------------------------------+
-                           |  x402 (ERC-1271 by the kernel's session key)
+                           |  x402 (EIP-3009 signed by the agent's spender EOA)
                  +------------------+
                  |  apps/inference  |
                  +------------------+
@@ -83,7 +83,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `DATABASE_URL` | yes | | shared Postgres |
-| `CHAIN_ID` | yes | | `84532` or `8453` |
+| `CHAIN_ID` | yes | | `8453` in production. `84532` is accepted by the schema, but RWAGMI v3 (the launch backend) has no Base Sepolia deployment, so nothing can be launched or claimed there |
 | `BASE_SEPOLIA_RPC_URL` / `BASE_RPC_URL` | yes (one) | | RPC for the selected chain |
 | `BUNDLER_URL` | yes | | ERC-4337 bundler (ZeroDev / Pimlico) |
 | `PAYMASTER_URL` | no | | ERC-7677 paymaster; unset = the kernel pays gas (ETH balance / EntryPoint deposit) |
@@ -94,10 +94,11 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SESSION_SIGNER_PRIVATE_KEY` | yes | | signs every agent userOp (never anything through ERC-1271) |
 | `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
-| `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts |
+| `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts (mainnet: launcher `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`) |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
 | `RWAGMI_LOCKER_V3_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
-| `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists |
+| `PLATFORM_TREASURY_ADDRESS` | no | | launches whose creator is this address run as the platform's own voice (`@bootrfun`); same value as `PLATFORM_TREASURY` |
+| `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists; mainnet: `53219209`, the RWAGMI-backed launcher's deploy block |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
 | `SUPERVISOR_SERVICE_KEY` | yes | | HMAC key for this service's `/internal/*`; 32+ characters and different from the sender and indexer keys (no fallback: every holder of those keys would otherwise be a supervisor admin) |
@@ -219,7 +220,7 @@ With a code, `ctx.kernelFor(agent)` builds the kernel client with `builderCode` 
 (`ascii(code) ‖ length ‖ 0x00 ‖ 16-byte 0x8021… marker`, 29 bytes for `bc_a1b2c3d4`, 16 gas per non-zero byte). Every
 session userOp carries it: the enable-mode no-op, fee claims, swaps and `fund_model`. The Kernel, `BootrCallPolicy` and the
 guardian hook decode from the head and ignore the trailing bytes (unit + fork tests in `packages/contracts`); indexers read
-it. The ERC-1271 signature path (x402 payments) is unchanged. `BUILDER_CODES_ENABLED=false` disables everything; a kernel
+it. x402 payments are not session-key userOps: the agent's spender EOA signs them (the session key has no ERC-1271 path). `BUILDER_CODES_ENABLED=false` disables everything; a kernel
 client is cached per `(kernel, permissionId, builderCode)` so a code registered later is picked up on the next op.
 
 Admin shortcuts: `POST /internal/agents/:id/session/install` (optionally `{permissionId}` to retry a half-done install) and
@@ -319,7 +320,7 @@ kernel itself claims, with the supervisor's session key:
 
 1. **Read** (`readTreasuryOnChain`): `poolId = RwagmiB20LauncherV3.deploymentInfo(token).primaryPoolId` (the indexer's
    `/market/:token` `poolId` only when that read fails; `null` when the coin was not launched through the RWAGMI
-   launcher, e.g. a Clanker-era coin). Claimable WETH = `pendingQuote(poolId, kernel)` (credited to the pool, not
+   launcher, e.g. a coin of the Clanker-era launchers before 2026-10-29). Claimable WETH = `pendingQuote(poolId, kernel)` (credited to the pool, not
    settled yet) + `claimableQuote(kernel, WETH)` (settled). The snapshot exposes `claimable.{weth, pending, settled,
    poolId}`; there is no claimable token amount any more. USD value at Chainlink ETH/USD.
 2. **Claim** (`runFeePolicy`, kind `claim_fees`): when the USD value reaches `CLAIM_THRESHOLD_USD`, one call from the
@@ -334,7 +335,7 @@ kernel itself claims, with the supervisor's session key:
 4. **After the claim** the WETH sits in the kernel and the unchanged swap / spender-funding steps take over (WETH ->
    USDC via `BootrSwapHelper`, USDC -> spender within the window cap).
 
-Session keys installed before this layout (Clanker-era rules, `rulesVersion` unset in `sv_agents.session_policy`) keep
+Session keys installed before 2026-10-29 (Clanker-era rules, `rulesVersion` unset in `sv_agents.session_policy`) keep
 working for swaps and funding; their claim rule points at the Clanker fee locker, which the supervisor no longer calls,
 and their funding rule stays at index 3 for `windowOf` until the key is rotated (`rotateSessionKey` installs the new
 five-rule layout). Clanker-era coins report `poolId: null` and no pending fees; their old Clanker fees are not

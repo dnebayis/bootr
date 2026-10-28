@@ -121,7 +121,8 @@ or a log line. `.env.example` is the authoritative list; every variable is descr
 The RWAGMI v3 launcher, hook, locker and dev-buy addresses (names above) exist on **Base mainnet only**. There
 is no RWAGMI v3 deployment on Base Sepolia, so on a Sepolia environment those variables stay empty and
 launching a coin is not possible there (see "Local development" below). Coins launched before 2026-10-29 are on
-Clanker v4; the services keep reading them from their original contracts.
+Clanker v4 (history: `docs/deploy/mainnet.md`); the indexer and the supervisor follow RWAGMI launches only, from
+block 53219209 (`BOOTR_START_BLOCK` / `LAUNCHER_START_BLOCK`).
 
 ### Shared (project-level shared variables)
 
@@ -129,7 +130,8 @@ Clanker v4; the services keep reading them from their original contracts.
 | --- | --- | --- |
 | `CHAIN_ID` | supervisor, indexer | `84532` (Sepolia) / `8453` (mainnet) |
 | `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` | supervisor, indexer, web (SIWE checks) | CDP Node URL (secret: the key is in the path). Indexer accepts a comma-separated list |
-| `SENDER_SERVICE_KEY` | sender, supervisor, web, indexer | secret, ≥ 32 chars (`openssl rand -hex 32`) |
+| `SENDER_SERVICE_KEY` | sender, supervisor, web | secret, ≥ 32 chars (`openssl rand -hex 32`) |
+| `INDEXER_SERVICE_KEY` | indexer, supervisor, web | secret, ≥ 32 chars, distinct from the others (the indexer still accepts `SENDER_SERVICE_KEY` with a deprecation warning) |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | supervisor, indexer | deployed contracts |
 | `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` | supervisor, indexer | RWAGMI v3 launch stack on Base mainnet (`.env.mainnet.example` has the verified values) |
 | `INFERENCE_PAYTO_ADDRESS` | inference, supervisor | relay revenue address |
@@ -141,7 +143,7 @@ Clanker v4; the services keep reading them from their original contracts.
 | Kind | Variables |
 | --- | --- |
 | platform | `PORT=3000`; image defaults `HOSTNAME=::`, `ADMIN_CONFIG_PATH=/data/admin-config.json`, `LAUNCH_DRAFTS_DIR=/data/launch-drafts`, `NODE_ENV=production` |
-| secrets | `SESSION_SECRET`, `SENDER_SERVICE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` |
+| secrets | `SESSION_SECRET`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `BASE_RPC_URL` |
 | config | `ADMIN_CONSOLE_SLUG` (treat as secret: it hides the console; a bare random slug, the URL is `/console-<slug>/signin`), `ADMIN_ADDRESSES`, `SENDER_URL=http://sender.railway.internal:3002` |
 | volume | `RAILWAY_RUN_UID=0` (see section 7) |
 
@@ -183,10 +185,10 @@ Clanker v4; the services keep reading them from their original contracts.
 | Kind | Variables |
 | --- | --- |
 | platform | `PORT=3004`, `SUPERVISOR_PORT=3004`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
-| secrets | `SESSION_SIGNER_PRIVATE_KEY`, `ADMIN_PRIVATE_KEY` (only if the supervisor approves session keys), `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`, `BUNDLER_URL`, `PAYMASTER_URL`, `ENABLE_MODE_BUNDLER_URL`, `ENABLE_MODE_PAYMASTER_URL`, `SEARCH_API_KEY` |
+| secrets | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY` (only if the supervisor approves session keys), `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL`, `PAYMASTER_URL`, `ENABLE_MODE_BUNDLER_URL`, `ENABLE_MODE_PAYMASTER_URL`, `SEARCH_API_KEY` |
 | private URLs | `SENDER_URL=http://sender.railway.internal:3002`, `INFERENCE_PROVIDER_URL=http://inference.railway.internal:3003`, `INDEXER_URL=http://indexer.railway.internal:42069` |
-| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (claims go through the locker, the launch is decoded from the launcher), `INFERENCE_PAYTO_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
-| optional | `LAUNCH_LOG_CHUNK_BLOCKS`, `SUPERVISOR_TICK_MS`, `MAX_AGENTS_PER_TICK`, `MAX_TOOL_STEPS`, `CLAIM_THRESHOLD_USD`, `FUEL_TARGET_USDC`, `SWAP_ROUTE`, `SWAP_SLIPPAGE_BPS`, `SEARCH_API_URL`, `SESSION_KEY_VALIDITY_DAYS`, `SESSION_ROTATE_BEFORE_DAYS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_USDC_TRANSFER_CAP`, `SESSION_GAS_ALLOWANCE_WEI`, `SESSION_1271_CALLERS`, `INFERENCE_TIMEOUT_MS`, `INFERENCE_MAX_OUTPUT_TOKENS`, `USER_OP_RECEIPT_TIMEOUT_MS`, `LOG_LEVEL` |
+| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (claims go through the locker, the launch is decoded from the launcher), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
+| optional | `LAUNCH_LOG_CHUNK_BLOCKS`, `SUPERVISOR_TICK_MS`, `MAX_AGENTS_PER_TICK`, `MAX_TOOL_STEPS`, `CLAIM_THRESHOLD_USD`, `FUEL_TARGET_USDC`, `SPENDER_MIN_USDC`, `SPENDER_TARGET_USDC`, `SWAP_SLIPPAGE_BPS`, `CHAINLINK_MAX_AGE_SECONDS`, `SEARCH_API_URL`, `SESSION_KEY_VALIDITY_DAYS`, `SESSION_ROTATE_BEFORE_DAYS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_USDC_TRANSFER_CAP`, `SESSION_USDC_WINDOW_SECONDS`, `SESSION_GAS_ALLOWANCE_WEI`, `ENABLE_MODE_MAX_PREFUND_WEI`, `INFERENCE_TIMEOUT_MS`, `INFERENCE_MAX_OUTPUT_TOKENS`, `USER_OP_RECEIPT_TIMEOUT_MS`, `LOG_LEVEL` |
 
 Nothing calls the supervisor's admin API from another service today; there is no `SUPERVISOR_URL` consumer.
 Reach it with `railway ssh` or a temporary private-network client (`http://supervisor.railway.internal:3004`).
@@ -197,7 +199,7 @@ Reach it with `railway ssh` or a temporary private-network client (`http://super
 | --- | --- |
 | platform | `PORT=42069` (must be set here: the root `.env` uses `PORT` for the sender), `INDEXER_DATABASE_URL=${{Postgres.DATABASE_URL}}` (the indexer deliberately ignores `DATABASE_URL`) |
 | schema | `DATABASE_SCHEMA` — leave unset on Railway for one schema per deployment (section 6), or a fixed name |
-| secrets | `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`, `SENDER_SERVICE_KEY` |
+| secrets | `BASE_RPC_URL`, `INDEXER_SERVICE_KEY` |
 | config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `RWAGMI_HOOK_V3_ADDRESS`, `RWAGMI_DEV_BUY_V3_ADDRESS`, `INDEXER_CORS_ORIGIN=https://bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `BOOT_TOKEN_ADDRESS` |
 | optional | `INDEXER_MAX_RPS` (~25 when sharing a CDP key with the supervisor), `INDEXER_SNAPSHOT_INTERVAL`, `CHAINLINK_ETH_USD_FEED`, `FUEL_SCAN_MAX_RANGE` |
 
@@ -207,18 +209,22 @@ over plain HTTP). `INDEXER_CORS_ORIGIN` defaults to `https://bootr.fun` when emp
 
 ### Local development
 
-Launching a coin needs the RWAGMI v3 stack, which only exists on Base mainnet. Local development against Base
-Sepolia is therefore no longer possible for launches; Sepolia still works for everything that does not launch
-(sender, inference, x402, web shell). The dev path for the launch flow is a **Base mainnet fork**:
+Launching a coin needs the RWAGMI v3 stack and Base's B20 precompiles, which only exist on Base mainnet. Local
+development against Base Sepolia is therefore no longer possible for launches; Sepolia still works for everything
+that does not launch (sender, inference, x402, web shell). The dev path for the launch flow is a **Base mainnet fork**
+with Base's Foundry binaries (`base-forge`, `base-anvil`):
 
 ```sh
-anvil --fork-url "$BASE_RPC_URL" --chain-id 8453 --port 8545   # base-anvil: forks mainnet at the latest block
+# contract tests: the fork tests create their own mainnet fork from BASE_RPC_URL (default https://mainnet.base.org)
+cd packages/contracts && BASE_RPC_URL="$BASE_RPC_URL" base-forge test
+
+# a forked node for a local service stack
+base-anvil --fork-url "$BASE_RPC_URL" --chain-id 8453 --port 8545
 ```
 
-Run the contract tests with `forge test --fork-url http://127.0.0.1:8545` (or a `base-anvil` profile that does
-the same), and point a local stack at the fork with `BASE_RPC_URL=http://127.0.0.1:8545`, `CHAIN_ID=8453`,
-the mainnet `RWAGMI_*_V3_ADDRESS` values from `.env.mainnet.example` and the addresses of a Bootr launcher
-deployed onto the fork. The fork keeps its state in memory: redeploy the Bootr contracts and restart the indexer
+Point a local stack at the fork with `BASE_RPC_URL=http://127.0.0.1:8545`, `CHAIN_ID=8453`, the mainnet
+`RWAGMI_*_V3_ADDRESS` values from `.env.mainnet.example` and the addresses of a Bootr launcher deployed onto the
+fork (`script/Deploy.s.sol`). The fork keeps its state in memory: redeploy the Bootr contracts and restart the indexer
 on a fresh schema after each restart. End to end against real infrastructure, test with a small coin on mainnet.
 
 ## 4. Domains and DNS
@@ -306,8 +312,8 @@ between a launch and the supervisor's first card read leaves that agent with the
 
 - One CDP project provides the RPC (`BASE_*_RPC_URL`), bundler/paymaster (`BUNDLER_URL` = `PAYMASTER_URL`)
   and the x402 facilitator (`CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`).
-- Paymaster policy allow-list: `BootrLauncher`, `AgentGuardian`, the `RwagmiLpLockerV3` (`settleAndClaim` / `claimQuote`), Universal Router,
-  USDC and WETH on the target chain (mainnet addresses differ from Sepolia).
+- Paymaster policy allow-list: `BootrLauncher`, `AgentGuardian`, `BootrSwapHelper`, the `RwagmiLpLockerV3`
+  (`settleAndClaim` / `claimQuote`), USDC and WETH (exact table: `docs/deploy/mainnet.md` section 1).
 - Railway egress IPs are not static by default. If the CDP secret API key (or any provider) uses an IP
   allow-list, enable **Static Outbound IPs** on `supervisor`, `inference` and `indexer` and allow-list those
   addresses; otherwise leave IP restrictions off and rely on key scoping.
@@ -347,8 +353,8 @@ between a launch and the supervisor's first card read leaves that agent with the
 - [ ] `BASE_RPC_URL` set (CDP mainnet Node URL), archive-capable for the indexer backfill; `NEXT_PUBLIC_RPC_URL`
       public or empty.
 - [ ] `packages/shared/src/addresses.ts` mainnet entries re-verified on-chain (RWAGMI v3 launcher, hook,
-      locker and dev buy; Clanker v4 contracts kept for the older coins; PoolManager, USDC, WETH, Universal Router, ERC-8004 registries — currently `null` on mainnet, so
-      reputation indexing is skipped), and the Bootr mainnet launcher/guardian/burner recorded.
+      locker and dev buy; PoolManager, USDC, WETH, Universal Router, ERC-8004 registries), and the Bootr mainnet
+      launcher/guardian/burner/call policy/swap helper recorded.
 - [ ] `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer), `RWAGMI_HOOK_V3_ADDRESS`,
       `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer) match the verified
       contracts on Basescan.
@@ -361,9 +367,9 @@ between a launch and the supervisor's first card read leaves that agent with the
       `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`, `INFERENCE_RPC_URL` (mainnet), `INFERENCE_PAYTO_ADDRESS` (mainnet
       treasury), `INFERENCE_PRICE_TABLE_JSON` reviewed, OpenRouter key spend limit set.
 - [ ] `BUNDLER_URL` / `PAYMASTER_URL` mainnet endpoints, paymaster policy allow-list updated for mainnet
-      addresses; `ENABLE_MODE_*` reviewed; `SWAP_ROUTE` valid on mainnet.
+      addresses; `ENABLE_MODE_*` reviewed; `SWAP_SLIPPAGE_BPS` set (on-chain cap 300).
 - [ ] Session-key policy knobs reviewed (`SESSION_USDC_TRANSFER_CAP`, `SESSION_GAS_ALLOWANCE_WEI`,
-      `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_1271_CALLERS`, `SESSION_KEY_VALIDITY_DAYS`).
+      `SESSION_USDC_WINDOW_SECONDS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_KEY_VALIDITY_DAYS`).
 - [ ] Fresh production secrets (not reused from Sepolia): `SESSION_SIGNER_PRIVATE_KEY`, `ADMIN_PRIVATE_KEY` (or
       unset), `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `SESSION_SECRET`, `SENDER_ENCRYPTION_KEY`,
       `ADMIN_CONSOLE_SLUG`; `ADMIN_ADDRESSES` = production admin wallets.
@@ -384,5 +390,5 @@ between a launch and the supervisor's first card read leaves that agent with the
   during a deploy can end up `unknown` and is settled by reconciliation (`GET /v1/requests/:key`).
 - **Ponder answers CORS preflights itself** with `*`; `INDEXER_CORS_ORIGIN` is enforced on the actual response
   (allowed origins are echoed, others get no `Access-Control-Allow-Origin`), which is what browsers check.
-- **`/public/posts/:kernel`**: the web reads it from the sender (`NEXT_PUBLIC_SENDER_PUBLIC_URL`), but the sender
-  has no such route yet, so recent posts are not shown.
+- **Recent posts** are read by the web through its own `/api/agents/:id/posts` route, which proxies the sender's
+  public `GET /public/posts/:agentId` (over `SENDER_URL`); the sender answers 404 for an agent it has never seen.

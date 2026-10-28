@@ -2,7 +2,7 @@
 
 Solidity 0.8.26 / Foundry. Targets Base mainnet. Everything is built on live third-party
 infrastructure: RWAGMI v3 launcher (Base B20 Asset tokens), Uniswap v4, ZeroDev Kernel v3.1, ERC-4337
-EntryPoint v0.7, ERC-8004. RWAGMI v3 has no Base Sepolia deployment, so launches are tested on a mainnet fork.
+EntryPoint v0.7, ERC-8004. RWAGMI v3 has no Base Sepolia deployment, so launches are tested on a Base mainnet fork with `base-forge` (Base's Foundry fork with the B20 precompiles).
 
 | Contract | Role |
 | --- | --- |
@@ -94,13 +94,16 @@ The supervisor then sends the enable userOp:
 
 Policies the supervisor installs (addresses in `packages/shared/src/addresses.ts`), in order (the index is
 what a policy-signature slot of a userOp signature addresses):
-[0] `BootrCallPolicy` (ours, `NOT_FOR_VALIDATE_SIG`; allow-list `FeeLocker.claim(kernel, *)`,
+[0] `BootrCallPolicy` (ours, `NOT_FOR_VALIDATE_SIG`; allow-list, rule layout version 2 of `apps/supervisor/src/session-key.ts`:
+`RwagmiLpLockerV3.settleAndClaim(*, *, to == kernel)`, `RwagmiLpLockerV3.claimQuote(*, to == kernel)`,
 `WETH.approve(swapHelper, *)`, `swapHelper.swapWethToUsdc(*, *)`, `USDC.transfer(spender, SUM_PER_WINDOW <= cap)`),
 [1] ZeroDev GasPolicy (cumulative gas cap) and [2] RateLimitPolicy (calls per interval), both
 `NOT_FOR_VALIDATE_SIG`, [3] TimestampPolicy (validity window), then the ECDSASigner flagged
 **SKIP_SIGNATURE (0x0002)**. Never SudoPolicy in production (used only in tests). The former
 `UniversalRouter.execute` / `WETH.transfer(router)` rules, the `USDC.transfer(payTo, …)` rule and ZeroDev's
-SignatureCallerPolicy are gone (C-02 / C-01).
+SignatureCallerPolicy are gone (C-02 / C-01). The Clanker-era layout (one `ClankerFeeLocker.claim(kernel, *)` rule
+in front, funding rule at index 3) survives only in session keys installed before 2026-10-29; the supervisor keeps
+reading their funding rule at index 3 until they are rotated.
 
 ### The ERC-1271 path is closed (C-01 / BOOTR-01)
 
@@ -179,7 +182,7 @@ parse callData and work with the wrapper. `BootrCallPolicy` replaces CallPolicy 
   StoredRule[8] rules)`, `StoredRule = (address target, bytes4 selector, uint8 argCount, StoredArg[4] args)`,
   `StoredArg = (uint8 index, uint8 op, bytes32 value)` - 1 + 8 x (1 + 4 x 2) = **73 slots** (< 128).
   `MAX_RULES = 8`, `MAX_ARGS = 4`; `onInstall` reverts `TooManyRules` / `TooManyArgs` beyond that (the
-  supervisor installs 4 rules with at most 2 args). Validation reads nothing else and uses no banned opcodes
+  supervisor installs 5 rules with at most 2 args). Validation reads nothing else and uses no banned opcodes
   (no `TIMESTAMP` / `NUMBER` / `GAS` / `BALANCE`, no external calls); `installedCount` (for `isInitialized`)
   is only touched on install/uninstall. `test_validationReadsOnlyAssociatedStorage` asserts with
   `vm.record()` that every slot read during `checkUserOpPolicy` is in `[base, base + 128)`, and
@@ -198,29 +201,14 @@ parse callData and work with the wrapper. `BootrCallPolicy` replaces CallPolicy 
 * Deploy with `script/DeployCallPolicy.s.sol` (no constructor args) and record the address in
   `addresses.ts` under `bootr.callPolicy`.
 
-### BootrAuthorizationPolicy (the ERC-1271 path)
+### BootrAuthorizationPolicy (not in this tree)
 
-`Kernel.isValidSignature` for a permission runs only the policies not flagged `NOT_FOR_VALIDATE_SIG`, with the
-RAW hash (`_checkPermissionPolicy`; the `Kernel(bytes32 hash)` wrapper is applied only for the signer), then the
-signer. Without a content policy the session EOA could sign anything for the kernel: USDC on Base settles
-`transferWithAuthorization` through `isValidSignature` (C-01 / BOOTR-01). `BootrAuthorizationPolicy` is that
-content policy:
-
-* `onInstall(bytes32 id ‖ abi.encode(address usdc, address payTo, uint256 maxValue, uint256 maxWindowSeconds))`,
-  stored per `(id, kernel)` in a 4-slot fixed struct (same associated-storage layout as `BootrCallPolicy`);
-  it also records `kernel.currentNonce()` (= the permission's `ValidationConfig.nonce`).
-* `checkSignaturePolicy(id, caller, hash, policySig)` with
-  `policySig = abi.encode(uint256 kind, uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce)`
-  (`kind` 0 = `TransferWithAuthorization`, 1 = `ReceiveWithAuthorization`; exactly 160 bytes, anything else
-  returns 1) recomputes the EIP-3009 struct hash with `from = msg.sender` (the kernel) and `to = payTo`, the
-  USDC digest with the token's live `DOMAIN_SEPARATOR()`, and returns 0 only if that digest equals `hash`,
-  `value <= maxValue`, `validBefore - validAfter <= maxWindowSeconds` and `kernel.validNonceFrom() <=
-  installNonce`. Expiry is left to USDC; `caller` is ignored (facilitators verify off-chain). Permit2, other
-  recipients, other tokens and arbitrary EIP-712 messages fail with `PolicyFailed(4)`.
-* Signature layout: `0x02 ‖ permissionId ‖ 0x04 ‖ uint64(160) ‖ policySig ‖ 0xff ‖ ecdsa(wrapped hash)`.
-* `checkUserOpPolicy` passes (the module is installed `NOT_FOR_VALIDATE_USEROP`; the call allow-list is
-  `BootrCallPolicy`). Deploy with `script/DeployAuthorizationPolicy.s.sol`; record under
-  `bootr.authorizationPolicy`; rotate every session key afterwards.
+An earlier design bounded the ERC-1271 path with a content policy (`BootrAuthorizationPolicy`, recomputing the
+EIP-3009 pre-image). It is not in `src/` and no script deploys it: the shipped fix is the one above (signer flagged
+`SKIP_SIGNATURE`, so a Bootr session key has no ERC-1271 path at all) plus per-agent spender EOAs for x402. Comments
+in `AgentGuardian.sol` and `test/security/SessionKeySignaturePath.t.sol`, and the C-01 discussion in
+`docs/security/session-key-and-treasury-review.md`, still mention the policy as the alternative that was considered.
+TODO(verify): `SessionKeySignaturePath.t.sol` points at an `AuthorizationPolicyFork.t.sol` that does not exist.
 
 ### BootrSwapHelper (the only WETH sink)
 
@@ -229,13 +217,13 @@ content policy:
 `amountOutMinimum = amountIn * ethUsd * (10000 - bps) / 10000` from Chainlink ETH/USD (`bps <= 300`, answer
 > 0, `updatedAt` at most 1 h old, `answeredInRound >= roundId`, else revert). Approve + `transferFrom` rather
 than transfer + sweep so that WETH never sits in the helper where a third party could swap it to themselves.
-No owner, no fee, no parameters after deployment. Base Sepolia: SwapRouter02
-`0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4`, ETH/USD `0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1`, pool fee 500
-(the testnet pool is thin, ~0.05 WETH, and drifts about 1% from Chainlink, so the fork tests swap 0.0005 WETH at
-2%). Deploy with `script/DeploySwapHelper.s.sol`; record under `bootr.swapHelper`; rotate every session key
+No owner, no fee, no parameters after deployment. Base mainnet: SwapRouter02
+`0x2626664c2603336E57B271c5C0b26F421741e481`, ETH/USD `0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70`, pool fee 500
+(the 0.05% WETH/USDC pool `0xd0b53D9277642d899DF5C87A3966A349A798F224`; the deployed helper is
+`0x5723152f21ed7E305312fd90a2Bb94864BA9D80d`). The fork tests swap 0.0005 WETH at 2%. Deploy with `script/DeploySwapHelper.s.sol`; record under `bootr.swapHelper`; rotate every session key
 afterwards.
 
-Revocation (verified on a Base Sepolia fork, `test/security/RevocationFork.t.sol`):
+Revocation (verified on a Base mainnet fork, `test/security/RevocationFork.t.sol`):
 
 * `revokeAllSessionKeys(kernel)` (root `invalidateNonce(currentNonce + 1)`) kills the userOp path of every
   non-root validation (Kernel compares `ValidationConfig.nonce` with `validNonceFrom` in `validateUserOp`).
@@ -266,6 +254,10 @@ neither moves funds nor resets the clock.
 * `script/Deploy.s.sol` - deploys guardian, burner implementation, launcher; wires `setLauncher`,
   `setPlatformTreasury`, defaults from env; `transferOwnership(PLATFORM_ADMIN)` (admin must `acceptOwnership`).
   Chain config by `block.chainid`: 8453 only (RWAGMI v3 stack verified on Basescan, see docs/rwagmi-migration.md); 84532 reverts.
+* `script/DeployLauncher.s.sol` - redeploys only `BootrLauncher` against the live guardian and burner implementation
+  (presets and `minPlatformBps` copied from `OLD_LAUNCHER`, optional `LAUNCH_FEE_WEI`), hands ownership to the admin,
+  `guardian.setLauncher(new)` and pauses the old launcher. This is how the RWAGMI-backed launcher
+  `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` replaced the Clanker-era one.
 * `script/DeployCallPolicy.s.sol` - deploys `BootrCallPolicy` (stateless, no wiring) and logs the address.
 * `script/DeploySwapHelper.s.sol` - deploys `BootrSwapHelper` (WETH, USDC, SwapRouter02, Chainlink ETH/USD per
   chain; `SWAP_POOL_FEE` default 500). Mainnet addresses must be re-verified before deploying.
@@ -283,7 +275,7 @@ pool and buys in the same call, so no sandwich is possible; the amount is bounde
   window writes), the `SUM_PER_WINDOW` accounting (accumulation, grid roll with the time slot, lying about the
   time, no-slot behaviour, batch sums, uninstall clearing, a fuzzed invariant) and `BootrSwapHelper` against a
   mock router and feed (floor math, slippage cap, stale / zero price, diverted output, fuzzed floor).
-* `test/security/RevocationFork.t.sol` - Base Sepolia fork with the full production policy set through the
+* `test/security/RevocationFork.t.sol` - Base mainnet fork with the full production policy set through the
   guardian enable path: the Kernel rejects any policy slot on the signature path (`SignerPrefixNotPresent`),
   the production permission has no signature path (`PermissionNotAlllowedForSignature`, paused or not) while
   userOps work; nonce-bump vs uninstall semantics on the legacy and the production layout; batch revoke;
@@ -293,8 +285,8 @@ pool and buys in the same call, so no sandwich is possible; the amount is bounde
   missing time claims fail `AA22`, batches over the remaining budget fail as a whole, other recipients fail.
 * `test/fork/SwapHelperFork.t.sol` - real SwapRouter02 / pool / Chainlink: floor honoured, stale feed and zero
   answer revert, slippage cap, session key can only turn kernel WETH into kernel USDC.
-* `test/fork/BootrFork.t.sol` - Base Sepolia fork (`BASE_SEPOLIA_RPC_URL` or https://sepolia.base.org):
-  real RWAGMI v3 launch on a mainnet fork (both presets, with/without dev buy), reward immutability, swap -> fee ratio,
+* `test/fork/BootrFork.t.sol` - Base mainnet fork (`BASE_RPC_URL` or https://mainnet.base.org), run with `base-forge`:
+  real RWAGMI v3 launch (both presets, with/without dev buy), reward immutability, swap -> fee ratio,
   buyback burn, Kernel access control (direct + userOp), enable-mode session key through the live
   EntryPoint (SudoPolicy fixture and the production `BootrCallPolicy` + ECDSA signer set: allowed
   no-op, rejected calls with `PolicyFailed`, batch, non-zero value, an ERC-8021 builder-code suffix on the

@@ -7,7 +7,8 @@ for the supervisor's `read_market` / `treasury_read` tools. Shapes are defined i
 ## Run
 
 ```sh
-# Base Sepolia, PGlite (no database needed). Env is read from the process environment.
+# PGlite (no database needed). Env is read from the process environment. Default CHAIN_ID is 84532 (Base Sepolia),
+# which only runs the snapshot handler (no RWAGMI v3 there); set CHAIN_ID=8453 and BASE_RPC_URL to index launches.
 pnpm --filter indexer dev            # http://localhost:42069  (/graphql, REST helpers)
 
 pnpm --filter indexer typecheck
@@ -15,17 +16,17 @@ pnpm --filter indexer test           # vitest: pure helpers in src/lib/*.test.ts
 INDEXER_URL=http://localhost:42069 pnpm --filter indexer smoke   # queries platformStats etc.
 
 # production (Postgres)
-INDEXER_DATABASE_URL=postgres://... DATABASE_SCHEMA=bootr_v1 pnpm --filter indexer start
+INDEXER_DATABASE_URL=postgres://... DATABASE_SCHEMA=bootr_mainnet_v1 pnpm --filter indexer start
 
 # container (build from the repo root); PORT must be the indexer's own, not the sender's from .env
 docker build -f apps/indexer/Dockerfile -t bootr-indexer .
-docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_v1 -p 42069:42069 bootr-indexer
+docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_mainnet_v1 -p 42069:42069 bootr-indexer
 ```
 
 The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; on Railway, without
 `DATABASE_SCHEMA`, one schema per deployment named after `RAILWAY_DEPLOYMENT_ID`). Ponder refuses to
 reuse a schema that was built by different indexing code, so a fixed `DATABASE_SCHEMA` must be bumped
-(`bootr_v2`, ...) whenever the indexer changes. See [`docs/deploy/railway.md`](../../docs/deploy/railway.md).
+(`bootr_mainnet_v2`, ...) whenever the indexer changes. See [`docs/deploy/railway.md`](../../docs/deploy/railway.md).
 
 Ponder only auto-loads `apps/indexer/.env.local`; export the variables (or use your usual env
 loader) to point it at the root `.env`. When sourcing the root `.env`, override `PORT` (it holds the
@@ -41,9 +42,12 @@ Coins launch through the RWAGMI v3 launcher (B20 Asset tokens in Uniswap v4 pool
 [`docs/rwagmi-migration.md`](../../docs/rwagmi-migration.md)), which exists on **Base mainnet only**.
 Without `BOOTR_LAUNCHER_ADDRESS`, or on a chain without the RWAGMI v3 stack (Base Sepolia), the
 indexer boots with a warning and only runs the snapshot block handler (ETH/USD, empty platform
-rollups). Set `CHAIN_ID=8453`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` and
-`BOOTR_START_BLOCK` (launcher deploy block) after deploying the RWAGMI-backed launcher, then delete
-`.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a Base mainnet fork.
+rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`
+(`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53219209 = `BOOTR_START_BLOCK`) and the guardian
+`0x799Ab875294E37839883D12084aB4BE3f7633630` (`BOOTR_GUARDIAN_ADDRESS`; both also default from `@bootr/shared`);
+after changing any of them delete `.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a
+Base mainnet fork (`base-anvil`, see [`docs/deploy/railway.md`](../../docs/deploy/railway.md)). Public host:
+`https://indexer.bootr.fun` (GraphQL at `/graphql`, REST, SSE `/stream`, `/ready`).
 
 ## Environment
 
@@ -51,9 +55,9 @@ rollups). Set `CHAIN_ID=8453`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS
 | --- | --- | --- |
 | `CHAIN_ID` | no | `84532` (default) or `8453`. One chain per process. |
 | `BASE_SEPOLIA_RPC_URL` / `BASE_RPC_URL` | recommended | Falls back to public endpoints. The RPC must serve old block headers: Base Sepolia has 200 ms blocks and Ponder's finality search probes from block 0, which pruned nodes (sepolia.base.org) reject. |
-| `BOOTR_LAUNCHER_ADDRESS` | for indexing | Empty = launch-derived sources skipped. |
-| `BOOTR_GUARDIAN_ADDRESS` | for indexing | Empty = AgentGuardian skipped (no activity/pause/dormancy). |
-| `BOOTR_START_BLOCK` | for indexing | Launcher deploy block. Empty = `latest`. RWAGMI sources start at `max(BOOTR_START_BLOCK, 52861401)` (the RWAGMI v3 launcher's creation block): only coins launched by BootrLauncher matter. |
+| `BOOTR_LAUNCHER_ADDRESS` | for indexing | Overrides the address book (`@bootr/shared`, `[chainId].bootr.launcher`). No address on the chain = launch-derived sources skipped. |
+| `BOOTR_GUARDIAN_ADDRESS` | for indexing | Overrides the address book. Empty = AgentGuardian skipped (no activity/pause/dormancy). |
+| `BOOTR_START_BLOCK` | for indexing | Launcher deploy block (mainnet: `53219209`). Empty = `latest`. RWAGMI sources start at `max(BOOTR_START_BLOCK, 52861401)` (the RWAGMI v3 launcher's creation block), which is `53219209` with the value above: only coins launched by BootrLauncher matter. |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` / `RWAGMI_HOOK_V3_ADDRESS` / `RWAGMI_LOCKER_V3_ADDRESS` | no | Override the RWAGMI v3 stack (defaults: the Base mainnet addresses in `src/lib/env.ts`; none on Base Sepolia). All three are needed. |
 | `INDEXER_DATABASE_URL` | prod | Postgres. Empty = PGlite in `.ponder/pglite`. (`DATABASE_URL` is deliberately not used, so other services' DB does not switch the indexer to Postgres.) |
 | `DATABASE_SCHEMA` | prod | Required by `ponder start` on Postgres. |
@@ -81,7 +85,7 @@ the RWAGMI v3 stack (launcher `0xB205c9e7…4B20`, hook `0xB20B0036…B20Ec`, LP
 | `RwagmiHookV3` | `PoolFeeTakenV3` | Gross swap fee (WETH) per swap: `token.feesTotalUsd`, `dailyStat.feesUsd`, `platformStats.feesTotalUsd`; plus one `feeAccrual` per Bootr reward slot (`gross × bps / 10000`) and its `feeBalance.accrued`. |
 | `RwagmiLpLockerV3` | `PoolFeesSettledV3`, `QuoteRewardsClaimedV3` | Settlement credits a slot's recipient (`feeCredit`, `feeBalance.settled`; RWAGMI's slot skipped). A claim pays a recipient's settled balance across all its coins: `feeClaim`, split across coins by `settled - claimed`. |
 | `AgentGuardian` | `Activity`, `AgentPaused`, `DormantClaimed`, `SessionKeyApproved`, `SessionKeyApprovalRevoked`, `SessionKeyUninstalled`, `SessionNonceInvalidated` | Agent status inputs, `dormantClaim`, `sessionKey`. |
-| ERC-8004 `ReputationRegistry` | `NewFeedback`, `FeedbackRevoked` | `agent.reputationScore` = mean of `value / 10^valueDecimals` over non-revoked feedback. Base Sepolia only (mainnet address not verified yet). |
+| ERC-8004 `ReputationRegistry` | `NewFeedback`, `FeedbackRevoked` | `agent.reputationScore` = mean of `value / 10^valueDecimals` over non-revoked feedback. Registry address from `@bootr/shared` (mainnet `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`). |
 | `BootrSnapshot` block handler | every `INDEXER_SNAPSHOT_INTERVAL` blocks | See below. |
 
 ### Derived vs on-chain
@@ -102,10 +106,10 @@ only, so they sum to 90% of it. A slot's fee is pending in the locker until a po
 `pendingQuote(poolId, recipient) + claimableQuote(recipient, WETH)`. `feeAccrual` amounts are
 `gross × bps / 10000` per swap, which can differ from the locker's cumulative credit by a few wei.
 
-Removed with Clanker (Oct 2026): per-coin fee amounts in the coin itself (Clanker's fee
-preference). `feeAccrual` / `feeClaim` / `feeBalance.asset` is always WETH, and `/treasury`'s
-`claimable` has one WETH row per recipient instead of a WETH and a coin row. Coins launched by the
-earlier Clanker-backed launcher are not indexed by this version.
+History (2026-10-29): the Clanker v4 launchers paid fees in WETH or in the coin itself (Clanker's fee
+preference). With RWAGMI `feeAccrual` / `feeClaim` / `feeBalance.asset` is always WETH, and `/treasury`'s
+`claimable` has one WETH row per recipient instead of a WETH and a coin row. Coins launched by the two
+earlier Clanker-backed launchers (`0xD4747d91…84EF`, `0x386CBE5D…e21d`) are not indexed by this version.
 
 Derived:
 * **Prices**: coin/WETH from `sqrtPriceX96`; USD via Chainlink ETH/USD (Base Sepolia feed
