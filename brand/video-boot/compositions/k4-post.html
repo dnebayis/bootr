@@ -1,0 +1,57 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #k4-flood { position: absolute; inset: 0; background: #ffffff; }
+    #k4-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #ebebeb; }
+    #k4-card { position: absolute; left: 144px; top: 190px; width: 1500px; height: 700px; border: 2px solid #d4d4d4; border-radius: 16px; background: #ffffff; }
+    #k4-av { position: absolute; left: 56px; top: 56px; width: 120px; height: 120px; }
+    #k4-name { position: absolute; left: 200px; top: 50px; font-size: 60px; line-height: 70px; font-weight: 600; letter-spacing: -0.04em; color: #171717; }
+    #k4-handle { position: absolute; left: 200px; top: 122px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 50px; font-weight: 500; color: #737373; }
+    .k4-ln { position: absolute; left: 56px; font-size: 88px; line-height: 104px; font-weight: 500; letter-spacing: -0.03em; color: #171717; white-space: nowrap; }
+    #k4-rule { position: absolute; left: 0; top: 580px; width: 1496px; height: 2px; background: #ebebeb; }
+    #k4-foot { position: absolute; left: 56px; top: 604px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 60px; font-weight: 500; color: #171717; }
+  </style>
+  <div id="root" data-composition-id="k4" data-width="1920" data-height="1080">
+    <div id="k4-flood">
+      <div id="k4-hv" data-layout-ignore></div>
+      <div id="k4-card">
+        <svg id="k4-av" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="k4-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#000000" mask="url(#k4-m)"></rect>
+        </svg>
+        <div id="k4-name">bootr</div>
+        <div id="k4-handle">@bootrfun</div>
+        <div class="k4-ln" id="k4-l1" style="top:250px">first boot complete.</div>
+        <div class="k4-ln" id="k4-l2" style="top:354px">treasury funded. limits set.</div>
+        <div class="k4-ln" id="k4-l3" style="top:458px">i'm awake.</div>
+        <div id="k4-rule"></div>
+        <div id="k4-foot">posted</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.3455;
+    const L = (k) => Math.round((k - 40) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    // Beat 40: the white floods out of the centre.
+    tl.fromTo("#k4-flood", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1700px at 960px 540px)", duration: 0.38, ease: "power2.inOut" }, 0);
+    // Beat 41: the post card lands.
+    tl.fromTo("#k4-card", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(41));
+    // Beats 42, 44, 48: three lines type, one step per character.
+    tl.fromTo("#k4-l1", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.6, ease: "steps(20)" }, L(42));
+    tl.fromTo("#k4-l2", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.85, ease: "steps(28)" }, L(44));
+    tl.fromTo("#k4-l3", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.35, ease: "steps(10)" }, L(48));
+    // Beat 51: posted.
+    tl.set("#k4-foot", { opacity: 0 }, 0);
+    tl.set("#k4-foot", { opacity: 1 }, L(51));
+    tl.fromTo("#k4-foot", { scale: 1.2, transformOrigin: "0% 50%" }, { scale: 1, duration: 0.18, ease: "power3.out" }, L(51));
+    window.__timelines["k4"] = tl;
+  </script>
+</template>

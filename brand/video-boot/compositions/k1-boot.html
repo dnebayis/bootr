@@ -1,0 +1,95 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; background: #000000; font-family: 'Geist Mono', monospace; color: #ffffff; }
+    #k1-shake { position: absolute; inset: 0; }
+    #k1-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #262626; }
+    #k1-log { position: absolute; inset: 0; }
+    .k1-row { position: absolute; left: 144px; width: 1680px; height: 96px; font-size: 56px; line-height: 96px; font-weight: 500; }
+    .k1-lab { position: absolute; left: 0; top: 0; white-space: nowrap; color: #ffffff; }
+    .k1-lead { position: absolute; left: 640px; top: 62px; width: 700px; height: 0; border-bottom: 3px dotted #3d3d3d; transform-origin: 0% 50%; }
+    .k1-ok { position: absolute; left: 1380px; top: 0; color: #ffffff; }
+    #k1-sum { position: absolute; left: 144px; top: 770px; font-size: 72px; line-height: 96px; font-weight: 500; color: #0070f3; white-space: nowrap; }
+    #k1-stat { position: absolute; left: 144px; top: 866px; font-size: 56px; line-height: 96px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    #k1-cur { position: absolute; left: 640px; top: 886px; width: 34px; height: 58px; background: #ffffff; }
+    .k1-num { position: absolute; left: 150px; top: 100px; font-family: 'Geist', sans-serif; font-size: 760px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; opacity: 0; white-space: nowrap; }
+    #k1-alab { position: absolute; left: 800px; top: 330px; font-size: 48px; line-height: 1; font-weight: 500; color: #8f8f8f; opacity: 0; }
+    .k1-state { position: absolute; left: 796px; top: 400px; font-family: 'Geist', sans-serif; font-size: 140px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; opacity: 0; white-space: nowrap; }
+    #k1-prog { position: absolute; left: 96px; top: 1000px; width: 1728px; height: 4px; background: #ffffff; transform-origin: 0% 50%; }
+  </style>
+  <div id="root" data-composition-id="k1" data-width="1920" data-height="1080">
+    <div id="k1-shake" data-layout-allow-overflow>
+      <div id="k1-hv" data-layout-ignore></div>
+      <div id="k1-log">
+        <div class="k1-row" id="k1-r1" style="top:66px"><span class="k1-lab">create coin</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r2" style="top:162px"><span class="k1-lab">open pool</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r3" style="top:258px"><span class="k1-lab">create treasury</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r4" style="top:354px"><span class="k1-lab">register identity</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r5" style="top:450px"><span class="k1-lab">lock fee split</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r6" style="top:546px"><span class="k1-lab">set limits</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div class="k1-row" id="k1-r7" style="top:642px"><span class="k1-lab">connect x account</span><span class="k1-lead"></span><span class="k1-ok">ok</span></div>
+        <div id="k1-sum">7 / 7 ok</div>
+        <div id="k1-stat">agent standby</div>
+        <div id="k1-cur" data-layout-ignore></div>
+      </div>
+      <div class="k1-num" id="k1-n3">3</div>
+      <div class="k1-num" id="k1-n2">2</div>
+      <div class="k1-num" id="k1-n1">1</div>
+      <div class="k1-num" id="k1-n0">0</div>
+      <div id="k1-alab">agent</div>
+      <div class="k1-state" id="k1-s3">standby</div>
+      <div class="k1-state" id="k1-s2">arming</div>
+      <div class="k1-state" id="k1-s1">armed</div>
+      <div class="k1-state" id="k1-s0" style="color:#0070f3">booting</div>
+      <div id="k1-prog" data-layout-ignore></div>
+    </div>
+  </div>
+  <script>
+    const B = 0.3455;
+    const b = (k) => Math.round(k * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    tl.set("#k1-shake", { x: 0, y: 0, opacity: 1 }, 0);
+    // Checks 3-7 land on beats 0-4: the label types, the leader draws, "ok" lands a half beat later.
+    [3, 4, 5, 6, 7].forEach((i, n) => {
+      const t = b(n);
+      const r = "#k1-r" + i;
+      tl.set(r + " .k1-ok", { opacity: 0 }, 0);
+      tl.set(r + " .k1-lead", { scaleX: 0 }, 0);
+      tl.set(r + " .k1-lab", { color: "#8f8f8f", clipPath: "inset(0px 100% 0px 0px)" }, 0);
+      tl.to(r + " .k1-lab", { clipPath: "inset(0px 0% 0px 0px)", duration: 0.14, ease: "steps(12)" }, t);
+      tl.to(r + " .k1-lead", { scaleX: 1, duration: 0.12, ease: "power3.out" }, t + 0.05);
+      tl.set(r + " .k1-ok", { opacity: 1 }, t + B / 2);
+      tl.set(r + " .k1-lab", { color: "#ffffff" }, t + B / 2);
+    });
+    // Beat 5: the summary, in the one accent. Beat 6: the agent waits; its cursor blinks.
+    gsap.set("#k1-sum", { opacity: 0 });
+    tl.set("#k1-sum", { opacity: 1 }, b(5));
+    tl.fromTo("#k1-sum", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.2, ease: "steps(8)" }, b(5));
+    gsap.set("#k1-stat", { opacity: 0 });
+    tl.set("#k1-stat", { opacity: 1 }, b(6));
+    tl.fromTo("#k1-stat", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.4, ease: "steps(13)" }, b(6));
+    gsap.set("#k1-cur", { opacity: 0 });
+    [6.9, 7.2, 7.5].forEach((k) => { tl.set("#k1-cur", { opacity: 1 }, b(k)); tl.set("#k1-cur", { opacity: 0 }, b(k) + 0.1); });
+    tl.set("#k1-cur", { opacity: 0 }, b(7.9));
+    // Beat 8: the log wipes out to the left; the countdown takes the frame.
+    tl.fromTo("#k1-log", { clipPath: "inset(0px 0% 0px 0px)" }, { clipPath: "inset(0px 100% 0px 0px)", duration: 0.22, ease: "power3.in" }, b(8) - 0.22);
+    tl.set("#k1-alab", { opacity: 1 }, b(8));
+    tl.fromTo("#k1-prog", { scaleX: 0 }, { scaleX: 1, duration: b(15.5) - b(8), ease: "power2.in" }, b(8));
+    [[3, 8], [2, 10], [1, 12], [0, 14]].forEach(([n, k], idx) => {
+      const t = b(k);
+      tl.set("#k1-n" + n, { opacity: 1 }, t);
+      tl.set("#k1-s" + n, { opacity: 1 }, t);
+      tl.fromTo("#k1-n" + n, { scale: 1.14, transformOrigin: "0% 100%" }, { scale: 1, duration: 0.18, ease: "power3.out" }, t);
+      if (n > 0) {
+        tl.set("#k1-n" + n, { opacity: 0 }, t + 2 * B);
+        tl.set("#k1-s" + n, { opacity: 0 }, t + 2 * B);
+      }
+      [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, 0, 0]].forEach(([d, x, y]) => tl.set("#k1-shake", { x, y }, t + d));
+    });
+    // Beat 15.5: everything goes black for half a beat before the drop.
+    tl.set("#k1-shake", { opacity: 0 }, b(15.5));
+    window.__timelines["k1"] = tl;
+  </script>
+</template>

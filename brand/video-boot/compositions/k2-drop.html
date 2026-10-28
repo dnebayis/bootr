@@ -1,0 +1,64 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #k2-flood { position: absolute; inset: 0; background: #ffffff; }
+    #k2-shake { position: absolute; inset: 0; }
+    #k2-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #ebebeb; transform-origin: 50% 0%; }
+    #k2-hh { position: absolute; left: 0; top: 890px; width: 1920px; height: 2px; background: #ebebeb; transform-origin: 0% 50%; }
+    #k2-mark-sq { position: absolute; left: 144px; top: 260px; width: 560px; height: 560px; }
+    #k2-mark { width: 560px; height: 560px; display: block; }
+    #k2-tick { position: absolute; left: 800px; top: 300px; font-size: 250px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #000000; white-space: nowrap; }
+    #k2-cur { position: absolute; left: 800px; top: 352px; width: 120px; height: 182px; background: #0070f3; }
+    .k2-sub { position: absolute; left: 806px; font-size: 64px; line-height: 1.2; font-weight: 500; letter-spacing: -0.01em; color: #4d4d4d; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="k2" data-width="1920" data-height="1080">
+    <div id="k2-flood">
+      <div id="k2-shake" data-layout-allow-overflow>
+        <div id="k2-hv" data-layout-ignore></div>
+        <div id="k2-hh" data-layout-ignore></div>
+        <div id="k2-mark-sq">
+          <svg id="k2-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="k2-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#000000" mask="url(#k2-m)"></rect>
+          </svg>
+        </div>
+        <div id="k2-tick">$BOOTR</div>
+        <div id="k2-cur" data-layout-ignore></div>
+        <div class="k2-sub" id="k2-sub1" style="top:630px">the platform coin,</div>
+        <div class="k2-sub" id="k2-sub2" style="top:710px">run by its own agent.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.3455;
+    const L = (k) => Math.round((k - 16) * B * 1000) / 1000; // local time of a film beat
+    const TICK_W = 980;
+    const tl = gsap.timeline({ paused: true });
+    tl.set("#k2-shake", { x: 0, y: 0 }, 0);
+    // Beat 16: the white floods out of the mark's centre; the mark slams in with a squash and a jolt.
+    tl.fromTo("#k2-flood", { clipPath: "circle(0px at 424px 540px)" }, { clipPath: "circle(1800px at 424px 540px)", duration: 0.38, ease: "power2.inOut" }, 0);
+    tl.fromTo("#k2-mark-sq", { scaleX: 0.3, scaleY: 0.3, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.92, duration: 0.12, ease: "power3.in" }, 0.02);
+    tl.to("#k2-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, 0.14);
+    [[0.14, 8, -6], [0.173, -7, 5], [0.206, 5, -3], [0.24, -2, 2], [0.273, 0, 0]].forEach(([t, x, y]) => tl.set("#k2-shake", { x, y }, t));
+    // Beat 17: $BOOTR types behind the accent block cursor.
+    tl.fromTo("#k2-tick", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.9, ease: "power2.inOut" }, L(17));
+    tl.set("#k2-cur", { opacity: 0 }, 0);
+    tl.set("#k2-cur", { opacity: 1 }, L(17));
+    tl.fromTo("#k2-cur", { x: 0 }, { x: TICK_W, duration: 0.9, ease: "power2.inOut" }, L(17));
+    [L(20.2), L(20.9)].forEach((t) => { tl.set("#k2-cur", { opacity: 0 }, t); tl.set("#k2-cur", { opacity: 1 }, t + 0.15); });
+    tl.set("#k2-cur", { opacity: 0 }, L(21.6));
+    // Beat 20 and 21.5: the sub text types, a line at a time.
+    tl.fromTo("#k2-sub1", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.5, ease: "steps(19)" }, L(20));
+    tl.fromTo("#k2-sub2", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.55, ease: "steps(21)" }, L(21.5));
+    // Beat 24: the two hairlines are drawn.
+    tl.fromTo("#k2-hv", { scaleY: 0 }, { scaleY: 1, duration: 0.55, ease: "expo.out" }, L(24));
+    tl.fromTo("#k2-hh", { scaleX: 0 }, { scaleX: 1, duration: 0.55, ease: "expo.out" }, L(24));
+    window.__timelines["k2"] = tl;
+  </script>
+</template>

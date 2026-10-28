@@ -1,0 +1,59 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #k3-panel { position: absolute; inset: 0; background: #000000; color: #ffffff; }
+    #k3-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #262626; }
+    #k3-title { position: absolute; left: 144px; top: 66px; font-size: 112px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .k3-row { position: absolute; left: 0; width: 1920px; height: 150px; }
+    .k3-lab { position: absolute; left: 144px; top: 20px; font-size: 64px; line-height: 90px; font-weight: 500; letter-spacing: -0.01em; color: #ffffff; }
+    .k3-val { position: absolute; right: 96px; top: 6px; font-family: 'Geist Mono', monospace; font-size: 104px; line-height: 110px; font-weight: 500; color: #ffffff; text-align: right; }
+    .k3-rail { position: absolute; left: 144px; top: 124px; width: 1680px; height: 2px; background: #262626; }
+    .k3-bar { position: absolute; left: 144px; top: 121px; height: 8px; background: #ffffff; transform-origin: 0% 50%; }
+    #k3-note { position: absolute; left: 144px; top: 880px; font-size: 72px; line-height: 80px; font-weight: 500; letter-spacing: -0.01em; color: #ffffff; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="k3" data-width="1920" data-height="1080">
+    <div id="k3-panel">
+      <div id="k3-hv" data-layout-ignore></div>
+      <div id="k3-title">1% of every swap</div>
+      <div class="k3-row" id="k3-r1" style="top:250px"><div class="k3-lab">agent</div><div class="k3-val" id="k3-v1">0%</div><div class="k3-rail"></div><div class="k3-bar" id="k3-b1" style="width:84px"></div></div>
+      <div class="k3-row" id="k3-r2" style="top:400px"><div class="k3-lab">creator</div><div class="k3-val" id="k3-v2">0%</div><div class="k3-rail"></div><div class="k3-bar" id="k3-b2" style="width:840px"></div></div>
+      <div class="k3-row" id="k3-r3" style="top:550px"><div class="k3-lab">burned</div><div class="k3-val" id="k3-v3">0%</div><div class="k3-rail"></div><div class="k3-bar" id="k3-b3" style="width:252px"></div></div>
+      <div class="k3-row" id="k3-r4" style="top:700px"><div class="k3-lab">platform</div><div class="k3-val" id="k3-v4">0%</div><div class="k3-rail"></div><div class="k3-bar" id="k3-b4" style="width:504px"></div></div>
+      <div id="k3-note">the agent's share pays for its thinking.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.3455;
+    const L = (k) => Math.round((k - 28) * B * 1000) / 1000;
+    const A = "#0070f3";
+    const tl = gsap.timeline({ paused: true });
+    // Beat 28: the black panel wipes in from the right edge.
+    tl.fromTo("#k3-panel", { clipPath: "inset(0px 0px 0px 100%)" }, { clipPath: "inset(0px 0px 0px 0%)", duration: 0.32, ease: "power3.inOut" }, 0);
+    // Beat 29: the title.
+    tl.fromTo("#k3-title", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(29));
+    // Beats 30, 31, 32, 33: the four rows. Each lands, its number ticks, its bar is drawn.
+    [[1, 5, 30], [2, 50, 31], [3, 15, 32], [4, 30, 33]].forEach(([i, v, k]) => {
+      const t = L(k);
+      const r = "#k3-r" + i;
+      tl.set(r, { opacity: 0 }, 0);
+      tl.fromTo(r, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+      tl.fromTo("#k3-b" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.6, ease: "power3.out" }, t + 0.05);
+      const o = { v: 0 };
+      tl.to(o, { v: v, duration: 0.7, ease: "power2.out", onUpdate: () => { document.getElementById("k3-v" + i).textContent = Math.round(o.v) + "%"; } }, t);
+    });
+    // The burned row takes the accent when it lands (beat 32) and gives it to the agent at beat 34.
+    tl.set("#k3-v3", { color: A }, L(32));
+    tl.set("#k3-b3", { backgroundColor: A }, L(32));
+    tl.set("#k3-v3", { color: "#ffffff" }, L(34));
+    tl.set("#k3-b3", { backgroundColor: "#ffffff" }, L(34));
+    tl.set("#k3-v1", { color: A }, L(34));
+    tl.set("#k3-b1", { backgroundColor: A }, L(34));
+    tl.fromTo("#k3-note", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.8, ease: "steps(40)" }, L(34));
+    tl.set("#k3-note", { opacity: 0 }, 0);
+    tl.set("#k3-note", { opacity: 1 }, L(34));
+    window.__timelines["k3"] = tl;
+  </script>
+</template>
