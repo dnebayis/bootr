@@ -147,8 +147,9 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
     poolId: hex(rand, 32),
     pairedToken: '0x4200000000000000000000000000000000000006',
     lpFeeBps: 10000,
-    agentBps: 2000,
-    creatorBps: buyback ? 3500 : 5000,
+    // BootrLauncher presets (out of 10000; the locker holds them as 9000-bps slots).
+    agentBps: 500,
+    creatorBps: buyback ? 5000 : 6500,
     burnBps: buyback ? 1500 : 0,
     platformBps: 3000,
     workerHash: hex(rand, 32),
@@ -240,7 +241,7 @@ function init(): Store {
     const growth = 1 + (89 - d) / 30;
     const volumeUsd = Math.round(40_000 * growth * (0.6 + rand() * 0.8));
     const feesUsd = volumeUsd * 0.01;
-    const lp = feesUsd; // the full LP fee is split; Clanker's 20% is charged on top
+    const lp = feesUsd * 0.9; // the reward slots get 90% of the 1% swap fee, RWAGMI 10%
     awake = Math.max(3, Math.round(awake + (rand() - 0.35) * 3));
     const burnedUsd = lp * 0.05;
     burned += burnedUsd;
@@ -249,10 +250,10 @@ function init(): Store {
       launches: Math.max(0, Math.round(growth * (1 + rand() * 4))),
       volumeUsd,
       feesUsd,
-      feesAgentUsd: lp * 0.2,
-      feesCreatorUsd: lp * 0.47,
+      feesAgentUsd: lp * 0.05,
+      feesCreatorUsd: lp * 0.6,
       feesBurnUsd: burnedUsd,
-      feesPlatformUsd: lp * 0.28,
+      feesPlatformUsd: lp * 0.3,
       activeAgents: awake + Math.round(rand() * 10),
       awakeAgents: awake,
       bootBurnedToken: (BigInt(Math.round(burnedUsd * 4000)) * 10n ** 18n).toString(),
@@ -347,14 +348,17 @@ export function subscribeMock(listener: (h: StreamHint) => void): () => void {
 const clone = <T,>(v: T): T => structuredClone(v);
 
 export const mock = {
-  /** Deterministic claimable fee-locker balance (base units, 18 decimals) for mock mode; some are zero. */
-  claimable(owner: string, feeToken: string, kind: 'weth' | 'coin'): bigint {
+  /**
+   * Deterministic WETH fee balance (wei) for mock mode; some are zero. `scope` is a pool id for the unsettled
+   * `pendingQuote(poolId, owner)` or `'settled'` for `claimableQuote(owner, WETH)`.
+   */
+  claimable(owner: string, scope: string): bigint {
     let h = 2166136261;
-    for (const ch of `${owner.toLowerCase()}:${feeToken.toLowerCase()}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    for (const ch of `${owner.toLowerCase()}:${scope.toLowerCase()}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
     const r = mulberry32(h >>> 0);
     if (r() < 0.25) return 0n;
-    // WETH: up to ~0.05; coin: up to ~4,000 tokens.
-    return kind === 'weth' ? BigInt(Math.floor(r() * 5e4)) * 10n ** 12n : BigInt(Math.floor(r() * 4e6)) * 10n ** 15n;
+    // Up to ~0.05 WETH settled, ~0.01 WETH per pool unsettled.
+    return BigInt(Math.floor(r() * (scope === 'settled' ? 5e4 : 1e4))) * 10n ** 12n;
   },
   tokens(tab: string, after: string | null, limit: number) {
     const s = mockStore();
@@ -397,8 +401,8 @@ export const mock = {
     const k = (b: number) => ({ accruedUsd: (total * b) / 10000, claimedUsd: (total * b * 0.7) / 10000 });
     return {
       byKind: {
-        agent: k(t?.agentBps ?? 2000),
-        creator: k(t?.creatorBps ?? 5000),
+        agent: k(t?.agentBps ?? 500),
+        creator: k(t?.creatorBps ?? 6500),
         burn: k(t?.burnBps ?? 0),
         platform: k(t?.platformBps ?? 3000),
       },
@@ -491,7 +495,7 @@ export function mockLaunch(input: { name: string; symbol: string; image: string;
   token.holders = 1;
   token.graduated = false;
   token.graduatedAt = null;
-  token.creatorBps = input.buyback ? 3500 : 5000;
+  token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
   agent.status = 'awake';
   token.agent = { id: agent.id, status: 'awake' };
