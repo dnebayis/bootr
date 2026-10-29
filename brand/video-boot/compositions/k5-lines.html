@@ -2,8 +2,8 @@
   <style>
     @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
     #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
-    #k5-panel { position: absolute; inset: 0; background: #000000; }
-    #k5-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #262626; }
+    #k5-panel { position: absolute; inset: 0; background: #0a0b0d; }
+    #k5-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #32353d; }
     .k5-ln { position: absolute; left: 144px; font-size: 100px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; white-space: nowrap; }
   </style>
   <div id="root" data-composition-id="k5" data-width="1920" data-height="1080">
@@ -26,7 +26,7 @@
       tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(k));
     });
     // Beat 66: the first three dim; the last stays white.
-    ["#k5-l1", "#k5-l2", "#k5-l3"].forEach((s) => tl.to(s, { color: "#525252", duration: 0.2, ease: "power2.out" }, L(66)));
+    ["#k5-l1", "#k5-l2", "#k5-l3"].forEach((s) => tl.to(s, { color: "#5b616e", duration: 0.2, ease: "power2.out" }, L(66)));
     // Just before beat 69: every line exits to the left.
     ["#k5-l1", "#k5-l2", "#k5-l3", "#k5-l4"].forEach((s) => tl.to(s, { clipPath: "inset(0px 100% 0px 0px)", duration: 0.22, ease: "power3.in" }, L(68.9)));
     window.__timelines["k5"] = tl;

@@ -7,9 +7,10 @@ TIME:    Music: catalog track "fast aggressive drum and bass, 174 BPM, heavy bas
          Music clips: A film 0 -> beat 48 (media 0 -> 16.584 s), B film beat 48 -> 80 (media beat 16 -> 48,
          the drop section looped on bar lines, 11.056 s). Music stops dead on beat 80 = 27.64 s.
          Effects are peak-aligned one frame after their picture.
-LOOK:    Bootr's own: black #000 (chain world) and white #fff (agent world), hairlines #262626 / #3d3d3d on black and
-         #ebebeb / #d4d4d4 on white, ink #fff / #171717, body #4d4d4d on white, mute #8f8f8f on black.
-         One accent #0070f3: the summary line in the boot log, the cursor that types $BOOTR, the burned row, the agent
+LOOK:    Bootr's own, from the product's Base tokens (apps/web/DESIGN.md, 2026-10-29): dark canvas #0a0b0d (chain world)
+         and white #fff (agent world), hairlines #32353d on dark and #dee1e7 on white, hairline-strong #5b616e,
+         ink #fff on dark / #0a0b0d on white, body #32353d on white, mute #818895 on dark / #5b616e on white.
+         One accent, Base Blue: #3c8aff Cerulean on dark, #0000ff on white (never Base Blue text on dark): the summary line in the boot log, the cursor that types $BOOTR, the burned row, the agent
          row at the end of the fees shot, the ticker on the end card. Never two accents in one frame except the ticker.
          Display: Geist 600, tracking -0.04em, line-height 1.0, 100-250 px. Body: Geist 500, 56-88 px.
          Mono: Geist Mono 500 for the boot log (56 px) and numbers (104-760 px). Minimum text 40 px.
@@ -17,8 +18,9 @@ LOOK:    Bootr's own: black #000 (chain world) and white #fff (agent world), hai
          no vignette, no gradients. Hairlines: a vertical at x=96 on every scene, as on the OG image.
 OBJECTS: the boot log (seven checks, each ending in "ok"), a countdown numeral 3-2-1-0 at 760 px (Geist 600; Geist Mono's zero is slashed and read as an empty set), a progress rule,
          the Bootr mark (24-unit rounded square, rx 5, power glyph knocked out of it), the ticker "$BOOTR" typed with
-         a block cursor, four proportional fee rows (agent 5 / creator 50 / burned 15 / platform 30) each with a bar
-         drawn on a hairline rail, a post card (square avatar = mark, "bootr", "@bootrfun", three typed lines,
+         a block cursor, five proportional fee rows, as shares of the 1% fee (agent 4.5 / creator 45 / burned 13.5 /
+         platform 27 / rwagmi 10, the product's 0.045 / 0.45 / 0.135 / 0.27 / 0.10 % of volume), each with a bar drawn
+         on a hairline rail, a post card (square avatar = mark, "bootr", "@bootrfun", three typed lines,
          "posted"), four statement lines, the lockup (mark + wordmark, as in brand/logo-motion).
 MOTION:  arrivals expo.out 0.45 s (x -40 -> 0, blur 8 -> 0 px); hits are tl.set on the beat, plus a 5-step jolt
          (+-7 px, 1 frame each) on the drop and the lockup impact; exits power3.in 0.22 s; floods are clip-path
@@ -34,8 +36,9 @@ SHOTS:   (b = beat, 1 beat = 0.3455 s; frames at 30 fps)
          b16-28  05.53-09.67  S2 drop, white. White circle floods from the mark's centre on b16. The mark (560 px)
                               slams in with squash and a 5-step jolt; impact + music drop. b17 "$BOOTR" (250 px) types
                               behind an accent block cursor; b20 the two-line sub text types; b24 hairlines draw.
-         b28-40  09.67-13.82  S3 fees, black. Wipe from the right. "1% of every swap" at b29. Rows land on four
-                              consecutive beats: b30 agent 5%, b31 creator 50%, b32 burned 15% (accent), b33 platform 30%;
+         b28-40  09.67-13.82  S3 fees, black. Wipe from the right. "where the 1% goes" at b29. Rows land on
+                              b30 agent 4.5%, b31 creator 45%, b32 burned 13.5% (accent), b33 platform 27%, b33.5 rwagmi
+                              10% (muted);
                               each number ticks, each bar draws. b34 note "the agent's share pays for its thinking."
                               and the accent moves to the agent row.
          b40-54  13.82-18.66  S4 the post, white. Circle flood. Card lands b41. Three lines type on b42, b44, b48

@@ -2,20 +2,20 @@
   <style>
     @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
     #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
-    #bt-ground { position: absolute; inset: 0; background: var(--color-ground, #000000); }
+    #bt-ground { position: absolute; inset: 0; background: var(--color-ground, #0a0b0d); }
     #bt-shake { position: absolute; inset: 0; }
     /* Two hairlines, as on the OG image: a vertical at x=96 and a horizontal at 82.5% of the height. */
-    #bt-hair-h { position: absolute; left: 0; top: 890px; width: 1920px; height: 2px; background: var(--color-hair, #262626); }
-    #bt-hair-v { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: var(--color-hair, #262626); }
+    #bt-hair-h { position: absolute; left: 0; top: 890px; width: 1920px; height: 2px; background: var(--color-hair, #32353d); }
+    #bt-hair-v { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: var(--color-hair, #32353d); }
     /* Lockup: mark 288 px, gap 110 px, wordmark 256 px (cap height 180 = mark / 1.6). Start centred, slide to the left. */
     #bt-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
     #bt-mark-sq { position: relative; width: 288px; height: 288px; }
     /* Ground-coloured backing, so the knocked-out glyph shows the ground and never the wordmark sliding out behind the mark. */
-    #bt-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: var(--color-ground, #000000); }
+    #bt-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: var(--color-ground, #0a0b0d); }
     #bt-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
     #bt-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: var(--color-ink, #ffffff); white-space: nowrap; }
     #bt-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: var(--color-ink, #ffffff); }
-    #bt-tick { position: absolute; left: 434px; top: 736px; font-size: 112px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #0070f3; white-space: nowrap; }
+    #bt-tick { position: absolute; left: 434px; top: 736px; font-size: 112px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #3c8aff; white-space: nowrap; }
   </style>
   <div id="root" data-composition-id="k6" data-width="1920" data-height="1080">
     <div id="bt-ground"></div>

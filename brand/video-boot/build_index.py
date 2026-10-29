@@ -28,7 +28,7 @@ add('sub-key-1', 'key-press.mp3', b(20), 0.5)
 add('sub-key-2', 'key-press.mp3', b(21.5), 0.5)
 add('hair', 'whoosh-short.mp3', b(24), 0.4)
 add('wipe-3', 'whoosh.mp3', b(28), 0.7)
-for i, k in enumerate([30, 31, 32, 33]): add(f'row-{i+1}', 'pop.mp3', b(k), 0.85)
+for i, k in enumerate([30, 31, 32, 33, 33.5]): add(f'row-{i+1}', 'pop.mp3', b(k), 0.85)
 add('note-key', 'key-press.mp3', b(34), 0.5)
 add('flood-4', 'whoosh-short.mp3', b(40), 0.7)
 for i, k in enumerate([42, 44, 48]): add(f'post-key-{i+1}', 'key-press.mp3', b(k), 0.5)
@@ -85,8 +85,8 @@ html = f'''<!doctype html>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
       * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-      html, body {{ margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #000000; }}
-      #root {{ position: relative; width: 100%; height: 100%; background: #000000; }}
+      html, body {{ margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #0a0b0d; }}
+      #root {{ position: relative; width: 100%; height: 100%; background: #0a0b0d; }}
       {z}
     </style>
   </head>
