@@ -42,9 +42,18 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
 - [ ] **Node** (RPC): a Base *mainnet* Node URL (`https://api.developer.coinbase.com/rpc/v1/base/<key>`). This is
       `BASE_RPC_URL` for supervisor, indexer and web (SIWE) and `INFERENCE_RPC_URL`. The indexer backfill needs
       historical logs from the launcher's deploy block onwards (no archive state), budget `INDEXER_MAX_RPS` ~25.
-- [ ] **Bundler + Paymaster**: the same URL serves `BUNDLER_URL` and `PAYMASTER_URL`. Keep
-      `ENABLE_MODE_SELF_BUNDLE=true` (CDP rejects enable-mode userOps; the admin EOA bundles them).
-- [ ] **Paymaster policy allow-list** (contracts a sponsored userOp may call). Add exactly:
+- [ ] **Bundler**: the CDP bundler URL in `BUNDLER_URL`. Keep `ENABLE_MODE_SELF_BUNDLE=true` (CDP rejects
+      enable-mode userOps; the admin EOA bundles them).
+- [ ] **Gas model** (2026-10-29): agents pay their own gas, no paymaster. `PAYMASTER_URL` stays **empty**. Every
+      kernel pays its userOp prefund from its EntryPoint deposit + ETH; the admin wallet seeds `GAS_BOOTSTRAP_WEI`
+      (0.001 ETH) when the session key is installed, and the fee policy unwraps the kernel's WETH fee share into ETH
+      (`fund_gas` ops, `WETH.withdraw`) whenever gas drops under `GAS_MIN_WEI` (0.0002 ETH) up to `GAS_TARGET_WEI`
+      (0.001 ETH). Anyone can add gas from the token page (`EntryPoint.depositTo(kernel)`); the console and
+      `POST /internal/agents/:id/gas/top-up` do it from the admin wallet. ETH on a kernel can only leave as gas
+      (no session-key rule carries value, the root validator is the guardian). An empty kernel sends nothing
+      (`out_of_gas` in the supervisor log) until someone adds gas. Budget: a Base userOp costs ~0.00001–0.00003 ETH.
+- [ ] **Paymaster policy allow-list** *(only if a `PAYMASTER_URL` is set to sponsor every op instead; not the
+      default)*. Contracts a sponsored userOp may call, exactly:
 
   | Contract | Address | Called by |
   | --- | --- | --- |
@@ -59,8 +68,8 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
 
   Not needed any more: the Universal Router (session keys no longer touch it; the burner's `swapAndBurn` is an
   owner transaction, not a userOp). Set a per-userOp and daily USD cap on the policy.
-- [ ] **Gasless campaign** (Base gasless / CDP paymaster credits): apply with the mainnet project id and the
-      allow-list above before launch day; until approved, the paymaster bills the CDP account.
+- [ ] **Gasless campaign** *(paymaster mode only)*: apply with the mainnet project id and the allow-list above;
+      until approved, the paymaster bills the CDP account.
 - [ ] **x402 facilitator**: `X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402` with a *secret*
       API key (`CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`) of the same project; `X402_NETWORK=eip155:8453`.
 - [ ] If any CDP key is IP-restricted: static outbound IPs on `supervisor`, `inference`, `indexer`.
@@ -70,10 +79,10 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
 | Role | Env | Funding before step 3 |
 | --- | --- | --- |
 | DEPLOYER | `PRIVATE_KEY` (forge only, never on Railway) | **~0.02 ETH** (five deployments, ~8M gas, leaves headroom for a Base fee spike) |
-| PLATFORM_ADMIN | `ADMIN_PRIVATE_KEY` (supervisor) | **~0.05 ETH + 20 USDC** (two `acceptOwnership`, `setDefaults`, `approveSessionKey` + a 0.005 ETH prefund per agent install / rotation, dormancy sweeps; the USDC is for an admin test launch) |
+| PLATFORM_ADMIN | `ADMIN_PRIVATE_KEY` (supervisor) | **~0.05 ETH + 20 USDC** (two `acceptOwnership`, `setDefaults`, `approveSessionKey` + the enable-op prefund per agent install / rotation, dormancy sweeps; the USDC is for an admin test launch) **+ `GAS_BOOTSTRAP_WEI` (0.001 ETH) per agent registration**: the kernel's starting gas, after which the agent pays from its own fees. Keep the admin above ~0.01 ETH; a dry admin leaves new agents without gas (the supervisor logs `gas bootstrap failed`) |
 | PLATFORM_RECIPIENT | address only | none (receives the platform slot: 27% of the 1% swap fee, 30% on pre-v2 Clanker coins) |
 | PLATFORM_TREASURY | address + key on the operator's machine | **gas (~0.01 ETH) + the $BOOT dev buy + 20 USDC fuel** (step 6; also receives dormant sweeps and inference revenue as `INFERENCE_PAYTO_ADDRESS`) |
-| SESSION_SIGNER | `SESSION_SIGNER_PRIVATE_KEY` | **none** (kernels pay their own gas through the paymaster / EntryPoint deposit) |
+| SESSION_SIGNER | `SESSION_SIGNER_PRIVATE_KEY` | **none** (kernels pay their own gas from their EntryPoint deposit: the admin's bootstrap, then their own WETH fees) |
 | SPENDER_MASTER | `SPENDER_MASTER_KEY` | **none** (spenders are funded by their kernels; EIP-3009 needs no ETH) |
 
 Also fresh: `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SESSION_SECRET`,
@@ -212,7 +221,7 @@ Shared variables (Railway `production` environment), from `.env.mainnet.example`
 | `X402_NETWORK` | `eip155:8453` |
 | `X402_FACILITATOR_URL` | `https://api.cdp.coinbase.com/platform/v2/x402` + `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` |
 | `INFERENCE_PAYTO_ADDRESS` | PLATFORM_TREASURY (inference + supervisor) |
-| `BUNDLER_URL`, `PAYMASTER_URL` | CDP mainnet bundler/paymaster URL; `ENABLE_MODE_SELF_BUNDLE=true`, `ENABLE_MODE_MAX_PREFUND_WEI=5000000000000000` |
+| `BUNDLER_URL`, `PAYMASTER_URL` | CDP mainnet bundler URL; `PAYMASTER_URL` **empty** (self-funded gas); `GAS_BOOTSTRAP_WEI=1000000000000000`, `GAS_MIN_WEI=200000000000000`, `GAS_TARGET_WEI=1000000000000000`; `ENABLE_MODE_SELF_BUNDLE=true`, `ENABLE_MODE_MAX_PREFUND_WEI=5000000000000000` |
 | `SWAP_SLIPPAGE_BPS` | `100` (on-chain cap 300) |
 | `SESSION_USDC_TRANSFER_CAP` | `50000000` (50 USDC / day per agent to its spender); review `SESSION_GAS_ALLOWANCE_WEI`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_KEY_VALIDITY_DAYS` |
 | Indexer | new `DATABASE_SCHEMA` (or per-deployment), `INDEXER_MAX_RPS=25`, `INDEXER_SNAPSHOT_INTERVAL` default (30 blocks), `BOOT_TOKEN_ADDRESS` after step 6 |
@@ -263,8 +272,10 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
   spender with a matching dry signature.
 - One **small test launch** from a normal wallet through the web (standard preset, 20 USDC fuel (not required by the
   contract: min fuel is 0), no dev buy), then:
-  `RwagmiLpLockerV3.claimableQuote(kernel, WETH)` (after `pendingQuote` settles) after a trade, a sponsored `claim_fees` op in `sv_treasury_ops` with a
-  `txHash`, and the paymaster dashboard showing the sponsorship.
+  `RwagmiLpLockerV3.claimableQuote(kernel, WETH)` (after `pendingQuote` settles) after a trade, a `claim_fees` op in `sv_treasury_ops` with a
+  `txHash` paid from the kernel's gas (`EntryPoint.balanceOf(kernel)` went down by `actualGasCost`), and, once the
+  claimed WETH is on the kernel and its gas is under `GAS_MIN_WEI`, a `fund_gas` op (`WETH.withdraw`) that brings
+  the kernel's ETH back up; `GET /internal/agents/:id` shows `gas.status: ok`.
 - A single swap through the helper with the session key (`FUEL_TARGET_USDC` below the kernel's USDC triggers it
   once WETH is claimed): `Swapped` event, output >= Chainlink - 1%.
 - Pause / unpause the test agent from the creator wallet; the supervisor marks the runtime `paused` by `guardian`.
@@ -305,8 +316,11 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
    bounded by `devBuyWei`. *Default: accept the pool-creation price for a creator's own first buy.*
 5. **MEV module** *(Clanker era; not applicable to launcher v2)*. The v1 dry-run deployed through `ClankerMevBlockDelay`;
    RWAGMI v3 has no such module, the pool is one-sided and the dev buy is part of the launch transaction.
-6. **Paymaster exposure.** Sponsored ops are capped by the CDP policy, not by Bootr. Set the daily USD cap before
-   the first launch.
+6. **Gas exposure.** Self-funded: the platform's only gas cost is `GAS_BOOTSTRAP_WEI` per registered agent from the
+   admin wallet (bounded by launches, each of which paid the 0.0005 ETH launch fee); everything after comes out of
+   the agent's own fee share, and a session key can at most burn its own kernel's gas (the GasPolicy allowance
+   caps even that). With a paymaster instead, sponsored ops are capped by the CDP policy, not by Bootr: set the
+   daily USD cap before the first launch.
 
 ## Deployed (2026-10-27, Base mainnet, original Clanker-era set)
 
@@ -405,8 +419,8 @@ the LP fee, burn variant 5 / 50 / 15 / 30, paid in WETH or the coin).
    complete; step 4 makes that explicit.
 4. **Pause the old launcher.** `cast send <old launcher> "pause()" --rpc-url base --private-key <admin>`. Existing
    agents keep running; fees keep accruing in their own lockers.
-5. **Paymaster.** Allow-list the new launcher and the RWAGMI locker in
-   the CDP policy (section 1 table). Keep the old entries until the last Clanker-era agent is retired.
+5. **Paymaster** *(only if one is configured; the default is self-funded gas)*. Allow-list the new launcher and the
+   RWAGMI locker in the CDP policy (section 1 table). Keep the old entries until the last Clanker-era agent is retired.
 6. **Variables.** Set the new launcher address and block: `BOOTR_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
    `LAUNCHER_START_BLOCK` (supervisor), `BOOTR_START_BLOCK` (indexer), plus `BOOTR_BURNER_IMPL_ADDRESS` if it
    changed. Add `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor, indexer),
