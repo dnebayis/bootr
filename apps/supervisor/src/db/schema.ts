@@ -130,7 +130,7 @@ export const inference = pgTable(
   (t) => [index('sv_inference_agent_idx').on(t.agentId, t.status)],
 );
 
-export const treasuryOpKinds = ['claim_fees', 'swap', 'fund_model', 'transfer'] as const;
+export const treasuryOpKinds = ['claim_fees', 'swap', 'fund_model', 'fund_gas', 'transfer'] as const;
 export type TreasuryOpKind = (typeof treasuryOpKinds)[number];
 export const treasuryOpStatuses = ['prepared', 'sent', 'unknown', 'confirmed', 'failed'] as const;
 export type TreasuryOpStatus = (typeof treasuryOpStatuses)[number];

@@ -8,6 +8,7 @@ import { hmacAuth, type AuthEnv } from './hmac.js';
 import { installSessionKey, rotateSessionKey } from './onboarding.js';
 import { saveRuntime } from './runtime.js';
 import { buildDeinitData, deserializeSessionPolicy, type SerializedSessionPolicy } from './session-key.js';
+import { bootstrapGas, readGas, gasView } from './gas.js';
 import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
@@ -119,8 +120,10 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const runtime = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, id) });
     const lastActions = await ctx.db.select().from(actions).where(eq(actions.agentId, id)).orderBy(desc(actions.createdAt)).limit(20);
     const ops = await ctx.db.select().from(treasuryOps).where(eq(treasuryOps.agentId, id)).orderBy(desc(treasuryOps.createdAt)).limit(20);
+    const gas = await readGas(ctx, agent.kernel as Address).then(gasView).catch(() => null);
     return c.json({
       agent: { ...agent, validatorData: agent.validatorData ? `${agent.validatorData.slice(0, 20)}...` : null },
+      gas,
       runtime: runtime
         ? { ...runtime, turn: runtime.turn ? { steps: (runtime.turn as { steps?: number }).steps, messages: ((runtime.turn as { messages?: unknown[] }).messages ?? []).length } : null }
         : null,
@@ -181,6 +184,32 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
       return c.json(result);
     } catch (err) {
       return c.json({ error: 'install_failed', message: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  /**
+   * Admin gas top-up: `EntryPoint.depositTo(kernel)` from the admin wallet. Body `{ wei?: string }`; without it the
+   * kernel is brought up to `GAS_BOOTSTRAP_WEI` (nothing is sent when it already holds that much).
+   */
+  app.post('/internal/agents/:id/gas/top-up', async (c) => {
+    const id = c.req.param('id');
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    if (!ctx.adminSigner) return c.json({ error: 'no_admin_signer' }, 503);
+    const body = (await c.req.json().catch(() => ({}))) as { wei?: string };
+    try {
+      let result: { txHash: Hex; wei: bigint } | null;
+      if (body.wei !== undefined) {
+        if (!/^\d+$/.test(body.wei) || BigInt(body.wei) <= 0n) return c.json({ error: 'invalid_amount' }, 400);
+        const wei = BigInt(body.wei);
+        result = { ...(await ctx.adminSigner.depositGas(agent.kernel as Address, wei)), wei };
+      } else {
+        result = await bootstrapGas(ctx, agent);
+      }
+      const gas = gasView(await readGas(ctx, agent.kernel as Address));
+      return c.json({ agentId: id, deposited: result ? { txHash: result.txHash, wei: result.wei.toString() } : null, gas });
+    } catch (err) {
+      return c.json({ error: 'top_up_failed', message: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
 

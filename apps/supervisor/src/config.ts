@@ -23,8 +23,18 @@ export const configSchema = z
     BASE_SEPOLIA_RPC_URL: optionalUrl,
     /** ERC-4337 bundler (ZeroDev / Pimlico) JSON-RPC URL. */
     BUNDLER_URL: z.string().url(),
-    /** Optional ERC-7677 paymaster URL. Unset = the kernel pays gas from its own ETH / EntryPoint deposit. */
+    /**
+     * Optional ERC-7677 paymaster URL. Unset (the default) = self-funded gas: the kernel pays every userOp's prefund
+     * from its EntryPoint deposit and its own ETH, the admin seeds `GAS_BOOTSTRAP_WEI` at registration and the fee
+     * policy unwraps the kernel's WETH fees into ETH whenever gas drops under `GAS_MIN_WEI` (gas.ts).
+     */
     PAYMASTER_URL: optionalUrl,
+    /** ETH (wei) the admin deposits into the EntryPoint for a kernel whose gas is below it when its session key is installed (default 0.001 ETH). */
+    GAS_BOOTSTRAP_WEI: z.preprocess((v) => (v === '' || v === undefined ? '1000000000000000' : v), z.string().regex(/^\d+$/)),
+    /** Gas (EntryPoint deposit + kernel ETH, wei) under which the fee policy unwraps WETH into ETH (default 0.0002 ETH). */
+    GAS_MIN_WEI: z.preprocess((v) => (v === '' || v === undefined ? '200000000000000' : v), z.string().regex(/^\d+$/)),
+    /** ...up to this much gas (wei), bounded by the kernel's WETH (default 0.001 ETH). */
+    GAS_TARGET_WEI: z.preprocess((v) => (v === '' || v === undefined ? '1000000000000000' : v), z.string().regex(/^\d+$/)),
     /**
      * Optional bundler for enable-mode userOps (session-key install / rotation). Installing a permission runs the
      * policies' `onInstall` during validation, which strict ERC-7562 bundlers (CDP) reject with an opcode validation
@@ -129,7 +139,8 @@ export const configSchema = z
   .refine((c) => c.SWAP_SLIPPAGE_BPS <= 300, { message: 'SWAP_SLIPPAGE_BPS must be <= 300 (BootrSwapHelper.MAX_SLIPPAGE_BPS)' })
   .refine((c) => c.SPENDER_MASTER_KEY.toLowerCase() !== c.SESSION_SIGNER_PRIVATE_KEY.toLowerCase() && (!c.ADMIN_PRIVATE_KEY || c.SPENDER_MASTER_KEY.toLowerCase() !== c.ADMIN_PRIVATE_KEY.toLowerCase()), { message: 'SPENDER_MASTER_KEY must differ from SESSION_SIGNER_PRIVATE_KEY and ADMIN_PRIVATE_KEY' })
   .refine((c) => c.SPENDER_TARGET_USDC >= c.SPENDER_MIN_USDC, { message: 'SPENDER_TARGET_USDC must be >= SPENDER_MIN_USDC' })
-  .refine((c) => !c.ENABLE_MODE_SELF_BUNDLE || !!c.ADMIN_PRIVATE_KEY, { message: 'ENABLE_MODE_SELF_BUNDLE=true requires ADMIN_PRIVATE_KEY (the admin signer sends handleOps)' });
+  .refine((c) => !c.ENABLE_MODE_SELF_BUNDLE || !!c.ADMIN_PRIVATE_KEY, { message: 'ENABLE_MODE_SELF_BUNDLE=true requires ADMIN_PRIVATE_KEY (the admin signer sends handleOps)' })
+  .refine((c) => BigInt(c.GAS_TARGET_WEI) >= BigInt(c.GAS_MIN_WEI), { message: 'GAS_TARGET_WEI must be >= GAS_MIN_WEI' });
 
 export type Config = z.infer<typeof configSchema>;
 

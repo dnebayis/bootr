@@ -1,7 +1,8 @@
 /**
- * The only module that holds the guardian owner's key. It signs exactly three kinds of transactions:
- * approveSessionKey, revokeSessionKey/revokeAllSessionKeys(Batch), and (with ENABLE_MODE_SELF_BUNDLE)
- * `EntryPoint.handleOps` for enable-mode userOps that strict bundlers refuse. Swap the
+ * The only module that holds the guardian owner's key. It signs exactly four kinds of transactions:
+ * approveSessionKey, revokeSessionKey/revokeAllSessionKeys(Batch), `EntryPoint.depositTo(kernel)` (a kernel's
+ * starting gas, gas.ts) and (with ENABLE_MODE_SELF_BUNDLE) `EntryPoint.handleOps` for enable-mode userOps that
+ * strict bundlers refuse. Swap the
  * implementation for a KMS/hardware signer without touching the rest of the supervisor.
  */
 import { createWalletClient, http, type Address, type Chain, type Hex, type PublicClient, type TransactionReceipt, type Transport } from 'viem';
@@ -23,6 +24,8 @@ export interface AdminSigner {
    * transaction is mined (the receipt carries the `UserOperationEvent` logs).
    */
   handleOps(ops: readonly PackedUserOperation[], beneficiary: Address): Promise<{ txHash: Hex; receipt: TransactionReceipt }>;
+  /** `EntryPoint.depositTo(kernel){value: wei}` from the admin EOA: gas the kernel can only spend as userOp prefund. */
+  depositGas(kernel: Address, wei: bigint): Promise<{ txHash: Hex }>;
 }
 
 export function createLocalAdminSigner(args: {
@@ -70,6 +73,13 @@ export function createLocalAdminSigner(args: {
       const { request } = await publicClient.simulateContract({ account, address: guardian, abi: guardianAbi, functionName: 'revokeAllSessionKeysBatch', args: [[...kernels]] });
       const txHash = await wallet.writeContract(request);
       await publicClient.waitForTransactionReceipt({ hash: txHash });
+      return { txHash };
+    },
+    async depositGas(kernel, wei) {
+      if (wei <= 0n) throw new Error('depositGas: amount must be positive');
+      const txHash = await wallet.writeContract({ account, address: entryPoint, abi: entryPoint07Abi, functionName: 'depositTo', args: [kernel], value: wei, chain });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== 'success') throw new Error(`EntryPoint.depositTo transaction ${txHash} reverted on-chain`);
       return { txHash };
     },
     async handleOps(ops, beneficiary) {

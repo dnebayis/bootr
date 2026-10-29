@@ -4,7 +4,7 @@ import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type 
 import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
-import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld } from './helpers.js';
+import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 
@@ -60,6 +60,45 @@ describe('onboarding from AgentLaunched', () => {
       expect(config?.xHandle).toBe('bootr_agent');
       expect(config?.xUserId).toBe('1000');
       expect(config?.socialStartedAt).toBeTruthy();
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('seeds the kernel\'s gas from the admin wallet once the session key is installed, only up to GAS_BOOTSTRAP_WEI', async () => {
+    // self-funded gas (no PAYMASTER_URL): a fresh kernel holds nothing, the admin deposits the bootstrap amount
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n, deposit: 0n, eth: 0n } });
+    const admin = mockAdminSigner();
+    world.ctx.adminSigner = admin.signer;
+    try {
+      await pollLaunches(world.ctx);
+      await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      expect(admin.deposits).toEqual([{ kernel: KERNEL, wei: 1_000_000_000_000_000n }]);
+      // a kernel that already holds part of it only gets the shortfall; one at the target gets nothing (idempotent)
+      world.state.deposit = 400_000_000_000_000n;
+      world.state.eth = 100_000_000_000_000n;
+      await world.db.update(agents).set({ status: 'onboarding' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      expect(admin.deposits.at(-1)).toEqual({ kernel: KERNEL, wei: 500_000_000_000_000n });
+      world.state.deposit = 1_000_000_000_000_000n;
+      await world.db.update(agents).set({ status: 'onboarding' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      expect(admin.deposits).toHaveLength(2);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('does not touch gas when a paymaster sponsors the agents', async () => {
+    const world = await makeWorld({ config: { PAYMASTER_URL: 'http://paymaster.test' }, chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n, deposit: 0n } });
+    const admin = mockAdminSigner();
+    world.ctx.adminSigner = admin.signer;
+    try {
+      await pollLaunches(world.ctx);
+      await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      expect(admin.deposits).toHaveLength(0);
     } finally {
       await world.close();
     }

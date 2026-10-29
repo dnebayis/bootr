@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, formatUnits, getAddress, isHex, pad, parseUnits, size, type Address, type Hex } from 'viem';
+import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, readEntryPointDeposit, type GasView } from './gas.js';
 import { callPolicyAbi, chainlinkAggregatorAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
 import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
@@ -52,6 +53,8 @@ export interface TreasurySnapshot {
    * was not launched through the RWAGMI launcher (nothing pending can be settled then).
    */
   claimable: { weth: string; pending: string; settled: string; poolId: Hex | null };
+  /** What pays the kernel's userOps: EntryPoint deposit + kernel ETH (gas.ts); `sponsored` when a paymaster is set. */
+  gas: GasView;
   ethUsd: number | null;
   usd: { usdc: number; spenderUsdc: number; weth: number; claimableWeth: number };
 }
@@ -107,8 +110,9 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
   // Unsettled fees sit on the pool (`pendingQuote`); settled ones on the kernel's per-currency balance (`claimableQuote`).
   const pending = poolId ? publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'pendingQuote', args: [poolId, kernel] }).catch(() => 0n) : Promise.resolve(0n);
   const settled = publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'claimableQuote', args: [kernel, addresses.weth] }).catch(() => 0n);
-  const [eth, weth, usdc, spenderUsdc, own, pendingWeth, settledWeth, price] = await Promise.all([
+  const [eth, deposit, weth, usdc, spenderUsdc, own, pendingWeth, settledWeth, price] = await Promise.all([
     publicClient.getBalance({ address: kernel }),
+    readEntryPointDeposit(ctx, kernel),
     bal(addresses.weth),
     bal(addresses.usdc),
     bal(addresses.usdc, spender),
@@ -117,6 +121,7 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
     settled,
     ethUsdPrice(ctx),
   ]);
+  const gas = gasReading({ deposit, balance: eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) });
   const claimWeth = pendingWeth + settledWeth;
   const wethHuman = Number(formatUnits(weth, 18));
   return {
@@ -125,6 +130,7 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
     observedAt: new Date(ctx.now()).toISOString(),
     balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
     claimable: { weth: formatUnits(claimWeth, 18), pending: formatUnits(pendingWeth, 18), settled: formatUnits(settledWeth, 18), poolId },
+    gas: gasView(gas),
     ethUsd: price,
     usd: {
       usdc: Number(formatUnits(usdc, 6)),
@@ -428,6 +434,8 @@ export async function reconcileOps(ctx: SupervisorContext, agent: AgentRow): Pro
 export interface FeePolicyOutcome {
   skipped?: string;
   claim?: ExecuteResult;
+  /** WETH unwrapped into the kernel's own gas (`fund_gas`, self-funded gas only). */
+  gas?: ExecuteResult;
   swap?: ExecuteResult;
   /** Top-up of the spender from the kernel's USDC (`fund_model`). */
   fund?: ExecuteResult;
@@ -443,9 +451,20 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
 
   const snap = snapshot ?? (await readTreasuryOnChain(ctx, agent));
   const out: FeePolicyOutcome = {};
+  // 0. Gas: self-funded kernels pay their own prefund. An empty one cannot send anything (the bundler would answer
+  //    AA21 and start the failure backoff), so wait for a top-up (the web "Add gas", the admin, or nothing).
+  const selfFunded = gasSelfFunded(config);
+  const minGas = BigInt(config.GAS_MIN_WEI);
+  const gasLow = selfFunded && snap.gas.status !== 'ok';
+  if (selfFunded && snap.gas.status === 'empty') {
+    ctx.log.warn({ agentId: agent.agentId, kernel: agent.kernel, gasEth: snap.gas.eth }, 'kernel out of gas; no treasury op until someone adds gas');
+    return { skipped: 'out_of_gas' };
+  }
   // 1. Claim: fees are WETH only (RWAGMI hook), valued at Chainlink ETH/USD; pending fees need the pool id to settle.
+  //    Low gas claims below the USD threshold too, when the kernel holds no WETH to unwrap: fees are its only gas source.
   const claimableUsd = snap.usd.claimableWeth;
-  if (claimableUsd >= config.CLAIM_THRESHOLD_USD && (snap.claimable.poolId || Number(snap.claimable.settled) > 0)) {
+  const claimForGas = gasLow && parseUnits(snap.balances.weth, 18) === 0n && parseUnits(snap.claimable.weth, 18) > 0n;
+  if ((claimableUsd >= config.CLAIM_THRESHOLD_USD || claimForGas) && (snap.claimable.poolId || Number(snap.claimable.settled) > 0)) {
     const poolId = snap.claimable.poolId;
     const op = await prepareOp(ctx, agent, {
       kind: 'claim_fees',
@@ -457,7 +476,28 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
     if (out.claim.status !== 'confirmed') return out;
   }
 
-  const after = out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
+  // 2. Gas: unwrap WETH into ETH on the kernel up to GAS_TARGET_WEI when gas is under GAS_MIN_WEI (rule layout >= 3).
+  const claimed = out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
+  if (gasLow) {
+    const amount = gasTopUp({ total: parseUnits(claimed.gas.eth, 18), minWei: minGas, targetWei: BigInt(config.GAS_TARGET_WEI), wethBalance: parseUnits(claimed.balances.weth, 18) });
+    if (amount > 0n && !agentHasGasRule(agent)) {
+      out.skipped = 'session_key_without_gas_rule';
+      ctx.log.warn({ agentId: agent.agentId }, 'gas is low but the installed session key predates the WETH.withdraw rule; rotate it');
+    } else if (amount > 0n) {
+      const op = await prepareOp(ctx, agent, {
+        kind: 'fund_gas',
+        calls: [encodeUnwrapCall(chain.addresses.weth, amount)],
+        description: `unwrap ${formatUnits(amount, 18)} WETH into gas (gas ${claimed.gas.eth} ETH -> target ${formatUnits(BigInt(config.GAS_TARGET_WEI), 18)} ETH)`,
+        origin: 'policy',
+      });
+      out.gas = await executeOp(ctx, agent, op.opId);
+      if (out.gas.status !== 'confirmed') return out;
+    } else {
+      out.skipped = 'no_weth_for_gas';
+    }
+  }
+
+  const after = out.gas || out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
   const wethBalance = parseUnits(after.balances.weth, 18);
   if (after.usd.usdc < config.FUEL_TARGET_USDC && wethBalance > 0n && after.ethUsd) {
     const amountIn = wethNeededFor(config.FUEL_TARGET_USDC, after.usd.usdc, after.ethUsd, wethBalance);

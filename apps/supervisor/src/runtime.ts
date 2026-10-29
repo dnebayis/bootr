@@ -130,7 +130,7 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
   return buildObservation({
     now,
     market: inputs.market ? { snapshot: inputs.market } : null,
-    treasury: inputs.treasury ? { balances: { ...inputs.treasury.balances, claimable: inputs.treasury.claimable, usd: inputs.treasury.usd } } : null,
+    treasury: inputs.treasury ? { balances: { ...inputs.treasury.balances, claimable: inputs.treasury.claimable, usd: inputs.treasury.usd, gas: inputs.treasury.gas } } : null,
     social: {
       messages: eligible.map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, post: v.post, observedAt: v.observedAt })),
       threadContexts: [],

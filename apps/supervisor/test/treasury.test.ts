@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFunctionData, erc20Abi, parseUnits, type Hex } from 'viem';
 import { rwagmiLpLockerV3Abi, swapHelperAbi } from '../src/abi.js';
 import { treasuryOps } from '../src/db/schema.js';
+import { encodeUnwrapCall, gasStatusOf, gasTopUp, wethAbi } from '../src/gas.js';
 import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
 import { clampSlippageBps, encodeClaimCall, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
 import { ADDR, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER } from './helpers.js';
@@ -258,6 +259,123 @@ describe('Chainlink staleness (L-01)', () => {
       w.state.feedUpdatedAt = w.state.blockTimestamp;
       w.state.ethUsd = 0n;
       expect(await ethUsdPrice(w.ctx)).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('self-funded gas (no paymaster)', () => {
+  const ETH = (v: string) => parseUnits(v, 18);
+
+  it('reports gas = EntryPoint deposit + kernel ETH, and its status against GAS_MIN_WEI', async () => {
+    const w = await makeWorld({ chain: { deposit: ETH('0.00015'), eth: ETH('0.0001') } });
+    try {
+      const snap = await readTreasuryOnChain(w.ctx, await seedAgent(w));
+      expect(snap.gas).toEqual({ eth: '0.00025', deposit: '0.00015', balance: '0.0001', status: 'ok' });
+    } finally {
+      await w.close();
+    }
+    expect(gasStatusOf(ETH('0.0002'), ETH('0.0002'), true)).toBe('ok');
+    expect(gasStatusOf(ETH('0.0001'), ETH('0.0002'), true)).toBe('low');
+    expect(gasStatusOf(ETH('0.00004'), ETH('0.0002'), true)).toBe('low');
+    expect(gasStatusOf(ETH('0.000039'), ETH('0.0002'), true)).toBe('empty');
+    expect(gasStatusOf(0n, ETH('0.0002'), false)).toBe('sponsored');
+    // nothing while gas is fine; otherwise up to the target, never more WETH than the kernel holds
+    expect(gasTopUp({ total: ETH('0.0002'), minWei: ETH('0.0002'), targetWei: ETH('0.001'), wethBalance: ETH('1') })).toBe(0n);
+    expect(gasTopUp({ total: ETH('0.0001'), minWei: ETH('0.0002'), targetWei: ETH('0.001'), wethBalance: ETH('1') })).toBe(ETH('0.0009'));
+    expect(gasTopUp({ total: ETH('0.0001'), minWei: ETH('0.0002'), targetWei: ETH('0.001'), wethBalance: ETH('0.0003') })).toBe(ETH('0.0003'));
+    expect(gasTopUp({ total: ETH('0.0001'), minWei: ETH('0.0002'), targetWei: ETH('0.001'), wethBalance: 0n })).toBe(0n);
+  });
+
+  it('unwraps WETH into gas (fund_gas) before refuelling USDC, when gas is under GAS_MIN_WEI', async () => {
+    // gas 0.0001 (< 0.0002 min), 0.1 WETH on the kernel, USDC 5 < 20 target
+    const w = await makeWorld({ chain: { deposit: ETH('0.0001'), eth: 0n, weth: ETH('0.1'), usdc: 5_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      const out = await runFeePolicy(w.ctx, agent);
+      expect(out.claim).toBeUndefined();
+      expect(out.gas?.status).toBe('confirmed');
+      expect(out.swap?.status).toBe('confirmed');
+      const ops = await w.db.select().from(treasuryOps).orderBy(treasuryOps.createdAt);
+      expect(ops.map((o) => o.kind)).toEqual(['fund_gas', 'swap']);
+      const gas = ops[0]!;
+      expect(gas.origin).toBe('policy');
+      expect(gas.calls).toHaveLength(1);
+      expect(gas.calls[0]!.to).toBe(ADDR.weth);
+      expect(gas.calls[0]!.value).toBe('0');
+      // WETH.withdraw(target 0.001 - gas 0.0001)
+      expect(decodeFunctionData({ abi: wethAbi, data: gas.calls[0]!.data as Hex })).toEqual({ functionName: 'withdraw', args: [ETH('0.0009')] });
+      expect(gas.description).toContain('unwrap 0.0009 WETH into gas');
+      expect(encodeUnwrapCall(ADDR.weth, ETH('0.0009'))).toEqual({ to: ADDR.weth, value: 0n, data: gas.calls[0]!.data });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('an empty kernel sends nothing at all (out_of_gas) until someone adds gas', async () => {
+    const w = await makeWorld({ chain: { deposit: 0n, eth: 0n, weth: ETH('0.1'), claimableWeth: ETH('0.01'), usdc: 0n } });
+    try {
+      const agent = await seedAgent(w);
+      expect(await runFeePolicy(w.ctx, agent)).toEqual({ skipped: 'out_of_gas' });
+      expect(await w.db.select().from(treasuryOps)).toHaveLength(0);
+      // "Add gas" from the web app: EntryPoint.depositTo(kernel) by anyone. 0.0001 ETH is enough to act again:
+      // claim (above the USD threshold), then unwrap WETH up to the target, then refuel USDC from the rest.
+      w.state.deposit = ETH('0.0001');
+      const out = await runFeePolicy(w.ctx, agent);
+      expect(out.claim?.status).toBe('confirmed');
+      expect(out.gas?.status).toBe('confirmed');
+      expect(out.swap?.status).toBe('confirmed');
+      expect((await w.db.select().from(treasuryOps).orderBy(treasuryOps.createdAt)).map((o) => o.kind)).toEqual(['claim_fees', 'fund_gas', 'swap']);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('low gas with no WETH claims fees below the USD threshold too, then unwraps them', async () => {
+    // 0.001 WETH claimable = $3 < $5 threshold; gas 0.0001; the fees are the agent's only gas source
+    const w = await makeWorld({ chain: { deposit: ETH('0.0001'), eth: 0n, weth: 0n, claimableWeth: ETH('0.001'), usdc: 50_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      const out = await runFeePolicy(w.ctx, agent);
+      expect(out.claim?.status).toBe('confirmed');
+      // the claim landed 0.001 WETH on the kernel (mocked), all of it goes to gas (0.0009 wanted, 0.001 held)
+      w.state.weth = ETH('0.001');
+      const ops = await w.db.select().from(treasuryOps).orderBy(treasuryOps.createdAt);
+      expect(ops.map((o) => o.kind)).toEqual(['claim_fees']);
+      expect(out.skipped).toBe('no_weth_for_gas'); // the mock balance did not move inside this run
+      const again = await runFeePolicy(w.ctx, agent);
+      expect(again.gas?.status).toBe('confirmed');
+      expect(decodeFunctionData({ abi: wethAbi, data: (await w.db.select().from(treasuryOps)).find((o) => o.kind === 'fund_gas')!.calls[0]!.data as Hex }).args).toEqual([ETH('0.0009')]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a session key installed under rule layout 2 (no WETH.withdraw) is reported, not used', async () => {
+    const w = await makeWorld({ chain: { deposit: ETH('0.0001'), eth: 0n, weth: ETH('0.1') } });
+    try {
+      const policy = { rulesVersion: 2, usdcTransferCap: '50000000', gasAllowanceWei: '1' };
+      const agent = await seedAgent(w, { agent: { sessionPolicy: policy } });
+      const out = await runFeePolicy(w.ctx, agent);
+      expect(out.skipped).toBe('session_key_without_gas_rule');
+      expect(out.gas).toBeUndefined();
+      expect((await w.db.select().from(treasuryOps)).map((o) => o.kind)).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('with a paymaster, gas is sponsored: no unwrap, no out_of_gas, even on an empty kernel', async () => {
+    const w = await makeWorld({ config: { PAYMASTER_URL: 'http://paymaster.test' }, chain: { deposit: 0n, eth: 0n, weth: ETH('0.1'), usdc: 5_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      const snap = await readTreasuryOnChain(w.ctx, agent);
+      expect(snap.gas.status).toBe('sponsored');
+      const out = await runFeePolicy(w.ctx, agent, snap);
+      expect(out.gas).toBeUndefined();
+      expect(out.skipped).toBeUndefined();
+      expect(out.swap?.status).toBe('confirmed');
     } finally {
       await w.close();
     }

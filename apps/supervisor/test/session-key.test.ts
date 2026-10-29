@@ -21,6 +21,7 @@ import {
   enableDigestManual,
   FUNDING_AMOUNT_ARG_INDEX,
   FUNDING_RULE_INDEX,
+  hasGasRule,
   fundingRuleIndex,
   LEGACY_FUNDING_RULE_INDEX,
   nonceKey,
@@ -33,7 +34,7 @@ import {
   type SessionPolicyParams,
 } from '../src/session-key.js';
 import { EXEC_MODE_BATCH, EXEC_MODE_SINGLE, encodeKernelCalls, nonceMode } from '../src/kernel.js';
-import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR } from '../src/abi.js';
+import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from '../src/abi.js';
 
 /** Clanker's mainnet FeeLocker: the claim target of session keys installed before the RWAGMI v3 cutover. */
 const LEGACY_CLANKER_FEE_LOCKER = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
@@ -114,7 +115,7 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(policyModules(p)).toEqual(policyEntries(p).map((e) => e.module));
   });
 
-  it('BootrCallPolicy rules: exactly locker.settleAndClaim(*,*,kernel), locker.claimQuote(*,kernel), WETH.approve(helper,*), helper.swapWethToUsdc(*,*), USDC.transfer(spender, SUM_PER_WINDOW cap)', () => {
+  it('BootrCallPolicy rules: exactly locker.settleAndClaim(*,*,kernel), locker.claimQuote(*,kernel), WETH.approve(helper,*), helper.swapWethToUsdc(*,*), USDC.transfer(spender, SUM_PER_WINDOW cap), WETH.withdraw(*)', () => {
     const p = params();
     const rules = callPolicyRules(p);
     expect(rules).toEqual([
@@ -133,8 +134,19 @@ describe('validatorData layout (contracts/src/README.md)', () => {
           { index: 1, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(50_000_000n, { size: 32 }) },
         ],
       },
+      // WETH.withdraw(wad): the kernel's gas. WETH9 pays msg.sender, so the ETH lands on the kernel and can only leave as prefund.
+      { target: ADDR.weth, selector: WETH_WITHDRAW_SELECTOR, windowSeconds: 0, args: [] },
     ]);
-    expect(rules).toHaveLength(5);
+    expect(rules).toHaveLength(6);
+    expect(WETH_WITHDRAW_SELECTOR).toBe('0x2e1a7d4d');
+    expect(hasGasRule(p)).toBe(true);
+    // the RWAGMI layout before self-funded gas (version 2) is the same list without the withdraw rule; the funding
+    // rule keeps its index in both, so `windowOf` reads the right window for keys installed under either
+    const v2 = callPolicyRules({ ...p, rulesVersion: 2 });
+    expect(v2).toEqual(rules.slice(0, 5));
+    expect(hasGasRule({ rulesVersion: 2 })).toBe(false);
+    expect(fundingRuleIndex({ rulesVersion: 2 })).toBe(FUNDING_RULE_INDEX);
+    expect(fundingRuleIndex(p)).toBe(FUNDING_RULE_INDEX);
     expect(FUNDING_RULE_INDEX).toBe(4);
     expect(rules[FUNDING_RULE_INDEX]!.args[FUNDING_AMOUNT_ARG_INDEX]!.op).toBe(CallPolicyOp.SUM_PER_WINDOW);
     expect(LOCKER_SETTLE_AND_CLAIM_SELECTOR).toBe(keccak256(toHex('settleAndClaim(bytes32[],address,address)')).slice(0, 10));
@@ -161,7 +173,7 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(SWAP_HELPER_SWAP_SELECTOR).toBe(keccak256(toHex('swapWethToUsdc(uint256,uint256)')).slice(0, 10));
     // nothing may ever reach the Universal Router or move WETH anywhere but the helper's allowance
     expect(rules.some((r) => r.target === ADDR.uniswap.universalRouter)).toBe(false);
-    expect(rules.filter((r) => r.target === ADDR.weth).every((r) => r.selector === ERC20_APPROVE_SELECTOR)).toBe(true);
+    expect(rules.filter((r) => r.target === ADDR.weth).map((r) => r.selector)).toEqual([ERC20_APPROVE_SELECTOR, WETH_WITHDRAW_SELECTOR]);
     expect(() => callPolicyRules(legacyParams())).toThrow(/legacy rule layout/);
     expect(() => callPolicyRules(clankerEraParams())).toThrow(/legacy rule layout/);
     expect(() => callPolicyRules(params({ feeLocker: undefined as unknown as Address }))).toThrow(/feeLocker/);

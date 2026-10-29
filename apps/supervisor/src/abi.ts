@@ -76,6 +76,8 @@ export const KERNEL_EXECUTE_SELECTOR = '0xe9ae5c53' as const;
 export const KERNEL_EXECUTE_USER_OP_SELECTOR = '0x8dd7712f' as const;
 /** ERC20.approve(address,uint256) */
 export const ERC20_APPROVE_SELECTOR = '0x095ea7b3' as const;
+/** WETH9.withdraw(uint256 wad): unwraps the kernel's WETH into ETH held by the kernel (its gas; see gas.ts). */
+export const WETH_WITHDRAW_SELECTOR = toFunctionSelector('withdraw(uint256)');
 /** BootrSwapHelper.swapWethToUsdc(uint256,uint256) */
 export const SWAP_HELPER_SWAP_SELECTOR = toFunctionSelector('swapWethToUsdc(uint256,uint256)');
 /** RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): settles the pools' fees and pays `to`. */

@@ -52,7 +52,7 @@ import {
   type Hex,
   type LocalAccount,
 } from 'viem';
-import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR } from './abi.js';
+import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
 
 export const KERNEL_VERSION = '0.3.1';
 export const SESSION_HOOK_DATA: Hex = '0x00';
@@ -168,8 +168,15 @@ export interface CallPolicyRule {
 
 /** `abi.encode(Rule[])` as `BootrCallPolicy.onInstall` decodes it (after the 32-byte permission id). */
 export const CALL_POLICY_RULES_ABI = parseAbiParameters('(address target, bytes4 selector, uint32 windowSeconds, (uint8 index, uint8 op, bytes32 value)[] args)[]');
-/** Current rule layout: RWAGMI v3 claims (2 rules), WETH approve, swap, USDC funding. */
-export const CALL_POLICY_RULES_VERSION = 2;
+/**
+ * Current rule layout: RWAGMI v3 claims (2 rules), WETH approve, swap, USDC funding, WETH withdraw (gas).
+ * Version 2 (RWAGMI, before self-funded gas) has the same first five rules and no withdraw rule.
+ */
+export const CALL_POLICY_RULES_VERSION = 3;
+/** Oldest layout `callPolicyRules` can still build (the RWAGMI layout without the gas rule). */
+export const MIN_CALL_POLICY_RULES_VERSION = 2;
+/** First layout with the `WETH.withdraw` rule the gas policy needs (gas.ts). */
+export const GAS_RULE_VERSION = 3;
 /** Position of the USDC funding rule in `callPolicyRules` (for `BootrCallPolicy.windowOf`). */
 export const FUNDING_RULE_INDEX = 4;
 /** Position of the funding rule in the Clanker-era layout (one `FeeLocker.claim` rule in front). */
@@ -180,7 +187,12 @@ export const FUNDING_AMOUNT_ARG_INDEX = 1;
 /** Funding rule index of an installed policy (no stored policy = the current layout). */
 export function fundingRuleIndex(p?: Pick<SessionPolicyParams, 'rulesVersion'> | null): number {
   if (!p) return FUNDING_RULE_INDEX;
-  return (p.rulesVersion ?? 0) >= CALL_POLICY_RULES_VERSION ? FUNDING_RULE_INDEX : LEGACY_FUNDING_RULE_INDEX;
+  return (p.rulesVersion ?? 0) >= MIN_CALL_POLICY_RULES_VERSION ? FUNDING_RULE_INDEX : LEGACY_FUNDING_RULE_INDEX;
+}
+
+/** Whether a stored policy's session key may unwrap WETH into gas (`WETH.withdraw` rule present). */
+export function hasGasRule(p?: Pick<SessionPolicyParams, 'rulesVersion'> | null): boolean {
+  return (p?.rulesVersion ?? 0) >= GAS_RULE_VERSION;
 }
 
 export const ERC20_TRANSFER_SELECTOR: Hex = toFunctionSelector('transfer(address,uint256)');
@@ -190,15 +202,17 @@ const eqAddress = (index: number, value: Address): CallPolicyArgRule => ({ index
 const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(value, { size: 32 }) });
 
 /**
- * The five calls a session key may make, in this order. Every call must carry zero ETH value. The RWAGMI locker
+ * The six calls a session key may make, in this order. Every call must carry zero ETH value. The RWAGMI locker
  * pays `msg.sender`'s (the kernel's) fee balance to `to`, and `to` is pinned to the kernel, so a claim can only move
  * fees into the kernel. The swap helper pulls WETH from the kernel and pays ALL output USDC back to the kernel at no
  * worse than the Chainlink price minus 3%, so these rules can only ever turn the kernel's WETH into the kernel's USDC
  * (finding C-02). The only USDC outflow is to the agent's own spender EOA, capped cumulatively per window
- * on-chain (M-02 and the x402 exposure after C-01).
+ * on-chain (M-02 and the x402 exposure after C-01). `WETH.withdraw` (version 3) turns the kernel's WETH into ETH
+ * held by the kernel itself: WETH9 pays `msg.sender`, and ETH on the kernel can only ever leave as userOp prefund
+ * (no rule carries value, the root validator is the guardian), so it is the agent's gas and nothing else (gas.ts).
  */
 export function callPolicyRules(p: SessionPolicyParams): CallPolicyRule[] {
-  if ((p.rulesVersion ?? 0) < CALL_POLICY_RULES_VERSION) throw new Error(`session policy has the legacy rule layout (rulesVersion ${p.rulesVersion ?? 'unset'}); rotate the session key`);
+  if ((p.rulesVersion ?? 0) < MIN_CALL_POLICY_RULES_VERSION) throw new Error(`session policy has the legacy rule layout (rulesVersion ${p.rulesVersion ?? 'unset'}); rotate the session key`);
   if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (RwagmiLpLockerV3)');
   if (!isAddress(p.swapHelper)) throw new Error('session policy has no swapHelper (bootr.swapHelper)');
   if (!isAddress(p.spender)) throw new Error('session policy has no spender');
@@ -216,6 +230,8 @@ export function callPolicyRules(p: SessionPolicyParams): CallPolicyRule[] {
     { target: p.swapHelper, selector: SWAP_HELPER_SWAP_SELECTOR, windowSeconds: 0, args: [] },
     // USDC.transfer(spender, SUM_PER_WINDOW <= cap): the spender's float, at most `cap` per window.
     { target: p.usdc, selector: ERC20_TRANSFER_SELECTOR, windowSeconds: p.usdcWindowSeconds, args: [eqAddress(0, p.spender), sumPerWindow(1, p.usdcTransferCap)] },
+    // WETH.withdraw(wad): the kernel's own gas (ETH stays on the kernel; see above). Appended last so every earlier index is stable.
+    ...(hasGasRule(p) ? [{ target: p.weth, selector: WETH_WITHDRAW_SELECTOR, windowSeconds: 0, args: [] as CallPolicyArgRule[] }] : []),
   ];
 }
 

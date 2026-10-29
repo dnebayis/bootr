@@ -87,6 +87,8 @@ export interface ChainState {
   fundingWindow: { windowEnd: bigint; spent: bigint; windowSeconds: number; cap: bigint };
   weth: bigint;
   eth: bigint;
+  /** Kernel's EntryPoint v0.7 deposit (its gas; `deposit + eth` is what the fee policy calls gas). */
+  deposit: bigint;
   token: bigint;
   /** `RwagmiLpLockerV3.pendingQuote(poolId, kernel)`: fees credited to the pool, not settled to the kernel yet. */
   pendingWeth: bigint;
@@ -121,6 +123,7 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
     fundingWindow: { windowEnd: 1_792_843_200n + 86_400n, spent: 0n, windowSeconds: 86_400, cap: 50_000_000n },
     weth: 0n,
     eth: 0n,
+    deposit: 1_000_000_000_000_000n, // 0.001 ETH: gas is healthy unless a test drains it
     token: 0n,
     pendingWeth: 0n,
     claimableWeth: 0n,
@@ -150,6 +153,7 @@ export function mockChain(state: ChainState): ChainContext {
           const holder = getAddress((args.args as Address[])[0]!);
           if (addr === ADDR.usdc) return holder === KERNEL ? state.usdc : holder === SPENDER ? state.spenderUsdc : 0n;
           if (addr === ADDR.weth) return state.weth;
+          if (addr === entryPoint07Address) return holder === KERNEL ? state.deposit : 0n;
           return state.token;
         }
         case 'windowOf':
@@ -400,12 +404,14 @@ export interface MockAdminSigner {
   outcome: 'success' | 'reverted' | Error;
   /** `UserOperationRevertReason.revertReason` attached when `outcome === 'reverted'`. */
   revertReason: Hex;
+  /** `EntryPoint.depositTo(kernel){value}` calls (gas bootstrap / admin top-up), in order. */
+  deposits: { kernel: Address; wei: bigint }[];
 }
 
 /** Admin signer whose `handleOps` behaves like a mined EntryPoint tx: it emits one `UserOperationEvent` per op. */
 export function mockAdminSigner(): MockAdminSigner {
   const admin = privateKeyToAccount(ADMIN_PK);
-  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], nonceRevoked: [], failRevoke: new Set(), handled: [], outcome: 'success', revertReason: '0x' };
+  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], nonceRevoked: [], failRevoke: new Set(), handled: [], outcome: 'success', revertReason: '0x', deposits: [] };
   let kernelNonce = 0;
   m.signer = {
     address: admin.address,
@@ -426,6 +432,10 @@ export function mockAdminSigner(): MockAdminSigner {
     async revokeAllSessionKeysBatch(kernels) {
       m.nonceRevoked.push([...kernels]);
       return { txHash: '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' };
+    },
+    async depositGas(kernel, wei) {
+      m.deposits.push({ kernel, wei });
+      return { txHash: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' };
     },
     async handleOps(ops, beneficiary) {
       m.handled.push({ ops, beneficiary });
