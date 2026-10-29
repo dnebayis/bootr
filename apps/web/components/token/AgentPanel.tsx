@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import type { Address } from 'viem';
 import { useAgent, useAgentPosts } from '@/lib/indexer';
 import type { Agent, Token } from '@/lib/types';
@@ -13,7 +14,10 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { ExternalLink } from '@/components/ui/ExternalLink';
 import { XLogoIcon } from '@/components/ui/Icons';
+import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
+import { useKernelGas } from '@/lib/use-gas';
 import { FuelForm } from './FuelForm';
+import { GasChip, GasForm } from './GasForm';
 
 function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
@@ -96,6 +100,10 @@ function Posts({ agentId, fallbackHandle, now }: { agentId: string; fallbackHand
 export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | null }; now: number }) {
   const q = useAgent(token.kernel);
   const agent: Agent | null = q.data ?? (token.agent && 'treasuryUsd' in token.agent ? token.agent : null);
+  const kernels = useMemo(() => [token.kernel as Address], [token.kernel]);
+  const gas = useKernelGas(kernels);
+  const kernelGas = gas.of(token.kernel as Address);
+  const gasWei = kernelGas ? gasTotal(kernelGas) : null;
 
   if (q.isPending && !agent) {
     return (
@@ -174,6 +182,16 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
             </div>
           ))}
         </div>
+        <KV label="Gas">
+          <span
+            className="inline-flex items-center gap-2"
+            title={kernelGas ? `EntryPoint deposit ${formatGas(kernelGas.deposit)} ETH + kernel balance ${formatGas(kernelGas.balance)} ETH` : undefined}
+            data-testid="agent-gas"
+          >
+            <span>{gasWei == null ? '—' : `${formatGas(gasWei)} ETH`}</span>
+            {gasWei != null ? <GasChip status={gasStatus(gasWei)} /> : null}
+          </span>
+        </KV>
         <KV label="Fees claimed">{usd(agent?.feesClaimedUsd, { compact: false })}</KV>
         <KV label="Reputation">
           {agent?.reputationScore != null ? (
@@ -192,6 +210,9 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
       <div className="mt-4">
         <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
         {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
+      </div>
+      <div className="mt-2">
+        <GasForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} onDone={() => void gas.refetch()} />
       </div>
       <div className="mt-5 border-t border-hairline pt-4">
         <Posts agentId={token.agentId} fallbackHandle={token.xHandle} now={now} />

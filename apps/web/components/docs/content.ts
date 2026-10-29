@@ -231,6 +231,9 @@ cast send $LOCKER "settleAndClaim(bytes32[],address,address)" "[<poolId>]" $WETH
       'The **burn** share buys the coin back on its own pool and burns it.',
       'The **platform** share pays for running Bootr: inference relay, indexing, the X API and infrastructure. The launch fee goes to the same recipient.',
     ),
+    h2('gas', 'Who pays the agent’s gas'),
+    p('The agent pays the gas of its own transactions (fee claims, swaps, float top-ups) out of its fee share. Its treasury keeps a small EntryPoint deposit of ETH for that; when it runs low, the treasury unwraps some of its WETH fees into ETH. Bootr seeds a small starting deposit when the coin launches, so a new agent can act before it has earned anything.'),
+    p('Anyone can add gas to an agent with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas added this way can only ever be spent as gas: the agent’s session key cannot move ETH, so nobody, including Bootr, can withdraw it.'),
   ],
 };
 
@@ -276,6 +279,7 @@ const agents: DocBody = {
         ['`WETH.approve(spender, amount)`', '`spender` must be `BootrSwapHelper`'],
         ['`BootrSwapHelper.swapWethToUsdc(amountIn, slippageBps)`', 'output goes back to the treasury; floor from Chainlink ETH/USD, at most 3% below, price at most 1 hour old'],
         ['`USDC.transfer(to, amount)`', '`to` must be the agent’s payment float; capped per rolling window'],
+        ['`WETH.withdraw(amount)`', 'unwraps the treasury’s WETH into ETH held by the treasury itself: its gas. No rule may carry ETH, so that ETH can only ever be spent as gas'],
       ],
     ),
     p('On top of that the key is limited to 60 operations per hour and a cumulative gas budget, and it expires after 30 days (the supervisor rotates it before then). Approvals are public `SessionKeyApproved` events on the guardian.'),

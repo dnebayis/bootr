@@ -15,6 +15,8 @@ import { useAgents } from '@/lib/indexer';
 import { useNow } from '@/lib/hooks';
 import { useTxRunner } from '@/lib/tx';
 import { ago, shortAddr, usd } from '@/lib/format';
+import { formatGas, gasStatus, gasTotal, type KernelGas } from '@/lib/gas';
+import { useKernelGas } from '@/lib/use-gas';
 import type { AgentWithToken } from '@/lib/types';
 import type { PlatformConfig } from '@/lib/server/admin-config';
 import { Button } from '@/components/ui/Button';
@@ -24,6 +26,7 @@ import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
+import { GasChip, GasForm } from '@/components/token/GasForm';
 import { PlatformFeesPanel } from './PlatformFees';
 
 const th = 'px-4 py-2 text-left text-caption font-normal text-mute';
@@ -308,13 +311,27 @@ function LaunchFeePanel() {
 
 // ------------------------------------------------------------------ agents
 
+/** ETH the kernel can spend on gas (EntryPoint deposit + balance) with its ok / low / out-of-gas chip. */
+function GasCell({ gas }: { gas: KernelGas | null }) {
+  const wei = gas ? gasTotal(gas) : null;
+  return (
+    <span className="inline-flex items-center justify-end gap-2" title={gas ? `Deposit ${formatGas(gas.deposit)} ETH + balance ${formatGas(gas.balance)} ETH` : undefined}>
+      <span className="font-mono text-sm tabular">{wei == null ? '—' : `${formatGas(wei)} ETH`}</span>
+      {wei != null ? <GasChip status={gasStatus(wei)} /> : null}
+    </span>
+  );
+}
+
 function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: boolean }) {
   const now = useNow();
   const [q, setQ] = useState('');
   const [refuel, setRefuel] = useState<{ kernel: Address; amount: string } | null>(null);
+  const [topUp, setTopUp] = useState<Address | null>(null);
   const write = useWriteContract();
   const { run, pending } = useTxRunner();
   const guardian = contracts.guardian;
+  const kernels = useMemo(() => agents.map((a) => a.id), [agents]);
+  const gas = useKernelGas(kernels);
 
   const list = useMemo(() => {
     const n = q.trim().toLowerCase();
@@ -347,7 +364,8 @@ function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: b
     >
       <p className="border-b border-hairline px-4 py-2 text-caption text-mute">
         Pause / Resume on AgentGuardian is creator-only on-chain. To stop an agent as the platform, revoke its session keys (bumps the kernel nonce).
-        Force refuel sends USDC from the connected wallet.
+        Force refuel sends USDC from the connected wallet. Gas is the kernel&rsquo;s EntryPoint deposit plus its ETH; Top up sends ETH to that deposit
+        (<code className="font-mono">EntryPoint.depositTo</code>) from the connected wallet.
       </p>
       {loading ? (
         <div className="p-4">
@@ -357,13 +375,14 @@ function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: b
         <Empty>No agents match.</Empty>
       ) : (
         <div className="max-h-[560px] overflow-auto">
-          <table className="w-full min-w-[860px] border-collapse">
+          <table className="w-full min-w-[1040px] border-collapse">
             <thead className="sticky top-0 bg-canvas-soft">
               <tr>
                 <th className={th}>Coin</th>
                 <th className={th}>Status</th>
                 <th className={th}>Kernel</th>
                 <th className={`${th} text-right`}>Treasury</th>
+                <th className={`${th} text-right`}>Gas</th>
                 <th className={th}>Last activity</th>
                 <th className={`${th} text-right`}>Actions</th>
               </tr>
@@ -385,9 +404,14 @@ function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: b
                     </a>
                   </td>
                   <td className={`${td} text-right font-mono text-sm tabular`}>{usd(a.treasuryUsd, { compact: false })}</td>
+                  <td className={`${td} text-right`}>
+                    <GasCell gas={gas.of(a.id)} />
+                  </td>
                   <td className={`${td} font-mono text-caption text-mute`}>{ago(a.lastActivityAt, now)}</td>
                   <td className={`${td}`}>
-                    {refuel?.kernel === a.id ? (
+                    {topUp === a.id ? (
+                      <GasForm kernel={a.id} symbol={a.tokenInfo?.symbol} layout="row" label="Top up" onCancel={() => setTopUp(null)} onDone={() => void gas.refetch()} />
+                    ) : refuel?.kernel === a.id ? (
                       <div className="flex items-center justify-end gap-1.5">
                         <Input mono suffix="USDC" className="w-32" value={refuel.amount} onChange={(e) => setRefuel({ kernel: a.id, amount: e.target.value.trim() })} />
                         <Button size="sm" variant="ink" onClick={sendRefuel} loading={pending === 'Force refuel'}>
@@ -407,6 +431,9 @@ function AgentsPanel({ agents, loading }: { agents: AgentWithToken[]; loading: b
                         </Button>
                         <Button size="sm" variant="secondary" onClick={() => setRefuel({ kernel: a.id, amount: '20' })} disabled={a.status === 'claimed'}>
                           Force refuel
+                        </Button>
+                        <Button size="sm" variant="secondary" onClick={() => setTopUp(a.id)} disabled={a.status === 'claimed'}>
+                          Top up
                         </Button>
                       </div>
                     )}

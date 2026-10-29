@@ -360,6 +360,21 @@ export const mock = {
     // Up to ~0.05 WETH settled, ~0.01 WETH per pool unsettled.
     return BigInt(Math.floor(r() * (scope === 'settled' ? 5e4 : 1e4))) * 10n ** 12n;
   },
+  /**
+   * Deterministic agent gas (wei) for mock mode, in place of `EntryPoint.balanceOf(kernel)` and the kernel's
+   * ETH balance. Most kernels are well funded; about one in five is low and one in ten is out of gas.
+   */
+  gas(kernel: string): { deposit: bigint; balance: bigint } {
+    let h = 2166136261;
+    for (const ch of `${kernel.toLowerCase()}:gas`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const r = mulberry32(h >>> 0);
+    const band = r();
+    // ok: 0.0003–0.003 ETH; low: 0.00005–0.00019 ETH; empty: 0–0.00003 ETH
+    const eth = band < 0.1 ? r() * 0.00003 : band < 0.3 ? 0.00005 + r() * 0.00014 : 0.0003 + r() * 0.0027;
+    const total = BigInt(Math.floor(eth * 1e9)) * 10n ** 9n;
+    const deposit = (total * BigInt(60 + Math.floor(r() * 40))) / 100n;
+    return { deposit, balance: total - deposit };
+  },
   tokens(tab: string, after: string | null, limit: number) {
     const s = mockStore();
     let list = [...s.tokens];

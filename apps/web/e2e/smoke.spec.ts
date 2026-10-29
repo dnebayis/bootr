@@ -32,6 +32,24 @@ test('token page renders agent, fee split and trades', async ({ page }) => {
   await expect(page.getByText(/Inactive for \d+ days/)).toBeVisible();
 });
 
+test('agent panel shows gas with a status chip and an Add gas form (mock mode)', async ({ page }) => {
+  await page.goto('/');
+  const href = await page.locator('a[href^="/token/0x"]').first().getAttribute('href');
+  await page.goto(href!);
+  const gas = page.getByTestId('agent-gas');
+  await expect(gas).toContainText(/\d ETH/);
+  await expect(gas.getByTestId('gas-status')).toHaveAttribute('data-status', /^(ok|low|empty)$/);
+  await page.getByRole('button', { name: 'Add gas' }).click();
+  const amount = page.getByRole('textbox', { name: 'Add gas amount in ETH' });
+  await expect(amount).toHaveValue('0.001');
+  await amount.fill('0.00001');
+  await expect(page.getByRole('button', { name: /^Add .*ETH$/ })).toBeDisabled();
+  await amount.fill('0.002');
+  await page.getByRole('button', { name: 'Add 0.002 ETH' }).click();
+  await expect(page.getByText(/Mock: added 0.002 ETH of gas/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add gas' })).toBeVisible();
+});
+
 test('agent panel counts the spender float in treasury USDC (mock mode)', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('a[href^="/token/0x"]').first()).toBeVisible();
@@ -89,6 +107,14 @@ test('/console-<slug> renders with a valid admin session', async ({ page, contex
   expect(res?.status()).toBe(200);
   await expect(page.getByText('Splits of existing tokens are locked on-chain; defaults apply to future launches only.').first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Launcher defaults' })).toBeVisible();
+  // Agents table: a Gas column with a status chip per row and a per-row Top up (EntryPoint.depositTo) form.
+  const agents = page.locator('section', { has: page.getByRole('heading', { name: 'Agents' }) });
+  await expect(agents.getByRole('columnheader', { name: 'Gas' })).toBeVisible();
+  expect(await agents.getByTestId('gas-status').count()).toBeGreaterThan(0);
+  await agents.getByRole('button', { name: 'Top up' }).first().click();
+  await expect(agents.getByRole('textbox', { name: 'Top up amount in ETH' })).toHaveValue('0.001');
+  await agents.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByText(/Mock: added 0.001 ETH of gas/)).toBeVisible();
 });
 
 test('robots disallows the console', async ({ request }) => {
