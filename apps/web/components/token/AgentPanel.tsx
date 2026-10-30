@@ -18,6 +18,7 @@ import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { FuelForm } from './FuelForm';
 import { GasChip, GasForm } from './GasForm';
+import { cn } from '@/components/ui/cn';
 
 function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
@@ -211,7 +212,17 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
         <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
         {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
       </div>
-      <div className="mt-2">
+      <div className="mt-2" id="gas">
+        {gasWei != null && gasStatus(gasWei) !== 'ok' && agent?.status !== 'claimed' ? (
+          <p
+            data-testid="gas-notice"
+            className={cn('mb-2 rounded-xs px-3 py-2 text-caption', gasStatus(gasWei) === 'empty' ? 'border border-danger text-danger' : 'bg-warning-surface text-warning')}
+          >
+            {gasStatus(gasWei) === 'empty'
+              ? 'Out of gas: the agent cannot claim fees, trade or refuel until someone adds gas. The creator funds the first gas; after that the agent refills from its own fees.'
+              : 'Gas is low. The agent refills it from its own WETH fees on its next claim; add gas if it has none to claim yet.'}
+          </p>
+        ) : null}
         <GasForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} onDone={() => void gas.refetch()} />
       </div>
       <div className="mt-5 border-t border-hairline pt-4">

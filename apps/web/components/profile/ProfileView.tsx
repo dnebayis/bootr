@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { useConnection, useWriteContract } from 'wagmi';
 import { useQueryClient } from '@tanstack/react-query';
@@ -13,6 +14,9 @@ import { env } from '@/lib/env';
 import { useMounted, useNow } from '@/lib/hooks';
 import { useTxRunner } from '@/lib/tx';
 import { ago, shortAddr, units, usd } from '@/lib/format';
+import { formatGas, gasStatus, gasTotal, type KernelGas } from '@/lib/gas';
+import { useKernelGas } from '@/lib/use-gas';
+import { GasChip } from '@/components/token/GasForm';
 import type { Token } from '@/lib/types';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { Panel, Empty } from '@/components/ui/Panel';
@@ -35,7 +39,8 @@ function Rows({ n = 3 }: { n?: number }) {
 const th = 'px-5 py-2 text-left text-caption font-normal text-mute';
 const td = 'px-5 py-2.5';
 
-function AgentRow({ token, now }: { token: Token; now: number }) {
+function AgentRow({ token, now, gas }: { token: Token; now: number; gas: KernelGas | null }) {
+  const gasWei = gas ? gasTotal(gas) : null;
   const agent = useAgent(token.kernel);
   const write = useWriteContract();
   const { run, pending } = useTxRunner();
@@ -75,6 +80,17 @@ function AgentRow({ token, now }: { token: Token; now: number }) {
         <StatusDot status={status} withLabel />
       </td>
       <td className={`${td} text-right font-mono text-sm tabular`}>{usd(agent.data?.treasuryUsd, { compact: false })}</td>
+      <td className={td}>
+        <span className="inline-flex items-center gap-2 font-mono text-sm tabular">
+          {gasWei == null ? <span className="text-mute">—</span> : `${formatGas(gasWei)} ETH`}
+          {gasWei != null ? <GasChip status={gasStatus(gasWei)} /> : null}
+          {gasWei != null && gasStatus(gasWei) === 'empty' && !final ? (
+            <Link href={`/token/${token.id}#gas`} className="text-caption text-link hover:underline">
+              Add gas
+            </Link>
+          ) : null}
+        </span>
+      </td>
       <td className={`${td} font-mono text-caption text-mute`}>{ago(agent.data?.lastActivityAt, now)}</td>
       <td className={`${td} text-right`}>
         <Button
@@ -99,6 +115,8 @@ export function ProfileView() {
   const launched = useTokensByCreator(isConnected ? address : undefined);
   const holdings = useHoldings(isConnected ? address : undefined);
   const fuel = useFuelHistory(isConnected ? address : undefined);
+  const launchedKernels = useMemo(() => (launched.data ?? []).map((t) => t.kernel as Address), [launched.data]);
+  const gas = useKernelGas(launchedKernels);
 
   if (!mounted) return <Rows n={6} />;
 
@@ -133,6 +151,7 @@ export function ProfileView() {
                   <th scope="col" className={th}>Coin</th>
                   <th scope="col" className={th}>Agent</th>
                   <th scope="col" className={`${th} text-right`}>Treasury</th>
+                  <th scope="col" className={th}>Gas</th>
                   <th scope="col" className={th}>Last activity</th>
                   <th scope="col" className={`${th} text-right`}>
                     <span className="sr-only">Actions</span>
@@ -141,7 +160,7 @@ export function ProfileView() {
               </thead>
               <tbody>
                 {launched.data.map((t) => (
-                  <AgentRow key={t.id} token={t} now={now} />
+                  <AgentRow key={t.id} token={t} now={now} gas={gas.of(t.kernel as Address)} />
                 ))}
               </tbody>
             </table>

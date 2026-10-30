@@ -63,6 +63,10 @@ test('profile shows creator fees with claim controls (mock mode)', async ({ page
   await expect(panel.getByRole('button', { name: 'Claim WETH' })).toBeVisible();
   const claims = panel.getByRole('button', { name: 'Claim fees' });
   expect(await claims.count()).toBeGreaterThan(0);
+  // The agents table carries each coin's gas with a status chip (the creator funds the first gas).
+  const agents = page.locator('table', { has: page.getByRole('columnheader', { name: 'Gas' }) });
+  await expect(agents).toBeVisible();
+  expect(await agents.getByTestId('gas-status').count()).toBeGreaterThan(0);
 });
 
 test('console lists platform fees with per-token and claim-all actions (mock mode)', async ({ page, context, baseURL }) => {
