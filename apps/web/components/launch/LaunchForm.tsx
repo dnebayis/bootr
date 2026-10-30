@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useConnection, useReadContract, useWriteContract } from 'wagmi';
 import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, type Address, zeroAddress } from 'viem';
+import { entryPoint, entryPointAbi, GAS_TOPUP_DEFAULT_ETH, GAS_TOPUP_MIN_ETH, validTopUp } from '@/lib/gas';
 import { toast } from 'sonner';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
@@ -94,6 +95,9 @@ export function LaunchForm() {
 
   // 04 Fuel & options
   const [fuel, setFuel] = useState('20');
+  // The agent's first gas: ETH the creator deposits into the EntryPoint for the new kernel right after the launch
+  // (a second transaction). The platform pays no gas; the agent refills from its own WETH fees afterwards.
+  const [gas, setGas] = useState(GAS_TOPUP_DEFAULT_ETH);
   const [devBuy, setDevBuy] = useState('');
   const [buyback, setBuyback] = useState(false);
 
@@ -123,6 +127,8 @@ export function LaunchForm() {
 
   const fuelUnits = /^\d+(\.\d{0,6})?$/.test(fuel) ? parseUnits(fuel, USDC_DECIMALS) : null;
   const devBuyWei = devBuy === '' ? 0n : /^\d+(\.\d{0,18})?$/.test(devBuy) ? parseEther(devBuy) : null;
+  // Empty or 0 = launch without gas (the agent waits until someone adds some); otherwise at least the form minimum.
+  const gasWei = gas === '' || /^0(\.0*)?$/.test(gas) ? 0n : validTopUp(gas) ? parseEther(gas) : null;
 
   const allowance = useReadContract({
     address: contracts.usdc,
@@ -150,6 +156,7 @@ export function LaunchForm() {
   if (identity.trim().length < 20) errors.push('Describe the agent in at least 20 characters.');
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
+  if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
     : !env.useMock && !contracts.launcher
@@ -194,14 +201,14 @@ export function LaunchForm() {
   }
 
   async function launch() {
-    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || !draftId || !pinned || upload.status !== 'done') return;
+    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done') return;
     const modelId = selectedModel?.id ?? '';
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle };
     if (!(await saveDraft(draftId, coin))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
       const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle });
-      toast.success(`Mock: $${symbol.toUpperCase()} launched`);
+      toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
       sessionStorage.removeItem(DRAFT_KEY);
       router.push(`/token/${id}`);
       return;
@@ -237,8 +244,16 @@ export function LaunchForm() {
     );
     if (!receipt) return;
     const [ev] = parseEventLogs({ abi: launcherAbi, eventName: 'AgentLaunched', logs: receipt.logs });
-    const token = (ev?.args as { token?: Address } | undefined)?.token;
+    const { token, kernel } = (ev?.args as { token?: Address; kernel?: Address } | undefined) ?? {};
     sessionStorage.removeItem(DRAFT_KEY);
+    if (gasWei > 0n && kernel) {
+      // The agent's first gas, from the creator's wallet. Skipping or failing this leaves a launched coin whose
+      // agent waits for gas; the token page's "Add gas" covers it later.
+      const deposited = await run('Add gas', () =>
+        write.mutateAsync({ address: entryPoint, abi: entryPointAbi, functionName: 'depositTo', args: [kernel], value: gasWei, chainId: appChain.id, dataSuffix: builderDataSuffix }),
+      );
+      if (!deposited) toast('Launched without gas. Add gas from the token page so the agent can start.');
+    }
     if (token) router.push(`/token/${token}`);
     else toast('Launched. The token page appears once the indexer catches up.');
   }
@@ -354,7 +369,7 @@ export function LaunchForm() {
       </Section>
 
       <Section n={4} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-3">
           <div>
             <Label htmlFor="fuel" hint={`Min ${minFuel} USDC`}>
               Fuel
@@ -368,6 +383,15 @@ export function LaunchForm() {
             </Label>
             <Input id="devbuy" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={devBuy} onChange={(e) => setDevBuy(e.target.value.trim())} aria-invalid={devBuyWei == null} />
             <p className="mt-1.5 text-caption text-mute">Bought in the launch transaction, sent to your wallet.</p>
+          </div>
+          <div>
+            <Label htmlFor="gas" hint="Optional">
+              Gas
+            </Label>
+            <Input id="gas" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={gas} onChange={(e) => setGas(e.target.value.trim())} aria-invalid={gasWei == null} />
+            <p className="mt-1.5 text-caption text-mute">
+              {gasWei === 0n ? 'Without gas the agent waits; anyone can add gas on the token page.' : 'The agent’s first gas, a second transaction after the launch. It refills from its own fees.'}
+            </p>
           </div>
         </div>
         <div className="flex items-start justify-between gap-6 rounded-sm border border-hairline p-4">
@@ -400,6 +424,7 @@ export function LaunchForm() {
             ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
             ['Fuel', `${fuel || 0} USDC`],
             ['Dev buy', devBuy ? `${devBuy} ETH` : 'None'],
+            ['Gas', gasWei && gasWei > 0n ? `${gas} ETH` : 'None'],
             ['Launch fee', launchFeeWei > 0n ? `${formatEther(launchFeeWei)} ETH` : 'None'],
             ['Swap fee', `${pctLabel(1)} in WETH`],
             ['Your share', `${pctLabel(ofVolume(split, 'creator'))} of volume`],
@@ -443,7 +468,11 @@ export function LaunchForm() {
               >
                 {needsApproval ? '2. Launch' : 'Launch'}
               </Button>
-              {env.useMock ? <span className="text-caption text-mute">Mock mode: no transaction is sent.</span> : null}
+              {env.useMock ? (
+                <span className="text-caption text-mute">Mock mode: no transaction is sent.</span>
+              ) : gasWei && gasWei > 0n ? (
+                <span className="text-caption text-mute">Two wallet prompts: the launch, then {gas} ETH of gas for the agent.</span>
+              ) : null}
             </div>
           )}
         </div>

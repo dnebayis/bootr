@@ -150,7 +150,20 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await expect(status.getByRole('link')).toHaveAttribute('href', `${GATEWAY}/ipfs/${cid}`);
   await expect(page.getByAltText('Coin image preview')).toHaveAttribute('src', /^blob:/);
 
+  // The agent's first gas: 0.001 ETH by default (a second tx after the launch), 0 is allowed, anything under the
+  // form minimum is not.
+  const gas = page.getByLabel('Gas', { exact: true });
+  await expect(gas).toHaveValue('0.001');
+  await expect(page.getByText('The agent’s first gas, a second transaction after the launch. It refills from its own fees.')).toBeVisible();
+  await gas.fill('0.00001');
+  await expect(page.getByText('Gas must be 0 or at least 0.0001 ETH.')).toBeVisible();
+  await expect(launch).toBeDisabled();
+  await gas.fill('0');
+  await expect(page.getByText('Without gas the agent waits; anyone can add gas on the token page.')).toBeVisible();
+  await gas.fill('0.002');
+
   await expect(launch).toBeEnabled();
   await launch.click();
+  await expect(page.getByText(/Mock: \$QENG launched with 0.002 ETH of gas/)).toBeVisible();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
 });
