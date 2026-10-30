@@ -5,11 +5,11 @@
  * as prefund, because no session-key rule carries value and the root validator is the guardian.
  *
  * Where the gas comes from:
- *  - the platform seeds `GAS_BOOTSTRAP_WEI` from the admin EOA when the session key is installed (`bootstrapGas`);
+ *  - the creator funds the first tank: `EntryPoint.depositTo(kernel)` from the launch form (or later from the token
+ *    page); the platform never pays it. Until the kernel holds gas the fee policy skips it (`out_of_gas`);
  *  - afterwards the agent pays from its own fee share: the fee policy unwraps the kernel's WETH into ETH
  *    (`WETH.withdraw`, allow-listed since rule layout 3) whenever gas drops under `GAS_MIN_WEI`, up to `GAS_TARGET_WEI`;
- *  - anyone may top a kernel up with `EntryPoint.depositTo(kernel)` (the web app's "Add gas"; the console's admin top-up
- *    goes through `POST /internal/agents/:id/gas/top-up`).
+ *  - anyone may top a kernel up with `EntryPoint.depositTo(kernel)` (the web app's "Add gas").
  */
 import { encodeFunctionData, formatEther, parseAbi, type Address } from 'viem';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
@@ -92,20 +92,4 @@ export function gasTopUp(args: { total: bigint; minWei: bigint; targetWei: bigin
 export function agentHasGasRule(agent: Pick<AgentRow, 'sessionPolicy'>): boolean {
   if (!agent.sessionPolicy) return true;
   return hasGasRule(deserializeSessionPolicy(agent.sessionPolicy as unknown as SerializedSessionPolicy));
-}
-
-/**
- * Seeds a kernel's gas from the admin EOA up to `GAS_BOOTSTRAP_WEI` (idempotent: reads the chain first, deposits only
- * the shortfall). Null when nothing was deposited: sponsored gas, no admin signer, or already funded.
- */
-export async function bootstrapGas(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId' | 'kernel'>): Promise<{ txHash: `0x${string}`; wei: bigint } | null> {
-  if (!gasSelfFunded(ctx.config) || !ctx.adminSigner) return null;
-  const kernel = agent.kernel as Address;
-  const target = BigInt(ctx.config.GAS_BOOTSTRAP_WEI);
-  const gas = await readGas(ctx, kernel);
-  if (gas.total >= target) return null;
-  const wei = target - gas.total;
-  const { txHash } = await ctx.adminSigner.depositGas(kernel, wei);
-  ctx.log.info({ agentId: agent.agentId, kernel, wei: wei.toString(), txHash }, 'gas bootstrapped from the admin wallet');
-  return { txHash, wei };
 }

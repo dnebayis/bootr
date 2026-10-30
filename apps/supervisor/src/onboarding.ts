@@ -13,7 +13,6 @@ import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLog
 import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { fetchCreatorIdentity } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
-import { bootstrapGas } from './gas.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
@@ -526,13 +525,6 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
         log.error({ err }, 'session key install failed');
         continue;
       }
-    }
-    // Starting gas (self-funded gas only): idempotent, so an agent that waits here for its X account is checked
-    // every pass and seeded once; the fee policy keeps it topped up from its own fees afterwards.
-    try {
-      await bootstrapGas(ctx, agent);
-    } catch (err) {
-      log.warn({ err }, 'gas bootstrap failed; the agent starts without gas until the admin wallet is funded');
     }
     try {
       let account = await ctx.sender.account(agent.agentId);

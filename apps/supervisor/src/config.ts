@@ -25,12 +25,10 @@ export const configSchema = z
     BUNDLER_URL: z.string().url(),
     /**
      * Optional ERC-7677 paymaster URL. Unset (the default) = self-funded gas: the kernel pays every userOp's prefund
-     * from its EntryPoint deposit and its own ETH, the admin seeds `GAS_BOOTSTRAP_WEI` at registration and the fee
-     * policy unwraps the kernel's WETH fees into ETH whenever gas drops under `GAS_MIN_WEI` (gas.ts).
+     * from its EntryPoint deposit and its own ETH. The creator deposits the first gas (launch form or token page) and
+     * the fee policy unwraps the kernel's WETH fees into ETH whenever gas drops under `GAS_MIN_WEI` (gas.ts).
      */
     PAYMASTER_URL: optionalUrl,
-    /** ETH (wei) the admin deposits into the EntryPoint for a kernel whose gas is below it when its session key is installed (default 0.001 ETH). */
-    GAS_BOOTSTRAP_WEI: z.preprocess((v) => (v === '' || v === undefined ? '1000000000000000' : v), z.string().regex(/^\d+$/)),
     /** Gas (EntryPoint deposit + kernel ETH, wei) under which the fee policy unwraps WETH into ETH (default 0.0002 ETH). */
     GAS_MIN_WEI: z.preprocess((v) => (v === '' || v === undefined ? '200000000000000' : v), z.string().regex(/^\d+$/)),
     /** ...up to this much gas (wei), bounded by the kernel's WETH (default 0.001 ETH). */

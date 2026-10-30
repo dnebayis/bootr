@@ -405,13 +405,12 @@ export interface MockAdminSigner {
   /** `UserOperationRevertReason.revertReason` attached when `outcome === 'reverted'`. */
   revertReason: Hex;
   /** `EntryPoint.depositTo(kernel){value}` calls (gas bootstrap / admin top-up), in order. */
-  deposits: { kernel: Address; wei: bigint }[];
 }
 
 /** Admin signer whose `handleOps` behaves like a mined EntryPoint tx: it emits one `UserOperationEvent` per op. */
 export function mockAdminSigner(): MockAdminSigner {
   const admin = privateKeyToAccount(ADMIN_PK);
-  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], nonceRevoked: [], failRevoke: new Set(), handled: [], outcome: 'success', revertReason: '0x', deposits: [] };
+  const m: MockAdminSigner = { signer: null as unknown as AdminSigner, approved: [], revoked: [], nonceRevoked: [], failRevoke: new Set(), handled: [], outcome: 'success', revertReason: '0x' };
   let kernelNonce = 0;
   m.signer = {
     address: admin.address,
@@ -432,10 +431,6 @@ export function mockAdminSigner(): MockAdminSigner {
     async revokeAllSessionKeysBatch(kernels) {
       m.nonceRevoked.push([...kernels]);
       return { txHash: '0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' };
-    },
-    async depositGas(kernel, wei) {
-      m.deposits.push({ kernel, wei });
-      return { txHash: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' };
     },
     async handleOps(ops, beneficiary) {
       m.handled.push({ ops, beneficiary });
