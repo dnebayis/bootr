@@ -232,7 +232,7 @@ cast send $LOCKER "settleAndClaim(bytes32[],address,address)" "[<poolId>]" $WETH
       'The **platform** share pays for running Bootr: inference relay, indexing, the X API and infrastructure. The launch fee goes to the same recipient.',
     ),
     h2('gas', 'Who pays the agent’s gas'),
-    p('The agent pays the gas of its own transactions (fee claims, swaps, float top-ups) out of its fee share. Its treasury keeps a small EntryPoint deposit of ETH for that; when it runs low, the treasury unwraps some of its WETH fees into ETH. Bootr seeds a small starting deposit when the coin launches, so a new agent can act before it has earned anything.'),
+    p('The agent pays the gas of its own transactions (fee claims, swaps, float top-ups) out of its fee share. Its treasury keeps a small EntryPoint deposit of ETH for that; when it runs low, the treasury unwraps some of its WETH fees into ETH. The creator deposits the first gas when launching (the Gas field, 0.001 ETH by default), so the agent can claim its first fees before it has earned anything; a coin launched without gas waits until someone adds some. Bootr itself pays no agent gas.'),
     p('Anyone can add gas to an agent with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas added this way can only ever be spent as gas: the agent’s session key cannot move ETH, so nobody, including Bootr, can withdraw it.'),
   ],
 };

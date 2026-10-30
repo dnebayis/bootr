@@ -187,7 +187,7 @@ block 53219209 (`BOOTR_START_BLOCK` / `LAUNCHER_START_BLOCK`).
 | platform | `PORT=3004`, `SUPERVISOR_PORT=3004`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
 | secrets | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY` (only if the supervisor approves session keys), `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL`, `PAYMASTER_URL`, `ENABLE_MODE_BUNDLER_URL`, `ENABLE_MODE_PAYMASTER_URL`, `SEARCH_API_KEY` |
 | private URLs | `SENDER_URL=http://sender.railway.internal:3002`, `INFERENCE_PROVIDER_URL=http://inference.railway.internal:3003`, `INDEXER_URL=http://indexer.railway.internal:42069` |
-| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (claims go through the locker, the launch is decoded from the launcher), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `GAS_BOOTSTRAP_WEI`, `GAS_MIN_WEI`, `GAS_TARGET_WEI` (self-funded gas; `PAYMASTER_URL` empty), `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
+| config | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (claims go through the locker, the launch is decoded from the launcher), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE`, `GAS_MIN_WEI`, `GAS_TARGET_WEI` (self-funded gas; `PAYMASTER_URL` empty), `BUILDER_CODES_ENABLED`, `BUILDER_CODES_URL` |
 | optional | `LAUNCH_LOG_CHUNK_BLOCKS`, `SUPERVISOR_TICK_MS`, `MAX_AGENTS_PER_TICK`, `MAX_TOOL_STEPS`, `CLAIM_THRESHOLD_USD`, `FUEL_TARGET_USDC`, `SPENDER_MIN_USDC`, `SPENDER_TARGET_USDC`, `SWAP_SLIPPAGE_BPS`, `CHAINLINK_MAX_AGE_SECONDS`, `SEARCH_API_URL`, `SESSION_KEY_VALIDITY_DAYS`, `SESSION_ROTATE_BEFORE_DAYS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_USDC_TRANSFER_CAP`, `SESSION_USDC_WINDOW_SECONDS`, `SESSION_GAS_ALLOWANCE_WEI`, `ENABLE_MODE_MAX_PREFUND_WEI`, `INFERENCE_TIMEOUT_MS`, `INFERENCE_MAX_OUTPUT_TOKENS`, `USER_OP_RECEIPT_TIMEOUT_MS`, `LOG_LEVEL` |
 
 Nothing calls the supervisor's admin API from another service today; there is no `SUPERVISOR_URL` consumer.
@@ -368,8 +368,8 @@ between a launch and the supervisor's first card read leaves that agent with the
 - [ ] `X402_NETWORK=eip155:8453`, `X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402`,
       `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`, `INFERENCE_RPC_URL` (mainnet), `INFERENCE_PAYTO_ADDRESS` (mainnet
       treasury), `INFERENCE_PRICE_TABLE_JSON` reviewed, OpenRouter key spend limit set.
-- [ ] `BUNDLER_URL` mainnet endpoint, `PAYMASTER_URL` empty (self-funded gas) with `GAS_BOOTSTRAP_WEI`,
-      `GAS_MIN_WEI`, `GAS_TARGET_WEI` reviewed and the admin wallet funded for bootstraps; `ENABLE_MODE_*`
+- [ ] `BUNDLER_URL` mainnet endpoint, `PAYMASTER_URL` empty (self-funded gas: the creator deposits the first gas
+      at launch) with `GAS_MIN_WEI`, `GAS_TARGET_WEI` reviewed; `ENABLE_MODE_*`
       reviewed; `SWAP_SLIPPAGE_BPS` set (on-chain cap 300).
 - [ ] Session-key policy knobs reviewed (`SESSION_USDC_TRANSFER_CAP`, `SESSION_GAS_ALLOWANCE_WEI`,
       `SESSION_USDC_WINDOW_SECONDS`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_KEY_VALIDITY_DAYS`).
