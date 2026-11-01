@@ -446,7 +446,7 @@ Pink `#fea8cd` is not used. Values marked *derived* are straight sRGB mixes of t
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `accent` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Fill of the one primary action per view (Launch, Fuel, Trade), focus rings, the active primary-nav underline, the ⌘K selection bar, the 2px rule on the `$BOOT` box. Base Blue is 2.29:1 on Gray 100, so dark mode uses Cerulean. |
+| `accent` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Fill of the one primary action per view (Launch, Fuel, Trade), focus rings, the active primary-nav underline, the ⌘K selection bar (the 2px rule on the `$BOOT` box was replaced by the bloom photograph on 2026-11-01). Base Blue is 2.29:1 on Gray 100, so dark mode uses Cerulean. |
 | `accent-hover` | `#3c8aff` Cerulean | `#6da7ff` *derived* (Cerulean → white, 25%) | Hover fill of primary buttons. |
 | `on-accent` | `#ffffff` | `#0a0b0d` | Label on `accent`. White on Cerulean is 3.35:1, so Cerulean always carries Gray 100 text. |
 | `on-accent-hover` | `#0a0b0d` | `#0a0b0d` | Label on `accent-hover`. |
@@ -563,6 +563,7 @@ New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animat
 | `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. Agent status dot top right (Green awake, gray sleeping). 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `accent` (thin, one card at a time; `ease-base` 150 ms). |
 | `StatusDot` | 8px circle. `awake` = solid `positive` (Green); `sleeping` = solid `mute` (gray); `paused` / `dormant` / `claimed` = 1px `hairline-strong` outline, no fill. Always paired with a text label for screen readers. |
 | `Badge` | Micro text, radius `xs`, hairline border, `canvas-soft` fill. "Graduated" (and the card's "Grad") is `warning` (Yellow) text on `warning-surface` — the only filled badge. |
+| `$BOOT` box | The home's one photograph: `public/boot-bloom.webp` (a yellow bloom on Base Blue) as a `bg-cover` layer at 16% opacity (light) / 22% (dark) over `canvas`, covering the whole box; cells are transparent with hairline borders so the image runs through, labels `mute`, values mono `ink`. The only place imagery or an opacity layer is allowed. |
 | `Stat tile` | Caption label, `display-md` mono value ticking with number-flow, optional delta in caption. The 24h change is `positive-text` / `negative-text` by sign. Tiles sit in a hairline-divided row, not separate cards. |
 | `Table` | Header row `canvas-soft`, caption `mute`; rows 36px, hairline separators, mono right-aligned numbers, hover `canvas-sub`. |
 | `Panel` | Section with a `display-sm` title, hairline border, radius `md`, 20px padding. |

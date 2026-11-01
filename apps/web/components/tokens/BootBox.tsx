@@ -12,32 +12,33 @@ import { CopyButton } from '@/components/ui/CopyButton';
 
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 bg-canvas px-4 py-3 last:col-span-2 md:px-5 md:last:col-span-1">
+    <div className="flex min-w-0 flex-col gap-1 border-hairline px-4 py-5 last:col-span-2 max-md:nth-[n+3]:border-t even:border-l md:px-5 md:py-6 md:not-first:border-l md:last:col-span-1">
       <span className="text-caption text-mute">{label}</span>
       <span className="truncate font-mono text-display-sm font-medium text-ink tabular">{children}</span>
     </div>
   );
 }
 
-/** The home page's one Base Blue element: a 2px rule inside the top edge (absolute, so the box keeps its size). */
-function BlueRule() {
-  return <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-accent" />;
+/** The box's background: the bloom photograph (public/boot-bloom.webp), faded so the numbers stay legible. */
+function Bloom() {
+  return <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[url('/boot-bloom.webp')] bg-cover bg-center opacity-[0.16] dark:opacity-[0.22]" />;
 }
+const BOX = 'relative overflow-hidden rounded-md border border-hairline bg-canvas';
 
 export function BootBox() {
   const { data, isPending, isError } = usePlatformStats();
 
   if (isPending) {
     return (
-      <section aria-label="BOOT token" className="relative overflow-hidden rounded-md border border-hairline">
-        <BlueRule />
-        <div className="flex items-center justify-between border-b border-hairline px-5 py-3">
+      <section aria-label="BOOT token" className={BOX}>
+        <Bloom />
+        <div className="relative flex items-center justify-between border-b border-hairline px-5 py-3.5">
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-24" />
         </div>
-        <div className="grid grid-cols-2 gap-px bg-hairline md:grid-cols-5">
+        <div className="relative grid grid-cols-2 md:grid-cols-5">
           {Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="bg-canvas px-5 py-3">
+            <div key={i} className="px-5 py-5 md:py-6">
               <Skeleton className="mb-2 h-3 w-16" />
               <Skeleton className="h-6 w-24" />
             </div>
@@ -49,9 +50,9 @@ export function BootBox() {
 
   if (isError || !data?.bootToken) {
     return (
-      <section aria-label="BOOT token" className="relative flex items-center justify-between gap-4 overflow-hidden rounded-md border border-hairline px-5 py-4">
-        <BlueRule />
-        <div className="flex items-baseline gap-3">
+      <section aria-label="BOOT token" className={`${BOX} flex items-center justify-between gap-4 px-5 py-6`}>
+        <Bloom />
+        <div className="relative flex items-baseline gap-3">
           <span className="font-mono text-sm font-medium text-ink">$BOOT</span>
           <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOT launches with the platform.'}</span>
         </div>
@@ -63,9 +64,9 @@ export function BootBox() {
   const dex = dexscreenerUrl(data.bootToken);
 
   return (
-    <section aria-label="BOOT token" className="relative overflow-hidden rounded-md border border-hairline">
-      <BlueRule />
-      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-hairline px-4 py-3 md:px-5">
+    <section aria-label="BOOT token" className={BOX}>
+      <Bloom />
+      <header className="relative flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-hairline px-4 py-3.5 md:px-5">
         <div className="flex items-center gap-3">
           <span className="font-mono text-sm font-semibold text-ink">$BOOT</span>
           <span className="text-caption text-mute">Platform token · fees buy and burn it</span>
@@ -79,7 +80,7 @@ export function BootBox() {
           {env.bootXUrl ? <ExternalLink href={env.bootXUrl}>X</ExternalLink> : null}
         </div>
       </header>
-      <div className="grid grid-cols-2 gap-px bg-hairline md:grid-cols-5">
+      <div className="relative grid grid-cols-2 md:grid-cols-5">
         <Cell label="Price">
           <Usd value={data.bootPriceUsd} />
         </Cell>
