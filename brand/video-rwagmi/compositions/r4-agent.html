@@ -1,0 +1,94 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #r4-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    #r4-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #dee1e7; }
+    .r4-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #r4-tile { position: absolute; left: 144px; top: 300px; width: 400px; height: 400px; border-radius: 52px; display: block; object-fit: cover; }
+    #r4-tile-l { position: absolute; left: 144px; top: 720px; font-size: 44px; line-height: 56px; font-weight: 500; color: #32353d; white-space: nowrap; }
+    #r4-box { position: absolute; left: 1224px; top: 300px; width: 552px; height: 400px; border: 2px solid #dee1e7; border-radius: 16px; box-sizing: border-box; }
+    #r4-mark { position: absolute; left: 38px; top: 34px; width: 96px; height: 96px; }
+    #r4-box-l { position: absolute; left: 160px; top: 46px; font-size: 44px; line-height: 56px; font-weight: 500; white-space: nowrap; }
+    #r4-bal { position: absolute; left: 38px; top: 180px; font-size: 128px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #r4-unit { position: absolute; left: 40px; top: 328px; font-size: 44px; line-height: 56px; font-weight: 500; color: #5b616e; }
+    #r4-claim { position: absolute; left: 560px; top: 498px; width: 664px; height: 4px; background: #0a0b0d; transform-origin: 0% 50%; }
+    #r4-claim-l { position: absolute; left: 820px; top: 410px; font-size: 56px; line-height: 64px; font-weight: 500; white-space: nowrap; }
+    #r4-claim-s { position: absolute; left: 650px; top: 530px; font-size: 40px; line-height: 50px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    #r4-sq { position: absolute; left: 540px; top: 480px; width: 40px; height: 40px; background: #0a0b0d; }
+    #r4-gas { position: absolute; left: 1498px; top: 700px; width: 4px; height: 180px; background: #0a0b0d; transform-origin: 50% 0%; }
+    #r4-gsq { position: absolute; left: 1488px; top: 690px; width: 24px; height: 24px; background: #0a0b0d; }
+    #r4-gas-l { position: absolute; left: 1010px; top: 770px; width: 460px; text-align: right; font-size: 56px; line-height: 64px; font-weight: 500; }
+    #r4-gas-s { position: absolute; left: 1010px; top: 836px; width: 460px; text-align: right; font-size: 40px; line-height: 50px; font-weight: 500; color: #5b616e; }
+  </style>
+  <div id="root" data-composition-id="r4" data-width="1920" data-height="1080">
+    <div id="r4-panel">
+      <div id="r4-hv" data-layout-ignore></div>
+      <div class="r4-t" id="r4-t1">the agent claims its share itself.</div>
+      <div class="r4-t" id="r4-t2">and pays its own gas from it.</div>
+      <img id="r4-tile" src="assets/rwagmi/rwagmi-avatar.png" alt="" />
+      <div id="r4-tile-l">rwagmi locker</div>
+      <div id="r4-box">
+        <svg id="r4-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="r4-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#0a0b0d" mask="url(#r4-m)"></rect>
+        </svg>
+        <div id="r4-box-l">agent treasury</div>
+        <div id="r4-bal">0.0000</div>
+        <div id="r4-unit">weth</div>
+      </div>
+      <div id="r4-claim" data-layout-ignore></div>
+      <div id="r4-claim-l">claim</div>
+      <div id="r4-claim-s">to its own treasury only</div>
+      <div id="r4-sq" data-layout-ignore></div>
+      <div id="r4-gas" data-layout-ignore></div>
+      <div id="r4-gsq" data-layout-ignore></div>
+      <div id="r4-gas-l">gas</div>
+      <div id="r4-gas-s">from its own balance</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 44) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, k) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(k));
+    gsap.set(["#r4-t1", "#r4-t2", "#r4-tile", "#r4-tile-l", "#r4-box", "#r4-claim-l", "#r4-claim-s", "#r4-sq", "#r4-gsq", "#r4-gas-l", "#r4-gas-s"], { opacity: 0 });
+    gsap.set(["#r4-claim", "#r4-gas"], { scaleX: 0, scaleY: 0 });
+    // Beat 44: the white world wipes up from below.
+    tl.fromTo("#r4-panel", { clipPath: "inset(100% 0px 0px 0px)" }, { clipPath: "inset(0% 0px 0px 0px)", duration: 0.32, ease: "power3.inOut" }, 0);
+    arrive("#r4-t1", 45);
+    tl.fromTo("#r4-tile", { scale: 0.8, opacity: 0, transformOrigin: "50% 50%" }, { scale: 1, opacity: 1, duration: 0.45, ease: "expo.out" }, L(46));
+    arrive("#r4-tile-l", 46.4);
+    arrive("#r4-box", 46.6);
+    // Beat 47: the claim line is drawn; beat 49 the fee arrives and the balance ticks up.
+    tl.set("#r4-claim", { scaleY: 1 }, L(47));
+    tl.fromTo("#r4-claim", { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, L(47));
+    arrive("#r4-claim-l", 47.2);
+    arrive("#r4-claim-s", 48.4);
+    tl.set("#r4-sq", { opacity: 1 }, L(47.5));
+    tl.fromTo("#r4-sq", { x: 0 }, { x: 704, duration: 0.7, ease: "power2.inOut" }, L(48.3));
+    tl.set("#r4-sq", { opacity: 0 }, L(49));
+    const o = { v: 0 };
+    const show = () => { document.getElementById("r4-bal").textContent = o.v.toFixed(4); };
+    tl.to(o, { v: 0.0042, duration: 0.7, ease: "power2.out", onUpdate: show }, L(49));
+    tl.fromTo("#r4-box", { scale: 1.03, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.3, ease: "power3.out" }, L(49));
+    // Beat 51.6-52: the title changes.
+    tl.to("#r4-t1", { clipPath: "inset(0px 100% 0px 0px)", duration: 0.22, ease: "power3.in" }, L(51.6));
+    arrive("#r4-t2", 52);
+    // Beat 53: the gas line is drawn, a square leaves the treasury, the balance dips.
+    tl.set("#r4-gas", { scaleX: 1 }, L(53));
+    tl.fromTo("#r4-gas", { scaleY: 0 }, { scaleY: 1, duration: 0.35, ease: "power3.out" }, L(53));
+    arrive("#r4-gas-l", 53.2);
+    arrive("#r4-gas-s", 53.6);
+    tl.set("#r4-gsq", { opacity: 1 }, L(53.4));
+    tl.fromTo("#r4-gsq", { y: 0 }, { y: 160, duration: 0.5, ease: "power2.in" }, L(53.4));
+    tl.set("#r4-gsq", { opacity: 0 }, L(54.3));
+    tl.to(o, { v: 0.0038, duration: 0.5, ease: "power2.out", onUpdate: show }, L(54.1));
+    window.__timelines["r4"] = tl;
+  </script>
+</template>

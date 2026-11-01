@@ -1,0 +1,58 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #r5-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    #r5-shake { position: absolute; inset: 0; }
+    #r5-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #32353d; }
+    #r5-mark { position: absolute; left: 144px; top: 440px; width: 200px; height: 200px; }
+    #r5-word { position: absolute; left: 420px; top: 442px; font-size: 178px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #r5-runs { position: absolute; left: 960px; top: 500px; font-size: 56px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #r5-tile { position: absolute; left: 1336px; top: 320px; width: 440px; height: 440px; border-radius: 56px; display: block; object-fit: cover; }
+    #r5-tile-l { position: absolute; left: 1336px; top: 790px; font-size: 96px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="r5" data-width="1920" data-height="1080">
+    <div id="r5-panel">
+      <div id="r5-shake" data-layout-allow-overflow>
+        <div id="r5-hv" data-layout-ignore></div>
+        <svg id="r5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="r5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#r5-m)"></rect>
+        </svg>
+        <div id="r5-word">bootr</div>
+        <div id="r5-runs">runs on</div>
+        <img id="r5-tile" src="assets/rwagmi/rwagmi-avatar.png" alt="" />
+        <div id="r5-tile-l">rwagmi</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 60) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    gsap.set("#r5-shake", { x: 0, y: 0 });
+    gsap.set(["#r5-mark", "#r5-word", "#r5-runs", "#r5-tile", "#r5-tile-l"], { opacity: 0 });
+    // Beat 60: the dark world wipes in from the left.
+    tl.fromTo("#r5-panel", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.32, ease: "power3.inOut" }, 0);
+    // Beat 61: the Bootr mark slams in, the wordmark types behind it.
+    tl.set("#r5-mark", { opacity: 1 }, L(61));
+    tl.fromTo("#r5-mark", { scaleX: 0.3, scaleY: 0.3, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.92, duration: 0.12, ease: "power3.in" }, L(61));
+    tl.to("#r5-mark", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, L(61) + 0.12);
+    tl.set("#r5-word", { opacity: 1 }, L(61.5));
+    tl.fromTo("#r5-word", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.5, ease: "steps(5)" }, L(61.5));
+    // Beat 63: "runs on".
+    tl.set("#r5-runs", { opacity: 1 }, L(63));
+    tl.fromTo("#r5-runs", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.3, ease: "steps(7)" }, L(63));
+    // Beat 64: the RWAGMI tile slams in with an impact; its name follows.
+    tl.set("#r5-tile", { opacity: 1 }, L(64) - 0.18);
+    tl.fromTo("#r5-tile", { scale: 1.5, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.18, ease: "power3.in" }, L(64) - 0.18);
+    [[0, 8, -6], [0.033, -7, 5], [0.066, 5, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#r5-shake", { x, y }, L(64) + d));
+    tl.fromTo("#r5-tile-l", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(64.5));
+    window.__timelines["r5"] = tl;
+  </script>
+</template>

@@ -1,0 +1,84 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #r2-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    #r2-shake { position: absolute; inset: 0; }
+    #r2-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: #32353d; }
+    .r2-t { position: absolute; left: 144px; font-size: 104px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #r2-pool { position: absolute; left: 144px; top: 320px; width: 1032px; height: 440px; border: 2px solid #32353d; box-sizing: border-box; }
+    #r2-eth-l { position: absolute; left: 28px; top: 22px; font-size: 52px; line-height: 60px; font-weight: 500; color: #818895; }
+    #r2-eth-v { position: absolute; left: 28px; bottom: 6px; font-size: 220px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #5b616e; }
+    #r2-divider { position: absolute; left: 514px; top: 0; width: 2px; height: 100%; background: #5b616e; }
+    #r2-block { position: absolute; left: 516px; top: 0; right: 0; bottom: 0; background: #ffffff; color: #0a0b0d; }
+    #r2-coin-l { position: absolute; left: 28px; top: 22px; font-size: 52px; line-height: 60px; font-weight: 500; }
+    #r2-coin-v { position: absolute; left: 28px; bottom: 6px; font-size: 172px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #r2-card { position: absolute; left: 700px; top: 442px; width: 300px; height: 96px; border-radius: 12px; background: #0a0b0d; border: 2px solid #ffffff; box-sizing: border-box; font-size: 44px; line-height: 92px; font-weight: 500; text-align: center; color: #ffffff; white-space: nowrap; }
+    #r2-tile { position: absolute; left: 1336px; top: 320px; width: 440px; height: 440px; border-radius: 56px; display: block; object-fit: cover; }
+    #r2-lock { position: absolute; left: 1668px; top: 236px; width: 150px; height: 169px; overflow: visible; }
+    #r2-tile-l { position: absolute; left: 1336px; top: 786px; font-size: 56px; line-height: 64px; font-weight: 500; letter-spacing: -0.01em; color: #ffffff; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="r2" data-width="1920" data-height="1080">
+    <div id="r2-panel">
+      <div id="r2-shake" data-layout-allow-overflow>
+        <div id="r2-hv" data-layout-ignore></div>
+        <div class="r2-t" id="r2-t1" style="top:60px">the pool is one-sided.</div>
+        <div class="r2-t" id="r2-t2" style="top:60px">the lp is locked at launch.</div>
+        <div id="r2-pool">
+          <div id="r2-eth-l">eth</div>
+          <div id="r2-eth-v">0</div>
+          <div id="r2-divider"></div>
+          <div id="r2-block"><div id="r2-coin-l">coin</div><div id="r2-coin-v">100%</div></div>
+        </div>
+        <div id="r2-card">lp position</div>
+        <img id="r2-tile" src="assets/rwagmi/rwagmi-avatar.png" alt="" />
+        <svg id="r2-lock" viewBox="0 0 160 180" fill="none" data-layout-allow-overflow>
+          <g id="r2-shackle">
+            <path d="M44 86 V58 a36 36 0 0 1 72 0 V86" stroke="#ffffff" stroke-width="32" stroke-linecap="butt"></path>
+            <path d="M44 86 V58 a36 36 0 0 1 72 0 V86" stroke="#0a0b0d" stroke-width="18" stroke-linecap="butt"></path>
+          </g>
+          <rect x="10" y="80" width="140" height="98" rx="20" fill="#0a0b0d" stroke="#ffffff" stroke-width="6"></rect>
+          <circle cx="80" cy="120" r="11" fill="#ffffff"></circle>
+          <rect x="75" y="124" width="10" height="26" rx="4" fill="#ffffff"></rect>
+        </svg>
+        <div id="r2-tile-l">rwagmi's locker</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 12) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    gsap.set("#r2-shake", { x: 0, y: 0 });
+    gsap.set(["#r2-t1", "#r2-t2", "#r2-pool", "#r2-card", "#r2-tile", "#r2-lock", "#r2-tile-l"], { opacity: 0 });
+    // Beat 12: the dark world opens out of the mark's centre.
+    tl.fromTo("#r2-panel", { clipPath: "circle(0px at 384px 540px)" }, { clipPath: "circle(2000px at 384px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    // Beat 13: the first title.
+    tl.fromTo("#r2-t1", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(13));
+    // Beat 13.5: the pool box is drawn; beat 14.5 the coin side fills from the bottom.
+    tl.set("#r2-pool", { opacity: 1 }, L(13.5));
+    tl.fromTo("#r2-pool", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.35, ease: "power3.out" }, L(13.5));
+    gsap.set("#r2-block", { clipPath: "inset(100% 0px 0px 0px)" });
+    tl.to("#r2-block", { clipPath: "inset(0% 0px 0px 0px)", duration: 0.9, ease: "power3.out" }, L(14.5));
+    const o = { v: 0 };
+    tl.to(o, { v: 100, duration: 0.9, ease: "power3.out", onUpdate: () => { document.getElementById("r2-coin-v").textContent = Math.round(o.v) + "%"; } }, L(14.5));
+    // Beat 18: the LP position card lands on the block. Beat 19: the locker tile pops in.
+    tl.fromTo("#r2-card", { y: -30, scale: 0.9, opacity: 0 }, { y: 0, scale: 1, opacity: 1, duration: 0.4, ease: "expo.out" }, L(18));
+    tl.fromTo("#r2-tile", { scale: 0.8, opacity: 0, transformOrigin: "50% 50%" }, { scale: 1, opacity: 1, duration: 0.45, ease: "expo.out" }, L(19));
+    // Beat 19.6-20: the title changes.
+    tl.to("#r2-t1", { clipPath: "inset(0px 100% 0px 0px)", duration: 0.22, ease: "power3.in" }, L(19.6));
+    tl.fromTo("#r2-t2", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(20));
+    // Beats 21-22.4: the card travels into the locker.
+    tl.to("#r2-card", { x: 706, y: 50, scale: 0.6, duration: 0.7, ease: "power3.inOut" }, L(21));
+    tl.set("#r2-card", { opacity: 0 }, L(22.5));
+    // Beat 23: the lock snaps shut.
+    tl.set("#r2-lock", { opacity: 1 }, L(23));
+    tl.fromTo("#r2-lock", { scale: 1.7, y: -40, transformOrigin: "50% 50%" }, { scale: 1, y: 0, duration: 0.18, ease: "power3.in" }, L(23));
+    tl.fromTo("#r2-shackle", { y: -30 }, { y: 0, duration: 0.12, ease: "power2.in" }, L(23) + 0.06);
+    [[0.18, 7, -5], [0.213, -6, 4], [0.246, 4, -2], [0.28, 0, 0]].forEach(([d, x, y]) => tl.set("#r2-shake", { x, y }, L(23) + d));
+    // Beat 24: the locker is named.
+    tl.fromTo("#r2-tile-l", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(24));
+    window.__timelines["r2"] = tl;
+  </script>
+</template>

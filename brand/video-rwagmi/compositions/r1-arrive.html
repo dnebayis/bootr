@@ -1,0 +1,50 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; background: #85e2ff; font-family: 'Geist', sans-serif; }
+    #r1-shake { position: absolute; inset: 0; }
+    #r1-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: rgba(10, 11, 13, 0.18); }
+    #r1-mark { position: absolute; left: 144px; top: 300px; width: 480px; height: 480px; }
+    .r1-q { position: absolute; width: 240px; height: 240px; display: block; }
+    #r1-tl { left: 0; top: 0; } #r1-tr { left: 240px; top: 0; } #r1-bl { left: 0; top: 240px; } #r1-br { left: 240px; top: 240px; }
+    .r1-ln { position: absolute; left: 720px; font-size: 120px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #0a0b0d; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="r1" data-width="1920" data-height="1080">
+    <div id="r1-shake" data-layout-allow-overflow>
+      <div id="r1-hv" data-layout-ignore></div>
+      <div id="r1-mark" data-layout-allow-overflow>
+        <img class="r1-q" id="r1-tl" src="assets/rwagmi/rwagmi-q-tl.png" alt="" />
+        <img class="r1-q" id="r1-tr" src="assets/rwagmi/rwagmi-q-tr.png" alt="" />
+        <img class="r1-q" id="r1-bl" src="assets/rwagmi/rwagmi-q-bl.png" alt="" />
+        <img class="r1-q" id="r1-br" src="assets/rwagmi/rwagmi-q-br.png" alt="" />
+      </div>
+      <div class="r1-ln" id="r1-l1" style="top:340px">bootr runs on</div>
+      <div class="r1-ln" id="r1-l2" style="top:480px">rwagmi's</div>
+      <div class="r1-ln" id="r1-l3" style="top:620px">launch stack.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const b = (k) => Math.round(k * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    gsap.set("#r1-shake", { x: 0, y: 0 });
+    // Frame 0: the four arcs are already entering from the corners.
+    gsap.set("#r1-tl", { x: 856, y: -220, rotation: -38 });
+    gsap.set("#r1-tr", { x: 1116, y: 80, rotation: 36 });
+    gsap.set("#r1-bl", { x: 556, y: 160, rotation: 34 });
+    gsap.set("#r1-br", { x: 916, y: 240, rotation: -36 });
+    ["#r1-tl", "#r1-tr", "#r1-bl", "#r1-br"].forEach((s) => {
+      tl.to(s, { x: 0, y: 0, rotation: 0, duration: b(4), ease: "power3.in" }, 0);
+    });
+    // Beat 4 (the drop): the mark is whole, squashes from its base and jolts the frame.
+    tl.fromTo("#r1-mark", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.92, duration: 0.1, ease: "power2.out" }, b(4));
+    tl.to("#r1-mark", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, b(4) + 0.1);
+    [[0, 8, -6], [0.033, -7, 5], [0.066, 5, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#r1-shake", { x, y }, b(4) + d));
+    // Beats 5, 6.5, 8: the sentence types beside the mark.
+    gsap.set(["#r1-l1", "#r1-l2", "#r1-l3"], { clipPath: "inset(0px 100% 0px 0px)" });
+    tl.to("#r1-l1", { clipPath: "inset(0px 0% 0px 0px)", duration: 0.55, ease: "steps(13)" }, b(5));
+    tl.to("#r1-l2", { clipPath: "inset(0px 0% 0px 0px)", duration: 0.4, ease: "steps(8)" }, b(6.5));
+    tl.to("#r1-l3", { clipPath: "inset(0px 0% 0px 0px)", duration: 0.55, ease: "steps(13)" }, b(8));
+    window.__timelines["r1"] = tl;
+  </script>
+</template>

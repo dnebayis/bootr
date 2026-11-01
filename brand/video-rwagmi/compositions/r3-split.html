@@ -1,0 +1,71 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #r3-panel { position: absolute; inset: 0; background: #85e2ff; color: #0a0b0d; }
+    #r3-shake { position: absolute; inset: 0; }
+    #r3-hv { position: absolute; left: 96px; top: 0; width: 2px; height: 1080px; background: rgba(10, 11, 13, 0.18); }
+    #r3-t { position: absolute; left: 144px; top: 50px; font-size: 104px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .r3-a { position: absolute; left: 144px; width: 90px; height: 90px; display: block; transform-origin: 0% 0%; }
+    .r3-rc { position: absolute; left: 0; width: 1920px; height: 130px; }
+    .r3-lab { position: absolute; left: 270px; top: 6px; font-size: 60px; line-height: 80px; font-weight: 500; letter-spacing: -0.01em; }
+    .r3-val { position: absolute; right: 96px; top: 0; font-size: 96px; line-height: 100px; font-weight: 600; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+    .r3-rail { position: absolute; left: 270px; top: 106px; width: 1554px; height: 2px; background: rgba(10, 11, 13, 0.22); }
+    .r3-bar { position: absolute; left: 270px; top: 103px; height: 8px; background: #0a0b0d; transform-origin: 0% 50%; }
+    #r3-note { position: absolute; left: 144px; top: 886px; font-size: 64px; line-height: 72px; font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="r3" data-width="1920" data-height="1080">
+    <div id="r3-panel">
+      <div id="r3-shake" data-layout-allow-overflow>
+        <div id="r3-hv" data-layout-ignore></div>
+        <div id="r3-t">1% of every swap</div>
+        <div class="r3-rc" id="r3-r1" style="top:250px"><div class="r3-lab">agent</div><div class="r3-val" id="r3-v1">0%</div><div class="r3-rail"></div><div class="r3-bar" id="r3-b1" style="width:70px"></div></div>
+        <div class="r3-rc" id="r3-r2" style="top:400px"><div class="r3-lab">creator</div><div class="r3-val" id="r3-v2">0%</div><div class="r3-rail"></div><div class="r3-bar" id="r3-b2" style="width:909px"></div></div>
+        <div class="r3-rc" id="r3-r3" style="top:550px"><div class="r3-lab">platform</div><div class="r3-val" id="r3-v3">0%</div><div class="r3-rail"></div><div class="r3-bar" id="r3-b3" style="width:420px"></div></div>
+        <div class="r3-rc" id="r3-r4" style="top:700px"><div class="r3-lab">rwagmi</div><div class="r3-val" id="r3-v4">0%</div><div class="r3-rail"></div><div class="r3-bar" id="r3-b4" style="width:155px"></div></div>
+        <img class="r3-a" id="r3-a1" style="top:260px" src="assets/rwagmi/rwagmi-q-tl.png" alt="" />
+        <img class="r3-a" id="r3-a2" style="top:410px" src="assets/rwagmi/rwagmi-q-tr.png" alt="" />
+        <img class="r3-a" id="r3-a3" style="top:560px" src="assets/rwagmi/rwagmi-q-bl.png" alt="" />
+        <img class="r3-a" id="r3-a4" style="top:710px" src="assets/rwagmi/rwagmi-q-br.png" alt="" />
+        <div id="r3-note">split at launch, locked on-chain.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 28) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    gsap.set("#r3-shake", { x: 0, y: 0 });
+    gsap.set([".r3-rc", "#r3-t", "#r3-note"], { opacity: 0 });
+    // Beat 28: the sky opens out of the locker tile.
+    tl.fromTo("#r3-panel", { clipPath: "circle(0px at 1556px 540px)" }, { clipPath: "circle(2200px at 1556px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    // Beat 29: the title.
+    tl.fromTo("#r3-t", { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(29));
+    // Beat 30 (the break in the music): the four arcs sit in the middle as the whole mark.
+    const Q = [[740, 360], [960, 360], [740, 580], [960, 580]];
+    const S0 = 220 / 90;
+    [1, 2, 3, 4].forEach((i) => {
+      const a = "#r3-a" + i;
+      const bx = 144, by = 260 + 150 * (i - 1);
+      const x0 = Q[i - 1][0] - bx, y0 = Q[i - 1][1] - by;
+      gsap.set(a, { x: x0, y: y0, scale: S0, opacity: 0 });
+      tl.fromTo(a, { opacity: 0, y: y0 + 30 }, { opacity: 1, y: y0, duration: 0.35, ease: "expo.out" }, L(30));
+      // Beat 31 + i: the arc flies out to be its row's bullet; the row lands.
+      const k = 32 + (i - 1);
+      tl.to(a, { x: 0, y: 0, scale: 1, duration: 0.55, ease: "expo.out" }, L(k));
+      const r = "#r3-r" + i;
+      tl.fromTo(r, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(k) + 0.15);
+      tl.fromTo("#r3-b" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.6, ease: "power3.out" }, L(k) + 0.2);
+      const target = [4.5, 58.5, 27, 10][i - 1];
+      const o = { v: 0 };
+      tl.to(o, { v: target, duration: 0.7, ease: "power2.out", onUpdate: () => { document.getElementById("r3-v" + i).textContent = (Math.round(o.v * 10) / 10).toString() + "%"; } }, L(k) + 0.15);
+    });
+    // Beat 32 (the drop): the frame jolts as the first arc leaves.
+    [[0, 8, -6], [0.033, -7, 5], [0.066, 5, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#r3-shake", { x, y }, L(32) + d));
+    // Beat 36: the note types.
+    tl.set("#r3-note", { opacity: 1 }, L(36));
+    tl.fromTo("#r3-note", { clipPath: "inset(0px 100% 0px 0px)" }, { clipPath: "inset(0px 0% 0px 0px)", duration: 0.8, ease: "steps(34)" }, L(36));
+    window.__timelines["r3"] = tl;
+  </script>
+</template>
