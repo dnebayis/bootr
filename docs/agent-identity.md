@@ -65,7 +65,7 @@ agent-core: prompt/system-prompt.ts                      identity, then OWNER RU
 ## Storage and operations
 
 - `LAUNCH_DRAFTS_DIR` (web): directory of the draft files. The Docker image sets `/data/launch-drafts`, on the
-  `web-data` volume next to `admin-config.json` (see `docs/deploy/railway.md`). Unset, it falls back to the
+  `web-data` volume next to `admin-config.json` (see `docs/deploy/coolify.md` section 4). Unset, it falls back to the
   directory of `ADMIN_CONFIG_PATH`, else `<cwd>/data/launch-drafts` (git-ignored). Without a persistent
   volume a redeploy loses texts of launches the supervisor has not read yet.
 - Files are small (under 1 KB) and are not pruned. A draft that never launches leaves one file behind.

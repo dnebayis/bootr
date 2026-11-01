@@ -70,11 +70,11 @@ How the pieces fit:
 | Host | Service | What it serves |
 | --- | --- | --- |
 | `https://bootr.fun` | web | the app, `/api/*` routes (`/api/health`, admin console, launch drafts, hosted agent cards at `/agents/<id>.json` and token metadata at `/tokens/<id>.json`) |
-| `https://api.bootr.fun` | sender | X OAuth (`/oauth/start`, `/oauth/callback` is the redirect URI registered in the X app), read-only `/public/posts/:agentId` and `/health`; `/internal/*` needs the service HMAC and is used over Railway's private network |
+| `https://api.bootr.fun` | sender | X OAuth (`/oauth/start`, `/oauth/callback` is the redirect URI registered in the X app), read-only `/public/posts/:agentId` and `/health`; `/internal/*` needs the service HMAC and is only called over the compose network |
 | `https://indexer.bootr.fun` | indexer | GraphQL at `/graphql`, REST (`/market/:token`, `/treasury/:kernel`, `/token/:id/fees`, `/search`, `/holdings/:owner`, `/fuel/:from`), SSE `/stream`, `/ready` |
 
-The supervisor and the inference relay have no public host; they talk to the others over Railway's private
-network (`*.railway.internal`).
+The supervisor and the inference relay have no public host; every service talks to the others over the Docker
+Compose network of the production server (`http://sender:3002`, `http://inference:3003`, `http://indexer:42069`).
 
 ### Contracts and addresses (Base mainnet, chain 8453)
 
@@ -139,11 +139,18 @@ base-forge test --match-path 'test/unit/*'                      # unit tests onl
 
 ### Deploys
 
-Services run on Railway (`web`, `sender`, `inference`, `supervisor`, `indexer`, Postgres), described in
-[`.railway/railway.ts`](.railway/railway.ts) and operated with the runbooks in
-[`docs/deploy/railway.md`](docs/deploy/railway.md) and [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md).
-Contract deployments are `forge script` runs from `packages/contracts` (see the mainnet runbook); the deployer
-key is only ever exported for the command.
+Production is one Hetzner VPS run by Coolify: Postgres and the five services (`web`, `sender`, `inference`,
+`supervisor`, `indexer`) are a Docker Compose application built from
+[`docker-compose.coolify.yml`](docker-compose.coolify.yml) out of this repository (GitHub `dnebayis/bootr`,
+branch `main`). Runbooks: [`docs/deploy/coolify.md`](docs/deploy/coolify.md) (server, deploys, variables,
+backups) and [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md) (contracts, keys, the $BOOT launch). Railway hosted
+the stack until 2026-11-01 ([`docs/deploy/railway.md`](docs/deploy/railway.md), history only). Contract
+deployments are `forge script` runs from `packages/contracts` (see the mainnet runbook); the deployer key is only
+ever exported for the command.
+
+Gas: agents pay their own gas. The creator deposits the first 0.001 ETH from the launch form, the agent then
+refills from its WETH fees, and anyone can add gas from the token page; the platform pays none
+([`docs/gas-model.md`](docs/gas-model.md)).
 
 ## Environment variables
 
@@ -155,8 +162,9 @@ Names only; see `.env.example` (and `.env.mainnet.example` for the mainnet value
 - Wallets: `DEPLOYER_ADDRESS`, `DEPLOYER_PRIVATE_KEY`, `ADMIN_ADDRESS`, `ADMIN_PRIVATE_KEY`,
   `PLATFORM_TREASURY_ADDRESS`, `PLATFORM_TREASURY_PRIVATE_KEY`, `SESSION_SIGNER_ADDRESS`,
   `SESSION_SIGNER_PRIVATE_KEY`
-- Services: `DATABASE_URL`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SESSION_SECRET`, `ADMIN_ADDRESSES`,
-  `ADMIN_CONSOLE_SLUG`
+- Services: `DATABASE_URL`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `SESSION_SECRET`,
+  `ADMIN_ADDRESSES`, `ADMIN_CONSOLE_SLUG`, `PINATA_JWT`
+- Gas (supervisor): `BUNDLER_URL`, `PAYMASTER_URL` (empty), `GAS_MIN_WEI`, `GAS_TARGET_WEI`, `ENABLE_MODE_SELF_BUNDLE`
 - RWAGMI v3 (Base mainnet only): `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS` (supervisor,
   indexer), `RWAGMI_HOOK_V3_ADDRESS`, `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer). The web app reads the locker from the
   shared address table, not from an env variable.
@@ -168,8 +176,8 @@ Names only; see `.env.example` (and `.env.mainnet.example` for the mainnet value
 Contract addresses live in `packages/shared/src/addresses.ts`. Re-verify them on-chain before any deploy that
 depends on them, RWAGMI's stack in particular (`docs/rwagmi-migration.md` lists the source of each address).
 Launching needs the RWAGMI v3 stack, which exists on Base mainnet only: develop the launch flow against a
-Base mainnet fork (`base-forge` for the contracts, see `docs/deploy/railway.md` "Local development" for a forked
-node behind the services).
+Base mainnet fork (`base-forge` for the contracts, see `docs/deploy/coolify.md` section 8 for a forked node behind
+the services).
 
 ## Coinbase Developer Platform (one API key)
 
@@ -194,4 +202,7 @@ session userOp. Codes are public identifiers, not secrets.
   agent 5 / creator 65 / platform 30 of the LP fee). Both are paused. Those coins keep their own locked split and
   fee locker; the indexer and supervisor follow RWAGMI launches only, from block 53219209.
 - **2026-10-29: RWAGMI v3.** `BootrLauncher` `0xD3CE024d…B1F3` launches through RWAGMI, see
-  [`docs/rwagmi-migration.md`](docs/rwagmi-migration.md).
+  [`docs/rwagmi-migration.md`](docs/rwagmi-migration.md). Same day: agents pay their own gas (no paymaster).
+- **2026-11-01: creator-funded gas and the move to one Coolify server.** The launch form takes the agent's first
+  gas; the admin wallet no longer seeds kernels ([`docs/gas-model.md`](docs/gas-model.md)). The services left
+  Railway for a Hetzner VPS run by Coolify ([`docs/deploy/coolify.md`](docs/deploy/coolify.md)).

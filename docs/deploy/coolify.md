@@ -1,88 +1,164 @@
-# Bootr on a single Coolify server
+# Production: one Coolify server
 
-Bootr runs on one Hetzner Cloud VPS managed by [Coolify](https://coolify.io) (self-hosted PaaS, Traefik proxy,
-Docker). This replaces the Railway layout in `docs/deploy/railway.md`; the variable names, images and service
-roles are unchanged, only where they run.
+Bootr runs on a single Hetzner Cloud VPS managed by [Coolify](https://coolify.io) (self-hosted PaaS: Docker,
+Traefik proxy, Let's Encrypt). This is the production runbook since 2026-11-01; the Railway layout it replaced is
+summarised in [`railway.md`](./railway.md) (history only). The contract-side cutover, keys and the $BOOT launch
+are in [`mainnet.md`](./mainnet.md).
 
 ## 1. Layout
 
 | Piece | Where |
 | --- | --- |
-| Server | Hetzner CX23 (2 vCPU, 4 GB RAM + 4 GB swap, 40 GB), Ubuntu 26.04, Helsinki. SSH as `root` with a key only; ufw allows 22/80/443 (+ 8000/6001/6002 for Coolify until it sits behind its own domain); fail2ban on |
-| Coolify | v4.5.x, installed with the official `install.sh`; panel at `https://coolify.bootr.fun`; `.env` backed up off-server |
-| Source | GitHub `dnebayis/bootr` (private), branch `main`, cloned by Coolify with a read-only deploy key |
-| Application | Coolify project `bootr`, environment `production`, app `bootr-stack`: a **Docker Compose** application built from `docker-compose.coolify.yml` at the repo root |
+| Server | Hetzner CX23 (2 vCPU, 4 GB RAM + 4 GB swap, 40 GB NVMe), Ubuntu 26.04, Helsinki, hostname `ubuntu-4gb-hel1-1`, IPv4 `77.42.90.52`. SSH as `root` with a key only (no password login) |
+| Network | Hetzner Cloud Firewall `bootr-1`: inbound TCP 22, 80, 443, 6001-6002 and ICMP, everything else dropped at the edge. ufw on the host mirrors it; Docker-published ports bypass ufw, which is why the cloud firewall is the one that counts |
+| Coolify | v4.5.x, installed with the official `install.sh`; panel at `https://coolify.bootr.fun`; API enabled, token in `/root/.coolify-token` (mode 600, never in the repo); `/data/coolify/source/.env` backed up off-server |
+| Source | GitHub `dnebayis/bootr` (private), branch `main`. Coolify clones it with a read-only deploy key (registered on the repo and in Coolify → Keys & Tokens) |
+| Application | Coolify project `bootr` → environment `production` → `bootr-stack`: a **Docker Compose** application built from [`docker-compose.coolify.yml`](../../docker-compose.coolify.yml) at the repo root |
 | Compose services | `postgres` (postgres:17, volume `postgres-data`), `sender` :3002, `inference` :3003, `indexer` :42069, `web` :3000 (volume `web-data` at `/data`), `supervisor` :3004 |
-| Domains (Traefik, Let's Encrypt) | `web` → `bootr.fun`, `www.bootr.fun`; `sender` → `api.bootr.fun`; `indexer` → `indexer.bootr.fun`. `inference`, `supervisor`, `postgres` stay private on the compose network |
-| Hermes Agent | `/root/.hermes`, runs as root for server operations (cron jobs, updates, security fixes); Anthropic OAuth, model `claude-opus-5.5` |
+| Domains (Traefik, Let's Encrypt) | `web` → `bootr.fun`, `www.bootr.fun`; `sender` → `api.bootr.fun`; `indexer` → `indexer.bootr.fun`. `inference`, `supervisor` and `postgres` have no domain and stay private on the compose network |
+| DNS | Namecheap: `A @`, `A www`, `A api`, `A indexer`, `A coolify` → `77.42.90.52` |
+| Hermes Agent | `/root/.hermes`, runs as root for server operations on request (incident fixes, one-off tasks); Anthropic OAuth, model `claude-opus-5.5`. Routine jobs (backups) are plain cron, not Hermes |
 
 Service-to-service URLs are the compose service names: `http://sender:3002`, `http://inference:3003`,
-`http://indexer:42069`, `postgres://bootr:<generated>@postgres:5432/bootr`. The compose file hard-codes them;
-the public hosts are in `NEXT_PUBLIC_*`, `X_REDIRECT_URI`, `SENDER_OAUTH_RETURN_URL`, `INDEXER_CORS_ORIGIN` and
+`http://indexer:42069`, `postgres://bootr:<generated>@postgres:5432/bootr`. The compose file hard-codes them.
+The public hosts live in `NEXT_PUBLIC_*`, `X_REDIRECT_URI`, `SENDER_OAUTH_RETURN_URL`, `INDEXER_CORS_ORIGIN` and
 `ADMIN_CONFIG_URL`.
+
+Public endpoints: `bootr.fun` (web: the app, `/api/*`, agent cards at `/agents/<id>.json`, token metadata at
+`/tokens/<id>.json`), `api.bootr.fun` (sender: X OAuth `/oauth/start` and `/oauth/callback`, `/public/posts/:agentId`,
+`/health`; `/internal/*` is HMAC-authenticated and only called over the compose network), `indexer.bootr.fun`
+(GraphQL `/graphql`, REST, SSE `/stream`, `/health`, `/ready`).
 
 ## 2. How a deploy works
 
-1. Push to `main`. Coolify does not pull on its own unless a GitHub webhook is configured (Application →
-   Webhooks); until then, deploy from the panel (**Deploy**) or the API:
+1. Push to `main`. Coolify does not pull on its own unless a GitHub webhook is configured (application →
+   Webhooks); until then deploy from the panel (**Deploy** / **Redeploy**) or from the server:
    ```sh
-   curl -s -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" -H "Content-Type: application/json" \
+   curl -s -X POST -H "Authorization: Bearer $(cat /root/.coolify-token)" -H "Content-Type: application/json" \
      http://127.0.0.1:8000/api/v1/deploy -d '{"uuid":"<application uuid>","force":false}'
    ```
-   (run on the server; the API token lives in `/root/.coolify-token`, mode 600, never in the repo).
-2. Coolify clones the repo, runs `docker compose build` for the five services (the Dockerfiles under `apps/*`;
-   the web image takes its `NEXT_PUBLIC_*` build args from the application's environment) and
-   `docker compose up -d`. The first build on the CX23 took ~11 minutes with swap in use; later builds reuse
-   the layer cache.
+   The application uuid is in the panel URL. `GET /api/v1/deployments/<deployment uuid>` returns the status and the
+   build log.
+2. Coolify clones the repo, runs `docker compose build` for the five services (the Dockerfiles under `apps/*`; the
+   web image takes its `NEXT_PUBLIC_*` build args from the application's environment) and `docker compose up -d`.
+   The first build on the CX23 took ~11 minutes with swap in use; later builds reuse the layer cache. Build one
+   application at a time on this box.
 3. Migrations run inside the containers at start (`command:` in the compose file): sender and supervisor
-   `node dist/db/migrate.js`, inference `node scripts/migrate.mjs`. The indexer manages its own schema:
-   `DATABASE_SCHEMA=bootr_v1` is fixed, so bump it (and `ponder db prune` the old one) whenever the indexing
-   code changes; Ponder refuses to reuse a schema built by another app version. A fresh schema backfills from
-   `BOOTR_START_BLOCK` (about 2 hours on the CDP RPC); `/ready` returns 503 until then.
-4. Check: Application → Logs per service, or on the server `docker ps` and
-   `docker logs <container>`; `curl -sk --resolve bootr.fun:443:127.0.0.1 https://bootr.fun/api/health`.
+   `node dist/db/migrate.js`, inference `node scripts/migrate.mjs`. Each keeps its own journal, so restarts are
+   no-ops. Migrations are forward-only (drizzle has no down migrations): keep them backward-compatible (add first,
+   remove in a later release) and take a backup (section 6) before a release that contains one.
+4. The indexer manages its own schema. `DATABASE_SCHEMA=bootr_v1` is fixed: bump it (`bootr_v2`, ...) whenever
+   the indexing code changes, because Ponder refuses to reuse a schema built by another app version, and drop the
+   old one afterwards (`docker exec <indexer container> ./node_modules/.bin/ponder db prune`). A fresh schema
+   backfills from `BOOTR_START_BLOCK` (53219209): about 70 minutes on the CDP RPC at `INDEXER_MAX_RPS=40`;
+   `/ready` returns 503 until then while `/health` is already 200. Unlike Railway's per-deployment schemas, the
+   previous index is **not** kept serving during a backfill: a schema bump means roughly an hour without token
+   data on the site, so do it at a quiet time.
+5. Check: application → Logs per service, or on the server `docker ps` and `docker logs <container>`.
+   ```sh
+   curl -sk --resolve bootr.fun:443:127.0.0.1 https://bootr.fun/api/health
+   curl -sk --resolve indexer.bootr.fun:443:127.0.0.1 https://indexer.bootr.fun/ready
+   ```
+   `--resolve` tests the proxy on the server itself, independent of DNS.
+
+Rollback: application → Deployments → a previous successful one → **Redeploy**. It rebuilds that commit (the
+Docker layer cache makes it fast) with the current environment; `NEXT_PUBLIC_*` values are baked into the web
+image at build time, so a rollback with changed public values needs those variables reverted first.
 
 ## 3. Environment
 
-The compose file declares every variable as `${NAME}` (secrets) or `${NAME:-default}` (config), and Coolify
-lists them under Application → Environment Variables. `SERVICE_PASSWORD_POSTGRES` is generated by Coolify;
-`SERVICE_FQDN_<service>_<port>` carries the domain. The matrix of names is the one in
-`docs/deploy/railway.md` section 3 (`.env.example` describes each). Filled on 2026-11-01 from the Railway
-project: public config via the API, secrets copied without ever being printed. Optional and empty:
-`SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`, `BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*`, `NEXT_PUBLIC_WC_PROJECT_ID`,
-`NEXT_PUBLIC_WORKER_SOURCE_BASE`, `NEXT_PUBLIC_INFERENCE_URL`.
+The compose file declares every variable as `${NAME}` (secrets) or `${NAME:-default}` (config), and Coolify lists
+them under application → Environment Variables. `SERVICE_PASSWORD_POSTGRES` is generated by Coolify;
+`SERVICE_FQDN_<service>_<port>` carries the domain. `.env.example` describes every variable; `.env.mainnet.example`
+holds the mainnet values and placeholders.
 
-Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
+| Service | Secrets | Config |
+| --- | --- | --- |
+| web | `SESSION_SECRET`, `ADMIN_CONSOLE_SLUG` (hides the console), `PINATA_JWT`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `BASE_RPC_URL` | `ADMIN_ADDRESSES`, `SENDER_URL=http://sender:3002`, `INFERENCE_URL=http://inference:3003`, `HOSTNAME=0.0.0.0`; build args `NEXT_PUBLIC_CHAIN_ID=8453`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_INDEXER_URL`, `NEXT_PUBLIC_SENDER_PUBLIC_URL`, `NEXT_PUBLIC_RPC_URL` (a public endpoint, never the keyed one), `NEXT_PUBLIC_BUILDER_CODE`, `NEXT_PUBLIC_IPFS_GATEWAY`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_USE_MOCK` (empty) |
+| sender | `SENDER_SERVICE_KEY`, `SENDER_ENCRYPTION_KEY` (rotating it orphans every stored X token), `X_CLIENT_SECRET` | `X_CLIENT_ID`, `X_REDIRECT_URI=https://api.bootr.fun/oauth/callback`, `SENDER_OAUTH_RETURN_URL=https://bootr.fun/launch`, `SENDER_TRUST_PROXY=1` (behind Traefik) |
+| inference | `OPENROUTER_API_KEY`, `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`, `INFERENCE_RPC_URL` | `X402_NETWORK=eip155:8453`, `X402_FACILITATOR_URL`, `INFERENCE_PAYTO_ADDRESS` |
+| indexer | `BASE_RPC_URL`, `INDEXER_SERVICE_KEY` | `DATABASE_SCHEMA=bootr_v1`, `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `BOOTR_START_BLOCK`, `RWAGMI_*_V3_ADDRESS` (four), `INDEXER_CORS_ORIGIN=https://bootr.fun,https://www.bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `INDEXER_MAX_RPS=40`, `BOOT_TOKEN_ADDRESS` after the $BOOT launch |
+| supervisor | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL` | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty, `GAS_MIN_WEI`, `GAS_TARGET_WEI` ([`docs/gas-model.md`](../gas-model.md)), `BUILDER_CODES_*`, `SESSION_*`, `SPENDER_*`, `CHAINLINK_MAX_AGE_SECONDS`, `LOG_LEVEL` |
 
-## 4. Known limits of the small box
+Secret keys shared by several services (`SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`) are one Coolify variable
+reaching every container that references it. Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
+`BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_WORKER_SOURCE_BASE`,
+`NEXT_PUBLIC_INFERENCE_URL`. Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
 
-- 4 GB RAM: the five services idle at ~2.5 GB; a web build pushes into swap. Do not run two builds at once.
-  Rescale to CX33/CX43 in the Hetzner panel when a second project lands.
-- The supervisor and the indexer share one CDP RPC key. During a backfill (40 req/s) the supervisor's launch
-  poll logs `rate limited` on `eth_getLogs` and retries next tick; harmless, stops when the backfill ends.
-  Lower `INDEXER_MAX_RPS` to 25 if it persists.
-- One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop), as on Railway.
+Hygiene: `.env` files are excluded from every image by `.dockerignore`; the images contain no secrets and the web
+build args are public values only. Services log to stdout and never log tokens or keys; the supervisor reduces
+every URL in an error to its origin because RPC and bundler URLs embed API keys. Rotate `SENDER_SERVICE_KEY` on
+all four consumers at once (one variable here), then redeploy. The Coolify API token can reach every variable:
+keep it on the server only.
 
-## 5. Moving the domains off Railway
+## 4. The web data volume
 
-Once `indexer.bootr.fun/ready` answers 200 on the server (test with `--resolve` as above), point the four
-hosts at the server in Namecheap: `A @ 77.42.90.52`, `A www`, `A api`, `A indexer` (replace the Railway
-ALIAS/CNAME records). Traefik issues the certificates within a minute of DNS resolving. Then stop the Railway
-services (or delete the project) so the two supervisors never run against the same chain state, and update
-the X app's callback only if `X_REDIRECT_URI` changed (it did not: `https://api.bootr.fun/oauth/callback`).
+`/api/admin/config` stores the platform config in a JSON file (`ADMIN_CONFIG_PATH`, image default
+`/data/admin-config.json`) and the launch drafts (`LAUNCH_DRAFTS_DIR`, `/data/launch-drafts`: the creator's Identity
+text per launch, served to the supervisor through the agent card, see [`docs/agent-identity.md`](../agent-identity.md))
+live next to it. The compose file mounts the named volume `web-data` at `/data`; the image owns `/data` as `node`
+and the volume inherits that ownership, so no root override is needed. The file store pins `web` to one replica;
+moving it to Postgres (the TODO in `apps/web/lib/server/admin-config.ts`) would lift that.
+
+## 5. X app, DNS and certificates
+
+- X developer portal (the app behind `X_CLIENT_ID`), User authentication settings: callback
+  `https://api.bootr.fun/oauth/callback` (plus `http://localhost:3002/oauth/callback` on the development app only),
+  website `https://bootr.fun`. `X_REDIRECT_URI` must match the portal exactly.
+- Traefik requests a Let's Encrypt certificate for each domain when the application deploys. If DNS did not point
+  at the server at that moment the attempt fails and is **not retried** until the proxy restarts: after a DNS
+  change run `docker restart coolify-proxy` and check `openssl s_client -servername <host> -connect <host>:443`
+  shows a Let's Encrypt issuer instead of `TRAEFIK DEFAULT CERT`.
+- The panel's own domain is set in Coolify → Settings → General ("Instance's Domain"). With it set, port 8000 is
+  not needed and the cloud firewall keeps it closed.
 
 ## 6. Backups and disk
 
 `/root/backup-bootr-db.sh` runs from root's crontab every day at 03:00 UTC (log: `/root/backups/backup.log`):
 `pg_dump -U bootr --exclude-schema="ponder_rpc_cache_*" bootr | gzip` into `/root/backups/bootr-<date>.sql.gz`,
 14 days kept. The excluded schema is the indexer's RPC cache (gigabytes of raw chain data that a backfill
-rebuilds in about an hour); the dump keeps `public` (sender, supervisor), `drizzle` (inference) and the
-indexer's `bootr_v1` tables, about 15 KB while the platform is empty. Restore into the compose Postgres with
-`zcat <file> | docker exec -i <postgres container> psql -U bootr bootr`. The dumps are not shipped off the
-server yet; copy them to the owner's machine (`scp`) or a Hetzner Storage Box. Coolify's own
-`/data/coolify/source/.env` is backed up on the owner's machine.
+rebuilds); the dump keeps `public` (sender, supervisor), `drizzle` (inference) and the indexer's `bootr_v1` tables,
+a few KB while the platform is empty. Restore into the compose Postgres with
+`zcat <file> | docker exec -i <postgres container> psql -U bootr bootr`. The dumps are not shipped off the server
+yet; copy them to the owner's machine (`scp`) or a Hetzner Storage Box. Coolify's own `/data/coolify/source/.env`
+is backed up on the owner's machine.
 
-Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; the four Node service
-images are ~1.8 GB each because the runtime stage copies the monorepo's production `node_modules`). Coolify
-runs a Docker cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run
-`docker builder prune -f` and `docker image prune -f` by hand. Do not delete `postgres-data` or `web-data`.
+Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; the four Node service images are
+~1.8 GB each because the runtime stage copies the monorepo's production `node_modules`). Coolify runs a Docker
+cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run `docker builder prune -f`
+and `docker image prune -f` by hand. Never delete the `postgres-data` or `web-data` volumes.
+
+## 7. Known limits of the small box
+
+- 4 GB RAM: the five services idle at ~2.5 GB; a web build pushes into swap. Do not run two builds at once, and
+  do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale, "resize disk too") to
+  CX33 (8 GB / 80 GB) or CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale,
+  the site is down for a few minutes while the server reboots.
+- The supervisor and the indexer share one CDP RPC key. During a backfill (40 req/s) the supervisor's launch poll
+  logs `rate limited` on `eth_getLogs` and retries next tick; harmless, it stops when the backfill ends. Lower
+  `INDEXER_MAX_RPS` to 25 if it persists.
+- One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop). Compose stops the old
+  supervisor before starting the new one, so there is no overlap of two tick loops, but a deploy still interrupts
+  an in-flight tick: deploy when no on-chain operation is pending.
+- Inference shutdown closes the server and the database right away on SIGTERM; a paid request in flight during a
+  deploy can end up `unknown` and is settled by reconciliation (`GET /v1/requests/:key`).
+- Ponder answers CORS preflights itself with `*`; `INDEXER_CORS_ORIGIN` is enforced on the actual response, which
+  is what browsers check.
+
+## 8. Local development
+
+Launching a coin needs the RWAGMI v3 stack and Base's B20 precompiles, which only exist on Base mainnet. Sepolia
+still works for everything that does not launch (sender, inference, x402, web shell). The dev path for the launch
+flow is a Base mainnet fork with Base's Foundry binaries (`base-forge`, `base-anvil`):
+
+```sh
+cd packages/contracts && BASE_RPC_URL="$BASE_RPC_URL" base-forge test   # the fork tests fork mainnet themselves
+base-anvil --fork-url "$BASE_RPC_URL" --chain-id 8453 --port 8545         # a forked node for a local stack
+```
+
+Point a local stack at the fork with `BASE_RPC_URL=http://127.0.0.1:8545`, `CHAIN_ID=8453`, the mainnet
+`RWAGMI_*_V3_ADDRESS` values from `.env.mainnet.example` and the addresses of a Bootr launcher deployed onto the
+fork (`script/Deploy.s.sol`). The fork keeps its state in memory: redeploy the Bootr contracts and restart the
+indexer on a fresh schema after each restart. End to end against real infrastructure, test with a small coin on
+mainnet. The whole stack can also be run locally with the same compose file:
+`docker compose -f docker-compose.coolify.yml up --build` with the variables in a `.env` next to it.

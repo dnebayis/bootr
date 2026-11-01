@@ -11,8 +11,8 @@ pnpm --filter web build
 pnpm --filter web test:e2e     # Playwright smoke tests (builds + starts on :3210, mock mode)
 ```
 
-Container (build from the repo root; `NEXT_PUBLIC_*` are build args, everything else is runtime env; Railway setup in
-[`docs/deploy/railway.md`](../../docs/deploy/railway.md)). The Dockerfile builds with `NEXT_OUTPUT=standalone` (see `next.config.ts`) and serves `apps/web/server.js`;
+Container (build from the repo root; `NEXT_PUBLIC_*` are build args, everything else is runtime env; production setup in
+[`docs/deploy/coolify.md`](../../docs/deploy/coolify.md)). The Dockerfile builds with `NEXT_OUTPUT=standalone` (see `next.config.ts`) and serves `apps/web/server.js`;
 `GET /api/health` is the liveness probe.
 
 ```sh
@@ -89,8 +89,8 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | Route | |
 |---|---|
 | `/` | $BOOT box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
-| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel + Fuel, locked fee split, Trade link, last 20 trades. |
-| `/launch` | Coin, Agent, X account, Fuel & options; USDC approve then `BootrLauncher.launch`. |
+| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel with Fuel and Gas (status chip, out-of-gas notice, Add gas = `EntryPoint.depositTo(kernel)`), locked fee split, Trade link, last 20 trades. |
+| `/launch` | Coin, Agent, X account, Fuel & options (fuel, dev buy, the agent's first gas); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |
 | `/llms.txt`, `/llms-full.txt` | The docs for language models: an llmstxt.org index and the full text in Markdown, `text/plain; charset=utf-8`, prerendered, cached 1 h (1 day at the edge). See "Docs" below. |

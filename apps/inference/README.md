@@ -201,7 +201,7 @@ pnpm --filter inference test         # vitest (no network, no Postgres: PGlite +
 pnpm --filter inference typecheck
 ```
 
-Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)):
+Container (build from the repo root; production setup in [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md)):
 
 ```sh
 docker build -f apps/inference/Dockerfile -t bootr-inference .
@@ -213,8 +213,8 @@ After changing `src/db/schema.ts`, run `pnpm --filter inference db:generate`.
 
 ## Base Sepolia test flow
 
-Production runs on Base mainnet (`X402_NETWORK=eip155:8453`, CDP facilitator) as an internal Railway service with
-no public host (`http://inference.railway.internal:3003`, called by the supervisor). The flow below exercises the
+Production runs on Base mainnet (`X402_NETWORK=eip155:8453`, CDP facilitator) as a private compose service with
+no public host (`http://inference:3003`, called by the supervisor and, for the model list, by the web app). The flow below exercises the
 relay on its own with testnet USDC; it does not involve a launcher (RWAGMI v3 has no Base Sepolia deployment, so no
 coin can be launched there).
 

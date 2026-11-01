@@ -66,7 +66,7 @@ pnpm --filter supervisor test         # vitest, PGlite in-memory Postgres, mocke
 pnpm --filter supervisor typecheck
 ```
 
-Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)). Run exactly one instance:
+Container (build from the repo root; production setup in [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md)). Run exactly one instance:
 
 ```sh
 docker build -f apps/supervisor/Dockerfile -t bootr-supervisor .
@@ -86,7 +86,9 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `CHAIN_ID` | yes | | `8453` in production. `84532` is accepted by the schema, but RWAGMI v3 (the launch backend) has no Base Sepolia deployment, so nothing can be launched or claimed there |
 | `BASE_SEPOLIA_RPC_URL` / `BASE_RPC_URL` | yes (one) | | RPC for the selected chain |
 | `BUNDLER_URL` | yes | | ERC-4337 bundler (ZeroDev / Pimlico) |
-| `PAYMASTER_URL` | no | | ERC-7677 paymaster; unset = the kernel pays gas (ETH balance / EntryPoint deposit) |
+| `PAYMASTER_URL` | no | | ERC-7677 paymaster. **Empty in production**: the kernel pays its own gas from its EntryPoint deposit and ETH balance, see "Gas" below and [`docs/gas-model.md`](../../docs/gas-model.md) |
+| `GAS_MIN_WEI` | no | `2e14` | gas (EntryPoint deposit + kernel ETH) under which the fee policy unwraps the kernel's WETH into ETH (`fund_gas`); under a fifth of it the agent is `out_of_gas` and sends nothing |
+| `GAS_TARGET_WEI` | no | `1e15` | the unwrap brings gas up to this much, bounded by the kernel's WETH; must be >= `GAS_MIN_WEI` |
 | `ENABLE_MODE_BUNDLER_URL` | no | `BUNDLER_URL` | bundler for session-key install/rotation (enable mode). Strict ERC-7562 bundlers such as CDP reject enable mode (`op code validation error`, policies run `onInstall` during validation); point this at ZeroDev and keep CDP for everything else |
 | `ENABLE_MODE_PAYMASTER_URL` | no | | paymaster for enable-mode userOps; unset = `PAYMASTER_URL` only when `ENABLE_MODE_BUNDLER_URL` is unset; ignored when self-bundling |
 | `ENABLE_MODE_SELF_BUNDLE` | no | `false` | `true` = enable-mode userOps are sent by the admin signer through `EntryPoint.handleOps([op], admin)` instead of any bundler (fixed gas budget, no paymaster, the kernel pays its prefund from its ETH balance / EntryPoint deposit). Requires `ADMIN_PRIVATE_KEY`. See "Bundlers" |
@@ -199,7 +201,7 @@ ERC-4337 bundlers differ in how strictly they enforce ERC-7562 (validation-phase
 
 | Op | Bundler | Why |
 | --- | --- | --- |
-| regular session ops (claims, swaps, `fund_model`) | **Coinbase CDP** (`BUNDLER_URL`, strict, sponsorship via `PAYMASTER_URL`), or any bundler | every policy's `checkUserOpPolicy` only touches the kernel's *associated storage* and no banned opcodes. `BootrCallPolicy` stores its rules in a fixed-size struct under `mapping(id => mapping(kernel => Config))` for exactly this reason (dynamic arrays would be foreign storage and CDP rejects the op with "op code validation error … entity stake/unstake delay too low"; see `packages/contracts/src/README.md`). The ZeroDev gas / rate-limit / timestamp policies and the ECDSA signer already use `mapping(id => mapping(kernel => struct))` |
+| regular session ops (claims, swaps, `fund_model`, `fund_gas`) | **Coinbase CDP** (`BUNDLER_URL`, strict; the kernel pays its own prefund, a `PAYMASTER_URL` is optional), or any bundler | every policy's `checkUserOpPolicy` only touches the kernel's *associated storage* and no banned opcodes. `BootrCallPolicy` stores its rules in a fixed-size struct under `mapping(id => mapping(kernel => Config))` for exactly this reason (dynamic arrays would be foreign storage and CDP rejects the op with "op code validation error … entity stake/unstake delay too low"; see `packages/contracts/src/README.md`). The ZeroDev gas / rate-limit / timestamp policies and the ECDSA signer already use `mapping(id => mapping(kernel => struct))` |
 | enable-mode ops (session-key install / rotation) | **self-bundle** (`ENABLE_MODE_SELF_BUNDLE=true`, recommended) or a lenient bundler such as ZeroDev (`ENABLE_MODE_BUNDLER_URL`) | enable mode runs each module's `onInstall` during validation (storage writes, events, RateLimitPolicy reads `block.timestamp`); strict bundlers refuse it at `eth_sendUserOperation` even though `eth_estimateUserOperationGas` passes. Installs happen once per agent plus a rotation every ~27 days, so the admin EOA (`ADMIN_PRIVATE_KEY`, already funded for `approveSessionKey`) calls `EntryPoint.handleOps` itself. The kernel pays the prefund (needs ETH or an EntryPoint deposit); the admin, as beneficiary, is refunded the actual gas cost |
 
 With self-bundling the supervisor still needs `BUNDLER_URL` for regular ops; `ENABLE_MODE_BUNDLER_URL` and
@@ -298,10 +300,13 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
 3. Reconcile: `sv_treasury_ops` in `sent`/`unknown` by userOp hash; a pending `held`/`sent` action by sender receipt or
    op status (`agent-core.reconcile`); an `unknown` inference by `GET /v1/requests/:key`.
 4. Sleep rule: USDC < 1 -> runtime `sleeping`, no inference; refuel is detected on the next tick.
-5. Fee policy (no model): pending + settled WETH fees on the RWAGMI locker (at Chainlink ETH/USD) >= `CLAIM_THRESHOLD_USD`
-   -> `claim_fees` userOp (`settleAndClaim`, see "Fee claims" below); then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap` WETH -> USDC through `BootrSwapHelper`
-   (`SWAP_SLIPPAGE_BPS` vs the on-chain Chainlink floor, amount for the missing USDC + 2%). A stale Chainlink answer
-   (`CHAINLINK_MAX_AGE_SECONDS`) disables swaps. Each op is logged with `opId`, `userOpHash`, `txHash`.
+5. Fee policy (no model): gas first (`out_of_gas` skips the agent entirely, see "Gas"); pending + settled WETH fees on
+   the RWAGMI locker (at Chainlink ETH/USD) >= `CLAIM_THRESHOLD_USD`, or any claimable WETH while gas is low and the
+   kernel holds no WETH -> `claim_fees` userOp (`settleAndClaim`, see "Fee claims" below); gas < `GAS_MIN_WEI` and WETH
+   > 0 -> `fund_gas` (`WETH.withdraw`, up to `GAS_TARGET_WEI`); then USDC < `FUEL_TARGET_USDC` and WETH > 0 -> `swap`
+   WETH -> USDC through `BootrSwapHelper` (`SWAP_SLIPPAGE_BPS` vs the on-chain Chainlink floor, amount for the missing
+   USDC + 2%); then the spender top-up. A stale Chainlink answer (`CHAINLINK_MAX_AGE_SECONDS`) disables swaps. Each op
+   is logged with `opId`, `userOpHash`, `txHash`.
 6. `wakeDecision` from: eligible pending mentions (`replyEligibility`), original-post schedule, continuation, config revision,
    scheduled `nextAt`, held action.
 7. Turn: observation (`buildObservation` with market, treasury, eligible mentions, schedule, last checkpoint, recent notes)
@@ -341,6 +346,26 @@ and their funding rule stays at index 3 for `windowOf` until the key is rotated 
 five-rule layout). Clanker-era coins report `poolId: null` and no pending fees; their old Clanker fees are not
 claimed by the supervisor any more.
 
+## Gas
+
+There is no paymaster: every session userOp's prefund comes out of the kernel's EntryPoint deposit, then its ETH balance
+(`Kernel.validateUserOp` forwards `missingAccountFunds`). The platform pays no agent gas ([`docs/gas-model.md`](../../docs/gas-model.md)):
+
+- The creator deposits the first gas from the launch form (`EntryPoint.depositTo(kernel)`, default 0.001 ETH, right
+  after the launch transaction); anyone can add more from the token page or the console.
+- `src/gas.ts` reads gas (`EntryPoint.balanceOf(kernel)` + the kernel's ETH) into the treasury snapshot (`gas.{eth,
+  deposit, balance, status}`, also in `GET /internal/agents/:id`). Status: `ok` (>= `GAS_MIN_WEI`), `low`, `empty`
+  (< `GAS_MIN_WEI / 5`), or `sponsored` when a `PAYMASTER_URL` is set.
+- `runFeePolicy` checks it before anything else: `empty` -> `skipped: out_of_gas` (warning, no op is sent); `low` ->
+  the claim may run below `CLAIM_THRESHOLD_USD` when the kernel has no WETH, then a `fund_gas` op calls `WETH.withdraw`
+  from the kernel for `min(GAS_TARGET_WEI - gas, WETH)` (WETH9 pays `msg.sender`, so the ETH lands on the kernel and can
+  only ever be spent as prefund). The snapshot is re-read before the swap and spender steps.
+- The withdraw selector is rule 5 of call-policy layout 3 (`CALL_POLICY_RULES_VERSION`, `hasGasRule`). A key on
+  layout 2 keeps claiming and swapping; when it runs low the policy logs `session_key_without_gas_rule` and the next
+  rotation installs the current layout. The funding rule stays at index 4 in both.
+- The admin wallet only ever pays the prefund of the session-key install (self-bundled enable op, bounded by
+  `ENABLE_MODE_MAX_PREFUND_WEI`); what that op does not consume stays in the kernel's deposit.
+
 ## Runbook: `held` states
 
 A runtime is `held` when a money or non-idempotent action has an unknown outcome. Nothing is ever resent; the runtime
@@ -366,7 +391,7 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | --- | --- | --- |
 | GET | `/health` | liveness (no auth) |
 | GET | `/internal/agents` | all agents with runtime status |
-| GET | `/internal/agents/:id` | runtime, pending action, last 20 actions, last 20 treasury ops |
+| GET | `/internal/agents/:id` | runtime, pending action, last 20 actions, last 20 treasury ops, `gas` (deposit, balance, status) |
 | POST | `/internal/agents/:id/pause` / `resume` | runtime-level pause (the guardian pause is on-chain, creator only) |
 | POST | `/internal/agents/:id/reconcile` | force reconciliation of ops, pending action and inference |
 | POST | `/internal/agents/:id/tick` | process one agent now |

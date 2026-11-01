@@ -6,19 +6,16 @@
 # manages its own schema at startup and is not migrated here.
 #
 # Usage, from a checkout with `pnpm install` done:
-#   DATABASE_URL=postgres://... ./scripts/railway-migrate.sh
+#   DATABASE_URL=postgres://... ./scripts/migrate.sh
 #   pnpm db:migrate                          # same, via the root package.json
 #
-# Against Railway from a laptop (the private *.railway.internal host is not reachable from outside,
-# so use the Postgres service's public URL):
-#   railway run --service Postgres -- sh -c 'DATABASE_URL="$DATABASE_PUBLIC_URL" ./scripts/railway-migrate.sh'
-#
-# Inside a deployed image (railway ssh), each service can migrate itself instead:
+# In production (docs/deploy/coolify.md) the containers migrate themselves at start:
 #   sender: node dist/db/migrate.js   inference: node scripts/migrate.mjs   supervisor: node dist/db/migrate.js
+# so this script is for a laptop or a one-off run against a database URL you can reach.
 set -eu
 
 if [ -z "${DATABASE_URL:-}" ]; then
-  echo "railway-migrate: DATABASE_URL is not set" >&2
+  echo "migrate: DATABASE_URL is not set" >&2
   exit 1
 fi
 
@@ -26,15 +23,15 @@ cd "$(dirname "$0")/.."
 
 # Print the target without credentials.
 target=$(printf '%s' "$DATABASE_URL" | sed -E 's#^([a-z]+://)[^@/]*@#\1***@#')
-echo "railway-migrate: target ${target}"
+echo "migrate: target ${target}"
 
-echo "railway-migrate: [1/3] sender"
+echo "migrate: [1/3] sender"
 pnpm --filter sender db:migrate
 
-echo "railway-migrate: [2/3] inference"
+echo "migrate: [2/3] inference"
 pnpm --filter @bootr/inference db:migrate
 
-echo "railway-migrate: [3/3] supervisor"
+echo "migrate: [3/3] supervisor"
 pnpm --filter supervisor db:migrate
 
-echo "railway-migrate: done"
+echo "migrate: done"

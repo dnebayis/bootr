@@ -1,8 +1,9 @@
 # Base mainnet cutover
 
-Runbook for moving Bootr from Base Sepolia (84532) to Base mainnet (8453). It assumes the Railway layout
-of [`railway.md`](./railway.md) (one `production` environment) and the contracts in `packages/contracts`.
-Nothing here is automated: every step is a command you run and a check you read back.
+Runbook for moving Bootr from Base Sepolia (84532) to Base mainnet (8453): contracts, keys, services and the
+$BOOT launch. Written for the Railway layout of 2026-10-27; since 2026-11-01 the services run on one Coolify
+server ([`coolify.md`](./coolify.md)), which changes where variables are set and how deploys run, not what they
+contain. Nothing here is automated: every step is a command you run and a check you read back.
 
 Related: `packages/shared/src/addresses.ts` (the mainnet address book, every entry carries its source),
 `packages/contracts/test/fork` and `test/security` (the Base mainnet fork suites that launch through this exact
@@ -73,13 +74,13 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
       until approved, the paymaster bills the CDP account.
 - [ ] **x402 facilitator**: `X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402` with a *secret*
       API key (`CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`) of the same project; `X402_NETWORK=eip155:8453`.
-- [ ] If any CDP key is IP-restricted: static outbound IPs on `supervisor`, `inference`, `indexer`.
+- [ ] If any CDP key is IP-restricted: the production server's IPv4 (`77.42.90.52`, one egress for every service).
 
 ### Keys and wallets (fresh, never reused from Sepolia)
 
 | Role | Env | Funding before step 3 |
 | --- | --- | --- |
-| DEPLOYER | `PRIVATE_KEY` (forge only, never on Railway) | **~0.02 ETH** (five deployments, ~8M gas, leaves headroom for a Base fee spike) |
+| DEPLOYER | `PRIVATE_KEY` (forge only, never on the server) | **~0.02 ETH** (five deployments, ~8M gas, leaves headroom for a Base fee spike) |
 | PLATFORM_ADMIN | `ADMIN_PRIVATE_KEY` (supervisor) | **~0.05 ETH + 20 USDC** (two `acceptOwnership`, `setDefaults`, `approveSessionKey` + the enable-op prefund per agent install / rotation, dormancy sweeps; the USDC is for an admin test launch). No agent gas: the creator funds each kernel's first gas at launch, the agent refills from its own fees. Keep the admin above ~0.01 ETH for installs and rotations |
 | PLATFORM_RECIPIENT | address only | none (receives the platform slot: 27% of the 1% swap fee, 30% on pre-v2 Clanker coins) |
 | PLATFORM_TREASURY | address + key on the operator's machine | **gas (~0.01 ETH) + the $BOOT dev buy + 20 USDC fuel** (step 6; also receives dormant sweeps and inference revenue as `INFERENCE_PAYTO_ADDRESS`) |
@@ -95,7 +96,7 @@ Also fresh: `SENDER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `INDEXER_SERVICE_KEY
       `https://bootr.fun`; `X_CLIENT_ID` / `X_CLIENT_SECRET` of that app, `X_REDIRECT_URI` identical to the portal,
       `SENDER_OAUTH_RETURN_URL=https://bootr.fun/launch`.
 - [ ] DNS: `bootr.fun` (apex, CNAME-flattening) -> `web`, `api.bootr.fun` -> `sender`, `indexer.bootr.fun` ->
-      `indexer`, certificates issued (railway.md section 4). `INDEXER_CORS_ORIGIN=https://bootr.fun`,
+      `indexer`, certificates issued (coolify.md section 5). `INDEXER_CORS_ORIGIN=https://bootr.fun`,
       `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `NEXT_PUBLIC_SITE_URL=https://bootr.fun`.
 - [ ] `NEXT_PUBLIC_BUILDER_CODE` registered for the mainnet platform wallet (Base Builder Codes).
 - [ ] `BASESCAN_API_KEY` for `--verify` (or use `--verifier sourcify`; the Sepolia contracts are Sourcify matches).
@@ -208,7 +209,8 @@ RWAGMI v3 stack from it).
 
 ## 5. Services: environment switch
 
-Shared variables (Railway `production` environment), from `.env.mainnet.example`:
+Variables of the Coolify application (one environment for every service; before 2026-11-01 Railway shared
+variables), from `.env.mainnet.example`:
 
 | Variable | Mainnet value |
 | --- | --- |
@@ -228,10 +230,11 @@ Shared variables (Railway `production` environment), from `.env.mainnet.example`
 | Indexer | new `DATABASE_SCHEMA` (or per-deployment), `INDEXER_MAX_RPS=25`, `INDEXER_SNAPSHOT_INTERVAL` default (30 blocks), `BOOT_TOKEN_ADDRESS` after step 6 |
 | Web | `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`, `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_SWAP_LINK_BASE=https://app.uniswap.org/swap?chain=base&outputCurrency=`, `NEXT_PUBLIC_BOOT_X_URL=https://x.com/bootrfun`, `NEXT_PUBLIC_USE_MOCK=` (empty) |
 
-Deploy order (railway.md section 2): migrations -> `sender` -> `inference` -> `indexer` (new schema; wait for
-`/ready`, the backfill is short right after the deploy block) -> `web` (rebuild for the new `NEXT_PUBLIC_*`) ->
-`supervisor` last. Save the admin config once from the console (graduation threshold, allowed models, `bootToken`
-after step 6).
+Deploy: one Coolify deploy builds and starts everything (coolify.md section 2); the compose file orders the
+containers (Postgres, then sender / inference / indexer, then web and the supervisor) and each service migrates
+itself at start. Give the indexer a new `DATABASE_SCHEMA` when its code changed and wait for `/ready` (the backfill
+is short right after the deploy block). Save the admin config once from the console (graduation threshold, allowed
+models, `bootToken` after step 6).
 
 ## 6. $BOOT launch (from PLATFORM_TREASURY)
 
@@ -289,7 +292,7 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
   (`Deploy.s.sol` again, new guardian + launcher, new address book entry); old kernels stay bound to the old guardian
   and keep working with the old supervisor config.
 - Session keys: `POST /internal/agents/panic-revoke` (fleet-wide nonce bump + uninstall), see the supervisor README.
-- Services: Railway rollback per service (railway.md section 10). The mainnet indexer schema is kept for a later
+- Services: redeploy a previous deployment from Coolify (coolify.md section 2). The mainnet indexer schema is kept for a later
   resume; Base Sepolia is no longer a launch target (RWAGMI v3 has no testnet), so there is no testnet to fall back to.
 - Funds: the only platform-held balances are the admin's gas and the treasury; nothing is custodied for users.
 
@@ -299,8 +302,8 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
 
 1. **Admin key template restriction (C-03).** `AgentGuardian.approveSessionKey` accepts *any* `validatorData`, so
    the admin key can approve a permission with `SudoPolicy` and drain every kernel. Mitigation today: the admin key
-   lives only on the supervisor. Go/no-go: deploy as is and restrict the admin key operationally (sealed Railway
-   variable, no other holder), or hold the deploy until the guardian pins a policy template (module list + flags)
+   lives only on the supervisor. Go/no-go: deploy as is and restrict the admin key operationally (a Coolify
+   variable on one server, no other holder), or hold the deploy until the guardian pins a policy template (module list + flags)
    on-chain? *Default: go as is, tracked for the next guardian release.*
 2. **Multisig as PLATFORM_ADMIN.** `Ownable2Step` on guardian and launcher accepts a Safe. But the supervisor
    needs `ADMIN_PRIVATE_KEY` for `approveSessionKey` / self-bundled installs, which a Safe cannot sign per tick.
@@ -375,7 +378,7 @@ builds a `LaunchConfigV3` and calls `RwagmiB20LauncherV3.launchB20`. Contracts a
 | `RwagmiEthDevBuyV3` | `0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20` | `BootrLauncher` (optional creator dev buy) |
 
 There is no v3 deployment on Base Sepolia: the dry-run and the contract tests run on a Base mainnet fork
-(`base-anvil`, railway.md "Local development"), and the end-to-end check is a small test coin on mainnet.
+(`base-anvil`, coolify.md section 8), and the end-to-end check is a small test coin on mainnet.
 
 ### Fee model
 
@@ -429,8 +432,8 @@ the LP fee, burn variant 5 / 50 / 15 / 30, paid in WETH or the coin).
    `RWAGMI_HOOK_V3_ADDRESS` and `RWAGMI_DEV_BUY_V3_ADDRESS` (indexer); the values are in `.env.mainnet.example`.
    The web app takes the RWAGMI stack from `packages/shared/src/addresses.ts`: update `[8453].bootr` (and, if RWAGMI
    rotated a module, `[8453].rwagmi*`) and commit it.
-7. **Redeploy** in the usual order (railway.md section 2): `indexer` on a **new schema** (it indexes the RWAGMI
-   events; wait for `/ready`), then `web` (rebuild), then `supervisor`. Session keys installed before this release carry
+7. **Redeploy** (coolify.md section 2; on Railway at the time: indexer, web, supervisor in that order): the `indexer`
+   on a **new schema** (it indexes the RWAGMI events; wait for `/ready`), `web` rebuilt, then the `supervisor`. Session keys installed before this release carry
    the Clanker-era rule layout (`rulesVersion` unset, a `ClankerFeeLocker.claim` rule); the supervisor installs the
    RWAGMI claim rules (`settleAndClaim` / `claimQuote` with `to == kernel`, `rulesVersion: 2`) when it rotates a key.
    `SESSION_ROTATE_BEFORE_DAYS` only rotates keys close to expiry, so trigger the rotation explicitly

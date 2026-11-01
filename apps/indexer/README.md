@@ -23,10 +23,11 @@ docker build -f apps/indexer/Dockerfile -t bootr-indexer .
 docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_mainnet_v1 -p 42069:42069 bootr-indexer
 ```
 
-The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; on Railway, without
-`DATABASE_SCHEMA`, one schema per deployment named after `RAILWAY_DEPLOYMENT_ID`). Ponder refuses to
-reuse a schema that was built by different indexing code, so a fixed `DATABASE_SCHEMA` must be bumped
-(`bootr_mainnet_v2`, ...) whenever the indexer changes. See [`docs/deploy/railway.md`](../../docs/deploy/railway.md).
+The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; without `DATABASE_SCHEMA` it falls
+back to `RAILWAY_DEPLOYMENT_ID`, a leftover of the Railway era). Production uses the fixed schema `bootr_v1`.
+Ponder refuses to reuse a schema that was built by different indexing code, so the name must be bumped
+(`bootr_v2`, ...) whenever the indexer changes, and the new schema backfills from `BOOTR_START_BLOCK` (about an
+hour). See [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 2.
 
 Ponder only auto-loads `apps/indexer/.env.local`; export the variables (or use your usual env
 loader) to point it at the root `.env`. When sourcing the root `.env`, override `PORT` (it holds the
@@ -46,7 +47,7 @@ rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0xD3C
 (`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53219209 = `BOOTR_START_BLOCK`) and the guardian
 `0x799Ab875294E37839883D12084aB4BE3f7633630` (`BOOTR_GUARDIAN_ADDRESS`; both also default from `@bootr/shared`);
 after changing any of them delete `.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a
-Base mainnet fork (`base-anvil`, see [`docs/deploy/railway.md`](../../docs/deploy/railway.md)). Public host:
+Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 8). Public host:
 `https://indexer.bootr.fun` (GraphQL at `/graphql`, REST, SSE `/stream`, `/ready`).
 
 ## Environment

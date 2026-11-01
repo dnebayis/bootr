@@ -26,7 +26,7 @@ pnpm --filter sender test           # vitest (PGlite in-memory Postgres + stubbe
 pnpm --filter sender typecheck
 ```
 
-Container (build from the repo root; Railway setup in [`docs/deploy/railway.md`](../../docs/deploy/railway.md)):
+Container (build from the repo root; production setup in [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md)):
 
 ```sh
 docker build -f apps/sender/Dockerfile -t bootr-sender .
