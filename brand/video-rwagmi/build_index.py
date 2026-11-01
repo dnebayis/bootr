@@ -49,9 +49,7 @@ add('r4-gas', 'whoosh-short.mp3', b(53.4), 0.45)
 add('r4-dip', 'click-soft.mp3', b(54.1), 0.7)
 add('r5-wipe', 'whoosh.mp3', b(60), 0.7)
 add('r5-mark', 'impact-bass-1.mp3', b(61) + 0.12, 0.5, 0.9, **{'data-fade-out': '0.4'})
-add('r5-key', 'key-press.mp3', b(63), 0.5)
 add('r5-tile', 'impact-bass-1.mp3', b(64), 0.7, 1.4, **{'data-fade-out': '0.6'})
-add('r5-name', 'pop.mp3', b(64.5), 0.6)
 
 DEFAULT_DUR = {'click-soft.mp3': 0.37, 'pop.mp3': 0.72, 'key-press.mp3': 0.4, 'whoosh.mp3': 0.575, 'whoosh-short.mp3': 0.575}
 clips = []

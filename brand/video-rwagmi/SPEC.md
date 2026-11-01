@@ -33,8 +33,8 @@ SHOTS:   (b = beat, 0.46985 s)
          b44-60  20.67-28.19  R4 white. Wipe from below. b45 "the agent claims its share itself." b46 the locker tile and the
                               treasury box. b47 the claim line draws, a square travels to the treasury at b49, the balance ticks
                               up. b52 title "and pays its own gas from it." b53 the gas line, a square leaves, balance dips.
-         b60-70  28.19-32.90  R5 dark. Wipe from the left. b61 Bootr lockup, b63 "runs on", b64 the avatar tile slams
-                              in (impact) with "rwagmi". Hold 2 s while the music fades out by itself.
+         b60-70  28.19-32.90  R5 dark. Wipe from the left. b61 the Bootr mark slams in (440 px, left of centre), b64 the avatar
+                              tile slams in (440 px, right of centre, impact). Two logos only. Hold 2 s while the music fades out.
 SOUND:   bed (1.0), whooshes on floods and wipes, impact on the drop (b4) and the fee drop (b32), key ticks while typing,
          pops on rows, a click on the lock, impact on the tile slam (b64).
 BANNED:  dark void with small floating elements (heroes >= 40% of the frame height); glow, bloom, particles; gradients, glass;
