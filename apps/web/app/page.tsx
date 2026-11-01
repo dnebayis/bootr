@@ -1,4 +1,5 @@
 import { BootBox } from '@/components/tokens/BootBox';
+import { AsciiWake } from '@/components/tokens/AsciiWake';
 import { GridSkeleton, TabsRow, TokensView } from '@/components/tokens/TokensView';
 import { ClientOnly } from '@/components/ui/ClientOnly';
 
@@ -15,6 +16,7 @@ export default function TokensPage() {
         fallback={
           <div className="flex flex-col gap-4">
             <TabsRow tab={null} />
+            <AsciiWake />
             <GridSkeleton />
           </div>
         }

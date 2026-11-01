@@ -11,6 +11,7 @@ import { Empty } from '@/components/ui/Panel';
 import { SearchIcon } from '@/components/ui/Icons';
 import { openSearch } from '@/components/shell/search-events';
 import { TokenGrid } from './TokenGrid';
+import { AsciiWake } from './AsciiWake';
 import { TokenCardSkeleton } from './TokenCard';
 
 export const TABS: { id: TokenTab; label: string; empty: string }[] = [
@@ -131,6 +132,7 @@ export function TokensView() {
   return (
     <div className="flex flex-col gap-4">
       <TabsRow tab={tab} />
+      <AsciiWake />
       <Feed key={tab} tab={tab} />
     </div>
   );
