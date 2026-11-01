@@ -140,7 +140,11 @@ services:
       BASE_RPC_URL: ${BASE_RPC_URL}
       ADMIN_CONSOLE_SLUG: ${ADMIN_CONSOLE_SLUG}
       ADMIN_ADDRESSES: ${ADMIN_ADDRESSES}
+      # Pinata (image and metadata pinning from the launch form).
+      PINATA_JWT: ${PINATA_JWT}
       SENDER_URL: http://sender:3002
+      # The model list for the launch form is fetched server-side from the relay.
+      INFERENCE_URL: http://inference:3003
     volumes:
       # Admin config and launch drafts (docs/deploy/railway.md section 7). The image owns /data as `node`,
       # and a named volume inherits that ownership on first use.
@@ -196,6 +200,13 @@ services:
       BUILDER_CODES_ENABLED: ${BUILDER_CODES_ENABLED:-}
       BUILDER_CODES_URL: ${BUILDER_CODES_URL:-}
       SWAP_SLIPPAGE_BPS: ${SWAP_SLIPPAGE_BPS:-}
+      CHAINLINK_MAX_AGE_SECONDS: ${CHAINLINK_MAX_AGE_SECONDS:-}
+      SESSION_GAS_ALLOWANCE_WEI: ${SESSION_GAS_ALLOWANCE_WEI:-}
+      SESSION_RATE_LIMIT_PER_HOUR: ${SESSION_RATE_LIMIT_PER_HOUR:-}
+      SESSION_USDC_TRANSFER_CAP: ${SESSION_USDC_TRANSFER_CAP:-}
+      SESSION_USDC_WINDOW_SECONDS: ${SESSION_USDC_WINDOW_SECONDS:-}
+      SPENDER_MIN_USDC: ${SPENDER_MIN_USDC:-}
+      SPENDER_TARGET_USDC: ${SPENDER_TARGET_USDC:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
 volumes:
