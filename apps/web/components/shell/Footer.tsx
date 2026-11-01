@@ -28,6 +28,7 @@ export function Footer() {
       <div className="border-t border-hairline">
         <div className="mx-auto flex items-center justify-between px-4 py-4 font-mono text-micro text-mute md:px-6">
           <span>bootr.fun</span>
+          <span className="font-doto text-sm font-semibold uppercase tracking-[0.1em] text-body">Built on Base</span>
           <span>{chainLabel()}{env.useMock ? ' · mock data' : ''}</span>
         </div>
       </div>

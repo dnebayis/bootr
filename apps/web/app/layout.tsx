@@ -1,6 +1,10 @@
 import type { Metadata, Viewport } from 'next';
 import { GeistSans } from 'geist/font/sans';
 import { GeistMono } from 'geist/font/mono';
+import { Doto } from 'next/font/google';
+
+// Base's secondary display face: short, all-caps labels only (DESIGN.md, Typography).
+const doto = Doto({ subsets: ['latin'], variable: '--font-doto-display', display: 'swap' });
 import { Providers } from '@/components/Providers';
 import { Nav } from '@/components/shell/Nav';
 import { Footer } from '@/components/shell/Footer';
@@ -33,7 +37,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable} ${doto.variable}`} suppressHydrationWarning>
       <head>
         {/* No-flash theme: set .light/.dark before first paint. Rendered by this server component, not a client one. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />

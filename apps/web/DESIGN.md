@@ -394,7 +394,7 @@ components:
 > Product brand for **bootr.fun** — a launchpad on Base where every coin gets an autonomous agent that runs its own X account. This section is the source of truth for the web app (`app/globals.css`, `components/brand/*`). Everything below it, including the colour values in the front matter, is the Vercel-inspired base the layout was derived from; its colours are superseded by the Base palette here. Where they disagree, this section wins.
 
 ### Positioning in one line
-A trading-terminal-grade product on Base, not a marketing site. Black, white and Base grays, hairlines, mono numbers, one Base Blue accent. The Vercel base minus its mesh gradient: Bootr has **no decorative system at all** — data is the decoration, and the few colours it uses are Base's and carry meaning.
+A trading-terminal-grade product on Base, not a marketing site. Black, white and Base grays, hairlines, mono numbers, one Base Blue accent. The Vercel base minus its mesh gradient: Bootr has **one texture and no other decoration** — a field of faint ink dots behind the home page that answers the pointer (see "Field" below); everything else is data, and the few colours it uses are Base's and carry meaning.
 
 ### Identity
 
@@ -517,7 +517,7 @@ Chart series under 3:1 (light Lime and Tan, dark Base Blue) are acceptable only 
 
 ### Typography
 
-Geist for everything narrative, Geist Mono for every number that can change, every address, hash, and code block. Loaded from the `geist` npm package (no network fetch at build).
+Geist for everything narrative, Geist Mono for every number that can change, every address, hash, and code block. Loaded from the `geist` npm package (no network fetch at build). **Doto** (Base's secondary display face, `next/font/google`, utility `font-doto`) for short all-caps labels only: the home eyebrow ("LAUNCHPAD · BUILT ON BASE") and the footer's "BUILT ON BASE". 14px, 600, `tracking 0.1em`, `body` colour (the dot-matrix face needs the weight and the contrast). Never lowercase, never more than a few words, never in the product UI proper (labels above numbers stay Geist caption).
 
 | Token | Size / line | Tracking | Weight | Use |
 |---|---|---|---|---|
@@ -534,7 +534,7 @@ Geist for everything narrative, Geist Mono for every number that can change, eve
 Labels above numbers are `caption` in `mute`, sentence case. Uppercase is allowed only for mono micro labels (chain badges: `BASE`, `SEPOLIA`).
 
 ### Spacing, radii, elevation
-- 4px grid (`--spacing: 0.25rem`). Card padding 16px; panel padding 20px; page gutter 16px mobile / 24px desktop; max content width 1280px.
+- 4px grid (`--spacing: 0.25rem`). Card padding 16px; panel padding 20px; page gutter 16px mobile / 24px desktop; no maximum content width since 2026-11-01 (the page, header and footer span the viewport; the token grid adds columns up to 4).
 - Radii: `xs 4` (badges, chips), `sm 6` (buttons, inputs), `md 8` (cards, panels), `lg 12` (dialogs, drawers). Nothing larger. No pills except the status dot and the 9999px chip used for counts.
 - Elevation is a hairline. Shadows only on floating layers (command palette, dropdown, drawer, toast): `0 1px 1px #00000005, 0 8px 16px -4px #0000000a, 0 24px 32px -8px #0000000f`. No glass, no blur, no glow.
 
@@ -545,8 +545,13 @@ Labels above numbers are `caption` in `mute`, sentence case. Uppercase is allowe
 | `duration-base` | 250ms | Card enter/reorder (`motion` `layout`), drawer, tabs. |
 | `duration-slow` | 400ms | Chart draw-in, number ticks (`@number-flow/react`). |
 | `ease-out-quint` | `cubic-bezier(0.22, 1, 0.36, 1)` | Default easing. |
+| `ease-base` | `cubic-bezier(0.4, 0, 0.2, 1)` | Base's one curve (brand.base.org/motion), for 120–240 ms feedback: card hover, the field. |
 
 New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animate-flash`) — no confetti, no glow, no bounce. `prefers-reduced-motion` disables layout animation, chart draw-in and number ticking (values swap instantly).
+
+**Type scramble** (`components/ui/Scramble.tsx`): Base's named headline pattern. The home `h1` resolves from random mono glyphs to "Tokens" left to right in 640 ms on mount; the server renders the final text (no layout shift), reduced motion skips it, screen readers get the text once. Headlines only, never body copy, at most one per page.
+
+**Field** (`components/tokens/AsciiWake.tsx`): the home page's only texture. A canvas fixed to the viewport behind the content draws one `ink` dot per 12px cell at 9% opacity. Within 72px of the pointer the dots become mono glyphs (`.` `:` `-` `=` `+` `*` `#` by heat) drawn in `accent` up to 90% opacity, drift up to 10px toward the pointer and cool back to dots in 1.2 s; a press sends a ring. This is the page's "burst of colour in a key interaction" (brand.base.org/color): the dots never carry colour, only the wake does. Idle when nothing is hot, static under reduced motion, cards and panels stay opaque on top. Not on other pages.
 
 ### Components
 
@@ -555,7 +560,7 @@ New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animat
 | `Button` | Heights 28 (sm) / 32 (md) / 40 (lg); radius `sm`. Variants: `primary` (`accent` fill with `on-accent` label, `accent-hover` + `on-accent-hover` on hover — one per view), `ink` (ink fill), `secondary` (canvas + hairline, ink text), `ghost` (no border, `canvas-sub` on hover). Disabled = 50% opacity, `cursor-not-allowed`. Loading keeps width, swaps label for "Confirming…". |
 | `Input` / `Textarea` / `Select` | 32px (md) or 40px (lg) tall, hairline border, `hairline-strong` on hover, accent focus ring. Mono for numeric inputs with a right-aligned unit suffix (`USDC`, `ETH`). |
 | `Tabs` | Text tabs with a 1px ink underline on the active item; driven by the URL (`?tab=`). Counts in mono `mute`. The primary nav is the one exception: its active item is underlined in `accent`. |
-| `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. Agent status dot top right (Green awake, gray sleeping). 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `hairline-strong`. |
+| `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. Agent status dot top right (Green awake, gray sleeping). 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `accent` (thin, one card at a time; `ease-base` 150 ms). |
 | `StatusDot` | 8px circle. `awake` = solid `positive` (Green); `sleeping` = solid `mute` (gray); `paused` / `dormant` / `claimed` = 1px `hairline-strong` outline, no fill. Always paired with a text label for screen readers. |
 | `Badge` | Micro text, radius `xs`, hairline border, `canvas-soft` fill. "Graduated" (and the card's "Grad") is `warning` (Yellow) text on `warning-surface` — the only filled badge. |
 | `Stat tile` | Caption label, `display-md` mono value ticking with number-flow, optional delta in caption. The 24h change is `positive-text` / `negative-text` by sign. Tiles sit in a hairline-divided row, not separate cards. |
@@ -573,11 +578,11 @@ Short, literal, sentence case. "Launch a coin with an agent that runs it." Not "
 |---|---|
 | Let hairlines and whitespace carry structure. | Add gradients, glass, blur, glow or colour blobs. |
 | Use mono + `tabular-nums` for every live number. | Colour prices, caps or volumes; only the 24h change gets Green/Red. |
-| Keep one Base Blue fill per view. | Use the accent for decoration, icons, headings or the mark. |
+| Keep one Base Blue fill per view. | Use the accent for decoration, icons, headings or the mark. The wake glyphs and the hovered card border are feedback, not decoration. |
 | Use Base palette values, or their documented *derived* shades. | Introduce a hue outside the Base palette, or use Pink. |
 | Check AA in both themes for every new pairing and add it to the Contrast table. | Put white text on Cerulean, or Base Blue text on the dark canvas. |
 | Use radius ≤ 12px. | Round everything to 24px+. |
-| Animate to explain change (reorder, new item, value tick). | Animate for decoration (floating, pulsing logos, confetti). |
+| Animate to explain change (reorder, new item, value tick) or to answer the pointer (the field, the hovered card). | Animate for decoration (floating, pulsing logos, confetti, autoplaying backgrounds). |
 
 
 

@@ -22,7 +22,7 @@ export function TokenCard({ token, now, flash }: { token: Token; now: number; fl
     <Link
       href={`/token/${token.id}`}
       className={cn(
-        'group flex h-[164px] flex-col gap-3 rounded-md border border-hairline bg-canvas p-4 transition-colors duration-150 hover:border-hairline-strong',
+        'group flex h-[164px] flex-col gap-3 rounded-md border border-hairline bg-canvas p-4 transition-colors duration-150 ease-base hover:border-accent',
         flash && 'animate-flash',
       )}
     >

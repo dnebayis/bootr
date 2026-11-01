@@ -24,7 +24,7 @@ const RING_WIDTH = 28; // px
 const GLYPHS = ['.', ':', '-', '=', '+', '*', '#'];
 const DOT_RADIUS = 1.1;
 const DOT_ALPHA = 0.09; // resting dots
-const GLYPH_ALPHA = 0.6; // a fully hot glyph
+const GLYPH_ALPHA = 0.9; // a fully hot glyph (accent colour)
 
 interface Ring {
   x: number;
@@ -55,13 +55,16 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
     let ox = 0;
     let oy = 0;
     let ink = '#fff';
+    let accent = '#3c8aff';
     let pointer: { x: number; y: number } | null = null;
     const rings: Ring[] = [];
     let raf = 0;
     let last = 0;
 
     const readInk = () => {
-      ink = getComputedStyle(canvas).color || ink;
+      const cs = getComputedStyle(canvas);
+      ink = cs.color || ink;
+      accent = cs.getPropertyValue('--accent').trim() || accent;
     };
 
     const draw = () => {
@@ -76,6 +79,7 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
         let y = oy + Math.floor(i / cols) * CELL + CELL / 2;
         const h = heat[i];
         if (h < 0.08) {
+          ctx.fillStyle = ink;
           ctx.globalAlpha = DOT_ALPHA;
           ctx.beginPath();
           ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
@@ -92,6 +96,8 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
             y += (dy / d) * f;
           }
         }
+        // The wake is the field's one burst of colour: glyphs are drawn in the accent, dots stay ink.
+        ctx.fillStyle = accent;
         ctx.globalAlpha = DOT_ALPHA + (GLYPH_ALPHA - DOT_ALPHA) * h;
         const g = GLYPHS[Math.min(GLYPHS.length - 1, Math.floor(h * GLYPHS.length))];
         ctx.fillText(g, x, y + 0.5);

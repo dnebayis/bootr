@@ -111,6 +111,8 @@
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Doto (Base's secondary display face): all-caps labels and texture only, never long text. */
+  --font-doto: var(--font-doto-display), var(--font-geist-mono), ui-monospace, monospace;
 }
 
 @theme {
@@ -151,6 +153,8 @@
 
   /* Motion. */
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Base's one motion curve (brand.base.org/motion), for UI feedback in 120-240 ms. */
+  --ease-base: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --duration-fast: 150ms;
   --duration-base: 250ms;
