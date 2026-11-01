@@ -23,8 +23,10 @@ const RING_SPEED = 480; // px/s
 const RING_WIDTH = 28; // px
 const GLYPHS = ['.', ':', '-', '=', '+', '*', '#'];
 const DOT_RADIUS = 1.1;
-const DOT_ALPHA = 0.09; // resting dots
-const GLYPH_ALPHA = 0.9; // a fully hot glyph (accent colour)
+const DOT_ALPHA_DARK = 0.09; // resting dots on the dark canvas
+const DOT_ALPHA_LIGHT = 0.06; // dark dots on white read stronger, so lighter
+const GLYPH_ALPHA_DARK = 0.9; // a fully hot glyph (accent colour)
+const GLYPH_ALPHA_LIGHT = 0.65; // Base Blue on white is loud, keep the wake under the text
 
 interface Ring {
   x: number;
@@ -56,6 +58,8 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
     let oy = 0;
     let ink = '#fff';
     let accent = '#3c8aff';
+    let dotAlpha = DOT_ALPHA_DARK;
+    let glyphAlpha = GLYPH_ALPHA_DARK;
     let pointer: { x: number; y: number } | null = null;
     const rings: Ring[] = [];
     let raf = 0;
@@ -65,6 +69,9 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
       const cs = getComputedStyle(canvas);
       ink = cs.color || ink;
       accent = cs.getPropertyValue('--accent').trim() || accent;
+      const dark = document.documentElement.classList.contains('dark');
+      dotAlpha = dark ? DOT_ALPHA_DARK : DOT_ALPHA_LIGHT;
+      glyphAlpha = dark ? GLYPH_ALPHA_DARK : GLYPH_ALPHA_LIGHT;
     };
 
     const draw = () => {
@@ -80,7 +87,7 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
         const h = heat[i];
         if (h < 0.08) {
           ctx.fillStyle = ink;
-          ctx.globalAlpha = DOT_ALPHA;
+          ctx.globalAlpha = dotAlpha;
           ctx.beginPath();
           ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
           ctx.fill();
@@ -98,7 +105,7 @@ export function AsciiWake({ className, children, fixed = false }: { className?: 
         }
         // The wake is the field's one burst of colour: glyphs are drawn in the accent, dots stay ink.
         ctx.fillStyle = accent;
-        ctx.globalAlpha = DOT_ALPHA + (GLYPH_ALPHA - DOT_ALPHA) * h;
+        ctx.globalAlpha = dotAlpha + (glyphAlpha - dotAlpha) * h;
         const g = GLYPHS[Math.min(GLYPHS.length - 1, Math.floor(h * GLYPHS.length))];
         ctx.fillText(g, x, y + 0.5);
       }

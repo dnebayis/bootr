@@ -21,6 +21,7 @@
   --mute: #5b616e;
   --hairline: #dee1e7;
   --hairline-strong: #b1b7c3;
+  --edge: #b1b7c3;
   /* Base Blue is the one hero accent; Cerulean is its hover (dark text, white fails AA on it). */
   --accent: #0000ff;
   --accent-hover: #3c8aff;
@@ -59,6 +60,7 @@
   --mute: #818895;
   --hairline: #32353d;
   --hairline-strong: #5b616e;
+  --edge: #32353d;
   /* Base Blue is 2.29:1 on Gray 100, so Cerulean takes the accent role in dark mode. */
   --accent: #3c8aff;
   --accent-hover: #6da7ff;
@@ -91,6 +93,7 @@
   --color-mute: var(--mute);
   --color-hairline: var(--hairline);
   --color-hairline-strong: var(--hairline-strong);
+  --color-edge: var(--edge);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-link: var(--link);

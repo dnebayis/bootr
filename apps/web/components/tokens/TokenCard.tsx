@@ -22,7 +22,7 @@ export function TokenCard({ token, now, flash }: { token: Token; now: number; fl
     <Link
       href={`/token/${token.id}`}
       className={cn(
-        'group flex h-[164px] flex-col gap-3 rounded-md border border-hairline bg-canvas p-4 transition-colors duration-150 ease-base hover:border-accent',
+        'group flex h-[164px] flex-col gap-3 rounded-md border border-edge bg-canvas p-4 transition-colors duration-150 ease-base hover:border-accent',
         flash && 'animate-flash',
       )}
     >
@@ -58,7 +58,7 @@ export function TokenCard({ token, now, flash }: { token: Token; now: number; fl
 
 export function TokenCardSkeleton() {
   return (
-    <div className="flex h-[164px] flex-col gap-3 rounded-md border border-hairline p-4" aria-hidden="true">
+    <div className="flex h-[164px] flex-col gap-3 rounded-md border border-edge bg-canvas p-4" aria-hidden="true">
       <div className="flex gap-3">
         <div className="size-12 animate-shimmer rounded-xs bg-canvas-sub" />
         <div className="flex flex-1 flex-col gap-2 pt-1">

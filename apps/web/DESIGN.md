@@ -440,6 +440,7 @@ Pink `#fea8cd` is not used. Values marked *derived* are straight sRGB mixes of t
 | `mute` | `#5b616e` Gray 60 | `#818895` *derived* (Gray 50 → Gray 30, 25%) | Labels, captions, secondary metadata. Gray 50 is 4.44:1 on both white and Gray 100, just under AA, so it is not used for text. |
 | `hairline` | `#dee1e7` Gray 15 | `#32353d` Gray 80 | Every 1px border and divider. |
 | `hairline-strong` | `#b1b7c3` Gray 30 | `#5b616e` Gray 60 | Input borders on hover, outline status dots, the RWAGMI (context) segment of the fee bar. |
+| `edge` | `#b1b7c3` Gray 30 | `#32353d` Gray 80 | The outer border of anything that must read as a box on the dotted page: token cards, panels, the `$BOOT` box. Equal to `hairline` in dark mode; one step stronger in light mode, where Gray 15 on white disappears against the field. |
 | `selection-bg` / `selection-fg` | `#0a0b0d` / `#eef0f3` | `#ffffff` / `#0a0b0d` | `::selection`. |
 
 **Accent (Base Blue)**

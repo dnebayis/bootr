@@ -23,7 +23,7 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 function Bloom() {
   return <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[url('/boot-bloom.webp')] bg-cover bg-center opacity-[0.16] dark:opacity-[0.22]" />;
 }
-const BOX = 'relative overflow-hidden rounded-md border border-hairline bg-canvas';
+const BOX = 'relative overflow-hidden rounded-md border border-edge bg-canvas';
 
 export function BootBox() {
   const { data, isPending, isError } = usePlatformStats();

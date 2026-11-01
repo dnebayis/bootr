@@ -17,7 +17,7 @@ export function Panel({
   id?: string;
 }) {
   return (
-    <section id={id} className={cn('rounded-md border border-hairline bg-canvas', className)}>
+    <section id={id} className={cn('rounded-md border border-edge bg-canvas', className)}>
       {title ? (
         <header className="flex items-center justify-between gap-3 border-b border-hairline px-5 py-3">
           <h2 className="text-sm font-semibold tracking-tight text-ink">{title}</h2>
