@@ -71,9 +71,18 @@ ALIAS/CNAME records). Traefik issues the certificates within a minute of DNS res
 services (or delete the project) so the two supervisors never run against the same chain state, and update
 the X app's callback only if `X_REDIRECT_URI` changed (it did not: `https://api.bootr.fun/oauth/callback`).
 
-## 6. Backups
+## 6. Backups and disk
 
-Postgres lives in the Docker volume `<app uuid>_postgres-data`. Coolify's scheduled backups apply to its own
-database resources, not to a compose-managed Postgres, so add a cron (Hermes or plain crontab) that runs
-`docker exec <postgres container> pg_dump -U bootr bootr | gzip > /root/backups/bootr-$(date +%F).sql.gz`
-and ships it off the server. Coolify's own `/data/coolify/source/.env` is backed up on the owner's machine.
+`/root/backup-bootr-db.sh` runs from root's crontab every day at 03:00 UTC (log: `/root/backups/backup.log`):
+`pg_dump -U bootr --exclude-schema="ponder_rpc_cache_*" bootr | gzip` into `/root/backups/bootr-<date>.sql.gz`,
+14 days kept. The excluded schema is the indexer's RPC cache (gigabytes of raw chain data that a backfill
+rebuilds in about an hour); the dump keeps `public` (sender, supervisor), `drizzle` (inference) and the
+indexer's `bootr_v1` tables, about 15 KB while the platform is empty. Restore into the compose Postgres with
+`zcat <file> | docker exec -i <postgres container> psql -U bootr bootr`. The dumps are not shipped off the
+server yet; copy them to the owner's machine (`scp`) or a Hetzner Storage Box. Coolify's own
+`/data/coolify/source/.env` is backed up on the owner's machine.
+
+Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; the four Node service
+images are ~1.8 GB each because the runtime stage copies the monorepo's production `node_modules`). Coolify
+runs a Docker cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run
+`docker builder prune -f` and `docker image prune -f` by hand. Do not delete `postgres-data` or `web-data`.
