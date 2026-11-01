@@ -12,7 +12,7 @@ import { CopyButton } from '@/components/ui/CopyButton';
 
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col gap-1 border-hairline px-4 py-5 last:col-span-2 max-md:nth-[n+3]:border-t even:border-l md:px-5 md:py-6 md:not-first:border-l md:last:col-span-1">
+    <div className="flex min-w-0 flex-col gap-1 border-hairline px-4 py-6 last:col-span-2 max-md:nth-[n+3]:border-t even:border-l md:px-5 md:py-9 md:not-first:border-l md:last:col-span-1">
       <span className="text-caption text-mute">{label}</span>
       <span className="truncate font-mono text-display-sm font-medium text-ink tabular">{children}</span>
     </div>
@@ -21,7 +21,7 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 
 /** The box's background: the bloom photograph (public/boot-bloom.webp), faded so the numbers stay legible. */
 function Bloom() {
-  return <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[url('/boot-bloom.webp')] bg-cover bg-center opacity-[0.16] dark:opacity-[0.22]" />;
+  return <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[url('/boot-bloom.webp')] bg-cover bg-[position:50%_88%] opacity-[0.3] dark:opacity-[0.38]" />;
 }
 const BOX = 'relative overflow-hidden rounded-md border border-edge bg-canvas';
 
@@ -38,7 +38,7 @@ export function BootBox() {
         </div>
         <div className="relative grid grid-cols-2 md:grid-cols-5">
           {Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="px-5 py-5 md:py-6">
+            <div key={i} className="px-5 py-6 md:py-9">
               <Skeleton className="mb-2 h-3 w-16" />
               <Skeleton className="h-6 w-24" />
             </div>
@@ -50,7 +50,7 @@ export function BootBox() {
 
   if (isError || !data?.bootToken) {
     return (
-      <section aria-label="BOOT token" className={`${BOX} flex items-center justify-between gap-4 px-5 py-6`}>
+      <section aria-label="BOOT token" className={`${BOX} flex items-center justify-between gap-4 px-5 py-9`}>
         <Bloom />
         <div className="relative flex items-baseline gap-3">
           <span className="font-mono text-sm font-medium text-ink">$BOOT</span>
