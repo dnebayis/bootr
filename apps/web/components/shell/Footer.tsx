@@ -6,7 +6,7 @@ import { env } from '@/lib/env';
 export function Footer() {
   return (
     <footer className="mt-24 border-t border-hairline">
-      <div className="mx-auto flex max-w-[1280px] flex-col gap-6 px-4 py-10 md:flex-row md:items-start md:justify-between md:px-6">
+      <div className="mx-auto flex flex-col gap-6 px-4 py-10 md:flex-row md:items-start md:justify-between md:px-6">
         <div className="flex flex-col gap-3">
           <Wordmark size="sm" />
           <p className="max-w-xs text-caption text-mute">Launch a coin with an agent that runs it. Fees split on-chain, locked at launch.</p>
@@ -26,7 +26,7 @@ export function Footer() {
         </nav>
       </div>
       <div className="border-t border-hairline">
-        <div className="mx-auto flex max-w-[1280px] items-center justify-between px-4 py-4 font-mono text-micro text-mute md:px-6">
+        <div className="mx-auto flex items-center justify-between px-4 py-4 font-mono text-micro text-mute md:px-6">
           <span>bootr.fun</span>
           <span>{chainLabel()}{env.useMock ? ' · mock data' : ''}</span>
         </div>

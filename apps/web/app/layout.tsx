@@ -44,7 +44,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
             Skip to content
           </a>
           <Nav />
-          <main id="main" className="mx-auto w-full max-w-[1280px] flex-1 px-4 pt-6 md:px-6 md:pt-8">
+          <main id="main" className="mx-auto w-full flex-1 px-4 pt-6 md:px-6 md:pt-8">
             {children}
           </main>
           <Footer />
