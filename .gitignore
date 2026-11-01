@@ -22,3 +22,6 @@ packages/contracts/broadcast/
 
 # foundry libs are installed via `pnpm --filter @bootr/contracts setup` (no submodules)
 packages/contracts/lib/
+
+# local application assets (demo videos)
+docs/applications/*.mp4
