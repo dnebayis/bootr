@@ -38,7 +38,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
         {/* No-flash theme: set .light/.dark before first paint. Rendered by this server component, not a client one. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
-      <body className="flex min-h-dvh flex-col">
+      <body className="flex min-h-dvh flex-col overflow-x-clip">
         <Providers>
           <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-50 focus:rounded-sm focus:bg-ink focus:px-3 focus:py-1.5 focus:text-on-ink">
             Skip to content
