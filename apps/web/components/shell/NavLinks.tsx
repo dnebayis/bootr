@@ -16,12 +16,12 @@ export function NavLinksView({ pathname }: { pathname: string | null }) {
             href={item.href}
             aria-current={active ? 'page' : undefined}
             className={cn(
-              'relative rounded-sm px-2.5 py-1.5 text-sm transition-colors duration-150',
+              'relative rounded-sm px-3 py-2 text-base transition-colors duration-150',
               active ? 'text-ink' : 'text-mute hover:text-ink',
             )}
           >
             {item.label}
-            {active ? <span className="absolute inset-x-2.5 -bottom-[13px] h-px bg-accent" aria-hidden="true" /> : null}
+            {active ? <span className="absolute inset-x-3 -bottom-[17px] h-px bg-accent" aria-hidden="true" /> : null}
           </Link>
         );
       })}

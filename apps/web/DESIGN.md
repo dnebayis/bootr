@@ -402,7 +402,7 @@ A trading-terminal-grade product on Base, not a marketing site. Black, white and
 |---|---|
 | Wordmark | `bootr`, always lowercase, Geist 600, `letter-spacing: -0.04em`, line-height 1. Never uppercase, never with a period, never set in mono. |
 | Mark | 24-unit square, `rx 5`, filled `currentColor`, with a squared power glyph knocked out: a vertical stroke `M12 4.75V12` dropping into an open-topped square `M8.75 7.75H6.75V17.25H17.25V7.75H15.25`, both 2.5 units, square caps. Reads as "power on" and as a boot/terminal block. |
-| Lockup | Mark + wordmark, gap 8px at 20px mark / 18px text (nav), gap 6px at 16px / 15px (footer). Mark height = cap height x 1.6. |
+| Lockup | Mark + wordmark, gap 10px at 26px mark / 24px text (nav, in a 72px header with 16px links), gap 8px at 20px / 18px (md), gap 6px at 16px / 15px (footer). Mark height = cap height x 1.6. |
 | Clear space | 0.5 x mark size on all sides. |
 | Favicon | `public/favicon.svg` — same mark, switches ink/white via `prefers-color-scheme`. Legible at 16px because strokes land on whole pixels at 24 -> 16 scale (2.5 -> 1.67px). |
 | OG image | `public/og.png` (rendered from `public/og.svg`): black canvas, one hairline grid cross, mark + wordmark, single sentence. |

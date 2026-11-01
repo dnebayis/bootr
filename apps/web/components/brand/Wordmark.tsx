@@ -4,12 +4,13 @@ type WordmarkProps = {
   className?: string;
   /** Hide the glyph and render only the lowercase "bootr" logotype. */
   textOnly?: boolean;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'nav' | 'lg';
 };
 
 const sizes = {
   sm: { mark: 16, text: 'text-[15px]', gap: 'gap-1.5' },
   md: { mark: 20, text: 'text-[18px]', gap: 'gap-2' },
+  nav: { mark: 26, text: 'text-[24px]', gap: 'gap-2.5' },
   lg: { mark: 32, text: 'text-[30px]', gap: 'gap-3' },
 } as const;
 
