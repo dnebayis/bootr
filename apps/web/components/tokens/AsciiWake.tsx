@@ -23,8 +23,8 @@ const RING_SPEED = 480; // px/s
 const RING_WIDTH = 28; // px
 const GLYPHS = ['.', ':', '-', '=', '+', '*', '#'];
 const DOT_RADIUS = 1.1;
-const DOT_ALPHA = 0.16; // resting dots
-const GLYPH_ALPHA = 0.8; // a fully hot glyph
+const DOT_ALPHA = 0.09; // resting dots
+const GLYPH_ALPHA = 0.6; // a fully hot glyph
 
 interface Ring {
   x: number;
