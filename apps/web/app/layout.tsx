@@ -8,6 +8,7 @@ const doto = Doto({ subsets: ['latin'], variable: '--font-doto-display', display
 import { Providers } from '@/components/Providers';
 import { Nav } from '@/components/shell/Nav';
 import { Footer } from '@/components/shell/Footer';
+import { Mascot } from '@/components/shell/Mascot';
 import { env } from '@/lib/env';
 import { THEME_SCRIPT } from '@/lib/theme-script';
 import './globals.css';
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
             {children}
           </main>
           <Footer />
+          <Mascot />
         </Providers>
       </body>
     </html>

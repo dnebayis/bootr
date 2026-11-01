@@ -1,0 +1,56 @@
+.bootr-mascot {
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  z-index: 10;
+  width: 62px;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 5px rgb(0 0 0 / 0.16));
+}
+
+.bootr-mascot-character {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  transform-origin: 50% 92%;
+  animation: bootr-breathe 3.2s ease-in-out infinite;
+}
+
+.bootr-mascot-body,
+.bootr-mascot-arm {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.bootr-mascot-body {
+  clip-path: polygon(0 0, 75% 0, 75% 64%, 100% 64%, 100% 100%, 0 100%);
+}
+
+.bootr-mascot-arm {
+  clip-path: polygon(75% 20%, 100% 20%, 100% 64%, 75% 64%);
+  transform-origin: 76% 52%;
+  animation: bootr-wave 2.8s ease-in-out infinite;
+}
+
+@keyframes bootr-breathe {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-2px) rotate(-1deg); }
+}
+
+@keyframes bootr-wave {
+  0%, 12%, 55%, 100% { transform: rotate(0); }
+  20%, 36% { transform: rotate(-13deg); }
+  28%, 44% { transform: rotate(10deg); }
+  52% { transform: rotate(-5deg); }
+}
+
+@media (min-width: 768px) {
+  .bootr-mascot { right: 20px; bottom: 16px; width: 88px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bootr-mascot-character, .bootr-mascot-arm { animation: none; }
+}
