@@ -238,6 +238,13 @@ models, `bootToken` after step 6).
 
 ## 6. $BOOTR launch (from PLATFORM_TREASURY)
 
+> **Before this launch (decided 2026-11-02):** redeploy `BootrLauncher` with a ~$6k opening market cap
+> (`STARTING_TICK = -243_400`, ~2.7 ETH FDV; the live launcher's `-230_400` opens at ~22k) using
+> `script/DeployLauncher.s.sol`, and first teach the indexer a list of launchers (old + new, each with its start
+> block) so coins of the old launcher, OWL included, stay indexed. Then update the launcher address everywhere
+> (`packages/shared/src/addresses.ts`, `.env.mainnet.example`, READMEs, this file) and redeploy web, supervisor
+> and indexer.
+
 The platform coin is a normal Bootr agent launched by the treasury wallet with the **buyback preset**:
 
 1. Publish the agent card at `https://bootr.fun/agents/boot.json` (the ERC-8004 `agentURI`; name "Bootr",
