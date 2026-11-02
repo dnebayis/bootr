@@ -1,0 +1,73 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #l1-ground { position: absolute; inset: 0; background: #0a0b0d; }
+    #l1-shake { position: absolute; inset: 0; }
+    .l1-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; white-space: nowrap; }
+    #l1-box { position: absolute; left: 144px; top: 250px; width: 920px; height: 620px; border: 2px solid #32353d; border-radius: 16px; box-sizing: border-box; }
+    #l1-mark { position: absolute; left: 46px; top: 42px; width: 112px; height: 112px; }
+    #l1-box-l { position: absolute; left: 196px; top: 62px; font-size: 56px; line-height: 72px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    .l1-n { position: absolute; left: 48px; font-size: 56px; line-height: 64px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    .l1-bar { position: absolute; left: 240px; height: 32px; background: #ffffff; transform-origin: 0% 50%; }
+    .l1-h { position: absolute; left: 48px; width: 820px; height: 2px; background: #32353d; }
+    #l1-key { position: absolute; left: 1344px; top: 360px; width: 200px; height: 200px; border-radius: 32px; background: #ffffff; }
+    #l1-key-hole { position: absolute; left: 44px; top: 44px; width: 56px; height: 56px; border-radius: 28px; background: #0a0b0d; }
+    #l1-key-l { position: absolute; left: 1344px; top: 590px; font-size: 48px; line-height: 60px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #l1-line { position: absolute; left: 1064px; top: 458px; width: 280px; height: 4px; background: #ffffff; transform-origin: 100% 50%; }
+  </style>
+  <div id="root" data-composition-id="l1" data-width="1920" data-height="1080">
+    <div id="l1-ground"></div>
+    <div id="l1-shake" data-layout-allow-overflow>
+      <div class="l1-t" id="l1-t1">the agent holds the money.</div>
+      <div id="l1-box">
+        <svg id="l1-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="l1-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#l1-m)"></rect>
+        </svg>
+        <div id="l1-box-l">agent treasury</div>
+        <div class="l1-h" style="top: 220px" data-layout-ignore></div>
+        <div class="l1-n" style="top: 262px">usdc</div>
+        <div class="l1-bar" id="l1-b1" style="top: 278px; width: 560px"></div>
+        <div class="l1-h" style="top: 366px" data-layout-ignore></div>
+        <div class="l1-n" style="top: 408px">weth</div>
+        <div class="l1-bar" id="l1-b2" style="top: 424px; width: 400px"></div>
+        <div class="l1-h" style="top: 512px" data-layout-ignore></div>
+        <div class="l1-n" style="top: 540px">eth</div>
+        <div class="l1-bar" id="l1-b3" style="top: 556px; width: 140px"></div>
+      </div>
+      <div id="l1-line" data-layout-ignore></div>
+      <div id="l1-key"><div id="l1-key-hole"></div></div>
+      <div id="l1-key-l">session key</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const L = (k) => Math.round((0.06 + k * B) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const type = (s, t, d, n) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + n + ")" }, t);
+    };
+    gsap.set(["#l1-key", "#l1-key-l"], { opacity: 0 });
+    gsap.set("#l1-line", { scaleX: 0 });
+    gsap.set(["#l1-b1", "#l1-b2", "#l1-b3"], { scaleX: 0 });
+    // Frame 0: the treasury box is already there; the first title types in.
+    type("#l1-t1", 0.02, 0.45, 14);
+    tl.to("#l1-b1", { scaleX: 1, duration: 0.5, ease: "expo.out" }, L(0.7));
+    tl.to("#l1-b2", { scaleX: 1, duration: 0.5, ease: "expo.out" }, L(1.1));
+    tl.to("#l1-b3", { scaleX: 1, duration: 0.5, ease: "expo.out" }, L(1.5));
+    // Beat 3: the key slams in with a jolt and a line draws to the treasury.
+    tl.set("#l1-key", { opacity: 1 }, L(3));
+    tl.fromTo("#l1-key", { scale: 1.6, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.28, ease: "expo.out" }, L(3));
+    [[0, 8, -6], [0.033, -6, 5], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#l1-shake", { x, y }, L(3) + d));
+    tl.fromTo("#l1-line", { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power3.out" }, L(3.3));
+    tl.fromTo("#l1-key-l", { x: 40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, L(3.6));
+    window.__timelines["l1"] = tl;
+  </script>
+</template>

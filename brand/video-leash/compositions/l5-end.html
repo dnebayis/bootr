@@ -1,0 +1,74 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #l5-ground { position: absolute; inset: 0; background: #0a0b0d; }
+    #l5-shake { position: absolute; inset: 0; }
+    .l5-t { position: absolute; left: 144px; font-size: 112px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; white-space: nowrap; }
+    #l5-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #l5-mark-sq { position: relative; width: 288px; height: 288px; }
+    #l5-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: #0a0b0d; }
+    #l5-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #l5-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #l5-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+  </style>
+  <div id="root" data-composition-id="l5" data-width="1920" data-height="1080">
+    <div id="l5-ground"></div>
+    <div id="l5-shake" data-layout-allow-overflow>
+      <div class="l5-t" id="l5-t1" style="top: 300px">the agent holds the money.</div>
+      <div class="l5-t" id="l5-t2" style="top: 470px">the key holds six calls.</div>
+      <div id="l5-word">bootr</div>
+      <div id="l5-cursor" data-layout-ignore></div>
+      <div id="l5-mark-box" data-layout-ignore>
+        <div id="l5-mark-sq">
+          <div id="l5-mark-bg"></div>
+          <svg id="l5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="l5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path id="l5-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="l5-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#l5-m)"></rect>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06 + 47 * B;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const type = (s, t, d, n) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + n + ")" }, t);
+    };
+    gsap.set(["#l5-t1", "#l5-t2", "#l5-word", "#l5-cursor", "#l5-mark-box"], { opacity: 0 });
+    tl.set("#l5-shake", { x: 0, y: 0 }, 0);
+    // Beat 47: the dark world floods out of the middle of the frame.
+    tl.fromTo("#l5-ground", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1400px at 960px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    type("#l5-t1", L(47.3), 0.5, 18);
+    type("#l5-t2", L(49.3), 0.5, 18);
+    // The two lines leave just before the mark (beat 54 = impact).
+    const Ti = L(54);
+    tl.to(["#l5-t1", "#l5-t2"], { clipPath: "inset(-10px 100% -10px 0px)", duration: 0.2, ease: "power3.in" }, Ti - 0.62);
+    // The mark: the cup is cut out, the stem falls into it, the square lands on beat 54.
+    tl.set("#l5-mark-box", { opacity: 1 }, Ti - 0.56);
+    tl.set(["#l5-cup", "#l5-stem"], { opacity: 0 }, 0);
+    tl.set("#l5-cup", { opacity: 1 }, Ti - 0.55);
+    tl.fromTo("#l5-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out" }, Ti - 0.55);
+    tl.set("#l5-stem", { opacity: 1 }, Ti - 0.183);
+    tl.fromTo("#l5-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in" }, Ti - 0.183);
+    tl.fromTo("#l5-mark-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out" }, Ti);
+    tl.to("#l5-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#l5-shake", { x, y }, Ti + d));
+    // The mark slides left into the lockup; "bootr" is typed behind it, led by a block cursor.
+    tl.fromTo("#l5-mark-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut" }, Ti + 0.45);
+    tl.set(["#l5-word", "#l5-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#l5-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    tl.fromTo("#l5-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    [Ti + 1.5, Ti + 1.8].forEach((t) => { tl.set("#l5-cursor", { opacity: 0 }, t); tl.set("#l5-cursor", { opacity: 1 }, t + 0.15); });
+    tl.set("#l5-cursor", { opacity: 0 }, Ti + 2.1);
+    window.__timelines["l5"] = tl;
+  </script>
+</template>

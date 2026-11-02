@@ -1,0 +1,176 @@
+# Generates compositions/l3-gate.html. Run: python3 build_l3.py
+# Attempts: (hit beat, code, result line 1, result line 2). Index 0 is allowed, 1-2 are stopped by the call policy,
+# 3 (the swap) passes the call policy and is stopped by the swap helper.
+ATTEMPTS = [
+    (20, 'settleAndClaim(..., to: kernel)', 'ok', 'lands in the kernel.'),
+    (24, 'settleAndClaim(..., to: another wallet)', 'PolicyFailed', 'only the kernel.'),
+    (28, 'usdc.transfer(spender, 1)', 'PolicyFailed', 'daily cap reached.'),
+    (32, 'swapWethToUsdc(amount, slippage: 10%)', 'SlippageTooHigh(1000, 300)', 'max 3% off chainlink.'),
+]
+
+codes = '\n'.join(f'      <div class="l3-code" id="l3-c{i}">{a[1]}</div>' for i, a in enumerate(ATTEMPTS))
+results = '\n'.join(
+    f'      <div class="l3-r1 {"ok" if i == 0 else "bad"}" id="l3-r{i}a">{a[2]}</div>\n      <div class="l3-r2" id="l3-r{i}b">{a[3]}</div>'
+    for i, a in enumerate(ATTEMPTS))
+
+html = f'''<template>
+  <style>
+    @font-face {{ font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }}
+    @font-face {{ font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }}
+    @font-face {{ font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }}
+    #root {{ position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }}
+    #l3-panel {{ position: absolute; inset: 0; background: #0a0b0d; }}
+    .l3-code {{ position: absolute; left: 144px; top: 76px; font-family: 'Geist Mono', monospace; font-size: 60px; line-height: 76px; font-weight: 500; color: #ffffff; white-space: nowrap; }}
+    #l3-key {{ position: absolute; left: 144px; top: 410px; width: 240px; height: 240px; border-radius: 36px; background: #ffffff; }}
+    #l3-key-hole {{ position: absolute; left: 52px; top: 52px; width: 64px; height: 64px; border-radius: 32px; background: #0a0b0d; }}
+    #l3-key-l {{ position: absolute; left: 144px; top: 676px; font-size: 48px; line-height: 60px; font-weight: 500; color: #818895; white-space: nowrap; }}
+    .l3-wl {{ position: absolute; width: 400px; text-align: center; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 50px; font-weight: 500; color: #818895; }}
+    .l3-wb {{ position: absolute; width: 8px; height: 200px; background: #ffffff; }}
+    #l3-w1, #l3-w2 {{ position: absolute; inset: 0; }}
+    #l3-kbox {{ position: absolute; left: 1080px; top: 360px; width: 340px; height: 280px; border: 2px solid #32353d; border-radius: 16px; box-sizing: border-box; }}
+    #l3-kmark {{ position: absolute; left: 40px; top: 38px; width: 112px; height: 112px; }}
+    #l3-kl {{ position: absolute; left: 40px; top: 186px; font-size: 56px; line-height: 72px; font-weight: 500; color: #ffffff; white-space: nowrap; }}
+    #l3-chip {{ position: absolute; left: 420px; top: 494px; width: 72px; height: 72px; background: #ffffff; }}
+    .l3-r1 {{ position: absolute; left: 144px; top: 836px; font-size: 72px; line-height: 84px; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }}
+    .l3-r1.bad {{ font-family: 'Geist Mono', monospace; font-weight: 500; letter-spacing: -0.02em; color: #fc401f; }}
+    .l3-r1.ok {{ color: #3c8aff; }}
+    .l3-r2 {{ position: absolute; left: 144px; top: 932px; font-size: 48px; line-height: 60px; font-weight: 500; color: #818895; white-space: nowrap; }}
+    #l3-ml {{ position: absolute; left: 1080px; top: 690px; font-size: 44px; line-height: 56px; font-weight: 500; color: #818895; white-space: nowrap; }}
+    #l3-mbar {{ position: absolute; left: 1080px; top: 758px; width: 620px; height: 28px; border: 2px solid #ffffff; box-sizing: border-box; }}
+    #l3-mfill {{ position: absolute; left: 1080px; top: 758px; width: 620px; height: 28px; background: #ffffff; transform-origin: 0% 50%; }}
+    #l3-mv {{ position: absolute; left: 1080px; top: 802px; font-family: 'Geist Mono', monospace; font-size: 44px; line-height: 56px; font-weight: 500; color: #ffffff; white-space: nowrap; }}
+  </style>
+  <div id="root" data-composition-id="l3" data-width="1920" data-height="1080">
+    <div id="l3-panel">
+{codes}
+      <div id="l3-key"><div id="l3-key-hole"></div></div>
+      <div id="l3-key-l">session key</div>
+      <div class="l3-wl" id="l3-wl1" style="left: 702px; top: 190px">call policy</div>
+      <div id="l3-w1">
+        <div class="l3-wb" id="l3-w1a" style="left: 898px; top: 330px"></div>
+        <div class="l3-wb" id="l3-w1b" style="left: 898px; top: 530px"></div>
+      </div>
+      <div class="l3-wl" id="l3-wl2" style="left: 1302px; top: 190px">swap helper</div>
+      <div id="l3-w2">
+        <div class="l3-wb" id="l3-w2a" style="left: 1498px; top: 330px"></div>
+        <div class="l3-wb" id="l3-w2b" style="left: 1498px; top: 530px"></div>
+      </div>
+      <div id="l3-kbox">
+        <svg id="l3-kmark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask id="l3-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect width="24" height="24" fill="#fff"></rect>
+            <path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#l3-m)"></rect>
+        </svg>
+        <div id="l3-kl">kernel</div>
+      </div>
+      <div id="l3-chip" data-layout-ignore></div>
+      <div id="l3-ml">usdc sent today</div>
+      <div id="l3-mbar" data-layout-ignore></div>
+      <div id="l3-mfill" data-layout-ignore></div>
+      <div id="l3-mv">50 / 50</div>
+{results}
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06 + 18 * B;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({{ paused: true }});
+    const type = (s, t) => {{
+      tl.set(s, {{ opacity: 1 }}, t);
+      tl.fromTo(s, {{ clipPath: "inset(-10px 100% -10px 0px)" }}, {{ clipPath: "inset(-10px 0% -10px 0px)", duration: 0.22, ease: "steps(16)" }}, t);
+    }};
+    const arrive = (s, t) => tl.fromTo(s, {{ x: -40, opacity: 0, filter: "blur(8px)" }}, {{ x: 0, opacity: 1, filter: "blur(0px)", duration: 0.4, ease: "expo.out" }}, t);
+    const hide = (s, t) => tl.set(s, {{ opacity: 0 }}, t);
+    const jolt = (s, t) => [[0, 9, 0], [0.033, -7, 0], [0.066, 5, 0], [0.1, -2, 0], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set(s, {{ x, y }}, t + d));
+    const gate = (p, open, t) => {{
+      tl.to("#l3-" + p + "a", {{ y: open ? -64 : 0, duration: 0.12, ease: "power3.in" }}, t);
+      tl.to("#l3-" + p + "b", {{ y: open ? 64 : 0, duration: 0.12, ease: "power3.in" }}, t);
+    }};
+    const codes = [0, 1, 2, 3].map((i) => "#l3-c" + i);
+    const results = [0, 1, 2, 3].flatMap((i) => ["#l3-r" + i + "a", "#l3-r" + i + "b"]);
+    gsap.set(codes.concat(results, ["#l3-kbox", "#l3-wl2", "#l3-w2", "#l3-chip", "#l3-ml", "#l3-mbar", "#l3-mfill", "#l3-mv"]), {{ opacity: 0 }});
+    gsap.set(["#l3-w1a", "#l3-w2a"], {{ y: -64 }});
+    gsap.set(["#l3-w1b", "#l3-w2b"], {{ y: 64 }});
+    // Beat 18: the dark world wipes in from the left; the key, the call policy and the kernel are in place.
+    tl.fromTo("#l3-panel", {{ clipPath: "inset(0px 100% 0px 0px)" }}, {{ clipPath: "inset(0px 0% 0px 0px)", duration: 0.32, ease: "power3.inOut" }}, 0);
+    tl.fromTo("#l3-kbox", {{ opacity: 0, scale: 0.85, transformOrigin: "50% 50%" }}, {{ opacity: 1, scale: 1, duration: 0.45, ease: "expo.out" }}, L(19));
+    const prevCode = (i) => codes[i - 1];
+    const prevRes = (i) => i > 0 ? [results[(i - 1) * 2], results[(i - 1) * 2 + 1]] : [];
+
+    // A0, beat 20: a claim to the kernel passes through the open gate.
+    {{
+      const H = L(20);
+      type("#l3-c0", H - 0.5);
+      tl.set("#l3-chip", {{ opacity: 1, x: 0, scale: 1, scaleX: 1, scaleY: 1, backgroundColor: "#ffffff" }}, H - 0.34);
+      tl.fromTo("#l3-chip", {{ x: 0 }}, {{ x: 404, duration: 0.34, ease: "power2.in" }}, H - 0.34);
+      tl.to("#l3-w1a", {{ backgroundColor: "#3c8aff", duration: 0.04 }}, H);
+      tl.to("#l3-w1b", {{ backgroundColor: "#3c8aff", duration: 0.04 }}, H);
+      tl.to("#l3-chip", {{ x: 740, duration: 0.28, ease: "power1.out" }}, H);
+      tl.to("#l3-w1a", {{ backgroundColor: "#ffffff", duration: 0.2 }}, H + 0.3);
+      tl.to("#l3-w1b", {{ backgroundColor: "#ffffff", duration: 0.2 }}, H + 0.3);
+      tl.to("#l3-kbox", {{ borderColor: "#3c8aff", duration: 0.05 }}, H + 0.28);
+      tl.to("#l3-chip", {{ opacity: 0, scale: 0.2, duration: 0.15, ease: "power2.in" }}, H + 0.28);
+      tl.to("#l3-kbox", {{ borderColor: "#32353d", duration: 0.4 }}, H + 0.5);
+      arrive("#l3-r0a", H + 0.3);
+      arrive("#l3-r0b", H + 0.45);
+    }}
+
+    // A1 and A2, beats 24 / 28: the gate shuts, the call hits it, PolicyFailed and the reason.
+    [1, 2].forEach((i) => {{
+      const H = L([20, 24, 28, 32][i]);
+      hide(prevCode(i), H - 0.52);
+      prevRes(i).forEach((s) => hide(s, H));
+      type("#l3-c" + i, H - 0.5);
+      if (i === 1) gate("w1", false, H - 0.46);
+      tl.set("#l3-chip", {{ opacity: 1, x: 0, scale: 1, scaleX: 1, scaleY: 1, backgroundColor: "#ffffff" }}, H - 0.34);
+      tl.fromTo("#l3-chip", {{ x: 0 }}, {{ x: 404, duration: 0.34, ease: "power2.in" }}, H - 0.34);
+      tl.to("#l3-chip", {{ scaleX: 0.6, scaleY: 1.3, backgroundColor: "#fc401f", duration: 0.06, ease: "power2.out" }}, H);
+      tl.to("#l3-chip", {{ opacity: 0, scale: 1.6, duration: 0.2, ease: "power2.in" }}, H + 0.06);
+      jolt("#l3-w1", H);
+      arrive("#l3-r" + i + "a", H + 0.02);
+      arrive("#l3-r" + i + "b", H + 0.18);
+    }});
+    // A2: the daily cap, already used up.
+    tl.fromTo("#l3-mbar", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, L(27));
+    tl.set(["#l3-ml", "#l3-mv"], {{ opacity: 1 }}, L(27));
+    tl.fromTo("#l3-ml", {{ x: 40, filter: "blur(8px)" }}, {{ x: 0, filter: "blur(0px)", duration: 0.4, ease: "expo.out" }}, L(27));
+    tl.set("#l3-mfill", {{ opacity: 1 }}, L(27.1));
+    tl.fromTo("#l3-mfill", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.5, ease: "expo.out" }}, L(27.1));
+    tl.fromTo("#l3-mv", {{ x: 40, opacity: 0, filter: "blur(8px)" }}, {{ x: 0, opacity: 1, filter: "blur(0px)", duration: 0.4, ease: "expo.out" }}, L(27.2));
+    ["#l3-ml", "#l3-mbar", "#l3-mfill", "#l3-mv"].forEach((s) => hide(s, L(30.9)));
+
+    // A3, beats 32 / 33.5: the swap passes the call policy (the gate opens again) and meets the swap helper.
+    {{
+      const H1 = L(32);
+      const H2 = L(33.5);
+      hide("#l3-kbox", L(30.6));
+      gate("w1", true, L(30.6));
+      tl.fromTo("#l3-w2", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.01 }}, L(30.6));
+      arrive("#l3-wl2", L(30.6));
+      hide("#l3-c2", H1 - 0.52);
+      prevRes(3).forEach((s) => hide(s, H1));
+      type("#l3-c3", H1 - 0.5);
+      tl.set("#l3-chip", {{ opacity: 1, x: 0, scale: 1, scaleX: 1, scaleY: 1, backgroundColor: "#ffffff" }}, H1 - 0.34);
+      tl.fromTo("#l3-chip", {{ x: 0 }}, {{ x: 404, duration: 0.34, ease: "power2.in" }}, H1 - 0.34);
+      tl.to("#l3-w1a", {{ backgroundColor: "#3c8aff", duration: 0.04 }}, H1);
+      tl.to("#l3-w1b", {{ backgroundColor: "#3c8aff", duration: 0.04 }}, H1);
+      tl.to("#l3-chip", {{ x: 1004, duration: H2 - H1, ease: "power1.inOut" }}, H1);
+      tl.to("#l3-w1a", {{ backgroundColor: "#ffffff", duration: 0.2 }}, H1 + 0.3);
+      tl.to("#l3-w1b", {{ backgroundColor: "#ffffff", duration: 0.2 }}, H1 + 0.3);
+      gate("w2", false, H2 - 0.36);
+      tl.to("#l3-chip", {{ scaleX: 0.6, scaleY: 1.3, backgroundColor: "#fc401f", duration: 0.06, ease: "power2.out" }}, H2);
+      tl.to("#l3-chip", {{ opacity: 0, scale: 1.6, duration: 0.2, ease: "power2.in" }}, H2 + 0.06);
+      jolt("#l3-w2", H2);
+      arrive("#l3-r3a", H2 + 0.02);
+      arrive("#l3-r3b", H2 + 0.18);
+    }}
+    window.__timelines["l3"] = tl;
+  </script>
+</template>
+'''
+open('compositions/l3-gate.html', 'w').write(html)
+print('l3-gate.html written')

@@ -1,0 +1,88 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #l4-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .l4-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .l4-key { position: absolute; left: 144px; width: 112px; height: 112px; border-radius: 20px; background: #0a0b0d; }
+    .l4-hole { position: absolute; left: 26px; top: 26px; width: 32px; height: 32px; border-radius: 16px; background: #ffffff; }
+    .l4-s1 { position: absolute; left: 256px; width: 150px; height: 4px; background: #0a0b0d; }
+    .l4-s2 { position: absolute; left: 406px; width: 150px; height: 4px; background: #0a0b0d; }
+    .l4-cut { position: absolute; left: 404px; width: 4px; height: 80px; background: #0000ff; transform-origin: 50% 50%; }
+    .l4-k { position: absolute; left: 556px; width: 112px; height: 112px; }
+    .l4-h { position: absolute; left: 760px; font-size: 96px; line-height: 112px; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .l4-d { position: absolute; left: 760px; font-size: 56px; line-height: 68px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .l4-hr { position: absolute; left: 144px; width: 1632px; height: 2px; background: #dee1e7; transform-origin: 0% 50%; }
+  </style>
+  <div id="root" data-composition-id="l4" data-width="1920" data-height="1080">
+    <div id="l4-panel">
+      <div class="l4-t" id="l4-t1">and it can be stopped.</div>
+
+      <div class="l4-key" id="l4-key1" style="top: 250px"><div class="l4-hole"></div></div>
+      <div class="l4-s1" id="l4-sa1" style="top: 304px"></div>
+      <div class="l4-s2" id="l4-sb1" style="top: 304px"></div>
+      <div class="l4-cut" id="l4-cut1" style="top: 266px"></div>
+      <svg class="l4-k" id="l4-k1" style="top: 250px" viewBox="0 0 24 24" fill="none" role="img" aria-label="kernel">
+        <mask id="l4-m1" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"></rect><path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path><path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path></mask>
+        <rect width="24" height="24" rx="5" fill="#0a0b0d" mask="url(#l4-m1)"></rect>
+      </svg>
+      <div class="l4-h" id="l4-h1" style="top: 244px">it expires.</div>
+      <div class="l4-d" id="l4-d1" style="top: 354px">30 days. rotated 3 days early.</div>
+      <div class="l4-hr" id="l4-hr1" style="top: 448px" data-layout-ignore></div>
+
+      <div class="l4-key" id="l4-key2" style="top: 500px"><div class="l4-hole"></div></div>
+      <div class="l4-s1" id="l4-sa2" style="top: 554px"></div>
+      <div class="l4-s2" id="l4-sb2" style="top: 554px"></div>
+      <div class="l4-cut" id="l4-cut2" style="top: 516px"></div>
+      <svg class="l4-k" id="l4-k2" style="top: 500px" viewBox="0 0 24 24" fill="none" role="img" aria-label="kernel">
+        <mask id="l4-m2" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"></rect><path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path><path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path></mask>
+        <rect width="24" height="24" rx="5" fill="#0a0b0d" mask="url(#l4-m2)"></rect>
+      </svg>
+      <div class="l4-h" id="l4-h2" style="top: 494px">the creator pauses it.</div>
+      <div class="l4-d" id="l4-d2" style="top: 604px">a paused agent's calls revert.</div>
+      <div class="l4-hr" id="l4-hr2" style="top: 698px" data-layout-ignore></div>
+
+      <div class="l4-key" id="l4-key3" style="top: 750px"><div class="l4-hole"></div></div>
+      <div class="l4-s1" id="l4-sa3" style="top: 804px"></div>
+      <div class="l4-s2" id="l4-sb3" style="top: 804px"></div>
+      <div class="l4-cut" id="l4-cut3" style="top: 766px"></div>
+      <svg class="l4-k" id="l4-k3" style="top: 750px" viewBox="0 0 24 24" fill="none" role="img" aria-label="kernel">
+        <mask id="l4-m3" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"></rect><path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path><path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path></mask>
+        <rect width="24" height="24" rx="5" fill="#0a0b0d" mask="url(#l4-m3)"></rect>
+      </svg>
+      <div class="l4-h" id="l4-h3" style="top: 744px">the platform revokes it.</div>
+      <div class="l4-d" id="l4-d3" style="top: 854px">every key, one transaction.</div>
+      <div class="l4-hr" id="l4-hr3" style="top: 948px" data-layout-ignore></div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06 + 38 * B;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const rows = [1, 2, 3];
+    gsap.set(["#l4-t1"].concat(rows.flatMap((i) => ["#l4-key" + i, "#l4-sa" + i, "#l4-sb" + i, "#l4-k" + i, "#l4-h" + i, "#l4-d" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#l4-cut" + i), { scaleY: 0 });
+    gsap.set(rows.map((i) => "#l4-hr" + i), { scaleX: 0 });
+    // Beat 38: the white world wipes up from below.
+    tl.fromTo("#l4-panel", { clipPath: "inset(100% 0px 0px 0px)" }, { clipPath: "inset(0% 0px 0px 0px)", duration: 0.32, ease: "power3.inOut" }, 0);
+    tl.set("#l4-t1", { opacity: 1 }, L(38.5));
+    tl.fromTo("#l4-t1", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(16)" }, L(38.5));
+    // Rows on beats 39, 41, 43: a key joined to the kernel; one beat later the line is cut.
+    rows.forEach((i) => {
+      const t = L(37 + 2 * i);
+      ["#l4-key", "#l4-sa", "#l4-sb", "#l4-k"].forEach((s) => arrive(s + i, t));
+      arrive("#l4-h" + i, t + 0.05);
+      arrive("#l4-d" + i, t + 0.2);
+      tl.fromTo("#l4-hr" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, t + 0.05);
+      const c = L(38 + 2 * i);
+      tl.to("#l4-sa" + i, { x: -16, duration: 0.08, ease: "power3.out" }, c);
+      tl.to("#l4-sb" + i, { x: 16, duration: 0.08, ease: "power3.out" }, c);
+      tl.fromTo("#l4-cut" + i, { scaleY: 0 }, { scaleY: 1, duration: 0.12, ease: "power3.out" }, c);
+      tl.fromTo("#l4-key" + i, { x: 0 }, { x: -6, duration: 0.06, yoyo: true, repeat: 3, ease: "steps(1)" }, c);
+    });
+    window.__timelines["l4"] = tl;
+  </script>
+</template>
