@@ -36,10 +36,16 @@ export function dexscreenerUrl(target: string, opts?: { embed?: boolean; theme?:
   return `${base}?embed=1&theme=${opts.theme ?? 'dark'}&trades=0&info=0`;
 }
 
+/**
+ * Where "Trade" sends people: LlamaSwap (swap.defillama.com), a meta-aggregator that routes through Uniswap v4
+ * and the other Base DEXes, ETH in, the coin out. `NEXT_PUBLIC_SWAP_LINK_BASE` or the admin console's
+ * `swapLinkBase` replaces the prefix; the token address is appended. Base Sepolia has no aggregator, so the
+ * link points at Uniswap there.
+ */
 export function swapLink(token: string, override?: string): string {
   const prefix =
     override ||
     env.swapLinkBase ||
-    `https://app.uniswap.org/swap?chain=${isMainnet ? 'base' : 'base_sepolia'}&outputCurrency=`;
+    (isMainnet ? 'https://swap.defillama.com/?chain=base&from=0x0000000000000000000000000000000000000000&to=' : 'https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=');
   return `${prefix}${token}`;
 }

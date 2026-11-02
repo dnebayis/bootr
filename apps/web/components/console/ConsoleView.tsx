@@ -237,7 +237,7 @@ function PlatformConfigPanel({ initial }: { initial: PlatformConfig }) {
           {numField('Post interval max', cfg.postIntervalMinutes.max, (n) => setCfg({ ...cfg, postIntervalMinutes: { ...cfg.postIntervalMinutes, max: n } }), 'min')}
           <div>
             <Label htmlFor="cfg-swap">Swap link base</Label>
-            <Input id="cfg-swap" placeholder="https://app.uniswap.org/swap?outputCurrency=" value={cfg.swapLinkBase} onChange={(e) => setCfg({ ...cfg, swapLinkBase: e.target.value })} />
+            <Input id="cfg-swap" placeholder="https://swap.defillama.com/?chain=base&from=0x0000000000000000000000000000000000000000&to=" value={cfg.swapLinkBase} onChange={(e) => setCfg({ ...cfg, swapLinkBase: e.target.value })} />
           </div>
         </div>
         <div>

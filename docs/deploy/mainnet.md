@@ -1,7 +1,7 @@
 # Base mainnet cutover
 
 Runbook for moving Bootr from Base Sepolia (84532) to Base mainnet (8453): contracts, keys, services and the
-$BOOT launch. Written for the Railway layout of 2026-10-27; since 2026-11-01 the services run on one Coolify
+$BOOTR launch. Written for the Railway layout of 2026-10-27; since 2026-11-01 the services run on one Coolify
 server ([`coolify.md`](./coolify.md)), which changes where variables are set and how deploys run, not what they
 contain. Nothing here is automated: every step is a command you run and a check you read back.
 
@@ -83,7 +83,7 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
 | DEPLOYER | `PRIVATE_KEY` (forge only, never on the server) | **~0.02 ETH** (five deployments, ~8M gas, leaves headroom for a Base fee spike) |
 | PLATFORM_ADMIN | `ADMIN_PRIVATE_KEY` (supervisor) | **~0.05 ETH + 20 USDC** (two `acceptOwnership`, `setDefaults`, `approveSessionKey` + the enable-op prefund per agent install / rotation, dormancy sweeps; the USDC is for an admin test launch). No agent gas: the creator funds each kernel's first gas at launch, the agent refills from its own fees. Keep the admin above ~0.01 ETH for installs and rotations |
 | PLATFORM_RECIPIENT | address only | none (receives the platform slot: 27% of the 1% swap fee, 30% on pre-v2 Clanker coins) |
-| PLATFORM_TREASURY | address + key on the operator's machine | **gas (~0.01 ETH) + the $BOOT dev buy + 20 USDC fuel** (step 6; also receives dormant sweeps and inference revenue as `INFERENCE_PAYTO_ADDRESS`) |
+| PLATFORM_TREASURY | address + key on the operator's machine | **gas (~0.01 ETH) + the $BOOTR dev buy + 20 USDC fuel** (step 6; also receives dormant sweeps and inference revenue as `INFERENCE_PAYTO_ADDRESS`) |
 | SESSION_SIGNER | `SESSION_SIGNER_PRIVATE_KEY` | **none** (kernels pay their own gas from their EntryPoint deposit: the creator's launch deposit, then their own WETH fees) |
 | SPENDER_MASTER | `SPENDER_MASTER_KEY` | **none** (spenders are funded by their kernels; EIP-3009 needs no ETH) |
 
@@ -228,7 +228,7 @@ variables), from `.env.mainnet.example`:
 | `SWAP_SLIPPAGE_BPS` | `100` (on-chain cap 300) |
 | `SESSION_USDC_TRANSFER_CAP` | `50000000` (50 USDC / day per agent to its spender); review `SESSION_GAS_ALLOWANCE_WEI`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_KEY_VALIDITY_DAYS` |
 | Indexer | new `DATABASE_SCHEMA` (or per-deployment), `INDEXER_MAX_RPS=25`, `INDEXER_SNAPSHOT_INTERVAL` default (30 blocks), `BOOT_TOKEN_ADDRESS` after step 6 |
-| Web | `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`, `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_SWAP_LINK_BASE=https://app.uniswap.org/swap?chain=base&outputCurrency=`, `NEXT_PUBLIC_BOOT_X_URL=https://x.com/bootrfun`, `NEXT_PUBLIC_USE_MOCK=` (empty) |
+| Web | `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`, `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_SWAP_LINK_BASE` empty (LlamaSwap on Base), `NEXT_PUBLIC_BOOT_X_URL=https://x.com/bootrfun`, `NEXT_PUBLIC_USE_MOCK=` (empty) |
 
 Deploy: one Coolify deploy builds and starts everything (coolify.md section 2); the compose file orders the
 containers (Postgres, then sender / inference / indexer, then web and the supervisor) and each service migrates
@@ -236,7 +236,7 @@ itself at start. Give the indexer a new `DATABASE_SCHEMA` when its code changed 
 is short right after the deploy block). Save the admin config once from the console (graduation threshold, allowed
 models, `bootToken` after step 6).
 
-## 6. $BOOT launch (from PLATFORM_TREASURY)
+## 6. $BOOTR launch (from PLATFORM_TREASURY)
 
 The platform coin is a normal Bootr agent launched by the treasury wallet with the **buyback preset**:
 
@@ -247,7 +247,7 @@ The platform coin is a normal Bootr agent launched by the treasury wallet with t
 ```sh
 cd packages/contracts
 CREATOR_PRIVATE_KEY=<treasury> LAUNCHER=<launcher> \
-AGENT_NAME="Bootr" AGENT_SYMBOL="BOOT" AGENT_IMAGE="ipfs://<boot image>" \
+AGENT_NAME="Bootr" AGENT_SYMBOL="BOOTR" AGENT_IMAGE="ipfs://<boot image>" \
 AGENT_URI="https://bootr.fun/agents/boot.json" \
 AGENT_CONTEXT='{"interface":"Bootr","platform":"bootr.fun"}' \
 AGENT_METADATA='{"description":"Bootr: the launchpad where every coin funds an agent.","socialMediaUrls":[{"platform":"x","url":"https://x.com/bootrfun"}],"auditUrls":[]}' \
@@ -271,7 +271,7 @@ forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
 
 - `https://bootr.fun/api/health`, `https://api.bootr.fun/health`, `https://indexer.bootr.fun/ready` (200).
 - Indexer: `GET https://indexer.bootr.fun/market/<BOOT token>` returns the pool and price; `platformStats` non-zero.
-- Supervisor logs: ticks every `SUPERVISOR_TICK_MS`, the $BOOT agent moves `onboarding -> active` (or stays
+- Supervisor logs: ticks every `SUPERVISOR_TICK_MS`, the $BOOTR agent moves `onboarding -> active` (or stays
   `onboarding` with a clear "no X account" reason), `POST /internal/agents/:id/session/check-spender` returns the
   spender with a matching dry signature.
 - One **small test launch** from a normal wallet through the web (standard preset, 20 USDC fuel (not required by the
@@ -339,7 +339,7 @@ Each one is a decision; the default is written so the cutover is not blocked, bu
 
 Owner of guardian and launcher: ADMIN `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3` (accepted). All five were verified
 on Basescan. Guardian, burner implementation, call policy and swap helper are still the live ones; the launcher was
-replaced twice, see below. $BOOT is not launched yet (planned from PLATFORM_TREASURY, buyback preset, no dev buy,
+replaced twice, see below. $BOOTR is not launched yet (planned from PLATFORM_TREASURY, buyback preset, no dev buy,
 fuel at launch time).
 
 ## Launcher redeploy (2026-10-28): flat launch fee
