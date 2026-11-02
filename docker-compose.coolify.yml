@@ -13,7 +13,9 @@
 # supervisor's keys. Each `command` below therefore starts with `env -u ...` that drops the secrets the
 # service does not declare in its own `environment` block (the list is the union of the sensitive
 # variables of all services). When a service gains a secret, add it to its block and remove it from its
-# `-u` list; when a new secret appears anywhere, add `-u NAME` to every other service.
+# `-u` list; when a new secret appears anywhere, add `-u NAME` to every other service. The container config
+# (and a `docker exec` shell) still holds the full `.env`; the main process (pid 1) is what is scoped, so
+# verify through `/proc/1/environ`, not through `docker exec ... echo $VAR`.
 
 x-restart: &restart
   restart: unless-stopped

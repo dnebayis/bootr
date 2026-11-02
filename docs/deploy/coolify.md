@@ -87,8 +87,12 @@ Coolify does not scope variables per service: it writes every variable of the ap
 (`/data/coolify/applications/<uuid>/.env`) and attaches it as `env_file` to every service, so by default each
 container, the public web process included, would carry the supervisor's keys. The compose file therefore
 starts every service through `env -u ...`, dropping the secrets that service does not declare in its own
-`environment` block (found on 2026-11-02; the lists are in the file's header comment). Check after a deploy with
-`docker exec <web container> sh -c 'printf %s "$ADMIN_PRIVATE_KEY" | wc -c'`, which must print 0. Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
+`environment` block (found on 2026-11-02; the lists are in the file's header comment). The stripping happens
+inside the container, so the container's own config (`docker inspect`, and the shell `docker exec` opens) still
+carries the full `.env`; what matters is the service's main process. Check after a deploy with
+`docker exec <web container> sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c ^ADMIN_PRIVATE_KEY='`, which must
+print 0 (verified 2026-11-02 for all five services: each main process holds exactly the secrets its block
+declares). Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
 `BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_WORKER_SOURCE_BASE`,
 `NEXT_PUBLIC_INFERENCE_URL`. Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
 
