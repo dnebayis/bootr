@@ -7,6 +7,13 @@
 #
 # Hostnames on the network are the service names below: sender:3002, inference:3003, indexer:42069,
 # supervisor:3004, postgres:5432. Migrations run at container start (the Railway pre-deploy commands).
+#
+# Secrets stay with their service. Coolify writes every variable of the application into one `.env` and
+# adds it as `env_file` to every service, so without help the public web process would hold the
+# supervisor's keys. Each `command` below therefore starts with `env -u ...` that drops the secrets the
+# service does not declare in its own `environment` block (the list is the union of the sensitive
+# variables of all services). When a service gains a secret, add it to its block and remove it from its
+# `-u` list; when a new secret appears anywhere, add `-u NAME` to every other service.
 
 x-restart: &restart
   restart: unless-stopped
@@ -32,7 +39,7 @@ services:
     build:
       context: .
       dockerfile: apps/sender/Dockerfile
-    command: ["sh", "-c", "node dist/db/migrate.js && exec node dist/index.js"]
+    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u INDEXER_SERVICE_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: apps/inference/Dockerfile
-    command: ["sh", "-c", "node scripts/migrate.mjs && exec node dist/main.js"]
+    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node scripts/migrate.mjs && exec node dist/main.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +85,7 @@ services:
     build:
       context: .
       dockerfile: apps/indexer/Dockerfile
+    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh scripts/start.sh"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,6 +134,7 @@ services:
         NEXT_PUBLIC_WORKER_SOURCE_BASE: ${NEXT_PUBLIC_WORKER_SOURCE_BASE:-}
         NEXT_PUBLIC_IPFS_GATEWAY: ${NEXT_PUBLIC_IPFS_GATEWAY:-}
         NEXT_PUBLIC_USE_MOCK: ""
+    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
     depends_on:
       - indexer
       - sender
@@ -155,7 +164,7 @@ services:
     build:
       context: .
       dockerfile: apps/supervisor/Dockerfile
-    command: ["sh", "-c", "node dist/db/migrate.js && exec node dist/index.js"]
+    command: ["sh", "-c", "exec env -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     # One replica only: the tick loop must not run twice.
     depends_on:
       postgres:

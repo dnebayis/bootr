@@ -81,7 +81,14 @@ holds the mainnet values and placeholders.
 | supervisor | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL` | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty, `GAS_MIN_WEI`, `GAS_TARGET_WEI` ([`docs/gas-model.md`](../gas-model.md)), `BUILDER_CODES_*`, `SESSION_*`, `SPENDER_*`, `CHAINLINK_MAX_AGE_SECONDS`, `LOG_LEVEL` |
 
 Secret keys shared by several services (`SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`) are one Coolify variable
-reaching every container that references it. Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
+reaching every container that references it.
+
+Coolify does not scope variables per service: it writes every variable of the application into one `.env`
+(`/data/coolify/applications/<uuid>/.env`) and attaches it as `env_file` to every service, so by default each
+container, the public web process included, would carry the supervisor's keys. The compose file therefore
+starts every service through `env -u ...`, dropping the secrets that service does not declare in its own
+`environment` block (found on 2026-11-02; the lists are in the file's header comment). Check after a deploy with
+`docker exec <web container> sh -c 'printf %s "$ADMIN_PRIVATE_KEY" | wc -c'`, which must print 0. Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
 `BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_WORKER_SOURCE_BASE`,
 `NEXT_PUBLIC_INFERENCE_URL`. Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
 

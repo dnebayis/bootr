@@ -4,6 +4,8 @@ const nextConfig: NextConfig = {
   // Container builds (apps/web/Dockerfile) set NEXT_OUTPUT=standalone to emit a self-contained
   // `.next/standalone` server; local `next build && next start` (and the e2e suite) are unchanged.
   ...(process.env.NEXT_OUTPUT === 'standalone' ? { output: 'standalone' as const } : {}),
+  // No `x-powered-by: Next.js` on responses: nothing in the stack should advertise its framework.
+  poweredByHeader: false,
   cacheComponents: true,
   partialPrefetching: true,
   transpilePackages: ['@bootr/shared'],
