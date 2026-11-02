@@ -26,10 +26,11 @@ EntryPoint v0.7, ERC-8004. RWAGMI v3 has no Base Sepolia deployment, so launches
      scaled from the preset to the 9000 creator bps (`_slotBps`: 500 -> 450, 6500 -> 5850, 1500 -> 1350, platform takes
      the remainder). RWAGMI appends its own `(protocolAdmin, protocolRecipient, 1000)` slot. No function on the launcher
      calls `updateRewardRecipient` / `updateRewardAdmin`, so the split is locked for the coin's life.
-   * one pool: paired = WETH, `allocationBps = 10000`, `tickIfToken0IsB20 = -230400`, `tickSpacing = 200`, static hook
-     fee `lpFeeBps` (10_000 = 1%, cap 100_000), one one-sided position `[-230400, -120000]` (mirrored to
-     `[120000, 230400]` when the coin sorts as currency1: the launcher validates positions in the pool's real
-     orientation). ~10 ETH FDV for the 100B supply, liquidity up to ~62,000x.
+   * one pool: paired = WETH, `allocationBps = 10000`, `tickIfToken0IsB20 = -243400`, `tickSpacing = 200`, static hook
+     fee `lpFeeBps` (10_000 = 1%, cap 100_000), one one-sided position `[-243400, -120000]` (mirrored to
+     `[120000, 243400]` when the coin sorts as currency1: the launcher validates positions in the pool's real
+     orientation). About $6k at launch (2.7 ETH fully diluted for the 100B supply; the USD figure moves with
+     ETH), liquidity up to ~228,000x.
    * `extensions = [RwagmiEthDevBuyV3 {poolIndex 0, msgValue = devBuyWei, data = abi.encode(creator, uint128(1))}]`
      only when `devBuyWei > 0` (the pool is created in the same tx, so nothing can front-run the buy).
    * `deadline = block.timestamp + 1 hours`.

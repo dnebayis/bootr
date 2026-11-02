@@ -62,9 +62,10 @@ builds a `LaunchConfigV3` and calls `RwagmiB20LauncherV3.launchB20{value: devBuy
 - `creatorRewards`: the preset above with recipients `[kernel, creator, (burner), platformRecipient]`, admin =
   `address(this)`.
 - `pools`: one pool, `pairedToken = WETH`, `allocationBps = 10000`, `tickSpacing = 200`, `fee = {mode: 0, staticFee:
-  10_000, dynamicConfig: zero}`, `tickIfToken0IsB20 = -230_400` (~10 ETH FDV at 100B supply, same as today),
-  `positions = [{tickLower: -230_400, tickUpper: -120_000, positionBps: 10_000}]` (one-sided, token0-is-B20
-  orientation; `BootrLauncher` passes the mirrored range `[120_000, 230_400]` when the B20 sorts as currency1, because
+  10_000, dynamicConfig: zero}`, `tickIfToken0IsB20 = -243_400` (about $6k at launch: 2.7 ETH fully diluted at 100B
+  supply; the USD figure moves with ETH), `positions = [{tickLower: -243_400, tickUpper: -120_000, positionBps:
+  10_000}]` (one-sided, token0-is-B20 orientation; `BootrLauncher` passes the mirrored range `[120_000, 243_400]` when
+  the B20 sorts as currency1, because
   the RWAGMI launcher validates positions in the pool's real orientation).
 - `primaryPoolIndex = 0`, `extensions = devBuyWei > 0 ? [{extension: devBuyV3, poolIndex: 0, msgValue: devBuyWei,
   data: abi.encode(creator, uint128(1))}] : []` (`minOut = 1`: the launch transaction creates the pool, so the dev buy

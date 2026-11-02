@@ -94,10 +94,11 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     uint8 public constant B20_PARAMS_VERSION = 1;
     uint32 public constant MIN_DORMANCY_PERIOD = 30 days;
     int24 public constant TICK_SPACING = 200;
-    /// @dev Starting tick as if the coin is token0: price 1.0001^-230400 ~= 9.9e-11 WETH per token,
-    ///      i.e. ~10 ETH fully diluted for the 100B supply.
-    int24 public constant STARTING_TICK = -230_400;
-    /// @dev Single position from the starting tick up to -120_000 (~62,000x). Liquidity is 100% coin
+    /// @dev Starting tick as if the coin is token0: price 1.0001^-243400 ~= 2.7e-11 WETH per token,
+    ///      i.e. ~2.7 ETH fully diluted for the 100B supply (about $6k at $2,250/ETH; the USD figure
+    ///      moves with ETH). The launcher mirrors it to +243_400 when the coin sorts as currency1.
+    int24 public constant STARTING_TICK = -243_400;
+    /// @dev Single position from the starting tick up to -120_000 (~228,000x). Liquidity is 100% coin
     ///      (one-sided) at launch, so no tick below the starting tick is needed.
     int24 public constant POSITION_TICK_UPPER = -120_000;
 
