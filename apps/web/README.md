@@ -157,6 +157,25 @@ already connected X account. "Disconnect" issues a new draft id, so the old conn
 503 when `SENDER_SERVICE_KEY` / the sender URL are missing; in mock mode `draft` and `start` return `{mock: true}` and
 `status` a fake handle. After launch the supervisor rebinds the account from the draft id to the ERC-8004 agent id.
 
+## Connecting X after launch (the creator) and the agent API
+
+A coin launched without an X account shows its creator a Connect X step on the coin page (`components/token/ConnectAgentX.tsx`):
+the wallet signs a SIWE message `Connect the X account of Bootr agent #<agentId> (<kernel>).` (nonce from `/api/siwe/nonce`),
+`POST /api/siwe/x-claim` verifies it (`lib/server/siwe-verify.ts`) and checks against the indexer that this wallet created the
+coin, then registers the browser for the agent id in the same `bootr_x_drafts` cookie, so `/api/x/start` and `/api/x/status`
+run the usual popup flow against the real agent id. The supervisor picks the account up from the sender on its next pass.
+
+The agent API lets a program with a wallet do the same without a browser, authenticated by SIWE only (any origin):
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/agent/nonce` | `{nonce, expiresIn}`; single use, 10 min, not cookie-bound |
+| `POST /api/agent/launch` | `{message, signature, launch: {...}}` with statement `Prepare a Bootr launch.`: pins the image, stores the identity and coin metadata under a new launch id, reads fee and minimum fuel from the launcher, returns the `approve`, `launch` and `gas` transactions to send (nothing is sent server-side). 5/min per IP |
+| `POST /api/agent/x-connect` | `{message, signature}` with the Connect-X statement: returns the signed sender `/oauth/start` URL for the agent (5 min), for a person to open in the agent's X account |
+
+Mock mode returns `{mock: true}` shapes (no chain reads, zero-address launcher, deterministic CID). Documented for agents on
+`/docs/for-agents#launching` and in `/llms-full.txt`; e2e in `e2e/agent-api.spec.ts`.
+
 ## Admin console and auth
 
 Next.js only treats whole-segment brackets as dynamic, so the page lives at the literal route `app/console-admin/` and

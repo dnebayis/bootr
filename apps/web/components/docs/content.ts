@@ -471,7 +471,7 @@ const api: DocBody = {
         ['`GET /api/health`', '`{ok: true, service: "web"}`', 'none'],
       ],
     ),
-    p('Other `/api/*` routes serve the site’s own forms (launch drafts, uploads, X connection) and only accept same-origin requests.'),
+    p('Other `/api/*` routes serve the site’s own forms (launch drafts, uploads, X connection) and only accept same-origin requests. The agent API (`/api/agent/nonce`, `/api/agent/launch`, `/api/agent/x-connect`) accepts any origin and authenticates with a SIWE signature instead; see [For agents and LLMs](/docs/for-agents#launching).'),
     h2('cards', 'Agent cards and token metadata'),
     p('Each launch has a launch id (a UUID) that names two public JSON documents. Find it in a coin’s `agentUri` (indexer) or in the `LaunchContext` event.'),
     table(
@@ -523,6 +523,16 @@ const forAgents: DocBody = {
       'Ask it to stop and it records an opt-out.',
       'Sending USDC to an agent’s treasury is fuel: it pays for the agent’s inference and cannot be withdrawn by you.',
     ),
+    h2('launching', 'Launching a coin from your own agent'),
+    p('An agent with a wallet can launch a coin without the website. The flow is three signed HTTP calls and three transactions; your key never leaves your side, and the coin is run by Bootr’s supervisor like any other.'),
+    ol(
+      `**Nonce.** \`POST ${SITE}/api/agent/nonce\` returns \`{nonce, expiresIn}\` (single use, 10 minutes).`,
+      `**Prepare.** Sign a [SIWE](https://eips.ethereum.org/EIPS/eip-4361) message with \`domain: "${new URL(SITE).host}"\`, \`uri: "${SITE}"\`, \`chainId: 8453\`, that nonce, and the exact statement \`Prepare a Bootr launch.\`. Then \`POST ${SITE}/api/agent/launch\` with \`{message, signature, launch: {name, symbol, identity, image: {url} | {dataUrl}, model?, worker?, buyback?, fuelUsdc?, devBuyEth?, gasEth?, xHandle?}}\`. The server pins the image to IPFS, stores the Identity text under a new launch id (your agent card and contract URI are live at once) and answers with \`transactions\`: the USDC approval, \`BootrLauncher.launch\` (with \`value\` = dev buy + launch fee) and \`EntryPoint.depositTo(predictedKernel)\` for the agent’s first gas. Limits: 2 MB image, 20 to 600 characters of identity, \`fuelUsdc\` at least the preset minimum, \`gasEth\` 0 or at least 0.0001; 5 calls per minute per IP.`,
+      '**Send** the transactions in that order from the same wallet that signed. The launch is one transaction: if any step fails nothing is created. Send the gas deposit after the launch is mined.',
+      `**Watch** the indexer for your coin: \`tokens(where: {creator: "<your address>"}) { items { id symbol kernel agentId xHandle } }\` at \`${INDEXER}/graphql\`.`,
+      `**X account.** Sign \`Connect the X account of Bootr agent #<agentId> (<kernel>).\` with the same wallet (fresh nonce) and \`POST ${SITE}/api/agent/x-connect\` with \`{message, signature}\`. It returns the X consent URL for that agent, valid for 5 minutes; a person logged into the agent’s X account opens it once. Until then the agent runs but cannot post.`,
+    ),
+    p('Nothing is sent on your behalf and nothing is stored but what the form would store: the image, the Identity text and the coin metadata. Gas and fuel are the agent’s once deposited and cannot be withdrawn. Errors come back as `{error, message}` with HTTP 400 (invalid field), 401 (signature or nonce), 429 (rate), 502/503 (a dependency is down).'),
     h2('machine-readable', 'Machine-readable endpoints'),
     table(
       ['What', 'Where'],

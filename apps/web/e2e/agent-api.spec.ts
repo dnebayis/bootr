@@ -1,0 +1,83 @@
+import { expect, test } from '@playwright/test';
+import { SiweMessage } from 'siwe';
+import { privateKeyToAccount } from 'viem/accounts';
+
+/** A throwaway key for the e2e build only (its address owns nothing). */
+const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+
+async function sign(request: Parameters<Parameters<typeof test>[2]>[0]['request'], statement: string) {
+  const n = await request.post('/api/agent/nonce');
+  expect(n.status()).toBe(200);
+  const { nonce } = (await n.json()) as { nonce: string };
+  // The e2e build's site origin is the default https://bootr.fun (domain and uri must match it).
+  const message = new SiweMessage({
+    domain: 'bootr.fun',
+    address: account.address,
+    statement,
+    uri: 'https://bootr.fun',
+    version: '1',
+    chainId: 84532,
+    nonce,
+    issuedAt: new Date().toISOString(),
+  }).prepareMessage();
+  const signature = await account.signMessage({ message });
+  return { message, signature };
+}
+
+test('agent API: a signed request prepares a launch (mock mode) and returns the transactions to send', async ({ request }) => {
+  const auth = await sign(request, 'Prepare a Bootr launch.');
+  const res = await request.post('/api/agent/launch', {
+    data: {
+      ...auth,
+      launch: {
+        name: 'Quiet Engine',
+        symbol: 'qeng',
+        identity: 'A patient onchain analyst for small Base coins.',
+        image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` },
+        fuelUsdc: '20',
+        gasEth: '0.001',
+      },
+    },
+  });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as {
+    launchId: string;
+    creator: string;
+    agentURI: string;
+    transactions: { step: string; to: string; data: string; value: string }[];
+    mock?: true;
+  };
+  expect(body.creator.toLowerCase()).toBe(account.address.toLowerCase());
+  expect(body.launchId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(body.agentURI).toBe(`https://bootr.fun/agents/${body.launchId}.json`);
+  expect(body.transactions.map((t) => t.step)).toEqual(['approve', 'launch', 'gas']);
+  expect(body.transactions[1].value).toBe('500000000000000');
+  expect(body.transactions[2].value).toBe('1000000000000000');
+  for (const t of body.transactions) expect(t.data).toMatch(/^0x[0-9a-f]+$/);
+  // The hosted agent card and contract URI exist right away, with the identity text.
+  const card = await request.get(`/agents/${body.launchId}.json`);
+  expect(card.status()).toBe(200);
+  expect(JSON.stringify(await card.json())).toContain('patient onchain analyst');
+
+  // A replayed nonce is refused.
+  const replay = await request.post('/api/agent/launch', { data: { ...auth, launch: { name: 'x', symbol: 'xx', identity: 'a'.repeat(30), image: { dataUrl: 'data:image/png;base64,AA==' } } } });
+  expect(replay.status()).toBe(401);
+});
+
+test('agent API: validation and the wrong statement are rejected', async ({ request }) => {
+  const wrong = await sign(request, 'Sign in to the Bootr console.');
+  expect((await request.post('/api/agent/launch', { data: { ...wrong, launch: {} } })).status()).toBe(400);
+  const auth = await sign(request, 'Prepare a Bootr launch.');
+  const bad = await request.post('/api/agent/launch', { data: { ...auth, launch: { name: 'Nope', symbol: 'toolongsymbol', identity: 'short', image: {} } } });
+  expect(bad.status()).toBe(400);
+});
+
+test('agent API: the creator gets an X connect URL for its agent (mock mode)', async ({ request }) => {
+  const auth = await sign(request, 'Connect the X account of Bootr agent #10388 (0x65958c0e8edf8c596120495acdf6f98f85a5bdf3).');
+  const res = await request.post('/api/agent/x-connect', { data: auth });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as { url: string; expiresIn: number; mock?: true };
+  expect(body.url).toContain('agentId=10388');
+  expect(body.expiresIn).toBe(300);
+});
