@@ -1,4 +1,4 @@
-import { keccak256, toHex, type Hex } from 'viem';
+import { WORKER_TEMPLATES as SHARED_WORKER_TEMPLATES, type WorkerTemplate as SharedWorkerTemplate } from '@bootr/shared/workers';
 import { UPLOAD_IMAGE_TYPES, UPLOAD_MAX_BYTES, type UploadResult } from './ipfs';
 import { FALLBACK_MODELS, THOUGHT, type ModelsResponse } from './models';
 
@@ -38,29 +38,10 @@ export async function fetchPlatformFlags(): Promise<PlatformFlags | null> {
   }
 }
 
-export type WorkerTemplate = { id: 'trader' | 'researcher' | 'community'; label: string; description: string; hash: Hex };
+export type WorkerTemplate = SharedWorkerTemplate;
 
-/** TODO(agent-core): replace placeholder hashes with the published worker bundle hashes. */
-export const WORKER_TEMPLATES: WorkerTemplate[] = [
-  {
-    id: 'trader',
-    label: 'Trader',
-    description: 'Watches its own market, claims fees, rebalances the treasury and reports trades.',
-    hash: keccak256(toHex('bootr-worker:trader:v0')),
-  },
-  {
-    id: 'researcher',
-    label: 'Researcher',
-    description: 'Reads onchain data and X, posts short findings about its niche on a schedule.',
-    hash: keccak256(toHex('bootr-worker:researcher:v0')),
-  },
-  {
-    id: 'community',
-    label: 'Community',
-    description: 'Answers mentions, welcomes new holders and posts updates about the coin.',
-    hash: keccak256(toHex('bootr-worker:community:v0')),
-  },
-];
+/** The worker templates, shared with the supervisor (`@bootr/shared` workers): the hash on-chain commits to the preset. */
+export const WORKER_TEMPLATES: readonly WorkerTemplate[] = SHARED_WORKER_TEMPLATES;
 
 /** Client-side pre-check for `/api/upload` (the server re-checks by magic bytes). Null when acceptable. */
 export function imageFileProblem(file: File): string | null {

@@ -346,8 +346,13 @@ export function LaunchForm() {
                 <input type="radio" name="worker" value={w.id} checked={worker === w.id} onChange={() => setWorker(w.id)} className="sr-only" />
                 <span className="text-sm font-medium text-ink">{w.label}</span>
                 <span className="text-caption text-mute">{w.description}</span>
-                <span className="mt-auto truncate font-mono text-micro text-mute" title={w.hash}>
-                  {w.hash.slice(0, 10)}… placeholder
+                <ul className="mt-1 flex flex-col gap-0.5 text-micro text-body">
+                  {w.does.map((d) => (
+                    <li key={d}>· {d}</li>
+                  ))}
+                </ul>
+                <span className="mt-auto truncate font-mono text-micro text-mute" title={`${w.hash} (keccak256 of the template definition, written on-chain at launch)`}>
+                  v{w.version} · {w.hash.slice(0, 10)}…
                 </span>
               </label>
             ))}

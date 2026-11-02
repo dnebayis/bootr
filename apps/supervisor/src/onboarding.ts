@@ -8,6 +8,7 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
@@ -42,6 +43,8 @@ export interface LaunchEvent {
   dormancyPeriod: number;
   model: string;
   agentURI: string;
+  /** The worker template the creator chose (`@bootr/shared` workers); unknown hashes fall back to the default template. */
+  workerHash: Hex;
   blockNumber: bigint;
   txHash: Hex;
 }
@@ -56,6 +59,7 @@ export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
     dormancyPeriod: Number(l.args.defaults.dormancyPeriod),
     model: l.args.model,
     agentURI: l.args.agentURI,
+    workerHash: l.args.workerHash,
     blockNumber: l.blockNumber ?? 0n,
     txHash: l.transactionHash ?? '0x',
   }));
@@ -63,7 +67,7 @@ export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
 
 export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
 
-export function defaultIdentity(name: string, symbol: string, agentURI: string, platform = false): string {
+export function defaultIdentity(name: string, symbol: string, agentURI: string, platform = false, templateLines: readonly string[] = []): string {
   if (platform) {
     return [
       `You are the voice of Bootr, the launchpad on Base where every coin gets its own agent. ${name} ($${symbol}) is the platform's own coin.`,
@@ -76,6 +80,7 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string, 
   }
   return [
     `You are the agent behind ${name} ($${symbol}), a coin launched on Bootr (Base), with your own X account and a small treasury you keep alive.`,
+    ...templateLines,
     'You talk like a person who cares about this coin and the people around it: curious, candid, a little playful, never a dashboard.',
     'Be concrete, honest and dated. Describe what you observe; never promise outcomes.',
     agentURI ? `Your public agent card: ${agentURI}` : '',
@@ -94,6 +99,8 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string, 
 export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, token: { name: string; symbol: string }, creatorIdentity: string | null = null): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
+  // The worker template the creator chose: its hash on-chain commits to the preset applied here.
+  const template = workerTemplateByHash(launch.workerHash) ?? workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
   return {
     agentId: launch.agentId.toString(),
     token: { address: getAddress(launch.token), symbol: token.symbol, name: token.name, chainId: ctx.chain.chainId },
@@ -102,12 +109,14 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
     xHandle: null,
     xUserId: null,
     model: launch.model || DEFAULT_MODEL,
-    identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform)),
+    identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform, platform ? [] : template.preset.identity)),
     creatorIdentity,
     platform,
     ownerRules: [],
-    capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false },
-    postIntervalMs: DEFAULT_POST_INTERVAL_MS,
+    capabilities: platform ? { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } : { ...template.preset.capabilities },
+    postIntervalMs: platform ? DEFAULT_POST_INTERVAL_MS : template.preset.postIntervalMs,
+    workerTemplate: template.id,
+    workerHash: launch.workerHash,
     dormancyPeriodMs: Math.max(60_000, launch.dormancyPeriod * 1000),
     replyAuthorIds: [],
     blockedAuthorIds: [],
@@ -120,7 +129,10 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
 export function withCreatorIdentity(config: Record<string, unknown>, creatorIdentity: string): Record<string, unknown> {
   const token = (config.token ?? {}) as { name?: unknown; symbol?: unknown };
   const agentURI = typeof config.agentURI === 'string' ? config.agentURI : '';
-  const defaults = defaultIdentity(String(token.name ?? 'Unknown'), String(token.symbol ?? 'TOKEN'), agentURI, config.platform === true);
+  const platform = config.platform === true;
+  // Keep the worker template's lines (stored as `workerTemplate` at registration; older rows have none).
+  const template = typeof config.workerTemplate === 'string' ? workerTemplateById(config.workerTemplate) : undefined;
+  const defaults = defaultIdentity(String(token.name ?? 'Unknown'), String(token.symbol ?? 'TOKEN'), agentURI, platform, platform ? [] : (template?.preset.identity ?? []));
   return { ...config, identityText: composeIdentityText(creatorIdentity, defaults), creatorIdentity };
 }
 

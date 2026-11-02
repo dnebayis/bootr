@@ -3,12 +3,13 @@ import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
+import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, workerTemplateById } from '@bootr/shared/workers';
 import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
 import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 
-function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Address } = {}): Log {
+function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Address; workerHash?: Hex } = {}): Log {
   const creator = opts.creator ?? CREATOR;
   const topics = encodeEventTopics({ abi: [agentLaunchedEvent], eventName: 'AgentLaunched', args: { token: TOKEN, kernel: KERNEL, creator } });
   const data = encodeAbiParameters(
@@ -21,10 +22,39 @@ function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Add
       { type: 'string' },
       { type: 'address' },
     ],
-    ['0x0000000000000000000000000000000000000000', agentId, [10_000, 5000, 3000, 0, 2000, creator, 20_000_000n, 90 * 86_400], pad('0x01', { size: 32 }), 'openai/gpt-4.1-mini', opts.agentURI ?? CARD_URI, '0x0000000000000000000000000000000000000000'],
+    ['0x0000000000000000000000000000000000000000', agentId, [10_000, 5000, 3000, 0, 2000, creator, 20_000_000n, 90 * 86_400], opts.workerHash ?? pad('0x01', { size: 32 }), 'openai/gpt-4.1-mini', opts.agentURI ?? CARD_URI, '0x0000000000000000000000000000000000000000'],
   );
   return { address: LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: toHex(7, { size: 32 }), logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
+
+const TEMPLATE_LINES = workerTemplateById(DEFAULT_WORKER_TEMPLATE)!.preset.identity;
+const LEGACY_HASH_RESEARCHER = Object.entries(LEGACY_WORKER_HASHES).find(([, id]) => id === 'researcher')![0] as Hex;
+
+describe('worker templates', () => {
+  it('applies the preset the on-chain worker hash commits to, and falls back to the default template for unknown hashes', async () => {
+    const world = await makeWorld({ chain: { logs: [], blockNumber: 50n } });
+    try {
+      const trader = workerTemplateById('trader')!;
+      const launch = decodeLaunchLogs([fakeLaunchLog(7n, { workerHash: trader.hash })])[0]!;
+      expect(launch.workerHash).toBe(trader.hash);
+      const cfg = buildLaunchConfig(world.ctx, launch, { name: 'Quiet Engine', symbol: 'QENG' }) as Record<string, unknown>;
+      expect(cfg.workerTemplate).toBe('trader');
+      expect(cfg.capabilities).toEqual(trader.preset.capabilities);
+      expect(cfg.postIntervalMs).toBe(trader.preset.postIntervalMs);
+      expect(String(cfg.identityText)).toContain(trader.preset.identity[0]);
+      // version-0 placeholder hashes (the first launches) still resolve
+      const legacy = decodeLaunchLogs([fakeLaunchLog(8n, { workerHash: LEGACY_HASH_RESEARCHER })])[0]!;
+      expect((buildLaunchConfig(world.ctx, legacy, { name: 'A', symbol: 'A' }) as Record<string, unknown>).workerTemplate).toBe('researcher');
+      // unknown hash: the default template
+      const unknown = decodeLaunchLogs([fakeLaunchLog(9n)])[0]!;
+      const u = buildLaunchConfig(world.ctx, unknown, { name: 'A', symbol: 'A' }) as Record<string, unknown>;
+      expect(u.workerTemplate).toBe(DEFAULT_WORKER_TEMPLATE);
+      expect(u.capabilities).toEqual(workerTemplateById(DEFAULT_WORKER_TEMPLATE)!.preset.capabilities);
+    } finally {
+      await world.close();
+    }
+  });
+});
 
 describe('onboarding from AgentLaunched', () => {
   it('decodes the event, registers the agent and runtime with {phase: boot}, and advances the cursor', async () => {
@@ -38,7 +68,7 @@ describe('onboarding from AgentLaunched', () => {
       expect(agent).toMatchObject({ token: TOKEN, kernel: KERNEL, creator: CREATOR, status: 'onboarding', launchBlock: 42 });
       expect(agent!.config).toMatchObject({ agentId: '7', token: { symbol: 'TEST', name: 'Test Coin', chainId: 84532 }, model: 'openai/gpt-4.1-mini', xHandle: null });
       // The mock card has no bootr.identity: default persona, nothing left to retry.
-      expect(agent!.config).toMatchObject({ creatorIdentity: '', identityText: defaultIdentity('Test Coin', 'TEST', CARD_URI) });
+      expect(agent!.config).toMatchObject({ creatorIdentity: '', identityText: defaultIdentity('Test Coin', 'TEST', CARD_URI, false, TEMPLATE_LINES) });
       expect(agentConfigOf(agent!)).toBeNull(); // X not connected yet
       const runtime = await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, '7') });
       expect(runtime!.state).toMatchObject({ phase: 'boot' });
@@ -257,7 +287,7 @@ describe('creator identity from the agent card', () => {
       expect(calls).toEqual([CARD_URI]);
       const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
       expect(agent!.config.creatorIdentity).toBe(IDENTITY);
-      expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI)}`);
+      expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, TEMPLATE_LINES)}`);
       // The persona reaches the parsed config the brain runs with, once X is connected.
       await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
       await completeOnboarding(world.ctx);
@@ -277,7 +307,7 @@ describe('creator identity from the agent card', () => {
       expect(await pollLaunches(world.ctx)).toBe(1);
       let agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
       expect(agent!.config.creatorIdentity).toBeNull();
-      expect(agent!.config.identityText).toBe(defaultIdentity('Test Coin', 'TEST', CARD_URI));
+      expect(agent!.config.identityText).toBe(defaultIdentity('Test Coin', 'TEST', CARD_URI, false, TEMPLATE_LINES));
 
       // still down: retried, still pending
       await completeOnboarding(world.ctx);
@@ -292,7 +322,7 @@ describe('creator identity from the agent card', () => {
       agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
       expect(agent!.status).toBe('active');
       expect(agent!.config.creatorIdentity).toBe(IDENTITY);
-      expect(agentConfigOf(agent!)!.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI)}`);
+      expect(agentConfigOf(agent!)!.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, TEMPLATE_LINES)}`);
       expect(calls).toHaveLength(3);
 
       // active: no further card reads
