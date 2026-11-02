@@ -104,7 +104,7 @@ describe('draft store', () => {
   });
 
   it('stores the coin metadata next to the identity text', async () => {
-    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null };
+    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', telegram: null, discord: null } };
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
     expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin });
     expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
@@ -139,9 +139,20 @@ describe('owner cookie', () => {
 
 describe('normalizeCoin', () => {
   const ok = { name: ' Quiet Engine ', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent' };
+  const none = { website: null, telegram: null, discord: null };
   it('accepts the launch form fields, trimmed', () => {
-    expect(normalizeCoin(ok)).toEqual({ ...ok, name: 'Quiet Engine' });
+    expect(normalizeCoin(ok)).toEqual({ ...ok, name: 'Quiet Engine', links: none });
     expect(normalizeCoin({ ...ok, imageIpfs: null, xHandle: null })).toMatchObject({ imageIpfs: null, xHandle: null });
+  });
+  it('keeps the optional links, trimmed, and only https URLs of the right host', () => {
+    const links = { website: ' https://quiet.engine ', telegram: 'https://t.me/quietengine', discord: 'https://discord.gg/abc' };
+    expect(normalizeCoin({ ...ok, links })).toMatchObject({ links: { website: 'https://quiet.engine', telegram: 'https://t.me/quietengine', discord: 'https://discord.gg/abc' } });
+    expect(normalizeCoin({ ...ok, links: { website: '', telegram: null } })).toMatchObject({ links: none });
+    expect(normalizeCoin({ ...ok, links: { website: 'http://quiet.engine' } })).toBeNull();
+    expect(normalizeCoin({ ...ok, links: { website: 'javascript:alert(1)' } })).toBeNull();
+    expect(normalizeCoin({ ...ok, links: { telegram: 'https://quiet.engine/tg' } })).toBeNull();
+    expect(normalizeCoin({ ...ok, links: { discord: 'https://t.me/x' } })).toBeNull();
+    expect(normalizeCoin({ ...ok, links: { website: `https://a.b/${'x'.repeat(200)}` } })).toBeNull();
   });
   it('rejects bad symbols, non-http images, bad handles and oversized names', () => {
     expect(normalizeCoin(null)).toBeNull();

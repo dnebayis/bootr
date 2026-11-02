@@ -4,7 +4,7 @@
  * and emits stream hints so live UI (reordering grid, ticking numbers) can be exercised.
  */
 import type { Address, Hex } from 'viem';
-import { agentCardUrl, mockLaunchId } from './agent-card';
+import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type {
   Agent,
   AgentPost,
@@ -155,6 +155,7 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
     workerHash: hex(rand, 32),
     model: MODELS[Math.floor(rand() * MODELS.length)]!,
     agentUri: agentCardUrl(mockLaunchId(id)),
+    metadata: contractUriUrl(mockLaunchId(id)),
     xHandle: rand() < 0.9 ? symbol.toLowerCase() + '_agent' : null,
     launchedAt,
     launchBlock: String(18_000_000 + i * 1000),

@@ -51,6 +51,8 @@ export interface Token {
   workerHash: Hex;
   model: string;
   agentUri: string;
+  /** ERC-7572 contract URI set at launch (the site's `/tokens/<launchId>.json` for coins launched on bootr.fun). */
+  metadata: string;
   xHandle: string | null;
   launchedAt: number;
   launchBlock: string;

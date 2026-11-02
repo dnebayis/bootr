@@ -67,8 +67,39 @@ export function draftsDir(): string {
   return path.join(process.cwd(), 'data', 'launch-drafts');
 }
 
+/** The coin's own links, entered in the launch form (optional). `website` any https URL; the others their own hosts. */
+export type CoinLinks = { website: string | null; telegram: string | null; discord: string | null };
+
 /** What the contract URI shows for a coin: entered in the launch form, written with the identity text. */
-export type DraftCoin = { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null };
+export type DraftCoin = { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: CoinLinks };
+
+const MAX_LINK = 200;
+const LINK_HOST: Record<keyof CoinLinks, RegExp | null> = {
+  website: null,
+  telegram: /^https:\/\/t\.me\//i,
+  discord: /^https:\/\/(discord\.gg|discord\.com\/invite)\//i,
+};
+
+/** One optional link: null when absent or empty, undefined when present but not an https URL of its kind. */
+function normalizeLink(kind: keyof CoinLinks, v: unknown): string | null | undefined {
+  if (v == null) return null;
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim();
+  if (!s) return null;
+  if (s.length > MAX_LINK || !/^https:\/\/[^\s"<>]+$/.test(s)) return undefined;
+  const host = LINK_HOST[kind];
+  return host && !host.test(s) ? undefined : s;
+}
+
+/** The form's links, or null when any of them is not acceptable. Missing fields (older drafts) are null. */
+export function normalizeLinks(input: unknown): CoinLinks | null {
+  const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+  const website = normalizeLink('website', o.website);
+  const telegram = normalizeLink('telegram', o.telegram);
+  const discord = normalizeLink('discord', o.discord);
+  if (website === undefined || telegram === undefined || discord === undefined) return null;
+  return { website, telegram, discord };
+}
 
 /** Validates the form's coin metadata (same bounds as the form); null when anything is off. */
 export function normalizeCoin(input: unknown): DraftCoin | null {
@@ -84,7 +115,9 @@ export function normalizeCoin(input: unknown): DraftCoin | null {
   if (image.length > 512 || !/^https?:\/\/[^\s"<>]+$/.test(image)) return null;
   if (imageIpfs === undefined || (imageIpfs !== null && !/^ipfs:\/\/[A-Za-z0-9./_-]{1,200}$/.test(imageIpfs))) return null;
   if (xHandle === undefined || (xHandle !== null && !/^[A-Za-z0-9_]{1,15}$/.test(xHandle))) return null;
-  return { name, symbol, image, imageIpfs, xHandle };
+  const links = normalizeLinks(c.links);
+  if (!links) return null;
+  return { name, symbol, image, imageIpfs, xHandle, links };
 }
 
 type DraftFile = { identity: string; coin: DraftCoin | null; ownerTag: string; createdAt: number; updatedAt: number };

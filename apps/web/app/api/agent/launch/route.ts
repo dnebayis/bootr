@@ -13,7 +13,7 @@ import { FALLBACK_MODELS, filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/m
 import { readConfig } from '@/lib/server/admin-config';
 import { pinataEnv } from '@/lib/server/env';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
-import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, saveDraftIdentity } from '@/lib/server/launch-drafts';
+import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, saveDraftIdentity } from '@/lib/server/launch-drafts';
 import { verifySiwe } from '@/lib/server/siwe-verify';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -35,6 +35,7 @@ type LaunchInput = {
   devBuyEth?: unknown;
   gasEth?: unknown;
   xHandle?: unknown;
+  links?: unknown;
 };
 
 function fail(status: number, error: string, message: string, headers: Record<string, string> = {}) {
@@ -136,6 +137,9 @@ export async function POST(req: NextRequest) {
   const gasWei = parseEther(gas);
   if (gasWei !== 0n && gasWei < parseEther(GAS_MIN_ETH)) return fail(400, 'invalid_request', `gasEth must be 0 or at least ${GAS_MIN_ETH}.`);
   const xHandle = typeof l.xHandle === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(l.xHandle.replace(/^@/, '')) ? l.xHandle.replace(/^@/, '') : null;
+  // Optional coin links (website any https URL; telegram on t.me; discord on discord.gg / discord.com/invite).
+  const links = normalizeLinks(l.links);
+  if (!links) return fail(400, 'invalid_request', 'links must be https URLs: website, telegram (t.me), discord (discord.gg).');
 
   const pinata = pinataEnv();
   if (!pinata.jwt && !pinata.mock) return fail(503, 'upload_unavailable', 'Image pinning is not configured on this deployment.');
@@ -151,7 +155,7 @@ export async function POST(req: NextRequest) {
   }
   const imageUrl = ipfsGatewayUrl(cid);
   try {
-    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle } });
+    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links } });
     if (!saved.ok) return fail(500, 'store_failed', 'Could not store the launch draft.');
   } catch {
     return fail(503, 'store_unavailable', 'The launch draft store is not writable.');

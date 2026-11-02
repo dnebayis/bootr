@@ -5,7 +5,8 @@ import { buildContractMetadata } from './contract-metadata';
 import { env } from './env';
 
 const DRAFT = '3b241101-e2bb-4255-8caf-4136c566a962';
-const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent' };
+const none = { website: null, telegram: null, discord: null };
+const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent', links: none };
 const token: CardToken = {
   id: '0xB200000000000000000000123456789abcdef012',
   chainId: 8453,
@@ -45,5 +46,15 @@ describe('ERC-7572 contract metadata', () => {
     expect(doc.description).toBe('On-chain name: an autonomous agent coin launched on Bootr.');
     expect(doc.socialMediaUrls).toEqual([{ platform: 'website', url: env.siteUrl }]);
     expect(doc).not.toHaveProperty('imageIpfs');
+  });
+  it("uses the coin's own website as external_link and lists its Telegram and Discord", () => {
+    const links = { website: 'https://quiet.engine', telegram: 'https://t.me/quietengine', discord: null };
+    const doc = buildContractMetadata({ identity: null, coin: { ...coin, links } }, token);
+    expect(doc.external_link).toBe('https://quiet.engine');
+    expect(doc.socialMediaUrls).toEqual([
+      { platform: 'x', url: 'https://x.com/qeng_agent' },
+      { platform: 'telegram', url: 'https://t.me/quietengine' },
+      { platform: 'website', url: 'https://quiet.engine' },
+    ]);
   });
 });

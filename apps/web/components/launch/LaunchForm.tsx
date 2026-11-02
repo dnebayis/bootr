@@ -84,6 +84,10 @@ export function LaunchForm() {
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
   const [upload, setUpload] = useState<ImageUploadState>({ status: 'idle' });
+  // Optional links, shown on the coin page and written into the contract URI. Telegram and Discord on their own hosts.
+  const [website, setWebsite] = useState('');
+  const [telegram, setTelegram] = useState('');
+  const [discord, setDiscord] = useState('');
 
   // 02 Agent
   const [identity, setIdentity] = useState('');
@@ -154,6 +158,14 @@ export function LaunchForm() {
   if (upload.status === 'uploading') errors.push('Wait for the image to finish uploading.');
   else if (!pinned) errors.push('Upload an image.');
   if (identity.trim().length < 20) errors.push('Describe the agent in at least 20 characters.');
+  const link = (v: string, host?: RegExp) => {
+    const s = v.trim();
+    return !s ? null : s.length <= 200 && /^https:\/\/[^\s"<>]+$/.test(s) && (!host || host.test(s)) ? s : undefined;
+  };
+  const links = { website: link(website), telegram: link(telegram, /^https:\/\/t\.me\//i), discord: link(discord, /^https:\/\/(discord\.gg|discord\.com\/invite)\//i) };
+  if (links.website === undefined) errors.push('Website must be an https URL.');
+  if (links.telegram === undefined) errors.push('Telegram must be an https://t.me/ link.');
+  if (links.discord === undefined) errors.push('Discord must be an https://discord.gg/ invite.');
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
@@ -184,7 +196,8 @@ export function LaunchForm() {
    * contract URI (`metadata`) can describe the coin. False when it could not be saved: launching anyway would
    * hand the agent the generic default persona and the coin an empty contract URI.
    */
-  async function saveDraft(id: string, coin: { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null }): Promise<boolean> {
+  type DraftLinks = { website: string | null; telegram: string | null; discord: string | null };
+  async function saveDraft(id: string, coin: { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: DraftLinks }): Promise<boolean> {
     try {
       const res = await fetch('/api/launch/draft', {
         method: 'POST',
@@ -202,8 +215,9 @@ export function LaunchForm() {
 
   async function launch() {
     if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done') return;
+    if (links.website === undefined || links.telegram === undefined || links.discord === undefined) return;
     const modelId = selectedModel?.id ?? '';
-    const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle };
+    const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
     if (!(await saveDraft(draftId, coin))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
@@ -285,6 +299,30 @@ export function LaunchForm() {
           </div>
         </div>
         <ImageUpload draftId={draftId} state={upload} onState={setUpload} />
+        <div>
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <span className="text-caption font-medium text-ink">Links</span>
+            <span className="text-caption text-mute">Optional</span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <Label htmlFor="website">Website</Label>
+              <Input id="website" inputMode="url" placeholder="https://" maxLength={200} value={website} onChange={(e) => setWebsite(e.target.value)} aria-invalid={links.website === undefined} />
+            </div>
+            <div>
+              <Label htmlFor="telegram">Telegram</Label>
+              <Input id="telegram" inputMode="url" placeholder="https://t.me/" maxLength={200} value={telegram} onChange={(e) => setTelegram(e.target.value)} aria-invalid={links.telegram === undefined} />
+            </div>
+            <div>
+              <Label htmlFor="discord">Discord</Label>
+              <Input id="discord" inputMode="url" placeholder="https://discord.gg/" maxLength={200} value={discord} onChange={(e) => setDiscord(e.target.value)} aria-invalid={links.discord === undefined} />
+            </div>
+          </div>
+          <p className="mt-1.5 text-caption text-mute">
+            Shown on the coin page and written into the coin&rsquo;s contract metadata, with your wallet as the creator. The agent&rsquo;s X account is connected
+            below.
+          </p>
+        </div>
       </Section>
 
       <Section n={2} title="Agent" description="Who the agent is, which model thinks for it, and what it works on.">

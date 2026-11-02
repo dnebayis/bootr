@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { isAddress } from 'viem';
 import { useToken } from '@/lib/indexer';
+import { useCoinLinks } from '@/lib/coin-links';
 import { useNow } from '@/lib/hooks';
 import { age, num, pct, price, shortAddr, usd } from '@/lib/format';
 import { chainBadge, explorer, swapLink } from '@/lib/chains';
@@ -64,6 +65,7 @@ export function TokenView({ address }: { address: string }) {
   const valid = isAddress(address, { strict: false });
   const { data: token, isPending, isError, refetch } = useToken(valid ? address : undefined);
   const now = useNow();
+  const links = useCoinLinks(token?.metadata);
 
   if (!valid) return <NotFound address={address} reason="That is not a valid token address." />;
 
@@ -93,7 +95,29 @@ export function TokenView({ address }: { address: string }) {
               </a>
               <CopyButton value={token.id} label="Copy token address" />
               <Badge tone="mono">{chainBadge(token.chainId)}</Badge>
+              <span className="inline-flex items-center gap-1" data-testid="token-creator">
+                <span className="text-mute">by</span>
+                <a href={explorer.address(token.creator)} target="_blank" rel="noopener noreferrer" className="hover:text-link" title={token.creator}>
+                  {shortAddr(token.creator, 6, 4)}
+                </a>
+                <CopyButton value={token.creator} label="Copy creator address" />
+              </span>
             </div>
+            {links.data && (links.data.website || links.data.telegram || links.data.discord) ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="token-links">
+                {[
+                  { label: 'Website', href: links.data.website },
+                  { label: 'Telegram', href: links.data.telegram },
+                  { label: 'Discord', href: links.data.discord },
+                ]
+                  .filter((l): l is { label: string; href: string } => !!l.href)
+                  .map(({ label, href }) => (
+                    <a key={label} href={href} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex items-center gap-0.5 text-body hover:text-link">
+                      {label} <ArrowUpRightIcon size={12} />
+                    </a>
+                  ))}
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-4">

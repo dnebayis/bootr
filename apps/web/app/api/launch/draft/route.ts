@@ -17,7 +17,7 @@ import {
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
- * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle}}
+ * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, telegram, discord}}}
  * Stores the creator's Identity text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
  * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
  * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`).
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
   }
   const coin = body.coin === undefined ? null : normalizeCoin(body.coin);
   if (body.coin !== undefined && coin === null) {
-    return NextResponse.json({ error: 'invalid_request', message: 'coin must carry a valid name, symbol and image URL' }, { status: 400, headers: NO_STORE });
+    return NextResponse.json({ error: 'invalid_request', message: 'coin must carry a valid name, symbol and image URL, and only https links' }, { status: 400, headers: NO_STORE });
   }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;
