@@ -17,7 +17,7 @@ are in [`mainnet.md`](./mainnet.md).
 | Compose services | `postgres` (postgres:17, volume `postgres-data`), `sender` :3002, `inference` :3003, `indexer` :42069, `web` :3000 (volume `web-data` at `/data`), `supervisor` :3004 |
 | Domains (Traefik, Let's Encrypt) | `web` → `bootr.fun`, `www.bootr.fun`; `sender` → `api.bootr.fun`; `indexer` → `indexer.bootr.fun`. `inference`, `supervisor` and `postgres` have no domain and stay private on the compose network |
 | DNS | Namecheap: `A @`, `A www`, `A api`, `A indexer`, `A coolify` → `77.42.90.52` |
-| Hermes Agent | `/root/.hermes`, runs as root for server operations on request (incident fixes, one-off tasks); Anthropic OAuth, model `claude-opus-5.5`. Routine jobs (backups) are plain cron, not Hermes |
+| Hermes Agent | `/root/.hermes`, runs as root for server operations on request (incident fixes, one-off tasks); Anthropic OAuth, model `claude-opus-5.5`. Routine jobs (backups) are plain cron, not Hermes. Reachable from Telegram as `@bootrhermesbot`: the gateway is the systemd service `hermes-gateway` (enabled at boot, `journalctl -u hermes-gateway -f`), the bot token and the single allowed Telegram user id live in `/root/.hermes/.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`; mode 600, never in the repo). Anyone else who writes to the bot is ignored. `python-telegram-bot` is installed in Hermes's own venv with its bundled `uv` |
 
 Service-to-service URLs are the compose service names: `http://sender:3002`, `http://inference:3003`,
 `http://indexer:42069`, `postgres://bootr:<generated>@postgres:5432/bootr`. The compose file hard-codes them.
