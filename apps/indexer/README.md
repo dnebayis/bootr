@@ -56,9 +56,10 @@ Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deplo
 | --- | --- | --- |
 | `CHAIN_ID` | no | `84532` (default) or `8453`. One chain per process. |
 | `BASE_SEPOLIA_RPC_URL` / `BASE_RPC_URL` | recommended | Falls back to public endpoints. The RPC must serve old block headers: Base Sepolia has 200 ms blocks and Ponder's finality search probes from block 0, which pruned nodes (sepolia.base.org) reject. |
-| `BOOTR_LAUNCHER_ADDRESS` | for indexing | Overrides the address book (`@bootr/shared`, `[chainId].bootr.launcher`). No address on the chain = launch-derived sources skipped. |
+| `BOOTR_LAUNCHERS` | for indexing (several launchers) | Comma-separated `address@startBlock` list of every BootrLauncher to follow, e.g. `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x<new launcher>@<its deploy block>`. Wins over the two single-launcher variables below. A malformed entry aborts the boot (never silently drops a launcher). Every Bootr source starts at the earliest listed block. See "Adding a launcher" below. |
+| `BOOTR_LAUNCHER_ADDRESS` | for indexing (single launcher) | Fallback when `BOOTR_LAUNCHERS` is empty: one launcher, overriding the address book (`@bootr/shared`, `[chainId].bootr.launcher`). No launcher on the chain = launch-derived sources skipped. |
 | `BOOTR_GUARDIAN_ADDRESS` | for indexing | Overrides the address book. Empty = AgentGuardian skipped (no activity/pause/dormancy). |
-| `BOOTR_START_BLOCK` | for indexing | Launcher deploy block (mainnet: `53219209`). Empty = `latest`. RWAGMI sources start at `max(BOOTR_START_BLOCK, 52861401)` (the RWAGMI v3 launcher's creation block), which is `53219209` with the value above: only coins launched by BootrLauncher matter. |
+| `BOOTR_START_BLOCK` | for indexing (single launcher) | Deploy block of `BOOTR_LAUNCHER_ADDRESS` (mainnet: `53219209`; `LAUNCHER_START_BLOCK`, the supervisor's name, is accepted when this is empty). Ignored with `BOOTR_LAUNCHERS`. Empty = `latest`. RWAGMI sources start at `max(start block, 52861401)` (the RWAGMI v3 launcher's creation block), which is `53219209` with the value above: only coins launched by BootrLauncher matter. |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` / `RWAGMI_HOOK_V3_ADDRESS` / `RWAGMI_LOCKER_V3_ADDRESS` | no | Override the RWAGMI v3 stack (defaults: the Base mainnet addresses in `src/lib/env.ts`; none on Base Sepolia). All three are needed. |
 | `INDEXER_DATABASE_URL` | prod | Postgres. Empty = PGlite in `.ponder/pglite`. (`DATABASE_URL` is deliberately not used, so other services' DB does not switch the indexer to Postgres.) |
 | `DATABASE_SCHEMA` | prod | Required by `ponder start` on Postgres. |
@@ -73,6 +74,34 @@ Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deplo
 PoolManager, USDC, WETH and ERC-8004 addresses come from `@bootr/shared` `getAddresses(chainId)`;
 the RWAGMI v3 stack (launcher `0xB205c9e7…4B20`, hook `0xB20B0036…B20Ec`, LP locker
 `0xB205CE7C…1B20`, Base mainnet) from `RWAGMI_V3` in `src/lib/env.ts` or the env above.
+
+### Adding a launcher
+
+A BootrLauncher is replaced by deploying a new one and pausing the old one; the old one's coins keep
+trading, so the indexer follows **every** launcher ever used, never just the current one. `ponder.config.ts`
+registers the `BootrLauncher` source and the `BootrToken` / `BuybackBurner` factories with the whole address
+list (Ponder takes an address array per source), filters RWAGMI's `B20LaunchCreatedV3` on `creator` being any
+of them, and starts every Bootr source at the earliest deploy block. Handlers use `event.log.address` for the
+emitting launcher, so nothing else cares which launcher a coin came from (the schema has no launcher column).
+
+To add one, append it to `BOOTR_LAUNCHERS` (keep the old entries; the first switch moves the current
+`BOOTR_LAUNCHER_ADDRESS` + `BOOTR_START_BLOCK` pair into the list):
+
+```sh
+BOOTR_LAUNCHERS=0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x<new launcher>@<new launcher deploy block>
+DATABASE_SCHEMA=bootr_v2   # bumped: see below
+```
+
+**A new launcher needs a new `DATABASE_SCHEMA` and a backfill.** Ponder's build id is a hash of the resolved
+config (contract addresses included), the schema and the indexing code (`ponder/dist/esm/build/index.js`), and
+`ponder start` refuses a schema whose stored build id differs ("previously used by a different Ponder app"), so
+the indexer does **not** pick a new address up on restart: bump `DATABASE_SCHEMA`, let the new schema backfill
+from the earliest start block, then `ponder db prune` the old schema. The backfill is much faster than the
+first one: Ponder keeps its raw RPC cache (blocks, logs, receipts) in the shared `ponder_sync` schema, which the
+new app schema reuses, so only the new launcher's logs (and its coins' transfers / burners) are fetched from the
+RPC; the indexing functions still replay every event. Keep the old launcher listed forever: dropping it drops
+its coins (OWL `0xb2000000000000000000004481c175669cbc8edb`, launched at block 53406588 by `0xD3CE…B1F3`, is the
+first one).
 
 ## What is indexed
 

@@ -16,32 +16,42 @@ import { enabledSources, indexerEnv } from './src/lib/env';
  * Single-chain config selected by CHAIN_ID (84532 Base Sepolia by default, 8453 Base).
  *
  * Coins launch through the RWAGMI v3 launcher (B20 tokens in Uniswap v4 pools, swap fee taken in WETH by the
- * RWAGMI hook, reward ledger in the RWAGMI LP locker; docs/rwagmi-migration.md). When BOOTR_LAUNCHER_ADDRESS is
- * empty, or the chain has no RWAGMI v3 stack (Base Sepolia), every launcher-dependent source (launcher, coins,
- * burners, RWAGMI launcher / locker / hook, PoolManager, guardian, reputation) is skipped with a warning, and only
- * the periodic snapshot block handler runs (ETH/USD + platform rollups), so `ponder dev` still boots.
+ * RWAGMI hook, reward ledger in the RWAGMI LP locker; docs/rwagmi-migration.md). When no BootrLauncher is
+ * configured (BOOTR_LAUNCHERS / BOOTR_LAUNCHER_ADDRESS empty), or the chain has no RWAGMI v3 stack (Base Sepolia),
+ * every launcher-dependent source (launcher, coins, burners, RWAGMI launcher / locker / hook, PoolManager,
+ * guardian, reputation) is skipped with a warning, and only the periodic snapshot block handler runs (ETH/USD +
+ * platform rollups), so `ponder dev` still boots.
  *
  * RWAGMI is a public launcher: `B20LaunchCreatedV3` is filtered on `creator == BootrLauncher` (the launcher is the
  * RWAGMI caller), and the pool / fee / claim handlers drop everything that is not a Bootr pool or fee recipient.
+ *
+ * Several BootrLauncher deployments can be followed at once (`BOOTR_LAUNCHERS=addr@block,...`): the launcher
+ * source and the two factories take the whole address list, the RWAGMI filter accepts any of them as `creator`, and
+ * every Bootr source starts at the earliest deploy block. Handlers read `event.log.address` for the emitting
+ * launcher. The address list is part of Ponder's build id, so adding a launcher means a new DATABASE_SCHEMA and a
+ * backfill (served mostly from Ponder's RPC cache); see README "Adding a launcher".
  */
 const env = indexerEnv();
 const chain = env.chainName;
 const startBlock = env.startBlock;
 const rwagmiStartBlock = env.rwagmiStartBlock;
 
-if (!env.launcher) {
+const launcherAddresses = env.launchers.map((l) => l.address);
+const hasLauncher = launcherAddresses.length > 0;
+
+if (!hasLauncher) {
   console.warn(
-    '[indexer] BOOTR_LAUNCHER_ADDRESS is empty: skipping BootrLauncher and every launch-derived source (coins, burners, fees, swaps, reputation).',
+    '[indexer] no BootrLauncher configured (BOOTR_LAUNCHERS / BOOTR_LAUNCHER_ADDRESS empty): skipping BootrLauncher and every launch-derived source (coins, burners, fees, swaps, reputation).',
   );
 } else if (!env.rwagmi) {
   console.warn(
     `[indexer] no RWAGMI v3 launch stack for chain ${env.chainId} (set RWAGMI_LAUNCHER_V3_ADDRESS, RWAGMI_HOOK_V3_ADDRESS, RWAGMI_LOCKER_V3_ADDRESS): skipping BootrLauncher and every launch-derived source.`,
   );
 }
-if (env.launcher && env.rwagmi && !env.guardian) {
+if (hasLauncher && env.rwagmi && !env.guardian) {
   console.warn('[indexer] BOOTR_GUARDIAN_ADDRESS is empty: skipping AgentGuardian (activity, pause, dormancy).');
 }
-if (env.launcher && startBlock === 'latest') {
+if (hasLauncher && startBlock === 'latest') {
   console.warn(
     '[indexer] BOOTR_START_BLOCK is empty: indexing from the latest block; earlier launches will be missing. Set it to the launcher deploy block.',
   );
@@ -49,31 +59,33 @@ if (env.launcher && startBlock === 'latest') {
 
 const agentLaunched = getAbiItem({ abi: BootrLauncherAbi, name: 'AgentLaunched' });
 const reputation = env.addresses.erc8004.reputationRegistry;
-if (env.launcher && env.rwagmi && !reputation) {
+if (hasLauncher && env.rwagmi && !reputation) {
   console.warn(`[indexer] no ERC-8004 ReputationRegistry address for chain ${env.chainId}: skipping reputation.`);
 }
 
 // Placeholder used only to satisfy the static types of skipped sources; never sent to the RPC.
 const ZERO = '0x0000000000000000000000000000000000000000' as const;
+/** Every followed launcher (Ponder takes an address array per source and per factory). */
+const launchers: readonly `0x${string}`[] = hasLauncher ? launcherAddresses : [ZERO];
 
 /** Every source with its full type; the ones whose address is unknown are dropped below. */
 const allContracts = {
   BootrLauncher: {
     abi: BootrLauncherAbi,
     chain,
-    address: env.launcher ?? ZERO,
+    address: launchers,
     startBlock,
   },
   BootrToken: {
     abi: B20TokenAbi,
     chain,
-    address: factory({ address: env.launcher ?? ZERO, event: agentLaunched, parameter: 'token' }),
+    address: factory({ address: launchers, event: agentLaunched, parameter: 'token' }),
     startBlock,
   },
   BuybackBurner: {
     abi: BuybackBurnerAbi,
     chain,
-    address: factory({ address: env.launcher ?? ZERO, event: agentLaunched, parameter: 'burner' }),
+    address: factory({ address: launchers, event: agentLaunched, parameter: 'burner' }),
     startBlock,
   },
   /** `B20LaunchCreatedV3` (Bootr launches only, see the filter) and `LaunchPoolCreatedV3` (pool id + key). */
@@ -82,7 +94,7 @@ const allContracts = {
     chain,
     address: env.rwagmi?.launcher ?? ZERO,
     startBlock: rwagmiStartBlock,
-    filter: { event: 'B20LaunchCreatedV3', args: { creator: env.launcher ?? ZERO } },
+    filter: { event: 'B20LaunchCreatedV3', args: { creator: launchers } },
   },
   /** `PoolFeesSettledV3` (credit per reward slot) and `QuoteRewardsClaimedV3` (claims). */
   RwagmiLpLockerV3: {

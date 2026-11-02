@@ -101,6 +101,9 @@ services:
       CHAIN_ID: ${CHAIN_ID:-8453}
       BASE_RPC_URL: ${BASE_RPC_URL}
       INDEXER_SERVICE_KEY: ${INDEXER_SERVICE_KEY}
+      # Every BootrLauncher ever used (`address@deployBlock,...`); empty = the single BOOTR_LAUNCHER_ADDRESS +
+      # BOOTR_START_BLOCK pair. Adding one needs a DATABASE_SCHEMA bump (apps/indexer/README.md "Adding a launcher").
+      BOOTR_LAUNCHERS: ${BOOTR_LAUNCHERS:-}
       BOOTR_LAUNCHER_ADDRESS: ${BOOTR_LAUNCHER_ADDRESS}
       BOOTR_GUARDIAN_ADDRESS: ${BOOTR_GUARDIAN_ADDRESS}
       BOOTR_START_BLOCK: ${BOOTR_START_BLOCK}

@@ -9,8 +9,8 @@ import { corsPolicy, type CorsPolicy } from './cors';
  */
 const str = (v: string | undefined) => (v ?? '').trim();
 
-function optAddress(name: string): Address | null {
-  const v = str(process.env[name]);
+function optAddress(name: string, source: NodeJS.ProcessEnv = process.env): Address | null {
+  const v = str(source[name]);
   if (!v) return null;
   if (!isAddress(v)) {
     console.warn(`[indexer] ${name}="${v}" is not a valid address; ignoring it`);
@@ -54,6 +54,69 @@ export const RWAGMI_V3: Record<number, RwagmiStack | null> = {
 /** Deploy blocks of the Bootr launcher per chain (used when BOOTR_START_BLOCK is empty). */
 const BOOTR_DEPLOY_BLOCK: Record<number, number | null> = { 8453: null, 84532: 49_367_726 };
 
+/** One BootrLauncher deployment: checksummed address and the block it was created in. */
+export type LauncherEntry = { address: Address; startBlock: number };
+
+/**
+ * Parses `BOOTR_LAUNCHERS`: comma-separated `address@startBlock` entries, e.g.
+ * `0xD3CE…B1F3@53219209,0xNEW…@53500000`. Every entry needs a valid address and a non-negative integer block;
+ * a malformed entry throws (a silently dropped launcher would silently drop its coins). Duplicate addresses are
+ * merged, keeping the lowest start block. Returns `[]` for an empty value.
+ */
+export function parseLaunchers(raw: string | undefined): LauncherEntry[] {
+  const out: LauncherEntry[] = [];
+  const entries = str(raw)
+    .split(',')
+    .map((e) => e.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
+    const [addr, block, ...rest] = entry.split('@').map((p) => p.trim());
+    if (rest.length || !addr || block === undefined || !isAddress(addr) || !/^\d+$/.test(block)) {
+      throw new Error(`[indexer] BOOTR_LAUNCHERS entry "${entry}" is not <address>@<startBlock>`);
+    }
+    const address = getAddress(addr);
+    const startBlock = Number(block);
+    if (!Number.isSafeInteger(startBlock)) throw new Error(`[indexer] BOOTR_LAUNCHERS entry "${entry}": block out of range`);
+    const dup = out.find((l) => l.address === address);
+    if (dup) dup.startBlock = Math.min(dup.startBlock, startBlock);
+    else out.push({ address, startBlock });
+  }
+  return out;
+}
+
+/**
+ * The launcher list for the chain: `BOOTR_LAUNCHERS` wins; otherwise the single-launcher variables
+ * (`BOOTR_LAUNCHER_ADDRESS` or the address book, `BOOTR_START_BLOCK` / `LAUNCHER_START_BLOCK` or the recorded
+ * deploy block). The start block of a single launcher is `'latest'` when nothing records it.
+ */
+export function resolveLaunchers(
+  env: NodeJS.ProcessEnv,
+  chainId: number,
+  bookLauncher: Address | null,
+): { launchers: LauncherEntry[]; startBlock: number | 'latest' } {
+  const list = parseLaunchers(env.BOOTR_LAUNCHERS);
+  if (list.length) {
+    // The single variables stay set in production (the supervisor shares them); only warn when they disagree.
+    const single = optAddress('BOOTR_LAUNCHER_ADDRESS', env);
+    if (single && !list.some((l) => l.address === single)) {
+      console.warn(`[indexer] BOOTR_LAUNCHERS is set and does not contain BOOTR_LAUNCHER_ADDRESS=${single}; the list wins`);
+    }
+    return { launchers: list, startBlock: Math.min(...list.map((l) => l.startBlock)) };
+  }
+  const launcher = optAddress('BOOTR_LAUNCHER_ADDRESS', env) ?? bookLauncher;
+  const sb = str(env.BOOTR_START_BLOCK) || str(env.LAUNCHER_START_BLOCK);
+  const startBlock = sb && /^\d+$/.test(sb) ? Number(sb) : (BOOTR_DEPLOY_BLOCK[chainId] ?? 'latest');
+  if (!launcher) return { launchers: [], startBlock };
+  // 'latest' cannot be stored per launcher; the entry gets 0 and the shared startBlock stays 'latest'.
+  return { launchers: [{ address: launcher, startBlock: startBlock === 'latest' ? 0 : startBlock }], startBlock };
+}
+
+/** True when `address` is one of the followed BootrLaunchers (case-insensitive). */
+export function isLauncher(env: Pick<IndexerEnv, 'launchers'>, address: string): boolean {
+  const a = address.toLowerCase();
+  return env.launchers.some((l) => l.address.toLowerCase() === a);
+}
+
 /** Seconds per block: Base mainnet 2 s, Base Sepolia 200 ms (measured 2026-10-24). */
 export const BLOCK_TIME_SEC: Record<number, number> = { 8453: 2, 84532: 0.2 };
 
@@ -67,11 +130,16 @@ export type IndexerEnv = {
   /** Ponder `maxRequestsPerSecond` for the chain (all rpc urls together). Keeps a shared CDP key under its quota. */
   maxRps: number;
   addresses: ChainAddresses;
-  launcher: Address | null;
+  /**
+   * Every BootrLauncher followed, each with its deploy block (`BOOTR_LAUNCHERS`, else the single
+   * `BOOTR_LAUNCHER_ADDRESS` + `BOOTR_START_BLOCK`). Empty = no launcher on this chain. A launcher is never
+   * removed from the list: its coins (and their swaps, fees, holders) stay indexed after it is paused.
+   */
+  launchers: LauncherEntry[];
   guardian: Address | null;
   /** RWAGMI v3 launcher / hook / locker (env overrides the per-chain defaults); null when the chain has none. */
   rwagmi: RwagmiStack | null;
-  /** BootrLauncher (and every Bootr source) start block: BOOTR_START_BLOCK, else the recorded deploy block. */
+  /** Start block of every Bootr source: the earliest launcher deploy block (`'latest'` when none is known). */
   startBlock: number | 'latest';
   /** Start block of the RWAGMI sources: the Bootr start block, never before the RWAGMI launcher's creation. */
   rwagmiStartBlock: number | 'latest';
@@ -116,12 +184,12 @@ export function indexerEnv(): IndexerEnv {
   if (!configured.length) {
     console.warn(`[indexer] no RPC url configured for chain ${chainId}; falling back to the public endpoint ${rpcUrl}`);
   }
-  const sb = str(process.env.BOOTR_START_BLOCK);
-  const startBlock = sb && /^\d+$/.test(sb) ? Number(sb) : (BOOTR_DEPLOY_BLOCK[chainId] ?? 'latest');
   // Default: one snapshot per ~60 s of chain time.
   const defaultInterval = Math.round(60 / BLOCK_TIME_SEC[chainId]!);
   const addresses = getAddresses(chainId);
   const rwagmi = rwagmiStack(chainId);
+  // Env wins; otherwise the deployment recorded in @bootr/shared (null until deployed).
+  const { launchers, startBlock } = resolveLaunchers(process.env, chainId, addresses.bootr.launcher);
   const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || defaultInterval);
   cached = {
     chainId,
@@ -130,8 +198,7 @@ export function indexerEnv(): IndexerEnv {
     rpcUrls,
     maxRps,
     addresses,
-    // Env wins; otherwise the deployment recorded in @bootr/shared (null until deployed).
-    launcher: optAddress('BOOTR_LAUNCHER_ADDRESS') ?? addresses.bootr.launcher,
+    launchers,
     guardian: optAddress('BOOTR_GUARDIAN_ADDRESS') ?? addresses.bootr.guardian,
     rwagmi,
     startBlock,
@@ -163,7 +230,7 @@ function rwagmiStack(chainId: number): RwagmiStack | null {
  * the Bootr launcher and the RWAGMI v3 stack it launches through.
  */
 export function enabledSources(env: IndexerEnv = indexerEnv()) {
-  const launcher = !!env.launcher && !!env.rwagmi;
+  const launcher = env.launchers.length > 0 && !!env.rwagmi;
   return {
     BootrLauncher: launcher,
     BootrToken: launcher,
