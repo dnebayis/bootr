@@ -63,19 +63,23 @@ export function GasForm({
 }) {
   const [open, setOpen] = useState(layout === 'row');
   const [amount, setAmount] = useState(GAS_TOPUP_DEFAULT_ETH);
+  // The token page form asks for an explicit acknowledgement: gas is not a purchase and cannot be withdrawn.
+  const [acknowledged, setAcknowledged] = useState(false);
   const { isConnected } = useConnection();
   const write = useWriteContract();
   const { run, pending } = useTxRunner();
   const txLabel = `${label} ${symbol ? `$${symbol}` : kernel.slice(0, 8)}`;
 
   const valid = validTopUp(amount);
+  const ready = valid && (layout === 'row' || acknowledged);
   const close = () => {
     setOpen(layout === 'row');
+    setAcknowledged(false);
     onCancel?.();
   };
 
   const submit = async () => {
-    if (!valid) return;
+    if (!ready) return;
     if (env.useMock) {
       toast.success(`Mock: added ${amount} ETH of gas to ${symbol ? `$${symbol}'s agent` : kernel.slice(0, 10)}`);
       close();
@@ -155,6 +159,14 @@ export function GasForm({
         Send ETH to the agent&rsquo;s EntryPoint deposit. It pays the gas of the agent&rsquo;s own transactions and can be spent on nothing else. Minimum{' '}
         {GAS_TOPUP_MIN_ETH} ETH.
       </label>
+      <p className="rounded-xs border border-danger px-3 py-2 text-caption text-danger">
+        This is not a purchase of {symbol ? `$${symbol}` : 'the coin'} and it is not refundable: once deposited, the ETH belongs to the agent as gas and nobody, including
+        Bootr, can withdraw it. To buy the coin, use Trade.
+      </p>
+      <label className="flex items-start gap-2 text-caption text-body">
+        <input type="checkbox" className="mt-0.5 accent-ink" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
+        <span>I understand this ETH becomes the agent&rsquo;s gas and cannot be withdrawn or refunded.</span>
+      </label>
       <Input {...inputProps} />
       <div className="flex gap-1.5">
         {PRESETS.map((p) => (
@@ -173,7 +185,7 @@ export function GasForm({
           Cancel
         </Button>
         {isConnected || env.useMock ? (
-          <Button type="submit" variant="ink" size="md" className="flex-1" disabled={!valid} loading={pending === txLabel}>
+          <Button type="submit" variant="ink" size="md" className="flex-1" disabled={!ready} loading={pending === txLabel}>
             Add {valid ? amount : ''} ETH
           </Button>
         ) : (

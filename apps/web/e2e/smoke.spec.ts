@@ -45,6 +45,8 @@ test('agent panel shows gas with a status chip and an Add gas form (mock mode)',
   await amount.fill('0.00001');
   await expect(page.getByRole('button', { name: /^Add .*ETH$/ })).toBeDisabled();
   await amount.fill('0.002');
+  await expect(page.getByRole('button', { name: 'Add 0.002 ETH' })).toBeDisabled(); // the acknowledgement is required
+  await page.getByRole('checkbox', { name: /cannot be withdrawn or refunded/ }).check();
   await page.getByRole('button', { name: 'Add 0.002 ETH' }).click();
   await expect(page.getByText(/Mock: added 0.002 ETH of gas/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Add gas' })).toBeVisible();

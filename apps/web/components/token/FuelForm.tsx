@@ -59,7 +59,8 @@ export function FuelForm({ kernel, symbol, disabled }: { kernel: Address; symbol
       }}
     >
       <label htmlFor="fuel-amount" className="text-caption text-mute">
-        Send USDC to the agent treasury. It pays for thoughts and posts.
+        Send USDC to the agent treasury. It pays for thoughts and posts. This is not a purchase of ${symbol} and it is not refundable: the USDC belongs to the
+        agent once sent. To buy the coin, use Trade.
       </label>
       <Input id="fuel-amount" inputMode="decimal" mono suffix="USDC" value={amount} onChange={(e) => setAmount(e.target.value.trim())} aria-invalid={!valid} />
       <div className="flex gap-1.5">
