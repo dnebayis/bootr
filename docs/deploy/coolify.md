@@ -128,6 +128,14 @@ Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; t
 cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run `docker builder prune -f`
 and `docker image prune -f` by hand. Never delete the `postgres-data` or `web-data` volumes.
 
+Memory: after a deploy the Docker daemon itself keeps the memory the in-daemon BuildKit build used (seen on
+2026-11-02: `dockerd` at 1.5 GB RSS plus 0.9 GB swap on the 4 GB box, against ~100 MB normally). It is not a leak
+and not logs (container logs rotate at 10 MB, three files). `live-restore` is on in `/etc/docker/daemon.json`, so
+`systemctl restart docker` hands the memory back without stopping the containers; Traefik answers 503 for about
+30 s afterwards while every container's health check runs again, then the site is back. Do this after a deploy
+when `free -m` shows swap in use. The Hermes Telegram gateway costs ~330 MB on its own; `systemctl stop
+hermes-gateway` frees it when the bot is not needed.
+
 ## 7. Known limits of the small box
 
 - 4 GB RAM: the five services idle at ~2.5 GB; a web build pushes into swap. Do not run two builds at once, and
