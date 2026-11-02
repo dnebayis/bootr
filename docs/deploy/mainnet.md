@@ -9,12 +9,14 @@ Related: `packages/shared/src/addresses.ts` (the mainnet address book, every ent
 `packages/contracts/test/fork` and `test/security` (the Base mainnet fork suites that launch through this exact
 configuration), `.env.mainnet.example` (every variable with its mainnet value or a placeholder).
 
-> **Status (2026-10-29).** New launches go through the RWAGMI v3 launcher (BootrLauncher v2,
-> `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, block 53219209). Sections 0-9 are the original Base Sepolia -> mainnet
-> cutover of 2026-10-27, written for the Clanker v4 launcher; they stay the runbook for the guardian, call policy,
-> swap helper, keys and services. Where a step depends on the launch backend it is marked *(Clanker era)* and
-> superseded by [Launcher v2 on RWAGMI](#launcher-v2-on-rwagmi-2026-10-29) at the end of this file, which also holds
-> the fee model and the launcher history. Design: [`docs/rwagmi-migration.md`](../rwagmi-migration.md).
+> **Status (2026-10-29, updated 2026-11-03).** Current launcher: `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, start block 53219209 (RWAGMI v3 backend; `scripts/switch-launcher.sh` rewrites this line).
+> Sections 0-9 are the original Base Sepolia -> mainnet cutover of 2026-10-27, written for the Clanker v4 launcher;
+> they stay the runbook for the guardian, call policy, swap helper, keys and services. Where a step depends on the
+> launch backend it is marked *(Clanker era)* and superseded by
+> [Launcher v2 on RWAGMI](#launcher-v2-on-rwagmi-2026-10-29) at the end of this file, which also holds the fee
+> model, the launcher history and, since 2026-11-03, the procedure for replacing the launcher again:
+> [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap). Design:
+> [`docs/rwagmi-migration.md`](../rwagmi-migration.md).
 
 ## 0. Dry-run first (no keys, no gas)
 
@@ -243,7 +245,9 @@ models, `bootToken` after step 6).
 > `script/DeployLauncher.s.sol`, and first teach the indexer a list of launchers (old + new, each with its start
 > block) so coins of the old launcher, OWL included, stay indexed. Then update the launcher address everywhere
 > (`packages/shared/src/addresses.ts`, `.env.mainnet.example`, READMEs, this file) and redeploy web, supervisor
-> and indexer.
+> and indexer. The step-by-step procedure, the exact commands and the read-back list are in
+> [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap) at the end of this file; the repo side of the
+> address change is `scripts/switch-launcher.sh <new launcher> <new start block>`.
 >
 > **Also before this launch (decided 2026-11-02):** agents pay for inference directly to BlockRun over x402 from
 > their own spender wallets (`docs/research/blockrun-vs-openrouter.md`), behind a supervisor flag with the
@@ -469,6 +473,7 @@ destroyed), then revert the variables. Coins already launched on v2 keep working
 | v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | 53164454 | paused 2026-10-28 |
 | v1.1 (flat launch fee) | Clanker v4 | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` | 53172831 | paused 2026-10-29 |
 | v2 | RWAGMI v3 (B20) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | current, Sourcify verified |
+| v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | _pending_ | _pending_ | planned, see [Launcher switch](#launcher-switch-6k-opening-cap) |
 
 The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
 
@@ -484,3 +489,155 @@ both previous launchers `paused() = true`.
 
 Coins launched before block 53219209 live on Clanker v4 with their own locked split; the indexer and supervisor only
 follow RWAGMI launches from `BOOTR_START_BLOCK` / `LAUNCHER_START_BLOCK` = 53219209 onwards.
+
+### Launcher switch (6k opening cap)
+
+Decided 2026-11-02 (section 6): the next `BootrLauncher` opens every pool at `STARTING_TICK = -243_400` (~2.7 ETH
+FDV, ~$6k) instead of the live `-230_400` (~22k). The constant is immutable, so this is the same move as the two
+earlier redeploys: a new `BootrLauncher` from `script/DeployLauncher.s.sol`, which copies both presets and
+`minPlatformBps` from `OLD_LAUNCHER`, hands ownership to the admin, `guardian.setLauncher(new)` and pauses the old
+launcher. Guardian, burner implementation, call policy, swap helper and every registered agent stay where they are;
+coins of the old launcher keep trading and claiming. The user signs every transaction; nothing here is automated.
+
+**Preconditions**
+
+- [ ] **Indexer multi-launcher support is live first.** The indexer reads `BOOTR_LAUNCHERS=<addr>@<startBlock>,...`
+      (fallback: `BOOTR_LAUNCHER_ADDRESS` + `BOOTR_START_BLOCK`) so the coins of the old launcher, OWL
+      (`0xb2000000000000000000004481c175669cbc8edb`) included, stay indexed once `BOOTR_LAUNCHER_ADDRESS` moves. Deploy
+      that indexer release (new `DATABASE_SCHEMA`, wait for `/ready`) and check `GET https://indexer.bootr.fun/market/<OWL>`
+      answers *before* touching the chain.
+- [ ] **Contracts.** `STARTING_TICK = -243_400` committed in `src/BootrLauncher.sol` with `test/unit/StartingTick.t.sol`
+      green; the fork suites green on the day (`base-forge test`, section 0); `forge build` clean. Rehearse the script
+      without `--broadcast` first (it simulates every call, including the ownership and guardian checks).
+- [ ] **Gas.** The deployer (`PRIVATE_KEY`) holds ~0.02 ETH on Base (the `via_ir` launcher is one large `CREATE`; the
+      2026-10-29 deploy cost a fraction of that, 0.02 is the margin). The admin (`ADMIN_PRIVATE_KEY`, owner of the
+      guardian and the old launcher: `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3`) holds at least 0.002 ETH for
+      `acceptOwnership`, `setLauncher` and `pause`. Both keys are exported for the command only.
+- [ ] **Launches paused during the switch.** In the admin console press **Pause launches** (on-chain `pause()` on the
+      live launcher) and switch on **Pause launches in the app**. Nothing then lands between `setLauncher` and the
+      service redeploy; the script's `if (!old.paused()) old.pause()` becomes a no-op.
+- [ ] `BASE_RPC_URL` set to the CDP Node URL or a public Base RPC (the script sends five transactions).
+
+**1. Deploy** (from `packages/contracts`; `LAUNCH_FEE_WEI` defaults to 0, so pass the live fee explicitly):
+
+```sh
+cd packages/contracts
+cast call 0xD3CE024ddC37465510E6c9a1D7942f003338B1F3 "launchFeeWei()(uint256)" --rpc-url base   # 500000000000000 today
+
+PRIVATE_KEY=<deployer key> ADMIN_PRIVATE_KEY=<admin key> \
+OLD_LAUNCHER=0xD3CE024ddC37465510E6c9a1D7942f003338B1F3 LAUNCH_FEE_WEI=500000000000000 \
+forge script script/DeployLauncher.s.sol --rpc-url base -vvv                                     # dry run (simulation)
+
+PRIVATE_KEY=<deployer key> ADMIN_PRIVATE_KEY=<admin key> \
+OLD_LAUNCHER=0xD3CE024ddC37465510E6c9a1D7942f003338B1F3 LAUNCH_FEE_WEI=500000000000000 \
+forge script script/DeployLauncher.s.sol --rpc-url base --broadcast --verify --verifier sourcify -vvv
+```
+
+`--verify --verifier sourcify` needs no key (this is how v2 was verified). For a Basescan verification instead,
+export `BASESCAN_API_KEY` (read by `[etherscan]` in `foundry.toml`) and drop `--verifier sourcify`, or run
+`forge verify-contract` afterwards. The script only deploys and calls (no B20 launch), so stock `forge` is enough;
+the 2026-10-29 redeploy used the same script. The script prints `BootrLauncher (new): 0x...`,
+`BootrLauncher (old, paused): ...` and `launchFeeWei`; its `deploy block:` line is the *simulation* block, not the
+block the contract was mined in.
+
+**2. Read the new address and the creation block.** From the broadcast artifact (the first transaction is the
+`CREATE`):
+
+```sh
+jq -r '.transactions[0] | .contractName, .contractAddress' broadcast/DeployLauncher.s.sol/8453/run-latest.json
+cast to-check-sum-address <address from above>                                                    # the repo stores checksummed addresses
+cast to-dec "$(jq -r '.receipts[0].blockNumber' broadcast/DeployLauncher.s.sol/8453/run-latest.json)"   # creation block
+```
+
+Or on Basescan: open the new address, "Contract Creator ... at txn", the transaction's block. The old block of
+53219209 came out of the same two fields (`0x32c0f89`).
+
+**3. Repo.** From the checkout:
+
+```sh
+scripts/switch-launcher.sh <new launcher, checksummed> <creation block>
+```
+
+It validates both arguments, then rewrites every file that names the *current* launcher: `packages/shared/src/addresses.ts`
+(`[8453].bootr.launcher` only; the Base Sepolia guardian shares the old address and is left alone),
+`.env.mainnet.example` (`BOOTR_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`, `LAUNCHER_START_BLOCK`,
+`BOOTR_START_BLOCK`, and `BOOTR_LAUNCHERS` when the line exists), `README.md`, `packages/contracts/README.md`,
+`packages/contracts/src/README.md`, `apps/indexer/README.md`, `apps/supervisor/README.md`, `docs/rwagmi-migration.md`,
+and in this file the status note at the top and the launcher history table (the v2 row becomes `paused <date>`, the
+v3 row gets the address and block). Lines that mention a paused / old / previous launcher, history rows and any
+`BOOTR_LAUNCHERS=` list keep the old address on purpose. It then prints `git diff --stat`, every remaining mention of
+the old address and block for review, and the production calls of step 4; it commits nothing, deploys nothing and
+never touches a secret. Then fill in the **Deployed** paragraph below, `pnpm --filter @bootr/shared typecheck`,
+`git diff`, commit and push to `main` (Coolify builds from `main`).
+
+**4. Production variables** (Coolify application `ko7sx54pwakworrqogccvbfc`; the script prints these with the real
+values; on the server, as root, the token stays in `/root/.coolify-token`):
+
+```sh
+# one PATCH per variable; a variable that does not exist yet (BOOTR_LAUNCHERS the first time) is a POST on the same path
+curl -s -X PATCH -H "Authorization: Bearer $(cat /root/.coolify-token)" -H "Content-Type: application/json" \
+  http://127.0.0.1:8000/api/v1/applications/ko7sx54pwakworrqogccvbfc/envs \
+  -d '{"key":"BOOTR_LAUNCHER_ADDRESS","value":"<new launcher>","is_preview":false,"is_build_time":false}'
+#   ... NEXT_PUBLIC_LAUNCHER_ADDRESS = <new launcher>  ("is_build_time":true, it is a web build arg)
+#   ... LAUNCHER_START_BLOCK         = <creation block>
+#   ... BOOTR_LAUNCHERS              = 0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,<new launcher>@<creation block>
+# BOOTR_START_BLOCK is ignored once BOOTR_LAUNCHERS is set (the indexer starts at the earliest listed block): leave it. Read back:
+curl -s -H "Authorization: Bearer $(cat /root/.coolify-token)" \
+  http://127.0.0.1:8000/api/v1/applications/ko7sx54pwakworrqogccvbfc/envs | jq -r '.[] | select(.key | test("LAUNCHER|START_BLOCK")) | "\(.key)=\(.value)"'
+```
+
+The same four values can be set in the panel (application → Environment Variables); `NEXT_PUBLIC_LAUNCHER_ADDRESS`
+must be marked build-time there.
+
+**5. Deploy.** `curl -s -X POST -H "Authorization: Bearer $(cat /root/.coolify-token)" -H "Content-Type: application/json"
+http://127.0.0.1:8000/api/v1/deploy -d '{"uuid":"ko7sx54pwakworrqogccvbfc","force":false}'`, then poll
+`GET /api/v1/deployments/<deployment uuid>` (coolify.md section 2). One deploy rebuilds `web` with the new build arg and
+restarts the indexer and the supervisor. The indexer's Ponder config now carries one more address: if it refuses to
+start on the current schema (build id changed), bump `DATABASE_SCHEMA` and expect the backfill from 53219209 (about
+70 minutes, coolify.md section 3). Wait for `https://indexer.bootr.fun/ready` and `https://bootr.fun/api/health`,
+then switch **Pause launches in the app** off in the console (the new launcher is not paused on-chain).
+
+**6. Verify** (`RPC` = a Base RPC, `NEW` = the new launcher, `OLD` = `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`,
+`G` = the guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`):
+
+```sh
+cast call $NEW "owner()(address)" --rpc-url $RPC            # 0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3 (admin; ownership accepted)
+cast call $G "launcher()(address)" --rpc-url $RPC           # == NEW
+cast call $OLD "paused()(bool)" --rpc-url $RPC              # true
+cast call $NEW "paused()(bool)" --rpc-url $RPC              # false
+cast call $NEW "STARTING_TICK()(int24)" --rpc-url $RPC      # -243400
+cast call $NEW "launchFeeWei()(uint256)" --rpc-url $RPC     # 500000000000000, same as OLD
+cast call $NEW "minPlatformBps()(uint16)" --rpc-url $RPC    # 1000, same as OLD
+cast call $NEW "guardian()(address)" --rpc-url $RPC         # == G
+cast call $NEW "burnerImplementation()(address)" --rpc-url $RPC   # 0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7, same as OLD
+cast call $NEW "rwagmiLauncher()(address)" --rpc-url $RPC   # 0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20
+SIG="(uint24,uint16,uint16,uint16,uint16,address,uint256,uint32)"
+diff <(cast call $OLD "standardDefaults()$SIG" --rpc-url $RPC) <(cast call $NEW "standardDefaults()$SIG" --rpc-url $RPC) && echo standard same
+diff <(cast call $OLD "buybackDefaults()$SIG"  --rpc-url $RPC) <(cast call $NEW "buybackDefaults()$SIG"  --rpc-url $RPC) && echo buyback same
+```
+
+- Sourcify / Basescan show an exact match for `NEW`.
+- Web: the admin console's launch-fee panel reads `0.0005` from the new address and shows "Launches open"; on the
+  launch page the wallet prompt of the test launch below is addressed to `NEW` (check `to` before signing).
+- Indexer: `GET https://indexer.bootr.fun/market/<OWL>` still answers (old launcher's coin, through `BOOTR_LAUNCHERS`);
+  `platformStats` unchanged.
+- Supervisor: no `registerAgent` errors in the log after the restart; the OWL agent keeps its state.
+- **One small test launch** from a normal wallet (standard preset, 0 dev buy, 0.001 ETH gas): the coin appears in the
+  indexer (`GET /market/<test token>`) and on the site, `RwagmiLpLockerV3.launchInfo(token)` shows the standard slots
+  with every admin = `NEW`, the supervisor onboards it (`registerAgent`, session install) and the pool's opening price
+  on the token page is in the ~$6k FDV range, not ~22k.
+- Section 7 smoke tests for anything that touched the launcher (fees claim through the new coin's locker entry).
+
+**Rollback.** As the admin: `cast send $G "setLauncher(address)" $OLD --rpc-url $RPC --private-key <admin>` and
+`cast send $OLD "unpause()" --rpc-url $RPC --private-key <admin>` (the old launcher is paused, not destroyed; the new
+one can stay deployed, or be paused with `pause()`). Then `git revert` the switch commit (running
+`scripts/switch-launcher.sh` with the values swapped is not supported: it insists on a later block), PATCH the four
+Coolify variables back (`BOOTR_LAUNCHER_ADDRESS` / `NEXT_PUBLIC_LAUNCHER_ADDRESS` = `OLD`,
+`LAUNCHER_START_BLOCK` = 53219209, `BOOTR_LAUNCHERS` without the new entry, or with it: a launcher with no coins is
+harmless to index) and deploy again. Coins launched on the new launcher in between keep working either way (their
+locker entries are theirs); the supervisor only follows them while the new launcher is in `BOOTR_LAUNCHER_ADDRESS`.
+
+**Deployed** (fill in after the switch): new `BootrLauncher` `0x...` at block `...`, verified on Sourcify on
+`<date>`; read back: `guardian.launcher()` = new, `owner()` = admin, `STARTING_TICK() = -243400`,
+`launchFeeWei() = 500000000000000`, `minPlatformBps = 1000`, presets identical to v2, v2 `paused() = true`;
+first test coin `0x...`; `BOOTR_LAUNCHERS` on production = `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,<new>@<block>`.
