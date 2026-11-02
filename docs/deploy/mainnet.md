@@ -49,7 +49,7 @@ suite and its Clanker module checks are gone from the tree; the v1 launcher was 
       kernel pays its userOp prefund from its EntryPoint deposit + ETH. The creator deposits the first gas: the
       launch form's Gas field (default 0.001 ETH, 0 allowed) sends `EntryPoint.depositTo(kernel)` right after the
       launch tx. The fee policy then unwraps the kernel's WETH fee share into ETH (`fund_gas` ops, `WETH.withdraw`)
-      whenever gas drops under `GAS_MIN_WEI` (0.0002 ETH) up to `GAS_TARGET_WEI` (0.001 ETH). Anyone can add gas
+      whenever gas drops under `GAS_MIN_WEI` (0.0002 ETH) up to `GAS_TARGET_WEI` (0.001 ETH). The creator can add gas
       from the token page or the console (`EntryPoint.depositTo(kernel)` from their own wallet); the platform pays
       no agent gas. ETH on a kernel can only leave as gas (no session-key rule carries value, the root validator is
       the guardian). An empty kernel sends nothing (`out_of_gas` in the supervisor log, "Out of gas" on the token

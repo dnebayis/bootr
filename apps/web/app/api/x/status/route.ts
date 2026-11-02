@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
-import { DRAFT_COOKIE, isDraftId, ownsDraft, senderAccount, SenderUnavailable } from '@/lib/server/sender';
+import { DRAFT_COOKIE, isSubject, ownsDraft, senderAccount, SenderUnavailable } from '@/lib/server/sender';
 import { senderEnv } from '@/lib/server/env';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -9,13 +9,13 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 const MOCK_HANDLE = 'mock_agent';
 
 /**
- * GET /api/x/status?agentId=<launch draft uuid> -> { connected, handle }
+ * GET /api/x/status?agentId=<launch draft uuid | agent id> -> { connected, handle }
  * Server-side HMAC call to the sender's internal `GET /internal/account/:agentId`; scopes and token
- * expiry are not exposed. Only for a draft this browser registered (`POST /api/x/draft`).
+ * expiry are not exposed. Only for a draft this browser registered (`POST /api/x/draft`) or an agent id its creator claimed (`POST /api/siwe/x-claim`).
  */
 export async function GET(req: NextRequest) {
   const agentId = req.nextUrl.searchParams.get('agentId') ?? '';
-  if (!isDraftId(agentId)) return NextResponse.json({ error: 'invalid_request', message: 'agentId must be a draft uuid' }, { status: 400, headers: NO_STORE });
+  if (!isSubject(agentId)) return NextResponse.json({ error: 'invalid_request', message: 'agentId must be a draft uuid or an agent id' }, { status: 400, headers: NO_STORE });
   if (env.useMock) return NextResponse.json({ connected: true, handle: MOCK_HANDLE }, { headers: NO_STORE });
   const cfg = senderEnv();
   if (!cfg.serviceKey || !cfg.internalUrl) {

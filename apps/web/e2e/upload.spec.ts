@@ -166,4 +166,14 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await launch.click();
   await expect(page.getByText(/Mock: \$QENG launched with 0.002 ETH of gas/)).toBeVisible();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+
+  // Launched without an X account: the coin page offers the creator the connect step, next to the creator-only
+  // Fuel and Add gas actions, and shows the agent's wallet to everyone.
+  await expect(page.getByTestId('connect-agent-x')).toBeVisible();
+  await expect(page.getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ })).toBeVisible();
+  await expect(page.getByTestId('agent-wallet')).toContainText(/0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}/);
+  await expect(page.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add gas' })).toBeVisible();
+  await page.getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ }).click();
+  await expect(page.getByText(/connected\. The agent starts shortly/)).toBeVisible();
 });

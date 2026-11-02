@@ -26,9 +26,14 @@ There is no paymaster in production (`PAYMASTER_URL` empty). **The platform pays
    the agent with `out_of_gas` (a warning in the log, nothing is sent, so no failed userOp burns the remainder) and
    the token page shows *Out of gas* with an **Add gas** form. The agent's social side keeps running; only
    treasury operations wait.
-5. **Anyone can add gas.** The token page and the console send `EntryPoint.depositTo(kernel)` from the connected
-   wallet (any amount from 0.0001 ETH). ETH deposited this way can only ever leave as gas: no session-key rule
-   carries value, the root validator is the guardian, and only the kernel itself could call `withdrawTo`.
+5. **The creator adds gas.** The token page shows *Add gas* (and *Fuel the agent*) to the coin's creator only, and
+   the console to admins; both send `EntryPoint.depositTo(kernel)` from the connected wallet (any amount from
+   0.0001 ETH) after an explicit "not a purchase, not refundable" acknowledgement. On-chain anyone can still call
+   `depositTo` for any kernel. ETH deposited this way can only ever leave as gas: no session-key rule carries
+   value, the root validator is the guardian (whose only root call is `claimDormant`, which never touches the
+   deposit), and only the kernel itself could call `withdrawTo`. A mistaken deposit therefore cannot be refunded
+   from the contracts; on 2026-11-02 a visitor deposited 0.02 ETH to the first live agent believing it bought the
+   coin, which is why the forms now warn and gate.
 
 ## Session-key rule for the refill
 

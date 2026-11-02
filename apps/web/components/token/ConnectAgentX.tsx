@@ -1,0 +1,82 @@
+'use client';
+
+import { useQueryClient } from '@tanstack/react-query';
+import { SiweMessage } from 'siwe';
+import { toast } from 'sonner';
+import { useConnection, useSignMessage } from 'wagmi';
+import { appChain } from '@/lib/chains';
+import { env } from '@/lib/env';
+import type { Token } from '@/lib/types';
+import { XConnect } from '@/components/launch/XConnect';
+
+/**
+ * The coin page's "connect X later" path, shown only to the creator of a coin whose agent has no X account
+ * yet. The creator signs a SIWE message naming the agent (`POST /api/siwe/x-claim` checks the signature and,
+ * through the indexer, that the wallet created the coin), which registers this browser for the agent id;
+ * the usual X OAuth popup then runs against the real agent id, and the supervisor finishes onboarding on
+ * its next tick once the sender reports the account.
+ */
+export function ConnectAgentX({ token }: { token: Token }) {
+  const { address } = useConnection();
+  const { signMessageAsync } = useSignMessage();
+  const queryClient = useQueryClient();
+
+  const claim = async (): Promise<boolean> => {
+    if (env.useMock) return true;
+    if (!address) {
+      toast.error('Connect the creator wallet first.');
+      return false;
+    }
+    const n = await fetch('/api/siwe/nonce', { method: 'POST' });
+    if (!n.ok) {
+      toast.error('Could not start the signature (nonce).');
+      return false;
+    }
+    const { nonce } = (await n.json()) as { nonce: string };
+    const message = new SiweMessage({
+      domain: window.location.host,
+      address,
+      statement: `Connect the X account of Bootr agent #${token.agentId} (${token.kernel}).`,
+      uri: window.location.origin,
+      version: '1',
+      chainId: appChain.id,
+      nonce,
+      issuedAt: new Date().toISOString(),
+    }).prepareMessage();
+    let signature: `0x${string}`;
+    try {
+      signature = await signMessageAsync({ message });
+    } catch {
+      toast.error('Signature cancelled.');
+      return false;
+    }
+    const v = await fetch('/api/siwe/x-claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, signature }) });
+    if (!v.ok) {
+      const body = (await v.json().catch(() => ({}))) as { error?: string };
+      toast.error(body.error ?? `Could not verify the creator wallet (${v.status}).`);
+      return false;
+    }
+    return true;
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-sm border border-hairline p-3" data-testid="connect-agent-x">
+      <p className="text-caption text-body">
+        This agent has no X account yet, so it cannot post. As the creator you can connect one now: sign a message with your wallet, then authorise a fresh X
+        account for the agent. The agent starts on the next supervisor pass.
+      </p>
+      <XConnect
+        draftId={token.agentId}
+        handle={null}
+        symbol={token.symbol}
+        claim={claim}
+        onHandle={(h) => {
+          if (!h) return;
+          toast.success(`@${h} connected. The agent starts shortly.`);
+          void queryClient.invalidateQueries({ queryKey: ['agent'] });
+          void queryClient.invalidateQueries({ queryKey: ['token'] });
+        }}
+      />
+    </div>
+  );
+}

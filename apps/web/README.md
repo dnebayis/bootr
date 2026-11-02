@@ -89,7 +89,7 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | Route | |
 |---|---|
 | `/` | $BOOT box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
-| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel with Fuel and Gas (status chip, out-of-gas notice, Add gas = `EntryPoint.depositTo(kernel)`), locked fee split, Trade link, last 20 trades. |
+| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade link, last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
 | `/launch` | Coin, Agent, X account, Fuel & options (fuel, dev buy, the agent's first gas); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |

@@ -8,6 +8,8 @@
  *
  * Draft ownership: a launch draft id may only be connected from the browser that registered it
  * (`POST /api/x/draft`), which receives an HttpOnly, SameSite=Strict cookie with an HMAC tag per draft.
+ * A live agent id (numeric ERC-8004 id) is registered the same way, but only after the coin's creator
+ * proved the wallet with a SIWE signature (`POST /api/siwe/x-claim`).
  * A link to `/api/x/start` sent by someone else therefore cannot bind the victim's X account to the
  * sender's draft (consent phishing), and `reconnect=1` is only honoured for a draft this browser owns.
  */
@@ -16,9 +18,37 @@ import { hmacHex, safeEqual } from './session-core';
 
 const enc = new TextEncoder();
 
-/** Launch-form draft ids are `crypto.randomUUID()`; only those may be bound from the browser (never a numeric ERC-8004 id). */
+/** Launch-form draft ids are `crypto.randomUUID()`; those may be bound from the browser without any wallet proof. */
 export function isDraftId(v: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v);
+}
+
+/** A live agent's ERC-8004 id; bound only after `POST /api/siwe/x-claim` (creator signature). */
+export function isAgentId(v: string): boolean {
+  return /^[1-9][0-9]{0,19}$/.test(v);
+}
+
+/** Anything `/api/x/start` and `/api/x/status` may serve once this browser registered it. */
+export function isSubject(v: string): boolean {
+  return isDraftId(v) || isAgentId(v);
+}
+
+/** The coin an agent belongs to, from the indexer (server side): who created it and its agent id. */
+export async function fetchTokenCreator(kernel: string): Promise<{ creator: string; agentId: string } | null> {
+  const base = (process.env.NEXT_PUBLIC_INDEXER_URL ?? '').replace(/\/$/, '');
+  if (!base) return null;
+  const res = await fetch(`${base}/graphql`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'query Creator($id: String!) { token(id: $id) { creator agentId } }', variables: { id: kernel.toLowerCase() } }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return null;
+  const json = (await res.json()) as { data?: { token?: { creator?: string; agentId?: string | number } | null } };
+  const t = json.data?.token;
+  if (!t?.creator || t.agentId == null) return null;
+  return { creator: String(t.creator), agentId: String(t.agentId) };
 }
 
 /** Opaque client state echoed back by the sender; URL-safe, ≤ 128 chars. */
@@ -74,7 +104,7 @@ function parseDraftCookie(value: string | undefined): { id: string; tag: string 
       const [id, tag] = p.split('.');
       return { id: id ?? '', tag: tag ?? '' };
     })
-    .filter((d) => isDraftId(d.id) && /^[0-9a-f]{32}$/.test(d.tag));
+    .filter((d) => isSubject(d.id) && /^[0-9a-f]{32}$/.test(d.tag));
 }
 
 /** Cookie value after registering `draftId` (most recent first, at most MAX_DRAFTS). Null when unconfigured. */

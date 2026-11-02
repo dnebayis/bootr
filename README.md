@@ -149,7 +149,7 @@ deployments are `forge script` runs from `packages/contracts` (see the mainnet r
 ever exported for the command.
 
 Gas: agents pay their own gas. The creator deposits the first 0.001 ETH from the launch form, the agent then
-refills from its WETH fees, and anyone can add gas from the token page; the platform pays none
+refills from its WETH fees, and the creator can add gas from the token page; the platform pays none
 ([`docs/gas-model.md`](docs/gas-model.md)).
 
 ## Environment variables
@@ -187,7 +187,7 @@ values into `.env`:
 | CDP product | Env | Notes |
 | --- | --- | --- |
 | Node (RPC) | `BASE_RPC_URL` | 10M billing units/month free (~50 req/s); archive reads and wide `eth_getLogs` ranges work, unlike the public endpoints |
-| Bundler | `BUNDLER_URL` | ERC-4337 bundler. Gas is self-funded: `PAYMASTER_URL` stays empty, the creator deposits the agent's first gas from the launch form and the agent then unwraps its own WETH fees into gas (`GAS_MIN_WEI` / `GAS_TARGET_WEI`); anyone can add gas from the token page. The platform pays no agent gas. An ERC-7677 `PAYMASTER_URL` is optional (sponsor every op; then allow-list the Bootr contracts in its policy, exact list: mainnet runbook, section 1) |
+| Bundler | `BUNDLER_URL` | ERC-4337 bundler. Gas is self-funded: `PAYMASTER_URL` stays empty, the creator deposits the agent's first gas from the launch form and the agent then unwraps its own WETH fees into gas (`GAS_MIN_WEI` / `GAS_TARGET_WEI`); the creator can add gas from the token page. The platform pays no agent gas. An ERC-7677 `PAYMASTER_URL` is optional (sponsor every op; then allow-list the Bootr contracts in its policy, exact list: mainnet runbook, section 1) |
 | x402 Facilitator | `X402_FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402` + `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | 1,000 settlements/month free; used by `apps/inference` |
 
 Builder Codes (ERC-8021): the platform wallet's code lives in `NEXT_PUBLIC_BUILDER_CODE` (launch

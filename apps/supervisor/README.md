@@ -352,7 +352,7 @@ There is no paymaster: every session userOp's prefund comes out of the kernel's 
 (`Kernel.validateUserOp` forwards `missingAccountFunds`). The platform pays no agent gas ([`docs/gas-model.md`](../../docs/gas-model.md)):
 
 - The creator deposits the first gas from the launch form (`EntryPoint.depositTo(kernel)`, default 0.001 ETH, right
-  after the launch transaction); anyone can add more from the token page or the console.
+  after the launch transaction) and can add more from the token page; admins from the console. Nothing can withdraw it.
 - `src/gas.ts` reads gas (`EntryPoint.balanceOf(kernel)` + the kernel's ETH) into the treasury snapshot (`gas.{eth,
   deposit, balance, status}`, also in `GET /internal/agents/:id`). Status: `ok` (>= `GAS_MIN_WEI`), `low`, `empty`
   (< `GAS_MIN_WEI / 5`), or `sponsored` when a `PAYMASTER_URL` is set.

@@ -15,8 +15,24 @@ type Status = { connected: boolean; handle?: string | null };
  * sender (HMAC, server-side) whether the draft id has a connected account. "Change" restarts the flow
  * with `reconnect=1`, the only way the sender replaces an already connected account. After launch the
  * supervisor rebinds the account from the draft id to the ERC-8004 agent id.
+ *
+ * With `claim` (the coin page, after launch) `draftId` is the live agent id and `claim` runs instead of the
+ * draft registration: it must prove the creator's wallet (`POST /api/siwe/x-claim`) and resolve true before
+ * the popup is pointed at the flow.
  */
-export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: string | null; handle: string | null; onHandle: (h: string | null) => void; symbol: string }) {
+export function XConnect({
+  draftId,
+  handle,
+  onHandle,
+  symbol,
+  claim,
+}: {
+  draftId: string | null;
+  handle: string | null;
+  onHandle: (h: string | null) => void;
+  symbol: string;
+  claim?: () => Promise<boolean>;
+}) {
   const [pending, setPending] = useState(false);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -61,16 +77,20 @@ export function XConnect({ draftId, handle, onHandle, symbol }: { draftId: strin
     }
     setPending(true);
     try {
-      const reg = await fetch('/api/x/draft', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentId: draftId }),
-      });
-      if (!reg.ok) throw new Error(reg.status === 503 ? 'X connection is not configured on this deployment.' : `Could not start X connect (${reg.status}).`);
+      if (claim) {
+        if (!(await claim())) throw new Error('');
+      } else {
+        const reg = await fetch('/api/x/draft', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: draftId }),
+        });
+        if (!reg.ok) throw new Error(reg.status === 503 ? 'X connection is not configured on this deployment.' : `Could not start X connect (${reg.status}).`);
+      }
     } catch (e) {
       popup.close();
       setPending(false);
-      toast.error((e as Error).message);
+      if ((e as Error).message) toast.error((e as Error).message);
       return;
     }
     const state = crypto.randomUUID();

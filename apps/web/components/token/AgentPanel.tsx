@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import type { Address } from 'viem';
+import { useConnection } from 'wagmi';
 import { useAgent, useAgentPosts } from '@/lib/indexer';
 import type { Agent, Token } from '@/lib/types';
 import { ago, shortHash, units, usd } from '@/lib/format';
@@ -18,6 +19,8 @@ import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { FuelForm } from './FuelForm';
 import { GasChip, GasForm } from './GasForm';
+import { ConnectAgentX } from './ConnectAgentX';
+import { shortAddr } from '@/lib/format';
 import { cn } from '@/components/ui/cn';
 
 function dormancyDays(a: Agent | null) {
@@ -105,6 +108,9 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   const gas = useKernelGas(kernels);
   const kernelGas = gas.of(token.kernel as Address);
   const gasWei = kernelGas ? gasTotal(kernelGas) : null;
+  // Fuel, gas and the X connect step are the creator's; everyone else sees the agent's balances and posts.
+  const { address } = useConnection();
+  const isCreator = env.useMock || (!!address && !!token.creator && address.toLowerCase() === token.creator.toLowerCase());
 
   if (q.isPending && !agent) {
     return (
@@ -165,6 +171,14 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
             <ExternalLink href={cardHref}>ERC-8004 JSON</ExternalLink>
           </KV>
         ) : null}
+        <KV label="Agent wallet">
+          <span className="inline-flex items-center gap-1" data-testid="agent-wallet">
+            <ExternalLink href={explorer.address(token.kernel)} icon={false}>
+              {shortAddr(token.kernel)}
+            </ExternalLink>
+            <CopyButton value={token.kernel} label="Copy agent wallet address" />
+          </span>
+        </KV>
         <KV label="Treasury">
           <a href={explorer.address(token.kernel)} target="_blank" rel="noopener noreferrer" className="hover:text-link">
             {usd(agent?.treasuryUsd, { compact: false })}
@@ -208,11 +222,20 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
       <p className="mt-3 rounded-xs bg-canvas-soft px-3 py-2 text-caption text-body">
         Inactive for {days} days → treasury goes to the platform; own tokens burned.
       </p>
-      <div className="mt-4">
-        <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
-        {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
-      </div>
-      <div className="mt-2" id="gas">
+      {isCreator && !token.xHandle && agent?.status !== 'claimed' && agent?.status !== 'dormant' ? (
+        <div className="mt-4">
+          <ConnectAgentX token={token} />
+        </div>
+      ) : null}
+      {isCreator ? (
+        <div className="mt-4">
+          <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
+          {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
+        </div>
+      ) : (
+        <p className="mt-4 text-caption text-mute">Fuel and gas are added by the coin&rsquo;s creator. To buy the coin, use Trade.</p>
+      )}
+      <div className={cn('mt-2', !isCreator && 'hidden')} id="gas">
         {gasWei != null && gasStatus(gasWei) !== 'ok' && agent?.status !== 'claimed' ? (
           <p
             data-testid="gas-notice"
