@@ -244,6 +244,12 @@ models, `bootToken` after step 6).
 > block) so coins of the old launcher, OWL included, stay indexed. Then update the launcher address everywhere
 > (`packages/shared/src/addresses.ts`, `.env.mainnet.example`, READMEs, this file) and redeploy web, supervisor
 > and indexer.
+>
+> **Also before this launch (decided 2026-11-02):** agents pay for inference directly to BlockRun over x402 from
+> their own spender wallets (`docs/research/blockrun-vs-openrouter.md`), behind a supervisor flag with the
+> OpenRouter relay kept as fallback: add BlockRun's payTo to the payer allowlist, move per-thought accounting, the
+> model allowlist and spend caps into the supervisor, trial on the $BOOTR agent first. Outreach to BlockRun goes by
+> email (`hello@blockrun.ai`, their X DMs are closed) and does not block the integration.
 
 The platform coin is a normal Bootr agent launched by the treasury wallet with the **buyback preset**:
 
