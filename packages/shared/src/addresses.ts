@@ -135,8 +135,8 @@ export const addresses = {
       signaturePolicy: '0xF6A936c88D97E6fad13b98d2FD731Ff17eeD591d',
     },
     bootr: {
-      // Not deployed yet: filled by the cutover (docs/deploy/mainnet.md).
-      launcher: '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3',
+      // Launcher redeployed 2026-11-03 at block 53433988 (6k opening cap, docs/deploy/mainnet.md, Launcher switch); the rest from the 2026-10-27 cutover.
+      launcher: '0x01f290cC464Ac6D167588b35A08305F58683526f',
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',

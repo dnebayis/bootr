@@ -9,7 +9,7 @@ Related: `packages/shared/src/addresses.ts` (the mainnet address book, every ent
 `packages/contracts/test/fork` and `test/security` (the Base mainnet fork suites that launch through this exact
 configuration), `.env.mainnet.example` (every variable with its mainnet value or a placeholder).
 
-> **Status (2026-10-29, updated 2026-11-03).** Current launcher: `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, start block 53219209 (RWAGMI v3 backend; `scripts/switch-launcher.sh` rewrites this line).
+> **Status (2026-10-29, updated 2026-11-03).** Current launcher: `0x01f290cC464Ac6D167588b35A08305F58683526f`, start block 53433988 (RWAGMI v3 backend; `scripts/switch-launcher.sh` rewrites this line).
 > Sections 0-9 are the original Base Sepolia -> mainnet cutover of 2026-10-27, written for the Clanker v4 launcher;
 > they stay the runbook for the guardian, call policy, swap helper, keys and services. Where a step depends on the
 > launch backend it is marked *(Clanker era)* and superseded by
@@ -472,8 +472,8 @@ destroyed), then revert the variables. Coins already launched on v2 keep working
 | --- | --- | --- | --- | --- |
 | v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | 53164454 | paused 2026-10-28 |
 | v1.1 (flat launch fee) | Clanker v4 | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` | 53172831 | paused 2026-10-29 |
-| v2 | RWAGMI v3 (B20) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | current, Sourcify verified |
-| v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | _pending_ | _pending_ | planned, see [Launcher switch](#launcher-switch-6k-opening-cap) |
+| v2 | RWAGMI v3 (B20) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | paused 2026-11-03 |
+| v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | `0x01f290cC464Ac6D167588b35A08305F58683526f` | 53433988 | current, verify on Sourcify |
 
 The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
 
@@ -637,7 +637,10 @@ Coolify variables back (`BOOTR_LAUNCHER_ADDRESS` / `NEXT_PUBLIC_LAUNCHER_ADDRESS
 harmless to index) and deploy again. Coins launched on the new launcher in between keep working either way (their
 locker entries are theirs); the supervisor only follows them while the new launcher is in `BOOTR_LAUNCHER_ADDRESS`.
 
-**Deployed** (fill in after the switch): new `BootrLauncher` `0x...` at block `...`, verified on Sourcify on
-`<date>`; read back: `guardian.launcher()` = new, `owner()` = admin, `STARTING_TICK() = -243400`,
-`launchFeeWei() = 500000000000000`, `minPlatformBps = 1000`, presets identical to v2, v2 `paused() = true`;
-first test coin `0x...`; `BOOTR_LAUNCHERS` on production = `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,<new>@<block>`.
+**Deployed** 2026-11-03: new `BootrLauncher` `0x01f290cC464Ac6D167588b35A08305F58683526f` at block 53433988 (tx
+`0xe0e0c1a6…f4acc`, five transactions, 0.0000169 ETH in total), verified on Sourcify and Basescan; read back the same
+day: `guardian.launcher()` = new, `owner()` = admin (no pending owner), `STARTING_TICK() = -243400`,
+`launchFeeWei() = 500000000000000`, `standardDefaults` and `buybackDefaults` byte-identical to v2, v2 `paused() = true`,
+new `paused() = false`; first test coin: none yet; `BOOTR_LAUNCHERS` on production =
+`0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x01f290cC464Ac6D167588b35A08305F58683526f@53433988`, `DATABASE_SCHEMA`
+bumped `bootr_v1` → `bootr_v2`.

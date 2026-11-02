@@ -96,11 +96,11 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SESSION_SIGNER_PRIVATE_KEY` | yes | | signs every agent userOp (never anything through ERC-1271) |
 | `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
-| `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts (mainnet: launcher `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`) |
+| `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts (mainnet: launcher `0x01f290cC464Ac6D167588b35A08305F58683526f`, guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`) |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
 | `RWAGMI_LOCKER_V3_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
 | `PLATFORM_TREASURY_ADDRESS` | no | | launches whose creator is this address run as the platform's own voice (`@bootrfun`); same value as `PLATFORM_TREASURY` |
-| `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists; mainnet: `53219209`, the RWAGMI-backed launcher's deploy block |
+| `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists; mainnet: `53433988`, the current launcher's deploy block |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
 | `SUPERVISOR_SERVICE_KEY` | yes | | HMAC key for this service's `/internal/*`; 32+ characters and different from the sender and indexer keys (no fallback: every holder of those keys would otherwise be a supervisor admin) |

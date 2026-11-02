@@ -9,7 +9,7 @@ Current Base mainnet deployment (source of truth: [`packages/shared/src/addresse
 
 | Contract | Address |
 | --- | --- |
-| `BootrLauncher` (RWAGMI v3, block 53219209) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` |
+| `BootrLauncher` (RWAGMI v3, block 53433988) | `0x01f290cC464Ac6D167588b35A08305F58683526f` |
 | `AgentGuardian` | `0x799Ab875294E37839883D12084aB4BE3f7633630` |
 | `BuybackBurner` implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` |
 | `BootrCallPolicy` | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` |

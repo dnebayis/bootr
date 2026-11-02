@@ -43,8 +43,8 @@ Coins launch through the RWAGMI v3 launcher (B20 Asset tokens in Uniswap v4 pool
 [`docs/rwagmi-migration.md`](../../docs/rwagmi-migration.md)), which exists on **Base mainnet only**.
 Without `BOOTR_LAUNCHER_ADDRESS`, or on a chain without the RWAGMI v3 stack (Base Sepolia), the
 indexer boots with a warning and only runs the snapshot block handler (ETH/USD, empty platform
-rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`
-(`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53219209 = `BOOTR_START_BLOCK`) and the guardian
+rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0x01f290cC464Ac6D167588b35A08305F58683526f`
+(`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53433988 = `BOOTR_START_BLOCK`) and the guardian
 `0x799Ab875294E37839883D12084aB4BE3f7633630` (`BOOTR_GUARDIAN_ADDRESS`; both also default from `@bootr/shared`);
 after changing any of them delete `.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a
 Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 8). Public host:
