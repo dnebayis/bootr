@@ -136,6 +136,17 @@ and not logs (container logs rotate at 10 MB, three files). `live-restore` is on
 when `free -m` shows swap in use. The Hermes Telegram gateway costs ~330 MB on its own; `systemctl stop
 hermes-gateway` frees it when the bot is not needed.
 
+Hermes scheduled jobs (`hermes cron list` on the server; scripts in `/root/.hermes/scripts/`):
+
+| Job | When | What |
+| --- | --- | --- |
+| Bootr daily check | 05:30 UTC (08:30 Istanbul) | `bootr-check.sh` collects load, memory (incl. dockerd RSS/swap), disk, container health, public endpoint codes, certificate expiry, backup age, fail2ban and SSH counts, pending apt updates, reboot-required and error-line counts per service; Hermes summarises it in Turkish to the owner on Telegram. It may restart Docker when dockerd is bloated (RSS > 600 MB or swap > 1.5 GB) and prune build cache/images when the disk passes 80%; it never reboots, never changes firewall/SSH/fail2ban, never runs apt upgrade, never touches volumes or secrets |
+| Bootr watchdog | every 15 min, no LLM | `bootr-watchdog.sh` prints only when something is wrong (a public endpoint not 200, an unhealthy Bootr container, disk ≥ 85%, < 300 MB RAM available, backup older than 30 h); empty output sends nothing, so a healthy day is silent |
+
+Both deliver to `telegram:<owner's user id>` (a bare `telegram` target does not resolve). Trigger one by hand with
+`hermes cron run <job id>`; `hermes cron runs <job id>` lists the attempts and `~/.hermes/logs/gateway.log` the
+delivery line.
+
 ## 7. Known limits of the small box
 
 - 4 GB RAM: the five services idle at ~2.5 GB; a web build pushes into swap. Do not run two builds at once, and
