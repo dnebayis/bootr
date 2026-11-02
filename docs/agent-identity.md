@@ -8,7 +8,7 @@ text lives and how it reaches the agent's `identityText`, the first section of i
 
 ```
 LaunchForm (Identity textarea)
-   │  POST /api/launch/draft {draftId, identity}        before the launch tx
+   │  POST /api/launch/draft {draftId, identity, coin}  before the launch tx
    ▼
 web: lib/server/launch-drafts.ts                         one JSON file per draft id
    │  GET /agents/<draftId>.json  → description + bootr.identity

@@ -138,6 +138,9 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await page.getByLabel('Name').fill('Quiet Engine');
   await page.getByLabel('Symbol').fill('QENG');
   await page.getByLabel('Identity').fill('A patient onchain analyst for small Base coins.');
+  // No X account connected: the form says the agent launches silent and asks for an explicit confirmation.
+  await expect(page.getByTestId('no-x-notice')).toContainText('the agent launches silent');
+  await page.getByLabel('Launch without an X account; I will connect one later from the coin page.').check();
   const launch = page.getByRole('button', { name: 'Launch', exact: true });
   await expect(launch).toBeDisabled();
   await expect(page.getByText('Upload an image.')).toBeVisible();
@@ -167,8 +170,9 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await expect(page.getByText(/Mock: \$QENG launched with 0.002 ETH of gas/)).toBeVisible();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
 
-  // Launched without an X account: the coin page offers the creator the connect step, next to the creator-only
-  // Fuel and Add gas actions, and shows the agent's wallet to everyone.
+  // Launched without an X account: the coin page opens with the creator's connect banner above the stats, keeps
+  // the creator-only Fuel and Add gas actions, and shows the agent's wallet to everyone.
+  await expect(page.getByTestId('creator-x-banner')).toContainText('waiting for an X account');
   await expect(page.getByTestId('connect-agent-x')).toBeVisible();
   await expect(page.getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ })).toBeVisible();
   await expect(page.getByTestId('agent-wallet')).toContainText(/0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}/);

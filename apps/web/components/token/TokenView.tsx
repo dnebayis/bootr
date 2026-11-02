@@ -17,6 +17,7 @@ import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { DexChart } from './DexChart';
 import { TokenImage } from '@/components/ui/TokenImage';
 import { AgentPanel } from './AgentPanel';
+import { CreatorXBanner } from './CreatorXBanner';
 import { FeeSplit } from './FeeSplit';
 import { TradesTable } from './TradesTable';
 
@@ -130,6 +131,8 @@ export function TokenView({ address }: { address: string }) {
           </LinkButton>
         </div>
       </header>
+
+      <CreatorXBanner token={token} />
 
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-hairline bg-hairline sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Market cap">

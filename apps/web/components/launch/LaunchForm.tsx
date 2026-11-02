@@ -96,6 +96,8 @@ export function LaunchForm() {
 
   // 03 X
   const [xHandle, setXHandle] = useState<string | null>(null);
+  // Launching without an X account is allowed, but never by accident: the agent is silent until one is connected.
+  const [silentOk, setSilentOk] = useState(false);
 
   // 04 Fuel & options
   const [fuel, setFuel] = useState('20');
@@ -169,6 +171,7 @@ export function LaunchForm() {
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
+  if (!xHandle && !silentOk) errors.push('Connect an X account, or confirm launching without one.');
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
     : !env.useMock && !contracts.launcher
@@ -409,6 +412,19 @@ export function LaunchForm() {
           }}
           symbol={symbol}
         />
+        {!xHandle ? (
+          <div className="rounded-sm border border-warning bg-canvas-soft p-4" data-testid="no-x-notice">
+            <p className="text-sm font-medium text-ink">No X account yet: the agent launches silent.</p>
+            <p className="mt-1 text-caption text-body">
+              The agent only speaks through its own X account. Without one it will not post, and the coin page shows it as sleeping, until you connect an
+              account from the coin page with this wallet. Trading, fees and the treasury work either way.
+            </p>
+            <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-ink">
+              <input type="checkbox" className="mt-0.5" checked={silentOk} onChange={(e) => setSilentOk(e.target.checked)} />
+              <span>Launch without an X account; I will connect one later from the coin page.</span>
+            </label>
+          </div>
+        ) : null}
       </Section>
 
       <Section n={4} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">
@@ -478,7 +494,6 @@ export function LaunchForm() {
             </div>
           ))}
         </dl>
-        {!xHandle ? <p className="text-caption text-mute">Without an X account the agent runs but stays silent until one is connected.</p> : null}
 
         <div className="flex flex-col gap-3">
           {blocked ? <p className="text-sm text-danger">{blocked}</p> : null}

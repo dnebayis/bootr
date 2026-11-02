@@ -19,7 +19,6 @@ import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { FuelForm } from './FuelForm';
 import { GasChip, GasForm } from './GasForm';
-import { ConnectAgentX } from './ConnectAgentX';
 import { shortAddr } from '@/lib/format';
 import { cn } from '@/components/ui/cn';
 
@@ -108,7 +107,7 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   const gas = useKernelGas(kernels);
   const kernelGas = gas.of(token.kernel as Address);
   const gasWei = kernelGas ? gasTotal(kernelGas) : null;
-  // Fuel, gas and the X connect step are the creator's; everyone else sees the agent's balances and posts.
+  // Fuel and gas are the creator's (the X connect step is the page's CreatorXBanner); everyone else sees the agent's balances and posts.
   const { address } = useConnection();
   const isCreator = env.useMock || (!!address && !!token.creator && address.toLowerCase() === token.creator.toLowerCase());
 
@@ -222,11 +221,6 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
       <p className="mt-3 rounded-xs bg-canvas-soft px-3 py-2 text-caption text-body">
         Inactive for {days} days → treasury goes to the platform; own tokens burned.
       </p>
-      {isCreator && !token.xHandle && agent?.status !== 'claimed' && agent?.status !== 'dormant' ? (
-        <div className="mt-4">
-          <ConnectAgentX token={token} />
-        </div>
-      ) : null}
       {isCreator ? (
         <div className="mt-4">
           <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
