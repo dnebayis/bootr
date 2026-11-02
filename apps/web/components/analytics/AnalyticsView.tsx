@@ -82,7 +82,7 @@ export function AnalyticsView() {
         <StatTile label="Volume 24h" value={<Usd value={p?.volume24hUsd} />} />
         <StatTile label="Volume, all time" value={<Usd value={p?.volumeTotalUsd} />} />
         <StatTile label="Fees, all time" value={<Usd value={p?.feesTotalUsd} />} />
-        <StatTile label="BOOT burned" value={<Num value={burnedTotal} />} />
+        <StatTile label="BOOTR burned" value={<Num value={burnedTotal} />} />
       </StatRow>
 
       {daily.isPending ? (
@@ -129,8 +129,8 @@ export function AnalyticsView() {
           <ChartPanel title="Awake agents" value={rows.length ? num(rows[rows.length - 1]!.awakeAgents) : undefined}>
             <SeriesChart label="Awake agents" kind="line" data={rows.map((d) => ({ x: d.id, y: d.awakeAgents }))} format={(n) => num(Math.round(n))} labelFormat={dateLabel} />
           </ChartPanel>
-          <ChartPanel title="$BOOT burned, cumulative" value={series.length ? `${num(series[series.length - 1]!.burnedCum)} BOOT` : undefined}>
-            <SeriesChart label="BOOT burned cumulative" data={series.map((d) => ({ x: d.id, y: d.burnedCum }))} format={(n) => num(n)} labelFormat={dateLabel} />
+          <ChartPanel title="$BOOTR burned, cumulative" value={series.length ? `${num(series[series.length - 1]!.burnedCum)} BOOTR` : undefined}>
+            <SeriesChart label="BOOTR burned cumulative" data={series.map((d) => ({ x: d.id, y: d.burnedCum }))} format={(n) => num(n)} labelFormat={dateLabel} />
           </ChartPanel>
           <ChartPanel title="Top agents by reputation" className="lg:col-span-2">
             {agents.isPending ? (

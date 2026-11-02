@@ -52,7 +52,7 @@ All scripts live in `script/` and read their configuration from the environment 
 | `DeployLauncher.s.sol` | redeploys only the launcher against the live guardian (presets copied from `OLD_LAUNCHER`, optional `LAUNCH_FEE_WEI`), re-points the guardian, pauses the old launcher |
 | `DeployCallPolicy.s.sol` | deploys `BootrCallPolicy` (stateless) |
 | `DeploySwapHelper.s.sol` | deploys `BootrSwapHelper` (WETH/USDC pool fee `SWAP_POOL_FEE`, default 500) |
-| `Launch.s.sol` | example launch from `CREATOR_PRIVATE_KEY` (the planned $BOOT launch) |
+| `Launch.s.sol` | example launch from `CREATOR_PRIVATE_KEY` (the planned $BOOTR launch) |
 
 Run them with `forge script ... --rpc-url base --broadcast` (the `base` RPC alias reads `BASE_RPC_URL` from
 `foundry.toml`); the deployer key is exported for the command only. The step-by-step cutover and redeploy

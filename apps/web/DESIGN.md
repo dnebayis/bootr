@@ -440,14 +440,14 @@ Pink `#fea8cd` is not used. Values marked *derived* are straight sRGB mixes of t
 | `mute` | `#5b616e` Gray 60 | `#818895` *derived* (Gray 50 → Gray 30, 25%) | Labels, captions, secondary metadata. Gray 50 is 4.44:1 on both white and Gray 100, just under AA, so it is not used for text. |
 | `hairline` | `#dee1e7` Gray 15 | `#32353d` Gray 80 | Every 1px border and divider. |
 | `hairline-strong` | `#b1b7c3` Gray 30 | `#5b616e` Gray 60 | Input borders on hover, outline status dots, the RWAGMI (context) segment of the fee bar. |
-| `edge` | `#b1b7c3` Gray 30 | `#32353d` Gray 80 | The outer border of anything that must read as a box on the dotted page: token cards, panels, the `$BOOT` box. Equal to `hairline` in dark mode; one step stronger in light mode, where Gray 15 on white disappears against the field. |
+| `edge` | `#b1b7c3` Gray 30 | `#32353d` Gray 80 | The outer border of anything that must read as a box on the dotted page: token cards, panels, the `$BOOTR` box. Equal to `hairline` in dark mode; one step stronger in light mode, where Gray 15 on white disappears against the field. |
 | `selection-bg` / `selection-fg` | `#0a0b0d` / `#eef0f3` | `#ffffff` / `#0a0b0d` | `::selection`. |
 
 **Accent (Base Blue)**
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `accent` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Fill of the one primary action per view (Launch, Fuel, Trade), focus rings, the active primary-nav underline, the ⌘K selection bar (the 2px rule on the `$BOOT` box was replaced by the bloom photograph on 2026-11-01). Base Blue is 2.29:1 on Gray 100, so dark mode uses Cerulean. |
+| `accent` | `#0000ff` Base Blue | `#3c8aff` Cerulean | Fill of the one primary action per view (Launch, Fuel, Trade), focus rings, the active primary-nav underline, the ⌘K selection bar (the 2px rule on the `$BOOTR` box was replaced by the bloom photograph on 2026-11-01). Base Blue is 2.29:1 on Gray 100, so dark mode uses Cerulean. |
 | `accent-hover` | `#3c8aff` Cerulean | `#6da7ff` *derived* (Cerulean → white, 25%) | Hover fill of primary buttons. |
 | `on-accent` | `#ffffff` | `#0a0b0d` | Label on `accent`. White on Cerulean is 3.35:1, so Cerulean always carries Gray 100 text. |
 | `on-accent-hover` | `#0a0b0d` | `#0a0b0d` | Label on `accent-hover`. |
@@ -479,7 +479,7 @@ Single-series charts (volume line and area at 8% fill, launches per day, awake a
 
 **Rules**
 - **Monochrome leads.** Black, white and the Base grays carry every surface, border and almost all text. Colour is the exception a reader notices.
-- **One hero accent.** Base Blue appears as a fill at most once per viewport (the primary button). Its other uses are thin and functional: focus ring, active nav underline, ⌘K selection bar, the 2px rule on the `$BOOT` box, link text, the hovered chart datum, the first categorical chart series. Never on headings, icons, the mark or wordmark, or as a background wash. No gradients.
+- **One hero accent.** Base Blue appears as a fill at most once per viewport (the primary button). Its other uses are thin and functional: focus ring, active nav underline, ⌘K selection bar, the 2px rule on the `$BOOTR` box, link text, the hovered chart datum, the first categorical chart series. Never on headings, icons, the mark or wordmark, or as a background wash. No gradients.
 - **At most three vibrant secondaries plus one muted on a page.** Green (awake / up), Red (down / error) and Yellow (graduated) are the vibrant three; Tan is the muted one. Lime appears only inside charts, and a chart page shows no Yellow. Pink is unused.
 - **Secondaries carry meaning, never decoration.** Green = positive or alive; Red = negative or failed; Yellow = graduated. Every coloured mark is paired with text (a label, a sign, a legend value), so colour is never the only signal.
 - **24h change is coloured:** `+4.2%` in `positive-text`, `−3.1%` in `negative-text`, `0.0%` and missing values in `ink`. The sign stays, so the number reads without colour. Only the 24h change is coloured; prices, caps and volumes stay `ink`.
@@ -564,7 +564,7 @@ New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animat
 | `Card` (token card) | Canvas + hairline, radius `md`, 16px padding. Agent status dot top right (Green awake, gray sleeping). 48px square image with 1px hairline border, radius `xs`. Title row: name (500) + `$SYMBOL` mono mute. Data grid of 2x2 mono values with caption labels. Hover: border `accent` (thin, one card at a time; `ease-base` 150 ms). |
 | `StatusDot` | 8px circle. `awake` = solid `positive` (Green); `sleeping` = solid `mute` (gray); `paused` / `dormant` / `claimed` = 1px `hairline-strong` outline, no fill. Always paired with a text label for screen readers. |
 | `Badge` | Micro text, radius `xs`, hairline border, `canvas-soft` fill. "Graduated" (and the card's "Grad") is `warning` (Yellow) text on `warning-surface` — the only filled badge. |
-| `$BOOT` box | The home's one photograph: `public/boot-bloom.webp` (a yellow bloom on Base Blue) as a `bg-cover` layer anchored toward its flowered bottom edge, at 30% opacity (light) / 38% (dark) over `canvas`, covering the whole box; cells are transparent with hairline borders so the image runs through, labels `mute`, values mono `ink`. The only place imagery or an opacity layer is allowed. |
+| `$BOOTR` box | The home's one photograph: `public/boot-bloom.webp` (a yellow bloom on Base Blue) as a `bg-cover` layer anchored toward its flowered bottom edge, at 30% opacity (light) / 38% (dark) over `canvas`, covering the whole box; cells are transparent with hairline borders so the image runs through, labels `mute`, values mono `ink`. The only place imagery or an opacity layer is allowed. |
 | `Stat tile` | Caption label, `display-md` mono value ticking with number-flow, optional delta in caption. The 24h change is `positive-text` / `negative-text` by sign. Tiles sit in a hairline-divided row, not separate cards. |
 | `Table` | Header row `canvas-soft`, caption `mute`; rows 36px, hairline separators, mono right-aligned numbers, hover `canvas-sub`. |
 | `Panel` | Section with a `display-sm` title, hairline border, radius `md`, 20px padding. |

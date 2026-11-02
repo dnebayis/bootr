@@ -12,7 +12,7 @@ test('home renders tabs and token cards (mock mode)', async ({ page }) => {
   }
   await expect(page.locator('a[href^="/token/0x"]').first()).toBeVisible();
   expect(await page.locator('a[href^="/token/0x"]').count()).toBeGreaterThan(8);
-  await expect(page.getByText('$BOOT', { exact: true })).toBeVisible();
+  await expect(page.getByText('$BOOTR', { exact: true })).toBeVisible();
 
   await tabs.getByRole('link', { name: 'Market cap' }).click();
   await expect(page).toHaveURL(/\?tab=mcap/);
@@ -139,7 +139,7 @@ test.describe('renders without requestAnimationFrame (background tab)', () => {
   test('home, token page and charts', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('main a[href^="/token/0x"]').first()).toBeVisible();
-    await expect(page.locator('section[aria-label="BOOT token"] header')).toBeVisible();
+    await expect(page.locator('section[aria-label="BOOTR token"] header')).toBeVisible();
     await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
 
     const href = await page.locator('main a[href^="/token/0x"]').first().getAttribute('href');

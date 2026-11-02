@@ -143,7 +143,7 @@ Production is one Hetzner VPS run by Coolify: Postgres and the five services (`w
 `supervisor`, `indexer`) are a Docker Compose application built from
 [`docker-compose.coolify.yml`](docker-compose.coolify.yml) out of this repository (GitHub `dnebayis/bootr`,
 branch `main`). Runbooks: [`docs/deploy/coolify.md`](docs/deploy/coolify.md) (server, deploys, variables,
-backups) and [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md) (contracts, keys, the $BOOT launch). Railway hosted
+backups) and [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md) (contracts, keys, the $BOOTR launch). Railway hosted
 the stack until 2026-11-01 ([`docs/deploy/railway.md`](docs/deploy/railway.md), history only). Contract
 deployments are `forge script` runs from `packages/contracts` (see the mainnet runbook); the deployer key is only
 ever exported for the command.

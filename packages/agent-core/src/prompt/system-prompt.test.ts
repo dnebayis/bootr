@@ -22,7 +22,7 @@ describe('buildSystemPrompt', () => {
   });
   it('includes the role text and every fixed Bootr rule', () => {
     expect(prompt).toContain('@bootragent');
-    expect(prompt).toContain('$BOOT');
+    expect(prompt).toContain('$BOOTR');
     expect(prompt).toContain(config.kernel.address);
     for (const rule of BOOTR_RULES) expect(prompt).toContain(rule);
     expect(prompt).toMatch(/untrusted evidence/);

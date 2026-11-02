@@ -30,7 +30,7 @@ export function BootBox() {
 
   if (isPending) {
     return (
-      <section aria-label="BOOT token" className={BOX}>
+      <section aria-label="BOOTR token" className={BOX}>
         <Bloom />
         <div className="relative flex items-center justify-between border-b border-hairline px-5 py-3.5">
           <Skeleton className="h-4 w-32" />
@@ -50,11 +50,11 @@ export function BootBox() {
 
   if (isError || !data?.bootToken) {
     return (
-      <section aria-label="BOOT token" className={`${BOX} flex items-center justify-between gap-4 px-5 py-9`}>
+      <section aria-label="BOOTR token" className={`${BOX} flex items-center justify-between gap-4 px-5 py-9`}>
         <Bloom />
         <div className="relative flex items-baseline gap-3">
-          <span className="font-mono text-sm font-medium text-ink">$BOOT</span>
-          <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOT launches with the platform.'}</span>
+          <span className="font-mono text-sm font-medium text-ink">$BOOTR</span>
+          <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOTR launches with the platform.'}</span>
         </div>
       </section>
     );
@@ -64,15 +64,15 @@ export function BootBox() {
   const dex = dexscreenerUrl(data.bootToken);
 
   return (
-    <section aria-label="BOOT token" className={BOX}>
+    <section aria-label="BOOTR token" className={BOX}>
       <Bloom />
       <header className="relative flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-hairline px-4 py-3.5 md:px-5">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-sm font-semibold text-ink">$BOOT</span>
+          <span className="font-mono text-sm font-semibold text-ink">$BOOTR</span>
           <span className="text-caption text-mute">Platform token · fees buy and burn it</span>
           <span className="hidden items-center gap-1 font-mono text-caption text-mute sm:inline-flex">
             {shortAddr(data.bootToken)}
-            <CopyButton value={data.bootToken} label="Copy BOOT address" />
+            <CopyButton value={data.bootToken} label="Copy BOOTR address" />
           </span>
         </div>
         <div className="flex items-center gap-4 text-caption">
@@ -91,7 +91,7 @@ export function BootBox() {
           <Pct value={data.bootChange24hPct} tone />
         </Cell>
         <Cell label="Total burned">
-          <Num value={burned} suffix=" BOOT" />
+          <Num value={burned} suffix=" BOOTR" />
         </Cell>
         <Cell label="Fees to burn">
           <Usd value={data.bootFeesToBurnUsd} compact={false} />

@@ -47,7 +47,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). Also the only origin accepted for SIWE sign-in (domain/URI) and for same-origin checks on admin and X-connect POSTs; `X-Forwarded-Host`/`Host` are never trusted. Under `next dev`, localhost origins are accepted too. Must be the exact origin users load (redirect `www.` to it), or admin sign-in and X connect are refused. |
 | `NEXT_PUBLIC_INFERENCE_URL` | Inference relay origin. Only read server-side by `/api/models` when `INFERENCE_URL` is unset; the browser never calls the relay. |
 | `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`. |
-| `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (Uniswap otherwise). |
+| `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (LlamaSwap on Base otherwise, Uniswap on Sepolia). |
 | `NEXT_PUBLIC_LAUNCHER_ADDRESS` | `BootrLauncher`. |
 | `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` | `AgentGuardian`. |
 | `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY` | Address passed as `supervisorSessionKey` in `launch()` (informational). |
@@ -88,7 +88,7 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 
 | Route | |
 |---|---|
-| `/` | $BOOT box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
+| `/` | $BOOTR box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
 | `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade link, last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
 | `/launch` | Coin, Agent, X account, Fuel & options (fuel, dev buy, the agent's first gas); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
