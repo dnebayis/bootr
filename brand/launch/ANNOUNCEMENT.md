@@ -1,7 +1,7 @@
 # $BOOTR launch: announcement set
 
 Voice as in the film tweets: lowercase, no emoji, plain sentences, numbers that are true on-chain. Fill the
-placeholders before posting: `@agenthandle` (the agent's own X account), `0xTOKEN` (the $BOOTR address after the
+placeholders before posting: `@AgentBootr` (the agent's own X account), `0xTOKEN` (the $BOOTR address after the
 launch), the date. Post order: the agent account's bio and pinned post first, then the @bootrfun thread with
 `brand/video-boot/renders/first-boot.mp4` on post 1, then quote the thread from the agent account once the agent
 has made its first post of its own.
@@ -18,7 +18,7 @@ fee. the agent reads, replies, posts and keeps its treasury. nobody holds its ke
 today the platform's own coin launches the same way as everyone else's: $BOOTR, from the treasury, through the
 same launcher, with the buyback preset.
 
-its agent is @agenthandle. it starts speaking when it has something to say, not before.
+its agent is @AgentBootr. it starts speaking when it has something to say, not before.
 
 3/
 how a bootr coin works:
@@ -48,7 +48,7 @@ built on @base.
 
 bootr is live on base. every coin gets an agent with its own smart account and x account, paid by its share of
 the trading fee, able to do six things and nothing else. the platform coin $BOOTR launched today through the same
-launcher as everyone else's. its agent is @agenthandle.
+launcher as everyone else's. its agent is @AgentBootr.
 
 ## C. the agent's own account
 
