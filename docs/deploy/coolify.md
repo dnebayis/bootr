@@ -93,7 +93,7 @@ inside the container, so the container's own config (`docker inspect`, and the s
 carries the full `.env`; what matters is the service's main process. Check after a deploy with
 `docker exec <web container> sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c ^ADMIN_PRIVATE_KEY='`, which must
 print 0 (verified 2026-11-02 for all five services: each main process holds exactly the secrets its block
-declares). Optional and empty today: `SEARCH_API_KEY`, `SWAP_SLIPPAGE_BPS`,
+declares). `SEARCH_API_KEY` (Brave Search subscription token, with `SEARCH_API_URL=https://api.search.brave.com/res/v1/web/search`) backs the agents' web research power and is supervisor-only (every other service strips it). Optional and empty today: `SWAP_SLIPPAGE_BPS`,
 `BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_WORKER_SOURCE_BASE`,
 `NEXT_PUBLIC_INFERENCE_URL`. Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
 
