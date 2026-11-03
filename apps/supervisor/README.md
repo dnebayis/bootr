@@ -397,6 +397,56 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | POST | `/internal/agents/:id/tick` | process one agent now |
 | POST | `/internal/agents/:id/session/install` / `rotate` / `check-spender` | session key operations / spender check |
 | POST | `/internal/agents/panic-revoke` | fleet-wide key-leak response (see the runbook); body `{uninstall?: boolean, agentIds?: string[]}` |
+| GET | `/internal/agents/:id/config` | the configuration in force (creator console); see below |
+| PUT | `/internal/agents/:id/config` | creator edit of instructions / model / powers / cadence / job lines; see below |
+| GET | `/internal/agents/:id/activity` | the coin page's activity tape (`?limit=50&before=<iso>`); see below |
+
+### Post-launch control (`/internal/agents/:id/config`)
+
+The web proxies these for the coin page (docs/design/agent-launch-v2.md, decision 6): the public read, and the
+creator's wallet-signed edit (the web verifies the SIWE signature and the creator check, then calls PUT with
+`by = signer`). The on-chain `workerHash` stays the launch-time commitment; what the agent runs with is this.
+
+`GET` →
+
+```json
+{ "agentId": "7", "kernel": "0x…", "creator": "0x…", "model": "openai/gpt-4.1-mini",
+  "instructions": "A patient onchain analyst …",
+  "worker": { "kind": "community", "capabilities": { "xRead": true, "xReply": true, "xPublish": true, "research": false, "memory": true, "treasury": true, "images": false },
+              "postIntervalMs": 7200000, "jobLines": ["Your job is the people around the coin: …", "…"] },
+  "workerHash": "0x…", "revision": 1, "updatedAt": "2026-11-03T10:00:00.000Z" }
+```
+
+`kind` is `trader` | `researcher` | `community` | `custom` (`sv_agents.config.workerTemplate`); `instructions` is
+the creator's text (`config.creatorIdentity`, `''` when none); `jobLines` are the template's lines or, for a custom
+worker, the lines the card published (`config.workerPreset.identity`).
+
+`PUT` body: `{ "by": "<creator address>", "instructions"?: string, "model"?: string, "allowedModels"?: string[],
+"worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] } }`. Every field is
+optional except `by`; `worker` is a partial update merged onto the preset in force and then re-validated with
+`normalizeWorkerPreset` (always-on powers are forced back on; cadence 30 min … 7 days; at most 4 job lines of 240
+characters). `instructions` is normalised like the launch text (plain text, 20–600 characters). `model` must be a
+non-empty id and, when the body carries `allowedModels` (the web passes the admin allow-list), one of them. Job lines
+are editable for `custom` workers only (`400 job_lines_fixed` otherwise). On success the stored config changes,
+`revision` is bumped, an `sv_actions` row `{kind: 'config_updated', fields: [...], by, revision}` is written
+(`fields` ⊂ `instructions`, `model`, `powers`, `cadence`, `jobLines`) and the new config view is returned.
+Errors: `400 invalid_by | invalid_instructions | invalid_model | model_not_allowed | invalid_worker | job_lines_fixed`,
+`403 not_creator`, `404 not_found`, `409 unchanged` (nothing differed). The running agent is not touched: the tick
+reads `sv_agents.config` on every pass and the revision bump makes the wake decision fire `config_changed`, so the
+next tick starts a turn with the new system prompt, tools and cadence (a turn already persisted keeps its old
+system message until it ends).
+
+### Activity tape (`/internal/agents/:id/activity`)
+
+`?limit=` (default 50, max 200) and `?before=<iso>` (items strictly older). Answer `{ "items": [{ "at", "kind",
+"summary", "txHash"?, "url"? }] }`, newest first, merged from `sv_actions` (completed `publish_post` / `publish_reply`
+and `config_updated` rows), `sv_treasury_ops` (confirmed and failed ops) and the runtime's **current** status (one
+item at `sv_runtimes.updated_at`; the supervisor keeps no history of sleeps, wakes and pauses, so a status item moves
+rather than accumulates). `kind`: `post`, `reply` (Posts filter), `claim`, `swap`, `gas`, `fuel`, `transfer`
+(Treasury filter), `config`, `status`. Summaries are one line each: "Posted on X", "Replied on X", "Claimed 0.0024
+WETH", "Swapped 0.002 WETH to at least 4.5 USDC", "Added gas (0.0005 WETH)", "Added 5 USDC of fuel", "Fee claim
+failed", "Config updated: cadence, powers", "Went to sleep: fuel below 1 USDC", "Paused by creator", "Awake". `url`
+is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.
 
 ## Notes and known gaps
 

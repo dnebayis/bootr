@@ -2,6 +2,8 @@
 import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
+import { agentActivity } from './activity.js';
+import { configView, updateAgentConfig, type ConfigUpdateBody } from './agent-config.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
 import { hmacAuth, type AuthEnv } from './hmac.js';
@@ -132,6 +134,40 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
       actions: lastActions,
       treasuryOps: ops,
     });
+  });
+
+  // ---- Post-launch control and the activity tape (docs/design/agent-launch-v2.md). The web proxies these for the coin page.
+
+  app.get('/internal/agents/:id/config', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    return c.json(configView(agent));
+  });
+
+  /** Body `{by, instructions?, model?, allowedModels?, worker?: {capabilities?, postIntervalMs?, jobLines?}}`; see agent-config.ts. */
+  app.put('/internal/agents/:id/config', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as ConfigUpdateBody | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    const result = await updateAgentConfig(ctx, agent, body);
+    if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
+    return c.json(result.config);
+  });
+
+  /** `?limit=50` (max 200) `&before=<iso>`: newest first; see activity.ts for the kinds and summaries. */
+  app.get('/internal/agents/:id/activity', async (c) => {
+    const id = c.req.param('id');
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const runtime = (await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, id) })) ?? null;
+    const limitRaw = c.req.query('limit');
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    if (limit !== undefined && !Number.isFinite(limit)) return c.json({ error: 'invalid_limit' }, 400);
+    const beforeRaw = c.req.query('before');
+    const before = beforeRaw ? new Date(beforeRaw) : undefined;
+    if (before && Number.isNaN(before.getTime())) return c.json({ error: 'invalid_before', message: 'before must be an ISO timestamp' }, 400);
+    return c.json({ items: await agentActivity(ctx, agent, runtime, { limit, before }) });
   });
 
   app.post('/internal/agents/:id/pause', async (c) => {

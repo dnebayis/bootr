@@ -1,0 +1,270 @@
+import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
+import { agentActivity, shortAmount } from '../src/activity.js';
+import { createApp } from '../src/api.js';
+import { actions, agents, runtimes, treasuryOps } from '../src/db/schema.js';
+import { signRequest } from '../src/hmac.js';
+import { agentConfigOf, defaultIdentity } from '../src/onboarding.js';
+import { AGENT_ID, CREATOR, KERNEL, makeWorld, seedAgent, SUPERVISOR_KEY, type TestWorld } from './helpers.js';
+
+const CARD_URI = 'https://bootr.fun/agents/7.json';
+const INSTRUCTIONS = 'A patient onchain analyst for small Base coins. Short, plain, no hype.';
+const COMMUNITY = workerTemplateById('community')!;
+const CUSTOM_PRESET = normalizeWorkerPreset({ capabilities: { xRead: true, xReply: false, xPublish: true, research: true, images: true }, postIntervalMs: 8 * 3_600_000, jobLines: ['Watch Base DeFi and post one sourced finding per cycle.'] })!;
+const CUSTOM = customWorker(CUSTOM_PRESET);
+
+function api(world: TestWorld) {
+  const nowSec = () => Math.floor(world.ctx.now() / 1000);
+  const app = createApp(world.ctx, nowSec);
+  return {
+    get: async (path: string) => app.request(path, { headers: { authorization: signRequest(SUPERVISOR_KEY, 'GET', path, '', nowSec()) } }),
+    put: async (path: string, body: unknown) => {
+      const text = JSON.stringify(body);
+      return app.request(path, { method: 'PUT', body: text, headers: { 'content-type': 'application/json', authorization: signRequest(SUPERVISOR_KEY, 'PUT', path, text, nowSec()) } });
+    },
+  };
+}
+
+/** A community-preset agent as registration stores it today, X connected, creator text set. */
+const presetConfig = (over: Record<string, unknown> = {}) => ({
+  identityText: `${INSTRUCTIONS}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, COMMUNITY.preset.identity)}`,
+  creatorIdentity: INSTRUCTIONS,
+  capabilities: { ...COMMUNITY.preset.capabilities },
+  postIntervalMs: COMMUNITY.preset.postIntervalMs,
+  workerTemplate: 'community',
+  workerHash: COMMUNITY.hash,
+  agentURI: CARD_URI,
+  revision: 1,
+  ...over,
+});
+
+describe('GET /internal/agents/:id/config', () => {
+  it('reports the configuration in force: instructions, model, worker kind, powers, cadence, job lines, revision', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig() });
+      const res = await api(world).get(`/internal/agents/${AGENT_ID}/config`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        agentId: AGENT_ID,
+        kernel: KERNEL,
+        creator: CREATOR,
+        model: 'openai/gpt-4.1-mini',
+        instructions: INSTRUCTIONS,
+        worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
+        workerHash: COMMUNITY.hash,
+        revision: 1,
+        updatedAt: expect.any(String),
+      });
+      expect((await api(world).get('/internal/agents/404/config')).status).toBe(404);
+      // a custom worker reports its stored preset
+      await world.db.update(agents).set({ config: presetConfig({ workerTemplate: 'custom', workerHash: CUSTOM.hash, workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: CUSTOM_PRESET.postIntervalMs }) }).where(eq(agents.agentId, AGENT_ID));
+      const custom = (await (await api(world).get(`/internal/agents/${AGENT_ID}/config`)).json()) as { worker: unknown };
+      expect(custom.worker).toEqual({ kind: 'custom', capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: CUSTOM_PRESET.postIntervalMs, jobLines: CUSTOM_PRESET.identity });
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('PUT /internal/agents/:id/config', () => {
+  it('applies instructions, model, powers and cadence, bumps the revision, records the edit, and the next tick reads it', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig() });
+      const { put, get } = api(world);
+      const next = 'A sharper voice: two sentences per post, always dated, never a price call.';
+      const res = await put(`/internal/agents/${AGENT_ID}/config`, {
+        by: CREATOR.toLowerCase(),
+        instructions: `  ${next}\r\n`,
+        model: 'anthropic/claude-sonnet-4.5',
+        allowedModels: ['openai/gpt-4.1-mini', 'anthropic/claude-sonnet-4.5'],
+        worker: { capabilities: { research: true, images: true, treasury: false }, postIntervalMs: 4 * 3_600_000 },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { revision: number; instructions: string; model: string; worker: { kind: string; capabilities: Record<string, boolean>; postIntervalMs: number; jobLines: string[] } };
+      expect(body.revision).toBe(2);
+      expect(body.instructions).toBe(next);
+      expect(body.model).toBe('anthropic/claude-sonnet-4.5');
+      // treasury stays on (always-on), the rest of the community powers are kept, the two switches flipped
+      expect(body.worker).toEqual({ kind: 'community', capabilities: { ...COMMUNITY.preset.capabilities, research: true, images: true }, postIntervalMs: 4 * 3_600_000, jobLines: COMMUNITY.preset.identity });
+      expect(await (await get(`/internal/agents/${AGENT_ID}/config`)).json()).toEqual(body);
+
+      // the stored config the tick parses (`agentConfigOf` on the sv_agents row) carries all of it: live next tick
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      const parsed = agentConfigOf(agent)!;
+      expect(parsed.revision).toBe(2);
+      expect(parsed.model).toBe('anthropic/claude-sonnet-4.5');
+      expect(parsed.capabilities).toEqual(body.worker.capabilities);
+      expect(parsed.postIntervalMs).toBe(4 * 3_600_000);
+      expect(parsed.identityText).toBe(`${next}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, COMMUNITY.preset.identity)}`);
+      expect(agent.config.workerPreset).toEqual({ capabilities: body.worker.capabilities, postIntervalMs: 4 * 3_600_000, identity: COMMUNITY.preset.identity });
+
+      const rows = await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actionId: `config-${AGENT_ID}-r2`, status: 'completed', action: { kind: 'config_updated', fields: ['instructions', 'model', 'powers', 'cadence'], by: CREATOR, revision: 2 } });
+
+      // a second edit of one field: revision 3, its own row
+      expect((await put(`/internal/agents/${AGENT_ID}/config`, { by: CREATOR, worker: { postIntervalMs: 24 * 3_600_000 } })).status).toBe(200);
+      expect((await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).map((r) => (r.action as { fields: string[] }).fields)).toEqual([['instructions', 'model', 'powers', 'cadence'], ['cadence']]);
+      expect(agentConfigOf((await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!)!.revision).toBe(3);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('rejects out-of-bounds workers, a wrong `by`, a model outside the allow-list, bad instructions, and answers 409 to a no-op', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig() });
+      const { put } = api(world);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      const expectError = async (body: unknown, status: number, error: string) => {
+        const res = await put(path, body);
+        expect([res.status, ((await res.json()) as { error: string }).error]).toEqual([status, error]);
+      };
+      await expectError({ by: '0x9000000000000000000000000000000000000009', model: 'x/y' }, 403, 'not_creator');
+      await expectError({ by: 'nope', model: 'x/y' }, 400, 'invalid_by');
+      await expectError({ by: CREATOR, worker: { postIntervalMs: 10 * 60_000 } }, 400, 'invalid_worker'); // below 30 min
+      await expectError({ by: CREATOR, worker: { postIntervalMs: 8 * 86_400_000 } }, 400, 'invalid_worker'); // above 7 d
+      await expectError({ by: CREATOR, worker: { capabilities: { flight: true } } }, 400, 'invalid_worker');
+      await expectError({ by: CREATOR, worker: { capabilities: { xRead: 'yes' } } }, 400, 'invalid_worker');
+      await expectError({ by: CREATOR, worker: { jobLines: ['a', 'b', 'c', 'd', 'e'] } }, 400, 'invalid_worker'); // 5 lines
+      await expectError({ by: CREATOR, worker: { jobLines: ['x'.repeat(241)] } }, 400, 'invalid_worker');
+      await expectError({ by: CREATOR, worker: { jobLines: ['A new job line for a preset agent.'] } }, 400, 'job_lines_fixed');
+      await expectError({ by: CREATOR, model: 'openai/o3', allowedModels: ['openai/gpt-4.1-mini'] }, 400, 'model_not_allowed');
+      await expectError({ by: CREATOR, model: '' }, 400, 'invalid_model');
+      await expectError({ by: CREATOR, instructions: 'too short' }, 400, 'invalid_instructions');
+      await expectError({ by: CREATOR, instructions: 'x'.repeat(601) }, 400, 'invalid_instructions');
+      await expectError({ by: CREATOR, instructions: 42 }, 400, 'invalid_instructions');
+      // no-ops: same values, or an empty body
+      await expectError({ by: CREATOR, instructions: INSTRUCTIONS, model: 'openai/gpt-4.1-mini', worker: { postIntervalMs: COMMUNITY.preset.postIntervalMs, capabilities: { research: false } } }, 409, 'unchanged');
+      await expectError({ by: CREATOR }, 409, 'unchanged');
+      await expectError({ by: CREATOR, worker: { capabilities: { memory: false } } }, 409, 'unchanged'); // always-on: forced back
+      expect((await put('/internal/agents/404/config', { by: CREATOR, model: 'x/y' })).status).toBe(404);
+      // nothing was written
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect(agent.config.revision).toBe(1);
+      expect(await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).toEqual([]);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('lets a custom worker edit its job lines, which re-enter the identity text', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig({ workerTemplate: 'custom', workerHash: CUSTOM.hash, workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: CUSTOM_PRESET.postIntervalMs }) });
+      const res = await api(world).put(`/internal/agents/${AGENT_ID}/config`, { by: CREATOR, worker: { jobLines: ['  Watch Base DeFi.  ', '', 'Never reply; only publish.'] } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { jobLines: string[] }; workerHash: string };
+      expect(body.worker.jobLines).toEqual(['Watch Base DeFi.', 'Never reply; only publish.']);
+      expect(body.workerHash).toBe(CUSTOM.hash); // the on-chain commitment is not rewritten
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect(agentConfigOf(agent)!.identityText).toBe(`${INSTRUCTIONS}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, ['Watch Base DeFi.', 'Never reply; only publish.'])}`);
+      expect((await world.db.select().from(actions)).map((r) => (r.action as { fields: string[] }).fields)).toEqual([['jobLines']]);
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('GET /internal/agents/:id/activity', () => {
+  const T0 = Date.parse('2026-10-24T12:00:00Z');
+  const at = (minutesAgo: number) => new Date(T0 - minutesAgo * 60_000);
+
+  async function seedTape(world: TestWorld) {
+    await seedAgent(world, { config: presetConfig(), runtime: { status: 'sleeping', updatedAt: at(1) } });
+    const row = (tool: string, min: number, status: 'completed' | 'failed', result: Record<string, unknown> | null = null) => ({ actionId: `${tool}-${min}`, agentId: AGENT_ID, cycleKey: `c${min}`, action: { tool, input: {} }, status, result, createdAt: at(min), updatedAt: at(min) });
+    await world.db.insert(actions).values([
+      row('publish_post', 50, 'completed', { postId: '1234' }),
+      row('read_mentions', 45, 'completed', { items: [] }), // not on the tape
+      row('publish_reply', 40, 'completed', { postId: '1235', replyAuthorId: '77' }),
+      row('publish_post', 35, 'failed'), // not on the tape
+      { actionId: `config-${AGENT_ID}-r2`, agentId: AGENT_ID, cycleKey: 'config:2', action: { kind: 'config_updated', fields: ['cadence', 'powers'], by: CREATOR, revision: 2 }, status: 'completed' as const, result: null, createdAt: at(20), updatedAt: at(20) },
+    ]);
+    const op = (opId: string, kind: 'claim_fees' | 'swap' | 'fund_gas' | 'fund_model', min: number, status: 'confirmed' | 'failed' | 'prepared', description: string) => ({
+      opId,
+      agentId: AGENT_ID,
+      kind,
+      calls: [],
+      callHash: opId,
+      description,
+      origin: 'policy',
+      status,
+      txHash: status === 'prepared' ? null : `0x${opId.padEnd(64, '0')}`,
+      confirmedAt: status === 'confirmed' ? at(min) : null,
+      createdAt: at(min + 1),
+      updatedAt: at(min),
+    });
+    await world.db.insert(treasuryOps).values([
+      op('aa', 'claim_fees', 30, 'confirmed', 'claim 0.0024 WETH of swap fees (~$7.20; 0.001 pending + 0.0014 settled) via settleAndClaim'),
+      op('bb', 'swap', 25, 'confirmed', 'swap 0.002 WETH -> ~>= 4.500000 USDC via the swap helper (refuel to 20)'),
+      op('cc', 'fund_gas', 15, 'failed', 'unwrap 0.0005 WETH into gas (gas 0 ETH -> target 0.001 ETH)'),
+      op('dd', 'fund_model', 10, 'confirmed', 'fund the spender 0xabc with 5.000000 USDC (float 1 -> target 6; 44 USDC left in this window)'),
+      op('ee', 'claim_fees', 5, 'prepared', 'claim 0.001 WETH of swap fees'), // in flight: not on the tape
+    ]);
+  }
+
+  it('merges posts, config edits, treasury ops and the current status, newest first, with short summaries and links', async () => {
+    const world = await makeWorld();
+    try {
+      await seedTape(world);
+      const res = await api(world).get(`/internal/agents/${AGENT_ID}/activity`);
+      expect(res.status).toBe(200);
+      const { items } = (await res.json()) as { items: { at: string; kind: string; summary: string; txHash?: string; url?: string }[] };
+      expect(items.map((i) => [i.kind, i.summary])).toEqual([
+        ['status', 'Went to sleep: fuel below 1 USDC'],
+        ['fuel', 'Added 5 USDC of fuel'],
+        ['gas', 'Gas top-up failed'],
+        ['config', 'Config updated: cadence, powers'],
+        ['swap', 'Swapped 0.002 WETH to at least 4.5 USDC'],
+        ['claim', 'Claimed 0.0024 WETH'],
+        ['reply', 'Replied on X'],
+        ['post', 'Posted on X'],
+      ]);
+      expect(items.map((i) => i.at)).toEqual([...items.map((i) => i.at)].sort().reverse());
+      expect(items[1]).toMatchObject({ txHash: `0x${'dd'.padEnd(64, '0')}`, url: `https://sepolia.basescan.org/tx/0x${'dd'.padEnd(64, '0')}` });
+      expect(items[6]!.url).toBe('https://x.com/bootr_agent/status/1235');
+      expect(items[7]!.url).toBe('https://x.com/bootr_agent/status/1234');
+      expect(items[0]!.url).toBeUndefined();
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('pages with limit (default 50, max 200) and the before cursor', async () => {
+    const world = await makeWorld();
+    try {
+      await seedTape(world);
+      const { get } = api(world);
+      const page1 = (await (await get(`/internal/agents/${AGENT_ID}/activity?limit=3`)).json()) as { items: { at: string; kind: string }[] };
+      expect(page1.items.map((i) => i.kind)).toEqual(['status', 'fuel', 'gas']);
+      const cursor = page1.items[2]!.at;
+      const page2 = (await (await get(`/internal/agents/${AGENT_ID}/activity?limit=3&before=${encodeURIComponent(cursor)}`)).json()) as { items: { kind: string }[] };
+      expect(page2.items.map((i) => i.kind)).toEqual(['config', 'swap', 'claim']);
+      const page3 = (await (await get(`/internal/agents/${AGENT_ID}/activity?limit=3&before=${encodeURIComponent(at(25).toISOString())}`)).json()) as { items: { kind: string }[] };
+      expect(page3.items.map((i) => i.kind)).toEqual(['claim', 'reply', 'post']);
+      expect((await get(`/internal/agents/${AGENT_ID}/activity?before=yesterday`)).status).toBe(400);
+      expect((await get(`/internal/agents/${AGENT_ID}/activity?limit=abc`)).status).toBe(400);
+      expect((await get('/internal/agents/404/activity')).status).toBe(404);
+      // the module clamps the limit
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+      expect((await agentActivity(world.ctx, agent, runtime, { limit: 1000 })).length).toBe(8);
+      expect((await agentActivity(world.ctx, agent, runtime, { limit: 0 })).length).toBe(1);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('shortAmount trims trailing zeros and keeps tiny amounts visible', () => {
+    expect(shortAmount('0.002400', 6)).toBe('0.0024');
+    expect(shortAmount('4.500000', 2)).toBe('4.5');
+    expect(shortAmount('10', 2)).toBe('10');
+    expect(shortAmount('0.0000004', 6)).toBe('0.0000004');
+    expect(shortAmount('0.000000123456', 6)).toBe('0.00000012');
+    expect(shortAmount('nope', 2)).toBe('nope');
+  });
+});

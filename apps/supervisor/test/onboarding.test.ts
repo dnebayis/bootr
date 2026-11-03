@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
-import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, workerTemplateById } from '@bootr/shared/workers';
+import { pino } from 'pino';
+import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
 import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
 import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
@@ -347,6 +348,94 @@ describe('creator identity from the agent card', () => {
       expect(withText.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Boot', 'BOOT', CARD_URI, true)}`);
       expect(withCreatorIdentity(plain, IDENTITY)).toEqual(withText);
       expect(withCreatorIdentity(plain, '')).toEqual({ ...plain, creatorIdentity: '' });
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+/** A creator-defined worker as the launch form builds it (`customWorker`) and the card publishes it (`bootr.worker`). */
+const CUSTOM_PRESET = normalizeWorkerPreset({ capabilities: { xRead: true, xReply: false, xPublish: true, research: true, images: true }, postIntervalMs: 8 * 3_600_000, jobLines: ['Your job is to watch Base DeFi and post one sourced finding per cycle.', 'Never reply to anyone; you only publish.'] })!;
+const CUSTOM = customWorker(CUSTOM_PRESET);
+const cardWithWorker = (worker: { id: string; version: number; preset: unknown }, identity?: string) => cardJson({ type: 'registration', bootr: { ...(identity ? { identity } : {}), worker } });
+
+/** Replaces the world's silent logger with one that collects worker-related warn+ lines (`ctx.log.child` descendants included). */
+function collectWorkerWarnings(world: TestWorld): string[] {
+  const lines: string[] = [];
+  world.ctx.log = pino({ level: 'warn' }, { write: (line: string) => void (line.includes('worker') && lines.push(line)) });
+  return lines;
+}
+
+describe('custom worker from the agent card', () => {
+  it('applies the preset published as bootr.worker when its hash equals the on-chain worker hash', async () => {
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n, { workerHash: CUSTOM.hash })], blockNumber: 50n } });
+    try {
+      const warnings = collectWorkerWarnings(world);
+      serveCard(world, () => cardWithWorker({ id: 'custom', version: 1, preset: { ...CUSTOM_PRESET, jobLines: CUSTOM_PRESET.identity, identity: undefined } }, IDENTITY));
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config).toMatchObject({ workerTemplate: 'custom', workerHash: CUSTOM.hash, workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: 8 * 3_600_000, creatorIdentity: IDENTITY });
+      // job lines play the role of the preset lines, after the creator's instructions
+      expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, CUSTOM_PRESET.identity)}`);
+      expect(warnings).toEqual([]);
+      // the parsed config the brain runs with carries the custom powers and cadence
+      await world.db.update(agents).set({ sessionKeyInstalledAt: new Date(), permissionId: '0x11223344' }).where(eq(agents.agentId, '7'));
+      await completeOnboarding(world.ctx);
+      const active = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      const config = agentConfigOf(active!)!;
+      expect(config.capabilities).toEqual(CUSTOM_PRESET.capabilities);
+      expect(config.postIntervalMs).toBe(8 * 3_600_000);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('falls back to the default template with a warning when the card worker does not hash to the on-chain hash, or the card has none', async () => {
+    const fallback = workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
+    const tampered = { ...CUSTOM_PRESET, postIntervalMs: 30 * 60_000 }; // the card says "every 30 min"; the chain committed to 8 h
+    const cases: { card: (() => Response) | null; warning: string }[] = [
+      { card: () => cardWithWorker({ id: 'custom', version: 1, preset: tampered }, IDENTITY), warning: 'does not hash to the on-chain worker hash' },
+      { card: () => cardJson({ type: 'registration', bootr: { identity: IDENTITY } }), warning: 'no usable bootr.worker' },
+      { card: null, warning: 'no usable bootr.worker' }, // the world's default fetch answers `{}`
+    ];
+    for (const { card, warning } of cases) {
+      const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n, { workerHash: CUSTOM.hash })], blockNumber: 50n } });
+      try {
+        const warnings = collectWorkerWarnings(world);
+        if (card) serveCard(world, card);
+        expect(await pollLaunches(world.ctx)).toBe(1);
+        const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+        expect(agent!.config).toMatchObject({ workerTemplate: DEFAULT_WORKER_TEMPLATE, workerHash: CUSTOM.hash, capabilities: fallback.preset.capabilities, postIntervalMs: fallback.preset.postIntervalMs });
+        expect(agent!.config.workerPreset).toBeUndefined();
+        // the creator text still applies (the identity and the worker are independent)
+        if (card) expect(agent!.config.creatorIdentity).toBe(IDENTITY);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain(warning);
+        // final: nothing to retry on later ticks
+        await completeOnboarding(world.ctx);
+        expect(warnings).toHaveLength(1);
+      } finally {
+        await world.close();
+      }
+    }
+  });
+
+  it('runs the default template while the card is unreachable and applies the custom worker on a later tick', async () => {
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n, { workerHash: CUSTOM.hash })], blockNumber: 50n } });
+    try {
+      let status = 503;
+      const calls = serveCard(world, () => (status === 200 ? cardWithWorker({ id: 'custom', version: 1, preset: CUSTOM_PRESET }, IDENTITY) : cardJson({ error: 'down' }, status)));
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      let agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config).toMatchObject({ workerTemplate: DEFAULT_WORKER_TEMPLATE, creatorIdentity: null });
+      expect(agent!.config.workerPreset).toBeUndefined();
+
+      status = 200;
+      await completeOnboarding(world.ctx);
+      agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(calls).toHaveLength(2);
+      expect(agent!.config).toMatchObject({ workerTemplate: 'custom', workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: 8 * 3_600_000, creatorIdentity: IDENTITY });
+      expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, CUSTOM_PRESET.identity)}`);
     } finally {
       await world.close();
     }

@@ -8,11 +8,11 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
-import { DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
+import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
-import { fetchCreatorIdentity } from './agent-card.js';
+import { creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
@@ -89,18 +89,64 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string, 
     .join('\n');
 }
 
+/** The worker an agent runs: a preset id or `custom`, with the preset in force. */
+export interface ResolvedWorker {
+  id: WorkerTemplateId | typeof CUSTOM_WORKER_ID;
+  preset: WorkerPreset;
+  /** Why the default template was used instead of what the creator chose (null when the hash resolved). */
+  fallback: 'unknown_hash_no_card' | 'card_without_worker' | 'worker_hash_mismatch' | null;
+}
+
+/**
+ * Turns the on-chain `workerHash` back into a preset: one of the shared templates, else the custom worker the
+ * agent card publishes as `bootr.worker`, accepted only when its recomputed hash equals the on-chain one (the
+ * card is creator-hosted and mutable; the hash is the launch-time commitment). Anything else is the default
+ * template, with `fallback` saying why (the caller logs it).
+ */
+export function resolveWorker(workerHash: string, card: unknown = null): ResolvedWorker {
+  const template = workerTemplateByHash(workerHash);
+  if (template) return { id: template.id, preset: template.preset, fallback: null };
+  const fallback = (why: ResolvedWorker['fallback']): ResolvedWorker => ({ id: DEFAULT_WORKER_TEMPLATE, preset: workerTemplateById(DEFAULT_WORKER_TEMPLATE)!.preset, fallback: why });
+  if (card === null || card === undefined) return fallback('unknown_hash_no_card');
+  const custom = workerFromCard(card);
+  if (!custom) return fallback('card_without_worker');
+  if (custom.hash !== String(workerHash).toLowerCase()) return fallback('worker_hash_mismatch');
+  return { id: CUSTOM_WORKER_ID, preset: custom.preset, fallback: null };
+}
+
+/**
+ * The worker preset a stored config runs with: the stored `workerPreset` (custom workers, and any worker edited
+ * through the config API) ahead of the template named by `workerTemplate`; rows older than templates get the
+ * default template's preset.
+ */
+export function storedWorkerPreset(config: Record<string, unknown>): WorkerPreset {
+  const stored = normalizeWorkerPreset(config.workerPreset);
+  if (stored) return stored;
+  const template = (typeof config.workerTemplate === 'string' ? workerTemplateById(config.workerTemplate) : undefined) ?? workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
+  return template.preset;
+}
+
 /**
  * Config stored at launch; `xHandle`/`xUserId` are filled in once the creator connects X.
  *
  * `creatorIdentity` is the creator's Identity text read from the agent card (`agentURI`, see agent-card.ts):
  * a string (possibly '') when the card was read, null when it could not be reached yet. It leads
- * `identityText`, ahead of the default lines; `completeOnboarding` retries a null one on later ticks.
+ * `identityText`, ahead of the default lines; `completeOnboarding` retries a null one on later ticks (and, with
+ * it, the custom worker of a card that was unreachable at registration).
+ *
+ * `worker` is what `workerHash` resolved to (`resolveWorker`): `workerTemplate` names it and, for a custom
+ * worker, `workerPreset` stores the preset itself (capabilities, cadence, job lines) because no template has it.
  */
-export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, token: { name: string; symbol: string }, creatorIdentity: string | null = null): Record<string, unknown> {
+export function buildLaunchConfig(
+  ctx: SupervisorContext,
+  launch: LaunchEvent,
+  token: { name: string; symbol: string },
+  creatorIdentity: string | null = null,
+  worker: ResolvedWorker = resolveWorker(launch.workerHash),
+): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
-  // The worker template the creator chose: its hash on-chain commits to the preset applied here.
-  const template = workerTemplateByHash(launch.workerHash) ?? workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
+  const { preset } = worker;
   return {
     agentId: launch.agentId.toString(),
     token: { address: getAddress(launch.token), symbol: token.symbol, name: token.name, chainId: ctx.chain.chainId },
@@ -109,13 +155,14 @@ export function buildLaunchConfig(ctx: SupervisorContext, launch: LaunchEvent, t
     xHandle: null,
     xUserId: null,
     model: launch.model || DEFAULT_MODEL,
-    identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform, platform ? [] : template.preset.identity)),
+    identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform, platform ? [] : preset.identity)),
     creatorIdentity,
     platform,
     ownerRules: [],
-    capabilities: platform ? { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } : { ...template.preset.capabilities },
-    postIntervalMs: platform ? DEFAULT_POST_INTERVAL_MS : template.preset.postIntervalMs,
-    workerTemplate: template.id,
+    capabilities: platform ? { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } : { ...preset.capabilities },
+    postIntervalMs: platform ? DEFAULT_POST_INTERVAL_MS : preset.postIntervalMs,
+    workerTemplate: worker.id,
+    ...(worker.id === CUSTOM_WORKER_ID ? { workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] } } : {}),
     workerHash: launch.workerHash,
     dormancyPeriodMs: Math.max(60_000, launch.dormancyPeriod * 1000),
     replyAuthorIds: [],
@@ -130,36 +177,76 @@ export function withCreatorIdentity(config: Record<string, unknown>, creatorIden
   const token = (config.token ?? {}) as { name?: unknown; symbol?: unknown };
   const agentURI = typeof config.agentURI === 'string' ? config.agentURI : '';
   const platform = config.platform === true;
-  // Keep the worker template's lines (stored as `workerTemplate` at registration; older rows have none).
-  const template = typeof config.workerTemplate === 'string' ? workerTemplateById(config.workerTemplate) : undefined;
-  const defaults = defaultIdentity(String(token.name ?? 'Unknown'), String(token.symbol ?? 'TOKEN'), agentURI, platform, platform ? [] : (template?.preset.identity ?? []));
+  // Keep the worker's job lines: the stored custom preset, else the template's (`workerTemplate`; older rows have none).
+  const defaults = defaultIdentity(String(token.name ?? 'Unknown'), String(token.symbol ?? 'TOKEN'), agentURI, platform, platform ? [] : storedWorkerPreset(config).identity);
   return { ...config, identityText: composeIdentityText(creatorIdentity, defaults), creatorIdentity };
 }
 
-/** Reads the creator identity for a launch; null (retry later) when the card is unreachable. Never throws. */
-async function readCreatorIdentity(ctx: SupervisorContext, agentURI: string, log: SupervisorContext['log']): Promise<string | null> {
+/** The stored config with a (normalized) worker preset applied: capabilities, cadence and job lines (platform agents keep their own capabilities). */
+export function withWorkerPreset(config: Record<string, unknown>, id: ResolvedWorker['id'], preset: WorkerPreset): Record<string, unknown> {
+  const platform = config.platform === true;
+  const next: Record<string, unknown> = {
+    ...config,
+    workerTemplate: id,
+    workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] },
+    ...(platform ? {} : { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs }),
+  };
+  const creatorIdentity = typeof config.creatorIdentity === 'string' ? config.creatorIdentity : null;
+  return { ...withCreatorIdentity(next, creatorIdentity ?? ''), creatorIdentity };
+}
+
+/** Logs why a launch runs the default template instead of what its hash names (never for a resolved hash). */
+function warnWorkerFallback(log: SupervisorContext['log'], launch: { workerHash: string; agentURI: string }, worker: ResolvedWorker): void {
+  if (!worker.fallback) return;
+  const why = {
+    unknown_hash_no_card: 'worker hash matches no template and the agent card could not be read; running the default template',
+    card_without_worker: 'worker hash matches no template and the agent card has no usable bootr.worker; running the default template',
+    worker_hash_mismatch: 'bootr.worker in the agent card does not hash to the on-chain worker hash; running the default template',
+  }[worker.fallback];
+  log.warn({ workerHash: launch.workerHash, agentURI: launch.agentURI, template: worker.id }, why);
+}
+
+/** One read of the agent card: the creator identity (null = retry later) and the parsed card. Never throws. */
+async function readAgentCard(ctx: SupervisorContext, agentURI: string, log: SupervisorContext['log']): Promise<{ creatorIdentity: string | null; card: unknown }> {
   try {
-    const identity = await fetchCreatorIdentity(agentURI, { fetch: ctx.fetch, resolve: ctx.resolveHost });
-    if (identity === null) log.warn({ agentURI }, 'agent card unreachable; keeping the default identity and retrying later');
-    return identity;
+    const res = await fetchAgentCard(agentURI, { fetch: ctx.fetch, resolve: ctx.resolveHost });
+    if (res === 'retry') {
+      log.warn({ agentURI }, 'agent card unreachable; keeping the default identity and retrying later');
+      return { creatorIdentity: null, card: null };
+    }
+    if (res === 'none') return { creatorIdentity: '', card: null };
+    return { creatorIdentity: creatorIdentityFromCard(res.card), card: res.card };
   } catch (err) {
     log.warn({ agentURI, err }, 'agent card read failed; keeping the default identity and retrying later');
-    return null;
+    return { creatorIdentity: null, card: null };
   }
 }
 
-/** Retries the agent card for onboarding agents whose creator identity could not be read at registration. */
-async function backfillCreatorIdentities(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
+/**
+ * Retries the agent card for onboarding agents whose card could not be reached at registration: applies the
+ * creator identity and, when the on-chain hash names no template, the custom worker it publishes.
+ */
+async function backfillFromAgentCard(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
   for (const agent of pending) {
     const { creatorIdentity, agentURI } = agent.config;
     if (typeof creatorIdentity === 'string' || typeof agentURI !== 'string' || !agentURI) continue;
     const log = ctx.log.child({ agentId: agent.agentId });
-    const identity = await readCreatorIdentity(ctx, agentURI, log);
-    if (identity === null) continue;
-    const config = withCreatorIdentity(agent.config, identity);
+    const read = await readAgentCard(ctx, agentURI, log);
+    if (read.creatorIdentity === null) continue;
+    let config = agent.config;
+    const workerHash = typeof config.workerHash === 'string' ? config.workerHash : '';
+    if (workerHash && !workerTemplateByHash(workerHash) && config.workerTemplate !== CUSTOM_WORKER_ID) {
+      const worker = resolveWorker(workerHash, read.card);
+      if (worker.fallback) warnWorkerFallback(log, { workerHash, agentURI }, worker);
+      else {
+        config = withWorkerPreset(config, worker.id, worker.preset);
+        log.info('custom worker applied from the agent card');
+      }
+    }
+    config = withCreatorIdentity(config, read.creatorIdentity);
     await ctx.db.update(agents).set({ config, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
     agent.config = config;
-    if (identity) log.info('creator identity applied from the agent card');
+    if (read.creatorIdentity) log.info('creator identity applied from the agent card');
   }
 }
 
@@ -288,8 +375,12 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'symbol' }).catch(() => 'TOKEN'),
   ]);
   const now = new Date(ctx.now());
-  const creatorIdentity = await readCreatorIdentity(ctx, launch.agentURI, ctx.log.child({ agentId }));
-  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity);
+  const log = ctx.log.child({ agentId });
+  const { creatorIdentity, card } = await readAgentCard(ctx, launch.agentURI, log);
+  const worker = resolveWorker(launch.workerHash, card);
+  // An unreachable card (creatorIdentity null) is retried by `backfillFromAgentCard`, worker included.
+  if (creatorIdentity !== null) warnWorkerFallback(log, launch, worker);
+  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker);
   const draftId = await readDraftId(ctx, launch.txHash, launch.token);
   const [row] = await ctx.db
     .insert(agents)
@@ -314,7 +405,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     .insert(runtimes)
     .values({ agentId, state: initialState() as unknown as Record<string, unknown>, cycle: 0, nextAt: now, status: 'ready', configRevision: 0, updatedAt: now })
     .onConflictDoNothing();
-  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
+  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId, worker: worker.id, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
   // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
   const builderCode = await ensureBuilderCode(ctx, row);
   return builderCode ? { ...row, builderCode } : row;
@@ -522,8 +613,8 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
   // Decode every pending draft id first, so the earliest-launch check in adoptDraftAccount sees all claimants.
   await backfillDraftIds(ctx, pending);
-  // Creator identities whose agent card was unreachable at registration, before any agent goes active below.
-  await backfillCreatorIdentities(ctx, pending);
+  // Creator identities (and custom workers) whose agent card was unreachable at registration, before any agent goes active below.
+  await backfillFromAgentCard(ctx, pending);
   for (const agent of pending) {
     const log = ctx.log.child({ agentId: agent.agentId });
     if (!agent.sessionKeyInstalledAt) {

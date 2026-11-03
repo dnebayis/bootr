@@ -58,6 +58,21 @@ agent-core: prompt/system-prompt.ts                      identity, then OWNER RU
    (not https, private host, 4xx, not JSON), or `null` when the card could not be reached (network error,
    5xx, 429, DNS failure). A `null` keeps the default identity and `completeOnboarding` retries on every tick
    while the agent is still onboarding; once active, the identity is not re-read.
+   **`bootr.worker`** (custom workers, docs/design/agent-launch-v2.md). When the creator picks *Custom* at launch,
+   the form saves the preset with the draft and the card publishes it as
+   `"bootr": { "identity": "…", "worker": { "id": "custom", "version": 1, "preset": { "capabilities": {…},
+   "postIntervalMs": 28800000, "identity": ["job line", …] } } }`; the launch tx carries
+   `workerHash = keccak256(canonical JSON of {id, version, preset})` (`customWorker()` in `@bootr/shared/workers`).
+   The supervisor's `resolveWorker` (onboarding.ts) tries the shared templates first; for an unknown hash it reads
+   `bootr.worker` from the same card fetch, re-normalises and re-hashes it (`workerFromCard`) and applies the preset
+   only when the hash equals the on-chain one, storing `config.workerTemplate = 'custom'` and
+   `config.workerPreset = {capabilities, postIntervalMs, identity}`; the job lines then take the place of a template's
+   identity lines in `defaultIdentity`. A card without a usable worker, or one whose hash differs (the card is
+   creator-hosted and mutable, the hash is not), leaves the default template in place with a `log.warn`. An
+   unreachable card is retried with the identity on later onboarding ticks (`backfillFromAgentCard`), the agent
+   running the default template meanwhile. After launch the creator can change powers, cadence, job lines (custom
+   only), instructions and model through `PUT /internal/agents/:id/config` (apps/supervisor/README.md): the stored
+   config and `workerPreset` change and `revision` counts the edits; the on-chain hash and the card are not rewritten.
 5. **System prompt** (`packages/agent-core/src/prompt/system-prompt.ts`). `identityText` opens the prompt.
    OWNER RULES, VOICE, PLATFORM ACCOUNT and BOOTR RULES follow and rank above it, so the creator's text
    describes a persona and carries no authority over the runtime, the tools or the publish gate.

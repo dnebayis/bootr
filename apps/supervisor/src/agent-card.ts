@@ -1,7 +1,8 @@
 /**
- * Reads the creator's Identity text from a launch's hosted agent card (`agentURI` of the `AgentLaunched`
- * event). The web app publishes it there as `bootr.identity` (apps/web/lib/agent-card.ts), filled from the
- * launch form via `POST /api/launch/draft`. See docs/agent-identity.md.
+ * Reads a launch's hosted agent card (`agentURI` of the `AgentLaunched` event): the creator's Identity text,
+ * published as `bootr.identity`, and, for a custom worker, the preset published as `bootr.worker`
+ * (apps/web/lib/agent-card.ts, filled from the launch form via `POST /api/launch/draft`). See
+ * docs/agent-identity.md.
  *
  * `agentURI` is creator-controlled on-chain, so the fetch follows the same rules as the agent's `read_url`
  * tool: public https only, every host resolved and checked against private ranges, redirects followed by
@@ -29,25 +30,39 @@ export function creatorIdentityFromCard(card: unknown): string {
 }
 
 /**
- * The creator identity behind `agentURI`:
- *   - a string: final. The text, or '' when the card has none, is unreadable (not public https, private
- *     host, not JSON, 4xx), or there is no URI at all. Nothing to retry.
- *   - null: the card could not be reached right now (network error, timeout, 5xx, 429, unresolvable host).
- *     Keep the default identity and try again on a later tick.
+ * Outcome of a card fetch:
+ *   - `{ card }`: the parsed JSON document (any shape; readers pick their fields).
+ *   - `'none'`: final. No URI, not public https, private host, 4xx, not JSON, too large. Nothing to retry.
+ *   - `'retry'`: the card could not be reached right now (network error, timeout, 5xx, 429, unresolvable
+ *     host). Keep the defaults and try again on a later tick.
+ */
+export type AgentCardFetch = { card: unknown } | 'none' | 'retry';
+
+/**
+ * The creator identity behind `agentURI`: the text, or '' when the card has none or is final-unreadable, or
+ * null when the card could not be reached (see `fetchAgentCard`).
  */
 export async function fetchCreatorIdentity(agentURI: string, opts: AgentCardOptions = {}): Promise<string | null> {
-  if (!agentURI) return '';
+  const res = await fetchAgentCard(agentURI, opts);
+  if (res === 'retry') return null;
+  if (res === 'none') return '';
+  return creatorIdentityFromCard(res.card);
+}
+
+/** Fetches and parses the whole agent card behind `agentURI` under the `read_url` host rules. Never throws. */
+export async function fetchAgentCard(agentURI: string, opts: AgentCardOptions = {}): Promise<AgentCardFetch> {
+  if (!agentURI) return 'none';
   let current: URL;
   try {
     current = new URL(agentURI);
   } catch {
-    return '';
+    return 'none';
   }
   const doFetch = opts.fetch ?? globalThis.fetch;
   let res: Response | null = null;
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      if (current.protocol !== 'https:' || current.username || current.password) return '';
+      if (current.protocol !== 'https:' || current.username || current.password) return 'none';
       await assertPublicHost(current.hostname, opts.resolve);
       res = await doFetch(current.toString(), {
         redirect: 'manual',
@@ -64,23 +79,23 @@ export async function fetchCreatorIdentity(agentURI: string, opts: AgentCardOpti
     }
   } catch (err) {
     // A host that resolves to a private address can never become readable; a DNS failure may be transient.
-    if (err instanceof PolicyError) return err.code === 'url_unresolvable_host' ? null : '';
-    return null;
+    if (err instanceof PolicyError) return err.code === 'url_unresolvable_host' ? 'retry' : 'none';
+    return 'retry';
   }
-  if (!res) return ''; // redirect chain too long
-  if (res.status === 429 || res.status >= 500) return null;
-  if (!res.ok) return '';
+  if (!res) return 'none'; // redirect chain too long
+  if (res.status === 429 || res.status >= 500) return 'retry';
+  if (!res.ok) return 'none';
   let body: string;
   try {
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.byteLength > MAX_CARD_BYTES) return '';
+    if (buf.byteLength > MAX_CARD_BYTES) return 'none';
     body = buf.toString('utf8');
   } catch {
-    return null;
+    return 'retry';
   }
   try {
-    return creatorIdentityFromCard(JSON.parse(body));
+    return { card: JSON.parse(body) as unknown };
   } catch {
-    return '';
+    return 'none';
   }
 }
