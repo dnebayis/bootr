@@ -33,20 +33,26 @@ export function isSubject(v: string): boolean {
   return isDraftId(v) || isAgentId(v);
 }
 
-/** The coin an agent belongs to, from the indexer (server side): who created it and its agent id. */
+/**
+ * The coin an agent belongs to, from the indexer (server side): who created it and its agent id. `kernel` is the
+ * agent's smart account (the `token.kernel` column), not the coin address: the lookup filters on it.
+ */
 export async function fetchTokenCreator(kernel: string): Promise<{ creator: string; agentId: string } | null> {
   const base = (process.env.NEXT_PUBLIC_INDEXER_URL ?? '').replace(/\/$/, '');
   if (!base) return null;
   const res = await fetch(`${base}/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query: 'query Creator($id: String!) { token(id: $id) { creator agentId } }', variables: { id: kernel.toLowerCase() } }),
+    body: JSON.stringify({
+      query: 'query Creator($kernel: String!) { tokens(where: { kernel: $kernel }, limit: 1) { items { creator agentId } } }',
+      variables: { kernel: kernel.toLowerCase() },
+    }),
     cache: 'no-store',
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) return null;
-  const json = (await res.json()) as { data?: { token?: { creator?: string; agentId?: string | number } | null } };
-  const t = json.data?.token;
+  const json = (await res.json()) as { data?: { tokens?: { items?: { creator?: string; agentId?: string | number }[] } | null } };
+  const t = json.data?.tokens?.items?.[0];
   if (!t?.creator || t.agentId == null) return null;
   return { creator: String(t.creator), agentId: String(t.agentId) };
 }
