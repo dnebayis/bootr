@@ -4,7 +4,9 @@ import { z } from 'zod';
 /**
  * OpenAI-compatible chat-completions subset accepted by the relay. Unknown keys are stripped,
  * so the hash and the forwarded body only cover fields the relay understands and prices.
- * Text-only content: image/audio parts are rejected because they are not priced.
+ * Text-only input: image/audio parts are rejected because they are not priced. Image OUTPUT is
+ * priced: `modalities: ["image", "text"]` on an image model asks for one picture, which OpenRouter
+ * returns as a base64 data URL in `choices[0].message.images[]`.
  */
 
 const textPart = z.object({ type: z.literal('text'), text: z.string() });
@@ -51,6 +53,8 @@ export const chatRequestSchema = z.object({
   tool_choice: toolChoice.optional(),
   max_tokens: z.number().int().positive(),
   temperature: z.number().min(0).max(2).optional(),
+  /** Output modalities (OpenRouter). `image` is only accepted for models priced for image output. */
+  modalities: z.array(z.enum(['text', 'image'])).min(1).max(2).optional(),
   stream: z
     .literal(false, { errorMap: () => ({ message: 'streaming is not supported' }) })
     .optional(),

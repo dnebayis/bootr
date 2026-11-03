@@ -4,7 +4,9 @@ import type { SenderContext } from './context.js';
 import { decrypt, encrypt, hmacHex, safeEqualHex } from './crypto.js';
 import { oauthStates } from './db/schema.js';
 
-export const X_SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'] as const;
+/** `media.write` is what `POST /2/media/upload` needs; accounts connected before it was requested must reconnect to post images. */
+export const X_SCOPES = ['tweet.read', 'tweet.write', 'users.read', 'offline.access', 'media.write'] as const;
+export const MEDIA_SCOPE = 'media.write';
 export const STATE_TTL_SEC = 10 * 60;
 
 export interface OAuthSettings {

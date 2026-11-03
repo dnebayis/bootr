@@ -36,6 +36,26 @@ export type InferenceResult =
   | { kind: 'unknown'; key: string; error: string }
   | { kind: 'failed'; key: string; error: string };
 
+/** One paid relay call (a thought or an image), before the response body is interpreted. */
+export type RelayResult =
+  | { kind: 'ok'; key: string; body: Record<string, unknown>; receipt: BootrReceipt | null; replayed: boolean }
+  | { kind: 'unknown'; key: string; error: string }
+  | { kind: 'failed'; key: string; error: string };
+
+export interface RelayCall {
+  /** Idempotency key at the relay and primary key of `sv_inference`; the same key is never paid for twice. */
+  key: string;
+  /** Runtime cycle the call belongs to (bookkeeping only). */
+  cycle: number;
+  request: Record<string, unknown>;
+  /** The most this call may cost (`X-Max-Quote-Micro-USDC` and the payer's hard cap). */
+  maxQuoteMicroUsdc: bigint;
+}
+
+function withAssistant(res: RelayResult): InferenceResult {
+  return res.kind === 'ok' ? { kind: 'ok', key: res.key, ...parseAssistant(res.body), receipt: res.receipt, replayed: res.replayed } : res;
+}
+
 type RelayError = { error?: { code?: string; message?: string } | string; code?: string };
 
 function errorCode(status: number, body: unknown): string {
@@ -74,22 +94,31 @@ export function buildRequest(config: AgentConfig, messages: readonly ChatMessage
 
 export async function runInference(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, cycle: number, request: InferenceRequest): Promise<InferenceResult> {
   const key = inferenceIdempotencyKey(agent.agentId, cycle);
+  return withAssistant(await relayRequest(ctx, agent, { key, cycle, request: request as unknown as Record<string, unknown>, maxQuoteMicroUsdc: BigInt(maxQuoteFor(config.model)) }));
+}
+
+/**
+ * Pays the relay for one request from the agent's spender, idempotently per `call.key`: a key already paid for
+ * is replayed from `sv_inference` (or reconciled at the relay when its outcome is unknown) and never paid again.
+ * Thoughts (`runInference`) and images (`images.ts`) share this path.
+ */
+export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<RelayResult> {
+  const { key, request } = call;
   const requestHash = digest(request);
   const now = () => new Date(ctx.now());
 
   const existing = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
   if (existing) {
     if (existing.status === 'succeeded' && existing.response) {
-      const parsed = parseAssistant(existing.response);
-      return { kind: 'ok', key, ...parsed, receipt: (existing.receipt as BootrReceipt | null) ?? null, replayed: true };
+      return { kind: 'ok', key, body: existing.response, receipt: (existing.receipt as { relay?: BootrReceipt } | null)?.relay ?? null, replayed: true };
     }
     if (existing.status === 'failed') return { kind: 'failed', key, error: existing.error ?? 'failed' };
     // pending (crashed mid-flight) or unknown: reconcile by key, never pay again.
-    return reconcileInference(ctx, key);
+    return reconcileRelay(ctx, key);
   }
 
-  await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle, requestHash, request: request as unknown as Record<string, unknown>, status: 'pending', createdAt: now(), updatedAt: now() });
-  const maxQuote = BigInt(maxQuoteFor(config.model));
+  await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle: call.cycle, requestHash, request, status: 'pending', createdAt: now(), updatedAt: now() });
+  const maxQuote = call.maxQuoteMicroUsdc;
   const spender = ctx.spenderFor(agent);
   let paymentSigned = false;
   const payer = createX402Payer({
@@ -124,7 +153,7 @@ export async function runInference(ctx: SupervisorContext, agent: AgentRow, conf
   return recordResponse(ctx, key, res);
 }
 
-async function recordResponse(ctx: SupervisorContext, key: string, res: Response): Promise<InferenceResult> {
+async function recordResponse(ctx: SupervisorContext, key: string, res: Response): Promise<RelayResult> {
   const now = new Date(ctx.now());
   let body: unknown = null;
   try {
@@ -137,8 +166,7 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
     const existing = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
     const mergedReceipt = { ...(existing?.receipt ?? {}), ...(receipt ? { relay: receipt as unknown as Record<string, unknown> } : {}) };
     await ctx.db.update(inference).set({ status: 'succeeded', response: body as Record<string, unknown>, receipt: mergedReceipt, error: null, updatedAt: now }).where(eq(inference.idempotencyKey, key));
-    const parsed = parseAssistant(body as Record<string, unknown>);
-    return { kind: 'ok', key, ...parsed, receipt, replayed: res.headers.get('x-bootr-idempotent-replay') === 'true' };
+    return { kind: 'ok', key, body: body as Record<string, unknown>, receipt, replayed: res.headers.get('x-bootr-idempotent-replay') === 'true' };
   }
   const code = errorCode(res.status, body);
   const unknown = /unknown|in_progress/.test(code) || res.status >= 500 && !/facilitator_unavailable|upstream_rejected/.test(code);
@@ -165,11 +193,15 @@ export function storedPayment(row: { receipt: Record<string, unknown> | null }):
  * without a stored payment was never paid for and is simply failed.
  */
 export async function reconcileInference(ctx: SupervisorContext, key: string): Promise<InferenceResult> {
+  return withAssistant(await reconcileRelay(ctx, key));
+}
+
+/** `reconcileInference` for any relay call (thought or image); the body is returned uninterpreted. */
+export async function reconcileRelay(ctx: SupervisorContext, key: string): Promise<RelayResult> {
   const row = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
   if (!row) return { kind: 'failed', key, error: 'unknown_key' };
   if (row.status === 'succeeded' && row.response) {
-    const parsed = parseAssistant(row.response);
-    return { kind: 'ok', key, ...parsed, receipt: (row.receipt as { relay?: BootrReceipt } | null)?.relay ?? null, replayed: true };
+    return { kind: 'ok', key, body: row.response, receipt: (row.receipt as { relay?: BootrReceipt } | null)?.relay ?? null, replayed: true };
   }
   if (row.status === 'failed') return { kind: 'failed', key, error: row.error ?? 'failed' };
   const payment = storedPayment(row);

@@ -129,7 +129,7 @@ export async function setup(opts: { connect?: boolean } = {}) {
         accessToken: 'access-token-secret',
         refreshToken: 'refresh-token-secret',
         expiresAt: new Date(clock.now().getTime() + 2 * 3600_000),
-        scopes: 'tweet.read tweet.write users.read offline.access',
+        scopes: 'tweet.read tweet.write users.read offline.access media.write',
       },
       { id: AGENT_X_ID, username: AGENT_HANDLE },
     );

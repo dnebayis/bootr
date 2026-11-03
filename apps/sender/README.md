@@ -15,6 +15,8 @@ Design follows Claus Network's SOCIAL-BOUNDARY model:
 - Outgoing text passes the agent-core publish gate (`validatePost`, which runs
   `outgoingActionRisk`) and the consent ledger: opted-out authors are never replied to or
   @mentioned, and a reply needs the supervisor's `replyEligibility` decision (see publish below).
+- A post or reply may carry **one picture** (`media`, see "Images" under publish): the sender
+  uploads it to X with its alt text and attaches it with `media_ids`.
 
 ## Running
 
@@ -133,7 +135,8 @@ There is no replay cache. A replay inside the window is harmless: publish is ide
 reject legitimate byte-identical retries signed in the same second.
 
 The header format and timestamp are checked before the body is read, and bodies are limited
-(`/internal/*` 256 KB, `/oauth/*` 8 KB; larger requests get `413 payload_too_large`). The canonical
+(`/internal/*` 256 KB, `/internal/publish` 8 MB because it may carry one picture as base64,
+`/oauth/*` 8 KB; larger requests get `413 payload_too_large`). The canonical
 string has no audience field: the supervisor and the web app sign it today, so separate keys per
 service (H-1) are the boundary rather than an audience string.
 
@@ -167,7 +170,9 @@ service (H-1) are the boundary rather than an audience string.
    pointing back at this endpoint (signed, `redirect=1`), so the user's browser still passes through
    `/oauth/start` (`scripts/oauth-link.mjs` prints such a link).
 2. The sender builds a PKCE (S256) authorize URL with scopes
-   `tweet.read tweet.write users.read offline.access` and sets an **HttpOnly, SameSite=Lax** cookie
+   `tweet.read tweet.write users.read offline.access media.write` (`media.write` is what the v2
+   media upload needs; an account connected before it was requested can still post text but must be
+   reconnected to post images) and sets an **HttpOnly, SameSite=Lax** cookie
    `bootr_xoauth_<nonce>` (path `/oauth/callback`, 10 minutes, `Secure` when `X_REDIRECT_URI` is https)
    holding a random secret. The `state` sent to X is `base64url(payload).HMAC(SENDER_SERVICE_KEY)`,
    valid for 10 minutes, and carries the agentId, the web app's state, the **encrypted** PKCE verifier,
@@ -232,8 +237,29 @@ must reconnect.
   "replyAuthorId": "42", // optional, informational: the sender resolves the author itself
   "replyEligibility": { "eligible": true }, // required for replies: agent-core replyEligibility for replyTo
   "attributions": [{ "username": "alice", "sourceUrl": "https://..." }], // optional, required by validatePost for @mentions
+  "media": { "data": "<base64 bytes>", "mime": "image/png", "alt": "A fox on a hill" }, // optional: one picture, see Images
 }
 ```
+
+#### Images
+
+`media` is one picture (`image/png`, `image/jpeg` or `image/webp`, at most 5 MB decoded, alt text
+1–1000 characters) sent inline as base64 over the HMAC channel; the supervisor keeps the agent's
+pictures (`sv_images`) and passes the bytes with the post, so the sender never fetches anything.
+The picture is part of the body hash (as `sha256(bytes)`, mime and alt), so the same `actionId`
+with another picture is `409 action_id_conflict`. Before X is contacted the sender checks that the
+connected account holds the `media.write` scope; otherwise it answers `409 media_not_authorized`
+without recording anything (the creator reconnects, or the agent posts without the picture).
+
+After the claim, in order: `POST /2/media/upload` (X API v2, multipart `media` +
+`media_category=tweet_image`; the v1.1 `media/upload.json` endpoint is retired and the chunked
+INIT/APPEND/FINALIZE flow is only needed for video), `POST /2/media/metadata` with
+`{id, metadata: {alt_text: {text}}}` (best effort: a failure is logged and the post still goes
+out), then `POST /2/tweets` with `media: {media_ids: [id]}`. An upload publishes nothing, so any
+upload failure (definite or not) records the action as `rejected` with
+`media_upload_failed: <reason>`; the supervisor may retry with a new `actionId`. Uploads are
+rate-keyed as `media` / `media_metadata`. Reconciliation of a `held` post with a picture works as
+for text: X does not add the media URL to the v2 `text`.
 
 Consent checks (H-4), in addition to the policy gate:
 
@@ -383,7 +409,8 @@ Every tick (and on `pnpm --filter sender reconcile`):
   this app's `NodeNext` resolution because its relative imports have no `.js` extension.
   `test/policy-parity.test.ts` loads the real package at runtime and fails if the copies drift.
   Replace the copies with re-exports once agent-core is NodeNext-clean.
-- Media uploads are not supported (text posts and replies only).
+- One image per post, photos only (no video, no GIF, no chunked upload). The v2 media upload and
+  metadata calls follow X's current docs but have not been exercised against the live API yet.
 - The admin console's `xQuotas` are not read by the sender (it has no admin-config client). The
   budget comes from `SENDER_DEFAULT_POSTS_PER_DAY` and per-agent `POST /internal/quota/:agentId`;
   pushing the console value there is the supervisor's job. There is no separate reply quota.

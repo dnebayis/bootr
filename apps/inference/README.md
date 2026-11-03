@@ -73,8 +73,9 @@ Request headers:
 
 The body accepts `model`, `messages` (roles `system`, `developer`, `user`, `assistant` with
 `tool_calls`, and `tool`; content is a string or text parts), `tools` (functions),
-`tool_choice`, `max_tokens` (required, because it prices the output), and `temperature`. Unknown
-fields are dropped. `stream: true` is rejected.
+`tool_choice`, `max_tokens` (required, because it prices the output), `temperature` and
+`modalities` (`["text"]` or `["image", "text"]`, see "Images"). Unknown fields are dropped.
+`stream: true` is rejected.
 
 Responses:
 
@@ -82,7 +83,7 @@ Responses:
 | ------- | ------------------------------------------------------------------------------------------------------- |
 | 200     | Upstream body passed through unchanged (incl. `usage`). Headers: `PAYMENT-RESPONSE`, `x-bootr-receipt`  |
 | 402     | With `PAYMENT-REQUIRED`: pay `amount` (= quote). Without it: `quote_exceeds_max` or `settlement_failed` |
-| 400     | Invalid body or headers, unknown model, `max_tokens` too large, context too long                        |
+| 400     | Invalid body or headers, unknown model, `max_tokens` too large, context too long, `image_output_not_supported` (`modalities` asks a text model for an image) |
 | 409     | `idempotency_key_conflict` (same key, different body), `request_in_progress`, `request_outcome_unknown`, `payment_authorization_reused` (the authorization already funded another key) |
 | 413     | `payload_too_large` (body over 1 MB)                                                                    |
 | 422/502 | `upstream_rejected` / `upstream_failed_credited` (paid; kept as a credit, retry the same key), `credit_exhausted` (refund due), `request_outcome_unknown`, `facilitator_unavailable` |
@@ -91,6 +92,25 @@ Responses:
 `{requestId, quoteMicroUsdc, chargedMicroUsdc, paymentTxOrId, network, usage}`.
 `paymentTxOrId` is the settlement transaction hash. If the payment was confirmed through
 reconciliation, it is `eip3009:<nonce>` instead.
+
+### Images
+
+An image is a chat completion with `modalities: ["image", "text"]` on an image model
+(`google/gemini-2.5-flash-image`, the Bootr default, or `openai/gpt-5-image-mini`): OpenRouter
+returns the picture as a base64 data URL in `choices[0].message.images[].image_url.url`, and the
+relay passes the body through and stores it like any completion (replays return the image again).
+Nothing else differs: same x402 flow, idempotency, credits and reconciliation.
+
+The quote is "one thought plus one picture": the prompt estimate and `max_tokens` at the model's
+text rates, plus a fixed allowance for exactly one image at the model's `image_output` rate, plus
+the margin. OpenRouter bills a Gemini 2.5 Flash Image picture as 1290 output tokens at $30 / 1M
+($0.0387; `GEMINI_IMAGE_OUTPUT_TOKENS`), so a Bootr image request quotes around 0.043 USDC. For
+`gpt-5-image-mini` the allowance is the worst case of 4160 tokens at $8 / 1M (a 1024x1024 high-quality
+image; medium is 1056, low 272). `GET /v1/models` shows `output_modalities` and the
+`image_output_micro_usdc_per_1k_tokens` / `image_output_tokens_per_image` fields for these models.
+With `exact` the quote is the charge; with `upto` the image tokens reported in
+`usage.completion_tokens_details.image_tokens` are settled at the image rate (every completion token at
+the higher rate when the provider does not break them out). Image *input* (vision) is still rejected.
 
 ### Idempotency, statuses, reconciliation
 
@@ -254,8 +274,8 @@ coin can be launched there).
 
 ## Limits
 
-- Non-streaming only. Content is text only (image and audio parts are rejected because they
-  are not priced).
+- Non-streaming only. Input content is text only (image and audio parts are rejected because they
+  are not priced); image output is priced for exactly one picture per request (see "Images").
 - `exact` charges the quote, which is an upper bound: the prompt is estimated with the o200k_base
   tokenizer (`gpt-tokenizer`), floored at UTF-8 bytes / 2 for other tokenizer families (M-5), and
   the output at the full `max_tokens`. Actual usage is reported in the receipt. Use `upto` (Permit2)
@@ -275,6 +295,7 @@ coin can be launched there).
 - Migration `0001_payer_scoped_keys` backfills `payer` and `payment_nonce` from stored payments;
   rows created before it have proof hash `legacy` and can no longer be read or replayed through the API. The relay's
   OpenRouter credit balance must be funded separately.
-- Default prices in `src/pricing.ts` follow OpenRouter list prices. Re-verify them at
-  `openrouter.ai/models` before mainnet. Context limits are clamped to each model's base price
-  tier.
+- Default prices in `src/pricing.ts` follow OpenRouter list prices (text models read on 2026-10-27,
+  image models on 2026-11-03: Gemini 2.5 Flash Image $0.30 / $2.50 / $30 per 1M prompt / completion
+  / image-output tokens; GPT-5 Image Mini $2.50 / $2 / $8). Re-verify them at `openrouter.ai/models`
+  before mainnet. Context limits are clamped to each model's base price tier.

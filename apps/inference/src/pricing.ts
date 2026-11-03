@@ -16,6 +16,12 @@ export const modelPriceSchema = z.object({
   contextLength: z.number().int().positive(),
   /** Hard cap on `max_tokens`. */
   maxOutputTokens: z.number().int().positive(),
+  /**
+   * Image generation (`modalities: ["image", "text"]`): price of image output tokens (micro-USDC per 1K) and the
+   * output tokens one image is billed as. Absent: the model cannot be asked for images.
+   */
+  imageOutputMicroUsdcPerKTokens: z.number().nonnegative().finite().optional(),
+  imageOutputTokensPerImage: z.number().int().positive().optional(),
 });
 
 export const priceTableSchema = z.object({
@@ -37,8 +43,19 @@ export type ModelPrice = z.infer<typeof modelPriceSchema>;
 export type PriceTable = z.infer<typeof priceTableSchema>;
 
 /**
- * Defaults derived from OpenRouter list prices on 2026-10-27 (https://openrouter.ai/api/v1/models). Re-verify against
- * https://openrouter.ai/models before mainnet; override with INFERENCE_PRICE_TABLE_JSON.
+ * Output tokens OpenRouter bills for one Gemini 2.5 Flash Image picture (1024x1024, `pricing.image_output`
+ * $30 / 1M tokens, i.e. $0.039 per image); the quote allows exactly one image per request.
+ */
+export const GEMINI_IMAGE_OUTPUT_TOKENS = 1290;
+/**
+ * Worst case for one `openai/gpt-5-image-mini` picture (`pricing.image_output` $8 / 1M): a 1024x1024 image at high
+ * quality is 4160 output tokens (medium 1056, low 272); the quote assumes the worst case, the receipt reports usage.
+ */
+export const GPT_IMAGE_MINI_OUTPUT_TOKENS = 4160;
+
+/**
+ * Defaults derived from OpenRouter list prices on 2026-10-27 (https://openrouter.ai/api/v1/models); the image models on
+ * 2026-11-03. Re-verify against https://openrouter.ai/models before mainnet; override with INFERENCE_PRICE_TABLE_JSON.
  * Context limits are clamped to each model's base price tier where long-context pricing differs.
  */
 export const DEFAULT_PRICE_TABLE: PriceTable = {
@@ -73,6 +90,9 @@ export const DEFAULT_PRICE_TABLE: PriceTable = {
     'meta-llama/llama-4-maverick': { inputMicroUsdcPerKTokens: 188, outputMicroUsdcPerKTokens: 652, contextLength: 400000, maxOutputTokens: 16384 },
     'mistralai/mistral-medium-3.1': { inputMicroUsdcPerKTokens: 400, outputMicroUsdcPerKTokens: 2000, contextLength: 131072, maxOutputTokens: 32768 },
     'z-ai/glm-4.6': { inputMicroUsdcPerKTokens: 550, outputMicroUsdcPerKTokens: 2200, contextLength: 204800, maxOutputTokens: 32768 },
+    // Image generation (chat completions with `modalities: ["image", "text"]`; the picture comes back in `message.images[]`).
+    'google/gemini-2.5-flash-image': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500, contextLength: 32768, maxOutputTokens: 8192, imageOutputMicroUsdcPerKTokens: 30000, imageOutputTokensPerImage: GEMINI_IMAGE_OUTPUT_TOKENS },
+    'openai/gpt-5-image-mini': { inputMicroUsdcPerKTokens: 2500, outputMicroUsdcPerKTokens: 2000, contextLength: 400000, maxOutputTokens: 32768, imageOutputMicroUsdcPerKTokens: 8000, imageOutputTokensPerImage: GPT_IMAGE_MINI_OUTPUT_TOKENS },
   },
 };
 
@@ -109,6 +129,12 @@ export function tokenCostMicroUsdc(
     scaleRate(price.inputMicroUsdcPerKTokens) * BigInt(inputTokens) +
     scaleRate(price.outputMicroUsdcPerKTokens) * BigInt(outputTokens);
   return ceilDiv(numerator, TOKENS_PER_K * RATE_SCALE);
+}
+
+/** ceil(imageRate * imageTokens / 1000) in micro-USDC; 0 for models without image output or no images. */
+export function imageCostMicroUsdc(price: ModelPrice, imageTokens: number): bigint {
+  if (!price.imageOutputMicroUsdcPerKTokens || imageTokens <= 0) return 0n;
+  return ceilDiv(scaleRate(price.imageOutputMicroUsdcPerKTokens) * BigInt(imageTokens), TOKENS_PER_K * RATE_SCALE);
 }
 
 export function marginMicroUsdc(
@@ -174,15 +200,26 @@ export function estimateInputTokens(req: EstimatableRequest): number {
 // Quotes
 // ---------------------------------------------------------------------------------------------
 
+export type Modality = 'text' | 'image';
+
 export interface QuoteInput extends EstimatableRequest {
   model: string;
   max_tokens: number;
+  /** OpenRouter `modalities`; one containing `image` asks for a picture and is priced for exactly one. */
+  modalities?: readonly Modality[] | undefined;
+}
+
+/** Images a request may produce: one when `modalities` names `image`, else none. */
+export function imagesRequested(req: Pick<QuoteInput, 'modalities'>): number {
+  return req.modalities?.includes('image') ? 1 : 0;
 }
 
 export interface Quote {
   model: string;
   estimatedInputTokens: number;
   maxOutputTokens: number;
+  /** Image output tokens allowed for (one image's worth when an image was requested, else 0). */
+  imageOutputTokens: number;
   costMicroUsdc: bigint;
   marginMicroUsdc: bigint;
   quoteMicroUsdc: bigint;
@@ -190,6 +227,7 @@ export interface Quote {
 
 export type QuoteError =
   | { code: 'model_not_allowed'; message: string }
+  | { code: 'image_output_not_supported'; message: string }
   | { code: 'max_tokens_too_large'; message: string; limit: number }
   | { code: 'context_length_exceeded'; message: string; limit: number; estimated: number };
 
@@ -207,6 +245,17 @@ export function computeQuote(
       },
     };
   }
+  const images = imagesRequested(req);
+  if (images > 0 && (!price.imageOutputMicroUsdcPerKTokens || !price.imageOutputTokensPerImage)) {
+    return {
+      ok: false,
+      error: {
+        code: 'image_output_not_supported',
+        message: `model "${req.model}" cannot generate images; drop "image" from modalities`,
+      },
+    };
+  }
+  const imageOutputTokens = images * (price.imageOutputTokensPerImage ?? 0);
   if (req.max_tokens > price.maxOutputTokens) {
     return {
       ok: false,
@@ -229,7 +278,7 @@ export function computeQuote(
       },
     };
   }
-  const cost = tokenCostMicroUsdc(price, estimatedInputTokens, req.max_tokens);
+  const cost = tokenCostMicroUsdc(price, estimatedInputTokens, req.max_tokens) + imageCostMicroUsdc(price, imageOutputTokens);
   let margin = marginMicroUsdc(table, cost);
   const floor = BigInt(table.minQuoteMicroUsdc);
   // Raise the margin so the quote never falls under the facilitator's minimum; the surplus stays with the relay.
@@ -241,6 +290,7 @@ export function computeQuote(
       model: req.model,
       estimatedInputTokens,
       maxOutputTokens: req.max_tokens,
+      imageOutputTokens,
       costMicroUsdc: cost,
       marginMicroUsdc: margin,
       quoteMicroUsdc: total > 0n ? total : 1n,
@@ -252,19 +302,38 @@ export interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens?: number;
+  /** OpenRouter reports image output tokens here for image models. */
+  completion_tokens_details?: { image_tokens?: number; [k: string]: unknown };
   [k: string]: unknown;
 }
 
-/** Usage-based price (for the `upto` scheme), never above the authorized quote. */
+/**
+ * Usage-based price (for the `upto` scheme), never above the authorized quote. For an image request the image
+ * tokens (`completion_tokens_details.image_tokens`) are priced at the image rate; when the provider does not break
+ * them out, every completion token of an image request is priced at the higher of the two output rates.
+ */
 export function actualChargeMicroUsdc(
   table: PriceTable,
   model: string,
   usage: Usage | undefined,
   quote: bigint,
+  modalities?: readonly Modality[] | undefined,
 ): bigint {
   const price = table.models[model];
   if (!price || !usage) return quote;
-  const actual = priceMicroUsdc(table, price, usage.prompt_tokens, usage.completion_tokens);
+  let actual: bigint;
+  const imageRequest = imagesRequested({ modalities }) > 0 && !!price.imageOutputMicroUsdcPerKTokens;
+  const imageTokens = usage.completion_tokens_details?.image_tokens;
+  if (imageRequest && typeof imageTokens === 'number' && imageTokens >= 0) {
+    const textTokens = Math.max(0, usage.completion_tokens - imageTokens);
+    const cost = tokenCostMicroUsdc(price, usage.prompt_tokens, textTokens) + imageCostMicroUsdc(price, imageTokens);
+    actual = cost + marginMicroUsdc(table, cost);
+  } else if (imageRequest) {
+    const worst: ModelPrice = { ...price, outputMicroUsdcPerKTokens: Math.max(price.outputMicroUsdcPerKTokens, price.imageOutputMicroUsdcPerKTokens ?? 0) };
+    actual = priceMicroUsdc(table, worst, usage.prompt_tokens, usage.completion_tokens);
+  } else {
+    actual = priceMicroUsdc(table, price, usage.prompt_tokens, usage.completion_tokens);
+  }
   return actual < quote ? actual : quote;
 }
 

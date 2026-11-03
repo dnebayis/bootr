@@ -30,6 +30,8 @@ type RelayModel = {
   name?: unknown;
   pricing?: { input_micro_usdc_per_1k_tokens?: unknown; output_micro_usdc_per_1k_tokens?: unknown };
   price_per_thought_usd?: unknown;
+  /** `['text', 'image']` for the relay's image generation models, which are not minds. */
+  output_modalities?: unknown;
 };
 type RelayList = { data?: RelayModel[]; margin?: { bps?: unknown; fixedMicroUsdc?: unknown } };
 
@@ -49,6 +51,7 @@ function fromRelay(body: RelayList): ModelOption[] {
   const out: ModelOption[] = [];
   for (const m of body.data ?? []) {
     if (typeof m.id !== 'string' || !/^[\w.:/-]{1,80}$/.test(m.id)) continue;
+    if (Array.isArray(m.output_modalities) && m.output_modalities.includes('image')) continue;
     const input = finite(m.pricing?.input_micro_usdc_per_1k_tokens);
     const output = finite(m.pricing?.output_micro_usdc_per_1k_tokens);
     const direct = finite(m.price_per_thought_usd);

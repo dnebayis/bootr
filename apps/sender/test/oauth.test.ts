@@ -69,7 +69,7 @@ describe('X OAuth 2.0 PKCE', () => {
   it('start -> callback stores encrypted tokens and the X identity', async () => {
     const s = await start('agent-9', 'web-state-1');
     expect(s.authorize.searchParams.get('scope')).toBe(
-      'tweet.read tweet.write users.read offline.access',
+      'tweet.read tweet.write users.read offline.access media.write',
     );
     expect(s.authorize.searchParams.get('code_challenge_method')).toBe('S256');
     expect(s.setCookie).toMatch(/HttpOnly/i);

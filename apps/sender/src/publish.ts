@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getAccessToken } from './accounts.js';
+import { MEDIA_SCOPE } from './oauth.js';
 import type { SenderContext } from './context.js';
 import { canonicalJson, sha256Hex } from './crypto.js';
 import { isOptedOut, mentionsOptedOut, resolveReplyTarget } from './consent-gate.js';
@@ -12,6 +13,31 @@ import { getAction, toReceipt, type Receipt } from './receipt.js';
 import type { XError } from './x-client.js';
 
 const xId = z.string().regex(/^\d{1,25}$/, 'must be a numeric X id');
+
+/** X accepts photos up to 5 MB. */
+export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
+export const MEDIA_MIMES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+
+/** One picture to attach: base64 bytes inline (the supervisor stores the agent's images), its type and alt text. */
+export const mediaSchema = z
+  .object({
+    data: z
+      .string()
+      .min(1)
+      .max(Math.ceil((MAX_MEDIA_BYTES * 4) / 3) + 4)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'must be base64'),
+    mime: z.enum(MEDIA_MIMES),
+    alt: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type MediaInput = z.infer<typeof mediaSchema>;
+
+export function decodeMedia(media: MediaInput): { ok: true; bytes: Buffer } | { ok: false; message: string } {
+  const bytes = Buffer.from(media.data, 'base64');
+  if (bytes.length === 0) return { ok: false, message: 'media.data decodes to nothing' };
+  if (bytes.length > MAX_MEDIA_BYTES) return { ok: false, message: `media is ${bytes.length} bytes; X takes at most ${MAX_MEDIA_BYTES}` };
+  return { ok: true, bytes };
+}
 
 export const publishSchema = z.object({
   agentId: z.string().min(1).max(128),
@@ -54,6 +80,8 @@ export const publishSchema = z.object({
    * check. Not part of the body hash (a policy input, not content).
    */
   publicAddresses: z.array(z.string().regex(/^0x[0-9a-fA-F]{40}$/)).max(4).optional(),
+  /** A picture to upload and attach (`media.media_ids`) with its alt text. Part of the body hash. */
+  media: mediaSchema.optional(),
   /**
    * The X user the supervisor expects to post as (its agent config). When the account currently bound
    * to the agent is a different user, nothing is sent and nothing is recorded (409 `account_mismatch`):
@@ -87,6 +115,10 @@ export function bodyHash(input: PublishInput): string {
       replyTo: input.replyTo ?? null,
       replyAuthorId: input.replyAuthorId ?? null,
       attributions: input.attributions ?? [],
+      // the picture by content, not by its base64 text (rows without media keep their pre-media hash)
+      ...(input.media
+        ? { media: { sha256: sha256Hex(Buffer.from(input.media.data, 'base64')), mime: input.media.mime, alt: input.media.alt } }
+        : {}),
     }),
   );
 }
@@ -160,6 +192,22 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
         boundHandle: tok.account.xHandle,
       },
     };
+  }
+  // A picture needs the media.write scope; nothing is recorded, the creator reconnects (or the agent posts without it).
+  let media: { bytes: Buffer; mime: string; alt: string } | null = null;
+  if (input.media) {
+    const decoded = decodeMedia(input.media);
+    if (!decoded.ok) return { http: 400, body: { error: 'invalid_media', message: decoded.message } };
+    if (!tok.account.scopes.split(/\s+/).includes(MEDIA_SCOPE)) {
+      return {
+        http: 409,
+        body: {
+          error: 'media_not_authorized',
+          message: `the connected X account was authorized without the ${MEDIA_SCOPE} scope; reconnect it to post images`,
+        },
+      };
+    }
+    media = { bytes: decoded.bytes, mime: input.media.mime, alt: input.media.alt };
   }
 
   // ---- policy and consent (a rejection is recorded and final for this actionId) ----
@@ -285,14 +333,30 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
   }
 
   // ---- contact X ----
-  let res = await ctx.x.createPost(tok.token, { text: input.text, replyTo: input.replyTo });
+  // The picture first: an upload publishes nothing, so any failure here is a definite rejection of
+  // this actionId (the agent may retry with a new one); alt text is best effort.
+  let mediaIds: string[] | undefined;
+  if (media) {
+    const up = await ctx.x.uploadMedia(tok.token, { bytes: media.bytes, mime: media.mime });
+    const mediaId = up.ok ? up.data.data?.id : undefined;
+    if (!up.ok || !mediaId || !/^\d+$/.test(mediaId)) {
+      const error = up.ok ? 'media_upload_failed: no media id in 2xx' : `media_upload_failed: ${describe(up.error)}`;
+      await safeUpdate(ctx, input.actionId, { status: 'rejected', error });
+      const row = await getAction(ctx, input.actionId).catch(() => undefined);
+      return row ? ok(ctx, row) : heldFallback(ctx, input.actionId);
+    }
+    const alt = await ctx.x.setMediaAltText(tok.token, mediaId, media.alt);
+    if (!alt.ok) log.warn('media alt text not set', { actionId: input.actionId, code: alt.error.code });
+    mediaIds = [mediaId];
+  }
+  const post = { text: input.text, replyTo: input.replyTo, ...(mediaIds ? { mediaIds } : {}) };
+  let res = await ctx.x.createPost(tok.token, post);
   if (!res.ok && res.error.status === 401) {
     // 401 is a definite non-creation; refresh and make exactly one more attempt, recorded first.
     const again = await getAccessToken(ctx, input.agentId, { force: true });
     if (again.ok) {
       const bumped = await safeUpdate(ctx, input.actionId, { attempts: 2 });
-      if (bumped)
-        res = await ctx.x.createPost(again.token, { text: input.text, replyTo: input.replyTo });
+      if (bumped) res = await ctx.x.createPost(again.token, post);
     }
   }
 

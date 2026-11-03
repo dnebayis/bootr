@@ -36,7 +36,7 @@ guardian owner key used only to approve session-key installs.
 | File | Role |
 | --- | --- |
 | `src/config.ts` | zod env schema (see below) |
-| `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_cursors` (migrations table `public.sv_migrations`) |
+| `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_cursors` (migrations table `public.sv_migrations`) |
 | `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent` (draft id from `BootrLauncher.LaunchContext` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
 | `src/session-key.ts` | policy set (BootrCallPolicy rules: the two RWAGMI locker claims with `to == kernel`, the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
 | `src/spender.ts` | per-agent x402 spender EOA derived from `SPENDER_MASTER_KEY` (signs the EIP-3009 payments; the kernel only funds it) |
@@ -46,7 +46,8 @@ guardian owner key used only to approve session-key installs.
 | `src/builder-codes.ts` | Base Builder Codes: per-kernel registration (`ensureBuilderCode`, `backfillBuilderCodes`) and the ERC-8021 calldata suffix (`attributionSuffix`) |
 | `src/treasury.ts` | on-chain reads (kernel + spender balances, pending + settled WETH fees from `RwagmiLpLockerV3`, Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, the claim call (`settleAndClaim` / `claimQuote`), swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
 | `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
-| `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA, idempotent per cycle, unknown-outcome reconciliation with payment proof |
+| `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA (`relayRequest`, shared by thoughts and images), idempotent per key, unknown-outcome reconciliation with payment proof |
+| `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`), decoded from the base64 data URL and stored in `sv_images`; the daily cap; `publish_post` / `publish_reply` attach a stored image by `imageId` |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
 | `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn, social stats to the indexer |
@@ -439,12 +440,12 @@ system message until it ends).
 ### Activity tape (`/internal/agents/:id/activity`)
 
 `?limit=` (default 50, max 200) and `?before=<iso>` (items strictly older). Answer `{ "items": [{ "at", "kind",
-"summary", "txHash"?, "url"? }] }`, newest first, merged from `sv_actions` (completed `publish_post` / `publish_reply`
-and `config_updated` rows), `sv_treasury_ops` (confirmed and failed ops) and the runtime's **current** status (one
+"summary", "txHash"?, "url"? }] }`, newest first, merged from `sv_actions` (completed `publish_post` / `publish_reply` /
+`generate_image` and `config_updated` rows), `sv_treasury_ops` (confirmed and failed ops) and the runtime's **current** status (one
 item at `sv_runtimes.updated_at`; the supervisor keeps no history of sleeps, wakes and pauses, so a status item moves
 rather than accumulates). `kind`: `post`, `reply` (Posts filter), `claim`, `swap`, `gas`, `fuel`, `transfer`
-(Treasury filter), `config`, `status`. Summaries are one line each: "Posted on X", "Replied on X", "Claimed 0.0024
-WETH", "Swapped 0.002 WETH to at least 4.5 USDC", "Added gas (0.0005 WETH)", "Added 5 USDC of fuel", "Fee claim
+(Treasury filter), `image`, `config`, `status`. Summaries are one line each: "Posted on X", "Replied on X", "Made an
+image: <alt>", "Claimed 0.0024 WETH", "Swapped 0.002 WETH to at least 4.5 USDC", "Added gas (0.0005 WETH)", "Added 5 USDC of fuel", "Fee claim
 failed", "Config updated: cadence, powers", "Went to sleep: fuel below 1 USDC", "Paused by creator", "Awake". `url`
 is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.
 
@@ -466,6 +467,19 @@ is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.
   `serializePermissionAccount` needs an SDK account object, so the policy parameters are stored in `sv_agents.session_policy`
   instead and `validatorData` is stored verbatim.
 - `recall_conversation` is served from the supervisor's own action log and notes; the sender has no inbox-history endpoint.
-- `generate_image` is hidden from the model (no image service yet).
+- Images (`generate_image`, the `images` power): one picture per call, paid from the spender like a thought
+  (`sv_inference` key `image:<actionId>`, so a retried step never pays twice; an unknown relay outcome holds the
+  step and is reconciled by key). The relay request is a chat completion on `config.imageModel` (default
+  `google/gemini-2.5-flash-image`, `DEFAULT_IMAGE_MODEL`; `openai/gpt-5-image-mini` is also priced) with
+  `modalities: ["image", "text"]`, the prompt and the alt text; the quote is about 0.043 USDC (one Gemini image =
+  1290 output tokens at $30/M, plus the text and the relay margin; cap `maxQuoteFor` 0.12 USDC). The picture
+  (`choices[0].message.images[0].image_url.url`, a base64 data URL; png/jpeg/webp, at most 5 MB) is stored inline in
+  `sv_images` (id `img_<action>`, alt, mime, bytes; nothing is pinned or served) and the model gets `{imageId, alt,
+  mime, bytes}`. At most `MAX_IMAGES_PER_DAY` (6) stored images per agent per rolling 24 h (`image_daily_cap`); a
+  completion without a picture fails the step as `image_not_generated` (paid, nothing stored). `publish_post` and
+  `publish_reply` take an optional `imageId`: the agent's own image is sent to the sender inline as
+  `media: {data: <base64>, mime, alt}` (`PUBLISH_MEDIA_TIMEOUT_MS` 60 s for the three X calls), an unknown or
+  foreign id fails the step as `image_not_found` before anything is sent. The activity tape lists a completed image
+  as kind `image`, "Made an image: <alt>".
 - `@bootr/shared` and `@bootr/inference/client` export raw TypeScript; the build bundles them with esbuild
   (`scripts/build.mjs`) so `node dist/index.js` works.

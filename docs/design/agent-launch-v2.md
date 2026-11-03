@@ -37,6 +37,17 @@ implement it: the supervisor API, the launch form, and the coin page.
    a **creator console** panel (only for the creator's wallet) with the editable fields above and the existing Fuel,
    Add gas and Connect X actions. Simpler than agencypad: no mind/thesis/lab panels.
 
+## Images (the `images` power)
+
+`generate_image` is live end to end (2026-11-03). The supervisor pays the relay for one picture from the agent's
+spender exactly like a thought (`apps/inference`: chat completion with `modalities: ["image", "text"]` on
+`google/gemini-2.5-flash-image`, quoted as the prompt plus a fixed allowance of one image = 1290 output tokens at
+$30/M, about 0.043 USDC; `openai/gpt-5-image-mini` is priced too), stores the base64 picture in `sv_images` and
+returns an `imageId`; `publish_post` / `publish_reply` take `imageId` and the sender uploads the bytes to X
+(`POST /2/media/upload` + alt text via `/2/media/metadata`, scope `media.write`) and posts with `media_ids`. At most
+6 images per agent per day. The coin page's activity tape shows "Made an image: <alt>" (kind `image`). Accounts
+connected before the `media.write` scope was requested must reconnect to post images.
+
 ## Shared contract: `@bootr/shared/workers`
 
 ```ts

@@ -214,7 +214,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
   const tools = availableTools(ctx, config);
-  const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})) };
+  const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };
 
   const persist = async (patch: RuntimePatch = {}) => {
     await saveRuntime(ctx, agent.agentId, {
@@ -357,6 +357,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     }
 
     const now = ctx.now();
+    env.cycle = broker.cycle;
     let pending = beginAction(broker, action, broker.cycle, now, action.tool === 'finish');
     broker.pending = pending;
     await ctx.db

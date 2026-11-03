@@ -1,16 +1,17 @@
 /**
  * The coin page's activity tape (`GET /internal/agents/:id/activity`): one newest-first list merged from
- *   - `sv_actions`: completed posts and replies, and `config_updated` rows (creator edits);
+ *   - `sv_actions`: completed posts, replies and images (`generate_image`), and `config_updated` rows (creator edits);
  *   - `sv_treasury_ops`: confirmed and failed fee claims, swaps, gas and fuel top-ups;
  *   - the runtime's current status (sleeping, paused, held, awake). The supervisor keeps no history of status
  *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake.
- * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer`.
+ * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer`;
+ * `image` (a picture made with `generate_image`) shows under All.
  */
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { actions, treasuryOps } from './db/schema.js';
 
-export type ActivityKind = 'post' | 'reply' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status';
+export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status';
 
 export interface ActivityItem {
   /** ISO timestamp. */
@@ -47,7 +48,12 @@ function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): A
     const fields = Array.isArray(a.fields) ? a.fields.map((f) => FIELD_LABELS[String(f)] ?? String(f)) : [];
     return { at: row.createdAt.toISOString(), kind: 'config', summary: fields.length ? `Config updated: ${fields.join(', ')}` : 'Config updated' };
   }
-  if ((a.tool !== 'publish_post' && a.tool !== 'publish_reply') || row.status !== 'completed') return null;
+  if (row.status !== 'completed') return null;
+  if (a.tool === 'generate_image') {
+    const alt = (row.result as { result?: { alt?: unknown } } | null)?.result?.alt ?? (a as { input?: { altText?: unknown } }).input?.altText;
+    return { at: row.createdAt.toISOString(), kind: 'image', summary: typeof alt === 'string' && alt ? `Made an image: ${alt}` : 'Made an image' };
+  }
+  if (a.tool !== 'publish_post' && a.tool !== 'publish_reply') return null;
   const postId = (row.result as { postId?: unknown } | null)?.postId;
   const url = typeof postId === 'string' && xHandle ? `https://x.com/${xHandle}/status/${postId}` : undefined;
   return { at: row.createdAt.toISOString(), kind: a.tool === 'publish_post' ? 'post' : 'reply', summary: a.tool === 'publish_post' ? 'Posted on X' : 'Replied on X', ...(url ? { url } : {}) };
@@ -113,7 +119,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   const before = query.before;
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
   // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
-  const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply') or ${actions.action}->>'kind' = 'config_updated')`;
+  const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image') or ${actions.action}->>'kind' = 'config_updated')`;
   const [actionRows, opRows] = await Promise.all([
     ctx.db
       .select()

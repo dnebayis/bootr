@@ -91,14 +91,22 @@ describe('HMAC auth', () => {
   });
 
   it('rejects oversized bodies and unsigned requests before buffering them', async () => {
+    // 256 KB on every internal route; /internal/publish alone takes 8 MB (one picture as base64).
     const big = JSON.stringify({ agentId: 'agent-1', text: 'x'.repeat(300 * 1024) });
-    const auth = signRequest(SERVICE_KEY, 'POST', '/internal/publish', big, nowSec());
-    const tooBig = await env.app.request('/internal/publish', {
+    const auth = signRequest(SERVICE_KEY, 'POST', '/internal/read/thread', big, nowSec());
+    const tooBig = await env.app.request('/internal/read/thread', {
       method: 'POST',
       headers: { authorization: auth, 'content-type': 'application/json' },
       body: big,
     });
     expect(tooBig.status).toBe(413);
+    const huge = JSON.stringify({ agentId: 'agent-1', text: 'x'.repeat(9 * 1024 * 1024) });
+    const hugePublish = await env.app.request('/internal/publish', {
+      method: 'POST',
+      headers: { authorization: signRequest(SERVICE_KEY, 'POST', '/internal/publish', huge, nowSec()), 'content-type': 'application/json' },
+      body: huge,
+    });
+    expect(hugePublish.status).toBe(413);
     const unsigned = await env.app.request('/internal/publish', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

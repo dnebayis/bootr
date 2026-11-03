@@ -155,9 +155,17 @@ export function createApp(deps: AppDeps): Hono {
         owned_by: id.split('/')[0],
         context_length: p.contextLength,
         max_output_tokens: p.maxOutputTokens,
+        /** `['text', 'image']` for models that take `modalities: ["image", "text"]`. */
+        output_modalities: p.imageOutputMicroUsdcPerKTokens ? ['text', 'image'] : ['text'],
         pricing: {
           input_micro_usdc_per_1k_tokens: p.inputMicroUsdcPerKTokens,
           output_micro_usdc_per_1k_tokens: p.outputMicroUsdcPerKTokens,
+          ...(p.imageOutputMicroUsdcPerKTokens
+            ? {
+                image_output_micro_usdc_per_1k_tokens: p.imageOutputMicroUsdcPerKTokens,
+                image_output_tokens_per_image: p.imageOutputTokensPerImage,
+              }
+            : {}),
         },
       })),
     }),
@@ -264,6 +272,7 @@ export function createApp(deps: AppDeps): Hono {
         model: quote.model,
         estimatedInputTokens: quote.estimatedInputTokens,
         maxOutputTokens: quote.maxOutputTokens,
+        ...(quote.imageOutputTokens ? { imageOutputTokens: quote.imageOutputTokens } : {}),
       };
       if (quote.quoteMicroUsdc > maxParse.data) {
         // No PAYMENT-REQUIRED header: this is not payable as-is; the client decides to retry.
@@ -584,6 +593,7 @@ export function createApp(deps: AppDeps): Hono {
       a.req.model,
       upstream.usage as Usage | undefined,
       a.quote,
+      a.req.modalities,
     );
     const { outcome, attempted } = await settle(a, charge);
     if (outcome.kind === 'unknown') {

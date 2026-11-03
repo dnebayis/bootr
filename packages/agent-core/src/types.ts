@@ -64,6 +64,8 @@ export const agentConfigSchema = z
     xHandle: xHandleSchema,
     xUserId: xIdSchema,
     model: z.string().min(1).max(128),
+    /** Image generation model (relay id) for `generate_image`; unset = the supervisor's default. */
+    imageModel: z.string().min(1).max(128).optional(),
     identityText: z.string().max(20000),
     /** True for the platform's own account (the launchpad's voice), false for a coin's agent. */
     platform: z.boolean().default(false),

@@ -1,4 +1,4 @@
-import { index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { customType, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 /**
  * Every table is prefixed `sv_` because the supervisor shares a Postgres database with the
@@ -159,6 +159,31 @@ export const treasuryOps = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [index('sv_treasury_ops_agent_idx').on(t.agentId, t.status)],
+);
+
+/** Postgres `bytea`; node-postgres returns a Buffer, PGlite a Uint8Array (callers normalise with `Buffer.from`). */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
+
+/**
+ * Pictures made with `generate_image` (one row per image, bytes inline): private to the agent until it attaches
+ * the `imageId` to a post or reply, when the supervisor hands the bytes to the sender for the X media upload.
+ * Small enough for Postgres (the relay caps one image at a few MB; X takes 5 MB); nothing is pinned or served.
+ */
+export const images = pgTable(
+  'sv_images',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    /** The `generate_image` action that paid for it (`sv_actions.action_id`). */
+    actionId: text('action_id').notNull().unique(),
+    alt: text('alt').notNull(),
+    mime: text('mime').notNull(),
+    bytes: bytea('bytes').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    model: text('model').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('sv_images_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
 /** Small key/value store for pollers (launch event block cursor). */

@@ -80,6 +80,9 @@ export class SenderError extends Error {
   }
 }
 
+/** Client timeout for a publish that carries media (the sender makes three X calls of up to 15 s each). */
+export const PUBLISH_MEDIA_TIMEOUT_MS = 60_000;
+
 /** HMAC client for apps/sender's internal API. Idempotent per `actionId`; never resends held publishes. */
 export class SenderClient {
   constructor(
@@ -88,8 +91,8 @@ export class SenderClient {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
   ) {}
 
-  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
-    const res = await signedFetch(this.fetchImpl, this.key, this.baseUrl, method, path, body);
+  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+    const res = await signedFetch(this.fetchImpl, this.key, this.baseUrl, method, path, body, timeoutMs);
     const text = await res.text();
     let json: unknown = null;
     try {
@@ -120,12 +123,18 @@ export class SenderClient {
     replyAuthorId?: string;
     replyEligibility?: ReplyEligibility;
     attributions?: { username: string; sourceUrl: string }[];
+    /**
+     * One picture to attach (`sv_images`, base64 bytes inline): the sender uploads it to X with the alt text and posts
+     * with `media_ids`. It is part of the sender's body hash, so the same actionId with another picture conflicts.
+     */
+    media?: { data: string; mime: string; alt: string };
     /** Addresses the text may name (own token, own treasury); the sender rejects any other. */
     publicAddresses?: string[];
     /** The X user the agent config expects; the sender refuses to post as any other account (409 account_mismatch). */
     xUserId?: string;
   }) {
-    return this.call<SenderPublishResponse>('POST', '/internal/publish', body);
+    // A publish with media is three X calls (upload, alt text, post) of up to X_TIMEOUT_MS each.
+    return this.call<SenderPublishResponse>('POST', '/internal/publish', body, body.media ? PUBLISH_MEDIA_TIMEOUT_MS : undefined);
   }
 
   receipt(actionId: string) {

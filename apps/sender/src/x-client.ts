@@ -99,14 +99,41 @@ export class XClient {
 
   createPost(
     token: string,
-    body: { text: string; replyTo?: string | null },
+    body: { text: string; replyTo?: string | null; mediaIds?: readonly string[] },
   ): Promise<XResult<{ data?: { id?: string; text?: string } }>> {
     const payload: Record<string, unknown> = { text: body.text };
     if (body.replyTo) payload.reply = { in_reply_to_tweet_id: body.replyTo };
+    if (body.mediaIds?.length) payload.media = { media_ids: [...body.mediaIds] };
     return this.request(token, 'POST', '/2/tweets', {
       body: payload,
       write: true,
       rateKey: 'post',
+    });
+  }
+
+  /**
+   * One-shot image upload (X API v2 `POST /2/media/upload`, multipart; the v1.1 `media/upload.json`
+   * endpoint is retired). Needs the `media.write` scope. Photos up to 5 MB fit the simple upload;
+   * the chunked INIT/APPEND/FINALIZE flow is only needed for video. The id in `data.id` goes into
+   * `POST /2/tweets` as `media.media_ids`; X keeps an unused upload for `expires_after_secs`.
+   */
+  uploadMedia(
+    token: string,
+    media: { bytes: Uint8Array; mime: string; category?: 'tweet_image' | 'tweet_gif' },
+  ): Promise<XResult<{ data?: { id?: string; media_key?: string; expires_after_secs?: number } }>> {
+    const form = new FormData();
+    form.set('media', new Blob([Buffer.from(media.bytes)], { type: media.mime }), 'image');
+    form.set('media_category', media.category ?? 'tweet_image');
+    form.set('media_type', media.mime);
+    return this.request(token, 'POST', '/2/media/upload', { form, write: true, rateKey: 'media' });
+  }
+
+  /** Alt text for an uploaded image (`POST /2/media/metadata`), at most 1000 characters. */
+  setMediaAltText(token: string, mediaId: string, altText: string): Promise<XResult<unknown>> {
+    return this.request(token, 'POST', '/2/media/metadata', {
+      body: { id: mediaId, metadata: { alt_text: { text: altText.slice(0, 1000) } } },
+      write: true,
+      rateKey: 'media_metadata',
     });
   }
 
@@ -176,7 +203,7 @@ export class XClient {
     token: string,
     method: 'GET' | 'POST',
     path: string,
-    opts: { query?: Query; body?: unknown; write?: boolean; rateKey?: string } = {},
+    opts: { query?: Query; body?: unknown; form?: FormData; write?: boolean; rateKey?: string } = {},
   ): Promise<XResult<T>> {
     const rateKey = `${opts.rateKey ?? path}:${tokenFingerprint(token)}`;
     const blockedUntil = this.cooldown.get(rateKey);
@@ -199,9 +226,10 @@ export class XClient {
           method,
           headers: {
             authorization: `Bearer ${token}`,
-            ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+            // a FormData body sets its own multipart content-type (with the boundary)
+            ...(opts.body !== undefined && !opts.form ? { 'content-type': 'application/json' } : {}),
           },
-          body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+          body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
           signal: AbortSignal.timeout(this.timeoutMs),
         });
       } catch (err) {

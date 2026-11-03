@@ -238,3 +238,67 @@ describe('input token estimate (M-5)', () => {
     expect(estimateInputTokens({ messages: [msg] })).toBeGreaterThanOrEqual(Math.ceil(bytes / 2));
   });
 });
+
+describe('image generation pricing', () => {
+  const imageTable: PriceTable = {
+    ...table,
+    models: {
+      ...table.models,
+      'test/image': {
+        inputMicroUsdcPerKTokens: 300,
+        outputMicroUsdcPerKTokens: 2500,
+        contextLength: 32_768,
+        maxOutputTokens: 8_192,
+        imageOutputMicroUsdcPerKTokens: 30_000,
+        imageOutputTokensPerImage: 1290,
+      },
+    },
+  };
+  const req = { model: 'test/image', messages: [{ role: 'user', content: 'a fox' }], max_tokens: 64 };
+
+  it('quotes one image as its token allowance at the image rate on top of the text tokens', () => {
+    const text = computeQuote(imageTable, req);
+    const image = computeQuote(imageTable, { ...req, modalities: ['image', 'text'] });
+    if (!text.ok || !image.ok) throw new Error('quote failed');
+    expect(text.quote.imageOutputTokens).toBe(0);
+    expect(image.quote.imageOutputTokens).toBe(1290);
+    // 30000 micro-USDC per 1K image tokens * 1290 tokens = 38_700
+    expect(image.quote.costMicroUsdc - text.quote.costMicroUsdc).toBe(38_700n);
+    expect(image.quote.quoteMicroUsdc).toBe(image.quote.costMicroUsdc + marginMicroUsdc(imageTable, image.quote.costMicroUsdc));
+  });
+
+  it('refuses image output on a model without an image price', () => {
+    const q = computeQuote(imageTable, { ...req, model: 'test/model', modalities: ['image', 'text'] });
+    expect(q.ok).toBe(false);
+    if (!q.ok) expect(q.error.code).toBe('image_output_not_supported');
+    // a text-only request on the image model is an ordinary text quote
+    expect(computeQuote(imageTable, { ...req, modalities: ['text'] }).ok).toBe(true);
+  });
+
+  it('the default table prices the OpenRouter image models', () => {
+    const gemini = DEFAULT_PRICE_TABLE.models['google/gemini-2.5-flash-image']!;
+    expect(gemini).toMatchObject({ inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500, imageOutputMicroUsdcPerKTokens: 30_000, imageOutputTokensPerImage: 1290 });
+    const q = computeQuote(DEFAULT_PRICE_TABLE, { ...req, model: 'google/gemini-2.5-flash-image', modalities: ['image', 'text'] });
+    if (!q.ok) throw new Error(q.error.code);
+    // one Gemini image ($0.0387) plus a few text tokens and the 10% + 100 margin stays well under 0.05 USDC
+    expect(q.quote.quoteMicroUsdc).toBeGreaterThan(38_700n);
+    expect(q.quote.quoteMicroUsdc).toBeLessThan(50_000n);
+    const mini = DEFAULT_PRICE_TABLE.models['openai/gpt-5-image-mini']!;
+    expect(mini).toMatchObject({ inputMicroUsdcPerKTokens: 2500, outputMicroUsdcPerKTokens: 2000, imageOutputMicroUsdcPerKTokens: 8000, imageOutputTokensPerImage: 4160 });
+  });
+
+  it('settles actual usage with image tokens at the image rate (upto), capped at the quote', () => {
+    const quote = 1_000_000n;
+    const usage = { prompt_tokens: 100, completion_tokens: 1300, completion_tokens_details: { image_tokens: 1290 } };
+    const charge = actualChargeMicroUsdc(imageTable, 'test/image', usage, quote, ['image', 'text']);
+    // 300*0.1 + 2500*0.01 + 30000*1.29 = 30 + 25 + 38700 = 38755, plus 10% + 100
+    expect(charge).toBe(38_755n + marginMicroUsdc(imageTable, 38_755n));
+    // no breakdown: every completion token at the higher rate
+    const flat = actualChargeMicroUsdc(imageTable, 'test/image', { prompt_tokens: 100, completion_tokens: 1300 }, quote, ['image', 'text']);
+    expect(flat).toBe(39_030n + marginMicroUsdc(imageTable, 39_030n));
+    // text-only request on the image model: text rate
+    const text = actualChargeMicroUsdc(imageTable, 'test/image', { prompt_tokens: 100, completion_tokens: 1300 }, quote);
+    expect(text).toBe(3_280n + marginMicroUsdc(imageTable, 3_280n));
+    expect(actualChargeMicroUsdc(imageTable, 'test/image', usage, 10n, ['image', 'text'])).toBe(10n);
+  });
+});

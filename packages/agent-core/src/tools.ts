@@ -152,7 +152,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   generate_image: define(
     'generate_image',
-    'Create one private illustration from a prompt and alt text. Returns an imageId you may attach to a post or reply.',
+    'Create one private illustration from a prompt and alt text (costs about one thought of fuel; a few per day at most). Returns an imageId to pass as imageId in publish_post or publish_reply.',
     'images',
     'write',
     true,

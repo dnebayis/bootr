@@ -269,6 +269,58 @@ describe('x402 middleware', () => {
   });
 });
 
+describe('image generation (modalities)', () => {
+  const PNG = `data:image/png;base64,${Buffer.from('not really a png').toString('base64')}`;
+  const imageBody = () =>
+    completionBody({
+      model: 'google/gemini-2.5-flash-image',
+      choices: [
+        {
+          index: 0,
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: 'Here is your fox.', images: [{ type: 'image_url', image_url: { url: PNG } }] },
+        },
+      ],
+      usage: { prompt_tokens: 20, completion_tokens: 1300, completion_tokens_details: { image_tokens: 1290 } },
+    });
+
+  it('prices one image, forwards modalities, and returns the base64 image (also on replay)', async () => {
+    const t = createTestApp({ upstreamFetch: async () => jsonResponse(imageBody()) });
+    const { payer } = payerFor(t);
+    const body = chatBody({ model: 'google/gemini-2.5-flash-image', modalities: ['image', 'text'], max_tokens: 64 });
+    const textQuote = quoteFor(chatBody({ model: 'google/gemini-2.5-flash-image', max_tokens: 64 }));
+    const quote = quoteFor(body);
+    expect(quote).toBeGreaterThan(textQuote + 38_700n);
+
+    const res = await paidPost(payer, body, 'k-image');
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { choices: { message: { images: unknown[] } }[] };
+    expect(json.choices[0]!.message.images).toEqual([{ type: 'image_url', image_url: { url: PNG } }]);
+    expect(t.facilitator.verify.mock.calls[0]![1].amount).toBe(quote.toString());
+    expect(await t.upstreamCalls[0]!.json()).toMatchObject({ model: 'google/gemini-2.5-flash-image', modalities: ['image', 'text'], max_tokens: 64 });
+    expect(readReceipt(res)).toMatchObject({ chargedMicroUsdc: quote.toString(), usage: imageBody().usage });
+
+    const replay = await paidPost(payer, body, 'k-image');
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get('x-bootr-idempotent-replay')).toBe('true');
+    const replayed = (await replay.json()) as { choices: { message: { images: { image_url: { url: string } }[] } }[] };
+    expect(replayed.choices[0]!.message.images[0]!.image_url.url).toBe(PNG);
+    expect(t.facilitator.settle).toHaveBeenCalledTimes(1);
+    expect(t.upstreamFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses image output on a text model and lists image models with their modalities', async () => {
+    const t = createTestApp();
+    const res = await post(t, chatBody({ modalities: ['image', 'text'] }), { 'idempotency-key': 'k-img-text', 'x-max-quote-micro-usdc': '1000000' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: 'image_output_not_supported' } });
+    const models = (await (await t.app.request(`${URL_BASE}/v1/models`)).json()) as { data: { id: string; output_modalities: string[]; pricing: Record<string, number> }[] };
+    const gemini = models.data.find((m) => m.id === 'google/gemini-2.5-flash-image');
+    expect(gemini).toMatchObject({ output_modalities: ['text', 'image'], pricing: { image_output_micro_usdc_per_1k_tokens: 30_000, image_output_tokens_per_image: 1290 } });
+    expect(models.data.find((m) => m.id === 'openai/gpt-4.1-mini')?.output_modalities).toEqual(['text']);
+  });
+});
+
 describe('idempotency', () => {
   it('replays the stored response for the same key + body without a new payment', async () => {
     const t = createTestApp();

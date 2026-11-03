@@ -44,6 +44,8 @@ import { getAction, toReceipt } from './receipt.js';
 
 export const PUBLIC_BODY_LIMIT = 8 * 1024;
 export const INTERNAL_BODY_LIMIT = 256 * 1024;
+/** `/internal/publish` may carry one picture as base64 (5 MB of image is about 6.7 MB of base64). */
+export const PUBLISH_BODY_LIMIT = 8 * 1024 * 1024;
 
 const quotaSchema = z
   .object({
@@ -91,10 +93,15 @@ export function createApp(ctx: SenderContext): Hono {
   app.get('/health', (c) => c.json({ ok: true, service: 'sender' }));
 
   // Body limits: the browser-facing OAuth routes take no body; internal requests are small JSON
-  // (publish text is at most 25k chars). Oversized bodies get 413 before any parsing.
+  // (publish text is at most 25k chars) except a publish carrying a picture. Oversized bodies get
+  // 413 before any parsing.
   const tooLarge = (c: Context) => c.json({ error: 'payload_too_large' }, 413);
   app.use('/oauth/*', bodyLimit({ maxSize: PUBLIC_BODY_LIMIT, onError: tooLarge }));
-  app.use('/internal/*', bodyLimit({ maxSize: INTERNAL_BODY_LIMIT, onError: tooLarge }));
+  const internalLimit = bodyLimit({ maxSize: INTERNAL_BODY_LIMIT, onError: tooLarge });
+  const publishLimit = bodyLimit({ maxSize: PUBLISH_BODY_LIMIT, onError: tooLarge });
+  app.use('/internal/*', (c, next) =>
+    new URL(c.req.url).pathname === '/internal/publish' ? publishLimit(c, next) : internalLimit(c, next),
+  );
 
   // ---------------- OAuth (browser-facing) ----------------
 

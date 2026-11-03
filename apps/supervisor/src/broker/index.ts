@@ -25,12 +25,12 @@ import { SenderError, type SenderInboxItem, type ReplyEligibility } from '../sen
 import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fundingBudget, minUsdcOut, opView, openOps, prepareOp, readTreasuryOnChain, recentOps, swapHelperAddress } from '../treasury.js';
 import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
 import { readUrl, searchWeb } from '../web-reader.js';
+import { generateImage, loadImage, mediaFor } from '../images.js';
 import { erc20Abi } from 'viem';
 
-/** Tools the supervisor can actually execute right now (search needs an API key; images are not wired). */
+/** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig): ToolDefinition[] {
   return toolsFor(config).filter((t) => {
-    if (t.name === 'generate_image') return false;
     if (t.name === 'search_web') return !!(ctx.config.SEARCH_API_URL && ctx.config.SEARCH_API_KEY);
     return true;
   });
@@ -41,6 +41,8 @@ export interface BrokerEnv {
   inbox: Map<string, SenderInboxItem>;
   /** postId -> agent-core `replyEligibility` decision taken when the mention was observed; sent with every reply. */
   eligibility: Map<string, ReplyEligibility>;
+  /** The runtime cycle executing the action (bookkeeping for paid relay calls); 0 when unknown. */
+  cycle?: number;
 }
 
 /** Records the eligibility decisions of `views` in `env` (what `publish_reply` sends to the sender). */
@@ -149,6 +151,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return { kind: 'completed', result: { authorId: action.input.authorId, replies: mine, notes: notes.items, nextBeforePostId: null } };
     }
     case 'publish_reply': {
+      const media = await mediaForAction(ctx, agentId, action.input.imageId);
+      if (media.error) return failed(media.error);
       const item = env.inbox.get(action.input.postId);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
       const eligibility: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now()).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
@@ -160,13 +164,16 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         ...(item ? { replyAuthorId: item.authorId } : {}),
         replyEligibility: eligibility,
         ...(action.input.attributions ? { attributions: action.input.attributions } : {}),
+        ...(media.media ? { media: media.media } : {}),
         publicAddresses: publicAddressesOf(config),
         xUserId: config.xUserId,
       });
       return publishOutcome(res, item?.authorId);
     }
     case 'publish_post': {
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
+      const media = await mediaForAction(ctx, agentId, action.input.imageId);
+      if (media.error) return failed(media.error);
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
     case 'resolve_mention': {
@@ -228,13 +235,25 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (res.status === 'unknown') return { kind: 'unknown', error: `treasury_outcome_unknown:${res.opId}:${res.userOpHash}` };
       return failed(`treasury_failed: ${res.error}`);
     }
-    case 'generate_image':
-      return failed('images_unavailable');
+    case 'generate_image': {
+      const res = await generateImage(ctx, agent, config, pending, action.input, env.cycle ?? 0);
+      if (res.kind === 'completed') return { kind: 'completed', result: res.result };
+      if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
+      return failed(res.error);
+    }
     default: {
       const never: never = action;
       return failed(`unsupported_tool:${(never as { tool: string }).tool}`);
     }
   }
+}
+
+/** The sender `media` for a post's optional `imageId`: the agent's own stored image, else a failure the model can act on. */
+async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: string | undefined): Promise<{ media?: ReturnType<typeof mediaFor>; error?: string }> {
+  if (!imageId) return {};
+  const image = await loadImage(ctx, agentId, imageId);
+  if (!image) return { error: `image_not_found: ${imageId} (make one with generate_image first)` };
+  return { media: mediaFor(image) };
 }
 
 function publishOutcome(res: { status: string; providerPostId?: string | null; receipt: { error?: string | null; status: string } }, replyAuthorId?: string): ActionOutcome {
