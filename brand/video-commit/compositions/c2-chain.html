@@ -1,0 +1,62 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #c2-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .c2-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .c2-n { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 60px; line-height: 72px; font-weight: 500; white-space: nowrap; }
+    .c2-c { position: absolute; left: 700px; font-size: 52px; line-height: 72px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .c2-b { position: absolute; left: 96px; width: 20px; height: 20px; background: #0000ff; }
+    .c2-chip { position: absolute; left: 1446px; width: 330px; height: 72px; background: #0000ff; color: #ffffff; font-family: 'Geist Mono', monospace; font-size: 44px; line-height: 72px; font-weight: 500; text-align: center; white-space: nowrap; }
+    .c2-h { position: absolute; left: 144px; width: 1632px; height: 2px; background: #dee1e7; transform-origin: 0% 50%; }
+    .c2-note { position: absolute; left: 144px; top: 880px; font-size: 72px; line-height: 80px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="c2" data-width="1920" data-height="1080">
+    <div id="c2-panel">
+      <div class="c2-t" id="c2-t1">the hash goes on-chain.</div>
+      <div class="c2-b" id="c2-b1" style="top: 296px"></div>
+      <div class="c2-n" id="c2-n1" style="top: 270px">launch</div>
+      <div class="c2-c" id="c2-c1" style="top: 270px">in the launch transaction</div>
+      <div class="c2-chip" id="c2-p1" style="top: 270px">0xb7b8…0058</div>
+      <div class="c2-h" id="c2-h1" style="top: 374px" data-layout-ignore></div>
+      <div class="c2-b" id="c2-b2" style="top: 496px"></div>
+      <div class="c2-n" id="c2-n2" style="top: 470px">AgentLaunched</div>
+      <div class="c2-c" id="c2-c2" style="top: 470px">in the event, public</div>
+      <div class="c2-chip" id="c2-p2" style="top: 470px">0xb7b8…0058</div>
+      <div class="c2-h" id="c2-h2" style="top: 574px" data-layout-ignore></div>
+      <div class="c2-b" id="c2-b3" style="top: 696px"></div>
+      <div class="c2-n" id="c2-n3" style="top: 670px">indexer</div>
+      <div class="c2-c" id="c2-c3" style="top: 670px">stored with the coin</div>
+      <div class="c2-chip" id="c2-p3" style="top: 670px">0xb7b8…0058</div>
+      <div class="c2-h" id="c2-h3" style="top: 774px" data-layout-ignore></div>
+      <div class="c2-note" id="c2-note">it is mined once. it cannot change.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06 + 12 * B;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const rows = [1, 2, 3];
+    gsap.set(["#c2-t1", "#c2-note"].concat(rows.flatMap((i) => ["#c2-n" + i, "#c2-c" + i, "#c2-b" + i, "#c2-p" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#c2-h" + i), { scaleX: 0 });
+    // Beat 12: the white world floods out of the hash (500, 906).
+    tl.fromTo("#c2-panel", { clipPath: "circle(0px at 500px 906px)" }, { clipPath: "circle(2400px at 500px 906px)", duration: 0.42, ease: "power2.inOut" }, 0);
+    tl.set("#c2-t1", { opacity: 1 }, L(12.5));
+    tl.fromTo("#c2-t1", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(23)" }, L(12.5));
+    // Beats 13, 14.5, 16: where the value is written; the hash lands on the right after the name.
+    rows.forEach((i) => {
+      const t = L(11.5 + 1.5 * i);
+      arrive("#c2-n" + i, t);
+      arrive("#c2-c" + i, t + 0.1);
+      tl.fromTo("#c2-b" + i, { scale: 0, opacity: 1, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.25, ease: "back.out(2.4)" }, t);
+      tl.fromTo("#c2-h" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, t + 0.05);
+      tl.fromTo("#c2-p" + i, { x: 60, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.4, ease: "expo.out" }, t + 0.25);
+    });
+    arrive("#c2-note", L(17.5));
+    window.__timelines["c2"] = tl;
+  </script>
+</template>

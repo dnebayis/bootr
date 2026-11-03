@@ -1,0 +1,57 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #c1-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    .c1-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .c1-l { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+    .c1-v { position: absolute; left: 520px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    #c1-k { position: absolute; left: 144px; top: 790px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #c1-hash { position: absolute; left: 144px; top: 852px; font-family: 'Geist Mono', monospace; font-size: 112px; line-height: 128px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    #c1-cap { position: absolute; left: 1000px; top: 884px; font-size: 52px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="c1" data-width="1920" data-height="1080">
+    <div id="c1-panel">
+      <div class="c1-t" id="c1-t1">you pick the job.</div>
+      <div id="c1-rows" data-layout-allow-overflow>
+        <div class="c1-l" id="c1-l1" style="top: 250px">powers</div>
+        <div class="c1-v" id="c1-v1" style="top: 250px">read x, reply on x, post on x</div>
+        <div class="c1-l" id="c1-l2" style="top: 356px">always on</div>
+        <div class="c1-v" id="c1-v2" style="top: 356px">memory, treasury</div>
+        <div class="c1-l" id="c1-l3" style="top: 462px">cadence</div>
+        <div class="c1-v" id="c1-v3" style="top: 462px">every 4 h</div>
+        <div class="c1-l" id="c1-l4" style="top: 568px">job</div>
+        <div class="c1-v" id="c1-v4" style="top: 568px">answer mentions first.</div>
+        <div class="c1-l" id="c1-l5" style="top: 674px">job</div>
+        <div class="c1-v" id="c1-v5" style="top: 674px">never tell anyone to buy or sell.</div>
+      </div>
+      <div id="c1-k">keccak256 =</div>
+      <div id="c1-hash">0xb7b8…0058</div>
+      <div id="c1-cap">the job, as one value.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const rows = [1, 2, 3, 4, 5];
+    gsap.set(["#c1-k", "#c1-hash", "#c1-cap"].concat(rows.flatMap((i) => ["#c1-l" + i, "#c1-v" + i])), { opacity: 0 });
+    // Beats 1-5: one choice per beat. The title is on screen from the first frame.
+    rows.forEach((i) => {
+      const t = L(i);
+      arrive("#c1-l" + i, t);
+      arrive("#c1-v" + i, t + 0.1);
+    });
+    // Beat 6.2: one value comes out of them; the hash lands on beat 7.
+    arrive("#c1-k", L(6.2));
+    tl.set("#c1-hash", { opacity: 1 }, L(7));
+    tl.fromTo("#c1-hash", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.5, ease: "steps(11)" }, L(7));
+    [[0, 6, -4], [0.033, -5, 3], [0.066, 3, -2], [0.1, 0, 0]].forEach(([d, x, y]) => tl.set("#c1-hash", { x, y }, L(7) + 0.5 + d));
+    arrive("#c1-cap", L(8.5));
+    window.__timelines["c1"] = tl;
+  </script>
+</template>

@@ -1,0 +1,74 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #c5-ground { position: absolute; inset: 0; background: #0a0b0d; }
+    #c5-shake { position: absolute; inset: 0; }
+    .c5-t { position: absolute; left: 144px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; white-space: nowrap; }
+    #c5-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #c5-mark-sq { position: relative; width: 288px; height: 288px; }
+    #c5-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: #0a0b0d; }
+    #c5-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #c5-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #c5-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+  </style>
+  <div id="root" data-composition-id="c5" data-width="1920" data-height="1080">
+    <div id="c5-ground"></div>
+    <div id="c5-shake" data-layout-allow-overflow>
+      <div class="c5-t" id="c5-t1" style="top: 300px">the job is committed at launch.</div>
+      <div class="c5-t" id="c5-t2" style="top: 470px">every change after it is on the tape.</div>
+      <div id="c5-word">bootr</div>
+      <div id="c5-cursor" data-layout-ignore></div>
+      <div id="c5-mark-box" data-layout-ignore>
+        <div id="c5-mark-sq">
+          <div id="c5-mark-bg"></div>
+          <svg id="c5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="c5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path id="c5-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="c5-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#c5-m)"></rect>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.48387;
+    const T0 = 0.06 + 45 * B;
+    const L = (k) => Math.round((0.06 + k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const type = (s, t, d, n) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + n + ")" }, t);
+    };
+    gsap.set(["#c5-t1", "#c5-t2", "#c5-word", "#c5-cursor", "#c5-mark-box"], { opacity: 0 });
+    tl.set("#c5-shake", { x: 0, y: 0 }, 0);
+    // Beat 45: the dark world floods out of the middle of the frame.
+    tl.fromTo("#c5-ground", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1400px at 960px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    type("#c5-t1", L(45.3), 0.5, 30);
+    type("#c5-t2", L(47), 0.5, 37);
+    // The two lines leave just before the mark (beat 52 = impact).
+    const Ti = L(53);
+    tl.to(["#c5-t1", "#c5-t2"], { clipPath: "inset(-10px 100% -10px 0px)", duration: 0.2, ease: "power3.in" }, Ti - 0.62);
+    // The mark: the cup is cut out, the stem falls into it, the square lands on beat 52.
+    tl.set("#c5-mark-box", { opacity: 1 }, Ti - 0.56);
+    tl.set(["#c5-cup", "#c5-stem"], { opacity: 0 }, 0);
+    tl.set("#c5-cup", { opacity: 1 }, Ti - 0.55);
+    tl.fromTo("#c5-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out" }, Ti - 0.55);
+    tl.set("#c5-stem", { opacity: 1 }, Ti - 0.183);
+    tl.fromTo("#c5-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in" }, Ti - 0.183);
+    tl.fromTo("#c5-mark-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out" }, Ti);
+    tl.to("#c5-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#c5-shake", { x, y }, Ti + d));
+    // The mark slides left into the lockup; "bootr" is typed behind it, led by a block cursor.
+    tl.fromTo("#c5-mark-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut" }, Ti + 0.45);
+    tl.set(["#c5-word", "#c5-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#c5-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    tl.fromTo("#c5-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    [Ti + 1.5, Ti + 1.8].forEach((t) => { tl.set("#c5-cursor", { opacity: 0 }, t); tl.set("#c5-cursor", { opacity: 1 }, t + 0.15); });
+    tl.set("#c5-cursor", { opacity: 0 }, Ti + 2.1);
+    window.__timelines["c5"] = tl;
+  </script>
+</template>
