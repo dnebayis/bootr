@@ -268,7 +268,7 @@ AGENT_NAME="Bootr" AGENT_SYMBOL="BOOTR" AGENT_IMAGE="ipfs://<boot image>" \
 AGENT_URI="https://bootr.fun/agents/boot.json" \
 AGENT_CONTEXT='{"interface":"Bootr","platform":"bootr.fun"}' \
 AGENT_METADATA='{"description":"Bootr: the launchpad where every coin funds an agent.","socialMediaUrls":[{"platform":"x","url":"https://x.com/bootrfun"}],"auditUrls":[]}' \
-AGENT_MODEL="claude-sonnet-4-5" BUYBACK=true FUEL_USDC=20000000 DEV_BUY_WEI=<wei> \
+AGENT_MODEL="anthropic/claude-haiku-4.5" BUYBACK=true FUEL_USDC=20000000 DEV_BUY_WEI=<wei> \
 SUPERVISOR_KEY=<session signer address> \
 forge script script/Launch.s.sol --rpc-url base --broadcast -vvv
 # prints token, kernel, burner, agentId

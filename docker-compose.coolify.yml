@@ -42,7 +42,7 @@ services:
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-sender:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u INDEXER_SERVICE_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BUNDLER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u INDEXER_SERVICE_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +66,7 @@ services:
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-inference:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node scripts/migrate.mjs && exec node dist/main.js'"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BUNDLER_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node scripts/migrate.mjs && exec node dist/main.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,7 +88,7 @@ services:
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-indexer:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh scripts/start.sh"]
+    command: ["sh", "-c", "exec env -u BUNDLER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh scripts/start.sh"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,7 +122,7 @@ services:
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-web:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
+    command: ["sh", "-c", "exec env -u BUNDLER_URL -u INFERENCE_RPC_URL -u SEARCH_API_KEY -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
     depends_on:
       - indexer
       - sender
@@ -156,7 +156,7 @@ services:
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-supervisor:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
+    command: ["sh", "-c", "exec env -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     # One replica only: the tick loop must not run twice.
     depends_on:
       postgres:
