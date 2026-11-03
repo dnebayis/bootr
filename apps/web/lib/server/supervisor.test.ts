@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeConfig, validateChanges } from './supervisor';
+import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeConfig, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -30,6 +30,11 @@ describe('validateChanges', () => {
     expect(validateChanges({})).toMatchObject({ ok: false });
     expect(validateChanges(null)).toMatchObject({ ok: false });
   });
+
+  it('takes the post review switch as a boolean only', () => {
+    expect(validateChanges({ requireApproval: true })).toEqual({ ok: true, changes: { requireApproval: true } });
+    expect(validateChanges({ requireApproval: 'yes' })).toMatchObject({ ok: false });
+  });
 });
 
 describe('sanitizeConfig', () => {
@@ -48,6 +53,8 @@ describe('sanitizeConfig', () => {
     expect(cfg).toMatchObject({ agentId: '42', model: 'openai/gpt-4.1-mini', revision: 3, worker: { kind: 'custom', postIntervalMs: 3_600_000, jobLines: ['a'] } });
     expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false });
     expect(cfg!.updatedAt).toBe('2023-11-14T22:13:20.000Z');
+    expect(cfg!.requireApproval).toBe(false);
+    expect(sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 }, requireApproval: true })!.requireApproval).toBe(true);
   });
 
   it('returns null without a kernel, creator or worker', () => {
@@ -70,5 +77,28 @@ describe('sanitizeActivity', () => {
       { at: '2026-11-03T10:00:00.000Z', kind: 'post', summary: 'Posted', url: 'https://x.com/a/status/1' },
       { at: '2026-11-03T09:00:00.000Z', kind: 'fee_claim', summary: 'Claimed', txHash: `0x${'cd'.repeat(32)}` },
     ]);
+  });
+});
+
+describe('sanitizeApprovals', () => {
+  const PNG = 'iVBORw0KGgo=';
+  it('keeps well-formed items, turns image bytes into a data URL and counts the pending ones', () => {
+    const a = sanitizeApprovals({
+      items: [
+        { id: 'act_1', agentId: '7', kind: 'post', text: 'A fox for you all.', inReplyTo: null, image: { id: 'img_1', alt: 'A fox', mime: 'image/png', data: PNG }, status: 'pending_approval', decision: null, decidedBy: null, note: null, postId: null, url: null, createdAt: '2026-11-03T10:00:00.000Z', decidedAt: null, expiresAt: '2026-11-05T10:00:00.000Z' },
+        { id: 'act_2', kind: 'reply', text: 'Done.', inReplyTo: '1001', image: { alt: 'x', mime: 'text/html', data: '<b>' }, status: 'approved', decision: 'approve', decidedBy: CREATOR, note: 'ok', url: 'https://x.com/a/status/9', createdAt: '2026-11-03T09:00:00.000Z', decidedAt: '2026-11-03T09:30:00.000Z' },
+        { id: 'act_3', kind: 'post', text: 'bad', status: 'wat', createdAt: '2026-11-03T08:00:00.000Z' },
+        { id: 'act_4', kind: 'post', text: 'no date', status: 'rejected' },
+      ],
+      pending: '1',
+    });
+    expect(a.pending).toBe(1);
+    expect(a.items.map((i) => i.id)).toEqual(['act_1', 'act_2']);
+    expect(a.items[0]).toMatchObject({ kind: 'post', status: 'pending_approval', image: { alt: 'A fox', dataUrl: `data:image/png;base64,${PNG}` }, expiresAt: '2026-11-05T10:00:00.000Z' });
+    expect(a.items[1]).toMatchObject({ kind: 'reply', inReplyTo: '1001', image: { alt: 'x' }, decision: 'approve', url: 'https://x.com/a/status/9', decidedAt: '2026-11-03T09:30:00.000Z' });
+    expect(a.items[1]!.image!.dataUrl).toBeUndefined();
+    expect(a.items[1]!.expiresAt).toBe('2026-11-05T09:00:00.000Z');
+    expect(sanitizeApproval(null)).toBeNull();
+    expect(sanitizeApprovals(null)).toEqual({ items: [], pending: 0 });
   });
 });

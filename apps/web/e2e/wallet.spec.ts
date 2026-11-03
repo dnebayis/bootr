@@ -108,8 +108,12 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await expect(console_.getByTestId('config-revision')).toHaveText('not edited yet');
   const instructions = console_.getByLabel('Instructions');
   await expect(instructions).not.toHaveValue('');
-  expect(await console_.getByRole('switch').count()).toBe(5);
+  expect(await console_.getByRole('switch').count()).toBe(6);
   await expect(console_.getByText('Memory · always on')).toBeVisible();
+  // Post approval mode: on by default in mock mode, with the pending count on the console title.
+  const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
+  await expect(review).toHaveAttribute('aria-checked', 'true');
+  await expect(console_.getByTestId('approvals-pending')).toHaveText('2 pending');
   await expect(console_.getByLabel('Cadence')).toBeVisible();
   await expect(console_.getByLabel('Model')).toBeVisible();
   const save = console_.getByRole('button', { name: 'Save changes' });
@@ -126,6 +130,42 @@ test('coin page shows the agent status line, the activity tape and the creator c
   // The edit lands on the tape.
   await tape.getByRole('tab', { name: 'All' }).click();
   await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('instructions, capabilities');
+
+  // The review queue: one signature (skipped in mock mode) opens the agent's queued posts; Approve sends, Reject notes.
+  const queue = console_.getByTestId('approval-queue');
+  await expect(queue.getByTestId('approval-queue-count')).toHaveText('2 pending');
+  const listed = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/approvals\/list$/.test(r.url()) && r.request().method() === 'POST');
+  await queue.getByRole('button', { name: 'Review posts' }).click();
+  expect((await listed).status()).toBe(200);
+  const items = queue.getByTestId('approval-item');
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toHaveAttribute('data-kind', 'post');
+  await expect(items.first().getByTestId('approval-image')).toBeVisible();
+  await expect(items.nth(1)).toHaveAttribute('data-kind', 'reply');
+  const approved = page.waitForResponse((r) => /\/approvals\/decide$/.test(r.url()) && r.request().method() === 'POST');
+  await items.first().getByRole('button', { name: 'Approve' }).click();
+  expect((await approved).status()).toBe(200);
+  await expect(page.getByText(/Approved and posted on X/)).toBeVisible();
+  await expect(items).toHaveCount(1);
+  await expect(queue.getByTestId('approval-queue-count')).toHaveText('1 pending');
+  await items.first().getByLabel('Note for the agent').fill('Too long; keep replies to one sentence.');
+  await items.first().getByRole('button', { name: 'Reject' }).click();
+  await expect(page.getByText(/Rejected\. The agent will see your note/)).toBeVisible();
+  await expect(queue.getByTestId('approval-queue-empty')).toBeVisible();
+  await expect(console_.getByTestId('approvals-pending')).toHaveCount(0);
+  // Both decisions land on the tape: the approved post as a post with its link, the rejection as a note-free row.
+  await expect(tape.locator('li[data-kind="approval_approved"]').first()).toContainText('Post approved by the creator');
+  await expect(tape.locator('li[data-kind="approval_rejected"]').first()).toContainText('Reply rejected by the creator');
+  await expect(tape.locator('li[data-kind="post"]').first()).toContainText('Week in numbers');
+  // Switching review off is a config change like any other.
+  await review.click();
+  await expect(save).toBeEnabled();
+  const savedAgain = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/config$/.test(r.url()) && r.request().method() === 'POST');
+  await save.click();
+  expect((await savedAgain).status()).toBe(200);
+  await expect(console_.getByTestId('config-revision')).toHaveText('edited 2 times');
+  await expect(review).toHaveAttribute('aria-checked', 'false');
+  await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('post review');
 
   // Fuel and gas live in the console now.
   await expect(console_.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();

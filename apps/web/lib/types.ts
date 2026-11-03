@@ -191,6 +191,8 @@ export interface AgentConfig {
   instructions: string;
   worker: AgentWorkerConfig;
   workerHash: Hex;
+  /** Posts and replies wait in the review queue until the creator approves them (default on for the platform's agent). */
+  requireApproval: boolean;
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -206,6 +208,45 @@ export interface AgentConfigChanges {
     postIntervalMs?: number;
     jobLines?: string[];
   };
+  requireApproval?: boolean;
+}
+
+// ---------------------------------------------------------------- post approval queue (supervisor, via /api/agent/[kernel]/approvals/*)
+
+export type ApprovalStatus = 'pending_approval' | 'approved' | 'rejected' | 'failed';
+export type ApprovalDecision = 'approve' | 'reject';
+
+/** One post or reply the agent wants to send, waiting for (or decided by) the creator. */
+export interface AgentApproval {
+  id: string;
+  kind: 'post' | 'reply';
+  text: string;
+  /** The X post a reply answers. */
+  inReplyTo: string | null;
+  /** The attached picture; `dataUrl` only while pending (what the creator previews). */
+  image: { alt: string; dataUrl?: string } | null;
+  status: ApprovalStatus;
+  decision: ApprovalDecision | null;
+  decidedBy: string | null;
+  note: string | null;
+  /** The post on X once approved and sent. */
+  url: string | null;
+  /** ISO 8601. */
+  createdAt: string;
+  decidedAt: string | null;
+  expiresAt: string;
+}
+
+/** `POST /api/agent/[kernel]/approvals/list` (creator only); `token` keeps the session without a new signature. */
+export interface AgentApprovals {
+  items: AgentApproval[];
+  pending: number;
+  token?: string;
+}
+
+/** `GET /api/agent/[kernel]/approvals`: the public count. */
+export interface AgentApprovalCount {
+  pending: number;
 }
 
 /** One row of the activity tape: a post, a reply, a treasury op, a runtime status change or a config edit. */

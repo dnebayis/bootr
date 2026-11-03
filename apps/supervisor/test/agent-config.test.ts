@@ -54,6 +54,7 @@ describe('GET /internal/agents/:id/config', () => {
         instructions: INSTRUCTIONS,
         worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
         workerHash: COMMUNITY.hash,
+        requireApproval: false,
         revision: 1,
         updatedAt: expect.any(String),
       });

@@ -4,14 +4,17 @@
  *   - `sv_treasury_ops`: confirmed and failed fee claims, swaps, gas and fuel top-ups;
  *   - the runtime's current status (sleeping, paused, held, awake). The supervisor keeps no history of status
  *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake.
+ *   - `sv_approvals`: posts waiting for the creator's review, approvals (the sent post is its own `post` row) and
+ *     rejections; texts and notes stay private (this is a public read).
  * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer`;
- * `image` (a picture made with `generate_image`) shows under All.
+ * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
+import { approvalActivity } from './approvals.js';
 import { actions, treasuryOps } from './db/schema.js';
 
-export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status';
+export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status' | 'approval_pending' | 'approval_approved' | 'approval_rejected';
 
 export interface ActivityItem {
   /** ISO timestamp. */
@@ -40,7 +43,7 @@ export function shortAmount(raw: string, decimals: number): string {
   return out.includes('.') ? out.replace(/0+$/, '').replace(/\.$/, '') : out;
 }
 
-const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', jobLines: 'job lines' };
+const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', jobLines: 'job lines', requireApproval: 'post review' };
 
 function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
   const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown };
@@ -54,7 +57,11 @@ function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): A
     return { at: row.createdAt.toISOString(), kind: 'image', summary: typeof alt === 'string' && alt ? `Made an image: ${alt}` : 'Made an image' };
   }
   if (a.tool !== 'publish_post' && a.tool !== 'publish_reply') return null;
-  const postId = (row.result as { postId?: unknown } | null)?.postId;
+  // The row holds either the bare result or the agent-core ActionResult envelope (`{status, result: {...}}`).
+  const res = (row.result ?? {}) as { postId?: unknown; result?: { postId?: unknown; queued?: unknown } };
+  // A publish queued for the creator's review is on the tape as `approval_pending`, not as a post.
+  if (res.result?.queued === true) return null;
+  const postId = res.postId ?? res.result?.postId;
   const url = typeof postId === 'string' && xHandle ? `https://x.com/${xHandle}/status/${postId}` : undefined;
   return { at: row.createdAt.toISOString(), kind: a.tool === 'publish_post' ? 'post' : 'reply', summary: a.tool === 'publish_post' ? 'Posted on X' : 'Replied on X', ...(url ? { url } : {}) };
 }
@@ -120,7 +127,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
   // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
   const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image') or ${actions.action}->>'kind' = 'config_updated')`;
-  const [actionRows, opRows] = await Promise.all([
+  const [actionRows, opRows, approvalItems] = await Promise.all([
     ctx.db
       .select()
       .from(actions)
@@ -133,6 +140,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
       .where(before ? and(eq(treasuryOps.agentId, agent.agentId), lt(treasuryOps.updatedAt, before)) : eq(treasuryOps.agentId, agent.agentId))
       .orderBy(desc(treasuryOps.updatedAt))
       .limit(limit),
+    approvalActivity(ctx, agent, limit, before),
   ]);
   const items: ActivityItem[] = [];
   for (const row of actionRows) {
@@ -143,6 +151,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
     const item = opItem(ctx.chain.chainId, op);
     if (item && (!before || Date.parse(item.at) < before.getTime())) items.push(item);
   }
+  for (const item of approvalItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
   const status = statusItem(agent, runtime);
   if (!before || Date.parse(status.at) < before.getTime()) items.push(status);
   items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));

@@ -19,7 +19,11 @@ import { mock, subscribeMock } from './mock';
 import type {
   Agent,
   AgentActivity,
+  AgentApproval,
+  AgentApprovalCount,
+  AgentApprovals,
   AgentConfig,
+  ApprovalDecision,
   AgentPosts,
   AgentWithToken,
   DailyStat,
@@ -293,6 +297,47 @@ export async function fetchAgentActivity(kernel: string, before: string | null =
   return { items: Array.isArray(json.items) ? json.items : [] };
 }
 
+/** How many posts wait for the creator's review (`/api/agent/:kernel/approvals`, public). */
+export async function fetchApprovalCount(kernel: string): Promise<AgentApprovalCount> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/approvals`, { cache: 'no-store' });
+  if (!res.ok) throw new IndexerError(`Approval count responded ${res.status}`);
+  const json = (await res.json()) as Partial<AgentApprovalCount>;
+  return { pending: typeof json.pending === 'number' ? json.pending : 0 };
+}
+
+/** The creator's proof for the review routes: a fresh SIWE signature, or the review token an earlier call returned. */
+export type ReviewAuth = { message: string; signature: string } | { token: string };
+
+/** A review route answered with an error; `status` 401 `review_expired` means: sign again. */
+export class ReviewError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function reviewCall<T>(kernel: string, path: 'list' | 'decide', body: Record<string, unknown>, query = ''): Promise<T> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/approvals/${path}${query}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store' });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    throw new ReviewError(res.status, err.error ?? `http_${res.status}`, err.message ?? `The review request failed (${res.status}).`);
+  }
+  return (await res.json()) as T;
+}
+
+/** The review queue (texts, image previews); `token` in the answer keeps the session without another signature. */
+export function fetchApprovals(kernel: string, auth: ReviewAuth, status: 'pending' | 'all' = 'pending'): Promise<AgentApprovals> {
+  return reviewCall<AgentApprovals>(kernel, 'list', auth, status === 'all' ? '?status=all' : '');
+}
+
+/** Approve (sends the post now) or reject (with an optional note the agent reads) one queued item. */
+export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: string, decision: ApprovalDecision, note?: string): Promise<AgentApproval> {
+  return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(note ? { note } : {}) });
+}
+
 // ---------------------------------------------------------------- query keys
 
 export const qk = {
@@ -311,6 +356,7 @@ export const qk = {
   posts: (k: string) => ['posts', k.toLowerCase()] as const,
   agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
   agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
+  approvalCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'approvals', 'count'] as const,
 };
 
 // ---------------------------------------------------------------- hooks
@@ -390,6 +436,11 @@ export function useAgentPosts(agentId: string | undefined) {
 
 export function useAgentConfig(kernel: string | undefined, enabled = true) {
   return useQuery({ queryKey: qk.agentConfig(kernel ?? ''), queryFn: () => fetchAgentConfig(kernel!), enabled: !!kernel && enabled, staleTime: 30_000, retry: 1 });
+}
+
+/** The "n pending" badge of the creator console; polled while the page is open. */
+export function useApprovalCount(kernel: string | undefined, enabled = true) {
+  return useQuery({ queryKey: qk.approvalCount(kernel ?? ''), queryFn: () => fetchApprovalCount(kernel!), enabled: !!kernel && enabled, staleTime: 15_000, refetchInterval: 60_000, retry: 1 });
 }
 
 /** Infinite activity tape; the next page starts before the last item's `at`. A short page means the end. */

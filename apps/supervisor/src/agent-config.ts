@@ -12,6 +12,7 @@ import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents } from './db/schema.js';
+import { requiresApproval } from './approvals.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
@@ -32,12 +33,14 @@ export interface AgentConfigView {
     jobLines: string[];
   };
   workerHash: string | null;
+  /** Posts and replies wait for the creator's approval before they go out (approvals.ts). */
+  requireApproval: boolean;
   revision: number;
   updatedAt: string;
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval';
 
 /** The worker preset in force for a stored config: live capabilities and cadence, stored or template job lines. */
 function currentPreset(config: Record<string, unknown>): WorkerPreset {
@@ -63,6 +66,7 @@ export function configView(agent: AgentRow): AgentConfigView {
     instructions: typeof config.creatorIdentity === 'string' ? config.creatorIdentity : '',
     worker: { kind: workerKind(config), capabilities: preset.capabilities, postIntervalMs: preset.postIntervalMs, jobLines: preset.identity },
     workerHash: typeof config.workerHash === 'string' ? config.workerHash : null,
+    requireApproval: requiresApproval(config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
   };
@@ -76,6 +80,8 @@ export interface ConfigUpdateBody {
   /** The admin model allow-list the web passes; when present `model` must be in it. */
   allowedModels?: unknown;
   worker?: unknown;
+  /** Post approval mode on/off (independent of the worker). */
+  requireApproval?: unknown;
 }
 
 export type ConfigUpdateResult = { ok: true; config: AgentConfigView; fields: ConfigField[] } | { ok: false; status: 400 | 403 | 409; error: string; message: string };
@@ -147,6 +153,15 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (merged.postIntervalMs !== current.postIntervalMs) fields.push('cadence');
     if (linesChanged) fields.push('jobLines');
     if (fields.some((f) => f === 'powers' || f === 'cadence' || f === 'jobLines')) config = withWorkerPreset(config, kind, merged);
+  }
+
+  // Post approval mode: a plain boolean, independent of the worker preset.
+  if (body.requireApproval !== undefined) {
+    if (typeof body.requireApproval !== 'boolean') return reject(400, 'invalid_require_approval', 'requireApproval must be a boolean');
+    if (body.requireApproval !== requiresApproval(before)) {
+      config.requireApproval = body.requireApproval;
+      fields.push('requireApproval');
+    }
   }
 
   if (!fields.length) return reject(409, 'unchanged', 'nothing changed');

@@ -186,6 +186,49 @@ export const images = pgTable(
   (t) => [index('sv_images_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
+export const approvalKinds = ['post', 'reply'] as const;
+export type ApprovalKind = (typeof approvalKinds)[number];
+export const approvalStatuses = ['pending_approval', 'approved', 'rejected', 'failed'] as const;
+export type ApprovalStatus = (typeof approvalStatuses)[number];
+export const approvalDecisions = ['approve', 'reject'] as const;
+export type ApprovalDecision = (typeof approvalDecisions)[number];
+
+/**
+ * Post approval mode (`config.requireApproval`): a `publish_post` / `publish_reply` the agent decided on is held
+ * here instead of going to the sender. The creator approves (the supervisor sends it then, with the image if any,
+ * and records the real post in `sv_actions`) or rejects (the note reaches the agent on its next turn). Pending
+ * rows expire after `APPROVAL_TTL_MS` (approvals.ts): auto-rejected with the note "expired".
+ */
+export const approvals = pgTable(
+  'sv_approvals',
+  {
+    /** The agent-core action id of the queued publish (`sv_actions.action_id`); also the sender actionId when approved. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    kind: text('kind', { enum: approvalKinds }).notNull(),
+    text: text('text').notNull(),
+    /** sha256 of the normalised text (dedupe within 24 h). */
+    textHash: text('text_hash').notNull(),
+    imageId: text('image_id'),
+    /** The X post a reply answers. */
+    inReplyTo: text('in_reply_to'),
+    /** What the sender needs for a reply decided earlier: `{replyAuthorId?, replyEligibility?, attributions?}`. */
+    meta: jsonb('meta').$type<Record<string, unknown>>().notNull().default({}),
+    status: text('status', { enum: approvalStatuses }).notNull().default('pending_approval'),
+    decision: text('decision', { enum: approvalDecisions }),
+    /** The creator address, or 'system' for an expiry. */
+    decidedBy: text('decided_by'),
+    note: text('note'),
+    /** The X post id once an approved item went out. */
+    postId: text('post_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    decidedAt: ts('decided_at'),
+    /** When the rejection (or failure) was surfaced to the agent; null = still to tell. */
+    feedbackAt: ts('feedback_at'),
+  },
+  (t) => [index('sv_approvals_agent_status_idx').on(t.agentId, t.status), index('sv_approvals_agent_created_idx').on(t.agentId, t.createdAt)],
+);
+
 /** Small key/value store for pollers (launch event block cursor). */
 export const cursors = pgTable('sv_cursors', {
   name: text('name').primaryKey(),

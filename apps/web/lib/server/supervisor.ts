@@ -1,5 +1,5 @@
 /**
- * Server-side client for apps/supervisor's internal API (`/internal/agents/:id/config`, `/activity`), used by the
+ * Server-side client for apps/supervisor's internal API (`/internal/agents/:id/config`, `/activity`, `/approvals`), used by the
  * coin page routes under `/api/agent/[kernel]/`. Same HMAC scheme as the sender (apps/supervisor/src/hmac.ts):
  *
  *   Authorization: HMAC <ts>:<hex>, hex = HMAC-SHA256(SUPERVISOR_SERVICE_KEY, ts + "\n" + METHOD + "\n" + path(+query) + "\n" + hex(sha256(body)))
@@ -8,7 +8,7 @@
  */
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import type { AgentActivity, AgentActivityItem, AgentConfig, AgentConfigChanges, AgentWorkerConfig, WorkerKind } from '@/lib/types';
+import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -39,7 +39,7 @@ export type PutAgentConfigBody = AgentConfigChanges & {
   allowedModels: string[];
 };
 
-async function call(method: 'GET' | 'PUT', path: string, body?: unknown): Promise<Response> {
+async function call(method: 'GET' | 'PUT' | 'POST', path: string, body?: unknown): Promise<Response> {
   const { serviceKey, url } = supervisorEnv();
   if (!serviceKey || !url) throw new SupervisorUnavailable('supervisor is not configured');
   const raw = body === undefined ? '' : JSON.stringify(body);
@@ -105,6 +105,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     instructions: str(o.instructions, 4000) ?? '',
     worker: w,
     workerHash: (str(o.workerHash, 66) && HASH_RE.test(o.workerHash as string) ? (o.workerHash as Hex) : `0x${'0'.repeat(64)}`) as Hex,
+    requireApproval: o.requireApproval === true,
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -126,6 +127,57 @@ export function sanitizeActivity(raw: unknown): AgentActivity {
     items.push(item);
   }
   return { items };
+}
+
+const APPROVAL_STATUSES: readonly AgentApproval['status'][] = ['pending_approval', 'approved', 'rejected', 'failed'];
+const IMAGE_MIME_RE = /^image\/(png|jpeg|webp|gif)$/;
+/** The largest picture the queue embeds (base64; X takes 5 MB, the relay caps lower). */
+const IMAGE_DATA_MAX = 8_000_000;
+
+/** One queue item as the console renders it; null when it is not an approval. Image bytes become a data URL. */
+export function sanitizeApproval(raw: unknown): AgentApproval | null {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const id = str(o.id, 120);
+  const kind = o.kind === 'reply' ? 'reply' : o.kind === 'post' ? 'post' : null;
+  const text = str(o.text, 8000);
+  const status = APPROVAL_STATUSES.includes(o.status as AgentApproval['status']) ? (o.status as AgentApproval['status']) : null;
+  const createdAt = iso(o.createdAt);
+  if (!id || !kind || text === null || !status || !createdAt) return null;
+  let image: AgentApproval['image'] = null;
+  if (o.image && typeof o.image === 'object') {
+    const im = o.image as { alt?: unknown; mime?: unknown; data?: unknown };
+    const alt = str(im.alt, 1000) ?? '';
+    const mime = str(im.mime, 40);
+    const data = typeof im.data === 'string' && im.data.length <= IMAGE_DATA_MAX && /^[A-Za-z0-9+/=]*$/.test(im.data) ? im.data : null;
+    image = { alt, ...(mime && IMAGE_MIME_RE.test(mime) && data ? { dataUrl: `data:${mime};base64,${data}` } : {}) };
+  }
+  const decision = o.decision === 'approve' || o.decision === 'reject' ? (o.decision as ApprovalDecision) : null;
+  return {
+    id,
+    kind,
+    text,
+    inReplyTo: str(o.inReplyTo, 40),
+    image,
+    status,
+    decision,
+    decidedBy: str(o.decidedBy, 64),
+    note: str(o.note, 1000),
+    url: typeof o.url === 'string' && /^https:\/\/[^\s]{1,300}$/.test(o.url) ? o.url : null,
+    createdAt,
+    decidedAt: iso(o.decidedAt),
+    expiresAt: iso(o.expiresAt) ?? new Date(Date.parse(createdAt) + 48 * 3_600_000).toISOString(),
+  };
+}
+
+export function sanitizeApprovals(raw: unknown): AgentApprovals {
+  const o = (raw ?? {}) as { items?: unknown; pending?: unknown };
+  const items: AgentApproval[] = [];
+  for (const it of Array.isArray(o.items) ? o.items : []) {
+    const a = sanitizeApproval(it);
+    if (a) items.push(a);
+  }
+  const n = Number(o.pending);
+  return { items, pending: Number.isFinite(n) && n >= 0 ? Math.round(n) : items.filter((i) => i.status === 'pending_approval').length };
 }
 
 // ------------------------------------------------------------------ calls
@@ -160,6 +212,23 @@ export async function getAgentActivity(agentId: string, opts: { limit?: number; 
   return sanitizeActivity(await res.json());
 }
 
+/** `GET /internal/agents/:id/approvals?status=`: the review queue (pending items carry their image). Unknown agent = empty. */
+export async function getAgentApprovals(agentId: string, status: 'pending' | 'all' = 'pending'): Promise<AgentApprovals> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/approvals?status=${status}`);
+  if (res.status === 404) return { items: [], pending: 0 };
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeApprovals(await res.json());
+}
+
+/** `POST /internal/agents/:id/approvals/:approvalId {decision, by, note?}`; the decided item, or a SupervisorError (400/403/404/409/503). */
+export async function decideAgentApproval(agentId: string, approvalId: string, body: { decision: ApprovalDecision; by: Address; note?: string }): Promise<AgentApproval> {
+  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/approvals/${encodeURIComponent(approvalId)}`, body);
+  if (!res.ok) throw await errorOf(res);
+  const item = sanitizeApproval(await res.json());
+  if (!item) throw new SupervisorUnavailable('supervisor returned a malformed approval');
+  return item;
+}
+
 // ------------------------------------------------------------------ creator changes (web-side pre-check; the supervisor is authoritative)
 
 export const INSTRUCTIONS_MIN = 20;
@@ -179,8 +248,12 @@ function cleanText(v: unknown): string | null {
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string } {
   if (!input || typeof input !== 'object') return { ok: false, message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.requireApproval !== undefined) {
+    if (typeof o.requireApproval !== 'boolean') return { ok: false, message: 'requireApproval must be true or false' };
+    changes.requireApproval = o.requireApproval;
+  }
   if (o.instructions !== undefined) {
     const text = cleanText(o.instructions);
     if (text === null || text.length < INSTRUCTIONS_MIN || text.length > INSTRUCTIONS_MAX) {

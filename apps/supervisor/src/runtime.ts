@@ -31,8 +31,9 @@ import {
 } from '@bootr/agent-core';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
-import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView } from './broker/index.js';
-import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
+import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
+import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
+import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
@@ -127,6 +128,7 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
   const eligible = views.filter((v) => v.eligible);
   const memories = await ctx.memories.recent(agent.agentId, 5);
   const schedule = inputs.schedule;
+  const review = await reviewSection(ctx, agent);
   return buildObservation({
     now,
     market: inputs.market ? { snapshot: inputs.market } : null,
@@ -148,8 +150,33 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       recentNotes: memories,
       tools: tools.map((t) => t.name),
       stepBudget: ctx.config.MAX_TOOL_STEPS,
+      ...(review ? { review } : {}),
+      // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
+      ...(await bootrTodaySection(ctx, agent, config)),
     },
   });
+}
+
+/**
+ * Post approval mode as the model sees it (approvals.ts): whether its posts are reviewed first, how many wait,
+ * and the rejections since its last turn ("your post X was rejected: note"), each told once. Stale pending
+ * items expire here too. Null when the flag is off and nothing was rejected.
+ */
+async function reviewSection(ctx: SupervisorContext, agent: AgentRow): Promise<Record<string, unknown> | null> {
+  await expireApprovals(ctx, agent.agentId);
+  const rejected = await takeFeedback(ctx, agent.agentId);
+  const enabled = requiresApproval(agent.config);
+  if (!enabled && rejected.length === 0) return null;
+  return {
+    enabled,
+    ...(enabled
+      ? {
+          pending: await pendingCount(ctx, agent.agentId),
+          note: 'The creator reviews your posts and replies before they go out: publish_post and publish_reply queue them. A queued item counts as posted; never post or rephrase it again. Rejections appear here on a later turn.',
+        }
+      : {}),
+    ...(rejected.length ? { rejected: rejected.map((r) => ({ approvalId: r.approvalId, kind: r.kind, text: r.text, note: r.note, decidedAt: r.decidedAt, message: r.message })) } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +280,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
 
   // A pending action left over from a previous process: resolve it first.
   if (broker.pending && (broker.pending.status === 'sent' || broker.pending.status === 'held')) {
-    const resolution = await resolvePending(ctx, agent, broker.pending);
+    // A publish queued for the creator's review before a crash settles from its approval row, never from the sender.
+    const queued = broker.pending.action.tool === 'publish_post' || broker.pending.action.tool === 'publish_reply' ? await queuedOutcomeFor(ctx, broker.pending.id) : null;
+    const resolution: PendingResolution = queued && queued.kind !== 'unknown' ? { resolved: true, outcome: queued } : await resolvePending(ctx, agent, broker.pending);
     if (resolution.resolved) {
       broker.pending = reconcile(broker.pending, { actionId: broker.pending.id, cycleKey: broker.pending.cycleKey, outcome: resolution.outcome, ...(resolution.receipt ? { receipt: resolution.receipt } : {}) });
     } else if (broker.pending.status === 'sent' && broker.pending.action.tool !== 'publish_post' && broker.pending.action.tool !== 'publish_reply') {
@@ -395,7 +424,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     pending = markSent(pending);
     broker.pending = pending;
     await persist();
-    const outcome = await executeAction(ctx, agent, config, pending, env);
+    // Post approval mode: the publish is stored for the creator instead of sent (approvals.ts).
+    const reviewed = (action.tool === 'publish_post' || action.tool === 'publish_reply') && requiresApproval(agent.config);
+    const outcome = reviewed ? await queueForApproval(ctx, agent, pending, env) : await executeAction(ctx, agent, config, pending, env);
     pending = recordOutcome(pending, outcome, ctx.now());
     broker.pending = pending;
     turn.inbox = Object.fromEntries(env.inbox);

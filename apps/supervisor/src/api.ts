@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { agentActivity } from './activity.js';
+import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { configView, updateAgentConfig, type ConfigUpdateBody } from './agent-config.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
@@ -168,6 +169,26 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
     if (before && Number.isNaN(before.getTime())) return c.json({ error: 'invalid_before', message: 'before must be an ISO timestamp' }, 400);
     return c.json({ items: await agentActivity(ctx, agent, runtime, { limit, before }) });
+  });
+
+  /** `?status=pending` (default) | `all`: the review queue (approvals.ts); pending items carry their image as base64. */
+  app.get('/internal/agents/:id/approvals', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const status = c.req.query('status') ?? 'pending';
+    if (status !== 'pending' && status !== 'all') return c.json({ error: 'invalid_status', message: 'status must be pending or all' }, 400);
+    return c.json(await listApprovals(ctx, agent, status));
+  });
+
+  /** Body `{decision: 'approve'|'reject', by, note?}`; approve sends the post now, reject tells the agent next turn. */
+  app.post('/internal/agents/:id/approvals/:approvalId', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as DecisionBody | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    const result = await decideApproval(ctx, agent, c.req.param('approvalId'), body);
+    if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
+    return c.json(result.approval);
   });
 
   app.post('/internal/agents/:id/pause', async (c) => {

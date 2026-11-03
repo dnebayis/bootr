@@ -15,6 +15,7 @@ import { groupByProvider, modelLabel } from '@/lib/models';
 import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
+import { useApprovalCount } from '@/lib/indexer';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -22,6 +23,7 @@ import { Label, Select, Switch, Textarea } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
+import { ApprovalQueue } from './ApprovalQueue';
 import { FuelForm } from './FuelForm';
 import { GasForm } from './GasForm';
 
@@ -29,10 +31,10 @@ const INSTRUCTIONS_MIN = 20;
 const INSTRUCTIONS_MAX = 600;
 const POWERS = CAPABILITY_KEYS.filter((k) => !ALWAYS_ON_CAPABILITIES.includes(k));
 
-type Draft = { instructions: string; capabilities: Record<CapabilityKey, boolean>; postIntervalMs: number; model: string };
+type Draft = { instructions: string; capabilities: Record<CapabilityKey, boolean>; postIntervalMs: number; model: string; requireApproval: boolean };
 
 function draftOf(c: AgentConfig): Draft {
-  return { instructions: c.instructions, capabilities: { ...c.worker.capabilities }, postIntervalMs: c.worker.postIntervalMs, model: c.model };
+  return { instructions: c.instructions, capabilities: { ...c.worker.capabilities }, postIntervalMs: c.worker.postIntervalMs, model: c.model, requireApproval: c.requireApproval };
 }
 
 /** Only what differs from the stored config; null when nothing does. */
@@ -46,6 +48,7 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (Object.keys(caps).length) worker.capabilities = caps;
   if (d.postIntervalMs !== config.worker.postIntervalMs) worker.postIntervalMs = d.postIntervalMs;
   if (Object.keys(worker).length) changes.worker = worker;
+  if (d.requireApproval !== config.requireApproval) changes.requireApproval = d.requireApproval;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -61,15 +64,17 @@ function cadenceLabel(ms: number): string {
 }
 
 /**
- * The creator's panel on the coin page: the agent's instructions, powers, cadence and model (from the supervisor via
- * `/api/agent/:kernel/config`, saved with a wallet signature through `POST` on the same route), then the existing
- * Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
+ * The creator's panel on the coin page: the agent's instructions, powers, the post review switch, cadence and model
+ * (from the supervisor via `/api/agent/:kernel/config`, saved with a wallet signature through `POST` on the same
+ * route), the review queue (ApprovalQueue), then the existing Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
  */
 export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | null }) {
   const { address } = useConnection();
   const { signMessageAsync } = useSignMessage();
   const queryClient = useQueryClient();
   const config = useAgentConfig(token.kernel);
+  const approvals = useApprovalCount(token.kernel);
+  const pendingReviews = approvals.data?.pending ?? 0;
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
   const kernels = useMemo(() => [token.kernel as Address], [token.kernel]);
   const gas = useKernelGas(kernels);
@@ -156,7 +161,19 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   };
 
   return (
-    <Panel title="Creator console" action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}>
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-2">
+          Creator console
+          {pendingReviews > 0 ? (
+            <span data-testid="approvals-pending">
+              <Badge tone="ink">{pendingReviews} pending</Badge>
+            </span>
+          ) : null}
+        </span>
+      }
+      action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}
+    >
       <div data-testid="creator-console" className="flex flex-col gap-4">
         {config.isPending ? (
           <div className="flex flex-col gap-3">
@@ -208,6 +225,13 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                 ))}
               </div>
             </fieldset>
+            <div className="flex items-center justify-between gap-3 rounded-sm border border-hairline px-3 py-2">
+              <span className="min-w-0">
+                <span className="block text-sm text-ink">Review posts before they go out</span>
+                <span className="block text-micro text-mute">Posts and replies wait in the review queue below until you approve them; unreviewed items expire after 48 hours.</span>
+              </span>
+              <Switch id="console-review" label="Review posts before they go out" checked={draft.requireApproval} onChange={(v) => update({ requireApproval: v })} />
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="console-cadence">Cadence</Label>
@@ -248,6 +272,8 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </div>
           </form>
         )}
+
+        {cfg ? <ApprovalQueue token={token} reviewing={cfg.requireApproval} /> : null}
 
         <div className="border-t border-hairline pt-4">
           <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />

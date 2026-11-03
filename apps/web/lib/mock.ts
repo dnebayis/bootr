@@ -9,7 +9,10 @@ import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type {
   Agent,
   AgentActivityItem,
+  AgentApproval,
+  AgentApprovals,
   AgentConfig,
+  ApprovalDecision,
   AgentConfigChanges,
   AgentPost,
   AgentStatus,
@@ -95,6 +98,8 @@ interface Store {
   /** Supervisor-side state the coin page reads through /api/agent/[kernel]/*: built lazily per kernel. */
   configs: Map<string, AgentConfig>;
   activity: Map<string, AgentActivityItem[]>;
+  /** The review queue per kernel (post approval mode), built lazily like the config. */
+  approvals: Map<string, AgentApproval[]>;
 }
 
 let store: Store | null = null;
@@ -285,7 +290,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map() };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map() };
 }
 
 export function mockStore(): Store {
@@ -518,12 +523,52 @@ export const mock = {
       cfg.worker.jobLines = [...w.jobLines];
       fields.push('jobLines');
     }
+    if (changes.requireApproval !== undefined && changes.requireApproval !== cfg.requireApproval) {
+      cfg.requireApproval = changes.requireApproval;
+      fields.push('post review');
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
-    if (fields.some((f) => f !== 'instructions' && f !== 'model') && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
+    if (fields.some((f) => f !== 'instructions' && f !== 'model' && f !== 'post review') && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
     cfg.revision += 1;
     cfg.updatedAt = new Date().toISOString();
     activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed ${fields.join(', ')} (revision ${cfg.revision}).` });
     return { ok: true, config: clone(cfg) };
+  },
+  /** The review queue of the agent's posts (lib/types AgentApprovals); `all` includes decided items. */
+  agentApprovals(kernel: string, status: 'pending' | 'all' = 'pending'): AgentApprovals {
+    const list = approvalsFor(kernel);
+    const items = status === 'all' ? list : list.filter((a) => a.status === 'pending_approval');
+    return clone({ items, pending: list.filter((a) => a.status === 'pending_approval').length });
+  },
+  /**
+   * Decides one queued item the way the supervisor would: approve "sends" it (a post row with a link lands on the
+   * tape), reject marks it with the note. 404 unknown, 409 already decided.
+   */
+  decideApproval(kernel: string, approvalId: string, decision: ApprovalDecision, by: string, note: string | null): { ok: true; approval: AgentApproval } | { ok: false; status: number; error: string; message: string } {
+    const item = approvalsFor(kernel).find((a) => a.id === approvalId);
+    if (!item) return { ok: false, status: 404, error: 'not_found', message: 'No such item.' };
+    if (item.status !== 'pending_approval') return { ok: false, status: 409, error: 'already_decided', message: `This item is ${item.status}.` };
+    const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
+    const at = new Date().toISOString();
+    item.decision = decision;
+    item.decidedBy = by;
+    item.decidedAt = at;
+    item.note = note;
+    delete item.image?.dataUrl;
+    const noun = item.kind === 'reply' ? 'Reply' : 'Post';
+    if (decision === 'approve') {
+      item.status = 'approved';
+      const postId = String(1850000000000000000n + BigInt(parseInt(item.id.replace(/\D/g, '') || '0', 10)) * 10n + 7n);
+      item.url = t?.xHandle ? `https://x.com/${t.xHandle}/status/${postId}` : null;
+      activityFor(kernel).unshift({ at, kind: item.kind, summary: `${item.kind === 'reply' ? 'Replied' : 'Posted'}: ${item.text}`, ...(item.url ? { url: item.url } : {}) }, { at, kind: 'approval_approved', summary: `${noun} approved by the creator`, ...(item.url ? { url: item.url } : {}) });
+    } else {
+      item.status = 'rejected';
+      activityFor(kernel).unshift({ at, kind: 'approval_rejected', summary: `${noun} rejected by the creator` });
+    }
+    const tape = activityFor(kernel);
+    const idx = tape.findIndex((row) => row.kind === 'approval_pending' && row.at === item.createdAt);
+    if (idx >= 0) tape.splice(idx, 1);
+    return { ok: true, approval: clone(item) };
   },
   /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
   agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {
@@ -569,6 +614,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     instructions,
     worker: { kind, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
+    requireApproval: true,
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
   };
@@ -585,6 +631,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     instructions: DEFAULT_INSTRUCTIONS,
     worker: { kind: template.id, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: template.hash,
+    requireApproval: false,
     revision: 0,
     updatedAt: new Date().toISOString(),
   };
@@ -622,6 +669,10 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
       items.push({ at: at(d * 86400 + 5 * 3600 + d * 700), kind: 'post', summary: `Posted: Day ${d} recap: volume ${usdShort(t.volume24hUsd * (0.6 + r() * 0.8))}, ${Math.round(2 + r() * 6)} new holders.`, url: postUrl(10 + d) });
     }
   }
+  for (const a of buildApprovals(t)) {
+    if (a.status === 'pending_approval') items.push({ at: a.createdAt, kind: 'approval_pending', summary: `A ${a.kind} is waiting for the creator's review` });
+    else if (a.status === 'approved' && a.decidedAt) items.push({ at: a.decidedAt, kind: 'approval_approved', summary: `${a.kind === 'reply' ? 'Reply' : 'Post'} approved by the creator`, ...(a.url ? { url: a.url } : {}) });
+  }
   if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
   items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` });
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -641,6 +692,36 @@ function configFor(kernel: string): AgentConfig {
     s.configs.set(key, cfg);
   }
   return cfg;
+}
+
+/** A tiny dot-matrix picture (SVG data URL) standing in for a generated image in the review queue. */
+const MOCK_IMAGE_SVG = `data:image/svg+xml;base64,${typeof btoa === 'function' ? btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90"><rect width="160" height="90" fill="#111"/><g fill="#9cff57">' + Array.from({ length: 48 }, (_, i) => `<circle cx="${12 + (i % 12) * 12.5}" cy="${18 + Math.floor(i / 12) * 18}" r="${1.5 + ((i * 7) % 5) * 0.7}"/>`).join('') + '</g></svg>') : ''}`;
+
+/** The review queue of a known token: two pending items (one with a picture, one reply) and one decided earlier. */
+function buildApprovals(t: Token): AgentApproval[] {
+  const now = Date.now();
+  const at = (ageS: number) => new Date(now - ageS * 1000).toISOString();
+  const expiry = (ageS: number) => new Date(now - ageS * 1000 + 48 * 3_600_000).toISOString();
+  const n = parseInt(t.agentId, 10) || 0;
+  const postId = (k: number) => String(1850000000000000000n + BigInt(n) * 10n + BigInt(k));
+  const base = { decision: null, decidedBy: null, note: null, url: null, decidedAt: null } as const;
+  return [
+    { id: `act_${n}q2`, kind: 'post', text: `Week in numbers for $${t.symbol}: ${t.holders} holders, ${usdShort(t.volume24hUsd)} traded in the last day, fees claimed on schedule. No predictions, just the ledger.`, inReplyTo: null, image: { alt: `A dot-matrix chart of $${t.symbol} holders over the week`, dataUrl: MOCK_IMAGE_SVG }, status: 'pending_approval', ...base, createdAt: at(900), expiresAt: expiry(900) },
+    { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
+    { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800) },
+  ];
+}
+
+function approvalsFor(kernel: string): AgentApproval[] {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let list = s.approvals.get(key);
+  if (!list) {
+    const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
+    list = t ? buildApprovals(t) : [];
+    s.approvals.set(key, list);
+  }
+  return list;
 }
 
 function activityFor(kernel: string): AgentActivityItem[] {
