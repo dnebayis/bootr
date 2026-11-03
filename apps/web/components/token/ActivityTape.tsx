@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { ArrowUpRightIcon, XLogoIcon } from '@/components/ui/Icons';
 import { cn } from '@/components/ui/cn';
+import { Isometric } from '@/components/art/Isometric';
 
 type Filter = 'all' | 'posts' | 'treasury';
 const FILTERS: { id: Filter; label: string }[] = [
@@ -134,8 +135,13 @@ export function ActivityTape({ token, now }: { token: Token; now: number }) {
           </ul>
         ) : filter === 'posts' && !handle ? (
           <p className="py-2 text-caption text-mute">The agent has not connected an X account yet.</p>
+        ) : filter === 'all' ? (
+          <div className="flex items-center gap-3 py-2">
+            <Isometric kind="blueprint" size={48} className="shrink-0 text-mute" />
+            <p className="text-caption text-mute">Nothing yet.</p>
+          </div>
         ) : (
-          <p className="py-2 text-caption text-mute">{filter === 'all' ? 'Nothing yet.' : `No ${filter === 'posts' ? 'posts' : 'treasury activity'} yet.`}</p>
+          <p className="py-2 text-caption text-mute">{`No ${filter === 'posts' ? 'posts' : 'treasury activity'} yet.`}</p>
         )}
         {activity.hasNextPage ? (
           <div className="pt-2">

@@ -18,6 +18,8 @@ import { changeClass, Usd } from '@/components/ui/Ticker';
 import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { DexChart } from './DexChart';
 import { TokenImage } from '@/components/ui/TokenImage';
+import { AgentPortrait } from '@/components/art/AgentPortrait';
+import { Isometric } from '@/components/art/Isometric';
 import { AgentPanel } from './AgentPanel';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
@@ -57,6 +59,7 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
 function NotFound({ address, reason }: { address: string; reason: string }) {
   return (
     <div className="flex flex-col items-start gap-3 py-16">
+      <Isometric kind="blueprint" size={64} className="text-mute" />
       <span className="font-mono text-caption text-mute">{address.length > 20 ? shortAddr(address) : address || '—'}</span>
       <h1 className="text-display-md font-semibold text-ink">Token not found.</h1>
       <p className="text-sm text-mute">{reason}</p>
@@ -90,7 +93,10 @@ export function TokenView({ address }: { address: string }) {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
-          <TokenImage src={token.image} symbol={token.symbol} size={56} className="rounded-sm" />
+          <div className="flex shrink-0 items-center gap-1.5" title="The coin and its agent">
+            <TokenImage src={token.image} symbol={token.symbol} size={56} className="rounded-sm" />
+            <AgentPortrait address={token.kernel} status={token.agent?.status} size={56} />
+          </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate text-display-md font-semibold text-ink">{token.name}</h1>

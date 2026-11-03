@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { imageFileProblem, uploadImage } from '@/lib/launch';
 import type { UploadResult } from '@/lib/ipfs';
 import { cn } from '@/components/ui/cn';
-import { UploadIcon } from '@/components/ui/Icons';
+import { Isometric } from '@/components/art/Isometric';
 import { Label } from '@/components/ui/Field';
 
 /* eslint-disable @next/next/no-img-element */
@@ -94,7 +94,7 @@ export function ImageUpload({ draftId, state, onState }: { draftId: string | nul
           void start(e.dataTransfer.files[0]);
         }}
       >
-        {preview ? <img src={preview} alt="Coin image preview" className={cn('size-full object-cover', state.status === 'uploading' && 'opacity-60')} /> : <UploadIcon size={20} />}
+        {preview ? <img src={preview} alt="Coin image preview" className={cn('size-full object-cover', state.status === 'uploading' && 'opacity-60')} /> : <Isometric kind="blueprint" size={40} />}
         {state.status === 'uploading' ? (
           <span className="absolute inset-x-0 bottom-0 h-0.5 bg-hairline" aria-hidden="true">
             <span className="block h-full bg-ink transition-[width] duration-150" style={{ width: `${Math.round(state.progress * 100)}%` }} />

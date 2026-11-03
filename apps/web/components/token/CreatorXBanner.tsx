@@ -4,6 +4,7 @@ import { useConnection } from 'wagmi';
 import { env } from '@/lib/env';
 import type { Token } from '@/lib/types';
 import { XLogoIcon } from '@/components/ui/Icons';
+import { Isometric } from '@/components/art/Isometric';
 import { ConnectAgentX } from './ConnectAgentX';
 
 /**
@@ -19,7 +20,8 @@ export function CreatorXBanner({ token }: { token: Token }) {
   return (
     <section aria-labelledby="creator-x-banner" className="rounded-md border border-warning bg-canvas-soft p-4" data-testid="creator-x-banner">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
-        <div className="min-w-0">
+        <Isometric kind="antenna" size={48} className="hidden shrink-0 text-body sm:block" />
+        <div className="min-w-0 flex-1">
           <h2 id="creator-x-banner" className="inline-flex items-center gap-2 text-base font-semibold text-ink">
             <XLogoIcon /> Your agent is waiting for an X account
           </h2>

@@ -36,6 +36,7 @@ import { Input, Label, Select, Switch, Textarea } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { SplitBar } from '@/components/token/FeeSplit';
+import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
 
@@ -677,15 +678,20 @@ export function LaunchForm() {
       <aside className="self-start lg:sticky lg:top-24" data-testid="launch-summary" aria-label="Launch summary">
         <div className="flex flex-col gap-4 rounded-md border border-hairline bg-canvas p-5">
           <div className="flex items-center gap-3">
-            {preview ? (
-              // eslint-disable-next-line @next/next/no-img-element -- local blob: preview
-              <img src={preview} alt="" className="size-12 shrink-0 rounded-xs border border-hairline object-cover" />
-            ) : (
-              <div className="size-12 shrink-0 rounded-xs border border-dashed border-hairline-strong bg-canvas-soft" aria-hidden="true" />
-            )}
+            <div className="flex shrink-0 items-center gap-1.5">
+              {preview ? (
+                // eslint-disable-next-line @next/next/no-img-element -- local blob: preview
+                <img src={preview} alt="" className="size-14 shrink-0 rounded-xs border border-hairline object-cover" />
+              ) : (
+                <div className="size-14 shrink-0 rounded-xs border border-dashed border-hairline-strong bg-canvas-soft" aria-hidden="true" />
+              )}
+              {/* The agent's face is derived from its kernel address, which only exists after the launch; until then the draft id stands in. */}
+              <AgentPortrait address={draftId ?? 'draft'} size={56} />
+            </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-ink">{name.trim() || 'Your coin'}</div>
               <div className="font-mono text-caption text-mute">{symbol ? `$${symbol}` : '$TICKER'}</div>
+              <div className="mt-0.5 text-caption text-mute">its face is fixed at launch</div>
             </div>
           </div>
 

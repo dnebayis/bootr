@@ -10,6 +10,7 @@ import { env } from '@/lib/env';
 import { explorer } from '@/lib/chains';
 import { identityRegistry } from '@/lib/agent-card';
 import { KV, Panel } from '@/components/ui/Panel';
+import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { CopyButton } from '@/components/ui/CopyButton';
@@ -86,7 +87,15 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   ];
 
   return (
-    <Panel title="Agent" action={<StatusDot status={agent?.status} withLabel />}>
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-2">
+          <AgentPortrait address={token.kernel} status={agent?.status ?? token.agent?.status} size={32} />
+          Agent
+        </span>
+      }
+      action={<StatusDot status={agent?.status} withLabel />}
+    >
       <dl className="divide-y divide-hairline">
         <KV label="Model">{token.model || '—'}</KV>
         <KV label="Worker">
