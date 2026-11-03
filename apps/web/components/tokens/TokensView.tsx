@@ -8,8 +8,6 @@ import type { TokenTab } from '@/lib/types';
 import { cn } from '@/components/ui/cn';
 import { Button } from '@/components/ui/Button';
 import { Empty } from '@/components/ui/Panel';
-import { SearchIcon } from '@/components/ui/Icons';
-import { openSearch } from '@/components/shell/search-events';
 import { TokenGrid } from './TokenGrid';
 import { TokenCardSkeleton } from './TokenCard';
 
@@ -24,6 +22,7 @@ function parseTab(v: string | null): TokenTab {
   return TABS.some((t) => t.id === v) ? (v as TokenTab) : 'newest';
 }
 
+/** The tabs. Search lives in the hero (and ⌘K); this row only points at it. */
 export function TabsRow({ tab }: { tab: TokenTab | null }) {
   return (
     <div className="flex flex-col-reverse gap-3 border-b border-hairline sm:flex-row sm:items-end sm:justify-between">
@@ -47,28 +46,7 @@ export function TabsRow({ tab }: { tab: TokenTab | null }) {
           );
         })}
       </nav>
-      <div className="pb-2.5 sm:w-72">
-        <label htmlFor="token-search" className="sr-only">
-          Search tokens
-        </label>
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-mute" />
-          <input
-            id="token-search"
-            readOnly
-            placeholder="Search name, symbol, address"
-            onClick={() => openSearch()}
-            onKeyDown={(e) => {
-              if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
-                e.preventDefault();
-                openSearch(e.key);
-              } else if (e.key === 'Enter') openSearch();
-            }}
-            className="h-8 w-full cursor-pointer rounded-sm border border-hairline bg-canvas pl-8 pr-12 text-sm text-ink placeholder:text-mute hover:border-hairline-strong focus:border-accent focus:outline-none"
-          />
-          <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-xs border border-hairline px-1 font-mono text-micro text-mute">⌘K</kbd>
-        </div>
-      </div>
+      <span className="pb-2.5 font-mono text-caption text-mute max-sm:hidden">Search with ⌘K</span>
     </div>
   );
 }

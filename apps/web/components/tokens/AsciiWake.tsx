@@ -15,13 +15,14 @@ import { cn } from '@/components/ui/cn';
  * the field too, and nothing blocks scrolling or selection.
  */
 
-const CELL = 12; // px per grid cell = the mono font size
+/** Grid pitch (px) and the glyph ramp, shared with `components/art/AsciiField` so the hero's field sits on the same grid. */
+export const CELL = 12; // px per grid cell = the mono font size
 const REACH = 72; // px: how far from the pointer cells heat up
 const TRAIL_MS = 1200; // cooling time from full heat back to a dot
 const PULL = 10; // px: max drift of a cell toward the pointer
 const RING_SPEED = 480; // px/s
 const RING_WIDTH = 28; // px
-const GLYPHS = ['.', ':', '-', '=', '+', '*', '#'];
+export const GLYPHS = ['.', ':', '-', '=', '+', '*', '#'];
 const DOT_RADIUS = 1.1;
 const DOT_ALPHA_DARK = 0.09; // resting dots on the dark canvas
 const DOT_ALPHA_LIGHT = 0.06; // dark dots on white read stronger, so lighter

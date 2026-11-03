@@ -4,8 +4,22 @@ import { ADMIN_COOKIE, newSessionId, signToken } from '../lib/server/session-cor
 const SLUG = process.env.ADMIN_CONSOLE_SLUG!;
 const ADMIN = process.env.ADMIN_ADDRESSES!.split(',')[0]!;
 
-test('home renders tabs and token cards (mock mode)', async ({ page }) => {
+test('home renders the hero, tabs and token cards (mock mode)', async ({ page }) => {
   await page.goto('/');
+  // The hero: one headline, one input that opens the ⌘K palette on the first key, one Launch link; the field is a client-only canvas.
+  const hero = page.getByTestId('hero');
+  await expect(hero.getByRole('heading', { level: 1, name: 'Every coin gets an agent.' })).toBeVisible();
+  await expect(hero.getByRole('link', { name: 'Launch' })).toHaveAttribute('href', '/launch');
+  await expect(hero.getByTestId('ascii-field')).toBeAttached();
+  const search = hero.getByRole('textbox', { name: 'Search tokens' });
+  await expect(search).toBeVisible();
+  await search.press('b');
+  const palette = page.getByRole('dialog', { name: 'Search tokens' });
+  await expect(palette).toBeVisible();
+  await expect(palette.getByRole('combobox')).toHaveValue('b');
+  await page.keyboard.press('Escape');
+  await expect(palette).toBeHidden();
+
   const tabs = page.getByRole('navigation', { name: 'Token lists' });
   for (const t of ['Newest', 'Graduated', 'Market cap', 'Active']) {
     await expect(tabs.getByRole('link', { name: t })).toBeVisible();
