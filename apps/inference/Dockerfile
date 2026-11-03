@@ -2,33 +2,45 @@
 # apps/inference: x402-paid LLM relay (@bootr/inference). Build from the repo root:
 #   docker build -f apps/inference/Dockerfile -t bootr-inference .
 #   docker run --rm -p 3003:3003 --env-file <file> bootr-inference
-# Migrations (Railway pre-deploy command, WORKDIR /app/apps/inference): node scripts/migrate.mjs
+# Migrations (compose `command`, WORKDIR /app/apps/inference): node scripts/migrate.mjs
+#
+# Stages: build (dev install, tsc) and prod-deps (production node_modules from the same lockfile) feed a runtime
+# stage that holds prod-deps, dist, the drizzle migrations and the migration script only. The pnpm store lives on
+# a BuildKit cache mount, never in a layer: the former `pnpm fetch` layer put every package of the lockfile
+# (1.3 GB) into the runtime image's virtual store. The runtime layout (root node_modules/.pnpm + workspace
+# symlinks, WORKDIR /app/apps/inference) is unchanged.
 
 ARG NODE_VERSION=24
 
-# ---------------------------------------------------------------- base: Node + pnpm (corepack, version from package.json)
+# ---------------------------------------------------------------- base: Node + pnpm (corepack, version from package.json) + manifests
 FROM node:${NODE_VERSION}-bookworm-slim AS base
 ENV CI=true \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     PNPM_STORE_DIR=/pnpm/store
 RUN corepack enable
 WORKDIR /repo
-
-# ---------------------------------------------------------------- fetch: lockfile-only layer, cached until pnpm-lock.yaml changes
-FROM base AS fetch
+# Manifests only: the install layers below are reused until a package.json or the lockfile changes.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm fetch --store-dir "$PNPM_STORE_DIR"
+COPY apps/inference/package.json apps/inference/
 
 # ---------------------------------------------------------------- build: tsc -> dist
-FROM fetch AS build
-COPY . .
-RUN pnpm install --offline --frozen-lockfile --store-dir "$PNPM_STORE_DIR" --filter "@bootr/inference..."
+FROM base AS build
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --ignore-scripts --store-dir "$PNPM_STORE_DIR" --filter "@bootr/inference..."
+COPY tsconfig.base.json ./
+COPY apps/inference apps/inference
 RUN pnpm --filter "@bootr/inference..." run build
 
 # ---------------------------------------------------------------- prod-deps: production node_modules only, same lockfile resolution
-FROM fetch AS prod-deps
-COPY apps/inference/package.json apps/inference/
-RUN pnpm install --offline --frozen-lockfile --prod --ignore-scripts --store-dir "$PNPM_STORE_DIR" --filter "@bootr/inference..."
+FROM base AS prod-deps
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod --ignore-scripts --store-dir "$PNPM_STORE_DIR" --filter "@bootr/inference..."
+# Trim what Node never loads: type declarations, source maps and docs of the dependencies, plus two packages the
+# lockfile resolves into the production tree as optional peers although only dev code uses them: typescript
+# (viem's) and @electric-sql/pglite (drizzle-orm's; production runs on postgres-js). Only the symlinks that
+# pointed at them remain, dangling.
+RUN find node_modules/.pnpm -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -name '*.md' -o -name '*.markdown' \) -delete \
+ && rm -rf node_modules/.pnpm/typescript@* node_modules/.pnpm/@electric-sql+pglite@*
 
 # ---------------------------------------------------------------- runtime
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime

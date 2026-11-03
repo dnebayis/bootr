@@ -42,7 +42,8 @@ Public endpoints: `bootr.fun` (web: the app, `/api/*`, agent cards at `/agents/<
 2. Coolify clones the repo, runs `docker compose build` for the five services (the Dockerfiles under `apps/*`; the
    web image takes its `NEXT_PUBLIC_*` build args from the application's environment) and `docker compose up -d`.
    The first build on the CX23 took ~11 minutes with swap in use; later builds reuse the layer cache. Build one
-   application at a time on this box.
+   application at a time on this box. Since 2026-11-03 the images are built by GitHub Actions and
+   pushed to GHCR (section 9); once the compose file points at them, this step is a pull.
 3. Migrations run inside the containers at start (`command:` in the compose file): sender and supervisor
    `node dist/db/migrate.js`, inference `node scripts/migrate.mjs`. Each keeps its own journal, so restarts are
    no-ops. Migrations are forward-only (drizzle has no down migrations): keep them backward-compatible (add first,
@@ -134,9 +135,9 @@ a few KB while the platform is empty. Restore into the compose Postgres with
 yet; copy them to the owner's machine (`scp`) or a Hetzner Storage Box. Coolify's own `/data/coolify/source/.env`
 is backed up on the owner's machine.
 
-Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; the four Node service images are
-~1.8 GB each because the runtime stage copies the monorepo's production `node_modules`). Coolify runs a Docker
-cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run `docker builder prune -f`
+Disk: the 40 GB box fills up with Docker build cache (each deploy adds layers; the four Node service images were
+~1.8 GB each until 2026-11-03, when the runtime stage still inherited the whole fetched pnpm store; section 9).
+Coolify runs a Docker cleanup on a schedule (Servers → localhost → Advanced); when the disk passes ~80%, run `docker builder prune -f`
 and `docker image prune -f` by hand. Never delete the `postgres-data` or `web-data` volumes.
 
 Memory: after a deploy the Docker daemon itself keeps the memory the in-daemon BuildKit build used (seen on
@@ -192,3 +193,64 @@ fork (`script/Deploy.s.sol`). The fork keeps its state in memory: redeploy the B
 indexer on a fresh schema after each restart. End to end against real infrastructure, test with a small coin on
 mainnet. The whole stack can also be run locally with the same compose file:
 `docker compose -f docker-compose.coolify.yml up --build` with the variables in a `.env` next to it.
+
+## 9. Images are built by GitHub Actions
+
+Building five images on the 4 GB box took 12-16 minutes per deploy and filled the disk with build cache, so the
+workflow [`.github/workflows/images.yml`](../../.github/workflows/images.yml) builds them on GitHub instead and
+pushes them to the GitHub Container Registry as **public** images (free, no registry login on the server):
+
+| Service | Image |
+| --- | --- |
+| web | `ghcr.io/dnebayis/bootr-web` |
+| sender | `ghcr.io/dnebayis/bootr-sender` |
+| inference | `ghcr.io/dnebayis/bootr-inference` |
+| indexer | `ghcr.io/dnebayis/bootr-indexer` |
+| supervisor | `ghcr.io/dnebayis/bootr-supervisor` |
+
+Every push to `main` that touches `apps/**`, `packages/**`, the lockfile or the workflow (and every manual run,
+Actions → images → Run workflow) builds the five `linux/amd64` images in parallel from the Dockerfiles under
+`apps/*` (same build context and Dockerfiles as before) and tags each one `:<short sha>`, `:sha-<full sha>` and
+`:main` (a manual run from another branch tags `:<branch>` instead of `:main`). Layers are cached per service in
+the Actions cache; a run that changes one app rebuilds only that app's later layers. The runtime stages copy only
+the service's production `node_modules`, `dist` and migrations; the old images carried the whole fetched pnpm
+store (1.3 GB) and weighed ~1.8 GB each, the new ones are a quarter of that.
+
+**Repository variables** (Settings → Secrets and variables → Actions → Variables, or
+`gh variable set NEXT_PUBLIC_SITE_URL --body https://bootr.fun`): the public values inlined into the web bundle,
+the same list as the web service's `build.args` in the compose file. Unset ones fall back to the compose defaults
+(`NEXT_PUBLIC_CHAIN_ID=8453`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_INDEXER_URL`, `NEXT_PUBLIC_SENDER_PUBLIC_URL`)
+or stay empty: `NEXT_PUBLIC_CHAIN_ID`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_INDEXER_URL`,
+`NEXT_PUBLIC_SENDER_PUBLIC_URL`, `NEXT_PUBLIC_RPC_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_BUILDER_CODE`,
+`NEXT_PUBLIC_INFERENCE_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`,
+`NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`,
+`NEXT_PUBLIC_WORKER_SOURCE_BASE`, `NEXT_PUBLIC_IPFS_GATEWAY`. They are public by definition; changing one means a
+new web image (push or manual run), the `NEXT_PUBLIC_*` variables in Coolify no longer matter once the compose
+file pulls images. No secret reaches any build: the workflow holds only `GITHUB_TOKEN` (push to GHCR) and the
+optional deploy token below.
+
+**Making the packages public** (once, after the first run has created them; there is no API for container
+visibility): GitHub → profile → Packages → `bootr-<svc>` → Package settings → Danger Zone → Change visibility →
+Public, for each of the five. Until then `docker pull` from the server fails with `denied` because the server
+has no GHCR login, and a public package can be pulled by anyone, which is fine: the images contain no secrets
+(section 3, Hygiene), only the public `NEXT_PUBLIC_*` values and the code of a private repo. If that is not
+acceptable, keep them private and add a GHCR login on the server (Coolify → Servers → Docker registries, with a
+read-only PAT) instead.
+
+**Automatic deploy** (optional): with the repository secret `COOLIFY_DEPLOY_TOKEN` (Coolify → Keys & Tokens →
+API tokens, deploy-only is enough) the workflow's last job calls `POST https://coolify.bootr.fun/api/v1/deploy`
+with `{"uuid":"ko7sx54pwakworrqogccvbfc","force":false}` after a push to `main` once all five images are pushed;
+without the secret the job prints "skipped". Set it only after the compose file has been switched to `image:`
+(below), otherwise the call just triggers a server-side rebuild as before.
+
+**Switching Coolify to the images**: replace each service's `build:` block in `docker-compose.coolify.yml` with
+`image: ghcr.io/dnebayis/bootr-<svc>:${IMAGE_TAG:-main}` and `pull_policy: always` (the web service also loses its
+`build.args`, the values live in the repository variables now). Add `IMAGE_TAG` to the application's variables in
+Coolify (empty = `main`). A deploy then pulls instead of building: Coolify still clones the repo for the compose
+file, runs `docker compose pull` and `up -d`. The `command:` lines and the environment blocks stay as they are.
+
+**Rollback**: every image is also tagged with its commit (`sha-<full sha>`, listed under the package's versions or
+in the workflow run). Set `IMAGE_TAG=sha-<sha>` in Coolify and redeploy: all five services move to that commit
+(the tags are per commit, so a partial rollback is `IMAGE_TAG` on one service only if you edit the compose file).
+Clear `IMAGE_TAG` to return to `main`. The migrations are forward-only (section 2), so a rollback across a
+migration still needs the backup from section 6; a `DATABASE_SCHEMA` bump is not undone by a rollback either.

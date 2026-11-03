@@ -1,0 +1,151 @@
+# Builds the five service images on every push to main (and on demand) and pushes them to GHCR as
+#   ghcr.io/dnebayis/bootr-<svc>:<short sha>  ghcr.io/dnebayis/bootr-<svc>:sha-<full sha>  ghcr.io/dnebayis/bootr-<svc>:main
+# so the Coolify server only pulls (docs/deploy/coolify.md, "Images are built by GitHub Actions"). The packages
+# must be made public once in the GitHub UI (same doc); the pushes themselves use GITHUB_TOKEN only.
+#
+# Repository variables (Settings -> Secrets and variables -> Actions -> Variables, or
+# `gh variable set NAME --body VALUE`): the public values inlined into the web bundle, passed as the build args of
+# apps/web/Dockerfile (the same list as the web service's `build.args` in docker-compose.coolify.yml). When unset,
+# the compose default in brackets applies, otherwise the value is empty:
+#   NEXT_PUBLIC_CHAIN_ID                [8453]
+#   NEXT_PUBLIC_SITE_URL                [https://bootr.fun]
+#   NEXT_PUBLIC_INDEXER_URL             [https://indexer.bootr.fun]
+#   NEXT_PUBLIC_SENDER_PUBLIC_URL       [https://api.bootr.fun]
+#   NEXT_PUBLIC_RPC_URL                 (a public endpoint, never a keyed one)
+#   NEXT_PUBLIC_WC_PROJECT_ID
+#   NEXT_PUBLIC_BUILDER_CODE
+#   NEXT_PUBLIC_INFERENCE_URL
+#   NEXT_PUBLIC_SWAP_LINK_BASE
+#   NEXT_PUBLIC_LAUNCHER_ADDRESS
+#   NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS
+#   NEXT_PUBLIC_SUPERVISOR_SESSION_KEY
+#   NEXT_PUBLIC_BOOT_X_URL
+#   NEXT_PUBLIC_WORKER_SOURCE_BASE
+#   NEXT_PUBLIC_IPFS_GATEWAY
+# NEXT_PUBLIC_USE_MOCK is always empty. No secret reaches any build.
+#
+# Optional repository secret COOLIFY_DEPLOY_TOKEN (a Coolify API token, Keys & Tokens in the panel): when set, the
+# last job asks Coolify to redeploy bootr-stack after a push to main; without it that step is skipped.
+
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - '.dockerignore'
+      - '.github/workflows/images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.svc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        svc: [web, sender, inference, indexer, supervisor]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/dnebayis/bootr-${{ matrix.svc }}
+        run: |
+          tags="$IMAGE:${GITHUB_SHA::7}"$'\n'"$IMAGE:sha-$GITHUB_SHA"
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            tags="$tags"$'\n'"$IMAGE:main"
+          else
+            # workflow_dispatch from another branch: never move :main, tag with the branch name instead.
+            tags="$tags"$'\n'"$IMAGE:${GITHUB_REF_NAME//\//-}"
+          fi
+          { echo 'tags<<EOF'; echo "$tags"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+
+      - name: Web build args (public values from repository variables)
+        id: webargs
+        if: matrix.svc == 'web'
+        env:
+          NEXT_PUBLIC_CHAIN_ID: ${{ vars.NEXT_PUBLIC_CHAIN_ID || '8453' }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL || 'https://bootr.fun' }}
+          NEXT_PUBLIC_INDEXER_URL: ${{ vars.NEXT_PUBLIC_INDEXER_URL || 'https://indexer.bootr.fun' }}
+          NEXT_PUBLIC_SENDER_PUBLIC_URL: ${{ vars.NEXT_PUBLIC_SENDER_PUBLIC_URL || 'https://api.bootr.fun' }}
+          NEXT_PUBLIC_RPC_URL: ${{ vars.NEXT_PUBLIC_RPC_URL }}
+          NEXT_PUBLIC_WC_PROJECT_ID: ${{ vars.NEXT_PUBLIC_WC_PROJECT_ID }}
+          NEXT_PUBLIC_BUILDER_CODE: ${{ vars.NEXT_PUBLIC_BUILDER_CODE }}
+          NEXT_PUBLIC_INFERENCE_URL: ${{ vars.NEXT_PUBLIC_INFERENCE_URL }}
+          NEXT_PUBLIC_SWAP_LINK_BASE: ${{ vars.NEXT_PUBLIC_SWAP_LINK_BASE }}
+          NEXT_PUBLIC_LAUNCHER_ADDRESS: ${{ vars.NEXT_PUBLIC_LAUNCHER_ADDRESS }}
+          NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS: ${{ vars.NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS }}
+          NEXT_PUBLIC_SUPERVISOR_SESSION_KEY: ${{ vars.NEXT_PUBLIC_SUPERVISOR_SESSION_KEY }}
+          NEXT_PUBLIC_BOOT_X_URL: ${{ vars.NEXT_PUBLIC_BOOT_X_URL }}
+          NEXT_PUBLIC_WORKER_SOURCE_BASE: ${{ vars.NEXT_PUBLIC_WORKER_SOURCE_BASE }}
+          NEXT_PUBLIC_IPFS_GATEWAY: ${{ vars.NEXT_PUBLIC_IPFS_GATEWAY }}
+          NEXT_PUBLIC_USE_MOCK: ''
+        run: |
+          {
+            echo 'args<<EOF'
+            for name in NEXT_PUBLIC_CHAIN_ID NEXT_PUBLIC_SITE_URL NEXT_PUBLIC_INDEXER_URL NEXT_PUBLIC_SENDER_PUBLIC_URL \
+                        NEXT_PUBLIC_RPC_URL NEXT_PUBLIC_WC_PROJECT_ID NEXT_PUBLIC_BUILDER_CODE NEXT_PUBLIC_INFERENCE_URL \
+                        NEXT_PUBLIC_SWAP_LINK_BASE NEXT_PUBLIC_LAUNCHER_ADDRESS NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS \
+                        NEXT_PUBLIC_SUPERVISOR_SESSION_KEY NEXT_PUBLIC_BOOT_X_URL NEXT_PUBLIC_WORKER_SOURCE_BASE \
+                        NEXT_PUBLIC_IPFS_GATEWAY NEXT_PUBLIC_USE_MOCK; do
+              echo "$name=${!name}"
+            done
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.svc }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: ${{ steps.webargs.outputs.args }}
+          cache-from: type=gha,scope=${{ matrix.svc }}
+          cache-to: type=gha,scope=${{ matrix.svc }},mode=max
+          # A plain single-platform image (no provenance manifest), so GHCR shows one linux/amd64 entry per tag.
+          provenance: false
+
+  deploy:
+    name: deploy (Coolify)
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      COOLIFY_DEPLOY_TOKEN: ${{ secrets.COOLIFY_DEPLOY_TOKEN }}
+    steps:
+      - name: Ask Coolify to redeploy bootr-stack
+        if: env.COOLIFY_DEPLOY_TOKEN != ''
+        run: |
+          curl --fail-with-body -sS -X POST https://coolify.bootr.fun/api/v1/deploy \
+            -H "Authorization: Bearer $COOLIFY_DEPLOY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"uuid":"ko7sx54pwakworrqogccvbfc","force":false}'
+      - name: Skipped
+        if: env.COOLIFY_DEPLOY_TOKEN == ''
+        run: echo "COOLIFY_DEPLOY_TOKEN is not set; deploy from the Coolify panel."
