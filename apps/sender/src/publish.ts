@@ -47,6 +47,8 @@ export const publishSchema = z.object({
     .max(128)
     .regex(/^[A-Za-z0-9:_.-]+$/),
   text: z.string().min(1).max(25_000),
+  /** The platform's own agent: the stricter platform post rules apply (no treasury talk, no price talk, ...). */
+  platform: z.boolean().optional(),
   replyTo: xId.nullish(),
   /** Informational only: the author is always resolved by the sender (inbox, else X). */
   replyAuthorId: xId.nullish(),
@@ -240,6 +242,7 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     recipient,
     ownHandle: tok.account.xHandle,
     publicAddresses: input.publicAddresses,
+    ...(input.platform ? { platform: true } : {}),
   });
   if (!decision.allowed) reasons.push(decision.code);
   if (replyAuthorId && (await isOptedOut(ctx, input.agentId, [replyAuthorId]))) {

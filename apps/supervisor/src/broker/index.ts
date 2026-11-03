@@ -167,13 +167,14 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         ...(media.media ? { media: media.media } : {}),
         publicAddresses: publicAddressesOf(config),
         xUserId: config.xUserId,
+        ...(config.platform ? { platform: true } : {}),
       });
       return publishOutcome(res, item?.authorId);
     }
     case 'publish_post': {
       const media = await mediaForAction(ctx, agentId, action.input.imageId);
       if (media.error) return failed(media.error);
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(action.input.attributions ? { attributions: action.input.attributions } : {}), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(action.input.attributions ? { attributions: action.input.attributions } : {}), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
     case 'resolve_mention': {

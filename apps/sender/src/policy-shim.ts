@@ -32,6 +32,8 @@ export interface OutgoingAction {
   ownHandle?: string | null;
   /** Addresses the text may name (own token, own treasury); undefined skips the address check. */
   publicAddresses?: readonly string[];
+  /** The platform's own agent: agent-core's platform post rules apply on top of the common ones. */
+  platform?: boolean;
 }
 
 export type OutgoingDecision = { allowed: true } | { allowed: false; code: string };
@@ -52,6 +54,7 @@ export function checkOutgoing(action: OutgoingAction): OutgoingDecision {
         recipient: action.recipient ?? null,
         exemptAccounts: action.ownHandle ? [action.ownHandle] : [],
         ...(action.publicAddresses ? { publicAddresses: action.publicAddresses } : {}),
+        ...(action.platform ? { platform: true } : {}),
       },
     );
     return { allowed: true };

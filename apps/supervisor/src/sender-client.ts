@@ -122,6 +122,8 @@ export class SenderClient {
     replyTo?: string;
     replyAuthorId?: string;
     replyEligibility?: ReplyEligibility;
+    /** The platform's own agent: the sender applies the stricter platform post rules. */
+    platform?: boolean;
     attributions?: { username: string; sourceUrl: string }[];
     /**
      * One picture to attach (`sv_images`, base64 bytes inline): the sender uploads it to X with the alt text and posts

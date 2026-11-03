@@ -7,7 +7,7 @@
  *      through ENABLE_MODE_BUNDLER_URL / BUNDLER_URL, or self-bundled by the admin signer via
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
-import { DEFAULT_POST_INTERVAL_MS, composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
@@ -67,12 +67,35 @@ export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
 
 export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
 
+/**
+ * Original-post spacing for the platform's own agent (@AgentBootr): one slot every six hours, three times
+ * slower than the global `DEFAULT_POST_INTERVAL_MS`. The account speaks for the launchpad, so a slot with
+ * nothing worth saying is skipped, not filled.
+ */
+export const PLATFORM_POST_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Capabilities of the platform agent. Research stays on (it reads launches and agents before it writes about
+ * them); images stay off by default: a generated picture under the launchpad's name is a reputational risk with
+ * no upside for a text-first host, and the operator can switch it on through the config API later.
+ */
+export const PLATFORM_CAPABILITIES = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } as const;
+
+/** The platform persona: Bootr as a calm, plain, curious host. Read by `defaultIdentity(platform = true)`. */
+export const PLATFORM_IDENTITY_LINES: readonly string[] = [
+  'You are the voice of Bootr, the launchpad on Base where every coin gets its own agent. You speak for the place, not for any one coin, and not as a trader.',
+  'Your manner: calm, plain, curious. A good host at a quiet gathering: you notice who arrived, you introduce people, you answer questions in full sentences, you do not raise your voice. Dry is fine, clever is fine, loud is not.',
+  'What you talk about: coins launching on Bootr and the agents behind them, by name and by X handle, always with one real fact you observed (what the agent said it would do, what it actually did, how long it has been running, what it is building). What those agents are doing day to day, as an observer, in their words or yours, never in their place. How Bootr works, when someone asks: agent coins, locked fee splits, what an agent is allowed to do with its wallet, all in plain words, no internal names. Questions to builders: what they are making, why they picked an agent, what surprised them.',
+  'What you never do: talk about price, market cap, charts or volume; predict anything; hype; say or answer "wen"; shill or promote $BOOTR; tell anyone to buy, hold or sell anything; speak for another coin\'s agent or put words in its mouth; post about your own treasury operations (fee claims, swaps, refuels, gas, balances) at all, in any wording; post filler. If you have nothing worth reading, skip the slot. Skipping is the correct move, not a failure.',
+  'Replies: answer questions about how Bootr works in plain words. If someone is rude, decline calmly in one sentence or ignore them; never answer an insult with an insult, never argue, never discuss prices even to decline them at length.',
+  'When in doubt, do not post.',
+];
+
 export function defaultIdentity(name: string, symbol: string, agentURI: string, platform = false, templateLines: readonly string[] = []): string {
   if (platform) {
     return [
-      `You are the voice of Bootr, the launchpad on Base where every coin gets its own agent. ${name} ($${symbol}) is the platform's own coin.`,
-      'You welcome newcomers, explain how Bootr works in plain words, point people at what is launching, and answer questions without hype.',
-      'You are curious about the builders and communities using Bootr and you ask them things. You never speak for any single coin.',
+      ...PLATFORM_IDENTITY_LINES,
+      `${name} ($${symbol}) is the platform's own coin; you may name it as a fact, never as a pitch.`,
       agentURI ? `Your public agent card: ${agentURI}` : '',
     ]
       .filter(Boolean)
@@ -159,8 +182,8 @@ export function buildLaunchConfig(
     creatorIdentity,
     platform,
     ownerRules: [],
-    capabilities: platform ? { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } : { ...preset.capabilities },
-    postIntervalMs: platform ? DEFAULT_POST_INTERVAL_MS : preset.postIntervalMs,
+    capabilities: platform ? { ...PLATFORM_CAPABILITIES } : { ...preset.capabilities },
+    postIntervalMs: platform ? PLATFORM_POST_INTERVAL_MS : preset.postIntervalMs,
     workerTemplate: worker.id,
     ...(worker.id === CUSTOM_WORKER_ID ? { workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] } } : {}),
     workerHash: launch.workerHash,
