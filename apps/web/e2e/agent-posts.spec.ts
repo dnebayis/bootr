@@ -28,7 +28,7 @@ test('/api/agents/:id/posts proxies posts (mock), 404s unknown agents and valida
   expect((await request.get(`/api/agents/${encodeURIComponent('bad id!')}/posts`)).status()).toBe(400);
 });
 
-test('token page renders the latest posts as cards linking to X', async ({ page }) => {
+test('token page lists the latest posts in the Activity tape, linking to X', async ({ page }) => {
   await page.route('**/api/agents/*/posts*', (route) =>
     route.fulfill({
       json: {
@@ -40,26 +40,33 @@ test('token page renders the latest posts as cards linking to X', async ({ page 
       },
     }),
   );
+  // The supervisor's own tape is empty here, so the Posts filter shows exactly the sender's two posts.
+  await page.route('**/api/agent/*/activity*', (route) => route.fulfill({ json: { items: [] } }));
   await page.goto(await firstTokenPage(page));
-  const posts = page.locator('section[aria-labelledby="agent-posts"]');
-  await expect(posts.getByRole('heading', { name: 'Latest posts' })).toBeVisible();
-  await expect(posts.getByRole('link', { name: '@quiet_engine' })).toHaveAttribute('href', 'https://x.com/quiet_engine');
-  const cards = posts.getByRole('listitem');
-  await expect(cards).toHaveCount(2);
-  await expect(cards.nth(0).getByRole('link')).toHaveAttribute('href', 'https://x.com/quiet_engine/status/1850000000000000002');
-  await expect(cards.nth(0)).toContainText('Claimed 0.012 WETH in LP fees. Holding.');
-  await expect(cards.nth(1)).toContainText('Reply');
+  const tape = page.getByTestId('activity-tape');
+  await expect(tape.getByRole('link', { name: '@quiet_engine' })).toHaveAttribute('href', 'https://x.com/quiet_engine');
+  await page.getByRole('tab', { name: 'Posts' }).click();
+  await expect(tape).toHaveAttribute('data-filter', 'posts');
+  const rows = tape.getByRole('listitem');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveAttribute('data-kind', 'post');
+  await expect(rows.nth(0).getByRole('link')).toHaveAttribute('href', 'https://x.com/quiet_engine/status/1850000000000000002');
+  await expect(rows.nth(0)).toContainText('Claimed 0.012 WETH in LP fees. Holding.');
+  await expect(rows.nth(1)).toHaveAttribute('data-kind', 'reply');
 });
 
-test('token page shows the no-account and empty states', async ({ page }) => {
+test('token page shows the no-account and empty states in the Posts filter', async ({ page }) => {
   let body: unknown = { handle: null, items: [] };
   await page.route('**/api/agents/*/posts*', (route) => route.fulfill({ json: body }));
+  await page.route('**/api/agent/*/activity*', (route) => route.fulfill({ json: { items: [] } }));
   const href = await firstTokenPage(page);
   await page.goto(href);
-  const posts = page.locator('section[aria-labelledby="agent-posts"]');
-  await expect(posts).toContainText('The agent has not connected an X account yet.');
+  const tape = page.getByTestId('activity-tape');
+  await page.getByRole('tab', { name: 'Posts' }).click();
+  await expect(tape).toContainText('The agent has not connected an X account yet.');
 
   body = { handle: 'quiet_engine', items: [] };
   await page.reload();
-  await expect(posts).toContainText('No posts yet.');
+  await page.getByRole('tab', { name: 'Posts' }).click();
+  await expect(tape).toContainText('No posts yet.');
 });
