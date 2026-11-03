@@ -30,18 +30,28 @@ test('/api/models serves the priced, allow-listed fallback list when no relay is
 
 test('launch form groups models by provider and defaults to the recommended one', async ({ page }) => {
   await page.goto('/launch');
-  const select = page.locator('select#model');
-  await expect(select).toHaveValue('anthropic/claude-haiku-4.5');
-  const groups = await select.locator('optgroup').evaluateAll((els) => els.map((e) => e.getAttribute('label')));
+  // Base UI Select: the trigger is a combobox carrying the current value; options live in a popup listbox.
+  const select = page.getByRole('combobox', { name: 'Model' });
+  await expect(select).toHaveAttribute('value', 'anthropic/claude-haiku-4.5');
+  await select.click();
+  const listbox = page.getByRole('listbox');
+  await expect(listbox).toBeVisible();
+  const groups = await listbox.getByRole('group').evaluateAll((els) =>
+    els.map((e) => e.getAttribute('aria-label') || document.getElementById(e.getAttribute('aria-labelledby') ?? '')?.textContent?.trim() || ''),
+  );
   expect(groups).toEqual(['Anthropic', 'OpenAI', 'Google', 'xAI', 'DeepSeek', 'Meta']);
-  await expect(select.locator('option[value="anthropic/claude-haiku-4.5"]')).toContainText('Recommended');
-  await expect(select.locator('option[value="anthropic/claude-haiku-4.5"]')).toContainText('$0.0101');
+  const haiku = listbox.getByRole('option', { name: /Claude Haiku 4\.5/ });
+  await expect(haiku).toContainText('Recommended');
+  await expect(haiku).toContainText('$0.0101');
+  await page.keyboard.press('Escape');
   const summary = page.getByTestId('model-summary');
   await expect(summary).toContainText('per thought');
   await expect(summary).toContainText('Recommended');
   await expect(page.getByText('A thought is one model call')).toBeVisible();
 
-  await select.selectOption('deepseek/deepseek-v3.2');
+  await select.click();
+  await page.getByRole('listbox').getByRole('option', { name: /DeepSeek V3\.2/ }).click();
+  await expect(select).toHaveAttribute('value', 'deepseek/deepseek-v3.2');
   await expect(summary).toContainText('DeepSeek V3.2');
   await expect(summary).not.toContainText('Recommended');
 });

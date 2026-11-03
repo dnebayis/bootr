@@ -572,6 +572,34 @@ New tokens slide in at the top of the grid with a one-shot 1px ink ring (`animat
 | `Skeleton` | `canvas-sub` blocks at the final layout size, slow opacity pulse. |
 | Command palette | cmdk in a `lg` radius dialog, 560px wide, floating shadow, mono result metadata, `⌘K` hint in nav. Selected row: `canvas-sub` fill plus a 2px inset `accent` bar on the left (a shadow, so no size change). |
 
+### Primitives (Base UI)
+
+Interactive primitives come from [Base UI](https://base-ui.com) (`@base-ui-components/react`, pinned to `1.0.0-rc.0`; the package has since been renamed `@base-ui/react`, same API). Base UI is headless: it owns behaviour and accessibility (roles, `aria-*`, focus management, keyboard navigation, portals, dismissal, typeahead), and `components/ui/*` owns every pixel. New menus, dialogs, tabs, selects, switches and tooltips **must** use these wrappers; no hand-rolled `role="tablist"` / `role="menu"` markup, no `position: absolute` dropdowns, no `<dialog>` by hand. If a wrapper lacks a prop, extend the wrapper.
+
+| Wrapper (`components/ui/`) | Base UI part | Role / what you get |
+|---|---|---|
+| `Select` (`Field.tsx`) | `Select` | `button role="combobox"` trigger carrying the `id` (a `<Label htmlFor>` names it) and the current value as its `value` attribute; portalled `listbox` popup; hidden input with `name` for forms. Accepts native `<option>` / `<optgroup>` children (mapped by `select-options.ts`) or typed `options` / `groups`. `onChange(e)` still hands `e.target.value`. `native` renders the plain `<select>` when a platform picker is wanted. |
+| `Switch` (`Field.tsx`) | `Switch` | `button role="switch"` with `aria-label`, `aria-checked`, `disabled`; hidden checkbox with `id` and `name` so a `<label htmlFor>` toggles it. |
+| `Tabs`, `TabList`, `Tab`, `TabPanel` (`Tabs.tsx`) | `Tabs` | `tablist` / `tab` / `aria-selected`, arrow keys, panels wired by `aria-controls`. `segment` (the Activity tape look) or `underline` (page tabs). |
+| `Tooltip`, `TooltipProvider` (`Tooltip.tsx`) | `Tooltip` | Hover + focus, `aria-describedby`, Escape closes. Wraps one focusable element. |
+| `Dialog`, `DialogClose`, `ConfirmDialog` (`Dialog.tsx`) | `Dialog`, `AlertDialog` | Modal, focus trap, focus return, backdrop. `ConfirmDialog` is `role="alertdialog"`: buttons or Escape only, never an outside press. |
+| `Menu`, `MenuItem`, `MenuSeparator`, `MenuGroup` (`Menu.tsx`) | `Menu` | `menu` / `menuitem`, typeahead, closes on item press / Escape / outside. Items can be links (`href`). |
+
+Still hand-made, on purpose: `Button`, `Input`, `Textarea`, `Label`, `Badge`, `Panel`, `StatTile`, `Skeleton` (plain elements need no behaviour library), the command palette (cmdk) and the mobile drawer (vaul).
+
+**Styling approach.** Wrappers pass Tailwind classes; state comes from the data attributes Base UI sets on each part, never from React state mirrored into classes: `data-active` (tab), `data-checked` / `data-unchecked` (switch), `data-highlighted` and `data-selected` (select item, menu item), `data-popup-open` (trigger), `data-open`, `data-disabled`, `data-side`. Tailwind v4 reads them as variants: `data-active:bg-ink`, `group-data-active:text-on-ink/70`, `data-highlighted:bg-canvas-sub`. Popups fade with `data-starting-style` / `data-ending-style` (`fade` in `surface.ts`, 150 ms, `motion-reduce:transition-none`); the dialog adds a 0.98 → 1 scale over `duration-base`. Every popup uses the same surface: `bg-canvas`, `border-hairline`, the floating shadow from "Spacing, radii, elevation" (`floatSurface` in `surface.ts`), radius `sm` (tooltip), `md` (select, menu) or `lg` (dialog), 4px inner padding, 32px rows, `canvas-sub` highlight, caption `mute` group labels, `rounded-sm` items. The accent appears only on the dialog's one confirm button and as the focus ring; the switch track is ink, the selected tab is ink, nothing in a menu is blue.
+
+**Portals and stacking.** Popups render into `<body>` through `Portal` with `z-50`, the same layer as the command palette and the drawer. Base UI asks for `isolation: isolate` on the app's root element (the wrapper of all page content, not `<body>`), so page-level stacking contexts (the home field canvas, `motion` layout cards, sticky headers) never paint above a portalled popup. The rule belongs on the shell's content wrapper (`isolate` utility); until it is there, keep every page-level `z-index` below 50. Dark mode works through portals because the theme class sits on `<html>`.
+
+**Tilt** (`Tilt.tsx`, `tilt-math.ts`): the holographic card tilt that wraps token cards and the launch preview. Rules:
+- Pointer-driven `rotateX` / `rotateY`, each **≤ 6°** (`MAX_TILT`; `intensity` is clamped), `perspective(800px)`, the near edge lifts toward the pointer.
+- Return to flat in `duration-base` with `ease-out-quint`; no transition while the pointer moves (it tracks at frame rate, one state write per animation frame).
+- Specular layer is neutral: a white highlight under the pointer at ≤ 10% and an ink shade on the far side at ≤ 4% (`color-mix`), both on `rounded-[inherit]`, `pointer-events-none`, `aria-hidden`. No hue, no accent, no rainbow: "holographic" here means light moving on a surface, not colour.
+- Off under `prefers-reduced-motion`, on touch / coarse pointers (`(hover: hover) and (pointer: fine)` is false; touch pointer events are ignored on hybrids), on the server and the first client render. Off means a plain `div` with no handlers and no transform, so layout is identical.
+- Wrap the card, not its contents: the card's own hover (accent border) and the `animate-flash` ring keep working; the `Tilt` element gets the card's radius via `className` so the specular clips to it. Never nest tilts; never tilt text-only panels, tables or forms.
+
+**Tests.** `components/ui/*.test.tsx` run under vitest (`pnpm -C apps/web test`): the tilt geometry (ceiling, rest state, neutral specular, no transform in the server render) and the `<option>` / `<optgroup>` mapping. Behaviour of the Base UI parts is covered by Playwright through the real pages.
+
 ### Voice
 Short, literal, sentence case. "Launch a coin with an agent that runs it." Not "Revolutionize", not "Unleash", no exclamation marks, no emoji. Numbers over adjectives. Empty states are one sentence. Errors say what happened and what to do.
 

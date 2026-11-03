@@ -149,7 +149,7 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await expect(research).toHaveAttribute('aria-checked', 'true');
   await research.click();
   await expect(research).toHaveAttribute('aria-checked', 'false');
-  await expect(page.getByLabel('Cadence', { exact: true })).toHaveValue('7200000');
+  await expect(page.getByLabel('Cadence', { exact: true })).toHaveAttribute('value', '7200000');
   await page.getByLabel('Job line 1', { exact: true }).fill('Your job is the weather on Base, as dated facts.');
   await expect(page.getByTestId('kind-cards')).toContainText(/v1 · 0x[0-9a-f]{8}…/);
   await expect(summary).toContainText('The agent can make bad decisions and lose money.');
