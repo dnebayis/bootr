@@ -37,6 +37,11 @@ export class IndexerClient {
     return this.get(`/treasury/${kernel}`);
   }
 
+  /** `GET /platform/feed?since=<unix s>`: launches, agent status changes, posts, agent fee claims and totals (platform-feed.ts), or null. */
+  platformFeed(sinceSec: number) {
+    return this.get(`/platform/feed?since=${Math.max(0, Math.floor(sinceSec))}`);
+  }
+
   /** `POST /internal/agent/:kernel/social` (HMAC). Failures are logged by the caller, never fatal. */
   async postSocial(kernel: string, stats: SocialStats): Promise<boolean> {
     try {

@@ -167,7 +167,10 @@ Derived:
   `trades`, `agents { tokenRef }`, `dailyStats`, `platformStats(id: "global")`), REST `/search`,
   `/token/:id/fees`, `/holdings/:owner`, `/fuel/:from`, and SSE `/stream` hints
   (`{type: 'launch'|'trade'|'agent', tokenId}`; clients re-fetch).
-* **Supervisor**: `GET /market/:token` (coin or kernel address), `GET /treasury/:kernel` (live
+* **Supervisor**: `GET /market/:token` (coin or kernel address), `GET /platform/feed?since=<unix>`
+  (the platform agent's "Bootr today" digest: launches, agent status changes, posts and agent fee
+  claims since `since`, clamped to 7 days, newest first, 50 rows per list, plus `totals` from
+  `platformStats` and the summed 7-day volume), `GET /treasury/:kernel` (live
   kernel balances, `spender` + `spenderUsdc`, and `claimable`: one WETH row per recipient (agent,
   creator, burn, platform) with `amount = pending + settled` from the RWAGMI v3 LP locker
   (`pendingQuote(poolId, recipient)` + `claimableQuote(recipient, WETH)`; `settled` aggregates all

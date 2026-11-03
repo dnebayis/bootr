@@ -2,7 +2,7 @@ import { db } from 'ponder:api';
 import schema from 'ponder:schema';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { and, client, desc, eq, graphql, gt, ilike, inArray, or, sql } from 'ponder';
+import { and, client, desc, eq, graphql, gt, gte, ilike, inArray, or, sql } from 'ponder';
 import { isAddress, type Address } from 'viem';
 
 import { B20TokenAbi } from '../../abis/B20Token';
@@ -375,6 +375,97 @@ app.get('/fuel/:from', async (c) => {
     .orderBy(desc(schema.fuel.timestamp))
     .limit(200);
   return c.json(j(rows.map((r) => ({ ...r, symbol: r.symbol ?? '', amountUsdc: r.amount }))));
+});
+
+/**
+ * What happened on Bootr since `since` (unix s, clamped to the last 7 days), for the platform agent's
+ * "Bootr today" observation (`apps/supervisor/src/platform-feed.ts`). Newest first, each list capped at
+ * 50 rows; the supervisor renders and truncates it. Launches come from `token`, wake/sleep changes from
+ * `agent.statusChangedAt`, posts from the social store, claims from `feeClaim` (agent slot only), totals
+ * from `platformStats` plus the sum of every coin's rolling 7-day volume.
+ */
+app.get('/platform/feed', async (c) => {
+  const now = Math.floor(Date.now() / 1000);
+  const floor = now - 7 * 86_400;
+  const raw = Number(c.req.query('since'));
+  const since = Number.isFinite(raw) && raw > floor ? Math.floor(raw) : floor;
+  const [[stats], social, launches, changes, claims, [vol]] = await Promise.all([
+    db.select().from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1),
+    socialMap(),
+    db
+      .select({
+        token: schema.token.id,
+        kernel: schema.token.kernel,
+        name: schema.token.name,
+        symbol: schema.token.symbol,
+        creator: schema.token.creator,
+        launchedAt: schema.token.launchedAt,
+        xHandle: schema.token.xHandle,
+      })
+      .from(schema.token)
+      .where(gte(schema.token.launchedAt, since))
+      .orderBy(desc(schema.token.launchedAt))
+      .limit(50),
+    db
+      .select({ kernel: schema.agent.id, token: schema.agent.token, status: schema.agent.status, at: schema.agent.statusChangedAt })
+      .from(schema.agent)
+      .where(gte(schema.agent.statusChangedAt, since))
+      .orderBy(desc(schema.agent.statusChangedAt))
+      .limit(50),
+    db
+      .select({
+        token: schema.feeClaim.token,
+        recipient: schema.feeClaim.recipient,
+        amountUsd: schema.feeClaim.amountUsd,
+        at: schema.feeClaim.timestamp,
+        txHash: schema.feeClaim.txHash,
+      })
+      .from(schema.feeClaim)
+      .where(and(gte(schema.feeClaim.timestamp, since), eq(schema.feeClaim.recipientKind, 'agent')))
+      .orderBy(desc(schema.feeClaim.timestamp))
+      .limit(50),
+    db.select({ usd: sql<number>`coalesce(sum(${schema.token.volume7dUsd}), 0)` }).from(schema.token),
+  ]);
+  const posted = [...social.values()].filter((s) => s.lastPostAt !== null && s.lastPostAt >= since).sort((a, b) => b.lastPostAt! - a.lastPostAt!).slice(0, 50);
+  // Symbols for the rows that only carry an address.
+  const kernels = [...new Set([...changes.map((r) => r.kernel), ...posted.map((p) => p.kernel as Address)])];
+  const tokenIds = [...new Set(claims.map((r) => r.token))];
+  const named =
+    kernels.length || tokenIds.length
+      ? await db
+          .select({ id: schema.token.id, kernel: schema.token.kernel, symbol: schema.token.symbol, xHandle: schema.token.xHandle })
+          .from(schema.token)
+          .where(or(...(kernels.length ? [inArray(schema.token.kernel, kernels)] : []), ...(tokenIds.length ? [inArray(schema.token.id, tokenIds)] : [])))
+      : [];
+  const byKernel = new Map(named.map((t) => [t.kernel, t]));
+  const byToken = new Map(named.map((t) => [t.id, t]));
+  const handle = (kernel: string, fallback: string | null | undefined) => social.get(kernel)?.xHandle ?? fallback ?? null;
+  return c.json(
+    j({
+      now,
+      since,
+      totals: {
+        tokens: stats?.tokens ?? 0,
+        agentsTotal: stats?.agentsTotal ?? 0,
+        agentsAwake: stats?.agentsAwake ?? 0,
+        volume24hUsd: stats?.volume24hUsd ?? 0,
+        volume7dUsd: usd(Number(vol?.usd ?? 0)),
+        fees24hUsd: stats?.fees24hUsd ?? 0,
+        updatedAt: stats?.updatedAt ?? null,
+      },
+      launches: launches.map((t) => ({ ...t, xHandle: handle(t.kernel, t.xHandle) })),
+      statusChanges: changes.map((r) => ({ ...r, symbol: byKernel.get(r.kernel)?.symbol ?? null, xHandle: handle(r.kernel, byKernel.get(r.kernel)?.xHandle) })),
+      posts: posted.map((p) => ({
+        kernel: p.kernel,
+        token: byKernel.get(p.kernel as Address)?.id ?? null,
+        symbol: byKernel.get(p.kernel as Address)?.symbol ?? null,
+        xHandle: p.xHandle,
+        lastPostAt: p.lastPostAt,
+        postsCount24h: p.postsCount24h,
+      })),
+      claims: claims.map((r) => ({ ...r, kernel: byToken.get(r.token)?.kernel ?? r.recipient, symbol: byToken.get(r.token)?.symbol ?? null })),
+    }),
+  );
 });
 
 /** SSE hints `{type: 'launch'|'trade'|'agent', tokenId}`. Clients re-fetch; payloads are hints only. */
