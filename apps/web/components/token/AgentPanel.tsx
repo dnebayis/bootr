@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { Address } from 'viem';
 import { useConnection } from 'wagmi';
-import { useAgent, useAgentPosts } from '@/lib/indexer';
+import { useAgent } from '@/lib/indexer';
 import type { Agent, Token } from '@/lib/types';
 import { ago, shortHash, units, usd } from '@/lib/format';
 import { env } from '@/lib/env';
@@ -14,13 +14,10 @@ import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { ExternalLink } from '@/components/ui/ExternalLink';
-import { XLogoIcon } from '@/components/ui/Icons';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
-import { FuelForm } from './FuelForm';
-import { GasChip, GasForm } from './GasForm';
+import { GasChip } from './GasForm';
 import { shortAddr } from '@/lib/format';
-import { cn } from '@/components/ui/cn';
 
 function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
@@ -45,61 +42,6 @@ function usdcHoldings(a: Agent | null) {
   return { total: (kernel + spender).toString(), kernel, spender };
 }
 
-function Posts({ agentId, fallbackHandle, now }: { agentId: string; fallbackHandle: string | null; now: number }) {
-  const posts = useAgentPosts(agentId || undefined);
-  // The sender knows the live binding; the indexer's handle is only used while posts cannot be loaded.
-  const handle = posts.data ? posts.data.handle : fallbackHandle;
-  const items = posts.data?.items ?? [];
-
-  return (
-    <section aria-labelledby="agent-posts" className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <h3 id="agent-posts" className="text-caption font-medium text-ink">
-          Latest posts
-        </h3>
-        {handle ? (
-          <a href={`https://x.com/${handle}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-caption text-body hover:text-link">
-            <XLogoIcon size={12} /> <span className="font-mono">@{handle}</span>
-          </a>
-        ) : null}
-      </div>
-      {agentId && posts.isPending ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-14" />
-          <Skeleton className="h-14" />
-        </div>
-      ) : items.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {items.map((p) => (
-            <li key={p.id}>
-              <a
-                href={p.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block rounded-sm border border-hairline px-3 py-2.5 transition-colors duration-150 hover:border-hairline-strong"
-              >
-                <p className="whitespace-pre-line break-words text-sm text-body">{p.text}</p>
-                <span className="mt-1.5 flex items-center gap-1.5 font-mono text-micro text-mute">
-                  {p.kind === 'reply' ? <span>Reply ·</span> : null}
-                  <span>{ago(p.createdAt, now)}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>View on X</span>
-                </span>
-              </a>
-            </li>
-          ))}
-        </ul>
-      ) : !handle ? (
-        <p className="text-caption text-mute">The agent has not connected an X account yet.</p>
-      ) : posts.data === null || posts.isError ? (
-        <p className="text-caption text-mute">Posts are unavailable right now.</p>
-      ) : (
-        <p className="text-caption text-mute">No posts yet.</p>
-      )}
-    </section>
-  );
-}
-
 export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | null }; now: number }) {
   const q = useAgent(token.kernel);
   const agent: Agent | null = q.data ?? (token.agent && 'treasuryUsd' in token.agent ? token.agent : null);
@@ -107,7 +49,7 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   const gas = useKernelGas(kernels);
   const kernelGas = gas.of(token.kernel as Address);
   const gasWei = kernelGas ? gasTotal(kernelGas) : null;
-  // Fuel and gas are the creator's (the X connect step is the page's CreatorXBanner); everyone else sees the agent's balances and posts.
+  // Fuel, gas and the agent's settings are the creator's (CreatorConsole on the page); everyone sees the facts here.
   const { address } = useConnection();
   const isCreator = env.useMock || (!!address && !!token.creator && address.toLowerCase() === token.creator.toLowerCase());
 
@@ -127,7 +69,6 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   const workerHref = env.workerSourceBase ? `${env.workerSourceBase}${token.workerHash}` : null;
   const registry = identityRegistry(token.chainId);
   const cardHref = /^https?:\/\//i.test(token.agentUri) ? token.agentUri : null;
-  const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
   const usdc = usdcHoldings(agent);
   const balances: { label: string; value: string; note?: string; title?: string }[] = [
     {
@@ -221,30 +162,7 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
       <p className="mt-3 rounded-xs bg-canvas-soft px-3 py-2 text-caption text-body">
         Inactive for {days} days → treasury goes to the platform; own tokens burned.
       </p>
-      {isCreator ? (
-        <div className="mt-4">
-          <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
-          {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
-        </div>
-      ) : (
-        <p className="mt-4 text-caption text-mute">Fuel and gas are added by the coin&rsquo;s creator. To buy the coin, use Trade.</p>
-      )}
-      <div className={cn('mt-2', !isCreator && 'hidden')} id="gas">
-        {gasWei != null && gasStatus(gasWei) !== 'ok' && agent?.status !== 'claimed' ? (
-          <p
-            data-testid="gas-notice"
-            className={cn('mb-2 rounded-xs px-3 py-2 text-caption', gasStatus(gasWei) === 'empty' ? 'border border-danger text-danger' : 'bg-warning-surface text-warning')}
-          >
-            {gasStatus(gasWei) === 'empty'
-              ? 'Out of gas: the agent cannot claim fees, trade or refuel until someone adds gas. The creator funds the first gas; after that the agent refills from its own fees.'
-              : 'Gas is low. The agent refills it from its own WETH fees on its next claim; add gas if it has none to claim yet.'}
-          </p>
-        ) : null}
-        <GasForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} onDone={() => void gas.refetch()} />
-      </div>
-      <div className="mt-5 border-t border-hairline pt-4">
-        <Posts agentId={token.agentId} fallbackHandle={token.xHandle} now={now} />
-      </div>
+      {!isCreator ? <p className="mt-3 text-caption text-mute">Fuel and gas are added by the coin&rsquo;s creator. To buy the coin, use Trade.</p> : null}
     </Panel>
   );
 }

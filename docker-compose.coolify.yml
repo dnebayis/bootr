@@ -139,7 +139,7 @@ services:
         NEXT_PUBLIC_WORKER_SOURCE_BASE: ${NEXT_PUBLIC_WORKER_SOURCE_BASE:-}
         NEXT_PUBLIC_IPFS_GATEWAY: ${NEXT_PUBLIC_IPFS_GATEWAY:-}
         NEXT_PUBLIC_USE_MOCK: ""
-    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
+    command: ["sh", "-c", "exec env -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
     depends_on:
       - indexer
       - sender
@@ -159,6 +159,10 @@ services:
       SENDER_URL: http://sender:3002
       # The model list for the launch form is fetched server-side from the relay.
       INFERENCE_URL: http://inference:3003
+      # The coin page's agent config and activity (/api/agent/[kernel]/config, /activity) come from the supervisor's
+      # internal API, signed with the key the supervisor also holds.
+      SUPERVISOR_URL: http://supervisor:3004
+      SUPERVISOR_SERVICE_KEY: ${SUPERVISOR_SERVICE_KEY}
     volumes:
       # Admin config and launch drafts (docs/deploy/railway.md section 7). The image owns /data as `node`,
       # and a named volume inherits that ownership on first use.

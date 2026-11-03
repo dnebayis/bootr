@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { isAddress } from 'viem';
+import { useConnection } from 'wagmi';
+import { env } from '@/lib/env';
 import { useToken } from '@/lib/indexer';
 import { useCoinLinks } from '@/lib/coin-links';
 import { useNow } from '@/lib/hooks';
@@ -17,6 +19,9 @@ import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { DexChart } from './DexChart';
 import { TokenImage } from '@/components/ui/TokenImage';
 import { AgentPanel } from './AgentPanel';
+import { AgentStatusLine } from './AgentStatusLine';
+import { ActivityTape } from './ActivityTape';
+import { CreatorConsole } from './CreatorConsole';
 import { CreatorXBanner } from './CreatorXBanner';
 import { FeeSplit } from './FeeSplit';
 import { TradesTable } from './TradesTable';
@@ -67,6 +72,8 @@ export function TokenView({ address }: { address: string }) {
   const { data: token, isPending, isError, refetch } = useToken(valid ? address : undefined);
   const now = useNow();
   const links = useCoinLinks(token?.metadata);
+  const { address: wallet } = useConnection();
+  const isCreator = env.useMock || (!!wallet && !!token?.creator && wallet.toLowerCase() === token.creator.toLowerCase());
 
   if (!valid) return <NotFound address={address} reason="That is not a valid token address." />;
 
@@ -104,6 +111,7 @@ export function TokenView({ address }: { address: string }) {
                 <CopyButton value={token.creator} label="Copy creator address" />
               </span>
             </div>
+            <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
             {links.data && (links.data.website || links.data.telegram || links.data.discord) ? (
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="token-links">
                 {[
@@ -157,6 +165,8 @@ export function TokenView({ address }: { address: string }) {
         </div>
         <aside className="flex flex-col gap-6">
           <AgentPanel token={token} now={now} />
+          {isCreator ? <CreatorConsole token={token} agent={token.agent} /> : null}
+          <ActivityTape token={token} now={now} />
         </aside>
       </div>
     </div>

@@ -18,6 +18,8 @@ import { env } from './env';
 import { mock, subscribeMock } from './mock';
 import type {
   Agent,
+  AgentActivity,
+  AgentConfig,
   AgentPosts,
   AgentWithToken,
   DailyStat,
@@ -266,6 +268,31 @@ export async function fetchAgentPosts(agentId: string): Promise<AgentPosts | nul
   return { handle: typeof json.handle === 'string' ? json.handle : null, items: Array.isArray(json.items) ? json.items.slice(0, 3) : [] };
 }
 
+
+/**
+ * The agent's current configuration (`/api/agent/:kernel/config`, proxied to the supervisor). Null when the
+ * supervisor does not know the agent (404); throws when the service is unavailable (503) so the console can say so.
+ */
+export async function fetchAgentConfig(kernel: string): Promise<AgentConfig | null> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/config`, { cache: 'no-store' });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new IndexerError(`Agent config responded ${res.status}`);
+  return (await res.json()) as AgentConfig;
+}
+
+export const ACTIVITY_PAGE = 30;
+
+/** One page of the activity tape (`/api/agent/:kernel/activity`), newest first; `before` pages past the last `at` shown. */
+export async function fetchAgentActivity(kernel: string, before: string | null = null): Promise<AgentActivity> {
+  const q = new URLSearchParams({ limit: String(ACTIVITY_PAGE) });
+  if (before) q.set('before', before);
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/activity?${q.toString()}`, { cache: 'no-store' });
+  if (res.status === 404) return { items: [] };
+  if (!res.ok) throw new IndexerError(`Agent activity responded ${res.status}`);
+  const json = (await res.json()) as Partial<AgentActivity>;
+  return { items: Array.isArray(json.items) ? json.items : [] };
+}
+
 // ---------------------------------------------------------------- query keys
 
 export const qk = {
@@ -282,6 +309,8 @@ export const qk = {
   holdings: (a: string) => ['profile', a.toLowerCase(), 'holdings'] as const,
   fuel: (a: string) => ['profile', a.toLowerCase(), 'fuel'] as const,
   posts: (k: string) => ['posts', k.toLowerCase()] as const,
+  agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
+  agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
 };
 
 // ---------------------------------------------------------------- hooks
@@ -356,6 +385,24 @@ export function useFuelHistory(addr: string | undefined) {
 
 export function useAgentPosts(agentId: string | undefined) {
   return useQuery({ queryKey: qk.posts(agentId ?? ''), queryFn: () => fetchAgentPosts(agentId!), enabled: !!agentId, staleTime: 60_000 });
+}
+
+
+export function useAgentConfig(kernel: string | undefined, enabled = true) {
+  return useQuery({ queryKey: qk.agentConfig(kernel ?? ''), queryFn: () => fetchAgentConfig(kernel!), enabled: !!kernel && enabled, staleTime: 30_000, retry: 1 });
+}
+
+/** Infinite activity tape; the next page starts before the last item's `at`. A short page means the end. */
+export function useAgentActivity(kernel: string | undefined) {
+  return useInfiniteQuery({
+    queryKey: qk.agentActivity(kernel ?? ''),
+    queryFn: ({ pageParam }) => fetchAgentActivity(kernel!, pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last.items.length >= ACTIVITY_PAGE ? (last.items[last.items.length - 1]?.at ?? undefined) : undefined),
+    enabled: !!kernel,
+    staleTime: 30_000,
+    retry: 1,
+  });
 }
 
 // ---------------------------------------------------------------- live stream

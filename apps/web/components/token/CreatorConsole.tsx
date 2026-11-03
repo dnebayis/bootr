@@ -1,0 +1,273 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { SiweMessage } from 'siwe';
+import { toast } from 'sonner';
+import type { Address } from 'viem';
+import { useConnection, useSignMessage } from 'wagmi';
+import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey } from '@bootr/shared/workers';
+import { appChain } from '@/lib/chains';
+import { env } from '@/lib/env';
+import { qk, useAgentConfig } from '@/lib/indexer';
+import { fetchModels } from '@/lib/launch';
+import { groupByProvider, modelLabel } from '@/lib/models';
+import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
+import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
+import { useKernelGas } from '@/lib/use-gas';
+import { Panel } from '@/components/ui/Panel';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Label, Select, Switch, Textarea } from '@/components/ui/Field';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { ConnectButton } from '@/components/shell/ConnectButton';
+import { cn } from '@/components/ui/cn';
+import { FuelForm } from './FuelForm';
+import { GasForm } from './GasForm';
+
+const INSTRUCTIONS_MIN = 20;
+const INSTRUCTIONS_MAX = 600;
+const POWERS = CAPABILITY_KEYS.filter((k) => !ALWAYS_ON_CAPABILITIES.includes(k));
+
+type Draft = { instructions: string; capabilities: Record<CapabilityKey, boolean>; postIntervalMs: number; model: string };
+
+function draftOf(c: AgentConfig): Draft {
+  return { instructions: c.instructions, capabilities: { ...c.worker.capabilities }, postIntervalMs: c.worker.postIntervalMs, model: c.model };
+}
+
+/** Only what differs from the stored config; null when nothing does. */
+export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | null {
+  const changes: AgentConfigChanges = {};
+  if (d.instructions.trim() !== config.instructions) changes.instructions = d.instructions.trim();
+  if (d.model !== config.model) changes.model = d.model;
+  const caps: Partial<Record<CapabilityKey, boolean>> = {};
+  for (const k of POWERS) if (d.capabilities[k] !== config.worker.capabilities[k]) caps[k] = d.capabilities[k];
+  const worker: NonNullable<AgentConfigChanges['worker']> = {};
+  if (Object.keys(caps).length) worker.capabilities = caps;
+  if (d.postIntervalMs !== config.worker.postIntervalMs) worker.postIntervalMs = d.postIntervalMs;
+  if (Object.keys(worker).length) changes.worker = worker;
+  return Object.keys(changes).length ? changes : null;
+}
+
+export function editedLabel(revision: number): string {
+  return revision === 0 ? 'not edited yet' : revision === 1 ? 'edited once' : `edited ${revision} times`;
+}
+
+function cadenceLabel(ms: number): string {
+  const known = CADENCE_OPTIONS.find((o) => o.ms === ms);
+  if (known) return known.label;
+  const h = ms / 3_600_000;
+  return h >= 24 ? `Every ${Math.round(h / 24)} d` : h >= 1 ? `Every ${Math.round(h * 10) / 10} h` : `Every ${Math.round(ms / 60_000)} min`;
+}
+
+/**
+ * The creator's panel on the coin page: the agent's instructions, powers, cadence and model (from the supervisor via
+ * `/api/agent/:kernel/config`, saved with a wallet signature through `POST` on the same route), then the existing
+ * Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
+ */
+export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | null }) {
+  const { address } = useConnection();
+  const { signMessageAsync } = useSignMessage();
+  const queryClient = useQueryClient();
+  const config = useAgentConfig(token.kernel);
+  const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
+  const kernels = useMemo(() => [token.kernel as Address], [token.kernel]);
+  const gas = useKernelGas(kernels);
+  const kernelGas = gas.of(token.kernel as Address);
+  const gasWei = kernelGas ? gasTotal(kernelGas) : null;
+  const [edits, setEdits] = useState<{ revision: number; draft: Draft } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const cfg = config.data ?? null;
+  // Edits belong to the revision they started from; a save (or someone else's) resets the form to the stored config.
+  const draft = cfg ? (edits && edits.revision === cfg.revision ? edits.draft : draftOf(cfg)) : null;
+  const update = (patch: Partial<Draft>) => {
+    if (!cfg || !draft) return;
+    setEdits({ revision: cfg.revision, draft: { ...draft, ...patch } });
+  };
+  const changes = cfg && draft ? diffConfig(cfg, draft) : null;
+  const instructionsLen = draft?.instructions.trim().length ?? 0;
+  const instructionsOk = instructionsLen >= INSTRUCTIONS_MIN && instructionsLen <= INSTRUCTIONS_MAX;
+  const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
+  const canSign = env.useMock || !!address;
+
+  const modelGroups = useMemo(() => {
+    const list = models.data?.models ?? [];
+    const current = draft?.model;
+    const known = current && list.some((m) => m.id === current) ? list : current ? [...list, { id: current, label: modelLabel(current), provider: 'Current', pricePerThoughtUsd: null }] : list;
+    return groupByProvider(known);
+  }, [models.data, draft?.model]);
+  const cadenceOptions = useMemo(() => {
+    const ms = draft?.postIntervalMs;
+    return ms && !CADENCE_OPTIONS.some((o) => o.ms === ms) ? [{ ms, label: cadenceLabel(ms) }, ...CADENCE_OPTIONS] : [...CADENCE_OPTIONS];
+  }, [draft?.postIntervalMs]);
+
+  const save = async () => {
+    if (!cfg || !changes || !instructionsOk) return;
+    setSaving(true);
+    try {
+      let body: { message: string; signature: string; changes: AgentConfigChanges };
+      if (env.useMock) {
+        body = { message: address ?? '', signature: '0x', changes };
+      } else {
+        if (!address) {
+          toast.error('Connect the creator wallet first.');
+          return;
+        }
+        const n = await fetch('/api/agent/nonce', { method: 'POST' });
+        if (!n.ok) {
+          toast.error('Could not start the signature (nonce).');
+          return;
+        }
+        const { nonce } = (await n.json()) as { nonce: string };
+        const message = new SiweMessage({
+          domain: window.location.host,
+          address,
+          statement: `Update the agent of Bootr coin $${token.symbol} (#${token.agentId}, ${token.kernel}).`,
+          uri: window.location.origin,
+          version: '1',
+          chainId: appChain.id,
+          nonce,
+          issuedAt: new Date().toISOString(),
+        }).prepareMessage();
+        let signature: `0x${string}`;
+        try {
+          signature = await signMessageAsync({ message });
+        } catch {
+          toast.error('Signature cancelled.');
+          return;
+        }
+        body = { message, signature, changes };
+      }
+      const res = await fetch(`/api/agent/${token.kernel.toLowerCase()}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+        toast.error(err.message ?? `Could not save (${res.status}).`);
+        return;
+      }
+      const next = (await res.json()) as AgentConfig;
+      queryClient.setQueryData(qk.agentConfig(token.kernel), next);
+      void queryClient.invalidateQueries({ queryKey: qk.agentActivity(token.kernel) });
+      setEdits(null);
+      toast.success(`Agent updated. The next cycle uses it (${editedLabel(next.revision)}).`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Panel title="Creator console" action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}>
+      <div data-testid="creator-console" className="flex flex-col gap-4">
+        {config.isPending ? (
+          <div className="flex flex-col gap-3">
+            <Skeleton className="h-24" />
+            <Skeleton className="h-5" />
+            <Skeleton className="h-8" />
+          </div>
+        ) : !cfg || !draft ? (
+          <p className="text-caption text-mute" data-testid="console-unavailable">
+            {config.isError ? 'The agent console is unavailable right now. Fuel and gas still work.' : 'The supervisor has not registered this agent yet. Fuel and gas still work.'}
+          </p>
+        ) : (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <div>
+              <Label htmlFor="console-instructions" hint={<span className={cn('font-mono tabular', !instructionsOk && 'text-danger')}>{instructionsLen}/{INSTRUCTIONS_MAX}</span>}>
+                Instructions
+              </Label>
+              <Textarea
+                id="console-instructions"
+                value={draft.instructions}
+                onChange={(e) => update({ instructions: e.target.value })}
+                maxLength={INSTRUCTIONS_MAX + 50}
+                aria-invalid={!instructionsOk}
+                placeholder="Personality, goals, strategy, what it should and should not do."
+              />
+            </div>
+            <fieldset>
+              <legend className="mb-1.5 text-caption font-medium text-ink">Powers</legend>
+              <ul className="divide-y divide-hairline rounded-sm border border-hairline">
+                {POWERS.map((k) => (
+                  <li key={k} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <span className="min-w-0">
+                      <span className="block text-sm text-ink">{CAPABILITIES[k].label}</span>
+                      <span className="block text-micro text-mute">{CAPABILITIES[k].description}</span>
+                    </span>
+                    <Switch id={`power-${k}`} label={CAPABILITIES[k].label} checked={draft.capabilities[k]} onChange={(v) => update({ capabilities: { ...draft.capabilities, [k]: v } })} />
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {ALWAYS_ON_CAPABILITIES.map((k) => (
+                  <Badge key={k}>{CAPABILITIES[k].label} · always on</Badge>
+                ))}
+              </div>
+            </fieldset>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="console-cadence">Cadence</Label>
+                <Select id="console-cadence" value={String(draft.postIntervalMs)} onChange={(e) => update({ postIntervalMs: Number(e.target.value) })}>
+                  {cadenceOptions.map((o) => (
+                    <option key={o.ms} value={o.ms}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="console-model">Model</Label>
+                <Select id="console-model" value={draft.model} onChange={(e) => update({ model: e.target.value })}>
+                  {modelGroups.map((g) => (
+                    <optgroup key={g.provider} label={g.provider}>
+                      {g.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              {canSign ? (
+                <Button type="submit" variant="ink" size="md" className="w-full" disabled={!changes || !instructionsOk} loading={saving} loadingLabel="Saving…">
+                  Save changes
+                </Button>
+              ) : (
+                <ConnectButton className="w-full" block />
+              )}
+              <span className="text-micro text-mute">
+                {cfg.worker.kind === 'custom' ? 'Custom worker' : `${cfg.worker.kind[0]!.toUpperCase()}${cfg.worker.kind.slice(1)} preset`} · saved with your wallet signature, applied from the next cycle.
+              </span>
+            </div>
+          </form>
+        )}
+
+        <div className="border-t border-hairline pt-4">
+          <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
+          {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
+          <div className="mt-2" id="gas">
+            {gasWei != null && gasStatus(gasWei) !== 'ok' && agent?.status !== 'claimed' ? (
+              <p
+                data-testid="gas-notice"
+                className={cn('mb-2 rounded-xs px-3 py-2 text-caption', gasStatus(gasWei) === 'empty' ? 'border border-danger text-danger' : 'bg-warning-surface text-warning')}
+                title={kernelGas ? `EntryPoint deposit ${formatGas(kernelGas.deposit)} ETH + kernel balance ${formatGas(kernelGas.balance)} ETH` : undefined}
+              >
+                {gasStatus(gasWei) === 'empty'
+                  ? 'Out of gas: the agent cannot claim fees, trade or refuel until someone adds gas. The creator funds the first gas; after that the agent refills from its own fees.'
+                  : 'Gas is low. The agent refills it from its own WETH fees on its next claim; add gas if it has none to claim yet.'}
+              </p>
+            ) : null}
+            <GasForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} onDone={() => void gas.refetch()} />
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}

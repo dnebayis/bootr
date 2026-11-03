@@ -33,6 +33,18 @@ export function senderEnv(): SenderServerEnv {
   return { serviceKey: serviceKey('SENDER_SERVICE_KEY'), publicUrl, internalUrl };
 }
 
+export type SupervisorServerEnv = {
+  /** HMAC key shared with apps/supervisor (SUPERVISOR_SERVICE_KEY, ≥ 32 chars); null when unset or too short. */
+  serviceKey: string | null;
+  /** Server-to-server supervisor origin (SUPERVISOR_URL, `http://supervisor:3004` on the compose network). */
+  url: string;
+};
+
+/** The supervisor's internal API, read by the coin page's `/api/agent/[kernel]/*` routes. */
+export function supervisorEnv(): SupervisorServerEnv {
+  return { serviceKey: serviceKey('SUPERVISOR_SERVICE_KEY'), url: str(process.env.SUPERVISOR_URL).replace(/\/$/, '') };
+}
+
 /**
  * Inference relay origin for server-side reads (`/api/models`): INFERENCE_URL (the internal relay
  * address), else NEXT_PUBLIC_INFERENCE_URL. Empty when neither is set.
@@ -105,6 +117,11 @@ export function configReport(): { errors: string[]; warnings: string[] } {
     errors.push(`SENDER_SERVICE_KEY is shorter than ${MIN_SERVICE_KEY_LENGTH} characters: X connect (/api/x/*) is disabled.`);
   } else if (!str(process.env.SENDER_SERVICE_KEY) && senderEnv().publicUrl && !env.useMock) {
     errors.push('SENDER_SERVICE_KEY is not set: X connect (/api/x/*) is disabled.');
+  }
+  if (short('SUPERVISOR_SERVICE_KEY')) {
+    errors.push(`SUPERVISOR_SERVICE_KEY is shorter than ${MIN_SERVICE_KEY_LENGTH} characters: the coin page's agent config and activity (/api/agent/*/config, /activity) are disabled.`);
+  } else if ((!str(process.env.SUPERVISOR_SERVICE_KEY) || !str(process.env.SUPERVISOR_URL)) && !env.useMock) {
+    warnings.push('SUPERVISOR_URL / SUPERVISOR_SERVICE_KEY are not both set: the coin page shows no agent activity and the creator console cannot save.');
   }
   if (short('INDEXER_SERVICE_KEY')) {
     errors.push(`INDEXER_SERVICE_KEY is shorter than ${MIN_SERVICE_KEY_LENGTH} characters: signed GET /api/admin/config is disabled.`);

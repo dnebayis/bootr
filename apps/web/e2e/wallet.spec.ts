@@ -79,3 +79,56 @@ test('console lists platform fees with per-token and claim-all actions (mock mod
   await expect(panel.getByTestId('platform-weth')).toContainText('WETH');
   expect(await panel.getByRole('button', { name: 'Claim', exact: true }).count()).toBeGreaterThan(0);
 });
+
+test('coin page shows the agent status line, the activity tape and the creator console (mock mode)', async ({ page }) => {
+  await fakeInjectedWallet(page);
+  await page.goto('/');
+  await page.locator('a[href^="/token/0x"]').first().click();
+  await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+
+  // Status line under the name: the status plus its reason.
+  await expect(page.getByTestId('agent-status')).toContainText(/awake · (posted .+|no posts yet)|sleeping · (waiting for an X account|fuel below 1 USDC|quiet for .+)|paused by creator|dormant|claimed/);
+
+  // The activity tape replaces "Latest posts": tabs All / Posts / Treasury, rows link to X or the explorer.
+  const tape = page.locator('section', { has: page.getByRole('heading', { name: 'Activity' }) });
+  await expect(tape).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Latest posts' })).toHaveCount(0);
+  await expect(tape.getByRole('tab', { name: 'All' })).toHaveAttribute('aria-selected', 'true');
+  await expect(tape.locator('li').first()).toBeVisible();
+  await tape.getByRole('tab', { name: 'Treasury' }).click();
+  await expect(tape.getByTestId('activity-tape')).toHaveAttribute('data-filter', 'treasury');
+  expect(await tape.locator('li[data-kind="fee_claim"]').count()).toBeGreaterThan(0);
+  await expect(tape.locator('li[data-kind="post"]')).toHaveCount(0);
+  await tape.getByRole('tab', { name: 'Posts' }).click();
+  await expect(tape.locator('li[data-kind="fee_claim"]')).toHaveCount(0);
+
+  // Creator console (everyone is the creator in mock mode): prefilled from /api/agent/[kernel]/config, saved with a POST.
+  const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
+  await expect(console_).toBeVisible();
+  await expect(console_.getByTestId('config-revision')).toHaveText('not edited yet');
+  const instructions = console_.getByLabel('Instructions');
+  await expect(instructions).not.toHaveValue('');
+  expect(await console_.getByRole('switch').count()).toBe(5);
+  await expect(console_.getByText('Memory · always on')).toBeVisible();
+  await expect(console_.getByLabel('Cadence')).toBeVisible();
+  await expect(console_.getByLabel('Model')).toBeVisible();
+  const save = console_.getByRole('button', { name: 'Save changes' });
+  await expect(save).toBeDisabled();
+  await instructions.fill('Post one dated fact about the pool per cycle and never tell anyone to buy.');
+  await console_.getByRole('switch', { name: 'Web research' }).click();
+  await expect(save).toBeEnabled();
+  const saved = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/config$/.test(r.url()) && r.request().method() === 'POST');
+  await save.click();
+  expect((await saved).status()).toBe(200);
+  await expect(page.getByText(/Agent updated/)).toBeVisible();
+  await expect(console_.getByTestId('config-revision')).toHaveText('edited once');
+  await expect(save).toBeDisabled();
+  // The edit lands on the tape.
+  await tape.getByRole('tab', { name: 'All' }).click();
+  await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('instructions, capabilities');
+
+  // Fuel and gas live in the console now.
+  await expect(console_.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
+  await expect(console_.getByRole('button', { name: 'Add gas' })).toBeVisible();
+  await expect(page.getByTestId('agent-wallet')).toBeVisible();
+});

@@ -4,9 +4,13 @@
  * and emits stream hints so live UI (reordering grid, ticking numbers) can be exercised.
  */
 import type { Address, Hex } from 'viem';
+import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type {
   Agent,
+  AgentActivityItem,
+  AgentConfig,
+  AgentConfigChanges,
   AgentPost,
   AgentStatus,
   AgentWithToken,
@@ -88,6 +92,9 @@ interface Store {
   daily: DailyStat[];
   platform: PlatformStats;
   seq: number;
+  /** Supervisor-side state the coin page reads through /api/agent/[kernel]/*: built lazily per kernel. */
+  configs: Map<string, AgentConfig>;
+  activity: Map<string, AgentActivityItem[]>;
 }
 
 let store: Store | null = null;
@@ -278,7 +285,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0 };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map() };
 }
 
 export function mockStore(): Store {
@@ -475,6 +482,55 @@ export const mock = {
       timestamp: s.now - i * 86400 * 2 - 3600,
     }));
   },
+  /** The agent's current configuration (lib/types AgentConfig); any valid kernel gets one so a fresh mock launch works. */
+  agentConfig(kernel: string): AgentConfig {
+    return clone(configFor(kernel));
+  },
+  /**
+   * Applies the creator's changes the way the supervisor's PUT would: only the fields present, always-on powers forced
+   * on, `revision` bumped, a `config_updated` row on the tape. `{ok: false}` with 409 when nothing changed.
+   */
+  updateAgentConfig(kernel: string, changes: AgentConfigChanges, by: string): { ok: true; config: AgentConfig } | { ok: false; status: number; error: string; message: string } {
+    const cfg = configFor(kernel);
+    const fields: string[] = [];
+    if (changes.instructions !== undefined && changes.instructions !== cfg.instructions) {
+      cfg.instructions = changes.instructions;
+      fields.push('instructions');
+    }
+    if (changes.model !== undefined && changes.model !== cfg.model) {
+      cfg.model = changes.model;
+      fields.push('model');
+    }
+    const w = changes.worker;
+    if (w?.capabilities) {
+      const next = { ...cfg.worker.capabilities };
+      for (const k of CAPABILITY_KEYS) if (!ALWAYS_ON_CAPABILITIES.includes(k) && typeof w.capabilities[k] === 'boolean') next[k] = w.capabilities[k]!;
+      if (CAPABILITY_KEYS.some((k) => next[k] !== cfg.worker.capabilities[k])) {
+        cfg.worker.capabilities = next;
+        fields.push('capabilities');
+      }
+    }
+    if (w?.postIntervalMs !== undefined && w.postIntervalMs !== cfg.worker.postIntervalMs) {
+      cfg.worker.postIntervalMs = w.postIntervalMs;
+      fields.push('postIntervalMs');
+    }
+    if (w?.jobLines !== undefined && JSON.stringify(w.jobLines) !== JSON.stringify(cfg.worker.jobLines)) {
+      cfg.worker.jobLines = [...w.jobLines];
+      fields.push('jobLines');
+    }
+    if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
+    if (fields.some((f) => f !== 'instructions' && f !== 'model') && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
+    cfg.revision += 1;
+    cfg.updatedAt = new Date().toISOString();
+    activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed ${fields.join(', ')} (revision ${cfg.revision}).` });
+    return { ok: true, config: clone(cfg) };
+  },
+  /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
+  agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {
+    const cutoff = opts.before ? Date.parse(opts.before) : NaN;
+    const list = activityFor(kernel).filter((it) => !Number.isFinite(cutoff) || Date.parse(it.at) < cutoff);
+    return clone({ items: list.slice(0, opts.limit) });
+  },
   /** Posts by ERC-8004 agent id; null for an id the mock store does not know. */
   postsByAgentId(agentId: string): { handle: string | null; items: AgentPost[] } | null {
     const t = mockStore().tokens.find((x) => x.agentId === agentId);
@@ -496,8 +552,121 @@ export const mock = {
   },
 };
 
+
+// ---- agent config and activity (what the supervisor would hold) ----
+
+const DEFAULT_INSTRUCTIONS = 'A patient onchain analyst for small Base coins. Reports what it sees as dated facts, never hypes, never tells anyone to buy or sell.';
+
+/** The config a token's agent starts with: its preset (by on-chain hash) or the default template, the launch model. */
+function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig {
+  const template = workerTemplateByHash(t.workerHash) ?? workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
+  const kind = workerTemplateByHash(t.workerHash) ? template.id : 'custom';
+  return {
+    agentId: t.agentId,
+    kernel: t.kernel,
+    creator: t.creator,
+    model: t.model,
+    instructions,
+    worker: { kind, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    workerHash: t.workerHash,
+    revision: 0,
+    updatedAt: new Date(t.launchedAt * 1000).toISOString(),
+  };
+}
+
+/** A config for a kernel the store never launched (a coin from another browser's mock launch): default worker, unknown creator. */
+function orphanConfig(kernel: Address): AgentConfig {
+  const template = workerTemplateById(DEFAULT_WORKER_TEMPLATE)!;
+  return {
+    agentId: String(900_000 + (parseInt(kernel.slice(-6), 16) % 90_000)),
+    kernel,
+    creator: '0x0000000000000000000000000000000000000000',
+    model: MODELS[0]!,
+    instructions: DEFAULT_INSTRUCTIONS,
+    worker: { kind: template.id, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    workerHash: template.hash,
+    revision: 0,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** A deterministic tape for a known token: the same three posts as `postsByAgentId`, treasury ops with tx hashes, sleeps and wakes. */
+function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
+  const now = Math.floor(Date.now() / 1000);
+  const r = mulberry32(parseInt(t.kernel.slice(-8), 16) >>> 0);
+  const at = (ageS: number) => new Date((now - ageS) * 1000).toISOString();
+  const tx = () => hex(r, 32);
+  const postUrl = (n: number) => `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(parseInt(t.agentId, 10) || 0) * 10n + BigInt(n))}`;
+  const items: AgentActivityItem[] = [];
+  if (t.xHandle) {
+    items.push(
+      { at: at(1800), kind: 'post', summary: 'Posted: Treasury rebalanced: 40 USDC moved to WETH after the 24h volume crossed the weekly median.', url: postUrl(3) },
+      { at: at(3 * 3600), kind: 'reply', summary: 'Replied: Fees are claimed every four hours. The split is locked on-chain, so nobody can change it.', url: postUrl(2) },
+      { at: at(9 * 3600), kind: 'post', summary: 'Posted: Holder count passed 300 today. Thanks for reading the boring updates.', url: postUrl(1) },
+    );
+  } else {
+    items.push({ at: at(600), kind: 'sleep', summary: 'Sleeping: waiting for an X account.' });
+  }
+  items.push(
+    { at: at(2 * 3600 + 300), kind: 'fee_claim', summary: `Claimed fees: ${(0.004 + r() * 0.02).toFixed(4)} WETH from the pool.`, txHash: tx() },
+    { at: at(2 * 3600 + 200), kind: 'swap', summary: `Swapped ${(0.003 + r() * 0.01).toFixed(4)} WETH for ${(8 + r() * 30).toFixed(2)} USDC.`, txHash: tx() },
+    { at: at(14 * 3600), kind: 'gas_topup', summary: `Gas refilled: ${(0.0005 + r() * 0.001).toFixed(4)} ETH deposited for the agent's own transactions.`, txHash: tx() },
+    { at: at(20 * 3600), kind: 'wake', summary: 'Woke up: fuel arrived.' },
+    { at: at(26 * 3600), kind: 'sleep', summary: 'Sleeping: fuel below 1 USDC.' },
+    { at: at(2 * 86400), kind: 'fee_claim', summary: `Claimed fees: ${(0.004 + r() * 0.02).toFixed(4)} WETH from the pool.`, txHash: tx() },
+    { at: at(2 * 86400 + 3600), kind: 'spender_topup', summary: `Moved ${(5 + r() * 10).toFixed(2)} USDC to the inference spender.`, txHash: tx() },
+    { at: at(3 * 86400), kind: 'fuel', summary: `Fuel received: ${(20 + r() * 60).toFixed(2)} USDC from the creator.`, txHash: tx() },
+  );
+  if (t.xHandle) {
+    for (let d = 1; d <= 5; d++) {
+      items.push({ at: at(d * 86400 + 5 * 3600 + d * 700), kind: 'post', summary: `Posted: Day ${d} recap: volume ${usdShort(t.volume24hUsd * (0.6 + r() * 0.8))}, ${Math.round(2 + r() * 6)} new holders.`, url: postUrl(10 + d) });
+    }
+  }
+  if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
+  items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` });
+  return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+function usdShort(v: number): string {
+  return v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v.toFixed(0)}`;
+}
+
+function configFor(kernel: string): AgentConfig {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let cfg = s.configs.get(key);
+  if (!cfg) {
+    const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
+    cfg = t ? buildConfig(t) : orphanConfig(kernel as Address);
+    s.configs.set(key, cfg);
+  }
+  return cfg;
+}
+
+function activityFor(kernel: string): AgentActivityItem[] {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let list = s.activity.get(key);
+  if (!list) {
+    const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
+    list = t ? buildActivity(t, s.agents.get(key) ?? null) : [];
+    s.activity.set(key, list);
+  }
+  return list;
+}
+
 /** Mock-mode launch: inserts a token into the in-memory store and returns its address. */
-export function mockLaunch(input: { name: string; symbol: string; image: string; model: string; buyback: boolean; xHandle: string | null }): Address {
+export function mockLaunch(input: {
+  name: string;
+  symbol: string;
+  image: string;
+  model: string;
+  buyback: boolean;
+  xHandle: string | null;
+  /** Optional: what the creator typed; seeds the mock agent config the coin page's creator console shows. */
+  instructions?: string;
+  workerHash?: Hex;
+}): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
   const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand);
@@ -513,6 +682,8 @@ export function mockLaunch(input: { name: string; symbol: string; image: string;
   token.graduatedAt = null;
   token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
+  if (input.workerHash) token.workerHash = input.workerHash;
+  if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));
   agent.status = 'awake';
   token.agent = { id: agent.id, status: 'awake' };
   s.tokens.unshift(token);

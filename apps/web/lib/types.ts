@@ -1,5 +1,8 @@
 /** Shapes from docs/data-contract.md. Amounts are integer base-unit strings. */
 import type { Address, Hex } from 'viem';
+import type { CapabilityKey } from '@bootr/shared/workers';
+
+export type { CapabilityKey };
 
 export type AgentStatus = 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
 export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
@@ -165,3 +168,56 @@ export interface AgentPosts {
 }
 
 export type StreamHint = { type: 'launch' | 'trade' | 'agent'; tokenId?: string };
+
+// ---------------------------------------------------------------- agent config and activity (supervisor, via /api/agent/[kernel]/*)
+
+export type WorkerKind = 'trader' | 'researcher' | 'community' | 'custom';
+
+/** The agent's current worker configuration as the supervisor holds it (docs/design/agent-launch-v2.md). */
+export interface AgentWorkerConfig {
+  kind: WorkerKind;
+  capabilities: Record<CapabilityKey, boolean>;
+  /** Minimum spacing between original posts, in milliseconds. */
+  postIntervalMs: number;
+  jobLines: string[];
+}
+
+/** `GET /api/agent/[kernel]/config` (the supervisor's `GET /internal/agents/:id/config`). */
+export interface AgentConfig {
+  agentId: string;
+  kernel: Address;
+  creator: Address;
+  model: string;
+  instructions: string;
+  worker: AgentWorkerConfig;
+  workerHash: Hex;
+  /** Starts at 0; every creator edit bumps it ("edited n times"). */
+  revision: number;
+  /** ISO 8601. */
+  updatedAt: string;
+}
+
+/** What the creator may change from the coin page; only the fields present are applied. */
+export interface AgentConfigChanges {
+  instructions?: string;
+  model?: string;
+  worker?: {
+    capabilities?: Partial<Record<CapabilityKey, boolean>>;
+    postIntervalMs?: number;
+    jobLines?: string[];
+  };
+}
+
+/** One row of the activity tape: a post, a reply, a treasury op, a runtime status change or a config edit. */
+export interface AgentActivityItem {
+  /** ISO 8601, newest first. */
+  at: string;
+  kind: string;
+  summary: string;
+  txHash?: Hex;
+  url?: string;
+}
+
+export interface AgentActivity {
+  items: AgentActivityItem[];
+}
