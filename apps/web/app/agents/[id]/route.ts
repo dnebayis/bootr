@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { buildRegistration, isLaunchId, pendingRegistration, type CardToken } from '@/lib/agent-card';
-import { readDraftIdentity } from '@/lib/server/launch-drafts';
+import { readLaunchDraft } from '@/lib/server/launch-drafts';
 import { findTokenByLaunchId } from '@/lib/server/token-lookup';
 
 /**
@@ -8,8 +8,9 @@ import { findTokenByLaunchId } from '@/lib/server/token-lookup';
  *
  * - known launch           -> 200, full document incl. the IdentityRegistry binding
  * - valid id, not indexed  -> 200, minimal document with `registrations: []` (right after launch)
- * Both carry the creator's Identity text as `bootr.identity` when the launch form saved one
- * (`POST /api/launch/draft`); the supervisor reads it from here.
+ * Both carry the creator's Instructions text as `bootr.identity` when the launch form saved one
+ * (`POST /api/launch/draft`), and a custom worker's preset as `bootr.worker`; the supervisor reads both
+ * from here (it recomputes the worker hash and applies the preset only if it equals the on-chain one).
  * - malformed id           -> 404
  * - indexer unreachable    -> 503, never cached
  */
@@ -32,7 +33,9 @@ export async function GET(_req: NextRequest, ctx: RouteContext<'/agents/[id]'>) 
   } catch {
     return json({ error: 'Agent registry is temporarily unavailable' }, 503, 'no-store');
   }
-  const identity = await readDraftIdentity(id);
-  if (!token) return json(pendingRegistration(identity), 200, 'public, max-age=10, s-maxage=10');
-  return json(buildRegistration(token, identity), 200, 'public, max-age=60, s-maxage=60');
+  const draft = await readLaunchDraft(id);
+  const identity = draft?.identity ?? null;
+  const worker = draft?.worker?.kind === 'custom' ? draft.worker.preset : null;
+  if (!token) return json(pendingRegistration(identity, worker), 200, 'public, max-age=10, s-maxage=10');
+  return json(buildRegistration(token, identity, worker), 200, 'public, max-age=60, s-maxage=60');
 }

@@ -8,12 +8,13 @@ import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { chainAddresses } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
+import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
 import { FALLBACK_MODELS, filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { pinataEnv } from '@/lib/server/env';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
-import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, saveDraftIdentity } from '@/lib/server/launch-drafts';
+import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
 import { verifySiwe } from '@/lib/server/siwe-verify';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -43,6 +44,20 @@ function fail(status: number, error: string, message: string, headers: Record<st
 }
 
 const DECIMAL = /^\d+(\.\d+)?$/;
+
+type ResolvedWorker = { id: string; hash: Hex; draft: DraftWorker };
+
+/** `worker` from the request: a template id (default community), or a custom preset; null when neither is acceptable. */
+function resolveWorker(input: unknown): ResolvedWorker | null {
+  if (input === undefined || typeof input === 'string') {
+    const t = WORKER_TEMPLATES.find((w) => w.id === (input ?? 'community'));
+    return t ? { id: t.id, hash: t.hash, draft: { kind: t.id } } : null;
+  }
+  const preset = normalizeWorkerPreset(input);
+  if (!preset) return null;
+  const custom = customWorker(preset);
+  return { id: custom.id, hash: custom.hash, draft: { kind: CUSTOM_WORKER_ID, preset } };
+}
 
 /** The image, from an https URL (fetched here, ≤ 2 MB) or a data: URL; checked by its bytes like the form upload. */
 async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/svg+xml' } | { error: string }> {
@@ -125,8 +140,16 @@ export async function POST(req: NextRequest) {
   if (!allowed.some((m) => m.id === model)) {
     return fail(400, 'invalid_request', `model must be one of: ${allowed.map((m) => m.id).join(', ')}`);
   }
-  const worker = WORKER_TEMPLATES.find((w) => w.id === (typeof l.worker === 'string' ? l.worker : 'community'));
-  if (!worker) return fail(400, 'invalid_request', `worker must be one of: ${WORKER_TEMPLATES.map((w) => w.id).join(', ')}`);
+  // The worker: a template id, or a custom preset {capabilities, postIntervalMs, jobLines} hashed like a template and
+  // published in the agent card (`bootr.worker`) so the supervisor can verify the hash the launch writes on-chain.
+  const worker = resolveWorker(l.worker);
+  if (!worker) {
+    return fail(
+      400,
+      'invalid_request',
+      `worker must be one of ${WORKER_TEMPLATES.map((w) => w.id).join(', ')}, or {capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs: ${WORKER_BOUNDS.minPostIntervalMs}..${WORKER_BOUNDS.maxPostIntervalMs}, jobLines: up to ${WORKER_BOUNDS.maxJobLines} lines of ${WORKER_BOUNDS.maxJobLineChars} characters}`,
+    );
+  }
   const buyback = l.buyback === true;
   const fuel = typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '20';
   if (!DECIMAL.test(fuel)) return fail(400, 'invalid_request', 'fuelUsdc must be a decimal USDC amount.');
@@ -155,7 +178,7 @@ export async function POST(req: NextRequest) {
   }
   const imageUrl = ipfsGatewayUrl(cid);
   try {
-    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links } });
+    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links }, worker: worker.draft });
     if (!saved.ok) return fail(500, 'store_failed', 'Could not store the launch draft.');
   } catch {
     return fail(503, 'store_unavailable', 'The launch draft store is not writable.');
@@ -245,6 +268,8 @@ export async function POST(req: NextRequest) {
       image: { url: imageUrl, ipfsUri: `ipfs://${cid}` },
       model,
       worker: worker.id,
+      workerHash: worker.hash,
+      ...(worker.draft.kind === CUSTOM_WORKER_ID ? { workerPreset: worker.draft.preset } : {}),
       buyback,
       launchFeeWei: feeWei.toString(),
       transactions,

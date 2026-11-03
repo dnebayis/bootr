@@ -137,7 +137,23 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
 
   await page.getByLabel('Name').fill('Quiet Engine');
   await page.getByLabel('Symbol').fill('QENG');
-  await page.getByLabel('Identity').fill('A patient onchain analyst for small Base coins.');
+  await page.getByLabel('Instructions').fill('A patient onchain analyst for small Base coins.');
+  // 03 Kind: presets show their powers and cadence read-only; Custom makes them editable and computes its own hash.
+  const summary = page.getByTestId('launch-summary');
+  await expect(summary).toContainText('Community');
+  await expect(page.getByRole('switch', { name: 'Web research' })).toBeDisabled();
+  await page.locator('label', { has: page.getByRole('radio', { name: 'Custom' }) }).click();
+  await expect(summary).toContainText('Custom');
+  const research = page.getByRole('switch', { name: 'Web research' });
+  await expect(research).toBeEnabled();
+  await expect(research).toHaveAttribute('aria-checked', 'true');
+  await research.click();
+  await expect(research).toHaveAttribute('aria-checked', 'false');
+  await expect(page.getByLabel('Cadence', { exact: true })).toHaveValue('7200000');
+  await page.getByLabel('Job line 1', { exact: true }).fill('Your job is the weather on Base, as dated facts.');
+  await expect(page.getByTestId('kind-cards')).toContainText(/v1 · 0x[0-9a-f]{8}…/);
+  await expect(summary).toContainText('The agent can make bad decisions and lose money.');
+  await expect(summary.getByTestId('cost-line')).toContainText('0 ETH + 0.001 ETH + 20 USDC');
   // No X account connected: the form says the agent launches silent and asks for an explicit confirmation.
   await expect(page.getByTestId('no-x-notice')).toContainText('the agent launches silent');
   await page.getByLabel('Launch without an X account; I will connect one later from the coin page.').check();
@@ -146,6 +162,7 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await expect(page.getByText('Upload an image.')).toBeVisible();
 
   const uploaded = page.waitForResponse((r) => r.url().endsWith('/api/upload') && r.request().method() === 'POST');
+  const drafted = page.waitForRequest((r) => r.url().endsWith('/api/launch/draft') && r.method() === 'POST');
   await page.locator('#image-file').setInputFiles({ name: 'coin.png', mimeType: 'image/png', buffer: PNG });
   expect((await uploaded).status()).toBe(200);
   const cid = mockCid(PNG);
@@ -167,6 +184,14 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
 
   await expect(launch).toBeEnabled();
   await launch.click();
+  // The draft carries the custom worker: the preset the on-chain hash commits to, published in the agent card.
+  expect((await drafted).postDataJSON()).toMatchObject({
+    identity: 'A patient onchain analyst for small Base coins.',
+    worker: {
+      kind: 'custom',
+      preset: { capabilities: { xRead: true, xReply: true, xPublish: true, research: false, memory: true, treasury: true, images: true }, postIntervalMs: 7_200_000, identity: ['Your job is the weather on Base, as dated facts.'] },
+    },
+  });
   await expect(page.getByText(/Mock: \$QENG launched with 0.002 ETH of gas/)).toBeVisible();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
 

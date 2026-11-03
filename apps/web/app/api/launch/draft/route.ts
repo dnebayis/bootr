@@ -9,6 +9,7 @@ import {
   isDraftId,
   normalizeCoin,
   normalizeIdentity,
+  normalizeWorker,
   ownerCookieValue,
   ownerTagFromCookie,
   saveDraftIdentity,
@@ -17,10 +18,12 @@ import {
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
- * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, telegram, discord}}}
- * Stores the creator's Identity text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
+ * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, telegram, discord}},
+ *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}}}
+ * Stores the creator's Instructions text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
  * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
- * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`).
+ * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`); a custom `worker` is published in the
+ * agent card as `bootr.worker`, where the supervisor recomputes the hash the launch wrote on-chain.
  * Same-origin only. The first write owns the draft id (HttpOnly cookie); a write without the owner's
  * cookie for an id that already has a text answers 409.
  */
@@ -34,7 +37,7 @@ export async function POST(req: NextRequest) {
   if (Number(req.headers.get('content-length') ?? 0) > 8192) {
     return NextResponse.json({ error: 'payload_too_large' }, { status: 413, headers: NO_STORE });
   }
-  let body: { draftId?: unknown; identity?: unknown; coin?: unknown } = {};
+  let body: { draftId?: unknown; identity?: unknown; coin?: unknown; worker?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -54,10 +57,14 @@ export async function POST(req: NextRequest) {
   if (body.coin !== undefined && coin === null) {
     return NextResponse.json({ error: 'invalid_request', message: 'coin must carry a valid name, symbol and image URL, and only https links' }, { status: 400, headers: NO_STORE });
   }
+  const worker = body.worker === undefined ? null : normalizeWorker(body.worker);
+  if (body.worker !== undefined && worker === null) {
+    return NextResponse.json({ error: 'invalid_request', message: 'worker must be a template id or a custom preset within bounds' }, { status: 400, headers: NO_STORE });
+  }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;
   try {
-    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin });
+    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin, worker });
   } catch {
     return NextResponse.json({ error: 'store_unavailable', message: 'The launch draft store is not writable.' }, { status: 503, headers: NO_STORE });
   }

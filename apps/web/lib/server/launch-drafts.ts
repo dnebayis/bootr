@@ -2,10 +2,11 @@
  * Launch drafts: the creator's "Identity" text and the coin's display metadata, stored per launch draft id
  * before the launch transaction.
  *
- * The launch form posts `{draftId, identity, coin}` to `POST /api/launch/draft` right before it sends the
- * launch tx. Both are kept here, one small JSON file per draft id. The text is published in the hosted
+ * The launch form posts `{draftId, identity, coin, worker}` to `POST /api/launch/draft` right before it sends
+ * the launch tx. All three are kept here, one small JSON file per draft id. The text is published in the hosted
  * ERC-8004 agent card (`/agents/<draftId>.json`, field `bootr.identity`), where the supervisor reads it
- * when it registers the launch (apps/supervisor/src/agent-card.ts; see docs/agent-identity.md). The coin
+ * when it registers the launch (apps/supervisor/src/agent-card.ts; see docs/agent-identity.md). A custom
+ * worker's preset is published there too (`bootr.worker`; docs/design/agent-launch-v2.md). The coin
  * metadata backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`).
  *
  * Ownership: the first write of a draft id answers with a random owner tag that the route sets as an
@@ -19,10 +20,11 @@
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/launch-drafts must not be imported in the browser');
 
-/** Same bounds as the launch form (`Identity`, 20 to 600 characters). */
+/** Same bounds as the launch form (`Instructions`, 20 to 600 characters). */
 export const MIN_IDENTITY_CHARS = 20;
 export const MAX_IDENTITY_CHARS = 600;
 
@@ -120,7 +122,28 @@ export function normalizeCoin(input: unknown): DraftCoin | null {
   return { name, symbol, image, imageIpfs, xHandle, links };
 }
 
-type DraftFile = { identity: string; coin: DraftCoin | null; ownerTag: string; createdAt: number; updatedAt: number };
+/**
+ * What the agent is for, as picked in the launch form: a preset (its template hash goes on-chain) or a custom worker
+ * whose preset is published in the agent card (`bootr.worker`) so the supervisor can recompute the on-chain hash.
+ */
+export type DraftWorker = { kind: WorkerTemplateId } | { kind: typeof CUSTOM_WORKER_ID; preset: WorkerPreset };
+
+/** The form's `worker: {kind, preset?}`; null when it is not a template id or not a valid custom preset. */
+export function normalizeWorker(input: unknown): DraftWorker | null {
+  if (!input || typeof input !== 'object') return null;
+  const { kind, preset } = input as { kind?: unknown; preset?: unknown };
+  if (typeof kind !== 'string') return null;
+  if (kind === CUSTOM_WORKER_ID) {
+    const p = normalizeWorkerPreset(preset);
+    return p ? { kind: CUSTOM_WORKER_ID, preset: p } : null;
+  }
+  const template = workerTemplateById(kind);
+  return template ? { kind: template.id } : null;
+}
+
+type DraftFile = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; ownerTag: string; createdAt: number; updatedAt: number };
+
+export type LaunchDraft = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null };
 
 function fileFor(dir: string, draftId: string): string {
   if (!isDraftId(draftId)) throw new Error('not a draft id');
@@ -134,6 +157,7 @@ async function readDraft(dir: string, draftId: string): Promise<DraftFile | null
     return {
       identity: raw.identity,
       coin: normalizeCoin(raw.coin),
+      worker: normalizeWorker(raw.worker),
       ownerTag: raw.ownerTag,
       createdAt: Number(raw.createdAt) || 0,
       updatedAt: Number(raw.updatedAt) || 0,
@@ -150,11 +174,11 @@ export async function readDraftIdentity(draftId: string, opts: { dir?: string } 
   return draft ? draft.identity : null;
 }
 
-/** The stored identity text and coin metadata for a draft id, or null when none was saved. Never throws. */
-export async function readLaunchDraft(draftId: string, opts: { dir?: string } = {}): Promise<{ identity: string; coin: DraftCoin | null } | null> {
+/** The stored identity text, coin metadata and worker choice for a draft id, or null when none was saved. Never throws. */
+export async function readLaunchDraft(draftId: string, opts: { dir?: string } = {}): Promise<LaunchDraft | null> {
   if (!isDraftId(draftId)) return null;
   const draft = await readDraft(opts.dir ?? draftsDir(), draftId);
-  return draft ? { identity: draft.identity, coin: draft.coin } : null;
+  return draft ? { identity: draft.identity, coin: draft.coin, worker: draft.worker } : null;
 }
 
 function randomTag(): string {
@@ -173,15 +197,15 @@ function timingSafeEqual(a: string, b: string): boolean {
 export type SaveResult = { ok: true; ownerTag: string } | { ok: false; reason: 'owned' };
 
 /**
- * Stores `identity` (already normalized) and `opts.coin` under `draftId`. A new draft id gets a fresh owner tag; an existing
- * one is only replaced when `ownerTag` matches the stored tag, else `{ok: false, reason: 'owned'}`.
+ * Stores `identity` (already normalized), `opts.coin` and `opts.worker` under `draftId`. A new draft id gets a fresh owner
+ * tag; an existing one is only replaced when `ownerTag` matches the stored tag, else `{ok: false, reason: 'owned'}`.
  * Writes are atomic (temp file + rename).
  */
 export async function saveDraftIdentity(
   draftId: string,
   identity: string,
   ownerTag: string | null,
-  opts: { dir?: string; now?: number; coin?: DraftCoin | null } = {},
+  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null } = {},
 ): Promise<SaveResult> {
   const dir = opts.dir ?? draftsDir();
   const now = opts.now ?? Math.floor(Date.now() / 1000);
@@ -189,7 +213,7 @@ export async function saveDraftIdentity(
   const existing = await readDraft(dir, draftId);
   if (existing && !(ownerTag && OWNER_TAG.test(ownerTag) && timingSafeEqual(ownerTag, existing.ownerTag))) return { ok: false, reason: 'owned' };
   const tag = existing ? existing.ownerTag : randomTag();
-  const next: DraftFile = { identity, coin: opts.coin ?? null, ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
+  const next: DraftFile = { identity, coin: opts.coin ?? null, worker: opts.worker ?? null, ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
   await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomTag().slice(0, 8)}.tmp`;
   await writeFile(tmp, JSON.stringify(next) + '\n', 'utf8');

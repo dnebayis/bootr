@@ -90,12 +90,12 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 |---|---|
 | `/` | $BOOTR box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
 | `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade link, last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
-| `/launch` | Coin, Agent, X account, Fuel & options (fuel, dev buy, the agent's first gas); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
+| `/launch` | 01 Coin, 02 Mind (model, searchable), 03 Kind (Trader / Researcher / Community / Custom with the Powers grid and Cadence), 04 Character (Instructions and job lines), 05 X account, 06 Fuel & options, with a sticky summary card (cost line, fee split, risk line, Launch). A custom kind's preset is hashed like a template (`customWorker`), saved with the draft (`POST /api/launch/draft`, field `worker`) and published in the agent card as `bootr.worker` ([`docs/design/agent-launch-v2.md`](../../docs/design/agent-launch-v2.md)); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |
 | `/llms.txt`, `/llms-full.txt` | The docs for language models: an llmstxt.org index and the full text in Markdown, `text/plain; charset=utf-8`, prerendered, cached 1 h (1 day at the edge). See "Docs" below. |
 | `/profile` | Wallet-gated: your agents (pause/unpause), creator fees (claimable WETH, unsettled WETH per coin, Claim), launched coins, holdings, fuel history. |
-| `/agents/[id].json` | ERC-8004 registration file (agent card) of the agent launched under draft id `id`; any origin, cached 60 s. |
+| `/agents/[id].json` | ERC-8004 registration file (agent card) of the agent launched under draft id `id`, with `bootr.identity` (the Instructions text) and, for a custom kind, `bootr.worker`; any origin, cached 60 s. |
 | `/tokens/[id].json` | ERC-7572 contract URI of the coin launched under draft id `id` (name, symbol, description, image, external_link, socialMediaUrls). |
 | `/console-<ADMIN_CONSOLE_SLUG>` | Hidden admin console (see below). Not linked, `noindex`, disallowed in `robots.txt`, absent from the sitemap. |
 
@@ -170,7 +170,7 @@ The agent API lets a program with a wallet do the same without a browser, authen
 | Route | Purpose |
 | --- | --- |
 | `POST /api/agent/nonce` | `{nonce, expiresIn}`; single use, 10 min, not cookie-bound |
-| `POST /api/agent/launch` | `{message, signature, launch: {...}}` with statement `Prepare a Bootr launch.`: pins the image, stores the identity and coin metadata under a new launch id, reads fee and minimum fuel from the launcher, returns the `approve`, `launch` and `gas` transactions to send (nothing is sent server-side). 5/min per IP |
+| `POST /api/agent/launch` | `{message, signature, launch: {...}}` with statement `Prepare a Bootr launch.`: pins the image, stores the instructions, coin metadata and worker under a new launch id, reads fee and minimum fuel from the launcher, returns the `approve`, `launch` and `gas` transactions to send (nothing is sent server-side). `launch.worker` is a template id (`trader`, `researcher`, `community`) or a custom preset `{capabilities, postIntervalMs, jobLines}` (`@bootr/shared/workers`, `normalizeWorkerPreset`); the answer carries `workerHash` (and `workerPreset` for a custom one). 5/min per IP |
 | `POST /api/agent/x-connect` | `{message, signature}` with the Connect-X statement: returns the signed sender `/oauth/start` URL for the agent (5 min), for a person to open in the agent's X account |
 
 Mock mode returns `{mock: true}` shapes (no chain reads, zero-address launcher, deterministic CID). Documented for agents on

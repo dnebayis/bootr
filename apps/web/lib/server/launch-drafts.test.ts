@@ -2,12 +2,14 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WORKER_BOUNDS } from '@bootr/shared/workers';
 import {
   MAX_IDENTITY_CHARS,
   draftsDir,
   isDraftId,
   normalizeCoin,
   normalizeIdentity,
+  normalizeWorker,
   ownerCookieValue,
   ownerTagFromCookie,
   parseOwnerCookie,
@@ -19,6 +21,7 @@ import {
 const DRAFT = '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e6f';
 const OTHER = '3b241101-e2bb-4255-8caf-4136c566a962';
 const TEXT = 'A patient onchain analyst for small Base coins. Short, plain, no hype.';
+const CAPS = { xRead: true, xReply: false, xPublish: true, research: true, memory: true, treasury: true, images: false };
 
 describe('normalizeIdentity', () => {
   it('accepts plain text between 20 and 600 characters, normalized', () => {
@@ -106,8 +109,23 @@ describe('draft store', () => {
   it('stores the coin metadata next to the identity text', async () => {
     const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', telegram: null, discord: null } };
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
-    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null });
     expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
+  });
+
+  it('stores the worker choice: a preset by id, a custom worker with its preset', async () => {
+    await saveDraftIdentity(DRAFT, TEXT, null, { dir, worker: { kind: 'trader' } });
+    expect((await readLaunchDraft(DRAFT, { dir }))?.worker).toEqual({ kind: 'trader' });
+    const preset = { capabilities: CAPS, postIntervalMs: 2 * 60 * 60 * 1000, identity: ['Your job is the weather on Base.'] };
+    await saveDraftIdentity(OTHER, TEXT, null, { dir, worker: { kind: 'custom', preset } });
+    expect((await readLaunchDraft(OTHER, { dir }))?.worker).toEqual({ kind: 'custom', preset });
+    // A file whose worker no longer validates (bounds changed, hand-edited) reads back without one.
+    const { writeFile } = await import('node:fs/promises');
+    const file = path.join(dir, `${OTHER}.json`);
+    const raw = JSON.parse(await readFile(file, 'utf8'));
+    raw.worker.preset.postIntervalMs = 1;
+    await writeFile(file, JSON.stringify(raw));
+    expect((await readLaunchDraft(OTHER, { dir }))?.worker).toBeNull();
   });
 
   it('rejects a malformed draft id instead of writing outside the directory', async () => {
@@ -162,5 +180,36 @@ describe('normalizeCoin', () => {
     expect(normalizeCoin({ ...ok, imageIpfs: 'https://x' })).toBeNull();
     expect(normalizeCoin({ ...ok, xHandle: 'bad handle' })).toBeNull();
     expect(normalizeCoin({ ...ok, name: 'x'.repeat(49) })).toBeNull();
+  });
+});
+
+describe('normalizeWorker', () => {
+  const H = 60 * 60 * 1000;
+  it('accepts a template id and nothing else by name', () => {
+    expect(normalizeWorker({ kind: 'trader' })).toEqual({ kind: 'trader' });
+    expect(normalizeWorker({ kind: 'community', preset: { junk: true } })).toEqual({ kind: 'community' });
+    expect(normalizeWorker({ kind: 'overlord' })).toBeNull();
+    expect(normalizeWorker('trader')).toBeNull();
+    expect(normalizeWorker(null)).toBeNull();
+  });
+  it('normalizes a custom preset: always-on powers forced, job lines cleaned, bounds enforced', () => {
+    const w = normalizeWorker({
+      kind: 'custom',
+      preset: { capabilities: { xRead: true, xPublish: true, research: 'yes', memory: false, treasury: false }, postIntervalMs: 2 * H, identity: ['  Your job is  the weather. ', '', 'Cite\u200b sources.'] },
+    });
+    expect(w).toEqual({
+      kind: 'custom',
+      preset: {
+        capabilities: { xRead: true, xReply: false, xPublish: true, research: false, memory: true, treasury: true, images: false },
+        postIntervalMs: 2 * H,
+        identity: ['Your job is the weather.', 'Cite sources.'],
+      },
+    });
+    expect(normalizeWorker({ kind: 'custom', preset: { capabilities: CAPS, postIntervalMs: 2 * H, jobLines: ['via jobLines'] } })).toMatchObject({ preset: { identity: ['via jobLines'] } });
+    expect(normalizeWorker({ kind: 'custom' })).toBeNull();
+    expect(normalizeWorker({ kind: 'custom', preset: { capabilities: CAPS, postIntervalMs: WORKER_BOUNDS.minPostIntervalMs - 1, identity: [] } })).toBeNull();
+    expect(normalizeWorker({ kind: 'custom', preset: { capabilities: CAPS, postIntervalMs: 2 * H, identity: ['x'.repeat(WORKER_BOUNDS.maxJobLineChars + 1)] } })).toBeNull();
+    expect(normalizeWorker({ kind: 'custom', preset: { capabilities: CAPS, postIntervalMs: 2 * H, identity: Array(WORKER_BOUNDS.maxJobLines + 1).fill('line') } })).toBeNull();
+    expect(normalizeWorker({ kind: 'custom', preset: { capabilities: CAPS, postIntervalMs: 2 * H, identity: [42] } })).toBeNull();
   });
 });

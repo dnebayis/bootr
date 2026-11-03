@@ -8,6 +8,7 @@
  * Shared by the route handler (server) and the UI (client): keep it free of browser/server APIs.
  */
 import { getAddresses } from '@bootr/shared/addresses';
+import { CUSTOM_WORKER_ID, CUSTOM_WORKER_VERSION, type WorkerPreset } from '@bootr/shared/workers';
 import type { Address } from 'viem';
 import { env } from './env';
 
@@ -54,18 +55,29 @@ export interface RegistrationFile {
   services: { name: string; endpoint: string }[];
   registrations: { agentRegistry: string; agentId: number }[];
   supportedTrust?: string[];
-  /** Bootr extension: what the creator wrote about the agent at launch (see docs/agent-identity.md). */
-  bootr?: { identity: string };
+  /**
+   * Bootr extension: what the creator wrote about the agent at launch (see docs/agent-identity.md) and, for a
+   * custom worker, the preset whose hash the launch wrote on-chain (docs/design/agent-launch-v2.md).
+   */
+  bootr?: { identity?: string; worker?: CardWorker };
 }
+
+/** `bootr.worker`: the custom worker definition, the same object whose canonical JSON is hashed on-chain. */
+export type CardWorker = { id: typeof CUSTOM_WORKER_ID; version: typeof CUSTOM_WORKER_VERSION; preset: WorkerPreset };
 
 /**
  * `description` with the creator's identity text ahead of Bootr's own sentence, plus the `bootr.identity`
- * extension the supervisor reads. Without a creator text the document is unchanged.
+ * extension the supervisor reads, and `bootr.worker` when the launch defined a custom worker. Without either
+ * the document is unchanged.
  */
-function withIdentity(doc: RegistrationFile, identity: string | null | undefined): RegistrationFile {
+function withIdentity(doc: RegistrationFile, identity: string | null | undefined, worker?: WorkerPreset | null): RegistrationFile {
   const text = (identity ?? '').trim();
-  if (!text) return doc;
-  return { ...doc, description: `${text}\n\n${doc.description}`, bootr: { identity: text } };
+  const bootr: NonNullable<RegistrationFile['bootr']> = {
+    ...(text ? { identity: text } : {}),
+    ...(worker ? { worker: { id: CUSTOM_WORKER_ID, version: CUSTOM_WORKER_VERSION, preset: worker } } : {}),
+  };
+  if (!text && !worker) return doc;
+  return { ...doc, ...(text ? { description: `${text}\n\n${doc.description}` } : {}), bootr };
 }
 
 export type CardToken = {
@@ -85,7 +97,7 @@ function chainName(chainId: number) {
   return chainId === 8453 ? 'Base' : chainId === 84532 ? 'Base Sepolia' : `chain ${chainId}`;
 }
 
-export function buildRegistration(t: CardToken, identity?: string | null): RegistrationFile {
+export function buildRegistration(t: CardToken, identity?: string | null, worker?: WorkerPreset | null): RegistrationFile {
   const registry = identityRegistry(t.chainId);
   const agentId = Number(t.agentId);
   const services = [
@@ -103,7 +115,7 @@ export function buildRegistration(t: CardToken, identity?: string | null): Regis
         ? [{ agentRegistry: `eip155:${t.chainId}:${registry}`, agentId }]
         : [],
     ...(reputationRegistry(t.chainId) ? { supportedTrust: ['reputation'] } : {}),
-  }, identity);
+  }, identity, worker);
 }
 
 /**
@@ -111,7 +123,7 @@ export function buildRegistration(t: CardToken, identity?: string | null): Regis
  * identity is already here: the supervisor registers the launch from the on-chain event, often before
  * the indexer has caught up.
  */
-export function pendingRegistration(identity?: string | null): RegistrationFile {
+export function pendingRegistration(identity?: string | null, worker?: WorkerPreset | null): RegistrationFile {
   return withIdentity(
     {
       type: REGISTRATION_TYPE,
@@ -121,6 +133,7 @@ export function pendingRegistration(identity?: string | null): RegistrationFile 
       registrations: [],
     },
     identity,
+    worker,
   );
 }
 

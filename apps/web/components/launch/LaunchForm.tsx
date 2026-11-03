@@ -7,13 +7,24 @@ import { useConnection, useReadContract, useWriteContract } from 'wagmi';
 import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, type Address, zeroAddress } from 'viem';
 import { entryPoint, entryPointAbi, GAS_TOPUP_DEFAULT_ETH, GAS_TOPUP_MIN_ETH, validTopUp } from '@/lib/gas';
 import { toast } from 'sonner';
+import {
+  CADENCE_OPTIONS,
+  CAPABILITIES,
+  CUSTOM_WORKER_ID,
+  customWorker,
+  normalizeWorkerPreset,
+  WORKER_BOUNDS,
+  type CapabilityKey,
+  type WorkerPreset,
+  type WorkerTemplateId,
+} from '@bootr/shared/workers';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
 import { ofVolume, pctLabel } from '@/lib/fee-split';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
-import { fetchModels, fetchPlatformFlags, WORKER_TEMPLATES, type WorkerTemplate } from '@/lib/launch';
+import { fetchModels, fetchPlatformFlags, WORKER_TEMPLATES } from '@/lib/launch';
 import { formatThoughtPrice, groupByProvider, RECOMMENDED_MODEL, THOUGHT } from '@/lib/models';
 import { Badge } from '@/components/ui/Badge';
 import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
@@ -30,7 +41,7 @@ import { XConnect } from './XConnect';
 
 function Section({ n, title, description, children }: { n: number; title: string; description: string; children: ReactNode }) {
   return (
-    <section className="grid gap-6 border-t border-hairline py-8 md:grid-cols-[240px_minmax(0,1fr)] md:gap-12">
+    <section className="flex flex-col gap-5 border-t border-hairline py-8">
       <div>
         <div className="font-mono text-caption text-mute">{String(n).padStart(2, '0')}</div>
         <h2 className="mt-1 text-display-sm font-semibold text-ink">{title}</h2>
@@ -73,6 +84,35 @@ function useDraftId(): [string | null, () => void] {
   return [id, () => setId(freshDraftId())];
 }
 
+/** What the creator picks in 03 Kind: a preset (its template hash goes on-chain) or a custom worker. */
+type Kind = WorkerTemplateId | typeof CUSTOM_WORKER_ID;
+
+/** The powers a creator can switch; `memory` and `treasury` are always on (the fee -> fuel loop needs the treasury). */
+const POWER_KEYS = ['xRead', 'xReply', 'xPublish', 'research', 'images'] as const satisfies readonly CapabilityKey[];
+type PowerKey = (typeof POWER_KEYS)[number];
+const ALWAYS_ON = ['memory', 'treasury'] as const satisfies readonly CapabilityKey[];
+
+const H = 60 * 60 * 1000;
+const DEFAULT_CADENCE_MS = 2 * H;
+const DEFAULT_POWERS: Record<PowerKey, boolean> = { xRead: true, xReply: true, xPublish: true, research: true, images: true };
+
+function cadenceLabel(ms: number): string {
+  const known = CADENCE_OPTIONS.find((o) => o.ms === ms);
+  if (known) return known.label;
+  if (ms % H === 0) return `Every ${ms / H} h`;
+  return `Every ${Math.round(ms / 60_000)} min`;
+}
+
+const KIND_CARDS: { id: Kind; label: string; description: string; does: string[] }[] = [
+  ...WORKER_TEMPLATES.map((w) => ({ id: w.id as Kind, label: w.label, description: w.description, does: w.does })),
+  {
+    id: CUSTOM_WORKER_ID,
+    label: 'Custom',
+    description: 'Pick its powers and cadence, and write its own job lines.',
+    does: ['Any of the five powers', 'Any cadence from 30 min to once a day', `Up to ${WORKER_BOUNDS.maxJobLines} job lines`, 'Claims fees and keeps its treasury'],
+  },
+];
+
 export function LaunchForm() {
   const router = useRouter();
   const [draftId, resetDraftId] = useDraftId();
@@ -89,17 +129,25 @@ export function LaunchForm() {
   const [telegram, setTelegram] = useState('');
   const [discord, setDiscord] = useState('');
 
-  // 02 Agent
-  const [identity, setIdentity] = useState('');
+  // 02 Mind
   const [model, setModel] = useState('');
-  const [worker, setWorker] = useState<WorkerTemplate['id']>('community');
+  const [modelQuery, setModelQuery] = useState('');
 
-  // 03 X
+  // 03 Kind: a preset, or a custom worker with its own powers and cadence.
+  const [kind, setKind] = useState<Kind>('community');
+  const [customPowers, setCustomPowers] = useState<Record<PowerKey, boolean>>(DEFAULT_POWERS);
+  const [customCadenceMs, setCustomCadenceMs] = useState(DEFAULT_CADENCE_MS);
+
+  // 04 Character: the Instructions text and, for a custom worker, its job lines.
+  const [identity, setIdentity] = useState('');
+  const [jobLines, setJobLines] = useState<string[]>(['']);
+
+  // 05 X
   const [xHandle, setXHandle] = useState<string | null>(null);
   // Launching without an X account is allowed, but never by accident: the agent is silent until one is connected.
   const [silentOk, setSilentOk] = useState(false);
 
-  // 04 Fuel & options
+  // 06 Fuel & options
   const [fuel, setFuel] = useState('20');
   // The agent's first gas: ETH the creator deposits into the EntryPoint for the new kernel right after the launch
   // (a second transaction). The platform pays no gas; the agent refills from its own WETH fees afterwards.
@@ -112,8 +160,13 @@ export function LaunchForm() {
   // Admin console switches (M-7): paused launches. The model allowlist is applied by /api/models.
   const platform = useQuery({ queryKey: ['platform'], queryFn: fetchPlatformFlags, staleTime: 30_000 });
   const modelList = useMemo(() => models.data?.models ?? [], [models.data]);
-  const modelGroups = useMemo(() => groupByProvider(modelList), [modelList]);
-  const selectedModel = modelList.find((m) => m.id === model) ?? modelList.find((m) => m.id === RECOMMENDED_MODEL) ?? modelGroups[0]?.models[0];
+  const selectedModel = modelList.find((m) => m.id === model) ?? modelList.find((m) => m.id === RECOMMENDED_MODEL) ?? groupByProvider(modelList)[0]?.models[0];
+  // The search box narrows the list; the selected model always stays in it so the select never shows blank.
+  const modelGroups = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    const list = q ? modelList.filter((m) => m.id === selectedModel?.id || `${m.label} ${m.provider} ${m.id}`.toLowerCase().includes(q)) : modelList;
+    return groupByProvider(list);
+  }, [modelList, modelQuery, selectedModel?.id]);
 
   const onChain = !!contracts.launcher && !env.useMock;
   const standardRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: onChain } });
@@ -148,18 +201,39 @@ export function LaunchForm() {
 
   // Pinned image: the gateway URL goes on-chain (renders in wallets and explorers), the ipfs:// URI into metadata.
   const pinned = upload.status === 'done' ? upload.result : null;
+  const preview = upload.status === 'idle' ? null : upload.preview;
   // The launcher's presets are out of 10000; the locker stores them as 9000-bps slots of the 1% swap fee (RWAGMI takes
   // the other 10%), so agent 500 -> slot 450 -> 0.045% of volume.
   const split = { agent: defaults.agentBps, creator: defaults.creatorBps, burn: defaults.burnBps, platform: defaults.platformBps };
   const buybackDefaults = buybackRead.data ? defaultsFromTuple(buybackRead.data) : FALLBACK_BUYBACK;
   const burnPct = ofVolume({ agent: buybackDefaults.agentBps, creator: buybackDefaults.creatorBps, burn: buybackDefaults.burnBps, platform: buybackDefaults.platformBps }, 'burn');
 
+  // The worker the launch commits to. Presets: the template and its hash. Custom: the preset built from the form,
+  // normalized like the server does (always-on powers forced, empty job lines dropped), hashed like a template.
+  const template = WORKER_TEMPLATES.find((w) => w.id === kind) ?? null;
+  const customPreset = useMemo<WorkerPreset | null>(
+    () =>
+      kind === CUSTOM_WORKER_ID
+        ? normalizeWorkerPreset({ capabilities: { ...customPowers, memory: true, treasury: true }, postIntervalMs: customCadenceMs, identity: jobLines })
+        : null,
+    [kind, customPowers, customCadenceMs, jobLines],
+  );
+  const custom = customPreset ? customWorker(customPreset) : null;
+  const workerHash = template ? template.hash : custom ? custom.hash : null;
+  const kindLabel = KIND_CARDS.find((k) => k.id === kind)?.label ?? kind;
+  // What the Powers grid and the Cadence select show: the preset's values (read-only) or the custom ones (editable).
+  const shownPowers: Record<PowerKey, boolean> = template ? template.preset.capabilities : customPowers;
+  const shownCadenceMs = template ? template.preset.postIntervalMs : customCadenceMs;
+  const cadenceChoices = CADENCE_OPTIONS.some((o) => o.ms === shownCadenceMs) ? CADENCE_OPTIONS : [...CADENCE_OPTIONS, { ms: shownCadenceMs, label: cadenceLabel(shownCadenceMs) }].sort((a, b) => a.ms - b.ms);
+  const shownJobLines = template ? template.preset.identity : jobLines;
+
   const errors: string[] = [];
   if (!name.trim()) errors.push('Name is required.');
   if (!/^[A-Za-z0-9]{2,10}$/.test(symbol)) errors.push('Symbol must be 2–10 letters or digits.');
   if (upload.status === 'uploading') errors.push('Wait for the image to finish uploading.');
   else if (!pinned) errors.push('Upload an image.');
-  if (identity.trim().length < 20) errors.push('Describe the agent in at least 20 characters.');
+  if (identity.trim().length < 20) errors.push('Write at least 20 characters of instructions.');
+  if (kind === CUSTOM_WORKER_ID && !customPreset) errors.push(`Job lines must be at most ${WORKER_BOUNDS.maxJobLineChars} characters each.`);
   const link = (v: string, host?: RegExp) => {
     const s = v.trim();
     return !s ? null : s.length <= 200 && /^https:\/\/[^\s"<>]+$/.test(s) && (!host || host.test(s)) ? s : undefined;
@@ -182,7 +256,6 @@ export function LaunchForm() {
           ? 'No model is available for new agents right now.'
           : null;
 
-  const workerTpl = WORKER_TEMPLATES.find((w) => w.id === worker)!;
   const thoughts = selectedModel?.pricePerThoughtUsd ? Math.floor(Number(fuel || 0) / selectedModel.pricePerThoughtUsd) : null;
 
   async function approve() {
@@ -194,30 +267,32 @@ export function LaunchForm() {
   }
 
   /**
-   * Saves the Identity text and the coin metadata under the draft id before the launch tx, so the hosted
-   * agent card (`agentURI`) can publish the text (the supervisor gives the agent that persona) and the hosted
-   * contract URI (`metadata`) can describe the coin. False when it could not be saved: launching anyway would
-   * hand the agent the generic default persona and the coin an empty contract URI.
+   * Saves the Instructions text, the coin metadata and the worker choice under the draft id before the launch tx,
+   * so the hosted agent card (`agentURI`) can publish the text (the supervisor gives the agent that persona) and,
+   * for a custom worker, the preset behind the on-chain hash (`bootr.worker`), and the hosted contract URI
+   * (`metadata`) can describe the coin. False when it could not be saved: launching anyway would hand the agent
+   * the generic default persona and the coin an empty contract URI.
    */
   type DraftLinks = { website: string | null; telegram: string | null; discord: string | null };
   async function saveDraft(id: string, coin: { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: DraftLinks }): Promise<boolean> {
+    const worker = kind === CUSTOM_WORKER_ID ? { kind, preset: customPreset } : { kind };
     try {
       const res = await fetch('/api/launch/draft', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ draftId: id, identity: identity.trim(), coin }),
+        body: JSON.stringify({ draftId: id, identity: identity.trim(), coin, worker }),
       });
       if (res.ok) return true;
       const body = (await res.json().catch(() => ({}))) as { message?: string };
-      toast.error(body.message ?? `Could not save the agent identity (${res.status}).`);
+      toast.error(body.message ?? `Could not save the agent instructions (${res.status}).`);
     } catch {
-      toast.error('Could not save the agent identity. Check your connection and try again.');
+      toast.error('Could not save the agent instructions. Check your connection and try again.');
     }
     return false;
   }
 
   async function launch() {
-    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done') return;
+    if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done' || !workerHash) return;
     if (links.website === undefined || links.telegram === undefined || links.discord === undefined) return;
     const modelId = selectedModel?.id ?? '';
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
@@ -242,7 +317,7 @@ export function LaunchForm() {
       buybackBurn: buyback,
       fuelUsdc: fuelUnits,
       devBuyWei,
-      workerHash: workerTpl.hash,
+      workerHash,
       model: modelId,
       // Hosted ERC-8004 registration file, keyed by the launch id; see app/agents/[id]/route.ts.
       agentURI: agentCardUrl(draftId),
@@ -275,266 +350,411 @@ export function LaunchForm() {
     else toast('Launched. The token page appears once the indexer catches up.');
   }
 
+  const costLine = [`${launchFeeWei > 0n ? formatEther(launchFeeWei) : '0'} ETH`, `${gasWei && gasWei > 0n ? gas : '0'} ETH`, `${fuel || 0} USDC`].join(' + ');
+
   return (
-    <div className="pb-16">
-      {platform.data?.launchesPaused ? (
-        <div role="status" className="mb-6 rounded-sm border border-hairline-strong bg-canvas-soft px-4 py-3 text-sm text-ink">
-          Launches are paused by the platform. You can prepare a launch, but it cannot be sent until launches resume.
-        </div>
-      ) : null}
-      <Section n={1} title="Coin" description="Name, ticker and image. These are permanent.">
-        <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
-          <div>
-            <Label htmlFor="name">Name</Label>
-            <Input id="name" inputSize="lg" maxLength={48} placeholder="Quiet Engine" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="symbol">Symbol</Label>
-            <Input
-              id="symbol"
-              inputSize="lg"
-              mono
-              maxLength={10}
-              placeholder="QENG"
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
-            />
-          </div>
-        </div>
-        <ImageUpload draftId={draftId} state={upload} onState={setUpload} />
-        <div>
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-caption font-medium text-ink">Links</span>
-            <span className="text-caption text-mute">Optional</span>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div>
-              <Label htmlFor="website">Website</Label>
-              <Input id="website" inputMode="url" placeholder="https://" maxLength={200} value={website} onChange={(e) => setWebsite(e.target.value)} aria-invalid={links.website === undefined} />
-            </div>
-            <div>
-              <Label htmlFor="telegram">Telegram</Label>
-              <Input id="telegram" inputMode="url" placeholder="https://t.me/" maxLength={200} value={telegram} onChange={(e) => setTelegram(e.target.value)} aria-invalid={links.telegram === undefined} />
-            </div>
-            <div>
-              <Label htmlFor="discord">Discord</Label>
-              <Input id="discord" inputMode="url" placeholder="https://discord.gg/" maxLength={200} value={discord} onChange={(e) => setDiscord(e.target.value)} aria-invalid={links.discord === undefined} />
-            </div>
-          </div>
-          <p className="mt-1.5 text-caption text-mute">
-            Shown on the coin page and written into the coin&rsquo;s contract metadata, with your wallet as the creator. The agent&rsquo;s X account is connected
-            below.
-          </p>
-        </div>
-      </Section>
-
-      <Section n={2} title="Agent" description="Who the agent is, which model thinks for it, and what it works on.">
-        <div>
-          <Label htmlFor="identity" hint={`${identity.length}/600`}>
-            Identity
-          </Label>
-          <Textarea
-            id="identity"
-            rows={4}
-            maxLength={600}
-            value={identity}
-            onChange={(e) => setIdentity(e.target.value)}
-            placeholder={'Who it is: a patient onchain analyst for small Base coins.\nHow it talks: short, plain, no hype, no emoji.\nWhat it never does: give price targets or financial advice.'}
-          />
-        </div>
-        <div>
-          <Label htmlFor="model" hint={models.data?.source === 'fallback' ? 'Estimated prices' : 'Price per thought'}>
-            Model
-          </Label>
-          <Select id="model" value={selectedModel?.id ?? ''} onChange={(e) => setModel(e.target.value)} disabled={models.isPending || modelList.length === 0}>
-            {models.isPending ? <option value="">Loading models…</option> : null}
-            {modelGroups.map((g) => (
-              <optgroup key={g.provider} label={g.provider}>
-                {g.models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} · {formatThoughtPrice(m.pricePerThoughtUsd)}
-                    {m.id === RECOMMENDED_MODEL ? ' · Recommended' : ''}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Select>
-          {selectedModel ? (
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-mute" data-testid="model-summary">
-              <span className="text-ink">{selectedModel.label}</span>
-              <span>{selectedModel.provider}</span>
-              <span className="font-mono tabular text-ink">{formatThoughtPrice(selectedModel.pricePerThoughtUsd)}</span>
-              <span>per thought</span>
-              {selectedModel.id === RECOMMENDED_MODEL ? <Badge>Recommended</Badge> : null}
-            </div>
-          ) : null}
-          <p className="mt-1 text-caption text-mute">
-            A thought is one model call: the agent reads its context (about {THOUGHT.promptTokens.toLocaleString('en-US')} tokens) and decides what to do next (up to{' '}
-            {THOUGHT.outputTokens.toLocaleString('en-US')} tokens). Each one is paid in USDC from the agent&rsquo;s fuel.
-          </p>
-        </div>
-        <fieldset>
-          <legend className="mb-1.5 text-caption font-medium text-ink">Worker template</legend>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {WORKER_TEMPLATES.map((w) => (
-              <label
-                key={w.id}
-                className={cn(
-                  'flex cursor-pointer flex-col gap-1.5 rounded-sm border p-3 transition-colors duration-150',
-                  worker === w.id ? 'border-ink' : 'border-hairline hover:border-hairline-strong',
-                )}
-              >
-                <input type="radio" name="worker" value={w.id} checked={worker === w.id} onChange={() => setWorker(w.id)} className="sr-only" />
-                <span className="text-sm font-medium text-ink">{w.label}</span>
-                <span className="text-caption text-mute">{w.description}</span>
-                <ul className="mt-1 flex flex-col gap-0.5 text-micro text-body">
-                  {w.does.map((d) => (
-                    <li key={d}>· {d}</li>
-                  ))}
-                </ul>
-                <span className="mt-auto truncate font-mono text-micro text-mute" title={`${w.hash} (keccak256 of the template definition, written on-chain at launch)`}>
-                  v{w.version} · {w.hash.slice(0, 10)}…
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      </Section>
-
-      <Section n={3} title="X account" description="The agent posts from its own account. Connect it here.">
-        <XConnect
-          draftId={draftId}
-          handle={xHandle}
-          onHandle={(h) => {
-            // Disconnect: drop the draft id the account was bound to, so it is not rebound after launch.
-            if (!h && xHandle && !env.useMock) resetDraftId();
-            setXHandle(h);
-          }}
-          symbol={symbol}
-        />
-        {!xHandle ? (
-          <div className="rounded-sm border border-warning bg-canvas-soft p-4" data-testid="no-x-notice">
-            <p className="text-sm font-medium text-ink">No X account yet: the agent launches silent.</p>
-            <p className="mt-1 text-caption text-body">
-              The agent only speaks through its own X account. Without one it will not post, and the coin page shows it as sleeping, until you connect an
-              account from the coin page with this wallet. Trading, fees and the treasury work either way.
-            </p>
-            <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-ink">
-              <input type="checkbox" className="mt-0.5" checked={silentOk} onChange={(e) => setSilentOk(e.target.checked)} />
-              <span>Launch without an X account; I will connect one later from the coin page.</span>
-            </label>
+    <div className="grid gap-8 pb-16 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-12">
+      <div className="min-w-0">
+        {platform.data?.launchesPaused ? (
+          <div role="status" className="mb-6 rounded-sm border border-hairline-strong bg-canvas-soft px-4 py-3 text-sm text-ink">
+            Launches are paused by the platform. You can prepare a launch, but it cannot be sent until launches resume.
           </div>
         ) : null}
-      </Section>
-
-      <Section n={4} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div>
-            <Label htmlFor="fuel" hint={`Min ${minFuel} USDC`}>
-              Fuel
-            </Label>
-            <Input id="fuel" inputSize="lg" inputMode="decimal" mono suffix="USDC" value={fuel} onChange={(e) => setFuel(e.target.value.trim())} aria-invalid={fuelUnits == null || Number(fuel) < minFuel} />
-            <p className="mt-1.5 text-caption text-mute">{thoughts != null ? `About ${thoughts.toLocaleString('en-US')} thoughts at the selected model.` : 'Pays for the agent’s thoughts.'}</p>
+        <Section n={1} title="Coin" description="Name, ticker and image. These are permanent.">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+            <div>
+              <Label htmlFor="name">Name</Label>
+              <Input id="name" inputSize="lg" maxLength={48} placeholder="Quiet Engine" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div>
+              <Label htmlFor="symbol">Symbol</Label>
+              <Input
+                id="symbol"
+                inputSize="lg"
+                mono
+                maxLength={10}
+                placeholder="QENG"
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+              />
+            </div>
           </div>
+          <ImageUpload draftId={draftId} state={upload} onState={setUpload} />
           <div>
-            <Label htmlFor="devbuy" hint="Optional">
-              Dev buy
-            </Label>
-            <Input id="devbuy" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={devBuy} onChange={(e) => setDevBuy(e.target.value.trim())} aria-invalid={devBuyWei == null} />
-            <p className="mt-1.5 text-caption text-mute">Bought in the launch transaction, sent to your wallet.</p>
-          </div>
-          <div>
-            <Label htmlFor="gas" hint="Optional">
-              Gas
-            </Label>
-            <Input id="gas" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={gas} onChange={(e) => setGas(e.target.value.trim())} aria-invalid={gasWei == null} />
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <span className="text-caption font-medium text-ink">Links</span>
+              <span className="text-caption text-mute">Optional</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <Label htmlFor="website">Website</Label>
+                <Input id="website" inputMode="url" placeholder="https://" maxLength={200} value={website} onChange={(e) => setWebsite(e.target.value)} aria-invalid={links.website === undefined} />
+              </div>
+              <div>
+                <Label htmlFor="telegram">Telegram</Label>
+                <Input id="telegram" inputMode="url" placeholder="https://t.me/" maxLength={200} value={telegram} onChange={(e) => setTelegram(e.target.value)} aria-invalid={links.telegram === undefined} />
+              </div>
+              <div>
+                <Label htmlFor="discord">Discord</Label>
+                <Input id="discord" inputMode="url" placeholder="https://discord.gg/" maxLength={200} value={discord} onChange={(e) => setDiscord(e.target.value)} aria-invalid={links.discord === undefined} />
+              </div>
+            </div>
             <p className="mt-1.5 text-caption text-mute">
-              {gasWei === 0n ? 'Without gas the agent waits; anyone can add gas on the token page.' : 'The agent’s first gas, a second transaction after the launch. It refills from its own fees.'}
+              Shown on the coin page and written into the coin&rsquo;s contract metadata, with your wallet as the creator. The agent&rsquo;s X account is connected
+              below.
             </p>
           </div>
-        </div>
-        <div className="flex items-start justify-between gap-6 rounded-sm border border-hairline p-4">
+        </Section>
+
+        <Section n={2} title="Mind" description="The model that thinks for the agent. Each thought is paid from its fuel.">
           <div>
-            <label htmlFor="buyback" className="text-sm font-medium text-ink">
-              Buyback & burn
-            </label>
-            <p className="mt-0.5 text-caption text-mute">
-              Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share. The coin&rsquo;s burner claims it in WETH,
-              swaps it for the coin and burns it.
+            <Label htmlFor="model" hint={models.data?.source === 'fallback' ? 'Estimated prices' : 'Price per thought'}>
+              Model
+            </Label>
+            <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)]">
+              <Input id="model-search" type="search" aria-label="Search models" placeholder="Search models" value={modelQuery} onChange={(e) => setModelQuery(e.target.value)} disabled={models.isPending || modelList.length === 0} />
+              <Select id="model" value={selectedModel?.id ?? ''} onChange={(e) => setModel(e.target.value)} disabled={models.isPending || modelList.length === 0}>
+                {models.isPending ? <option value="">Loading models…</option> : null}
+                {modelGroups.map((g) => (
+                  <optgroup key={g.provider} label={g.provider}>
+                    {g.models.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} · {formatThoughtPrice(m.pricePerThoughtUsd)}
+                        {m.id === RECOMMENDED_MODEL ? ' · Recommended' : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </Select>
+            </div>
+            {modelQuery.trim() && modelGroups.every((g) => g.models.every((m) => m.id === selectedModel?.id)) ? (
+              <p className="mt-1.5 text-caption text-mute">No other model matches &ldquo;{modelQuery.trim()}&rdquo;.</p>
+            ) : null}
+            {selectedModel ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-mute" data-testid="model-summary">
+                <span className="text-ink">{selectedModel.label}</span>
+                <span>{selectedModel.provider}</span>
+                <span className="font-mono tabular text-ink">{formatThoughtPrice(selectedModel.pricePerThoughtUsd)}</span>
+                <span>per thought</span>
+                {selectedModel.id === RECOMMENDED_MODEL ? <Badge>Recommended</Badge> : null}
+              </div>
+            ) : null}
+            <p className="mt-1 text-caption text-mute">
+              A thought is one model call: the agent reads its context (about {THOUGHT.promptTokens.toLocaleString('en-US')} tokens) and decides what to do next (up to{' '}
+              {THOUGHT.outputTokens.toLocaleString('en-US')} tokens). Each one is paid in USDC from the agent&rsquo;s fuel.
             </p>
           </div>
-          <Switch id="buyback" checked={buyback} onChange={setBuyback} label="Buyback and burn" />
-        </div>
-        <div className="rounded-sm border border-hairline p-4">
-          <div className="mb-3 flex items-baseline justify-between">
-            <span className="text-sm font-medium text-ink">Split preview</span>
-            <span className="font-mono text-caption text-mute">
-              {[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')} of the 90% share
-            </span>
-          </div>
-          <SplitBar split={split} />
-        </div>
+        </Section>
 
-        <dl className="grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-sm sm:grid-cols-2">
-          {[
-            ['Coin', name && symbol ? `${name} · $${symbol}` : '—'],
-            ['Model', selectedModel?.label ?? '—'],
-            ['Worker', workerTpl.label],
-            ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
-            ['Fuel', `${fuel || 0} USDC`],
-            ['Dev buy', devBuy ? `${devBuy} ETH` : 'None'],
-            ['Gas', gasWei && gasWei > 0n ? `${gas} ETH` : 'None'],
-            ['Launch fee', launchFeeWei > 0n ? `${formatEther(launchFeeWei)} ETH` : 'None'],
-            ['Swap fee', `${pctLabel(1)} in WETH`],
-            ['Your share', `${pctLabel(ofVolume(split, 'creator'))} of volume`],
-          ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-2">
-              <dt className="text-mute">{k}</dt>
-              <dd className="truncate font-mono text-ink">{v}</dd>
+        <Section n={3} title="Kind" description="What the agent is for. The preset's hash is written on-chain at launch.">
+          <fieldset>
+            <legend className="sr-only">Kind</legend>
+            <div className="grid gap-2 sm:grid-cols-2" data-testid="kind-cards">
+              {KIND_CARDS.map((k) => {
+                const tpl = WORKER_TEMPLATES.find((w) => w.id === k.id);
+                const hash = tpl ? tpl.hash : custom?.hash;
+                return (
+                  <label
+                    key={k.id}
+                    className={cn(
+                      'flex cursor-pointer flex-col gap-1.5 rounded-sm border p-3 transition-colors duration-150',
+                      kind === k.id ? 'border-ink' : 'border-hairline hover:border-hairline-strong',
+                    )}
+                  >
+                    <input type="radio" name="kind" value={k.id} checked={kind === k.id} onChange={() => setKind(k.id)} className="sr-only" />
+                    <span className="text-sm font-medium text-ink">{k.label}</span>
+                    <span className="text-caption text-mute">{k.description}</span>
+                    <ul className="mt-1 flex flex-col gap-0.5 text-micro text-body">
+                      {k.does.map((d) => (
+                        <li key={d}>· {d}</li>
+                      ))}
+                    </ul>
+                    <span
+                      className="mt-auto truncate font-mono text-micro text-mute"
+                      title={hash ? `${hash} (keccak256 of the ${tpl ? 'template' : 'custom worker'} definition, written on-chain at launch)` : undefined}
+                    >
+                      v{tpl ? tpl.version : 1} · {hash ? `${hash.slice(0, 10)}…` : '—'}
+                    </span>
+                  </label>
+                );
+              })}
             </div>
-          ))}
-        </dl>
+          </fieldset>
 
-        <div className="flex flex-col gap-3">
-          {blocked ? <p className="text-sm text-danger">{blocked}</p> : null}
-          {errors.length > 0 && (name || symbol || identity) ? (
-            <ul className="flex flex-col gap-0.5 text-caption text-mute">
-              {errors.map((e) => (
-                <li key={e}>{e}</li>
+          <div>
+            <div className="mb-1.5 flex items-baseline justify-between gap-3">
+              <span className="text-caption font-medium text-ink">Powers</span>
+              <span className="text-caption text-mute">{template ? `Set by the ${template.label} preset` : 'Switch what it may do'}</span>
+            </div>
+            <div className="grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline sm:grid-cols-2" data-testid="powers">
+              {POWER_KEYS.map((key) => (
+                <div key={key} className="flex items-start justify-between gap-4 bg-canvas px-3 py-2.5">
+                  <div className="min-w-0">
+                    <label htmlFor={`power-${key}`} className="text-sm font-medium text-ink">
+                      {CAPABILITIES[key].label}
+                    </label>
+                    <p className="mt-0.5 text-caption text-mute">{CAPABILITIES[key].description}</p>
+                  </div>
+                  <Switch
+                    id={`power-${key}`}
+                    checked={shownPowers[key]}
+                    disabled={!!template}
+                    label={CAPABILITIES[key].label}
+                    onChange={(v) => setCustomPowers((p) => ({ ...p, [key]: v }))}
+                  />
+                </div>
               ))}
-            </ul>
+              <div className="flex flex-col gap-1.5 bg-canvas px-3 py-2.5 sm:col-span-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {ALWAYS_ON.map((key) => (
+                    <span key={key} title={CAPABILITIES[key].description}>
+                      <Badge>{CAPABILITIES[key].label} · always on</Badge>
+                    </span>
+                  ))}
+                </div>
+                <p className="text-caption text-mute">Every agent keeps notes between cycles and runs its own treasury: fees become fuel.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-[240px_minmax(0,1fr)]">
+            <div>
+              <Label htmlFor="cadence" hint={template ? 'Set by the preset' : undefined}>
+                Cadence
+              </Label>
+              <Select id="cadence" value={String(shownCadenceMs)} disabled={!!template || !shownPowers.xPublish} onChange={(e) => setCustomCadenceMs(Number(e.target.value))}>
+                {cadenceChoices.map((o) => (
+                  <option key={o.ms} value={String(o.ms)}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+              <p className="mt-1.5 text-caption text-mute">
+                {shownPowers.xPublish ? 'Minimum spacing between its own posts. Replies are not spaced.' : 'Without Post on X the agent only replies; the cadence does not apply.'}
+              </p>
+            </div>
+          </div>
+        </Section>
+
+        <Section n={4} title="Character" description="Who the agent is and what it is told to do. Published in its agent card.">
+          <div>
+            <Label htmlFor="identity" hint={`${identity.length}/600`}>
+              Instructions
+            </Label>
+            <Textarea
+              id="identity"
+              rows={4}
+              maxLength={600}
+              value={identity}
+              onChange={(e) => setIdentity(e.target.value)}
+              placeholder={'Who it is: a patient onchain analyst for small Base coins.\nHow it talks: short, plain, no hype, no emoji.\nWhat it never does: give price targets or financial advice.'}
+            />
+            <p className="mt-1.5 text-caption text-mute">Personality, goals, strategy, what it should and should not do. 20 to 600 characters; the agent reads this before every turn.</p>
+          </div>
+          <div data-testid="job-lines">
+            <div className="mb-1.5 flex items-baseline justify-between gap-3">
+              <span className="text-caption font-medium text-ink">Job lines</span>
+              <span className="text-caption text-mute">{template ? `Set by the ${template.label} preset` : `Up to ${WORKER_BOUNDS.maxJobLines}, optional`}</span>
+            </div>
+            {template ? (
+              <ol className="flex flex-col gap-1.5 rounded-sm border border-hairline p-3 text-sm text-body">
+                {shownJobLines.map((line, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="font-mono text-caption text-mute">{i + 1}.</span>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {jobLines.map((line, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      aria-label={`Job line ${i + 1}`}
+                      maxLength={WORKER_BOUNDS.maxJobLineChars}
+                      placeholder={i === 0 ? 'Your job is …' : 'And …'}
+                      value={line}
+                      onChange={(e) => setJobLines((ls) => ls.map((l, j) => (j === i ? e.target.value : l)))}
+                    />
+                    <span className="w-14 shrink-0 text-right font-mono text-micro text-mute">{line.length}/{WORKER_BOUNDS.maxJobLineChars}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Remove job line ${i + 1}`}
+                      disabled={jobLines.length === 1}
+                      onClick={() => setJobLines((ls) => ls.filter((_, j) => j !== i))}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+                {jobLines.length < WORKER_BOUNDS.maxJobLines ? (
+                  <div>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => setJobLines((ls) => [...ls, ''])}>
+                      Add a line
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+            <p className="mt-1.5 text-caption text-mute">
+              {template
+                ? 'The preset puts these lines at the top of the agent’s identity, after your instructions.'
+                : 'Short sentences that say what the job is. They sit at the top of the agent’s identity, after your instructions, and are part of the hash written on-chain.'}
+            </p>
+          </div>
+        </Section>
+
+        <Section n={5} title="X account" description="The agent posts from its own account. Connect it here.">
+          <XConnect
+            draftId={draftId}
+            handle={xHandle}
+            onHandle={(h) => {
+              // Disconnect: drop the draft id the account was bound to, so it is not rebound after launch.
+              if (!h && xHandle && !env.useMock) resetDraftId();
+              setXHandle(h);
+            }}
+            symbol={symbol}
+          />
+          {!xHandle ? (
+            <div className="rounded-sm border border-warning bg-canvas-soft p-4" data-testid="no-x-notice">
+              <p className="text-sm font-medium text-ink">No X account yet: the agent launches silent.</p>
+              <p className="mt-1 text-caption text-body">
+                The agent only speaks through its own X account. Without one it will not post, and the coin page shows it as sleeping, until you connect an
+                account from the coin page with this wallet. Trading, fees and the treasury work either way.
+              </p>
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-ink">
+                <input type="checkbox" className="mt-0.5" checked={silentOk} onChange={(e) => setSilentOk(e.target.checked)} />
+                <span>Launch without an X account; I will connect one later from the coin page.</span>
+              </label>
+            </div>
           ) : null}
-          {!isConnected && !env.useMock ? (
-            <div className="flex items-center gap-3">
-              <ConnectButton />
-              <span className="text-caption text-mute">Connect a wallet on {appChain.name} to launch.</span>
+        </Section>
+
+        <Section n={6} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <Label htmlFor="fuel" hint={`Min ${minFuel} USDC`}>
+                Fuel
+              </Label>
+              <Input id="fuel" inputSize="lg" inputMode="decimal" mono suffix="USDC" value={fuel} onChange={(e) => setFuel(e.target.value.trim())} aria-invalid={fuelUnits == null || Number(fuel) < minFuel} />
+              <p className="mt-1.5 text-caption text-mute">{thoughts != null ? `About ${thoughts.toLocaleString('en-US')} thoughts at the selected model.` : 'Pays for the agent’s thoughts.'}</p>
             </div>
-          ) : (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {needsApproval ? (
-                <Button variant="secondary" size="lg" onClick={approve} loading={pending === 'Approve USDC'} disabled={!!blocked || fuelUnits == null}>
-                  1. Approve {fuel} USDC
+            <div>
+              <Label htmlFor="devbuy" hint="Optional">
+                Dev buy
+              </Label>
+              <Input id="devbuy" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={devBuy} onChange={(e) => setDevBuy(e.target.value.trim())} aria-invalid={devBuyWei == null} />
+              <p className="mt-1.5 text-caption text-mute">Bought in the launch transaction, sent to your wallet.</p>
+            </div>
+            <div>
+              <Label htmlFor="gas" hint="Optional">
+                Gas
+              </Label>
+              <Input id="gas" inputSize="lg" inputMode="decimal" mono suffix="ETH" placeholder="0" value={gas} onChange={(e) => setGas(e.target.value.trim())} aria-invalid={gasWei == null} />
+              <p className="mt-1.5 text-caption text-mute">
+                {gasWei === 0n ? 'Without gas the agent waits; anyone can add gas on the token page.' : 'The agent’s first gas, a second transaction after the launch. It refills from its own fees.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start justify-between gap-6 rounded-sm border border-hairline p-4">
+            <div>
+              <label htmlFor="buyback" className="text-sm font-medium text-ink">
+                Buyback & burn
+              </label>
+              <p className="mt-0.5 text-caption text-mute">
+                Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share. The coin&rsquo;s burner claims it in WETH,
+                swaps it for the coin and burns it.
+              </p>
+            </div>
+            <Switch id="buyback" checked={buyback} onChange={setBuyback} label="Buyback and burn" />
+          </div>
+        </Section>
+      </div>
+
+      {/* Summary card: sticky beside the form from lg up, after it below. The Launch button lives here. */}
+      <aside className="self-start lg:sticky lg:top-24" data-testid="launch-summary" aria-label="Launch summary">
+        <div className="flex flex-col gap-4 rounded-md border border-hairline bg-canvas p-5">
+          <div className="flex items-center gap-3">
+            {preview ? (
+              // eslint-disable-next-line @next/next/no-img-element -- local blob: preview
+              <img src={preview} alt="" className="size-12 shrink-0 rounded-xs border border-hairline object-cover" />
+            ) : (
+              <div className="size-12 shrink-0 rounded-xs border border-dashed border-hairline-strong bg-canvas-soft" aria-hidden="true" />
+            )}
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium text-ink">{name.trim() || 'Your coin'}</div>
+              <div className="font-mono text-caption text-mute">{symbol ? `$${symbol}` : '$TICKER'}</div>
+            </div>
+          </div>
+
+          <dl className="grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-sm">
+            {[
+              ['Kind', kindLabel],
+              ['Model', selectedModel?.label ?? '—'],
+              ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
+              ['Fuel', `${fuel || 0} USDC`],
+              ...(devBuyWei && devBuyWei > 0n ? [['Dev buy', `${devBuy} ETH`]] : []),
+              ['Your share', `${pctLabel(ofVolume(split, 'creator'))} of volume`],
+            ].map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">
+                <dt className="text-mute">{k}</dt>
+                <dd className="truncate font-mono text-ink">{v}</dd>
+              </div>
+            ))}
+          </dl>
+
+          <div>
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="text-caption font-medium text-ink">Fee split</span>
+              <span className="font-mono text-caption text-mute">{[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')} of the 90% share</span>
+            </div>
+            <SplitBar split={split} />
+          </div>
+
+          <div className="flex flex-col gap-1 border-t border-hairline pt-4">
+            <p className="text-sm text-ink" data-testid="cost-line">
+              Your wallet pays: <span className="font-mono tabular">{costLine}</span>
+            </p>
+            <p className="text-caption text-mute">Launch fee + gas + fuel{devBuyWei && devBuyWei > 0n ? `, plus the ${devBuy} ETH dev buy` : ''}. Fuel and gas are the agent&rsquo;s once deposited.</p>
+            <p className="text-caption text-mute">The agent can make bad decisions and lose money.</p>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            {blocked ? <p className="text-sm text-danger">{blocked}</p> : null}
+            {errors.length > 0 && (name || symbol || identity) ? (
+              <ul className="flex flex-col gap-0.5 text-caption text-mute">
+                {errors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            ) : null}
+            {!isConnected && !env.useMock ? (
+              <div className="flex flex-col gap-2">
+                <ConnectButton />
+                <span className="text-caption text-mute">Connect a wallet on {appChain.name} to launch.</span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {needsApproval ? (
+                  <Button variant="secondary" size="lg" onClick={approve} loading={pending === 'Approve USDC'} disabled={!!blocked || fuelUnits == null}>
+                    1. Approve {fuel} USDC
+                  </Button>
+                ) : null}
+                <Button variant="primary" size="lg" onClick={launch} disabled={errors.length > 0 || !!blocked || needsApproval || !draftId} loading={pending === 'Launch'}>
+                  {needsApproval ? '2. Launch' : 'Launch'}
                 </Button>
-              ) : null}
-              <Button
-                variant="primary"
-                size="lg"
-                onClick={launch}
-                disabled={errors.length > 0 || !!blocked || needsApproval || !draftId}
-                loading={pending === 'Launch'}
-                className="sm:min-w-40"
-              >
-                {needsApproval ? '2. Launch' : 'Launch'}
-              </Button>
-              {env.useMock ? (
-                <span className="text-caption text-mute">Mock mode: no transaction is sent.</span>
-              ) : gasWei && gasWei > 0n ? (
-                <span className="text-caption text-mute">Two wallet prompts: the launch, then {gas} ETH of gas for the agent.</span>
-              ) : null}
-            </div>
-          )}
+                {env.useMock ? (
+                  <span className="text-caption text-mute">Mock mode: no transaction is sent.</span>
+                ) : gasWei && gasWei > 0n ? (
+                  <span className="text-caption text-mute">Two wallet prompts: the launch, then {gas} ETH of gas for the agent.</span>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
-      </Section>
+      </aside>
     </div>
   );
 }
