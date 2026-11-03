@@ -1,0 +1,68 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #p5-ground { position: absolute; inset: 0; background: #0a0b0d; }
+    #p5-shake { position: absolute; inset: 0; }
+    .p5-t { position: absolute; left: 144px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; color: #ffffff; white-space: nowrap; }
+    #p5-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #p5-mark-sq { position: relative; width: 288px; height: 288px; }
+    #p5-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: #0a0b0d; }
+    #p5-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #p5-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #p5-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+  </style>
+  <div id="root" data-composition-id="p5" data-width="1920" data-height="1080">
+    <div id="p5-ground"></div>
+    <div id="p5-shake" data-layout-allow-overflow>
+      <div id="p5-word">bootr</div>
+      <div id="p5-cursor" data-layout-ignore></div>
+      <div id="p5-mark-box" data-layout-ignore>
+        <div id="p5-mark-sq">
+          <div id="p5-mark-bg"></div>
+          <svg id="p5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="p5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path id="p5-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="p5-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#p5-m)"></rect>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const T0 = 60 * B;
+    const L = (k) => Math.round((k * B - T0) * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const type = (s, t, d, n) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + n + ")" }, t);
+    };
+    gsap.set(["#p5-word", "#p5-cursor", "#p5-mark-box"], { opacity: 0 });
+    tl.set("#p5-shake", { x: 0, y: 0 }, 0);
+    // Beat 60: the dark world floods out of the middle of the frame.
+    tl.fromTo("#p5-ground", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1400px at 960px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    const Ti = L(62);
+    // The mark: the cup is cut out, the stem falls into it, the square lands on beat 52.
+    tl.set("#p5-mark-box", { opacity: 1 }, Ti - 0.56);
+    tl.set(["#p5-cup", "#p5-stem"], { opacity: 0 }, 0);
+    tl.set("#p5-cup", { opacity: 1 }, Ti - 0.55);
+    tl.fromTo("#p5-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out" }, Ti - 0.55);
+    tl.set("#p5-stem", { opacity: 1 }, Ti - 0.183);
+    tl.fromTo("#p5-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in" }, Ti - 0.183);
+    tl.fromTo("#p5-mark-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out" }, Ti);
+    tl.to("#p5-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#p5-shake", { x, y }, Ti + d));
+    // The mark slides left into the lockup; "bootr" is typed behind it, led by a block cursor.
+    tl.fromTo("#p5-mark-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut" }, Ti + 0.45);
+    tl.set(["#p5-word", "#p5-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#p5-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    tl.fromTo("#p5-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    [Ti + 1.5, Ti + 1.8].forEach((t) => { tl.set("#p5-cursor", { opacity: 0 }, t); tl.set("#p5-cursor", { opacity: 1 }, t + 0.15); });
+    tl.set("#p5-cursor", { opacity: 0 }, Ti + 2.1);
+    window.__timelines["p5"] = tl;
+  </script>
+</template>

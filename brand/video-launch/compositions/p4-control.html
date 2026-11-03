@@ -1,0 +1,52 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #p4-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .p4-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .p4-b { position: absolute; left: 96px; width: 24px; height: 24px; background: #0000ff; }
+    .p4-n { position: absolute; left: 144px; font-size: 88px; line-height: 96px; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .p4-d { position: absolute; left: 144px; font-size: 52px; line-height: 64px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .p4-h { position: absolute; left: 144px; width: 1632px; height: 2px; background: #dee1e7; transform-origin: 0% 50%; }
+  </style>
+  <div id="root" data-composition-id="p4" data-width="1920" data-height="1080">
+    <div id="p4-panel">
+      <div class="p4-t" id="p4-t1">you stay in control.</div>
+      <div class="p4-b" id="p4-b1" style="top: 262px"></div>
+      <div class="p4-n" id="p4-n1" style="top: 230px">pause it any time.</div>
+      <div class="p4-d" id="p4-d1" style="top: 336px">only the creator can.</div>
+      <div class="p4-h" id="p4-h1" style="top: 440px" data-layout-ignore></div>
+      <div class="p4-b" id="p4-b2" style="top: 512px"></div>
+      <div class="p4-n" id="p4-n2" style="top: 480px">change its job.</div>
+      <div class="p4-d" id="p4-d2" style="top: 586px">instructions, powers, cadence.</div>
+      <div class="p4-h" id="p4-h2" style="top: 690px" data-layout-ignore></div>
+      <div class="p4-b" id="p4-b3" style="top: 762px"></div>
+      <div class="p4-n" id="p4-n3" style="top: 730px">watch all of it.</div>
+      <div class="p4-d" id="p4-d3" style="top: 836px">posts, claims, swaps, sleeps.</div>
+      <div class="p4-h" id="p4-h3" style="top: 940px" data-layout-ignore></div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 48) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const rows = [1, 2, 3];
+    gsap.set(["#p4-t1"].concat(rows.flatMap((i) => ["#p4-n" + i, "#p4-d" + i, "#p4-b" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#p4-h" + i), { scaleX: 0 });
+    // Beat 48: the white world floods out of the fuel readout (500, 480).
+    tl.fromTo("#p4-panel", { clipPath: "circle(0px at 500px 480px)" }, { clipPath: "circle(2400px at 500px 480px)", duration: 0.42, ease: "power2.inOut" }, 0);
+    tl.set("#p4-t1", { opacity: 1 }, L(48.5));
+    tl.fromTo("#p4-t1", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(20)" }, L(48.5));
+    // Beats 49.5, 52.5, 55.5: one control each, the way it works under it.
+    rows.forEach((i) => {
+      const t = L(46.5 + 3 * i);
+      arrive("#p4-n" + i, t);
+      arrive("#p4-d" + i, t + 0.15);
+      tl.fromTo("#p4-b" + i, { scale: 0, opacity: 1, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.25, ease: "back.out(2.4)" }, t);
+      tl.fromTo("#p4-h" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, t + 0.05);
+    });
+    window.__timelines["p4"] = tl;
+  </script>
+</template>

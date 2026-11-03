@@ -1,0 +1,73 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #p3-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    .p3-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #p3-bar { position: absolute; left: 144px; top: 340px; width: 1632px; height: 140px; border: 2px solid #32353d; }
+    .p3-s { position: absolute; top: 0; height: 136px; border-right: 4px solid #0a0b0d; transform-origin: 0% 50%; }
+    .p3-n { position: absolute; font-family: 'Geist Mono', monospace; font-size: 44px; line-height: 56px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #p3-cap { position: absolute; left: 144px; top: 640px; font-size: 72px; line-height: 80px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+    #p3-fl { position: absolute; left: 144px; top: 290px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #p3-num { position: absolute; left: 144px; top: 360px; font-family: 'Geist Mono', monospace; font-size: 200px; line-height: 220px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    #p3-unit { font-size: 80px; color: #818895; margin-left: 28px; }
+    #p3-sleep { position: absolute; left: 144px; top: 700px; font-size: 96px; line-height: 104px; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="p3" data-width="1920" data-height="1080">
+    <div id="p3-panel">
+      <div class="p3-t" id="p3-t1">someone trades.</div>
+      <div class="p3-t" id="p3-t2">the agent pays for its own thinking.</div>
+      <div id="p3-fee" data-layout-allow-overflow>
+        <div id="p3-bar">
+          <div class="p3-s" id="p3-s1" style="left: 0px; width: 955px; background: #ffffff"></div>
+          <div class="p3-s" id="p3-s2" style="left: 955px; width: 441px; background: #818895"></div>
+          <div class="p3-s" id="p3-s3" style="left: 1396px; width: 163px; background: #5b616e"></div>
+          <div class="p3-s" id="p3-s4" style="left: 1559px; width: 73px; background: #3c8aff; border-right: 0"></div>
+        </div>
+        <div class="p3-n" id="p3-n1" style="left: 144px; top: 500px">creator</div>
+        <div class="p3-n" id="p3-n2" style="left: 1099px; top: 500px">platform</div>
+        <div class="p3-n" id="p3-n3" style="left: 1540px; top: 500px">rwagmi</div>
+        <div class="p3-n" id="p3-n4" style="left: 1500px; top: 270px; width: 276px; text-align: right; color: #3c8aff">agent</div>
+        <div id="p3-cap">1% of every trade. locked.</div>
+      </div>
+      <div id="p3-fl">fuel</div>
+      <div id="p3-num">20.00<span id="p3-unit">usdc</span></div>
+      <div id="p3-sleep">fuel gone, it sleeps.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 28) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, n) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + n + ")" }, t);
+    };
+    gsap.set(["#p3-t1", "#p3-t2", "#p3-n1", "#p3-n2", "#p3-n3", "#p3-n4", "#p3-cap", "#p3-fl", "#p3-num", "#p3-sleep"], { opacity: 0 });
+    gsap.set(["#p3-s1", "#p3-s2", "#p3-s3", "#p3-s4"], { scaleX: 0 });
+    gsap.set("#p3-bar", { opacity: 0 });
+    // Beat 28: the dark world wipes in from the right.
+    tl.fromTo("#p3-panel", { clipPath: "inset(0px 0px 0px 100%)" }, { clipPath: "inset(0px 0px 0px 0%)", duration: 0.34, ease: "power3.inOut" }, 0);
+    type("#p3-t1", L(29), 0.5, 15);
+    // Beat 32 (the music comes back): the fee bar draws, one share a beat.
+    tl.set("#p3-bar", { opacity: 1 }, L(32));
+    [1, 2, 3, 4].forEach((i) => {
+      tl.fromTo("#p3-s" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power3.out" }, L(31 + i));
+      arrive("#p3-n" + i, L(31 + i) + 0.1);
+    });
+    arrive("#p3-cap", L(36));
+    // Beat 40: the bar leaves, the fuel readout takes its place.
+    tl.to(["#p3-fee", "#p3-t1"], { opacity: 0, x: -40, duration: 0.22, ease: "power3.in" }, L(40));
+    type("#p3-t2", L(40.5), 0.6, 36);
+    arrive("#p3-fl", L(40.7));
+    arrive("#p3-num", L(41));
+    const fuel = { v: 20 };
+    const unit = '<span id="p3-unit">usdc</span>';
+    tl.to(fuel, { v: 19.97, duration: 0.6, ease: "power2.out", onUpdate: () => { document.getElementById("p3-num").innerHTML = fuel.v.toFixed(2) + unit; } }, L(42.5));
+    arrive("#p3-sleep", L(44.5));
+    window.__timelines["p3"] = tl;
+  </script>
+</template>

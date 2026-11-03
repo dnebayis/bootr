@@ -1,0 +1,38 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #p1-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    #p1-shake { position: absolute; inset: 0; }
+    .p1-h { position: absolute; left: 144px; font-size: 144px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .p1-r { position: absolute; left: 144px; font-size: 72px; line-height: 80px; font-weight: 500; color: #dee1e7; letter-spacing: -0.02em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="p1" data-width="1920" data-height="1080">
+    <div id="p1-panel">
+      <div id="p1-shake" data-layout-allow-overflow>
+        <div class="p1-h" id="p1-t1" style="top: 130px">every coin gets</div>
+        <div class="p1-h" id="p1-t2" style="top: 290px">an agent.</div>
+        <div class="p1-r" id="p1-r1" style="top: 580px">its own wallet.</div>
+        <div class="p1-r" id="p1-r2" style="top: 680px">its own x account.</div>
+        <div class="p1-r" id="p1-r3" style="top: 780px">its own fee share.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round(k * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    gsap.set(["#p1-t2", "#p1-r1", "#p1-r2", "#p1-r3"], { opacity: 0 });
+    tl.set("#p1-shake", { x: 0, y: 0 }, 0);
+    // Beat 4 (the drop): the word lands with an impact.
+    tl.set("#p1-t2", { opacity: 1 }, L(4));
+    tl.fromTo("#p1-t2", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(9)" }, L(4));
+    [[0, 10, -6], [0.033, -8, 5], [0.066, 6, -4], [0.1, -3, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#p1-shake", { x, y }, L(4) + d));
+    arrive("#p1-r1", L(5.5));
+    arrive("#p1-r2", L(6.8));
+    arrive("#p1-r3", L(8.1));
+    window.__timelines["p1"] = tl;
+  </script>
+</template>

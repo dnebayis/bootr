@@ -1,0 +1,71 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #p2-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .p2-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .p2-l { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .p2-v { position: absolute; left: 520px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #0a0b0d; white-space: nowrap; }
+    .p2-h { position: absolute; left: 144px; width: 1632px; height: 2px; background: #dee1e7; transform-origin: 0% 50%; }
+    #p2-btn { position: absolute; left: 144px; top: 836px; width: 360px; height: 112px; background: #0000ff; color: #ffffff; font-size: 56px; line-height: 112px; font-weight: 600; letter-spacing: -0.03em; text-align: center; transform-origin: 50% 50%; }
+    #p2-one { position: absolute; left: 600px; top: 856px; font-size: 72px; line-height: 72px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+    #p2-cur { position: absolute; left: 0; top: 0; width: 36px; height: 48px; }
+  </style>
+  <div id="root" data-composition-id="p2" data-width="1920" data-height="1080">
+    <div id="p2-panel">
+      <div class="p2-t" id="p2-t1">you set its job.</div>
+      <div class="p2-l" id="p2-l1" style="top: 210px">coin</div>
+      <div class="p2-v" id="p2-v1" style="top: 210px">Orbit · orb</div>
+      <div class="p2-h" id="p2-h1" style="top: 290px" data-layout-ignore></div>
+      <div class="p2-l" id="p2-l2" style="top: 306px">kind</div>
+      <div class="p2-v" id="p2-v2" style="top: 306px">researcher</div>
+      <div class="p2-h" id="p2-h2" style="top: 386px" data-layout-ignore></div>
+      <div class="p2-l" id="p2-l3" style="top: 402px">powers</div>
+      <div class="p2-v" id="p2-v3" style="top: 402px">read x, reply, post, research</div>
+      <div class="p2-h" id="p2-h3" style="top: 482px" data-layout-ignore></div>
+      <div class="p2-l" id="p2-l4" style="top: 498px">cadence</div>
+      <div class="p2-v" id="p2-v4" style="top: 498px">every 4 h</div>
+      <div class="p2-h" id="p2-h4" style="top: 578px" data-layout-ignore></div>
+      <div class="p2-l" id="p2-l5" style="top: 594px">x account</div>
+      <div class="p2-v" id="p2-v5" style="top: 594px">connected</div>
+      <div class="p2-h" id="p2-h5" style="top: 674px" data-layout-ignore></div>
+      <div class="p2-l" id="p2-l6" style="top: 690px">fuel</div>
+      <div class="p2-v" id="p2-v6" style="top: 690px">20 usdc</div>
+      <div class="p2-h" id="p2-h6" style="top: 770px" data-layout-ignore></div>
+      <div id="p2-btn">launch</div>
+      <div id="p2-one">one transaction.</div>
+      <svg id="p2-cur" data-layout-ignore viewBox="0 0 36 48" fill="none"><path d="M3 3 L3 38 L12 30 L18 44 L25 41 L19 28 L32 28 Z" fill="#0a0b0d" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"></path></svg>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const L = (k) => Math.round((k - 12) * B * 1000) / 1000;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const rows = [1, 2, 3, 4, 5, 6];
+    gsap.set(["#p2-t1", "#p2-btn", "#p2-one", "#p2-cur"].concat(rows.flatMap((i) => ["#p2-l" + i, "#p2-v" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#p2-h" + i), { scaleX: 0 });
+    // Beat 12: the white world floods out of "an agent." (470, 370).
+    tl.fromTo("#p2-panel", { clipPath: "circle(0px at 470px 370px)" }, { clipPath: "circle(2400px at 470px 370px)", duration: 0.42, ease: "power2.inOut" }, 0);
+    tl.set("#p2-t1", { opacity: 1 }, L(12.5));
+    tl.fromTo("#p2-t1", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(16)" }, L(12.5));
+    // Beats 13-18: one form row per beat.
+    rows.forEach((i) => {
+      const t = L(12 + i);
+      arrive("#p2-l" + i, t);
+      arrive("#p2-v" + i, t + 0.1);
+      tl.fromTo("#p2-h" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, t + 0.05);
+    });
+    // Beat 20: the button lands; a cursor comes to it and clicks on beat 23.
+    tl.fromTo("#p2-btn", { scale: 0.9, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.3, ease: "back.out(2.2)" }, L(20));
+    tl.set("#p2-cur", { x: 1100, y: 640, opacity: 1 }, L(21));
+    tl.to("#p2-cur", { x: 330, y: 892, duration: L(22.8) - L(21), ease: "power2.inOut" }, L(21));
+    tl.to("#p2-btn", { scale: 0.95, duration: 0.06, ease: "power2.out" }, L(23));
+    tl.to("#p2-btn", { scale: 1, duration: 0.4, ease: "back.out(2.4)" }, L(23) + 0.06);
+    tl.to("#p2-cur", { opacity: 0, duration: 0.2 }, L(23) + 0.4);
+    arrive("#p2-one", L(24));
+    window.__timelines["p2"] = tl;
+  </script>
+</template>
