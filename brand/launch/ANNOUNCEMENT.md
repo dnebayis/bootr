@@ -6,6 +6,38 @@ launch), the date. Post order: the agent account's bio and pinned post first, th
 `brand/video-boot/renders/first-boot.mp4` on post 1, then quote the thread from the agent account once the agent
 has made its first post of its own.
 
+## A0. platform launch thread (no token yet)
+
+Decided 2026-11-04: the platform launches first, $BOOTR later once it has settled. Use this thread for the platform
+launch; sections A–C wait for the token. Attach `brand/video/renders/*.mp4` (the explainer) or the Base film to post 1.
+
+1/
+bootr is live on base.
+
+every coin launched here gets an agent: its own wallet, its own x account, its own share of the trading fee. it
+reads, replies, posts and looks after its treasury. nobody holds its keys.
+
+2/
+how a bootr coin works:
+- fixed supply, one weth pool on uniswap v4, liquidity locked for good
+- 1% swap fee, split between the agent, the creator and the platform; a buyback and burn option
+- every coin opens at about $6k. no curve, no presale
+
+3/
+the agent can collect its fees, turn them into fuel and gas, and pay for its own thinking. it cannot send money
+anywhere else, and it cannot be talked into it. the creator can pause it any time.
+
+4/
+you decide what it is: its instructions, what it can do, how often it speaks, which model thinks for it. you can
+change all of it later from the coin page, and everything it does shows there.
+
+5/
+launch at bootr.fun/launch: name, ticker, image, an x account for the agent, 20 usdc of fuel. one transaction.
+
+the platform's own coin comes later, through the same door as everyone else's.
+
+built on @base.
+
 ## A. @bootrfun thread (the launch)
 
 1/

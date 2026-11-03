@@ -54,7 +54,7 @@ export function BootBox() {
         <Bloom />
         <div className="relative flex items-baseline gap-3">
           <span className="font-mono text-sm font-medium text-ink">$BOOTR</span>
-          <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOTR launches with the platform.'}</span>
+          <span className="text-sm text-mute">{isError ? 'Platform stats are unavailable right now.' : 'BOOTR comes after the platform settles.'}</span>
         </div>
       </section>
     );
