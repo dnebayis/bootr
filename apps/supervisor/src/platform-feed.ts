@@ -125,7 +125,7 @@ export function milestoneWords(kind: unknown, value: unknown): string {
 // Formatting
 // ---------------------------------------------------------------------------
 
-interface Windowed {
+export interface Windowed {
   launches: NonNullable<PlatformFeedData['launches']>;
   changes: NonNullable<PlatformFeedData['statusChanges']>;
   posts: NonNullable<PlatformFeedData['posts']>;
@@ -134,7 +134,8 @@ interface Windowed {
   firstPosts: NonNullable<PlatformFeedData['firstPosts']>;
 }
 
-function select(data: PlatformFeedData, fromSec: number, toSec: number, exclude: string | null): Windowed {
+/** The feed's items within [fromSec, toSec) (unix seconds), newest first, without the reader's own kernel (`exclude`, lower-case). */
+export function selectWindow(data: PlatformFeedData, fromSec: number, toSec: number, exclude: string | null): Windowed {
   const own = (k: unknown) => exclude !== null && typeof k === 'string' && k.toLowerCase() === exclude;
   const within = (t: unknown) => typeof t === 'number' && Number.isFinite(t) && t >= fromSec && t < toSec;
   const list = <T>(v: T[] | undefined): T[] => (Array.isArray(v) ? v : []);
@@ -198,8 +199,8 @@ export function formatPlatformFeed(data: PlatformFeedData, opts: { now: number; 
   const nowSec = now / 1000;
   const daySec = Math.max(since, now - DAY_MS) / 1000;
   const sinceSec = since / 1000;
-  const day = select(data, daySec, nowSec + 1, exclude);
-  const week = select(data, sinceSec, nowSec + 1, exclude);
+  const day = selectWindow(data, daySec, nowSec + 1, exclude);
+  const week = selectWindow(data, sinceSec, nowSec + 1, exclude);
   const dayCounts = counts(day);
   const weekCounts = counts(week);
   const noteworthy = dayCounts.launches + dayCounts.milestones + dayCounts.statusChanges + dayCounts.posters + dayCounts.firstPosts + dayCounts.claims > 0;
@@ -303,11 +304,11 @@ interface CacheEntry {
 const cache = new WeakMap<object, CacheEntry>();
 
 /**
- * `buildPlatformFeed` with one indexer call per tick: reads within PLATFORM_FEED_TTL_MS of the last one
- * (by `ctx.now()`) share its raw answer, which covers any `since` at or after the cached one. Concurrent
- * readers share the in-flight promise. Rendering (and `exclude`) is applied per call.
+ * The raw feed with one indexer call per tick: reads within PLATFORM_FEED_TTL_MS of the last one (by `ctx.now()`)
+ * share its answer, which covers any `since` at or after the cached one. Concurrent readers share the in-flight
+ * promise. Null when the indexer did not answer.
  */
-export async function cachedPlatformFeed(ctx: Pick<SupervisorContext, 'indexer' | 'now' | 'log'>, opts: PlatformFeedOptions = {}): Promise<PlatformFeed> {
+export async function cachedPlatformFeedData(ctx: Pick<SupervisorContext, 'indexer' | 'now' | 'log'>, opts: Pick<PlatformFeedOptions, 'since'> = {}): Promise<PlatformFeedData | null> {
   const now = ctx.now();
   const since = Math.max(opts.since ?? now - WEEK_MS, now - WEEK_MS);
   const key = ctx.indexer as unknown as object;
@@ -327,6 +328,14 @@ export async function cachedPlatformFeed(ctx: Pick<SupervisorContext, 'indexer' 
     cache.set(key, entry);
   }
   const raw = await entry.raw;
-  if (!raw || typeof raw !== 'object') return unavailableFeed(now, since);
-  return formatPlatformFeed(raw as unknown as PlatformFeedData, { now, since, exclude: opts.exclude ?? null });
+  return raw && typeof raw === 'object' ? (raw as unknown as PlatformFeedData) : null;
+}
+
+/** `buildPlatformFeed` on the per-tick cache (`cachedPlatformFeedData`); rendering (and `exclude`) is applied per call. */
+export async function cachedPlatformFeed(ctx: Pick<SupervisorContext, 'indexer' | 'now' | 'log'>, opts: PlatformFeedOptions = {}): Promise<PlatformFeed> {
+  const now = ctx.now();
+  const since = Math.max(opts.since ?? now - WEEK_MS, now - WEEK_MS);
+  const data = await cachedPlatformFeedData(ctx, { since });
+  if (!data) return unavailableFeed(now, since);
+  return formatPlatformFeed(data, { now, since, exclude: opts.exclude ?? null });
 }
