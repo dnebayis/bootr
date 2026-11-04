@@ -341,6 +341,7 @@ export function subscribeMock(listener: (h: StreamHint) => void): () => void {
         t.volume24hUsd += v;
         t.fees24hUsd += v * 0.01;
         t.change24hPct = (t.change24hPct ?? 0) + (move - 1) * 100;
+        t.lastTradeAt = Math.floor(Date.now() / 1000);
         if (!t.graduated && t.marketCapUsd >= s.platform.graduationThresholdUsd) {
           t.graduated = true;
           t.graduatedAt = Math.floor(Date.now() / 1000);
@@ -427,7 +428,7 @@ export const mock = {
     if (tab === 'graduated') list = list.filter((t) => t.graduated).sort((a, b) => (b.graduatedAt ?? 0) - (a.graduatedAt ?? 0));
     else if (tab === 'mcap') list.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
     else if (tab === 'active') list = list.filter((t) => t.agent?.status === 'awake').sort((a, b) => b.volume24hUsd - a.volume24hUsd);
-    else list.sort((a, b) => b.launchedAt - a.launchedAt);
+    else list.sort((a, b) => (b.lastTradeAt ?? b.launchedAt) - (a.lastTradeAt ?? a.launchedAt));
     const start = after ? Number(after) : 0;
     const items = list.slice(start, start + limit);
     const next = start + limit;

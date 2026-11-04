@@ -73,6 +73,8 @@ export interface Token {
   holders: number;
   graduated: boolean;
   graduatedAt: number | null;
+  /** Unix seconds of the last buy or sell; null until the first trade. Drives the bump order of the home grid. */
+  lastTradeAt?: number | null;
   /** Not in the table; optional 24h price change if the indexer provides it. */
   change24hPct?: number | null;
   agent?: Pick<Agent, 'id' | 'status'> | null;

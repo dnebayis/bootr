@@ -122,6 +122,28 @@ app.get('/search', async (c) => {
   return c.json(j(await withAgent(rows)));
 });
 
+/**
+ * The home grid in bump order (pump.fun style): a buy or a sell moves the coin to the front, and a coin that
+ * has not traded yet sits by its launch time. `coalesce(lastTradeAt, launchedAt)` cannot be expressed in
+ * Ponder's GraphQL `orderBy` (one column, NULLs first on desc), hence this route. API code is not part of
+ * Ponder's build id, so adding it needs no new DATABASE_SCHEMA. Offset cursor: the order moves between
+ * pages, so the client dedupes by id. `{items, pageInfo: {endCursor, hasNextPage}}`, like the GraphQL list.
+ */
+app.get('/tokens/bumped', async (c) => {
+  const limit = Math.min(100, Math.max(1, Number(c.req.query('limit')) || 48));
+  const offset = Math.max(0, Math.floor(Number(c.req.query('after')) || 0));
+  const bumpedAt = sql`coalesce(${schema.token.lastTradeAt}, ${schema.token.launchedAt})`;
+  const rows = await db
+    .select()
+    .from(schema.token)
+    .orderBy(desc(bumpedAt), desc(schema.token.launchedAt), desc(schema.token.id))
+    .limit(limit + 1)
+    .offset(offset);
+  const hasNextPage = rows.length > limit;
+  const items = await withAgent(rows.slice(0, limit));
+  return c.json(j({ items, pageInfo: { endCursor: hasNextPage ? String(offset + limit) : null, hasNextPage } }));
+});
+
 /** `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}` for one coin. */
 app.get('/token/:id/fees', async (c) => {
   const id = c.req.param('id');
