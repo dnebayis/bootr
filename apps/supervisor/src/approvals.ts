@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
+import { agentDirectory, conversationGuard } from './agent-directory.js';
 import { inboxViews, publicAddressesOf, type BrokerEnv } from './broker/index.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, approvals, type ApprovalDecision, type ApprovalKind, type ApprovalStatus } from './db/schema.js';
@@ -89,9 +90,15 @@ async function viewOf(ctx: SupervisorContext, agent: AgentRow, row: ApprovalRow,
   };
 }
 
-/** What the model is told when its post is queued (the runtime records the action as completed with this result). */
-function queuedResult(row: Pick<ApprovalRow, 'id' | 'kind' | 'createdAt'>): Record<string, unknown> {
+/**
+ * What the model is told when its post is queued (the runtime records the action as completed with this result).
+ * A reply's `replyAuthorId` / `conversationId` ride along so the agent-to-agent caps (agent-directory.ts) count it.
+ */
+function queuedResult(row: Pick<ApprovalRow, 'id' | 'kind' | 'createdAt' | 'meta'>): Record<string, unknown> {
+  const meta = (row.meta ?? {}) as { replyAuthorId?: string; conversationId?: string };
   return {
+    ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}),
+    ...(meta.conversationId ? { conversationId: meta.conversationId } : {}),
     queued: true,
     approvalId: row.id,
     status: 'pending_approval',
@@ -130,6 +137,9 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     const image = await loadImage(ctx, agent.agentId, action.input.imageId);
     if (!image) return { kind: 'failed', error: `image_not_found: ${action.input.imageId} (make one with generate_image first)` };
   }
+  // The agent-to-agent caps apply to a reviewed post too: the creator's approval does not undo a loop.
+  const capped = await conversationGuard(ctx, agent, { platform: agent.config.platform === true }, pending, env);
+  if (capped) return capped;
 
   const meta: Record<string, unknown> = {};
   let kind: ApprovalKind = 'post';
@@ -142,8 +152,11 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     // Same decision the broker would send: taken when the mention was observed; unknown mentions are not eligible.
     const eligibility: ReplyEligibility =
       env.eligibility.get(action.input.postId) ??
-      (item && config ? inboxViews(config, [item], now).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
-    if (item) meta.replyAuthorId = item.authorId;
+      (item && config ? inboxViews(config, [item], now, await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
+    if (item) {
+      meta.replyAuthorId = item.authorId;
+      meta.conversationId = item.conversationId;
+    }
     meta.replyEligibility = eligibility;
   }
   if (action.input.attributions) meta.attributions = action.input.attributions;
@@ -291,7 +304,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     }
     media = mediaFor(image);
   }
-  const meta = row.meta as { replyAuthorId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[] };
+  const meta = row.meta as { replyAuthorId?: string; conversationId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[] };
   let res;
   try {
     res = await ctx.sender.publish({
@@ -334,7 +347,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
       cycleKey: `approval:${row.id}`,
       action: { tool, input: { text: row.text, ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.inReplyTo ? { postId: row.inReplyTo } : {}) }, approval: { id: row.id, by, note } },
       status: res.status === 'sent' ? 'completed' : 'held',
-      result: { ...(postId ? { postId } : {}), ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}), approvalId: row.id, senderStatus: res.status },
+      result: { ...(postId ? { postId } : {}), ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}), ...(meta.conversationId ? { conversationId: meta.conversationId } : {}), approvalId: row.id, senderStatus: res.status },
       receipt: postId ? { postId } : null,
       createdAt: now,
       updatedAt: now,

@@ -12,9 +12,7 @@ import {
   checkpoint,
   interruptionPlan,
   markSent,
-  originalPostSchedule,
   parseAction,
-  publicChannelBlocked,
   reconcile,
   recordOutcome,
   resumeAction,
@@ -26,17 +24,18 @@ import {
   type BrokerRuntime,
   type ChatMessage,
   type PendingAction,
-  type PostSchedule,
   type ToolDefinition,
 } from '@bootr/agent-core';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
+import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { postPerformanceSection } from './post-performance.js';
+import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 
@@ -113,19 +112,22 @@ export async function saveRuntime(ctx: SupervisorContext, agentId: string, patch
 export interface TurnInputs {
   reasons: string[];
   inbox: SenderInboxItem[];
-  schedule: PostSchedule | null;
+  /** The agent's cadence with the platform rhythm applied (rhythm.ts: jitter, quiet hours, slots). */
+  schedule: RhythmSchedule | null;
   treasury: TreasurySnapshot | null;
   market: Record<string, unknown> | null;
+  /** The other Bootr agents (agent-directory.ts); read on demand when the caller did not pass it. */
+  directory?: AgentDirectory;
 }
 
-export function scheduleFor(config: AgentConfig, state: AgentState, now: number): PostSchedule | null {
-  if (!config.capabilities.xPublish || publicChannelBlocked(config.ownerRules, 'publish_post') || !config.socialStartedAt) return null;
-  return originalPostSchedule(config.socialStartedAt, state.lastPostAt ?? null, now, config.postIntervalMs);
+/** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
+export function scheduleFor(config: AgentConfig, state: AgentState, now: number): RhythmSchedule | null {
+  return jitteredSchedule(config, state.lastPostAt ?? null, now);
 }
 
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ToolDefinition[]) {
+async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ToolDefinition[], directory: AgentDirectory) {
   const now = ctx.now();
-  const views: InboxView[] = inboxViews(config, inputs.inbox, now);
+  const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory);
   const eligible = views.filter((v) => v.eligible);
   const memories = await ctx.memories.recent(agent.agentId, 5);
   const schedule = inputs.schedule;
@@ -135,12 +137,10 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
     market: inputs.market ? { snapshot: inputs.market } : null,
     treasury: inputs.treasury ? { balances: { ...inputs.treasury.balances, claimable: inputs.treasury.claimable, usd: inputs.treasury.usd, gas: inputs.treasury.gas } } : null,
     social: {
-      messages: eligible.map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, post: v.post, observedAt: v.observedAt })),
+      messages: eligible.map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}) })),
       threadContexts: [],
       repliesAvailable: eligible.length > 0,
-      originalPost: schedule
-        ? { due: schedule.due, nextAt: schedule.nextAtIso, intervalMs: schedule.intervalMs, lastPostAt: schedule.lastPostAt ? new Date(schedule.lastPostAt).toISOString() : null }
-        : null,
+      originalPost: schedule ? originalPostView(schedule) : null,
     },
     lastResults: state.lastResults ?? [],
     continuation: state.continuation ?? null,
@@ -156,6 +156,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
       ...(await postPerformanceSection(ctx, agent.agentId)),
+      // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
+      ...(await bootrAgentsSection(ctx, agent, config, views)),
     },
   });
 }
@@ -214,7 +216,8 @@ function compactMessages(messages: ChatMessage[]): boolean {
 export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
   const tools = availableTools(ctx, config);
-  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools);
+  const directory = inputs.directory ?? (await agentDirectory(ctx));
+  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory);
   const turn: Turn = {
     startedAt: ctx.now(),
     steps: 0,
@@ -225,7 +228,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
-    eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now()).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
+    eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now(), directory).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
     recentSteps: [],
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });

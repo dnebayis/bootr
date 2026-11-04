@@ -7,12 +7,14 @@ import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type Runt
 import { and, asc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { guardianAbi, kernelAbi } from './abi.js';
+import { agentDirectory } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepPostMetrics } from './post-performance.js';
+import { applyRhythm } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import type { SenderInboxItem } from './sender-client.js';
@@ -165,8 +167,10 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
         log.warn({ err }, 'mention read failed');
       }
     }
-    const views = inboxViews(config, inbox, now);
-    const schedule = scheduleFor(config, state, now);
+    // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).
+    const directory = await agentDirectory(ctx);
+    const views = inboxViews(config, inbox, now, directory);
+    const schedule = await applyRhythm(ctx, scheduleFor(config, state, now), now);
     const pending = runtime.pending as unknown as PendingAction | null;
     const status: RuntimeStatus = runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : runtime.status === 'running' ? 'working' : 'waiting';
     const decision = wakeDecision({
@@ -177,7 +181,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       leaseUntil: null,
       inbox: views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
       replyRetryDue: false,
-      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: true } : null,
+      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose } : null,
       continuation: !!state.continuation || !!runtime.turn,
       configRevision: config.revision,
       lastDecision: runtime.lastDecisionAt ? { at: runtime.lastDecisionAt.getTime(), revision: runtime.lastDecisionRevision ?? -1 } : null,
@@ -195,7 +199,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;
-      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market }, lease);
+      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory }, lease);
     } catch (err) {
       const failures = (runtime.failures ?? 0) + 1;
       const { interruptionPlan } = await import('@bootr/agent-core');
