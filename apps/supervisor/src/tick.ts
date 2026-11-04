@@ -17,6 +17,7 @@ import { sweepPostMetrics } from './post-performance.js';
 import { applyRhythm } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
+import { weeklyDigestWake } from './weekly-digest.js';
 import type { SenderInboxItem } from './sender-client.js';
 import { readTreasuryOnChain, reconcileOps, runFeePolicy } from './treasury.js';
 
@@ -187,6 +188,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       lastDecision: runtime.lastDecisionAt ? { at: runtime.lastDecisionAt.getTime(), revision: runtime.lastDecisionRevision ?? -1 } : null,
       heldAction: pending?.status === 'held',
     });
+    // The platform agent's weekly digest (weekly-digest.ts) may wake it on its own; it folds itself into `decision`.
+    const digest = await weeklyDigestWake(ctx, agent, config, state, schedule, status, now, decision);
     if (runtime.configRevision !== config.revision) await saveRuntime(ctx, agent.agentId, { configRevision: config.revision });
     if (!decision.run) {
       await postSocial(ctx, agent, config, runtime, runtime.status === 'held' ? 'awake' : 'awake');
@@ -199,7 +202,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;
-      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory }, lease);
+      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest }, lease);
     } catch (err) {
       const failures = (runtime.failures ?? 0) + 1;
       const { interruptionPlan } = await import('@bootr/agent-core');

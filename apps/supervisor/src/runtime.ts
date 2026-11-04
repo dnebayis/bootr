@@ -36,6 +36,7 @@ import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { postPerformanceSection } from './post-performance.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
+import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 
@@ -52,6 +53,8 @@ export interface AgentState {
   inferenceKey?: string | null;
   lastPostAt?: number | null;
   lastResults?: unknown[];
+  /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
+  lastDigestWeek?: string | null;
 }
 
 export function initialState(): AgentState {
@@ -70,6 +73,8 @@ export interface Turn {
   eligibility?: Record<string, ReplyEligibility>;
   /** Short summaries of the steps so far (for continuation). */
   recentSteps: { tool: string; status: string; summary: string }[];
+  /** The weekly digest this turn carries until an original post or `finish` closes it (weekly-digest.ts). */
+  digestWeek?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +123,8 @@ export interface TurnInputs {
   market: Record<string, unknown> | null;
   /** The other Bootr agents (agent-directory.ts); read on demand when the caller did not pass it. */
   directory?: AgentDirectory;
+  /** The platform agent's weekly digest when one is due this turn (weekly-digest.ts). */
+  digest?: WeeklyDigestPlan | null;
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
@@ -158,6 +165,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await postPerformanceSection(ctx, agent.agentId)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
+      // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.
+      ...weeklyDigestSection(config, inputs.digest ?? null, tools),
     },
   });
 }
@@ -230,6 +239,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
     eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now(), directory).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
     recentSteps: [],
+    digestWeek: inputs.digest?.week ?? null,
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
@@ -279,6 +289,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   };
 
   const forceFinish = async (why: string): Promise<TurnResult> => {
+    settleWeeklyDigest(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
     const next = ctx.now() + 5 * 60_000;
     return endTurn('step_cap', { status: 'waiting', nextAt: new Date(next) });
@@ -421,6 +432,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       state.continuation = null;
       state.lastResults = [];
       state.phase = 'social';
+      settleWeeklyDigest(state, turn);
       broker.pending = markSent(pending);
       broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } }, now);
       await settle();
@@ -449,7 +461,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     const result = await settle();
     if (result) {
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
-        if (action.tool === 'publish_post') state.lastPostAt = ctx.now();
+        // The weekly digest is not the cadence post (weekly-digest.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
+        if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn)) state.lastPostAt = ctx.now();
       }
       turn.messages.push(toolMessage(inf.toolCall.id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
       turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });
