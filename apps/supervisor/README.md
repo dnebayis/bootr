@@ -106,6 +106,11 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
 | `RWAGMI_LOCKER_V3_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
 | `PLATFORM_TREASURY_ADDRESS` | no | | launches whose creator is this address run as the platform's own voice (`@bootrfun`); same value as `PLATFORM_TREASURY` |
+| `PLATFORM_POST_SLOTS_PER_10M` | no | `3` | posting rhythm (`rhythm.ts`): original posts across every Bootr agent per ten-minute window |
+| `PLATFORM_QUIET_HOURS_UTC` | no | | UTC quiet hours `HH-HH` (`22-06` wraps midnight) during which original posts wait; unset = none |
+| `PLATFORM_DIGEST_AT` | no | `sun:16` | when the platform agent posts "this week on Bootr" (`weekly-digest.ts`): `<day>:<hour>` in UTC, once per ISO week |
+| `PLATFORM_NUMBERS_AT` | no | `15` | the hour in UTC (`HH`) at which the platform agent posts the platform's numbers (`platform-numbers.ts`), once per UTC day |
+| `PLATFORM_WATCHLIST` | no | `base,jessepollak,clanker_world` | X handles the platform agent follows (`watchlist.ts`), comma-separated, `@` optional; their latest posts are read through the sender once per handle per 6 h and handed to the agent, which may engage in an original post that credits the author |
 | `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists; mainnet: `53433988`, the current launcher's deploy block |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |

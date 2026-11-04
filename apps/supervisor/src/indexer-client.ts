@@ -46,6 +46,11 @@ export class IndexerClient {
     return this.get(`/platform/feed?since=${Math.max(0, Math.floor(sinceSec))}`);
   }
 
+  /** `GET /platform/fees`: fee totals per launch path and in all (`total.byKind` agent / creator / burn / platform), or null. */
+  platformFees() {
+    return this.get('/platform/fees');
+  }
+
   /**
    * `POST /graphql` (Ponder's public GraphQL): the `data` object, or null when the indexer is unavailable,
    * answers with errors, or the body is not an object. Variables are the caller's; nothing is interpolated

@@ -153,6 +153,7 @@ service (H-1) are the boundary rather than an audience string.
 | POST   | `/internal/read/thread`                              | HMAC                    | walk the reply chain upward from a post (at most 8)                     |
 | POST   | `/internal/read/account`                             | HMAC                    | look up a user by username                                              |
 | POST   | `/internal/read/metrics`                             | HMAC                    | engagement counts of the agent's own posts (at most 20 ids)             |
+| POST   | `/internal/read/timeline`                            | HMAC                    | an account's latest original posts of the week (at most 10)             |
 | POST   | `/internal/inbox/resolve`                            | HMAC                    | mark a mention `skip`, `opt_out` or `defer`                             |
 | GET    | `/internal/metering/:agentId?month=YYYY-MM`          | HMAC                    | post and read counts for charge-back                                    |
 | GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt}` |
@@ -332,6 +333,13 @@ X is not called and `throttled: true` comes back with the current eligible items
   It follows `replied_to` up to 8 posts.
 - `POST /internal/read/account {agentId, username}` returns `{ user }` with username, name,
   description, verified, verified_type, created_at, protected and public_metrics.
+- `POST /internal/read/timeline {agentId, username, max?}` returns `{ user: {id, username, name?}, posts }`:
+  the account's latest original posts (no replies, no reposts) of the last 7 days, newest first, at most
+  `max` (default 5, never more than 10), each `{id, text, createdAt, metrics: {likes, replies, reposts, quotes} | null}`.
+  Two X calls (`GET /2/users/by/username/:name`, one page of `GET /2/users/:id/tweets` with
+  `exclude=replies,retweets`), metered as one `account` and one `timeline` read; 404 `x_not_found` for an
+  account X does not know. The supervisor's watchlist (`apps/supervisor/src/watchlist.ts`) reads each handle at
+  most once every six hours.
 - `POST /internal/read/metrics {agentId, postIds}` (1 to 20 ids) returns `{ items, missing, nonPublic }`:
   one `GET /2/tweets?ids=` with `tweet.fields=created_at,public_metrics,non_public_metrics`, read with the
   agent's own token, so X also returns the author-only counts. Each item is `{postId, createdAt, likes,

@@ -17,7 +17,7 @@ import type { AdminSigner } from '../src/admin-signer.js';
 import type { KernelClient } from '../src/kernel.js';
 import { enableDigest } from '../src/session-key.js';
 import { MemoryStore } from '../src/memories.js';
-import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem, type SenderPostMetrics } from '../src/sender-client.js';
+import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem, type SenderPostMetrics, type SenderTimelinePost } from '../src/sender-client.js';
 import type { IndexerClient } from '../src/indexer-client.js';
 import { initialState } from '../src/runtime.js';
 import { spenderAccount } from '../src/spender.js';
@@ -283,6 +283,10 @@ export interface MockSender {
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
   optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
+  /** `readTimeline` answers by lowercase handle: posts, or null for an account X does not know; absent = no posts. */
+  timelines: Record<string, SenderTimelinePost[] | null>;
+  /** Every `readTimeline` call: the handle asked for. */
+  timelineReads: string[];
   /** `readMetrics` answers from here (postId -> counts); ids not listed come back in `missing`. */
   metrics: Record<string, Partial<SenderPostMetrics>>;
   /** When set, `readMetrics` throws this. */
@@ -292,7 +296,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -328,6 +332,18 @@ export function mockSender(): MockSender {
         throw err;
       }
       return hit ?? { user: { username: h }, activity: 'recent' as const, latestPostAt: new Date().toISOString() };
+    },
+    /** Mirrors apps/sender/src/inbox.ts `readTimeline`: 404 for an unknown account, else the posts newest first, at most `max`. */
+    async readTimeline(_agentId: string, username: string, max = 5) {
+      const h = username.replace(/^@/, '').toLowerCase();
+      m.timelineReads.push(h);
+      const posts = m.timelines[h];
+      if (posts === null) {
+        const err = new Error('x_not_found: user not found') as Error & { status: number };
+        err.status = 404;
+        throw err;
+      }
+      return { user: { id: `u_${h}`, username: h }, posts: (posts ?? []).slice(0, max) };
     },
     /** Mirrors apps/sender/src/metrics.ts: one read per call, unknown ids are `missing`. */
     async readMetrics(_agentId: string, postIds: string[]) {

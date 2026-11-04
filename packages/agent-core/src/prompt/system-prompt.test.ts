@@ -89,6 +89,12 @@ describe('buildSystemPrompt', () => {
     expect(platform).toMatch(/Replies: answer questions about how Bootr works in plain words\. Never argue\. Never discuss prices/);
     expect(platform).toMatch(/never answer an insult with an insult/);
     expect(platform).toMatch(/Emoji are fine in small doses \(one or two, never strings\)[^\n]*No shouting, no cashtags other than \$BOOTR/);
+    // the daily numbers post is the one place for the platform totals; price and market cap stay out everywhere
+    expect(platform).toMatch(/Never talk about price, market cap, charts or returns\./);
+    expect(platform).toMatch(/coins launched, agents awake, what was traded in the last day, fees earned by agents and creators, \$BOOTR burned, holders\) are facts you may state once a day, in the numbers post/);
+    expect(platform).toMatch(/Rotate what you post about: never two original posts of the same kind in a row/);
+    expect(platform).toMatch(/AI and agent news at most one post in four/);
+    expect(platform).toMatch(/The watchlist section is for engaging with the people who build Base[^\n]*publish_reply is only for people who wrote to you/);
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));
     for (const rule of PLATFORM_RULES) expect(coin).not.toContain(rule);

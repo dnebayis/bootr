@@ -38,6 +38,8 @@ import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhas
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
+import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
+import { watchlistSection } from './watchlist.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
@@ -59,6 +61,8 @@ export interface AgentState {
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
+  /** UTC day (`YYYY-MM-DD`) of the last daily numbers post the platform agent closed (platform-numbers.ts). */
+  lastNumbersDay?: string | null;
 }
 
 export function initialState(): AgentState {
@@ -81,6 +85,8 @@ export interface Turn {
   routing?: RoutingState | null;
   /** The weekly digest this turn carries until an original post or `finish` closes it (weekly-digest.ts). */
   digestWeek?: string | null;
+  /** The daily numbers post this turn carries until an original post or `finish` closes it (platform-numbers.ts). */
+  numbersDay?: string | null;
   /** The turn woke for a due original post; `finish` without one consumes the slot (`lastSlotSkippedAt`). */
   postDue?: boolean;
   /** An original post completed (or was queued for review) in this turn. */
@@ -135,6 +141,8 @@ export interface TurnInputs {
   directory?: AgentDirectory;
   /** The platform agent's weekly digest when one is due this turn (weekly-digest.ts). */
   digest?: WeeklyDigestPlan | null;
+  /** The platform agent's daily numbers post when one is due this turn (platform-numbers.ts). */
+  numbers?: PlatformNumbersPlan | null;
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
@@ -187,6 +195,10 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.
       ...weeklyDigestSection(config, inputs.digest ?? null, tools),
+      // The platform's numbers and the daily numbers post (platform agent only): platform-numbers.ts.
+      ...platformNumbersSection(config, config.platform ? await cachedPlatformNumbers(ctx, config) : null, inputs.numbers ?? null),
+      // The people the host follows and their latest posts (platform agent only): watchlist.ts.
+      ...(await watchlistSection(ctx, agent, config)),
     },
   });
 }
@@ -262,6 +274,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     recentSteps: [],
     routing,
     digestWeek: inputs.digest?.week ?? null,
+    numbersDay: inputs.numbers?.day ?? null,
     postDue: inputs.reasons.includes('original_post_due'),
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
@@ -315,6 +328,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
 
   const forceFinish = async (why: string): Promise<TurnResult> => {
     settleWeeklyDigest(state, turn);
+    settlePlatformNumbers(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
     const next = ctx.now() + 5 * 60_000;
     return endTurn('step_cap', { status: 'waiting', nextAt: new Date(next) });
@@ -468,6 +482,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
       if (turn.postDue && !turn.posted) state.lastSlotSkippedAt = now;
       settleWeeklyDigest(state, turn);
+      settlePlatformNumbers(state, turn);
       broker.pending = markSent(pending);
       broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } }, now);
       await settle();
@@ -496,9 +511,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     const result = await settle();
     if (result) {
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
-        // The weekly digest is not the cadence post (weekly-digest.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
+        // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
         if (action.tool === 'publish_post') turn.posted = true;
-        if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn)) state.lastPostAt = ctx.now();
+        if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();
       }
       turn.messages.push(toolMessage(inf.toolCall.id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
       turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });

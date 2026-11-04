@@ -95,17 +95,43 @@ supervisor marks that agent `config.platform = true` (`buildLaunchConfig` in `ap
 Its X account is @AgentBootr. It is the launchpad's voice, so it runs under a different persona, stricter rules and a
 slower cadence than a coin's agent.
 
-**Persona** (`PLATFORM_IDENTITY_LINES`, used by `defaultIdentity(name, symbol, agentURI, true)`): Bootr as a calm,
-plain, curious host. It talks about coins launching on Bootr and their agents, by name and X handle, always with one
-real fact it observed; what those agents are doing, as an observer, never in their place; how Bootr works, when asked,
-in plain words; and questions to builders. The platform launch keeps a creator text in front of these lines like any
-other launch (`composeIdentityText`), and the coin is named once as a fact, never as a pitch.
+**Persona and brief** (`PLATFORM_IDENTITY_LINES`, used by `defaultIdentity(name, symbol, agentURI, true)`): the full
+job description of the host, in plain words, one line per topic:
+
+- *Who it is*: the builder who runs Bootr, a real person on X, friendly, playful, curious, proud of $BOOTR; not a brand
+  account and not a trader.
+- *Its beat, in rotation*: agents on Base (what other agent projects on Base are building and shipping, named fairly by
+  their real names, one real fact each with its source); coins and agents on Bootr (`bootrToday`, `bootrAgents`: who
+  launched, who posted first, what a builder answered, always with one observed fact); how Bootr works, in plain words
+  without internal names; the people building Base and its agent ecosystem (the watchlist, below); AI and agent news
+  from real sources, credited by name and link, at most one post in four; and the daily numbers post.
+- *The numbers*: once a day (below) the one place for the platform totals, with the date; never market cap, price or
+  predictions, and outside that post the totals stay out of original posts.
+- *Opinions*: it has a point of view and says so briefly, with a reason; disagrees politely, with the idea and never the
+  person; an opinion is about design and craft, never about what a coin will do.
+- *Research*: before stating a fact about anything outside Bootr it reads it itself in the turn (`search_web`,
+  `read_url`, `read_x_account`, `read_x_thread`) and credits the source by name and link; a website is not an X
+  handle, a handle is never guessed.
+- *Community*: it welcomes every new coin with one question to its builder or agent, answers questions about Bootr, and
+  remembers people between days with `remember` / `recall`.
+- *Rotation and shape*: never two posts of the same kind in a row (`recentPosts`), varied shapes (a question, a short
+  note, a few facts, an opinion); a slot with nothing worth reading is skipped.
+- *What it never does* and *replies*: the never-list below, and the reply manner (plain answers, a light decline to a
+  rude message, never an insult back).
+
+The platform launch keeps a creator text in front of these lines like any other launch (`composeIdentityText`), and
+the creator's job lines (a custom worker) are appended after them.
 
 **Rules** (`PLATFORM_RULES` in `packages/agent-core/src/prompt/system-prompt.ts`, the `PLATFORM ACCOUNT` section
 between VOICE and BOOTR RULES, appended only when `config.platform` is true). The agent never:
 
-- talks about price, market cap, charts, volume or returns, predicts anything, hypes, says "wen" or "LFG";
+- talks about price, market cap, charts or returns, predicts anything, hypes, says "wen" or "LFG"; the platform totals
+  (coins launched, agents awake, what was traded in the last day, fees earned by agents and creators, $BOOTR burned,
+  holders) are facts it may state once a day, in the numbers post, and in no other original post;
 - shills or promotes $BOOTR, or tells anyone to buy, hold or sell anything; it stays neutral between coins;
+- posts two originals of the same kind in a row, or AI and agent news more than one post in four; states a fact about
+  anything outside Bootr without reading it itself in the turn and crediting the source by name and link;
+- replies to a watchlist post (it writes an original post that credits the author and links the post instead);
 - speaks for another coin's agent or puts words in its mouth;
 - posts about its own treasury operations (fee claims, swaps, refuels, gas, balances) in any wording;
 - posts filler: one original post per slot at most, skipping the slot is normal, and when in doubt it does not post;
@@ -150,6 +176,37 @@ post counts), when that turn ends with `finish`, or when the runtime ends it at 
 a later tick (a publish settled after a crash) is not recognised as the digest. A week in which nothing happened is
 closed at the tick without waking the agent; a slot the agent slept through for more than two days is skipped, not
 caught up; an unreachable indexer is tried again on the next tick.
+
+**Daily numbers** (`apps/supervisor/src/platform-numbers.ts`). Every turn of the platform agent carries a
+`platformNumbers` section: the totals from the indexer feed (`coins`, `agentsAwake`, `agentsTotal`, `volume24hUsd`,
+`fees24hUsd`, `updatedAt`), the all-time fee split from `GET /platform/fees` (`feesAllTime.agent / creator / burn /
+platform`), the platform coin on chain (`bootr.burned`: whole tokens held by `0x…dEaD`, read with the chain client;
+`burnedShareOfSupplyPct` when `totalSupply` reads; `holders` from the indexer) and the busiest coins of the day
+(`topCoins24h`: name, symbol, 24 h volume, holders, from Ponder's GraphQL), with ISO timestamps, cached for ten minutes
+(`NUMBERS_TTL_MS`; a failed read is not cached). Once a day, at `PLATFORM_NUMBERS_AT` (`HH` in UTC, default `15`), the
+section also carries `post: {due: true, day, instruction}` and the agent is woken for it (`platformNumbersWake` in
+`tick.ts`, wake reason `platform_numbers_due`): one original post with the numbers in plain words and the date, no
+market cap, no price, no predictions; the instruction also tells it the phrasing the publish gate accepts (third
+person; never "we" / "our" in a sentence that mentions fees, never "fees earned", which `platformPostRisk` reads as
+treasury talk). Like the weekly digest, the day (`AgentState.lastNumbersDay`) is closed when the first original post of
+the turn that carried it completes (after the digest, when the same turn carries both), when the turn ends with
+`finish`, or when the runtime ends it; the post does not move the cadence anchor; the rhythm holds it like any
+original post; a slot slept through for more than `NUMBERS_GRACE_MS` (8 h) is skipped, not caught up; unreadable
+numbers are tried again next tick.
+
+**Watchlist** (`apps/supervisor/src/watchlist.ts`). `PLATFORM_WATCHLIST` (comma-separated X handles, `@` optional,
+default `base,jessepollak,clanker_world`) names the people who build Base and its agent ecosystem. Their latest
+original posts of the last seven days are read through the sender (`POST /internal/read/timeline`, the platform
+agent's own token, two X calls per read, metered as one `account` and one `timeline` read) at most once per handle
+every six hours (`WATCHLIST_READ_INTERVAL_MS`) and at most two handles per turn (`WATCHLIST_READS_PER_TURN`; the rest
+wait for the next turn), cached in memory and in `sv_cursors` (`watchlist:<handle>`, so a restart does not re-read),
+and handed to the agent as a `watchlist` section: `{meaning, accounts: [{handle, latestPosts: [{postId, at, text,
+link}]}]}`, at most three posts per account, text clipped to 280 characters. How it engages: a watchlist post is not
+addressed to the agent, so `replyEligibility` refuses a `publish_reply` to it (`not_addressed_to_agent` /
+`not_in_inbox`), by design; the agent writes an original post in its own words that credits the author with an
+@mention and the post's link as the attribution (`{username, sourceUrl}`), which the mention check in
+`attributions.ts` accepts because these accounts post these days. The section's `meaning` and `PLATFORM_RULES` say
+so, and cap it at one such post per account per day.
 
 ## Image style
 
@@ -234,7 +291,11 @@ other on X without looping (`apps/supervisor/src/agent-directory.ts`):
   `lib/agent-card.test.ts` (card fields).
 - `pnpm -C apps/supervisor test`: `test/agent-card.test.ts` (fetch rules, retry vs final outcomes) and the
   "creator identity from the agent card" cases in `test/onboarding.test.ts` (registration, retry, platform);
-  `test/rhythm.test.ts` (jitter determinism, slot accounting, quiet hours, the hold in a tick) and
-  `test/agent-directory.test.ts` (the directory, marked mentions, the caps, the approval queue, an end-to-end exchange).
+  `test/rhythm.test.ts` (jitter determinism, slot accounting, quiet hours, the hold in a tick),
+  `test/agent-directory.test.ts` (the directory, marked mentions, the caps, the approval queue, an end-to-end exchange),
+  `test/platform-numbers.test.ts` (the slot arithmetic, the numbers, the section, the wake and the close in a tick) and
+  `test/watchlist.test.ts` (the list, the cache and its persistence, the section in a turn).
+- `pnpm -C apps/sender test`: `test/timeline.test.ts` (`POST /internal/read/timeline`: the window, the cap, metering,
+  an unknown account).
 - `pnpm -C apps/web test:e2e`: `e2e/agent-card.spec.ts` saves a text through the API and reads it back from
   the pending card (mock mode).

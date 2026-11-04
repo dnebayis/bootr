@@ -340,7 +340,8 @@ describe('weekly digest in the tick', () => {
     } finally {
       await w.close();
     }
-    const w2 = await makeWorld({ script: [], config: { PLATFORM_DIGEST_AT: 'sun:18' } });
+    // the daily numbers post (platform-numbers.ts, default 15:00 UTC) is moved out of the way: only the digest may wake it here
+    const w2 = await makeWorld({ script: [], config: { PLATFORM_DIGEST_AT: 'sun:18', PLATFORM_NUMBERS_AT: '20' } });
     try {
       w2.setNow(SUNDAY);
       const calls = feedFrom(w2, async () => busyWeek() as unknown as Record<string, unknown>);

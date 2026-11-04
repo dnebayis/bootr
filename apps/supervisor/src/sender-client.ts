@@ -80,6 +80,19 @@ export interface SenderMetrics {
   nonPublic: boolean;
 }
 
+/** `POST /internal/read/timeline` body: one account's latest original posts of the week. */
+export interface SenderTimelinePost {
+  id: string;
+  text: string;
+  createdAt: string | null;
+  metrics: { likes: number; replies: number; reposts: number; quotes: number } | null;
+}
+
+export interface SenderTimeline {
+  user: { id: string; username: string; name?: string };
+  posts: SenderTimelinePost[];
+}
+
 /** agent-core `replyEligibility` outcome for a mention, as the sender expects it. */
 export interface ReplyEligibility {
   eligible: boolean;
@@ -176,6 +189,14 @@ export class SenderClient {
   /** Engagement counts of the agent's own posts (1 to 20 ids), read with the agent's token. */
   readMetrics(agentId: string, postIds: string[]) {
     return this.call<SenderMetrics>('POST', '/internal/read/metrics', { agentId, postIds });
+  }
+
+  /**
+   * `POST /internal/read/timeline`: an account's latest original posts of the last 7 days (at most `max`, 10 at most,
+   * 5 by default), newest first, read with the agent's token (apps/sender/src/inbox.ts `readTimeline`).
+   */
+  readTimeline(agentId: string, username: string, max?: number) {
+    return this.call<SenderTimeline>('POST', '/internal/read/timeline', { agentId, username, ...(max ? { max } : {}) });
   }
 
   readAccount(agentId: string, username: string) {

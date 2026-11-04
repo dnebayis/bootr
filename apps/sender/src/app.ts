@@ -12,9 +12,11 @@ import {
   readAccount,
   readMentions,
   readThread,
+  readTimeline,
   resolveInbox,
   resolveSchema,
   threadSchema,
+  timelineSchema,
 } from './inbox.js';
 import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
@@ -340,6 +342,19 @@ export function createApp(ctx: SenderContext): Hono {
     const res = await readAccount(ctx, body.data);
     if (!res.ok) return fail(c, res);
     return c.json({ user: res.user, latestPostAt: res.latestPostAt ?? null, activity: res.activity });
+  });
+
+  /**
+   * POST /internal/read/timeline {agentId, username, max?}
+   * An account's latest original posts of the last 7 days (at most `max`, 10 at most, 5 by default), newest first:
+   * {user: {id, username, name?}, posts[{id, text, createdAt, metrics}]}. See `readTimeline` in src/inbox.ts.
+   */
+  internal.post('/read/timeline', async (c) => {
+    const body = parseBody(c, timelineSchema);
+    if (!body.ok) return body.res;
+    const res = await readTimeline(ctx, body.data);
+    if (!res.ok) return fail(c, res);
+    return c.json({ user: res.user, posts: res.posts });
   });
 
   internal.post('/inbox/resolve', async (c) => {

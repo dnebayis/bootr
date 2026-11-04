@@ -11,11 +11,22 @@ import type { XListResponse, XTweet, XUser } from './x-client.js';
 
 const xId = z.string().regex(/^\d{1,25}$/);
 
+/** `POST /internal/read/timeline`: posts per read, at most; the default when `max` is absent. */
+export const MAX_TIMELINE_POSTS = 10;
+export const DEFAULT_TIMELINE_POSTS = 5;
+/** The timeline read looks this far back. */
+export const TIMELINE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 export const mentionsSchema = z.object({ agentId: z.string().min(1), sinceId: xId.optional() });
 export const threadSchema = z.object({ agentId: z.string().min(1), postId: xId });
 export const accountReadSchema = z.object({
   agentId: z.string().min(1),
   username: z.string().regex(/^@?\w{1,15}$/),
+});
+export const timelineSchema = z.object({
+  agentId: z.string().min(1),
+  username: z.string().regex(/^@?\w{1,15}$/),
+  max: z.number().int().min(1).max(MAX_TIMELINE_POSTS).optional(),
 });
 export const resolveSchema = z.object({
   agentId: z.string().min(1),
@@ -318,6 +329,56 @@ export async function readAccount(
     latestPostAt = undefined;
   }
   return { ok: true, user, latestPostAt, activity: activityOf(latestPostAt, Date.now()) };
+}
+
+export interface TimelinePost {
+  id: string;
+  text: string;
+  createdAt: string | null;
+  /** `public_metrics` when X returned them. */
+  metrics: { likes: number; replies: number; reposts: number; quotes: number } | null;
+}
+
+const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+export function toTimelinePost(t: XTweet): TimelinePost {
+  const m = t.public_metrics;
+  return {
+    id: t.id,
+    text: t.note_tweet?.text ?? t.text,
+    createdAt: typeof t.created_at === 'string' ? t.created_at : null,
+    metrics: m ? { likes: count(m.like_count), replies: count(m.reply_count), reposts: count(m.retweet_count), quotes: count(m.quote_count) } : null,
+  };
+}
+
+/**
+ * An account's latest original posts (no replies, no reposts) of the last TIMELINE_WINDOW_MS, newest first, at most
+ * `max` (DEFAULT_TIMELINE_POSTS; never more than MAX_TIMELINE_POSTS). Two X calls (user lookup, one timeline page),
+ * metered as one `account` and one `timeline` read; the supervisor's watchlist reads each handle at most every 6 h.
+ */
+export async function readTimeline(
+  ctx: SenderContext,
+  input: z.infer<typeof timelineSchema>,
+): Promise<{ ok: true; user: { id: string; username: string; name?: string }; posts: TimelinePost[] } | Fail> {
+  const username = input.username.replace(/^@/, '');
+  const max = Math.min(input.max ?? DEFAULT_TIMELINE_POSTS, MAX_TIMELINE_POSTS);
+  const res = await withToken(ctx, input.agentId, (token) => ctx.x.userByUsername(token, username));
+  if (!res.ok) return res;
+  if (!res.data.data) return { ok: false, status: 404, error: 'x_not_found', message: 'user not found' };
+  await meterRead(ctx, input.agentId, 'account', 1);
+  const user = res.data.data;
+  const now = ctx.now().getTime();
+  const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const tl = await withToken(ctx, input.agentId, (token) =>
+    ctx.x.userTimeline(token, user.id, { startTime: iso(now - TIMELINE_WINDOW_MS), endTime: iso(now - 10_000), exclude: 'replies,retweets' }),
+  );
+  if (!tl.ok) return tl;
+  await meterRead(ctx, input.agentId, 'timeline', 1);
+  const posts = (tl.data.data ?? [])
+    .map(toTimelinePost)
+    .sort((a, b) => cmpId(b.id, a.id))
+    .slice(0, max);
+  return { ok: true, user: { id: user.id, username: user.username, ...(user.name ? { name: user.name } : {}) }, posts };
 }
 
 export async function resolveInbox(

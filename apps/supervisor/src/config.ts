@@ -133,6 +133,23 @@ export const configSchema = z
         .regex(/^(mon|tue|wed|thu|fri|sat|sun):([01]?\d|2[0-3])$/i, 'expected the digest slot as <day>:<hour> in UTC, e.g. sun:16')
         .transform((v) => v.toLowerCase()),
     ),
+    /**
+     * When the platform's own agent posts its daily numbers (platform-numbers.ts): the hour in UTC (`HH`, default
+     * `15`). Once per UTC day; held by quiet hours and slots like any post.
+     */
+    PLATFORM_NUMBERS_AT: z.preprocess(
+      (v) => (v === '' || v === undefined ? '15' : v),
+      z
+        .string()
+        .regex(/^([01]?\d|2[0-3])$/, 'expected the numbers hour as HH in UTC, e.g. 15')
+        .transform((v) => String(Number(v))),
+    ),
+    /**
+     * X accounts the platform's own agent follows (watchlist.ts): comma-separated handles, with or without `@`.
+     * Their latest posts of the week are read through the sender (one read per handle per 6 h) and handed to the
+     * agent as a `watchlist` section. Empty = the default list (`base,jessepollak,clanker_world`).
+     */
+    PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'base,jessepollak,clanker_world' : v), z.string().max(2000)),
     MAX_TOOL_STEPS: int(8, 1),
     SUPERVISOR_PORT: int(3004, 1),
     /** Claimable LP fees (USD) above which claim_fees runs automatically. */
