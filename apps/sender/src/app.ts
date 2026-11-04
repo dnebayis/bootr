@@ -18,6 +18,7 @@ import {
 } from './inbox.js';
 import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
+import { metricsSchema, readMetrics } from './metrics.js';
 import {
   BINDING_COOKIE_PATH,
   STATE_TTL_SEC,
@@ -318,6 +319,19 @@ export function createApp(ctx: SenderContext): Hono {
     const res = await readThread(ctx, body.data);
     if (!res.ok) return fail(c, res);
     return c.json({ posts: res.posts, truncated: res.truncated });
+  });
+
+  /**
+   * POST /internal/read/metrics {agentId, postIds[1..20]}
+   * Engagement of the agent's own posts: {items[{postId, createdAt, likes, replies, reposts, quotes,
+   * bookmarks, impressions, nonPublic}], missing[], nonPublic}. See src/metrics.ts.
+   */
+  internal.post('/read/metrics', async (c) => {
+    const body = parseBody(c, metricsSchema);
+    if (!body.ok) return body.res;
+    const res = await readMetrics(ctx, body.data);
+    if (!res.ok) return fail(c, res);
+    return c.json({ items: res.items, missing: res.missing, nonPublic: res.nonPublic });
   });
 
   internal.post('/read/account', async (c) => {

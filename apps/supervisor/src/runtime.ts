@@ -36,6 +36,7 @@ import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requ
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
+import { postPerformanceSection } from './post-performance.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 
@@ -153,6 +154,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(review ? { review } : {}),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
+      // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
+      ...(await postPerformanceSection(ctx, agent.agentId)),
     },
   });
 }

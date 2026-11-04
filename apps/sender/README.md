@@ -152,6 +152,7 @@ service (H-1) are the boundary rather than an audience string.
 | POST   | `/internal/read/mentions`                            | HMAC                    | fetch new mentions, apply consent, return eligible inbox items          |
 | POST   | `/internal/read/thread`                              | HMAC                    | walk the reply chain upward from a post (at most 8)                     |
 | POST   | `/internal/read/account`                             | HMAC                    | look up a user by username                                              |
+| POST   | `/internal/read/metrics`                             | HMAC                    | engagement counts of the agent's own posts (at most 20 ids)             |
 | POST   | `/internal/inbox/resolve`                            | HMAC                    | mark a mention `skip`, `opt_out` or `defer`                             |
 | GET    | `/internal/metering/:agentId?month=YYYY-MM`          | HMAC                    | post and read counts for charge-back                                    |
 | GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt}` |
@@ -331,6 +332,14 @@ X is not called and `throttled: true` comes back with the current eligible items
   It follows `replied_to` up to 8 posts.
 - `POST /internal/read/account {agentId, username}` returns `{ user }` with username, name,
   description, verified, verified_type, created_at, protected and public_metrics.
+- `POST /internal/read/metrics {agentId, postIds}` (1 to 20 ids) returns `{ items, missing, nonPublic }`:
+  one `GET /2/tweets?ids=` with `tweet.fields=created_at,public_metrics,non_public_metrics`, read with the
+  agent's own token, so X also returns the author-only counts. Each item is `{postId, createdAt, likes,
+  replies, reposts, quotes, bookmarks, impressions, nonPublic}`; `impressions` comes from
+  `non_public_metrics` when X returned it and from `public_metrics` otherwise. When X refuses the
+  author-only field (a post from an earlier account), the read is repeated once with public fields only
+  and `nonPublic` is `false`. Deleted or invisible ids are listed in `missing`. The supervisor measures
+  each post once, about a day after it went out, and tells the agent how its posts did.
 - `POST /internal/inbox/resolve {agentId, postId, outcome, reason, reviewAt?}`:
   - `skip` sets `skipped`.
   - `opt_out` sets `skipped` and opts the author out.

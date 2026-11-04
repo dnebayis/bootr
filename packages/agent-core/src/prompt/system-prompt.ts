@@ -13,6 +13,7 @@ export const BOOTR_RULES: readonly string[] = [
   'Reply only to eligible received conversations presented to you; resolve the rest explicitly with resolve_mention. Honor stop requests.',
   'Use finish to checkpoint concise memory, your agenda, a short factual summary and your next wake time. Pending eligible replies wake you earlier.',
   'You never hold keys or credentials. Signing, posting and payments happen in separate services that enforce their own limits; you only request them.',
+  'A postPerformance section, when present, shows how readers responded to your own recent posts (likes, replies, reposts, quotes, impressions). Those numbers are evidence about what readers responded to, not a reason to chase engagement; never post about them.',
 ];
 
 /**
