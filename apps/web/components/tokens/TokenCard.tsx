@@ -12,13 +12,20 @@ import { TokenImage } from '@/components/ui/TokenImage';
 export const CARD_HEIGHT = 164;
 
 /**
- * A 3D tilt for the token card: the wrapper lifts 3px and rotates up to ten degrees toward the pointer (perspective
+ * A 3D tilt for the token card: the wrapper lifts 6px, grows 2% and rotates up to fourteen degrees toward the pointer (perspective
  * transform, CSS variables, no React state per move) and settles back on leave over `ease-base`. The same
  * variables carry a parallax offset for the dot-matrix layer on the image frame, which is what makes the
  * card read as holographic without any colour. Mouse only (touch cards stay flat), off under
  * `prefers-reduced-motion`.
  */
-export function CardTilt({ children, className, intensity = 10 }: { children: ReactNode; className?: string; intensity?: number }) {
+/** A stable 0..1 number from a string, so the cards do not drift in step. */
+function phaseOf(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return (h % 1000) / 1000;
+}
+
+export function CardTilt({ children, className, intensity = 14, floatSeed }: { children: ReactNode; className?: string; intensity?: number; floatSeed?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
 
@@ -30,6 +37,7 @@ export function CardTilt({ children, className, intensity = 10 }: { children: Re
     el.style.setProperty('--tx', `${tx.toFixed(1)}px`);
     el.style.setProperty('--ty', `${ty.toFixed(1)}px`);
     el.style.setProperty('--lift', `${lift}px`);
+    el.style.setProperty('--scale', lift ? '1.02' : '1');
   };
 
   return (
@@ -41,15 +49,17 @@ export function CardTilt({ children, className, intensity = 10 }: { children: Re
         const px = (e.clientX - b.left) / b.width - 0.5; // -0.5 .. 0.5
         const py = (e.clientY - b.top) / b.height - 0.5;
         // The card lifts a little toward the pointer and tilts up to `intensity` degrees; the dot-matrix layer slides the other way.
-        set(-py * intensity, px * intensity, -px * 10, -py * 10, -3);
+        set(-py * intensity, px * intensity, -px * 12, -py * 12, -6);
       }}
       onPointerLeave={() => set(0, 0, 0, 0, 0)}
       className={cn(
-        'transition-transform duration-200 ease-base [transform:perspective(700px)_translateY(var(--lift,0px))_rotateX(var(--rx,0deg))_rotateY(var(--ry,0deg))]',
+        'transition-transform duration-200 ease-base [transform:perspective(600px)_translateY(var(--lift,0px))_rotateX(var(--rx,0deg))_rotateY(var(--ry,0deg))_scale(var(--scale,1))]',
         className,
       )}
     >
-      {children}
+      <div className={floatSeed ? 'animate-float' : undefined} style={floatSeed ? { animationDelay: `-${(phaseOf(floatSeed) * 7).toFixed(2)}s` } : undefined}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -83,7 +93,7 @@ function ImageFrame({ token }: { token: Token }) {
 export function TokenCard({ token, now, flash }: { token: Token; now: number; flash?: boolean }) {
   const status = token.agent?.status;
   return (
-    <CardTilt>
+    <CardTilt floatSeed={token.id}>
       <Link
         href={`/token/${token.id}`}
         className={cn(

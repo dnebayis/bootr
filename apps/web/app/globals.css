@@ -166,6 +166,17 @@
   --animate-flash: flash 900ms var(--ease-out-quint);
   --animate-shimmer: shimmer 1.6s linear infinite;
   --animate-enter: enter 250ms var(--ease-out-quint) both;
+  --animate-float: float 7s var(--ease-in-out) infinite;
+
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-5px);
+    }
+  }
 
   @keyframes enter {
     from {
@@ -282,5 +293,12 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* The token cards drift slowly (TokenCard CardTilt); still under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-float {
+    animation: none;
   }
 }
