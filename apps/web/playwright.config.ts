@@ -21,6 +21,9 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL: `http://localhost:${PORT}`,
+    // The token cards drift forever (TokenCard `animate-float`), which Playwright reads as an element that never
+    // settles, so a click waits until it times out; the drift is off under reduced motion.
+    contextOptions: { reducedMotion: 'reduce' },
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
