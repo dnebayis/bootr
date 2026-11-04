@@ -7,13 +7,15 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
   {
     id: 'newest-coins',
     title: 'Newest coins with their agent',
-    about: 'Lists are paged: pass `pageInfo.endCursor` back as `after` for the next page. `limit` is at most 1000.',
+    about: 'Lists are paged: pass `pageInfo.endCursor` back as `after` for the next page. `limit` is at most 1000. `source` is the launch path (`bootr` or `clanker`) and `lpFeeBps` the coin’s own swap fee (10000 = 1%).',
     query: `query NewestCoins {
   tokens(orderBy: "launchedAt", orderDirection: "desc", limit: 10) {
     items {
       id
       name
       symbol
+      source
+      lpFeeBps
       priceUsd
       marketCapUsd
       volume24hUsd
@@ -28,11 +30,12 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
   {
     id: 'one-coin',
     title: 'One coin: locked fee slots and latest trades',
-    about: 'Ids are lowercase hex. `feeSlots` mirrors `launchInfo(token).rewards` on the RWAGMI locker, including RWAGMI’s own slot (`recipientKind: "protocol"`).',
+    about: 'Ids are lowercase hex. `feeSlots` mirrors the locker’s reward slots: on a `bootr` coin `launchInfo(token).rewards` on the RWAGMI locker, including RWAGMI’s own slot (`recipientKind: "protocol"`, the four Bootr slots sum to 9000); on a `clanker` coin `tokenRewards(token)` on the Clanker locker (the four slots sum to 10000, the burn slot’s recipient is `0x…dEaD`, and `protocolBps` is Clanker’s 20% charged on top of `lpFeeBps`). `clankerPool` is null on `bootr` coins.',
     query: `query Coin($id: String!) {
   token(id: $id) {
     name
     symbol
+    source
     poolId
     lpFeeBps
     agentBps
@@ -41,6 +44,7 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
     platformBps
     protocolBps
     feeSlots { items { slot recipient recipientKind bps } }
+    clankerPool { hook locker mevModule startingTick lpFeeBps }
     trades(orderBy: "timestamp", orderDirection: "desc", limit: 5) {
       items { side valueUsd priceUsd trader timestamp txHash }
     }
@@ -83,6 +87,28 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
   }
   dailyStats(orderBy: "id", orderDirection: "desc", limit: 7) {
     items { id launches volumeUsd feesUsd feesAgentUsd feesCreatorUsd feesBurnUsd feesPlatformUsd }
+  }
+}`,
+  },
+  {
+    id: 'fees-by-source',
+    title: 'Fee totals per launch path',
+    about: '`sourceStats` has one row per launch path (`id` = `bootr` or `clanker`): coins, volume, the gross swap fees traders paid (`feesTotalUsd`), what accrued to each slot kind, and what was claimed. The REST helper `/platform/fees` returns both rows and their sum.',
+    query: `query FeesBySource {
+  sourceStatss(orderBy: "id", orderDirection: "asc") {
+    items {
+      id
+      tokens
+      volumeTotalUsd
+      feesTotalUsd
+      feesAgentUsd
+      feesCreatorUsd
+      feesBurnUsd
+      feesPlatformUsd
+      feesClaimedUsd
+      feesPlatformClaimedUsd
+      updatedAt
+    }
   }
 }`,
   },

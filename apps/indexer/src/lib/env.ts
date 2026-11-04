@@ -51,19 +51,45 @@ export const RWAGMI_V3: Record<number, RwagmiStack | null> = {
   84532: null,
 };
 
+/**
+ * Clanker v4 stack per chain (docs/design/clanker-launch.md section 1, re-verified on Base mainnet 2026-11-04):
+ * the factory, the static fee hook V2, the LP locker that converts and deposits rewards, and the fee locker that
+ * pays them out. `startBlock` is the earliest block any Clanker source may start at (the factory's creation,
+ * 2025-05); Clanker sources start at the Clanker launchers' deploy block, never before this. Base mainnet only.
+ */
+export type ClankerStack = { factory: Address; hook: Address; locker: Address; feeLocker: Address; startBlock: number };
+export const CLANKER_V4: Record<number, ClankerStack | null> = {
+  8453: {
+    // Clanker v4.0.0 (Basescan "Clanker v4.0.0", Sourcify match): `deprecated() == false` on 2026-11-04.
+    factory: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
+    // ClankerHookStaticFeeV2 (clanker docs, deployed contracts v4.1.0): `PROTOCOL_FEE_NUMERATOR() == 200000`.
+    hook: '0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC',
+    // ClankerLpLockerFeeConversion: `enabledLockers(locker, hook) == true` on the factory; the address the docs list
+    // (0x63D2DfEA…) is not enabled. `feeLocker()` on it returns the fee locker below.
+    locker: '0xffA37784D619F228D8B379d287a4D7282e500762',
+    // ClankerFeeLocker: `allowedDepositors(locker) == true`.
+    feeLocker: '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68',
+    startBlock: 30_000_000,
+  },
+  84532: null,
+};
+
 /** Deploy blocks of the Bootr launcher per chain (used when BOOTR_START_BLOCK is empty). */
 const BOOTR_DEPLOY_BLOCK: Record<number, number | null> = { 8453: null, 84532: 49_367_726 };
 
 /** One BootrLauncher deployment: checksummed address and the block it was created in. */
 export type LauncherEntry = { address: Address; startBlock: number };
 
+/** Which launch path a coin came through (`token.source`). */
+export type LaunchSource = 'bootr' | 'clanker';
+
 /**
- * Parses `BOOTR_LAUNCHERS`: comma-separated `address@startBlock` entries, e.g.
- * `0xD3CE…B1F3@53219209,0xNEW…@53500000`. Every entry needs a valid address and a non-negative integer block;
- * a malformed entry throws (a silently dropped launcher would silently drop its coins). Duplicate addresses are
- * merged, keeping the lowest start block. Returns `[]` for an empty value.
+ * Parses `BOOTR_LAUNCHERS` (or `BOOTR_CLANKER_LAUNCHERS`, `name`): comma-separated `address@startBlock` entries,
+ * e.g. `0xD3CE…B1F3@53219209,0xNEW…@53500000`. Every entry needs a valid address and a non-negative integer
+ * block; a malformed entry throws (a silently dropped launcher would silently drop its coins). Duplicate addresses
+ * are merged, keeping the lowest start block. Returns `[]` for an empty value.
  */
-export function parseLaunchers(raw: string | undefined): LauncherEntry[] {
+export function parseLaunchers(raw: string | undefined, name = 'BOOTR_LAUNCHERS'): LauncherEntry[] {
   const out: LauncherEntry[] = [];
   const entries = str(raw)
     .split(',')
@@ -72,11 +98,11 @@ export function parseLaunchers(raw: string | undefined): LauncherEntry[] {
   for (const entry of entries) {
     const [addr, block, ...rest] = entry.split('@').map((p) => p.trim());
     if (rest.length || !addr || block === undefined || !isAddress(addr) || !/^\d+$/.test(block)) {
-      throw new Error(`[indexer] BOOTR_LAUNCHERS entry "${entry}" is not <address>@<startBlock>`);
+      throw new Error(`[indexer] ${name} entry "${entry}" is not <address>@<startBlock>`);
     }
     const address = getAddress(addr);
     const startBlock = Number(block);
-    if (!Number.isSafeInteger(startBlock)) throw new Error(`[indexer] BOOTR_LAUNCHERS entry "${entry}": block out of range`);
+    if (!Number.isSafeInteger(startBlock)) throw new Error(`[indexer] ${name} entry "${entry}": block out of range`);
     const dup = out.find((l) => l.address === address);
     if (dup) dup.startBlock = Math.min(dup.startBlock, startBlock);
     else out.push({ address, startBlock });
@@ -111,11 +137,45 @@ export function resolveLaunchers(
   return { launchers: [{ address: launcher, startBlock: startBlock === 'latest' ? 0 : startBlock }], startBlock };
 }
 
+/**
+ * The Clanker launcher list (`BOOTR_CLANKER_LAUNCHERS=address@startBlock,...`, every BootrClankerLauncher ever
+ * used). Empty = the Clanker path is off. A launcher on the list cannot also be a Bootr launcher.
+ */
+export function resolveClankerLaunchers(
+  env: NodeJS.ProcessEnv,
+  bootr: readonly LauncherEntry[],
+): { clankerLaunchers: LauncherEntry[]; clankerStartBlock: number | 'latest' } {
+  const list = parseLaunchers(env.BOOTR_CLANKER_LAUNCHERS, 'BOOTR_CLANKER_LAUNCHERS');
+  const both = list.find((c) => bootr.some((b) => b.address === c.address));
+  if (both) throw new Error(`[indexer] ${both.address} is listed in both BOOTR_LAUNCHERS and BOOTR_CLANKER_LAUNCHERS`);
+  if (!list.length) return { clankerLaunchers: [], clankerStartBlock: 'latest' };
+  return { clankerLaunchers: list, clankerStartBlock: Math.min(...list.map((l) => l.startBlock)) };
+}
+
 /** True when `address` is one of the followed BootrLaunchers (case-insensitive). */
 export function isLauncher(env: Pick<IndexerEnv, 'launchers'>, address: string): boolean {
   const a = address.toLowerCase();
   return env.launchers.some((l) => l.address.toLowerCase() === a);
 }
+
+/** True when `address` is one of the followed BootrClankerLaunchers (case-insensitive). */
+export function isClankerLauncher(env: Pick<IndexerEnv, 'clankerLaunchers'>, address: string): boolean {
+  const a = address.toLowerCase();
+  return env.clankerLaunchers.some((l) => l.address.toLowerCase() === a);
+}
+
+/** The launch path of the launcher that emitted an event, by its address. */
+export function launchSourceOf(env: Pick<IndexerEnv, 'launchers' | 'clankerLaunchers'>, launcher: string): LaunchSource | null {
+  if (isLauncher(env, launcher)) return 'bootr';
+  if (isClankerLauncher(env, launcher)) return 'clanker';
+  return null;
+}
+
+const minBlock = (a: number | 'latest', b: number | 'latest'): number | 'latest' => {
+  if (a === 'latest') return b;
+  if (b === 'latest') return a;
+  return Math.min(a, b);
+};
 
 /** Seconds per block: Base mainnet 2 s, Base Sepolia 200 ms (measured 2026-10-24). */
 export const BLOCK_TIME_SEC: Record<number, number> = { 8453: 2, 84532: 0.2 };
@@ -136,13 +196,24 @@ export type IndexerEnv = {
    * removed from the list: its coins (and their swaps, fees, holders) stay indexed after it is paused.
    */
   launchers: LauncherEntry[];
+  /**
+   * Every BootrClankerLauncher followed (`BOOTR_CLANKER_LAUNCHERS`), the wrapper that launches through Clanker v4
+   * (docs/design/clanker-launch.md). Empty = the Clanker path is off; like `launchers`, never shortened.
+   */
+  clankerLaunchers: LauncherEntry[];
   guardian: Address | null;
   /** RWAGMI v3 launcher / hook / locker (env overrides the per-chain defaults); null when the chain has none. */
   rwagmi: RwagmiStack | null;
+  /** Clanker v4 factory / static hook / LP locker / fee locker (env overrides the defaults); null when none. */
+  clanker: ClankerStack | null;
   /** Start block of every Bootr source: the earliest launcher deploy block (`'latest'` when none is known). */
   startBlock: number | 'latest';
   /** Start block of the RWAGMI sources: the Bootr start block, never before the RWAGMI launcher's creation. */
   rwagmiStartBlock: number | 'latest';
+  /** Start block of the Clanker sources: the earliest Clanker launcher deploy block (`'latest'` = path off). */
+  clankerStartBlock: number | 'latest';
+  /** Start block of the sources shared by both paths (coins, PoolManager, guardian, reputation, snapshot). */
+  anyStartBlock: number | 'latest';
   ethUsdFeed: Address;
   snapshotInterval: number;
   bootToken: Address | null;
@@ -190,6 +261,8 @@ export function indexerEnv(): IndexerEnv {
   const rwagmi = rwagmiStack(chainId);
   // Env wins; otherwise the deployment recorded in @bootr/shared (null until deployed).
   const { launchers, startBlock } = resolveLaunchers(process.env, chainId, addresses.bootr.launcher);
+  const { clankerLaunchers, clankerStartBlock } = resolveClankerLaunchers(process.env, launchers);
+  const clanker = clankerStack(chainId);
   const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || defaultInterval);
   cached = {
     chainId,
@@ -199,10 +272,14 @@ export function indexerEnv(): IndexerEnv {
     maxRps,
     addresses,
     launchers,
+    clankerLaunchers,
     guardian: optAddress('BOOTR_GUARDIAN_ADDRESS') ?? addresses.bootr.guardian,
     rwagmi,
+    clanker,
     startBlock,
     rwagmiStartBlock: typeof startBlock === 'number' && rwagmi ? Math.max(startBlock, rwagmi.startBlock) : startBlock,
+    clankerStartBlock: typeof clankerStartBlock === 'number' && clanker ? Math.max(clankerStartBlock, clanker.startBlock) : clankerStartBlock,
+    anyStartBlock: minBlock(launchers.length && rwagmi ? startBlock : 'latest', clankerLaunchers.length && clanker ? clankerStartBlock : 'latest'),
     ethUsdFeed: optAddress('CHAINLINK_ETH_USD_FEED') ?? CHAINLINK_ETH_USD[chainId]!,
     snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : defaultInterval,
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
@@ -225,21 +302,38 @@ function rwagmiStack(chainId: number): RwagmiStack | null {
   return { launcher, hook, locker, startBlock: d?.startBlock ?? 0 };
 }
 
+/** CLANKER_{FACTORY,HOOK,LOCKER,FEE_LOCKER}_ADDRESS override the chain defaults; all four are needed. */
+function clankerStack(chainId: number): ClankerStack | null {
+  const d = CLANKER_V4[chainId] ?? null;
+  const factory = optAddress('CLANKER_FACTORY_ADDRESS') ?? d?.factory ?? null;
+  const hook = optAddress('CLANKER_HOOK_ADDRESS') ?? d?.hook ?? null;
+  const locker = optAddress('CLANKER_LOCKER_ADDRESS') ?? d?.locker ?? null;
+  const feeLocker = optAddress('CLANKER_FEE_LOCKER_ADDRESS') ?? d?.feeLocker ?? null;
+  if (!factory || !hook || !locker || !feeLocker) return null;
+  return { factory, hook, locker, feeLocker, startBlock: d?.startBlock ?? 0 };
+}
+
 /**
- * Which Ponder sources are registered (handlers check the same flags). Every launch-derived source needs both
- * the Bootr launcher and the RWAGMI v3 stack it launches through.
+ * Which Ponder sources are registered (handlers check the same flags). The Bootr path needs a Bootr launcher and
+ * the RWAGMI v3 stack it launches through; the Clanker path a Clanker launcher and the Clanker v4 stack. The
+ * sources both paths share (coins, PoolManager, guardian, reputation) run when either path is on.
  */
 export function enabledSources(env: IndexerEnv = indexerEnv()) {
   const launcher = env.launchers.length > 0 && !!env.rwagmi;
+  const clanker = env.clankerLaunchers.length > 0 && !!env.clanker;
+  const any = launcher || clanker;
   return {
     BootrLauncher: launcher,
-    BootrToken: launcher,
     BuybackBurner: launcher,
     RwagmiLauncherV3: launcher,
     RwagmiLpLockerV3: launcher,
     RwagmiHookV3: launcher,
-    PoolManager: launcher,
-    AgentGuardian: launcher && !!env.guardian,
-    ReputationRegistry: launcher && !!env.addresses.erc8004.reputationRegistry,
+    BootrClankerLauncher: clanker,
+    ClankerLpLocker: clanker,
+    ClankerFeeLocker: clanker,
+    BootrToken: any,
+    PoolManager: any,
+    AgentGuardian: any && !!env.guardian,
+    ReputationRegistry: any && !!env.addresses.erc8004.reputationRegistry,
   };
 }

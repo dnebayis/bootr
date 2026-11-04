@@ -6,17 +6,19 @@ import { and, client, desc, eq, graphql, gt, gte, ilike, inArray, or, sql } from
 import { isAddress, type Address } from 'viem';
 
 import { B20TokenAbi } from '../../abis/B20Token';
+import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
 import { Erc20Abi } from '../../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../../abis/Multicall3';
 import { RwagmiLpLockerV3Abi } from '../../abis/RwagmiLpLockerV3';
 import { corsMiddleware } from '../lib/cors';
 import { indexerEnv } from '../lib/env';
-import { RECIPIENT_KINDS, type RecipientKind } from '../lib/fees';
+import { DEAD_ADDRESS, RECIPIENT_KINDS, type LaunchSource, type RecipientKind } from '../lib/fees';
 import { verifyRequest } from '../lib/hmac';
 import { toUnits, usd } from '../lib/price';
 import { rpcClient } from '../lib/rpc';
 import { parseSocialPatch, socialStore, type AgentSocial } from '../lib/social-store';
 import { FEED_LIMIT, composePlatformFeed, feedNameRefs, feedWindow } from './platform-feed';
+import { composePlatformFees } from './platform-fees';
 import { publish, subscribe } from './stream';
 
 const env = indexerEnv();
@@ -118,12 +120,13 @@ app.get('/search', async (c) => {
   return c.json(j(await withAgent(rows)));
 });
 
-/** `{byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}` for one coin. */
+/** `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}` for one coin. */
 app.get('/token/:id/fees', async (c) => {
   const id = c.req.param('id');
   if (!isAddr(id)) return c.json({ error: 'invalid token address' }, 400);
   const token = lc(id) as Address;
-  const [acc, cl] = await Promise.all([
+  const [t, acc, cl] = await Promise.all([
+    findToken(token),
     db
       .select({ kind: schema.feeAccrual.recipientKind, usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)` })
       .from(schema.feeAccrual)
@@ -141,7 +144,17 @@ app.get('/token/:id/fees', async (c) => {
   >;
   for (const r of acc) if (r.kind in byKind) byKind[r.kind as RecipientKind].accruedUsd = usd(Number(r.usd));
   for (const r of cl) if (r.kind in byKind) byKind[r.kind as RecipientKind].claimedUsd = usd(Number(r.usd));
-  return c.json({ token, byKind });
+  return c.json({ token, source: t?.source ?? null, lpFeeBps: t?.lpFeeBps ?? null, protocolBps: t?.protocolBps ?? null, byKind });
+});
+
+/**
+ * Platform fee totals per launch path (`sourceStats`): `{total, bySource: {bootr, clanker}}`, each with `tokens`,
+ * `volumeTotalUsd`, `feesTotalUsd` (gross, what traders paid), `byKind` (accrued to agent / creator / burn /
+ * platform), `feesClaimedUsd`, `feesPlatformClaimedUsd`, `updatedAt`.
+ */
+app.get('/platform/fees', async (c) => {
+  const rows = await db.select().from(schema.sourceStats);
+  return c.json(j(composePlatformFees(rows)));
 });
 
 /** Compact market snapshot for the supervisor's `read_market`. Accepts a coin or kernel address. */
@@ -163,6 +176,7 @@ app.get('/market/:token', async (c) => {
       kernel: t.kernel,
       symbol: t.symbol,
       name: t.name,
+      source: t.source,
       poolId: t.poolId,
       priceUsd: t.priceUsd,
       priceWeth: t.priceWeth,
@@ -176,6 +190,7 @@ app.get('/market/:token', async (c) => {
       holders: t.holders,
       graduated: t.graduated,
       lpFeeBps: t.lpFeeBps,
+      protocolBps: t.protocolBps,
       ethPriceUsd: stats[0]?.ethPriceUsd ?? null,
       updatedAt: stats[0]?.updatedAt ?? null,
       trades: trades.map((r) => ({
@@ -201,6 +216,9 @@ app.get('/market/:token', async (c) => {
  * Fees are WETH only, so `claimable` has one WETH row per recipient (the coin-asset rows are gone).
  * Note: `settled` is per recipient across every RWAGMI pool it is paid from (creator / platform
  * balances aggregate all their coins).
+ * Clanker coins (`source: 'clanker'`): `settled = ClankerFeeLocker.availableFees(recipient, WETH)` (the burn
+ * slot: `availableFees(0x…dEaD, coin)`, in the coin), `pending` is 0 (fees still inside the LP position have no
+ * cheap view; they move to the fee locker on the next `collectRewards`).
  */
 app.get('/treasury/:kernel', async (c) => {
   const id = c.req.param('kernel');
@@ -219,14 +237,20 @@ app.get('/treasury/:kernel', async (c) => {
   const kernel = t.kernel as Address;
   const weth = env.addresses.weth;
   const coin = t.id as Address;
+  const launchSource: LaunchSource = t.source === 'clanker' ? 'clanker' : 'bootr';
   const recipients: { recipient: Address; recipientKind: RecipientKind }[] = [
     { recipient: kernel, recipientKind: 'agent' },
     { recipient: t.creator as Address, recipientKind: 'creator' },
     ...(t.burner ? [{ recipient: t.burner as Address, recipientKind: 'burn' as const }] : []),
     { recipient: t.platformRecipient as Address, recipientKind: 'platform' },
   ];
-  const locker = env.rwagmi?.locker ?? null;
+  // The locker to ask: the RWAGMI LP locker (pending + claimable) or the Clanker fee locker (available).
+  const locker = launchSource === 'bootr' ? (env.rwagmi?.locker ?? null) : null;
+  const feeLocker = launchSource === 'clanker' ? (env.clanker?.feeLocker ?? null) : null;
   const poolId = t.poolId as `0x${string}`;
+  /** Asset a recipient is paid in: WETH, except the Clanker burn slot, which receives the coin itself. */
+  const assetOf = (r: { recipient: Address; recipientKind: RecipientKind }): Address =>
+    launchSource === 'clanker' && r.recipientKind === 'burn' && lc(r.recipient) === DEAD_ADDRESS ? coin : weth;
 
   let balances = {
     usdc: a.treasuryUsdc,
@@ -259,6 +283,9 @@ app.get('/treasury/:kernel', async (c) => {
             { abi: RwagmiLpLockerV3Abi, address: locker, functionName: 'pendingQuote', args: [poolId, r.recipient] },
             { abi: RwagmiLpLockerV3Abi, address: locker, functionName: 'claimableQuote', args: [r.recipient, weth] },
           ])
+        : []),
+      ...(feeLocker
+        ? recipients.map((r) => ({ abi: ClankerFeeLockerAbi, address: feeLocker, functionName: 'availableFees', args: [r.recipient, assetOf(r)] }))
         : []),
       ...(spender ? [{ abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf', args: [spender] }] : []),
     ];
@@ -293,6 +320,22 @@ app.get('/treasury/:kernel', async (c) => {
         });
       }
     }
+    if (feeLocker) {
+      for (const r of recipients) {
+        const settled = val(i++) ?? 0n;
+        const asset = assetOf(r);
+        const isCoin = asset === coin;
+        claimable.push({
+          ...r,
+          asset,
+          symbol: isCoin ? t.symbol : 'WETH',
+          amount: settled,
+          amountUsd: usd(toUnits(settled, 18) * (isCoin ? t.priceUsd : ethUsd)),
+          pending: 0n,
+          settled,
+        });
+      }
+    }
     if (spender) spenderUsdc = val(i) ?? spenderUsdc;
   } catch (err) {
     console.warn(`[indexer] /treasury live read failed: ${(err as Error).message}`);
@@ -308,6 +351,8 @@ app.get('/treasury/:kernel', async (c) => {
       kernel,
       token: t.id,
       symbol: t.symbol,
+      source: launchSource,
+      lpFeeBps: t.lpFeeBps,
       agentId: a.agentId,
       status: a.status,
       paused: a.paused,
@@ -384,8 +429,8 @@ app.get('/fuel/:from', async (c) => {
  * 50 rows; the supervisor renders and truncates it. Launches come from `token`, wake/sleep changes from
  * `agent.statusChangedAt`, posts and first posts from the social store, claims from `feeClaim` (agent slot
  * only), milestones (first trade, holder counts, 24 h volume) from `milestone`, totals from `platformStats`
- * plus the sum of every coin's rolling 7-day volume. The body is composed in api/platform-feed.ts.
- * No prices or market caps.
+ * plus the sum of every coin's rolling 7-day volume. Launch items carry `source` (`bootr` | `clanker`) and the
+ * coin's `lpFeeBps`. The body is composed in api/platform-feed.ts. No prices or market caps.
  */
 app.get('/platform/feed', async (c) => {
   const { now, since } = feedWindow(Math.floor(Date.now() / 1000), c.req.query('since'));
@@ -401,6 +446,8 @@ app.get('/platform/feed', async (c) => {
         creator: schema.token.creator,
         launchedAt: schema.token.launchedAt,
         xHandle: schema.token.xHandle,
+        source: schema.token.source,
+        lpFeeBps: schema.token.lpFeeBps,
       })
       .from(schema.token)
       .where(gte(schema.token.launchedAt, since))

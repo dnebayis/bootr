@@ -7,7 +7,7 @@ import type { Address, Hex } from 'viem';
 
 import { ChainlinkAggregatorAbi } from '../../abis/ChainlinkAggregator';
 import { indexerEnv } from './env';
-import { classifyRecipient, type RecipientKind } from './fees';
+import { classifyRecipient, DEAD_ADDRESS as DEAD, type LaunchSource, type RecipientKind } from './fees';
 import { positionTicks } from './pool';
 import { chainlinkToUsd, coinPriceInWeth, liquidityUsd, toUnits, unitPrice, usd } from './price';
 import { deriveStatus, dormantSince } from './status';
@@ -20,7 +20,7 @@ export type AgentRow = typeof schema.agent.$inferSelect;
 
 export const GLOBAL = 'global';
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-export const DEAD_ADDRESS = '0x000000000000000000000000000000000000dead';
+export const DEAD_ADDRESS = DEAD;
 export const DEFAULT_GRADUATION_THRESHOLD_USD = 50_000;
 /** Re-read Chainlink at most every N blocks from event handlers (snapshot refreshes more often). */
 const ETH_USD_MAX_AGE_BLOCKS = 300n;
@@ -200,6 +200,54 @@ export function feeKindDelta(kind: RecipientKind, amountUsd: number): DailyDelta
   return d;
 }
 
+type SourceDelta = Partial<{
+  tokens: number;
+  volumeTotalUsd: number;
+  feesTotalUsd: number;
+  feesAgentUsd: number;
+  feesCreatorUsd: number;
+  feesBurnUsd: number;
+  feesPlatformUsd: number;
+  feesClaimedUsd: number;
+  feesPlatformClaimedUsd: number;
+}>;
+
+/** Per-launch-path totals (`sourceStats`), the same deltas as the platform / daily rollups but keyed by source. */
+export async function bumpSource(context: Ctx, source: LaunchSource, ts: number, d: SourceDelta) {
+  const add = (a: number, b: number | undefined) => usd(a + (b ?? 0));
+  await context.db
+    .insert(schema.sourceStats)
+    .values({
+      id: source,
+      tokens: d.tokens ?? 0,
+      volumeTotalUsd: add(0, d.volumeTotalUsd),
+      feesTotalUsd: add(0, d.feesTotalUsd),
+      feesAgentUsd: add(0, d.feesAgentUsd),
+      feesCreatorUsd: add(0, d.feesCreatorUsd),
+      feesBurnUsd: add(0, d.feesBurnUsd),
+      feesPlatformUsd: add(0, d.feesPlatformUsd),
+      feesClaimedUsd: add(0, d.feesClaimedUsd),
+      feesPlatformClaimedUsd: add(0, d.feesPlatformClaimedUsd),
+      updatedAt: ts,
+    })
+    .onConflictDoUpdate((r) => ({
+      tokens: r.tokens + (d.tokens ?? 0),
+      volumeTotalUsd: add(r.volumeTotalUsd, d.volumeTotalUsd),
+      feesTotalUsd: add(r.feesTotalUsd, d.feesTotalUsd),
+      feesAgentUsd: add(r.feesAgentUsd, d.feesAgentUsd),
+      feesCreatorUsd: add(r.feesCreatorUsd, d.feesCreatorUsd),
+      feesBurnUsd: add(r.feesBurnUsd, d.feesBurnUsd),
+      feesPlatformUsd: add(r.feesPlatformUsd, d.feesPlatformUsd),
+      feesClaimedUsd: add(r.feesClaimedUsd, d.feesClaimedUsd),
+      feesPlatformClaimedUsd: add(r.feesPlatformClaimedUsd, d.feesPlatformClaimedUsd),
+      updatedAt: Math.max(r.updatedAt, ts),
+    }));
+}
+
+/** `token.source` as the typed union (the column is text). */
+export const sourceOf = (t: Pick<TokenRow, 'source'>): LaunchSource => (t.source === 'clanker' ? 'clanker' : 'bootr');
+
+/** The kind of a fee recipient of this coin; the dead address is the burn slot on either path. */
 export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind | null {
   return classifyRecipient(recipient, {
     kernel: t.kernel,

@@ -2,9 +2,12 @@ import { createConfig, factory } from 'ponder';
 import { getAbiItem } from 'viem';
 
 import { AgentGuardianAbi } from './abis/AgentGuardian';
+import { BootrClankerLauncherAbi } from './abis/BootrClankerLauncher';
 import { BootrLauncherAbi } from './abis/BootrLauncher';
 import { BuybackBurnerAbi } from './abis/BuybackBurner';
 import { B20TokenAbi } from './abis/B20Token';
+import { ClankerFeeLockerAbi } from './abis/ClankerFeeLocker';
+import { ClankerLpLockerFeeConversionAbi } from './abis/ClankerLpLockerFeeConversion';
 import { PoolManagerAbi } from './abis/PoolManager';
 import { ReputationRegistryAbi } from './abis/ReputationRegistry';
 import { RwagmiHookV3Abi } from './abis/RwagmiHookV3';
@@ -15,40 +18,59 @@ import { enabledSources, indexerEnv } from './src/lib/env';
 /**
  * Single-chain config selected by CHAIN_ID (84532 Base Sepolia by default, 8453 Base).
  *
- * Coins launch through the RWAGMI v3 launcher (B20 tokens in Uniswap v4 pools, swap fee taken in WETH by the
- * RWAGMI hook, reward ledger in the RWAGMI LP locker; docs/rwagmi-migration.md). When no BootrLauncher is
- * configured (BOOTR_LAUNCHERS / BOOTR_LAUNCHER_ADDRESS empty), or the chain has no RWAGMI v3 stack (Base Sepolia),
- * every launcher-dependent source (launcher, coins, burners, RWAGMI launcher / locker / hook, PoolManager,
- * guardian, reputation) is skipped with a warning, and only the periodic snapshot block handler runs (ETH/USD +
- * platform rollups), so `ponder dev` still boots.
+ * Coins come from two launch paths (docs/design/clanker-launch.md):
+ *
+ * - Bootr path: `BootrLauncher` launches through the RWAGMI v3 launcher (B20 tokens in Uniswap v4 pools, swap fee
+ *   taken in WETH by the RWAGMI hook, reward ledger in the RWAGMI LP locker; docs/rwagmi-migration.md). Needs
+ *   `BOOTR_LAUNCHERS` (or `BOOTR_LAUNCHER_ADDRESS`) and the RWAGMI v3 stack (Base mainnet only).
+ * - Clanker path: `BootrClankerLauncher` launches through Clanker v4 (`BOOTR_CLANKER_LAUNCHERS=addr@block,...`,
+ *   empty = off). The wrapper emits the same `AgentLaunched` plus `ClankerLaunched` (pool id, hook, locker, fee);
+ *   rewards are collected by `ClankerLpLockerFeeConversion` (`ClaimedRewards`, per slot, after conversion) and
+ *   paid out by `ClankerFeeLocker` (`ClaimTokens`). Both lockers are single public contracts: Ponder's log filter
+ *   cannot take a dynamic token set, so the handlers drop events of coins that are not ours (as the Bootr path
+ *   does for the RWAGMI hook / locker).
+ *
+ * When neither path is configured every launch-derived source is skipped with a warning and only the periodic
+ * snapshot block handler runs (ETH/USD + platform rollups), so `ponder dev` still boots.
  *
  * RWAGMI is a public launcher: `B20LaunchCreatedV3` is filtered on `creator == BootrLauncher` (the launcher is the
  * RWAGMI caller), and the pool / fee / claim handlers drop everything that is not a Bootr pool or fee recipient.
  *
- * Several BootrLauncher deployments can be followed at once (`BOOTR_LAUNCHERS=addr@block,...`): the launcher
- * source and the two factories take the whole address list, the RWAGMI filter accepts any of them as `creator`, and
- * every Bootr source starts at the earliest deploy block. Handlers read `event.log.address` for the emitting
- * launcher. The address list is part of Ponder's build id, so adding a launcher means a new DATABASE_SCHEMA and a
- * backfill (served mostly from Ponder's RPC cache); see README "Adding a launcher".
+ * Several launcher deployments can be followed at once per path: the launcher sources and the coin factory take
+ * the whole address lists, the RWAGMI filter accepts any Bootr launcher as `creator`, and every source starts at
+ * the earliest deploy block of its path. Handlers read `event.log.address` for the emitting launcher. The address
+ * lists are part of Ponder's build id, so adding a launcher means a new DATABASE_SCHEMA and a backfill (served
+ * mostly from Ponder's RPC cache); see README "Adding a launcher".
  */
 const env = indexerEnv();
 const chain = env.chainName;
 const startBlock = env.startBlock;
 const rwagmiStartBlock = env.rwagmiStartBlock;
+const clankerStartBlock = env.clankerStartBlock;
+const anyStartBlock = env.anyStartBlock;
 
 const launcherAddresses = env.launchers.map((l) => l.address);
+const clankerLauncherAddresses = env.clankerLaunchers.map((l) => l.address);
 const hasLauncher = launcherAddresses.length > 0;
+const hasClankerLauncher = clankerLauncherAddresses.length > 0;
+const enabled = enabledSources(env);
 
-if (!hasLauncher) {
+if (!hasLauncher && !hasClankerLauncher) {
   console.warn(
-    '[indexer] no BootrLauncher configured (BOOTR_LAUNCHERS / BOOTR_LAUNCHER_ADDRESS empty): skipping BootrLauncher and every launch-derived source (coins, burners, fees, swaps, reputation).',
-  );
-} else if (!env.rwagmi) {
-  console.warn(
-    `[indexer] no RWAGMI v3 launch stack for chain ${env.chainId} (set RWAGMI_LAUNCHER_V3_ADDRESS, RWAGMI_HOOK_V3_ADDRESS, RWAGMI_LOCKER_V3_ADDRESS): skipping BootrLauncher and every launch-derived source.`,
+    '[indexer] no launcher configured (BOOTR_LAUNCHERS / BOOTR_LAUNCHER_ADDRESS / BOOTR_CLANKER_LAUNCHERS empty): skipping every launch-derived source (coins, burners, fees, swaps, reputation).',
   );
 }
-if (hasLauncher && env.rwagmi && !env.guardian) {
+if (hasLauncher && !env.rwagmi) {
+  console.warn(
+    `[indexer] no RWAGMI v3 launch stack for chain ${env.chainId} (set RWAGMI_LAUNCHER_V3_ADDRESS, RWAGMI_HOOK_V3_ADDRESS, RWAGMI_LOCKER_V3_ADDRESS): skipping BootrLauncher and the Bootr path.`,
+  );
+}
+if (hasClankerLauncher && !env.clanker) {
+  console.warn(
+    `[indexer] no Clanker v4 stack for chain ${env.chainId} (set CLANKER_FACTORY_ADDRESS, CLANKER_HOOK_ADDRESS, CLANKER_LOCKER_ADDRESS, CLANKER_FEE_LOCKER_ADDRESS): skipping BootrClankerLauncher and the Clanker path.`,
+  );
+}
+if ((enabled.BootrLauncher || enabled.BootrClankerLauncher) && !env.guardian) {
   console.warn('[indexer] BOOTR_GUARDIAN_ADDRESS is empty: skipping AgentGuardian (activity, pause, dormancy).');
 }
 if (hasLauncher && startBlock === 'latest') {
@@ -59,14 +81,21 @@ if (hasLauncher && startBlock === 'latest') {
 
 const agentLaunched = getAbiItem({ abi: BootrLauncherAbi, name: 'AgentLaunched' });
 const reputation = env.addresses.erc8004.reputationRegistry;
-if (hasLauncher && env.rwagmi && !reputation) {
+if ((enabled.BootrLauncher || enabled.BootrClankerLauncher) && !reputation) {
   console.warn(`[indexer] no ERC-8004 ReputationRegistry address for chain ${env.chainId}: skipping reputation.`);
 }
 
 // Placeholder used only to satisfy the static types of skipped sources; never sent to the RPC.
 const ZERO = '0x0000000000000000000000000000000000000000' as const;
-/** Every followed launcher (Ponder takes an address array per source and per factory). */
+/** Every followed Bootr launcher (Ponder takes an address array per source and per factory). */
 const launchers: readonly `0x${string}`[] = hasLauncher ? launcherAddresses : [ZERO];
+/** Every followed Clanker launcher. */
+const clankerLaunchers: readonly `0x${string}`[] = hasClankerLauncher ? clankerLauncherAddresses : [ZERO];
+/** Every launcher of either path: they emit the same `AgentLaunched`, which announces the coins. */
+const allLaunchers: readonly `0x${string}`[] = [
+  ...(enabled.BootrLauncher ? launcherAddresses : []),
+  ...(enabled.BootrClankerLauncher ? clankerLauncherAddresses : []),
+];
 
 /** Every source with its full type; the ones whose address is unknown are dropped below. */
 const allContracts = {
@@ -76,12 +105,21 @@ const allContracts = {
     address: launchers,
     startBlock,
   },
+  /** `AgentLaunched` (same ABI as BootrLauncher) and `ClankerLaunched` (pool id, hook, locker, MEV module, fee). */
+  BootrClankerLauncher: {
+    abi: BootrClankerLauncherAbi,
+    chain,
+    address: clankerLaunchers,
+    startBlock: clankerStartBlock,
+  },
+  /** Coins of both paths (`Transfer` for balances / holders); B20 and Clanker tokens share the ERC-20 surface. */
   BootrToken: {
     abi: B20TokenAbi,
     chain,
-    address: factory({ address: launchers, event: agentLaunched, parameter: 'token' }),
-    startBlock,
+    address: factory({ address: allLaunchers.length ? allLaunchers : [ZERO], event: agentLaunched, parameter: 'token' }),
+    startBlock: anyStartBlock,
   },
+  /** Bootr path only: the Clanker path's burn slot is the dead address, not a BuybackBurner clone. */
   BuybackBurner: {
     abi: BuybackBurnerAbi,
     chain,
@@ -110,27 +148,41 @@ const allContracts = {
     address: env.rwagmi?.hook ?? ZERO,
     startBlock: rwagmiStartBlock,
   },
+  /** `ClaimedRewards`: a Clanker coin's collected LP fees per reward slot, after fee-preference conversion. */
+  ClankerLpLocker: {
+    abi: ClankerLpLockerFeeConversionAbi,
+    chain,
+    address: env.clanker?.locker ?? ZERO,
+    startBlock: clankerStartBlock,
+  },
+  /** `ClaimTokens` / `ClaimTokensPermissioned`: a fee owner's stored balance of an asset is paid out. */
+  ClankerFeeLocker: {
+    abi: ClankerFeeLockerAbi,
+    chain,
+    address: env.clanker?.feeLocker ?? ZERO,
+    startBlock: clankerStartBlock,
+  },
+  /** Every v4 swap; the handler keeps the pool ids of both paths' coins. */
   PoolManager: {
     abi: PoolManagerAbi,
     chain,
     address: env.addresses.uniswap.poolManager,
-    startBlock: rwagmiStartBlock,
+    startBlock: anyStartBlock,
   },
   AgentGuardian: {
     abi: AgentGuardianAbi,
     chain,
     address: env.guardian ?? ZERO,
-    startBlock,
+    startBlock: anyStartBlock,
   },
   ReputationRegistry: {
     abi: ReputationRegistryAbi,
     chain,
     address: reputation ?? ZERO,
-    startBlock,
+    startBlock: anyStartBlock,
   },
 } as const;
 
-const enabled = enabledSources(env);
 const contracts = Object.fromEntries(
   Object.entries(allContracts).filter(([name]) => enabled[name as keyof typeof enabled]),
 ) as unknown as typeof allContracts;
@@ -149,7 +201,8 @@ export default createConfig({
   blocks: {
     BootrSnapshot: {
       chain,
-      startBlock,
+      // The earliest known launcher block of either path (as before: a known Bootr block even when its path is off).
+      startBlock: startBlock === 'latest' ? clankerStartBlock : clankerStartBlock === 'latest' ? startBlock : Math.min(startBlock, clankerStartBlock),
       interval: env.snapshotInterval,
     },
   },

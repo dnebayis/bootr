@@ -39,9 +39,16 @@ web shows agents without an X handle.
 queries ("PGlite is closed", exit code 75). Restart it after editing, or run `ponder start` for long
 backfills. `INDEXER_MAX_RPS` (default 50) caps the JSON-RPC rate across all configured urls.
 
-Coins launch through the RWAGMI v3 launcher (B20 Asset tokens in Uniswap v4 pools; see
-[`docs/rwagmi-migration.md`](../../docs/rwagmi-migration.md)), which exists on **Base mainnet only**.
-Without `BOOTR_LAUNCHER_ADDRESS`, or on a chain without the RWAGMI v3 stack (Base Sepolia), the
+Coins come through two launch paths, both on **Base mainnet only** (`token.source`):
+
+* **bootr**: `BootrLauncher` launches through the RWAGMI v3 launcher (B20 Asset tokens in Uniswap v4 pools; see
+  [`docs/rwagmi-migration.md`](../../docs/rwagmi-migration.md)). Needs `BOOTR_LAUNCHERS` and the RWAGMI stack.
+* **clanker**: `BootrClankerLauncher` launches through Clanker v4 (see
+  [`docs/design/clanker-launch.md`](../../docs/design/clanker-launch.md)). Needs `BOOTR_CLANKER_LAUNCHERS`; empty =
+  the path is off. The wrapper emits the same `AgentLaunched` plus `ClankerLaunched`; fees are collected by Clanker's
+  LP locker and paid by its fee locker (addresses in `CLANKER_V4`, `src/lib/env.ts`, verified on chain 2026-11-04).
+
+Without any launcher, or on a chain without the launch stacks (Base Sepolia), the
 indexer boots with a warning and only runs the snapshot block handler (ETH/USD, empty platform
 rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0x01f290cC464Ac6D167588b35A08305F58683526f`
 (`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53433988 = `BOOTR_START_BLOCK`) and the guardian
@@ -61,6 +68,8 @@ Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deplo
 | `BOOTR_GUARDIAN_ADDRESS` | for indexing | Overrides the address book. Empty = AgentGuardian skipped (no activity/pause/dormancy). |
 | `BOOTR_START_BLOCK` | for indexing (single launcher) | Deploy block of `BOOTR_LAUNCHER_ADDRESS` (mainnet: `53219209`; `LAUNCHER_START_BLOCK`, the supervisor's name, is accepted when this is empty). Ignored with `BOOTR_LAUNCHERS`. Empty = `latest`. RWAGMI sources start at `max(start block, 52861401)` (the RWAGMI v3 launcher's creation block), which is `53219209` with the value above: only coins launched by BootrLauncher matter. |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` / `RWAGMI_HOOK_V3_ADDRESS` / `RWAGMI_LOCKER_V3_ADDRESS` | no | Override the RWAGMI v3 stack (defaults: the Base mainnet addresses in `src/lib/env.ts`; none on Base Sepolia). All three are needed. |
+| `BOOTR_CLANKER_LAUNCHERS` | for the Clanker path | Comma-separated `address@startBlock` list of every `BootrClankerLauncher` ever used (same format and rules as `BOOTR_LAUNCHERS`; an address cannot be on both lists). Empty = the Clanker path is off. Clanker sources start at the earliest listed block. Adding one = new `DATABASE_SCHEMA` + backfill, like a Bootr launcher. |
+| `CLANKER_FACTORY_ADDRESS` / `CLANKER_HOOK_ADDRESS` / `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` | no | Override the Clanker v4 stack (defaults in `CLANKER_V4`, `src/lib/env.ts`: factory `0xE85A59c6…83a9`, static fee hook V2 `0xb429d62f…28CC`, LP locker `0xffA37784…0762` (the enabled one, not the `0x63D2…` the docs list), fee locker `0xF3622742…5D68`; none on Base Sepolia). All four are needed. |
 | `INDEXER_DATABASE_URL` | prod | Postgres. Empty = PGlite in `.ponder/pglite`. (`DATABASE_URL` is deliberately not used, so other services' DB does not switch the indexer to Postgres.) |
 | `DATABASE_SCHEMA` | prod | Required by `ponder start` on Postgres. |
 | `INDEXER_SNAPSHOT_INTERVAL` | no | Blocks between snapshots. Default ~60 s (30 on Base, 300 on Base Sepolia). |
@@ -92,6 +101,12 @@ BOOTR_LAUNCHERS=0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x<new launc
 DATABASE_SCHEMA=bootr_v2   # bumped: see below
 ```
 
+The Clanker path has its own list, `BOOTR_CLANKER_LAUNCHERS`, with the same rules (keep every wrapper ever used;
+the `BootrClankerLauncher` source, the coin factory and the two Clanker locker sources follow it). Turning the path
+on, or adding a wrapper, is the same operation as below: the address lists and the schema (`token.source`,
+`clankerPool`, `sourceStats`) are part of the build id, so the first deploy with this version needs a new
+`DATABASE_SCHEMA` and a backfill even before any Clanker launcher is listed.
+
 **A new launcher needs a new `DATABASE_SCHEMA` and a backfill.** Ponder's build id is a hash of the resolved
 config (contract addresses included), the schema and the indexing code (`ponder/dist/esm/build/index.js`), and
 `ponder start` refuses a schema whose stored build id differs ("previously used by a different Ponder app"), so
@@ -109,9 +124,12 @@ first one).
 | --- | --- | --- |
 | `RwagmiLauncherV3` | `B20LaunchCreatedV3` (filtered: `creator == BootrLauncher`), `LaunchPoolCreatedV3` | Stage the launch (`rwagmiLaunch`: name, symbol, supply, primary pool) and its pool (`pool`: id, v4 key, hook fee mode / static fee, starting tick). Pools of launches not staged (non-Bootr) are dropped. Both precede `AgentLaunched` in the launch tx. |
 | `BootrLauncher` | `AgentLaunched` | Creates token/agent rows from the staged launch + pool. Reads the locked reward split from `RwagmiLpLockerV3.launchInfo(token).rewards` (`feeSlot`, `token.*Bps`). Replays the launch tx receipt for `LiquidityPlacedV3` (exact position range + liquidity), the dev buy (`PoolFeeTakenV3` + `Swap`), initial coin `Transfer`s and the USDC fuel transfer, since they precede `AgentLaunched`. Image / metadata from the `launch()` calldata, else the B20 `contractURI()`. |
-| `BootrToken` (factory: `AgentLaunched.token`) | `Transfer` | `balance` table, `token.holders` (non-zero balances, excluding 0x0 and 0x…dEaD). |
-| `BuybackBurner` (factory: `AgentLaunched.burner`) | `Swapped`, `Burned` | `burn` rows, `token.burnedTotal`, BOOT burn stats. |
-| `PoolManager` | `Swap` | All swaps are delivered; only pool ids in the `pool` table are kept. On Base mainnet this means fetching every v4 swap log (Ponder cannot filter on a dynamic pool-id set). |
+| `BootrClankerLauncher` | `ClankerLaunched`, `AgentLaunched` | Clanker path. `ClankerLaunched` stages `clankerPool` (pool id, hook, locker, MEV module, starting tick, the LP fee actually used). `AgentLaunched` reads the receipt for Clanker's `TokenCreated` (name, symbol, image, metadata, context, extensions supply) and the locker's `TokenRewardAdded` (pool key, reward slots, position range), falling back to the token's views and `tokenRewards(token)`; writes the `pool` row (dynamic-fee key), token / agent / `feeSlot` rows (`source: 'clanker'`, four slots summing to 10000, the burn slot's recipient `0x…dEaD`, `protocolBps` 2000 = Clanker's 20% on top), and replays the dev-buy swap, coin transfers and the USDC fuel. |
+| `BootrToken` (factory: `AgentLaunched.token` of both launcher lists) | `Transfer` | `balance` table, `token.holders` (non-zero balances, excluding 0x0 and 0x…dEaD). |
+| `BuybackBurner` (factory: `AgentLaunched.burner`, Bootr launchers only) | `Swapped`, `Burned` | `burn` rows, `token.burnedTotal`, BOOT burn stats. |
+| `PoolManager` | `Swap` | All swaps are delivered; only pool ids in the `pool` table are kept (RWAGMI and Clanker pools alike; a Clanker pool's id comes from `ClankerLaunched`). On Base mainnet this means fetching every v4 swap log (Ponder cannot filter on a dynamic pool-id set). `trade.feeUsd` uses the coin's own `lpFeeBps`: bootr `Swap.fee + lpFeeBps`, clanker `lpFee × 1.2`. |
+| `ClankerLpLocker` (`ClankerLpLockerFeeConversion`) | `ClaimedRewards` | A coin's collected LP fees per reward slot, after fee-preference conversion (WETH for agent / creator / platform, the coin for the burn slot): `feeAccrual` + `feeCredit`, `feeBalance.accrued = settled`, per-kind daily / per-source rollups. The locker is public: events of coins that are not ours are dropped (a dynamic token filter is not possible, as with the RWAGMI locker). |
+| `ClankerFeeLocker` | `ClaimTokens`, `ClaimTokensPermissioned` | A fee owner's whole stored balance of an asset is paid out: `feeClaim` split across its coins by `settled - claimed` (same `recordClaim` as the RWAGMI claims). The burn slot's claim of the coin (owner `0x…dEaD`) is also a `burn` row and `token.burnedTotal`. |
 | `RwagmiHookV3` | `PoolFeeTakenV3` | Gross swap fee (WETH) per swap: `token.feesTotalUsd`, `dailyStat.feesUsd`, `platformStats.feesTotalUsd`; plus one `feeAccrual` per Bootr reward slot (`gross × bps / 10000`) and its `feeBalance.accrued`. |
 | `RwagmiLpLockerV3` | `PoolFeesSettledV3`, `QuoteRewardsClaimedV3` | Settlement credits a slot's recipient (`feeCredit`, `feeBalance.settled`; RWAGMI's slot skipped). A claim pays a recipient's settled balance across all its coins: `feeClaim`, split across coins by `settled - claimed`. |
 | `AgentGuardian` | `Activity`, `AgentPaused`, `DormantClaimed`, `SessionKeyApproved`, `SessionKeyApprovalRevoked`, `SessionKeyUninstalled`, `SessionNonceInvalidated` | Agent status inputs, `dormantClaim`, `sessionKey`. |
@@ -136,18 +154,33 @@ only, so they sum to 90% of it. A slot's fee is pending in the locker until a po
 `pendingQuote(poolId, recipient) + claimableQuote(recipient, WETH)`. `feeAccrual` amounts are
 `gross × bps / 10000` per swap, which can differ from the locker's cumulative credit by a few wei.
 
-History (2026-10-29): the Clanker v4 launchers paid fees in WETH or in the coin itself (Clanker's fee
-preference). With RWAGMI `feeAccrual` / `feeClaim` / `feeBalance.asset` is always WETH, and `/treasury`'s
-`claimable` has one WETH row per recipient instead of a WETH and a coin row. Coins launched by the two
-earlier Clanker-backed launchers (`0xD4747d91…84EF`, `0x386CBE5D…e21d`) are not indexed by this version.
+### Fees (Clanker path)
+
+The LP fee is per token (`token.lpFeeBps` from `ClankerLaunched.lpFeeBps`; the platform's own coin may use 2%
+while everyone else uses 1%), and Clanker's static fee hook V2 charges 20% of it on top for Clanker
+(`PROTOCOL_FEE_NUMERATOR = 200000`, verified on chain): a trader pays `lpFeeBps × 1.2`, the four reward slots
+share 100% of the LP fee (`agentBps + creatorBps + burnBps + platformBps = 10000`, `protocolBps = 2000` means
+"on top", `protocolRecipient` null). No hook event names the gross fee, so the per-trade `feeUsd` is also the
+gross figure on token / daily / platform rows. The locker collects a coin's position fees
+(`collectRewards(token)`, anyone; the hook also collects on swaps), converts each slot's share (`Paired` →
+WETH for agent, creator and platform; `Clanker` → the coin for the burn slot, recipient `0x…dEaD`) and stores it
+in the fee locker (`ClaimedRewards`: `feeAccrual`, `feeCredit`, `feeBalance.settled`); `ClankerFeeLocker.claim
+(feeOwner, asset)` pays the owner's whole balance (`ClaimTokens`: `feeClaim`, burn rows for the dead address's
+coin claim). `/treasury/:kernel` reads `availableFees(recipient, WETH)` (the burn slot: `(0x…dEaD, coin)`) as
+`settled`; `pending` is 0 on this path. Per-source totals live in `sourceStats` (`GET /platform/fees`).
+
+History (2026-10-29): the Clanker-era launchers v1 / v1.1 (`0xD4747d91…84EF`, `0x386CBE5D…e21d`) paid fees in
+WETH or in the coin itself; their coins are not indexed by this version. The Clanker path above (2026-11-04) is
+the new `BootrClankerLauncher` wrapper, followed next to the Bootr path.
 
 Derived:
 * **Prices**: coin/WETH from `sqrtPriceX96`; USD via Chainlink ETH/USD (Base Sepolia feed
   `0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1`, verified `description() = "ETH / USD"`).
   `marketCapUsd = priceUsd × totalSupply`; `liquidityUsd` from the locked launch position's
   liquidity (`LiquidityPlacedV3`) evaluated over the launch position range.
-* **Trade fee**: `trade.feeUsd = valueUsd × (Swap.fee + lpFeeBps) / 1e6` (feeds `fees24hUsd`); exact
-  WETH fees come from `PoolFeeTakenV3`.
+* **Trade fee**: bootr `trade.feeUsd = valueUsd × (Swap.fee + lpFeeBps) / 1e6` (exact WETH fees come from
+  `PoolFeeTakenV3`); clanker `valueUsd × lpFee × 1.2 / 1e6` (`Swap.fee` is the LP fee the hook set, the stored
+  `lpFeeBps` when 0). Feeds `fees24hUsd`. `lpFeeBps` is the coin's own value, never a platform-wide 1%.
 * **Rolling windows**: hourly buckets (`tokenWindow`) → `volume24hUsd`, `volume7dUsd`,
   `fees24hUsd`, `change24hPct`.
 * **Status** (`src/lib/status.ts`): claimed > dormant > paused > sleeping (kernel + spender USDC < 1) > awake
@@ -163,18 +196,21 @@ Derived:
 
 ## Consumers
 
-* **Web** (`apps/web/lib/indexer.ts`): GraphQL at `/graphql` (`tokens`, `token { agent }`,
-  `trades`, `agents { tokenRef }`, `dailyStats`, `platformStats(id: "global")`), REST `/search`,
-  `/token/:id/fees`, `/holdings/:owner`, `/fuel/:from`, and SSE `/stream` hints
+* **Web** (`apps/web/lib/indexer.ts`): GraphQL at `/graphql` (`tokens`, `token { agent clankerPool }`,
+  `trades`, `agents { tokenRef }`, `dailyStats`, `platformStats(id: "global")`, `sourceStats(id)`), REST `/search`,
+  `/token/:id/fees` (with `source`, `lpFeeBps`, `protocolBps`), `/platform/fees` (totals per launch path),
+  `/holdings/:owner`, `/fuel/:from`, and SSE `/stream` hints
   (`{type: 'launch'|'trade'|'agent', tokenId}`; clients re-fetch).
-* **Supervisor**: `GET /market/:token` (coin or kernel address), `GET /platform/feed?since=<unix>`
-  (the platform agent's "Bootr today" digest: launches, agent status changes, posts and agent fee
-  claims since `since`, clamped to 7 days, newest first, 50 rows per list, plus `totals` from
-  `platformStats` and the summed 7-day volume), `GET /treasury/:kernel` (live
-  kernel balances, `spender` + `spenderUsdc`, and `claimable`: one WETH row per recipient (agent,
-  creator, burn, platform) with `amount = pending + settled` from the RWAGMI v3 LP locker
+* **Supervisor**: `GET /market/:token` (coin or kernel address; carries `source`, `lpFeeBps`, `protocolBps`),
+  `GET /platform/feed?since=<unix>`
+  (the platform agent's "Bootr today" digest: launches (each with `source` and `lpFeeBps`), agent status changes,
+  posts and agent fee claims since `since`, clamped to 7 days, newest first, 50 rows per list, plus `totals` from
+  `platformStats` and the summed 7-day volume), `GET /treasury/:kernel` (`source`, `lpFeeBps`, live
+  kernel balances, `spender` + `spenderUsdc`, and `claimable`: one row per recipient (agent,
+  creator, burn, platform) with `amount = pending + settled`: bootr WETH from the RWAGMI v3 LP locker
   (`pendingQuote(poolId, recipient)` + `claimableQuote(recipient, WETH)`; `settled` aggregates all
-  the recipient's coins)), and
+  the recipient's coins); clanker `ClankerFeeLocker.availableFees(recipient, WETH)` (the burn slot in the coin),
+  `pending` 0), and
   `POST /internal/agent/:kernel/social` signed like the sender
   (`Authorization: HMAC <ts>:<hex(HMAC-SHA256(SENDER_SERVICE_KEY, ts\nPOST\npath\nsha256(body)))>`)
   with `{xHandle?, lastPostAt?, postsCount24h?, status?: 'awake'|'sleeping', spender?: hex|null}`
@@ -184,7 +220,10 @@ Derived:
 
 ```
 abis/            ABIs as `const` (Bootr from packages/contracts/out, RWAGMI v3 launcher / LP locker / hook from
-                 @rwagmi/token-launcher-sdk 0.3.0, B20 token, v4 PoolManager, Chainlink, ERC-8004)
+                 @rwagmi/token-launcher-sdk 0.3.0, B20 token, v4 PoolManager, Chainlink, ERC-8004; Clanker v4
+                 factory / LP locker / fee locker / token from clanker v4-contracts, event signatures verified
+                 against Base mainnet logs 2026-11-04; BootrClankerLauncher = BootrLauncher's launch / AgentLaunched
+                 + the wrapper's events until the contract is compiled)
 ponder.config.ts single-chain config, skips undeployed sources
 ponder.schema.ts tables + relations
 src/*.ts         indexing functions (launcher, market, fees, guardian, reputation, snapshot)
