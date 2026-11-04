@@ -60,6 +60,26 @@ export interface SenderRebind {
   handle: string | null;
 }
 
+/** `POST /internal/read/metrics` item: engagement of one of the agent's own posts (apps/sender/src/metrics.ts). */
+export interface SenderPostMetrics {
+  postId: string;
+  createdAt: string | null;
+  likes: number;
+  replies: number;
+  reposts: number;
+  quotes: number;
+  bookmarks: number | null;
+  impressions: number | null;
+  nonPublic: { impressions: number | null; urlLinkClicks: number | null; userProfileClicks: number | null } | null;
+}
+
+export interface SenderMetrics {
+  items: SenderPostMetrics[];
+  /** Ids X did not return (deleted or invisible posts). */
+  missing: string[];
+  nonPublic: boolean;
+}
+
 /** agent-core `replyEligibility` outcome for a mention, as the sender expects it. */
 export interface ReplyEligibility {
   eligible: boolean;
@@ -151,6 +171,11 @@ export class SenderClient {
 
   readThread(agentId: string, postId: string) {
     return this.call<{ posts: XPost[]; truncated: boolean }>('POST', '/internal/read/thread', { agentId, postId });
+  }
+
+  /** Engagement counts of the agent's own posts (1 to 20 ids), read with the agent's token. */
+  readMetrics(agentId: string, postIds: string[]) {
+    return this.call<SenderMetrics>('POST', '/internal/read/metrics', { agentId, postIds });
   }
 
   readAccount(agentId: string, username: string) {

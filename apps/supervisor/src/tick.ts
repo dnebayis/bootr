@@ -12,6 +12,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
+import { sweepPostMetrics } from './post-performance.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import type { SenderInboxItem } from './sender-client.js';
@@ -43,6 +44,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await backfillBuilderCodes(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'builder code backfill failed');
+  }
+  // Engagement of posts that went out a day ago, a few agents per tick (post-performance.ts).
+  try {
+    await sweepPostMetrics(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'post metrics sweep failed');
   }
 
   const due = await ctx.db

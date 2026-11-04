@@ -17,7 +17,7 @@ import type { AdminSigner } from '../src/admin-signer.js';
 import type { KernelClient } from '../src/kernel.js';
 import { enableDigest } from '../src/session-key.js';
 import { MemoryStore } from '../src/memories.js';
-import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem } from '../src/sender-client.js';
+import { SenderError, type SenderAccount, type SenderClient, type SenderInboxItem, type SenderPostMetrics } from '../src/sender-client.js';
 import type { IndexerClient } from '../src/indexer-client.js';
 import { initialState } from '../src/runtime.js';
 import { spenderAccount } from '../src/spender.js';
@@ -246,11 +246,16 @@ export interface MockSender {
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
   optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
+  /** `readMetrics` answers from here (postId -> counts); ids not listed come back in `missing`. */
+  metrics: Record<string, Partial<SenderPostMetrics>>;
+  /** When set, `readMetrics` throws this. */
+  metricsError: Error | null;
+  metricsReads: string[][];
   client: SenderClient;
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -279,6 +284,22 @@ export function mockSender(): MockSender {
     },
     async readAccount() {
       return { user: {} };
+    },
+    /** Mirrors apps/sender/src/metrics.ts: one read per call, unknown ids are `missing`. */
+    async readMetrics(_agentId: string, postIds: string[]) {
+      m.metricsReads.push(postIds);
+      if (m.metricsError) throw m.metricsError;
+      const items: SenderPostMetrics[] = [];
+      const missing: string[] = [];
+      for (const id of postIds) {
+        const c = m.metrics[id];
+        if (!c) {
+          missing.push(id);
+          continue;
+        }
+        items.push({ postId: id, createdAt: null, likes: 0, replies: 0, reposts: 0, quotes: 0, bookmarks: null, impressions: null, nonPublic: null, ...c });
+      }
+      return { items, missing, nonPublic: true };
     },
     async resolve() {
       return {};

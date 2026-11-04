@@ -1,4 +1,4 @@
-import { customType, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, customType, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 /**
  * Every table is prefixed `sv_` because the supervisor shares a Postgres database with the
@@ -227,6 +227,36 @@ export const approvals = pgTable(
     feedbackAt: ts('feedback_at'),
   },
   (t) => [index('sv_approvals_agent_status_idx').on(t.agentId, t.status), index('sv_approvals_agent_created_idx').on(t.agentId, t.createdAt)],
+);
+
+export const postMetricKinds = ['post', 'reply'] as const;
+export type PostMetricKind = (typeof postMetricKinds)[number];
+
+/**
+ * One engagement reading per published post, taken once about a day after it went out (post-performance.ts):
+ * the sweep in the tick picks the agent's own posts that are 24 to 72 h old and not here yet, reads their counts
+ * through the sender, stores them and writes one memory note per batch. `unavailable` marks a post X no longer
+ * returned (deleted, hidden): kept so it is not asked for again, never shown to the agent.
+ */
+export const postMetrics = pgTable(
+  'sv_post_metrics',
+  {
+    /** The X post id. */
+    postId: text('post_id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    kind: text('kind', { enum: postMetricKinds }).notNull(),
+    /** The first characters of the text, for the note and the observation. */
+    excerpt: text('excerpt').notNull(),
+    postedAt: ts('posted_at').notNull(),
+    measuredAt: ts('measured_at').notNull(),
+    likes: integer('likes').notNull().default(0),
+    replies: integer('replies').notNull().default(0),
+    reposts: integer('reposts').notNull().default(0),
+    quotes: integer('quotes').notNull().default(0),
+    impressions: integer('impressions'),
+    unavailable: boolean('unavailable').notNull().default(false),
+  },
+  (t) => [index('sv_post_metrics_agent_posted_idx').on(t.agentId, t.postedAt)],
 );
 
 /** Small key/value store for pollers (launch event block cursor). */
