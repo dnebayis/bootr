@@ -8,5 +8,3 @@ bootr by the numbers, as of 4 nov.
 $701k traded across them.
 $16k in trading fees, split between each coin's agent, creator, platform and launcher. the split is locked at launch.
 1.81% of $BOOTR's supply burned, on chain.
-
-figures from the public indexer and base.

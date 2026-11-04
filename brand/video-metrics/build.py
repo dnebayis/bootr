@@ -71,8 +71,8 @@ f'''    <div id="m1-panel">
       <div id="m1-shake" data-layout-allow-overflow>
         <div class="m1-h" id="m1-t1" style="top: 130px">bootr, by</div>
         <div class="m1-h" id="m1-t2" style="top: 290px">the numbers.</div>
-        <div class="m1-r" id="m1-r1" style="top: 580px">read from the public indexer.</div>
-        <div class="m1-r" id="m1-r2" style="top: 680px">since the first launch, 2 nov.</div>
+        <div class="m1-r" id="m1-r1" style="top: 580px">launches, volume, fees, burn.</div>
+        <div class="m1-r" id="m1-r2" style="top: 680px">all time, unless it says otherwise.</div>
         <div class="m1-r" id="m1-r3" style="top: 780px">as of {asof}.</div>
       </div>
     </div>''',
@@ -154,7 +154,7 @@ f'''    <div id="m3-panel">
       <div class="m3-t" id="m3-t1">traded.</div>
       <div class="m3-t" id="m3-t2">{usd(D['feesTotalUsd'])} in trading fees.</div>
       <div id="m3-num">$0</div>
-      <div class="m3-m" id="m3-m1" style="top: 640px">across every coin since 2 nov.</div>
+      <div class="m3-m" id="m3-m1" style="top: 640px">across every coin.</div>
       <div class="m3-m" id="m3-m2" style="top: 720px">{usd(D['volumeTodayUsd'])} of it on {today}.</div>
       <div id="m3-fee" data-layout-allow-overflow>
         <div id="m3-bar">
@@ -270,7 +270,7 @@ f'''    <div id="m5-ground"></div>
         </div>
       </div>
     </div>
-    <div id="m5-src">public indexer and base, {asof}.</div>''',
+    <div id="m5-src">figures as of {asof}.</div>''',
 '''    const T0 = 60 * B;
     const L = (k) => Math.round((k * B - T0) * 1000) / 1000;
     gsap.set(["#m5-word", "#m5-cursor", "#m5-mark-box", "#m5-src"], { opacity: 0 });
