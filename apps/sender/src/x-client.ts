@@ -41,6 +41,8 @@ export interface XTweet {
   };
   note_tweet?: { text: string; entities?: XTweet['entities'] };
   public_metrics?: Record<string, number>;
+  /** Only with the author's own user token (`GET /2/tweets?tweet.fields=non_public_metrics`). */
+  non_public_metrics?: Record<string, number>;
 }
 
 export interface XUser {
@@ -55,6 +57,17 @@ export interface XUser {
   public_metrics?: Record<string, number>;
 }
 
+/** A per-resource problem inside a 200 response (`errors[]`): a deleted post, a field the token may not read. */
+export interface XPartialError {
+  resource_id?: string;
+  resource_type?: string;
+  parameter?: string;
+  value?: string;
+  title?: string;
+  detail?: string;
+  type?: string;
+}
+
 export interface XListResponse {
   data?: XTweet[];
   includes?: { users?: XUser[]; tweets?: XTweet[] };
@@ -65,6 +78,11 @@ export interface XListResponse {
 export const TWEET_FIELDS =
   'author_id,conversation_id,created_at,entities,in_reply_to_user_id,referenced_tweets,note_tweet,public_metrics';
 export const USER_FIELDS = 'username,verified,verified_type';
+/** Engagement read of the agent's own posts: public counts plus the author-only ones (impressions, clicks). */
+export const METRIC_FIELDS = 'created_at,public_metrics';
+export const NON_PUBLIC_METRIC_FIELDS = 'non_public_metrics';
+/** `GET /2/tweets` takes at most 100 ids; the metrics read stays far below that. */
+export const MAX_POSTS_LOOKUP = 100;
 
 export interface XClientOptions {
   baseUrl?: string;
@@ -186,6 +204,26 @@ export class XClient {
         'tweet.fields': TWEET_FIELDS,
         expansions: 'author_id',
         'user.fields': USER_FIELDS,
+      },
+    });
+  }
+
+  /**
+   * Several posts at once (`GET /2/tweets?ids=`), at most MAX_POSTS_LOOKUP, with `created_at` and
+   * `public_metrics` and, when `nonPublic` is set, `non_public_metrics` (author-only; X refuses the
+   * field for posts the token's user did not write, so callers fall back to public fields). Deleted or
+   * invisible ids come back in `errors`, not in `data`.
+   */
+  getPosts(
+    token: string,
+    ids: readonly string[],
+    opts: { nonPublic?: boolean } = {},
+  ): Promise<XResult<{ data?: XTweet[]; errors?: XPartialError[] }>> {
+    return this.request(token, 'GET', '/2/tweets', {
+      rateKey: 'tweets',
+      query: {
+        ids: ids.slice(0, MAX_POSTS_LOOKUP).join(','),
+        'tweet.fields': opts.nonPublic ? `${METRIC_FIELDS},${NON_PUBLIC_METRIC_FIELDS}` : METRIC_FIELDS,
       },
     });
   }

@@ -22,6 +22,12 @@ describe('parseSocialPatch', () => {
     });
     expect(parseSocialPatch({ spender: null, postsCount24h: 0 })).toEqual({ spender: null, postsCount24h: 0 });
   });
+  it('accepts firstPostAt as unix seconds or null', () => {
+    expect(parseSocialPatch({ firstPostAt: 1_800_000_000 })).toEqual({ firstPostAt: 1_800_000_000 });
+    expect(parseSocialPatch({ firstPostAt: null })).toEqual({ firstPostAt: null });
+    expect(typeof parseSocialPatch({ firstPostAt: -1 })).toBe('string');
+    expect(typeof parseSocialPatch({ firstPostAt: 'yesterday' })).toBe('string');
+  });
   it('rejects a malformed spender', () => {
     for (const spender of ['0x1234', 'abcdef0123456789abcdef0123456789abcdef01', '0xzzcdef0123456789abcdef0123456789abcdef01', 42, '', {}])
       expect(typeof parseSocialPatch({ spender })).toBe('string');
@@ -51,6 +57,24 @@ describe('FileStore (PGlite dev mode)', () => {
       expect(raw[kernel]?.spender).toBe(spender);
       expect((await new FileStore(file).all()).get(kernel)).toMatchObject({ xHandle: 'agent', postsCount24h: 2, spender });
       expect((await store.upsert(kernel, { spender: null })).spender).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the earliest firstPostAt ever stored and reads old entries as firstPostAt: null', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'bootr-social-'));
+    try {
+      const file = path.join(dir, 'agent-social.json');
+      await writeFile(file, JSON.stringify({ [kernel]: { kernel, xHandle: 'agent', lastPostAt: 1_700_000_000, postsCount24h: 1, status: 'awake', updatedAt: 1 } }));
+      const store = new FileStore(file);
+      expect((await store.all()).get(kernel)?.firstPostAt).toBeNull();
+      expect((await store.upsert(kernel, { firstPostAt: 1_700_000_500, lastPostAt: 1_700_000_500 })).firstPostAt).toBe(1_700_000_500);
+      // a later value never replaces it; an earlier one does; null leaves it alone
+      expect((await store.upsert(kernel, { firstPostAt: 1_700_009_000 })).firstPostAt).toBe(1_700_000_500);
+      expect((await store.upsert(kernel, { firstPostAt: null, postsCount24h: 3 })).firstPostAt).toBe(1_700_000_500);
+      expect((await store.upsert(kernel, { firstPostAt: 1_600_000_000 })).firstPostAt).toBe(1_600_000_000);
+      expect((await new FileStore(file).all()).get(kernel)?.firstPostAt).toBe(1_600_000_000);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

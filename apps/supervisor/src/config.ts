@@ -87,8 +87,38 @@ export const configSchema = z
     INFERENCE_TIMEOUT_MS: int(150_000, 1000),
     INFERENCE_MAX_OUTPUT_TOKENS: int(1024, 16),
     INDEXER_URL: z.string().url(),
+    /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
+    SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),
     SUPERVISOR_TICK_MS: int(60_000, 1000),
     MAX_AGENTS_PER_TICK: int(10, 1),
+    /**
+     * Platform posting rhythm (rhythm.ts): at most this many original posts across every Bootr agent per 10-minute
+     * window. An agent whose post is due but finds the window full waits for a later tick; its slot is not lost.
+     */
+    PLATFORM_POST_SLOTS_PER_10M: int(3, 1),
+    /**
+     * Quiet hours in UTC as `HH-HH` (`02-06`: from 02:00 up to 06:00; `22-06` wraps midnight). Original posts wait
+     * until the window ends; replies still go out. Unset (the default) = no quiet hours.
+     */
+    PLATFORM_QUIET_HOURS_UTC: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z
+        .string()
+        .regex(/^([01]?\d|2[0-4])-([01]?\d|2[0-4])$/, 'expected quiet hours as HH-HH in UTC, e.g. 02-06')
+        .refine((v) => Number(v.split('-')[0]) % 24 !== Number(v.split('-')[1]) % 24, { message: 'quiet hours must not start and end at the same hour' })
+        .optional(),
+    ),
+    /**
+     * When the platform's own agent posts its "this week on Bootr" digest (weekly-digest.ts): `<day>:<hour>` in UTC,
+     * `sun:16` = Sunday 16:00 UTC (the default). Once per ISO week; held by quiet hours and slots like any post.
+     */
+    PLATFORM_DIGEST_AT: z.preprocess(
+      (v) => (v === '' || v === undefined ? 'sun:16' : v),
+      z
+        .string()
+        .regex(/^(mon|tue|wed|thu|fri|sat|sun):([01]?\d|2[0-3])$/i, 'expected the digest slot as <day>:<hour> in UTC, e.g. sun:16')
+        .transform((v) => v.toLowerCase()),
+    ),
     MAX_TOOL_STEPS: int(8, 1),
     SUPERVISOR_PORT: int(3004, 1),
     /** Claimable LP fees (USD) above which claim_fees runs automatically. */

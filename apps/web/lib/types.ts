@@ -195,10 +195,19 @@ export interface AgentConfig {
   requireApproval: boolean;
   /** Economy mode: the cheaper model a turn starts on for reading and deciding; null = the whole turn runs on `model`. */
   routing: { decideModel: string | null };
+  /** The image model in force for `generate_image` (one of `/api/models?kind=image`). */
+  imageModel: string;
+  /** How its pictures look: a public https reference picture (the coin's image by default) and the creator's notes. */
+  imageStyle: AgentImageStyle;
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
   updatedAt: string;
+}
+
+export interface AgentImageStyle {
+  reference: string | null;
+  notes: string;
 }
 
 /** What the creator may change from the coin page; only the fields present are applied. */
@@ -211,6 +220,9 @@ export interface AgentConfigChanges {
     jobLines?: string[];
   };
   requireApproval?: boolean;
+  imageModel?: string;
+  /** Partial: a missing field keeps its stored value; `reference: null` removes the picture. */
+  imageStyle?: Partial<AgentImageStyle>;
   routing?: { decideModel: string | null };
 }
 

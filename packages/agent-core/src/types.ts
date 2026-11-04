@@ -58,6 +58,20 @@ export type Routing = z.infer<typeof routingSchema>;
 export const DEFAULT_POST_INTERVAL_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_DORMANCY_PERIOD_MS = 90 * 24 * 60 * 60 * 1000;
 
+/** Free-text style notes the creator can attach to the agent's pictures ("flat colours, no text"). */
+export const MAX_IMAGE_STYLE_NOTES_CHARS = 200;
+
+/**
+ * How the agent's pictures should look: `reference` is a public https picture the image model sees next to every
+ * prompt and matches in style and palette (by default the coin's own image, read from the agent card at onboarding;
+ * null = none), `notes` are the creator's words on top.
+ */
+export const imageStyleSchema = z.object({
+  reference: httpsUrlSchema.nullable().default(null),
+  notes: z.string().trim().max(MAX_IMAGE_STYLE_NOTES_CHARS).default(''),
+});
+export type ImageStyle = z.infer<typeof imageStyleSchema>;
+
 export const agentConfigSchema = z
   .object({
     agentId: z.string().min(1).max(128),
@@ -76,6 +90,8 @@ export const agentConfigSchema = z
     imageModel: z.string().min(1).max(128).optional(),
     /** Economy mode (see `routingSchema`); absent = off. */
     routing: routingSchema.optional(),
+    /** Reference picture and notes every `generate_image` prompt carries; unset = no reference, no notes. */
+    imageStyle: imageStyleSchema.optional(),
     identityText: z.string().max(20000),
     /** True for the platform's own account (the launchpad's voice), false for a coin's agent. */
     platform: z.boolean().default(false),
@@ -223,6 +239,7 @@ export const toolInputSchemas = {
   read_url: z.object({ url: httpsUrlSchema, render: z.boolean().optional() }).strict(),
   search_web: z.object({ query: text(400) }).strict(),
   read_market: z.object({ tokenAddress: evmAddressSchema.optional(), pairId: z.string().max(80).optional() }).strict(),
+  read_coin: z.object({ symbolOrAddress: text(64) }).strict(),
   read_chain: z
     .object({
       method: z.enum(['balance', 'contract_call', 'transaction', 'block']),

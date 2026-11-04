@@ -4,13 +4,34 @@ import { z } from 'zod';
 /**
  * OpenAI-compatible chat-completions subset accepted by the relay. Unknown keys are stripped,
  * so the hash and the forwarded body only cover fields the relay understands and prices.
- * Text-only input: image/audio parts are rejected because they are not priced. Image OUTPUT is
- * priced: `modalities: ["image", "text"]` on an image model asks for one picture, which OpenRouter
- * returns as a base64 data URL in `choices[0].message.images[]`.
+ * Input is text, plus `image_url` parts (public https URLs, no data URLs) in user messages: each one is
+ * priced as `IMAGE_INPUT_TOKENS_PER_IMAGE` prompt tokens and only the image models take them
+ * (pricing.ts); audio parts are rejected because they are not priced. Image OUTPUT is priced:
+ * `modalities: ["image", "text"]` on an image model asks for one picture, which OpenRouter returns as a
+ * base64 data URL in `choices[0].message.images[]`.
  */
 
 const textPart = z.object({ type: z.literal('text'), text: z.string() });
 const content = z.union([z.string(), z.array(textPart).min(1)]);
+/** A picture the provider fetches itself (a reference image for an image model). */
+const imageUrlPart = z.object({
+  type: z.literal('image_url'),
+  image_url: z.object({
+    url: z
+      .string()
+      .max(2000)
+      .refine((v) => {
+        try {
+          const u = new URL(v);
+          return u.protocol === 'https:' && !u.username && !u.password;
+        } catch {
+          return false;
+        }
+      }, 'image_url.url must be a public https URL'),
+    detail: z.enum(['auto', 'low', 'high']).optional(),
+  }),
+});
+const userContent = z.union([z.string(), z.array(z.union([textPart, imageUrlPart])).min(1)]);
 
 const toolCall = z.object({
   id: z.string().min(1),
@@ -21,7 +42,7 @@ const toolCall = z.object({
 const message = z.discriminatedUnion('role', [
   z.object({ role: z.literal('system'), content, name: z.string().optional() }),
   z.object({ role: z.literal('developer'), content, name: z.string().optional() }),
-  z.object({ role: z.literal('user'), content, name: z.string().optional() }),
+  z.object({ role: z.literal('user'), content: userContent, name: z.string().optional() }),
   z.object({
     role: z.literal('assistant'),
     content: content.nullable().optional(),

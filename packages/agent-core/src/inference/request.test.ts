@@ -55,6 +55,11 @@ describe('maxQuoteFor', () => {
     expect(maxQuoteFor('openai/gpt-5.6-terra')).toBe(MAX_QUOTE_MICRO_USDC['gpt-5.6-terra']);
     expect(maxQuoteFor('google/gemini-3.5-flash-lite')).toBe(MAX_QUOTE_MICRO_USDC['gemini-3.5-flash-lite']);
     expect(maxQuoteFor('vendor/unknown-model')).toBe(MAX_QUOTE_MICRO_USDC.default);
+    // image models: their own caps, ahead of the text model sharing the prefix
+    expect(maxQuoteFor('google/gemini-3-pro-image')).toBe(250_000);
+    expect(maxQuoteFor('google/gemini-3.1-flash-image')).toBe(150_000);
+    expect(maxQuoteFor('openai/gpt-5.4-image-2')).toBe(250_000);
+    expect(maxQuoteFor('openai/gpt-5.4-image-2')).not.toBe(MAX_QUOTE_MICRO_USDC['gpt-5.4']);
   });
   it('uses the longest matching prefix and falls back to default', () => {
     expect(maxQuoteFor('gpt-5-mini-2026')).toBe(MAX_QUOTE_MICRO_USDC['gpt-5-mini']);

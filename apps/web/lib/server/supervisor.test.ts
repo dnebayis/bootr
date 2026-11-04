@@ -45,6 +45,22 @@ describe('validateChanges', () => {
     expect(validateChanges({ routing: 'deepseek' })).toMatchObject({ ok: false });
     expect(validateChanges({ routing: null })).toMatchObject({ ok: false });
   });
+
+  it('takes an image model id and a partial image style: an https reference or null, one line of notes', () => {
+    expect(validateChanges({ imageModel: 'google/gemini-3-pro-image' })).toEqual({ ok: true, changes: { imageModel: 'google/gemini-3-pro-image' } });
+    expect(validateChanges({ imageModel: 'not a model!' })).toMatchObject({ ok: false });
+    expect(validateChanges({ imageStyle: { reference: 'https://cdn.bootr.fun/coins/7.png', notes: '  flat\n colours,  no text ' } })).toEqual({
+      ok: true,
+      changes: { imageStyle: { reference: 'https://cdn.bootr.fun/coins/7.png', notes: 'flat colours, no text' } },
+    });
+    expect(validateChanges({ imageStyle: { reference: null } })).toEqual({ ok: true, changes: { imageStyle: { reference: null } } });
+    expect(validateChanges({ imageStyle: { notes: '' } })).toEqual({ ok: true, changes: { imageStyle: { notes: '' } } });
+    expect(validateChanges({ imageStyle: { reference: 'http://cdn.bootr.fun/coins/7.png' } })).toMatchObject({ ok: false, message: expect.stringContaining('https') });
+    expect(validateChanges({ imageStyle: { reference: 'ipfs://bafy' } })).toMatchObject({ ok: false });
+    expect(validateChanges({ imageStyle: { notes: 'x'.repeat(201) } })).toMatchObject({ ok: false });
+    expect(validateChanges({ imageStyle: {} })).toMatchObject({ ok: false, message: 'Nothing to change.' });
+    expect(validateChanges({ imageStyle: 'flat' })).toMatchObject({ ok: false });
+  });
 });
 
 describe('sanitizeConfig', () => {
@@ -70,6 +86,13 @@ describe('sanitizeConfig', () => {
     expect(sanitizeConfig({ ...minimal, routing: { decideModel: 'deepseek/deepseek-v3.2' } })!.routing).toEqual({ decideModel: 'deepseek/deepseek-v3.2' });
     expect(sanitizeConfig({ ...minimal, routing: { decideModel: 'bad id!' } })!.routing).toEqual({ decideModel: null });
     expect(sanitizeConfig({ ...minimal, routing: 'x' })!.routing).toEqual({ decideModel: null });
+    // image model and style: absent -> '' and no reference; a non-https reference is dropped
+    expect(cfg!.imageModel).toBe('');
+    expect(cfg!.imageStyle).toEqual({ reference: null, notes: '' });
+    const styled = sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 }, imageModel: 'google/gemini-3-pro-image', imageStyle: { reference: 'https://cdn.bootr.fun/coins/1.png', notes: 'flat colours' } })!;
+    expect(styled.imageModel).toBe('google/gemini-3-pro-image');
+    expect(styled.imageStyle).toEqual({ reference: 'https://cdn.bootr.fun/coins/1.png', notes: 'flat colours' });
+    expect(sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 }, imageStyle: { reference: 'javascript:alert(1)', notes: 7 } })!.imageStyle).toEqual({ reference: null, notes: '' });
   });
 
   it('returns null without a kernel, creator or worker', () => {

@@ -19,11 +19,14 @@ import {
 } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
+import { agentDirectory, bootrAgentOf, conversationGuard, markOf, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, treasuryOps } from '../db/schema.js';
+import { originalPostGate } from '../rhythm.js';
 import { SenderError, type SenderInboxItem, type ReplyEligibility } from '../sender-client.js';
 import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fundingBudget, minUsdcOut, opView, openOps, prepareOp, readTreasuryOnChain, recentOps, swapHelperAddress } from '../treasury.js';
 import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
+import { readCoin } from '../coin-reader.js';
 import { readUrl, searchWeb } from '../web-reader.js';
 import { generateImage, loadImage, mediaFor } from '../images.js';
 import { erc20Abi } from 'viem';
@@ -61,6 +64,8 @@ export interface InboxView {
   reason?: string;
   post: SenderInboxItem['post'];
   observedAt: string | number;
+  /** Set when the author is another Bootr agent (agent-directory.ts). */
+  bootrAgent?: BootrAgentMark;
 }
 
 /** Addresses the agent may name in public: its own token and its own treasury. */
@@ -68,18 +73,35 @@ export function publicAddressesOf(config: AgentConfig): string[] {
   return [config.token.address, config.kernel.address];
 }
 
-export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number): InboxView[] {
+/**
+ * Inbox items as the model sees them, with agent-core's reply eligibility. With a `directory`, messages from other
+ * Bootr agents are marked and their authors may be answered without a verified badge (the conversation caps in
+ * agent-directory.ts bound the exchange).
+ */
+export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number, directory?: AgentDirectory | null): InboxView[] {
+  const peers = directory ? directory.entries.filter((e) => e.agentId !== config.agentId && e.xUserId !== config.xUserId) : [];
+  const replyAuthorIds = peers.length ? [...new Set([...config.replyAuthorIds, ...peers.map((e) => e.xUserId)])] : config.replyAuthorIds;
   return items.map((item) => {
     const e = replyEligibility(item.post, {
       ownUserId: config.xUserId,
       ownHandle: config.xHandle,
-      replyAuthorIds: config.replyAuthorIds,
+      replyAuthorIds,
       blockedAuthorIds: config.blockedAuthorIds,
       seenAt: typeof item.seenAt === 'number' ? item.seenAt : item.seenAt ? Date.parse(item.seenAt) : null,
       deferredUntil: typeof item.deferredUntil === 'number' ? item.deferredUntil : item.deferredUntil ? Date.parse(item.deferredUntil) : null,
       now,
     });
-    return { postId: item.postId, authorId: item.authorId, conversationId: item.conversationId, eligible: e.eligible, ...(e.reason ? { reason: e.reason } : {}), post: item.post, observedAt: item.observedAt };
+    const peer = directory ? bootrAgentOf(directory, item.authorId, config.agentId) : null;
+    return {
+      postId: item.postId,
+      authorId: item.authorId,
+      conversationId: item.conversationId,
+      eligible: e.eligible,
+      ...(e.reason ? { reason: e.reason } : {}),
+      post: item.post,
+      observedAt: item.observedAt,
+      ...(peer ? { bootrAgent: markOf(peer) } : {}),
+    };
   });
 }
 
@@ -119,7 +141,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
     case 'read_mentions': {
       const res = await ctx.sender.readMentions(agentId);
       for (const item of res.items) env.inbox.set(item.postId, item);
-      const items = inboxViews(config, res.items, ctx.now());
+      const items = inboxViews(config, res.items, ctx.now(), await agentDirectory(ctx));
       recordEligibility(env, items);
       return { kind: 'completed', result: { throttled: res.throttled, nextReadAt: res.nextReadAt ?? null, items, instructionAuthority: false } };
     }
@@ -153,9 +175,12 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
     case 'publish_reply': {
       const media = await mediaForAction(ctx, agentId, action.input.imageId);
       if (media.error) return failed(media.error);
+      // Agent-to-agent cap: at most N answers to another Bootr agent in one thread (agent-directory.ts).
+      const capped = await conversationGuard(ctx, agent, config, pending, env);
+      if (capped) return capped;
       const item = env.inbox.get(action.input.postId);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
-      const eligibility: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now()).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
+      const eligibility: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
       const res = await ctx.sender.publish({
         agentId,
         actionId: pending.id,
@@ -169,11 +194,17 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         xUserId: config.xUserId,
         ...(config.platform ? { platform: true } : {}),
       });
-      return publishOutcome(res, item?.authorId);
+      return publishOutcome(res, item?.authorId, item?.conversationId);
     }
     case 'publish_post': {
       const media = await mediaForAction(ctx, agentId, action.input.imageId);
       if (media.error) return failed(media.error);
+      // Platform rhythm: quiet hours and the platform-wide slot window (rhythm.ts); this action's own row is not a used slot.
+      const gate = await originalPostGate(ctx, ctx.now(), { excludeActionId: pending.id });
+      if (!gate.open) return failed(gate.hold.message);
+      // Agent-to-agent cap: one new thread with another Bootr agent per day (agent-directory.ts).
+      const capped = await conversationGuard(ctx, agent, config, pending, env);
+      if (capped) return capped;
       const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(action.input.attributions ? { attributions: action.input.attributions } : {}), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
@@ -209,6 +240,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (!snapshot) return failed('market_unavailable');
       return { kind: 'completed', result: { token, snapshot, observedAt: new Date(ctx.now()).toISOString(), untrusted: true } };
     }
+    case 'read_coin':
+      return readCoin(ctx, action.input.symbolOrAddress);
     case 'read_chain':
       return readChain(ctx, action.input);
     case 'treasury_read': {
@@ -257,10 +290,11 @@ async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: 
   return { media: mediaFor(image) };
 }
 
-function publishOutcome(res: { status: string; providerPostId?: string | null; receipt: { error?: string | null; status: string } }, replyAuthorId?: string): ActionOutcome {
+function publishOutcome(res: { status: string; providerPostId?: string | null; receipt: { error?: string | null; status: string } }, replyAuthorId?: string, conversationId?: string): ActionOutcome {
   if (res.status === 'sent') {
     const postId = res.providerPostId ?? undefined;
-    return { kind: 'completed', result: { postId, ...(replyAuthorId ? { replyAuthorId } : {}) }, receipt: { ...(postId ? { postId } : {}) } };
+    // `replyAuthorId` + `conversationId` are what the agent-to-agent caps count (agent-directory.ts).
+    return { kind: 'completed', result: { postId, ...(replyAuthorId ? { replyAuthorId } : {}), ...(conversationId ? { conversationId } : {}) }, receipt: { ...(postId ? { postId } : {}) } };
   }
   if (res.status === 'rejected') return failed(`sender_rejected:${res.receipt.error ?? 'rejected'}`);
   // held or pending: maybe published; never resend. The runtime holds until the receipt settles.

@@ -1,6 +1,7 @@
 /**
  * Reads a launch's hosted agent card (`agentURI` of the `AgentLaunched` event): the creator's Identity text,
- * published as `bootr.identity`, and, for a custom worker, the preset published as `bootr.worker`
+ * published as `bootr.identity`, the coin picture (`image`, the agent's default image style reference) and, for a
+ * custom worker, the preset published as `bootr.worker`
  * (apps/web/lib/agent-card.ts, filled from the launch form via `POST /api/launch/draft`). See
  * docs/agent-identity.md.
  *
@@ -9,7 +10,7 @@
  * hand with the same check, body capped. The text itself is bounded and reduced to plain text by
  * `normalizeCreatorIdentity`; it only ever fills the identity slot of the system prompt, below OWNER RULES.
  */
-import { PolicyError, normalizeCreatorIdentity } from '@bootr/agent-core';
+import { httpsUrlSchema, PolicyError, normalizeCreatorIdentity } from '@bootr/agent-core';
 import { assertPublicHost } from './web-reader.js';
 
 const MAX_CARD_BYTES = 256 * 1024;
@@ -19,6 +20,14 @@ export interface AgentCardOptions {
   fetch?: typeof fetch;
   resolve?: (host: string) => Promise<{ address: string }[]>;
   timeoutMs?: number;
+}
+
+/** The card's `image` (the coin picture the web serves on a public https URL), the agents' default style reference; null otherwise. */
+export function coinImageFromCard(card: unknown): string | null {
+  if (!card || typeof card !== 'object') return null;
+  const image = (card as { image?: unknown }).image;
+  const parsed = httpsUrlSchema.safeParse(image);
+  return parsed.success ? parsed.data : null;
 }
 
 /** `bootr.identity` of a parsed agent card, normalized; '' when absent or not a string. */

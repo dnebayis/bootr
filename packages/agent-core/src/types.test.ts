@@ -12,6 +12,17 @@ describe('agentConfigSchema', () => {
     expect(config.ownerRules).toEqual([]);
     expect(config.revision).toBe(0);
   });
+  it('takes an optional image model and image style (https reference or none, notes up to 200 characters)', () => {
+    expect(parseAgentConfig(baseConfig).imageStyle).toBeUndefined();
+    const styled = parseAgentConfig({ ...baseConfig, imageModel: 'google/gemini-3-pro-image', imageStyle: { reference: 'https://cdn.example.com/coin.png', notes: '  flat colours, no text  ' } });
+    expect(styled.imageModel).toBe('google/gemini-3-pro-image');
+    expect(styled.imageStyle).toEqual({ reference: 'https://cdn.example.com/coin.png', notes: 'flat colours, no text' });
+    expect(parseAgentConfig({ ...baseConfig, imageStyle: {} }).imageStyle).toEqual({ reference: null, notes: '' });
+    expect(agentConfigSchema.safeParse({ ...baseConfig, imageStyle: { reference: 'http://cdn.example.com/coin.png' } }).success).toBe(false);
+    expect(agentConfigSchema.safeParse({ ...baseConfig, imageStyle: { reference: 'ipfs://bafy' } }).success).toBe(false);
+    expect(agentConfigSchema.safeParse({ ...baseConfig, imageStyle: { notes: 'x'.repeat(201) } }).success).toBe(false);
+  });
+
   it('rejects duplicate owner rule ids and bad handles', () => {
     expect(() =>
       parseAgentConfig({ ...baseConfig, ownerRules: [{ id: 'a', text: 'x', enabled: true }, { id: 'a', text: 'y', enabled: true }] }),

@@ -17,8 +17,25 @@ export type ModelsResponse = {
   models: ModelOption[];
 };
 
+/** An image generation model (`/api/models?kind=image`), priced per picture. */
+export type ImageModelOption = {
+  id: string;
+  label: string;
+  provider: string;
+  /** Estimated USDC cost of one picture (see IMAGE), null when the relay gave no price. */
+  pricePerImageUsd: number | null;
+};
+
+export type ImageModelsResponse = {
+  source: 'relay' | 'fallback';
+  image: typeof IMAGE;
+  models: ImageModelOption[];
+};
+
 /** Default model for new agents: cheap, fast, good at short tool-using turns. */
 export const RECOMMENDED_MODEL = 'anthropic/claude-haiku-4.5';
+/** The supervisor's default image model (apps/supervisor/src/images.ts): Nano Banana Pro. */
+export const DEFAULT_IMAGE_MODEL = 'google/gemini-3-pro-image';
 
 /**
  * One thought = one paid inference call by the supervisor. The prompt (identity, recent state,
@@ -27,14 +44,31 @@ export const RECOMMENDED_MODEL = 'anthropic/claude-haiku-4.5';
  */
 export const THOUGHT = { promptTokens: 4000, outputTokens: 1024 } as const;
 
+/**
+ * One picture = one `generate_image` call: a short prompt plus the reference picture (the relay allows 1600 prompt
+ * tokens per attached image), 256 text tokens next to the picture, and the picture's own output tokens
+ * (`imageOutputTokensPerImage`, what the relay quotes one image as).
+ */
+export const IMAGE = { promptTokens: 2000, outputTokens: 256 } as const;
+
 /** Relay pricing defaults (apps/inference/src/pricing.ts): 10% + 100 micro-USDC margin, 1000 micro-USDC floor. */
 export const RELAY_MARGIN = { bps: 1000, fixedMicroUsdc: 100, minQuoteMicroUsdc: 1000 } as const;
 
 export type RelayPrice = { inputMicroUsdcPerKTokens: number; outputMicroUsdcPerKTokens: number };
+export type RelayImagePrice = RelayPrice & { imageOutputMicroUsdcPerKTokens: number; imageOutputTokensPerImage: number };
 
 /** Mirrors the relay's quote: ceil(token cost) + ceil(cost * bps / 1e4) + fixed, floored at the minimum quote. */
 export function thoughtPriceUsd(p: RelayPrice, margin: { bps: number; fixedMicroUsdc: number; minQuoteMicroUsdc?: number } = RELAY_MARGIN): number {
   const cost = Math.ceil((p.inputMicroUsdcPerKTokens * THOUGHT.promptTokens + p.outputMicroUsdcPerKTokens * THOUGHT.outputTokens) / 1000);
+  const total = cost + Math.ceil((cost * margin.bps) / 10_000) + margin.fixedMicroUsdc;
+  return Math.max(total, margin.minQuoteMicroUsdc ?? RELAY_MARGIN.minQuoteMicroUsdc) / 1_000_000;
+}
+
+/** Mirrors the relay's quote for one picture: text tokens at the text rates, the image's tokens at the image rate, then the margin. */
+export function imagePriceUsd(p: RelayImagePrice, margin: { bps: number; fixedMicroUsdc: number; minQuoteMicroUsdc?: number } = RELAY_MARGIN): number {
+  const cost = Math.ceil(
+    (p.inputMicroUsdcPerKTokens * IMAGE.promptTokens + p.outputMicroUsdcPerKTokens * IMAGE.outputTokens + p.imageOutputMicroUsdcPerKTokens * p.imageOutputTokensPerImage) / 1000,
+  );
   const total = cost + Math.ceil((cost * margin.bps) / 10_000) + margin.fixedMicroUsdc;
   return Math.max(total, margin.minQuoteMicroUsdc ?? RELAY_MARGIN.minQuoteMicroUsdc) / 1_000_000;
 }
@@ -82,6 +116,12 @@ const LABELS: Record<string, string> = {
   'meta-llama/llama-4-maverick': 'Llama 4 Maverick',
   'mistralai/mistral-medium-3.1': 'Mistral Medium 3.1',
   'z-ai/glm-4.6': 'GLM 4.6',
+  // image models
+  'google/gemini-3-pro-image': 'Nano Banana Pro (Gemini 3 Pro Image)',
+  'google/gemini-3.1-flash-image': 'Nano Banana 2 (Gemini 3.1 Flash Image)',
+  'google/gemini-2.5-flash-image': 'Gemini 2.5 Flash Image',
+  'openai/gpt-5.4-image-2': 'GPT Image 2',
+  'openai/gpt-5-image-mini': 'GPT Image mini',
 };
 
 export function providerName(id: string): string {
@@ -117,6 +157,23 @@ export const FALLBACK_MODELS: ModelOption[] = Object.entries(FALLBACK_PRICES).ma
   pricePerThoughtUsd: thoughtPriceUsd(p),
 }));
 
+/**
+ * Built-in image models when the relay is unreachable or unset: the relay's default price table (OpenRouter list
+ * prices, 2026-11-04) run through `imagePriceUsd`; the relay is authoritative.
+ */
+const FALLBACK_IMAGE_PRICES: Record<string, RelayImagePrice> = {
+  'google/gemini-3-pro-image': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120_000, imageOutputTokensPerImage: 1120 },
+  'google/gemini-3.1-flash-image': { inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, imageOutputMicroUsdcPerKTokens: 60_000, imageOutputTokensPerImage: 1120 },
+  'openai/gpt-5.4-image-2': { inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, imageOutputMicroUsdcPerKTokens: 30_000, imageOutputTokensPerImage: 4160 },
+};
+
+export const FALLBACK_IMAGE_MODELS: ImageModelOption[] = Object.entries(FALLBACK_IMAGE_PRICES).map(([id, p]) => ({
+  id,
+  label: modelLabel(id),
+  provider: providerName(id),
+  pricePerImageUsd: imagePriceUsd(p),
+}));
+
 /** `anthropic/claude-haiku-4.5` and `claude-haiku-4-5` name the same model. */
 export function modelKey(id: string): string {
   return id.trim().toLowerCase().replace(/^[^/]+\//, '').replace(/\./g, '-');
@@ -132,19 +189,22 @@ export function filterAllowedModels<T extends { id: string }>(models: readonly T
   return models.filter((m) => full.has(m.id.toLowerCase()) || keys.has(modelKey(m.id)));
 }
 
-/** Picker groups in PROVIDERS order; unknown vendors last. Within a group: cheapest first. */
-export function groupByProvider(models: readonly ModelOption[]): { provider: string; models: ModelOption[] }[] {
+type Priced = { provider: string; label: string; pricePerThoughtUsd?: number | null; pricePerImageUsd?: number | null };
+
+/** Picker groups in PROVIDERS order; unknown vendors last. Within a group: cheapest first (per thought, or per image for image models). */
+export function groupByProvider<T extends Priced>(models: readonly T[]): { provider: string; models: T[] }[] {
   const order = (name: string) => {
     const i = PROVIDERS.findIndex((p) => p.name === name);
     return i === -1 ? PROVIDERS.length : i;
   };
-  const groups = new Map<string, ModelOption[]>();
+  const price = (m: T) => m.pricePerThoughtUsd ?? m.pricePerImageUsd ?? Infinity;
+  const groups = new Map<string, T[]>();
   for (const m of models) groups.set(m.provider, [...(groups.get(m.provider) ?? []), m]);
   return [...groups.entries()]
     .sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))
     .map(([provider, list]) => ({
       provider,
-      models: [...list].sort((a, b) => (a.pricePerThoughtUsd ?? Infinity) - (b.pricePerThoughtUsd ?? Infinity) || a.label.localeCompare(b.label)),
+      models: [...list].sort((a, b) => price(a) - price(b) || a.label.localeCompare(b.label)),
     }));
 }
 

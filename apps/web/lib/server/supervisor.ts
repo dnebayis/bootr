@@ -8,7 +8,7 @@
  */
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentFuel, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
+import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -112,6 +112,24 @@ export function sanitizeFuel(raw: unknown): AgentFuel {
   return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), byModel };
 }
 
+const HTTPS_RE = /^https:\/\/[^\s/?#]+[^\s]*$/i;
+
+/** A public https URL (no credentials), as the supervisor's `httpsUrlSchema` accepts it; null otherwise. */
+export function httpsUrl(v: unknown): string | null {
+  if (typeof v !== 'string' || v.length > 2000 || !HTTPS_RE.test(v)) return null;
+  try {
+    const u = new URL(v);
+    return u.protocol === 'https:' && !u.username && !u.password ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function imageStyle(raw: unknown): AgentImageStyle {
+  const s = (raw && typeof raw === 'object' ? raw : {}) as { reference?: unknown; notes?: unknown };
+  return { reference: httpsUrl(s.reference), notes: str(s.notes, IMAGE_NOTES_MAX) ?? '' };
+}
+
 /** The config as the coin page renders it; null when the body is not a config. */
 export function sanitizeConfig(raw: unknown): AgentConfig | null {
   const o = (raw ?? {}) as Record<string, unknown>;
@@ -131,6 +149,8 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     workerHash: (str(o.workerHash, 66) && HASH_RE.test(o.workerHash as string) ? (o.workerHash as Hex) : `0x${'0'.repeat(64)}`) as Hex,
     requireApproval: o.requireApproval === true,
     routing: { decideModel: decideModelOf(o.routing) },
+    imageModel: str(o.imageModel, 120) ?? '',
+    imageStyle: imageStyle(o.imageStyle),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -266,6 +286,8 @@ export async function decideAgentApproval(agentId: string, approvalId: string, b
 
 export const INSTRUCTIONS_MIN = 20;
 export const INSTRUCTIONS_MAX = 600;
+/** `MAX_IMAGE_STYLE_NOTES_CHARS` in packages/agent-core. */
+export const IMAGE_NOTES_MAX = 200;
 
 function cleanText(v: unknown): string | null {
   if (typeof v !== 'string') return null;
@@ -276,13 +298,34 @@ function cleanText(v: unknown): string | null {
 }
 
 /**
- * The `changes` a creator may send: instructions (20–600 plain chars), a model id, and worker fields inside
- * WORKER_BOUNDS. Unknown keys are dropped, always-on powers cannot be switched off. Returns the error to show.
+ * The `changes` a creator may send: instructions (20–600 plain chars), a model id, worker fields inside
+ * WORKER_BOUNDS, the post review switch, an image model id and the image style (an https reference or null, notes
+ * of at most IMAGE_NOTES_MAX plain characters). Unknown keys are dropped, always-on powers cannot be switched off.
+ * Returns the error to show.
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string } {
   if (!input || typeof input !== 'object') return { ok: false, message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; routing?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.imageModel !== undefined) {
+    if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, message: 'Pick an image model from the list.' };
+    changes.imageModel = o.imageModel;
+  }
+  if (o.imageStyle !== undefined) {
+    if (!o.imageStyle || typeof o.imageStyle !== 'object') return { ok: false, message: 'imageStyle must be an object' };
+    const s = o.imageStyle as { reference?: unknown; notes?: unknown };
+    const style: Partial<AgentImageStyle> = {};
+    if (s.reference !== undefined) {
+      if (s.reference !== null && httpsUrl(s.reference) === null) return { ok: false, message: 'The reference image must be an https URL, or empty for none.' };
+      style.reference = s.reference as string | null;
+    }
+    if (s.notes !== undefined) {
+      const notes = cleanText(s.notes)?.replace(/\s+/g, ' ');
+      if (notes == null || notes.length > IMAGE_NOTES_MAX) return { ok: false, message: `Style notes are plain text of at most ${IMAGE_NOTES_MAX} characters.` };
+      style.notes = notes;
+    }
+    if (Object.keys(style).length) changes.imageStyle = style;
+  }
   if (o.requireApproval !== undefined) {
     if (typeof o.requireApproval !== 'boolean') return { ok: false, message: 'requireApproval must be true or false' };
     changes.requireApproval = o.requireApproval;

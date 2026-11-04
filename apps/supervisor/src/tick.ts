@@ -4,16 +4,20 @@
  */
 import { randomUUID } from 'node:crypto';
 import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
-import { and, asc, eq, gt, inArray, ne } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { guardianAbi, kernelAbi } from './abi.js';
+import { agentDirectory } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
+import { sweepPostMetrics } from './post-performance.js';
+import { applyRhythm } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
+import { weeklyDigestWake } from './weekly-digest.js';
 import type { SenderInboxItem } from './sender-client.js';
 import { readTreasuryOnChain, reconcileOps, runFeePolicy } from './treasury.js';
 
@@ -43,6 +47,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await backfillBuilderCodes(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'builder code backfill failed');
+  }
+  // Engagement of posts that went out a day ago, a few agents per tick (post-performance.ts).
+  try {
+    await sweepPostMetrics(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'post metrics sweep failed');
   }
 
   const due = await ctx.db
@@ -158,8 +168,10 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
         log.warn({ err }, 'mention read failed');
       }
     }
-    const views = inboxViews(config, inbox, now);
-    const schedule = scheduleFor(config, state, now);
+    // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).
+    const directory = await agentDirectory(ctx);
+    const views = inboxViews(config, inbox, now, directory);
+    const schedule = await applyRhythm(ctx, scheduleFor(config, state, now), now);
     const pending = runtime.pending as unknown as PendingAction | null;
     const status: RuntimeStatus = runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : runtime.status === 'running' ? 'working' : 'waiting';
     const decision = wakeDecision({
@@ -170,12 +182,14 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       leaseUntil: null,
       inbox: views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
       replyRetryDue: false,
-      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: true } : null,
+      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose } : null,
       continuation: !!state.continuation || !!runtime.turn,
       configRevision: config.revision,
       lastDecision: runtime.lastDecisionAt ? { at: runtime.lastDecisionAt.getTime(), revision: runtime.lastDecisionRevision ?? -1 } : null,
       heldAction: pending?.status === 'held',
     });
+    // The platform agent's weekly digest (weekly-digest.ts) may wake it on its own; it folds itself into `decision`.
+    const digest = await weeklyDigestWake(ctx, agent, config, state, schedule, status, now, decision);
     if (runtime.configRevision !== config.revision) await saveRuntime(ctx, agent.agentId, { configRevision: config.revision });
     if (!decision.run) {
       await postSocial(ctx, agent, config, runtime, runtime.status === 'held' ? 'awake' : 'awake');
@@ -188,7 +202,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;
-      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market }, lease);
+      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest }, lease);
     } catch (err) {
       const failures = (runtime.failures ?? 0) + 1;
       const { interruptionPlan } = await import('@bootr/agent-core');
@@ -232,13 +246,26 @@ export async function postsLast24h(ctx: SupervisorContext, agentId: string): Pro
   return { count: posts.length, lastPostAt: last };
 }
 
+/** When the agent's first ever post or reply went out (ms), from the completed actions it still has; null when it never posted. */
+export async function firstPostAt(ctx: SupervisorContext, agentId: string): Promise<number | null> {
+  const [row] = await ctx.db
+    .select({ createdAt: actions.createdAt })
+    .from(actions)
+    .where(and(eq(actions.agentId, agentId), eq(actions.status, 'completed'), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`))
+    .orderBy(asc(actions.createdAt))
+    .limit(1);
+  return row ? row.createdAt.getTime() : null;
+}
+
 async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHandle: string }, runtime: RuntimeRow, status: 'awake' | 'sleeping' | 'paused'): Promise<void> {
   try {
-    const { count, lastPostAt } = await postsLast24h(ctx, agent.agentId);
+    const [{ count, lastPostAt }, first] = await Promise.all([postsLast24h(ctx, agent.agentId), firstPostAt(ctx, agent.agentId)]);
     const state = runtime.state as unknown as AgentState;
     await ctx.indexer.postSocial(agent.kernel, {
       xHandle: config.xHandle,
       lastPostAt: state.lastPostAt ? Math.floor(state.lastPostAt / 1000) : lastPostAt ? Math.floor(lastPostAt / 1000) : null,
+      // The indexer keeps the earliest value it ever saw, so pruned actions never move it later.
+      firstPostAt: first ? Math.floor(first / 1000) : null,
       postsCount24h: count,
       status: runtime.status === 'paused' ? 'paused' : runtime.status === 'sleeping' ? 'sleeping' : status,
       spender: agent.spender ?? null,

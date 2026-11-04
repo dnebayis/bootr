@@ -6,6 +6,7 @@
 import type { Address, Hex } from 'viem';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
+import { DEFAULT_IMAGE_MODEL } from './models';
 import type {
   Agent,
   AgentActivityItem,
@@ -532,8 +533,20 @@ export const mock = {
       cfg.routing = { decideModel: changes.routing.decideModel };
       fields.push('economy mode');
     }
+    if (changes.imageModel !== undefined && changes.imageModel !== cfg.imageModel) {
+      cfg.imageModel = changes.imageModel;
+      fields.push('image model');
+    }
+    if (changes.imageStyle) {
+      const next = { reference: changes.imageStyle.reference !== undefined ? changes.imageStyle.reference : cfg.imageStyle.reference, notes: changes.imageStyle.notes ?? cfg.imageStyle.notes };
+      if (next.reference !== cfg.imageStyle.reference || next.notes !== cfg.imageStyle.notes) {
+        cfg.imageStyle = next;
+        fields.push('image style');
+      }
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
-    if (fields.some((f) => f !== 'instructions' && f !== 'model' && f !== 'post review' && f !== 'economy mode') && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
+    const workerFields = ['capabilities', 'postIntervalMs', 'jobLines'];
+    if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
     cfg.revision += 1;
     cfg.updatedAt = new Date().toISOString();
     activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed ${fields.join(', ')} (revision ${cfg.revision}).` });
@@ -635,6 +648,9 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     workerHash: t.workerHash,
     requireApproval: true,
     routing: { decideModel: null },
+    imageModel: DEFAULT_IMAGE_MODEL,
+    // the supervisor reads the coin picture from the agent card at onboarding
+    imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
   };
@@ -653,6 +669,8 @@ function orphanConfig(kernel: Address): AgentConfig {
     workerHash: template.hash,
     requireApproval: false,
     routing: { decideModel: null },
+    imageModel: DEFAULT_IMAGE_MODEL,
+    imageStyle: { reference: null, notes: '' },
     revision: 0,
     updatedAt: new Date().toISOString(),
   };

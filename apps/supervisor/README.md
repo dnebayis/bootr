@@ -36,7 +36,7 @@ guardian owner key used only to approve session-key installs.
 | File | Role |
 | --- | --- |
 | `src/config.ts` | zod env schema (see below) |
-| `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_cursors` (migrations table `public.sv_migrations`) |
+| `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_approvals`, `sv_post_metrics`, `sv_cursors` (migrations table `public.sv_migrations`) |
 | `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent` (draft id from `BootrLauncher.LaunchContext` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
 | `src/session-key.ts` | policy set (BootrCallPolicy rules: the two RWAGMI locker claims with `to == kernel`, the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
 | `src/spender.ts` | per-agent x402 spender EOA derived from `SPENDER_MASTER_KEY` (signs the EIP-3009 payments; the kernel only funds it) |
@@ -54,6 +54,7 @@ guardian owner key used only to approve session-key installs.
 | `src/api.ts` | Hono admin API (HMAC), including the fleet-wide `panic-revoke` |
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
 | `src/memories.ts` | `remember` / `recall` keyword search |
+| `src/post-performance.ts` | engagement of the agent's own posts, read once 24 to 72 h after posting (sender `POST /internal/read/metrics`, at most 5 agents per tick); one memory note per batch (best and weakest post, no advice) and the `postPerformance` section of the first observation (last 7 days, capped at 600 chars) |
 | `src/sender-client.ts`, `src/indexer-client.ts`, `src/hmac.ts` | HMAC clients (same scheme as the sender) |
 
 ## Running
@@ -109,7 +110,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `INFERENCE_PROVIDER_URL`, `INFERENCE_PAYTO_ADDRESS` | yes | | apps/inference relay and its USDC recipient (the payer refuses any other payee) |
 | `INFERENCE_TIMEOUT_MS` | no | `150000` | |
 | `INFERENCE_MAX_OUTPUT_TOKENS` | no | `1024` | priced by the relay quote |
-| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) |
+| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/platform/feed`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) and GraphQL (`/graphql`, the `read_coin` tool) |
+| `SITE_URL` | no | `https://bootr.fun` | The public site; `read_coin` hands out `<SITE_URL>/token/<coin>` as the coin page |
 | `SUPERVISOR_TICK_MS` | no | `60000` | |
 | `MAX_AGENTS_PER_TICK` | no | `10` | |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { SiweMessage } from 'siwe';
 import { toast } from 'sonner';
@@ -10,8 +10,8 @@ import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS,
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { qk, useAgentConfig } from '@/lib/indexer';
-import { fetchModels } from '@/lib/launch';
-import { cheapestModel, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
+import { fetchImageModels, fetchModels } from '@/lib/launch';
+import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
 import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
@@ -19,8 +19,9 @@ import { useAgentFuel, useApprovalCount } from '@/lib/indexer';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Label, Select, Switch, Textarea } from '@/components/ui/Field';
+import { Input, Label, Select, Switch, Textarea } from '@/components/ui/Field';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { TokenImage } from '@/components/ui/TokenImage';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
 import { ApprovalQueue } from './ApprovalQueue';
@@ -29,12 +30,46 @@ import { GasForm } from './GasForm';
 
 const INSTRUCTIONS_MIN = 20;
 const INSTRUCTIONS_MAX = 600;
+/** `MAX_IMAGE_STYLE_NOTES_CHARS` in packages/agent-core. */
+const IMAGE_NOTES_MAX = 200;
 const POWERS = CAPABILITY_KEYS.filter((k) => !ALWAYS_ON_CAPABILITIES.includes(k));
 
-type Draft = { instructions: string; capabilities: Record<CapabilityKey, boolean>; postIntervalMs: number; model: string; requireApproval: boolean; decideModel: string | null };
+type Draft = {
+  instructions: string;
+  capabilities: Record<CapabilityKey, boolean>;
+  postIntervalMs: number;
+  model: string;
+  requireApproval: boolean;
+  imageModel: string;
+  /** The reference picture URL as typed ('' = none) and the style notes. */
+  imageReference: string;
+  imageNotes: string;
+  /** Economy mode: the deciding model, null when off. */
+  decideModel: string | null;
+};
 
 function draftOf(c: AgentConfig): Draft {
-  return { instructions: c.instructions, capabilities: { ...c.worker.capabilities }, postIntervalMs: c.worker.postIntervalMs, model: c.model, requireApproval: c.requireApproval, decideModel: c.routing.decideModel };
+  return {
+    instructions: c.instructions,
+    capabilities: { ...c.worker.capabilities },
+    postIntervalMs: c.worker.postIntervalMs,
+    model: c.model,
+    requireApproval: c.requireApproval,
+    imageModel: c.imageModel || DEFAULT_IMAGE_MODEL,
+    imageReference: c.imageStyle.reference ?? '',
+    imageNotes: c.imageStyle.notes,
+    decideModel: c.routing.decideModel,
+  };
+}
+
+/** A public https URL (what the supervisor accepts as a reference picture). */
+export function isHttpsUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return u.protocol === 'https:' && !u.username && !u.password;
+  } catch {
+    return false;
+  }
 }
 
 /** Only what differs from the stored config; null when nothing does. */
@@ -50,6 +85,13 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (Object.keys(worker).length) changes.worker = worker;
   if (d.requireApproval !== config.requireApproval) changes.requireApproval = d.requireApproval;
   if (d.decideModel !== config.routing.decideModel) changes.routing = { decideModel: d.decideModel };
+  if (d.imageModel !== (config.imageModel || DEFAULT_IMAGE_MODEL)) changes.imageModel = d.imageModel;
+  const style: NonNullable<AgentConfigChanges['imageStyle']> = {};
+  const reference = d.imageReference.trim() || null;
+  if (reference !== config.imageStyle.reference) style.reference = reference;
+  const notes = d.imageNotes.trim().replace(/\s+/g, ' ');
+  if (notes !== config.imageStyle.notes) style.notes = notes;
+  if (Object.keys(style).length) changes.imageStyle = style;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -71,9 +113,10 @@ function cadenceLabel(ms: number): string {
 }
 
 /**
- * The creator's panel on the coin page: the agent's instructions, powers, the post review switch, cadence and model
- * (from the supervisor via `/api/agent/:kernel/config`, saved with a wallet signature through `POST` on the same
- * route), the review queue (ApprovalQueue), then the existing Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
+ * The creator's panel on the coin page: the agent's instructions, powers (with the image model and image style under
+ * Images), the post review switch, cadence and model (from the supervisor via `/api/agent/:kernel/config`, saved with
+ * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), then the existing Fuel and
+ * Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
  */
 export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | null }) {
   const { address } = useConnection();
@@ -84,6 +127,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const fuel = useAgentFuel(token.kernel);
   const pendingReviews = approvals.data?.pending ?? 0;
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
+  const imageModels = useQuery({ queryKey: ['models', 'image'], queryFn: fetchImageModels, staleTime: 60_000 });
   const kernels = useMemo(() => [token.kernel as Address], [token.kernel]);
   const gas = useKernelGas(kernels);
   const kernelGas = gas.of(token.kernel as Address);
@@ -101,6 +145,11 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const changes = cfg && draft ? diffConfig(cfg, draft) : null;
   const instructionsLen = draft?.instructions.trim().length ?? 0;
   const instructionsOk = instructionsLen >= INSTRUCTIONS_MIN && instructionsLen <= INSTRUCTIONS_MAX;
+  const reference = draft?.imageReference.trim() ?? '';
+  const referenceOk = reference === '' || isHttpsUrl(reference);
+  const notesLen = draft?.imageNotes.trim().replace(/\s+/g, ' ').length ?? 0;
+  const notesOk = notesLen <= IMAGE_NOTES_MAX;
+  const styleOk = referenceOk && notesOk;
   const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
   const canSign = env.useMock || !!address;
 
@@ -119,13 +168,20 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
     const parts = rows.slice(0, 3).map((r) => `${r.thoughts} on ${modelLabel(r.model)} (${formatMicroUsdc(r.chargedMicroUsdc)})`);
     return `Last ${fuel.data!.days} days: ${total} thoughts, ${formatMicroUsdc(spent)}: ${parts.join(', ')}.`;
   }, [fuel.data]);
+  const imageModelGroups = useMemo(() => {
+    const list = imageModels.data?.models ?? [];
+    const current = draft?.imageModel;
+    const known = current && list.some((m) => m.id === current) ? list : current ? [...list, { id: current, label: modelLabel(current), provider: 'Current', pricePerImageUsd: null }] : list;
+    return groupByProvider(known);
+  }, [imageModels.data, draft?.imageModel]);
+  const imagePrice = imageModels.data?.models.find((m) => m.id === draft?.imageModel)?.pricePerImageUsd ?? null;
   const cadenceOptions = useMemo(() => {
     const ms = draft?.postIntervalMs;
     return ms && !CADENCE_OPTIONS.some((o) => o.ms === ms) ? [{ ms, label: cadenceLabel(ms) }, ...CADENCE_OPTIONS] : [...CADENCE_OPTIONS];
   }, [draft?.postIntervalMs]);
 
   const save = async () => {
-    if (!cfg || !changes || !instructionsOk) return;
+    if (!cfg || !changes || !instructionsOk || !styleOk) return;
     setSaving(true);
     try {
       let body: { message: string; signature: string; changes: AgentConfigChanges };
@@ -228,13 +284,70 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
               <legend className="mb-1.5 text-caption font-medium text-ink">Powers</legend>
               <ul className="divide-y divide-hairline rounded-sm border border-hairline">
                 {POWERS.map((k) => (
-                  <li key={k} className="flex items-center justify-between gap-3 px-3 py-2">
-                    <span className="min-w-0">
-                      <span className="block text-sm text-ink">{CAPABILITIES[k].label}</span>
-                      <span className="block text-micro text-mute">{CAPABILITIES[k].description}</span>
-                    </span>
-                    <Switch id={`power-${k}`} label={CAPABILITIES[k].label} checked={draft.capabilities[k]} onChange={(v) => update({ capabilities: { ...draft.capabilities, [k]: v } })} />
-                  </li>
+                  <Fragment key={k}>
+                    <li className="flex items-center justify-between gap-3 px-3 py-2">
+                      <span className="min-w-0">
+                        <span className="block text-sm text-ink">{CAPABILITIES[k].label}</span>
+                        <span className="block text-micro text-mute">{CAPABILITIES[k].description}</span>
+                      </span>
+                      <Switch id={`power-${k}`} label={CAPABILITIES[k].label} checked={draft.capabilities[k]} onChange={(v) => update({ capabilities: { ...draft.capabilities, [k]: v } })} />
+                    </li>
+                    {k === 'images' && draft.capabilities.images ? (
+                      <li className="flex flex-col gap-3 bg-canvas-soft px-3 py-3" data-testid="image-style">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <Label htmlFor="console-image-model" hint={imagePrice != null ? <span className="font-mono tabular">{formatThoughtPrice(imagePrice)} per image</span> : undefined}>
+                              Image model
+                            </Label>
+                            <Select id="console-image-model" value={draft.imageModel} onChange={(e) => update({ imageModel: e.target.value })}>
+                              {imageModelGroups.map((g) => (
+                                <optgroup key={g.provider} label={g.provider}>
+                                  {g.models.map((m) => (
+                                    <option key={m.id} value={m.id}>
+                                      {m.label}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </Select>
+                          </div>
+                          <div>
+                            <Label htmlFor="console-image-notes" hint={<span className={cn('font-mono tabular', !notesOk && 'text-danger')}>{notesLen}/{IMAGE_NOTES_MAX}</span>}>
+                              Style notes
+                            </Label>
+                            <Input
+                              id="console-image-notes"
+                              value={draft.imageNotes}
+                              onChange={(e) => update({ imageNotes: e.target.value })}
+                              maxLength={IMAGE_NOTES_MAX + 50}
+                              aria-invalid={!notesOk}
+                              placeholder="flat colours, no text"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <Label htmlFor="console-image-reference">Reference image</Label>
+                          <div className="flex items-center gap-3">
+                            <TokenImage src={referenceOk && reference ? reference : null} symbol={token.symbol} size={40} className="rounded-xs" />
+                            <Input
+                              id="console-image-reference"
+                              value={draft.imageReference}
+                              onChange={(e) => update({ imageReference: e.target.value })}
+                              aria-invalid={!referenceOk}
+                              inputMode="url"
+                              placeholder="https://… (empty: no reference)"
+                              className="min-w-0 flex-1"
+                            />
+                          </div>
+                          <p className={cn('mt-1.5 text-micro', referenceOk ? 'text-mute' : 'text-danger')}>
+                            {referenceOk
+                              ? 'Every picture matches this image’s style and palette without copying it. The coin’s own image by default; clear it for none.'
+                              : 'The reference must be an https URL.'}
+                          </p>
+                        </div>
+                      </li>
+                    ) : null}
+                  </Fragment>
                 ))}
               </ul>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -320,7 +433,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </div>
             <div className="flex flex-col gap-2">
               {canSign ? (
-                <Button type="submit" variant="ink" size="md" className="w-full" disabled={!changes || !instructionsOk} loading={saving} loadingLabel="Saving…">
+                <Button type="submit" variant="ink" size="md" className="w-full" disabled={!changes || !instructionsOk || !styleOk} loading={saving} loadingLabel="Saving…">
                   Save changes
                 </Button>
               ) : (

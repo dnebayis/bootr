@@ -300,6 +300,34 @@ describe('creator identity from the agent card', () => {
     }
   });
 
+  it('takes the coin picture from the card as the image style reference, at registration or on the retry', async () => {
+    const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n } });
+    try {
+      serveCard(world, () => cardJson({ type: 'registration', image: 'https://cdn.bootr.fun/coins/7.png', bootr: { identity: IDENTITY } }));
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.imageStyle).toEqual({ reference: 'https://cdn.bootr.fun/coins/7.png', notes: '' });
+    } finally {
+      await world.close();
+    }
+    const later = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n } });
+    try {
+      let status = 503;
+      serveCard(later, () => (status === 200 ? cardJson({ image: 'ipfs://bafy-not-https', bootr: { identity: IDENTITY } }) : cardJson({ error: 'down' }, status)));
+      expect(await pollLaunches(later.ctx)).toBe(1);
+      let agent = await later.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.imageStyle).toEqual({ reference: null, notes: '' });
+      status = 200;
+      await completeOnboarding(later.ctx);
+      agent = await later.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(agent!.config.creatorIdentity).toBe(IDENTITY);
+      // an ipfs:// image is no reference the image model can fetch: none is set
+      expect(agent!.config.imageStyle).toEqual({ reference: null, notes: '' });
+    } finally {
+      await later.close();
+    }
+  });
+
   it('keeps the default identity while the card is unreachable and applies the text on a later tick', async () => {
     const world = await makeWorld({ chain: { logs: [fakeLaunchLog(7n)], blockNumber: 50n } });
     try {

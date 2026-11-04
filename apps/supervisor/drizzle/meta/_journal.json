@@ -43,6 +43,13 @@
       "when": 1793749155217,
       "tag": "0005_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793791045384,
+      "tag": "0006_post_metrics",
+      "breakpoints": true
     }
   ]
 }

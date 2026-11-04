@@ -4,6 +4,7 @@ import {
   computeQuote,
   DEFAULT_PRICE_TABLE,
   estimateInputTokens,
+  IMAGE_INPUT_TOKENS_PER_IMAGE,
   loadPriceTable,
   marginMicroUsdc,
   microUsdcToDollarString,
@@ -285,6 +286,52 @@ describe('image generation pricing', () => {
     expect(q.quote.quoteMicroUsdc).toBeLessThan(50_000n);
     const mini = DEFAULT_PRICE_TABLE.models['openai/gpt-5-image-mini']!;
     expect(mini).toMatchObject({ inputMicroUsdcPerKTokens: 2500, outputMicroUsdcPerKTokens: 2000, imageOutputMicroUsdcPerKTokens: 8000, imageOutputTokensPerImage: 4160 });
+  });
+
+  it('prices the advanced image models: Nano Banana Pro, Nano Banana 2 and GPT Image 2 (OpenRouter, 2026-11-04)', () => {
+    const quoteOf = (model: string) => {
+      const q = computeQuote(DEFAULT_PRICE_TABLE, { ...req, model, modalities: ['image', 'text'] });
+      if (!q.ok) throw new Error(q.error.code);
+      return q.quote;
+    };
+    const pro = DEFAULT_PRICE_TABLE.models['google/gemini-3-pro-image']!;
+    expect(pro).toMatchObject({ inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120_000, imageOutputTokensPerImage: 1120 });
+    // one 1K picture is 1120 tokens at $120/M = $0.1344; with a few text tokens and the margin it stays under $0.16
+    expect(quoteOf('google/gemini-3-pro-image').imageOutputTokens).toBe(1120);
+    expect(quoteOf('google/gemini-3-pro-image').quoteMicroUsdc).toBeGreaterThan(134_400n);
+    expect(quoteOf('google/gemini-3-pro-image').quoteMicroUsdc).toBeLessThan(160_000n);
+
+    const flash = DEFAULT_PRICE_TABLE.models['google/gemini-3.1-flash-image']!;
+    expect(flash).toMatchObject({ inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, imageOutputMicroUsdcPerKTokens: 60_000, imageOutputTokensPerImage: 1120 });
+    expect(quoteOf('google/gemini-3.1-flash-image').quoteMicroUsdc).toBeGreaterThan(67_200n);
+    expect(quoteOf('google/gemini-3.1-flash-image').quoteMicroUsdc).toBeLessThan(80_000n);
+
+    const gpt = DEFAULT_PRICE_TABLE.models['openai/gpt-5.4-image-2']!;
+    expect(gpt).toMatchObject({ inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, imageOutputMicroUsdcPerKTokens: 30_000, imageOutputTokensPerImage: 4160 });
+    expect(quoteOf('openai/gpt-5.4-image-2').quoteMicroUsdc).toBeGreaterThan(124_800n);
+    expect(quoteOf('openai/gpt-5.4-image-2').quoteMicroUsdc).toBeLessThan(150_000n);
+  });
+
+  it('allows a fixed token budget per attached picture on image models and refuses pictures on text models', () => {
+    const picture = { type: 'image_url', image_url: { url: 'https://example.com/coin.png' } };
+    const plain = { role: 'user', content: [{ type: 'text', text: 'a fox' }] };
+    const withPicture = { role: 'user', content: [{ type: 'text', text: 'a fox' }, picture] };
+    const extra = estimateInputTokens({ messages: [withPicture] }) - estimateInputTokens({ messages: [plain] });
+    // the URL itself is a handful of tokens; the picture adds the allowance on top
+    expect(extra).toBeGreaterThanOrEqual(IMAGE_INPUT_TOKENS_PER_IMAGE);
+    expect(extra).toBeLessThan(IMAGE_INPUT_TOKENS_PER_IMAGE + 60);
+    expect(estimateInputTokens({ messages: [withPicture, withPicture] }) - estimateInputTokens({ messages: [plain, plain] })).toBeGreaterThanOrEqual(2 * IMAGE_INPUT_TOKENS_PER_IMAGE);
+
+    const text = computeQuote(imageTable, { ...req, messages: [plain] });
+    const image = computeQuote(imageTable, { ...req, messages: [withPicture] });
+    if (!text.ok || !image.ok) throw new Error('quote failed');
+    expect(image.quote.estimatedInputTokens - text.quote.estimatedInputTokens).toBe(extra);
+    // 300 micro-USDC per 1K input tokens * 1600 tokens = 480 more, at least
+    expect(image.quote.costMicroUsdc - text.quote.costMicroUsdc).toBeGreaterThanOrEqual(480n);
+
+    const refused = computeQuote(imageTable, { ...req, model: 'test/model', messages: [withPicture] });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error.code).toBe('image_input_not_supported');
   });
 
   it('settles actual usage with image tokens at the image rate (upto), capped at the quote', () => {

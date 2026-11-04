@@ -318,6 +318,35 @@ describe('image generation (modalities)', () => {
     const gemini = models.data.find((m) => m.id === 'google/gemini-2.5-flash-image');
     expect(gemini).toMatchObject({ output_modalities: ['text', 'image'], pricing: { image_output_micro_usdc_per_1k_tokens: 30_000, image_output_tokens_per_image: 1290 } });
     expect(models.data.find((m) => m.id === 'openai/gpt-4.1-mini')?.output_modalities).toEqual(['text']);
+    // the advanced image models are listed the same way, with their per-image token allowance
+    expect(models.data.find((m) => m.id === 'google/gemini-3-pro-image')).toMatchObject({ output_modalities: ['text', 'image'], pricing: { input_micro_usdc_per_1k_tokens: 2000, image_output_micro_usdc_per_1k_tokens: 120_000, image_output_tokens_per_image: 1120 } });
+    expect(models.data.find((m) => m.id === 'google/gemini-3.1-flash-image')).toMatchObject({ output_modalities: ['text', 'image'], pricing: { image_output_micro_usdc_per_1k_tokens: 60_000, image_output_tokens_per_image: 1120 } });
+    expect(models.data.find((m) => m.id === 'openai/gpt-5.4-image-2')).toMatchObject({ output_modalities: ['text', 'image'], pricing: { image_output_micro_usdc_per_1k_tokens: 30_000, image_output_tokens_per_image: 4160 } });
+  });
+
+  it('forwards a reference picture (image_url part) to an image model and refuses it on a text model', async () => {
+    const t = createTestApp({ upstreamFetch: async () => jsonResponse({ ...imageBody(), model: 'google/gemini-3-pro-image' }) });
+    const { payer } = payerFor(t);
+    const messages = [
+      { role: 'system', content: 'You are an illustrator.' },
+      { role: 'user', content: [{ type: 'text', text: 'a fox, in the style of the reference' }, { type: 'image_url', image_url: { url: 'https://example.com/coin.png' } }] },
+    ];
+    const body = chatBody({ model: 'google/gemini-3-pro-image', messages, modalities: ['image', 'text'], max_tokens: 64 });
+    const quote = quoteFor(body);
+    expect(quote).toBeGreaterThan(134_400n);
+    const res = await paidPost(payer, body, 'k-image-ref');
+    expect(res.status).toBe(200);
+    expect(await t.upstreamCalls[0]!.json()).toMatchObject({ model: 'google/gemini-3-pro-image', messages, modalities: ['image', 'text'] });
+
+    const headers = { 'idempotency-key': 'k-image-ref-text', 'x-max-quote-micro-usdc': '1000000' };
+    const refused = await post(t, chatBody({ messages }), headers);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { code: 'image_input_not_supported' } });
+    // only public https pictures: data URLs and http are not accepted at all
+    const dataUrl = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: PNG } }] }];
+    expect((await post(t, chatBody({ model: 'google/gemini-3-pro-image', messages: dataUrl }), headers)).status).toBe(400);
+    const http = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'http://example.com/coin.png' } }] }];
+    expect((await post(t, chatBody({ model: 'google/gemini-3-pro-image', messages: http }), headers)).status).toBe(400);
   });
 });
 

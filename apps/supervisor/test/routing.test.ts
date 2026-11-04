@@ -5,6 +5,7 @@ import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { actions, agents, inference as inferenceTable, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
+import { DEFAULT_IMAGE_MODEL } from '../src/images.js';
 import { thoughtsByModel } from '../src/inference.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { decideModelOf, handleIntent, modelFor, startRouting, toolsForPhase, type RoutedTurn } from '../src/routing.js';
@@ -173,7 +174,7 @@ describe('economy mode turns', () => {
       const totals = await thoughtsByModel(w.ctx, AGENT_ID, new Date(w.ctx.now() - 86_400_000));
       expect(totals.find((t) => t.model === DECIDER)).toEqual({ model: DECIDER, thoughts: 2, chargedMicroUsdc: '2000' });
       expect(totals.find((t) => t.model === WRITER)).toEqual({ model: WRITER, thoughts: 3, chargedMicroUsdc: '3000' });
-      expect(totals.find((t) => t.model === 'google/gemini-2.5-flash-image')).toEqual({ model: 'google/gemini-2.5-flash-image', thoughts: 1, chargedMicroUsdc: '43000' });
+      expect(totals.find((t) => t.model === DEFAULT_IMAGE_MODEL)).toEqual({ model: DEFAULT_IMAGE_MODEL, thoughts: 1, chargedMicroUsdc: '43000' });
       const fuel = await api(w).get(`/internal/agents/${AGENT_ID}/fuel?days=7`);
       expect(fuel.status).toBe(200);
       expect(await fuel.json()).toMatchObject({ agentId: AGENT_ID, days: 7, byModel: expect.arrayContaining([{ model: DECIDER, thoughts: 2, chargedMicroUsdc: '2000' }]) });

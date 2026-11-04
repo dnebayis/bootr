@@ -273,6 +273,29 @@ export const balance = onchainTable(
   }),
 );
 
+/**
+ * extra: once-only milestones of a coin, for the platform feed (`GET /platform/feed`) and the agents'
+ * `read_coin` tool: `first_swap` (the first trade after the launch transaction; `value` 0), `holders`
+ * (the holder count reached `value`: 25, 100, 500, 1000) and `volume24h` (rolling 24 h volume reached
+ * `value` USD: 1000, 10000). One row per (token, kind, value), written the first time it happens.
+ */
+export const milestone = onchainTable(
+  'milestone',
+  (t) => ({
+    id: t.text().primaryKey(),
+    token: t.hex().notNull(),
+    kernel: t.hex().notNull(),
+    kind: t.text().notNull(),
+    value: t.integer().notNull(),
+    timestamp: t.integer().notNull(),
+    txHash: t.hex(),
+  }),
+  (table) => ({
+    tokenIdx: index().on(table.token),
+    tsIdx: index().on(table.timestamp),
+  }),
+);
+
 // ------------------------------------------------------------------ fees / burns / treasury
 
 /**
@@ -543,6 +566,7 @@ export const tokenRelations = relations(token, ({ one, many }) => ({
   feeSlots: many(feeSlot),
   burns: many(burn),
   balances: many(balance),
+  milestones: many(milestone),
 }));
 
 export const agentRelations = relations(agent, ({ one, many }) => ({
@@ -578,6 +602,10 @@ export const burnRelations = relations(burn, ({ one }) => ({
 
 export const balanceRelations = relations(balance, ({ one }) => ({
   tokenRef: one(token, { fields: [balance.token], references: [token.id] }),
+}));
+
+export const milestoneRelations = relations(milestone, ({ one }) => ({
+  tokenRef: one(token, { fields: [milestone.token], references: [token.id] }),
 }));
 
 export const sessionKeyRelations = relations(sessionKey, ({ one }) => ({

@@ -4,7 +4,7 @@ import { parseAgentConfig } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
 import { availableTools, executeAction, type BrokerEnv } from '../src/broker/index.js';
 import { actions, images as imagesTable, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { DEFAULT_IMAGE_MODEL, MAX_IMAGES_PER_DAY, imageRequest, parseImageResponse } from '../src/images.js';
+import { DEFAULT_IMAGE_MODEL, MAX_IMAGES_PER_DAY, imageRequest, imageStyleOf, parseImageResponse } from '../src/images.js';
 import { tick } from '../src/tick.js';
 import { agentConfig, AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse } from './helpers.js';
 
@@ -38,9 +38,13 @@ describe('generate_image', () => {
 
   it('builds a one-image relay request and reads the base64 picture back', () => {
     const req = imageRequest(DEFAULT_IMAGE_MODEL, { prompt: 'a fox on a hill', altText: 'A fox sitting on a green hill at dusk' });
-    expect(req).toMatchObject({ model: 'google/gemini-2.5-flash-image', modalities: ['image', 'text'], max_tokens: 256, stream: false });
+    expect(req).toMatchObject({ model: 'google/gemini-3-pro-image', modalities: ['image', 'text'], max_tokens: 256, stream: false });
     expect(JSON.stringify(req.messages)).toContain('a fox on a hill');
     expect(JSON.stringify(req.messages)).toContain('A fox sitting on a green hill at dusk');
+    // without a style: plain text, no picture attached, no reference talk
+    const plain = req.messages as { role: string; content: unknown }[];
+    expect(typeof plain[1]!.content).toBe('string');
+    expect(String(plain[0]!.content)).not.toContain('reference');
 
     const ok = parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: DATA_URL } }] } }] });
     expect(ok).toEqual({ ok: true, mime: 'image/png', bytes: PNG_BYTES });
@@ -49,10 +53,32 @@ describe('generate_image', () => {
     expect(parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: 'data:image/gif;base64,AAAA' } }] } }] })).toMatchObject({ ok: false, error: expect.stringMatching(/unsupported type/) });
   });
 
+  it('attaches the style reference as an image_url part and the notes to the instructions', () => {
+    const style = { reference: 'https://cdn.bootr.fun/coins/fox.png', notes: 'flat colours, no text' };
+    const req = imageRequest(DEFAULT_IMAGE_MODEL, { prompt: 'a fox on a hill', altText: 'A fox on a hill' }, style);
+    const [system, user] = req.messages as [{ role: string; content: string }, { role: string; content: { type: string; text?: string; image_url?: { url: string } }[] }];
+    expect(system.content).toContain('Match its visual style, palette');
+    expect(system.content).toContain('Do not copy');
+    expect(system.content).toContain('Style notes from the creator: flat colours, no text');
+    expect(user.content).toEqual([
+      { type: 'text', text: 'a fox on a hill\n\nThe image will be described as: A fox on a hill' },
+      { type: 'image_url', image_url: { url: 'https://cdn.bootr.fun/coins/fox.png' } },
+    ]);
+    // notes alone: no picture, the notes still reach the model
+    const notesOnly = imageRequest(DEFAULT_IMAGE_MODEL, { prompt: 'x', altText: 'y' }, { reference: null, notes: 'ink on paper' });
+    expect(typeof (notesOnly.messages as { content: unknown }[])[1]!.content).toBe('string');
+    expect(String((notesOnly.messages as { content: unknown }[])[0]!.content)).toContain('ink on paper');
+    expect(String((notesOnly.messages as { content: unknown }[])[0]!.content)).not.toContain('reference picture');
+
+    expect(imageStyleOf({})).toEqual({ reference: null, notes: '' });
+    expect(imageStyleOf({ imageStyle: { reference: 'ftp://nope', notes: 'x' } })).toEqual({ reference: null, notes: '' });
+    expect(imageStyleOf({ imageStyle: style })).toEqual(style);
+  });
+
   it('pays the relay once per action (like a thought), stores the bytes and returns an imageId', async () => {
     const w = await makeWorld({ script: [imageResponse()] });
     try {
-      const agent = await seedAgent(w, { config: withImages });
+      const agent = await seedAgent(w, { config: { ...withImages, imageStyle: { reference: 'https://cdn.bootr.fun/coins/test.png', notes: '' } } });
       const config = parseAgentConfig(agent.config);
       const input = { prompt: 'a fox on a hill', altText: 'A fox on a hill' };
       const first = await executeAction(w.ctx, agent, config, pending('act_img1', 'generate_image', input), env());
@@ -61,8 +87,10 @@ describe('generate_image', () => {
       const posts = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'));
       expect(posts).toHaveLength(1);
       expect(posts[0]!.headers.get('idempotency-key')).toBe('image:act_img1');
-      expect(posts[0]!.headers.get('x-max-quote-micro-usdc')).toBe('120000');
+      expect(posts[0]!.headers.get('x-max-quote-micro-usdc')).toBe('250000');
       expect(posts[0]!.body).toMatchObject({ model: DEFAULT_IMAGE_MODEL, modalities: ['image', 'text'] });
+      // the coin picture rides along as the style reference
+      expect((posts[0]!.body as { messages: { content: unknown }[] }).messages[1]!.content).toEqual([{ type: 'text', text: expect.stringContaining('a fox on a hill') }, { type: 'image_url', image_url: { url: 'https://cdn.bootr.fun/coins/test.png' } }]);
 
       const rows = await w.db.select().from(imagesTable);
       expect(rows).toHaveLength(1);
