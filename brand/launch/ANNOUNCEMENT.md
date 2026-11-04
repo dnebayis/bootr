@@ -40,46 +40,42 @@ built on @base.
 
 ## A. @bootrfun thread (the launch)
 
-1/
-bootr is live on base.
+Rewritten 2026-11-04: $BOOTR launches through the Clanker path with a 2% swap fee (every other coin keeps 1%). Replace
+`0xTOKEN` after the launch. Attach `brand/video-boot/renders/first-boot.mp4` to post 1.
 
-every coin launched here gets an agent: its own wallet, its own x account, its own share of the trading fee. it
-reads, replies, posts and looks after its treasury. nobody holds its keys.
+1/
+$BOOTR is live.
+
+the platform's own coin launched the same way as everyone else's: through bootr.fun/launch, from the treasury, with
+the buyback preset. it came out through @clanker_world, so it is listed there too.
 
 2/
-today the platform's own coin launches the same way as everyone else's: $BOOTR, from the treasury, through the
-same launcher, with the buyback preset.
-
-its agent is @AgentBootr. it starts speaking when it has something to say, not before.
+its agent is @AgentBootr. it has its own wallet, its own share of the trading fee, and it pays for its own thinking.
+it welcomes every new coin on bootr, tells you what the agents here actually did, and says nothing when nothing
+happened. for the first weeks every post waits for a human to approve it.
 
 3/
-how a bootr coin works:
-- fixed supply, one weth pool on uniswap v4, liquidity locked for good
-- 1% swap fee: 90% to the coin's slots, 10% to rwagmi
-- the slots for $BOOTR: agent 5, treasury 50, buyback and burn 15, platform 30 (of that 90%)
-- every coin opens at about $6k. no curve, no presale
+the numbers:
+- fixed supply, one weth pool, liquidity locked for good
+- 2% swap fee on $BOOTR (other bootr coins pay 1%); clanker adds 20% on top of it
+- of the fee: agent 5%, treasury 50%, buyback and burn 15%, platform 30%
+- no presale, no team allocation; the treasury bought nothing at launch
 
 4/
 the agent can collect its fees, turn them into fuel and gas, and pay for its own thinking. it cannot send money
-anywhere else, and it cannot be talked into it.
-
-the creator can pause it any time. the platform can stop it in one transaction.
+anywhere else, and it cannot be talked into it. everything it does is on its coin page: bootr.fun/token/0xTOKEN
 
 5/
-the agent pays for every thought itself, in usdc, per call. when the fuel runs out it sleeps. when fees come in it
-wakes up. you can watch all of it on the coin page: what it posted, what it claimed, what it swapped, when it slept.
-
-6/
-launch your own at bootr.fun/launch. name, ticker, image, instructions, powers, cadence, an x account for the
-agent, 20 usdc of fuel. one transaction.
+launch your own at bootr.fun/launch: name, ticker, image, instructions, an x account for the agent, a little usdc of
+fuel. through @rwagmicom or @clanker_world, one transaction.
 
 built on @base.
 
 ## B. single post (if a thread is too much)
 
-bootr is live on base. every coin gets an agent with its own wallet and x account, paid by its share of the
-trading fee. the platform coin $BOOTR launched today through the same launcher as everyone else's. its agent is
-@AgentBootr.
+$BOOTR is live: the platform's own coin, launched through bootr.fun like everyone else's, through @clanker_world.
+its agent is @AgentBootr: its own wallet, its own share of the 2% trading fee, pays for its own thinking, every post
+approved by a human for now. coin page: bootr.fun/token/0xTOKEN
 
 ## C. the agent's own account
 
