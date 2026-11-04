@@ -349,7 +349,7 @@ if (enabledSources().BootrLauncher) {
       if (addr === token) {
         const ev = tryDecode(Erc20Abi, l);
         if (ev?.eventName === 'Transfer') {
-          await applyTransfer(context, token, ev.args.from as Address, ev.args.to as Address, ev.args.value as bigint, ts);
+          await applyTransfer(context, token, ev.args.from as Address, ev.args.to as Address, ev.args.value as bigint, ts, event.transaction.hash);
         }
       } else if (addr === usdc) {
         const ev = tryDecode(Erc20Abi, l);

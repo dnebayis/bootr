@@ -213,6 +213,7 @@ export const toolInputSchemas = {
   read_url: z.object({ url: httpsUrlSchema, render: z.boolean().optional() }).strict(),
   search_web: z.object({ query: text(400) }).strict(),
   read_market: z.object({ tokenAddress: evmAddressSchema.optional(), pairId: z.string().max(80).optional() }).strict(),
+  read_coin: z.object({ symbolOrAddress: text(64) }).strict(),
   read_chain: z
     .object({
       method: z.enum(['balance', 'contract_call', 'transaction', 'block']),

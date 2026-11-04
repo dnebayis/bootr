@@ -340,6 +340,9 @@ export function mockIndexer(market: Record<string, unknown> | null = { priceUsd:
     async treasury() {
       return null;
     },
+    async graphql() {
+      return null;
+    },
     async postSocial(_k: string, stats: unknown) {
       posted.push(stats);
       return true;

@@ -110,7 +110,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `INFERENCE_PROVIDER_URL`, `INFERENCE_PAYTO_ADDRESS` | yes | | apps/inference relay and its USDC recipient (the payer refuses any other payee) |
 | `INFERENCE_TIMEOUT_MS` | no | `150000` | |
 | `INFERENCE_MAX_OUTPUT_TOKENS` | no | `1024` | priced by the relay quote |
-| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) |
+| `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/platform/feed`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) and GraphQL (`/graphql`, the `read_coin` tool) |
+| `SITE_URL` | no | `https://bootr.fun` | The public site; `read_coin` hands out `<SITE_URL>/token/<coin>` as the coin page |
 | `SUPERVISOR_TICK_MS` | no | `60000` | |
 | `MAX_AGENTS_PER_TICK` | no | `10` | |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |

@@ -49,6 +49,25 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
     variables: { id: '0x…coin address, lowercase' },
   },
   {
+    id: 'milestones',
+    title: 'A coin’s milestones and its agent’s recent activity',
+    about: '`milestones` are written once each: `first_swap` (the first trade after the launch transaction), `holders` (the count reached: 25, 100, 500, 1000) and `volume24h` (rolling 24 h volume reached, in USD: 1000, 10000). The agent’s `read_coin` tool reads this shape.',
+    query: `query CoinMilestones($id: String!) {
+  token(id: $id) {
+    name
+    symbol
+    launchedAt
+    xHandle
+    holders
+    agent { status lastPostAt postsCount24h feesClaimedUsd }
+    milestones(orderBy: "timestamp", orderDirection: "desc", limit: 8) {
+      items { kind value timestamp txHash }
+    }
+  }
+}`,
+    variables: { id: '0x…coin address, lowercase' },
+  },
+  {
     id: 'platform',
     title: 'Platform totals and the last 7 days',
     about: '`platformStats` is a singleton with id `"global"`; `dailyStats` has one row per UTC day (`id` = `YYYY-MM-DD`).',

@@ -4,7 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
-import { and, asc, eq, gt, inArray, ne } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { guardianAbi, kernelAbi } from './abi.js';
 import { agentDirectory } from './agent-directory.js';
@@ -243,13 +243,26 @@ export async function postsLast24h(ctx: SupervisorContext, agentId: string): Pro
   return { count: posts.length, lastPostAt: last };
 }
 
+/** When the agent's first ever post or reply went out (ms), from the completed actions it still has; null when it never posted. */
+export async function firstPostAt(ctx: SupervisorContext, agentId: string): Promise<number | null> {
+  const [row] = await ctx.db
+    .select({ createdAt: actions.createdAt })
+    .from(actions)
+    .where(and(eq(actions.agentId, agentId), eq(actions.status, 'completed'), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`))
+    .orderBy(asc(actions.createdAt))
+    .limit(1);
+  return row ? row.createdAt.getTime() : null;
+}
+
 async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHandle: string }, runtime: RuntimeRow, status: 'awake' | 'sleeping' | 'paused'): Promise<void> {
   try {
-    const { count, lastPostAt } = await postsLast24h(ctx, agent.agentId);
+    const [{ count, lastPostAt }, first] = await Promise.all([postsLast24h(ctx, agent.agentId), firstPostAt(ctx, agent.agentId)]);
     const state = runtime.state as unknown as AgentState;
     await ctx.indexer.postSocial(agent.kernel, {
       xHandle: config.xHandle,
       lastPostAt: state.lastPostAt ? Math.floor(state.lastPostAt / 1000) : lastPostAt ? Math.floor(lastPostAt / 1000) : null,
+      // The indexer keeps the earliest value it ever saw, so pruned actions never move it later.
+      firstPostAt: first ? Math.floor(first / 1000) : null,
       postsCount24h: count,
       status: runtime.status === 'paused' ? 'paused' : runtime.status === 'sleeping' ? 'sleeping' : status,
       spender: agent.spender ?? null,

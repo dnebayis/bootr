@@ -294,8 +294,8 @@ describe('social push to the indexer', () => {
       expect(received.length).toBeGreaterThan(0);
       const last = received.at(-1)!;
       expect(last.path).toBe(`/internal/agent/${KERNEL}/social`);
-      expect(last.body).toMatchObject({ xHandle: 'bootr_agent', postsCount24h: expect.any(Number), spender: SPENDER });
-      expect(Object.keys(last.body).sort()).toEqual(['lastPostAt', 'postsCount24h', 'spender', 'status', 'xHandle']);
+      expect(last.body).toMatchObject({ xHandle: 'bootr_agent', postsCount24h: expect.any(Number), spender: SPENDER, firstPostAt: null });
+      expect(Object.keys(last.body).sort()).toEqual(['firstPostAt', 'lastPostAt', 'postsCount24h', 'spender', 'status', 'xHandle']);
     } finally {
       await w.close();
     }

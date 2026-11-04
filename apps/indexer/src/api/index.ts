@@ -16,6 +16,7 @@ import { verifyRequest } from '../lib/hmac';
 import { toUnits, usd } from '../lib/price';
 import { rpcClient } from '../lib/rpc';
 import { parseSocialPatch, socialStore, type AgentSocial } from '../lib/social-store';
+import { FEED_LIMIT, composePlatformFeed, feedNameRefs, feedWindow } from './platform-feed';
 import { publish, subscribe } from './stream';
 
 const env = indexerEnv();
@@ -381,15 +382,14 @@ app.get('/fuel/:from', async (c) => {
  * What happened on Bootr since `since` (unix s, clamped to the last 7 days), for the platform agent's
  * "Bootr today" observation (`apps/supervisor/src/platform-feed.ts`). Newest first, each list capped at
  * 50 rows; the supervisor renders and truncates it. Launches come from `token`, wake/sleep changes from
- * `agent.statusChangedAt`, posts from the social store, claims from `feeClaim` (agent slot only), totals
- * from `platformStats` plus the sum of every coin's rolling 7-day volume.
+ * `agent.statusChangedAt`, posts and first posts from the social store, claims from `feeClaim` (agent slot
+ * only), milestones (first trade, holder counts, 24 h volume) from `milestone`, totals from `platformStats`
+ * plus the sum of every coin's rolling 7-day volume. The body is composed in api/platform-feed.ts.
+ * No prices or market caps.
  */
 app.get('/platform/feed', async (c) => {
-  const now = Math.floor(Date.now() / 1000);
-  const floor = now - 7 * 86_400;
-  const raw = Number(c.req.query('since'));
-  const since = Number.isFinite(raw) && raw > floor ? Math.floor(raw) : floor;
-  const [[stats], social, launches, changes, claims, [vol]] = await Promise.all([
+  const { now, since } = feedWindow(Math.floor(Date.now() / 1000), c.req.query('since'));
+  const [[stats], social, launches, changes, claims, milestones, [vol]] = await Promise.all([
     db.select().from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1),
     socialMap(),
     db
@@ -423,13 +423,14 @@ app.get('/platform/feed', async (c) => {
       .from(schema.feeClaim)
       .where(and(gte(schema.feeClaim.timestamp, since), eq(schema.feeClaim.recipientKind, 'agent')))
       .orderBy(desc(schema.feeClaim.timestamp))
-      .limit(50),
+      .limit(FEED_LIMIT),
+    db.select().from(schema.milestone).where(gte(schema.milestone.timestamp, since)).orderBy(desc(schema.milestone.timestamp), desc(schema.milestone.id)).limit(FEED_LIMIT),
     db.select({ usd: sql<number>`coalesce(sum(${schema.token.volume7dUsd}), 0)` }).from(schema.token),
   ]);
-  const posted = [...social.values()].filter((s) => s.lastPostAt !== null && s.lastPostAt >= since).sort((a, b) => b.lastPostAt! - a.lastPostAt!).slice(0, 50);
   // Symbols for the rows that only carry an address.
-  const kernels = [...new Set([...changes.map((r) => r.kernel), ...posted.map((p) => p.kernel as Address)])];
-  const tokenIds = [...new Set(claims.map((r) => r.token))];
+  const refs = feedNameRefs({ statusChanges: changes, claims, milestones, social, since });
+  const kernels = refs.kernels as Address[];
+  const tokenIds = refs.tokenIds as Address[];
   const named =
     kernels.length || tokenIds.length
       ? await db
@@ -437,34 +438,21 @@ app.get('/platform/feed', async (c) => {
           .from(schema.token)
           .where(or(...(kernels.length ? [inArray(schema.token.kernel, kernels)] : []), ...(tokenIds.length ? [inArray(schema.token.id, tokenIds)] : [])))
       : [];
-  const byKernel = new Map(named.map((t) => [t.kernel, t]));
-  const byToken = new Map(named.map((t) => [t.id, t]));
-  const handle = (kernel: string, fallback: string | null | undefined) => social.get(kernel)?.xHandle ?? fallback ?? null;
   return c.json(
-    j({
-      now,
-      since,
-      totals: {
-        tokens: stats?.tokens ?? 0,
-        agentsTotal: stats?.agentsTotal ?? 0,
-        agentsAwake: stats?.agentsAwake ?? 0,
-        volume24hUsd: stats?.volume24hUsd ?? 0,
-        volume7dUsd: usd(Number(vol?.usd ?? 0)),
-        fees24hUsd: stats?.fees24hUsd ?? 0,
-        updatedAt: stats?.updatedAt ?? null,
-      },
-      launches: launches.map((t) => ({ ...t, xHandle: handle(t.kernel, t.xHandle) })),
-      statusChanges: changes.map((r) => ({ ...r, symbol: byKernel.get(r.kernel)?.symbol ?? null, xHandle: handle(r.kernel, byKernel.get(r.kernel)?.xHandle) })),
-      posts: posted.map((p) => ({
-        kernel: p.kernel,
-        token: byKernel.get(p.kernel as Address)?.id ?? null,
-        symbol: byKernel.get(p.kernel as Address)?.symbol ?? null,
-        xHandle: p.xHandle,
-        lastPostAt: p.lastPostAt,
-        postsCount24h: p.postsCount24h,
-      })),
-      claims: claims.map((r) => ({ ...r, kernel: byToken.get(r.token)?.kernel ?? r.recipient, symbol: byToken.get(r.token)?.symbol ?? null })),
-    }),
+    j(
+      composePlatformFeed({
+        now,
+        since,
+        stats,
+        volume7dUsd: Number(vol?.usd ?? 0),
+        social,
+        launches,
+        statusChanges: changes,
+        claims,
+        milestones,
+        named,
+      }),
+    ),
   );
 });
 
