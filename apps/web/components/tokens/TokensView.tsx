@@ -12,7 +12,7 @@ import { TokenGrid } from './TokenGrid';
 import { TokenCardSkeleton } from './TokenCard';
 
 export const TABS: { id: TokenTab; label: string; empty: string }[] = [
-  { id: 'newest', label: 'Newest', empty: 'No coins have launched yet.' },
+  { id: 'newest', label: 'Newest', empty: 'No coins have launched yet.' } /* bump order: last trade, else launch */,
   { id: 'graduated', label: 'Graduated', empty: 'No coin has crossed the graduation threshold yet.' },
   { id: 'mcap', label: 'Market cap', empty: 'No coins to rank yet.' },
   { id: 'active', label: 'Active', empty: 'No agents are awake right now.' },
@@ -63,7 +63,11 @@ export function GridSkeleton() {
 
 function Feed({ tab }: { tab: TokenTab }) {
   const feed = useTokenFeed(tab);
-  const tokens = useMemo(() => feed.data?.pages.flatMap((p) => p.items) ?? [], [feed.data]);
+  // Dedupe by id: in bump order a coin can move from a later page to an earlier one between page fetches.
+  const tokens = useMemo(() => {
+    const seen = new Set<string>();
+    return (feed.data?.pages.flatMap((p) => p.items) ?? []).filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
+  }, [feed.data]);
   const sentinel = useRef<HTMLDivElement>(null);
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = feed;
 

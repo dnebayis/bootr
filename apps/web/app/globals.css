@@ -167,6 +167,30 @@
   --animate-shimmer: shimmer 1.6s linear infinite;
   --animate-enter: enter 250ms var(--ease-out-quint) both;
   --animate-float: float 7s var(--ease-in-out) infinite;
+  --animate-shake: shake 600ms var(--ease-out-quint);
+
+  /* A trade bumps a coin to the front of the home grid; the card shakes once (pump.fun style). */
+  @keyframes shake {
+    0%,
+    100% {
+      transform: translateX(0) rotate(0);
+    }
+    15% {
+      transform: translateX(-5px) rotate(-1.5deg);
+    }
+    30% {
+      transform: translateX(5px) rotate(1.5deg);
+    }
+    45% {
+      transform: translateX(-4px) rotate(-1deg);
+    }
+    60% {
+      transform: translateX(3px) rotate(0.5deg);
+    }
+    75% {
+      transform: translateX(-1px);
+    }
+  }
 
   @keyframes float {
     0%,

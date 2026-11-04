@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { motion } from 'motion/react';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import type { Token } from '@/lib/types';
@@ -38,9 +38,41 @@ function useFreshIds(tokens: Token[], resetKey: string) {
   return fresh;
 }
 
+/**
+ * Ids whose `lastTradeAt` moved forward since the previous render (a buy or a sell just landed), so the card
+ * can shake once as it jumps to the front, pump.fun style. The first render of a tab only records the baseline.
+ */
+function useBumpedIds(tokens: Token[], resetKey: string) {
+  const last = useRef<Map<string, number> | null>(null);
+  const key = useRef(resetKey);
+  const [bumped, setBumped] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const snapshot = new Map(tokens.map((t) => [t.id, t.lastTradeAt ?? 0]));
+    if (key.current !== resetKey || last.current === null) {
+      key.current = resetKey;
+      last.current = snapshot;
+      return;
+    }
+    const prev = last.current;
+    last.current = snapshot;
+    const moved = tokens.filter((t) => prev.has(t.id) && (t.lastTradeAt ?? 0) > prev.get(t.id)!).map((t) => t.id);
+    if (moved.length === 0) return;
+    setBumped(new Set(moved));
+    const timer = setTimeout(() => setBumped(new Set()), 900);
+    return () => clearTimeout(timer);
+  }, [tokens, resetKey]);
+  return bumped;
+}
+
+/** The shake wrapper: a separate element so the CSS transform does not fight motion's layout transform on the li. */
+function Bump({ on, children }: { on: boolean; children: ReactNode }) {
+  return <div className={on ? 'motion-safe:animate-shake' : undefined}>{children}</div>;
+}
+
 export function TokenGrid({ tokens, resetKey }: { tokens: Token[]; resetKey: string }) {
   const now = useNow();
   const fresh = useFreshIds(tokens, resetKey);
+  const bumped = useBumpedIds(tokens, resetKey);
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(1200);
   const [offset, setOffset] = useState(0);
@@ -86,7 +118,9 @@ export function TokenGrid({ tokens, resetKey }: { tokens: Token[]; resetKey: str
               className={fresh.has(t.id) ? 'animate-enter' : undefined}
               transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
             >
-              <TokenCard token={t} now={now} flash={fresh.has(t.id)} />
+              <Bump on={bumped.has(t.id)}>
+                <TokenCard token={t} now={now} flash={fresh.has(t.id) || bumped.has(t.id)} />
+              </Bump>
             </motion.li>
           ))}
         </ul>
@@ -108,7 +142,9 @@ export function TokenGrid({ tokens, resetKey }: { tokens: Token[]; resetKey: str
           >
             {rows[row.index]!.map((t) => (
               <motion.li key={t.id} layout="position" transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}>
-                <TokenCard token={t} now={now} flash={fresh.has(t.id)} />
+                <Bump on={bumped.has(t.id)}>
+                  <TokenCard token={t} now={now} flash={fresh.has(t.id) || bumped.has(t.id)} />
+                </Bump>
               </motion.li>
             ))}
           </ul>

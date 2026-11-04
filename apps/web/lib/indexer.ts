@@ -88,7 +88,7 @@ const delay = (ms = 220) => new Promise((r) => setTimeout(r, ms));
 const TOKEN_FIELDS = /* GraphQL */ `
   id chainId name symbol image creator kernel burner agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
-  priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt
+  priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt lastTradeAt
   agent { id status }
 `;
 
@@ -127,6 +127,12 @@ export async function fetchTokens(tab: TokenTab, after: string | null = null, li
   if (env.useMock) {
     await delay();
     return mock.tokens(tab, after, limit);
+  }
+  if (tab === 'newest') {
+    // Bump order (last trade, else launch): Ponder's GraphQL cannot sort on coalesce(), the indexer's REST route can.
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (after) qs.set('after', after);
+    return rest<TokenPage>(`/tokens/bumped?${qs}`);
   }
   const { orderBy, where: baseWhere } = ORDER[tab];
   let where: Record<string, unknown> | undefined = baseWhere;
