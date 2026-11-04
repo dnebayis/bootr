@@ -12,7 +12,7 @@ describe('recentPosts', () => {
       await w.db.insert(approvals).values([
         { id: 'act_a1', agentId: AGENT_ID, kind: 'post', text: 'Nothing much moved on Bootr in the last day.', textHash: 'h1', status: 'rejected', note: 'Today is launch day. Write in lowercase.', createdAt: new Date(now - 3 * 3_600_000) },
         { id: 'act_a2', agentId: AGENT_ID, kind: 'reply', text: 'each coin gets its own wallet and x account.', textHash: 'h2', status: 'pending_approval', createdAt: new Date(now - 60_000) },
-        { id: 'act_old', agentId: AGENT_ID, kind: 'post', text: 'from two days ago', textHash: 'h3', status: 'approved', createdAt: new Date(now - 48 * 3_600_000) },
+        { id: 'act_old', agentId: AGENT_ID, kind: 'post', text: 'from two days ago', textHash: 'h3', status: 'approved', createdAt: new Date(now - 72 * 3_600_000) },
       ]);
       await w.db.insert(actions).values([
         { actionId: 'act_s1', agentId: AGENT_ID, cycleKey: 'c1', action: { tool: 'publish_post', input: { text: 'basecat launched on bootr today; its agent is @basecatagent.' } }, status: 'completed', attempts: 1, createdAt: new Date(now - 2 * 3_600_000), updatedAt: new Date(now - 2 * 3_600_000) },

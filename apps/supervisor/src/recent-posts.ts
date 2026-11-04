@@ -1,5 +1,5 @@
 /**
- * `recentPosts`: what the agent itself said in the last day, so a turn does not repeat a fact or a phrasing and sees
+ * `recentPosts`: what the agent itself said in the last two days, so a turn does not repeat a fact or a phrasing and sees
  * what the creator rejected (with the note). Sources: completed `publish_post` / `publish_reply` actions (sv_actions)
  * and the review queue (sv_approvals: pending, approved, rejected, failed). Newest first, at most RECENT_POSTS_MAX,
  * texts clipped. Empty object when there is nothing, so the observation stays small.
@@ -8,8 +8,8 @@ import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
 import { actions, approvals } from './db/schema.js';
 
-export const RECENT_POSTS_WINDOW_MS = 24 * 60 * 60 * 1000;
-export const RECENT_POSTS_MAX = 8;
+export const RECENT_POSTS_WINDOW_MS = 48 * 60 * 60 * 1000;
+export const RECENT_POSTS_MAX = 16;
 const EXCERPT = 140;
 
 export interface RecentPost {
@@ -63,5 +63,5 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'>, ag
 export async function recentPostsSection(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<Record<string, unknown>> {
   const items = await recentPosts(ctx, agentId);
   if (items.length === 0) return {};
-  return { recentPosts: { meaning: 'what you already said in the last 24 hours, newest first; never repeat a fact or a phrasing from here, and a rejected item carries the creator\'s note', items } };
+  return { recentPosts: { meaning: 'what you already said in the last two days, newest first; never repeat a fact or a phrasing from here, and a rejected item carries the creator\'s note', items } };
 }
