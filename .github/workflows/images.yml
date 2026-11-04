@@ -116,8 +116,6 @@ jobs:
                         NEXT_PUBLIC_IPFS_GATEWAY NEXT_PUBLIC_USE_MOCK; do
               echo "$name=${!name}"
             done
-            # The commit the image was built from (the indexer names its schema after it: scripts/start.sh).
-            echo "GIT_SHA=$GITHUB_SHA"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -129,7 +127,10 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          build-args: ${{ steps.webargs.outputs.args }}
+          # GIT_SHA for every service (the indexer names its schema after it); the NEXT_PUBLIC_* values for the web.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            ${{ steps.webargs.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.svc }}
           cache-to: type=gha,scope=${{ matrix.svc }},mode=max
           # A plain single-platform image (no provenance manifest), so GHCR shows one linux/amd64 entry per tag.
