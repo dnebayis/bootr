@@ -2,8 +2,10 @@
 
 bootr.fun/launch, signed with the treasury wallet `0x55e66C7F30Ac6d5C0C757fDdaF56D66506439d82` on Base. The treasury
 needs about 0.006 ETH and 5 USDC before you start (0.0005 launch fee, 0.001 first gas for the agent, three small
-transactions, 5 USDC fuel). Launch only after the platform-agent deploy (fe1d725 or later) is verified: the agent is
-marked as the platform's own at launch time, and the running code decides that.
+transactions, 5 USDC fuel). Decided 2026-11-04: $BOOTR launches **through Clanker** (docs/design/clanker-launch.md), so the launch waits for the
+Clanker path to be live: contracts deployed (gate, launcher v3.1, Clanker launcher, `guardian.setLauncher(gate)`)
+and the matching web/supervisor/indexer deploy verified. The agent is marked as the platform's own at launch time by
+the running code (platform-agent deploy fe1d725 is live since 2026-11-04 11:34 UTC).
 
 ## 01 Coin
 
@@ -57,7 +59,8 @@ box unchecked.
 | Fuel | `5` USDC |
 | Dev buy | empty |
 | Gas | `0.001` ETH (the default) |
-| Buyback and burn | **on** (fee slots agent 5 / treasury 50 / buyback 15 / platform 30, as announced) |
+| Launch through | **Clanker** (opening market cap about 10 ETH, Clanker's standard layout; the trader pays 1% + 20% on top for Clanker; the coin is listed on clanker.world too) |
+| Buyback and burn | **on** (fee slots agent 5 / treasury 50 / buyback 15 / platform 30 of the whole 1%; the burn slot receives the coin itself) |
 
 Three wallet prompts follow: USDC approval, the launch, the gas deposit for the agent.
 
