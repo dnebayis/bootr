@@ -116,6 +116,8 @@ jobs:
                         NEXT_PUBLIC_IPFS_GATEWAY NEXT_PUBLIC_USE_MOCK; do
               echo "$name=${!name}"
             done
+            # The commit the image was built from (the indexer names its schema after it: scripts/start.sh).
+            echo "GIT_SHA=$GITHUB_SHA"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
