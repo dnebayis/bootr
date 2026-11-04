@@ -28,6 +28,8 @@ export const env = {
   senderPublicUrl: str(process.env.NEXT_PUBLIC_SENDER_PUBLIC_URL).replace(/\/$/, ''),
   swapLinkBase: str(process.env.NEXT_PUBLIC_SWAP_LINK_BASE),
   launcherAddress: addr(process.env.NEXT_PUBLIC_LAUNCHER_ADDRESS),
+  /** `BootrClankerLauncher`: the "Launch through Clanker" path. Optional; the choice is hidden while unset. */
+  clankerLauncherAddress: addr(process.env.NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS),
   guardianAddress: addr(process.env.NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS),
   supervisorSessionKey: addr(process.env.NEXT_PUBLIC_SUPERVISOR_SESSION_KEY),
   bootXUrl: str(process.env.NEXT_PUBLIC_BOOT_X_URL),

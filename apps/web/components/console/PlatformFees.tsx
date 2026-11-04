@@ -1,19 +1,20 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useConnection, useReadContracts, useWriteContract } from 'wagmi';
+import { useConnection, useReadContract, useReadContracts, useWriteContract } from 'wagmi';
 import { toast } from 'sonner';
 import type { Address, Hex } from 'viem';
+import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
-import { platformSlot, type Slot } from '@/lib/fee-split';
+import { DEFAULT_LP_FEE_BPS, feeModelOf, pctLabel, platformSlot, swapFeePct, traderPaysPct, type Slot } from '@/lib/fee-split';
 import { appChain, explorer } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { shortAddr, units } from '@/lib/format';
 import { mock } from '@/lib/mock';
 import { useTxRunner } from '@/lib/tx';
-import type { AgentWithToken } from '@/lib/types';
+import type { AgentWithToken, LaunchSource } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Empty, Panel } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -28,12 +29,20 @@ const CHUNK = 50;
 
 type Claim = { recipient: Address; poolIds: Hex[]; amount: bigint; label: string };
 
+type Coin = { token: Address; name: string; symbol: string; source: LaunchSource; lpFeeBps: number };
+
 /**
- * Platform share of the WETH swap fees in RWAGMI's LP locker. Each coin's platform recipient and pool ids come
+ * Platform fees, per launch path.
+ *
+ * Through Bootr: the platform share of the WETH swap fees in RWAGMI's LP locker. Each coin's platform recipient and pool ids come
  * from `launchInfo(token)` (the last Bootr slot, before RWAGMI's appended one). A recipient's claimable WETH is
  * its settled balance (`claimableQuote`) plus each coin's unsettled share (`pendingQuote`). Claims pay
  * `msg.sender`'s own balance, so only the connected platform recipient wallet can claim:
  * `settleAndClaim(poolIds, WETH, me)` when pools have unsettled fees, else `claimQuote(WETH, me)`.
+ *
+ * Through Clanker: Clanker's LP locker converts the platform slot's share to WETH and deposits it in ClankerFeeLocker
+ * (`availableFees(treasury, WETH)`); `claim(treasury, WETH)` pays the treasury whoever calls it. The panel claims for
+ * the connected wallet, which is the platform wallet when the admin signs in with it.
  */
 export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[]; loading: boolean }) {
   const locker = contracts.lpLocker;
@@ -43,13 +52,45 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
   const { run, pending } = useTxRunner();
   const [allRunning, setAllRunning] = useState(false);
 
-  const coins = useMemo(() => {
-    const seen = new Map<string, { token: Address; name: string; symbol: string }>();
+  const allCoins = useMemo(() => {
+    const seen = new Map<string, Coin>();
     for (const a of agents) {
-      if (!seen.has(a.token.toLowerCase())) seen.set(a.token.toLowerCase(), { token: a.token, name: a.tokenInfo?.name ?? shortAddr(a.token), symbol: a.tokenInfo?.symbol ?? '' });
+      if (!seen.has(a.token.toLowerCase())) {
+        seen.set(a.token.toLowerCase(), {
+          token: a.token,
+          name: a.tokenInfo?.name ?? shortAddr(a.token),
+          symbol: a.tokenInfo?.symbol ?? '',
+          source: a.tokenInfo?.source === 'clanker' ? 'clanker' : 'bootr',
+          lpFeeBps: a.tokenInfo?.lpFeeBps ?? DEFAULT_LP_FEE_BPS,
+        });
+      }
     }
     return [...seen.values()];
   }, [agents]);
+  /** Bootr-path coins: their platform share sits in RWAGMI's locker. */
+  const coins = useMemo(() => allCoins.filter((c) => c.source === 'bootr'), [allCoins]);
+  const clankerCoins = useMemo(() => allCoins.filter((c) => c.source === 'clanker'), [allCoins]);
+
+  // Clanker path: one balance per wallet in the fee locker, claimed with `claim(wallet, WETH)`.
+  const feeLocker = contracts.clankerFeeLocker;
+  const clankerLive = !env.useMock && !!feeLocker;
+  const clankerRead = useReadContract({
+    address: feeLocker ?? undefined,
+    abi: clankerFeeLockerAbi,
+    functionName: 'availableFees',
+    args: me ? [me, contracts.weth] : undefined,
+    chainId: appChain.id,
+    query: { enabled: clankerLive && !!me && clankerCoins.length > 0 },
+  });
+  const clankerAmount: bigint | null = env.useMock ? (clankerCoins.length ? mock.claimable(MOCK_RECIPIENT, 'clanker') : 0n) : clankerLive ? (clankerRead.data ?? null) : null;
+  const claimClanker = async () => {
+    if (env.useMock) return void toast.success('Mock: Claim on Clanker sent');
+    if (!feeLocker || !me) return;
+    const r = await run('Claim on Clanker', () =>
+      write.mutateAsync({ address: feeLocker, abi: clankerFeeLockerAbi, functionName: 'claim', args: [me, contracts.weth], chainId: appChain.id, dataSuffix: builderDataSuffix }),
+    );
+    if (r) void clankerRead.refetch();
+  };
 
   const infos = useReadContracts({
     allowFailure: true,
@@ -169,17 +210,20 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
       }
     >
       <p className="border-b border-hairline px-4 py-2 text-caption text-mute">
-        Fees are paid in WETH. A claim pays the caller&rsquo;s own balance, so connect the platform recipient&rsquo;s wallet to claim. Each claim settles the
-        coins&rsquo; unsettled fees first; Claim all sends one transaction per {CHUNK} coins, in order.
+        Fees are paid in WETH, per launch path. Through Bootr a claim pays the caller&rsquo;s own balance in RWAGMI&rsquo;s locker, so connect the platform
+        recipient&rsquo;s wallet to claim; each claim settles the coins&rsquo; unsettled fees first, and Claim all sends one transaction per {CHUNK} coins, in order.
+        Through Clanker the fees wait in Clanker&rsquo;s fee locker, claimed below.
       </p>
       {loading || reading ? (
         <div className="p-4">
           <Skeleton className="h-32" />
         </div>
-      ) : coins.length === 0 ? (
+      ) : allCoins.length === 0 ? (
         <Empty>No coins launched yet.</Empty>
       ) : (
         <>
+          {clankerCoins.length > 0 ? <div className="border-b border-hairline bg-canvas-soft px-4 py-1.5 text-caption font-medium text-ink">Through Bootr: RWAGMI&rsquo;s locker</div> : null}
+          {coins.length === 0 ? <p className="border-b border-hairline px-4 py-3 text-caption text-mute">No coins launched through Bootr yet.</p> : null}
           <div className="divide-y divide-hairline border-b border-hairline">
             {distinct.map((r, k) => {
               const amount = totalOf(k);
@@ -246,6 +290,61 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
               </tbody>
             </table>
           </div>
+          {clankerCoins.length > 0 ? (
+            <div className="border-t border-hairline" data-testid="platform-fees-clanker">
+              <div className="bg-canvas-soft px-4 py-1.5 text-caption font-medium text-ink">Through Clanker: Clanker&rsquo;s fee locker</div>
+              <p className="border-t border-hairline px-4 py-2 text-caption text-mute">
+                These coins pay their fees into Clanker&rsquo;s fee locker, as WETH. Clanker&rsquo;s LP locker collects a coin&rsquo;s fees first (on swaps, or when
+                anyone asks it to collect); once collected, the platform&rsquo;s share is paid out with one call on the fee locker,{' '}
+                <span className="font-mono text-ink">claim(treasury, WETH)</span>, where the treasury is the platform wallet. The claim always pays that wallet,
+                whoever sends it: connect the platform wallet here, or send the call from anywhere.
+              </p>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-3">
+                <div>
+                  <div className="text-caption text-mute">
+                    Collected, waiting for a claim
+                    {me ? (
+                      <>
+                        {' '}
+                        for{' '}
+                        <a href={explorer.address(me)} target="_blank" rel="noopener noreferrer" className="font-mono hover:text-link">
+                          {shortAddr(me, 6, 4)}
+                        </a>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="font-mono text-base text-ink tabular" data-testid="platform-weth-clanker">
+                    {clankerAmount == null ? '—' : `${units(clankerAmount, 18, 6)} WETH`}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void claimClanker()}
+                  disabled={!clankerAmount || (!env.useMock && !me) || !!pending || allRunning}
+                  loading={pending === 'Claim on Clanker'}
+                  title={!env.useMock && !me ? 'Connect the platform wallet to claim' : undefined}
+                >
+                  Claim on Clanker
+                </Button>
+              </div>
+              <ul className="divide-y divide-hairline border-t border-hairline">
+                {clankerCoins.map((coin) => {
+                  const fee = feeModelOf(coin);
+                  return (
+                    <li key={coin.token} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+                      <a href={`/token/${coin.token}`} className="text-sm text-ink hover:text-link">
+                        {coin.name} <span className="font-mono text-caption text-mute">${coin.symbol}</span>
+                      </a>
+                      <span className="font-mono text-caption text-body">
+                        {pctLabel(swapFeePct(fee))} fee, plus 20% on top for Clanker: {pctLabel(traderPaysPct(fee))} per trade
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
         </>
       )}
     </Panel>

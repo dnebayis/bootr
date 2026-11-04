@@ -25,6 +25,23 @@ async function sign(request: Parameters<Parameters<typeof test>[2]>[0]['request'
   return { message, signature };
 }
 
+test('agent API: launchThrough picks the Clanker launcher, anything else is refused (mock mode)', async ({ request }) => {
+  const auth = await sign(request, 'Prepare a Bootr launch.');
+  const launch = { name: 'Basewatch', symbol: 'bwatch', identity: 'A patient onchain analyst for small Base coins.', image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` } };
+  // Its own client IP: the route allows 5 calls per minute per IP and the other tests here share the default one.
+  const headers = { 'x-real-ip': '10.7.0.3' };
+  const res = await request.post('/api/agent/launch', { headers, data: { ...auth, launch: { ...launch, launchThrough: 'clanker' } } });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as { launchThrough: string; transactions: { step: string; note: string }[] };
+  expect(body.launchThrough).toBe('clanker');
+  expect(body.transactions[1].step).toBe('launch');
+  expect(body.transactions[1].note).toContain('BootrClankerLauncher.launch');
+  const other = await sign(request, 'Prepare a Bootr launch.');
+  const bad = await request.post('/api/agent/launch', { headers, data: { ...other, launch: { ...launch, launchThrough: 'pump' } } });
+  expect(bad.status()).toBe(400);
+  expect(((await bad.json()) as { message: string }).message).toContain('launchThrough');
+});
+
 test('agent API: a signed request prepares a launch (mock mode) and returns the transactions to send', async ({ request }) => {
   const auth = await sign(request, 'Prepare a Bootr launch.');
   const res = await request.post('/api/agent/launch', {

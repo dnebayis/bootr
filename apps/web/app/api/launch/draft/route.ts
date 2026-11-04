@@ -9,6 +9,7 @@ import {
   isDraftId,
   normalizeCoin,
   normalizeIdentity,
+  normalizeSource,
   normalizeWorker,
   ownerCookieValue,
   ownerTagFromCookie,
@@ -19,7 +20,8 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
  * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, telegram, discord}},
- *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}}}
+ *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}},
+ *   launchThrough?: 'bootr' | 'clanker'}
  * Stores the creator's Instructions text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
  * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
  * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`); a custom `worker` is published in the
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
   if (Number(req.headers.get('content-length') ?? 0) > 8192) {
     return NextResponse.json({ error: 'payload_too_large' }, { status: 413, headers: NO_STORE });
   }
-  let body: { draftId?: unknown; identity?: unknown; coin?: unknown; worker?: unknown } = {};
+  let body: { draftId?: unknown; identity?: unknown; coin?: unknown; worker?: unknown; launchThrough?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -61,10 +63,14 @@ export async function POST(req: NextRequest) {
   if (body.worker !== undefined && worker === null) {
     return NextResponse.json({ error: 'invalid_request', message: 'worker must be a template id or a custom preset within bounds' }, { status: 400, headers: NO_STORE });
   }
+  const source = normalizeSource(body.launchThrough);
+  if (source === null) {
+    return NextResponse.json({ error: 'invalid_request', message: 'launchThrough must be bootr or clanker' }, { status: 400, headers: NO_STORE });
+  }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;
   try {
-    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin, worker });
+    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin, worker, source });
   } catch {
     return NextResponse.json({ error: 'store_unavailable', message: 'The launch draft store is not writable.' }, { status: 503, headers: NO_STORE });
   }

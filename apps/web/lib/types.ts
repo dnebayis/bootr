@@ -6,6 +6,8 @@ export type { CapabilityKey };
 
 export type AgentStatus = 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
 export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
+/** Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker) or the Clanker wrapper (docs/design/clanker-launch.md). */
+export type LaunchSource = 'bootr' | 'clanker';
 export type TokenTab = 'newest' | 'graduated' | 'mcap' | 'active';
 
 export interface Agent {
@@ -46,7 +48,10 @@ export interface Token {
   agentId: string;
   poolId: Hex;
   pairedToken: Address;
+  /** The pool's swap fee, 1e6-based (10000 = 1%). Fixed at 1% on the Bootr path; per coin on the Clanker path. */
   lpFeeBps: number;
+  /** `bootr` (default; older indexers omit the field) or `clanker`. */
+  source?: LaunchSource;
   agentBps: number;
   creatorBps: number;
   burnBps: number;
@@ -132,7 +137,7 @@ export interface TokenDetail extends Token {
 }
 
 export interface AgentWithToken extends Agent {
-  tokenInfo: Pick<Token, 'id' | 'name' | 'symbol' | 'image' | 'creator' | 'xHandle'> | null;
+  tokenInfo: Pick<Token, 'id' | 'name' | 'symbol' | 'image' | 'creator' | 'xHandle' | 'source' | 'lpFeeBps'> | null;
 }
 
 export interface FuelEvent {

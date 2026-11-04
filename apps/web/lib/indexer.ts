@@ -44,15 +44,31 @@ export const PAGE_SIZE = 48;
 
 class IndexerError extends Error {}
 
+/**
+ * `token.source` (`bootr` | `clanker`) arrived with the Clanker launch path. An indexer built before it rejects the
+ * field, so the first such error drops it from every later query (the web then treats every coin as a Bootr coin).
+ * TODO(clanker): remove once every deployment's indexer carries `token.source`.
+ */
+let indexerHasSource = true;
+const SOURCE_FIELD = /\bsource\b/g;
+
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  const q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
   const res = await fetch(`${env.indexerUrl}/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query, variables }),
+    body: JSON.stringify({ query: q, variables }),
   });
   if (!res.ok) throw new IndexerError(`Indexer responded ${res.status}`);
   const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) throw new IndexerError(json.errors.map((e) => e.message).join('; '));
+  if (json.errors?.length) {
+    const message = json.errors.map((e) => e.message).join('; ');
+    if (indexerHasSource && /Cannot query field "source"/.test(message)) {
+      indexerHasSource = false;
+      return gql(query, variables);
+    }
+    throw new IndexerError(message);
+  }
   if (!json.data) throw new IndexerError('Empty indexer response');
   return json.data;
 }
@@ -69,7 +85,7 @@ const delay = (ms = 220) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------- fragments
 
 const TOKEN_FIELDS = /* GraphQL */ `
-  id chainId name symbol image creator kernel burner agentId poolId pairedToken lpFeeBps
+  id chainId name symbol image creator kernel burner agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
   priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt
   agent { id status }
@@ -167,7 +183,7 @@ export async function fetchAgents(): Promise<AgentWithToken[]> {
   // TODO(indexer): assumes a Ponder relation `agent.tokenRef -> token` (the `token` column is the FK).
   const data = await gql<{ agents: Paged<Agent & { tokenRef: AgentWithToken['tokenInfo'] }> }>(
     `query Agents { agents(limit: 1000, orderBy: "treasuryUsd", orderDirection: "desc") {
-      items { ${AGENT_FIELDS} tokenRef { id name symbol image creator xHandle } }
+      items { ${AGENT_FIELDS} tokenRef { id name symbol image creator xHandle source lpFeeBps } }
     } }`,
   );
   return data.agents.items.map(({ tokenRef, ...a }) => ({ ...a, tokenInfo: tokenRef ?? null }));

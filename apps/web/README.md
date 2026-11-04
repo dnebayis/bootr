@@ -49,6 +49,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`. |
 | `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (LlamaSwap on Base otherwise, Uniswap on Sepolia). |
 | `NEXT_PUBLIC_LAUNCHER_ADDRESS` | `BootrLauncher`. |
+| `NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS` | `BootrClankerLauncher`, the "Launch through Clanker" path (optional; the choice is hidden while unset). |
 | `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` | `AgentGuardian`. |
 | `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY` | Address passed as `supervisorSessionKey` in `launch()` (informational). |
 | `NEXT_PUBLIC_BOOT_X_URL` | Platform X profile link (hidden when empty). |

@@ -49,3 +49,8 @@ export function swapLink(token: string, override?: string): string {
     (isMainnet ? 'https://swap.defillama.com/?chain=base&from=0x0000000000000000000000000000000000000000&to=' : 'https://app.uniswap.org/swap?chain=base_sepolia&outputCurrency=');
   return `${prefix}${token}`;
 }
+
+/** The coin's page on clanker.world (coins launched through Clanker are listed there too). */
+export function clankerWorldUrl(token: string): string {
+  return `https://clanker.world/clanker/${token}`;
+}
