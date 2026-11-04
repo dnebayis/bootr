@@ -6,14 +6,14 @@ const ADMIN = process.env.ADMIN_ADDRESSES!.split(',')[0]!;
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 
 /**
- * Launch through Bootr or Clanker (docs/design/clanker-launch.md, task D). Mock mode offers both paths; a Clanker coin
+ * Launch through RWAGMI or Clanker (docs/design/clanker-launch.md, task D). Mock mode offers both paths; a Clanker coin
  * shows its source label, the whole-fee split with Clanker's 20% on top, and still links to the swap aggregator.
  */
-test('launch form offers Bootr and Clanker; the summary and fee preview follow the choice, the coin page shows the source', async ({ page }) => {
+test('launch form offers RWAGMI and Clanker; the summary and fee preview follow the choice, the coin page shows the source', async ({ page }) => {
   await page.goto('/launch');
   const choice = page.getByTestId('launch-through');
   // Page-rooted, so they can serve as `has:` inside the card label (an inner locator is re-rooted on the outer one).
-  const bootr = page.getByRole('radio', { name: /^Bootr / });
+  const bootr = page.getByRole('radio', { name: /^RWAGMI / });
   const clanker = page.getByRole('radio', { name: /^Clanker / });
   await expect(bootr).toBeChecked();
   await expect(choice).toContainText('Opens at about 2.7 ETH of market cap');
@@ -21,7 +21,7 @@ test('launch form offers Bootr and Clanker; the summary and fee preview follow t
   await expect(choice).toContainText('Listed on bootr.fun and clanker.world.');
 
   const summary = page.getByTestId('launch-summary');
-  await expect(summary).toContainText('Launch throughBootr');
+  await expect(summary).toContainText('Launch throughRWAGMI');
   await expect(summary).toContainText('0.585% of volume');
   await expect(summary).toContainText('of the 90% share');
   await expect(summary.getByTestId('fee-sentence')).toContainText('Swappers pay 1.00% in total: 0.90% goes to the recipients above and 0.10% to RWAGMI');
@@ -83,7 +83,7 @@ test('the admin fee panel lists platform fees per source with the Clanker claim 
   await context.addCookies([{ name: ADMIN_COOKIE, value: token, url: baseURL! }]);
   await page.goto(`/console-${SLUG}`);
   const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Platform fees' }) });
-  await expect(panel).toContainText('Through Bootr: RWAGMI’s locker');
+  await expect(panel).toContainText('Through RWAGMI: RWAGMI’s locker');
   const clanker = panel.getByTestId('platform-fees-clanker');
   await expect(clanker).toContainText('Through Clanker: Clanker’s fee locker');
   await expect(clanker).toContainText('claim(treasury, WETH)');
@@ -96,9 +96,9 @@ test('the admin fee panel lists platform fees per source with the Clanker claim 
 
 test('docs explain the two launch paths without naming anything private', async ({ page, request }) => {
   await page.goto('/docs/launch');
-  await expect(page.getByRole('heading', { name: 'Launch through Bootr or Clanker' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Launch through RWAGMI or Clanker' })).toBeVisible();
   await expect(page.getByText('bootr.fun and clanker.world')).toBeVisible();
   const full = await (await request.get('/llms-full.txt')).text();
-  expect(full).toContain('Launch through Bootr or Clanker');
+  expect(full).toContain('Launch through RWAGMI or Clanker');
   expect(full.toLowerCase()).not.toContain('console');
 });

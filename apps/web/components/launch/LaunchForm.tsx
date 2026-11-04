@@ -112,7 +112,7 @@ function cadenceLabel(ms: number): string {
 const LAUNCH_THROUGH: { id: LaunchSource; label: string; lines: string[] }[] = [
   {
     id: 'bootr',
-    label: 'Bootr',
+    label: 'RWAGMI',
     lines: [
       'Opens at about 2.7 ETH of market cap (around $6k).',
       '1% fee on every trade: 90% of it goes to the agent, you and the platform, 10% to RWAGMI, the launcher.',
@@ -181,8 +181,8 @@ export function LaunchForm() {
   const [gas, setGas] = useState(GAS_TOPUP_DEFAULT_ETH);
   const [devBuy, setDevBuy] = useState('');
   const [buyback, setBuyback] = useState(false);
-  // Launch through Bootr (RWAGMI v3, the default) or Clanker. The Clanker launcher is optional per deployment; while it
-  // is not configured the choice is hidden and every launch goes through Bootr. Mock mode always offers both.
+  // Launch through RWAGMI (the default; source id 'bootr') or Clanker. The Clanker launcher is optional per deployment; while it
+  // is not configured the choice is hidden and every launch goes through RWAGMI. Mock mode always offers both.
   const clankerAvailable = env.useMock || !!contracts.clankerLauncher;
   const [launchThroughPick, setLaunchThrough] = useState<LaunchSource>('bootr');
   const launchThrough: LaunchSource = clankerAvailable ? launchThroughPick : 'bootr';
@@ -769,7 +769,7 @@ export function LaunchForm() {
             {[
               ['Kind', kindLabel],
               ['Model', selectedModel?.label ?? '—'],
-              ['Launch through', launchThrough === 'clanker' ? 'Clanker' : 'Bootr'],
+              ['Launch through', launchThrough === 'clanker' ? 'Clanker' : 'RWAGMI'],
               ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
               ['Fuel', `${fuel || 0} USDC`],
               ...(devBuyWei && devBuyWei > 0n ? [['Dev buy', `${devBuy} ETH`]] : []),

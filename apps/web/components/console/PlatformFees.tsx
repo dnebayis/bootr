@@ -210,7 +210,7 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
       }
     >
       <p className="border-b border-hairline px-4 py-2 text-caption text-mute">
-        Fees are paid in WETH, per launch path. Through Bootr a claim pays the caller&rsquo;s own balance in RWAGMI&rsquo;s locker, so connect the platform
+        Fees are paid in WETH, per launch path. Through RWAGMI a claim pays the caller&rsquo;s own balance in RWAGMI&rsquo;s locker, so connect the platform
         recipient&rsquo;s wallet to claim; each claim settles the coins&rsquo; unsettled fees first, and Claim all sends one transaction per {CHUNK} coins, in order.
         Through Clanker the fees wait in Clanker&rsquo;s fee locker, claimed below.
       </p>
@@ -222,8 +222,8 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
         <Empty>No coins launched yet.</Empty>
       ) : (
         <>
-          {clankerCoins.length > 0 ? <div className="border-b border-hairline bg-canvas-soft px-4 py-1.5 text-caption font-medium text-ink">Through Bootr: RWAGMI&rsquo;s locker</div> : null}
-          {coins.length === 0 ? <p className="border-b border-hairline px-4 py-3 text-caption text-mute">No coins launched through Bootr yet.</p> : null}
+          {clankerCoins.length > 0 ? <div className="border-b border-hairline bg-canvas-soft px-4 py-1.5 text-caption font-medium text-ink">Through RWAGMI: RWAGMI&rsquo;s locker</div> : null}
+          {coins.length === 0 ? <p className="border-b border-hairline px-4 py-3 text-caption text-mute">No coins launched through RWAGMI yet.</p> : null}
           <div className="divide-y divide-hairline border-b border-hairline">
             {distinct.map((r, k) => {
               const amount = totalOf(k);

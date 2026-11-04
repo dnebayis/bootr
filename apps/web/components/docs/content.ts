@@ -85,7 +85,7 @@ const overview: DocBody = {
       ],
     ),
     h2('since-rwagmi', 'This release'),
-    p('Every coin launches through the RWAGMI v3 launcher (B20 tokens, fees in WETH) or, if the creator picks it, through Clanker v4; see [Launch through Bootr or Clanker](/docs/launch#launch-through). Coins created by Bootr’s earlier Clanker-based launcher (before 29 October 2026) are not covered by these pages and are not shown by the current indexer.'),
+    p('Every coin launches through the RWAGMI v3 launcher (B20 tokens, fees in WETH) or, if the creator picks it, through Clanker v4; see [Launch through RWAGMI or Clanker](/docs/launch#launch-through). Coins created by Bootr’s earlier Clanker-based launcher (before 29 October 2026) are not covered by these pages and are not shown by the current indexer.'),
     note('Building on Bootr? Start with [Contracts](/docs/contracts) and [Public APIs](/docs/api). Are you an agent or a language model? Read [For agents and LLMs](/docs/for-agents) or fetch [/llms.txt](/llms.txt).'),
   ],
 };
@@ -107,10 +107,10 @@ const launch: DocBody = {
       '**Guardian registration.** `AgentGuardian.registerAgent(kernel, token, creator, dormancyPeriod)` records the creator (who may pause the agent) and the dormancy period.',
       '**Events, fee, refund.** Emits `AgentLaunched` and `LaunchContext(token, context)`, sends the launch fee to the platform recipient and refunds any extra ETH.',
     ),
-    h2('launch-through', 'Launch through Bootr or Clanker'),
+    h2('launch-through', 'Launch through RWAGMI or Clanker'),
     p('The form offers two launchers. Both create the same agent (treasury, identity, guardian, session key) and lock the same fee split; they differ in the pool the coin opens in and in who takes what from the fee. The choice is permanent for the coin.'),
     table(
-      ['', 'Through Bootr', 'Through Clanker'],
+      ['', 'Through RWAGMI', 'Through Clanker'],
       [
         ['Opening market cap', 'about 2.7 ETH (around $6k)', 'about 10 ETH (around $27k), Clanker’s standard layout'],
         ['Swap fee', '1%, taken in WETH', '1% for every coin except the platform’s own, which uses 2%; Clanker adds 20% on top, so a trader pays 1.2% (2.4%)'],
@@ -119,7 +119,7 @@ const launch: DocBody = {
         ['Listed on', 'bootr.fun', 'bootr.fun and clanker.world'],
       ],
     ),
-    p('Through Clanker the contract is `BootrClankerLauncher`, with the same `launch(params)`. The token address is not predictable before the transaction, so the form reads it from the `AgentLaunched` event. The steps above describe the Bootr path; on the Clanker path step 3 calls Clanker’s factory and step 4 writes the slots into Clanker’s locker, with the launcher as the admin of every slot, so the split is locked the same way.'),
+    p('Through Clanker the contract is `BootrClankerLauncher`, with the same `launch(params)`. The token address is not predictable before the transaction, so the form reads it from the `AgentLaunched` event. The steps above describe the RWAGMI path; on the Clanker path step 3 calls Clanker’s factory and step 4 writes the slots into Clanker’s locker, with the launcher as the admin of every slot, so the split is locked the same way.'),
     h2('what-you-pay', 'What you pay'),
     table(
       ['Item', 'Amount'],
@@ -158,7 +158,7 @@ const launch: DocBody = {
 // ---------------------------------------------------------------- Fees and claims
 
 const fees: DocBody = {
-  lead: 'Every swap pays a 1% fee, taken in WETH by the pool’s hook. 90% of it goes to the coin’s recipients, split by the preset chosen at launch; 10% goes to RWAGMI, the launcher. Nothing is charged on top: swappers pay 1.00% in total. Coins launched through Clanker differ: their recipients share the whole swap fee (1% for every coin except the platform’s own, which uses 2%) and Clanker charges 20% of it on top, so a trader pays 1.2% (or 2.4%); see [Launch through Bootr or Clanker](/docs/launch#launch-through).',
+  lead: 'Every swap pays a 1% fee, taken in WETH by the pool’s hook. 90% of it goes to the coin’s recipients, split by the preset chosen at launch; 10% goes to RWAGMI, the launcher. Nothing is charged on top: swappers pay 1.00% in total. Coins launched through Clanker differ: their recipients share the whole swap fee (1% for every coin except the platform’s own, which uses 2%) and Clanker charges 20% of it on top, so a trader pays 1.2% (or 2.4%); see [Launch through RWAGMI or Clanker](/docs/launch#launch-through).',
   blocks: [
     h2('presets', 'Presets'),
     table(
