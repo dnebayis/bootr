@@ -11,12 +11,14 @@ import { composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
+import { agentLaunchedEvent, clankerLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
+import { launchSourceOf, type LaunchSource, type LauncherEntry } from './chain.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
+import { agentSource, clankerDetailsOf, clankerLockersFor, type ClankerLaunchDetails } from './launch-source.js';
 import { initialState } from './runtime.js';
 import type { SenderAccount } from './sender-client.js';
 import { SenderError } from './sender-client.js';
@@ -47,9 +49,17 @@ export interface LaunchEvent {
   workerHash: Hex;
   blockNumber: bigint;
   txHash: Hex;
+  /** The launcher that emitted the event. */
+  launcher: Address;
+  /** Its source (`launchSourceOf`): `clanker` for `BootrClankerLauncher`, `bootr` otherwise. */
+  source: LaunchSource;
 }
 
-export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
+/**
+ * Decodes `AgentLaunched` logs; the source of each is the emitting launcher's entry in `launchers` (an unknown
+ * emitter counts as `bootr`, which is what every log was before the Clanker launcher existed).
+ */
+export function decodeLaunchLogs(logs: Log[], launchers: readonly LauncherEntry[] = []): LaunchEvent[] {
   return parseEventLogs({ abi: [agentLaunchedEvent], logs }).map((l) => ({
     token: l.args.token,
     kernel: l.args.kernel,
@@ -62,7 +72,31 @@ export function decodeLaunchLogs(logs: Log[]): LaunchEvent[] {
     workerHash: l.args.workerHash,
     blockNumber: l.blockNumber ?? 0n,
     txHash: l.transactionHash ?? '0x',
+    launcher: getAddress(l.address),
+    source: launchSourceOf(launchers, l.address) ?? 'bootr',
   }));
+}
+
+/**
+ * `BootrClankerLauncher.ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick, lpFeeBps)` for `token`
+ * among the launch tx logs, emitted by `launcher` (only our launcher's log counts, as for the draft id). The fee
+ * locker is not in the event: it is the configured `ClankerFeeLocker`. Null when the log is absent.
+ */
+export function decodeClankerLaunch(logs: Log[], launcher: Address, token: Address, feeLocker: Address): ClankerLaunchDetails | null {
+  const events = parseEventLogs({ abi: [clankerLaunchedEvent], logs, strict: true });
+  for (const ev of events) {
+    if (!isAddressEqual(ev.address, launcher) || !isAddressEqual(ev.args.token, token)) continue;
+    return {
+      poolId: ev.args.poolId,
+      hook: getAddress(ev.args.hook),
+      locker: getAddress(ev.args.locker),
+      feeLocker: getAddress(feeLocker),
+      mevModule: getAddress(ev.args.mevModule),
+      startingTick: ev.args.startingTick,
+      lpFeeBps: ev.args.lpFeeBps,
+    };
+  }
+  return null;
 }
 
 export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
@@ -159,6 +193,9 @@ export function storedWorkerPreset(config: Record<string, unknown>): WorkerPrese
  *
  * `worker` is what `workerHash` resolved to (`resolveWorker`): `workerTemplate` names it and, for a custom
  * worker, `workerPreset` stores the preset itself (capabilities, cadence, job lines) because no template has it.
+ *
+ * `source` mirrors `sv_agents.source`; a Clanker launch also stores `clanker` (pool id, hook, lockers from
+ * `ClankerLaunched`, see launch-source.ts) when the receipt could be read, else nothing until `backfillClankerDetails`.
  */
 export function buildLaunchConfig(
   ctx: SupervisorContext,
@@ -166,6 +203,7 @@ export function buildLaunchConfig(
   token: { name: string; symbol: string },
   creatorIdentity: string | null = null,
   worker: ResolvedWorker = resolveWorker(launch.workerHash),
+  clanker: ClankerLaunchDetails | null = null,
 ): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
@@ -175,6 +213,8 @@ export function buildLaunchConfig(
     token: { address: getAddress(launch.token), symbol: token.symbol, name: token.name, chainId: ctx.chain.chainId },
     kernel: { address: getAddress(launch.kernel) },
     creator: { address: getAddress(launch.creator) },
+    source: launch.source,
+    ...(launch.source === 'clanker' && clanker ? { clanker } : {}),
     xHandle: null,
     xUserId: null,
     model: launch.model || DEFAULT_MODEL,
@@ -321,26 +361,57 @@ export function decodeDraftId(logs: Log[], launcher: Address, token: Address): s
   return '';
 }
 
-/** Reads the launch tx receipt and decodes the draft id; null when the RPC call fails (retried on a later tick). */
-export async function readDraftId(ctx: SupervisorContext, txHash: string, token: string): Promise<string | null> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return '';
+/**
+ * The launch tx's logs: `[]` for a malformed hash (nothing to decode), null when the RPC call fails (the caller
+ * retries on a later tick).
+ */
+export async function readLaunchLogs(ctx: SupervisorContext, txHash: string): Promise<Log[] | null> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return [];
   try {
     const receipt = await ctx.chain.publicClient.getTransactionReceipt({ hash: txHash as Hex });
-    return decodeDraftId(receipt.logs, ctx.chain.launcher, getAddress(token));
+    return receipt.logs;
   } catch (err) {
-    ctx.log.warn({ txHash, err }, 'could not read the launch receipt for the draft id; will retry');
+    ctx.log.warn({ txHash, err }, 'could not read the launch receipt; will retry');
     return null;
   }
+}
+
+/** Reads the launch tx receipt and decodes the draft id; null when the RPC call fails (retried on a later tick). */
+export async function readDraftId(ctx: SupervisorContext, txHash: string, token: string, launcher: Address = ctx.chain.launcher): Promise<string | null> {
+  const logs = await readLaunchLogs(ctx, txHash);
+  return logs && decodeDraftId(logs, launcher, getAddress(token));
+}
+
+/** The launcher an agent was registered from: the Clanker launcher for `clanker` rows, else the Bootr one. */
+function launcherOf(ctx: SupervisorContext, agent: Pick<AgentRow, 'source'>): Address {
+  return agentSource(agent) === 'clanker' && ctx.chain.clankerLauncher ? ctx.chain.clankerLauncher : ctx.chain.launcher;
 }
 
 /** Fills `sv_agents.draft_id` for agents registered before it existed (lazy, onboarding agents only). */
 async function backfillDraftIds(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
   for (const agent of pending) {
     if (agent.draftId !== null || !agent.launchTxHash) continue;
-    const draftId = await readDraftId(ctx, agent.launchTxHash, agent.token);
+    const draftId = await readDraftId(ctx, agent.launchTxHash, agent.token, launcherOf(ctx, agent));
     if (draftId === null) continue;
     await ctx.db.update(agents).set({ draftId, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
     agent.draftId = draftId;
+  }
+}
+
+/** Fills `config.clanker` for Clanker agents whose launch receipt could not be read at registration (onboarding agents only). */
+async function backfillClankerDetails(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
+  for (const agent of pending) {
+    if (agentSource(agent) !== 'clanker' || clankerDetailsOf(agent.config) || !agent.launchTxHash || !ctx.chain.clankerLauncher) continue;
+    const logs = await readLaunchLogs(ctx, agent.launchTxHash);
+    if (!logs) continue;
+    const details = decodeClankerLaunch(logs, ctx.chain.clankerLauncher, getAddress(agent.token), ctx.chain.clanker.feeLocker);
+    if (!details) {
+      ctx.log.warn({ agentId: agent.agentId, txHash: agent.launchTxHash }, 'clanker launch receipt has no ClankerLaunched log for the token; using the configured lockers');
+      continue;
+    }
+    const config = { ...agent.config, clanker: details };
+    await ctx.db.update(agents).set({ config, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
+    agent.config = config;
   }
 }
 
@@ -403,8 +474,13 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   const worker = resolveWorker(launch.workerHash, card);
   // An unreachable card (creatorIdentity null) is retried by `backfillFromAgentCard`, worker included.
   if (creatorIdentity !== null) warnWorkerFallback(log, launch, worker);
-  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker);
-  const draftId = await readDraftId(ctx, launch.txHash, launch.token);
+  // One receipt read serves the draft id and, for a Clanker launch, the pool / locker details; a failed read leaves
+  // both to the onboarding backfills (`backfillDraftIds`, `backfillClankerDetails`).
+  const launchLogs = await readLaunchLogs(ctx, launch.txHash);
+  const draftId = launchLogs && decodeDraftId(launchLogs, launch.launcher, launch.token);
+  const clanker = launch.source === 'clanker' && launchLogs ? decodeClankerLaunch(launchLogs, launch.launcher, launch.token, ctx.chain.clanker.feeLocker) : null;
+  if (launch.source === 'clanker' && launchLogs && !clanker) log.warn({ txHash: launch.txHash }, 'clanker launch receipt has no ClankerLaunched log for the token; using the configured lockers');
+  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker, clanker);
   const [row] = await ctx.db
     .insert(agents)
     .values({
@@ -412,6 +488,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
       token: getAddress(launch.token),
       kernel: getAddress(launch.kernel),
       creator: getAddress(launch.creator),
+      source: launch.source,
       config,
       launchBlock: Number(launch.blockNumber),
       launchTxHash: launch.txHash,
@@ -428,25 +505,29 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     .insert(runtimes)
     .values({ agentId, state: initialState() as unknown as Record<string, unknown>, cycle: 0, nextAt: now, status: 'ready', configRevision: 0, updatedAt: now })
     .onConflictDoNothing();
-  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, block: launch.blockNumber.toString(), draftId, worker: worker.id, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
+  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, source: launch.source, block: launch.blockNumber.toString(), draftId, worker: worker.id, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
   // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
   const builderCode = await ensureBuilderCode(ctx, row);
   return builderCode ? { ...row, builderCode } : row;
 }
 
-/** Reads new `AgentLaunched` logs after the stored cursor and registers every agent found. */
+/**
+ * Reads new `AgentLaunched` logs after the stored cursor from every followed launcher (`chain.launchers`: the Bootr
+ * launcher and, when configured, the Clanker one; one cursor for all) and registers every agent found.
+ */
 export async function pollLaunches(ctx: SupervisorContext): Promise<number> {
-  const { publicClient } = ctx.chain;
+  const { publicClient, launchers } = ctx.chain;
   const latest = await publicClient.getBlockNumber();
   const cursor = await ctx.db.query.cursors.findFirst({ where: eq(cursors.name, LAUNCH_CURSOR) });
   let from = cursor ? BigInt(cursor.value) + 1n : BigInt(ctx.config.LAUNCHER_START_BLOCK);
   if (from > latest) return 0;
   let registered = 0;
   const chunk = BigInt(ctx.config.LAUNCH_LOG_CHUNK_BLOCKS);
+  const address = launchers.length === 1 ? launchers[0]!.address : launchers.map((l) => l.address);
   while (from <= latest) {
     const to = from + chunk - 1n < latest ? from + chunk - 1n : latest;
-    const logs = await publicClient.getLogs({ address: ctx.chain.launcher, event: agentLaunchedEvent, fromBlock: from, toBlock: to });
-    for (const launch of decodeLaunchLogs(logs)) {
+    const logs = await publicClient.getLogs({ address, event: agentLaunchedEvent, fromBlock: from, toBlock: to });
+    for (const launch of decodeLaunchLogs(logs, launchers)) {
       if (await registerAgent(ctx, launch)) registered += 1;
     }
     await ctx.db
@@ -471,10 +552,16 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
   for (const [k, v] of Object.entries(bootrRequired)) if (!v) throw new Error(`bootr.${k} address is not configured for chain ${ctx.chain.chainId}`);
   const zerodevRequired = { gasPolicy: z.gasPolicy, rateLimitPolicy: z.rateLimitPolicy, timestampPolicy: z.timestampPolicy, ecdsaSigner: z.ecdsaSigner };
   for (const [k, v] of Object.entries(zerodevRequired)) if (!v) throw new Error(`zerodev.${k} address is not configured for chain ${ctx.chain.chainId}`);
+  // Claim targets by launch source: the RWAGMI locker for Bootr coins; the Clanker LP locker (collectRewards) and
+  // fee locker (claim) the launch named for Clanker coins (launch-source.ts).
+  const source = agentSource(agent);
+  const clanker = source === 'clanker' ? clankerLockersFor(ctx, agent) : null;
   return {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
-    feeLocker: ctx.chain.rwagmi.lpLocker,
+    source,
+    feeLocker: clanker ? clanker.feeLocker : ctx.chain.rwagmi.lpLocker,
+    ...(clanker ? { lpLocker: clanker.lpLocker } : {}),
     rulesVersion: CALL_POLICY_RULES_VERSION,
     swapHelper: bootrRequired.swapHelper as Address,
     usdc: addresses.usdc,
@@ -636,6 +723,8 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
   // Decode every pending draft id first, so the earliest-launch check in adoptDraftAccount sees all claimants.
   await backfillDraftIds(ctx, pending);
+  // Clanker pool / locker details whose launch receipt was unreadable at registration (before any session key below).
+  await backfillClankerDetails(ctx, pending);
   // Creator identities (and custom workers) whose agent card was unreachable at registration, before any agent goes active below.
   await backfillFromAgentCard(ctx, pending);
   for (const agent of pending) {

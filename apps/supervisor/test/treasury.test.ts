@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { decodeFunctionData, erc20Abi, parseUnits, type Hex } from 'viem';
-import { rwagmiLpLockerV3Abi, swapHelperAbi } from '../src/abi.js';
+import { clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLpLockerV3Abi, swapHelperAbi } from '../src/abi.js';
 import { treasuryOps } from '../src/db/schema.js';
 import { encodeUnwrapCall, gasStatusOf, gasTopUp, wethAbi } from '../src/gas.js';
 import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
-import { clampSlippageBps, encodeClaimCall, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
-import { ADDR, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER } from './helpers.js';
+import { CLANKER_PENDING_NOTE, claimOpFor, clampSlippageBps, encodeClaimCall, encodeClankerClaimCalls, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
+import { ADDR, CLANKER_FEE_LOCKER, CLANKER_LP_LOCKER, CLANKER_POOL_ID, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER, TOKEN } from './helpers.js';
 
 /** Clanker's mainnet FeeLocker: the claim target of session keys installed before the RWAGMI v3 cutover. */
 const LEGACY_CLANKER_FEE_LOCKER = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
@@ -138,6 +138,110 @@ describe('fee claim policy', () => {
     expect(claimOf(withPool.data!)).toEqual({ functionName: 'settleAndClaim', args: [[POOL_ID], ADDR.weth, KERNEL] });
     const settledOnly = encodeClaimCall({ lpLocker: RWAGMI_LP_LOCKER, kernel: KERNEL, weth: ADDR.weth, poolId: null });
     expect(claimOf(settledOnly.data!)).toEqual({ functionName: 'claimQuote', args: [ADDR.weth, KERNEL] });
+  });
+
+  it('a Bootr agent reports source bootr and no pending-fee note', async () => {
+    const w = await makeWorld({ chain: { claimableWeth: parseUnits('0.004', 18) } });
+    try {
+      const snap = await readTreasuryOnChain(w.ctx, await seedAgent(w));
+      expect(snap.source).toBe('bootr');
+      expect(snap.claimable.note).toBeUndefined();
+      expect(w.state.calls.some((c) => c.fn === 'availableFees')).toBe(false);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('fee claims of a coin launched through Clanker (docs/design/clanker-launch.md section 3)', () => {
+  /** The `config.clanker` block `registerAgent` stores from `ClankerLaunched`. */
+  const clankerDetails = { poolId: CLANKER_POOL_ID, hook: '0x00000000000000000000000000000000000000B4', locker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER, mevModule: '0x00000000000000000000000000000000000000E5', startingTick: -230400, lpFeeBps: 10_000 };
+
+  it('reads settled WETH from ClankerFeeLocker.availableFees(kernel, WETH), no pending, the Clanker pool id and the under-reporting note; the RWAGMI locker is never asked', async () => {
+    const w = await makeWorld({ chain: { clankerAvailableWeth: parseUnits('0.004', 18), claimableWeth: parseUnits('9', 18), pendingWeth: parseUnits('9', 18) } });
+    try {
+      const agent = await seedAgent(w, { agent: { source: 'clanker' }, config: { source: 'clanker', clanker: clankerDetails } });
+      const snap = await readTreasuryOnChain(w.ctx, agent);
+      expect(snap.source).toBe('clanker');
+      expect(snap.claimable).toEqual({ weth: '0.004', pending: '0', settled: '0.004', poolId: CLANKER_POOL_ID, note: CLANKER_PENDING_NOTE });
+      expect(snap.claimable.note).toMatch(/under-reported/);
+      expect(snap.usd.claimableWeth).toBeCloseTo(12, 6);
+      const fns = w.state.calls.map((c) => c.fn);
+      expect(fns).toContain('availableFees');
+      expect(fns).not.toContain('pendingQuote');
+      expect(fns).not.toContain('claimableQuote');
+      expect(fns).not.toContain('deploymentInfo');
+      // the fee locker read is for the kernel's WETH on the locker the launch named
+      expect(w.state.calls.find((c) => c.fn === 'availableFees')!.args).toEqual([KERNEL, ADDR.weth]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('without the stored ClankerLaunched details (receipt unread) the configured lockers are used and the pool id is null', async () => {
+    const w = await makeWorld({ chain: { clankerAvailableWeth: parseUnits('0.001', 18) } });
+    try {
+      const agent = await seedAgent(w, { agent: { source: 'clanker' }, config: { source: 'clanker' } });
+      const snap = await readTreasuryOnChain(w.ctx, agent);
+      expect(snap.claimable).toEqual({ weth: '0.001', pending: '0', settled: '0.001', poolId: null, note: CLANKER_PENDING_NOTE });
+      const op = claimOpFor(w.ctx, agent, snap)!;
+      expect(op.calls.map((c) => c.to)).toEqual([CLANKER_LP_LOCKER, CLANKER_FEE_LOCKER]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('claims above the threshold with one batched userOp: lpLocker.collectRewards(token) then feeLocker.claim(kernel, WETH); the rest of the policy is unchanged', async () => {
+    // 0.004 WETH at $3000 = $12 >= $5 ; USDC 5 < 20 target ; WETH balance 0.1 -> claim, then the usual swap
+    const w = await makeWorld({ chain: { clankerAvailableWeth: parseUnits('0.004', 18), usdc: 5_000_000n, weth: parseUnits('0.1', 18) } });
+    try {
+      const agent = await seedAgent(w, { agent: { source: 'clanker' }, config: { source: 'clanker', clanker: clankerDetails } });
+      const out = await runFeePolicy(w.ctx, agent);
+      expect(out.claim?.status).toBe('confirmed');
+      expect(out.swap?.status).toBe('confirmed');
+      const ops = await w.db.select().from(treasuryOps);
+      expect(ops.map((o) => o.kind).sort()).toEqual(['claim_fees', 'swap']);
+      const claim = ops.find((o) => o.kind === 'claim_fees')!;
+      expect(claim.origin).toBe('policy');
+      expect(claim.calls).toHaveLength(2);
+      expect(claim.calls.map((c) => [c.to, c.value])).toEqual([
+        [CLANKER_LP_LOCKER, '0'],
+        [CLANKER_FEE_LOCKER, '0'],
+      ]);
+      expect(decodeFunctionData({ abi: clankerLpLockerAbi, data: claim.calls[0]!.data as Hex })).toEqual({ functionName: 'collectRewards', args: [TOKEN] });
+      expect(decodeFunctionData({ abi: clankerFeeLockerAbi, data: claim.calls[1]!.data as Hex })).toEqual({ functionName: 'claim', args: [KERNEL, ADDR.weth] });
+      expect(claim.description).toContain('collectRewards + claim');
+      expect(claim.description).toContain('Clanker');
+      // one userOp for the claim (both calls batched), one for the swap
+      expect(w.kernel.submitted).toHaveLength(2);
+      const swap = ops.find((o) => o.kind === 'swap')!;
+      expect(swap.calls.map((c) => c.to)).toEqual([ADDR.weth, ADDR.bootr.swapHelper]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('does nothing below the threshold, and never claims an empty fee locker (claim would revert NoFeesToClaim)', async () => {
+    const w = await makeWorld({ chain: { clankerAvailableWeth: parseUnits('0.001', 18), usdc: 50_000_000n } });
+    try {
+      const agent = await seedAgent(w, { agent: { source: 'clanker' }, config: { source: 'clanker', clanker: clankerDetails } });
+      expect(await runFeePolicy(w.ctx, agent)).toEqual({});
+      expect(await w.db.select().from(treasuryOps)).toHaveLength(0);
+      const snap = await readTreasuryOnChain(w.ctx, agent);
+      expect(claimOpFor(w.ctx, agent, { ...snap, claimable: { ...snap.claimable, settled: '0', weth: '0' } })).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('encodeClankerClaimCalls: [lpLocker.collectRewards(token), feeLocker.claim(kernel, WETH)], both without value', () => {
+    const calls = encodeClankerClaimCalls({ lpLocker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER, token: TOKEN, kernel: KERNEL, weth: ADDR.weth });
+    expect(calls.map((c) => [c.to, c.value])).toEqual([
+      [CLANKER_LP_LOCKER, 0n],
+      [CLANKER_FEE_LOCKER, 0n],
+    ]);
+    expect(decodeFunctionData({ abi: clankerLpLockerAbi, data: calls[0]!.data! })).toEqual({ functionName: 'collectRewards', args: [TOKEN] });
+    expect(decodeFunctionData({ abi: clankerFeeLockerAbi, data: calls[1]!.data! })).toEqual({ functionName: 'claim', args: [KERNEL, ADDR.weth] });
   });
 });
 

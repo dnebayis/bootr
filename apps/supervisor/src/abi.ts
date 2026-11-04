@@ -40,6 +40,40 @@ export const agentLaunchedEvent = launcherAbi[0];
  */
 export const launchContextEvent = parseAbi(['event LaunchContext(address indexed token, string context)'])[0];
 
+/**
+ * `BootrClankerLauncher.ClankerLaunched` (docs/design/clanker-launch.md section 2): emitted in the launch tx next to
+ * the identical `AgentLaunched`, so the pool and locker details need no decoding of Clanker's `TokenCreated`.
+ * `poolId` is the Uniswap v4 pool id, `hook` the Clanker static-fee hook, `locker` the `ClankerLpLockerFeeConversion`
+ * the positions sit in, `lpFeeBps` the LP fee in bps (same unit as `LaunchDefaults.lpFeeBps`).
+ */
+export const clankerLaunchedEvent = parseAbi(['event ClankerLaunched(address indexed token, bytes32 poolId, address hook, address locker, address mevModule, int24 startingTick, uint24 lpFeeBps)'])[0];
+
+/**
+ * Clanker v4 `ClankerFeeLocker` (`0xF3622742…` on Base, docs/design/clanker-launch.md section 1; restored from the
+ * Clanker-era supervisor at commit 390468e). `claim(feeOwner, token)` is callable by anyone and always pays
+ * `feeOwner`; `availableFees(feeOwner, token)` is the balance deposited by the LP locker so far.
+ */
+export const clankerFeeLockerAbi = parseAbi([
+  'function claim(address feeOwner, address token)',
+  'function availableFees(address feeOwner, address token) view returns (uint256)',
+  'function feesToClaim(address feeOwner, address token) view returns (uint256 balance)',
+  'event ClaimTokens(address indexed feeOwner, address indexed token, uint256 amountClaimed)',
+]);
+
+/**
+ * Clanker v4 `ClankerLpLockerFeeConversion` (`0xffA37784…` on Base). `collectRewards(token)` (permissionless)
+ * collects the LP positions' fees, converts each recipient's share per its fee preference and deposits it into the
+ * fee locker; `tokenRewards(token)` lists the positions and recipients (the view part is vendored from the Clanker
+ * ABI at 390468e:apps/indexer/abis/ClankerLpLockerFeeConversion.ts).
+ */
+export const clankerLpLockerAbi = parseAbi([
+  'struct PoolKey { address currency0; address currency1; uint24 fee; int24 tickSpacing; address hooks; }',
+  'struct TokenRewardInfo { address token; PoolKey poolKey; uint256 positionId; uint256 numPositions; uint16[] rewardBps; address[] rewardAdmins; address[] rewardRecipients; }',
+  'function collectRewards(address token)',
+  'function tokenRewards(address token) view returns (TokenRewardInfo)',
+  'event ClaimedRewards(address indexed token, uint256 amount0, uint256 amount1, uint256[] rewards0, uint256[] rewards1)',
+]);
+
 export const kernelAbi = parseAbi([
   'struct ValidationConfig { uint32 nonce; address hook; }',
   'function currentNonce() view returns (uint32)',
@@ -84,5 +118,9 @@ export const SWAP_HELPER_SWAP_SELECTOR = toFunctionSelector('swapWethToUsdc(uint
 export const LOCKER_SETTLE_AND_CLAIM_SELECTOR = toFunctionSelector('settleAndClaim(bytes32[],address,address)');
 /** RwagmiLpLockerV3.claimQuote(address currency, address to): pays the caller's already settled balance to `to`. */
 export const LOCKER_CLAIM_QUOTE_SELECTOR = toFunctionSelector('claimQuote(address,address)');
+/** ClankerLpLockerFeeConversion.collectRewards(address token): collects the positions' fees into the fee locker (anyone may call). */
+export const CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR = toFunctionSelector('collectRewards(address)');
+/** ClankerFeeLocker.claim(address feeOwner, address token): pays `feeOwner`'s balance of `token` to `feeOwner`, whoever calls. */
+export const CLANKER_FEE_LOCKER_CLAIM_SELECTOR = toFunctionSelector('claim(address,address)');
 /** BootrSwapHelper.MAX_SLIPPAGE_BPS: the contract refuses a higher requested slippage. */
 export const SWAP_MAX_SLIPPAGE_BPS = 300;

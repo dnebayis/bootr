@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, pad, toHex, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, launchContextEvent } from '../src/abi.js';
+import { agentLaunchedEvent, clankerLaunchedEvent, launchContextEvent } from '../src/abi.js';
+import { launcherEntries, launchSourceOf } from '../src/chain.js';
 import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { pino } from 'pino';
 import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
-import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
-import { agentConfig, CREATOR, KERNEL, LAUNCHER, makeWorld, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
+import { clankerDetailsOf, clankerLockersFor } from '../src/launch-source.js';
+import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeClankerLaunch, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, sessionPolicyFor, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
+import { agentConfig, CLANKER_FEE_LOCKER, CLANKER_LAUNCHER, CLANKER_LP_LOCKER, CLANKER_POOL_ID, CREATOR, KERNEL, LAUNCHER, makeWorld, RWAGMI_LP_LOCKER, testConfig, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 
-function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Address; workerHash?: Hex } = {}): Log {
+function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Address; workerHash?: Hex; launcher?: Address; token?: Address; kernel?: Address } = {}): Log {
   const creator = opts.creator ?? CREATOR;
-  const topics = encodeEventTopics({ abi: [agentLaunchedEvent], eventName: 'AgentLaunched', args: { token: TOKEN, kernel: KERNEL, creator } });
+  const topics = encodeEventTopics({ abi: [agentLaunchedEvent], eventName: 'AgentLaunched', args: { token: opts.token ?? TOKEN, kernel: opts.kernel ?? KERNEL, creator } });
   const data = encodeAbiParameters(
     [
       { type: 'address' },
@@ -25,7 +27,17 @@ function fakeLaunchLog(agentId: bigint, opts: { agentURI?: string; creator?: Add
     ],
     ['0x0000000000000000000000000000000000000000', agentId, [10_000, 5000, 3000, 0, 2000, creator, 20_000_000n, 90 * 86_400], opts.workerHash ?? pad('0x01', { size: 32 }), 'openai/gpt-4.1-mini', opts.agentURI ?? CARD_URI, '0x0000000000000000000000000000000000000000'],
   );
-  return { address: LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: toHex(7, { size: 32 }), logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
+  return { address: opts.launcher ?? LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: toHex(7, { size: 32 }), logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
+}
+
+const CLANKER_HOOK: Address = '0x00000000000000000000000000000000000000B4';
+const CLANKER_MEV: Address = '0x00000000000000000000000000000000000000E5';
+
+/** `BootrClankerLauncher.ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick, lpFeeBps)` as emitted next to `AgentLaunched`. */
+function clankerLaunchedLog(opts: { token?: Address; address?: Address; locker?: Address } = {}): Log {
+  const topics = encodeEventTopics({ abi: [clankerLaunchedEvent], eventName: 'ClankerLaunched', args: { token: opts.token ?? TOKEN } });
+  const data = encodeAbiParameters([{ type: 'bytes32' }, { type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'int24' }, { type: 'uint24' }], [CLANKER_POOL_ID, CLANKER_HOOK, opts.locker ?? CLANKER_LP_LOCKER, CLANKER_MEV, -230400, 10_000]);
+  return { address: opts.address ?? CLANKER_LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: toHex(7, { size: 32 }), logIndex: 2, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
 
 const TEMPLATE_LINES = workerTemplateById(DEFAULT_WORKER_TEMPLATE)!.preset.identity;
@@ -436,6 +448,122 @@ describe('custom worker from the agent card', () => {
       expect(calls).toHaveLength(2);
       expect(agent!.config).toMatchObject({ workerTemplate: 'custom', workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: 8 * 3_600_000, creatorIdentity: IDENTITY });
       expect(agent!.config.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Test Coin', 'TEST', CARD_URI, false, CUSTOM_PRESET.identity)}`);
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('launch source: Bootr and Clanker launchers (docs/design/clanker-launch.md)', () => {
+  const CLANKER_TX = toHex(7, { size: 32 });
+  const expectedDetails = { poolId: CLANKER_POOL_ID, hook: CLANKER_HOOK, locker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER, mevModule: CLANKER_MEV, startingTick: -230400, lpFeeBps: 10_000 };
+
+  it('config: the Clanker launcher is optional, must differ from the Bootr one, and the two make the launcher list', () => {
+    expect(testConfig().BOOTR_CLANKER_LAUNCHER_ADDRESS).toBeUndefined();
+    expect(launcherEntries(testConfig())).toEqual([{ address: LAUNCHER, source: 'bootr' }]);
+    const both = testConfig({ BOOTR_CLANKER_LAUNCHER_ADDRESS: CLANKER_LAUNCHER });
+    expect(launcherEntries(both)).toEqual([
+      { address: LAUNCHER, source: 'bootr' },
+      { address: CLANKER_LAUNCHER, source: 'clanker' },
+    ]);
+    expect(launchSourceOf(launcherEntries(both), CLANKER_LAUNCHER.toLowerCase() as Address)).toBe('clanker');
+    expect(launchSourceOf(launcherEntries(both), LAUNCHER)).toBe('bootr');
+    expect(launchSourceOf(launcherEntries(both), TOKEN)).toBeNull();
+    expect(() => testConfig({ BOOTR_CLANKER_LAUNCHER_ADDRESS: LAUNCHER.toLowerCase() })).toThrow(/must differ/);
+    // the lockers default to the verified Base mainnet addresses
+    const defaults = testConfig({ CLANKER_LOCKER_ADDRESS: '', CLANKER_FEE_LOCKER_ADDRESS: '' });
+    expect(defaults.CLANKER_LOCKER_ADDRESS).toBe('0xffA37784D619F228D8B379d287a4D7282e500762');
+    expect(defaults.CLANKER_FEE_LOCKER_ADDRESS).toBe('0xF3622742b1E446D92e45E22923Ef11C2fcD55D68');
+  });
+
+  it('decodes the source from the emitting launcher (unknown emitters count as bootr) and ClankerLaunched only from our launcher', () => {
+    const launchers = launcherEntries(testConfig({ BOOTR_CLANKER_LAUNCHER_ADDRESS: CLANKER_LAUNCHER }));
+    const [bootr, clanker] = decodeLaunchLogs([fakeLaunchLog(7n), fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER })], launchers);
+    expect(bootr).toMatchObject({ agentId: 7n, launcher: LAUNCHER, source: 'bootr' });
+    expect(clanker).toMatchObject({ agentId: 8n, launcher: CLANKER_LAUNCHER, source: 'clanker' });
+    expect(decodeLaunchLogs([fakeLaunchLog(9n, { launcher: CLANKER_LAUNCHER })])[0]!.source).toBe('bootr'); // no list: everything is Bootr
+    expect(decodeClankerLaunch([fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER }), clankerLaunchedLog()], CLANKER_LAUNCHER, TOKEN, CLANKER_FEE_LOCKER)).toEqual(expectedDetails);
+    // another contract's log, another token's log, or no log at all: nothing
+    expect(decodeClankerLaunch([clankerLaunchedLog({ address: TOKEN })], CLANKER_LAUNCHER, TOKEN, CLANKER_FEE_LOCKER)).toBeNull();
+    expect(decodeClankerLaunch([clankerLaunchedLog({ token: CREATOR })], CLANKER_LAUNCHER, TOKEN, CLANKER_FEE_LOCKER)).toBeNull();
+    expect(decodeClankerLaunch([fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER })], CLANKER_LAUNCHER, TOKEN, CLANKER_FEE_LOCKER)).toBeNull();
+    expect(clankerDetailsOf({ clanker: expectedDetails })).toEqual(expectedDetails);
+    expect(clankerDetailsOf({})).toBeNull();
+    expect(clankerDetailsOf({ clanker: { ...expectedDetails, locker: 'nope' } })).toBeNull();
+  });
+
+  it('pollLaunches follows both launchers with one cursor and registers each agent under its source, with the Clanker details from the receipt', async () => {
+    const KERNEL_8: Address = '0x2000000000000000000000000000000000000008';
+    const TOKEN_8: Address = '0x3000000000000000000000000000000000000008';
+    const world = await makeWorld({
+      config: { BOOTR_CLANKER_LAUNCHER_ADDRESS: CLANKER_LAUNCHER },
+      chain: {
+        logs: [fakeLaunchLog(7n), fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER, token: TOKEN_8, kernel: KERNEL_8 })],
+        blockNumber: 50n,
+        receipts: { [CLANKER_TX]: [fakeLaunchLog(7n), launchContextLog(bootrContext(DRAFT)), fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER, token: TOKEN_8, kernel: KERNEL_8 }), launchContextLog(bootrContext(DRAFT), { token: TOKEN_8, address: CLANKER_LAUNCHER }), clankerLaunchedLog({ token: TOKEN_8 })] },
+      },
+    });
+    try {
+      expect(world.ctx.chain.launchers.map((l) => l.source)).toEqual(['bootr', 'clanker']);
+      expect(await pollLaunches(world.ctx)).toBe(2);
+      const bootr = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') }))!;
+      const clanker = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') }))!;
+      expect(bootr).toMatchObject({ source: 'bootr', token: TOKEN, kernel: KERNEL, draftId: DRAFT });
+      expect(bootr.config).toMatchObject({ source: 'bootr' });
+      expect(bootr.config.clanker).toBeUndefined();
+      expect(clanker).toMatchObject({ source: 'clanker', token: TOKEN_8, kernel: KERNEL_8, draftId: DRAFT });
+      expect(clanker.config).toMatchObject({ source: 'clanker', clanker: expectedDetails });
+      expect((await world.db.query.cursors.findFirst({ where: eq(cursors.name, 'launcher_block') }))!.value).toBe('50');
+
+      // the session-key policy follows the source: RWAGMI locker for the Bootr agent, the Clanker lockers for the other
+      const bootrPolicy = sessionPolicyFor(world.ctx, bootr, 1_900_000_000);
+      expect(bootrPolicy).toMatchObject({ source: 'bootr', feeLocker: RWAGMI_LP_LOCKER, rulesVersion: 4 });
+      expect(bootrPolicy.lpLocker).toBeUndefined();
+      const clankerPolicy = sessionPolicyFor(world.ctx, clanker, 1_900_000_000);
+      expect(clankerPolicy).toMatchObject({ source: 'clanker', feeLocker: CLANKER_FEE_LOCKER, lpLocker: CLANKER_LP_LOCKER, token: TOKEN_8, kernel: KERNEL_8, rulesVersion: 4 });
+      expect(clankerLockersFor(world.ctx, clanker)).toMatchObject({ lpLocker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER });
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('a Clanker agent whose launch receipt was unreadable gets its details on a later tick; the configured lockers serve meanwhile', async () => {
+    const world = await makeWorld({ config: { BOOTR_CLANKER_LAUNCHER_ADDRESS: CLANKER_LAUNCHER }, chain: { logs: [fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER })], blockNumber: 50n } });
+    try {
+      // no receipt in the mock: getTransactionReceipt throws, registration still succeeds
+      expect(await pollLaunches(world.ctx)).toBe(1);
+      let agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') }))!;
+      expect(agent.source).toBe('clanker');
+      expect(agent.draftId).toBeNull();
+      expect(clankerDetailsOf(agent.config)).toBeNull();
+      expect(clankerLockersFor(world.ctx, agent)).toMatchObject({ lpLocker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER, details: null });
+      // a launch that named another locker: once the receipt is readable, that locker is stored and used
+      const OTHER_LOCKER: Address = '0x00000000000000000000000000000000000000D1';
+      world.state.receipts[CLANKER_TX] = [fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER }), launchContextLog(bootrContext(DRAFT), { address: CLANKER_LAUNCHER }), clankerLaunchedLog({ locker: OTHER_LOCKER })];
+      await completeOnboarding(world.ctx);
+      agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') }))!;
+      expect(agent.draftId).toBe(DRAFT);
+      expect(clankerDetailsOf(agent.config)).toEqual({ ...expectedDetails, locker: OTHER_LOCKER });
+      expect(clankerLockersFor(world.ctx, agent)).toMatchObject({ lpLocker: OTHER_LOCKER, feeLocker: CLANKER_FEE_LOCKER });
+      expect(sessionPolicyFor(world.ctx, agent, 1_900_000_000)).toMatchObject({ source: 'clanker', lpLocker: OTHER_LOCKER, feeLocker: CLANKER_FEE_LOCKER });
+      // decoded once; later ticks do not re-read the receipt
+      const reads = world.state.calls.filter((c) => c.fn === 'getTransactionReceipt').length;
+      await completeOnboarding(world.ctx);
+      expect(world.state.calls.filter((c) => c.fn === 'getTransactionReceipt')).toHaveLength(reads);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('buildLaunchConfig stores the source and, for a Clanker launch, the details', async () => {
+    const world = await makeWorld();
+    try {
+      const launch = { ...decodeLaunchLogs([fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER })])[0]!, source: 'clanker' as const };
+      const config = buildLaunchConfig(world.ctx, launch, { name: 'C', symbol: 'C' }, '', undefined, expectedDetails);
+      expect(config).toMatchObject({ source: 'clanker', clanker: expectedDetails });
+      const bootr = buildLaunchConfig(world.ctx, { ...launch, source: 'bootr' }, { name: 'C', symbol: 'C' }, '', undefined, expectedDetails);
+      expect(bootr).toMatchObject({ source: 'bootr' });
+      expect(bootr.clanker).toBeUndefined();
     } finally {
       await world.close();
     }

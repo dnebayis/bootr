@@ -36,16 +36,17 @@ guardian owner key used only to approve session-key installs.
 | File | Role |
 | --- | --- |
 | `src/config.ts` | zod env schema (see below) |
-| `src/db/schema.ts`, `drizzle/` | `sv_agents`, `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_cursors` (migrations table `public.sv_migrations`) |
-| `src/onboarding.ts` | `AgentLaunched` poller (block cursor in `sv_cursors`), `registerAgent` (draft id from `BootrLauncher.LaunchContext` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
-| `src/session-key.ts` | policy set (BootrCallPolicy rules: the two RWAGMI locker claims with `to == kernel`, the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
+| `src/db/schema.ts`, `drizzle/` | `sv_agents` (with `source`: `bootr` / `clanker`, the launcher the agent came from), `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_cursors` (migrations table `public.sv_migrations`) |
+| `src/onboarding.ts` | `AgentLaunched` poller over every followed launcher (Bootr and, when configured, the Clanker one; one block cursor in `sv_cursors`), `registerAgent` (source from the emitting launcher; draft id from `LaunchContext` and, for Clanker launches, pool / locker details from `ClankerLaunched` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
+| `src/launch-source.ts` | the treasury path by launch source: `agentSource`, the stored `config.clanker` block (`clankerDetailsOf`) and the lockers a Clanker coin claims from (`clankerLockersFor`) |
+| `src/session-key.ts` | policy set (BootrCallPolicy rules: two claim rules by launch source, the RWAGMI locker pair with `to == kernel` or the Clanker `collectRewards(token)` + `claim(kernel, *)` pair, then the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
 | `src/spender.ts` | per-agent x402 spender EOA derived from `SPENDER_MASTER_KEY` (signs the EIP-3009 payments; the kernel only funds it) |
 | `src/admin-signer.ts` | `AdminSigner` interface (guardian owner: `approveSessionKey`, `revokeSessionKey`, `revokeAllSessionKeys`, `revokeAllSessionKeysBatch`, `handleOps`) + local-key implementation; swap for KMS/hardware later |
 | `src/kernel.ts` | viem `toSmartAccount` implementation of the Kernel session account + bundler client (`prepareUserOp`, `submitUserOp`, `waitForReceipt`, `getReceipt`; `signTypedData` / `signMessage` always refused: the kernel has no ERC-1271 path); every userOp signature carries BootrCallPolicy's time slot; appends the ERC-8021 builder-code suffix to every userOp callData; self-bundles enable-mode ops through `EntryPoint.handleOps` when given a `selfBundle` sender |
 | `src/entrypoint.ts` | EntryPoint v0.7 helpers: the fixed self-bundle gas budget and `FailedOp` / `FailedOpWithRevert` decoding (inner Kernel / guardian / BootrCallPolicy errors) |
 | `src/builder-codes.ts` | Base Builder Codes: per-kernel registration (`ensureBuilderCode`, `backfillBuilderCodes`) and the ERC-8021 calldata suffix (`attributionSuffix`) |
-| `src/treasury.ts` | on-chain reads (kernel + spender balances, pending + settled WETH fees from `RwagmiLpLockerV3`, Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, the claim call (`settleAndClaim` / `claimQuote`), swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
-| `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
+| `src/treasury.ts` | on-chain reads (kernel + spender balances, claimable WETH fees by launch source: pending + settled from `RwagmiLpLockerV3`, or settled from `ClankerFeeLocker`; Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, the claim calls by source (`settleAndClaim` / `claimQuote`, or `collectRewards` + `claim` batched), swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
+| `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts, the Clanker v4 fee locker / LP locker and `ClankerLaunched`; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
 | `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA (`relayRequest`, shared by thoughts and images), idempotent per key, unknown-outcome reconciliation with payment proof |
 | `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`), decoded from the base64 data URL and stored in `sv_images`; the daily cap; `publish_post` / `publish_reply` attach a stored image by `imageId` |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
@@ -98,6 +99,9 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SPENDER_MASTER_KEY` | yes | | 32-byte hex master from which every agent's x402 spender EOA is derived (`spender.ts`); must differ from the session signer and the admin key |
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts (mainnet: launcher `0x01f290cC464Ac6D167588b35A08305F58683526f`, guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`) |
+| `BOOTR_CLANKER_LAUNCHER_ADDRESS` | no | | `BootrClankerLauncher` ([`docs/design/clanker-launch.md`](../../docs/design/clanker-launch.md)): a second launcher the poller follows with the same cursor; its launches are registered with `sv_agents.source = 'clanker'` and claim fees from the Clanker lockers. Must differ from `BOOTR_LAUNCHER_ADDRESS`. Unset = Bootr launches only |
+| `CLANKER_LOCKER_ADDRESS` | no | `0xffA37784…0762` | `ClankerLpLockerFeeConversion` on Base mainnet (the one Clanker enables for the V2 hooks; the README-listed `0x63D2DfEA…` is not): `collectRewards(token)` target for Clanker coins. The locker named in the coin's `ClankerLaunched` event wins when known |
+| `CLANKER_FEE_LOCKER_ADDRESS` | no | `0xF3622742…5D68` | `ClankerFeeLocker` on Base mainnet: `availableFees(kernel, WETH)` is the Clanker coin's claimable balance, `claim(kernel, WETH)` pays it to the kernel |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
 | `RWAGMI_LOCKER_V3_ADDRESS` | no | `0xB205CE7C…1B20` | `RwagmiLpLockerV3` on Base mainnet: the kernel's WETH fee ledger and the session key's only claim target (no Base Sepolia deployment; tests mock both) |
 | `PLATFORM_TREASURY_ADDRESS` | no | | launches whose creator is this address run as the platform's own voice (`@bootrfun`); same value as `PLATFORM_TREASURY` |
@@ -134,13 +138,17 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 
 ## How an agent is onboarded
 
-1. `pollLaunches` reads `BootrLauncher.AgentLaunched` logs after the stored cursor (2000-block chunks) and calls
-   `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents` (status `onboarding`, config with
-   `xHandle`/`xUserId` still `null`) and `sv_runtimes` (state `{phase: 'boot'}`, cycle 0). It also reads the launch
-   tx receipt, decodes `BootrLauncher.LaunchContext(token, context)` (emitted by our launcher for this token right
-   after `AgentLaunched`; the RWAGMI `B20LaunchCreatedV3` event carries no context) and stores the `id` of its JSON
-   `context` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`) in `sv_agents.draft_id`
-   (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
+1. `pollLaunches` reads `AgentLaunched` logs after the stored cursor (2000-block chunks) from every followed launcher
+   (`BOOTR_LAUNCHER_ADDRESS` and, when set, `BOOTR_CLANKER_LAUNCHER_ADDRESS`; both emit the same event) and calls
+   `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents` (status `onboarding`, `source` =
+   `bootr` or `clanker` by the emitting launcher, config with `xHandle`/`xUserId` still `null`) and `sv_runtimes`
+   (state `{phase: 'boot'}`, cycle 0). It also reads the launch tx receipt, decodes `LaunchContext(token, context)`
+   (emitted by our launcher for this token right after `AgentLaunched`; the RWAGMI `B20LaunchCreatedV3` event carries
+   no context) and stores the `id` of its JSON `context` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`)
+   in `sv_agents.draft_id` (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
+   For a Clanker launch the same receipt yields `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick,
+   lpFeeBps)`, stored as `config.clanker` (plus the configured fee locker); an unreadable receipt leaves it to
+   `backfillClankerDetails` on a later tick, and the configured lockers serve meanwhile.
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
@@ -346,6 +354,31 @@ working for swaps and funding; their claim rule points at the Clanker fee locker
 and their funding rule stays at index 3 for `windowOf` until the key is rotated (`rotateSessionKey` installs the new
 five-rule layout). Clanker-era coins report `poolId: null` and no pending fees; their old Clanker fees are not
 claimed by the supervisor any more.
+
+## Fee claims (launched through Clanker)
+
+Coins launched through `BootrClankerLauncher` (`BOOTR_CLANKER_LAUNCHER_ADDRESS`, `sv_agents.source = 'clanker'`,
+[`docs/design/clanker-launch.md`](../../docs/design/clanker-launch.md)) keep their LP positions in Clanker's
+`ClankerLpLockerFeeConversion`; the kernel's reward slot has fee preference `Paired`, so its share arrives as WETH in
+`ClankerFeeLocker`. Same policy, different calls, keyed by `source` (`launch-source.ts`):
+
+1. **Read**: `settled = ClankerFeeLocker.availableFees(kernel, WETH)`; `pending` is always `0` because fees still inside
+   the LP position have no view (design note, open question 8), so `claimable` may under-report until a claim
+   collects them. The snapshot carries `source: 'clanker'`, `claimable.poolId` = the Clanker pool from
+   `ClankerLaunched` (null while unread) and `claimable.note` saying so; `treasury_read` repeats it under
+   `policy.fees`. The RWAGMI launcher and locker are never asked for a Clanker coin.
+2. **Claim** (`claim_fees`): when the settled USD value reaches `CLAIM_THRESHOLD_USD` (and the fee locker holds
+   something: `claim` reverts `NoFeesToClaim` on zero), one batched userOp from the kernel with two calls:
+   `ClankerLpLockerFeeConversion.collectRewards(token)` (collects the position's fees, converts every slot per its
+   preference, deposits into the fee locker) then `ClankerFeeLocker.claim(kernel, WETH)`. The lockers are the ones
+   `config.clanker` names, else `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS`. Because `claim` pays
+   `feeOwner` whoever calls, an out-of-gas kernel can be claimed for by the admin or anyone (`cast send … "claim(address,address)" <kernel> <WETH>`).
+3. **Policy**: BootrCallPolicy rule layout 4 (`CALL_POLICY_RULES_VERSION`) keys the two claim rules by source:
+   `collectRewards(address)` with word 0 pinned to the agent's token and `claim(address,address)` with word 0 pinned
+   to the kernel (the token is free; the payee is fixed). The four shared rules follow at the same indexes, so
+   `fundingRuleIndex` stays 4 and the gas rule 5. For a Bootr agent layout 4 encodes byte for byte what layout 3 did:
+   existing Bootr keys are untouched and need no rotation.
+4. **After the claim** the WETH is in the kernel and the swap / spender-funding steps are the same as for Bootr coins.
 
 ## Gas
 

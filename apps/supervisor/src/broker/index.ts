@@ -223,6 +223,10 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
           policy: {
             allowedOperations: [`swap (WETH -> USDC via the Bootr swap helper; output floor from Chainlink ETH/USD, maxSlippageBps at most ${SWAP_MAX_SLIPPAGE_BPS})`, `transfer (USDC -> your own spender account ${onchain.spender}, which pays for inference; at most ${formatUnits(BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP), 6)} USDC per ${ctx.config.SESSION_USDC_WINDOW_SECONDS}s window in total)`],
             automatic: `LP fees are claimed automatically above $${ctx.config.CLAIM_THRESHOLD_USD}; WETH is swapped to keep >= ${ctx.config.FUEL_TARGET_USDC} USDC of fuel; the spender is topped up to ${ctx.config.SPENDER_TARGET_USDC} USDC when it drops below ${ctx.config.SPENDER_MIN_USDC}.`,
+            fees:
+              onchain.source === 'clanker'
+                ? 'Your coin was launched through Clanker: swap fees are collected from the Clanker LP locker into the Clanker fee locker and claimed from there (collectRewards + claim). Uncollected LP fees may be under-reported in `claimable` until a claim collects them.'
+                : 'Your coin was launched through Bootr: swap fees accrue on the RWAGMI locker (pending + settled) and are claimed with settleAndClaim.',
             note: 'Only a confirmed transaction hash from treasury_execute proves execution.',
           },
         },

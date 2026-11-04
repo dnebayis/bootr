@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { concatHex, decodeAbiParameters, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, keccak256, pad, parseAbiParameters, slice, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PolicyFlags } from '@zerodev/permissions';
-import { ADDR, GUARDIAN, KERNEL, PAYTO, POOL_ID, RWAGMI_LP_LOCKER, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
+import { ADDR, CLANKER_FEE_LOCKER, CLANKER_LP_LOCKER, GUARDIAN, KERNEL, PAYTO, POOL_ID, RWAGMI_LP_LOCKER, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
 import {
   buildDeinitData,
   buildValidatorData,
   CALL_POLICY_RULES_VERSION,
   callPolicyRules,
+  policySource,
+  SOURCE_RULES_VERSION,
   CallPolicyOp,
   decodeCallPolicyData,
   encodeCallPolicyData,
@@ -34,7 +36,7 @@ import {
   type SessionPolicyParams,
 } from '../src/session-key.js';
 import { EXEC_MODE_BATCH, EXEC_MODE_SINGLE, encodeKernelCalls, nonceMode } from '../src/kernel.js';
-import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from '../src/abi.js';
+import { CLANKER_FEE_LOCKER_CLAIM_SELECTOR, CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, clankerFeeLockerAbi, clankerLpLockerAbi, ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, rwagmiLpLockerV3Abi, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from '../src/abi.js';
 
 /** Clanker's mainnet FeeLocker: the claim target of session keys installed before the RWAGMI v3 cutover. */
 const LEGACY_CLANKER_FEE_LOCKER = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
@@ -220,6 +222,82 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(fundingRuleIndex(legacyParams())).toBe(LEGACY_FUNDING_RULE_INDEX);
     expect(fundingRuleIndex({ rulesVersion: 1 })).toBe(3);
     expect(fundingRuleIndex({ rulesVersion: 3 })).toBe(4);
+  });
+});
+
+describe('claim rules by launch source (docs/design/clanker-launch.md section 3)', () => {
+  /** A policy of an agent launched through Clanker: fee locker = ClankerFeeLocker, lpLocker = ClankerLpLockerFeeConversion. */
+  const clankerParams = (over: Partial<SessionPolicyParams> = {}): SessionPolicyParams => params({ source: 'clanker', feeLocker: CLANKER_FEE_LOCKER, lpLocker: CLANKER_LP_LOCKER, ...over });
+
+  it('a Bootr agent gets byte for byte the rules of layout 3: the version bump changes nothing for existing or new Bootr keys', () => {
+    const v3 = params({ rulesVersion: 3 });
+    delete (v3 as { source?: unknown }).source; // a policy stored before `source` existed
+    const v4 = params({ rulesVersion: 4, source: 'bootr' });
+    const v4Unset = params({ rulesVersion: 4 });
+    expect(CALL_POLICY_RULES_VERSION).toBe(4);
+    expect(SOURCE_RULES_VERSION).toBe(4);
+    expect(policySource(v3)).toBe('bootr');
+    expect(policySource(v4Unset)).toBe('bootr');
+    expect(callPolicyRules(v4)).toEqual(callPolicyRules(v3));
+    expect(callPolicyRules(v4Unset)).toEqual(callPolicyRules(v3));
+    expect(encodeCallPolicyData(callPolicyRules(v4))).toBe(encodeCallPolicyData(callPolicyRules(v3)));
+    // the whole validatorData is identical too (same modules, same init data), so a stored v3 key and a fresh v4 key
+    // of the same agent carry the same enable digest
+    expect(buildValidatorData(v4)).toBe(buildValidatorData(v3));
+    expect(buildValidatorData(v4Unset)).toBe(buildValidatorData(v3));
+    expect(hasGasRule(v4)).toBe(true);
+    expect(fundingRuleIndex(v4)).toBe(FUNDING_RULE_INDEX);
+    // the pinned bytes of the first Bootr rules are unchanged (RWAGMI locker, `to == kernel`)
+    expect(callPolicyRules(v4).slice(0, 2).map((r) => [r.target, r.selector])).toEqual([
+      [RWAGMI_LP_LOCKER, LOCKER_SETTLE_AND_CLAIM_SELECTOR],
+      [RWAGMI_LP_LOCKER, LOCKER_CLAIM_QUOTE_SELECTOR],
+    ]);
+  });
+
+  it('a Clanker agent: lpLocker.collectRewards(token == own coin), feeLocker.claim(feeOwner == kernel, *), then the same four shared rules', () => {
+    const p = clankerParams();
+    const rules = callPolicyRules(p);
+    const shared = callPolicyRules(params()).slice(2);
+    expect(rules).toHaveLength(6);
+    expect(rules.slice(0, 2)).toEqual([
+      { target: CLANKER_LP_LOCKER, selector: CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(TOKEN, { size: 32 }).toLowerCase() }] },
+      { target: CLANKER_FEE_LOCKER, selector: CLANKER_FEE_LOCKER_CLAIM_SELECTOR, windowSeconds: 0, args: [{ index: 0, op: CallPolicyOp.EQUAL, value: pad(KERNEL, { size: 32 }).toLowerCase() }] },
+    ]);
+    // the swap pair, the windowed spender funding and the gas rule are the same bytes as for a Bootr agent
+    expect(rules.slice(2)).toEqual(shared);
+    expect(fundingRuleIndex(p)).toBe(FUNDING_RULE_INDEX);
+    expect(rules[FUNDING_RULE_INDEX]!.args[FUNDING_AMOUNT_ARG_INDEX]!.op).toBe(CallPolicyOp.SUM_PER_WINDOW);
+    expect(hasGasRule(p)).toBe(true);
+    expect(policySource(p)).toBe('clanker');
+    expect(CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR).toBe(keccak256(toHex('collectRewards(address)')).slice(0, 10));
+    expect(CLANKER_FEE_LOCKER_CLAIM_SELECTOR).toBe(keccak256(toHex('claim(address,address)')).slice(0, 10));
+    // the pinned words sit where the ABI encoding of the real calls puts them
+    const word = (data: Hex, index: number) => slice(data, 4 + 32 * index, 4 + 32 * (index + 1)).toLowerCase();
+    const collect = encodeFunctionData({ abi: clankerLpLockerAbi, functionName: 'collectRewards', args: [TOKEN] });
+    expect(slice(collect, 0, 4)).toBe(CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR);
+    expect(word(collect, 0)).toBe(pad(TOKEN, { size: 32 }).toLowerCase());
+    const claim = encodeFunctionData({ abi: clankerFeeLockerAbi, functionName: 'claim', args: [KERNEL, ADDR.weth] });
+    expect(slice(claim, 0, 4)).toBe(CLANKER_FEE_LOCKER_CLAIM_SELECTOR);
+    expect(word(claim, 0)).toBe(pad(KERNEL, { size: 32 }).toLowerCase());
+    // a claim for anyone else, or a collection of another coin, fails the EQUAL rules
+    expect(word(encodeFunctionData({ abi: clankerFeeLockerAbi, functionName: 'claim', args: [SPENDER, ADDR.weth] }), 0)).not.toBe(pad(KERNEL, { size: 32 }).toLowerCase());
+    expect(word(encodeFunctionData({ abi: clankerLpLockerAbi, functionName: 'collectRewards', args: [ADDR.weth] }), 0)).not.toBe(pad(TOKEN, { size: 32 }).toLowerCase());
+    // the token argument of `claim` is free (the payee is fixed); nothing points at the RWAGMI locker any more
+    expect(rules[1]!.args).toHaveLength(1);
+    expect(rules.some((r) => r.target === RWAGMI_LP_LOCKER)).toBe(false);
+    // round-trips through the contract layout and differs from the Bootr encoding only in the first two rules
+    expect(decodeCallPolicyData(encodeCallPolicyData(rules)).map((r) => [r.target, r.selector])).toEqual(rules.map((r) => [r.target, r.selector]));
+    expect(encodeCallPolicyData(rules)).not.toBe(encodeCallPolicyData(callPolicyRules(params())));
+    expect(policyModules(p)).toEqual(policyModules(params()));
+    expect(buildValidatorData(p)).not.toBe(buildValidatorData(params()));
+  });
+
+  it('a Clanker policy needs the lockers and the source-aware layout', () => {
+    expect(() => callPolicyRules(clankerParams({ lpLocker: undefined }))).toThrow(/lpLocker/);
+    expect(() => callPolicyRules(clankerParams({ feeLocker: undefined as unknown as Address }))).toThrow(/feeLocker/);
+    expect(() => callPolicyRules(clankerParams({ rulesVersion: 3 }))).toThrow(/rule layout 4/);
+    // the legacy guard still comes first
+    expect(() => callPolicyRules(clankerParams({ rulesVersion: 1 }))).toThrow(/legacy rule layout/);
   });
 });
 

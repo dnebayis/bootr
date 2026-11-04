@@ -9,7 +9,7 @@ import { agents } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { createKernelClient, encodeKernelCalls } from '../src/kernel.js';
 import { registerAgent, type LaunchEvent } from '../src/onboarding.js';
-import { ADDR, AGENT_ID, CREATOR, GUARDIAN, KERNEL, makeWorld, PAYTO, SUPERVISOR_KEY, SESSION_PK, seedAgent, TOKEN, type TestWorld } from './helpers.js';
+import { ADDR, AGENT_ID, CREATOR, GUARDIAN, KERNEL, LAUNCHER, makeWorld, PAYTO, SUPERVISOR_KEY, SESSION_PK, seedAgent, TOKEN, type TestWorld } from './helpers.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 const CODE = 'bc_a1b2c3d4';
@@ -17,7 +17,7 @@ const CODE = 'bc_a1b2c3d4';
 const MARKER = '80218021802180218021802180218021';
 
 function launch(agentId: bigint): LaunchEvent {
-  return { token: TOKEN, kernel: KERNEL, creator: CREATOR, burner: '0x0000000000000000000000000000000000000000', agentId, dormancyPeriod: 90 * 86_400, model: 'openai/gpt-4.1-mini', agentURI: '', workerHash: `0x${'00'.repeat(32)}`, blockNumber: 42n, txHash: `0x${'07'.repeat(32)}` };
+  return { token: TOKEN, kernel: KERNEL, creator: CREATOR, burner: '0x0000000000000000000000000000000000000000', agentId, dormancyPeriod: 90 * 86_400, model: 'openai/gpt-4.1-mini', agentURI: '', workerHash: `0x${'00'.repeat(32)}`, blockNumber: 42n, txHash: `0x${'07'.repeat(32)}`, launcher: LAUNCHER, source: 'bootr' };
 }
 
 /** Records every builder-code request and answers with the scripted response (or throws). */
