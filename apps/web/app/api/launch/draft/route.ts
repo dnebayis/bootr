@@ -19,7 +19,7 @@ import {
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
- * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, telegram, discord}},
+ * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, x, telegram, discord}},
  *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}},
  *   launchThrough?: 'bootr' | 'clanker'}
  * Stores the creator's Instructions text under the draft id so the hosted agent card (`/agents/<draftId>.json`)

@@ -108,7 +108,7 @@ describe('draft store', () => {
   });
 
   it('stores the coin metadata next to the identity text', async () => {
-    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', telegram: null, discord: null } };
+    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', x: 'https://x.com/quietengine', telegram: null, discord: null } };
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
     expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null, source: 'bootr' });
     expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
@@ -168,7 +168,7 @@ describe('owner cookie', () => {
 
 describe('normalizeCoin', () => {
   const ok = { name: ' Quiet Engine ', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent' };
-  const none = { website: null, telegram: null, discord: null };
+  const none = { website: null, x: null, telegram: null, discord: null };
   it('accepts the launch form fields, trimmed', () => {
     expect(normalizeCoin(ok)).toEqual({ ...ok, name: 'Quiet Engine', links: none });
     expect(normalizeCoin({ ...ok, imageIpfs: null, xHandle: null })).toMatchObject({ imageIpfs: null, xHandle: null });
@@ -182,6 +182,13 @@ describe('normalizeCoin', () => {
     expect(normalizeCoin({ ...ok, links: { telegram: 'https://quiet.engine/tg' } })).toBeNull();
     expect(normalizeCoin({ ...ok, links: { discord: 'https://t.me/x' } })).toBeNull();
     expect(normalizeCoin({ ...ok, links: { website: `https://a.b/${'x'.repeat(200)}` } })).toBeNull();
+  });
+  it("keeps the project's X account as https://x.com/<handle>, from a URL or a handle; older drafts have none", () => {
+    expect(normalizeCoin({ ...ok, links: { x: '@bootrfun' } })).toMatchObject({ links: { ...none, x: 'https://x.com/bootrfun' } });
+    expect(normalizeCoin({ ...ok, links: { x: 'https://twitter.com/bootrfun/' } })).toMatchObject({ links: { ...none, x: 'https://x.com/bootrfun' } });
+    expect(normalizeCoin({ ...ok, links: { website: 'https://quiet.engine' } })).toMatchObject({ links: { ...none, website: 'https://quiet.engine' } });
+    expect(normalizeCoin({ ...ok, links: { x: 'https://quiet.engine/x' } })).toBeNull();
+    expect(normalizeCoin({ ...ok, links: { x: 'too long for a handle' } })).toBeNull();
   });
   it('rejects bad symbols, non-http images, bad handles and oversized names', () => {
     expect(normalizeCoin(null)).toBeNull();

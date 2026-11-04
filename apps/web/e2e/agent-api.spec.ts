@@ -54,6 +54,7 @@ test('agent API: a signed request prepares a launch (mock mode) and returns the 
         image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` },
         fuelUsdc: '20',
         gasEth: '0.001',
+        links: { website: 'https://quiet.engine', x: '@quietengine' },
       },
     },
   });
@@ -76,6 +77,12 @@ test('agent API: a signed request prepares a launch (mock mode) and returns the 
   const card = await request.get(`/agents/${body.launchId}.json`);
   expect(card.status()).toBe(200);
   expect(JSON.stringify(await card.json())).toContain('patient onchain analyst');
+  // The coin's links are in the contract URI: the project's X account as an x.com link, the website as external_link.
+  const meta = await request.get(`/tokens/${body.launchId}.json`);
+  expect(meta.status()).toBe(200);
+  const doc = (await meta.json()) as { external_link: string; socialMediaUrls: { platform: string; url: string }[] };
+  expect(doc.external_link).toBe('https://quiet.engine');
+  expect(doc.socialMediaUrls).toContainEqual({ platform: 'x', url: 'https://x.com/quietengine' });
 
   // A replayed nonce is refused.
   const replay = await request.post('/api/agent/launch', { data: { ...auth, launch: { name: 'x', symbol: 'xx', identity: 'a'.repeat(30), image: { dataUrl: 'data:image/png;base64,AA==' } } } });
@@ -88,6 +95,13 @@ test('agent API: validation and the wrong statement are rejected', async ({ requ
   const auth = await sign(request, 'Prepare a Bootr launch.');
   const bad = await request.post('/api/agent/launch', { data: { ...auth, launch: { name: 'Nope', symbol: 'toolongsymbol', identity: 'short', image: {} } } });
   expect(bad.status()).toBe(400);
+  // A project X link that is not an X profile or a handle is refused before anything is stored.
+  const badX = await sign(request, 'Prepare a Bootr launch.');
+  const link = await request.post('/api/agent/launch', {
+    data: { ...badX, launch: { name: 'Quiet Engine', symbol: 'QENG', identity: 'a'.repeat(30), image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` }, links: { x: 'https://quiet.engine/x' } } },
+  });
+  expect(link.status()).toBe(400);
+  expect(((await link.json()) as { message: string }).message).toContain('x an x.com link or a handle');
 });
 
 test('agent API: the creator gets an X connect URL for its agent (mock mode)', async ({ request }) => {

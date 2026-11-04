@@ -6,6 +6,7 @@
 import type { Address, Hex } from 'viem';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
+import type { CoinPageLinks } from './coin-links';
 import { DEFAULT_IMAGE_MODEL } from './models';
 import type {
   Agent,
@@ -103,6 +104,8 @@ interface Store {
   activity: Map<string, AgentActivityItem[]>;
   /** The review queue per kernel (post approval mode), built lazily like the config. */
   approvals: Map<string, AgentApproval[]>;
+  /** The coin's own links (what the hosted contract URI would carry), keyed by the token's `metadata` URL. */
+  links: Map<string, CoinPageLinks>;
 }
 
 let store: Store | null = null;
@@ -253,9 +256,12 @@ function init(): Store {
   const agents = new Map<string, Agent>();
   const trades = new Map<string, Trade[]>();
   let launchedAt = now - 60 * 4;
+  const links = new Map<string, CoinPageLinks>();
   NAMES.forEach(([name, symbol], i) => {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
     if (i === CLANKER_INDEX) clankerize(token);
+    // The newest coin carries project links, its X account among them (distinct from its agent's handle).
+    if (i === 0) links.set(token.metadata, { website: 'https://ledgerowl.example', x: 'https://x.com/ledgerowl', telegram: 'https://t.me/ledgerowl', discord: null });
     tokens.push(token);
     agents.set(agent.id.toLowerCase(), agent);
     trades.set(token.id.toLowerCase(), makeTrades(token, rand, now));
@@ -306,7 +312,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map() };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links };
 }
 
 export function mockStore(): Store {
@@ -426,6 +432,10 @@ export const mock = {
     const items = list.slice(start, start + limit);
     const next = start + limit;
     return clone({ items, pageInfo: { endCursor: next < list.length ? String(next) : null, hasNextPage: next < list.length } });
+  },
+  /** The coin's own links by its `metadata` URL (mock stand-in for the hosted contract URI); none for most coins. */
+  coinLinks(metadata: string): CoinPageLinks {
+    return mockStore().links.get(metadata) ?? { website: null, x: null, telegram: null, discord: null };
   },
   token(id: string): TokenDetail | null {
     const s = mockStore();
@@ -813,6 +823,8 @@ export function mockLaunch(input: {
   /** Optional: what the creator typed; seeds the mock agent config the coin page's creator console shows. */
   instructions?: string;
   workerHash?: Hex;
+  /** The coin's own links from the form, shown on the mock coin page like the hosted contract URI would. */
+  links?: CoinPageLinks;
 }): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
@@ -831,6 +843,7 @@ export function mockLaunch(input: {
   token.burnBps = input.buyback ? 1500 : 0;
   if (input.source === 'clanker') clankerize(token);
   if (input.workerHash) token.workerHash = input.workerHash;
+  if (input.links) s.links.set(token.metadata, { ...input.links });
   if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));
   agent.status = 'awake';
   token.agent = { id: agent.id, status: 'awake' };

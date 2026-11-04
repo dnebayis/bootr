@@ -5,7 +5,7 @@ import { buildContractMetadata } from './contract-metadata';
 import { env } from './env';
 
 const DRAFT = '3b241101-e2bb-4255-8caf-4136c566a962';
-const none = { website: null, telegram: null, discord: null };
+const none = { website: null, x: null, telegram: null, discord: null };
 const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent', links: none };
 const token: CardToken = {
   id: '0xB200000000000000000000123456789abcdef012',
@@ -48,13 +48,32 @@ describe('ERC-7572 contract metadata', () => {
     expect(doc).not.toHaveProperty('imageIpfs');
   });
   it("uses the coin's own website as external_link and lists its Telegram and Discord", () => {
-    const links = { website: 'https://quiet.engine', telegram: 'https://t.me/quietengine', discord: null };
+    const links = { ...none, website: 'https://quiet.engine', telegram: 'https://t.me/quietengine' };
     const doc = buildContractMetadata({ identity: null, coin: { ...coin, links } }, token);
     expect(doc.external_link).toBe('https://quiet.engine');
     expect(doc.socialMediaUrls).toEqual([
       { platform: 'x', url: 'https://x.com/qeng_agent' },
       { platform: 'telegram', url: 'https://t.me/quietengine' },
       { platform: 'website', url: 'https://quiet.engine' },
+    ]);
+  });
+
+  it("lists the project's X account before the agent's, and once when they are the same account", () => {
+    const project = buildContractMetadata({ identity: null, coin: { ...coin, links: { ...none, x: 'https://x.com/quietengine' } } }, token);
+    expect(project.socialMediaUrls).toEqual([
+      { platform: 'x', url: 'https://x.com/quietengine' },
+      { platform: 'x', url: 'https://x.com/qeng_agent' },
+      { platform: 'website', url: env.siteUrl },
+    ]);
+    const same = buildContractMetadata({ identity: null, coin: { ...coin, links: { ...none, x: 'https://x.com/QENG_agent' } } }, token);
+    expect(same.socialMediaUrls).toEqual([
+      { platform: 'x', url: 'https://x.com/QENG_agent' },
+      { platform: 'website', url: env.siteUrl },
+    ]);
+    const silent = buildContractMetadata({ identity: null, coin: { ...coin, xHandle: null, links: { ...none, x: 'https://x.com/quietengine' } } }, { ...token, xHandle: null });
+    expect(silent.socialMediaUrls).toEqual([
+      { platform: 'x', url: 'https://x.com/quietengine' },
+      { platform: 'website', url: env.siteUrl },
     ]);
   });
 });

@@ -22,6 +22,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import type { LaunchSource } from '@/lib/types';
+import { normalizeXLink } from '@/lib/x-link';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/launch-drafts must not be imported in the browser');
 
@@ -70,21 +71,24 @@ export function draftsDir(): string {
   return path.join(process.cwd(), 'data', 'launch-drafts');
 }
 
-/** The coin's own links, entered in the launch form (optional). `website` any https URL; the others their own hosts. */
-export type CoinLinks = { website: string | null; telegram: string | null; discord: string | null };
+/**
+ * The coin's own links, entered in the launch form (optional). `website` any https URL; the others their own hosts.
+ * `x` is the project's account (`https://x.com/<handle>`, lib/x-link.ts), not the agent's (`DraftCoin.xHandle`).
+ */
+export type CoinLinks = { website: string | null; x: string | null; telegram: string | null; discord: string | null };
 
 /** What the contract URI shows for a coin: entered in the launch form, written with the identity text. */
 export type DraftCoin = { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: CoinLinks };
 
 const MAX_LINK = 200;
-const LINK_HOST: Record<keyof CoinLinks, RegExp | null> = {
+const LINK_HOST: Record<Exclude<keyof CoinLinks, 'x'>, RegExp | null> = {
   website: null,
   telegram: /^https:\/\/t\.me\//i,
   discord: /^https:\/\/(discord\.gg|discord\.com\/invite)\//i,
 };
 
 /** One optional link: null when absent or empty, undefined when present but not an https URL of its kind. */
-function normalizeLink(kind: keyof CoinLinks, v: unknown): string | null | undefined {
+function normalizeLink(kind: Exclude<keyof CoinLinks, 'x'>, v: unknown): string | null | undefined {
   if (v == null) return null;
   if (typeof v !== 'string') return undefined;
   const s = v.trim();
@@ -98,10 +102,11 @@ function normalizeLink(kind: keyof CoinLinks, v: unknown): string | null | undef
 export function normalizeLinks(input: unknown): CoinLinks | null {
   const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
   const website = normalizeLink('website', o.website);
+  const x = normalizeXLink(o.x);
   const telegram = normalizeLink('telegram', o.telegram);
   const discord = normalizeLink('discord', o.discord);
-  if (website === undefined || telegram === undefined || discord === undefined) return null;
-  return { website, telegram, discord };
+  if (website === undefined || x === undefined || telegram === undefined || discord === undefined) return null;
+  return { website, x, telegram, discord };
 }
 
 /** Validates the form's coin metadata (same bounds as the form); null when anything is off. */

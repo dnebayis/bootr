@@ -164,9 +164,10 @@ export async function POST(req: NextRequest) {
   const gasWei = parseEther(gas);
   if (gasWei !== 0n && gasWei < parseEther(GAS_MIN_ETH)) return fail(400, 'invalid_request', `gasEth must be 0 or at least ${GAS_MIN_ETH}.`);
   const xHandle = typeof l.xHandle === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(l.xHandle.replace(/^@/, '')) ? l.xHandle.replace(/^@/, '') : null;
-  // Optional coin links (website any https URL; telegram on t.me; discord on discord.gg / discord.com/invite).
+  // Optional coin links (website any https URL; x the project's account as an x.com URL or a handle; telegram on
+  // t.me; discord on discord.gg / discord.com/invite).
   const links = normalizeLinks(l.links);
-  if (!links) return fail(400, 'invalid_request', 'links must be https URLs: website, telegram (t.me), discord (discord.gg).');
+  if (!links) return fail(400, 'invalid_request', 'links must be https URLs: website, telegram (t.me), discord (discord.gg); x an x.com link or a handle.');
 
   const pinata = pinataEnv();
   if (!pinata.jwt && !pinata.mock) return fail(503, 'upload_unavailable', 'Image pinning is not configured on this deployment.');

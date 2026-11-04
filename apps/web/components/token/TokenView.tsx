@@ -75,7 +75,8 @@ export function TokenView({ address }: { address: string }) {
   const valid = isAddress(address, { strict: false });
   const { data: token, isPending, isError, refetch } = useToken(valid ? address : undefined);
   const now = useNow();
-  const links = useCoinLinks(token?.metadata);
+  // The coin's own links; the agent's X handle stays out of them (AgentStatusLine shows it).
+  const links = useCoinLinks(token?.metadata, token?.xHandle);
   const { address: wallet } = useConnection();
   const isCreator = env.useMock || (!!wallet && !!token?.creator && wallet.toLowerCase() === token.creator.toLowerCase());
 
@@ -131,10 +132,11 @@ export function TokenView({ address }: { address: string }) {
               ) : null}
             </div>
             <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
-            {links.data && (links.data.website || links.data.telegram || links.data.discord) ? (
+            {links.data && (links.data.website || links.data.x || links.data.telegram || links.data.discord) ? (
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="token-links">
                 {[
                   { label: 'Website', href: links.data.website },
+                  { label: 'X', href: links.data.x },
                   { label: 'Telegram', href: links.data.telegram },
                   { label: 'Discord', href: links.data.discord },
                 ]

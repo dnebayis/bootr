@@ -40,6 +40,7 @@ import { SplitBar } from '@/components/token/FeeSplit';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
+import { normalizeXLink, xHandleOfUrl } from '@/lib/x-link';
 
 function Section({ n, title, description, children }: { n: number; title: string; description: string; children: ReactNode }) {
   return (
@@ -151,8 +152,10 @@ export function LaunchForm() {
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
   const [upload, setUpload] = useState<ImageUploadState>({ status: 'idle' });
-  // Optional links, shown on the coin page and written into the contract URI. Telegram and Discord on their own hosts.
+  // Optional links, shown on the coin page and written into the contract URI. Telegram and Discord on their own hosts;
+  // X is the project's account (a URL or a handle), not the agent's, which is connected in section 04.
   const [website, setWebsite] = useState('');
+  const [projectX, setProjectX] = useState('');
   const [telegram, setTelegram] = useState('');
   const [discord, setDiscord] = useState('');
 
@@ -275,8 +278,14 @@ export function LaunchForm() {
     const s = v.trim();
     return !s ? null : s.length <= 200 && /^https:\/\/[^\s"<>]+$/.test(s) && (!host || host.test(s)) ? s : undefined;
   };
-  const links = { website: link(website), telegram: link(telegram, /^https:\/\/t\.me\//i), discord: link(discord, /^https:\/\/(discord\.gg|discord\.com\/invite)\//i) };
+  const links = {
+    website: link(website),
+    x: normalizeXLink(projectX),
+    telegram: link(telegram, /^https:\/\/t\.me\//i),
+    discord: link(discord, /^https:\/\/(discord\.gg|discord\.com\/invite)\//i),
+  };
   if (links.website === undefined) errors.push('Website must be an https URL.');
+  if (links.x === undefined) errors.push('X must be an x.com link or a handle.');
   if (links.telegram === undefined) errors.push('Telegram must be an https://t.me/ link.');
   if (links.discord === undefined) errors.push('Discord must be an https://discord.gg/ invite.');
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
@@ -312,7 +321,7 @@ export function LaunchForm() {
    * (`metadata`) can describe the coin. False when it could not be saved: launching anyway would hand the agent
    * the generic default persona and the coin an empty contract URI.
    */
-  type DraftLinks = { website: string | null; telegram: string | null; discord: string | null };
+  type DraftLinks = { website: string | null; x: string | null; telegram: string | null; discord: string | null };
   async function saveDraft(id: string, coin: { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: DraftLinks }): Promise<boolean> {
     const worker = kind === CUSTOM_WORKER_ID ? { kind, preset: customPreset } : { kind };
     try {
@@ -332,13 +341,13 @@ export function LaunchForm() {
 
   async function launch() {
     if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done' || !workerHash) return;
-    if (links.website === undefined || links.telegram === undefined || links.discord === undefined) return;
+    if (links.website === undefined || links.x === undefined || links.telegram === undefined || links.discord === undefined) return;
     const modelId = selectedModel?.id ?? '';
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
     if (!(await saveDraft(draftId, coin))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
-      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle, source: launchThrough });
+      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle, source: launchThrough, links: coin.links });
       toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
       sessionStorage.removeItem(DRAFT_KEY);
       router.push(`/token/${id}`);
@@ -427,10 +436,15 @@ export function LaunchForm() {
               <span className="text-caption font-medium text-ink">Links</span>
               <span className="text-caption text-mute">Optional</span>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="website">Website</Label>
                 <Input id="website" inputMode="url" placeholder="https://" maxLength={200} value={website} onChange={(e) => setWebsite(e.target.value)} aria-invalid={links.website === undefined} />
+              </div>
+              <div>
+                <Label htmlFor="project-x">X</Label>
+                <Input id="project-x" placeholder="@handle or https://x.com/handle" maxLength={200} value={projectX} onChange={(e) => setProjectX(e.target.value)} aria-invalid={links.x === undefined} />
+                <p className="mt-1 text-caption text-mute">The project&rsquo;s account (the agent gets its own).</p>
               </div>
               <div>
                 <Label htmlFor="telegram">Telegram</Label>
@@ -771,6 +785,7 @@ export function LaunchForm() {
               ['Model', selectedModel?.label ?? '—'],
               ['Launch through', launchThrough === 'clanker' ? 'Clanker' : 'RWAGMI'],
               ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
+              ...(links.x ? [['Project X', `@${xHandleOfUrl(links.x) ?? ''}`]] : []),
               ['Fuel', `${fuel || 0} USDC`],
               ...(devBuyWei && devBuyWei > 0n ? [['Dev buy', `${devBuy} ETH`]] : []),
               ['Your share', `${pctLabel(ofVolume(split, 'creator', fee))} of volume`],

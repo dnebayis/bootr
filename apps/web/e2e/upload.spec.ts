@@ -138,8 +138,17 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await page.getByLabel('Name').fill('Quiet Engine');
   await page.getByLabel('Symbol').fill('QENG');
   await page.getByLabel('Instructions').fill('A patient onchain analyst for small Base coins.');
-  // 03 Kind: presets show their powers and cadence read-only; Custom makes them editable and computes its own hash.
   const summary = page.getByTestId('launch-summary');
+  // The project's own X account (a handle or an x.com link) is a coin link, apart from the agent's X account.
+  const projectX = page.getByLabel('X', { exact: true });
+  await expect(page.getByText('The project’s account (the agent gets its own).')).toBeVisible();
+  await projectX.fill('not a handle');
+  await expect(page.getByText('X must be an x.com link or a handle.')).toBeVisible();
+  await projectX.fill('@bootrfun');
+  await expect(page.getByText('X must be an x.com link or a handle.')).toHaveCount(0);
+  await expect(summary).toContainText('Project X@bootrfun');
+  await expect(summary).toContainText('X accountNot connected');
+  // 03 Kind: presets show their powers and cadence read-only; Custom makes them editable and computes its own hash.
   await expect(summary).toContainText('Community');
   await expect(page.getByRole('switch', { name: 'Web research' })).toBeDisabled();
   await page.locator('label', { has: page.getByRole('radio', { name: 'Custom' }) }).click();
@@ -187,6 +196,7 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   // The draft carries the custom worker: the preset the on-chain hash commits to, published in the agent card.
   expect((await drafted).postDataJSON()).toMatchObject({
     identity: 'A patient onchain analyst for small Base coins.',
+    coin: { name: 'Quiet Engine', symbol: 'QENG', xHandle: null, links: { website: null, x: 'https://x.com/bootrfun', telegram: null, discord: null } },
     worker: {
       kind: 'custom',
       preset: { capabilities: { xRead: true, xReply: true, xPublish: true, research: false, memory: true, treasury: true, images: true }, postIntervalMs: 7_200_000, identity: ['Your job is the weather on Base, as dated facts.'] },
@@ -194,6 +204,11 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   });
   await expect(page.getByText(/Mock: \$QENG launched with 0.002 ETH of gas/)).toBeVisible();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+
+  // The project's X account reached the coin page as a link, with no agent handle to confuse it with.
+  const projectLink = page.getByTestId('token-links').getByRole('link', { name: 'X' });
+  await expect(projectLink).toHaveAttribute('href', 'https://x.com/bootrfun');
+  await expect(projectLink).toHaveAttribute('rel', 'noopener noreferrer nofollow');
 
   // Launched without an X account: the coin page opens with the creator's connect banner above the stats, keeps
   // the creator-only Fuel and Add gas actions, and shows the agent's wallet to everyone.
