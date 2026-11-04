@@ -192,7 +192,8 @@ Derived:
   each agent's x402 spender EOA (`agent.spenderUsdc`; address from the supervisor's social push) in
   one multicall, the admin config, the supervisor social data, and scans USDC `Transfer` logs into
   kernels (eth_getLogs with an OR-list of kernel topics). During backfill the RPC/HTTP reads are
-  skipped. `treasuryUsdc` is the kernel only; `treasuryUsd` and the sleep rule count the spender too.
+  skipped and the handler does its work once per UTC hour instead of once per snapshot, since it
+  took about 84% of a backfill at the full rate. `treasuryUsdc` is the kernel only; `treasuryUsd` and the sleep rule count the spender too.
 
 ## Consumers
 

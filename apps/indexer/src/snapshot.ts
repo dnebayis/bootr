@@ -28,7 +28,7 @@ import {
   type Ctx,
   type TokenRow,
 } from './lib/store';
-import { dayId, dayStart } from './lib/time';
+import { dayId, dayStart, historicalSnapshotDue } from './lib/time';
 
 /**
  * Periodic snapshot (every INDEXER_SNAPSHOT_INTERVAL blocks, default 30 ~ 60 s on Base).
@@ -36,8 +36,11 @@ import { dayId, dayStart } from './lib/time';
  * Near the chain tip ("live": block younger than 15 min) it also refreshes ETH/USD, pool state
  * (PoolManager.extsload), kernel balances plus each agent's spender USDC float (one multicall), the
  * admin config and the supervisor's social data (which carries the spender address). During historical backfill those RPC/HTTP reads are skipped (they would only
- * describe the past and be overwritten at the tip); time-based fields (windows, status,
- * graduation) are still recomputed so the history stays coherent.
+ * describe the past and be overwritten at the tip), and the rest runs once per UTC hour instead of once per
+ * snapshot (`historicalSnapshotDue`): time-based fields (windows, status), the fuel scan and the daily rollup stay
+ * coherent at that grain, and the first live snapshot brings everything up to date. Every snapshot rewrites each
+ * coin and agent, so at the full rate this handler took about 84% of a backfill (702 s of 840 s, 1.5 million
+ * swaps took 21 s). Trades, fees, claims and graduation come from their own events and are not thinned.
  */
 const LIVE_WINDOW_SEC = 15 * 60;
 const KERNELS_PER_GETLOGS = 100;
@@ -162,6 +165,7 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
   const now = Number(event.block.timestamp);
   const bn = event.block.number;
   const live = now >= Math.floor(Date.now() / 1000) - LIVE_WINDOW_SEC;
+  if (!live && !historicalSnapshotDue(now, env.snapshotInterval)) return;
 
   const ethUsd = await getEthUsd(context, bn, live);
 

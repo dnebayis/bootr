@@ -9,3 +9,15 @@ export function dayId(ts: number): string {
 export function dayStart(ts: number): number {
   return Math.floor(ts / DAY_SEC) * DAY_SEC;
 }
+
+export const HOUR_SEC = 3_600;
+
+/**
+ * Whether a snapshot block far behind the chain tip does the full recompute: the first snapshot of each UTC hour.
+ * Stateless, so a replay always picks the same blocks. `blockSec` is Base's 2 s block time (mainnet and Sepolia):
+ * snapshots `intervalBlocks * blockSec` seconds apart land exactly once in that window of an hour, and an interval
+ * of an hour or more is always due.
+ */
+export function historicalSnapshotDue(blockTimestamp: number, intervalBlocks: number, blockSec = 2): boolean {
+  return blockTimestamp % HOUR_SEC < intervalBlocks * blockSec;
+}
