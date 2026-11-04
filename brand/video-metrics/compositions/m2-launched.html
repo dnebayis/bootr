@@ -1,0 +1,62 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #m2-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .m2-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .m2-n { position: absolute; left: 144px; width: 300px; font-size: 200px; line-height: 200px; font-weight: 600; letter-spacing: -0.05em; color: #0000ff; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .m2-l { position: absolute; left: 520px; font-size: 80px; line-height: 88px; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .m2-d { position: absolute; left: 520px; font-family: 'Geist Mono', monospace; font-size: 44px; line-height: 56px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .m2-h { position: absolute; left: 144px; width: 1632px; height: 2px; background: #dee1e7; transform-origin: 0% 50%; }
+  </style>
+  <div id="root" data-composition-id="m2" data-width="1920" data-height="1080">
+    <div id="m2-panel">
+      <div class="m2-t" id="m2-t1">launched.</div>
+      <div class="m2-n" id="m2-n1" style="top: 190px">0</div>
+      <div class="m2-l" id="m2-l1" style="top: 234px">coins launched.</div>
+      <div class="m2-d" id="m2-d1" style="top: 318px">rwagmi 1, clanker 6</div>
+      <div class="m2-h" id="m2-h1" style="top: 416px" data-layout-ignore></div>
+      <div class="m2-n" id="m2-n2" style="top: 440px">0</div>
+      <div class="m2-l" id="m2-l2" style="top: 484px">agents, one per coin.</div>
+      <div class="m2-d" id="m2-d2" style="top: 568px">each with its own wallet</div>
+      <div class="m2-h" id="m2-h2" style="top: 666px" data-layout-ignore></div>
+      <div class="m2-n" id="m2-n3" style="top: 690px">0</div>
+      <div class="m2-l" id="m2-l3" style="top: 734px">ways to launch.</div>
+      <div class="m2-d" id="m2-d3" style="top: 818px">rwagmi or clanker, one transaction</div>
+      <div class="m2-h" id="m2-h3" style="top: 916px" data-layout-ignore></div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, c) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + c + ")" }, t);
+    };
+    const group = (v) => String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const count = (s, t, d, to, fmt) => {
+      const o = { v: 0 };
+      tl.fromTo(o, { v: 0 }, { v: to, duration: d, ease: "power2.out", onUpdate: () => { document.querySelector(s).textContent = fmt(o.v); } }, t);
+    };
+    const L = (k) => Math.round((k - 12) * B * 1000) / 1000;
+    const rows = [1, 2, 3];
+    gsap.set(["#m2-t1"].concat(rows.flatMap((i) => ["#m2-n" + i, "#m2-l" + i, "#m2-d" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#m2-h" + i), { scaleX: 0 });
+    // Beat 12: the white world floods out of the headline (800, 290).
+    tl.fromTo("#m2-panel", { clipPath: "circle(0px at 800px 330px)" }, { clipPath: "circle(2400px at 800px 330px)", duration: 0.42, ease: "power2.inOut" }, 0);
+    type("#m2-t1", L(12.5), 0.45, 9);
+    const targets = [7, 7, 2];
+    rows.forEach((i) => {
+      const t = L(13.5 + 4 * (i - 1));
+      arrive("#m2-n" + i, t);
+      count("#m2-n" + i, t, 1.0, targets[i - 1], (v) => String(Math.round(v)));
+      arrive("#m2-l" + i, t + 0.25);
+      arrive("#m2-d" + i, t + 0.45);
+      tl.fromTo("#m2-h" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, t + 0.1);
+    });
+    window.__timelines["m2"] = tl;
+  </script>
+</template>

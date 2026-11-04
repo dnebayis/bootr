@@ -1,0 +1,88 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #m3-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    .m3-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    #m3-num { position: absolute; left: 144px; top: 340px; font-family: 'Geist Mono', monospace; font-size: 260px; line-height: 280px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    .m3-m { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 52px; line-height: 64px; font-weight: 500; color: #818895; white-space: nowrap; }
+    #m3-bar { position: absolute; left: 144px; top: 420px; width: 1632px; height: 140px; border: 2px solid #32353d; }
+    .m3-s { position: absolute; top: 0; height: 136px; transform-origin: 0% 50%; }
+    .m3-n { position: absolute; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 48px; font-weight: 500; color: #818895; white-space: nowrap; }
+    .m3-v { position: absolute; font-family: 'Geist Mono', monospace; font-size: 48px; line-height: 56px; font-weight: 500; color: #ffffff; white-space: nowrap; }
+    #m3-cap { position: absolute; left: 144px; top: 790px; font-size: 72px; line-height: 80px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+    #m3-cap2 { position: absolute; left: 144px; top: 890px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 48px; font-weight: 500; color: #818895; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="m3" data-width="1920" data-height="1080">
+    <div id="m3-panel">
+      <div class="m3-t" id="m3-t1">traded.</div>
+      <div class="m3-t" id="m3-t2">$16,382 in trading fees.</div>
+      <div id="m3-num">$0</div>
+      <div class="m3-m" id="m3-m1" style="top: 640px">across every coin since 2 nov.</div>
+      <div class="m3-m" id="m3-m2" style="top: 720px">$699,587 of it on 4 nov.</div>
+      <div id="m3-fee" data-layout-allow-overflow>
+        <div id="m3-bar">
+          <div class="m3-s" id="m3-s1" style="left: 0px; width: 635px; background: #ffffff; border-right: 4px solid #0a0b0d;"></div>
+          <div class="m3-s" id="m3-s2" style="left: 635px; width: 456px; background: #818895; border-right: 4px solid #0a0b0d;"></div>
+          <div class="m3-s" id="m3-s3" style="left: 1091px; width: 281px; background: #4a4f5a; border-right: 4px solid #0a0b0d;"></div>
+          <div class="m3-s" id="m3-s4" style="left: 1372px; width: 198px; background: #a9afbb; border-right: 4px solid #0a0b0d;"></div>
+          <div class="m3-s" id="m3-s5" style="left: 1570px; width: 62px; background: #3c8aff; border-right: 0;"></div>
+        </div>
+      <div class="m3-n" id="m3-n1" style="left: 144px; top: 600px">creator</div>
+      <div class="m3-v" id="m3-v1" style="left: 144px; top: 648px">$6,370</div>
+      <div class="m3-n" id="m3-n2" style="left: 779px; top: 600px">platform</div>
+      <div class="m3-v" id="m3-v2" style="left: 779px; top: 648px">$4,576</div>
+      <div class="m3-n" id="m3-n3" style="left: 1235px; top: 600px">launchers</div>
+      <div class="m3-v" id="m3-v3" style="left: 1235px; top: 648px">$2,820</div>
+      <div class="m3-n" id="m3-n4" style="left: 1516px; top: 600px">burn</div>
+      <div class="m3-v" id="m3-v4" style="left: 1516px; top: 648px">$1,984</div>
+      <div class="m3-n" id="m3-n5" style="left: 1376px; top: 292px; width: 400px; text-align: right; color: #3c8aff">agent</div>
+      <div class="m3-v" id="m3-v5" style="left: 1376px; top: 340px; width: 400px; text-align: right; color: #3c8aff">$632</div>
+        <div id="m3-cap">all time. by slot.</div>
+        <div id="m3-cap2">locked at launch.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, c) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + c + ")" }, t);
+    };
+    const group = (v) => String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const count = (s, t, d, to, fmt) => {
+      const o = { v: 0 };
+      tl.fromTo(o, { v: 0 }, { v: to, duration: d, ease: "power2.out", onUpdate: () => { document.querySelector(s).textContent = fmt(o.v); } }, t);
+    };
+    const L = (k) => Math.round((k - 28) * B * 1000) / 1000;
+    const idx = [1, 2, 3, 4, 5];
+    gsap.set(["#m3-t1", "#m3-t2", "#m3-num", "#m3-m1", "#m3-m2", "#m3-cap", "#m3-cap2"].concat(idx.flatMap((i) => ["#m3-n" + i, "#m3-v" + i])), { opacity: 0 });
+    gsap.set(idx.map((i) => "#m3-s" + i), { scaleX: 0 });
+    gsap.set("#m3-bar", { opacity: 0 });
+    // Beat 28: the dark world wipes in from the right.
+    tl.fromTo("#m3-panel", { clipPath: "inset(0px 0px 0px 100%)" }, { clipPath: "inset(0px 0px 0px 0%)", duration: 0.34, ease: "power3.inOut" }, 0);
+    type("#m3-t1", L(29), 0.45, 7);
+    // Beat 32 (the music comes back): the number counts up, then holds.
+    arrive("#m3-num", L(32));
+    count("#m3-num", L(32), 1.4, 701596, (v) => "$" + group(v));
+    arrive("#m3-m1", L(33.5));
+    arrive("#m3-m2", L(35.5));
+    // Beat 40: the number leaves, the fees take its place, one slot a beat.
+    tl.to(["#m3-num", "#m3-m1", "#m3-m2", "#m3-t1"], { opacity: 0, x: -40, duration: 0.22, ease: "power3.in" }, L(40));
+    type("#m3-t2", L(40.5), 0.7, 24);
+    tl.set("#m3-bar", { opacity: 1 }, L(41.5));
+    idx.forEach((i) => {
+      const t = L(41.2 + 0.6 * i);
+      tl.fromTo("#m3-s" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power3.out" }, t);
+      arrive("#m3-n" + i, t + 0.1);
+      arrive("#m3-v" + i, t + 0.18);
+    });
+    arrive("#m3-cap", L(44.3));
+    arrive("#m3-cap2", L(44.9));
+    window.__timelines["m3"] = tl;
+  </script>
+</template>

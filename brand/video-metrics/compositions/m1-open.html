@@ -1,0 +1,48 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #m1-panel { position: absolute; inset: 0; background: #0a0b0d; color: #ffffff; }
+    #m1-shake { position: absolute; inset: 0; }
+    .m1-h { position: absolute; left: 144px; font-size: 144px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .m1-r { position: absolute; left: 144px; font-size: 72px; line-height: 80px; font-weight: 500; color: #dee1e7; letter-spacing: -0.02em; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="m1" data-width="1920" data-height="1080">
+    <div id="m1-panel">
+      <div id="m1-shake" data-layout-allow-overflow>
+        <div class="m1-h" id="m1-t1" style="top: 130px">bootr, by</div>
+        <div class="m1-h" id="m1-t2" style="top: 290px">the numbers.</div>
+        <div class="m1-r" id="m1-r1" style="top: 580px">read from the public indexer.</div>
+        <div class="m1-r" id="m1-r2" style="top: 680px">since the first launch, 2 nov.</div>
+        <div class="m1-r" id="m1-r3" style="top: 780px">as of 4 nov, 20:13 utc.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, c) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + c + ")" }, t);
+    };
+    const group = (v) => String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const count = (s, t, d, to, fmt) => {
+      const o = { v: 0 };
+      tl.fromTo(o, { v: 0 }, { v: to, duration: d, ease: "power2.out", onUpdate: () => { document.querySelector(s).textContent = fmt(o.v); } }, t);
+    };
+    const L = (k) => Math.round(k * B * 1000) / 1000;
+    gsap.set(["#m1-t2", "#m1-r1", "#m1-r2", "#m1-r3"], { opacity: 0 });
+    tl.set("#m1-shake", { x: 0, y: 0 }, 0);
+    // Beat 4 (the drop): the word lands with an impact.
+    tl.set("#m1-t2", { opacity: 1 }, L(4));
+    tl.fromTo("#m1-t2", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.45, ease: "steps(12)" }, L(4));
+    [[0, 10, -6], [0.033, -8, 5], [0.066, 6, -4], [0.1, -3, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#m1-shake", { x, y }, L(4) + d));
+    arrive("#m1-r1", L(5.5));
+    arrive("#m1-r2", L(6.8));
+    arrive("#m1-r3", L(8.1));
+    window.__timelines["m1"] = tl;
+  </script>
+</template>

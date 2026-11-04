@@ -1,0 +1,49 @@
+{
+  "observedAt": "2026-11-04T20:13:05Z",
+  "coins": 7,
+  "agents": 7,
+  "bySource": {
+    "clanker": 6,
+    "bootr": 1
+  },
+  "volumeTotalUsd": 701596.022807,
+  "volumeTodayUsd": 699587.024719,
+  "today": "2026-11-04",
+  "feesTotalUsd": 16381.684311,
+  "slots": {
+    "creator": 6369.606357,
+    "platform": 4576.442283,
+    "launchers": 2819.8358450000014,
+    "burn": 1983.646506,
+    "agent": 632.15332
+  },
+  "top24h": [
+    {
+      "name": "Bootr",
+      "symbol": "BOOTR",
+      "volume24hUsd": 667148.137535,
+      "holders": 488
+    },
+    {
+      "name": "Ledger Owl",
+      "symbol": "OWL",
+      "volume24hUsd": 19613.735171,
+      "holders": 7
+    },
+    {
+      "name": "Bootr Cat",
+      "symbol": "BCAT",
+      "volume24hUsd": 10588.898663,
+      "holders": 15
+    },
+    {
+      "name": "BASECAT",
+      "symbol": "BASECAT",
+      "volume24hUsd": 2236.25335,
+      "holders": 7
+    }
+  ],
+  "bootrBurned": 1814313540.6080034,
+  "bootrSupply": 99999999999.99998,
+  "bootrBurnedPct": 1.8143135406080035
+}

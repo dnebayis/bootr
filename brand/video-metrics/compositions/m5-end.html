@@ -1,0 +1,78 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #m5-ground { position: absolute; inset: 0; background: #0a0b0d; }
+    #m5-shake { position: absolute; inset: 0; }
+    #m5-mark-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #m5-mark-sq { position: relative; width: 288px; height: 288px; }
+    #m5-mark-bg { position: absolute; left: 0; top: 0; width: 288px; height: 288px; border-radius: 60px; background: #0a0b0d; }
+    #m5-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #m5-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #m5-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+    #m5-src { position: absolute; left: 144px; top: 930px; font-family: 'Geist Mono', monospace; font-size: 36px; line-height: 44px; font-weight: 500; color: #818895; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="m5" data-width="1920" data-height="1080">
+    <div id="m5-ground"></div>
+    <div id="m5-shake" data-layout-allow-overflow>
+      <div id="m5-word">bootr</div>
+      <div id="m5-cursor" data-layout-ignore></div>
+      <div id="m5-mark-box" data-layout-ignore>
+        <div id="m5-mark-sq">
+          <div id="m5-mark-bg"></div>
+          <svg id="m5-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="m5-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path id="m5-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="m5-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#m5-m)"></rect>
+          </svg>
+        </div>
+      </div>
+    </div>
+    <div id="m5-src">public indexer and base, 4 nov, 20:13 utc.</div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, c) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + c + ")" }, t);
+    };
+    const group = (v) => String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const count = (s, t, d, to, fmt) => {
+      const o = { v: 0 };
+      tl.fromTo(o, { v: 0 }, { v: to, duration: d, ease: "power2.out", onUpdate: () => { document.querySelector(s).textContent = fmt(o.v); } }, t);
+    };
+    const T0 = 60 * B;
+    const L = (k) => Math.round((k * B - T0) * 1000) / 1000;
+    gsap.set(["#m5-word", "#m5-cursor", "#m5-mark-box", "#m5-src"], { opacity: 0 });
+    tl.set("#m5-shake", { x: 0, y: 0 }, 0);
+    // Beat 60: the dark world floods out of the middle of the frame.
+    tl.fromTo("#m5-ground", { clipPath: "circle(0px at 960px 540px)" }, { clipPath: "circle(1400px at 960px 540px)", duration: 0.4, ease: "power2.inOut" }, 0);
+    const Ti = L(62);
+    // The mark: the cup is cut out, the stem falls into it, the square lands on beat 62.
+    tl.set("#m5-mark-box", { opacity: 1 }, Ti - 0.56);
+    tl.set(["#m5-cup", "#m5-stem"], { opacity: 0 }, 0);
+    tl.set("#m5-cup", { opacity: 1 }, Ti - 0.55);
+    tl.fromTo("#m5-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out" }, Ti - 0.55);
+    tl.set("#m5-stem", { opacity: 1 }, Ti - 0.183);
+    tl.fromTo("#m5-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in" }, Ti - 0.183);
+    tl.fromTo("#m5-mark-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out" }, Ti);
+    tl.to("#m5-mark-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#m5-shake", { x, y }, Ti + d));
+    // The mark slides left into the lockup; "bootr" is typed behind it, led by a block cursor.
+    tl.fromTo("#m5-mark-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut" }, Ti + 0.45);
+    tl.set(["#m5-word", "#m5-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#m5-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    tl.fromTo("#m5-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut" }, Ti + 0.5);
+    [Ti + 1.5, Ti + 1.8].forEach((t) => { tl.set("#m5-cursor", { opacity: 0 }, t); tl.set("#m5-cursor", { opacity: 1 }, t + 0.15); });
+    tl.set("#m5-cursor", { opacity: 0 }, Ti + 2.1);
+    arrive("#m5-src", Ti + 1.2);
+    window.__timelines["m5"] = tl;
+  </script>
+</template>

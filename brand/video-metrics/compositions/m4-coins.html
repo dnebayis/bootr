@@ -1,0 +1,80 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #m4-panel { position: absolute; inset: 0; background: #ffffff; color: #0a0b0d; }
+    .m4-t { position: absolute; left: 144px; top: 60px; font-size: 84px; line-height: 1; font-weight: 600; letter-spacing: -0.04em; white-space: nowrap; }
+    .m4-n { position: absolute; left: 144px; font-size: 80px; line-height: 88px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+    .m4-d { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 48px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+    .m4-b { position: absolute; left: 720px; height: 80px; transform-origin: 0% 50%; }
+    .m4-v { position: absolute; right: 144px; font-family: 'Geist Mono', monospace; font-size: 60px; line-height: 72px; font-weight: 500; white-space: nowrap; }
+    #m4-pct { position: absolute; left: 144px; top: 250px; font-size: 300px; line-height: 320px; font-weight: 600; letter-spacing: -0.05em; color: #0000ff; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .m4-m { position: absolute; left: 144px; font-size: 72px; line-height: 80px; font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; }
+    .m4-s { position: absolute; left: 144px; font-family: 'Geist Mono', monospace; font-size: 40px; line-height: 48px; font-weight: 500; color: #5b616e; white-space: nowrap; }
+  </style>
+  <div id="root" data-composition-id="m4" data-width="1920" data-height="1080">
+    <div id="m4-panel">
+      <div class="m4-t" id="m4-t1">busiest coins, last 24 h.</div>
+      <div class="m4-t" id="m4-t2">burned, on chain.</div>
+      <div id="m4-coins" data-layout-allow-overflow>
+      <div class="m4-n" id="m4-n1" style="top: 230px">bootr</div>
+      <div class="m4-d" id="m4-d1" style="top: 322px">488 holders</div>
+      <div class="m4-b" id="m4-b1" style="top: 242px; width: 720px; background: #0000ff"></div>
+      <div class="m4-v" id="m4-v1" style="top: 242px">$667,148</div>
+      <div class="m4-n" id="m4-n2" style="top: 430px">ledger owl</div>
+      <div class="m4-d" id="m4-d2" style="top: 522px">7 holders</div>
+      <div class="m4-b" id="m4-b2" style="top: 442px; width: 21px; background: #818895"></div>
+      <div class="m4-v" id="m4-v2" style="top: 442px">$19,614</div>
+      <div class="m4-n" id="m4-n3" style="top: 630px">bootr cat</div>
+      <div class="m4-d" id="m4-d3" style="top: 722px">15 holders</div>
+      <div class="m4-b" id="m4-b3" style="top: 642px; width: 11px; background: #818895"></div>
+      <div class="m4-v" id="m4-v3" style="top: 642px">$10,589</div>
+      <div class="m4-n" id="m4-n4" style="top: 830px">basecat</div>
+      <div class="m4-d" id="m4-d4" style="top: 922px">7 holders</div>
+      <div class="m4-b" id="m4-b4" style="top: 842px; width: 6px; background: #818895"></div>
+      <div class="m4-v" id="m4-v4" style="top: 842px">$2,236</div>
+      </div>
+      <div id="m4-pct">0.00%</div>
+      <div class="m4-m" id="m4-m1" style="top: 600px">of $BOOTR's supply, burned.</div>
+      <div class="m4-s" id="m4-s1" style="top: 710px">1,814,313,541 tokens.</div>
+    </div>
+  </div>
+  <script>
+    const B = 0.46985;
+    const tl = gsap.timeline({ paused: true });
+    const arrive = (s, t) => tl.fromTo(s, { x: -40, opacity: 0, filter: "blur(8px)" }, { x: 0, opacity: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }, t);
+    const type = (s, t, d, c) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: d, ease: "steps(" + c + ")" }, t);
+    };
+    const group = (v) => String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const count = (s, t, d, to, fmt) => {
+      const o = { v: 0 };
+      tl.fromTo(o, { v: 0 }, { v: to, duration: d, ease: "power2.out", onUpdate: () => { document.querySelector(s).textContent = fmt(o.v); } }, t);
+    };
+    const L = (k) => Math.round((k - 48) * B * 1000) / 1000;
+    const rows = [1, 2, 3, 4];
+    gsap.set(["#m4-t1", "#m4-t2", "#m4-pct", "#m4-m1", "#m4-s1"].concat(rows.flatMap((i) => ["#m4-n" + i, "#m4-d" + i, "#m4-v" + i])), { opacity: 0 });
+    gsap.set(rows.map((i) => "#m4-b" + i), { scaleX: 0 });
+    // Beat 48: the white world floods out of the number (760, 500).
+    tl.fromTo("#m4-panel", { clipPath: "circle(0px at 760px 500px)" }, { clipPath: "circle(2400px at 760px 500px)", duration: 0.42, ease: "power2.inOut" }, 0);
+    type("#m4-t1", L(48.5), 0.6, 25);
+    rows.forEach((i) => {
+      const t = L(49.3 + 0.6 * (i - 1));
+      arrive("#m4-n" + i, t);
+      arrive("#m4-d" + i, t + 0.12);
+      tl.fromTo("#m4-b" + i, { scaleX: 0 }, { scaleX: 1, duration: 0.5, ease: "power3.out" }, t + 0.05);
+      arrive("#m4-v" + i, t + 0.3);
+    });
+    // Beat 53.5: the list leaves, the burn takes its place.
+    tl.to(["#m4-coins", "#m4-t1"], { opacity: 0, x: -40, duration: 0.22, ease: "power3.in" }, L(52.8));
+    type("#m4-t2", L(53.3), 0.5, 17);
+    arrive("#m4-pct", L(53.9));
+    count("#m4-pct", L(53.9), 1.1, 1.8143, (v) => v.toFixed(2) + "%");
+    arrive("#m4-m1", L(54.6));
+    arrive("#m4-s1", L(55.4));
+    window.__timelines["m4"] = tl;
+  </script>
+</template>
