@@ -8,7 +8,7 @@
  */
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
+import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -88,6 +88,30 @@ function worker(raw: unknown): AgentWorkerConfig | null {
   return { kind: KINDS.includes(w.kind as WorkerKind) ? (w.kind as WorkerKind) : 'custom', capabilities, postIntervalMs: Math.round(interval), jobLines };
 }
 
+const MODEL_ID_RE = /^[\w.:/-]{1,80}$/;
+
+/** The decide model of a `routing` block, or null (off) for anything else. */
+function decideModelOf(raw: unknown): string | null {
+  const m = (raw as { decideModel?: unknown } | null | undefined)?.decideModel;
+  return typeof m === 'string' && MODEL_ID_RE.test(m) ? m : null;
+}
+
+/** The fuel metering as the coin page renders it: whole thoughts, micro-USDC as digits, model ids only. */
+export function sanitizeFuel(raw: unknown): AgentFuel {
+  const o = (raw ?? {}) as { days?: unknown; since?: unknown; byModel?: unknown };
+  const days = Number(o.days);
+  const byModel: AgentFuel['byModel'] = [];
+  for (const it of Array.isArray(o.byModel) ? o.byModel : []) {
+    const r = (it ?? {}) as Record<string, unknown>;
+    const model = str(r.model, 80);
+    const thoughts = Number(r.thoughts);
+    const charged = typeof r.chargedMicroUsdc === 'string' ? r.chargedMicroUsdc : typeof r.chargedMicroUsdc === 'number' ? String(Math.round(r.chargedMicroUsdc)) : '';
+    if (!model || !MODEL_ID_RE.test(model) || !Number.isInteger(thoughts) || thoughts < 0 || !/^\d{1,18}$/.test(charged)) continue;
+    byModel.push({ model, thoughts, chargedMicroUsdc: charged });
+  }
+  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), byModel };
+}
+
 const HTTPS_RE = /^https:\/\/[^\s/?#]+[^\s]*$/i;
 
 /** A public https URL (no credentials), as the supervisor's `httpsUrlSchema` accepts it; null otherwise. */
@@ -124,6 +148,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     worker: w,
     workerHash: (str(o.workerHash, 66) && HASH_RE.test(o.workerHash as string) ? (o.workerHash as Hex) : `0x${'0'.repeat(64)}`) as Hex,
     requireApproval: o.requireApproval === true,
+    routing: { decideModel: decideModelOf(o.routing) },
     imageModel: str(o.imageModel, 120) ?? '',
     imageStyle: imageStyle(o.imageStyle),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
@@ -221,6 +246,14 @@ export async function putAgentConfig(agentId: string, body: PutAgentConfigBody):
   return cfg;
 }
 
+/** `GET /internal/agents/:id/fuel?days=`: thoughts per model (economy mode shows its split here). Unknown agent = empty. */
+export async function getAgentFuel(agentId: string, days = 7): Promise<AgentFuel> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/fuel?days=${Math.min(90, Math.max(1, Math.trunc(days)))}`);
+  if (res.status === 404) return { days, since: new Date(Date.now() - days * 86_400_000).toISOString(), byModel: [] };
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeFuel(await res.json());
+}
+
 /** `GET /internal/agents/:id/activity?limit=&before=`; newest first. `before` is the `at` of the last item shown. */
 export async function getAgentActivity(agentId: string, opts: { limit?: number; before?: string } = {}): Promise<AgentActivity> {
   const limit = Math.min(ACTIVITY_LIMIT_MAX, Math.max(1, Math.trunc(opts.limit ?? ACTIVITY_LIMIT_DEFAULT)));
@@ -272,7 +305,7 @@ function cleanText(v: unknown): string | null {
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string } {
   if (!input || typeof input !== 'object') return { ok: false, message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
   const changes: AgentConfigChanges = {};
   if (o.imageModel !== undefined) {
     if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, message: 'Pick an image model from the list.' };
@@ -297,6 +330,12 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
     if (typeof o.requireApproval !== 'boolean') return { ok: false, message: 'requireApproval must be true or false' };
     changes.requireApproval = o.requireApproval;
   }
+  if (o.routing !== undefined) {
+    if (!o.routing || typeof o.routing !== 'object' || Array.isArray(o.routing)) return { ok: false, message: 'routing must be an object' };
+    const m = (o.routing as { decideModel?: unknown }).decideModel;
+    if (m !== null && (typeof m !== 'string' || !MODEL_ID_RE.test(m))) return { ok: false, message: 'Pick a deciding model from the list, or switch economy mode off.' };
+    changes.routing = { decideModel: m };
+  }
   if (o.instructions !== undefined) {
     const text = cleanText(o.instructions);
     if (text === null || text.length < INSTRUCTIONS_MIN || text.length > INSTRUCTIONS_MAX) {
@@ -305,7 +344,7 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
     changes.instructions = text;
   }
   if (o.model !== undefined) {
-    if (typeof o.model !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.model)) return { ok: false, message: 'Pick a model from the list.' };
+    if (typeof o.model !== 'string' || !MODEL_ID_RE.test(o.model)) return { ok: false, message: 'Pick a model from the list.' };
     changes.model = o.model;
   }
   if (o.worker !== undefined) {

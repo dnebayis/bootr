@@ -56,6 +56,7 @@ describe('GET /internal/agents/:id/config', () => {
         worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
         workerHash: COMMUNITY.hash,
         requireApproval: false,
+        routing: { decideModel: null },
         imageModel: DEFAULT_IMAGE_MODEL,
         imageStyle: { reference: null, notes: '' },
         revision: 1,

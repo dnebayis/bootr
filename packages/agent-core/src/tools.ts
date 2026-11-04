@@ -1,8 +1,15 @@
 import type { z } from 'zod';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
-import { toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
+import { DRAFT_INTENT_TOOL_NAME, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
 
 export type ToolEffect = 'read' | 'write' | 'money';
+
+/** What a request carries per function: every catalog `ToolDefinition` and the phase tool `DRAFT_INTENT_TOOL`. */
+export interface ModelTool {
+  name: string;
+  description: string;
+  input: z.ZodTypeAny;
+}
 
 export interface ToolDefinition<N extends ToolName = ToolName> {
   name: N;
@@ -168,6 +175,20 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
 
 export const TOOL_LIST: readonly ToolDefinition[] = Object.values(TOOLS) as ToolDefinition[];
 
+/**
+ * Economy mode's intent tool: offered to the decide model in place of `publish_post` and `publish_reply`. Calling it
+ * hands the turn to the writer model; nothing is published by it. Not in `TOOLS`: `toolsFor` never returns it.
+ */
+export const DRAFT_INTENT_TOOL: ModelTool = {
+  name: DRAFT_INTENT_TOOL_NAME,
+  description:
+    'Decide to write one post or one reply. Give kind (post or reply), target (the post id a reply answers) and about: what to say and the facts to use, in at most 300 characters. A writer takes over from here with the real publishing tools; call this only when there is something worth publishing now.',
+  input: draftIntentInputSchema,
+};
+
+/** `publish_post` and `publish_reply`: the tools the decide phase of economy mode withholds in favour of `draft_intent`. */
+export const PUBLISHING_TOOLS: readonly ToolName[] = ['publish_post', 'publish_reply'];
+
 /** Owner rules that close a public channel independent of capabilities. */
 export function publicChannelBlocked(ownerRules: readonly OwnerRule[], name: ToolName): boolean {
   const enabled = (id: string) => ownerRules.some((rule) => rule.enabled && rule.id === id);
@@ -197,13 +218,13 @@ export interface FunctionDefinition {
 }
 
 /** OpenAI chat-completions style function definitions. */
-export function toFunctionDefinitions(tools: readonly ToolDefinition[]): FunctionDefinition[] {
+export function toFunctionDefinitions(tools: readonly ModelTool[]): FunctionDefinition[] {
   return tools.map((tool) => ({
     type: 'function',
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: zodToJsonSchema(tool.input as z.ZodTypeAny),
+      parameters: zodToJsonSchema(tool.input),
     },
   }));
 }

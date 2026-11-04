@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeConfig, validateChanges } from './supervisor';
+import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeConfig, sanitizeFuel, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -36,6 +36,16 @@ describe('validateChanges', () => {
     expect(validateChanges({ requireApproval: 'yes' })).toMatchObject({ ok: false });
   });
 
+  it('takes economy mode as routing.decideModel: a model id to switch it on, null to switch it off', () => {
+    expect(validateChanges({ routing: { decideModel: 'deepseek/deepseek-v3.2' } })).toEqual({ ok: true, changes: { routing: { decideModel: 'deepseek/deepseek-v3.2' } } });
+    expect(validateChanges({ routing: { decideModel: null } })).toEqual({ ok: true, changes: { routing: { decideModel: null } } });
+    expect(validateChanges({ routing: { decideModel: '' } })).toMatchObject({ ok: false });
+    expect(validateChanges({ routing: { decideModel: 'not a model id!' } })).toMatchObject({ ok: false });
+    expect(validateChanges({ routing: {} })).toMatchObject({ ok: false });
+    expect(validateChanges({ routing: 'deepseek' })).toMatchObject({ ok: false });
+    expect(validateChanges({ routing: null })).toMatchObject({ ok: false });
+  });
+
   it('takes an image model id and a partial image style: an https reference or null, one line of notes', () => {
     expect(validateChanges({ imageModel: 'google/gemini-3-pro-image' })).toEqual({ ok: true, changes: { imageModel: 'google/gemini-3-pro-image' } });
     expect(validateChanges({ imageModel: 'not a model!' })).toMatchObject({ ok: false });
@@ -70,7 +80,12 @@ describe('sanitizeConfig', () => {
     expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false });
     expect(cfg!.updatedAt).toBe('2023-11-14T22:13:20.000Z');
     expect(cfg!.requireApproval).toBe(false);
+    expect(cfg!.routing).toEqual({ decideModel: null });
     expect(sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 }, requireApproval: true })!.requireApproval).toBe(true);
+    const minimal = { agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } };
+    expect(sanitizeConfig({ ...minimal, routing: { decideModel: 'deepseek/deepseek-v3.2' } })!.routing).toEqual({ decideModel: 'deepseek/deepseek-v3.2' });
+    expect(sanitizeConfig({ ...minimal, routing: { decideModel: 'bad id!' } })!.routing).toEqual({ decideModel: null });
+    expect(sanitizeConfig({ ...minimal, routing: 'x' })!.routing).toEqual({ decideModel: null });
     // image model and style: absent -> '' and no reference; a non-https reference is dropped
     expect(cfg!.imageModel).toBe('');
     expect(cfg!.imageStyle).toEqual({ reference: null, notes: '' });
@@ -100,6 +115,31 @@ describe('sanitizeActivity', () => {
       { at: '2026-11-03T10:00:00.000Z', kind: 'post', summary: 'Posted', url: 'https://x.com/a/status/1' },
       { at: '2026-11-03T09:00:00.000Z', kind: 'fee_claim', summary: 'Claimed', txHash: `0x${'cd'.repeat(32)}` },
     ]);
+  });
+});
+
+describe('sanitizeFuel', () => {
+  it('keeps well-formed per-model rows and defaults the window', () => {
+    const f = sanitizeFuel({
+      days: 7,
+      since: '2026-10-28T12:00:00.000Z',
+      byModel: [
+        { model: 'deepseek/deepseek-v3.2', thoughts: 31, chargedMicroUsdc: '34100' },
+        { model: 'anthropic/claude-haiku-4.5', thoughts: 7, chargedMicroUsdc: 65800 },
+        { model: 'bad id!', thoughts: 1, chargedMicroUsdc: '1' },
+        { model: 'x/y', thoughts: 1.5, chargedMicroUsdc: '1' },
+        { model: 'x/y', thoughts: 1, chargedMicroUsdc: '-1' },
+      ],
+    });
+    expect(f).toEqual({
+      days: 7,
+      since: '2026-10-28T12:00:00.000Z',
+      byModel: [
+        { model: 'deepseek/deepseek-v3.2', thoughts: 31, chargedMicroUsdc: '34100' },
+        { model: 'anthropic/claude-haiku-4.5', thoughts: 7, chargedMicroUsdc: '65800' },
+      ],
+    });
+    expect(sanitizeFuel(null)).toEqual({ days: 7, since: '1970-01-01T00:00:00.000Z', byModel: [] });
   });
 });
 

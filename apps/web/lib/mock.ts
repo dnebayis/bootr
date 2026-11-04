@@ -15,6 +15,7 @@ import type {
   AgentConfig,
   ApprovalDecision,
   AgentConfigChanges,
+  AgentFuel,
   AgentPost,
   AgentStatus,
   AgentWithToken,
@@ -542,6 +543,10 @@ export const mock = {
       cfg.requireApproval = changes.requireApproval;
       fields.push('post review');
     }
+    if (changes.routing !== undefined && changes.routing.decideModel !== cfg.routing.decideModel) {
+      cfg.routing = { decideModel: changes.routing.decideModel };
+      fields.push('economy mode');
+    }
     if (changes.imageModel !== undefined && changes.imageModel !== cfg.imageModel) {
       cfg.imageModel = changes.imageModel;
       fields.push('image model');
@@ -597,6 +602,20 @@ export const mock = {
     if (idx >= 0) tape.splice(idx, 1);
     return { ok: true, approval: clone(item) };
   },
+  /** Fuel metering (lib/types AgentFuel): a week of thoughts split between the deciding model and the writer when economy mode is on. */
+  agentFuel(kernel: string, days = 7): AgentFuel {
+    const cfg = configFor(kernel);
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const decide = cfg.routing.decideModel;
+    const turns = 6 * days;
+    const byModel = decide
+      ? [
+          { model: decide, thoughts: turns * 4, chargedMicroUsdc: String(turns * 4 * 1_100) },
+          { model: cfg.model, thoughts: turns, chargedMicroUsdc: String(turns * 9_400) },
+        ]
+      : [{ model: cfg.model, thoughts: turns * 5, chargedMicroUsdc: String(turns * 5 * 9_400) }];
+    return { days, since, byModel };
+  },
   /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
   agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {
     const cutoff = opts.before ? Date.parse(opts.before) : NaN;
@@ -642,6 +661,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     worker: { kind, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
     requireApproval: true,
+    routing: { decideModel: null },
     imageModel: DEFAULT_IMAGE_MODEL,
     // the supervisor reads the coin picture from the agent card at onboarding
     imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
@@ -662,6 +682,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     worker: { kind: template.id, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: template.hash,
     requireApproval: false,
+    routing: { decideModel: null },
     imageModel: DEFAULT_IMAGE_MODEL,
     imageStyle: { reference: null, notes: '' },
     revision: 0,

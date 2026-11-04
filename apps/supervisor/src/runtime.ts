@@ -23,8 +23,8 @@ import {
   type AgentConfig,
   type BrokerRuntime,
   type ChatMessage,
+  type ModelTool,
   type PendingAction,
-  type ToolDefinition,
 } from '@bootr/agent-core';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
@@ -34,6 +34,7 @@ import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requ
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
+import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { postPerformanceSection } from './post-performance.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
@@ -73,6 +74,8 @@ export interface Turn {
   eligibility?: Record<string, ReplyEligibility>;
   /** Short summaries of the steps so far (for continuation). */
   recentSteps: { tool: string; status: string; summary: string }[];
+  /** Economy mode phase (routing.ts); null or absent when the whole turn runs on `config.model`. */
+  routing?: RoutingState | null;
   /** The weekly digest this turn carries until an original post or `finish` closes it (weekly-digest.ts). */
   digestWeek?: string | null;
 }
@@ -132,7 +135,7 @@ export function scheduleFor(config: AgentConfig, state: AgentState, now: number)
   return jitteredSchedule(config, state.lastPostAt ?? null, now);
 }
 
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ToolDefinition[], directory: AgentDirectory) {
+async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory) {
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory);
   const eligible = views.filter((v) => v.eligible);
@@ -224,7 +227,8 @@ function compactMessages(messages: ChatMessage[]): boolean {
 
 export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
-  const tools = availableTools(ctx, config);
+  const routing = startRouting(config);
+  const tools = toolsForPhase(routing, availableTools(ctx, config));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
   const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory);
   const turn: Turn = {
@@ -233,12 +237,13 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     nudged: false,
     reasons: inputs.reasons,
     messages: [
-      { role: 'system', content: buildSystemPrompt(config) },
+      { role: 'system', content: buildSystemPrompt(config, 'social', { phase: phaseOf(routing) }) },
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
     eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now(), directory).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
     recentSteps: [],
+    routing,
     digestWeek: inputs.digest?.week ?? null,
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
@@ -256,7 +261,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const log = ctx.log.child({ agentId: agent.agentId });
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
-  const tools = availableTools(ctx, config);
+  const catalog = availableTools(ctx, config);
+  /** The functions of the current economy-mode phase (routing.ts); the catalog itself when the mode is off. */
+  const tools = () => toolsForPhase(turn.routing, catalog);
   const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };
 
   const persist = async (patch: RuntimePatch = {}) => {
@@ -353,7 +360,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       let request;
       for (;;) {
         try {
-          request = buildRequest(config, turn.messages, tools, ctx.config.INFERENCE_MAX_OUTPUT_TOKENS);
+          request = buildRequest(config, turn.messages, tools(), ctx.config.INFERENCE_MAX_OUTPUT_TOKENS, modelFor(config, turn.routing));
           break;
         } catch (err) {
           if (err instanceof PolicyError && err.code === 'context_too_large' && compactMessages(turn.messages)) continue;
@@ -362,6 +369,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       }
       await persist();
       inf = await runInference(ctx, agent, config, broker.cycle, request);
+      logThought(log, turn.routing, turn.steps + 1, request.model, inf);
     }
     turn.steps += 1;
 
@@ -389,10 +397,17 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       continue;
     }
 
+    // Economy mode: draft_intent is consumed here (the writer takes over from the next step), never brokered.
+    if (handleIntent(config, turn, catalog, inf.toolCall)) {
+      broker = { ...broker, cycle: broker.cycle + 1 };
+      await persist();
+      continue;
+    }
+
     let action: Action;
     try {
       action = parseAction({ tool: inf.toolCall.name, input: inf.toolCall.input });
-      if (!tools.some((t) => t.name === action.tool)) throw new PolicyError('tool_unavailable', { message: `tool_unavailable: ${action.tool}` });
+      if (!tools().some((t) => t.name === action.tool)) throw new PolicyError('tool_unavailable', { message: `tool_unavailable: ${action.tool}` });
     } catch (err) {
       broker = { ...broker, cycle: broker.cycle + 1 };
       const detail = err instanceof ZodError ? err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') : err instanceof Error ? err.message : String(err);

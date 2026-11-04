@@ -23,6 +23,7 @@ import type {
   AgentApprovalCount,
   AgentApprovals,
   AgentConfig,
+  AgentFuel,
   ApprovalDecision,
   AgentPosts,
   AgentWithToken,
@@ -300,6 +301,13 @@ export async function fetchAgentConfig(kernel: string): Promise<AgentConfig | nu
   return (await res.json()) as AgentConfig;
 }
 
+export async function fetchAgentFuel(kernel: string): Promise<AgentFuel> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/fuel`, { cache: 'no-store' });
+  if (!res.ok) throw new IndexerError(`Agent fuel responded ${res.status}`);
+  const json = (await res.json()) as Partial<AgentFuel>;
+  return { days: typeof json.days === 'number' ? json.days : 7, since: typeof json.since === 'string' ? json.since : '', byModel: Array.isArray(json.byModel) ? json.byModel : [] };
+}
+
 export const ACTIVITY_PAGE = 30;
 
 /** One page of the activity tape (`/api/agent/:kernel/activity`), newest first; `before` pages past the last `at` shown. */
@@ -373,6 +381,7 @@ export const qk = {
   agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
   agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
   approvalCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'approvals', 'count'] as const,
+  agentFuel: (kernel: string) => ['agent', kernel.toLowerCase(), 'fuel'] as const,
 };
 
 // ---------------------------------------------------------------- hooks
@@ -452,6 +461,11 @@ export function useAgentPosts(agentId: string | undefined) {
 
 export function useAgentConfig(kernel: string | undefined, enabled = true) {
   return useQuery({ queryKey: qk.agentConfig(kernel ?? ''), queryFn: () => fetchAgentConfig(kernel!), enabled: !!kernel && enabled, staleTime: 30_000, retry: 1 });
+}
+
+/** Thoughts per model over the last week (the economy mode line of the creator console). */
+export function useAgentFuel(kernel: string | undefined, enabled = true) {
+  return useQuery({ queryKey: qk.agentFuel(kernel ?? ''), queryFn: () => fetchAgentFuel(kernel!), enabled: !!kernel && enabled, staleTime: 60_000, retry: 1 });
 }
 
 /** The "n pending" badge of the creator console; polled while the page is open. */

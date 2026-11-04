@@ -11,11 +11,11 @@ import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { qk, useAgentConfig } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
-import { DEFAULT_IMAGE_MODEL, formatThoughtPrice, groupByProvider, modelLabel } from '@/lib/models';
+import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
 import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
-import { useApprovalCount } from '@/lib/indexer';
+import { useAgentFuel, useApprovalCount } from '@/lib/indexer';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -44,6 +44,8 @@ type Draft = {
   /** The reference picture URL as typed ('' = none) and the style notes. */
   imageReference: string;
   imageNotes: string;
+  /** Economy mode: the deciding model, null when off. */
+  decideModel: string | null;
 };
 
 function draftOf(c: AgentConfig): Draft {
@@ -56,6 +58,7 @@ function draftOf(c: AgentConfig): Draft {
     imageModel: c.imageModel || DEFAULT_IMAGE_MODEL,
     imageReference: c.imageStyle.reference ?? '',
     imageNotes: c.imageStyle.notes,
+    decideModel: c.routing.decideModel,
   };
 }
 
@@ -81,6 +84,7 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (d.postIntervalMs !== config.worker.postIntervalMs) worker.postIntervalMs = d.postIntervalMs;
   if (Object.keys(worker).length) changes.worker = worker;
   if (d.requireApproval !== config.requireApproval) changes.requireApproval = d.requireApproval;
+  if (d.decideModel !== config.routing.decideModel) changes.routing = { decideModel: d.decideModel };
   if (d.imageModel !== (config.imageModel || DEFAULT_IMAGE_MODEL)) changes.imageModel = d.imageModel;
   const style: NonNullable<AgentConfigChanges['imageStyle']> = {};
   const reference = d.imageReference.trim() || null;
@@ -89,6 +93,12 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (notes !== config.imageStyle.notes) style.notes = notes;
   if (Object.keys(style).length) changes.imageStyle = style;
   return Object.keys(changes).length ? changes : null;
+}
+
+/** The picker groups, with `current` appended under "Current" when the list does not carry it (an old or admin-only id). */
+function pickerGroups(list: readonly ModelOption[], current: string | null | undefined) {
+  const known = current && !list.some((m) => m.id === current) ? [...list, { id: current, label: modelLabel(current), provider: 'Current', pricePerThoughtUsd: null }] : [...list];
+  return groupByProvider(known);
 }
 
 export function editedLabel(revision: number): string {
@@ -114,6 +124,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const queryClient = useQueryClient();
   const config = useAgentConfig(token.kernel);
   const approvals = useApprovalCount(token.kernel);
+  const fuel = useAgentFuel(token.kernel);
   const pendingReviews = approvals.data?.pending ?? 0;
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
   const imageModels = useQuery({ queryKey: ['models', 'image'], queryFn: fetchImageModels, staleTime: 60_000 });
@@ -142,12 +153,21 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
   const canSign = env.useMock || !!address;
 
-  const modelGroups = useMemo(() => {
-    const list = models.data?.models ?? [];
-    const current = draft?.model;
-    const known = current && list.some((m) => m.id === current) ? list : current ? [...list, { id: current, label: modelLabel(current), provider: 'Current', pricePerThoughtUsd: null }] : list;
-    return groupByProvider(known);
-  }, [models.data, draft?.model]);
+  const modelList = models.data?.models ?? FALLBACK_MODELS;
+  const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
+  const decideGroups = useMemo(() => pickerGroups(modelList, draft?.decideModel), [modelList, draft?.decideModel]);
+  // The suggestion when the switch goes on: the cheapest allowed mind that is not the writer itself.
+  const cheapest = useMemo(() => cheapestModel(modelList, draft?.model), [modelList, draft?.model]);
+  const priceOf = (id: string | null) => (id ? (modelList.find((m) => m.id === id || modelKey(m.id) === modelKey(id))?.pricePerThoughtUsd ?? null) : null);
+  const economyOn = draft?.decideModel != null;
+  const fuelLine = useMemo(() => {
+    const rows = fuel.data?.byModel ?? [];
+    if (!rows.length) return null;
+    const total = rows.reduce((n, r) => n + r.thoughts, 0);
+    const spent = rows.reduce((n, r) => n + Number(r.chargedMicroUsdc), 0);
+    const parts = rows.slice(0, 3).map((r) => `${r.thoughts} on ${modelLabel(r.model)} (${formatMicroUsdc(r.chargedMicroUsdc)})`);
+    return `Last ${fuel.data!.days} days: ${total} thoughts, ${formatMicroUsdc(spent)}: ${parts.join(', ')}.`;
+  }, [fuel.data]);
   const imageModelGroups = useMemo(() => {
     const list = imageModels.data?.models ?? [];
     const current = draft?.imageModel;
@@ -206,6 +226,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
       const next = (await res.json()) as AgentConfig;
       queryClient.setQueryData(qk.agentConfig(token.kernel), next);
       void queryClient.invalidateQueries({ queryKey: qk.agentActivity(token.kernel) });
+      if (changes.routing) void queryClient.invalidateQueries({ queryKey: qk.agentFuel(token.kernel) });
       setEdits(null);
       toast.success(`Agent updated. The next cycle uses it (${editedLabel(next.revision)}).`);
     } finally {
@@ -367,6 +388,48 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                   ))}
                 </Select>
               </div>
+            </div>
+            <div className="rounded-sm border border-hairline px-3 py-2" data-testid="economy-mode">
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0">
+                  <span className="block text-sm text-ink">Economy mode</span>
+                  <span className="block text-micro text-mute">
+                    A cheaper model does the reading and deciding; {modelLabel(draft.model)} writes only when there is something to publish. Most of a turn is reading, so most thoughts get cheaper.
+                  </span>
+                </span>
+                <Switch id="console-economy" label="Economy mode" checked={economyOn} onChange={(v) => update({ decideModel: v ? (cheapest?.id ?? cfg.routing.decideModel ?? null) : null })} disabled={!economyOn && !cheapest} />
+              </div>
+              {economyOn ? (
+                <div className="mt-2">
+                  <Label
+                    htmlFor="console-decide-model"
+                    hint={
+                      <span className="font-mono tabular">
+                        {formatThoughtPrice(priceOf(draft.decideModel))} vs {formatThoughtPrice(priceOf(draft.model))} per thought
+                      </span>
+                    }
+                  >
+                    Deciding model
+                  </Label>
+                  <Select id="console-decide-model" value={draft.decideModel ?? ''} onChange={(e) => update({ decideModel: e.target.value || null })}>
+                    {decideGroups.map((g) => (
+                      <optgroup key={g.provider} label={g.provider}>
+                        {g.models.map((m) => (
+                          <option key={m.id} value={m.id} disabled={m.id === draft.model}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </Select>
+                  {draft.decideModel === draft.model ? <p className="mt-1 text-micro text-danger">Pick a model other than the writer, or the mode does nothing.</p> : null}
+                </div>
+              ) : null}
+              {fuelLine ? (
+                <p className="mt-2 text-micro text-mute" data-testid="fuel-by-model">
+                  {fuelLine}
+                </p>
+              ) : null}
             </div>
             <div className="flex flex-col gap-2">
               {canSign ? (
