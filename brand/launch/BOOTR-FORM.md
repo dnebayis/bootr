@@ -59,8 +59,8 @@ box unchecked.
 | Fuel | `5` USDC |
 | Dev buy | empty |
 | Gas | `0.001` ETH (the default) |
-| Launch through | **Clanker** (opening market cap about 10 ETH, Clanker's standard layout; the trader pays 1% + 20% on top for Clanker; the coin is listed on clanker.world too) |
-| Buyback and burn | **on** (fee slots agent 5 / treasury 50 / buyback 15 / platform 30 of the whole 1%; the burn slot receives the coin itself) |
+| Launch through | **Clanker** (opening market cap about 10 ETH, Clanker's standard layout; $BOOTR's swap fee is 2% (set by the admin on the Clanker launcher before the launch; every other coin stays at 1%); the trader pays the fee + 20% on top for Clanker, so 2.4%; the coin is listed on clanker.world too) |
+| Buyback and burn | **on** (fee slots agent 5 / treasury 50 / buyback 15 / platform 30 of the whole 2%; the burn slot receives the coin itself) |
 
 Three wallet prompts follow: USDC approval, the launch, the gas deposit for the agent.
 
