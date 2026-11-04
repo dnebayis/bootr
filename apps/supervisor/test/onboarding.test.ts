@@ -587,9 +587,9 @@ describe('launch source: Bootr and Clanker launchers (docs/design/clanker-launch
     const world = await makeWorld();
     try {
       const launch = { ...decodeLaunchLogs([fakeLaunchLog(8n, { launcher: CLANKER_LAUNCHER })])[0]!, source: 'clanker' as const };
-      const config = buildLaunchConfig(world.ctx, launch, { name: 'C', symbol: 'C' }, '', undefined, expectedDetails);
+      const config = buildLaunchConfig(world.ctx, launch, { name: 'C', symbol: 'C' }, '', undefined, null, expectedDetails);
       expect(config).toMatchObject({ source: 'clanker', clanker: expectedDetails });
-      const bootr = buildLaunchConfig(world.ctx, { ...launch, source: 'bootr' }, { name: 'C', symbol: 'C' }, '', undefined, expectedDetails);
+      const bootr = buildLaunchConfig(world.ctx, { ...launch, source: 'bootr' }, { name: 'C', symbol: 'C' }, '', undefined, null, expectedDetails);
       expect(bootr).toMatchObject({ source: 'bootr' });
       expect(bootr.clanker).toBeUndefined();
     } finally {
