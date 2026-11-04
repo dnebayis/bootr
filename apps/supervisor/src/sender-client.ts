@@ -179,7 +179,7 @@ export class SenderClient {
   }
 
   readAccount(agentId: string, username: string) {
-    return this.call<{ user: Record<string, unknown> }>('POST', '/internal/read/account', { agentId, username });
+    return this.call<{ user: Record<string, unknown>; latestPostAt?: string | null; activity?: 'recent' | 'stale' | 'unknown' }>('POST', '/internal/read/account', { agentId, username });
   }
 
   resolve(body: { agentId: string; postId: string; outcome: 'skip' | 'opt_out' | 'defer'; reason: string; reviewAt?: string }) {

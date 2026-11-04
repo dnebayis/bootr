@@ -272,6 +272,8 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
 export interface MockSender {
   /** X accounts by agent id; null = every agent id reports the default connected account. */
   accounts: Record<string, SenderAccount & { connectedAt?: string }> | null;
+  /** `readAccount` answers by lowercase handle: a record, or null for an account X does not know; absent = a recent account. */
+  accountReads: Record<string, { user: Record<string, unknown>; activity: 'recent' | 'stale' | 'unknown'; latestPostAt: string | null } | null>;
   rebinds: { from: string; to: string; connectedBefore?: string }[];
   items: SenderInboxItem[];
   published: unknown[];
@@ -290,7 +292,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -317,8 +319,15 @@ export function mockSender(): MockSender {
     async readThread() {
       return { posts: [], truncated: false };
     },
-    async readAccount() {
-      return { user: {} };
+    async readAccount(_agentId: string, username: string) {
+      const h = username.replace(/^@/, '').toLowerCase();
+      const hit = m.accountReads[h];
+      if (hit === null) {
+        const err = new Error('x_not_found: user not found') as Error & { status: number };
+        err.status = 404;
+        throw err;
+      }
+      return hit ?? { user: { username: h }, activity: 'recent' as const, latestPostAt: new Date().toISOString() };
     },
     /** Mirrors apps/sender/src/metrics.ts: one read per call, unknown ids are `missing`. */
     async readMetrics(_agentId: string, postIds: string[]) {

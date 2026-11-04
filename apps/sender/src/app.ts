@@ -339,7 +339,7 @@ export function createApp(ctx: SenderContext): Hono {
     if (!body.ok) return body.res;
     const res = await readAccount(ctx, body.data);
     if (!res.ok) return fail(c, res);
-    return c.json({ user: res.user });
+    return c.json({ user: res.user, latestPostAt: res.latestPostAt ?? null, activity: res.activity });
   });
 
   internal.post('/inbox/resolve', async (c) => {

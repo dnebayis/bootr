@@ -37,8 +37,8 @@ import { erc20Abi } from 'viem';
 
 
 /** The `attributions` field of a publish (attributions.ts): the model's credits for mentioned handles, plus coin pages for mentioned Bootr agents. */
-async function attributionsFor(ctx: SupervisorContext, text: string, attributions: { username: string; sourceUrl: string }[] | undefined): Promise<{ attributions?: { username: string; sourceUrl: string }[] }> {
-  const credited = await publishAttributions(ctx, text, attributions);
+async function attributionsFor(ctx: SupervisorContext, agentId: string, text: string, attributions: { username: string; sourceUrl: string }[] | undefined): Promise<{ attributions?: { username: string; sourceUrl: string }[] }> {
+  const credited = await publishAttributions(ctx, agentId, text, attributions);
   return credited.length ? { attributions: credited } : {};
 }
 
@@ -198,7 +198,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         replyTo: action.input.postId,
         ...(item ? { replyAuthorId: item.authorId } : {}),
         replyEligibility: eligibility,
-        ...(await attributionsFor(ctx, action.input.text, action.input.attributions)),
+        ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions)),
         ...(media.media ? { media: media.media } : {}),
         publicAddresses: publicAddressesOf(config),
         xUserId: config.xUserId,
@@ -215,7 +215,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // Agent-to-agent cap: one new thread with another Bootr agent per day (agent-directory.ts).
       const capped = await conversationGuard(ctx, agent, config, pending, env);
       if (capped) return capped;
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(await attributionsFor(ctx, action.input.text, action.input.attributions)), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions)), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
     case 'resolve_mention': {

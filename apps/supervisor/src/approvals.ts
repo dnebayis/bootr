@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
 import { PolicyError, validatePost } from '@bootr/agent-core';
-import { publishAttributions } from './attributions.js';
+import { MentionError, publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import { agentDirectory, conversationGuard } from './agent-directory.js';
@@ -163,7 +163,13 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   }
   // What the sender will check on approval, checked now: credits that name nobody in the text are dropped, and a
   // text the publish gate refuses comes back to the agent as a tool error instead of failing after the creator's approval.
-  const attributions = await publishAttributions(ctx, action.input.text, action.input.attributions);
+  let attributions: { username: string; sourceUrl: string }[];
+  try {
+    attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions);
+  } catch (err) {
+    if (err instanceof MentionError) return { kind: 'failed', error: err.message };
+    throw err;
+  }
   if (attributions.length) meta.attributions = attributions;
   try {
     validatePost(action.input.text, attributions, kind === 'post' ? 'original' : 'short', !!action.input.imageId, { platform: agent.config.platform === true });

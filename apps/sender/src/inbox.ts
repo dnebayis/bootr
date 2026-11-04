@@ -278,17 +278,46 @@ export async function readThread(
   return { ok: true, posts: chain.reverse().map((t) => toXPost(t, users)), truncated };
 }
 
+/** An account is `recent` when it posted within this window, `stale` when its last post is older, `unknown` when the timeline could not be read. */
+export const ACCOUNT_RECENT_MS = 180 * 24 * 60 * 60 * 1000;
+export type AccountActivity = 'recent' | 'stale' | 'unknown';
+
+/** Pure: the activity label for a latest-post time (ISO or null = nothing in the window) at `now`. */
+export function activityOf(latestPostAt: string | null | undefined, now: number): AccountActivity {
+  if (latestPostAt === undefined) return 'unknown';
+  if (latestPostAt === null) return 'stale';
+  const t = Date.parse(latestPostAt);
+  if (!Number.isFinite(t)) return 'unknown';
+  return now - t <= ACCOUNT_RECENT_MS ? 'recent' : 'stale';
+}
+
 export async function readAccount(
   ctx: SenderContext,
   input: z.infer<typeof accountReadSchema>,
-): Promise<{ ok: true; user: XUser } | Fail> {
+): Promise<{ ok: true; user: XUser; latestPostAt: string | null | undefined; activity: AccountActivity } | Fail> {
   const username = input.username.replace(/^@/, '');
   const res = await withToken(ctx, input.agentId, (token) => ctx.x.userByUsername(token, username));
   if (!res.ok) return res;
   if (!res.data.data)
     return { ok: false, status: 404, error: 'x_not_found', message: 'user not found' };
   await meterRead(ctx, input.agentId, 'account', 1);
-  return { ok: true, user: res.data.data };
+  const user = res.data.data;
+  // The account's latest post within the recency window (one timeline page, newest first). A read that fails
+  // (rate limit, protected account) leaves the activity unknown rather than failing the lookup.
+  let latestPostAt: string | null | undefined;
+  try {
+    const now = Date.now();
+    const tl = await withToken(ctx, input.agentId, (token) =>
+      ctx.x.userTimeline(token, user.id, { startTime: new Date(now - ACCOUNT_RECENT_MS).toISOString().replace(/\.\d{3}Z$/, 'Z'), endTime: new Date(now - 10_000).toISOString().replace(/\.\d{3}Z$/, 'Z') }),
+    );
+    if (tl.ok) {
+      const times = (tl.data.data ?? []).map((t) => t.created_at).filter((v): v is string => typeof v === 'string').sort();
+      latestPostAt = times.length ? times[times.length - 1]! : null;
+    }
+  } catch {
+    latestPostAt = undefined;
+  }
+  return { ok: true, user, latestPostAt, activity: activityOf(latestPostAt, Date.now()) };
 }
 
 export async function resolveInbox(

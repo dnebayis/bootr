@@ -328,6 +328,13 @@ describe('queueForApproval checks what the sender will check', () => {
       expect(peer.kind).toBe('completed');
       const peerRow = (await w.db.select().from(approvals)).find((r) => r.id === 'act_c4')!;
       expect((peerRow.meta as { attributions?: unknown }).attributions).toEqual([{ username: 'owlagent', sourceUrl: 'https://bootr.fun/token/0x7777777777777777777777777777777777777770' }]);
+      // a mention of an account X does not know, or one silent for months, is refused with a reason the agent can act on
+      w.sender.accountReads['cryptobriefing'] = { user: { username: 'CryptoBriefing' }, activity: 'stale', latestPostAt: '2015-06-01T00:00:00.000Z' };
+      w.sender.accountReads['nosuchaccount_x'] = null;
+      const stale = await queueForApproval(w.ctx, agent, pending('act_m1', 'publish_post', { text: 'good report via @CryptoBriefing', attributions: [{ username: 'CryptoBriefing', sourceUrl: 'https://cryptobriefing.com/report' }] }), env());
+      expect(stale).toMatchObject({ kind: 'failed', error: expect.stringContaining('mention_inactive_account: @cryptobriefing') });
+      const unknown = await queueForApproval(w.ctx, agent, pending('act_m2', 'publish_post', { text: 'thanks @nosuchaccount_x', attributions: [{ username: 'nosuchaccount_x', sourceUrl: 'https://x.com/nosuchaccount_x/status/1' }] }), env());
+      expect(unknown).toMatchObject({ kind: 'failed', error: expect.stringContaining('mention_unknown_account') });
       // a text the gate refuses never reaches the queue: the agent gets the code back
       const bad = await queueForApproval(w.ctx, agent, pending('act_c3', 'publish_post', { text: 'cc @nobody_credited' }), env());
       expect(bad.kind).toBe('failed');
