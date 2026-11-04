@@ -363,6 +363,12 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
       }
       worker.capabilities = out;
     }
+    if (w.jobLines !== undefined) {
+      if (!Array.isArray(w.jobLines) || w.jobLines.some((l) => typeof l !== 'string')) return { ok: false, message: 'jobLines must be an array of strings' };
+      const lines = (w.jobLines as string[]).map((l) => l.trim()).filter(Boolean);
+      if (lines.length > WORKER_BOUNDS.maxJobLines || lines.some((l) => l.length > WORKER_BOUNDS.maxJobLineChars)) return { ok: false, message: `At most ${WORKER_BOUNDS.maxJobLines} job lines of ${WORKER_BOUNDS.maxJobLineChars} characters.` };
+      worker.jobLines = lines;
+    }
     if (w.postIntervalMs !== undefined) {
       const n = Number(w.postIntervalMs);
       if (!Number.isInteger(n) || n < WORKER_BOUNDS.minPostIntervalMs || n > WORKER_BOUNDS.maxPostIntervalMs) {

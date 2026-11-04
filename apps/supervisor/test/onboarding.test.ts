@@ -382,7 +382,7 @@ describe('creator identity from the agent card', () => {
       expect(plain.platform).toBe(true);
       expect(plain.creatorIdentity).toBeNull();
       expect(plain.identityText).toBe(defaultIdentity('Boot', 'BOOT', CARD_URI, true));
-      expect(String(plain.identityText)).toContain('voice of Bootr');
+      expect(String(plain.identityText)).toContain('You run Bootr');
 
       const withText = buildLaunchConfig(world.ctx, launch, { name: 'Boot', symbol: 'BOOT' }, IDENTITY);
       expect(withText.identityText).toBe(`${IDENTITY}\n\n${defaultIdentity('Boot', 'BOOT', CARD_URI, true)}`);

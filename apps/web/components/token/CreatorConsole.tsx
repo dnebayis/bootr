@@ -6,7 +6,7 @@ import { SiweMessage } from 'siwe';
 import { toast } from 'sonner';
 import type { Address } from 'viem';
 import { useConnection, useSignMessage } from 'wagmi';
-import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey } from '@bootr/shared/workers';
+import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { qk, useAgentConfig } from '@/lib/indexer';
@@ -46,6 +46,8 @@ type Draft = {
   imageNotes: string;
   /** Economy mode: the deciding model, null when off. */
   decideModel: string | null;
+  /** The worker's job lines (up to WORKER_BOUNDS.maxJobLines, each up to maxJobLineChars). */
+  jobLines: string[];
 };
 
 function draftOf(c: AgentConfig): Draft {
@@ -58,6 +60,7 @@ function draftOf(c: AgentConfig): Draft {
     imageModel: c.imageModel || DEFAULT_IMAGE_MODEL,
     imageReference: c.imageStyle.reference ?? '',
     imageNotes: c.imageStyle.notes,
+    jobLines: [...c.worker.jobLines],
     decideModel: c.routing.decideModel,
   };
 }
@@ -82,6 +85,8 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   const worker: NonNullable<AgentConfigChanges['worker']> = {};
   if (Object.keys(caps).length) worker.capabilities = caps;
   if (d.postIntervalMs !== config.worker.postIntervalMs) worker.postIntervalMs = d.postIntervalMs;
+  const lines = d.jobLines.map((l) => l.trim()).filter(Boolean);
+  if (JSON.stringify(lines) !== JSON.stringify(config.worker.jobLines)) worker.jobLines = lines;
   if (Object.keys(worker).length) changes.worker = worker;
   if (d.requireApproval !== config.requireApproval) changes.requireApproval = d.requireApproval;
   if (d.decideModel !== config.routing.decideModel) changes.routing = { decideModel: d.decideModel };
@@ -363,6 +368,32 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
               </span>
               <Switch id="console-review" label="Review posts before they go out" checked={draft.requireApproval} onChange={(v) => update({ requireApproval: v })} />
             </div>
+            <fieldset className="min-w-0">
+              <legend className="mb-1.5 text-caption font-medium text-ink">Job lines</legend>
+              <p className="mb-2 text-caption text-mute">What the agent is told to do, one job per line; up to {WORKER_BOUNDS.maxJobLines}. The platform's own agent follows them too.</p>
+              <div className="space-y-2">
+                {draft.jobLines.map((line, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <Input
+                      aria-label={`Job line ${i + 1}`}
+                      value={line}
+                      maxLength={WORKER_BOUNDS.maxJobLineChars}
+                      placeholder={i === 0 ? 'Your job is …' : 'And …'}
+                      onChange={(e) => update({ jobLines: draft.jobLines.map((l, j) => (j === i ? e.target.value : l)) })}
+                      className="min-w-0 flex-1"
+                    />
+                    <Button type="button" variant="secondary" size="sm" aria-label={`Remove job line ${i + 1}`} onClick={() => update({ jobLines: draft.jobLines.filter((_, j) => j !== i) })}>
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+                {draft.jobLines.length < WORKER_BOUNDS.maxJobLines ? (
+                  <Button type="button" variant="secondary" size="sm" onClick={() => update({ jobLines: [...draft.jobLines, ''] })}>
+                    Add a job line
+                  </Button>
+                ) : null}
+              </div>
+            </fieldset>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="console-cadence">Cadence</Label>
