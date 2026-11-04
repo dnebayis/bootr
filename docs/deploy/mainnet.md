@@ -656,7 +656,10 @@ Written 2026-11-04 from [`docs/design/clanker-launch.md`](../design/clanker-laun
 0.00009 ETH, all three Sourcify/Basescan verified): `BootrLaunchGate` `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5`,
 `BootrLauncher` v3.1 `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, `BootrClankerLauncher`
 `0x387f1B0aC128D534E822c344D829645336BDAbbB` (MEV module `ClankerSniperAuctionV2`, `launchFeeWei` 500000000000000,
-`platformLpFeeBps` 20000 from the start). Read back the same day: gate allow-lists both launchers, pending owner = admin. A creator picks "Launch through Bootr" (RWAGMI v3, the live launcher) or "Launch through Clanker"
+`platformLpFeeBps` 20000 from the start). Read back the same day: gate allow-lists both launchers, pending owner = admin. Admin steps the same day: `acceptOwnership` on the
+three (txs `0xc9155d53…48ca`, `0xaa50820d…04b2`, `0x04f56463…9507`), `guardian.setLauncher(gate)` tx
+`0x63c9b79f8e9f18f49c85eabaf6c0dd9db23d6ec4b4a9e1fbcba3078d75ad9401` (block 53503255), v3 `pause()` tx
+`0x6164b842c0183ae3291b56c743fc6c5d472db6c7bcfcb70037a7ff6f60015a76`; `platformLpFeeBps` 20000 since deploy. A creator picks "Launch through Bootr" (RWAGMI v3, the live launcher) or "Launch through Clanker"
 (clanker.world's v4 factory) and gets the same agent either way. Three contracts, one admin switch:
 
 | Contract | Role |
