@@ -12,6 +12,7 @@ import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, worke
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, clankerLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
+import { readGas } from './gas.js';
 import { coinImageFromCard, creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import { launchSourceOf, type LaunchSource, type LauncherEntry } from './chain.js';
@@ -752,6 +753,13 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
     if (!agent.sessionKeyInstalledAt) {
       if (!ctx.adminSigner) {
         log.warn('session key not installed and no ADMIN_PRIVATE_KEY; agent stays in onboarding');
+        continue;
+      }
+      // A self-funded kernel pays the install's prefund itself: with no gas at all the EntryPoint answers AA21 every
+      // time, so wait for a top-up (the coin page's "Add gas") instead of failing once a minute.
+      const gas = await readGas(ctx, agent.kernel as Address).catch(() => null);
+      if (gas && gas.status === 'empty') {
+        log.warn({ kernel: agent.kernel, deposit: gas.deposit.toString() }, 'kernel has no gas; the session key install waits for a top-up');
         continue;
       }
       try {

@@ -12,6 +12,8 @@
  */
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
+import { PolicyError, validatePost } from '@bootr/agent-core';
+import { publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import { agentDirectory, conversationGuard } from './agent-directory.js';
@@ -159,7 +161,16 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     }
     meta.replyEligibility = eligibility;
   }
-  if (action.input.attributions) meta.attributions = action.input.attributions;
+  // What the sender will check on approval, checked now: credits that name nobody in the text are dropped, and a
+  // text the publish gate refuses comes back to the agent as a tool error instead of failing after the creator's approval.
+  const attributions = await publishAttributions(ctx, action.input.text, action.input.attributions);
+  if (attributions.length) meta.attributions = attributions;
+  try {
+    validatePost(action.input.text, attributions, kind === 'post' ? 'original' : 'short', !!action.input.imageId, { platform: agent.config.platform === true });
+  } catch (err) {
+    const code = err instanceof PolicyError ? err.code : 'invalid_post';
+    return { kind: 'failed', error: `${code}: the post does not pass the publish gate; rewrite it` };
+  }
 
   const [row] = await ctx.db
     .insert(approvals)

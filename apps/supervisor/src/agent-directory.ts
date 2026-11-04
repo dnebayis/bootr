@@ -38,6 +38,8 @@ export interface BootrAgentEntry {
   xUserId: string;
   symbol: string;
   name: string;
+  /** The coin's address (lowercase), for its page `${SITE_URL}/token/<address>`. */
+  token: string;
   platform: boolean;
   /** Epoch ms of the agent's registration (its launch, give or take the poll). */
   launchedAt: number;
@@ -60,7 +62,7 @@ export interface BootrAgentMark {
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 /** The directory from `sv_agents` rows: any agent with an X account that is not revoked. Pure. */
-export function buildAgentDirectory(rows: readonly Pick<AgentRow, 'agentId' | 'kernel' | 'config' | 'status' | 'createdAt'>[], now: number): AgentDirectory {
+export function buildAgentDirectory(rows: readonly Pick<AgentRow, 'agentId' | 'kernel' | 'token' | 'config' | 'status' | 'createdAt'>[], now: number): AgentDirectory {
   const entries: BootrAgentEntry[] = [];
   for (const row of rows) {
     if (row.status === 'revoked') continue;
@@ -76,6 +78,7 @@ export function buildAgentDirectory(rows: readonly Pick<AgentRow, 'agentId' | 'k
       xUserId,
       symbol: str(token.symbol, 32) || '?',
       name: str(token.name, 64) || 'Unnamed',
+      token: row.token.toLowerCase(),
       platform: c.platform === true,
       launchedAt: row.createdAt.getTime(),
     });
@@ -96,7 +99,7 @@ export async function agentDirectory(ctx: Pick<SupervisorContext, 'db' | 'now'>,
     if (now - dir.at < AGENT_DIRECTORY_TTL_MS && now >= dir.at) return dir;
   }
   const next = ctx.db
-    .select({ agentId: agents.agentId, kernel: agents.kernel, config: agents.config, status: agents.status, createdAt: agents.createdAt })
+    .select({ agentId: agents.agentId, kernel: agents.kernel, token: agents.token, config: agents.config, status: agents.status, createdAt: agents.createdAt })
     .from(agents)
     .where(ne(agents.status, 'revoked'))
     .then((rows) => buildAgentDirectory(rows, now));

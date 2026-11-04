@@ -88,6 +88,7 @@ describe('the Bootr agents directory', () => {
     const row = (agentId: string, handle: unknown, xUserId: unknown, ageMs: number, status: 'active' | 'paused' | 'revoked' | 'onboarding' = 'active', extra: Record<string, unknown> = {}) => ({
       agentId,
       kernel: `0x${agentId.padStart(40, '0')}`.toUpperCase().replace('0X', '0x'),
+      token: `0x${agentId.padStart(39, '0')}b`,
       status,
       createdAt: new Date(T0 - ageMs),
       config: { xHandle: handle, xUserId, token: { symbol: `S${agentId}`, name: `Coin ${agentId}` }, ...extra },

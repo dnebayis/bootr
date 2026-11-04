@@ -1,3 +1,4 @@
+import { publishAttributions } from '../attributions.js';
 /**
  * Action broker: maps every agent-core tool to an executor and turns what happened into an
  * `ActionOutcome` for the agent-core broker state machine. Idempotency keys are the deterministic
@@ -32,6 +33,15 @@ import { generateImage, loadImage, mediaFor } from '../images.js';
 import { erc20Abi } from 'viem';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
+
+
+
+/** The `attributions` field of a publish (attributions.ts): the model's credits for mentioned handles, plus coin pages for mentioned Bootr agents. */
+async function attributionsFor(ctx: SupervisorContext, text: string, attributions: { username: string; sourceUrl: string }[] | undefined): Promise<{ attributions?: { username: string; sourceUrl: string }[] }> {
+  const credited = await publishAttributions(ctx, text, attributions);
+  return credited.length ? { attributions: credited } : {};
+}
+
 export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig): ToolDefinition[] {
   return toolsFor(config).filter((t) => {
     if (t.name === 'search_web') return !!(ctx.config.SEARCH_API_URL && ctx.config.SEARCH_API_KEY);
@@ -188,7 +198,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         replyTo: action.input.postId,
         ...(item ? { replyAuthorId: item.authorId } : {}),
         replyEligibility: eligibility,
-        ...(action.input.attributions ? { attributions: action.input.attributions } : {}),
+        ...(await attributionsFor(ctx, action.input.text, action.input.attributions)),
         ...(media.media ? { media: media.media } : {}),
         publicAddresses: publicAddressesOf(config),
         xUserId: config.xUserId,
@@ -205,7 +215,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // Agent-to-agent cap: one new thread with another Bootr agent per day (agent-directory.ts).
       const capped = await conversationGuard(ctx, agent, config, pending, env);
       if (capped) return capped;
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(action.input.attributions ? { attributions: action.input.attributions } : {}), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
+      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(await attributionsFor(ctx, action.input.text, action.input.attributions)), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
     case 'resolve_mention': {

@@ -85,6 +85,17 @@ export function mentionedHandles(text: string): string[] {
 }
 
 /**
+ * The attributions `validatePost` will accept for `text`: those crediting a handle the text actually mentions.
+ * The model often credits what it read (a tweet, a page) as a source without naming the account in the post; a
+ * credit without a mention carries nothing to X and would only fail the publish gate (`mentions_require_source_credit`).
+ */
+export function creditedAttributions<T extends { username: string }>(text: string, attributions: readonly T[] | undefined): T[] {
+  if (!attributions?.length) return [];
+  const mentions = new Set(mentionedHandles(text));
+  return attributions.filter((a) => typeof a.username === 'string' && mentions.has(a.username.toLowerCase()));
+}
+
+/**
  * Deterministic publish gate. Throws PolicyError with one of:
  * - any outgoingActionRisk code
  * - any outgoingDisclosureRisk code (secrets, internal references, runtime jargon, foreign addresses)

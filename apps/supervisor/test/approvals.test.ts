@@ -220,7 +220,7 @@ describe('decisions', () => {
     try {
       const agent = await seedAgent(w, { config: REVIEWED });
       await queueForApproval(w.ctx, agent, pending('act_p1', 'publish_post', { text: 'Soon.' }), env());
-      await queueForApproval(w.ctx, agent, pending('act_p2', 'publish_post', { text: 'cc @quietperson' }), env());
+      await queueForApproval(w.ctx, agent, pending('act_p2', 'publish_post', { text: 'cc @quietperson', attributions: [{ username: 'quietperson', sourceUrl: 'https://x.com/quietperson/status/1' }] }), env());
       const { post } = api(w);
       w.sender.consentLookupFails = '2026-10-24T12:10:00Z';
       const later = await post(`/internal/agents/${AGENT_ID}/approvals/act_p1`, { decision: 'approve', by: CREATOR });
@@ -299,6 +299,40 @@ describe('decisions', () => {
       expect(w.sender.published).toHaveLength(0);
       expect((await w.db.select().from(actions).where(eq(actions.actionId, 'act_p1')))[0]).toMatchObject({ status: 'completed', result: { result: { queued: true, approvalId: 'act_p1' } } });
       expect((await runtimeRow(w)).status).toBe('waiting');
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('queueForApproval checks what the sender will check', () => {
+  it('drops credits that name nobody in the text and refuses a text the publish gate rejects', async () => {
+    const w = await makeWorld();
+    try {
+      const agent = await seedAgent(w, { config: REVIEWED });
+      // credited what it read (a bootrfun tweet) without naming it: queued without the credit
+      const credits = [{ username: 'bootrfun', sourceUrl: 'https://x.com/bootrfun/status/1' }];
+      const ok = await queueForApproval(w.ctx, agent, pending('act_c1', 'publish_post', { text: 'bootr is where every coin gets an agent.', attributions: credits }), env());
+      expect(ok.kind).toBe('completed');
+      const row = (await w.db.query.approvals.findFirst())!;
+      expect((row.meta as { attributions?: unknown }).attributions).toBeUndefined();
+      // a credit for a handle the text mentions stays
+      const kept = await queueForApproval(w.ctx, agent, pending('act_c2', 'publish_post', { text: 'good question from @bootrfun today.', attributions: credits }), env());
+      expect(kept.kind).toBe('completed');
+      const rows = await w.db.select().from(approvals);
+      expect((rows.find((r) => r.id === 'act_c2')!.meta as { attributions?: unknown }).attributions).toEqual(credits);
+      // a mention of another Bootr agent is credited with that coin's page (the directory knows it)
+      const seeded = await seedAgent(w, { agent: { agentId: '77', kernel: '0x7777777777777777777777777777777777777777', token: '0x7777777777777777777777777777777777777770' }, runtime: { agentId: '77' }, config: { xHandle: 'OwlAgent', xUserId: '7700' } });
+      expect(seeded.agentId).toBe('77');
+      const peer = await queueForApproval(w.ctx, agent, pending('act_c4', 'publish_post', { text: 'welcome @OwlAgent to bootr.' }), env());
+      expect(peer.kind).toBe('completed');
+      const peerRow = (await w.db.select().from(approvals)).find((r) => r.id === 'act_c4')!;
+      expect((peerRow.meta as { attributions?: unknown }).attributions).toEqual([{ username: 'owlagent', sourceUrl: 'https://bootr.fun/token/0x7777777777777777777777777777777777777770' }]);
+      // a text the gate refuses never reaches the queue: the agent gets the code back
+      const bad = await queueForApproval(w.ctx, agent, pending('act_c3', 'publish_post', { text: 'cc @nobody_credited' }), env());
+      expect(bad.kind).toBe('failed');
+      expect((bad as { error: string }).error).toMatch(/publish gate/);
+      expect(await w.db.select().from(approvals)).toHaveLength(3);
     } finally {
       await w.close();
     }

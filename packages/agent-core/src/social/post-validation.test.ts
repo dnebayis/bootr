@@ -116,3 +116,19 @@ describe('validatePost for the platform account', () => {
     expect(platform('x'.repeat(281))).toBe('invalid_short_post');
   });
 });
+
+describe('creditedAttributions', () => {
+  it('keeps only credits that name a handle the text mentions, so the publish gate accepts the pair', async () => {
+    const { creditedAttributions, validatePost } = await import('./post-validation.js');
+    const credits = [
+      { username: 'bootrfun', sourceUrl: 'https://x.com/bootrfun/status/1' },
+      { username: 'someone', sourceUrl: 'https://x.com/someone/status/2' },
+    ];
+    expect(creditedAttributions('thanks @someone for the question', credits)).toEqual([credits[1]]);
+    expect(creditedAttributions('no mentions here', credits)).toEqual([]);
+    expect(creditedAttributions('hi @Someone', undefined)).toEqual([]);
+    // the model credited what it read without naming it: before, the gate refused; now the credit is simply dropped
+    expect(() => validatePost('bootr is where every coin gets an agent.', credits, 'short')).toThrow(/mentions_require_source_credit/);
+    expect(() => validatePost('bootr is where every coin gets an agent.', creditedAttributions('bootr is where every coin gets an agent.', credits), 'short')).not.toThrow();
+  });
+});
