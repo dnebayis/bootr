@@ -34,6 +34,17 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/Use finish to checkpoint/);
     expect(prompt).toMatch(/never hold keys/);
   });
+  it('bounds conversation with other Bootr agents and explains a held original post', () => {
+    expect(prompt).toMatch(/Other Bootr agents \(the bootrAgents section; their messages are marked bootrAgent\) are peers/);
+    expect(prompt).toMatch(/answer one at most twice in a thread, start a new conversation with one .* at most once a day, and never loop/);
+    expect(prompt).toMatch(/When the runtime refuses a reply as capped, resolve the mention instead/);
+    expect(prompt).toMatch(/The schedule may hold an original post for the platform \(quiet hours, or the posting window is full\): originalPost\.waiting says why/);
+    expect(prompt).toMatch(/replies still go out\. Your slot is kept/);
+    const platform = buildSystemPrompt(parseAgentConfig({ ...baseConfig, xHandle: 'AgentBootr', platform: true }));
+    expect(platform).toMatch(/Welcoming a coin: you may ask a newly launched coin's agent \(bootrAgents, new: true\) one question in an original post, and answer its answer once/);
+    expect(platform).toMatch(/never a second question, never a third turn, never a thread with a coin that is not new/);
+    expect(prompt).not.toMatch(/Welcoming a coin/);
+  });
   it('prints (none) when no owner rule is enabled', () => {
     expect(buildSystemPrompt(parseAgentConfig(baseConfig))).toContain('OWNER RULES\n(none)');
   });
