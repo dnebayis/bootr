@@ -206,3 +206,4 @@ session userOp. Codes are public identifiers, not secrets.
 - **2026-11-01: creator-funded gas and the move to one Coolify server.** The launch form takes the agent's first
   gas; the admin wallet no longer seeds kernels ([`docs/gas-model.md`](docs/gas-model.md)). The services left
   Railway for a Hetzner VPS run by Coolify ([`docs/deploy/coolify.md`](docs/deploy/coolify.md)).
+ 
