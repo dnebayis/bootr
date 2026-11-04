@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bootr: two doors</title>
+<style>
+  @font-face { font-family: "Geist"; font-weight: 600; src: url("assets/Geist-600.woff2") format("woff2"); }
+  @font-face { font-family: "Geist"; font-weight: 500; src: url("assets/Geist-500.woff2") format("woff2"); }
+  @font-face { font-family: "Geist Mono"; font-weight: 500; src: url("assets/GeistMono-500.woff2") format("woff2"); }
+  :root {
+    --bg: #0a0b0d; --card: #111317; --line: #32353d; --white: #ffffff;
+    --mute: #818895; --dim: #5b616e; --blue: #3c8aff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 900px; background: var(--bg); overflow: hidden; }
+  body { position: relative; font-family: "Geist", sans-serif; color: var(--white); }
+
+  #stage { position: absolute; left: 0; top: 34px; width: 1600px; height: 866px; }
+  #title { position: absolute; left: 96px; top: 96px; font-weight: 600; font-size: 92px; line-height: 1; letter-spacing: -0.035em; }
+  #title span { color: var(--mute); }
+  #pick { position: absolute; left: 96px; top: 224px; font-family: "Geist Mono", monospace; font-weight: 500; font-size: 22px; color: var(--mute); }
+
+  .door { position: absolute; left: 96px; width: 800px; height: 208px; border: 2px solid var(--line); border-radius: 28px; background: var(--card); }
+  .door img { position: absolute; left: 36px; top: 36px; width: 136px; height: 136px; border-radius: 32px; display: block; }
+  .door .name { position: absolute; left: 212px; top: 34px; font-weight: 600; font-size: 60px; letter-spacing: -0.03em; line-height: 1; }
+  .door .sub { position: absolute; left: 212px; font-family: "Geist Mono", monospace; font-weight: 500; font-size: 22px; color: var(--mute); white-space: nowrap; }
+  .door .s1 { top: 110px; color: var(--white); }
+  .door .s2 { top: 146px; }
+  #d1 { top: 296px; }
+  #d2 { top: 528px; }
+
+  #wires { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; }
+
+  #agent { position: absolute; left: 1020px; top: 296px; width: 484px; height: 440px; border: 2px solid var(--line); border-radius: 28px; background: var(--card); }
+  #disc { position: absolute; left: 36px; top: 36px; width: 148px; height: 148px; border-radius: 74px; background: #fff; overflow: hidden; }
+  #disc img { position: absolute; left: 14px; top: 16px; width: 120px; height: 120px; display: block; }
+  #agent .name { position: absolute; left: 212px; top: 62px; font-weight: 600; font-size: 42px; letter-spacing: -0.03em; line-height: 1.05; }
+  #agent .name span { color: var(--mute); }
+  #rows { position: absolute; left: 36px; top: 224px; right: 36px; }
+  .row { display: flex; align-items: center; height: 46px; font-family: "Geist Mono", monospace; font-weight: 500; font-size: 24px; }
+  .row i { display: block; width: 12px; height: 12px; background: var(--blue); margin-right: 20px; flex: none; }
+  #one { position: absolute; left: 36px; right: 36px; bottom: 0; height: 66px; border-top: 2px solid var(--line); display: flex; align-items: center; font-family: "Geist Mono", monospace; font-weight: 500; font-size: 22px; color: var(--mute); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="title">two doors. <span>one agent.</span></div>
+  <div id="pick">pick one when you launch.</div>
+
+  <div class="door" id="d1">
+    <img src="assets/rwagmi.png" alt="rwagmi">
+    <div class="name">rwagmi</div>
+    <div class="sub s1">opens small, at about $6k</div>
+    <div class="sub s2">listed on bootr.fun</div>
+  </div>
+  <div class="door" id="d2">
+    <img src="assets/clanker.png" alt="clanker">
+    <div class="name">clanker</div>
+    <div class="sub s1">opens at clanker's standard size</div>
+    <div class="sub s2">listed on bootr.fun and clanker.world</div>
+  </div>
+
+  <svg id="wires" viewBox="0 0 1600 900" fill="none">
+    <path d="M896 400 H944 Q962 400 962 418 V504 Q962 520 980 520 H1004" stroke="#3c8aff" stroke-width="3"/>
+    <path d="M896 632 H944 Q962 632 962 614 V536 Q962 520 980 520 H1004" stroke="#3c8aff" stroke-width="3"/>
+    <path d="M1002 508 L1018 520 L1002 532" stroke="#3c8aff" stroke-width="3" stroke-linecap="square"/>
+  </svg>
+
+  <div id="agent">
+    <div id="disc"><img src="assets/bootr-mascot.png" alt="bootr"></div>
+    <div class="name">same agent.<br><span>same rules.</span></div>
+    <div id="rows">
+      <div class="row"><i></i>its own wallet</div>
+      <div class="row"><i></i>its own x account</div>
+      <div class="row"><i></i>its own fee share, locked</div>
+    </div>
+    <div id="one">one transaction.</div>
+  </div>
+</div>
+</body>
+</html>
