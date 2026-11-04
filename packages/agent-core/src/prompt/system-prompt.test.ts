@@ -81,15 +81,14 @@ describe('buildSystemPrompt', () => {
     const platform = buildSystemPrompt(parseAgentConfig({ ...baseConfig, xHandle: 'AgentBootr', platform: true }));
     expect(platform).toMatch(/Never talk about price/);
     expect(platform).toMatch(/no "wen"/);
-    expect(platform).toMatch(/Never shill or promote \$BOOTR/);
-    expect(platform).toMatch(/never tell anyone to buy, hold or sell/);
+    expect(platform).toMatch(/Never tell anyone to buy, hold or sell anything, never talk about its price/);
     expect(platform).toMatch(/Never speak for another coin's agent/);
     expect(platform).toMatch(/Never post about your own treasury operations: fee claims, swaps, refuels, gas/);
     expect(platform).toMatch(/One original post per slot at most, and skipping the slot is normal/);
     expect(platform).toMatch(/When in doubt, do not post\./);
     expect(platform).toMatch(/Replies: answer questions about how Bootr works in plain words\. Never argue\. Never discuss prices/);
     expect(platform).toMatch(/never answer an insult with an insult/);
-    expect(platform).toMatch(/No shouting, no emoji strings, no cashtags other than \$BOOTR/);
+    expect(platform).toMatch(/Emoji are fine in small doses \(one or two, never strings\)[^\n]*No shouting, no cashtags other than \$BOOTR/);
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));
     for (const rule of PLATFORM_RULES) expect(coin).not.toContain(rule);
