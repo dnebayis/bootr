@@ -25,6 +25,24 @@ export interface ChainAddresses {
   rwagmiLockerV3: Address | null;
   /** Optional ETH creator buy extension (WETH pool only). */
   rwagmiDevBuyV3: Address | null;
+  /**
+   * Clanker v4 (the "Launch through Clanker" path, docs/design/clanker-launch.md): BootrClankerLauncher calls
+   * `factory.deployToken` with `hookStaticFeeV2`, the `lpLockerFeeConversion` locker, the `univ4EthDevBuy`
+   * extension and one of the MEV modules; every reward slot's fees land in `feeLocker` (`availableFees`,
+   * `claim(feeOwner, token)` pays the owner, callable by anyone). `null` where not verified for the chain.
+   */
+  clanker: {
+    factory: Address;
+    feeLocker: Address;
+    lpLockerFeeConversion: Address;
+    hookStaticFeeV2: Address;
+    hookDynamicFeeV2: Address | null;
+    univ4EthDevBuy: Address;
+    /** ClankerSniperAuctionV2: what clanker.world and the SDK launch with; the launcher's default MEV module. */
+    sniperAuctionV2: Address | null;
+    /** ClankerMevBlockDelay: the MEV module Bootr launcher v1 shipped with; the fallback. */
+    mevBlockDelay: Address;
+  };
   /** ERC-8004 registries. `null` when not yet verified for the chain. */
   erc8004: {
     identityRegistry: Address | null;
@@ -67,6 +85,13 @@ export interface ChainAddresses {
   bootr: {
     launcher: Address | null;
     guardian: Address | null;
+    /**
+     * BootrLaunchGate: `guardian.launcher` since launcher v3.1; an owner-controlled allowlist of launchers that
+     * forwards `registerAgent`. `null` until the Clanker-path deploy (script/DeployClankerLauncher.s.sol).
+     */
+    launchGate: Address | null;
+    /** BootrClankerLauncher: the "Launch through Clanker" launcher, same `LaunchParams` ABI as `launcher`. */
+    clankerLauncher: Address | null;
     burnerImplementation: Address | null;
     /**
      * BootrCallPolicy: the session-key call allow-list module. Replaces ZeroDev's CallPolicy, which
@@ -93,6 +118,39 @@ export const addresses = {
     rwagmiHookV3: '0xB20B00367E37F826a0652c85a6DF375D784B20Ec',
     rwagmiLockerV3: '0xB205CE7CC26C35ed5E1f9655FF9d0115af4a1B20',
     rwagmiDevBuyV3: '0xb20A2dCBC4AA42474072381aEb52CbFc5C751B20',
+    // Clanker v4, re-verified 2026-11-04 (docs/design/clanker-launch.md section 1): clanker.gitbook.io "deployed
+    // contracts", clanker-sdk `src/utils/clankers.ts` (chainId 8453, `clanker_v4` + `related`), Basescan / Sourcify
+    // verified sources, and `cast call` through https://mainnet.base.org at block 53501740.
+    // `packages/contracts/test/fork/ClankerFork.t.sol::test_clankerAllowlistsOnFork` reads every allowlist on a fork.
+    clanker: {
+      // "Clanker v4.0.0" on Basescan (exact match), Sourcify match; `deprecated() == false`, `teamFeeRecipient() ==
+      // 0xFC535Ead…`. "v4.1" is the set of modules below enabled on this same factory, not a new factory.
+      factory: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
+      // ClankerFeeLocker (Sourcify-verified as `CornersFeeLocker`, same ABI): `allowedDepositors(lpLockerFeeConversion)
+      // == true`; `claim(feeOwner, token)` pays the owner, anyone may call; `availableFees(feeOwner, token)`.
+      feeLocker: '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68',
+      // ClankerLpLockerFeeConversion, clanker-sdk `related.locker`: `enabledLockers(this, hookStaticFeeV2) == true`
+      // (and for the dynamic V2 hook), `feeLocker() == feeLocker`, `MAX_REWARD_PARTICIPANTS() == 7`. NOT the README's
+      // 0x63D2DfEA64b3433F4071A98665bcD7Ca14d93496: `enabledLockers(0x63D2…, hookStaticFeeV2) == false`, a launch
+      // through it reverts `LockerNotEnabled`. Not source-verified on Sourcify (the SDK and the chain are the sources).
+      lpLockerFeeConversion: '0xffA37784D619F228D8B379d287a4D7282e500762',
+      // ClankerHookStaticFeeV2 (Sourcify): `MAX_LP_FEE() == 100_000`, `PROTOCOL_FEE_NUMERATOR() == 200_000` (20% of
+      // the LP fee, charged on top), `MAX_MEV_MODULE_DELAY() == 120`, `MAX_MEV_LP_FEE() == 800_000`.
+      hookStaticFeeV2: '0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC',
+      // ClankerHookDynamicFeeV2 (docs "deployed contracts"); not used by Bootr.
+      hookDynamicFeeV2: '0xd60D6B218116cFd801E28F78d011a203D2b068Cc',
+      // ClankerUniv4EthDevBuy (Sourcify): `factory() == factory`; `pairedTokenAmountOutMinimum` is unused on a WETH
+      // pair, the extension swaps with `amountOutMinimum = 1` itself.
+      univ4EthDevBuy: '0x1331f0788F9c08C8F38D52c7a1152250A9dE00be',
+      // ClankerSniperAuctionV2 (Sourcify): clanker-sdk / clanker.world default MEV module;
+      // `blocksBetweenDeploymentAndFirstAuction() == 2`, `maxRounds() == 5`; init data `abi.encode(FeeConfig
+      // {startingFee, endingFee, secondsToDecay})`, SDK defaults 666_777 / 41_673 / 15. Enabled on the factory per the
+      // fork read of 2026-11-04 (`enabledMevModules` is private: storage slot 8).
+      sniperAuctionV2: '0xebB25BB797D82CB78E1bc70406b13233c0854413',
+      // ClankerMevBlockDelay (docs "deployed contracts"; bytecode present, not Sourcify-verified): the module Bootr
+      // launcher v1 shipped with; the fallback if Clanker disables the auction (empty init data).
+      mevBlockDelay: '0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2',
+    },
     erc8004: {
       // github.com/erc-8004/erc-8004-contracts README (same pair on every ERC-8004 mainnet, Base listed);
       // `name() == "AgentIdentity"`, `symbol() == "AGENT"`, `reputation.getIdentityRegistry() == identity`.
@@ -138,6 +196,10 @@ export const addresses = {
       // Launcher redeployed 2026-11-03 at block 53433988 (6k opening cap, docs/deploy/mainnet.md, Launcher switch); the rest from the 2026-10-27 cutover.
       launcher: '0x01f290cC464Ac6D167588b35A08305F58683526f',
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
+      // TODO: fill after `forge script script/DeployClankerLauncher.s.sol` (gate, launcher v3.1, Clanker launcher) and
+      // `guardian.setLauncher(gate)`; docs/deploy/mainnet.md "Clanker path". `launcher` above becomes v3.1 then.
+      launchGate: null,
+      clankerLauncher: null,
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
       swapHelper: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
@@ -150,6 +212,19 @@ export const addresses = {
     rwagmiHookV3: null,
     rwagmiLockerV3: null,
     rwagmiDevBuyV3: null,
+    // Clanker v4 on Base Sepolia, from the launcher v1 address book (commit 390468e, verified 2026-10-27 then; not
+    // re-verified on 2026-11-04). The sniper auction's Sepolia address was never recorded. Unused today: the Clanker
+    // path is tested on a Base mainnet fork and `script/DeployClankerLauncher.s.sol` is mainnet-only.
+    clanker: {
+      factory: '0xE85A59c628F7d27878ACeB4bf3b35733630083a9',
+      feeLocker: '0x42A95190B4088C88Dd904d930c79deC1158bF09D',
+      lpLockerFeeConversion: '0x824bB048a5EC6e06a09aEd115E9eEA4618DC2c8f',
+      hookStaticFeeV2: '0x11b51DBC2f7F683b81CeDa83DC0078D57bA328cc',
+      hookDynamicFeeV2: '0xBF4983dC0f2F8FE78C5cf8Fc621f294A993728Cc',
+      univ4EthDevBuy: '0x691f97752E91feAcD7933F32a1FEdCeDae7bB59c',
+      sniperAuctionV2: null,
+      mevBlockDelay: '0x71DB365E93e170ba3B053339A917c11024e7a9d4',
+    },
     erc8004: {
       identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
       reputationRegistry: '0x8004B663056A597Dffe9eCcC1965A193B7388713',
@@ -182,6 +257,9 @@ export const addresses = {
       // Deployed 2026-10-24 (block 49367726), Sourcify exact match.
       launcher: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
       guardian: '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3',
+      // No gate / Clanker launcher on Base Sepolia (the Clanker path is mainnet-only).
+      launchGate: null,
+      clankerLauncher: null,
       burnerImplementation: '0x52f8Ad63ad88a40199a81B39C333C158651caE90',
       // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
       callPolicy: '0x7DcD91d4a1c520217F7258558Cf3560f93337802',

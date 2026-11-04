@@ -16,7 +16,8 @@ configuration), `.env.mainnet.example` (every variable with its mainnet value or
 > [Launcher v2 on RWAGMI](#launcher-v2-on-rwagmi-2026-10-29) at the end of this file, which also holds the fee
 > model, the launcher history and, since 2026-11-03, the procedure for replacing the launcher again:
 > [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap). Design:
-> [`docs/rwagmi-migration.md`](../rwagmi-migration.md).
+> [`docs/rwagmi-migration.md`](../rwagmi-migration.md). Next: [Clanker path](#clanker-path) (gate, launcher v3.1,
+> `BootrClankerLauncher`; design [`docs/design/clanker-launch.md`](../design/clanker-launch.md)), not deployed yet.
 
 ## 0. Dry-run first (no keys, no gas)
 
@@ -644,3 +645,166 @@ day: `guardian.launcher()` = new, `owner()` = admin (no pending owner), `STARTIN
 new `paused() = false`; first test coin: none yet; `BOOTR_LAUNCHERS` on production =
 `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x01f290cC464Ac6D167588b35A08305F58683526f@53433988`, `DATABASE_SCHEMA`
 bumped `bootr_v1` → `bootr_v2`.
+
+## Clanker path
+
+Written 2026-11-04 from [`docs/design/clanker-launch.md`](../design/clanker-launch.md) (task A); **not deployed
+yet**. A creator picks "Launch through Bootr" (RWAGMI v3, the live launcher) or "Launch through Clanker"
+(clanker.world's v4 factory) and gets the same agent either way. Three contracts, one admin switch:
+
+| Contract | Role |
+| --- | --- |
+| `BootrLaunchGate` | becomes `guardian.launcher`; an owner-controlled allowlist of launchers that forwards `registerAgent`. Owner = `PLATFORM_ADMIN`. |
+| `BootrLauncher` v3.1 | the live v3 with one change: it registers through the gate (`Deps.gate`). Same presets, `minPlatformBps`, launch fee, burner implementation; `STARTING_TICK = -243400` (~$6k) stays. |
+| `BootrClankerLauncher` | same `LaunchParams` / `LaunchDefaults` / `AgentLaunched` / `LaunchContext` / `LaunchFeePaid` ABI plus `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick, lpFeeBps)`. Clanker `Standard` layout (tick `-230400`, one position to `-120000`, ~10 ETH opening cap), preset bps unscaled (Clanker's 20% protocol fee is charged **on top** of the LP fee), `Paired` WETH slots, burn slot `0xdEaD` in the coin, `tokenAdmin` / `rewardAdmins` = the launcher with no update path. Owner knobs: `setLaunchFee`, `setPlatformLpFeeBps` (the treasury's own coins, see below), `setMevModule`, `pause`. |
+
+Until `guardian.setLauncher(gate)` is sent, both new launchers revert `NotLauncher` at the registration step, so they
+can be deployed, verified and read back with no launch possible through them. The v3 launcher keeps registering
+directly until then; after the switch it is paused and its coins keep trading and claiming (their locker entries
+are theirs). The indexer and the supervisor follow launchers by address: the Clanker launcher needs the indexer
+sources of design section 4 (tasks C / B) before its coins are visible on the site; the contracts do not wait for
+that, the web's "Launch through Clanker" choice does.
+
+**Deploy order**
+
+1. `BootrLaunchGate(owner = deployer, guardian)`.
+2. `BootrLauncher` v3.1 (RWAGMI deps + `gate`; presets, `minPlatformBps`, `burnerImplementation`, launch fee copied
+   from `OLD_LAUNCHER`).
+3. `BootrClankerLauncher` (Clanker deps + `gate`; same presets and launch fee; `MEV_MODULE` + its init data;
+   `PLATFORM_LP_FEE_BPS`).
+4. `gate.addLauncher(v3.1)`, `gate.addLauncher(clanker)`; ownership of all three transferred to `PLATFORM_ADMIN`
+   (`acceptOwnership` on each: gate, v3.1 launcher, Clanker launcher).
+5. **Admin:** `guardian.setLauncher(gate)` (from the guardian owner `0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3`).
+6. **Admin:** `pause()` on v3 `0x01f290cC464Ac6D167588b35A08305F58683526f`.
+
+Steps 1-4 are `script/DeployClankerLauncher.s.sol`; it sends 5 and 6 only when the broadcaster *is* the guardian
+owner (a fork rehearsal), otherwise it prints the two `cast send` lines. Env of the script: `PRIVATE_KEY` (deployer),
+`PLATFORM_ADMIN` (final owner; default deployer), `OLD_LAUNCHER` (`0x01f290cC…526f`), `LAUNCH_FEE_WEI` (default: the
+old launcher's, 500000000000000 today), `MEV_MODULE` (default `ClankerSniperAuctionV2`
+`0xebB25BB797D82CB78E1bc70406b13233c0854413`; `ClankerMevBlockDelay` `0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2` is
+the fallback and takes empty init data), `MEV_STARTING_FEE` / `MEV_ENDING_FEE` / `MEV_SECONDS_TO_DECAY` (clanker-sdk
+defaults 666777 / 41673 / 15), `PLATFORM_LP_FEE_BPS` (default 0), `ERC8004_IDENTITY` (optional, as in `Deploy.s.sol`).
+
+**Preconditions**
+
+- [ ] `forge build` clean, unit tests green, `base-forge test --match-path 'test/fork/ClankerFork.t.sol' -vv` green
+      **the same day** (section 0; Clanker's admin can change the allowlists without notice). `test_clankerAllowlistsOnFork`
+      is the day-of read: factory `deprecated() == false`, `enabledLockers(0xffA37784…, 0xb429d62f…) == true`, the
+      static V2 hook, the dev-buy extension and the chosen MEV module enabled (the private mappings are read from the
+      factory's storage slots 5 / 7 / 8, checked against the public `enabledLockers` slot 6), fee locker
+      `allowedDepositors(locker) == true`, hook `PROTOCOL_FEE_NUMERATOR() == 200000`. The 2026-11-04 read at block
+      53501740: all true, both MEV modules enabled. If the sniper auction is disabled, pass `MEV_MODULE=<block delay>`
+      (and later `setMevModule(0xE143…, 0x)` on a deployed launcher; `test_mevBlockDelayFallbackLaunchesIfEnabled`
+      covers that path).
+- [ ] Rehearse the script without `--broadcast` first; the simulation runs every call including the ownership
+      transfers.
+- [ ] Gas: deployer ~0.03 ETH (three `CREATE`s, two of them `via_ir` launchers of ~12.1 and ~12.5 kB runtime plus the
+      gate; the v3 redeploy cost 0.0000169 ETH for five transactions, 0.03 is the margin); admin ~0.003 ETH for three
+      `acceptOwnership`, `setLauncher`, `pause` (and `setPlatformLpFeeBps` if set later).
+- [ ] **Launches paused during the switch** (console **Pause launches** + **Pause launches in the app**), as in the
+      launcher switch above; unpause the app side once the services point at the new addresses.
+- [ ] Indexer multi-launcher support already live (`BOOTR_LAUNCHERS`); the Clanker sources (task C) deployed or at
+      least scheduled, since Clanker coins are invisible on the site until then.
+
+**1. Deploy** (from `packages/contracts`; stock `forge` is enough, the script launches nothing):
+
+```sh
+cd packages/contracts
+cast call 0x01f290cC464Ac6D167588b35A08305F58683526f "launchFeeWei()(uint256)" --rpc-url base   # 500000000000000 today
+
+PRIVATE_KEY=<deployer key> PLATFORM_ADMIN=0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3 \
+OLD_LAUNCHER=0x01f290cC464Ac6D167588b35A08305F58683526f \
+forge script script/DeployClankerLauncher.s.sol --rpc-url base -vvv                                      # dry run
+
+PRIVATE_KEY=<deployer key> PLATFORM_ADMIN=0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3 \
+OLD_LAUNCHER=0x01f290cC464Ac6D167588b35A08305F58683526f \
+forge script script/DeployClankerLauncher.s.sol --rpc-url base --broadcast --verify --verifier sourcify -vvv
+```
+
+The script prints `BootrLaunchGate`, `BootrLauncher v3.1`, `BootrClankerLauncher`, `mevModule`, `launchFeeWei`,
+`platformLpFeeBps` and the two admin lines. Creation blocks: `jq -r '.receipts[] | .contractAddress, .blockNumber'
+broadcast/DeployClankerLauncher.s.sol/8453/run-latest.json` (three `CREATE`s in deploy order), `cast to-dec` on the
+block numbers; the v3.1 launcher's block is the new `LAUNCHER_START_BLOCK`, the Clanker launcher's block is
+`CLANKER_START_BLOCK`.
+
+**2. Admin** (`G` = guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`, `GATE`, `V31`, `CL` = the printed
+addresses, `OLD` = `0x01f290cC464Ac6D167588b35A08305F58683526f`; the admin key exported for each command only):
+
+```sh
+cast send $GATE "acceptOwnership()" --rpc-url base --private-key <admin>
+cast send $V31  "acceptOwnership()" --rpc-url base --private-key <admin>
+cast send $CL   "acceptOwnership()" --rpc-url base --private-key <admin>
+cast send $G    "setLauncher(address)" $GATE --rpc-url base --private-key <admin>     # the switch: both new launchers go live
+cast send $OLD  "pause()" --rpc-url base --private-key <admin>
+# before the $BOOTR launch (owner decision 2026-11-04): the platform's own coin carries a 2% LP fee, every other coin
+# keeps the preset 1%. The launcher applies it when the creator is the preset's platformRecipient (= PLATFORM_TREASURY).
+cast send $CL   "setPlatformLpFeeBps(uint24)" 20000 --rpc-url base --private-key <admin>
+```
+
+`setPlatformLpFeeBps` can also be passed as `PLATFORM_LP_FEE_BPS=20000` to the script. Set it to `0` again after
+the $BOOTR launch if no other platform coin should carry 2%; the stored presets never change.
+
+**3. Repo.** `packages/shared/src/addresses.ts` (`[8453].bootr.launcher` = `V31`, `launchGate`, `clankerLauncher`),
+`.env.mainnet.example` (`BOOTR_LAUNCHER_ADDRESS` / `NEXT_PUBLIC_LAUNCHER_ADDRESS` = `V31`, `LAUNCHER_START_BLOCK`,
+`BOOTR_LAUNCHERS` with the v3.1 entry appended, `BOOTR_LAUNCH_GATE_ADDRESS`, `BOOTR_CLANKER_LAUNCHER_ADDRESS`,
+`NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS`, `CLANKER_START_BLOCK`, `CLANKER_FACTORY_ADDRESS`, `CLANKER_LOCKER_ADDRESS`,
+`CLANKER_FEE_LOCKER_ADDRESS`), the READMEs, the launcher history below. `scripts/switch-launcher.sh <V31> <block>`
+handles the v3.1 part (it rewrites the current-launcher lines only); the gate and Clanker lines are new and are edited
+by hand. `pnpm --filter @bootr/shared typecheck`, commit, push to `main`.
+
+**4. Production variables** (Coolify, as in step 4 of the launcher switch): `BOOTR_LAUNCHER_ADDRESS` = `V31`,
+`NEXT_PUBLIC_LAUNCHER_ADDRESS` = `V31` (build-time), `LAUNCHER_START_BLOCK` = v3.1 block, `BOOTR_LAUNCHERS` =
+`…,0x01f290cC464Ac6D167588b35A08305F58683526f@53433988,<V31>@<block>`, and the new ones: `BOOTR_LAUNCH_GATE_ADDRESS`,
+`BOOTR_CLANKER_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS` (build-time), `CLANKER_START_BLOCK`,
+`CLANKER_FACTORY_ADDRESS=0xE85A59c628F7d27878ACeB4bf3b35733630083a9`,
+`CLANKER_LOCKER_ADDRESS=0xffA37784D619F228D8B379d287a4D7282e500762`,
+`CLANKER_FEE_LOCKER_ADDRESS=0xF3622742b1E446D92e45E22923Ef11C2fcD55D68`. Then deploy (step 5 of the launcher switch:
+new `DATABASE_SCHEMA`, backfill, `/ready`, `/api/health`), unpause the app side.
+
+**5. Verify** (`RPC` = a Base RPC):
+
+```sh
+cast call $G    "launcher()(address)" --rpc-url $RPC                       # == GATE
+cast call $GATE "guardian()(address)" --rpc-url $RPC                       # == G
+cast call $GATE "owner()(address)" --rpc-url $RPC                          # admin
+cast call $GATE "launchers(address)(bool)" $V31 --rpc-url $RPC             # true
+cast call $GATE "launchers(address)(bool)" $CL --rpc-url $RPC              # true
+cast call $GATE "launchers(address)(bool)" $OLD --rpc-url $RPC             # false
+cast call $OLD  "paused()(bool)" --rpc-url $RPC                            # true
+cast call $V31  "paused()(bool)" --rpc-url $RPC                            # false
+cast call $V31  "gate()(address)" --rpc-url $RPC                           # == GATE
+cast call $V31  "STARTING_TICK()(int24)" --rpc-url $RPC                    # -243400
+cast call $V31  "launchFeeWei()(uint256)" --rpc-url $RPC                   # same as OLD
+cast call $CL   "gate()(address)" --rpc-url $RPC                           # == GATE
+cast call $CL   "guardian()(address)" --rpc-url $RPC                       # == G
+cast call $CL   "STARTING_TICK()(int24)" --rpc-url $RPC                    # -230400
+cast call $CL   "lpLocker()(address)" --rpc-url $RPC                       # 0xffA37784D619F228D8B379d287a4D7282e500762
+cast call $CL   "staticHook()(address)" --rpc-url $RPC                     # 0xb429d62f8f3bFFb98CdB9569533eA23bF0Ba28CC
+cast call $CL   "mevModule()(address)" --rpc-url $RPC                      # 0xebB25BB797D82CB78E1bc70406b13233c0854413 (or the block delay)
+cast call $CL   "launchFeeWei()(uint256)" --rpc-url $RPC                   # same as OLD
+cast call $CL   "platformLpFeeBps()(uint24)" --rpc-url $RPC                # 20000 before $BOOTR, else 0
+SIG="(uint24,uint16,uint16,uint16,uint16,address,uint256,uint32)"
+for L in $V31 $CL; do
+  diff <(cast call $OLD "standardDefaults()$SIG" --rpc-url $RPC) <(cast call $L "standardDefaults()$SIG" --rpc-url $RPC) && echo "$L standard same"
+  diff <(cast call $OLD "buybackDefaults()$SIG"  --rpc-url $RPC) <(cast call $L "buybackDefaults()$SIG"  --rpc-url $RPC) && echo "$L buyback same"
+done
+```
+
+- Sourcify / Basescan show exact matches for `GATE`, `V31` and `CL`.
+- One small test launch through `V31` from a normal wallet (standard preset, 0 dev buy): the coin appears in the
+  indexer and on the site, `RwagmiLpLockerV3.launchInfo(token)` shows admins = `V31`, the supervisor onboards it.
+- One small test launch through `CL` (standard preset, 0 dev buy, from a normal wallet): `TokenCreated` on the factory
+  with `msgSender == CL` and `tokenAdmin == CL`, `ClankerLaunched.lpFeeBps == 10000`,
+  `ClankerLpLockerFeeConversion.tokenRewards(token)` with three slots, admins = `CL`, bps 500 / 6500 / 3000,
+  `feePreferences(token, i) == 1` (Paired) for all three; `https://clanker.world/clanker/<token>` after
+  `POST https://www.clanker.world/api/tokens/index-by-address` (web, task D). After the first swap and 2 minutes:
+  `collectRewards(token)` then `availableFees(kernel, WETH) > 0`.
+- A launch through `CL` from `PLATFORM_TREASURY` with `platformLpFeeBps = 20000`: `ClankerHookStaticFeeV2.clankerFee
+  (poolId) == 20000`; the next launch from another wallet reads `10000`.
+
+**Rollback.** As the admin: `cast send $G "setLauncher(address)" $OLD` and `cast send $OLD "unpause()"`: v3 registers
+directly again, both new launchers revert `NotLauncher` (no need to pause them, `pause()` is available). Agents
+registered through the gate in between stay registered; their coins keep trading and claiming. Repo and Coolify
+variables back as in the launcher-switch rollback; `BOOTR_LAUNCHERS` may keep the v3.1 entry.
+
+**Deployed:** not yet.

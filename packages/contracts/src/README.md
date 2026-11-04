@@ -6,7 +6,9 @@ EntryPoint v0.7, ERC-8004. RWAGMI v3 has no Base Sepolia deployment, so launches
 
 | Contract | Role |
 | --- | --- |
-| `BootrLauncher` | One-tx launch: Kernel treasury -> optional `BuybackBurner` clone -> B20 token + v4 pool (RWAGMI v3) -> ERC-8004 identity -> USDC fuel -> guardian registration. `Ownable2Step`, `Pausable`, `ReentrancyGuard`. |
+| `BootrLauncher` | One-tx launch: Kernel treasury -> optional `BuybackBurner` clone -> B20 token + v4 pool (RWAGMI v3) -> ERC-8004 identity -> USDC fuel -> guardian registration through the gate (v3.1). `Ownable2Step`, `Pausable`, `ReentrancyGuard`. |
+| `BootrClankerLauncher` | "Launch through Clanker": the same `LaunchParams` / `LaunchDefaults` / events, the coin and pool created by Clanker v4 `deployToken` (static-fee hook V2, `ClankerLpLockerFeeConversion`, Standard layout `[-230400, -120000]`, ~10 ETH opening cap). Reward slots take the preset bps unscaled (Clanker's 20% is charged on top of the LP fee): kernel / creator / platform in WETH (`Paired`), the buyback slot is `0xdEaD` in the coin (`Clanker`), so no burner contract. `tokenAdmin` and every `rewardAdmin` = the launcher, no update path. `platformLpFeeBps` (owner-set, 0 = off) replaces the preset LP fee when the creator is the platform treasury; `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick, lpFeeBps)` carries the fee used. MEV module owner-settable (`ClankerSniperAuctionV2` by default, `ClankerMevBlockDelay` the fallback). |
+| `BootrLaunchGate` | `guardian.launcher` since v3.1: an owner-controlled allowlist of launchers that forwards `registerAgent` to the guardian unchanged (`LauncherAdded` / `LauncherRemoved`). `Ownable2Step` (platform admin). |
 | `AgentGuardian` | ERC-7579 root **validator + hook** of every agent Kernel. Tracks activity, enforces creator pause, approves session-key installs, sweeps dormant treasuries. `Ownable2Step` (platform admin). |
 | `BuybackBurner` | EIP-1167 clone per buyback-enabled coin. Reward-slot recipient in the RWAGMI locker; `claim()` pulls its WETH (anyone), `burn()` burns stray coin (anyone), `swapAndBurn(minOut)` swaps WETH -> coin and burns (launcher owner only: there is no on-chain price for a fresh coin, so a caller-chosen `minOut` was a griefing primitive, BOOTR-03). No owner of its own. |
 | `BootrCallPolicy` | ERC-7579 **policy** (module type 5) for Kernel v3.1 session permissions: call allow-list over `Kernel.execute` (target, selector, static-arg rules; `<=` rules are summed per batch; `SUM_PER_WINDOW` rules are capped cumulatively per rolling window on-chain), understands the `executeUserOp` wrapper. No owner, no external calls. |
@@ -47,6 +49,20 @@ is 0) and records it per pool (`hook.cumulativeFees(poolId)`). The locker credit
 through its session key (`BootrCallPolicy` allows `settleAndClaim` with `to == kernel`), the burner through `claim()`,
 the creator and the platform from their wallets. Unsettled fees are visible as `pendingQuote(poolId, recipient)`,
 settled ones as `claimableQuote(recipient, WETH)`.
+
+Fee path on the Clanker path (`BootrClankerLauncher`): the pool's LP fee (`lpFeeBps`, dynamic-fee flag on the pool
+key) accrues to the locker's position; the hook takes 20% of it on top for Clanker. `ClankerLpLockerFeeConversion.
+collectRewards(token)` (permissionless; skipped while the MEV module is operating, i.e. the first 2 minutes) collects
+the position, converts each slot per its preference (`Paired`: coin share swapped to WETH; the burn slot's `Clanker`:
+WETH share swapped to the coin; `amountOutMinimum: 0`) and deposits every share into `ClankerFeeLocker`.
+`ClankerFeeLocker.claim(feeOwner, token)` pays `feeOwner` whoever calls, `availableFees(feeOwner, token)` is the
+balance. The kernel's claim op is `collectRewards(token)` + `claim(kernel, WETH)`; the burn is finalised by anyone with
+`claim(0xdEaD, token)`. Launch flow otherwise as above with `clanker.deployToken{value: devBuyWei}(cfg)` in step 3
+(token: `tokenAdmin = launcher`, `salt = keccak(creator, params.salt)`, image / metadata / context from the params;
+pool: `tickIfToken0IsClanker = -230400`, tick spacing 200, static `clankerFee = pairedFee = lpFeeBps`; locker: the
+preset's slots unscaled; MEV module from storage; dev buy `ClankerUniv4EthDevBuy` with `recipient = creator`) and
+`ClankerLaunched` emitted after `LaunchContext`. No `predictToken`: Clanker's CREATE2 salt covers the full
+constructor arguments; the web reads the address from the receipt.
 
 ## AgentGuardian - how root authority works in Kernel v3.1
 
