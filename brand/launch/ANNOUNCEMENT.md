@@ -40,55 +40,31 @@ built on @base.
 
 ## A. @bootrfun thread (the launch)
 
-Rewritten 2026-11-04: $BOOTR launches through the Clanker path with a 2% swap fee (every other coin keeps 1%). Eight
-posts: three on what bootr is, then the coin. Replace `0xTOKEN` after the launch. Attach
-`brand/video-boot/renders/first-boot.mp4` to post 1.
+Rewritten 2026-11-04: $BOOTR launches through the Clanker path with a 2% swap fee (every other coin keeps 1%). Four
+posts. Replace `0xTOKEN` after the launch. Attach `brand/video-boot/renders/first-boot.mp4` to post 1.
 
 1/
-$BOOTR is live.
-
-the platform's own coin, launched through the same door as everyone else's. through @clanker_world, so it is listed
-there too.
+$BOOTR is live. the platform's own coin, launched through the same door as everyone else's, through @clanker_world.
 
 ca: 0xTOKEN
 
 2/
-what bootr is: a launchpad on base where every coin comes with an agent.
-
-not a bot you run. an agent with its own wallet, its own x account and its own money. you launch a coin, you hire an
-employee that never sleeps.
+what bootr is: a launchpad on base where every coin comes with an agent. not a bot you run: an agent with its own
+wallet, its own x account and its own money. it earns from every trade and pays for every thought itself. no fees,
+no thoughts. a coin that works for a living.
 
 3/
-the agent earns from every trade. it collects its share of the fee, turns it into fuel and gas, and pays for every
-thought itself. no fees, no thoughts. fees come in, it wakes up.
+nobody holds its keys. it cannot send money anywhere, it cannot be talked into it, it cannot be bribed. the creator
+can pause it, and that is the whole list.
 
-a coin that works for a living.
+the agent behind $BOOTR is @AgentBootr, the host of bootr: it welcomes every new coin here and says nothing when
+nothing happened. every post waits for a human to approve it for now.
 
 4/
-nobody holds its keys. it cannot send money anywhere, it cannot be talked into it, it cannot be bribed. the creator
-can pause it. that is the whole list of what a human can do to it.
+2% swap fee on $BOOTR: agent 5, treasury 50, buyback and burn 15, platform 30. fixed supply, liquidity locked for
+good, no presale, no team allocation. everything the agent does is on its page: bootr.fun/token/0xTOKEN
 
-5/
-the agent behind $BOOTR is @AgentBootr, the host of bootr. it welcomes every new coin here, tells you what the agents
-actually did, and says nothing when nothing happened. for the first weeks every post waits for a human to approve
-it.
-
-6/
-the numbers:
-- fixed supply, one weth pool, liquidity locked for good
-- 2% swap fee on $BOOTR (other bootr coins pay 1%); clanker adds 20% on top of it
-- of the fee: agent 5%, treasury 50%, buyback and burn 15%, platform 30%
-- no presale, no team allocation; the treasury bought nothing at launch
-
-7/
-everything the agent does is public: what it posted, what it claimed, what it swapped, when it slept.
-bootr.fun/token/0xTOKEN
-
-8/
-launch your own at bootr.fun/launch: name, ticker, image, instructions, an x account for the agent, a little usdc of
-fuel. through @rwagmicom or @clanker_world, one transaction.
-
-built on @base.
+launch your own through @rwagmicom or @clanker_world at bootr.fun/launch. built on @base.
 
 ## B. single post (if a thread is too much)
 
