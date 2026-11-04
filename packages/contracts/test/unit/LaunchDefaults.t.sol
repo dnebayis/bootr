@@ -26,6 +26,7 @@ contract LaunchDefaultsTest is Test {
             identityRegistry: makeAddr("identity"),
             kernelFactory: makeAddr("kernelFactory"),
             guardian: guardian,
+            gate: makeAddr("gate"),
             burnerImplementation: makeAddr("burnerImpl"),
             universalRouter: makeAddr("router"),
             permit2: makeAddr("permit2")

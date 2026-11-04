@@ -11,6 +11,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {AgentGuardian} from "./AgentGuardian.sol";
+import {BootrLaunchGate} from "./BootrLaunchGate.sol";
 import {BuybackBurner} from "./BuybackBurner.sol";
 import {IB20Factory, IRwagmiB20Launcher, IRwagmiB20LauncherV3, IRwagmiLpLockerV3} from "./interfaces/IRwagmi.sol";
 import {IERC8004IdentityRegistry} from "./interfaces/IERC8004IdentityRegistry.sol";
@@ -30,6 +31,10 @@ import {PoolKey, V4Constants} from "./interfaces/IUniswapV4.sol";
 ///         RWAGMI's immutable mode (`initialAdmin = 0`): nobody holds admin, mint or metadata powers.
 ///         RWAGMI appends its own 10% slot to every launch; Bootr's presets are expressed over the
 ///         remaining 9000 bps (see `_slotBps`).
+///
+///         v3.1 (2026-11-04): the only change from v3 is that the guardian registration goes through
+///         `BootrLaunchGate` (`gate.registerAgent`), so a second launcher (`BootrClankerLauncher`) can
+///         register agents on the same guardian. The kernel's root validator stays the guardian.
 contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
 
@@ -74,7 +79,8 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         address usdc;
         address identityRegistry; // ERC-8004
         address kernelFactory; // ZeroDev KernelFactory (Kernel v3.1)
-        address guardian; // AgentGuardian
+        address guardian; // AgentGuardian (kernel root validator + hook)
+        address gate; // BootrLaunchGate (guardian.launcher; forwards registerAgent for allow-listed launchers)
         address burnerImplementation; // BuybackBurner
         address universalRouter;
         address permit2;
@@ -116,6 +122,7 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
     IERC8004IdentityRegistry public immutable identityRegistry;
     IKernelFactory public immutable kernelFactory;
     AgentGuardian public immutable guardian;
+    BootrLaunchGate public immutable gate;
     address public immutable burnerImplementation;
     address public immutable universalRouter;
     address public immutable permit2;
@@ -182,7 +189,7 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         if (
             deps.rwagmiLauncher == address(0) || deps.rwagmiLocker == address(0) || deps.rwagmiHook == address(0)
                 || deps.rwagmiDevBuy == address(0) || deps.b20Factory == address(0) || deps.weth == address(0) || deps.usdc == address(0) || deps.identityRegistry == address(0)
-                || deps.kernelFactory == address(0) || deps.guardian == address(0)
+                || deps.kernelFactory == address(0) || deps.guardian == address(0) || deps.gate == address(0)
                 || deps.burnerImplementation == address(0) || deps.universalRouter == address(0)
                 || deps.permit2 == address(0)
         ) revert ZeroAddress();
@@ -197,6 +204,7 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
         identityRegistry = IERC8004IdentityRegistry(deps.identityRegistry);
         kernelFactory = IKernelFactory(deps.kernelFactory);
         guardian = AgentGuardian(deps.guardian);
+        gate = BootrLaunchGate(deps.gate);
         burnerImplementation = deps.burnerImplementation;
         universalRouter = deps.universalRouter;
         permit2 = deps.permit2;
@@ -283,8 +291,8 @@ contract BootrLauncher is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiv
             usdc.safeTransferFrom(creator, kernel, p.fuelUsdc);
         }
 
-        // (g) guardian registration
-        guardian.registerAgent(kernel, token, creator, d.dormancyPeriod);
+        // (g) guardian registration, through the gate (guardian.launcher == gate since v3.1)
+        gate.registerAgent(kernel, token, creator, d.dormancyPeriod);
 
         // (h)
         emit AgentLaunched(

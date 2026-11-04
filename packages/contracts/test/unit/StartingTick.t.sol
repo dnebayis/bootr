@@ -45,6 +45,7 @@ contract StartingTickTest is Test {
             identityRegistry: makeAddr("identity"),
             kernelFactory: makeAddr("kernelFactory"),
             guardian: makeAddr("guardian"),
+            gate: makeAddr("gate"),
             burnerImplementation: makeAddr("burnerImpl"),
             universalRouter: makeAddr("router"),
             permit2: makeAddr("permit2")

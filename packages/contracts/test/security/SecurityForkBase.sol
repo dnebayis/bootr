@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {AgentGuardian} from "../../src/AgentGuardian.sol";
 import {BootrCallPolicy} from "../../src/BootrCallPolicy.sol";
+import {BootrLaunchGate} from "../../src/BootrLaunchGate.sol";
 import {BootrLauncher} from "../../src/BootrLauncher.sol";
 import {BootrSwapHelper} from "../../src/BootrSwapHelper.sol";
 import {BuybackBurner} from "../../src/BuybackBurner.sol";
@@ -79,6 +80,7 @@ abstract contract SecurityForkBase is Test {
         0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267;
 
     AgentGuardian guardian;
+    BootrLaunchGate gate;
     BootrLauncher launcher;
     BootrCallPolicy callPolicy;
     BootrSwapHelper swapHelper;
@@ -100,6 +102,7 @@ abstract contract SecurityForkBase is Test {
         vm.createSelectFork(vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org")));
         require(block.chainid == 8453, "not a Base mainnet fork");
         guardian = new AgentGuardian(address(this), ENTRY_POINT, USDC, WETH);
+        gate = new BootrLaunchGate(address(this), address(guardian));
         BuybackBurner burnerImpl = new BuybackBurner();
         callPolicy = new BootrCallPolicy();
         swapHelper = new BootrSwapHelper(WETH, USDC, SWAP_ROUTER_02, ETH_USD_FEED, 500);
@@ -137,6 +140,7 @@ abstract contract SecurityForkBase is Test {
                 identityRegistry: IDENTITY,
                 kernelFactory: KERNEL_FACTORY,
                 guardian: address(guardian),
+                gate: address(gate),
                 burnerImplementation: address(burnerImpl),
                 universalRouter: UNIVERSAL_ROUTER,
                 permit2: PERMIT2
@@ -145,7 +149,8 @@ abstract contract SecurityForkBase is Test {
             b,
             1000
         );
-        guardian.setLauncher(address(launcher));
+        guardian.setLauncher(address(gate));
+        gate.addLauncher(address(launcher));
         guardian.setPlatformTreasury(treasury);
         deal(USDC, creator, 10_000e6);
         vm.deal(creator, 100 ether);

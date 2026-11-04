@@ -4,15 +4,17 @@ pragma solidity ^0.8.26;
 import {Script, console2} from "forge-std/Script.sol";
 
 import {AgentGuardian} from "../src/AgentGuardian.sol";
+import {BootrLaunchGate} from "../src/BootrLaunchGate.sol";
 import {BootrLauncher} from "../src/BootrLauncher.sol";
 import {BuybackBurner} from "../src/BuybackBurner.sol";
 
-/// @notice Deploys AgentGuardian, BuybackBurner implementation and BootrLauncher, wires them and
-///         hands ownership to PLATFORM_ADMIN (Ownable2Step: the admin must `acceptOwnership`).
+/// @notice Deploys AgentGuardian, BootrLaunchGate, BuybackBurner implementation and BootrLauncher (v3.1), wires
+///         them (`guardian.setLauncher(gate)`, `gate.addLauncher(launcher)`) and hands ownership to PLATFORM_ADMIN
+///         (Ownable2Step: the admin must `acceptOwnership` on guardian, gate and launcher).
 ///
 /// Env:
 ///   PRIVATE_KEY           deployer key (broadcaster)
-///   PLATFORM_ADMIN        final owner of guardian + launcher (default: deployer)
+///   PLATFORM_ADMIN        final owner of guardian + gate + launcher (default: deployer)
 ///   PLATFORM_RECIPIENT    LP-fee recipient for the platform share
 ///   PLATFORM_TREASURY     receiver of dormant sweeps (default: PLATFORM_RECIPIENT)
 ///   MIN_FUEL_USDC         6-decimals, default 0
@@ -44,7 +46,7 @@ contract Deploy is Script {
             revert("RWAGMI v3 is not deployed on Base Sepolia");
         } else if (block.chainid == 8453) {
             // Base mainnet - verified on-chain 2026-10-27 (see packages/shared/src/addresses.ts for the sources and
-            // test/fork/MainnetDryRun.t.sol for the fork dry-run that launches through this exact configuration).
+            // test/fork/BootrFork.t.sol for the fork suite that launches through this exact configuration).
             c = ChainDeps({
                 // RWAGMI v3 stack (docs/rwagmi-migration.md), verified on Basescan; launcher created at block 52,861,401
                 rwagmiLauncher: 0xB205c9e7B43ca3a4aA99b82D449354CCB3294B20,
@@ -84,6 +86,7 @@ contract Deploy is Script {
 
         vm.startBroadcast(pk);
         AgentGuardian guardian = new AgentGuardian(deployer, ENTRY_POINT_V07, c.usdc, c.weth);
+        BootrLaunchGate gate = new BootrLaunchGate(deployer, address(guardian));
         BuybackBurner burnerImpl = new BuybackBurner();
         BootrLauncher launcher = new BootrLauncher(
             deployer,
@@ -98,6 +101,7 @@ contract Deploy is Script {
                 identityRegistry: c.identity,
                 kernelFactory: c.kernelFactory,
                 guardian: address(guardian),
+                gate: address(gate),
                 burnerImplementation: address(burnerImpl),
                 universalRouter: c.universalRouter,
                 permit2: c.permit2
@@ -124,19 +128,53 @@ contract Deploy is Script {
             }),
             minPlatformBps
         );
-        guardian.setLauncher(address(launcher));
+        guardian.setLauncher(address(gate));
+        gate.addLauncher(address(launcher));
         guardian.setPlatformTreasury(treasury);
         if (admin != deployer) {
             guardian.transferOwnership(admin);
+            gate.transferOwnership(admin);
             launcher.transferOwnership(admin);
         }
         vm.stopBroadcast();
 
         console2.log("chainId            ", block.chainid);
         console2.log("AgentGuardian      ", address(guardian));
+        console2.log("BootrLaunchGate    ", address(gate));
         console2.log("BuybackBurner impl ", address(burnerImpl));
         console2.log("BootrLauncher      ", address(launcher));
         console2.log("pending owner      ", admin);
-        if (admin != deployer) console2.log("NOTE: admin must call acceptOwnership() on both contracts");
+        if (admin != deployer) console2.log("NOTE: admin must call acceptOwnership() on guardian, gate and launcher");
+    }
+
+    /// @dev Reads both presets of a live launcher (any launcher with BootrLauncher's `standardDefaults` /
+    ///      `buybackDefaults` getters, BootrClankerLauncher included), for redeploys that copy them.
+    function _presets(BootrLauncher old)
+        internal
+        view
+        returns (BootrLauncher.LaunchDefaults memory standard, BootrLauncher.LaunchDefaults memory buyback)
+    {
+        (uint24 lp, uint16 a, uint16 cr, uint16 b, uint16 pl, address r, uint256 f, uint32 d) = old.standardDefaults();
+        standard = BootrLauncher.LaunchDefaults({
+            lpFeeBps: lp,
+            agentBps: a,
+            creatorBps: cr,
+            burnBps: b,
+            platformBps: pl,
+            platformRecipient: r,
+            minFuelUsdc: f,
+            dormancyPeriod: d
+        });
+        (lp, a, cr, b, pl, r, f, d) = old.buybackDefaults();
+        buyback = BootrLauncher.LaunchDefaults({
+            lpFeeBps: lp,
+            agentBps: a,
+            creatorBps: cr,
+            burnBps: b,
+            platformBps: pl,
+            platformRecipient: r,
+            minFuelUsdc: f,
+            dormancyPeriod: d
+        });
     }
 }

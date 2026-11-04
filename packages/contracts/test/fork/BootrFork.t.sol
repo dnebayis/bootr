@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {AgentGuardian} from "../../src/AgentGuardian.sol";
 import {BootrCallPolicy} from "../../src/BootrCallPolicy.sol";
+import {BootrLaunchGate} from "../../src/BootrLaunchGate.sol";
 import {BootrLauncher} from "../../src/BootrLauncher.sol";
 import {BootrSwapHelper} from "../../src/BootrSwapHelper.sol";
 import {BuybackBurner} from "../../src/BuybackBurner.sol";
@@ -39,6 +40,7 @@ contract BootrForkTest is Test {
     uint256 constant TOTAL_SUPPLY = 100_000_000_000e18;
 
     AgentGuardian guardian;
+    BootrLaunchGate gate;
     BuybackBurner burnerImpl;
     BootrLauncher launcher;
     BootrCallPolicy callPolicy;
@@ -65,6 +67,7 @@ contract BootrForkTest is Test {
         creator = vm.addr(creatorPk);
 
         guardian = new AgentGuardian(address(this), ENTRY_POINT, USDC, WETH);
+        gate = new BootrLaunchGate(address(this), address(guardian));
         burnerImpl = new BuybackBurner();
         callPolicy = new BootrCallPolicy();
         swapHelper = new BootrSwapHelper(WETH, USDC, SWAP_ROUTER_02, ETH_USD_FEED, 500);
@@ -81,6 +84,7 @@ contract BootrForkTest is Test {
                 identityRegistry: IDENTITY,
                 kernelFactory: KERNEL_FACTORY,
                 guardian: address(guardian),
+                gate: address(gate),
                 burnerImplementation: address(burnerImpl),
                 universalRouter: UNIVERSAL_ROUTER,
                 permit2: PERMIT2
@@ -89,7 +93,8 @@ contract BootrForkTest is Test {
             _defaults(true),
             1000
         );
-        guardian.setLauncher(address(launcher));
+        guardian.setLauncher(address(gate));
+        gate.addLauncher(address(launcher));
         guardian.setPlatformTreasury(treasury);
 
         deal(USDC, creator, 10_000e6);
