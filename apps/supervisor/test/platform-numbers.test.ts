@@ -136,8 +136,8 @@ describe('the numbers and the section', () => {
       const calls = indexerFrom(w, { feed: FEED, fees: FEES, graph: GRAPH });
       const n = (await readPlatformNumbers(w.ctx, { token: { address: TOKEN, symbol: 'BOOTR', name: 'Bootr', chainId: 84532 } }))!;
       expect(n.observedAt).toBe(new Date(AT).toISOString());
-      expect(n.totals).toEqual({ coins: 42, agentsAwake: 19, agentsTotal: 40, volume24hUsd: 12_345.68, fees24hUsd: 120, updatedAt: '2026-10-24T15:00:00.000Z' });
-      expect(n.feesAllTime).toEqual({ total: 9_000, agent: 3_600, creator: 2_700, burn: 1_800, platform: 900, updatedAt: '2026-10-24T14:59:00.000Z' });
+      expect(n.totals).toEqual({ coins: 42, agentsAwake: 19, agentsTotal: 40, volume24hUsd: 12_345.68, fees24hUsd: 120, fees24hNote: expect.any(String), updatedAt: '2026-10-24T15:00:00.000Z' });
+      expect(n.feesAllTime).toEqual({ note: expect.any(String), total: 9_000, agent: 3_600, creator: 2_700, burn: 1_800, platform: 900, updatedAt: '2026-10-24T14:59:00.000Z' });
       // the mocked token has no `decimals` / `totalSupply`: 18 decimals assumed, no share of supply
       expect(n.bootr).toEqual({ symbol: 'BOOTR', burned: 1_500_000, burnedShareOfSupplyPct: null, holders: 900 });
       expect(n.topCoins24h).toEqual([
@@ -174,7 +174,7 @@ describe('the numbers and the section', () => {
     expect(platformNumbersSection({ platform: false }, null, { day: '2026-10-24', slotAt: SLOT })).toEqual({});
     const off = platformNumbersSection({ platform: true }, null, null) as { platformNumbers: Record<string, unknown> };
     expect(off.platformNumbers).toMatchObject({ instructionAuthority: false, available: false, post: { due: false } });
-    const numbers = { observedAt: new Date(AT).toISOString(), totals: { coins: 1, agentsAwake: 1, agentsTotal: 1, volume24hUsd: 0, fees24hUsd: 0, updatedAt: null }, feesAllTime: null, bootr: null, topCoins24h: null };
+    const numbers = { observedAt: new Date(AT).toISOString(), totals: { coins: 1, agentsAwake: 1, agentsTotal: 1, volume24hUsd: 0, fees24hUsd: 0, fees24hNote: '', updatedAt: null }, feesAllTime: null, bootr: null, topCoins24h: null };
     const due = platformNumbersSection({ platform: true }, numbers, { day: '2026-10-24', slotAt: SLOT }) as { platformNumbers: Record<string, unknown> };
     expect(due.platformNumbers).toMatchObject({ available: true, totals: numbers.totals, post: { due: true, day: '2026-10-24', instruction: PLATFORM_NUMBERS_INSTRUCTION } });
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/No market cap, no price, no returns, no predictions/);

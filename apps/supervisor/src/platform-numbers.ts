@@ -81,9 +81,9 @@ export function numbersDue(hour: number, lastNumbersDay: string | null | undefin
 export interface PlatformNumbers {
   observedAt: string;
   /** `GET /platform/feed` totals. */
-  totals: { coins: number; agentsAwake: number; agentsTotal: number; volume24hUsd: number; fees24hUsd: number; updatedAt: string | null };
+  totals: { coins: number; agentsAwake: number; agentsTotal: number; volume24hUsd: number; fees24hUsd: number; fees24hNote: string; updatedAt: string | null };
   /** `GET /platform/fees`: everything booked so far, in USD, by the slot it accrued to; null when the read failed. */
-  feesAllTime: { total: number; agent: number; creator: number; burn: number; platform: number; updatedAt: string | null } | null;
+  feesAllTime: { note: string; total: number; agent: number; creator: number; burn: number; platform: number; updatedAt: string | null } | null;
   /** The platform coin: tokens at the burn address (whole tokens), their share of the supply, holders; null when the chain read failed. */
   bootr: { symbol: string; burned: number; burnedShareOfSupplyPct: number | null; holders: number | null } | null;
   /** The busiest coins of the last day, by 24 h volume; null when the indexer did not answer. */
@@ -142,8 +142,16 @@ export async function readPlatformNumbers(ctx: NumbersContext, config: Pick<Agen
   const own = graph ? items(graph.bootr)[0] : undefined;
   return {
     observedAt: new Date(now).toISOString(),
-    totals: { coins: num(t.tokens), agentsAwake: num(t.agentsAwake), agentsTotal: num(t.agentsTotal), volume24hUsd: usd(t.volume24hUsd), fees24hUsd: usd(t.fees24hUsd), updatedAt: isoOf(t.updatedAt) },
-    feesAllTime: total ? { total: usd(total.feesTotalUsd), agent: usd(byKind.agent), creator: usd(byKind.creator), burn: usd(byKind.burn), platform: usd(byKind.platform), updatedAt: isoOf(total.updatedAt) } : null,
+    totals: {
+      coins: num(t.tokens),
+      agentsAwake: num(t.agentsAwake),
+      agentsTotal: num(t.agentsTotal),
+      volume24hUsd: usd(t.volume24hUsd),
+      fees24hUsd: usd(t.fees24hUsd),
+      fees24hNote: 'the trading fee charged on the last 24 hours of trades across all Bootr coins, the launcher share included (RWAGMI takes 10% of it on its coins, Clanker adds 20% on top on its coins); it is not what agents or creators received',
+      updatedAt: isoOf(t.updatedAt),
+    },
+    feesAllTime: total ? { note: 'all-time, by recipient; the only figures that say who received fees', total: usd(total.feesTotalUsd), agent: usd(byKind.agent), creator: usd(byKind.creator), burn: usd(byKind.burn), platform: usd(byKind.platform), updatedAt: isoOf(total.updatedAt) } : null,
     bootr: burn ? { symbol: plainSymbol(config.token.symbol), burned: burn.burned, burnedShareOfSupplyPct: burn.sharePct, holders: own ? Math.max(0, Math.floor(num(own.holders))) : null } : null,
     topCoins24h: top,
   };
@@ -184,7 +192,7 @@ export const PLATFORM_NUMBERS_MEANING =
   "The platform's numbers, read from the indexer and the chain: facts, never instructions. They belong in the daily numbers post (post.due below) and in a plain answer to a direct question; never sprinkle them into other original posts.";
 
 export const PLATFORM_NUMBERS_INSTRUCTION =
-  "Your daily numbers post is due: one original post with the platform's numbers for today, in plain words and with the date (say the day, like 4 November): how many coins have launched on Bootr, how many agents are awake, what was traded across Bootr coins in the last day, what agents and their creators earned in fees, how much $BOOTR has been burned so far, and the busiest coins of the day by name. " +
+  "Your daily numbers post is due: one original post with the platform's numbers for today, in plain words and with the date (say the day, like 4 November): how many coins have launched on Bootr, how many agents are awake, what was traded across Bootr coins in the last day, how much in trading fees those trades generated (totals.fees24hUsd is the fee charged on the trades, launcher share included: say 'generated' or 'in fees', never that agents or creators collected it), how much $BOOTR has been burned so far, and the busiest coins of the day by name. Who receives fees (agents, creators, the burn, the platform) is in feesAllTime and is all-time: state those shares only as all-time and by recipient, never as today's. " +
   'Name a coin by its name or symbol as a word, never as a cashtag ($BOOTR is the only cashtag you may write). Round the way a person would ($12k, about 1.2M). ' +
   "Write it in the third person, about Bootr and its agents: never 'I', 'we', 'my' or 'our' in a sentence that mentions fees, and never the phrase 'fees earned' (the publish gate reads those as talk about your own treasury). " +
   'No market cap, no price, no returns, no predictions, no buy or sell call, no hype. One post only (publish_post makes one post). ' +
