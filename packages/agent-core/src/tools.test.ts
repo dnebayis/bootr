@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TOOLS, TOOL_LIST, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
+import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
 import { TOOL_NAMES, type AgentConfig } from './types.js';
 
 const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> => ({
@@ -53,6 +53,19 @@ describe('tool catalog', () => {
     expect(params.additionalProperties).toBe(false);
     const all = toFunctionDefinitions(TOOL_LIST);
     expect(all.every((d) => typeof d.function.description === 'string' && d.function.description.length > 10)).toBe(true);
+  });
+
+  it('keeps draft_intent out of the catalog but renders it as a function definition like any tool', () => {
+    expect(TOOL_LIST.some((t) => t.name === DRAFT_INTENT_TOOL.name)).toBe(false);
+    expect(toolsFor(caps(['xRead', 'xReply', 'xPublish'])).map((t) => t.name)).not.toContain('draft_intent');
+    expect(PUBLISHING_TOOLS).toEqual(['publish_post', 'publish_reply']);
+    const [def] = toFunctionDefinitions([DRAFT_INTENT_TOOL]);
+    expect(def?.function.name).toBe('draft_intent');
+    const params = def?.function.parameters as { properties: Record<string, Record<string, unknown>>; required: string[]; additionalProperties: boolean };
+    expect(params.required).toEqual(['kind', 'about']);
+    expect(params.properties.kind?.enum).toEqual(['post', 'reply']);
+    expect(params.properties.about?.maxLength).toBe(300);
+    expect(params.additionalProperties).toBe(false);
   });
 
   it('parses tool input by name', () => {

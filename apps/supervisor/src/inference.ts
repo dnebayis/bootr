@@ -14,12 +14,12 @@ import {
   type AgentConfig,
   type ChatMessage,
   type InferenceRequest,
-  type ToolDefinition,
+  type ModelTool,
 } from '@bootr/agent-core';
 import { createX402Payer, paymentProofHeaders, readReceipt, X402PaymentRefusedError, type BootrReceipt } from '@bootr/inference/client';
 import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
-import { eq } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { inference } from './db/schema.js';
 
@@ -86,15 +86,44 @@ export function parseAssistant(body: Record<string, unknown>): { message: ChatMe
   return { message, toolCall: { id: first.id, name: first.function.name, input, raw: first.function.arguments } };
 }
 
-export function buildRequest(config: AgentConfig, messages: readonly ChatMessage[], tools: readonly ToolDefinition[], maxOutputTokens: number): InferenceRequest {
-  const request = buildInferenceRequest(messages, tools, { model: config.model, maxOutputTokens });
+/** One request on `model` (the agent's own model unless economy mode routes the step to its decide model; routing.ts). */
+export function buildRequest(config: AgentConfig, messages: readonly ChatMessage[], tools: readonly ModelTool[], maxOutputTokens: number, model: string = config.model): InferenceRequest {
+  const request = buildInferenceRequest(messages, tools, { model, maxOutputTokens });
   if (!contextFits(request)) throw new PolicyError('context_too_large');
   return request;
 }
 
-export async function runInference(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, cycle: number, request: InferenceRequest): Promise<InferenceResult> {
+/** The quote cap follows the model the request names, so a cheap decide step is capped like a cheap model. */
+export async function runInference(ctx: SupervisorContext, agent: AgentRow, _config: AgentConfig, cycle: number, request: InferenceRequest): Promise<InferenceResult> {
   const key = inferenceIdempotencyKey(agent.agentId, cycle);
-  return withAssistant(await relayRequest(ctx, agent, { key, cycle, request: request as unknown as Record<string, unknown>, maxQuoteMicroUsdc: BigInt(maxQuoteFor(config.model)) }));
+  return withAssistant(await relayRequest(ctx, agent, { key, cycle, request: request as unknown as Record<string, unknown>, maxQuoteMicroUsdc: BigInt(maxQuoteFor(request.model)) }));
+}
+
+export interface ThoughtTotals {
+  /** Relay model id as the request named it (`request.model`); images show under their image model. */
+  model: string;
+  /** Paid relay calls that succeeded. */
+  thoughts: number;
+  /** Sum of the relay receipts' `chargedMicroUsdc` (micro-USDC, as a decimal string). */
+  chargedMicroUsdc: string;
+}
+
+/**
+ * Metering for the creator: succeeded relay calls since `since`, grouped by the model each one ran on, most
+ * thoughts first. With economy mode on this is where the split between the decide model and the writer shows.
+ */
+export async function thoughtsByModel(ctx: SupervisorContext, agentId: string, since: Date): Promise<ThoughtTotals[]> {
+  const rows = await ctx.db
+    .select({
+      model: sql<string>`coalesce(${inference.request}->>'model', '')`,
+      thoughts: sql<number>`count(*)::int`,
+      charged: sql<string>`coalesce(sum((${inference.receipt}->'relay'->>'chargedMicroUsdc')::numeric), 0)::text`,
+    })
+    .from(inference)
+    .where(and(eq(inference.agentId, agentId), eq(inference.status, 'succeeded'), gte(inference.createdAt, since)))
+    .groupBy(sql`1`)
+    .orderBy(sql`2 desc, 1`);
+  return rows.map((r) => ({ model: r.model, thoughts: Number(r.thoughts), chargedMicroUsdc: String(r.charged).replace(/\.0+$/, '') }));
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentConfigSchema, parseAction, parseAgentConfig, workerOutputSchema } from './types.js';
+import { agentConfigSchema, draftIntentInputSchema, parseAction, parseAgentConfig, workerOutputSchema } from './types.js';
 import { baseConfig } from './test/fixtures.js';
 
 describe('agentConfigSchema', () => {
@@ -19,6 +19,28 @@ describe('agentConfigSchema', () => {
     expect(agentConfigSchema.safeParse({ ...baseConfig, xHandle: '@bad' }).success).toBe(false);
     expect(agentConfigSchema.safeParse({ ...baseConfig, xUserId: '0123' }).success).toBe(false);
     expect(agentConfigSchema.safeParse({ ...baseConfig, replyAuthorIds: ['1', '1'] }).success).toBe(false);
+  });
+  it('takes economy mode as routing.decideModel, null or absent meaning off', () => {
+    expect(parseAgentConfig(baseConfig).routing).toBeUndefined();
+    expect(parseAgentConfig({ ...baseConfig, routing: { decideModel: null } }).routing).toEqual({ decideModel: null });
+    expect(parseAgentConfig({ ...baseConfig, routing: { decideModel: 'deepseek/deepseek-v3.2' } }).routing).toEqual({ decideModel: 'deepseek/deepseek-v3.2' });
+    expect(agentConfigSchema.safeParse({ ...baseConfig, routing: { decideModel: '' } }).success).toBe(false);
+    expect(agentConfigSchema.safeParse({ ...baseConfig, routing: {} }).success).toBe(false);
+  });
+});
+
+describe('draftIntentInputSchema', () => {
+  it('accepts a post or a reply intent with a short brief, and demands a target for replies', () => {
+    expect(draftIntentInputSchema.parse({ kind: 'post', about: 'Say that holders doubled this week, per read_market.' })).toEqual({ kind: 'post', about: 'Say that holders doubled this week, per read_market.' });
+    expect(draftIntentInputSchema.parse({ kind: 'reply', target: '42', about: 'Answer the fee question: 1% to the agent.' }).target).toBe('42');
+    expect(draftIntentInputSchema.safeParse({ kind: 'reply', about: 'no target' }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'x'.repeat(301) }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: ' ' }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'thread', about: 'nope' }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'ok', text: 'extra' }).success).toBe(false);
+  });
+  it('is not a catalog action', () => {
+    expect(() => parseAction({ tool: 'draft_intent', input: { kind: 'post', about: 'x' } })).toThrow();
   });
 });
 

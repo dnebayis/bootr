@@ -193,6 +193,8 @@ export interface AgentConfig {
   workerHash: Hex;
   /** Posts and replies wait in the review queue until the creator approves them (default on for the platform's agent). */
   requireApproval: boolean;
+  /** Economy mode: the cheaper model a turn starts on for reading and deciding; null = the whole turn runs on `model`. */
+  routing: { decideModel: string | null };
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -209,6 +211,16 @@ export interface AgentConfigChanges {
     jobLines?: string[];
   };
   requireApproval?: boolean;
+  routing?: { decideModel: string | null };
+}
+
+/** `GET /api/agent/[kernel]/fuel` (the supervisor's `GET /internal/agents/:id/fuel`): paid thoughts per model over the last `days`. */
+export interface AgentFuel {
+  days: number;
+  /** ISO 8601: the start of the window. */
+  since: string;
+  /** Most thoughts first; `chargedMicroUsdc` is a decimal string of micro-USDC. */
+  byModel: { model: string; thoughts: number; chargedMicroUsdc: string }[];
 }
 
 // ---------------------------------------------------------------- post approval queue (supervisor, via /api/agent/[kernel]/approvals/*)

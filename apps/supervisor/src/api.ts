@@ -15,7 +15,7 @@ import { readGas, gasView } from './gas.js';
 import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
-import { reconcileInference } from './inference.js';
+import { reconcileInference, thoughtsByModel } from './inference.js';
 import type { AgentState } from './runtime.js';
 
 export interface PanicRevokeResult {
@@ -169,6 +169,18 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
     if (before && Number.isNaN(before.getTime())) return c.json({ error: 'invalid_before', message: 'before must be an ISO timestamp' }, 400);
     return c.json({ items: await agentActivity(ctx, agent, runtime, { limit, before }) });
+  });
+
+  /** `?days=7` (1..90): succeeded paid calls since then, grouped by the model each ran on (inference.ts `thoughtsByModel`). */
+  app.get('/internal/agents/:id/fuel', async (c) => {
+    const id = c.req.param('id');
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const daysRaw = c.req.query('days');
+    const days = daysRaw === undefined ? 7 : Number(daysRaw);
+    if (!Number.isInteger(days) || days < 1 || days > 90) return c.json({ error: 'invalid_days', message: 'days must be an integer of 1..90' }, 400);
+    const since = new Date(ctx.now() - days * 86_400_000);
+    return c.json({ agentId: id, days, since: since.toISOString(), byModel: await thoughtsByModel(ctx, id, since) });
   });
 
   /** `?status=pending` (default) | `all`: the review queue (approvals.ts); pending items carry their image as base64. */

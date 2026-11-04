@@ -47,6 +47,14 @@ export const capabilitiesSchema = z.object({
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 
+/**
+ * Economy mode: a turn starts on a cheaper `decideModel` (reading, deciding, memory and treasury work) and switches
+ * to `model` (the writer) only once the decide model calls `draft_intent`. `decideModel` null = off, the whole turn
+ * runs on `model`. A decide model equal to `model` is accepted and behaves as off.
+ */
+export const routingSchema = z.object({ decideModel: z.string().min(1).max(128).nullable() });
+export type Routing = z.infer<typeof routingSchema>;
+
 export const DEFAULT_POST_INTERVAL_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_DORMANCY_PERIOD_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -66,6 +74,8 @@ export const agentConfigSchema = z
     model: z.string().min(1).max(128),
     /** Image generation model (relay id) for `generate_image`; unset = the supervisor's default. */
     imageModel: z.string().min(1).max(128).optional(),
+    /** Economy mode (see `routingSchema`); absent = off. */
+    routing: routingSchema.optional(),
     identityText: z.string().max(20000),
     /** True for the platform's own account (the launchpad's voice), false for a coin's agent. */
     platform: z.boolean().default(false),
@@ -245,6 +255,24 @@ export const toolInputSchemas = {
 } as const;
 
 export type ToolName = keyof typeof toolInputSchemas;
+
+/**
+ * `draft_intent`: the only way out of the decide phase of economy mode. It is not a catalog tool (it never executes
+ * anything and never reaches the broker); the supervisor swaps it in for the publishing tools while the cheap model
+ * runs, and swaps it out again once the writer takes over (apps/supervisor/src/routing.ts).
+ */
+export const DRAFT_INTENT_TOOL_NAME = 'draft_intent' as const;
+export const draftIntentInputSchema = z
+  .object({
+    kind: z.enum(['post', 'reply']),
+    /** The mention (post id) a reply answers; required for a reply, ignored for a post. */
+    target: xIdSchema.optional(),
+    /** What to say and the facts to use, for the writer (max 300 characters). */
+    about: text(300),
+  })
+  .strict()
+  .refine((v) => v.kind !== 'reply' || !!v.target, { message: 'a reply intent needs the target post id', path: ['target'] });
+export type DraftIntent = z.infer<typeof draftIntentInputSchema>;
 export const TOOL_NAMES = Object.keys(toolInputSchemas) as ToolName[];
 
 export type ToolInput<N extends ToolName = ToolName> = z.infer<(typeof toolInputSchemas)[N]>;

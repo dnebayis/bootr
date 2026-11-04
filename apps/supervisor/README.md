@@ -415,7 +415,8 @@ creator's wallet-signed edit (the web verifies the SIWE signature and the creato
   "instructions": "A patient onchain analyst …",
   "worker": { "kind": "community", "capabilities": { "xRead": true, "xReply": true, "xPublish": true, "research": false, "memory": true, "treasury": true, "images": false },
               "postIntervalMs": 7200000, "jobLines": ["Your job is the people around the coin: …", "…"] },
-  "workerHash": "0x…", "revision": 1, "updatedAt": "2026-11-03T10:00:00.000Z" }
+  "workerHash": "0x…", "requireApproval": false, "routing": { "decideModel": null },
+  "revision": 1, "updatedAt": "2026-11-03T10:00:00.000Z" }
 ```
 
 `kind` is `trader` | `researcher` | `community` | `custom` (`sv_agents.config.workerTemplate`); `instructions` is
@@ -423,19 +424,31 @@ the creator's text (`config.creatorIdentity`, `''` when none); `jobLines` are th
 worker, the lines the card published (`config.workerPreset.identity`).
 
 `PUT` body: `{ "by": "<creator address>", "instructions"?: string, "model"?: string, "allowedModels"?: string[],
-"worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] } }`. Every field is
+"worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] },
+"requireApproval"?: boolean, "routing"?: { "decideModel": string | null } }`. Every field is
 optional except `by`; `worker` is a partial update merged onto the preset in force and then re-validated with
 `normalizeWorkerPreset` (always-on powers are forced back on; cadence 30 min … 7 days; at most 4 job lines of 240
 characters). `instructions` is normalised like the launch text (plain text, 20–600 characters). `model` must be a
 non-empty id and, when the body carries `allowedModels` (the web passes the admin allow-list), one of them. Job lines
 are editable for `custom` workers only (`400 job_lines_fixed` otherwise). On success the stored config changes,
 `revision` is bumped, an `sv_actions` row `{kind: 'config_updated', fields: [...], by, revision}` is written
-(`fields` ⊂ `instructions`, `model`, `powers`, `cadence`, `jobLines`) and the new config view is returned.
-Errors: `400 invalid_by | invalid_instructions | invalid_model | model_not_allowed | invalid_worker | job_lines_fixed`,
+(`fields` ⊂ `instructions`, `model`, `powers`, `cadence`, `jobLines`, `requireApproval`, `routing`) and the new config
+view is returned. `routing.decideModel` is economy mode (src/routing.ts): the cheaper model a turn starts on, validated
+like `model` (non-empty, inside `allowedModels` when given); `null` switches the mode off.
+Errors: `400 invalid_by | invalid_instructions | invalid_model | model_not_allowed | invalid_worker | job_lines_fixed |
+invalid_require_approval | invalid_routing`,
 `403 not_creator`, `404 not_found`, `409 unchanged` (nothing differed). The running agent is not touched: the tick
 reads `sv_agents.config` on every pass and the revision bump makes the wake decision fire `config_changed`, so the
 next tick starts a turn with the new system prompt, tools and cadence (a turn already persisted keeps its old
 system message until it ends).
+
+### Fuel by model (`/internal/agents/:id/fuel`)
+
+`?days=` (default 7, 1..90). Answer `{ "agentId", "days", "since", "byModel": [{ "model", "thoughts", "chargedMicroUsdc" }] }`:
+succeeded `sv_inference` rows since then grouped by the model their request named (`request.model`), most thoughts
+first, `chargedMicroUsdc` summed from the relay receipts. Images show under their image model. With economy mode on
+this is where the split between the decide model and the writer shows; the web renders it under the economy mode
+switch on the coin page.
 
 ### Activity tape (`/internal/agents/:id/activity`)
 

@@ -14,6 +14,7 @@ import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents } from './db/schema.js';
 import { requiresApproval } from './approvals.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
+import { decideModelOf } from './routing.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
 const MAX_MODEL_CHARS = 128;
@@ -35,12 +36,14 @@ export interface AgentConfigView {
   workerHash: string | null;
   /** Posts and replies wait for the creator's approval before they go out (approvals.ts). */
   requireApproval: boolean;
+  /** Economy mode (routing.ts): the cheaper model a turn starts on; null = the whole turn runs on `model`. */
+  routing: { decideModel: string | null };
   revision: number;
   updatedAt: string;
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval' | 'routing';
 
 /** The worker preset in force for a stored config: live capabilities and cadence, stored or template job lines. */
 function currentPreset(config: Record<string, unknown>): WorkerPreset {
@@ -48,6 +51,12 @@ function currentPreset(config: Record<string, unknown>): WorkerPreset {
   const caps = normalizeWorkerPreset({ capabilities: config.capabilities, postIntervalMs: stored.postIntervalMs })?.capabilities ?? stored.capabilities;
   const interval = typeof config.postIntervalMs === 'number' ? config.postIntervalMs : stored.postIntervalMs;
   return { capabilities: caps, postIntervalMs: interval, identity: stored.identity };
+}
+
+/** The stored `routing` block, or off when it is missing or malformed. */
+function routingOf(config: Record<string, unknown>): { decideModel: string | null } {
+  const r = config.routing as { decideModel?: unknown } | null | undefined;
+  return { decideModel: r && typeof r === 'object' && typeof r.decideModel === 'string' && r.decideModel ? r.decideModel : null };
 }
 
 function workerKind(config: Record<string, unknown>): ResolvedWorker['id'] {
@@ -67,6 +76,7 @@ export function configView(agent: AgentRow): AgentConfigView {
     worker: { kind: workerKind(config), capabilities: preset.capabilities, postIntervalMs: preset.postIntervalMs, jobLines: preset.identity },
     workerHash: typeof config.workerHash === 'string' ? config.workerHash : null,
     requireApproval: requiresApproval(config),
+    routing: { decideModel: decideModelOf({ model: typeof config.model === 'string' ? config.model : '', routing: routingOf(config) }) },
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
   };
@@ -82,6 +92,8 @@ export interface ConfigUpdateBody {
   worker?: unknown;
   /** Post approval mode on/off (independent of the worker). */
   requireApproval?: unknown;
+  /** Economy mode: `{decideModel: string | null}`; the model must be in `allowedModels` like `model`. */
+  routing?: unknown;
 }
 
 export type ConfigUpdateResult = { ok: true; config: AgentConfigView; fields: ConfigField[] } | { ok: false; status: 400 | 403 | 409; error: string; message: string };
@@ -161,6 +173,24 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (body.requireApproval !== requiresApproval(before)) {
       config.requireApproval = body.requireApproval;
       fields.push('requireApproval');
+    }
+  }
+
+  // Economy mode: the decide model is validated like `model`; null switches the mode off. Stored as given: a decide
+  // model equal to the writer is kept and simply behaves as off (routing.ts), so a later model change can re-enable it.
+  if (body.routing !== undefined) {
+    if (!body.routing || typeof body.routing !== 'object' || Array.isArray(body.routing)) return reject(400, 'invalid_routing', 'routing must be an object {decideModel}');
+    const raw = (body.routing as { decideModel?: unknown }).decideModel;
+    let decideModel: string | null;
+    if (raw === null) decideModel = null;
+    else {
+      decideModel = typeof raw === 'string' ? raw.trim() : '';
+      if (!decideModel || decideModel.length > MAX_MODEL_CHARS) return reject(400, 'invalid_routing', `routing.decideModel must be null or a string of 1..${MAX_MODEL_CHARS} characters`);
+      if (Array.isArray(body.allowedModels) && !body.allowedModels.some((m) => m === decideModel)) return reject(400, 'model_not_allowed', `model ${decideModel} is not in the allow-list`);
+    }
+    if (decideModel !== routingOf(before).decideModel) {
+      config.routing = { decideModel };
+      fields.push('routing');
     }
   }
 

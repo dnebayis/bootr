@@ -118,7 +118,7 @@ export const FALLBACK_MODELS: ModelOption[] = Object.entries(FALLBACK_PRICES).ma
 }));
 
 /** `anthropic/claude-haiku-4.5` and `claude-haiku-4-5` name the same model. */
-function modelKey(id: string): string {
+export function modelKey(id: string): string {
   return id.trim().toLowerCase().replace(/^[^/]+\//, '').replace(/\./g, '-');
 }
 
@@ -146,6 +146,26 @@ export function groupByProvider(models: readonly ModelOption[]): { provider: str
       provider,
       models: [...list].sort((a, b) => (a.pricePerThoughtUsd ?? Infinity) - (b.pricePerThoughtUsd ?? Infinity) || a.label.localeCompare(b.label)),
     }));
+}
+
+/**
+ * The cheapest priced mind of a list, skipping `exclude` (the writer itself: economy mode needs a second, cheaper
+ * model). Unpriced models never win; null when nothing qualifies.
+ */
+export function cheapestModel(models: readonly ModelOption[], exclude?: string | null): ModelOption | null {
+  let best: ModelOption | null = null;
+  for (const m of models) {
+    if (m.id === exclude || m.pricePerThoughtUsd == null) continue;
+    if (!best || m.pricePerThoughtUsd < best.pricePerThoughtUsd! || (m.pricePerThoughtUsd === best.pricePerThoughtUsd && m.id < best.id)) best = m;
+  }
+  return best;
+}
+
+/** Micro-USDC totals as money: `$0.14`, tiny sums with four decimals, `$0` for nothing. */
+export function formatMicroUsdc(micro: string | number): string {
+  const n = Number(micro) / 1_000_000;
+  if (!Number.isFinite(n) || n <= 0) return '$0';
+  return n >= 0.01 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
 }
 
 /** `$0.0101` style: three significant digits, never scientific notation. */

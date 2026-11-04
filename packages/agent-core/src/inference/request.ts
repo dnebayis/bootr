@@ -1,5 +1,5 @@
 import { digest, byteLength } from '../hash.js';
-import { toFunctionDefinitions, type FunctionDefinition, type ToolDefinition } from '../tools.js';
+import { toFunctionDefinitions, type FunctionDefinition, type ModelTool } from '../tools.js';
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -42,7 +42,7 @@ export interface InferenceRequest {
 /** OpenAI chat-completions request. Tool choice stays 'auto' with parallel calls disabled: one tool at a time. */
 export function buildInferenceRequest(
   messages: readonly ChatMessage[],
-  tools: readonly ToolDefinition[],
+  tools: readonly ModelTool[],
   settings: InferenceSettings,
 ): InferenceRequest {
   const definitions = toFunctionDefinitions(tools);

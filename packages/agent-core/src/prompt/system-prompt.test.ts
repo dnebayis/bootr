@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOOTR_RULES, PLATFORM_RULES, VOICE_RULES, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
+import { BOOTR_RULES, PLATFORM_RULES, ROUTING_RULES, VOICE_RULES, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
 import { parseAgentConfig } from '../types.js';
 import { baseConfig } from '../test/fixtures.js';
 
@@ -33,6 +33,18 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/original-post schedule/);
     expect(prompt).toMatch(/Use finish to checkpoint/);
     expect(prompt).toMatch(/never hold keys/);
+  });
+  it('adds one economy-mode line per phase after the Bootr rules, and none when the mode is off', () => {
+    expect(prompt).not.toContain('ECONOMY MODE');
+    const decide = buildSystemPrompt(config, 'social', { phase: 'decide' });
+    expect(decide.endsWith('ECONOMY MODE\n' + ROUTING_RULES.decide)).toBe(true);
+    expect(decide).toMatch(/call draft_intent/);
+    expect(decide).toMatch(/never write the public text yourself/);
+    const write = buildSystemPrompt(config, 'social', { phase: 'write' });
+    expect(write.endsWith('ECONOMY MODE\n' + ROUTING_RULES.write)).toBe(true);
+    expect(write).toMatch(/an earlier step of yours, on a cheaper model/);
+    expect(write).not.toContain(ROUTING_RULES.decide);
+    expect(buildSystemPrompt(config, 'social', { phase: null })).toBe(prompt);
   });
   it('prints (none) when no owner rule is enabled', () => {
     expect(buildSystemPrompt(parseAgentConfig(baseConfig))).toContain('OWNER RULES\n(none)');
