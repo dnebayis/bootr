@@ -236,6 +236,8 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
       ...windowFields(buckets, now, market.priceUsd),
       ...graduationFields(t, market.marketCapUsd, cfg.graduationThresholdUsd, now),
       ...(s && s.xHandle !== t.xHandle ? { xHandle: s.xHandle } : {}),
+      // the model the creator switched to after launch (social-store `model`); the launch-time value stays until then
+      ...(s?.model && s.model !== t.model ? { model: s.model } : {}),
     };
     const updated = await context.db.update(schema.token, { id: t.id }).set(next);
     tokenById.set(t.id, updated);

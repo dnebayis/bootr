@@ -91,3 +91,13 @@ describe('FileStore (PGlite dev mode)', () => {
     }
   });
 });
+
+describe('social patch: model', () => {
+  it('takes a relay model id or null and refuses junk', async () => {
+    const { parseSocialPatch } = await import('./social-store.js');
+    expect(parseSocialPatch({ model: 'anthropic/claude-sonnet-4.6' })).toEqual({ model: 'anthropic/claude-sonnet-4.6' });
+    expect(parseSocialPatch({ model: null })).toEqual({ model: null });
+    expect(parseSocialPatch({ model: 'not a model!' })).toMatch(/model must be/);
+    expect(parseSocialPatch({ model: 'x'.repeat(200) })).toMatch(/model must be/);
+  });
+});

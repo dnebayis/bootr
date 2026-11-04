@@ -295,7 +295,7 @@ describe('social push to the indexer', () => {
       const last = received.at(-1)!;
       expect(last.path).toBe(`/internal/agent/${KERNEL}/social`);
       expect(last.body).toMatchObject({ xHandle: 'bootr_agent', postsCount24h: expect.any(Number), spender: SPENDER, firstPostAt: null });
-      expect(Object.keys(last.body).sort()).toEqual(['firstPostAt', 'lastPostAt', 'postsCount24h', 'spender', 'status', 'xHandle']);
+      expect(Object.keys(last.body).sort()).toEqual(['firstPostAt', 'lastPostAt', 'model', 'postsCount24h', 'spender', 'status', 'xHandle']);
     } finally {
       await w.close();
     }
@@ -309,7 +309,7 @@ describe('social push to the indexer', () => {
       // processAgent directly: no onboarding pass, so the spender backfill does not run
       const r = await processAgent(w.ctx, agent, await runtimeRow(w));
       expect(r?.skipped).toBe('sleeping');
-      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping', spender: null });
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping', spender: null, model: expect.any(String) });
     } finally {
       await w.close();
     }

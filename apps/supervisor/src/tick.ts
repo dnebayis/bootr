@@ -263,7 +263,7 @@ export async function firstPostAt(ctx: SupervisorContext, agentId: string): Prom
   return row ? row.createdAt.getTime() : null;
 }
 
-async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHandle: string }, runtime: RuntimeRow, status: 'awake' | 'sleeping' | 'paused'): Promise<void> {
+async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHandle: string; model?: string }, runtime: RuntimeRow, status: 'awake' | 'sleeping' | 'paused'): Promise<void> {
   try {
     const [{ count, lastPostAt }, first] = await Promise.all([postsLast24h(ctx, agent.agentId), firstPostAt(ctx, agent.agentId)]);
     const state = runtime.state as unknown as AgentState;
@@ -275,6 +275,7 @@ async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHa
       postsCount24h: count,
       status: runtime.status === 'paused' ? 'paused' : runtime.status === 'sleeping' ? 'sleeping' : status,
       spender: agent.spender ?? null,
+      ...(config.model ? { model: config.model } : {}),
     });
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'social stats post failed');

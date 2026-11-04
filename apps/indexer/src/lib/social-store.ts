@@ -27,10 +27,12 @@ export type AgentSocial = {
   status: 'awake' | 'sleeping' | null;
   /** Lowercase hex address of the agent's x402 spender EOA, or null (unknown / not derived yet). */
   spender: string | null;
+  /** The model the agent runs on now (the creator can change it after launch); null = the launch-time value. */
+  model: string | null;
   updatedAt: number;
 };
 
-export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'firstPostAt' | 'postsCount24h' | 'status' | 'spender'>>;
+export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'firstPostAt' | 'postsCount24h' | 'status' | 'spender' | 'model'>>;
 
 interface Store {
   all(): Promise<Map<string, AgentSocial>>;
@@ -45,6 +47,7 @@ const empty = (kernel: string): AgentSocial => ({
   postsCount24h: 0,
   status: null,
   spender: null,
+  model: null,
   updatedAt: 0,
 });
 
@@ -116,7 +119,8 @@ class PgStore implements Store {
            updated_at integer NOT NULL
          );
          ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS spender text;
-         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS first_post_at integer;`,
+         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS first_post_at integer;
+         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS model text;`,
       )
       .then(() => undefined);
     return this.ready;
@@ -131,6 +135,7 @@ class PgStore implements Store {
       postsCount24h: Number(r.posts_count_24h ?? 0),
       status: (r.status as AgentSocial['status']) ?? null,
       spender: (r.spender as string | null) ?? null,
+      model: (r.model as string | null) ?? null,
       updatedAt: Number(r.updated_at ?? 0),
     };
   }
@@ -146,10 +151,10 @@ class PgStore implements Store {
     const prev = await this.pool.query('SELECT * FROM bootr_offchain.agent_social WHERE kernel = $1', [kernel]);
     const next = merge(prev.rows[0] ? this.row(prev.rows[0]) : empty(kernel), patch);
     await this.pool.query(
-      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, spender, updated_at, first_post_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, spender = $6, updated_at = $7, first_post_at = $8`,
-      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.spender, next.updatedAt, next.firstPostAt],
+      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, spender, updated_at, first_post_at, model)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, spender = $6, updated_at = $7, first_post_at = $8, model = $9`,
+      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.spender, next.updatedAt, next.firstPostAt, next.model],
     );
     return next;
   }
@@ -201,6 +206,11 @@ export function parseSocialPatch(body: unknown): SocialPatch | string {
     else if (typeof o.spender === 'string' && /^0x[0-9a-fA-F]{40}$/.test(o.spender)) patch.spender = o.spender.toLowerCase();
     else return 'spender must be a 20-byte hex address or null';
   }
-  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, firstPostAt, postsCount24h, status, spender)';
+  if ('model' in o) {
+    if (o.model === null || o.model === '') patch.model = null;
+    else if (typeof o.model === 'string' && /^[A-Za-z0-9][\w.:/-]{0,127}$/.test(o.model)) patch.model = o.model;
+    else return 'model must be a relay model id (up to 128 characters) or null';
+  }
+  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, firstPostAt, postsCount24h, status, spender, model)';
   return patch;
 }

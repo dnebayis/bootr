@@ -9,6 +9,8 @@ export interface SocialStats {
   status?: 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
   /** The agent's x402 spender EOA (`sv_agents.spender`), or null until derived. The indexer reads its USDC float. */
   spender?: string | null;
+  /** The model the agent runs on now (config.model); the coin page shows it instead of the launch-time one. */
+  model?: string;
 }
 
 /** Read-side client for the Ponder indexer REST helpers (docs/data-contract.md). Every read is best effort. */

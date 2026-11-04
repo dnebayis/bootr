@@ -74,6 +74,8 @@ async function withAgent(tokens: TokenRow[]) {
   return tokens.map((t) => ({
     ...t,
     xHandle: social.get(t.kernel)?.xHandle ?? t.xHandle,
+    // the model in force now (the creator can change it from the coin page); the row keeps the launch-time one
+    model: social.get(t.kernel)?.model ?? t.model,
     agent: byId.get(t.kernel) ?? null,
   }));
 }
