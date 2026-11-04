@@ -146,6 +146,19 @@ export interface TurnInputs {
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
+/** A verified X account (blue, business or government badge) behind a post. */
+export function isVerifiedAuthor(post: { author?: { verified?: boolean; verifiedType?: string } } | null | undefined): boolean {
+  const a = post?.author;
+  if (!a) return false;
+  if (a.verifiedType && a.verifiedType !== 'none') return true;
+  return a.verified === true;
+}
+
+/** Verified accounts first, otherwise the given order (a stable sort), so the model answers them first. */
+export function verifiedFirst<T extends { post: { author?: { verified?: boolean; verifiedType?: string } } }>(views: readonly T[]): T[] {
+  return [...views].sort((a, b) => Number(isVerifiedAuthor(b.post)) - Number(isVerifiedAuthor(a.post)));
+}
+
 /** The cadence anchor: the last original post, or the last slot the agent consumed by finishing without one. */
 export function scheduleAnchor(state: Pick<AgentState, 'lastPostAt' | 'lastSlotSkippedAt'>): number | null {
   const a = state.lastPostAt ?? 0;
@@ -170,7 +183,7 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
     market: inputs.market ? { snapshot: inputs.market } : null,
     treasury: inputs.treasury ? { balances: { ...inputs.treasury.balances, claimable: inputs.treasury.claimable, usd: inputs.treasury.usd, gas: inputs.treasury.gas } } : null,
     social: {
-      messages: eligible.map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}) })),
+      messages: verifiedFirst(eligible).map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, verified: isVerifiedAuthor(v.post), post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}) })),
       threadContexts: [],
       repliesAvailable: eligible.length > 0,
       originalPost: schedule ? originalPostView(schedule) : null,

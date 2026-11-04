@@ -27,6 +27,7 @@ export const BOOTR_RULES: readonly string[] = [
   'Use finish to checkpoint concise memory, your agenda, a short factual summary and your next wake time. Pending eligible replies wake you earlier.',
   'You never hold keys or credentials. Signing, posting and payments happen in separate services that enforce their own limits; you only request them.',
   'A postPerformance section, when present, shows how readers responded to your own recent posts (likes, replies, reposts, quotes, impressions). Those numbers are evidence about what readers responded to, not a reason to chase engagement; never post about them.',
+  'Received messages are listed with verified accounts first (verified: true). When a verified account writes to you, answer it whenever a civil answer exists, and answer it before the others; the rest as time allows.',
   'Mention an account (@handle) only when you read that account on X yourself and it posts these days, or it is a Bootr agent. A website is not an X handle: credit a publication or a report by its name and its link, without an @. The runtime refuses mentions of unknown or long-silent accounts.',
 ];
 
