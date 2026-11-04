@@ -485,3 +485,36 @@ describe('self-funded gas (no paymaster)', () => {
     }
   });
 });
+
+describe('prepareOp simulation', () => {
+  it('simulates a multi-call op as one batch execute from the EntryPoint, so approve-then-swap passes', async () => {
+    const { makeWorld, seedAgent } = await import('./helpers.js');
+    const { encodeSwapCalls, prepareOp } = await import('../src/treasury.js');
+    const { entryPoint07Address } = await import('viem/account-abstraction');
+    const world = await makeWorld();
+    try {
+      const agent = await seedAgent(world);
+      const seen: { account?: string; to?: string; data?: string }[] = [];
+      const swapHelper = '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d' as const;
+      (world.ctx.chain.publicClient as unknown as { call: (a: { account?: string; to?: string; data?: string }) => Promise<unknown> }).call = async (a) => {
+        seen.push(a);
+        // the swap helper alone (no allowance in that state) reverts; the kernel batch from the EntryPoint passes
+        if (a.to?.toLowerCase() === swapHelper.toLowerCase()) throw new Error('execution reverted');
+        return { data: '0x' };
+      };
+      const calls = encodeSwapCalls({ weth: world.ctx.chain.addresses.weth, swapHelper, amountIn: 1_000n, maxSlippageBps: 300 });
+      const op = await prepareOp(world.ctx, agent, { kind: 'swap', calls, description: 'swap', origin: 'policy' });
+      expect(op.status).toBe('prepared');
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.account?.toLowerCase()).toBe(entryPoint07Address.toLowerCase());
+      expect(seen[0]!.to?.toLowerCase()).toBe(agent.kernel.toLowerCase());
+      // a single call still simulates as the kernel itself
+      seen.length = 0;
+      await prepareOp(world.ctx, agent, { kind: 'fund_model', calls: [calls[0]!], description: 'one', origin: 'policy' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.account?.toLowerCase()).toBe(agent.kernel.toLowerCase());
+    } finally {
+      await world.close();
+    }
+  });
+});

@@ -85,6 +85,15 @@ export const EXEC_MODE_BATCH: Hex = `0x01${'00'.repeat(31)}`;
 
 /** `execute(mode, executionCalldata)` wrapped in `executeUserOp` (required for hooked validations). */
 export function encodeKernelCalls(calls: readonly KernelCall[]): Hex {
+  return concatHex([KERNEL_EXECUTE_USER_OP_SELECTOR, encodeKernelExecute(calls)]);
+}
+
+/**
+ * The bare `execute(mode, executionCalldata)` of the kernel (single or batch mode). The EntryPoint may call it
+ * directly, so an `eth_call` from the EntryPoint address runs the whole batch atomically: the way to simulate an
+ * op whose later calls depend on earlier ones (approve, then swap).
+ */
+export function encodeKernelExecute(calls: readonly KernelCall[]): Hex {
   if (calls.length === 0) throw new Error('no calls to encode');
   let mode: Hex;
   let executionCalldata: Hex;
@@ -98,8 +107,7 @@ export function encodeKernelCalls(calls: readonly KernelCall[]): Hex {
       calls.map((c) => ({ target: c.to, value: c.value ?? 0n, callData: c.data ?? '0x' })),
     ]);
   }
-  const inner = encodeFunctionData({ abi: kernelAbi, functionName: 'execute', args: [mode, executionCalldata] });
-  return concatHex([KERNEL_EXECUTE_USER_OP_SELECTOR, inner]);
+  return encodeFunctionData({ abi: kernelAbi, functionName: 'execute', args: [mode, executionCalldata] });
 }
 
 export function nonceMode(nonce: bigint): Hex {

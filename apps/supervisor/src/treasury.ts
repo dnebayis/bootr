@@ -16,7 +16,8 @@ import type { LaunchSource } from './chain.js';
 import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
-import type { KernelCall } from './kernel.js';
+import { entryPoint07Address } from 'viem/account-abstraction';
+import { encodeKernelExecute, type KernelCall } from './kernel.js';
 import { agentSource, clankerLockersFor } from './launch-source.js';
 
 export interface SerializedCall {
@@ -354,15 +355,22 @@ export interface PrepareArgs {
   origin: 'policy' | 'model';
 }
 
-/** Simulates every call as the kernel (`eth_call` from the kernel address) and stores the op as `prepared`. */
+/**
+ * Simulates the op and stores it as `prepared`. One call runs as the kernel (`eth_call` from the kernel address, the
+ * readable revert reason). Several calls run as the kernel's batch `execute` called from the EntryPoint, so a later
+ * call sees the state of an earlier one (the swap op is `approve` then `swapWethToUsdc`: alone, the swap reverts).
+ */
 export async function prepareOp(ctx: SupervisorContext, agent: AgentRow, args: PrepareArgs): Promise<TreasuryOpRow> {
   const kernel = agent.kernel as Address;
-  for (const call of args.calls) {
-    try {
+  try {
+    if (args.calls.length === 1) {
+      const [call] = args.calls as [KernelCall];
       await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
-    } catch (err) {
-      throw new PolicyError('treasury_simulation_failed', { message: `treasury_simulation_failed: ${rpcErrorText(err)}` });
+    } else {
+      await ctx.chain.publicClient.call({ account: entryPoint07Address, to: kernel, data: encodeKernelExecute(args.calls) });
     }
+  } catch (err) {
+    throw new PolicyError('treasury_simulation_failed', { message: `treasury_simulation_failed: ${rpcErrorText(err)}` });
   }
   const calls = serializeCalls(args.calls);
   const opId = `op_${randomUUID()}`;
