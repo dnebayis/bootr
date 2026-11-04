@@ -437,6 +437,24 @@ export const mock = {
   coinLinks(metadata: string): CoinPageLinks {
     return mockStore().links.get(metadata) ?? { website: null, x: null, telegram: null, discord: null };
   },
+  /**
+   * The creator's links edit (`PUT /api/agent/[kernel]/links`) on the mock store: the coin's links map is replaced
+   * under its `metadata` URL, so the coin page shows the new links. The route calls it on the server; the coin page
+   * calls it again on its own copy of the store after a save. 404 when no coin has that treasury.
+   */
+  updateCoinLinks(kernel: string, links: CoinPageLinks): { ok: true; links: CoinPageLinks } | { ok: false; status: number; error: string; message: string } {
+    const s = mockStore();
+    const token = s.tokens.find((t) => t.kernel.toLowerCase() === kernel.toLowerCase());
+    if (!token) return { ok: false, status: 404, error: 'unknown_coin', message: 'No indexed coin has that treasury.' };
+    const next = { ...links };
+    s.links.set(token.metadata, next);
+    return { ok: true, links: { ...next } };
+  },
+  /** The mock coin with that treasury, as the creator routes read it from the indexer: `null` when unknown. */
+  coinOfKernel(kernel: string): { metadata: string; symbol: string; xHandle: string | null; creator: Address } | null {
+    const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
+    return t ? { metadata: t.metadata, symbol: t.symbol, xHandle: t.xHandle, creator: t.creator } : null;
+  },
   token(id: string): TokenDetail | null {
     const s = mockStore();
     const t = s.tokens.find((x) => x.id.toLowerCase() === id.toLowerCase());

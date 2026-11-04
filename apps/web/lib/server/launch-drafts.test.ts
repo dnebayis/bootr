@@ -17,6 +17,7 @@ import {
   readDraftIdentity,
   readLaunchDraft,
   saveDraftIdentity,
+  updateLaunchDraftLinks,
 } from './launch-drafts';
 
 const DRAFT = '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e6f';
@@ -142,6 +143,23 @@ describe('draft store', () => {
   it('rejects a malformed draft id instead of writing outside the directory', async () => {
     await expect(saveDraftIdentity('../x', TEXT, null, { dir })).rejects.toThrow(/draft id/);
     expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("replaces a launched coin's links without the owner tag and keeps everything else", async () => {
+    const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: 'qeng_agent', links: { website: null, x: null, telegram: null, discord: null } };
+    const saved = await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin, worker: { kind: 'trader' }, now: 1 });
+    const links = { website: 'https://quiet.engine', x: 'https://x.com/bootrfun', telegram: null, discord: 'https://discord.gg/qeng' };
+    expect(await updateLaunchDraftLinks(DRAFT, links, { dir, now: 2 })).toEqual({ ok: true });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin: { ...coin, links }, worker: { kind: 'trader' }, source: 'bootr' });
+    // The owner tag and the creation time survive; only `updatedAt` moves.
+    const raw = JSON.parse(await readFile(path.join(dir, `${DRAFT}.json`), 'utf8'));
+    expect(raw).toMatchObject({ ownerTag: saved.ok ? saved.ownerTag : '', createdAt: 1, updatedAt: 2 });
+    expect(await readdir(dir)).toEqual([`${DRAFT}.json`]);
+    // No draft, a draft without coin metadata, a malformed id: nothing is written.
+    expect(await updateLaunchDraftLinks(OTHER, links, { dir })).toEqual({ ok: false, reason: 'missing' });
+    await saveDraftIdentity(OTHER, TEXT, null, { dir });
+    expect(await updateLaunchDraftLinks(OTHER, links, { dir })).toEqual({ ok: false, reason: 'no_coin' });
+    expect(await updateLaunchDraftLinks('../x', links, { dir })).toEqual({ ok: false, reason: 'missing' });
   });
 });
 

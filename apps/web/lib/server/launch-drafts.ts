@@ -21,8 +21,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
+import { normalizeLinks, type CoinLinks } from '@/lib/coin-link-rules';
 import type { LaunchSource } from '@/lib/types';
-import { normalizeXLink } from '@/lib/x-link';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/launch-drafts must not be imported in the browser');
 
@@ -72,42 +72,16 @@ export function draftsDir(): string {
 }
 
 /**
- * The coin's own links, entered in the launch form (optional). `website` any https URL; the others their own hosts.
- * `x` is the project's account (`https://x.com/<handle>`, lib/x-link.ts), not the agent's (`DraftCoin.xHandle`).
+ * The coin's own links, entered in the launch form (optional) and changed later by the creator from the coin page
+ * (`PUT /api/agent/[kernel]/links`, `updateLaunchDraftLinks`). The rules live in lib/coin-link-rules.ts, shared
+ * with the forms; `x` is the project's account (`https://x.com/<handle>`, lib/x-link.ts), not the agent's
+ * (`DraftCoin.xHandle`).
  */
-export type CoinLinks = { website: string | null; x: string | null; telegram: string | null; discord: string | null };
+export type { CoinLinks } from '@/lib/coin-link-rules';
+export { normalizeLinks } from '@/lib/coin-link-rules';
 
 /** What the contract URI shows for a coin: entered in the launch form, written with the identity text. */
 export type DraftCoin = { name: string; symbol: string; image: string; imageIpfs: string | null; xHandle: string | null; links: CoinLinks };
-
-const MAX_LINK = 200;
-const LINK_HOST: Record<Exclude<keyof CoinLinks, 'x'>, RegExp | null> = {
-  website: null,
-  telegram: /^https:\/\/t\.me\//i,
-  discord: /^https:\/\/(discord\.gg|discord\.com\/invite)\//i,
-};
-
-/** One optional link: null when absent or empty, undefined when present but not an https URL of its kind. */
-function normalizeLink(kind: Exclude<keyof CoinLinks, 'x'>, v: unknown): string | null | undefined {
-  if (v == null) return null;
-  if (typeof v !== 'string') return undefined;
-  const s = v.trim();
-  if (!s) return null;
-  if (s.length > MAX_LINK || !/^https:\/\/[^\s"<>]+$/.test(s)) return undefined;
-  const host = LINK_HOST[kind];
-  return host && !host.test(s) ? undefined : s;
-}
-
-/** The form's links, or null when any of them is not acceptable. Missing fields (older drafts) are null. */
-export function normalizeLinks(input: unknown): CoinLinks | null {
-  const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-  const website = normalizeLink('website', o.website);
-  const x = normalizeXLink(o.x);
-  const telegram = normalizeLink('telegram', o.telegram);
-  const discord = normalizeLink('discord', o.discord);
-  if (website === undefined || x === undefined || telegram === undefined || discord === undefined) return null;
-  return { website, x, telegram, discord };
-}
 
 /** Validates the form's coin metadata (same bounds as the form); null when anything is off. */
 export function normalizeCoin(input: unknown): DraftCoin | null {
@@ -233,6 +207,29 @@ export async function saveDraftIdentity(
   await writeFile(tmp, JSON.stringify(next) + '\n', 'utf8');
   await rename(tmp, file);
   return { ok: true, ownerTag: tag };
+}
+
+export type UpdateLinksResult = { ok: true } | { ok: false; reason: 'missing' | 'no_coin' };
+
+/**
+ * Replaces the coin links of a stored draft: the creator's edit from the coin page after the launch, so no owner
+ * tag is needed (the route proved the creator wallet). `{ok: false, reason: 'missing'}` when no draft is stored
+ * under `draftId`, `'no_coin'` when the draft carries no coin metadata to attach links to (such a draft never
+ * backed a contract URI). Writes are atomic (temp file + rename); the next `GET /tokens/<id>.json` reads the file.
+ */
+export async function updateLaunchDraftLinks(draftId: string, links: CoinLinks, opts: { dir?: string; now?: number } = {}): Promise<UpdateLinksResult> {
+  if (!isDraftId(draftId)) return { ok: false, reason: 'missing' };
+  const dir = opts.dir ?? draftsDir();
+  const existing = await readDraft(dir, draftId);
+  if (!existing) return { ok: false, reason: 'missing' };
+  if (!existing.coin) return { ok: false, reason: 'no_coin' };
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  const next: DraftFile = { ...existing, coin: { ...existing.coin, links: { ...links } }, updatedAt: now };
+  const file = fileFor(dir, draftId);
+  const tmp = `${file}.${process.pid}.${randomTag().slice(0, 8)}.tmp`;
+  await writeFile(tmp, JSON.stringify(next) + '\n', 'utf8');
+  await rename(tmp, file);
+  return { ok: true };
 }
 
 // ------------------------------------------------------------------ owner cookie (`<id>.<tag>~<id>.<tag>`)

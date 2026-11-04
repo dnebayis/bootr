@@ -49,15 +49,25 @@ export function pickCoinLinks(json: unknown, agentXHandle: string | null | undef
 }
 
 /**
+ * The react-query key of a coin's links: what `useCoinLinks` reads and what the creator's links form writes after a
+ * save (`queryClient.setQueryData`), so the links row changes at once without a second fetch.
+ */
+export function coinLinksKey(metadata: string | null | undefined, agentXHandle: string | null | undefined) {
+  const path = env.useMock ? null : ownContractUri(metadata);
+  const mockKey = env.useMock && metadata ? metadata : null;
+  return ['coin-links', path ?? mockKey, agentXHandle ?? null] as const;
+}
+
+/**
  * The coin's website, X account, Telegram and Discord, read from its hosted ERC-7572 contract URI (set in the
- * launch form, `lib/contract-metadata.ts`). `agentXHandle` is the agent's own handle, kept out of `x`. Coins
+ * launch form, `lib/contract-metadata.ts`; changed later by the creator through `PUT /api/agent/[kernel]/links`). `agentXHandle` is the agent's own handle, kept out of `x`. Coins
  * whose contract URI is not hosted here (or none at all) show no links. Mock mode reads the mock store instead.
  */
 export function useCoinLinks(metadata: string | null | undefined, agentXHandle: string | null | undefined) {
   const path = env.useMock ? null : ownContractUri(metadata);
   const mockKey = env.useMock && metadata ? metadata : null;
   return useQuery({
-    queryKey: ['coin-links', path ?? mockKey, agentXHandle ?? null],
+    queryKey: coinLinksKey(metadata, agentXHandle),
     queryFn: async (): Promise<CoinPageLinks> => {
       if (mockKey) return mock.coinLinks(mockKey);
       const res = await fetch(path!, { cache: 'no-store' });

@@ -2,13 +2,9 @@
 
 import { Fragment, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { SiweMessage } from 'siwe';
 import { toast } from 'sonner';
 import type { Address } from 'viem';
-import { useConnection, useSignMessage } from 'wagmi';
 import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, WORKER_BOUNDS } from '@bootr/shared/workers';
-import { appChain } from '@/lib/chains';
-import { env } from '@/lib/env';
 import { qk, useAgentConfig } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
@@ -25,6 +21,8 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
 import { ApprovalQueue } from './ApprovalQueue';
+import { CoinLinksForm } from './CoinLinksForm';
+import { useCreatorSignature } from './creator-signature';
 import { FuelForm } from './FuelForm';
 import { GasForm } from './GasForm';
 
@@ -120,12 +118,12 @@ function cadenceLabel(ms: number): string {
 /**
  * The creator's panel on the coin page: the agent's instructions, powers (with the image model and image style under
  * Images), the post review switch, cadence and model (from the supervisor via `/api/agent/:kernel/config`, saved with
- * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), then the existing Fuel and
- * Add gas actions. Shown only to the creator's wallet (everyone in mock mode, where saving skips the signature).
+ * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), the coin's links
+ * (CoinLinksForm), then the existing Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock
+ * mode, where saving skips the signature).
  */
 export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | null }) {
-  const { address } = useConnection();
-  const { signMessageAsync } = useSignMessage();
+  const { canSign, sign } = useCreatorSignature();
   const queryClient = useQueryClient();
   const config = useAgentConfig(token.kernel);
   const approvals = useApprovalCount(token.kernel);
@@ -156,7 +154,6 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const notesOk = notesLen <= IMAGE_NOTES_MAX;
   const styleOk = referenceOk && notesOk;
   const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
-  const canSign = env.useMock || !!address;
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
   const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
@@ -189,39 +186,9 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
     if (!cfg || !changes || !instructionsOk || !styleOk) return;
     setSaving(true);
     try {
-      let body: { message: string; signature: string; changes: AgentConfigChanges };
-      if (env.useMock) {
-        body = { message: address ?? '', signature: '0x', changes };
-      } else {
-        if (!address) {
-          toast.error('Connect the creator wallet first.');
-          return;
-        }
-        const n = await fetch('/api/agent/nonce', { method: 'POST' });
-        if (!n.ok) {
-          toast.error('Could not start the signature (nonce).');
-          return;
-        }
-        const { nonce } = (await n.json()) as { nonce: string };
-        const message = new SiweMessage({
-          domain: window.location.host,
-          address,
-          statement: `Update the agent of Bootr coin $${token.symbol} (#${token.agentId}, ${token.kernel}).`,
-          uri: window.location.origin,
-          version: '1',
-          chainId: appChain.id,
-          nonce,
-          issuedAt: new Date().toISOString(),
-        }).prepareMessage();
-        let signature: `0x${string}`;
-        try {
-          signature = await signMessageAsync({ message });
-        } catch {
-          toast.error('Signature cancelled.');
-          return;
-        }
-        body = { message, signature, changes };
-      }
+      const signed = await sign(`Update the agent of Bootr coin $${token.symbol} (#${token.agentId}, ${token.kernel}).`);
+      if (!signed) return;
+      const body: { message: string; signature: string; changes: AgentConfigChanges } = { ...signed, changes };
       const res = await fetch(`/api/agent/${token.kernel.toLowerCase()}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
@@ -370,7 +337,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </div>
             <fieldset className="min-w-0">
               <legend className="mb-1.5 text-caption font-medium text-ink">Job lines</legend>
-              <p className="mb-2 text-caption text-mute">What the agent is told to do, one job per line; up to {WORKER_BOUNDS.maxJobLines}. The platform's own agent follows them too.</p>
+              <p className="mb-2 text-caption text-mute">What the agent is told to do, one job per line; up to {WORKER_BOUNDS.maxJobLines}. The platform&rsquo;s own agent follows them too.</p>
               <div className="space-y-2">
                 {draft.jobLines.map((line, i) => (
                   <div key={i} className="flex items-start gap-2">
@@ -478,6 +445,10 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
         )}
 
         {cfg ? <ApprovalQueue token={token} reviewing={cfg.requireApproval} /> : null}
+
+        <div className="border-t border-hairline pt-4">
+          <CoinLinksForm token={token} />
+        </div>
 
         <div className="border-t border-hairline pt-4">
           <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />

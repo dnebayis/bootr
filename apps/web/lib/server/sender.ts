@@ -33,28 +33,48 @@ export function isSubject(v: string): boolean {
   return isDraftId(v) || isAgentId(v);
 }
 
+/** The coin an agent belongs to, as the creator routes need it (`fetchTokenCreator`). */
+export type TokenCreator = {
+  creator: string;
+  agentId: string;
+  symbol: string;
+  /** The ERC-7572 contract URI set at launch (`/tokens/<launchId>.json` for coins launched here). */
+  metadata: string | null;
+  /** The agent's own X handle, kept apart from the project's X link. */
+  xHandle: string | null;
+};
+
 /**
- * The coin an agent belongs to, from the indexer (server side): who created it and its agent id. `kernel` is the
- * agent's smart account (the `token.kernel` column), not the coin address: the lookup filters on it.
+ * The coin an agent belongs to, from the indexer (server side): who created it, its agent id, symbol, contract URI
+ * and the agent's X handle. `kernel` is the agent's smart account (the `token.kernel` column), not the coin
+ * address: the lookup filters on it.
  */
-export async function fetchTokenCreator(kernel: string): Promise<{ creator: string; agentId: string } | null> {
+export async function fetchTokenCreator(kernel: string): Promise<TokenCreator | null> {
   const base = (process.env.NEXT_PUBLIC_INDEXER_URL ?? '').replace(/\/$/, '');
   if (!base) return null;
   const res = await fetch(`${base}/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      query: 'query Creator($kernel: String!) { tokens(where: { kernel: $kernel }, limit: 1) { items { creator agentId } } }',
+      query: 'query Creator($kernel: String!) { tokens(where: { kernel: $kernel }, limit: 1) { items { creator agentId symbol metadata xHandle } } }',
       variables: { kernel: kernel.toLowerCase() },
     }),
     cache: 'no-store',
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) return null;
-  const json = (await res.json()) as { data?: { tokens?: { items?: { creator?: string; agentId?: string | number }[] } | null } };
+  const json = (await res.json()) as {
+    data?: { tokens?: { items?: { creator?: string; agentId?: string | number; symbol?: string; metadata?: string | null; xHandle?: string | null }[] } | null };
+  };
   const t = json.data?.tokens?.items?.[0];
   if (!t?.creator || t.agentId == null) return null;
-  return { creator: String(t.creator), agentId: String(t.agentId) };
+  return {
+    creator: String(t.creator),
+    agentId: String(t.agentId),
+    symbol: typeof t.symbol === 'string' ? t.symbol : '',
+    metadata: typeof t.metadata === 'string' && t.metadata ? t.metadata : null,
+    xHandle: typeof t.xHandle === 'string' && t.xHandle ? t.xHandle : null,
+  };
 }
 
 /** Opaque client state echoed back by the sender; URL-safe, ≤ 128 chars. */

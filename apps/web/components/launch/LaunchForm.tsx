@@ -40,7 +40,8 @@ import { SplitBar } from '@/components/token/FeeSplit';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
-import { normalizeXLink, xHandleOfUrl } from '@/lib/x-link';
+import { LINK_ERRORS, LINK_KINDS, normalizeLink } from '@/lib/coin-link-rules';
+import { xHandleOfUrl } from '@/lib/x-link';
 
 function Section({ n, title, description, children }: { n: number; title: string; description: string; children: ReactNode }) {
   return (
@@ -274,20 +275,14 @@ export function LaunchForm() {
   else if (!pinned) errors.push('Upload an image.');
   if (identity.trim().length < 20) errors.push('Write at least 20 characters of instructions.');
   if (kind === CUSTOM_WORKER_ID && !customPreset) errors.push(`Job lines must be at most ${WORKER_BOUNDS.maxJobLineChars} characters each.`);
-  const link = (v: string, host?: RegExp) => {
-    const s = v.trim();
-    return !s ? null : s.length <= 200 && /^https:\/\/[^\s"<>]+$/.test(s) && (!host || host.test(s)) ? s : undefined;
-  };
+  // The same rules as the draft store and the coin page's links form (lib/coin-link-rules.ts).
   const links = {
-    website: link(website),
-    x: normalizeXLink(projectX),
-    telegram: link(telegram, /^https:\/\/t\.me\//i),
-    discord: link(discord, /^https:\/\/(discord\.gg|discord\.com\/invite)\//i),
+    website: normalizeLink('website', website),
+    x: normalizeLink('x', projectX),
+    telegram: normalizeLink('telegram', telegram),
+    discord: normalizeLink('discord', discord),
   };
-  if (links.website === undefined) errors.push('Website must be an https URL.');
-  if (links.x === undefined) errors.push('X must be an x.com link or a handle.');
-  if (links.telegram === undefined) errors.push('Telegram must be an https://t.me/ link.');
-  if (links.discord === undefined) errors.push('Discord must be an https://discord.gg/ invite.');
+  for (const kind of LINK_KINDS) if (links[kind] === undefined) errors.push(LINK_ERRORS[kind]);
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
