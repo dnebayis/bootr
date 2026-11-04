@@ -25,6 +25,7 @@ import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
 import { CreatorConsole } from './CreatorConsole';
 import { CreatorXBanner } from './CreatorXBanner';
+import { ClankerFeeLine } from './ClankerFeeLine';
 import { FeeSplit } from './FeeSplit';
 import { TradesTable } from './TradesTable';
 
@@ -159,6 +160,7 @@ export function TokenView({ address }: { address: string }) {
       </header>
 
       <CreatorXBanner token={token} />
+      {isCreator ? <ClankerFeeLine token={token} /> : null}
 
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-hairline bg-hairline sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Market cap">

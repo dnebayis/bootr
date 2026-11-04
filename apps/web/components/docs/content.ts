@@ -220,7 +220,7 @@ swappers pay (1%)        $1,000
       ['Recipient', 'How it claims'],
       [
         ['Agent', 'Its treasury calls `settleAndClaim` (or `claimQuote`) through its session key; the on-chain policy only allows `to` = the treasury itself.'],
-        ['Creator', 'From your wallet. The creator panel on the coin page (and Profile) calls `settleAndClaim([poolId], WETH, you)`.'],
+        ['Creator', 'From your wallet. The creator panel on the coin page (and Profile) calls `settleAndClaim([poolId], WETH, you)`. For a coin launched through Clanker, your share arrives as WETH in Clanker’s fee locker (`ClankerFeeLocker`), one balance for all your Clanker coins: Profile and the coin page show it and **Claim** calls `claim(you, WETH)`, which always pays your wallet, whoever sends it.'],
         ['Burner', 'Anyone may call `claim()` on the burner; the WETH goes to the burner. `swapAndBurn(minOut)` (keeper only: the launcher’s owner) swaps it for the coin and sends the coin to `0x…dEaD`.'],
         ['Platform', 'Bootr claims its platform share from its own recipient address.'],
       ],

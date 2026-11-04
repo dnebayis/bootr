@@ -390,6 +390,17 @@ export const mock = {
     return BigInt(Math.floor(r() * (scope === 'settled' ? 5e4 : 1e4))) * 10n ** 12n;
   },
   /**
+   * Deterministic WETH balance (wei) waiting in Clanker's fee locker for `owner`, in place of
+   * `ClankerFeeLocker.availableFees(owner, WETH)`: between 0.001 and 0.05 WETH, never zero, so the creator panels
+   * always have something to claim in mock mode.
+   */
+  clankerFees(owner: string): bigint {
+    let h = 2166136261;
+    for (const ch of `${owner.toLowerCase()}:clanker-fees`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const r = mulberry32(h >>> 0);
+    return BigInt(1000 + Math.floor(r() * 49_000)) * 10n ** 12n;
+  },
+  /**
    * Deterministic agent gas (wei) for mock mode, in place of `EntryPoint.balanceOf(kernel)` and the kernel's
    * ETH balance. Most kernels are well funded; about one in five is low and one in ten is out of gas.
    */

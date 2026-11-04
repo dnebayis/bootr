@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN_COOKIE, newSessionId, signToken } from '../lib/server/session-core';
+import { connectBrowserWallet, fakeInjectedWallet } from './fake-wallet';
 
 const SLUG = process.env.ADMIN_CONSOLE_SLUG!;
 const ADMIN = process.env.ADMIN_ADDRESSES!.split(',')[0]!;
@@ -69,6 +70,13 @@ test('the mock Clanker coin shows its label, the whole-fee split and the swap li
   await expect(page.getByTestId('fee-sentence')).toContainText('The swap fee is 1.00%, all of it to the recipients above, plus 20% on top for Clanker (0.20%)');
   await expect(page.getByText('Clanker', { exact: true })).toBeVisible(); // the legend's launcher entry
   await expect(page.getByRole('link', { name: /Trade/ })).toBeVisible();
+  // The creator (everyone in mock mode) gets one line with the WETH waiting in Clanker's fee locker and the claim.
+  const line = page.getByTestId('clanker-fee-line');
+  await expect(line).toContainText('Your claimable fees:');
+  await expect(line.getByTestId('clanker-fee-amount')).toContainText(/^0\.\d+ WETH$/);
+  await expect(line.getByRole('link', { name: 'Profile' })).toHaveAttribute('href', '/profile');
+  await line.getByRole('button', { name: 'Claim' }).click();
+  await expect(page.getByText('Mock: Claim $BWATCH fees sent')).toBeVisible();
 
   await page.goto('/');
   const first = page.locator('a[href^="/token/0x"]').first();
@@ -76,6 +84,30 @@ test('the mock Clanker coin shows its label, the whole-fee split and the swap li
   await expect(page.getByRole('heading', { name: 'Locked fee split' })).toBeVisible();
   await expect(page.getByTestId('token-source')).toHaveCount(0);
   await expect(page.getByTestId('fee-sentence')).toContainText('0.10% to RWAGMI, the launcher');
+  await expect(page.getByTestId('clanker-fee-line')).toHaveCount(0);
+});
+
+test('profile shows the creator fees of Clanker coins with one claim for all of them (mock mode)', async ({ page }) => {
+  // Mock mode gives a freshly connected wallet a few demo coins, the Clanker one ($BWATCH) among them.
+  await fakeInjectedWallet(page);
+  await page.goto('/profile');
+  await connectBrowserWallet(page);
+  const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Creator fees, Clanker coins' }) });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('clanker-creator-weth')).toContainText(/^0\.\d+ WETH$/);
+  await expect(panel).toContainText('$BWATCH');
+  await expect(panel.getByRole('columnheader', { name: 'Launched' })).toBeVisible();
+  await expect(panel.getByRole('cell', { name: /\b20\d\d\b/ }).first()).toBeVisible();
+  await expect(panel).toContainText('1.00% fee, plus 20% on top for Clanker');
+  await expect(panel).toContainText('arrives as WETH in Clanker’s fee locker. Claim sends it to your wallet.');
+  // The RWAGMI panel keeps the Bootr coins only.
+  const rwagmi = page.locator('section', { has: page.getByRole('heading', { name: 'Creator fees', exact: true }) });
+  await expect(rwagmi).toBeVisible();
+  await expect(rwagmi).not.toContainText('$BWATCH');
+  const claim = panel.getByRole('button', { name: 'Claim', exact: true });
+  await expect(claim).toBeEnabled();
+  await claim.click();
+  await expect(page.getByText('Mock: Claim Clanker fees sent')).toBeVisible();
 });
 
 test('the admin fee panel lists platform fees per source with the Clanker claim instructions', async ({ page, context, baseURL }) => {

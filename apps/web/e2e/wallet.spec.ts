@@ -1,35 +1,9 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { ADMIN_COOKIE, newSessionId, signToken } from '../lib/server/session-core';
+import { fakeInjectedWallet } from './fake-wallet';
 
 const SLUG = process.env.ADMIN_CONSOLE_SLUG!;
 const ADMIN = process.env.ADMIN_ADDRESSES!.split(',')[0]!;
-const WALLET = '0x00000000000000000000000000000000000e2e01';
-
-/** Minimal EIP-1193 wallet on Base Sepolia, so the injected connector can connect without an extension. */
-async function fakeInjectedWallet(page: Page) {
-  await page.addInitScript((account) => {
-    const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
-    const answers: Record<string, unknown> = {
-      eth_requestAccounts: [account],
-      eth_accounts: [account],
-      eth_chainId: '0x14a34',
-      net_version: '84532',
-      wallet_switchEthereumChain: null,
-      wallet_requestPermissions: [{ parentCapability: 'eth_accounts' }],
-      wallet_getPermissions: [{ parentCapability: 'eth_accounts' }],
-      eth_blockNumber: '0x1',
-    };
-    (window as unknown as { ethereum: unknown }).ethereum = {
-      isMetaMask: false,
-      request: async ({ method }: { method: string }) => {
-        if (method in answers) return answers[method];
-        throw Object.assign(new Error(`unsupported ${method}`), { code: 4200 });
-      },
-      on: (e: string, f: (...a: unknown[]) => void) => void (listeners[e] = [...(listeners[e] ?? []), f]),
-      removeListener: (e: string, f: (...a: unknown[]) => void) => void (listeners[e] = (listeners[e] ?? []).filter((x) => x !== f)),
-    };
-  }, WALLET);
-}
 
 test('connect menu lists Base Account first, then Coinbase Wallet and the browser wallet', async ({ page }) => {
   const errors: string[] = [];
