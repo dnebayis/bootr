@@ -52,10 +52,31 @@ export const GEMINI_IMAGE_OUTPUT_TOKENS = 1290;
  * quality is 4160 output tokens (medium 1056, low 272); the quote assumes the worst case, the receipt reports usage.
  */
 export const GPT_IMAGE_MINI_OUTPUT_TOKENS = 4160;
+/**
+ * Output tokens Google bills for one Gemini 3 Pro Image (Nano Banana Pro) picture at 1K or 2K: 1120 tokens, at
+ * `pricing.image_output` $120 / 1M about $0.134 per image (a 4K picture is 2000 tokens, $0.24; the relay asks for 1K).
+ */
+export const GEMINI_3_PRO_IMAGE_OUTPUT_TOKENS = 1120;
+/**
+ * One Gemini 3.1 Flash Image (Nano Banana 2) picture at 1K or 2K: 1120 tokens, at `pricing.image_output` $60 / 1M
+ * about $0.067 per image (512px is 560 tokens, 4K is 2000).
+ */
+export const GEMINI_3_1_FLASH_IMAGE_OUTPUT_TOKENS = 1120;
+/**
+ * Worst case for one `openai/gpt-5.4-image-2` picture (`pricing.image_output` $30 / 1M): 1024x1024 at high quality is
+ * 4160 output tokens, about $0.125 per image (medium 1056 tokens, $0.032; the receipt reports what was used).
+ */
+export const GPT_IMAGE_2_OUTPUT_TOKENS = 4160;
+/**
+ * Prompt tokens one attached picture (`image_url` content part, e.g. the agent's reference image) is allowed for,
+ * priced at the model's input rate: Gemini 3 bills up to 1120 tokens per input image, OpenAI's image models up to
+ * about 1500 at high detail. Only models priced for image output accept image input (see `computeQuote`).
+ */
+export const IMAGE_INPUT_TOKENS_PER_IMAGE = 1600;
 
 /**
  * Defaults derived from OpenRouter list prices on 2026-10-27 (https://openrouter.ai/api/v1/models); the image models on
- * 2026-11-03. Re-verify against https://openrouter.ai/models before mainnet; override with INFERENCE_PRICE_TABLE_JSON.
+ * 2026-11-04 (`pricing.image_output` is USD per image output token). Re-verify against https://openrouter.ai/models before mainnet; override with INFERENCE_PRICE_TABLE_JSON.
  * Context limits are clamped to each model's base price tier where long-context pricing differs.
  */
 export const DEFAULT_PRICE_TABLE: PriceTable = {
@@ -93,6 +114,12 @@ export const DEFAULT_PRICE_TABLE: PriceTable = {
     // Image generation (chat completions with `modalities: ["image", "text"]`; the picture comes back in `message.images[]`).
     'google/gemini-2.5-flash-image': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500, contextLength: 32768, maxOutputTokens: 8192, imageOutputMicroUsdcPerKTokens: 30000, imageOutputTokensPerImage: GEMINI_IMAGE_OUTPUT_TOKENS },
     'openai/gpt-5-image-mini': { inputMicroUsdcPerKTokens: 2500, outputMicroUsdcPerKTokens: 2000, contextLength: 400000, maxOutputTokens: 32768, imageOutputMicroUsdcPerKTokens: 8000, imageOutputTokensPerImage: GPT_IMAGE_MINI_OUTPUT_TOKENS },
+    // Nano Banana Pro: prompt $2/M, completion $12/M, image_output $120/M; about $0.134 per 1K picture (2026-11-04).
+    'google/gemini-3-pro-image': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, contextLength: 131072, maxOutputTokens: 32768, imageOutputMicroUsdcPerKTokens: 120000, imageOutputTokensPerImage: GEMINI_3_PRO_IMAGE_OUTPUT_TOKENS },
+    // Nano Banana 2: prompt $0.5/M, completion $3/M, image_output $60/M; about $0.067 per 1K picture (2026-11-04).
+    'google/gemini-3.1-flash-image': { inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, contextLength: 131072, maxOutputTokens: 32768, imageOutputMicroUsdcPerKTokens: 60000, imageOutputTokensPerImage: GEMINI_3_1_FLASH_IMAGE_OUTPUT_TOKENS },
+    // GPT Image 2: prompt $8/M, completion $15/M, image_output $30/M; at most $0.125 per picture (2026-11-04).
+    'openai/gpt-5.4-image-2': { inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, contextLength: 272000, maxOutputTokens: 32768, imageOutputMicroUsdcPerKTokens: 30000, imageOutputTokensPerImage: GPT_IMAGE_2_OUTPUT_TOKENS },
   },
 };
 
@@ -175,12 +202,23 @@ export interface EstimatableRequest {
   tool_choice?: unknown;
 }
 
+/** Pictures attached to the prompt: `image_url` content parts across all messages. */
+export function imageInputsOf(messages: readonly unknown[]): number {
+  let n = 0;
+  for (const m of messages) {
+    const content = (m as { content?: unknown } | null)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) if ((part as { type?: unknown } | null)?.type === 'image_url') n++;
+  }
+  return n;
+}
+
 /**
  * Upper-bound estimate of prompt tokens (M-5): the larger of
  *  - the o200k_base token count of the serialized messages, tools and tool_choice (a real BPE
  *    tokenizer, so adversarial Unicode that expands to ~1 token per byte is counted as such), and
  *  - UTF-8 bytes / 2 (cross-family floor),
- * plus per-message framing overhead.
+ * plus per-message framing overhead and `IMAGE_INPUT_TOKENS_PER_IMAGE` per attached picture.
  */
 export function estimateInputTokens(req: EstimatableRequest): number {
   const parts: string[] = req.messages.map((m) => JSON.stringify(m));
@@ -193,7 +231,7 @@ export function estimateInputTokens(req: EstimatableRequest): number {
     tokens += countTokens(part);
   }
   const counted = Math.max(tokens, Math.ceil(bytes / MIN_TOKENS_PER_BYTE_DIVISOR));
-  return counted + PER_MESSAGE_OVERHEAD * req.messages.length + PER_REQUEST_OVERHEAD;
+  return counted + PER_MESSAGE_OVERHEAD * req.messages.length + PER_REQUEST_OVERHEAD + IMAGE_INPUT_TOKENS_PER_IMAGE * imageInputsOf(req.messages);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -228,6 +266,7 @@ export interface Quote {
 export type QuoteError =
   | { code: 'model_not_allowed'; message: string }
   | { code: 'image_output_not_supported'; message: string }
+  | { code: 'image_input_not_supported'; message: string }
   | { code: 'max_tokens_too_large'; message: string; limit: number }
   | { code: 'context_length_exceeded'; message: string; limit: number; estimated: number };
 
@@ -256,6 +295,16 @@ export function computeQuote(
     };
   }
   const imageOutputTokens = images * (price.imageOutputTokensPerImage ?? 0);
+  // Attached pictures are priced as input tokens only on the image models (text models bill them differently).
+  if (imageInputsOf(req.messages) > 0 && !price.imageOutputMicroUsdcPerKTokens) {
+    return {
+      ok: false,
+      error: {
+        code: 'image_input_not_supported',
+        message: `model "${req.model}" does not take image_url content parts; use an image model`,
+      },
+    };
+  }
   if (req.max_tokens > price.maxOutputTokens) {
     return {
       ok: false,

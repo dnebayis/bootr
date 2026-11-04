@@ -114,9 +114,14 @@ export const MAX_QUOTE_MICRO_USDC: Readonly<Record<string, number>> = {
   'gemini-3.8-flash': 700_000,
   'gemini-3.5-flash-lite': 400_000,
   'gemini-2.5-flash': 400_000,
-  // Image generation (one picture per request; the relay quotes about 0.04 USDC for Gemini, see apps/inference)
+  // Image generation (one picture per request plus a reference picture as input; the relay quotes about 0.04 USDC for
+  // Gemini 2.5 Flash Image, 0.07 for Gemini 3.1 Flash Image, 0.14 for Gemini 3 Pro Image and up to 0.13 for GPT Image 2,
+  // see apps/inference/src/pricing.ts)
   'gemini-2.5-flash-image': 120_000,
+  'gemini-3.1-flash-image': 150_000,
+  'gemini-3-pro-image': 250_000,
   'gpt-5-image-mini': 150_000,
+  'gpt-5.4-image': 250_000,
   // Others
   'grok-4.7': 1_000_000,
   'grok-4.20': 600_000,

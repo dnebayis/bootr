@@ -12,7 +12,7 @@ import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, worke
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
-import { creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
+import { coinImageFromCard, creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
@@ -75,9 +75,10 @@ export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
 export const PLATFORM_POST_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Capabilities of the platform agent. Research stays on (it reads launches and agents before it writes about
- * them); images stay off by default: a generated picture under the launchpad's name is a reputational risk with
- * no upside for a text-first host, and the operator can switch it on through the config API later.
+ * Capabilities of the platform agent at launch. Research stays on (it reads launches and agents before it writes
+ * about them); images start off (a generated picture under the launchpad's name is a reputational risk the operator
+ * should opt into). Like every other agent's powers they are edited through the config API (`withWorkerPreset`), so
+ * images can be switched on from the console; the 6 h cadence and the platform persona are not touched by that.
  */
 export const PLATFORM_CAPABILITIES = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false } as const;
 
@@ -159,6 +160,10 @@ export function storedWorkerPreset(config: Record<string, unknown>): WorkerPrese
  *
  * `worker` is what `workerHash` resolved to (`resolveWorker`): `workerTemplate` names it and, for a custom
  * worker, `workerPreset` stores the preset itself (capabilities, cadence, job lines) because no template has it.
+ *
+ * `coinImage` is the coin picture from the agent card (`coinImageFromCard`): the default `imageStyle.reference`
+ * every generated picture matches (images.ts); null when the card had none or could not be read yet
+ * (`backfillFromAgentCard` fills it in with the identity).
  */
 export function buildLaunchConfig(
   ctx: SupervisorContext,
@@ -166,6 +171,7 @@ export function buildLaunchConfig(
   token: { name: string; symbol: string },
   creatorIdentity: string | null = null,
   worker: ResolvedWorker = resolveWorker(launch.workerHash),
+  coinImage: string | null = null,
 ): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
@@ -187,6 +193,7 @@ export function buildLaunchConfig(
     workerTemplate: worker.id,
     ...(worker.id === CUSTOM_WORKER_ID ? { workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] } } : {}),
     workerHash: launch.workerHash,
+    imageStyle: { reference: coinImage, notes: '' },
     dormancyPeriodMs: Math.max(60_000, launch.dormancyPeriod * 1000),
     replyAuthorIds: [],
     blockedAuthorIds: [],
@@ -205,17 +212,30 @@ export function withCreatorIdentity(config: Record<string, unknown>, creatorIden
   return { ...config, identityText: composeIdentityText(creatorIdentity, defaults), creatorIdentity };
 }
 
-/** The stored config with a (normalized) worker preset applied: capabilities, cadence and job lines (platform agents keep their own capabilities). */
+/**
+ * The stored config with a (normalized) worker preset applied: capabilities, cadence and job lines. The platform's
+ * agent takes the capabilities and cadence too (that is how the console toggles its powers, images included); its
+ * job lines stay out of its identity text (`withCreatorIdentity`), and `backfillFromAgentCard` never puts a card's
+ * worker on it, so its launch defaults (PLATFORM_CAPABILITIES, PLATFORM_POST_INTERVAL_MS) hold until an edit.
+ */
 export function withWorkerPreset(config: Record<string, unknown>, id: ResolvedWorker['id'], preset: WorkerPreset): Record<string, unknown> {
-  const platform = config.platform === true;
   const next: Record<string, unknown> = {
     ...config,
     workerTemplate: id,
     workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] },
-    ...(platform ? {} : { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs }),
+    capabilities: { ...preset.capabilities },
+    postIntervalMs: preset.postIntervalMs,
   };
   const creatorIdentity = typeof config.creatorIdentity === 'string' ? config.creatorIdentity : null;
   return { ...withCreatorIdentity(next, creatorIdentity ?? ''), creatorIdentity };
+}
+
+/** The stored config with the coin picture as the image style reference, unless one is already set. */
+export function withCoinImage(config: Record<string, unknown>, coinImage: string | null): Record<string, unknown> {
+  if (!coinImage) return config;
+  const style = (config.imageStyle && typeof config.imageStyle === 'object' ? config.imageStyle : {}) as { reference?: unknown; notes?: unknown };
+  if (typeof style.reference === 'string' && style.reference) return config;
+  return { ...config, imageStyle: { reference: coinImage, notes: typeof style.notes === 'string' ? style.notes : '' } };
 }
 
 /** Logs why a launch runs the default template instead of what its hash names (never for a resolved hash). */
@@ -247,7 +267,8 @@ async function readAgentCard(ctx: SupervisorContext, agentURI: string, log: Supe
 
 /**
  * Retries the agent card for onboarding agents whose card could not be reached at registration: applies the
- * creator identity and, when the on-chain hash names no template, the custom worker it publishes.
+ * creator identity, the coin picture as the image style reference and, when the on-chain hash names no template,
+ * the custom worker it publishes (never on the platform's agent, which keeps its launch defaults).
  */
 async function backfillFromAgentCard(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
   for (const agent of pending) {
@@ -256,9 +277,9 @@ async function backfillFromAgentCard(ctx: SupervisorContext, pending: AgentRow[]
     const log = ctx.log.child({ agentId: agent.agentId });
     const read = await readAgentCard(ctx, agentURI, log);
     if (read.creatorIdentity === null) continue;
-    let config = agent.config;
+    let config = withCoinImage(agent.config, coinImageFromCard(read.card));
     const workerHash = typeof config.workerHash === 'string' ? config.workerHash : '';
-    if (workerHash && !workerTemplateByHash(workerHash) && config.workerTemplate !== CUSTOM_WORKER_ID) {
+    if (workerHash && !workerTemplateByHash(workerHash) && config.workerTemplate !== CUSTOM_WORKER_ID && config.platform !== true) {
       const worker = resolveWorker(workerHash, read.card);
       if (worker.fallback) warnWorkerFallback(log, { workerHash, agentURI }, worker);
       else {
@@ -403,7 +424,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   const worker = resolveWorker(launch.workerHash, card);
   // An unreachable card (creatorIdentity null) is retried by `backfillFromAgentCard`, worker included.
   if (creatorIdentity !== null) warnWorkerFallback(log, launch, worker);
-  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker);
+  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker, coinImageFromCard(card));
   const draftId = await readDraftId(ctx, launch.txHash, launch.token);
   const [row] = await ctx.db
     .insert(agents)

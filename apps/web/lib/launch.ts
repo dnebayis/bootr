@@ -1,6 +1,6 @@
 import { WORKER_TEMPLATES as SHARED_WORKER_TEMPLATES, type WorkerTemplate as SharedWorkerTemplate } from '@bootr/shared/workers';
 import { UPLOAD_IMAGE_TYPES, UPLOAD_MAX_BYTES, type UploadResult } from './ipfs';
-import { FALLBACK_MODELS, THOUGHT, type ModelsResponse } from './models';
+import { FALLBACK_IMAGE_MODELS, FALLBACK_MODELS, IMAGE, THOUGHT, type ImageModelsResponse, type ModelsResponse } from './models';
 
 export { FALLBACK_MODELS, filterAllowedModels, type ModelOption } from './models';
 
@@ -9,6 +9,19 @@ export { FALLBACK_MODELS, filterAllowedModels, type ModelOption } from './models
  * is internal in production, and the route applies the admin allowlist. Falls back to the built-in
  * list (unfiltered) only when the route itself is unreachable.
  */
+/** The image models a creator can pick for an agent, priced per picture (`/api/models?kind=image`). */
+export async function fetchImageModels(): Promise<ImageModelsResponse> {
+  try {
+    const res = await fetch('/api/models?kind=image');
+    if (!res.ok) throw new Error(String(res.status));
+    const j = (await res.json()) as Partial<ImageModelsResponse>;
+    if (!Array.isArray(j.models)) throw new Error('bad response');
+    return { source: j.source === 'relay' ? 'relay' : 'fallback', image: IMAGE, models: j.models };
+  } catch {
+    return { source: 'fallback', image: IMAGE, models: FALLBACK_IMAGE_MODELS };
+  }
+}
+
 export async function fetchModels(): Promise<ModelsResponse> {
   try {
     const res = await fetch('/api/models');
