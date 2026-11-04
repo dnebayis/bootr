@@ -194,12 +194,12 @@ export const addresses = {
     },
     bootr: {
       // Launcher redeployed 2026-11-03 at block 53433988 (6k opening cap, docs/deploy/mainnet.md, Launcher switch); the rest from the 2026-10-27 cutover.
-      launcher: '0x01f290cC464Ac6D167588b35A08305F58683526f',
+      launcher: '0x62c038dA8A409ad1CD811df980A6F9867cd453fd',
       guardian: '0x799Ab875294E37839883D12084aB4BE3f7633630',
-      // TODO: fill after `forge script script/DeployClankerLauncher.s.sol` (gate, launcher v3.1, Clanker launcher) and
-      // `guardian.setLauncher(gate)`; docs/deploy/mainnet.md "Clanker path". `launcher` above becomes v3.1 then.
-      launchGate: null,
-      clankerLauncher: null,
+      // Deployed 2026-11-04 at block 53,503,025 by script/DeployClankerLauncher.s.sol (Sourcify/Basescan verified);
+      // docs/deploy/mainnet.md "Clanker path". `launcher` above is v3.1 (registers through the gate).
+      launchGate: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
+      clankerLauncher: '0x387f1B0aC128D534E822c344D829645336BDAbbB',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
       swapHelper: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',

@@ -82,7 +82,7 @@ The source of truth is [`packages/shared/src/addresses.ts`](packages/shared/src/
 
 | Contract | Address | Notes |
 | --- | --- | --- |
-| `BootrLauncher` (RWAGMI v3) | `0x01f290cC464Ac6D167588b35A08305F58683526f` | deployed at block 53433988, Sourcify verified, launch fee 0.0005 ETH |
+| `BootrLauncher` (RWAGMI v3) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` | deployed at block 53503025, Sourcify verified, launch fee 0.0005 ETH |
 | `AgentGuardian` | `0x799Ab875294E37839883D12084aB4BE3f7633630` | root validator and hook of every kernel; `launcher()` is the contract above |
 | `BuybackBurner` implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` | cloned per buyback launch |
 | `BootrCallPolicy` | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` | session-key allow-list (claims, swap, USDC to the spender) |

@@ -11,7 +11,7 @@ Current Base mainnet deployment (source of truth: [`packages/shared/src/addresse
 
 | Contract | Address |
 | --- | --- |
-| `BootrLauncher` (RWAGMI v3, block 53433988) | `0x01f290cC464Ac6D167588b35A08305F58683526f` |
+| `BootrLauncher` (RWAGMI v3, block 53503025) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` |
 | `BootrLaunchGate` / `BootrLauncher` v3.1 / `BootrClankerLauncher` | not deployed yet (`script/DeployClankerLauncher.s.sol`, [`docs/deploy/mainnet.md`](../../docs/deploy/mainnet.md) "Clanker path") |
 | `AgentGuardian` | `0x799Ab875294E37839883D12084aB4BE3f7633630` |
 | `BuybackBurner` implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` |

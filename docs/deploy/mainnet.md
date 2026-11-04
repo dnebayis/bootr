@@ -9,7 +9,7 @@ Related: `packages/shared/src/addresses.ts` (the mainnet address book, every ent
 `packages/contracts/test/fork` and `test/security` (the Base mainnet fork suites that launch through this exact
 configuration), `.env.mainnet.example` (every variable with its mainnet value or a placeholder).
 
-> **Status (2026-10-29, updated 2026-11-03).** Current launcher: `0x01f290cC464Ac6D167588b35A08305F58683526f`, start block 53433988 (RWAGMI v3 backend; `scripts/switch-launcher.sh` rewrites this line).
+> **Status (2026-10-29, updated 2026-11-03).** Current launcher: `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, start block 53503025 (RWAGMI v3 backend; `scripts/switch-launcher.sh` rewrites this line).
 > Sections 0-9 are the original Base Sepolia -> mainnet cutover of 2026-10-27, written for the Clanker v4 launcher;
 > they stay the runbook for the guardian, call policy, swap helper, keys and services. Where a step depends on the
 > launch backend it is marked *(Clanker era)* and superseded by
@@ -17,7 +17,7 @@ configuration), `.env.mainnet.example` (every variable with its mainnet value or
 > model, the launcher history and, since 2026-11-03, the procedure for replacing the launcher again:
 > [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap). Design:
 > [`docs/rwagmi-migration.md`](../rwagmi-migration.md). Next: [Clanker path](#clanker-path) (gate, launcher v3.1,
-> `BootrClankerLauncher`; design [`docs/design/clanker-launch.md`](../design/clanker-launch.md)), not deployed yet.
+> `BootrClankerLauncher`; design [`docs/design/clanker-launch.md`](../design/clanker-launch.md)), deployed 2026-11-04.
 
 ## 0. Dry-run first (no keys, no gas)
 
@@ -474,7 +474,10 @@ destroyed), then revert the variables. Coins already launched on v2 keep working
 | v1 | Clanker v4 | `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` | 53164454 | paused 2026-10-28 |
 | v1.1 (flat launch fee) | Clanker v4 | `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` | 53172831 | paused 2026-10-29 |
 | v2 | RWAGMI v3 (B20) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | paused 2026-11-03 |
-| v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | `0x01f290cC464Ac6D167588b35A08305F58683526f` | 53433988 | current, verify on Sourcify |
+| v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | `0x01f290cC464Ac6D167588b35A08305F58683526f` | 53433988 | paused 2026-11-04 (Clanker path switch) |
+| v3.1 (registers through `BootrLaunchGate`) | RWAGMI v3 (B20) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` | 53503025 | current (Bootr path), verified |
+| Clanker launcher (`BootrClankerLauncher`, Standard layout, `platformLpFeeBps` 2%) | Clanker v4 | `0x387f1B0aC128D534E822c344D829645336BDAbbB` | 53503025 | current (Clanker path), verified |
+| gate (`BootrLaunchGate`, `guardian.launcher`) | — | `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5` | 53503025 | current |
 
 The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
 
@@ -648,8 +651,12 @@ bumped `bootr_v1` → `bootr_v2`.
 
 ## Clanker path
 
-Written 2026-11-04 from [`docs/design/clanker-launch.md`](../design/clanker-launch.md) (task A); **not deployed
-yet**. A creator picks "Launch through Bootr" (RWAGMI v3, the live launcher) or "Launch through Clanker"
+Written 2026-11-04 from [`docs/design/clanker-launch.md`](../design/clanker-launch.md) (task A). **Deployed
+2026-11-04** at block 53503025 by `script/DeployClankerLauncher.s.sol` (deployer `0x3C71F98E8b41Bd70127Ae3dCc2f91550324caE75`,
+0.00009 ETH, all three Sourcify/Basescan verified): `BootrLaunchGate` `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5`,
+`BootrLauncher` v3.1 `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, `BootrClankerLauncher`
+`0x387f1B0aC128D534E822c344D829645336BDAbbB` (MEV module `ClankerSniperAuctionV2`, `launchFeeWei` 500000000000000,
+`platformLpFeeBps` 20000 from the start). Read back the same day: gate allow-lists both launchers, pending owner = admin. A creator picks "Launch through Bootr" (RWAGMI v3, the live launcher) or "Launch through Clanker"
 (clanker.world's v4 factory) and gets the same agent either way. Three contracts, one admin switch:
 
 | Contract | Role |

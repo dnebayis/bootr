@@ -8,8 +8,8 @@ it is now the design record of what shipped. Source of truth for the RWAGMI side
 
 ## Status (2026-10-29)
 
-Shipped. The RWAGMI-backed `BootrLauncher` is live on Base mainnet at `0x01f290cC464Ac6D167588b35A08305F58683526f`
-(deployed at block 53433988, Sourcify verified, launch fee 0.0005 ETH, min fuel 0, owner = the platform admin, not
+Shipped. The RWAGMI-backed `BootrLauncher` is live on Base mainnet at `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`
+(deployed at block 53503025, Sourcify verified, launch fee 0.0005 ETH, min fuel 0, owner = the platform admin, not
 paused; read back on-chain on 2026-10-29). `AgentGuardian.launcher()` points at it. The two Clanker-era launchers
 `0x386CBE5DD03C38a31e52d94105d5CA83A311e21d` (block 53172831, flat launch fee) and
 `0xD4747d91BE6121eBa7602D9114B51d6C184084EF` (block 53164454) are paused and historical. Guardian
