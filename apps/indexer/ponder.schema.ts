@@ -42,6 +42,9 @@ export const token = onchainTable(
     pairedToken: t.hex().notNull(),
     /** extra: true when the coin is currency0 of the v4 pool. */
     coinIsToken0: t.boolean().notNull(),
+    /** extra: the locked LP position's range (the `pool` row's, copied at launch), used for `liquidityUsd`. */
+    tickLower: t.integer().notNull(),
+    tickUpper: t.integer().notNull(),
     /**
      * Swap fee of this coin's pool in hundredths of a bip (1e6 = 100%; 10_000 = 1%), per token: the RWAGMI
      * hook's static fee (bootr) or `ClankerLaunched.lpFeeBps` (clanker; Clanker adds 20% of it on top).

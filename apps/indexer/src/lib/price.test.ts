@@ -82,3 +82,24 @@ describe('units', () => {
     expect(usd(2.35e-7)).toBe(0);
   });
 });
+
+describe('a Clanker pool with the coin as currency1 ($BOOTR, 2026-11-04)', () => {
+  // Pool state read from the indexer on 2026-11-04 (`PoolManager.Swap` liquidity 1.007e24, price tick 211449).
+  const sqrtPriceX96 = 3091769184186775186558952405292365n;
+  const poolLiquidity = 1007143810120425777431872n;
+  const supply = 10n ** 29n;
+  const ethUsd = 2411;
+
+  it('derives the launch liquidity from the mirrored range, matching the pool', () => {
+    const L = oneSidedLiquidity(supply, 120000, 230400, false);
+    expect(Number(L) / Number(poolLiquidity)).toBeCloseTo(1, 1);
+    // The unmirrored (Clanker-frame) range had given 4e31.
+    expect(Number(oneSidedLiquidity(supply, -230400, -120000, false))).toBeGreaterThan(1e31);
+  });
+
+  it('values the liquidity near the deposited WETH plus the remaining coins, not in the trillions', () => {
+    const value = liquidityUsd({ liquidity: poolLiquidity, sqrtPriceX96, tickLower: 120000, tickUpper: 230400, coinIsToken0: false, ethUsd });
+    expect(value).toBeGreaterThan(50_000);
+    expect(value).toBeLessThan(200_000);
+  });
+});

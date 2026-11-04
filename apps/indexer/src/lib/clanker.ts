@@ -68,11 +68,18 @@ export function clankerSlots(info: Pick<ClankerRewardInfo, 'rewardBps' | 'reward
 /**
  * The LP position's range for the pool row: the first position of `TokenRewardAdded` when present (the
  * `Standard` layout is one position), else the expected launch range flipped for the coin's side.
+ *
+ * Clanker stores every position as if the coin were currency0 (`tickIfToken0IsClanker` and the locker
+ * config's `tickLower`/`tickUpper`); `ClankerLpLockerMultiple` mints the mirrored range `[-upper, -lower]`
+ * when the coin is currency1, so the stored ticks are mirrored here too. $BOOTR (currency1) had been given
+ * `[-230400, -120000]` from `tokenRewards`, which put its launch liquidity at 4e31 and its liquidity at $4T.
  */
 export function clankerPositionTicks(info: Pick<ClankerRewardInfo, 'tickLower' | 'tickUpper'> | null, coinIsToken0: boolean, startingTick: number) {
   const lower = info?.tickLower?.[0];
   const upper = info?.tickUpper?.[0];
-  if (lower !== undefined && upper !== undefined) return { tickLower: Number(lower), tickUpper: Number(upper) };
+  if (lower !== undefined && upper !== undefined) {
+    return coinIsToken0 ? { tickLower: Number(lower), tickUpper: Number(upper) } : { tickLower: -Number(upper), tickUpper: -Number(lower) };
+  }
   const std = positionTicks(coinIsToken0);
   // `tickIfToken0IsClanker` is the position's lower bound when the coin is token0 (mirrored otherwise).
   return coinIsToken0 ? { tickLower: startingTick, tickUpper: std.tickUpper } : { tickLower: std.tickLower, tickUpper: -startingTick };

@@ -8,7 +8,6 @@ import type { Address, Hex } from 'viem';
 import { ChainlinkAggregatorAbi } from '../../abis/ChainlinkAggregator';
 import { indexerEnv } from './env';
 import { classifyRecipient, DEAD_ADDRESS as DEAD, type LaunchSource, type RecipientKind } from './fees';
-import { positionTicks } from './pool';
 import { chainlinkToUsd, coinPriceInWeth, liquidityUsd, toUnits, unitPrice, usd } from './price';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
@@ -263,7 +262,6 @@ export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind 
 export function marketFields(t: TokenRow, ethUsd: number) {
   const priceWeth = coinPriceInWeth(t.sqrtPriceX96, t.coinIsToken0);
   const priceUsd = unitPrice(priceWeth * ethUsd);
-  const { tickLower, tickUpper } = positionTicks(t.coinIsToken0);
   return {
     priceWeth,
     priceUsd,
@@ -272,8 +270,9 @@ export function marketFields(t: TokenRow, ethUsd: number) {
       // The locked position; active liquidity is 0 while the price sits on the range edge.
       liquidity: t.positionLiquidity > t.poolLiquidity ? t.positionLiquidity : t.poolLiquidity,
       sqrtPriceX96: t.sqrtPriceX96,
-      tickLower,
-      tickUpper,
+      // The token's own position range (Clanker pools are not the RWAGMI launch range).
+      tickLower: t.tickLower,
+      tickUpper: t.tickUpper,
       coinIsToken0: t.coinIsToken0,
       ethUsd,
     }),

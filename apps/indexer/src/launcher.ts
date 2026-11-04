@@ -229,7 +229,7 @@ type LaunchRows = {
   symbol: string;
   image: string;
   metadata: string;
-  pool: { id: Hex; pairedToken: Address; coinIsToken0: boolean; startingTick: number };
+  pool: { id: Hex; pairedToken: Address; coinIsToken0: boolean; startingTick: number; tickLower: number; tickUpper: number };
   lpFeeBps: number;
   totalSupply: bigint;
   positionLiquidity: bigint;
@@ -268,6 +268,8 @@ async function insertLaunch(context: Ctx, event: LaunchEvent, r: LaunchRows) {
     poolId: r.pool.id,
     pairedToken: r.pool.pairedToken,
     coinIsToken0: r.pool.coinIsToken0,
+    tickLower: r.pool.tickLower,
+    tickUpper: r.pool.tickUpper,
     lpFeeBps: r.lpFeeBps,
     agentBps: bps.agent,
     creatorBps: bps.creator,
@@ -542,7 +544,7 @@ if (enabledSources().BootrLauncher) {
       symbol: launch.symbol,
       image,
       metadata,
-      pool: { id: pool.id, pairedToken: pool.pairedToken, coinIsToken0: pool.coinIsToken0, startingTick: pool.startingTick },
+      pool: { id: pool.id, pairedToken: pool.pairedToken, coinIsToken0: pool.coinIsToken0, startingTick: pool.startingTick, tickLower, tickUpper },
       // Per token: the pool's static hook fee, else the launch defaults, else 1%.
       lpFeeBps: (pool.feeMode === 0 && pool.staticFee > 0 ? pool.staticFee : d.lpFeeBps) || DEFAULT_LP_FEE_BPS,
       totalSupply: launch.totalSupply,
@@ -672,7 +674,7 @@ if (enabledSources().BootrClankerLauncher) {
       symbol,
       image,
       metadata,
-      pool: { id: staged.poolId, pairedToken, coinIsToken0, startingTick },
+      pool: { id: staged.poolId, pairedToken, coinIsToken0, startingTick, tickLower, tickUpper },
       lpFeeBps,
       totalSupply,
       positionLiquidity: oneSidedLiquidity(depositedSupply, tickLower, tickUpper, coinIsToken0),

@@ -32,8 +32,9 @@ const rewardAdded: ClankerRewardInfo = {
   rewardBps: [500, 5000, 1500, 3000],
   rewardAdmins: [LAUNCHER, LAUNCHER, LAUNCHER, LAUNCHER],
   rewardRecipients: [parties.kernel, parties.creator, DEAD_ADDRESS, parties.platformRecipient],
-  tickLower: [120_000],
-  tickUpper: [230_400],
+  // Clanker's frame (as if the coin were currency0); the locker mirrors it for this currency1 coin.
+  tickLower: [-230_400],
+  tickUpper: [-120_000],
   poolSupply: CLANKER_TOKEN_SUPPLY,
 };
 
@@ -78,8 +79,9 @@ describe('a Clanker launch', () => {
     expect(classifySlots(extra, parties, 'bootr')[4]).toBe('protocol');
   });
 
-  it('takes the LP position range from TokenRewardAdded, else mirrors tickIfToken0IsClanker for a currency1 coin', () => {
+  it('takes the LP position range from TokenRewardAdded (mirrored for a currency1 coin), else mirrors tickIfToken0IsClanker', () => {
     expect(clankerPositionTicks(rewardAdded, false, -230_400)).toEqual({ tickLower: 120_000, tickUpper: 230_400 });
+    expect(clankerPositionTicks(rewardAdded, true, -230_400)).toEqual({ tickLower: -230_400, tickUpper: -120_000 });
     expect(clankerPositionTicks(null, false, -230_400)).toEqual({ tickLower: 120_000, tickUpper: 230_400 });
     expect(clankerPositionTicks(null, true, -230_400)).toEqual({ tickLower: -230_400, tickUpper: -120_000 });
     expect(clankerPositionTicks({ tickLower: [], tickUpper: [] }, true, -200_000)).toEqual({ tickLower: -200_000, tickUpper: -120_000 });
