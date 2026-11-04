@@ -5,7 +5,7 @@ import { actions, runtimes, treasuryOps, inference as inferenceTable } from '../
 import { verifyRequest } from '../src/hmac.js';
 import { IndexerClient } from '../src/indexer-client.js';
 import { acquireLease, releaseLease } from '../src/runtime.js';
-import { processAgent, reconcilePending, tick } from '../src/tick.js';
+import { REVOKE_CHECK_GRACE_MS, processAgent, reconcilePending, tick } from '../src/tick.js';
 import { AGENT_ID, finishResponse, INDEXER_KEY, KERNEL, makeWorld, seedAgent, SPENDER, toolCallResponse } from './helpers.js';
 
 async function runtimeRow(world: Awaited<ReturnType<typeof makeWorld>>) {
@@ -320,7 +320,7 @@ describe('admin revoke is the kill switch', () => {
   it('pauses an agent (operator) once the kernel nonce passed its permission, and leaves a live one alone', async () => {
     const world = await makeWorld({ chain: { kernelNonce: 2 } });
     try {
-      const agent = await seedAgent(world);
+      const agent = await seedAgent(world, { agent: { sessionKeyInstalledAt: new Date(world.ctx.now() - REVOKE_CHECK_GRACE_MS) } });
       const r = await processAgent(world.ctx, agent, await runtimeRow(world));
       expect(r?.skipped).toBe('keys_revoked');
       const rt = await runtimeRow(world);
@@ -339,6 +339,16 @@ describe('admin revoke is the kill switch', () => {
       expect((await runtimeRow(live)).status).not.toBe('paused');
     } finally {
       await live.close();
+    }
+    // Freshly installed: a stale read (the RPC still answers with the pre-install state) must not pause the agent.
+    const fresh = await makeWorld({ chain: { kernelNonce: 2 } });
+    try {
+      const agent = await seedAgent(fresh, { agent: { sessionKeyInstalledAt: new Date(fresh.ctx.now() - 30_000) } });
+      const r = await processAgent(fresh.ctx, agent, await runtimeRow(fresh));
+      expect(r?.skipped).not.toBe('keys_revoked');
+      expect((await runtimeRow(fresh)).status).not.toBe('paused');
+    } finally {
+      await fresh.close();
     }
   });
 });

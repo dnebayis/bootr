@@ -30,6 +30,9 @@ export interface TickReport {
   errors: { agentId: string; error: string }[];
 }
 
+/** The on-chain session-key revocation check waits this long after an install (a lagging RPC can read the pre-install state). */
+export const REVOKE_CHECK_GRACE_MS = 10 * 60_000;
+
 export async function tick(ctx: SupervisorContext): Promise<TickReport> {
   const report: TickReport = { registered: 0, processed: [], ran: [], errors: [] };
   try {
@@ -117,7 +120,10 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // (and `revokeSessionKey` uninstalls the permission), which leaves the stored session key dead. Mirror that
     // into a sticky operator pause so the agent stops ticking instead of failing every minute; a fresh install
     // through the admin API clears it.
-    if (agent.permissionId && agent.sessionKeyInstalledAt && runtime.pausedBy !== 'operator') {
+    // Not within the first minutes after an install: right after the install transaction a lagging RPC node can
+    // still answer with the pre-install state (hook = 0), which looks exactly like `revokeSessionKey`.
+    const installedFor = agent.sessionKeyInstalledAt ? ctx.now() - agent.sessionKeyInstalledAt.getTime() : -1;
+    if (agent.permissionId && installedFor >= REVOKE_CHECK_GRACE_MS && runtime.pausedBy !== 'operator') {
       const revoked = await sessionKeyRevokedOnChain(ctx, agent.kernel as Address, agent.permissionId as Hex);
       if (revoked) {
         await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'operator' });
