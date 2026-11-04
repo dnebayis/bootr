@@ -1,10 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useConnection, useReadContract, useReadContracts, useWriteContract } from 'wagmi';
+import { useConnection, useReadContracts, useWriteContract } from 'wagmi';
 import { toast } from 'sonner';
 import type { Address, Hex } from 'viem';
-import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
 import { DEFAULT_LP_FEE_BPS, feeModelOf, pctLabel, platformSlot, swapFeePct, traderPaysPct, type Slot } from '@/lib/fee-split';
@@ -14,6 +13,7 @@ import { env } from '@/lib/env';
 import { shortAddr, units } from '@/lib/format';
 import { mock } from '@/lib/mock';
 import { useTxRunner } from '@/lib/tx';
+import { useClankerFees } from '@/lib/use-clanker-fees';
 import type { AgentWithToken, LaunchSource } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Empty, Panel } from '@/components/ui/Panel';
@@ -71,26 +71,9 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
   const coins = useMemo(() => allCoins.filter((c) => c.source === 'bootr'), [allCoins]);
   const clankerCoins = useMemo(() => allCoins.filter((c) => c.source === 'clanker'), [allCoins]);
 
-  // Clanker path: one balance per wallet in the fee locker, claimed with `claim(wallet, WETH)`.
-  const feeLocker = contracts.clankerFeeLocker;
-  const clankerLive = !env.useMock && !!feeLocker;
-  const clankerRead = useReadContract({
-    address: feeLocker ?? undefined,
-    abi: clankerFeeLockerAbi,
-    functionName: 'availableFees',
-    args: me ? [me, contracts.weth] : undefined,
-    chainId: appChain.id,
-    query: { enabled: clankerLive && !!me && clankerCoins.length > 0 },
-  });
-  const clankerAmount: bigint | null = env.useMock ? (clankerCoins.length ? mock.claimable(MOCK_RECIPIENT, 'clanker') : 0n) : clankerLive ? (clankerRead.data ?? null) : null;
-  const claimClanker = async () => {
-    if (env.useMock) return void toast.success('Mock: Claim on Clanker sent');
-    if (!feeLocker || !me) return;
-    const r = await run('Claim on Clanker', () =>
-      write.mutateAsync({ address: feeLocker, abi: clankerFeeLockerAbi, functionName: 'claim', args: [me, contracts.weth], chainId: appChain.id, dataSuffix: builderDataSuffix }),
-    );
-    if (r) void clankerRead.refetch();
-  };
+  // Clanker path: one balance per wallet in the fee locker, claimed with `claim(wallet, WETH)` (mock mode: the mock recipient).
+  const clanker = useClankerFees({ owner: me ?? (env.useMock ? MOCK_RECIPIENT : undefined), enabled: clankerCoins.length > 0, label: 'Claim on Clanker' });
+  const clankerAmount = clanker.amount;
 
   const infos = useReadContracts({
     allowFailure: true,
@@ -204,7 +187,7 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
       title="Platform fees"
       bodyClassName="p-0"
       action={
-        <Button size="sm" variant="ink" onClick={() => void claimAll()} disabled={claims.length === 0 || !!pending} loading={allRunning} loadingLabel="Claiming…">
+        <Button size="sm" variant="ink" onClick={() => void claimAll()} disabled={claims.length === 0 || !!pending || clanker.pending} loading={allRunning} loadingLabel="Claiming…">
           Claim all{claims.length ? ` (${claims.length})` : ''}
         </Button>
       }
@@ -314,15 +297,15 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
                     ) : null}
                   </div>
                   <div className="font-mono text-base text-ink tabular" data-testid="platform-weth-clanker">
-                    {clankerAmount == null ? '—' : `${units(clankerAmount, 18, 6)} WETH`}
+                    {clanker.reading ? '…' : clankerAmount == null ? '—' : `${units(clankerAmount, 18, 6)} WETH`}
                   </div>
                 </div>
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => void claimClanker()}
-                  disabled={!clankerAmount || (!env.useMock && !me) || !!pending || allRunning}
-                  loading={pending === 'Claim on Clanker'}
+                  onClick={() => void clanker.claim()}
+                  disabled={!clankerAmount || (!env.useMock && !me) || !!pending || clanker.pending || allRunning}
+                  loading={clanker.pending}
                   title={!env.useMock && !me ? 'Connect the platform wallet to claim' : undefined}
                 >
                   Claim on Clanker

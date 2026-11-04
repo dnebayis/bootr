@@ -25,6 +25,7 @@ import { StatusDot } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { TokenImage } from '@/components/ui/TokenImage';
 import { CreatorFees } from './CreatorFees';
+import { ClankerCreatorFees } from './ClankerCreatorFees';
 
 function Rows({ n = 3 }: { n?: number }) {
   return (
@@ -168,8 +169,9 @@ export function ProfileView() {
         )}
       </Panel>
 
-      {/* The panel reads RWAGMI's locker; coins launched through Clanker keep their creator share in Clanker's fee locker. */}
+      {/* One panel per launch path: RWAGMI's locker for Bootr coins, Clanker's fee locker for Clanker coins (hidden without one). */}
       <CreatorFees owner={address} tokens={(launched.data ?? []).filter((t) => t.source !== 'clanker')} loading={launched.isPending} />
+      <ClankerCreatorFees owner={address} tokens={(launched.data ?? []).filter((t) => t.source === 'clanker')} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Tokens you launched" bodyClassName="p-0">

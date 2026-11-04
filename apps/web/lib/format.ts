@@ -88,6 +88,12 @@ export function shortHash(h: string | null | undefined): string {
   return shortAddr(h, 8, 6);
 }
 
+/** Nov 2, 2026 (UTC) from unix seconds. */
+export function dayLabel(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) return '—';
+  return new Date(unixSeconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
 export function dateLabel(isoDay: string): string {
   const d = new Date(`${isoDay}T00:00:00Z`);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
