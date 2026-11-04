@@ -9,7 +9,7 @@ import { entryPoint07Abi, entryPoint07Address, type PackedUserOperation } from '
 import { getAddresses } from '@bootr/shared/addresses';
 import { baseSepolia } from 'viem/chains';
 import { loadConfig, type Config } from '../src/config.js';
-import type { ChainContext } from '../src/chain.js';
+import type { ChainContext, LauncherEntry } from '../src/chain.js';
 import type { AgentRow, SupervisorContext } from '../src/context.js';
 import { MIGRATIONS_SCHEMA, MIGRATIONS_TABLE, type Db } from '../src/db/client.js';
 import * as schema from '../src/db/schema.js';
@@ -38,6 +38,13 @@ export const RWAGMI_LAUNCHER: Address = '0x7000000000000000000000000000000000000
 export const RWAGMI_LP_LOCKER: Address = '0x8000000000000000000000000000000000000008';
 /** Primary RWAGMI pool id of the test coin (`deploymentInfo(TOKEN).primaryPoolId`). */
 export const POOL_ID: Hex = '0x9000000000000000000000000000000000000000000000000000000000000009';
+/** `BootrClankerLauncher` placeholder (`BOOTR_CLANKER_LAUNCHER_ADDRESS` in a test config; unset by default). */
+export const CLANKER_LAUNCHER: Address = '0xA00000000000000000000000000000000000000A';
+/** Clanker v4 locker placeholders (`CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` in the test config). */
+export const CLANKER_LP_LOCKER: Address = '0xB00000000000000000000000000000000000000B';
+export const CLANKER_FEE_LOCKER: Address = '0xC000000000000000000000000000000000000000';
+/** Uniswap v4 pool id of a Clanker test coin (`ClankerLaunched.poolId`). */
+export const CLANKER_POOL_ID: Hex = '0xc000000000000000000000000000000000000000000000000000000000000c0c';
 export const SERVICE_KEY = 'test-service-key-0123456789abcdef0123456789';
 /** The supervisor's own admin-API key (must differ from the sender and indexer keys). */
 export const SUPERVISOR_KEY = 'test-supervisor-key-fedcba9876543210fedcba';
@@ -60,6 +67,8 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     BOOTR_GUARDIAN_ADDRESS: GUARDIAN,
     RWAGMI_LAUNCHER_V3_ADDRESS: RWAGMI_LAUNCHER,
     RWAGMI_LOCKER_V3_ADDRESS: RWAGMI_LP_LOCKER,
+    CLANKER_LOCKER_ADDRESS: CLANKER_LP_LOCKER,
+    CLANKER_FEE_LOCKER_ADDRESS: CLANKER_FEE_LOCKER,
     SENDER_URL: 'http://sender.test',
     SENDER_SERVICE_KEY: SERVICE_KEY,
     SUPERVISOR_SERVICE_KEY: SUPERVISOR_KEY,
@@ -96,6 +105,8 @@ export interface ChainState {
   claimableWeth: bigint;
   /** `RwagmiB20LauncherV3.deploymentInfo(token).primaryPoolId`; null = not an RWAGMI launch (zero pool id). */
   poolId: Hex | null;
+  /** `ClankerFeeLocker.availableFees(kernel, WETH)`: what the Clanker LP locker has deposited for the kernel so far. */
+  clankerAvailableWeth: bigint;
   ethUsd: bigint; // 8 dp
   paused: boolean;
   logs: unknown[];
@@ -128,6 +139,7 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
     pendingWeth: 0n,
     claimableWeth: 0n,
     poolId: POOL_ID,
+    clankerAvailableWeth: 0n,
     ethUsd: 3000_00000000n,
     paused: false,
     logs: [],
@@ -142,7 +154,12 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
   };
 }
 
-export function mockChain(state: ChainState): ChainContext {
+/**
+ * The mocked chain context. `clankerLauncher` adds `BootrClankerLauncher` to the followed launchers (what a config
+ * with `BOOTR_CLANKER_LAUNCHER_ADDRESS` does in `createChainContext`); `makeWorld` passes the test config's value.
+ */
+export function mockChain(state: ChainState, opts: { clankerLauncher?: Address | null } = {}): ChainContext {
+  const clankerLauncher = opts.clankerLauncher ?? null;
   const publicClient = {
     chain: baseSepolia,
     async readContract(args: { address: Address; functionName: string; args?: unknown[] }) {
@@ -174,6 +191,11 @@ export function mockChain(state: ChainState): ChainContext {
           if (addr !== RWAGMI_LP_LOCKER) throw new Error('claimableQuote on an unexpected address');
           const [recipient, currency] = args.args as [Address, Address];
           return getAddress(recipient) === KERNEL && getAddress(currency) === ADDR.weth ? state.claimableWeth : 0n;
+        }
+        case 'availableFees': {
+          if (addr !== CLANKER_FEE_LOCKER) throw new Error('availableFees on an unexpected address');
+          const [feeOwner, token] = args.args as [Address, Address];
+          return getAddress(feeOwner) === KERNEL && getAddress(token) === ADDR.weth ? state.clankerAvailableWeth : 0n;
         }
         case 'latestRoundData':
           // a fresh answer: `updatedAt` = the mocked block time (= the world's `now`), same round
@@ -231,7 +253,20 @@ export function mockChain(state: ChainState): ChainContext {
       return { number: blockNumber, timestamp: state.blockTimestamp };
     },
   } as unknown as ChainContext['publicClient'];
-  return { chain: baseSepolia, chainId: 84532, publicClient, addresses: ADDR, launcher: LAUNCHER, guardian: GUARDIAN, ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1', rwagmi: { launcher: RWAGMI_LAUNCHER, lpLocker: RWAGMI_LP_LOCKER } };
+  const launchers: LauncherEntry[] = [{ address: LAUNCHER, source: 'bootr' }, ...(clankerLauncher ? [{ address: clankerLauncher, source: 'clanker' as const }] : [])];
+  return {
+    chain: baseSepolia,
+    chainId: 84532,
+    publicClient,
+    addresses: ADDR,
+    launcher: LAUNCHER,
+    clankerLauncher,
+    launchers,
+    guardian: GUARDIAN,
+    ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1',
+    rwagmi: { launcher: RWAGMI_LAUNCHER, lpLocker: RWAGMI_LP_LOCKER },
+    clanker: { lpLocker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER },
+  };
 }
 
 export interface MockSender {
@@ -545,7 +580,7 @@ export async function makeWorld(opts: { chain?: Partial<ChainState>; script?: Re
   const ctx: SupervisorContext = {
     config,
     db,
-    chain: mockChain(state),
+    chain: mockChain(state, { clankerLauncher: (config.BOOTR_CLANKER_LAUNCHER_ADDRESS as Address | undefined) ?? null }),
     sender: sender.client,
     indexer: indexer.client,
     memories: new MemoryStore(db),

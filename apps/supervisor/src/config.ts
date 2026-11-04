@@ -62,6 +62,20 @@ export const configSchema = z
     BOOTR_LAUNCHER_ADDRESS: address,
     BOOTR_GUARDIAN_ADDRESS: address,
     /**
+     * `BootrClankerLauncher` (docs/design/clanker-launch.md): the second launcher the poller follows. Its
+     * `AgentLaunched` events register agents with `sv_agents.source = 'clanker'`, whose fees sit in Clanker's
+     * lockers instead of the RWAGMI one. Unset = Bootr launches only.
+     */
+    BOOTR_CLANKER_LAUNCHER_ADDRESS: optionalAddress,
+    /**
+     * Clanker v4 lockers on Base mainnet (verified 2026-11-04, docs/design/clanker-launch.md section 1).
+     * `ClankerLpLockerFeeConversion`: holds the LP positions; `collectRewards(token)` (permissionless) moves the
+     * accrued fees into the fee locker. The address the Clanker README lists (`0x63D2DfEA…`) is NOT enabled.
+     */
+    CLANKER_LOCKER_ADDRESS: addressWithDefault('0xffA37784D619F228D8B379d287a4D7282e500762'),
+    /** `ClankerFeeLocker`: per-recipient balances; `availableFees(kernel, WETH)` is read, `claim(kernel, WETH)` always pays the kernel. */
+    CLANKER_FEE_LOCKER_ADDRESS: addressWithDefault('0xF3622742b1E446D92e45E22923Ef11C2fcD55D68'),
+    /**
      * RWAGMI v3 stack (docs/rwagmi-migration.md). Defaults are the Base mainnet deployment; there is no deployment on
      * Base Sepolia (services are tested with fixtures and, end to end, on mainnet with a test coin).
      * `RwagmiB20LauncherV3`: `deploymentInfo(token).primaryPoolId` is the coin's fee pool.
@@ -168,7 +182,8 @@ export const configSchema = z
   .refine((c) => c.SPENDER_MASTER_KEY.toLowerCase() !== c.SESSION_SIGNER_PRIVATE_KEY.toLowerCase() && (!c.ADMIN_PRIVATE_KEY || c.SPENDER_MASTER_KEY.toLowerCase() !== c.ADMIN_PRIVATE_KEY.toLowerCase()), { message: 'SPENDER_MASTER_KEY must differ from SESSION_SIGNER_PRIVATE_KEY and ADMIN_PRIVATE_KEY' })
   .refine((c) => c.SPENDER_TARGET_USDC >= c.SPENDER_MIN_USDC, { message: 'SPENDER_TARGET_USDC must be >= SPENDER_MIN_USDC' })
   .refine((c) => !c.ENABLE_MODE_SELF_BUNDLE || !!c.ADMIN_PRIVATE_KEY, { message: 'ENABLE_MODE_SELF_BUNDLE=true requires ADMIN_PRIVATE_KEY (the admin signer sends handleOps)' })
-  .refine((c) => BigInt(c.GAS_TARGET_WEI) >= BigInt(c.GAS_MIN_WEI), { message: 'GAS_TARGET_WEI must be >= GAS_MIN_WEI' });
+  .refine((c) => BigInt(c.GAS_TARGET_WEI) >= BigInt(c.GAS_MIN_WEI), { message: 'GAS_TARGET_WEI must be >= GAS_MIN_WEI' })
+  .refine((c) => !c.BOOTR_CLANKER_LAUNCHER_ADDRESS || c.BOOTR_CLANKER_LAUNCHER_ADDRESS.toLowerCase() !== c.BOOTR_LAUNCHER_ADDRESS.toLowerCase(), { message: 'BOOTR_CLANKER_LAUNCHER_ADDRESS must differ from BOOTR_LAUNCHER_ADDRESS (the launch source is decided by the emitting launcher)' });
 
 export type Config = z.infer<typeof configSchema>;
 

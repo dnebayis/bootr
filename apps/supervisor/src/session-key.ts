@@ -52,7 +52,8 @@ import {
   type Hex,
   type LocalAccount,
 } from 'viem';
-import { ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
+import { CLANKER_FEE_LOCKER_CLAIM_SELECTOR, CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
+import type { LaunchSource } from './chain.js';
 
 export const KERNEL_VERSION = '0.3.1';
 export const SESSION_HOOK_DATA: Hex = '0x00';
@@ -69,10 +70,19 @@ export interface SessionPolicyParams {
   kernel: Address;
   token: Address;
   /**
-   * `RwagmiLpLockerV3`: the only claim target (`settleAndClaim` / `claimQuote`, both with `to == kernel`). Policies
-   * stored before the RWAGMI migration (`rulesVersion` unset) hold the Clanker fee locker here.
+   * Launch source the claim rules are built for (chain.ts `LaunchSource`): `bootr` (default, also for every policy
+   * stored before the field existed) = the two RWAGMI locker rules; `clanker` = `ClankerLpLockerFeeConversion.
+   * collectRewards(token)` + `ClankerFeeLocker.claim(kernel, *)` (docs/design/clanker-launch.md section 3).
+   */
+  source?: LaunchSource;
+  /**
+   * Bootr: `RwagmiLpLockerV3`, the only claim target (`settleAndClaim` / `claimQuote`, both with `to == kernel`).
+   * Clanker: `ClankerFeeLocker` (`claim(feeOwner == kernel, *)`). Policies stored before the RWAGMI migration
+   * (`rulesVersion` unset) hold the Clanker fee locker here with the old single-rule layout.
    */
   feeLocker: Address;
+  /** Clanker only: `ClankerLpLockerFeeConversion`, the `collectRewards(token)` target. */
+  lpLocker?: Address;
   /**
    * Layout of the BootrCallPolicy rules this policy was installed with (`CALL_POLICY_RULES_VERSION`). Unset = the
    * Clanker-era four-rule layout (`FeeLocker.claim` first, USDC funding at index 3), kept until the key is rotated.
@@ -169,14 +179,18 @@ export interface CallPolicyRule {
 /** `abi.encode(Rule[])` as `BootrCallPolicy.onInstall` decodes it (after the 32-byte permission id). */
 export const CALL_POLICY_RULES_ABI = parseAbiParameters('(address target, bytes4 selector, uint32 windowSeconds, (uint8 index, uint8 op, bytes32 value)[] args)[]');
 /**
- * Current rule layout: RWAGMI v3 claims (2 rules), WETH approve, swap, USDC funding, WETH withdraw (gas).
- * Version 2 (RWAGMI, before self-funded gas) has the same first five rules and no withdraw rule.
+ * Current rule layout: two claim rules keyed by the launch source (Bootr: the RWAGMI v3 locker pair; Clanker:
+ * `collectRewards` + `claim`), then WETH approve, swap, USDC funding, WETH withdraw (gas). For a Bootr agent
+ * version 4 encodes byte for byte what version 3 did (the layout only gained the Clanker variant), so no Bootr key
+ * is rotated for it. Version 3 = the RWAGMI layout with the gas rule; version 2 = the same five rules without it.
  */
-export const CALL_POLICY_RULES_VERSION = 3;
+export const CALL_POLICY_RULES_VERSION = 4;
 /** Oldest layout `callPolicyRules` can still build (the RWAGMI layout without the gas rule). */
 export const MIN_CALL_POLICY_RULES_VERSION = 2;
 /** First layout with the `WETH.withdraw` rule the gas policy needs (gas.ts). */
 export const GAS_RULE_VERSION = 3;
+/** First layout whose claim rules follow the launch source (a `clanker` policy needs at least this version). */
+export const SOURCE_RULES_VERSION = 4;
 /** Position of the USDC funding rule in `callPolicyRules` (for `BootrCallPolicy.windowOf`). */
 export const FUNDING_RULE_INDEX = 4;
 /** Position of the funding rule in the Clanker-era layout (one `FeeLocker.claim` rule in front). */
@@ -201,10 +215,44 @@ export const ERC20_TRANSFER_SELECTOR: Hex = toFunctionSelector('transfer(address
 const eqAddress = (index: number, value: Address): CallPolicyArgRule => ({ index, op: CallPolicyOp.EQUAL, value: pad(value, { size: 32 }).toLowerCase() as Hex });
 const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(value, { size: 32 }) });
 
+/** The source a policy's claim rules follow (`bootr` for every policy stored before the field existed). */
+export function policySource(p: Pick<SessionPolicyParams, 'source'>): LaunchSource {
+  return p.source === 'clanker' ? 'clanker' : 'bootr';
+}
+
 /**
- * The six calls a session key may make, in this order. Every call must carry zero ETH value. The RWAGMI locker
- * pays `msg.sender`'s (the kernel's) fee balance to `to`, and `to` is pinned to the kernel, so a claim can only move
- * fees into the kernel. The swap helper pulls WETH from the kernel and pays ALL output USDC back to the kernel at no
+ * The two claim rules, by launch source. Bootr: the RWAGMI locker pays `msg.sender`'s (the kernel's) fee balance to
+ * `to`, and `to` is pinned to the kernel, so a claim can only move fees into the kernel. Clanker: `collectRewards`
+ * only moves the coin's LP fees from the positions into the fee locker (pinned to the agent's own token, anyone may
+ * call it anyway), and `ClankerFeeLocker.claim(feeOwner, token)` always pays `feeOwner`, pinned to the kernel; the
+ * token is free (WETH today, and nothing else can be stolen since the payee is fixed).
+ */
+function claimRules(p: SessionPolicyParams): CallPolicyRule[] {
+  if (policySource(p) === 'clanker') {
+    if ((p.rulesVersion ?? 0) < SOURCE_RULES_VERSION) throw new Error(`a clanker session policy needs rule layout ${SOURCE_RULES_VERSION} or later (rulesVersion ${p.rulesVersion ?? 'unset'})`);
+    if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (ClankerFeeLocker)');
+    if (!p.lpLocker || !isAddress(p.lpLocker)) throw new Error('session policy has no lpLocker (ClankerLpLockerFeeConversion)');
+    return [
+      // ClankerLpLockerFeeConversion.collectRewards(address token): word 0 is the token, pinned to the agent's coin.
+      { target: p.lpLocker, selector: CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.token)] },
+      // ClankerFeeLocker.claim(address feeOwner, address token): word 0 is `feeOwner`, pinned to the kernel.
+      { target: p.feeLocker, selector: CLANKER_FEE_LOCKER_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.kernel)] },
+    ];
+  }
+  if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (RwagmiLpLockerV3)');
+  return [
+    // RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): static word 2 is `to` (word 0 is
+    // the offset of `ids`); pools and currency are free, the payout always lands in the kernel.
+    { target: p.feeLocker, selector: LOCKER_SETTLE_AND_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(2, p.kernel)] },
+    // RwagmiLpLockerV3.claimQuote(address currency, address to): already settled balance, `to == kernel`.
+    { target: p.feeLocker, selector: LOCKER_CLAIM_QUOTE_SELECTOR, windowSeconds: 0, args: [eqAddress(1, p.kernel)] },
+  ];
+}
+
+/**
+ * The six calls a session key may make, in this order: the two claim rules of the launch source (`claimRules`),
+ * then the shared four. Every call must carry zero ETH value. A claim can only move the kernel's own fees into the
+ * kernel (both sources). The swap helper pulls WETH from the kernel and pays ALL output USDC back to the kernel at no
  * worse than the Chainlink price minus 3%, so these rules can only ever turn the kernel's WETH into the kernel's USDC
  * (finding C-02). The only USDC outflow is to the agent's own spender EOA, capped cumulatively per window
  * on-chain (M-02 and the x402 exposure after C-01). `WETH.withdraw` (version 3) turns the kernel's WETH into ETH
@@ -213,17 +261,12 @@ const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ ind
  */
 export function callPolicyRules(p: SessionPolicyParams): CallPolicyRule[] {
   if ((p.rulesVersion ?? 0) < MIN_CALL_POLICY_RULES_VERSION) throw new Error(`session policy has the legacy rule layout (rulesVersion ${p.rulesVersion ?? 'unset'}); rotate the session key`);
-  if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (RwagmiLpLockerV3)');
   if (!isAddress(p.swapHelper)) throw new Error('session policy has no swapHelper (bootr.swapHelper)');
   if (!isAddress(p.spender)) throw new Error('session policy has no spender');
   if (!Number.isInteger(p.usdcWindowSeconds) || p.usdcWindowSeconds <= 0) throw new Error('usdcWindowSeconds must be a positive integer');
   if (p.usdcTransferCap <= 0n || p.usdcTransferCap > 2n ** 128n - 1n) throw new Error('usdcTransferCap must fit uint128');
   return [
-    // RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): static word 2 is `to` (word 0 is
-    // the offset of `ids`); pools and currency are free, the payout always lands in the kernel.
-    { target: p.feeLocker, selector: LOCKER_SETTLE_AND_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(2, p.kernel)] },
-    // RwagmiLpLockerV3.claimQuote(address currency, address to): already settled balance, `to == kernel`.
-    { target: p.feeLocker, selector: LOCKER_CLAIM_QUOTE_SELECTOR, windowSeconds: 0, args: [eqAddress(1, p.kernel)] },
+    ...claimRules(p),
     // WETH.approve(swapHelper, *): the helper only ever spends the allowance from msg.sender == kernel.
     { target: p.weth, selector: ERC20_APPROVE_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.swapHelper)] },
     // swapHelper.swapWethToUsdc(amountIn, maxSlippageBps): output to msg.sender, floor from Chainlink on-chain.

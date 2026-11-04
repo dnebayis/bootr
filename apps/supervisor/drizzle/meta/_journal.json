@@ -50,6 +50,13 @@
       "when": 1793791045384,
       "tag": "0006_post_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793808000000,
+      "tag": "0007_agent_source",
+      "breakpoints": true
     }
   ]
 }

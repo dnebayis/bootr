@@ -9,12 +9,21 @@ const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' 
 export const agentStatuses = ['onboarding', 'active', 'paused', 'revoked'] as const;
 export type AgentStatus = (typeof agentStatuses)[number];
 
+/** Launch source (chain.ts `LaunchSource`): which launcher emitted the agent's `AgentLaunched`, hence where its fees live. */
+export const agentSources = ['bootr', 'clanker'] as const;
+export type AgentSource = (typeof agentSources)[number];
+
 /** One row per launched agent: identity, config and the installed session key. */
 export const agents = pgTable('sv_agents', {
   agentId: text('agent_id').primaryKey(),
   token: text('token').notNull(),
   kernel: text('kernel').notNull().unique(),
   creator: text('creator').notNull(),
+  /**
+   * `bootr` (RWAGMI v3 locker, `settleAndClaim`) or `clanker` (Clanker v4 lockers, `collectRewards` + `claim`);
+   * decided by the launcher that emitted the event (docs/design/clanker-launch.md). Rows older than the column are Bootr.
+   */
+  source: text('source', { enum: agentSources }).notNull().default('bootr'),
   /** agent-core `AgentConfig` (possibly incomplete until the X account is connected). */
   config: jsonb('config').$type<Record<string, unknown>>().notNull(),
   permissionId: text('permission_id'),
