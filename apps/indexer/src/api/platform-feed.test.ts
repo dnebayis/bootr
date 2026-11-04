@@ -22,7 +22,7 @@ function input(over: Partial<FeedInput> = {}): FeedInput {
       [OWL_K, social({ kernel: OWL_K, xHandle: 'owlagent', lastPostAt: NOW - 100, firstPostAt: NOW - 100, postsCount24h: 1 })],
       [FOX_K, social({ kernel: FOX_K, xHandle: 'foxagent', lastPostAt: NOW - 50, firstPostAt: SINCE - 5000, postsCount24h: 4 })],
     ]),
-    launches: [{ token: OWL_T, kernel: OWL_K, name: 'Owl', symbol: 'OWL', creator: '0xcc', launchedAt: NOW - 3000, xHandle: null }],
+    launches: [{ token: OWL_T, kernel: OWL_K, name: 'Owl', symbol: 'OWL', creator: '0xcc', launchedAt: NOW - 3000, xHandle: null, source: 'clanker', lpFeeBps: 20_000 }],
     statusChanges: [{ kernel: FOX_K, token: FOX_T, status: 'sleeping', at: NOW - 400 }],
     claims: [{ token: FOX_T, recipient: FOX_K, amountUsd: 4.2, at: NOW - 900, txHash: TX }],
     milestones: [
@@ -65,7 +65,8 @@ describe('composePlatformFeed', () => {
     expect(body.now).toBe(NOW);
     expect(body.since).toBe(SINCE);
     expect(body.totals).toEqual({ tokens: 5, agentsTotal: 5, agentsAwake: 2, volume24hUsd: 1234.5, volume7dUsd: 9999.123457, fees24hUsd: 12, updatedAt: NOW - 30 });
-    expect(body.launches).toEqual([{ token: OWL_T, kernel: OWL_K, name: 'Owl', symbol: 'OWL', creator: '0xcc', launchedAt: NOW - 3000, xHandle: 'owlagent' }]);
+    // Launch items carry the launch path and the coin's own LP fee (the platform's coin may use 2%, others 1%).
+    expect(body.launches).toEqual([{ token: OWL_T, kernel: OWL_K, name: 'Owl', symbol: 'OWL', creator: '0xcc', launchedAt: NOW - 3000, xHandle: 'owlagent', source: 'clanker', lpFeeBps: 20_000 }]);
     expect(body.statusChanges).toEqual([{ kernel: FOX_K, token: FOX_T, status: 'sleeping', at: NOW - 400, symbol: 'FOX', xHandle: 'foxagent' }]);
     expect(body.posts.map((p) => [p.symbol, p.postsCount24h])).toEqual([
       ['FOX', 4],

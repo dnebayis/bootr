@@ -3,18 +3,26 @@ import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
+import { isBurnClaim } from './lib/clanker';
 import { enabledSources } from './lib/env';
 import { allocateClaim } from './lib/fees';
-import { applyFeeTaken } from './lib/ledger';
+import { applyClankerCollection, applyFeeTaken } from './lib/ledger';
 import { toUnits, usd } from './lib/price';
-import { assetUsd, bumpDaily, bumpPlatform, getEthUsd, getPlatformConfig, lc, recipientKindOf, type Ctx } from './lib/store';
+import { assetUsd, bumpDaily, bumpPlatform, bumpSource, getEthUsd, getPlatformConfig, lc, recipientKindOf, sourceOf, type Ctx, type TokenRow } from './lib/store';
 
 /**
- * RWAGMI v3 fee flow (docs/rwagmi-migration.md), all in WETH:
+ * Bootr path: RWAGMI v3 fee flow (docs/rwagmi-migration.md), all in WETH:
  *   RwagmiHookV3.PoolFeeTakenV3          gross swap fee per swap -> feeAccrual per Bootr slot (bps share)
  *   RwagmiLpLockerV3.PoolFeesSettledV3   the locker credits a slot's recipient -> feeCredit, feeBalance.settled
  *   RwagmiLpLockerV3.QuoteRewardsClaimedV3  a recipient claims its settled balance -> feeClaim
- * Events of non-Bootr pools and recipients are dropped.
+ * Clanker path (docs/design/clanker-launch.md section 4):
+ *   ClankerLpLockerFeeConversion.ClaimedRewards  the locker collects a coin's LP fees, converts each slot's share
+ *                                                (WETH for agent / creator / platform, the coin for the burn slot)
+ *                                                and stores it in the fee locker -> feeAccrual + feeCredit,
+ *                                                feeBalance.accrued = settled
+ *   ClankerFeeLocker.ClaimTokens(Permissioned)   a fee owner's stored balance of an asset is paid out -> feeClaim;
+ *                                                the burn slot's coin claim (to 0x…dEaD) counts as a burn
+ * Events of pools and recipients that are not ours are dropped.
  */
 if (enabledSources().RwagmiHookV3) {
   ponder.on('RwagmiHookV3:PoolFeeTakenV3', async ({ event, context }) => {
@@ -94,6 +102,53 @@ if (enabledSources().RwagmiLpLockerV3) {
   });
 }
 
+if (enabledSources().ClankerLpLocker) {
+  /**
+   * `collectRewards(token)` (anyone; the hook also collects on swaps while the MEV module is off): the position's
+   * fees are taken, converted per slot preference and stored in the fee locker; `rewards0[i]` / `rewards1[i]` are
+   * slot `i`'s share in currency0 / currency1 after conversion. Only coins in the `token` table are ours.
+   */
+  ponder.on('ClankerLpLocker:ClaimedRewards', async ({ event, context }) => {
+    const t = await context.db.find(schema.token, { id: lc(event.args.token) });
+    if (!t || sourceOf(t) !== 'clanker') return;
+    const p = await context.db.find(schema.pool, { id: t.poolId });
+    if (!p) return;
+    await applyClankerCollection(
+      context,
+      t,
+      { id: p.id, currency0: p.currency0, currency1: p.currency1 },
+      { rewards0: event.args.rewards0, rewards1: event.args.rewards1 },
+      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
+    );
+  });
+}
+
+if (enabledSources().ClankerFeeLocker) {
+  /** `claim(feeOwner, asset)` (anyone; always pays `feeOwner`) pays the whole (feeOwner, asset) balance. */
+  ponder.on('ClankerFeeLocker:ClaimTokens', async ({ event, context }) => {
+    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      ts: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+    });
+  });
+
+  ponder.on('ClankerFeeLocker:ClaimTokensPermissioned', async ({ event, context }) => {
+    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      ts: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+    });
+  });
+}
+
+/**
+ * A locker pays a recipient's whole balance of `asset` (RWAGMI: settled WETH across its pools; Clanker: the fee
+ * locker's stored balance across its coins). Split it over the per-coin claimable balances (`settled - claimed`)
+ * and record one feeClaim per coin. A burn slot claiming its coin (the Clanker path's dead address) is also a burn.
+ */
 async function recordClaim(
   context: Ctx,
   recipient: Address,
@@ -137,6 +192,10 @@ async function recordClaim(
       outstanding: r.outstanding - part,
       claimedUsd: usd(r.claimedUsd + amountUsd),
     }));
+    await bumpSource(context, sourceOf(t), meta.ts, {
+      feesClaimedUsd: amountUsd,
+      ...(row.recipientKind === 'platform' ? { feesPlatformClaimedUsd: amountUsd } : {}),
+    });
     if (row.recipientKind === 'agent') {
       const agent = await context.db.find(schema.agent, { id: row.recipient });
       if (agent) {
@@ -145,6 +204,32 @@ async function recordClaim(
           .set({ feesClaimedUsd: usd(agent.feesClaimedUsd + amountUsd) });
       }
     }
+    if (isBurnClaim({ recipientKind: row.recipientKind, recipient: row.recipient, asset, token: row.token })) {
+      await recordBurn(context, t, row.recipient, part, amountUsd, meta);
+    }
+  }
+}
+
+/** A coin leaving circulation: `burn` row, `token.burnedTotal`, and the BOOT burn stats when it is the platform coin. */
+async function recordBurn(context: Ctx, t: TokenRow, burner: Address, amount: bigint, amountUsd: number, meta: { txHash: Hex; logIndex: number; ts: number }) {
+  await context.db
+    .insert(schema.burn)
+    .values({
+      id: `${meta.txHash}-${meta.logIndex}`,
+      token: t.id,
+      burner: lc(burner),
+      amountToken: amount,
+      amountWethSpent: 0n,
+      amountUsd,
+      timestamp: meta.ts,
+      txHash: meta.txHash,
+    })
+    .onConflictDoNothing();
+  await context.db.update(schema.token, { id: t.id }).set((r) => ({ burnedTotal: r.burnedTotal + amount }));
+  const cfg = await getPlatformConfig(context);
+  if (cfg.bootToken === t.id) {
+    await bumpDaily(context, meta.ts, { bootBurnedToken: amount, bootBurnedUsd: amountUsd });
+    await bumpPlatform(context, meta.ts, { bootBurnedTotal: amount });
   }
 }
 

@@ -7,8 +7,8 @@ import { lc } from './lib/store';
 
 if (enabledSources().PoolManager) {
   /**
-   * Every PoolManager swap is delivered; only pools registered by `AgentLaunched` are kept
-   * (Ponder log filters cannot match a dynamic set of pool ids).
+   * Every PoolManager swap is delivered; only pools registered by `AgentLaunched` (either path: RWAGMI pools
+   * and Clanker pools alike) are kept (Ponder log filters cannot match a dynamic set of pool ids).
    */
   ponder.on('PoolManager:Swap', async ({ event, context }) => {
     const p = await context.db.find(schema.pool, { id: lc(event.args.id) });

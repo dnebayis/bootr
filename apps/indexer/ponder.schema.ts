@@ -8,10 +8,15 @@ import { index, onchainTable, relations } from 'ponder';
  * `BigInt`, serialized as base-unit strings); `*Usd` are floats rounded to 6 dp; timestamps
  * are unix seconds (int).
  *
- * Coins launch through RWAGMI v3 (docs/rwagmi-migration.md): one Uniswap v4 pool per coin, paired
- * with WETH; the RWAGMI hook takes the swap fee in WETH only, so every fee row's `asset` is WETH.
- * "Fees" on token / daily / platform rows are the gross swap fee (`PoolFeeTakenV3`); the per-kind
- * splits cover Bootr's reward slots (90%), the rest is RWAGMI's protocol slot (10%).
+ * Coins come through two launch paths (`token.source`, docs/design/clanker-launch.md):
+ * - `bootr`: RWAGMI v3 (docs/rwagmi-migration.md): one Uniswap v4 pool per coin, paired with WETH; the
+ *   RWAGMI hook takes the swap fee in WETH only, so every fee row's `asset` is WETH. "Fees" on token /
+ *   daily / platform rows are the gross swap fee (`PoolFeeTakenV3`); the per-kind splits cover Bootr's
+ *   reward slots (90%), the rest is RWAGMI's protocol slot (10%).
+ * - `clanker`: Clanker v4: the reward slots share 100% of the LP fee and Clanker charges 20% of it on top
+ *   (the trader pays `lpFeeBps × 1.2`); fee rows come from the locker's collections (`ClaimedRewards`,
+ *   `asset` WETH for the agent / creator / platform slots, the coin itself for the burn slot, whose
+ *   recipient is the dead address) and claims from `ClankerFeeLocker.ClaimTokens`.
  */
 
 // ------------------------------------------------------------------ token / agent
@@ -21,31 +26,39 @@ export const token = onchainTable(
   (t) => ({
     id: t.hex().primaryKey(),
     chainId: t.integer().notNull(),
+    /** Launch path: `bootr` (RWAGMI v3 through BootrLauncher) or `clanker` (Clanker v4 through BootrClankerLauncher). */
+    source: t.text().notNull(),
     name: t.text().notNull(),
     symbol: t.text().notNull(),
     image: t.text().notNull(),
-    /** extra: launch metadata (`LaunchParams.metadata`, else the B20 `contractURI()`). */
+    /** extra: launch metadata (`LaunchParams.metadata`, else the B20 `contractURI()` / Clanker `TokenCreated.tokenMetadata`). */
     metadata: t.text().notNull(),
     creator: t.hex().notNull(),
     kernel: t.hex().notNull(),
+    /** BuybackBurner clone (bootr buyback preset) or the dead address `0x…dEaD` (clanker buyback slot); null otherwise. */
     burner: t.hex(),
     agentId: t.bigint().notNull(),
     poolId: t.hex().notNull(),
     pairedToken: t.hex().notNull(),
     /** extra: true when the coin is currency0 of the v4 pool. */
     coinIsToken0: t.boolean().notNull(),
-    /** Swap fee in hundredths of a bip (1e6 = 100%; 10_000 = 1%): the RWAGMI hook's static fee for the pool. */
+    /**
+     * Swap fee of this coin's pool in hundredths of a bip (1e6 = 100%; 10_000 = 1%), per token: the RWAGMI
+     * hook's static fee (bootr) or `ClankerLaunched.lpFeeBps` (clanker; Clanker adds 20% of it on top).
+     */
     lpFeeBps: t.integer().notNull(),
     /**
-     * Locked reward split from `RwagmiLpLockerV3.launchInfo(token).rewards`, in bps of the whole swap fee:
-     * agent + creator + burn + platform = 9000, `protocolBps` (RWAGMI) = 1000.
+     * Locked reward split in bps of the LP fee: bootr `agent + creator + burn + platform = 9000` with
+     * `protocolBps` (RWAGMI) = 1000 (`RwagmiLpLockerV3.launchInfo(token).rewards`); clanker the four sum to
+     * 10000 and `protocolBps` is 2000 *on top* (`ClankerLpLockerFeeConversion.tokenRewards(token)`).
      */
     agentBps: t.integer().notNull(),
     creatorBps: t.integer().notNull(),
     burnBps: t.integer().notNull(),
     platformBps: t.integer().notNull(),
-    /** extra: RWAGMI's reward slot (bps of the swap fee) and its recipient. */
+    /** extra: the launch protocol's share: RWAGMI's reward slot (bootr) or Clanker's fee on top (clanker). */
     protocolBps: t.integer().notNull(),
+    /** extra: RWAGMI's slot recipient (bootr); null on the Clanker path (the hook keeps the protocol fee). */
     protocolRecipient: t.hex(),
     /** extra: platform reward-slot recipient. */
     platformRecipient: t.hex().notNull(),
@@ -81,7 +94,7 @@ export const token = onchainTable(
     trades24h: t.integer().notNull(),
     volumeTotalUsd: t.doublePrecision().notNull(),
     feesTotalUsd: t.doublePrecision().notNull(),
-    /** extra: coins burned by the BuybackBurner (base units). */
+    /** extra: coins burned by the BuybackBurner (bootr) or claimed to the dead address by the burn slot (clanker), base units. */
     burnedTotal: t.bigint().notNull(),
     lastTradeAt: t.integer(),
     holders: t.integer().notNull(),
@@ -146,8 +159,9 @@ export const agent = onchainTable(
 );
 
 /**
- * extra: Uniswap v4 pools of Bootr coins, from `RwagmiLauncherV3.LaunchPoolCreatedV3` (Swap and fee
- * events of other pools are ignored). One pool per coin, paired with WETH.
+ * extra: Uniswap v4 pools of Bootr coins of both paths, from `RwagmiLauncherV3.LaunchPoolCreatedV3` (bootr) or
+ * `BootrClankerLauncher.ClankerLaunched` + the locker's `TokenRewardAdded` (clanker). `PoolManager.Swap` of any
+ * other pool is ignored. One pool per coin, paired with WETH.
  */
 export const pool = onchainTable(
   'pool',
@@ -155,10 +169,13 @@ export const pool = onchainTable(
     id: t.hex().primaryKey(),
     token: t.hex().notNull(),
     coinIsToken0: t.boolean().notNull(),
-    /** Position range: `LiquidityPlacedV3` once the launch is indexed, the expected launch range before. */
+    /** Position range: `LiquidityPlacedV3` / `TokenRewardAdded` once the launch is indexed, the expected launch range before. */
     tickLower: t.integer().notNull(),
     tickUpper: t.integer().notNull(),
-    /** v4 PoolKey (`LaunchPoolCreatedV3.key`; native fee 0, the hook charges the swap fee). */
+    /**
+     * v4 PoolKey (`LaunchPoolCreatedV3.key` / `TokenRewardAdded.poolKey`). bootr: native fee 0, the hook charges the
+     * swap fee; clanker: the dynamic-fee flag (0x800000), the hook sets the LP fee.
+     */
     currency0: t.hex().notNull(),
     currency1: t.hex().notNull(),
     fee: t.integer().notNull(),
@@ -166,7 +183,7 @@ export const pool = onchainTable(
     hooks: t.hex().notNull(),
     pairedToken: t.hex().notNull(),
     poolIndex: t.integer().notNull(),
-    /** Hook fee mode (0 static, 1 dynamic) and static fee in hundredths of a bip. */
+    /** Hook fee mode (0 static, 1 dynamic) and static fee in hundredths of a bip (the pool's `lpFeeBps`). */
     feeMode: t.integer().notNull(),
     staticFee: t.integer().notNull(),
     startingTick: t.integer().notNull(),
@@ -175,6 +192,29 @@ export const pool = onchainTable(
   }),
   (table) => ({ tokenIdx: index().on(table.token) }),
 );
+
+/**
+ * extra: Clanker-path launch facts from `BootrClankerLauncher.ClankerLaunched` (and the factory's `TokenCreated`
+ * in the same receipt): the pool, the modules the coin was launched with, and the LP fee actually used (per
+ * token: the platform's own coin may differ from everyone else's). One row per Clanker coin, keyed by token.
+ */
+export const clankerPool = onchainTable('clanker_pool', (t) => ({
+  id: t.hex().primaryKey(),
+  poolId: t.hex().notNull(),
+  hook: t.hex().notNull(),
+  locker: t.hex().notNull(),
+  mevModule: t.hex().notNull(),
+  /** `tickIfToken0IsClanker` as emitted (not flipped). */
+  startingTick: t.integer().notNull(),
+  /** LP fee in hundredths of a bip (10_000 = 1%); the trader pays this plus Clanker's 20% of it. */
+  lpFeeBps: t.integer().notNull(),
+  /** `TokenCreated.tokenContext` (`{interface, platform, id}`), empty when the receipt carried none. */
+  context: t.text().notNull(),
+  /** Supply taken by extensions (dev buy etc.); the LP position holds `totalSupply - extensionsSupply`. */
+  extensionsSupply: t.bigint().notNull(),
+  launchTx: t.hex().notNull(),
+  blockNumber: t.bigint().notNull(),
+}));
 
 /**
  * extra: `RwagmiLauncherV3.B20LaunchCreatedV3` of launches made by BootrLauncher. Emitted inside the
@@ -198,8 +238,10 @@ export const rwagmiLaunch = onchainTable('rwagmi_launch', (t) => ({
 }));
 
 /**
- * extra: locked reward slots of a coin (`RwagmiLpLockerV3.launchInfo(token).rewards`, read at launch).
- * `recipientKind`: agent | creator | burn | platform | protocol (RWAGMI's appended slot).
+ * extra: locked reward slots of a coin (`RwagmiLpLockerV3.launchInfo(token).rewards` on the Bootr path,
+ * `ClankerLpLockerFeeConversion.tokenRewards(token)` / `TokenRewardAdded` on the Clanker path, read at launch).
+ * `recipientKind`: agent | creator | burn | platform | protocol (RWAGMI's appended slot, bootr only). The
+ * Clanker burn slot's recipient is the dead address.
  */
 export const feeSlot = onchainTable(
   'fee_slot',
@@ -299,8 +341,10 @@ export const milestone = onchainTable(
 // ------------------------------------------------------------------ fees / burns / treasury
 
 /**
- * Fee earned per Bootr reward slot, booked when the hook takes the fee (`PoolFeeTakenV3`):
- * gross × slot bps / 10_000, like the locker's per-slot credit. `asset` is WETH.
+ * Fee earned per Bootr reward slot. bootr: booked when the hook takes the fee (`PoolFeeTakenV3`), gross × slot
+ * bps / 10_000 like the locker's per-slot credit, `asset` WETH. clanker: booked when the locker collects the
+ * position's fees (`ClaimedRewards`), the exact post-conversion amount per slot, `asset` WETH (or the coin for
+ * the burn slot).
  */
 export const feeAccrual = onchainTable(
   'fee_accrual',
@@ -342,8 +386,9 @@ export const feeClaim = onchainTable(
 
 /**
  * extra: per (recipient, asset, coin) accrued/settled/claimed/outstanding. `settled` is what the locker
- * credited (`PoolFeesSettledV3`); a claim (`QuoteRewardsClaimedV3`) pays out a recipient's settled balance
- * across coins and is attributed by `settled - claimed`. `outstanding = accrued - claimed`.
+ * credited (`PoolFeesSettledV3`; on the Clanker path `ClaimedRewards`, where accrued = settled); a claim
+ * (`QuoteRewardsClaimedV3` / `ClaimTokens`) pays out a recipient's settled balance across coins and is
+ * attributed by `settled - claimed`. `outstanding = accrued - claimed`.
  */
 export const feeBalance = onchainTable(
   'fee_balance',
@@ -367,8 +412,9 @@ export const feeBalance = onchainTable(
 );
 
 /**
- * extra: `RwagmiLpLockerV3.PoolFeesSettledV3` for Bootr reward slots: the exact WETH the locker credited to
- * a recipient when a pool was settled (RWAGMI's protocol slot is skipped).
+ * extra: the exact amount a locker credited to a reward slot: `RwagmiLpLockerV3.PoolFeesSettledV3` (bootr, WETH;
+ * RWAGMI's protocol slot is skipped) or `ClankerLpLockerFeeConversion.ClaimedRewards` (clanker, per slot and
+ * side after conversion).
  */
 export const feeCredit = onchainTable(
   'fee_credit',
@@ -535,6 +581,28 @@ export const platformStats = onchainTable('platform_stats', (t) => ({
   updatedAt: t.integer().notNull(),
 }));
 
+/**
+ * extra: platform totals per launch path (`id` = `bootr` | `clanker`), bumped by the handlers: coins, volume, the
+ * gross fee traders paid, what accrued to each Bootr slot kind, and what was claimed. `platformStats` keeps the
+ * sums; `GET /platform/fees` reads this table.
+ */
+export const sourceStats = onchainTable('source_stats', (t) => ({
+  id: t.text().primaryKey(),
+  tokens: t.integer().notNull(),
+  volumeTotalUsd: t.doublePrecision().notNull(),
+  /** Gross swap fee (bootr: including RWAGMI's 10%; clanker: including Clanker's 20% on top). */
+  feesTotalUsd: t.doublePrecision().notNull(),
+  feesAgentUsd: t.doublePrecision().notNull(),
+  feesCreatorUsd: t.doublePrecision().notNull(),
+  feesBurnUsd: t.doublePrecision().notNull(),
+  feesPlatformUsd: t.doublePrecision().notNull(),
+  /** Claims of every slot kind. */
+  feesClaimedUsd: t.doublePrecision().notNull(),
+  /** Claims of the platform slot only. */
+  feesPlatformClaimedUsd: t.doublePrecision().notNull(),
+  updatedAt: t.integer().notNull(),
+}));
+
 export const platformConfig = onchainTable('platform_config', (t) => ({
   id: t.text().primaryKey(),
   graduationThresholdUsd: t.doublePrecision().notNull(),
@@ -559,6 +627,7 @@ export const priceFeed = onchainTable('price_feed', (t) => ({
 
 export const tokenRelations = relations(token, ({ one, many }) => ({
   agent: one(agent, { fields: [token.kernel], references: [agent.id] }),
+  clankerPool: one(clankerPool, { fields: [token.id], references: [clankerPool.id] }),
   trades: many(trade),
   feeAccruals: many(feeAccrual),
   feeClaims: many(feeClaim),

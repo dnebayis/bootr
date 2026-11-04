@@ -6,7 +6,9 @@
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, DEAD_ADDRESS, graduationFields, lc, marketFields, recordTradeBucket, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
+import { swapFeeUsd } from './fees';
+import { bookGrossFee } from './ledger';
+import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
 import { holderMilestones, milestoneId, swapMilestones, type MilestoneEvent } from './milestones';
 import { interpretSwap, toUnits, usd } from './price';
 
@@ -57,9 +59,10 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   const next: TokenRow = { ...t, sqrtPriceX96: s.sqrtPriceX96, poolLiquidity: s.liquidity, tick: s.tick };
   const market = marketFields(next, ethUsd);
   const valueUsd = usd(toUnits(view.amountPaired, 18) * ethUsd);
-  // Swap fee in pips (1e6 = 100%): the native LP fee (0 on RWAGMI pools) plus the hook's fee, which
-  // RWAGMI takes in WETH and splits over the reward slots (exact amounts come from PoolFeeTakenV3).
-  const feeUsd = usd((valueUsd * (s.fee + t.lpFeeBps)) / 1e6);
+  // What the trader paid, from `Swap.fee` and the coin's own `lpFeeBps` (lib/fees.ts `swapFeePips`): bootr
+  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top).
+  const source = sourceOf(t);
+  const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, t.lpFeeBps));
 
   await context.db.insert(schema.trade).values({
     id,
@@ -101,6 +104,10 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   );
   await bumpDaily(context, m.timestamp, { volumeUsd: valueUsd, trades: 1 });
   await bumpPlatform(context, m.timestamp, { volumeTotalUsd: valueUsd });
+  await bumpSource(context, source, m.timestamp, { volumeTotalUsd: valueUsd });
+  // No hook event names the gross fee on the Clanker path (the RWAGMI hook's PoolFeeTakenV3 does on the Bootr
+  // path), so the per-trade figure is the gross fee there; the exact per-slot amounts come at collection.
+  if (source === 'clanker') await bookGrossFee(context, updated, feeUsd, m.timestamp);
 }
 
 const counts = (holder: string) => holder !== ZERO_ADDRESS && holder !== DEAD_ADDRESS;

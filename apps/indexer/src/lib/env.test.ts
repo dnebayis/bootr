@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isLauncher, parseLaunchers, resolveLaunchers } from './env';
+import { enabledSources, isLauncher, launchSourceOf, parseLaunchers, resolveClankerLaunchers, resolveLaunchers, type ClankerStack, type IndexerEnv, type RwagmiStack } from './env';
 
 const OLD = '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3';
 const NEW = '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5';
@@ -69,5 +69,39 @@ describe('isLauncher', () => {
     expect(isLauncher(env, OLD.toLowerCase())).toBe(true);
     expect(isLauncher(env, NEW)).toBe(true);
     expect(isLauncher(env, '0x0000000000000000000000000000000000000000')).toBe(false);
+  });
+});
+
+describe('resolveClankerLaunchers (BOOTR_CLANKER_LAUNCHERS) and enabledSources', () => {
+  const CLANKER_LAUNCHER = '0x1111111111111111111111111111111111111111';
+  const bootr = parseLaunchers(`${OLD}@53219209,${NEW}@53433988`);
+
+  it('is off when the variable is empty and on with its own earliest start block', () => {
+    expect(resolveClankerLaunchers({}, bootr)).toEqual({ clankerLaunchers: [], clankerStartBlock: 'latest' });
+    expect(resolveClankerLaunchers({ BOOTR_CLANKER_LAUNCHERS: `${CLANKER_LAUNCHER.toLowerCase()}@53600000` }, bootr)).toEqual({
+      clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 53_600_000 }],
+      clankerStartBlock: 53_600_000,
+    });
+    expect(() => resolveClankerLaunchers({ BOOTR_CLANKER_LAUNCHERS: 'garbage' }, bootr)).toThrow(/BOOTR_CLANKER_LAUNCHERS entry "garbage"/);
+    // A launcher cannot be on both lists (it would be indexed through the wrong path).
+    expect(() => resolveClankerLaunchers({ BOOTR_CLANKER_LAUNCHERS: `${NEW}@1` }, bootr)).toThrow(/both/);
+  });
+
+  it('enables the Clanker sources only with a Clanker launcher and stack, the shared ones with either path', () => {
+    const base = { guardian: NEW, addresses: { erc8004: { reputationRegistry: NEW } } } as unknown as IndexerEnv;
+    const rwagmi: RwagmiStack = { launcher: NEW, hook: NEW, locker: NEW, startBlock: 1 };
+    const clanker: ClankerStack = { factory: NEW, hook: NEW, locker: NEW, feeLocker: NEW, startBlock: 1 };
+    const none = enabledSources({ ...base, launchers: [], clankerLaunchers: [], rwagmi, clanker });
+    expect(Object.values(none).every((v) => v === false)).toBe(true);
+    const onlyClanker = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker });
+    expect(onlyClanker).toMatchObject({ BootrLauncher: false, RwagmiHookV3: false, BuybackBurner: false, BootrClankerLauncher: true, ClankerLpLocker: true, ClankerFeeLocker: true, BootrToken: true, PoolManager: true, AgentGuardian: true, ReputationRegistry: true });
+    const both = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker });
+    expect(Object.values(both).every((v) => v === true)).toBe(true);
+    // No Clanker stack on the chain: the Clanker path stays off even with a launcher listed.
+    const noStack = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null });
+    expect(noStack).toMatchObject({ BootrLauncher: true, BootrClankerLauncher: false, ClankerLpLocker: false, PoolManager: true });
+    expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }] }, CLANKER_LAUNCHER.toLowerCase())).toBe('clanker');
+    expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, OLD)).toBe('bootr');
+    expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, CLANKER_LAUNCHER)).toBeNull();
   });
 });
