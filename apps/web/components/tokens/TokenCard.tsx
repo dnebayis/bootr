@@ -12,23 +12,24 @@ import { TokenImage } from '@/components/ui/TokenImage';
 export const CARD_HEIGHT = 164;
 
 /**
- * A minimal 3D tilt for the token card: the wrapper rotates a few degrees toward the pointer (perspective
+ * A 3D tilt for the token card: the wrapper lifts 3px and rotates up to ten degrees toward the pointer (perspective
  * transform, CSS variables, no React state per move) and settles back on leave over `ease-base`. The same
  * variables carry a parallax offset for the dot-matrix layer on the image frame, which is what makes the
  * card read as holographic without any colour. Mouse only (touch cards stay flat), off under
  * `prefers-reduced-motion`.
  */
-export function CardTilt({ children, className, intensity = 5 }: { children: ReactNode; className?: string; intensity?: number }) {
+export function CardTilt({ children, className, intensity = 10 }: { children: ReactNode; className?: string; intensity?: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
 
-  const set = (rx: number, ry: number, tx: number, ty: number) => {
+  const set = (rx: number, ry: number, tx: number, ty: number, lift: number) => {
     const el = ref.current;
     if (!el) return;
     el.style.setProperty('--rx', `${rx.toFixed(2)}deg`);
     el.style.setProperty('--ry', `${ry.toFixed(2)}deg`);
     el.style.setProperty('--tx', `${tx.toFixed(1)}px`);
     el.style.setProperty('--ty', `${ty.toFixed(1)}px`);
+    el.style.setProperty('--lift', `${lift}px`);
   };
 
   return (
@@ -39,11 +40,12 @@ export function CardTilt({ children, className, intensity = 5 }: { children: Rea
         const b = e.currentTarget.getBoundingClientRect();
         const px = (e.clientX - b.left) / b.width - 0.5; // -0.5 .. 0.5
         const py = (e.clientY - b.top) / b.height - 0.5;
-        set(-py * intensity, px * intensity, -px * 6, -py * 6);
+        // The card lifts a little toward the pointer and tilts up to `intensity` degrees; the dot-matrix layer slides the other way.
+        set(-py * intensity, px * intensity, -px * 10, -py * 10, -3);
       }}
-      onPointerLeave={() => set(0, 0, 0, 0)}
+      onPointerLeave={() => set(0, 0, 0, 0, 0)}
       className={cn(
-        'transition-transform duration-150 ease-base [transform:perspective(800px)_rotateX(var(--rx,0deg))_rotateY(var(--ry,0deg))]',
+        'transition-transform duration-200 ease-base [transform:perspective(700px)_translateY(var(--lift,0px))_rotateX(var(--rx,0deg))_rotateY(var(--ry,0deg))]',
         className,
       )}
     >
