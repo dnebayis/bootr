@@ -16,12 +16,17 @@ const RANGES = [
   { id: 90, label: '90D' },
 ] as const;
 
-function ChartPanel({ title, value, children, className, legend }: { title: string; value?: ReactNode; children: ReactNode; className?: string; legend?: ReactNode }) {
+function ChartPanel({ title, value, note, children, className, legend }: { title: string; value?: ReactNode; note?: ReactNode; children: ReactNode; className?: string; legend?: ReactNode }) {
   return (
     <section className={cn('flex min-w-0 flex-col gap-4 rounded-md border border-hairline p-5', className)}>
       <header className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-medium text-ink">{title}</h2>
-        {value ? <span className="font-mono text-sm text-ink tabular">{value}</span> : null}
+        {value ? (
+          <span className="flex flex-col items-end gap-0.5">
+            <span className="font-mono text-sm text-ink tabular">{value}</span>
+            {note ? <span className="text-caption text-mute">{note}</span> : null}
+          </span>
+        ) : null}
       </header>
       {children}
       {legend}
@@ -53,6 +58,9 @@ export function AnalyticsView() {
   const p = platform.data;
   const burnedTotal = p ? Number(formatUnits(BigInt(p.bootBurnedTotal || '0'), 18)) : null;
   const sum = (k: 'volumeUsd' | 'feesUsd' | 'launches') => rows.reduce((a, d) => a + d[k], 0);
+  // What the four reward slots received; `feesUsd` is the gross swap fee, with RWAGMI's 10% (bootr) or
+  // Clanker's 20% on top (clanker) included, and had been shown as if it all went to the recipients.
+  const toRecipients = rows.reduce((a, d) => a + d.feesAgentUsd + d.feesCreatorUsd + d.feesBurnUsd + d.feesPlatformUsd, 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -81,7 +89,7 @@ export function AnalyticsView() {
         <StatTile label="Agents awake" value={<Num value={p?.agentsAwake} compact={false} />} />
         <StatTile label="Volume 24h" value={<Usd value={p?.volume24hUsd} />} />
         <StatTile label="Volume, all time" value={<Usd value={p?.volumeTotalUsd} />} />
-        <StatTile label="Fees, all time" value={<Usd value={p?.feesTotalUsd} />} />
+        <StatTile label="Swap fees charged, all time" value={<Usd value={p?.feesTotalUsd} />} note="incl. the launch protocol’s share" />
         <StatTile label="BOOTR burned" value={<Num value={burnedTotal} />} />
       </StatRow>
 
@@ -101,8 +109,9 @@ export function AnalyticsView() {
             <SeriesChart label="Total volume" data={rows.map((d) => ({ x: d.id, y: d.volumeUsd }))} height={240} format={(n) => usd(n)} labelFormat={dateLabel} />
           </ChartPanel>
           <ChartPanel
-            title="Fees by recipient"
-            value={usd(sum('feesUsd'))}
+            title="Fees to recipients"
+            value={usd(toRecipients)}
+            note={`of ${usd(sum('feesUsd'))} charged on trades`}
             legend={
               <Legend
                 items={[
