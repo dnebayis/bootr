@@ -356,6 +356,20 @@ export interface PrepareArgs {
 }
 
 /**
+ * Simulates an op's calls as the kernel would run them. One call runs as the kernel (`eth_call` from the kernel
+ * address, the readable revert reason); several run as the kernel's batch `execute` called from the EntryPoint, so a
+ * later call sees the state of an earlier one (the swap op is `approve` then `swapWethToUsdc`: alone, the swap reverts).
+ */
+export async function simulateCalls(ctx: SupervisorContext, kernel: Address, calls: readonly KernelCall[]): Promise<void> {
+  if (calls.length === 1) {
+    const [call] = calls as [KernelCall];
+    await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
+  } else {
+    await ctx.chain.publicClient.call({ account: entryPoint07Address, to: kernel, data: encodeKernelExecute(calls) });
+  }
+}
+
+/**
  * Simulates the op and stores it as `prepared`. One call runs as the kernel (`eth_call` from the kernel address, the
  * readable revert reason). Several calls run as the kernel's batch `execute` called from the EntryPoint, so a later
  * call sees the state of an earlier one (the swap op is `approve` then `swapWethToUsdc`: alone, the swap reverts).
@@ -363,12 +377,7 @@ export interface PrepareArgs {
 export async function prepareOp(ctx: SupervisorContext, agent: AgentRow, args: PrepareArgs): Promise<TreasuryOpRow> {
   const kernel = agent.kernel as Address;
   try {
-    if (args.calls.length === 1) {
-      const [call] = args.calls as [KernelCall];
-      await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
-    } else {
-      await ctx.chain.publicClient.call({ account: entryPoint07Address, to: kernel, data: encodeKernelExecute(args.calls) });
-    }
+    await simulateCalls(ctx, kernel, args.calls);
   } catch (err) {
     throw new PolicyError('treasury_simulation_failed', { message: `treasury_simulation_failed: ${rpcErrorText(err)}` });
   }
@@ -421,15 +430,13 @@ export async function executeOp(ctx: SupervisorContext, agent: AgentRow, opId: s
 
   const calls = deserializeCalls(op.calls);
   const kernel = agent.kernel as Address;
-  for (const call of calls) {
-    try {
-      await ctx.chain.publicClient.call({ account: kernel, to: call.to, data: call.data ?? '0x', value: call.value ?? 0n });
-    } catch (err) {
-      const error = `simulation_failed: ${rpcErrorText(err)}`;
-      await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
-      ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
-      return { status: 'failed', opId, error };
-    }
+  try {
+    await simulateCalls(ctx, kernel, calls);
+  } catch (err) {
+    const error = `simulation_failed: ${rpcErrorText(err)}`;
+    await ctx.db.update(treasuryOps).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(treasuryOps.opId, opId));
+    ctx.log.warn({ agentId: agent.agentId, opId, kind: op.kind, error }, 'treasury op failed');
+    return { status: 'failed', opId, error };
   }
 
   const client = await ctx.kernelFor(agent);

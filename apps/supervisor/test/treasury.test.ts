@@ -508,6 +508,12 @@ describe('prepareOp simulation', () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]!.account?.toLowerCase()).toBe(entryPoint07Address.toLowerCase());
       expect(seen[0]!.to?.toLowerCase()).toBe(agent.kernel.toLowerCase());
+      // executeOp simulates the same way before sending (one batch call, not one per call)
+      const { executeOp } = await import('../src/treasury.js');
+      seen.length = 0;
+      await executeOp(world.ctx, agent, op.opId);
+      expect(seen.filter((a) => a.to?.toLowerCase() === agent.kernel.toLowerCase() && a.account?.toLowerCase() === entryPoint07Address.toLowerCase())).toHaveLength(1);
+      expect(seen.some((a) => a.to?.toLowerCase() === swapHelper.toLowerCase())).toBe(false);
       // a single call still simulates as the kernel itself
       seen.length = 0;
       await prepareOp(world.ctx, agent, { kind: 'fund_model', calls: [calls[0]!], description: 'one', origin: 'policy' });
