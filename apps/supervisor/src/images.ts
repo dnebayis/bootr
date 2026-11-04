@@ -4,15 +4,20 @@
  * the action id so a retry never pays twice), decoded from the base64 data URL OpenRouter returns in
  * `message.images[]` and stored inline in `sv_images`. The model gets back an `imageId` it can pass to
  * `publish_post` / `publish_reply`; the broker then hands the bytes to the sender for the X media upload.
+ *
+ * Every picture looks like the agent's own coin: the config's `imageStyle.reference` (the coin image by default,
+ * see onboarding.ts) travels with the prompt as an `image_url` part and the model is told to match its style and
+ * palette without copying it; `imageStyle.notes` are the creator's words on top ("flat colours, no text").
  */
-import { maxQuoteFor, type AgentConfig, type PendingAction, type ToolInput } from '@bootr/agent-core';
+import { imageStyleSchema, maxQuoteFor, type AgentConfig, type ImageStyle, type PendingAction, type ToolInput } from '@bootr/agent-core';
 import { and, count, eq, gte } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { images } from './db/schema.js';
 import { relayRequest } from './inference.js';
 
-/** Relay id of the image model when the agent config names none (`config.imageModel`). */
-export const DEFAULT_IMAGE_MODEL = 'google/gemini-2.5-flash-image';
+/** Relay id of the image model when the agent config names none (`config.imageModel`): Nano Banana Pro. */
+export const DEFAULT_IMAGE_MODEL = 'google/gemini-3-pro-image';
+export const NO_IMAGE_STYLE: ImageStyle = { reference: null, notes: '' };
 /** Pictures one agent may make per rolling day, so a runaway agent cannot drain its fuel on images. */
 export const MAX_IMAGES_PER_DAY = 6;
 export const IMAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -30,17 +35,33 @@ export interface StoredImage {
   bytes: Buffer;
 }
 
-export function imageModelOf(config: Pick<AgentConfig, 'imageModel'>): string {
-  return config.imageModel ?? DEFAULT_IMAGE_MODEL;
+/** The image model in force for a parsed or raw stored config. */
+export function imageModelOf(config: { imageModel?: unknown }): string {
+  return typeof config.imageModel === 'string' && config.imageModel ? config.imageModel : DEFAULT_IMAGE_MODEL;
 }
 
-/** The relay request for one picture: the prompt and what the picture must convey (its alt text). */
-export function imageRequest(model: string, input: ToolInput<'generate_image'>): Record<string, unknown> {
+/** The image style in force for a parsed or raw stored config (no reference, no notes when unset or malformed). */
+export function imageStyleOf(config: { imageStyle?: unknown }): ImageStyle {
+  const parsed = imageStyleSchema.safeParse(config.imageStyle ?? {});
+  return parsed.success ? parsed.data : { ...NO_IMAGE_STYLE };
+}
+
+const ILLUSTRATOR = 'You are an illustrator. Produce exactly one image for the request. No text in the image unless the request asks for it.';
+const MATCH_REFERENCE =
+  'A reference picture is attached: it is the look of this account. Match its visual style, palette, mood and level of detail so the new image reads as part of the same set. Do not copy, trace or reproduce the reference, its composition or any text in it; make a new picture for the request.';
+
+/**
+ * The relay request for one picture: the prompt and what the picture must convey (its alt text), with the style
+ * reference attached as an `image_url` part and the creator's notes in the instructions.
+ */
+export function imageRequest(model: string, input: ToolInput<'generate_image'>, style: ImageStyle = NO_IMAGE_STYLE): Record<string, unknown> {
+  const system = [ILLUSTRATOR, style.reference ? MATCH_REFERENCE : '', style.notes ? `Style notes from the creator: ${style.notes}` : ''].filter(Boolean).join('\n');
+  const text = `${input.prompt}\n\nThe image will be described as: ${input.altText}`;
   return {
     model,
     messages: [
-      { role: 'system', content: 'You are an illustrator. Produce exactly one image for the request. No text in the image unless the request asks for it.' },
-      { role: 'user', content: `${input.prompt}\n\nThe image will be described as: ${input.altText}` },
+      { role: 'system', content: system },
+      { role: 'user', content: style.reference ? [{ type: 'text', text }, { type: 'image_url', image_url: { url: style.reference } }] : text },
     ],
     modalities: ['image', 'text'],
     max_tokens: IMAGE_TEXT_TOKENS,
@@ -92,7 +113,7 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
   if (made >= MAX_IMAGES_PER_DAY) return { kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours` };
 
   const model = imageModelOf(config);
-  const res = await relayRequest(ctx, agent, { key: `image:${pending.id}`, cycle, request: imageRequest(model, input), maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
+  const res = await relayRequest(ctx, agent, { key: `image:${pending.id}`, cycle, request: imageRequest(model, input, imageStyleOf(config)), maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
   if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
   if (res.kind === 'failed') return { kind: 'failed', error: `image_failed: ${res.error}` };
 

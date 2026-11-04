@@ -1,18 +1,20 @@
 /**
  * Post-launch control (docs/design/agent-launch-v2.md, decision 6): the creator can change an agent's
- * instructions, powers, cadence and model from the coin page. The on-chain `workerHash` stays the launch-time
+ * instructions, powers, cadence, model, image model and image style from the coin page. The on-chain `workerHash` stays the launch-time
  * commitment; the configuration in force lives in `sv_agents.config`, `revision` counts the edits and every
  * edit is an `sv_actions` row `{kind: 'config_updated', fields}` (the activity tape shows it). The running
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { MAX_CREATOR_IDENTITY_CHARS, normalizeCreatorIdentity } from '@bootr/agent-core';
+import { imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, type ImageStyle } from '@bootr/agent-core';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents } from './db/schema.js';
 import { requiresApproval } from './approvals.js';
+import { relayImageModels } from './image-models.js';
+import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
@@ -35,12 +37,16 @@ export interface AgentConfigView {
   workerHash: string | null;
   /** Posts and replies wait for the creator's approval before they go out (approvals.ts). */
   requireApproval: boolean;
+  /** The image model in force (`images.ts`: the default when the config names none). */
+  imageModel: string;
+  /** The reference picture and notes every generated image follows (images.ts). */
+  imageStyle: ImageStyle;
   revision: number;
   updatedAt: string;
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle';
 
 /** The worker preset in force for a stored config: live capabilities and cadence, stored or template job lines. */
 function currentPreset(config: Record<string, unknown>): WorkerPreset {
@@ -67,6 +73,8 @@ export function configView(agent: AgentRow): AgentConfigView {
     worker: { kind: workerKind(config), capabilities: preset.capabilities, postIntervalMs: preset.postIntervalMs, jobLines: preset.identity },
     workerHash: typeof config.workerHash === 'string' ? config.workerHash : null,
     requireApproval: requiresApproval(config),
+    imageModel: imageModelOf(config),
+    imageStyle: imageStyleOf(config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
   };
@@ -82,6 +90,16 @@ export interface ConfigUpdateBody {
   worker?: unknown;
   /** Post approval mode on/off (independent of the worker). */
   requireApproval?: unknown;
+  /** The image model: one of the relay's image models (image-models.ts). */
+  imageModel?: unknown;
+  /** Partial `{reference?: https url | null, notes?: string}`, merged onto the stored style. */
+  imageStyle?: unknown;
+}
+
+/** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
+function normalizeStyleNotes(input: string): string {
+  // eslint-disable-next-line no-control-regex -- the C0 range is the point
+  return input.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export type ConfigUpdateResult = { ok: true; config: AgentConfigView; fields: ConfigField[] } | { ok: false; status: 400 | 403 | 409; error: string; message: string };
@@ -161,6 +179,34 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (body.requireApproval !== requiresApproval(before)) {
       config.requireApproval = body.requireApproval;
       fields.push('requireApproval');
+    }
+  }
+
+  // Image model: one of the image models the relay lists (the built-in three when it cannot be reached).
+  if (body.imageModel !== undefined) {
+    const model = typeof body.imageModel === 'string' ? body.imageModel.trim() : '';
+    if (!model || model.length > MAX_MODEL_CHARS) return reject(400, 'invalid_image_model', `imageModel must be a string of 1..${MAX_MODEL_CHARS} characters`);
+    const offered = await relayImageModels(ctx);
+    if (!offered.includes(model)) return reject(400, 'image_model_not_allowed', `image model ${model} is not offered by the relay`);
+    if (model !== imageModelOf(before)) {
+      config.imageModel = model;
+      fields.push('imageModel');
+    }
+  }
+
+  // Image style: a partial object merged onto the style in force; the reference is an https URL or null.
+  if (body.imageStyle !== undefined) {
+    if (!body.imageStyle || typeof body.imageStyle !== 'object' || Array.isArray(body.imageStyle)) return reject(400, 'invalid_image_style', 'imageStyle must be an object');
+    const current = imageStyleOf(before);
+    const patch = body.imageStyle as { reference?: unknown; notes?: unknown };
+    const parsed = imageStyleSchema.safeParse({
+      reference: patch.reference !== undefined ? patch.reference : current.reference,
+      notes: patch.notes !== undefined ? (typeof patch.notes === 'string' ? normalizeStyleNotes(patch.notes) : patch.notes) : current.notes,
+    });
+    if (!parsed.success) return reject(400, 'invalid_image_style', `imageStyle.reference must be a public https URL or null and imageStyle.notes plain text of at most ${MAX_IMAGE_STYLE_NOTES_CHARS} characters`);
+    if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
+      config.imageStyle = parsed.data;
+      fields.push('imageStyle');
     }
   }
 

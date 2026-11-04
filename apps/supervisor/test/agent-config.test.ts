@@ -5,7 +5,8 @@ import { agentActivity, shortAmount } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { actions, agents, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
-import { agentConfigOf, defaultIdentity } from '../src/onboarding.js';
+import { DEFAULT_IMAGE_MODEL } from '../src/images.js';
+import { agentConfigOf, defaultIdentity, PLATFORM_CAPABILITIES, PLATFORM_POST_INTERVAL_MS } from '../src/onboarding.js';
 import { AGENT_ID, CREATOR, KERNEL, makeWorld, seedAgent, SUPERVISOR_KEY, type TestWorld } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
@@ -55,6 +56,8 @@ describe('GET /internal/agents/:id/config', () => {
         worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
         workerHash: COMMUNITY.hash,
         requireApproval: false,
+        imageModel: DEFAULT_IMAGE_MODEL,
+        imageStyle: { reference: null, notes: '' },
         revision: 1,
         updatedAt: expect.any(String),
       });
@@ -148,6 +151,100 @@ describe('PUT /internal/agents/:id/config', () => {
       const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
       expect(agent.config.revision).toBe(1);
       expect(await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).toEqual([]);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('takes an image model from the relay list and an image style (reference and notes), and labels them on the tape', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig({ imageStyle: { reference: 'https://cdn.bootr.fun/coins/test.png', notes: '' } }) });
+      const { put, get } = api(world);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      // the test relay answers `{}` to GET /v1/models: the built-in list applies
+      const res = await put(path, { by: CREATOR, imageModel: 'openai/gpt-5.4-image-2', imageStyle: { notes: '  flat\tcolours,\n no  text  ' } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { imageModel: string; imageStyle: { reference: string | null; notes: string }; revision: number };
+      expect(body.imageModel).toBe('openai/gpt-5.4-image-2');
+      // a partial style keeps the reference and normalises the notes to one line
+      expect(body.imageStyle).toEqual({ reference: 'https://cdn.bootr.fun/coins/test.png', notes: 'flat colours, no text' });
+      expect(body.revision).toBe(2);
+      expect(await (await get(path)).json()).toMatchObject({ imageModel: 'openai/gpt-5.4-image-2', imageStyle: body.imageStyle });
+      // the parsed config the tick runs with carries both
+      const parsed = agentConfigOf((await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!)!;
+      expect(parsed.imageModel).toBe('openai/gpt-5.4-image-2');
+      expect(parsed.imageStyle).toEqual(body.imageStyle);
+
+      // reference off, then another picture
+      expect(((await (await put(path, { by: CREATOR, imageStyle: { reference: null } })).json()) as { imageStyle: unknown }).imageStyle).toEqual({ reference: null, notes: 'flat colours, no text' });
+      expect(((await (await put(path, { by: CREATOR, imageStyle: { reference: 'https://cdn.bootr.fun/coins/other.png' } })).json()) as { imageStyle: unknown }).imageStyle).toEqual({ reference: 'https://cdn.bootr.fun/coins/other.png', notes: 'flat colours, no text' });
+
+      const expectError = async (b: unknown, status: number, error: string) => {
+        const r = await put(path, b);
+        expect([r.status, ((await r.json()) as { error: string }).error]).toEqual([status, error]);
+      };
+      await expectError({ by: CREATOR, imageModel: 'openai/gpt-4.1-mini' }, 400, 'image_model_not_allowed'); // a mind, not an image model
+      await expectError({ by: CREATOR, imageModel: '' }, 400, 'invalid_image_model');
+      await expectError({ by: CREATOR, imageStyle: { reference: 'http://cdn.bootr.fun/x.png' } }, 400, 'invalid_image_style');
+      await expectError({ by: CREATOR, imageStyle: { reference: 'ipfs://bafy' } }, 400, 'invalid_image_style');
+      await expectError({ by: CREATOR, imageStyle: { notes: 'x'.repeat(201) } }, 400, 'invalid_image_style');
+      await expectError({ by: CREATOR, imageStyle: 'flat' }, 400, 'invalid_image_style');
+      await expectError({ by: CREATOR, imageModel: 'openai/gpt-5.4-image-2', imageStyle: { notes: 'flat colours, no text' } }, 409, 'unchanged');
+
+      const fields = (await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).map((r) => (r.action as { fields: string[] }).fields);
+      expect(fields).toEqual([['imageModel', 'imageStyle'], ['imageStyle'], ['imageStyle']]);
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+      const tape = await agentActivity(world.ctx, agent, runtime);
+      expect(tape.map((t) => t.summary)).toContain('Config updated: image model, image style');
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('accepts the relay\'s own image model list when it answers', async () => {
+    const world = await makeWorld();
+    try {
+      const inner = world.ctx.fetch;
+      world.ctx.fetch = (async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/v1/models')) {
+          return new Response(JSON.stringify({ data: [{ id: 'google/gemini-2.5-flash-image', output_modalities: ['text', 'image'] }, { id: 'openai/gpt-4.1-mini', output_modalities: ['text'] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      await seedAgent(world, { config: presetConfig() });
+      const { put } = api(world);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      expect((await put(path, { by: CREATOR, imageModel: 'google/gemini-2.5-flash-image' })).status).toBe(200);
+      // the relay's list, not the built-in one, decides; and it is cached, so the second answer does not need the relay
+      const res = await put(path, { by: CREATOR, imageModel: 'google/gemini-3-pro-image' });
+      expect([res.status, ((await res.json()) as { error: string }).error]).toEqual([400, 'image_model_not_allowed']);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('toggles the platform agent\'s powers (images included) without touching its cadence or persona', async () => {
+    const world = await makeWorld();
+    try {
+      const identity = defaultIdentity('Test Coin', 'TEST', CARD_URI, true);
+      await seedAgent(world, { config: presetConfig({ platform: true, capabilities: { ...PLATFORM_CAPABILITIES }, postIntervalMs: PLATFORM_POST_INTERVAL_MS, identityText: identity, creatorIdentity: '' }) });
+      const { put, get } = api(world);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      expect(((await (await get(path)).json()) as { worker: { capabilities: Record<string, boolean>; postIntervalMs: number } }).worker).toMatchObject({ capabilities: PLATFORM_CAPABILITIES, postIntervalMs: PLATFORM_POST_INTERVAL_MS });
+      const res = await put(path, { by: CREATOR, worker: { capabilities: { images: true } } });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { capabilities: Record<string, boolean>; postIntervalMs: number } };
+      expect(body.worker.capabilities).toEqual({ ...PLATFORM_CAPABILITIES, images: true });
+      expect(body.worker.postIntervalMs).toBe(PLATFORM_POST_INTERVAL_MS);
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      const parsed = agentConfigOf(agent)!;
+      expect(parsed.capabilities.images).toBe(true);
+      expect(parsed.postIntervalMs).toBe(PLATFORM_POST_INTERVAL_MS);
+      expect(parsed.identityText).toBe(identity); // no job lines enter the platform persona
+      expect(parsed.platform).toBe(true);
     } finally {
       await world.close();
     }

@@ -3,7 +3,7 @@
  * (same names, same order); `lib/docs/agent-tools.test.ts` fails when the two drift.
  *
  * `group` is the capability flag that gates the tool; `availability` notes what the supervisor changes on
- * top (apps/supervisor/src/broker/index.ts drops `generate_image` always and `search_web` without a provider).
+ * top (apps/supervisor/src/broker/index.ts drops `search_web` without a provider).
  */
 export const TOOL_GROUPS = {
   xRead: 'X (read)',
@@ -37,5 +37,5 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'treasury_read', group: 'treasury', does: 'Its balances, claimable fees, limits and recent operations.' },
   { name: 'treasury_prepare', group: 'treasury', does: 'Prepare and simulate one treasury operation within the limits. Nothing moves yet.' },
   { name: 'treasury_execute', group: 'treasury', does: 'Execute a prepared operation. The signer, not the model, enforces the limits.' },
-  { name: 'generate_image', group: 'images', does: 'Create an illustration for a post. Not enabled on Bootr agents yet.' },
+  { name: 'generate_image', group: 'images', does: 'Create one illustration for a post, in the style of the coin’s own image, paid from fuel like a thought. At most 6 per day.' },
 ];
