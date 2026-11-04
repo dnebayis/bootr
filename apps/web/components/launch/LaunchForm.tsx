@@ -18,9 +18,10 @@ import {
   type WorkerPreset,
   type WorkerTemplateId,
 } from '@bootr/shared/workers';
-import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
+import { clankerLauncherAbi, defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { erc20Abi } from '@/lib/abi/erc20';
-import { ofVolume, pctLabel } from '@/lib/fee-split';
+import { ofVolume, pctLabel, traderPaysPct, type FeeModel } from '@/lib/fee-split';
+import type { LaunchSource } from '@/lib/types';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
@@ -104,6 +105,31 @@ function cadenceLabel(ms: number): string {
   return `Every ${Math.round(ms / 60_000)} min`;
 }
 
+/**
+ * The two launch paths (docs/design/clanker-launch.md). Plain words: what the coin opens at, who takes what from the
+ * fee, where it is listed. The form keeps the 1% fee for everyone; only the platform's own coin uses another fee.
+ */
+const LAUNCH_THROUGH: { id: LaunchSource; label: string; lines: string[] }[] = [
+  {
+    id: 'bootr',
+    label: 'Bootr',
+    lines: [
+      'Opens at about 2.7 ETH of market cap (around $6k).',
+      '1% fee on every trade: 90% of it goes to the agent, you and the platform, 10% to RWAGMI, the launcher.',
+      'Listed on bootr.fun.',
+    ],
+  },
+  {
+    id: 'clanker',
+    label: 'Clanker',
+    lines: [
+      'Opens at about 10 ETH of market cap (around $27k).',
+      '1% fee on every trade, all of it to the agent, you and the platform; Clanker adds 20% on top, so a trader pays 1.2%.',
+      'Listed on bootr.fun and clanker.world.',
+    ],
+  },
+];
+
 const KIND_CARDS: { id: Kind; label: string; description: string; does: string[] }[] = [
   ...WORKER_TEMPLATES.map((w) => ({ id: w.id as Kind, label: w.label, description: w.description, does: w.does })),
   {
@@ -155,6 +181,14 @@ export function LaunchForm() {
   const [gas, setGas] = useState(GAS_TOPUP_DEFAULT_ETH);
   const [devBuy, setDevBuy] = useState('');
   const [buyback, setBuyback] = useState(false);
+  // Launch through Bootr (RWAGMI v3, the default) or Clanker. The Clanker launcher is optional per deployment; while it
+  // is not configured the choice is hidden and every launch goes through Bootr. Mock mode always offers both.
+  const clankerAvailable = env.useMock || !!contracts.clankerLauncher;
+  const [launchThroughPick, setLaunchThrough] = useState<LaunchSource>('bootr');
+  const launchThrough: LaunchSource = clankerAvailable ? launchThroughPick : 'bootr';
+  const launcher = launchThrough === 'clanker' ? contracts.clankerLauncher : contracts.launcher;
+  const abi = launchThrough === 'clanker' ? clankerLauncherAbi : launcherAbi;
+  const fee: FeeModel = { source: launchThrough, lpFeeBps: 10_000 };
 
   // Priced, admin-filtered list from /api/models (the relay itself is internal).
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
@@ -169,12 +203,13 @@ export function LaunchForm() {
     return groupByProvider(list);
   }, [modelList, modelQuery, selectedModel?.id]);
 
-  const onChain = !!contracts.launcher && !env.useMock;
-  const standardRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: onChain } });
-  const buybackRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'buybackDefaults', chainId: appChain.id, query: { enabled: onChain } });
-  const pausedRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'paused', chainId: appChain.id, query: { enabled: onChain } });
+  // Presets, pause switch and launch fee come from the chosen launcher (both launchers share the ABI).
+  const onChain = !!launcher && !env.useMock;
+  const standardRead = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: onChain } });
+  const buybackRead = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'buybackDefaults', chainId: appChain.id, query: { enabled: onChain } });
+  const pausedRead = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'paused', chainId: appChain.id, query: { enabled: onChain } });
   // Flat ETH launch fee (0 when unset). Added to msg.value next to the dev buy; the contract forwards it to the platform.
-  const launchFeeRead = useReadContract({ address: contracts.launcher, abi: launcherAbi, functionName: 'launchFeeWei', chainId: appChain.id, query: { enabled: onChain } });
+  const launchFeeRead = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'launchFeeWei', chainId: appChain.id, query: { enabled: onChain } });
   const launchFeeWei = launchFeeRead.data ?? 0n;
   const defaults: LaunchDefaults = buyback
     ? buybackRead.data
@@ -194,20 +229,21 @@ export function LaunchForm() {
     address: contracts.usdc,
     abi: erc20Abi,
     functionName: 'allowance',
-    args: address && contracts.launcher ? [address, contracts.launcher] : undefined,
+    args: address && launcher ? [address, launcher] : undefined,
     chainId: appChain.id,
-    query: { enabled: !!address && !!contracts.launcher && !env.useMock },
+    query: { enabled: !!address && !!launcher && !env.useMock },
   });
   const needsApproval = !env.useMock && fuelUnits != null && (allowance.data ?? 0n) < fuelUnits;
 
   // Pinned image: the gateway URL goes on-chain (renders in wallets and explorers), the ipfs:// URI into metadata.
   const pinned = upload.status === 'done' ? upload.result : null;
   const preview = upload.status === 'idle' ? null : upload.preview;
-  // The launcher's presets are out of 10000; the locker stores them as 9000-bps slots of the 1% swap fee (RWAGMI takes
-  // the other 10%), so agent 500 -> slot 450 -> 0.045% of volume.
+  // The launcher's presets are out of 10000. Through Bootr the locker stores them as 9000-bps slots of the 1% swap fee
+  // (RWAGMI takes the other 10%), so agent 500 -> slot 450 -> 0.045% of volume; through Clanker the slots share the
+  // whole fee (agent 500 -> 0.05%) and Clanker charges 20% on top.
   const split = { agent: defaults.agentBps, creator: defaults.creatorBps, burn: defaults.burnBps, platform: defaults.platformBps };
   const buybackDefaults = buybackRead.data ? defaultsFromTuple(buybackRead.data) : FALLBACK_BUYBACK;
-  const burnPct = ofVolume({ agent: buybackDefaults.agentBps, creator: buybackDefaults.creatorBps, burn: buybackDefaults.burnBps, platform: buybackDefaults.platformBps }, 'burn');
+  const burnPct = ofVolume({ agent: buybackDefaults.agentBps, creator: buybackDefaults.creatorBps, burn: buybackDefaults.burnBps, platform: buybackDefaults.platformBps }, 'burn', fee);
 
   // The worker the launch commits to. Presets: the template and its hash. Custom: the preset built from the form,
   // normalized like the server does (always-on powers forced, empty job lines dropped), hashed like a template.
@@ -249,8 +285,10 @@ export function LaunchForm() {
   if (!xHandle && !silentOk) errors.push('Connect an X account, or confirm launching without one.');
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
-    : !env.useMock && !contracts.launcher
-      ? 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).'
+    : !env.useMock && !launcher
+      ? launchThrough === 'clanker'
+        ? 'The Clanker launcher is not configured (NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS).'
+        : 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).'
       : pausedRead.data
         ? 'Launches are paused by the platform.'
         : !models.isPending && modelList.length === 0
@@ -260,9 +298,9 @@ export function LaunchForm() {
   const thoughts = selectedModel?.pricePerThoughtUsd ? Math.floor(Number(fuel || 0) / selectedModel.pricePerThoughtUsd) : null;
 
   async function approve() {
-    if (!contracts.launcher || fuelUnits == null) return;
+    if (!launcher || fuelUnits == null) return;
     const r = await run('Approve USDC', () =>
-      write.mutateAsync({ address: contracts.usdc, abi: erc20Abi, functionName: 'approve', args: [contracts.launcher!, fuelUnits], chainId: appChain.id }),
+      write.mutateAsync({ address: contracts.usdc, abi: erc20Abi, functionName: 'approve', args: [launcher, fuelUnits], chainId: appChain.id }),
     );
     if (r) void allowance.refetch();
   }
@@ -281,7 +319,7 @@ export function LaunchForm() {
       const res = await fetch('/api/launch/draft', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ draftId: id, identity: identity.trim(), coin, worker }),
+        body: JSON.stringify({ draftId: id, identity: identity.trim(), coin, worker, launchThrough }),
       });
       if (res.ok) return true;
       const body = (await res.json().catch(() => ({}))) as { message?: string };
@@ -300,7 +338,7 @@ export function LaunchForm() {
     if (!(await saveDraft(draftId, coin))) return;
     if (env.useMock) {
       // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
-      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle });
+      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle, source: launchThrough });
       toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
       sessionStorage.removeItem(DRAFT_KEY);
       router.push(`/token/${id}`);
@@ -324,10 +362,13 @@ export function LaunchForm() {
       agentURI: agentCardUrl(draftId),
       supervisorSessionKey: env.supervisorSessionKey ?? zeroAddress, // TODO(supervisor): fetch per-launch key
     } as const;
+    // The chosen launcher; both take the same `LaunchParams`. On the Clanker path the token address is not predictable
+    // up front, so (as on the Bootr path) it is read from the receipt's `AgentLaunched` log below.
+    if (!launcher) return;
     const receipt = await run('Launch', () =>
       write.mutateAsync({
-        address: contracts.launcher!,
-        abi: launcherAbi,
+        address: launcher,
+        abi,
         functionName: 'launch',
         args: [params],
         value: devBuyWei + launchFeeWei,
@@ -336,7 +377,7 @@ export function LaunchForm() {
       }),
     );
     if (!receipt) return;
-    const [ev] = parseEventLogs({ abi: launcherAbi, eventName: 'AgentLaunched', logs: receipt.logs });
+    const [ev] = parseEventLogs({ abi, eventName: 'AgentLaunched', logs: receipt.logs });
     const { token, kernel } = (ev?.args as { token?: Address; kernel?: Address } | undefined) ?? {};
     sessionStorage.removeItem(DRAFT_KEY);
     if (gasWei > 0n && kernel) {
@@ -633,7 +674,34 @@ export function LaunchForm() {
           ) : null}
         </Section>
 
-        <Section n={6} title="Fuel & options" description="Starting treasury, an optional dev buy, and the fee preset.">
+        <Section n={6} title="Fuel & options" description="Where the coin launches, its starting treasury, an optional dev buy, and the fee preset.">
+          {clankerAvailable ? (
+            <fieldset>
+              <div className="mb-1.5 flex items-baseline justify-between gap-3">
+                <legend className="text-caption font-medium text-ink">Launch through</legend>
+                <span className="text-caption text-mute">Permanent. The agent is the same either way.</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2" data-testid="launch-through">
+                {LAUNCH_THROUGH.map((o) => (
+                  <label
+                    key={o.id}
+                    className={cn(
+                      'flex cursor-pointer flex-col gap-1.5 rounded-sm border p-3 transition-colors duration-150',
+                      launchThrough === o.id ? 'border-ink' : 'border-hairline hover:border-hairline-strong',
+                    )}
+                  >
+                    <input type="radio" name="launch-through" value={o.id} checked={launchThrough === o.id} onChange={() => setLaunchThrough(o.id)} className="sr-only" />
+                    <span className="text-sm font-medium text-ink">{o.label}</span>
+                    <ul className="flex flex-col gap-0.5 text-caption text-body">
+                      {o.lines.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <Label htmlFor="fuel" hint={`Min ${minFuel} USDC`}>
@@ -665,8 +733,10 @@ export function LaunchForm() {
                 Buyback & burn
               </label>
               <p className="mt-0.5 text-caption text-mute">
-                Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share. The coin&rsquo;s burner claims it in WETH,
-                swaps it for the coin and burns it.
+                Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share.{' '}
+                {launchThrough === 'clanker'
+                  ? 'Clanker\u2019s locker turns that share into the coin and sends it to the dead address.'
+                  : 'The coin\u2019s burner claims it in WETH, swaps it for the coin and burns it.'}
               </p>
             </div>
             <Switch id="buyback" checked={buyback} onChange={setBuyback} label="Buyback and burn" />
@@ -699,10 +769,11 @@ export function LaunchForm() {
             {[
               ['Kind', kindLabel],
               ['Model', selectedModel?.label ?? '—'],
+              ['Launch through', launchThrough === 'clanker' ? 'Clanker' : 'Bootr'],
               ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
               ['Fuel', `${fuel || 0} USDC`],
               ...(devBuyWei && devBuyWei > 0n ? [['Dev buy', `${devBuy} ETH`]] : []),
-              ['Your share', `${pctLabel(ofVolume(split, 'creator'))} of volume`],
+              ['Your share', `${pctLabel(ofVolume(split, 'creator', fee))} of volume`],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">
                 <dt className="text-mute">{k}</dt>
@@ -714,9 +785,12 @@ export function LaunchForm() {
           <div>
             <div className="mb-2 flex items-baseline justify-between">
               <span className="text-caption font-medium text-ink">Fee split</span>
-              <span className="font-mono text-caption text-mute">{[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')} of the 90% share</span>
+              <span className="font-mono text-caption text-mute">
+                {[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')}
+                {launchThrough === 'clanker' ? ` of the fee, 20% on top for Clanker (${pctLabel(traderPaysPct(fee))} in total)` : ' of the 90% share'}
+              </span>
             </div>
-            <SplitBar split={split} />
+            <SplitBar split={split} fee={fee} />
           </div>
 
           <div className="flex flex-col gap-1 border-t border-hairline pt-4">

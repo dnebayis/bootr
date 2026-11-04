@@ -22,6 +22,7 @@ import type {
   FeesByKind,
   FuelEvent,
   Holding,
+  LaunchSource,
   PlatformStats,
   StreamHint,
   Token,
@@ -160,6 +161,7 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
     poolId: hex(rand, 32),
     pairedToken: '0x4200000000000000000000000000000000000006',
     lpFeeBps: 10000,
+    source: 'bootr',
     // BootrLauncher presets (out of 10000; the locker holds them as 9000-bps slots).
     agentBps: 500,
     creatorBps: buyback ? 5000 : 6500,
@@ -208,6 +210,17 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
   return { token, agent };
 }
 
+/** The one mock coin launched through Clanker (`Basewatch`): the fourth newest, so the newest coin stays a Bootr coin. */
+const CLANKER_INDEX = 3;
+const DEAD = '0x000000000000000000000000000000000000dEaD' as Address;
+
+/** Turns a mock token into a Clanker-path coin: the slots share the whole 1% fee, a burn share goes to the dead address. */
+function clankerize(token: Token, lpFeeBps = 10000) {
+  token.source = 'clanker';
+  token.lpFeeBps = lpFeeBps;
+  token.burner = token.burnBps > 0 ? DEAD : null;
+}
+
 function makeTrades(t: Token, rand: () => number, now: number): Trade[] {
   const out: Trade[] = [];
   let ts = now - Math.floor(rand() * 120);
@@ -241,6 +254,7 @@ function init(): Store {
   let launchedAt = now - 60 * 4;
   NAMES.forEach(([name, symbol], i) => {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
+    if (i === CLANKER_INDEX) clankerize(token);
     tokens.push(token);
     agents.set(agent.id.toLowerCase(), agent);
     trades.set(token.id.toLowerCase(), makeTrades(token, rand, now));
@@ -419,7 +433,7 @@ export const mock = {
         const t = s.tokens.find((x) => x.id === a.token);
         return {
           ...a,
-          tokenInfo: t ? { id: t.id, name: t.name, symbol: t.symbol, image: t.image, creator: t.creator, xHandle: t.xHandle } : null,
+          tokenInfo: t ? { id: t.id, name: t.name, symbol: t.symbol, image: t.image, creator: t.creator, xHandle: t.xHandle, source: t.source, lpFeeBps: t.lpFeeBps } : null,
         };
       }),
     );
@@ -762,6 +776,8 @@ export function mockLaunch(input: {
   model: string;
   buyback: boolean;
   xHandle: string | null;
+  /** Which launcher the form chose; a Clanker coin shows its label and the whole-fee split. */
+  source?: LaunchSource;
   /** Optional: what the creator typed; seeds the mock agent config the coin page's creator console shows. */
   instructions?: string;
   workerHash?: Hex;
@@ -781,6 +797,7 @@ export function mockLaunch(input: {
   token.graduatedAt = null;
   token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
+  if (input.source === 'clanker') clankerize(token);
   if (input.workerHash) token.workerHash = input.workerHash;
   if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));
   agent.status = 'awake';

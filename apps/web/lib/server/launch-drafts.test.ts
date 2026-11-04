@@ -9,6 +9,7 @@ import {
   isDraftId,
   normalizeCoin,
   normalizeIdentity,
+  normalizeSource,
   normalizeWorker,
   ownerCookieValue,
   ownerTagFromCookie,
@@ -109,8 +110,18 @@ describe('draft store', () => {
   it('stores the coin metadata next to the identity text', async () => {
     const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', telegram: null, discord: null } };
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
-    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null, source: 'bootr' });
     expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
+  });
+
+  it('stores which launcher the launch goes through; older drafts read as bootr', async () => {
+    expect(normalizeSource(undefined)).toBe('bootr');
+    expect(normalizeSource('clanker')).toBe('clanker');
+    expect(normalizeSource('other')).toBeNull();
+    await saveDraftIdentity(DRAFT, TEXT, null, { dir, source: 'clanker' });
+    expect((await readLaunchDraft(DRAFT, { dir }))?.source).toBe('clanker');
+    await saveDraftIdentity(OTHER, TEXT, null, { dir });
+    expect((await readLaunchDraft(OTHER, { dir }))?.source).toBe('bootr');
   });
 
   it('stores the worker choice: a preset by id, a custom worker with its preset', async () => {

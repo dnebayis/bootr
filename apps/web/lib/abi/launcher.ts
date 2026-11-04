@@ -1,6 +1,31 @@
 import type { Address } from 'viem';
 
-export { launcherAbi } from './launcher.abi';
+import { launcherAbi } from './launcher.abi';
+
+export { launcherAbi };
+
+/**
+ * BootrClankerLauncher: the same `launch(LaunchParams)`, defaults, fee and `predictKernel` as BootrLauncher (one ABI
+ * for both paths), plus `ClankerLaunched`. `predictToken` is not available on this path: the token address comes
+ * from the receipt's `AgentLaunched` log.
+ */
+export const clankerLauncherAbi = [
+  ...launcherAbi,
+  {
+    type: 'event',
+    name: 'ClankerLaunched',
+    inputs: [
+      { name: 'token', type: 'address', indexed: true, internalType: 'address' },
+      { name: 'poolId', type: 'bytes32', indexed: false, internalType: 'bytes32' },
+      { name: 'hook', type: 'address', indexed: false, internalType: 'address' },
+      { name: 'locker', type: 'address', indexed: false, internalType: 'address' },
+      { name: 'mevModule', type: 'address', indexed: false, internalType: 'address' },
+      { name: 'startingTick', type: 'int24', indexed: false, internalType: 'int24' },
+      { name: 'lpFeeBps', type: 'uint24', indexed: false, internalType: 'uint24' },
+    ],
+    anonymous: false,
+  },
+] as const;
 
 /**
  * BootrLauncher.LaunchDefaults (packages/contracts/src/BootrLauncher.sol).

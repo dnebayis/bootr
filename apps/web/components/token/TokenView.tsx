@@ -8,7 +8,7 @@ import { useToken } from '@/lib/indexer';
 import { useCoinLinks } from '@/lib/coin-links';
 import { useNow } from '@/lib/hooks';
 import { age, num, pct, price, shortAddr, usd } from '@/lib/format';
-import { chainBadge, explorer, swapLink } from '@/lib/chains';
+import { chainBadge, clankerWorldUrl, explorer, swapLink } from '@/lib/chains';
 import { Badge } from '@/components/ui/Badge';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { LinkButton } from '@/components/ui/Button';
@@ -116,6 +116,18 @@ export function TokenView({ address }: { address: string }) {
                 </a>
                 <CopyButton value={token.creator} label="Copy creator address" />
               </span>
+              {token.source === 'clanker' ? (
+                <a
+                  href={clankerWorldUrl(token.id)}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  className="inline-flex items-center gap-0.5 hover:text-link"
+                  data-testid="token-source"
+                  title="This coin was launched through Clanker and is listed on clanker.world too"
+                >
+                  launched through clanker <ArrowUpRightIcon size={12} />
+                </a>
+              ) : null}
             </div>
             <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
             {links.data && (links.data.website || links.data.telegram || links.data.discord) ? (

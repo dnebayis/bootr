@@ -168,7 +168,8 @@ export function ProfileView() {
         )}
       </Panel>
 
-      <CreatorFees owner={address} tokens={launched.data ?? []} loading={launched.isPending} />
+      {/* The panel reads RWAGMI's locker; coins launched through Clanker keep their creator share in Clanker's fee locker. */}
+      <CreatorFees owner={address} tokens={(launched.data ?? []).filter((t) => t.source !== 'clanker')} loading={launched.isPending} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Tokens you launched" bodyClassName="p-0">

@@ -14,7 +14,7 @@ import { FALLBACK_MODELS, filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/m
 import { readConfig } from '@/lib/server/admin-config';
 import { pinataEnv } from '@/lib/server/env';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
-import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
+import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, normalizeSource, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
 import { verifySiwe } from '@/lib/server/siwe-verify';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -37,6 +37,7 @@ type LaunchInput = {
   gasEth?: unknown;
   xHandle?: unknown;
   links?: unknown;
+  launchThrough?: unknown;
 };
 
 function fail(status: number, error: string, message: string, headers: Record<string, string> = {}) {
@@ -105,8 +106,9 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
  * (statement "Prepare a Bootr launch.", nonce from `POST /api/agent/nonce`), and this route does what the launch
  * form does before the wallet signs: pins the image, stores the Identity text and the coin metadata under a
  * new launch id (the hosted agent card and contract URI), reads the launcher's fee and minimum fuel, and
- * returns the transactions the wallet must send, in order: the USDC approval, `BootrLauncher.launch`, and
- * the agent's first gas (`EntryPoint.depositTo(predictedKernel)`). Nothing is sent on the caller's behalf
+ * returns the transactions the wallet must send, in order: the USDC approval, `launch` on the chosen launcher
+ * (`launchThrough`: `bootr`, the default, or `clanker`; same `LaunchParams` either way), and the agent's first gas
+ * (`EntryPoint.depositTo(predictedKernel)`). Nothing is sent on the caller's behalf
  * and no key ever reaches this server. 5 calls per minute per IP.
  */
 export async function POST(req: NextRequest) {
@@ -151,6 +153,8 @@ export async function POST(req: NextRequest) {
     );
   }
   const buyback = l.buyback === true;
+  const launchThrough = normalizeSource(l.launchThrough);
+  if (launchThrough === null) return fail(400, 'invalid_request', 'launchThrough must be bootr (default) or clanker.');
   const fuel = typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '20';
   if (!DECIMAL.test(fuel)) return fail(400, 'invalid_request', 'fuelUsdc must be a decimal USDC amount.');
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
@@ -169,6 +173,14 @@ export async function POST(req: NextRequest) {
   const img = await loadImage(l.image);
   if ('error' in img) return fail(400, 'invalid_image', img.error);
 
+  // Both launchers share the ABI; the Clanker one is optional per deployment (mock mode answers for both).
+  const launcher = (launchThrough === 'clanker' ? contracts.clankerLauncher : contracts.launcher) ?? (env.useMock ? zeroAddress : null);
+  if (!launcher) {
+    return launchThrough === 'clanker'
+      ? fail(503, 'clanker_unavailable', 'Launching through Clanker is not available on this deployment.')
+      : fail(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment.');
+  }
+
   const draftId = crypto.randomUUID();
   let cid: string;
   try {
@@ -178,15 +190,13 @@ export async function POST(req: NextRequest) {
   }
   const imageUrl = ipfsGatewayUrl(cid);
   try {
-    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links }, worker: worker.draft });
+    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links }, worker: worker.draft, source: launchThrough });
     if (!saved.ok) return fail(500, 'store_failed', 'Could not store the launch draft.');
   } catch {
     return fail(503, 'store_unavailable', 'The launch draft store is not writable.');
   }
 
   // Launcher state: fee and minimum fuel from the chain (fallbacks in mock mode or when the RPC is down).
-  const launcher = contracts.launcher ?? (env.useMock ? zeroAddress : null);
-  if (!launcher) return fail(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment.');
   const chain = chainId === 8453 ? base : baseSepolia;
   const client = createPublicClient({ chain, transport: http((chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL) || undefined) });
   const salt = keccak256(toHex(draftId));
@@ -241,7 +251,7 @@ export async function POST(req: NextRequest) {
       to: launcher,
       data: encodeFunctionData({ abi: launcherAbi, functionName: 'launch', args: [params] }),
       value: (devBuyWei + feeWei).toString(),
-      note: `BootrLauncher.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
+      note: `${launchThrough === 'clanker' ? 'BootrClankerLauncher' : 'BootrLauncher'}.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
     },
   ];
   if (gasWei > 0n) {
@@ -262,6 +272,7 @@ export async function POST(req: NextRequest) {
       chainId,
       creator,
       launcher,
+      launchThrough,
       predictedKernel,
       agentURI: params.agentURI,
       metadata: params.metadata,
