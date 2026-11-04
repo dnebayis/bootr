@@ -274,3 +274,32 @@ describe('rhythm in the tick', () => {
     }
   });
 });
+
+describe('a due slot the agent passes on', () => {
+  it('is consumed by finish: the next tick does not wake it for the same slot, and a post still moves the anchor', async () => {
+    const { finishResponse, makeWorld, seedAgent, toolCallResponse, AGENT_ID } = await import('./helpers.js');
+    const runtimeRow = async (world: Awaited<ReturnType<typeof makeWorld>>) => (await world.db.query.runtimes.findFirst())!;
+    const { processAgent } = await import('../src/tick.js');
+    const { scheduleFor } = await import('../src/runtime.js');
+    const { agentConfigOf } = await import('../src/onboarding.js');
+    const w = await makeWorld({ script: [finishResponse(Date.now() + 60_000)] });
+    try {
+      const agent = await seedAgent(w);
+      const first = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(first?.ran).toBe(true);
+      expect(first?.reasons).toContain('original_post_due');
+      const after = await runtimeRow(w);
+      const state = after.state as unknown as import('../src/runtime.js').AgentState;
+      expect(state.lastSlotSkippedAt).toBe(w.ctx.now());
+      // the cadence now counts from the skipped slot: not due again right away
+      const config = agentConfigOf(agent)!;
+      expect(scheduleFor(config, state, w.ctx.now() + 5 * 60_000)?.due).toBe(false);
+      const second = await processAgent(w.ctx, agent, { ...after, nextAt: new Date(w.ctx.now() - 1000) });
+      expect(second?.reasons ?? []).not.toContain('original_post_due');
+      expect(AGENT_ID).toBeTruthy();
+      expect(toolCallResponse).toBeTypeOf('function');
+    } finally {
+      await w.close();
+    }
+  });
+});

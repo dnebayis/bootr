@@ -36,6 +36,7 @@ import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { postPerformanceSection } from './post-performance.js';
+import { recentPostsSection } from './recent-posts.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
@@ -53,6 +54,8 @@ export interface AgentState {
   /** Idempotency key of an inference whose outcome is unknown; blocks new inference until reconciled. */
   inferenceKey?: string | null;
   lastPostAt?: number | null;
+  /** When a turn that woke for a due original post finished without one: the slot is consumed, not kept (rhythm). */
+  lastSlotSkippedAt?: number | null;
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
@@ -78,6 +81,10 @@ export interface Turn {
   routing?: RoutingState | null;
   /** The weekly digest this turn carries until an original post or `finish` closes it (weekly-digest.ts). */
   digestWeek?: string | null;
+  /** The turn woke for a due original post; `finish` without one consumes the slot (`lastSlotSkippedAt`). */
+  postDue?: boolean;
+  /** An original post completed (or was queued for review) in this turn. */
+  posted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +138,16 @@ export interface TurnInputs {
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
+/** The cadence anchor: the last original post, or the last slot the agent consumed by finishing without one. */
+export function scheduleAnchor(state: Pick<AgentState, 'lastPostAt' | 'lastSlotSkippedAt'>): number | null {
+  const a = state.lastPostAt ?? 0;
+  const b = state.lastSlotSkippedAt ?? 0;
+  const anchor = Math.max(a, b);
+  return anchor > 0 ? anchor : null;
+}
+
 export function scheduleFor(config: AgentConfig, state: AgentState, now: number): RhythmSchedule | null {
-  return jitteredSchedule(config, state.lastPostAt ?? null, now);
+  return jitteredSchedule(config, scheduleAnchor(state), now);
 }
 
 async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory) {
@@ -166,6 +181,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
       ...(await postPerformanceSection(ctx, agent.agentId)),
+      // What it said in the last day (recent-posts.ts): no repeats, and the creator's rejection notes.
+      ...(await recentPostsSection(ctx, agent.agentId)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.
@@ -245,6 +262,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     recentSteps: [],
     routing,
     digestWeek: inputs.digest?.week ?? null,
+    postDue: inputs.reasons.includes('original_post_due'),
   };
   await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
@@ -447,6 +465,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       state.continuation = null;
       state.lastResults = [];
       state.phase = 'social';
+      // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
+      if (turn.postDue && !turn.posted) state.lastSlotSkippedAt = now;
       settleWeeklyDigest(state, turn);
       broker.pending = markSent(pending);
       broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } }, now);
@@ -477,6 +497,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     if (result) {
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
         // The weekly digest is not the cadence post (weekly-digest.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
+        if (action.tool === 'publish_post') turn.posted = true;
         if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn)) state.lastPostAt = ctx.now();
       }
       turn.messages.push(toolMessage(inf.toolCall.id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
