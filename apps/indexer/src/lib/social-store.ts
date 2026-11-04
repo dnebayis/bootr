@@ -21,6 +21,8 @@ export type AgentSocial = {
   kernel: string;
   xHandle: string | null;
   lastPostAt: number | null;
+  /** When the agent's first ever post or reply went out (unix s); once set it only ever moves earlier. */
+  firstPostAt: number | null;
   postsCount24h: number;
   status: 'awake' | 'sleeping' | null;
   /** Lowercase hex address of the agent's x402 spender EOA, or null (unknown / not derived yet). */
@@ -28,7 +30,7 @@ export type AgentSocial = {
   updatedAt: number;
 };
 
-export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'postsCount24h' | 'status' | 'spender'>>;
+export type SocialPatch = Partial<Pick<AgentSocial, 'xHandle' | 'lastPostAt' | 'firstPostAt' | 'postsCount24h' | 'status' | 'spender'>>;
 
 interface Store {
   all(): Promise<Map<string, AgentSocial>>;
@@ -39,15 +41,21 @@ const empty = (kernel: string): AgentSocial => ({
   kernel,
   xHandle: null,
   lastPostAt: null,
+  firstPostAt: null,
   postsCount24h: 0,
   status: null,
   spender: null,
   updatedAt: 0,
 });
 
+/** `firstPostAt` never moves later: the earliest value ever stored or sent wins (a null patch leaves it alone). */
+const earliest = (a: number | null | undefined, b: number | null | undefined): number | null =>
+  typeof a === 'number' && typeof b === 'number' ? Math.min(a, b) : typeof a === 'number' ? a : typeof b === 'number' ? b : null;
+
 const merge = (prev: AgentSocial, patch: SocialPatch): AgentSocial => ({
   ...prev,
   ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
+  firstPostAt: earliest(prev.firstPostAt, patch.firstPostAt),
   updatedAt: Math.floor(Date.now() / 1000),
 });
 
@@ -107,7 +115,8 @@ class PgStore implements Store {
            spender text,
            updated_at integer NOT NULL
          );
-         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS spender text;`,
+         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS spender text;
+         ALTER TABLE bootr_offchain.agent_social ADD COLUMN IF NOT EXISTS first_post_at integer;`,
       )
       .then(() => undefined);
     return this.ready;
@@ -118,6 +127,7 @@ class PgStore implements Store {
       kernel: r.kernel as string,
       xHandle: (r.x_handle as string | null) ?? null,
       lastPostAt: (r.last_post_at as number | null) ?? null,
+      firstPostAt: (r.first_post_at as number | null) ?? null,
       postsCount24h: Number(r.posts_count_24h ?? 0),
       status: (r.status as AgentSocial['status']) ?? null,
       spender: (r.spender as string | null) ?? null,
@@ -136,10 +146,10 @@ class PgStore implements Store {
     const prev = await this.pool.query('SELECT * FROM bootr_offchain.agent_social WHERE kernel = $1', [kernel]);
     const next = merge(prev.rows[0] ? this.row(prev.rows[0]) : empty(kernel), patch);
     await this.pool.query(
-      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, spender, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, spender = $6, updated_at = $7`,
-      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.spender, next.updatedAt],
+      `INSERT INTO bootr_offchain.agent_social (kernel, x_handle, last_post_at, posts_count_24h, status, spender, updated_at, first_post_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (kernel) DO UPDATE SET x_handle = $2, last_post_at = $3, posts_count_24h = $4, status = $5, spender = $6, updated_at = $7, first_post_at = $8`,
+      [kernel, next.xHandle, next.lastPostAt, next.postsCount24h, next.status, next.spender, next.updatedAt, next.firstPostAt],
     );
     return next;
   }
@@ -171,6 +181,12 @@ export function parseSocialPatch(body: unknown): SocialPatch | string {
       patch.lastPostAt = o.lastPostAt as number;
     else return 'lastPostAt must be unix seconds or null';
   }
+  if ('firstPostAt' in o) {
+    if (o.firstPostAt === null) patch.firstPostAt = null;
+    else if (Number.isInteger(o.firstPostAt) && (o.firstPostAt as number) >= 0 && (o.firstPostAt as number) < 2 ** 31)
+      patch.firstPostAt = o.firstPostAt as number;
+    else return 'firstPostAt must be unix seconds or null';
+  }
   if ('postsCount24h' in o) {
     if (Number.isInteger(o.postsCount24h) && (o.postsCount24h as number) >= 0 && (o.postsCount24h as number) <= 10_000)
       patch.postsCount24h = o.postsCount24h as number;
@@ -185,6 +201,6 @@ export function parseSocialPatch(body: unknown): SocialPatch | string {
     else if (typeof o.spender === 'string' && /^0x[0-9a-fA-F]{40}$/.test(o.spender)) patch.spender = o.spender.toLowerCase();
     else return 'spender must be a 20-byte hex address or null';
   }
-  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, postsCount24h, status, spender)';
+  if (Object.keys(patch).length === 0) return 'no recognised fields (xHandle, lastPostAt, firstPostAt, postsCount24h, status, spender)';
   return patch;
 }

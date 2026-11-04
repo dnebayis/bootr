@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { BOOTR_TODAY_MEANING, BOOTR_TODAY_UNAVAILABLE, bootrTodaySection } from '../src/context.js';
 import type { IndexerClient } from '../src/indexer-client.js';
-import { PLATFORM_FEED_MAX_CHARS, PLATFORM_FEED_TTL_MS, buildPlatformFeed, cachedPlatformFeed, formatPlatformFeed, type PlatformFeedData } from '../src/platform-feed.js';
+import { PLATFORM_FEED_MAX_CHARS, PLATFORM_FEED_TTL_MS, buildPlatformFeed, cachedPlatformFeed, formatPlatformFeed, milestoneWords, type PlatformFeedData } from '../src/platform-feed.js';
 import { AGENT_ID, finishResponse, KERNEL, makeWorld, seedAgent } from './helpers.js';
 
 const NOW = Date.parse('2026-11-04T12:00:00Z');
@@ -37,6 +37,17 @@ function busyDay(): PlatformFeedData {
       { token: '0x3', kernel: OLD, symbol: 'OLD', amountUsd: 42.1, at: sec('2026-11-04T07:00:00Z'), txHash: '0xaa' },
       { token: '0x3', kernel: OLD, symbol: 'OLD', amountUsd: 10, at: sec('2026-11-02T07:00:00Z'), txHash: '0xab' },
     ],
+    milestones: [
+      { token: '0x1', kernel: FOX, symbol: 'FOX', kind: 'holders', value: 25, at: sec('2026-11-04T11:30:00Z'), txHash: null },
+      { token: '0x2', kernel: OWL, symbol: 'OWL', kind: 'first_swap', value: 0, at: sec('2026-11-04T09:30:00Z'), txHash: '0xac' },
+      { token: '0x3', kernel: OLD, symbol: 'OLD', kind: 'volume24h', value: 1000, at: sec('2026-11-02T10:00:00Z'), txHash: '0xad' },
+      { token: '0x4', kernel: OWN, symbol: 'BOOTR', kind: 'holders', value: 100, at: sec('2026-11-04T11:40:00Z'), txHash: null },
+    ],
+    firstPosts: [
+      { kernel: OWL, symbol: 'OWL', xHandle: 'owlagent', firstPostAt: sec('2026-11-04T10:30:00Z'), lastPostAt: sec('2026-11-04T10:30:00Z'), postsCount24h: 3 },
+      { kernel: OLD, symbol: 'OLD', xHandle: 'oldagent', firstPostAt: sec('2026-11-01T09:30:00Z'), lastPostAt: sec('2026-11-04T08:00:00Z'), postsCount24h: 1 },
+      { kernel: OWN, symbol: 'BOOTR', xHandle: 'AgentBootr', firstPostAt: sec('2026-11-04T11:00:00Z'), lastPostAt: sec('2026-11-04T11:00:00Z'), postsCount24h: 2 },
+    ],
   };
 }
 
@@ -60,18 +71,19 @@ describe('platform feed formatting', () => {
     expect(feed.noteworthy).toBe(false);
     expect(feed.text).toContain('Nothing noteworthy on Bootr in the last 24 h (since 2026-11-03T12:00:00Z)');
     expect(feed.text).toContain('Totals: 3 coins, 1 agent awake of 3, $0.00 traded in 24 h.');
-    expect(feed.text).toContain('Last 7 d (since 2026-10-28T12:00:00Z): 0 new coins, 0 wake/sleep changes, 0 agents posted, 0 agent fee claims, $15.50 traded.');
-    expect(feed.day).toEqual({ launches: 0, statusChanges: 0, posters: 0, claims: 0, claimedUsd: 0 });
+    expect(feed.text).toContain('(since 2026-11-03T12:00:00Z): no launches, milestones, wake/sleep changes, posts or agent fee claims.');
+    expect(feed.text).toContain('Last 7 d (since 2026-10-28T12:00:00Z): 0 new coins, 0 milestones, 0 wake/sleep changes, 0 agents posted, 0 agent fee claims, $15.50 traded.');
+    expect(feed.day).toEqual({ launches: 0, statusChanges: 0, posters: 0, firstPosts: 0, claims: 0, claimedUsd: 0, milestones: 0 });
   });
 
   it('renders a busy day newest first with ISO dates, leaves out the reader itself and cleans third-party strings', () => {
     const feed = formatPlatformFeed(busyDay(), { now: NOW, exclude: KERNEL });
     expect(feed.noteworthy).toBe(true);
-    expect(feed.day).toEqual({ launches: 2, statusChanges: 1, posters: 2, claims: 1, claimedUsd: 42.1 });
-    expect(feed.week).toEqual({ launches: 3, statusChanges: 2, posters: 2, claims: 2, claimedUsd: 52.1 });
+    expect(feed.day).toEqual({ launches: 2, statusChanges: 1, posters: 2, firstPosts: 1, claims: 1, claimedUsd: 42.1, milestones: 2 });
+    expect(feed.week).toEqual({ launches: 3, statusChanges: 2, posters: 2, firstPosts: 2, claims: 2, claimedUsd: 52.1, milestones: 3 });
     const text = feed.text;
     expect(text.length).toBeLessThanOrEqual(PLATFORM_FEED_MAX_CHARS);
-    expect(text).toContain('Last 24 h (since 2026-11-03T12:00:00Z), newest first: 2 new coins, 1 wake/sleep change, 2 agents posted, 1 agent fee claim.');
+    expect(text).toContain('Last 24 h (since 2026-11-03T12:00:00Z), newest first: 2 new coins, 2 milestones, 1 wake/sleep change, 2 agents posted (1 for the first time), 1 agent fee claim.');
     expect(text).toContain('Totals: 14 coins, 6 agents awake of 14, $12.3k traded in 24 h (indexer at 2026-11-04T11:58:00Z).');
     // newest launch first; the name is cleaned and clipped, the creator shortened
     const owl = text.indexOf('- 2026-11-04T09:12:00Z Owl Coin with a very long name t ($OWL) launched by 0xabcd…abcd, agent @owlagent');
@@ -82,11 +94,39 @@ describe('platform feed formatting', () => {
     expect(text).not.toContain('went to sleep'); // 2026-11-02T20:00Z is older than 24 h
     expect(text.indexOf('$OWL agent (@owlagent): 3 posts in 24 h')).toBeLessThan(text.indexOf('$OLD agent (@oldagent): 1 post in 24 h'));
     expect(text).toContain('- 2026-11-04T07:00:00Z $OLD agent claimed $42.10 in fees');
-    expect(text).toContain('Last 7 d (since 2026-10-28T12:00:00Z): 3 new coins ($OWL, $FOX, $OLD), 2 wake/sleep changes, 2 agents posted, 2 agent fee claims ($52.10), $80.1k traded.');
+    // milestones newest first; the one older than 24 h is counted in the week only
+    const fox25 = text.indexOf('- 2026-11-04T11:30:00Z $FOX reached 25 holders');
+    const owlFirst = text.indexOf('- 2026-11-04T09:30:00Z $OWL had its first trade');
+    expect(fox25).toBeGreaterThan(-1);
+    expect(owlFirst).toBeGreaterThan(fox25);
+    expect(text).not.toContain('passed $1.0k traded');
+    expect(text).toContain('- 2026-11-04T10:30:00Z $OWL agent (@owlagent) posted for the first time');
+    expect(text).not.toContain('$OLD agent (@oldagent) posted for the first time');
+    expect(text).toContain('Last 7 d (since 2026-10-28T12:00:00Z): 3 new coins ($OWL, $FOX, $OLD), 3 milestones, 2 wake/sleep changes, 2 agents posted (2 for the first time), 2 agent fee claims ($52.10), $80.1k traded.');
     // the reader's own coin, status, posts never appear
     expect(text).not.toContain('BOOTR');
     expect(text).not.toContain('AgentBootr');
     expect(text).not.toContain('\u0007');
+  });
+
+  it('words every milestone kind and never prints a control character', () => {
+    expect(milestoneWords('first_swap', 0)).toBe('had its first trade');
+    expect(milestoneWords('holders', 100)).toBe('reached 100 holders');
+    expect(milestoneWords('holders', 1)).toBe('reached 1 holder');
+    expect(milestoneWords('volume24h', 10_000)).toBe('passed $10.0k traded in 24 h');
+    expect(milestoneWords('vol\u0007ume', 'x')).toBe('reached milestone vol ume 0');
+  });
+
+  it('a day with only a milestone or a first post is noteworthy', () => {
+    const base = { now: NOW / 1000, since: NOW / 1000 - 7 * 86_400, totals: { tokens: 3, agentsTotal: 3, agentsAwake: 1 } };
+    const m = formatPlatformFeed({ ...base, milestones: [{ token: '0x1', kernel: FOX, symbol: 'FOX', kind: 'holders', value: 500, at: sec('2026-11-04T11:00:00Z') }] }, { now: NOW, exclude: KERNEL });
+    expect(m.noteworthy).toBe(true);
+    expect(m.text).toContain('Milestones:\n- 2026-11-04T11:00:00Z $FOX reached 500 holders');
+    const p = formatPlatformFeed({ ...base, firstPosts: [{ kernel: FOX, symbol: 'FOX', xHandle: 'foxagent', firstPostAt: sec('2026-11-04T11:00:00Z') }] }, { now: NOW, exclude: KERNEL });
+    expect(p.noteworthy).toBe(true);
+    expect(p.text).toContain('First posts:\n- 2026-11-04T11:00:00Z $FOX agent (@foxagent) posted for the first time');
+    const own = formatPlatformFeed({ ...base, milestones: [{ token: '0x4', kernel: KERNEL, kind: 'holders', value: 500, at: sec('2026-11-04T11:00:00Z') }] }, { now: NOW, exclude: KERNEL });
+    expect(own.noteworthy).toBe(false);
   });
 
   it('truncates to the character cap from the end of the lists and says how much was cut', () => {

@@ -10,7 +10,8 @@ const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> =>
 describe('tool catalog', () => {
   it('defines every tool with a capability, effect and schema', () => {
     expect(TOOL_LIST.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(TOOL_LIST).toHaveLength(18);
+    expect(TOOL_LIST).toHaveLength(19);
+    expect(TOOLS.read_coin).toMatchObject({ capability: 'research', effect: 'read', idempotent: true });
     expect(TOOLS.treasury_execute.effect).toBe('money');
     expect(TOOLS.treasury_execute.idempotent).toBe(false);
     expect(TOOLS.publish_reply.idempotent).toBe(false);
@@ -25,6 +26,8 @@ describe('tool catalog', () => {
     expect(toolEnabled(caps(['xReply']), 'publish_reply')).toBe(true);
     expect(toolEnabled(caps(['treasury']), 'treasury_execute')).toBe(true);
     expect(toolEnabled(caps(['research']), 'treasury_read')).toBe(false);
+    expect(toolEnabled(caps(['research']), 'read_coin')).toBe(true);
+    expect(toolEnabled(caps(['xRead', 'memory', 'treasury']), 'read_coin')).toBe(false);
     expect(toolEnabled(caps(['images']), 'generate_image')).toBe(true);
   });
 
@@ -58,5 +61,9 @@ describe('tool catalog', () => {
   it('parses tool input by name', () => {
     expect(parseToolInput('read_x_thread', { postId: '99' })).toEqual({ postId: '99' });
     expect(() => parseToolInput('read_x_thread', { postId: 'abc' })).toThrow();
+    expect(parseToolInput('read_coin', { symbolOrAddress: ' $OWL ' })).toEqual({ symbolOrAddress: '$OWL' });
+    expect(() => parseToolInput('read_coin', { symbolOrAddress: '' })).toThrow();
+    expect(() => parseToolInput('read_coin', { symbolOrAddress: 'x'.repeat(65) })).toThrow();
+    expect(() => parseToolInput('read_coin', { symbolOrAddress: 'OWL', extra: 1 })).toThrow();
   });
 });

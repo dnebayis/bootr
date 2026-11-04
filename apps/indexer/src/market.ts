@@ -43,6 +43,6 @@ if (enabledSources().BootrToken) {
     const token = lc(event.log.address);
     const t = await context.db.find(schema.token, { id: token });
     if (!t || t.launchTx === event.transaction.hash) return; // launch tx is replayed by AgentLaunched
-    await applyTransfer(context, token, event.args.from, event.args.to, event.args.value, Number(event.block.timestamp));
+    await applyTransfer(context, token, event.args.from, event.args.to, event.args.value, Number(event.block.timestamp), event.transaction.hash);
   });
 }

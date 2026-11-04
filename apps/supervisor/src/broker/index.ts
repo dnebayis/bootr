@@ -24,6 +24,7 @@ import { actions, treasuryOps } from '../db/schema.js';
 import { SenderError, type SenderInboxItem, type ReplyEligibility } from '../sender-client.js';
 import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fundingBudget, minUsdcOut, opView, openOps, prepareOp, readTreasuryOnChain, recentOps, swapHelperAddress } from '../treasury.js';
 import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
+import { readCoin } from '../coin-reader.js';
 import { readUrl, searchWeb } from '../web-reader.js';
 import { generateImage, loadImage, mediaFor } from '../images.js';
 import { erc20Abi } from 'viem';
@@ -209,6 +210,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (!snapshot) return failed('market_unavailable');
       return { kind: 'completed', result: { token, snapshot, observedAt: new Date(ctx.now()).toISOString(), untrusted: true } };
     }
+    case 'read_coin':
+      return readCoin(ctx, action.input.symbolOrAddress);
     case 'read_chain':
       return readChain(ctx, action.input);
     case 'treasury_read': {

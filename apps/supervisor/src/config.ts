@@ -87,6 +87,8 @@ export const configSchema = z
     INFERENCE_TIMEOUT_MS: int(150_000, 1000),
     INFERENCE_MAX_OUTPUT_TOKENS: int(1024, 16),
     INDEXER_URL: z.string().url(),
+    /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
+    SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),
     SUPERVISOR_TICK_MS: int(60_000, 1000),
     MAX_AGENTS_PER_TICK: int(10, 1),
     MAX_TOOL_STEPS: int(8, 1),
