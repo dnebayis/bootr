@@ -108,7 +108,7 @@ export function CoinLinksForm({ token }: { token: Token }) {
     >
       <div>
         <h3 className="text-caption font-medium text-ink">Links</h3>
-        <p className="mt-0.5 text-caption text-mute">Shown on the coin page and written into the coin’s contract metadata. Clear a field to remove a link.</p>
+        <p className="mt-0.5 text-caption text-mute">Shown on the coin page and written into the coin’s contract metadata. Clear a field to remove a link.{token.source === 'clanker' ? ' Clanker’s own page keeps the links set at launch.' : ''}</p>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {FIELDS.map(({ kind, label, placeholder, url }) => (

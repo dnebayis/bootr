@@ -4,6 +4,7 @@ import { base, baseSepolia } from 'viem/chains';
 import { entryPointAbi } from '@/lib/gas';
 import { ipfsGatewayUrl, UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
+import { clankerTokenMetadata } from '@/lib/contract-metadata';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { chainAddresses } from '@/lib/chains';
 import { env } from '@/lib/env';
@@ -190,8 +191,9 @@ export async function POST(req: NextRequest) {
     return fail(502, 'pin_failed', err instanceof PinError ? err.message : 'Image pinning failed.');
   }
   const imageUrl = ipfsGatewayUrl(cid);
+  const draftCoin = { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links };
   try {
-    const saved = await saveDraftIdentity(draftId, identity, null, { coin: { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links }, worker: worker.draft, source: launchThrough });
+    const saved = await saveDraftIdentity(draftId, identity, null, { coin: draftCoin, worker: worker.draft, source: launchThrough });
     if (!saved.ok) return fail(500, 'store_failed', 'Could not store the launch draft.');
   } catch {
     return fail(503, 'store_unavailable', 'The launch draft store is not writable.');
@@ -226,7 +228,8 @@ export async function POST(req: NextRequest) {
     name,
     symbol,
     image: imageUrl,
-    metadata: contractUriUrl(draftId),
+    // Clanker's page reads JSON from this field; the hosted document's URL stays inside it (lib/contract-metadata.ts).
+    metadata: launchThrough === 'clanker' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId)) : contractUriUrl(draftId),
     context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId, via: 'agent-api' }),
     salt,
     buybackBurn: buyback,

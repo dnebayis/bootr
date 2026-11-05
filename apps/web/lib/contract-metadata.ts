@@ -35,3 +35,26 @@ export function buildContractMetadata(launch: { identity: string | null; coin: D
     ...(launch.coin?.imageIpfs ? { imageIpfs: launch.coin.imageIpfs } : {}),
   };
 }
+
+/**
+ * What goes into a Clanker token's `metadata` on chain: Clanker reads this field as a JSON string (`description`,
+ * `socialMediaUrls: [{platform, url}]`) to fill its own page. `contractUri` is ours: the hosted document the coin page
+ * reads and the creator edits (`ownContractUri` in lib/coin-links.ts). The token's admin is the launcher, which has no
+ * update path, so this string never changes after launch; later edits reach only the hosted document.
+ */
+export function clankerTokenMetadata(coin: DraftCoin, contractUri: string): string {
+  const { name, xHandle, links } = coin;
+  const projectX = links.x && xHandleOfUrl(links.x) ? links.x : null;
+  const sameAccount = !!projectX && !!xHandle && xHandleOfUrl(projectX)!.toLowerCase() === xHandle.toLowerCase();
+  return JSON.stringify({
+    description: `${name}: an autonomous agent coin launched on Bootr.`,
+    socialMediaUrls: [
+      ...(projectX ? [{ platform: 'x', url: projectX }] : []),
+      ...(xHandle && !sameAccount ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
+      ...(links.telegram ? [{ platform: 'telegram', url: links.telegram }] : []),
+      ...(links.discord ? [{ platform: 'discord', url: links.discord }] : []),
+      { platform: 'website', url: links.website || env.siteUrl },
+    ],
+    contractUri,
+  });
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CardToken } from './agent-card';
 import { contractUriUrl } from './agent-card';
-import { buildContractMetadata } from './contract-metadata';
+import { buildContractMetadata, clankerTokenMetadata } from './contract-metadata';
 import { env } from './env';
 
 const DRAFT = '3b241101-e2bb-4255-8caf-4136c566a962';
@@ -77,3 +77,31 @@ describe('ERC-7572 contract metadata', () => {
     ]);
   });
 });
+
+describe('a Clanker token\'s on-chain metadata', () => {
+  const uri = contractUriUrl(DRAFT);
+
+  it('is the JSON Clanker reads, with the project and agent accounts, the hosted document inside', () => {
+    const links = { website: 'https://quiet.engine', x: 'https://x.com/quietengine', telegram: 'https://t.me/quiet', discord: null };
+    const doc = JSON.parse(clankerTokenMetadata({ ...coin, xHandle: 'quietbot', links }, uri));
+    expect(doc).toEqual({
+      description: 'Quiet Engine: an autonomous agent coin launched on Bootr.',
+      socialMediaUrls: [
+        { platform: 'x', url: 'https://x.com/quietengine' },
+        { platform: 'x', url: 'https://x.com/quietbot' },
+        { platform: 'telegram', url: 'https://t.me/quiet' },
+        { platform: 'website', url: 'https://quiet.engine' },
+      ],
+      contractUri: uri,
+    });
+  });
+
+  it('lists one X entry when the accounts are the same, and the site when no website was given', () => {
+    const doc = JSON.parse(clankerTokenMetadata({ ...coin, xHandle: 'QuietEngine', links: { ...none, x: 'https://x.com/quietengine' } }, uri));
+    expect(doc.socialMediaUrls).toEqual([
+      { platform: 'x', url: 'https://x.com/quietengine' },
+      { platform: 'website', url: env.siteUrl },
+    ]);
+  });
+});
+

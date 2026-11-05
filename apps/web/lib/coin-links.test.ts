@@ -13,6 +13,16 @@ describe('coin page links from the hosted contract URI', () => {
     expect(ownContractUri(null)).toBeNull();
   });
 
+  it('finds the hosted document inside a Clanker token\'s JSON metadata, under the same rules', () => {
+    const json = (contractUri: unknown) => JSON.stringify({ description: 'd', socialMediaUrls: [], contractUri });
+    expect(ownContractUri(json(`${env.siteUrl}/tokens/${DRAFT}.json`))).toBe(`/tokens/${DRAFT}.json`);
+    expect(ownContractUri(json(`https://elsewhere.example/tokens/${DRAFT}.json`))).toBeNull();
+    expect(ownContractUri(json(json(`${env.siteUrl}/tokens/${DRAFT}.json`)))).toBeNull();
+    expect(ownContractUri(json(7))).toBeNull();
+    expect(ownContractUri('{"description":"a coin launched elsewhere"}')).toBeNull();
+    expect(ownContractUri('{not json')).toBeNull();
+  });
+
   it("shows the project's X account and keeps the agent's own handle out", () => {
     const doc = {
       external_link: 'https://quiet.engine',

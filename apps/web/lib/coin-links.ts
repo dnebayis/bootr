@@ -14,6 +14,15 @@ export const NO_COIN_LINKS: CoinPageLinks = { website: null, x: null, telegram: 
 /** Only contract URIs this site hosts (`/tokens/<launchId>.json`) are fetched; anything else is never requested. */
 export function ownContractUri(metadata: string | null | undefined): string | null {
   if (!metadata) return null;
+  // A Clanker launch carries JSON (`clankerTokenMetadata`) with the hosted document's URL inside.
+  if (metadata.trimStart().startsWith('{')) {
+    try {
+      const inner = (JSON.parse(metadata) as { contractUri?: unknown }).contractUri;
+      return typeof inner === 'string' && !inner.trimStart().startsWith('{') ? ownContractUri(inner) : null;
+    } catch {
+      return null;
+    }
+  }
   const site = env.siteUrl.replace(/\/$/, '');
   const m = /^(?:https?:\/\/[^/]+)?(\/tokens\/[0-9a-f-]{36}(?:\.json)?)$/i.exec(metadata);
   if (!m) return null;
