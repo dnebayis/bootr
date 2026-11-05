@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_SITE_URL } from './api-page.js';
 
 /** Treat `VAR=` (empty) as unset so defaults apply. */
 const blank = (v: unknown) => (v === '' ? undefined : v);
@@ -23,6 +24,15 @@ export const configSchema = z.object({
   DATABASE_URL: z.string().min(1),
   /** Where the browser is sent after /oauth/callback. Unset = JSON response. */
   SENDER_OAUTH_RETURN_URL: optionalUrl,
+  /** The web app; the page at `GET /` lists the APIs from `<this>/api/catalog`. Never taken from a request. */
+  SENDER_SITE_URL: z.preprocess(
+    blank,
+    z
+      .string()
+      .url()
+      .refine((v) => /^https?:\/\//i.test(v), 'must be an http(s) URL')
+      .default(DEFAULT_SITE_URL),
+  ),
   /** Reconciliation tick; 0 disables the in-process worker. */
   SENDER_RECONCILE_INTERVAL_MS: num(z.coerce.number().int().nonnegative(), 60_000),
   X_API_BASE_URL: z.preprocess(blank, z.string().url().default('https://api.x.com')),
