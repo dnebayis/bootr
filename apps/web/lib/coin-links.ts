@@ -37,14 +37,16 @@ export function ownContractUri(metadata: string | null | undefined): string | nu
  */
 export function pickCoinLinks(json: unknown, agentXHandle: string | null | undefined): CoinPageLinks {
   if (!json || typeof json !== 'object') return NO_COIN_LINKS;
-  const o = json as { external_link?: unknown; socialMediaUrls?: unknown };
+  const o = json as { external_link?: unknown; website?: unknown; socialMediaUrls?: unknown };
   const urls = Array.isArray(o.socialMediaUrls) ? (o.socialMediaUrls as { platform?: unknown; url?: unknown }[]) : [];
   const site = env.siteUrl.replace(/\/$/, '').toLowerCase();
   const https = (v: unknown): string | null => (typeof v === 'string' && /^https:\/\/[^\s"<>]+$/.test(v) && v.length <= 200 ? v : null);
   const of = (platform: string) => https(urls.find((u) => u.platform === platform)?.url);
   // `external_link` is the coin's website when the creator gave one, else this site's token page: not a link to show.
   const external = https(o.external_link);
-  const website = external && !external.toLowerCase().startsWith(`${site}/`) && external.toLowerCase() !== site ? external : null;
+  const guessed = external && !external.toLowerCase().startsWith(`${site}/`) && external.toLowerCase() !== site ? external : null;
+  // `website` is what the creator entered, even when it is this site; documents without the field fall back to the guess.
+  const website = 'website' in o ? https(o.website) : guessed;
   const agent = (agentXHandle ?? '').toLowerCase();
   const x =
     urls

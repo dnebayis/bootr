@@ -11,7 +11,7 @@ import { age, num, pct, price, shortAddr, usd } from '@/lib/format';
 import { chainBadge, clankerWorldUrl, explorer, swapLink } from '@/lib/chains';
 import { Badge } from '@/components/ui/Badge';
 import { CopyButton } from '@/components/ui/CopyButton';
-import { LinkButton } from '@/components/ui/Button';
+import { buttonClass, LinkButton } from '@/components/ui/Button';
 import { Panel, Empty } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { changeClass, Usd } from '@/components/ui/Ticker';
@@ -133,7 +133,7 @@ export function TokenView({ address }: { address: string }) {
             </div>
             <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
             {links.data && (links.data.website || links.data.x || links.data.telegram || links.data.discord) ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" data-testid="token-links">
+              <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="token-links">
                 {[
                   { label: 'Website', href: links.data.website },
                   { label: 'X', href: links.data.x },
@@ -142,8 +142,14 @@ export function TokenView({ address }: { address: string }) {
                 ]
                   .filter((l): l is { label: string; href: string } => !!l.href)
                   .map(({ label, href }) => (
-                    <a key={label} href={href} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex items-center gap-0.5 text-body hover:text-link">
-                      {label} <ArrowUpRightIcon size={12} />
+                    <a
+                      key={label}
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      className={buttonClass('secondary', 'md', 'h-9 gap-1.5 border-hairline-strong px-3.5 font-medium')}
+                    >
+                      {label} <ArrowUpRightIcon size={14} />
                     </a>
                   ))}
               </div>

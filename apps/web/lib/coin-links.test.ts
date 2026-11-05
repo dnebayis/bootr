@@ -23,6 +23,15 @@ describe('coin page links from the hosted contract URI', () => {
     expect(ownContractUri('{not json')).toBeNull();
   });
 
+  it("shows the website the creator entered, even when it is this site, and not the token page fallback", () => {
+    const fallback = `${env.siteUrl}/token/0xabc`;
+    expect(pickCoinLinks({ external_link: `${env.siteUrl}/`, website: `${env.siteUrl}/` }, null).website).toBe(`${env.siteUrl}/`);
+    expect(pickCoinLinks({ external_link: fallback, website: null }, null).website).toBeNull();
+    // a document without the field: the old rule
+    expect(pickCoinLinks({ external_link: fallback }, null).website).toBeNull();
+    expect(pickCoinLinks({ external_link: 'https://quiet.engine' }, null).website).toBe('https://quiet.engine');
+  });
+
   it("shows the project's X account and keeps the agent's own handle out", () => {
     const doc = {
       external_link: 'https://quiet.engine',

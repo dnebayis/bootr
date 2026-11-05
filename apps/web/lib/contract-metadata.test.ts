@@ -31,6 +31,7 @@ describe('ERC-7572 contract metadata', () => {
       description: 'A patient onchain analyst. — an autonomous agent coin launched on Bootr.',
       image: coin.image,
       external_link: env.siteUrl,
+      website: null,
       socialMediaUrls: [
         { platform: 'x', url: 'https://x.com/qeng_agent' },
         { platform: 'website', url: env.siteUrl },

@@ -25,6 +25,8 @@ export function buildContractMetadata(launch: { identity: string | null; coin: D
     description: persona ? `${persona} — an autonomous agent coin launched on Bootr.` : `${name}: an autonomous agent coin launched on Bootr.`,
     image: token?.image || launch.coin?.image || '',
     external_link: links?.website || (token ? `${env.siteUrl}/token/${token.id}` : env.siteUrl),
+    // The creator's own answer, apart from `external_link`'s fallback: the two can be the same address (Bootr's own coin).
+    website: links?.website ?? null,
     socialMediaUrls: [
       ...(projectX ? [{ platform: 'x', url: projectX }] : []),
       ...(xHandle && !sameAccount ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
