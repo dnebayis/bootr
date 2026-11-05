@@ -1,8 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeConfig, sanitizeFuel, validateChanges } from './supervisor';
+import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
+
+describe('sanitizeNotifications', () => {
+  const item = { id: 'ntf_1', event: 'gas_out', title: 'Out of gas', body: 'Add gas.', tone: 'danger', state: 'active', firstAt: '2026-11-05T10:00:00Z', lastSeenAt: '2026-11-05T11:00:00Z', resolvedAt: null, extra: 'dropped' };
+
+  it('keeps known fields and drops a malformed item', () => {
+    expect(sanitizeNotification(item)).toEqual({ id: 'ntf_1', event: 'gas_out', title: 'Out of gas', body: 'Add gas.', tone: 'danger', state: 'active', firstAt: '2026-11-05T10:00:00Z', lastSeenAt: '2026-11-05T11:00:00Z', resolvedAt: null });
+    expect(sanitizeNotification({ ...item, title: 7 })).toBeNull();
+    expect(sanitizeNotification({ ...item, tone: 'shouting' })?.tone).toBe('info');
+  });
+
+  it('counts only what is active and reads Telegram strictly', () => {
+    const view = sanitizeNotifications({ items: [item, { ...item, id: 'ntf_2', state: 'resolved', resolvedAt: '2026-11-05T12:00:00Z' }, { junk: true }], events: [{ key: 'gas_out', label: 'Out of gas', enabled: false }, { nope: 1 }], telegram: { available: 'yes', linked: true, linkedAt: 'not a date' } });
+    expect(view.items).toHaveLength(2);
+    expect(view.active).toBe(1);
+    expect(view.events).toEqual([{ key: 'gas_out', label: 'Out of gas', enabled: false }]);
+    expect(view.telegram).toEqual({ available: false, linked: true, linkedAt: null });
+    expect(sanitizeNotifications(null)).toEqual({ items: [], active: 0, events: [], telegram: { available: false, linked: false, linkedAt: null } });
+  });
+});
+
+describe('sanitizeChat', () => {
+  const message = { id: 'msg_1', role: 'agent', text: 'hello', status: 'done', chargedMicroUsdc: '18000', remembered: true, at: '2026-11-05T10:00:00Z', error: 'internal' };
+
+  it('keeps a message, without what the panel has no use for', () => {
+    expect(sanitizeChatMessage(message)).toEqual({ id: 'msg_1', role: 'agent', text: 'hello', status: 'done', chargedMicroUsdc: '18000', remembered: true, at: '2026-11-05T10:00:00Z' });
+    expect(sanitizeChatMessage({ ...message, role: 'system' })).toBeNull();
+    expect(sanitizeChatMessage({ ...message, chargedMicroUsdc: '1e9' })?.chargedMicroUsdc).toBeNull();
+  });
+
+  it('reads the quote, with a null cost when the supervisor cannot say', () => {
+    const view = sanitizeChat({ messages: [message, { nope: 1 }], quote: { model: 'anthropic/claude-sonnet-4.6', approxMicroUsdc: null, basis: null, maxMicroUsdc: 150000, refusal: 'fuel_low', refusalText: 'Fuel is low.', limits: { perHour: 20, perDay: 60, usedHour: 1, usedDay: 2 }, maxChars: 1000 } });
+    expect(view.messages).toHaveLength(1);
+    expect(view.quote).toMatchObject({ approxMicroUsdc: null, basis: null, refusal: 'fuel_low', refusalText: 'Fuel is low.', limits: { usedHour: 1, usedDay: 2 } });
+    expect(sanitizeChat({ quote: { approxMicroUsdc: 18000, basis: 'recent_messages' } }).quote).toMatchObject({ approxMicroUsdc: 18000, basis: 'recent_messages', maxChars: 1000 });
+  });
+});
 
 describe('validateChanges', () => {
   it('keeps instructions, model and worker fields inside bounds and drops unknown keys', () => {

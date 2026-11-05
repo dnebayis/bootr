@@ -7,7 +7,7 @@ import { authorizeReview, ok, readBody, relay } from '../review';
 /**
  * POST /api/agent/:kernel/approvals/list {message, signature} | {token} -> {items, pending, token}
  * The creator's review queue (texts, image previews, decided items): a SIWE message whose statement is
- * `Review the posts of Bootr coin $SYMBOL (#agentId, kernel).` (nonce from `POST /api/agent/nonce`), or the
+ * `Open the console of Bootr coin $SYMBOL (#agentId, kernel).` (nonce from `POST /api/agent/nonce`), or the
  * review token an earlier call returned. `status=all` in the query lists decided items too.
  */
 export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kernel]/approvals/list'>) {

@@ -277,6 +277,60 @@ export interface AgentApprovals {
   token?: string;
 }
 
+/** One line of the creator's private chat with the agent (supervisor chat.ts). */
+export interface AgentChatMessage {
+  id: string;
+  role: 'creator' | 'agent';
+  text: string;
+  status: 'open' | 'done' | 'failed';
+  chargedMicroUsdc: string | null;
+  remembered: boolean;
+  at: string;
+}
+
+/** What one message costs and whether one may be sent now; `refusalText` says why not, in plain words. */
+export interface AgentChatQuote {
+  model: string;
+  approxMicroUsdc: number | null;
+  basis: 'recent_messages' | 'list_price' | null;
+  maxMicroUsdc: number;
+  refusal: string | null;
+  refusalText: string | null;
+  limits: { perHour: number; perDay: number; usedHour: number; usedDay: number };
+  maxChars: number;
+}
+
+/** `POST /api/agent/[kernel]/chat/list`. */
+export interface AgentChat {
+  messages: AgentChatMessage[];
+  quote: AgentChatQuote;
+  token?: string;
+}
+
+export type NotificationTone = 'info' | 'warning' | 'danger';
+
+/** One thing the creator is told about their agent (supervisor notifications.ts). */
+export interface AgentNotification {
+  id: string;
+  event: string;
+  title: string;
+  body: string;
+  tone: NotificationTone;
+  state: 'active' | 'resolved';
+  firstAt: string;
+  lastSeenAt: string;
+  resolvedAt: string | null;
+}
+
+/** `POST /api/agent/[kernel]/notifications/list`: the creator's inbox, its per-event switches and the Telegram state. */
+export interface AgentNotifications {
+  items: AgentNotification[];
+  active: number;
+  events: { key: string; label: string; enabled: boolean }[];
+  telegram: { available: boolean; linked: boolean; linkedAt: string | null };
+  token?: string;
+}
+
 /** `GET /api/agent/[kernel]/approvals`: the public count. */
 export interface AgentApprovalCount {
   pending: number;

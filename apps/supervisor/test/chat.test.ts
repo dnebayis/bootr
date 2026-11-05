@@ -6,7 +6,7 @@ import { TOOL_LIST } from '@bootr/agent-core';
 import { computeQuote, DEFAULT_PRICE_TABLE } from '@bootr/inference';
 import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { createApp } from '../src/api.js';
-import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, estimateQuote, fuelGate, resetChatPrices, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
+import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, estimateQuote, fuelGate, REFUSAL_TEXT, resetChatPrices, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
 import { actions, approvals, chatMessages, images, inference, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { recentThoughtCost } from '../src/inference.js';
@@ -392,7 +392,7 @@ describe('one answer at a time, and never paid twice', () => {
 
   it('a failed answer says so and leaves chat usable', async () => {
     const { w, agent } = await world([new Response(JSON.stringify({ error: { code: 'bad_request' } }), { status: 400 }), say('back')]);
-    expect(await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi' })).toMatchObject({ ok: false, status: 502, error: 'chat_failed' });
+    expect(await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi' })).toMatchObject({ ok: false, status: 409, error: 'chat_failed' });
     w.setNow(w.ctx.now() + 1000);
     expect(await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi again' })).toMatchObject({ ok: true, message: { text: 'back' } });
     await w.close();
@@ -464,6 +464,13 @@ describe('what a message costs', () => {
     expect((await chatView(w.ctx, agent)).quote).toMatchObject({ approxMicroUsdc: null, basis: null, refusal: null });
     expect(await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi' })).toMatchObject({ ok: true });
     await w.close();
+  });
+});
+
+describe('the words a creator reads', () => {
+  it('name no machinery', () => {
+    const all = Object.values(REFUSAL_TEXT).join(' ').toLowerCase();
+    for (const word of ['x402', 'session key', 'kernel', 'spender', 'relay', 'inference']) expect(all).not.toContain(word);
   });
 });
 

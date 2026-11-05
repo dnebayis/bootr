@@ -401,6 +401,13 @@ describe('notification text', () => {
     }
   });
 
+  it('says what happened in plain words, without our machinery', () => {
+    const data = { pending: 2, expiring: 1, hours: 3, days: 1, thoughtsLeft: 5, failures: 6 };
+    const texts = (Object.keys(EVENT_RULES) as (keyof typeof EVENT_RULES)[]).flatMap((event) => ['paused_onchain', 'paused_by_bootr', 'blocked', 'failing', 'expiring', 'outdated'].map((reason) => notificationText(event, { ...data, reason })));
+    const all = JSON.stringify([texts, Object.values(EVENT_RULES).map((r) => r.label)]).toLowerCase();
+    for (const word of ['x402', 'session key', 'kernel', 'userop', 'spender', 'guardian', 'permissionid', 'bundler']) expect(all).not.toContain(word);
+  });
+
   it('a queued post puts the event in the inbox without its text, and a decision clears it', async () => {
     const w = await makeWorld();
     const agent = await seedAgent(w, { config: { requireApproval: true } });

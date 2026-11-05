@@ -2,18 +2,15 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { SiweMessage } from 'siwe';
 import { toast } from 'sonner';
-import { useConnection, useSignMessage } from 'wagmi';
-import { appChain } from '@/lib/chains';
-import { env } from '@/lib/env';
 import { ago } from '@/lib/format';
-import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount, type ReviewAuth } from '@/lib/indexer';
+import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
 import type { AgentApproval, AgentApprovals, ApprovalDecision, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
+import { useConsoleSession } from './console-session';
 
 /** "expires in 2 h" / "expires in 35 min" / "expired". */
 export function expiresLabel(expiresAt: string, now = Date.now()): string {
@@ -59,16 +56,13 @@ function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; on
 
 /**
  * The creator's review queue inside the console: posts and replies the agent wants to send while "Review posts
- * before they go out" is on. One wallet signature opens the queue (the route answers a review token that keeps it
- * open for the session); Approve sends the post through the agent's X account now, Reject tells the agent why on
+ * before they go out" is on. The console's one wallet signature opens the queue (console-session.ts); Approve sends the post through the agent's X account now, Reject tells the agent why on
  * its next turn. In mock mode the signature is skipped.
  */
 export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: boolean }) {
-  const { address } = useConnection();
-  const { signMessageAsync } = useSignMessage();
+  const session = useConsoleSession(token);
   const queryClient = useQueryClient();
   const count = useApprovalCount(token.kernel);
-  const [auth, setAuth] = useState<ReviewAuth | null>(null);
   const [list, setList] = useState<AgentApprovals | null>(null);
   const [opening, setOpening] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -76,49 +70,19 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
   const pending = list ? list.pending : (count.data?.pending ?? 0);
   if (!reviewing && pending === 0 && !list) return null;
 
-  const sign = async (): Promise<ReviewAuth | null> => {
-    if (env.useMock) return { message: address ?? '', signature: '0x' };
-    if (!address) {
-      toast.error('Connect the creator wallet first.');
-      return null;
-    }
-    const n = await fetch('/api/agent/nonce', { method: 'POST' });
-    if (!n.ok) {
-      toast.error('Could not start the signature (nonce).');
-      return null;
-    }
-    const { nonce } = (await n.json()) as { nonce: string };
-    const message = new SiweMessage({
-      domain: window.location.host,
-      address,
-      statement: `Review the posts of Bootr coin $${token.symbol} (#${token.agentId}, ${token.kernel}).`,
-      uri: window.location.origin,
-      version: '1',
-      chainId: appChain.id,
-      nonce,
-      issuedAt: new Date().toISOString(),
-    }).prepareMessage();
-    try {
-      return { message, signature: await signMessageAsync({ message }) };
-    } catch {
-      toast.error('Signature cancelled.');
-      return null;
-    }
-  };
-
-  const load = async (fresh: ReviewAuth | null) => {
-    const a = fresh ?? auth ?? (await sign());
+  const load = async () => {
+    const a = await session.auth();
     if (!a) return;
     const res = await fetchApprovals(token.kernel, a);
     setList(res);
-    setAuth(res.token ? { token: res.token } : a);
+    session.keep(res.token);
     queryClient.setQueryData(qk.approvalCount(token.kernel), { pending: res.pending });
   };
 
   const open = async () => {
     setOpening(true);
     try {
-      await load(null);
+      await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not open the review queue.');
     } finally {
@@ -127,9 +91,10 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
   };
 
   const decide = async (item: AgentApproval, decision: ApprovalDecision, note: string) => {
-    if (!auth) return;
     setBusy(item.id);
     try {
+      const auth = await session.auth();
+      if (!auth) return;
       const decided = await decideApproval(token.kernel, auth, item.id, decision, note.trim() || undefined);
       setList((prev) => (prev ? { ...prev, items: prev.items.filter((i) => i.id !== item.id), pending: Math.max(0, prev.pending - 1) } : prev));
       queryClient.setQueryData(qk.approvalCount(token.kernel), (c: { pending: number } | undefined) => ({ pending: Math.max(0, (c?.pending ?? 1) - 1) }));
@@ -138,7 +103,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
       toast.success(decided.status === 'approved' ? (decided.url ? 'Approved and posted on X.' : 'Approved: the agent is sending it.') : 'Rejected. The agent will see your note on its next turn.');
     } catch (err) {
       if (err instanceof ReviewError && err.status === 401) {
-        setAuth(null);
+        session.forget();
         setList(null);
         toast.error('The review session expired. Open the queue again.');
       } else if (err instanceof ReviewError && err.status === 409) {
@@ -166,7 +131,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
             Refresh
           </Button>
         ) : (
-          <Button type="button" variant="secondary" size="sm" onClick={() => void open()} loading={opening} loadingLabel="Opening…" disabled={!env.useMock && !address}>
+          <Button type="button" variant="secondary" size="sm" onClick={() => void open()} loading={opening} loadingLabel="Opening…" disabled={!session.canSign}>
             {pending > 0 ? 'Review posts' : 'Open queue'}
           </Button>
         )}

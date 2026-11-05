@@ -21,11 +21,13 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { TokenImage } from '@/components/ui/TokenImage';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
+import { AgentChat } from './AgentChat';
 import { ApprovalQueue } from './ApprovalQueue';
 import { CoinLinksForm } from './CoinLinksForm';
 import { useCreatorSignature } from './creator-signature';
 import { FuelForm } from './FuelForm';
 import { GasForm } from './GasForm';
+import { NotificationInbox } from './NotificationInbox';
 
 const INSTRUCTIONS_MIN = 20;
 const INSTRUCTIONS_MAX = 600;
@@ -117,9 +119,9 @@ function cadenceLabel(ms: number): string {
 }
 
 /**
- * The creator's panel on the coin page: the agent's instructions, powers (with the image model and image style under
+ * The creator's panel on the coin page: the inbox (NotificationInbox), the agent's instructions, powers (with the image model and image style under
  * Images), the post review switch, cadence and model (from the supervisor via `/api/agent/:kernel/config`, saved with
- * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), the coin's links
+ * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), the private chat (AgentChat), the coin's links
  * (CoinLinksForm), then the existing Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock
  * mode, where saving skips the signature).
  */
@@ -229,6 +231,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
       action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}
     >
       <div data-testid="creator-console" className="flex flex-col gap-4">
+        <NotificationInbox token={token} />
         {outlook && (outlook.runway || outlook.warnings.length > 0) ? (
           <div className="flex flex-col gap-2" data-testid="fuel-outlook">
             {outlook.runway ? (
@@ -467,6 +470,8 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
         )}
 
         {cfg ? <ApprovalQueue token={token} reviewing={cfg.requireApproval} /> : null}
+
+        {cfg ? <AgentChat token={token} /> : null}
 
         <div className="border-t border-hairline pt-4">
           <CoinLinksForm token={token} />

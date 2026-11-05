@@ -22,6 +22,9 @@ import type {
   AgentApproval,
   AgentApprovalCount,
   AgentApprovals,
+  AgentChat,
+  AgentChatMessage,
+  AgentNotifications,
   AgentConfig,
   AgentFuel,
   ApprovalDecision,
@@ -368,6 +371,43 @@ export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: str
   return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(note ? { note } : {}) });
 }
 
+/** The creator's inbox badge: how many notifications are open. */
+export async function fetchNotificationCount(kernel: string): Promise<{ active: number }> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/notifications`, { cache: 'no-store' });
+  if (!res.ok) throw new IndexerError(`Notification count responded ${res.status}`);
+  const json = (await res.json()) as { active?: unknown };
+  return { active: typeof json.active === 'number' ? json.active : 0 };
+}
+
+async function consoleCall<T>(kernel: string, path: string, body: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    throw new ReviewError(res.status, err.error ?? `http_${res.status}`, err.message ?? `The request failed (${res.status}).`);
+  }
+  return (await res.json()) as T;
+}
+
+export function fetchNotifications(kernel: string, auth: ReviewAuth): Promise<AgentNotifications> {
+  return consoleCall<AgentNotifications>(kernel, 'notifications/list', auth);
+}
+
+export function saveNotificationSettings(kernel: string, auth: ReviewAuth, optOut: string[]): Promise<AgentNotifications> {
+  return consoleCall<AgentNotifications>(kernel, 'notifications/settings', { ...auth, optOut });
+}
+
+export function telegramAction(kernel: string, auth: ReviewAuth, action: 'link' | 'unlink'): Promise<{ url: string | null; token?: string }> {
+  return consoleCall<{ url: string | null; token?: string }>(kernel, 'notifications/telegram', { ...auth, action });
+}
+
+export function fetchAgentChat(kernel: string, auth: ReviewAuth): Promise<AgentChat> {
+  return consoleCall<AgentChat>(kernel, 'chat/list', auth);
+}
+
+export function sendAgentChat(kernel: string, auth: ReviewAuth, text: string): Promise<{ reply: AgentChatMessage | null; pending: boolean; token?: string }> {
+  return consoleCall<{ reply: AgentChatMessage | null; pending: boolean; token?: string }>(kernel, 'chat/send', { ...auth, text });
+}
+
 // ---------------------------------------------------------------- query keys
 
 export const qk = {
@@ -387,6 +427,8 @@ export const qk = {
   agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
   agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
   approvalCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'approvals', 'count'] as const,
+  notificationCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'notifications', 'count'] as const,
+  consoleSession: (kernel: string) => ['agent', kernel.toLowerCase(), 'console-session'] as const,
   agentFuel: (kernel: string) => ['agent', kernel.toLowerCase(), 'fuel'] as const,
 };
 
@@ -477,6 +519,11 @@ export function useAgentFuel(kernel: string | undefined, enabled = true) {
 /** The "n pending" badge of the creator console; polled while the page is open. */
 export function useApprovalCount(kernel: string | undefined, enabled = true) {
   return useQuery({ queryKey: qk.approvalCount(kernel ?? ''), queryFn: () => fetchApprovalCount(kernel!), enabled: !!kernel && enabled, staleTime: 15_000, refetchInterval: 60_000, retry: 1 });
+}
+
+/** The console's inbox badge; polled while the page is open. */
+export function useNotificationCount(kernel: string | undefined, enabled = true) {
+  return useQuery({ queryKey: qk.notificationCount(kernel ?? ''), queryFn: () => fetchNotificationCount(kernel!), enabled: !!kernel && enabled, staleTime: 30_000, refetchInterval: 60_000, retry: 1 });
 }
 
 /** Infinite activity tape; the next page starts before the last item's `at`. A short page means the end. */

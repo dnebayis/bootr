@@ -87,7 +87,7 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
       return { title: 'Agent keeps failing', body: `Its last ${failures !== null ? plural(failures, 'turn') : 'turns'} failed. It keeps trying, with longer waits.` };
     }
     case 'x_revoked':
-      return { title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect its X account again.' };
+      return { title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect the same X account again from the inbox in the creator console.' };
     case 'key_rotation': {
       const days = num(data.days);
       const when = data.reason === 'expiring' ? (days !== null && days >= 1 ? `It runs out in about ${plural(days, 'day')}.` : 'It runs out very soon.') : 'It was set up under older limits.';

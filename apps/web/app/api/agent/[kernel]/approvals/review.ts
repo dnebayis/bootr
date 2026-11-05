@@ -1,8 +1,9 @@
 /**
- * Shared by the review-queue routes (`/approvals/list`, `/approvals/decide`): the creator proves who they are once
- * with a SIWE message whose statement is `Review the posts of Bootr coin $SYMBOL (#agentId, kernel).`; the answer
- * carries a short-lived review token (HMAC with SESSION_SECRET, like the admin session) that the console sends
- * instead of a new signature for the rest of the session. Nothing here runs in the browser.
+ * Shared by the creator's private console routes (`/approvals/list`, `/approvals/decide`, `/notifications/*`,
+ * `/chat/*`): the creator proves who they are once with a SIWE message whose statement is
+ * `Open the console of Bootr coin $SYMBOL (#agentId, kernel).` (`Review the posts of ...` from older pages still
+ * counts); the answer carries a short-lived token (HMAC with SESSION_SECRET, like the admin session) that the console
+ * sends instead of a new signature for the rest of the session. Nothing here runs in the browser.
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { isAddress, type Address } from 'viem';
@@ -15,7 +16,7 @@ import { hmacHex, safeEqual, sessionSecret } from '@/lib/server/session-core';
 import { verifySiwe } from '@/lib/server/siwe-verify';
 import { SupervisorError, SupervisorUnavailable } from '@/lib/server/supervisor';
 
-export const REVIEW_STATEMENT = /^Review the posts of Bootr coin \$([A-Za-z0-9_]{1,16}) \(#(\d{1,20}), (0x[0-9a-fA-F]{40})\)\.$/;
+export const REVIEW_STATEMENT = /^(?:Open the console|Review the posts) of Bootr coin \$([A-Za-z0-9_]{1,16}) \(#(\d{1,20}), (0x[0-9a-fA-F]{40})\)\.$/;
 /** How long one signature keeps the queue open. */
 export const REVIEW_TTL_S = 30 * 60;
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -102,7 +103,7 @@ export async function authorizeReview(req: NextRequest, kernel: string, body: { 
 
   if (body.token !== undefined) {
     const s = await verifyReviewToken(body.token, kernel);
-    if (!s) return { ok: false, response: fail(401, 'review_expired', 'The review session expired. Sign again.') };
+    if (!s) return { ok: false, response: fail(401, 'review_expired', 'The console session expired. Sign again.') };
     return { ok: true, address: s.a as Address, agentId: s.agentId, token: body.token as string };
   }
 
@@ -118,7 +119,7 @@ export async function authorizeReview(req: NextRequest, kernel: string, body: { 
   }
   if (!token) return { ok: false, response: fail(404, 'unknown_coin', 'No indexed coin has that treasury.') };
   if (token.agentId !== agentId || token.creator.toLowerCase() !== v.address.toLowerCase()) {
-    return { ok: false, response: fail(403, 'not_creator', 'Only the wallet that launched the coin can review its posts.') };
+    return { ok: false, response: fail(403, 'not_creator', 'Only the wallet that launched the coin can open its console.') };
   }
   const session: ReviewSession = { k: 'review', a: v.address, kernel: kernel.toLowerCase(), agentId: agentId!, e: Math.floor(Date.now() / 1000) + REVIEW_TTL_S };
   return { ok: true, address: v.address, agentId: agentId!, token: await signReviewToken(session) };

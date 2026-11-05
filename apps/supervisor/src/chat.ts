@@ -378,7 +378,8 @@ export async function chatView(ctx: SupervisorContext, agent: AgentRow): Promise
   const fuel = await readFuel(ctx, agent);
   const history = rows.filter((r) => r.status === 'done').map((r) => ({ role: r.role, text: r.text }));
   const { approx, basis } = await quoteFor(ctx, agent, config, runtime, fuel, history);
-  const refusal = refusalFor({ agent, config, runtime, open, used, fuel, messageCost: approx });
+  // The same check a send makes, which goes by real charges only: the list price is for showing.
+  const refusal = refusalFor({ agent, config, runtime, open, used, fuel, messageCost: basis === 'recent_messages' ? approx : null });
   return {
     messages: rows.map(viewOf),
     quote: {
@@ -405,7 +406,7 @@ function refusalFor(f: { agent: AgentRow; config: AgentConfig | null; runtime: R
 
 export type ChatSendResult =
   | { ok: true; message: ChatMessageView; pending: boolean }
-  | { ok: false; status: 400 | 403 | 409 | 429 | 502; error: string; message: string };
+  | { ok: false; status: 400 | 403 | 409 | 429; error: string; message: string };
 
 // eslint-disable-next-line no-control-regex -- stripping them is the point
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -471,6 +472,6 @@ export async function sendChatMessage(ctx: SupervisorContext, agent: AgentRow, b
   }
   await settle(ctx, agent, config, agentRowId, res);
   const [row] = await ctx.db.select().from(chatMessages).where(eq(chatMessages.id, agentRowId));
-  if (res.kind === 'failed') return { ok: false, status: 502, error: 'chat_failed', message: 'The agent could not answer just now. Try again in a minute.' };
+  if (res.kind === 'failed') return { ok: false, status: 409, error: 'chat_failed', message: 'The agent could not answer just now. Try again in a minute.' };
   return { ok: true, message: viewOf(row!), pending: row!.status === 'open' };
 }
