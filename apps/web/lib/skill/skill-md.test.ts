@@ -17,6 +17,7 @@ const read = (p: string) => readFileSync(path.join(WEB, p), 'utf8');
 const LAUNCH = read('app/api/agent/launch/route.ts');
 const X_CONNECT = read('app/api/agent/x-connect/route.ts');
 const LINKS = read('app/api/agent/[kernel]/links/route.ts');
+const CLAIM = read('app/api/agent/claim/[id]/route.ts');
 
 /** Being merged from other branches; the skill links to them on purpose. Everything else must exist today. */
 const PENDING = new Set(['/api/catalog', ...DOC_PAGES.filter((p) => p.slug).map((p) => `/docs/${p.slug}.md`)]);
@@ -107,6 +108,7 @@ describe('sections', () => {
       'What an Agent Can and Can\'t Do With Its Treasury',
       'Read Operations',
       'Error Handling',
+      'Developer Tools',
       'Additional Resources',
     ]);
   });
@@ -159,9 +161,9 @@ describe('cited paths', () => {
 describe('matches the agent API', () => {
   const errors = section('Error Handling');
 
-  it('lists every error code the three routes return, and none they do not', () => {
+  it('lists every error code the four routes return, and none they do not', () => {
     const codes = (src: string) => [...src.matchAll(/(?:fail|refuse)\(\s*\d+,\s*'([a-z_]+)'/g)].map((m) => m[1]!);
-    const real = new Set([...codes(LAUNCH), ...codes(X_CONNECT), ...codes(LINKS), 'siwe_rejected']);
+    const real = new Set([...codes(LAUNCH), ...codes(X_CONNECT), ...codes(LINKS), ...codes(CLAIM), 'siwe_rejected']);
     expect(real.size).toBeGreaterThan(15);
     for (const code of real) expect(errors, code).toContain(`\`${code}\``);
     const table = errors.split('\n').filter((l) => /^\| \d/.test(l));

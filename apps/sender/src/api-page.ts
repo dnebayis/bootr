@@ -368,6 +368,7 @@ function renderListing(
       ['API docs', urls.docsUrl],
       ['llms.txt', urls.llmsUrl],
       ['skill.md', urls.skillUrl],
+      ['SDK, CLI and MCP', `${urls.docsUrl}#developer-tools`],
     ] as const
   )
     .map(
