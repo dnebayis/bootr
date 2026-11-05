@@ -64,42 +64,42 @@
     gsap.set("#dl", { x: -960 });
     gsap.set("#dr", { x: 960 });
     gsap.set("#band", { y: 260 });
-    tl.to("#l1", { opacity: 0, duration: 0.08 }, 2.420);
-    typeIn("#l2", 2.530); tl.to("#l2", { opacity: 0, duration: 0.08 }, 4.295);
-    typeIn("#l3", 4.405); tl.to("#l3", { opacity: 0, duration: 0.08 }, 6.170);
-    typeIn("#l4", 6.280); tl.to("#l4", { opacity: 0, duration: 0.08 }, 8.045);
-    typeIn("#l5", 8.155); tl.to("#l5", { opacity: 0, duration: 0.08 }, 9.920);
+    tl.to("#l1", { opacity: 0, duration: 0.08 }, 2.102);
+    typeIn("#l2", 2.212); tl.to("#l2", { opacity: 0, duration: 0.08 }, 4.284);
+    typeIn("#l3", 4.394); tl.to("#l3", { opacity: 0, duration: 0.08 }, 6.465);
+    typeIn("#l4", 6.575); tl.to("#l4", { opacity: 0, duration: 0.08 }, 8.647);
+    typeIn("#l5", 8.757); tl.to("#l5", { opacity: 0, duration: 0.08 }, 10.829);
     // The face fills in, one wave for each thing it could be.
     pop(".w0", 0.1);
-    pop(".w1", 2.5);
-    pop(".w2", 4.375);
-    pop(".w3", 6.25);
-    pop(".w4", 8.125);
-    tl.set(".shut", { opacity: 1 }, 8.125);
+    pop(".w1", 2.182);
+    pop(".w2", 4.364);
+    pop(".w3", 6.545);
+    pop(".w4", 8.727);
+    tl.set(".shut", { opacity: 1 }, 8.727);
     // The name types itself.
-    tl.set(["#ticker", "#caret"], { opacity: 1 }, 8.575);
-    tl.fromTo("#ticker", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.6, ease: "steps(6)", immediateRender: false }, 8.575);
-    tl.fromTo("#caret", { x: 0 }, { x: 420, duration: 0.6, ease: "steps(6)", immediateRender: false }, 8.575);
+    tl.set(["#ticker", "#caret"], { opacity: 1 }, 9.177);
+    tl.fromTo("#ticker", { clipPath: "inset(-10px 100% -10px 0px)" }, { clipPath: "inset(-10px 0% -10px 0px)", duration: 0.6, ease: "steps(6)", immediateRender: false }, 9.177);
+    tl.fromTo("#caret", { x: 0 }, { x: 420, duration: 0.6, ease: "steps(6)", immediateRender: false }, 9.177);
     // The doors slam on the swell.
-    tl.fromTo("#dl", { x: -960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 10.0);
-    tl.fromTo("#dr", { x: 960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 10.0);
-    tl.fromTo("#band", { y: 260 }, { y: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 10.12);
-    tl.set("#b1", { opacity: 0 }, 12.5);
-    typeIn("#b2", 12.5);
+    tl.fromTo("#dl", { x: -960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 10.909);
+    tl.fromTo("#dr", { x: 960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 10.909);
+    tl.fromTo("#band", { y: 260 }, { y: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 13.091);
+    tl.set("#b1", { opacity: 0 }, 14.182);
+    typeIn("#b2", 14.182);
     // Behind the closed doors the face moves to the centre.
-    tl.set(["#ticker", "#caret"], { opacity: 0 }, 10.4);
-    tl.set("#face", { x: -396, y: -160, scale: 0.7, transformOrigin: "496px 434px" }, 10.4);
+    tl.set(["#ticker", "#caret"], { opacity: 0 }, 11.309000000000001);
+    tl.set("#face", { x: -396, y: -160, scale: 0.7, transformOrigin: "496px 434px" }, 11.309000000000001);
     // The doors open and it wakes.
-    tl.to("#band", { y: 260, duration: 0.3, ease: "power3.in" }, 15.0);
-    tl.to("#dl", { x: -960, duration: 0.55, ease: "power3.inOut" }, 15.0);
-    tl.to("#dr", { x: 960, duration: 0.55, ease: "power3.inOut" }, 15.0);
-    tl.set(".shut", { opacity: 0 }, 15.6);
-    tl.set(".eye", { opacity: 1 }, 15.6);
-    tl.fromTo(".eye", { scale: 0, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.3, ease: "back.out(3)", immediateRender: false }, 15.6);
-    tl.to(".eye", { scaleY: 0.12, duration: 0.05 }, 16.2);
-    tl.to(".eye", { scaleY: 1, duration: 0.08 }, 16.3);
-    typeIn("#turn", 15.55);
-    tl.to(["#face", "#turn"], { opacity: 0, duration: 0.2, ease: "power3.in" }, 16.75);
+    tl.to("#band", { y: 260, duration: 0.3, ease: "power3.in" }, 15.273);
+    tl.to("#dl", { x: -960, duration: 0.55, ease: "power3.inOut" }, 15.273);
+    tl.to("#dr", { x: 960, duration: 0.55, ease: "power3.inOut" }, 15.273);
+    tl.set(".shut", { opacity: 0 }, 15.873);
+    tl.set(".eye", { opacity: 1 }, 15.873);
+    tl.fromTo(".eye", { scale: 0, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.3, ease: "back.out(3)", immediateRender: false }, 15.873);
+    tl.to(".eye", { scaleY: 0.12, duration: 0.05 }, 16.573);
+    tl.to(".eye", { scaleY: 1, duration: 0.08 }, 16.673);
+    typeIn("#turn", 15.823);
+    tl.to(["#face", "#turn"], { opacity: 0, duration: 0.2, ease: "power3.in" }, 16.7);
     window.__timelines["i1"] = tl;
   </script>
 </template>

@@ -4,7 +4,7 @@ GOAL: the viewer feels invited: there is an agent waiting for a name, and the ne
 
 OUTPUT: HyperFrames, 1920x1080, 30 fps.
 
-TIME: 20.6 s x 30 = 618 frames. Bed 96 BPM, beat = 0.625 s, bars at 5, 10, 15. Swell on 10.0, strong hits on 15.0 and 17.5.
+TIME: 20.4 s x 30 = 612 frames. Bed 110 BPM, beat = 60/110 s, a new bar every 2.18 s. The voice is ElevenLabs "River", one clip a line, on the bars.
 
 LOOK:
 - Ground: Base Blue #0000ff, flat.
@@ -25,17 +25,18 @@ MOTION:
 
 SHOTS:
 
-| Time | Picture | Line | Sound |
-| --- | --- | --- | --- |
-| 0.0 to 2.5 | a few dots at the centre of the face | "i don't exist yet." | bed, pop |
-| 2.5 to 4.375 | wave 1 | "i could watch a market." | pop, key |
-| 4.375 to 6.25 | wave 2 | "i could welcome your holders." | pop, key |
-| 6.25 to 8.125 | wave 3 | "i could read all night." | pop, key |
-| 8.125 to 10.0 | mouth, ticker types | "you'd name me." "$YOURS" | pop, key |
-| 10.0 to 12.5 | doors slam: RWAGMI and Clanker, Base band | "on base." | whoosh, impact |
-| 12.5 to 15.0 | doors hold | "one transaction." | key |
-| 15.0 to 16.9 | doors open, finished face centred, eyes open, one blink | "your turn." | whoosh, pop |
-| 16.9 to 20.6 | mark lands on 17.5, "bootr" typed | | impact, key |
+| Time | Picture | Line and voice |
+| --- | --- | --- |
+| 0.0 to 2.18 | a few dots | "i don't exist yet." |
+| 2.18 to 4.36 | wave 1 | "i could watch a market." |
+| 4.36 to 6.55 | wave 2 | "i could welcome your holders." |
+| 6.55 to 8.73 | wave 3 | "i could read all night." |
+| 8.73 to 10.91 | mouth, ticker types | "you'd name me." "$YOURS" |
+| 10.91 to 13.09 | doors slam: RWAGMI and Clanker | voice: "Through R-WAGMI, or Clanker." |
+| 13.09 to 14.18 | Base band rises | "on base." |
+| 14.18 to 15.27 | doors hold | "one transaction." |
+| 15.27 to 16.8 | doors open, face centred, eyes open, one blink | "your turn." |
+| 16.8 to 20.4 | mark lands on 17.45, "bootr" typed, music comes up | |
 
 BANNED: the spec.md defaults, plus: URL, slogan, "earn", "profit", price or return language, redrawn or recoloured partner logos, a partnership claim.
 
