@@ -485,6 +485,14 @@ async function settleReceipt(ctx: SupervisorContext, op: TreasuryOpRow, userOpHa
   return { status: 'failed', opId: op.opId, error };
 }
 
+/** How long a submitted op with no receipt stays open before it is treated as never landed. */
+export const UNKNOWN_OP_TTL_MS = 60 * 60_000;
+
+/** A submit error in which the bundler refused the op outright (as opposed to a timeout, where it may have queued it). */
+export function isBundlerRefusal(error: string | null | undefined): boolean {
+  return !!error && error.startsWith('submit_error:') && /user operation rejected|validation reverted|banned opcode|\bAA[0-9]{2}\b/i.test(error);
+}
+
 /** Resolves `sent`/`unknown` ops by their userOp hash. Returns the ops whose status changed. */
 export async function reconcileOps(ctx: SupervisorContext, agent: AgentRow): Promise<{ op: TreasuryOpRow; result: ExecuteResult }[]> {
   const open = await openOps(ctx, agent.agentId);
@@ -496,6 +504,19 @@ export async function reconcileOps(ctx: SupervisorContext, agent: AgentRow): Pro
     const receipt = await client.getReceipt(op.userOpHash as Hex);
     if (receipt) {
       changed.push({ op, result: await settleReceipt(ctx, op, op.userOpHash as Hex, receipt) });
+      continue;
+    }
+    // An `unknown` op with no receipt blocks every later op of the agent (`openOps`), so it must end: at once when the
+    // bundler said no (nothing was queued; `updatedAt` stays, so the failure backoff counts from the real attempt),
+    // else after an hour. $BOOTR's treasury would have stayed blocked by one op the bundler had refused.
+    if (op.status === 'unknown') {
+      const refused = isBundlerRefusal(op.error);
+      if (refused || ctx.now() - op.updatedAt.getTime() > UNKNOWN_OP_TTL_MS) {
+        const error = refused ? (op.error as string) : `no_receipt_after_1h: ${op.error ?? ''}`;
+        await ctx.db.update(treasuryOps).set({ status: 'failed', error, ...(refused ? {} : { updatedAt: new Date(ctx.now()) }) }).where(eq(treasuryOps.opId, op.opId));
+        ctx.log.warn({ agentId: agent.agentId, opId: op.opId, error }, 'unknown treasury op closed as failed');
+        changed.push({ op, result: { status: 'failed', opId: op.opId, error } });
+      }
       continue;
     }
     // A `sent` op older than 10 minutes without a receipt is downgraded to unknown (still reconcilable).
@@ -526,7 +547,9 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
   if (open.length) return { skipped: 'op_in_flight' };
   const recent = await recentOps(ctx, agent.agentId, 3);
   const lastFailed = recent.find((o) => o.status === 'failed' && o.origin === 'policy');
-  if (lastFailed && ctx.now() - lastFailed.updatedAt.getTime() < 60 * 60_000) return { skipped: 'recent_failure_backoff' };
+  // A failure from before the current session key says nothing about this key (a rotation is often the fix).
+  const failedOnThisKey = lastFailed && !(agent.sessionKeyInstalledAt && lastFailed.updatedAt <= agent.sessionKeyInstalledAt);
+  if (lastFailed && failedOnThisKey && ctx.now() - lastFailed.updatedAt.getTime() < 60 * 60_000) return { skipped: 'recent_failure_backoff' };
 
   const snap = snapshot ?? (await readTreasuryOnChain(ctx, agent));
   const out: FeePolicyOutcome = {};

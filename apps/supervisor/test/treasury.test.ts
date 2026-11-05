@@ -4,6 +4,9 @@ import { clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLpLockerV3Abi, swapHelpe
 import { treasuryOps } from '../src/db/schema.js';
 import { encodeUnwrapCall, gasStatusOf, gasTopUp, wethAbi } from '../src/gas.js';
 import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
+import { UNKNOWN_OP_TTL_MS } from '../src/treasury.js';
+import { reconcileOps } from '../src/treasury.js';
+import { isBundlerRefusal } from '../src/treasury.js';
 import { CLANKER_PENDING_NOTE, claimOpFor, clampSlippageBps, encodeClaimCall, encodeClankerClaimCalls, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
 import { ADDR, CLANKER_FEE_LOCKER, CLANKER_LP_LOCKER, CLANKER_POOL_ID, KERNEL, makeWorld, POOL_ID, RWAGMI_LP_LOCKER, seedAgent, SPENDER, TOKEN } from './helpers.js';
 
@@ -59,6 +62,55 @@ describe('fee claim policy', () => {
       await w.db.insert(treasuryOps).values({ opId: 'op_x', agentId: agent.agentId, kind: 'swap', calls: [], callHash: '0x00', description: 'd', origin: 'policy', status: 'unknown', userOpHash: '0x01' });
       w.state.claimableWeth = parseUnits('1', 18);
       expect((await runFeePolicy(w.ctx, agent)).skipped).toBe('op_in_flight');
+    } finally {
+      await w.close();
+    }
+  });
+
+  const stuckOp = (agentId: string, error: string, updatedAt: Date) => ({ opId: 'op_stuck', agentId, kind: 'claim_fees' as const, calls: [], callHash: '0x00', description: 'd', origin: 'policy' as const, status: 'unknown' as const, userOpHash: `0x${'ab'.repeat(32)}`, error, updatedAt });
+
+  it('closes an op the bundler refused, so it no longer blocks the treasury, and a new key clears the backoff', async () => {
+    const w = await makeWorld({ chain: { claimableWeth: parseUnits('0.01', 18), usdc: 50_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      const refusedAt = new Date(w.ctx.now() - 60_000);
+      await w.db.insert(treasuryOps).values(stuckOp(agent.agentId, 'submit_error: User Operation rejected with op code validation error. | account uses banned opcode: TIMESTAMP', refusedAt));
+      expect((await runFeePolicy(w.ctx, agent)).skipped).toBe('op_in_flight');
+      const receipt = w.kernel.receipt;
+      w.kernel.receipt = null as never; // the bundler never queued it: no receipt, ever
+      const changed = await reconcileOps(w.ctx, agent);
+      w.kernel.receipt = receipt;
+      expect(changed.map((c) => c.result.status)).toEqual(['failed']);
+      const [row] = await w.db.select().from(treasuryOps);
+      expect(row!.status).toBe('failed');
+      expect(row!.updatedAt.getTime()).toBe(refusedAt.getTime());
+      // the same key: one hour of backoff, counted from the attempt
+      expect((await runFeePolicy(w.ctx, { ...agent, sessionKeyInstalledAt: new Date(refusedAt.getTime() - 1000) })).skipped).toBe('recent_failure_backoff');
+      // a key installed after the failure may try at once
+      const out = await runFeePolicy(w.ctx, { ...agent, sessionKeyInstalledAt: new Date(refusedAt.getTime() + 1000) });
+      expect(out.skipped).toBeUndefined();
+      expect(out.claim?.status).toBe('confirmed');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('keeps an unknown op open for an hour unless the bundler refused it, then closes it', async () => {
+    const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+    try {
+      const agent = await seedAgent(w);
+      expect(isBundlerRefusal('receipt_timeout')).toBe(false);
+      expect(isBundlerRefusal('submit_error: fetch failed')).toBe(false);
+      expect(isBundlerRefusal('submit_error: validation reverted: [reason]: AA23 reverted')).toBe(true);
+      w.kernel.receipt = null as never;
+      await w.db.insert(treasuryOps).values(stuckOp(agent.agentId, 'submit_error: fetch failed', new Date(w.ctx.now() - 10 * 60_000)));
+      expect(await reconcileOps(w.ctx, agent)).toEqual([]);
+      expect((await w.db.select().from(treasuryOps))[0]!.status).toBe('unknown');
+      await w.db.update(treasuryOps).set({ updatedAt: new Date(w.ctx.now() - UNKNOWN_OP_TTL_MS - 1000) });
+      expect((await reconcileOps(w.ctx, agent)).map((c) => c.result.status)).toEqual(['failed']);
+      const [row] = await w.db.select().from(treasuryOps);
+      expect(row!.status).toBe('failed');
+      expect(row!.error).toBe('no_receipt_after_1h: submit_error: fetch failed');
     } finally {
       await w.close();
     }
