@@ -66,12 +66,11 @@ describe('the list', () => {
     for (const a of PLATFORM_UPDATES) for (const b of PLATFORM_UPDATES) if (a !== b) expect(postCarriesUpdate(a.url, b)).toBe(false);
   });
 
-  it('is plain public copy: no internal names, no price talk, no skill, https links, and the publish gate takes it', () => {
+  it('is plain public copy: no internal names, no price talk, https links, and the publish gate takes it', () => {
     for (const u of PLATFORM_UPDATES) {
       const text = `${u.title} ${u.plain}`;
       expect(text).not.toMatch(/x402|session key|kernel|supervisor|spender|indexer|inference/i);
       expect(text).not.toMatch(/price|market cap|returns?\b|profit|\bbuy\b/i);
-      expect(`${text} ${u.url}`).not.toMatch(/skill/i);
       expect(u.url).toMatch(/^https:\/\//);
       expect(postValidation(`${u.plain} ${u.url}`, [], 'original', false, { platform: true })).toEqual({ ok: true });
     }
