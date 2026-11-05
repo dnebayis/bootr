@@ -5,6 +5,7 @@ import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Addres
 import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { configView, updateAgentConfig, type ConfigUpdateBody } from './agent-config.js';
+import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
 import { hmacAuth, type AuthEnv } from './hmac.js';
@@ -252,6 +253,26 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
       return c.json({ ok: true });
     }
     return c.json({ error: 'invalid_action', message: 'action must be link or unlink' }, 400);
+  });
+
+  // ---- The creator's private chat with the agent (chat.ts). Nothing here publishes, moves money or touches the runtime.
+
+  /** The conversation, what a message costs and whether one may be sent now. */
+  app.get('/internal/agents/:id/chat', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    return c.json(await chatView(ctx, agent));
+  });
+
+  /** Body `{by, text}`: one message and the agent's answer, `pending` when its outcome is not known yet (read it back with the GET). */
+  app.post('/internal/agents/:id/chat', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as { by?: unknown; text?: unknown } | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    const result = await sendChatMessage(ctx, agent, body);
+    if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
+    return c.json({ message: result.message, pending: result.pending });
   });
 
   app.post('/internal/agents/:id/pause', async (c) => {

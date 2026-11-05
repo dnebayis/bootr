@@ -12,6 +12,7 @@ import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
+import { SLEEP_USDC } from './fuel.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, quotaHold } from './rhythm.js';
@@ -22,7 +23,7 @@ import { weeklyDigestWake } from './weekly-digest.js';
 import type { SenderInboxItem } from './sender-client.js';
 import { readTreasuryOnChain, reconcileOps, runFeePolicy } from './treasury.js';
 
-export const SLEEP_USDC = 1;
+export { SLEEP_USDC };
 
 export interface TickReport {
   registered: number;

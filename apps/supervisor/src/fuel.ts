@@ -20,6 +20,9 @@ export interface FuelView {
   low: boolean;
 }
 
+/** Below this much fuel in all (treasury USDC plus the spendable float) the agent sleeps: no thoughts until it is refuelled. */
+export const SLEEP_USDC = 1;
+
 const MEANING = 'what you can still spend on thinking; thoughtsLeft is an estimate from what your recent thoughts cost. Private: never post about it.';
 
 export function fuelView(usd: Pick<TreasurySnapshot['usd'], 'spenderUsdc' | 'usdc'>, cost: { thoughts: number; spentMicroUsdc: number }): FuelView {
