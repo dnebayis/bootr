@@ -103,6 +103,10 @@ describe('buildSystemPrompt', () => {
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));
     for (const rule of PLATFORM_RULES) expect(coin).not.toContain(rule);
+    // what changed on Bootr comes from its own section, in the rotation, and never at the cost of anything else
+    expect(platform).toMatch(/platformUpdate, when present, is one change live on Bootr: say it once, in your own voice, in an original post with its link\. It uses a regular slot and follows the rotation; skip nothing else for it\./);
+    expect(platform).toMatch(/a question to a builder, the numbers, a live change on Bootr\)/);
+    expect(coin).not.toContain('platformUpdate');
     expect(coin).not.toMatch(/When in doubt, do not post/);
   });
 });
