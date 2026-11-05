@@ -5,9 +5,12 @@ import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Addres
 import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { configView, updateAgentConfig, type ConfigUpdateBody } from './agent-config.js';
+import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
 import { hmacAuth, type AuthEnv } from './hmac.js';
+import { activeNotificationCount, notificationsView, updateNotificationSettings } from './notifications.js';
+import { refreshReviewNotifications } from './notify-health.js';
 import { installSessionKey, rotateSessionKey } from './onboarding.js';
 import { saveRuntime } from './runtime.js';
 import { buildDeinitData, deserializeSessionPolicy, type SerializedSessionPolicy } from './session-key.js';
@@ -16,6 +19,7 @@ import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
 import { fuelReport, reconcileInference } from './inference.js';
+import { createTelegramLink, removeTelegramLink } from './telegram.js';
 import type { AgentState } from './runtime.js';
 
 export interface PanicRevokeResult {
@@ -202,6 +206,73 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const result = await decideApproval(ctx, agent, c.req.param('approvalId'), body);
     if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
     return c.json(result.approval);
+  });
+
+  // ---- Creator notifications (notifications.ts). The web checks the creator's signature; `by` is checked again here on every change.
+
+  /** The inbox: open items, what closed in the last week, the per-event switches and the Telegram state. */
+  app.get('/internal/agents/:id/notifications', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    await refreshReviewNotifications(ctx, agent);
+    return c.json(await notificationsView(ctx, agent));
+  });
+
+  /** `{active}`: the console's badge. */
+  app.get('/internal/agents/:id/notifications/count', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    return c.json({ active: await activeNotificationCount(ctx, agent.agentId) });
+  });
+
+  /** Body `{by, optOut: NotificationEvent[]}`: the events the creator turned off, all of them each time. */
+  app.put('/internal/agents/:id/notifications/settings', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as { by?: unknown; optOut?: unknown } | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    const result = await updateNotificationSettings(ctx, agent, body);
+    if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
+    return c.json(result.view);
+  });
+
+  /** Body `{by, action: 'link'|'unlink'}`: `link` answers a one-time deep link `{url, expiresAt}`; 503 without a bot. */
+  app.post('/internal/agents/:id/notifications/telegram', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as { by?: unknown; action?: unknown } | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    if (body.action === 'link') {
+      const link = await createTelegramLink(ctx, agent, body.by);
+      if (!link.ok) return c.json({ error: link.error, message: link.message }, link.status);
+      return c.json({ url: link.url, expiresAt: link.expiresAt });
+    }
+    if (body.action === 'unlink') {
+      const removed = await removeTelegramLink(ctx, agent, body.by);
+      if (!removed.ok) return c.json({ error: removed.error, message: removed.message }, removed.status);
+      return c.json({ ok: true });
+    }
+    return c.json({ error: 'invalid_action', message: 'action must be link or unlink' }, 400);
+  });
+
+  // ---- The creator's private chat with the agent (chat.ts). Nothing here publishes, moves money or touches the runtime.
+
+  /** The conversation, what a message costs and whether one may be sent now. */
+  app.get('/internal/agents/:id/chat', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    return c.json(await chatView(ctx, agent));
+  });
+
+  /** Body `{by, text}`: one message and the agent's answer, `pending` when its outcome is not known yet (read it back with the GET). */
+  app.post('/internal/agents/:id/chat', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const body = (await c.req.json().catch(() => null)) as { by?: unknown; text?: unknown } | null;
+    if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
+    const result = await sendChatMessage(ctx, agent, body);
+    if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
+    return c.json({ message: result.message, pending: result.pending });
   });
 
   app.post('/internal/agents/:id/pause', async (c) => {

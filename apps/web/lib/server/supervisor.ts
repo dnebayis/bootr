@@ -8,7 +8,7 @@
  */
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
+import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentChat, AgentChatMessage, AgentNotification, AgentNotifications, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -39,7 +39,7 @@ export type PutAgentConfigBody = AgentConfigChanges & {
   allowedModels: string[];
 };
 
-async function call(method: 'GET' | 'PUT' | 'POST', path: string, body?: unknown): Promise<Response> {
+async function call(method: 'GET' | 'PUT' | 'POST', path: string, body?: unknown, timeoutMs = 10_000): Promise<Response> {
   const { serviceKey, url } = supervisorEnv();
   if (!serviceKey || !url) throw new SupervisorUnavailable('supervisor is not configured');
   const raw = body === undefined ? '' : JSON.stringify(body);
@@ -47,7 +47,7 @@ async function call(method: 'GET' | 'PUT' | 'POST', path: string, body?: unknown
   if (body !== undefined) headers['content-type'] = 'application/json';
   let res: Response;
   try {
-    res = await fetch(`${url}${path}`, { method, headers, ...(body !== undefined ? { body: raw } : {}), cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+    res = await fetch(`${url}${path}`, { method, headers, ...(body !== undefined ? { body: raw } : {}), cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     throw new SupervisorUnavailable(`supervisor unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -282,6 +282,133 @@ export async function decideAgentApproval(agentId: string, approvalId: string, b
   const item = sanitizeApproval(await res.json());
   if (!item) throw new SupervisorUnavailable('supervisor returned a malformed approval');
   return item;
+}
+
+const NOTIFICATION_TONES: readonly AgentNotification['tone'][] = ['info', 'warning', 'danger'];
+
+export function sanitizeNotification(raw: unknown): AgentNotification | null {
+  const n = (raw ?? {}) as Record<string, unknown>;
+  const id = str(n.id, 200);
+  const event = str(n.event, 40);
+  const title = str(n.title, 200);
+  const body = str(n.body, 600);
+  const firstAt = iso(n.firstAt);
+  const lastSeenAt = iso(n.lastSeenAt);
+  if (!id || !event || !title || !body || !firstAt || !lastSeenAt) return null;
+  return {
+    id,
+    event,
+    title,
+    body,
+    tone: NOTIFICATION_TONES.includes(n.tone as AgentNotification['tone']) ? (n.tone as AgentNotification['tone']) : 'info',
+    state: n.state === 'resolved' ? 'resolved' : 'active',
+    firstAt,
+    lastSeenAt,
+    resolvedAt: iso(n.resolvedAt),
+  };
+}
+
+export function sanitizeNotifications(raw: unknown): AgentNotifications {
+  const v = (raw ?? {}) as { items?: unknown; events?: unknown; telegram?: { available?: unknown; linked?: unknown; linkedAt?: unknown } };
+  const items = (Array.isArray(v.items) ? v.items : []).map(sanitizeNotification).filter((i): i is AgentNotification => i !== null);
+  const events = (Array.isArray(v.events) ? v.events : []).flatMap((e: { key?: unknown; label?: unknown; enabled?: unknown }) => {
+    const key = str(e?.key, 40);
+    const label = str(e?.label, 120);
+    return key && label ? [{ key, label, enabled: e.enabled !== false }] : [];
+  });
+  return {
+    items,
+    active: items.filter((i) => i.state === 'active').length,
+    events,
+    telegram: { available: v.telegram?.available === true, linked: v.telegram?.linked === true, linkedAt: iso(v.telegram?.linkedAt) },
+  };
+}
+
+const EMPTY_NOTIFICATIONS: AgentNotifications = { items: [], active: 0, events: [], telegram: { available: false, linked: false, linkedAt: null } };
+
+/** `GET /internal/agents/:id/notifications`: the creator's inbox. Unknown agent = empty. */
+export async function getAgentNotifications(agentId: string): Promise<AgentNotifications> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/notifications`);
+  if (res.status === 404) return EMPTY_NOTIFICATIONS;
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeNotifications(await res.json());
+}
+
+/** `GET /internal/agents/:id/notifications/count`: open items for the console's badge. Unknown agent = 0. */
+export async function getAgentNotificationCount(agentId: string): Promise<number> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/notifications/count`);
+  if (res.status === 404) return 0;
+  if (!res.ok) throw await errorOf(res);
+  const n = Number(((await res.json()) as { active?: unknown }).active);
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+
+/** `PUT /internal/agents/:id/notifications/settings {by, optOut}`; the inbox after the change. */
+export async function putNotificationSettings(agentId: string, body: { by: Address; optOut: string[] }): Promise<AgentNotifications> {
+  const res = await call('PUT', `/internal/agents/${encodeURIComponent(agentId)}/notifications/settings`, body);
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeNotifications(await res.json());
+}
+
+/** `POST /internal/agents/:id/notifications/telegram {by, action}`: a one-time deep link, or the chat removed. */
+export async function postTelegramAction(agentId: string, body: { by: Address; action: 'link' | 'unlink' }): Promise<{ url: string | null }> {
+  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/notifications/telegram`, body);
+  if (!res.ok) throw await errorOf(res);
+  const url = str(((await res.json()) as { url?: unknown }).url, 200);
+  return { url: url && url.startsWith('https://t.me/') ? url : null };
+}
+
+/** The longest message the chat takes; the supervisor checks it again (`CHAT_MAX_CHARS` in apps/supervisor/src/chat.ts). */
+export const CHAT_MAX_CHARS = 1000;
+/** A chat answer is one model call: as long as a thought may take (`INFERENCE_TIMEOUT_MS`) and a little more. */
+const CHAT_SEND_TIMEOUT_MS = 170_000;
+
+export function sanitizeChatMessage(raw: unknown): AgentChatMessage | null {
+  const m = (raw ?? {}) as Record<string, unknown>;
+  const id = str(m.id, 120);
+  const at = iso(m.at);
+  const text = str(m.text, 8000);
+  if (!id || !at || text === null || (m.role !== 'creator' && m.role !== 'agent')) return null;
+  const status = m.status === 'open' || m.status === 'failed' ? m.status : 'done';
+  const charged = typeof m.chargedMicroUsdc === 'string' && /^\d{1,12}$/.test(m.chargedMicroUsdc) ? m.chargedMicroUsdc : null;
+  return { id, role: m.role, text, status, chargedMicroUsdc: charged, remembered: m.remembered === true, at };
+}
+
+const count = (v: unknown): number => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0);
+
+export function sanitizeChat(raw: unknown): AgentChat {
+  const v = (raw ?? {}) as { messages?: unknown; quote?: Record<string, unknown> };
+  const q = v.quote ?? {};
+  const limits = (q.limits ?? {}) as Record<string, unknown>;
+  const approx = Number(q.approxMicroUsdc);
+  return {
+    messages: (Array.isArray(v.messages) ? v.messages : []).map(sanitizeChatMessage).filter((m): m is AgentChatMessage => m !== null),
+    quote: {
+      model: str(q.model, 80) ?? '',
+      approxMicroUsdc: q.approxMicroUsdc !== null && Number.isFinite(approx) && approx > 0 ? approx : null,
+      basis: q.basis === 'recent_messages' || q.basis === 'list_price' ? q.basis : null,
+      maxMicroUsdc: count(q.maxMicroUsdc),
+      refusal: str(q.refusal, 40),
+      refusalText: str(q.refusalText, 300),
+      limits: { perHour: count(limits.perHour), perDay: count(limits.perDay), usedHour: count(limits.usedHour), usedDay: count(limits.usedDay) },
+      maxChars: count(q.maxChars) || CHAT_MAX_CHARS,
+    },
+  };
+}
+
+/** `GET /internal/agents/:id/chat`: the conversation and the quote. 404 becomes a SupervisorError the route relays. */
+export async function getAgentChat(agentId: string): Promise<AgentChat> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/chat`);
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeChat(await res.json());
+}
+
+/** `POST /internal/agents/:id/chat {by, text}`: waits for the answer, which is one paid model call. */
+export async function sendAgentChat(agentId: string, body: { by: Address; text: string }): Promise<{ reply: AgentChatMessage | null; pending: boolean }> {
+  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/chat`, body, CHAT_SEND_TIMEOUT_MS);
+  if (!res.ok) throw await errorOf(res);
+  const json = (await res.json()) as { message?: unknown; pending?: unknown };
+  return { reply: sanitizeChatMessage(json.message), pending: json.pending === true };
 }
 
 // ------------------------------------------------------------------ creator changes (web-side pre-check; the supervisor is authoritative)

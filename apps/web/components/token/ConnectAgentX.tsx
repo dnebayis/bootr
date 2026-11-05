@@ -14,9 +14,10 @@ import { XConnect } from '@/components/launch/XConnect';
  * yet. The creator signs a SIWE message naming the agent (`POST /api/siwe/x-claim` checks the signature and,
  * through the indexer, that the wallet created the coin), which registers this browser for the agent id;
  * the usual X OAuth popup then runs against the real agent id, and the supervisor finishes onboarding on
- * its next tick once the sender reports the account.
+ * its next tick once the sender reports the account. With `again` (the inbox, after X dropped the connection) the same
+ * flow restores it; the agent only posts as the account it was set up with, so the text asks for that one.
  */
-export function ConnectAgentX({ token }: { token: Token }) {
+export function ConnectAgentX({ token, again = false }: { token: Token; again?: boolean }) {
   const { address } = useConnection();
   const { signMessageAsync } = useSignMessage();
   const queryClient = useQueryClient();
@@ -61,10 +62,14 @@ export function ConnectAgentX({ token }: { token: Token }) {
 
   return (
     <div className="flex flex-col gap-2 rounded-sm border border-hairline p-3" data-testid="connect-agent-x">
-      <p className="text-caption text-body">
-        This agent has no X account yet, so it cannot post. As the creator you can connect one now: sign a message with your wallet, then authorise a fresh X
-        account for the agent. The agent starts on the next supervisor pass.
-      </p>
+      {again ? (
+        <p className="text-caption text-body">Sign a message with your wallet, then authorise the same X account the agent has been using. It picks up again within a few minutes.</p>
+      ) : (
+        <p className="text-caption text-body">
+          This agent has no X account yet, so it cannot post. As the creator you can connect one now: sign a message with your wallet, then authorise a fresh X
+          account for the agent. The agent starts on the next supervisor pass.
+        </p>
+      )}
       <XConnect
         draftId={token.agentId}
         handle={null}

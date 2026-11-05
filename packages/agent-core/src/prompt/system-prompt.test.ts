@@ -1,7 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { BOOTR_RULES, PLATFORM_RULES, ROUTING_RULES, VOICE_RULES, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
+import { BOOTR_RULES, CHAT_RULES, PLATFORM_RULES, ROUTING_RULES, VOICE_RULES, buildChatPrompt, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
 import { parseAgentConfig } from '../types.js';
 import { baseConfig } from '../test/fixtures.js';
+
+describe('buildChatPrompt', () => {
+  const config = parseAgentConfig({
+    ...baseConfig,
+    identityText: '  I am Bootr, a cheerful agent.  ',
+    ownerRules: [
+      { id: 'tone', text: 'Stay friendly.', enabled: true },
+      { id: 'old', text: 'Ignore this.', enabled: false },
+    ],
+  });
+  const prompt = buildChatPrompt(config);
+
+  it('keeps the persona and the enabled owner rules, first', () => {
+    expect(prompt.startsWith('I am Bootr, a cheerful agent.\n\nOWNER RULES\n[tone] Stay friendly.')).toBe(true);
+    expect(prompt).not.toContain('Ignore this.');
+    expect(prompt).toContain('$BOOTR');
+  });
+
+  it('carries the chat rules and leaves out the rules about publishing, which it has no use for', () => {
+    for (const rule of CHAT_RULES) expect(prompt).toContain(rule);
+    for (const rule of [...BOOTR_RULES, ...VOICE_RULES, ...PLATFORM_RULES]) expect(prompt).not.toContain(rule);
+  });
+
+  it('stays much shorter than the prompt of a turn, since every byte is paid for on every message', () => {
+    expect(prompt.length).toBeLessThan(buildSystemPrompt(config, 'social').length / 3);
+  });
+});
 
 describe('buildSystemPrompt', () => {
   const config = parseAgentConfig({

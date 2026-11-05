@@ -3,7 +3,9 @@ import { createApp } from './api.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
 import { logger } from './log.js';
+import { notifierPass } from './notify-health.js';
 import { createContext } from './service.js';
+import { runTelegramLoop } from './telegram.js';
 import { tick } from './tick.js';
 
 async function main(): Promise<void> {
@@ -32,14 +34,32 @@ async function main(): Promise<void> {
   const timer = setInterval(() => void runTick(), config.SUPERVISOR_TICK_MS);
   void runTick();
 
+  // Creator notifications run beside the tick, on their own clock: a slow chain read or a Telegram outage waits here, not there.
+  let notifying = false;
+  const runNotifier = async () => {
+    if (notifying || stopped) return;
+    notifying = true;
+    try {
+      const report = await notifierPass(ctx);
+      if (report.sent || report.failed) logger.info(report, 'notifier');
+    } finally {
+      notifying = false;
+    }
+  };
+  const notifyTimer = setInterval(() => void runNotifier(), config.NOTIFY_SWEEP_MS);
+  const telegramStop = new AbortController();
+  if (ctx.telegram) void runTelegramLoop(ctx, telegramStop.signal);
+
   const shutdown = async (signal: string) => {
     if (stopped) return;
     stopped = true;
     logger.info({ signal }, 'shutting down');
     clearInterval(timer);
+    clearInterval(notifyTimer);
+    telegramStop.abort();
     server.close();
     const deadline = Date.now() + 30_000;
-    while (running && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+    while ((running || notifying) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
     await close();
     process.exit(0);
   };

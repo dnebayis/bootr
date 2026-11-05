@@ -444,6 +444,43 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | PUT | `/internal/agents/:id/config` | creator edit of instructions / model / powers / cadence / job lines; see below |
 | GET | `/internal/agents/:id/activity` | the coin page's activity tape (`?limit=50&before=<iso>`); see below |
 
+### Creator notifications (`/internal/agents/:id/notifications`)
+
+`notifications.ts` holds one row per event per agent while it is true: posts waiting for review, reviews within 6 h of
+expiring, low fuel (fewer than 24 thoughts or under 2 days of everything left, reserve included), out of gas, asleep,
+stopped (paused, an action with no known result, 5 failed turns), X connection revoked (the sender's account status) and
+a treasury permission that needs renewing (about to run out, or issued under older limits). `notify-health.ts` is a pass
+on its own timer (`NOTIFY_SWEEP_MS`) beside the tick; it looks at an agent at most every `NOTIFY_CHECK_MS`, and a failed
+read leaves that event as it was. An event that stops being true closes its row, which clears it from the active list and
+stops its sends.
+
+Telegram (`telegram.ts`, optional, `TELEGRAM_BOT_TOKEN`): a chat is linked to the creator's wallet with a one-time deep
+link and received over long polling, so the supervisor needs no public route. Each event has a first wait, a repeat
+interval and at most 5 sends per episode (`EVENT_RULES`); an event that comes back keeps the clock of its last send. The
+text is plain, built from our own numbers and reason codes. A failed send is a row state: a blocked bot removes the link,
+a refusal waits an hour, an outage ends the pass after one attempt. A tick never talks to Telegram.
+
+- `GET /internal/agents/:id/notifications`: the inbox, the per-event switches and the Telegram state.
+- `GET /internal/agents/:id/notifications/count`: `{active}`.
+- `PUT /internal/agents/:id/notifications/settings` `{by, optOut}`: a turned-off event is hidden and never sent.
+- `POST /internal/agents/:id/notifications/telegram` `{by, action: 'link'|'unlink'}`: `link` answers `{url, expiresAt}`, 503 `telegram_unavailable` without a bot.
+
+### Private chat (`/internal/agents/:id/chat`)
+
+`chat.ts`: the creator talks with their agent. One message is one paid request on the agent's own relay path (`chat:` key
+in `sv_inference`), so it draws on its fuel and shows in `/fuel`, but not in the thought average of `recentThoughtCost`.
+The prompt is the persona, owner rules and a few chat rules, plus the agent's state read at that moment, with no tools but
+`remember`. Any other function call runs nothing, and the module imports no broker, sender, treasury, kernel or runtime
+code. A note goes to `sv_memories` with `sources` and `tags` `creator-chat`. It never writes `sv_runtimes`.
+
+A message is refused (409 `chat_*`, 429 `chat_rate_limited`) when the agent is paused, asleep or not running, while an
+answer is out, over 20 messages an hour or 60 a day, when the balances cannot be read, or when paying could leave the agent
+less than the sleep line plus 24 thoughts. The payer refuses any quote above 0.15 USDC. An unknown outcome stays open and
+settles by its key, never with a second payment.
+
+- `GET /internal/agents/:id/chat`: the last messages and `quote` (approximate cost, limits, why it is refused if it is).
+- `POST /internal/agents/:id/chat` `{by, text}`: `{message, pending}`.
+
 ### Post-launch control (`/internal/agents/:id/config`)
 
 The web proxies these for the coin page (docs/design/agent-launch-v2.md, decision 6): the public read, and the

@@ -19,7 +19,7 @@ import {
 import { createX402Payer, paymentProofHeaders, readReceipt, X402PaymentRefusedError, type BootrReceipt } from '@bootr/inference/client';
 import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
-import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, notLike, or, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { inference } from './db/schema.js';
 
@@ -157,12 +157,12 @@ export async function thoughtsByModel(ctx: SupervisorContext, agentId: string, s
 /** The latest paid thoughts (images excluded), so the average follows the model the agent runs on now. */
 export const RECENT_THOUGHTS = 40;
 
-/** What the agent's latest paid thoughts cost: one indexed read, for the turn's `fuel` section (fuel.ts). */
+/** What the agent's latest paid thoughts cost: one indexed read, for the turn's `fuel` section (fuel.ts). A chat message (`chat:` key, chat.ts) is no thought: far smaller, it would flatter the estimate. */
 export async function recentThoughtCost(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<{ thoughts: number; spentMicroUsdc: number }> {
   const rows = await ctx.db
     .select({ charged: sql<string>`${CHARGED_MICRO_USDC}::text` })
     .from(inference)
-    .where(and(eq(inference.agentId, agentId), PAID_CALL, sql`${inference.request}->'modalities' is null`, sql`${CHARGED_MICRO_USDC} is not null`))
+    .where(and(eq(inference.agentId, agentId), PAID_CALL, sql`${inference.request}->'modalities' is null`, sql`${CHARGED_MICRO_USDC} is not null`, notLike(inference.idempotencyKey, 'chat:%')))
     .orderBy(desc(inference.createdAt))
     .limit(RECENT_THOUGHTS);
   return { thoughts: rows.length, spentMicroUsdc: rows.reduce((sum, r) => sum + Number(r.charged), 0) };

@@ -13,6 +13,10 @@ import type {
   AgentActivityItem,
   AgentApproval,
   AgentApprovals,
+  AgentChat,
+  AgentChatMessage,
+  AgentNotification,
+  AgentNotifications,
   AgentConfig,
   AgentConfigChanges,
   AgentFuel,
@@ -114,6 +118,10 @@ interface Store {
   activity: Map<string, AgentActivityItem[]>;
   /** The review queue per kernel (post approval mode), built lazily like the config. */
   approvals: Map<string, AgentApproval[]>;
+  /** The creator's inbox per kernel, built lazily like the config. */
+  inboxes: Map<string, MockInbox>;
+  /** The creator's chat per kernel. */
+  chats: Map<string, AgentChatMessage[]>;
   /** The coin's own links (what the hosted contract URI would carry), keyed by the token's `metadata` URL. */
   links: Map<string, CoinPageLinks>;
   /** The creators' off-chain images, by lowercase coin address. */
@@ -324,7 +332,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links, images: new Map() };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), links, images: new Map() };
 }
 
 export function mockStore(): Store {
@@ -746,6 +754,65 @@ export const mock = {
     activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed ${fields.join(', ')} (revision ${cfg.revision}).` });
     return { ok: true, config: clone(cfg) };
   },
+  /** The creator's inbox (lib/types AgentNotifications). */
+  agentNotifications(kernel: string): AgentNotifications {
+    return inboxView(inboxFor(kernel));
+  },
+  /** Turns events off or on, as the supervisor's settings route would. */
+  setNotificationOptOut(kernel: string, optOut: string[]): AgentNotifications {
+    const inbox = inboxFor(kernel);
+    inbox.optOut = optOut.filter((e) => MOCK_EVENTS.some((m) => m.key === e));
+    return inboxView(inbox);
+  },
+  /** A pretend deep link; in mock mode the chat counts as linked at once, since no bot will answer. */
+  telegramAction(kernel: string, action: 'link' | 'unlink'): { url: string | null } {
+    const inbox = inboxFor(kernel);
+    if (action === 'unlink') {
+      inbox.telegram = { ...inbox.telegram, linked: false, linkedAt: null };
+      return { url: null };
+    }
+    inbox.telegram = { ...inbox.telegram, linked: true, linkedAt: new Date().toISOString() };
+    return { url: 'https://t.me/bootr_alerts_bot?start=mock-link-token' };
+  },
+  /** The creator's chat (lib/types AgentChat): no fuel or history checks in mock mode, only the limit. */
+  agentChat(kernel: string): AgentChat {
+    const messages = chatFor(kernel);
+    const used = messages.filter((m) => m.role === 'creator').length;
+    const limited = used >= MOCK_CHAT_LIMITS.perHour;
+    return clone({
+      messages,
+      quote: {
+        model: 'anthropic/claude-sonnet-4.6',
+        approxMicroUsdc: Number(MOCK_CHAT_COST),
+        basis: 'list_price' as const,
+        maxMicroUsdc: 150_000,
+        refusal: limited ? 'rate_limited' : null,
+        refusalText: limited ? 'That is the chat limit for now: 20 messages an hour, 60 a day.' : null,
+        limits: { ...MOCK_CHAT_LIMITS, usedHour: used, usedDay: used },
+        maxChars: 1000,
+      },
+    });
+  },
+  /** One message and a canned answer. "Remember ..." pretends to store a note; everything else only talks. */
+  sendAgentChat(kernel: string, text: string): { ok: true; reply: AgentChatMessage } | { ok: false; status: 409 | 429; error: string; message: string } {
+    const messages = chatFor(kernel);
+    if (messages.filter((m) => m.role === 'creator').length >= MOCK_CHAT_LIMITS.perHour) return { ok: false, status: 429, error: 'chat_rate_limited', message: 'That is the chat limit for now: 20 messages an hour, 60 a day.' };
+    const at = new Date().toISOString();
+    const n = messages.length;
+    messages.push({ id: `msg_${n}`, role: 'creator', text, status: 'done', chargedMicroUsdc: null, remembered: false, at });
+    const remembered = /\bremember\b/i.test(text);
+    const reply: AgentChatMessage = {
+      id: `msg_${n + 1}`,
+      role: 'agent',
+      text: remembered ? 'Noted. I will keep that in mind.' : /\b(post|tweet|swap|claim|send|transfer)\b/i.test(text) ? 'I can only talk here: posts and replies happen in my own turns, and treasury actions are not something I do from this chat.' : 'Quiet day so far: one post went out and the pool moved a little. Next I will look at the mentions when I wake.',
+      status: 'done',
+      chargedMicroUsdc: MOCK_CHAT_COST,
+      remembered,
+      at,
+    };
+    messages.push(reply);
+    return { ok: true, reply: clone(reply) };
+  },
   /** The review queue of the agent's posts (lib/types AgentApprovals); `all` includes decided items. */
   agentApprovals(kernel: string, status: 'pending' | 'all' = 'pending'): AgentApprovals {
     const list = approvalsFor(kernel);
@@ -943,6 +1010,60 @@ function buildApprovals(t: Token): AgentApproval[] {
     { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
     { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800) },
   ];
+}
+
+const MOCK_EVENTS: readonly { key: string; label: string }[] = [
+  { key: 'review_waiting', label: 'Posts waiting for your review' },
+  { key: 'review_expiring', label: 'Reviews about to expire' },
+  { key: 'fuel_low', label: 'Low on fuel' },
+  { key: 'gas_out', label: 'Out of gas' },
+  { key: 'agent_asleep', label: 'Agent asleep' },
+  { key: 'agent_stopped', label: 'Agent stopped' },
+  { key: 'x_revoked', label: 'X connection lost' },
+  { key: 'key_rotation', label: 'Treasury permission renewal' },
+];
+
+type MockInbox = { items: AgentNotification[]; optOut: string[]; telegram: AgentNotifications['telegram']; available: boolean };
+
+/** Mock mode has one inbox per coin, with one item of each kind a creator would first meet. */
+function inboxFor(kernel: string): MockInbox {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let inbox = s.inboxes.get(key);
+  if (!inbox) {
+    const at = (hoursAgo: number) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
+    inbox = {
+      available: true,
+      optOut: [],
+      telegram: { available: true, linked: false, linkedAt: null },
+      items: [
+        { id: 'ntf_mock_1', event: 'fuel_low', title: 'Low on fuel', body: 'About 1 day of fuel left at the recent rate. Add fuel to keep the agent thinking.', tone: 'warning', state: 'active', firstAt: at(5), lastSeenAt: at(0.1), resolvedAt: null },
+        { id: 'ntf_mock_2', event: 'x_revoked', title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect the same X account again from the inbox in the creator console.', tone: 'danger', state: 'active', firstAt: at(2), lastSeenAt: at(0.1), resolvedAt: null },
+        { id: 'ntf_mock_3', event: 'gas_out', title: 'Out of gas', body: 'The agent cannot claim fees, trade or refuel until someone adds gas on the coin page.', tone: 'danger', state: 'resolved', firstAt: at(60), lastSeenAt: at(30), resolvedAt: at(30) },
+      ],
+    };
+    s.inboxes.set(key, inbox);
+  }
+  return inbox;
+}
+
+const MOCK_CHAT_LIMITS = { perHour: 20, perDay: 60 };
+const MOCK_CHAT_COST = '18000';
+
+function chatFor(kernel: string): AgentChatMessage[] {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let list = s.chats.get(key);
+  if (!list) {
+    list = [];
+    s.chats.set(key, list);
+  }
+  return list;
+}
+
+function inboxView(inbox: MockInbox): AgentNotifications {
+  const items = inbox.items.filter((i) => !inbox.optOut.includes(i.event));
+  return clone({ items, active: items.filter((i) => i.state === 'active').length, events: MOCK_EVENTS.map((e) => ({ ...e, enabled: !inbox.optOut.includes(e.key) })), telegram: inbox.telegram });
 }
 
 function approvalsFor(kernel: string): AgentApproval[] {
