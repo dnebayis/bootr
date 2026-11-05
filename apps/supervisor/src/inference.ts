@@ -34,12 +34,15 @@ export interface ModelToolCall {
 export type InferenceResult =
   | { kind: 'ok'; key: string; message: ChatMessage; toolCall: ModelToolCall | null; receipt: BootrReceipt | null; replayed: boolean }
   | { kind: 'unknown'; key: string; error: string }
+  /** The relay holds the payment for this key (`status: 'credit'`): retry this key, a new one would pay again. */
+  | { kind: 'credit'; key: string; error: string }
   | { kind: 'failed'; key: string; error: string };
 
 /** One paid relay call (a thought or an image), before the response body is interpreted. */
 export type RelayResult =
   | { kind: 'ok'; key: string; body: Record<string, unknown>; receipt: BootrReceipt | null; replayed: boolean }
   | { kind: 'unknown'; key: string; error: string }
+  | { kind: 'credit'; key: string; error: string }
   | { kind: 'failed'; key: string; error: string };
 
 export interface RelayCall {
@@ -221,6 +224,13 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
   return recordResponse(ctx, key, res);
 }
 
+/** The one line an operator refunds from: that a refund is due, to whom and how much (the signed amount if the relay named none). */
+function logRefundDue(ctx: SupervisorContext, key: string, row: { agentId: string; receipt: Record<string, unknown> | null } | undefined, charged: unknown, detail: Record<string, unknown>): void {
+  const signed = (row?.receipt as { payment?: { payload?: { authorization?: { value?: unknown } } } } | null)?.payment?.payload?.authorization?.value;
+  const chargedMicroUsdc = String(charged ?? signed ?? 'unknown');
+  ctx.log.error({ key, agentId: row?.agentId, chargedMicroUsdc, ...detail }, `paid inference failed at the relay: refund due to the agent: ${chargedMicroUsdc} micro-USDC`);
+}
+
 async function recordResponse(ctx: SupervisorContext, key: string, res: Response): Promise<RelayResult> {
   const now = new Date(ctx.now());
   let body: unknown = null;
@@ -237,6 +247,19 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
     return { kind: 'ok', key, body: body as Record<string, unknown>, receipt, replayed: res.headers.get('x-bootr-idempotent-replay') === 'true' };
   }
   const code = errorCode(res.status, body);
+  const relay = body as { status?: unknown; refundDue?: unknown; requestId?: unknown; chargedMicroUsdc?: unknown } | null;
+  // Paid and kept as a credit (`upstream_rejected` or `upstream_failed_credited`): the row stays open, so only this key is retried.
+  if (relay?.status === 'credit') {
+    await ctx.db.update(inference).set({ status: 'unknown', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'credit', key, error: code };
+  }
+  // Paid and the attempts are spent (`credit_exhausted`): final for this key, and the operator owes the agent.
+  if (relay?.refundDue === true) {
+    const row = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
+    logRefundDue(ctx, key, row, relay.chargedMicroUsdc, { code, requestId: relay.requestId });
+    await ctx.db.update(inference).set({ status: 'failed', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'failed', key, error: code };
+  }
   const unknown = /unknown|in_progress/.test(code) || res.status >= 500 && !/facilitator_unavailable|upstream_rejected/.test(code);
   if (unknown) {
     await ctx.db.update(inference).set({ status: 'unknown', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
@@ -258,7 +281,8 @@ export function storedPayment(row: { receipt: Record<string, unknown> | null }):
  * as `PAYMENT-SIGNATURE` (`paymentProofHeaders`). `succeeded` and `credit` (payment collected, completion still
  * owed) both replay the POST with the same key, body and proof: the relay serves them without a new payment.
  * `failed` with `refundDue` means the operator owes the agent a refund and is logged at error level. A row
- * without a stored payment was never paid for and is simply failed.
+ * without a stored payment was never paid for and is simply failed. The stored request is what goes out, so the
+ * relay's request hash always matches the key whatever the turn looks like by now.
  */
 export async function reconcileInference(ctx: SupervisorContext, key: string): Promise<InferenceResult> {
   return withAssistant(await reconcileRelay(ctx, key));
@@ -279,7 +303,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
     return { kind: 'failed', key, error: 'no_payment_signed' };
   }
   const proof = paymentProofHeaders(payment);
-  let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null } | null = null;
+  let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null; chargedMicroUsdc?: string | null } | null = null;
   try {
     const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { headers: proof, signal: AbortSignal.timeout(15_000) });
     if (res.status === 404) status = { status: 'failed', retrySafe: true };
@@ -304,7 +328,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
   }
   if (status.status === 'failed' || status.retrySafe === true) {
     const error = status.refundDue ? 'relay_failed_refund_due' : `relay_${status.status ?? 'failed'}`;
-    if (status.refundDue) ctx.log.error({ key, agentId: row.agentId, reason: status.statusReason ?? null }, 'paid inference failed at the relay: refund due to the agent');
+    if (status.refundDue) logRefundDue(ctx, key, row, status.chargedMicroUsdc, { reason: status.statusReason ?? null });
     await ctx.db.update(inference).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error };
   }

@@ -59,6 +59,13 @@ export interface AgentState {
   continuation?: { progress: string; recentSteps: { tool: string; status: string; summary: string }[] } | null;
   /** Idempotency key of an inference whose outcome is unknown; blocks new inference until reconciled. */
   inferenceKey?: string | null;
+  /** Epoch ms before which nothing wakes the agent after an inference failure, whatever the cause (tick.ts). */
+  inferenceRetryAt?: number | null;
+  /**
+   * A turn the runtime ended without a checkpoint (step cap, no tool call, context too large) waits for its `nextAt`:
+   * what it already had in front of it (these mentions, a due post) is no reason to buy it again before `until` (tick.ts).
+   */
+  runtimeEnded?: { until: number; postIds: string[]; postDue: boolean } | null;
   lastPostAt?: number | null;
   /** When a turn that woke for a due original post finished without one: the slot is consumed, not kept (rhythm). */
   lastSlotSkippedAt?: number | null;
@@ -353,6 +360,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     settlePlatformNumbers(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
     const next = ctx.now() + 5 * 60_000;
+    state.runtimeEnded = { until: next, postIds: Object.keys(turn.inbox).slice(-100), postDue: !!turn.postDue };
     return endTurn('step_cap', { status: 'waiting', nextAt: new Date(next) });
   };
 
@@ -389,21 +397,40 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     await settle();
   }
 
-  // Unknown inference from a previous attempt: never pay for a replacement.
+  /**
+   * Every inference failure backs off, and tick.ts wakes nothing before `inferenceRetryAt`. A credit keeps the key
+   * and the turn, so the next attempt replays the stored request without a new payment; anything else ends the turn
+   * and the next attempt gets a new key.
+   */
+  const backOff = (inf: { kind: 'credit' | 'failed'; key: string; error: string }): Promise<TurnResult> => {
+    const failures = (runtime.failures ?? 0) + 1;
+    const plan = interruptionPlan(0, failures, ctx.now());
+    log.warn({ key: inf.key, error: inf.error, failures, nextAt: plan.nextAt, credit: inf.kind === 'credit' }, 'inference failed');
+    state.inferenceKey = inf.kind === 'credit' ? inf.key : null;
+    state.inferenceRetryAt = plan.nextAt;
+    state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
+    return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: inf.error });
+  };
+
+  // Unknown inference or a credit from a previous attempt: never pay for a replacement.
   let carried: InferenceResult | null = null;
   if (state.inferenceKey) {
     const res = await reconcileInference(ctx, state.inferenceKey);
     if (res.kind === 'unknown') return endTurn('inference_unknown', { status: 'waiting', nextAt: new Date(ctx.now() + 60_000) });
+    if (res.kind === 'credit') return backOff(res);
     state.inferenceKey = null;
     if (res.kind === 'failed') {
       broker = { ...broker, cycle: broker.cycle + 1 };
+      // Signed for and lost (a refund may be due): a replacement waits for the backoff. Nothing signed: nothing at stake.
+      if (res.error !== 'no_payment_signed') return backOff(res);
     } else {
       carried = res;
     }
   }
 
   while (true) {
-    if (turn.steps >= ctx.config.MAX_TOOL_STEPS) return forceFinish('step cap reached');
+    // A carried response is already paid for: it is used even on the last step.
+    if (!carried && turn.steps >= ctx.config.MAX_TOOL_STEPS) return forceFinish('step cap reached');
     await renewLease(ctx, agent.agentId, lease);
 
     let inf: InferenceResult;
@@ -432,14 +459,12 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       log.warn({ key: inf.key, error: inf.error }, 'inference outcome unknown; holding the turn');
       return endTurn('inference_unknown', { status: 'waiting', nextAt: new Date(ctx.now() + 60_000) });
     }
+    if (inf.kind === 'credit') return backOff(inf);
     if (inf.kind === 'failed') {
       broker = { ...broker, cycle: broker.cycle + 1 };
-      const failures = (runtime.failures ?? 0) + 1;
-      const plan = interruptionPlan(0, failures, ctx.now());
-      log.warn({ key: inf.key, error: inf.error, failures, nextAt: plan.nextAt }, 'inference failed');
-      state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
-      return endTurn('inference_failed', { status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: inf.error });
+      return backOff(inf);
     }
+    state.inferenceRetryAt = null;
 
     turn.messages.push(inf.message);
     if (!inf.toolCall) {
@@ -499,6 +524,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       state.summary = cp.summary;
       state.lastCheckpointAt = now;
       state.continuation = null;
+      state.runtimeEnded = null;
       state.lastResults = [];
       state.phase = 'social';
       // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
