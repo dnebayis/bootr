@@ -151,6 +151,8 @@ export const configSchema = z
      */
     PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'base,jessepollak,clanker_world' : v), z.string().max(2000)),
     MAX_TOOL_STEPS: int(8, 1),
+    /** Closes mentions the sender would refuse for lack of a verified badge before a turn's first step (mention-close.ts). */
+    MENTION_AUTO_CLOSE_ENABLED: bool('true'),
     SUPERVISOR_PORT: int(3004, 1),
     /** Claimable LP fees (USD) above which claim_fees runs automatically. */
     CLAIM_THRESHOLD_USD: num(5),

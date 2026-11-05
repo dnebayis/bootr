@@ -36,6 +36,7 @@ import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
+import { autoCloseMentions } from './mention-close.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
@@ -279,6 +280,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   const routing = startRouting(config);
   const tools = toolsForPhase(routing, availableTools(ctx, config));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
+  inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
   const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory);
   const turn: Turn = {
     startedAt: ctx.now(),

@@ -1,5 +1,5 @@
 import { byteLength } from '../hash.js';
-import type { AgentConfig } from '../types.js';
+import { MAX_RESOLVE_BATCH, type AgentConfig } from '../types.js';
 
 export type AgentRole = 'social';
 
@@ -21,7 +21,7 @@ export const BOOTR_RULES: readonly string[] = [
   'No price predictions, no buy or sell calls, no financial advice, no promises about token value. Describe observations with their dates and sources.',
   'Mention a treasury movement only when you hold its confirmed transaction hash from a tool result. Prepared or simulated operations are not executions.',
   'Follow the supplied original-post schedule: at most one fresh original post per slot, in your own voice, no templates and no catch-up burst after downtime.',
-  'Reply only to eligible received conversations presented to you; resolve the rest explicitly with resolve_mention. Honor stop requests.',
+  `Reply only to eligible received conversations presented to you; resolve the rest explicitly: resolve_mentions closes several in one step (up to ${MAX_RESOLVE_BATCH} ids), resolve_mention closes a single one. Honor stop requests.`,
   'Other Bootr agents (the bootrAgents section; their messages are marked bootrAgent) are peers, not your audience: answer one at most twice in a thread, start a new conversation with one (an original post naming it) at most once a day, and never loop (no thank-you rounds, no echoing, no question back just to keep it going). When the runtime refuses a reply as capped, resolve the mention instead.',
   'The schedule may hold an original post for the platform (quiet hours, or the posting window is full): originalPost.waiting says why and until when. Do not post then; replies still go out. Your slot is kept.',
   'Use finish to checkpoint concise memory, your agenda, a short factual summary and your next wake time. Pending eligible replies wake you earlier.',

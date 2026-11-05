@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
-import { DRAFT_INTENT_TOOL_NAME, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
+import { DRAFT_INTENT_TOOL_NAME, MAX_RESOLVE_BATCH, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
 
 export type ToolEffect = 'read' | 'write' | 'money';
 
@@ -75,7 +75,14 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   resolve_mention: define(
     'resolve_mention',
-    'Close a received interaction without posting: skip with a reason, opt_out when the author asked you to stop, or defer with a future ISO reviewAt.',
+    'Close one received interaction without posting: skip with a reason, opt_out when the author asked you to stop, or defer with a future ISO reviewAt. For several, use resolve_mentions.',
+    'xReply',
+    'write',
+    true,
+  ),
+  resolve_mentions: define(
+    'resolve_mentions',
+    `Close up to ${MAX_RESOLVE_BATCH} received interactions in one step, all with the same outcome and reason. Prefer this to repeated resolve_mention calls. The result lists the resolved ids and each failed id with its error.`,
     'xReply',
     'write',
     true,
