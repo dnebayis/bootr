@@ -8,6 +8,7 @@ import {
   NUMBERS_GRACE_MS,
   NUMBERS_WAKE_REASON,
   PLATFORM_NUMBERS_INSTRUCTION,
+  PLATFORM_NUMBERS_MEANING,
   TOP_COINS_QUERY,
   dayKey,
   lastNumbersSlotAt,
@@ -177,7 +178,8 @@ describe('the numbers and the section', () => {
     const numbers = { observedAt: new Date(AT).toISOString(), totals: { coins: 1, agentsAwake: 1, agentsTotal: 1, volume24hUsd: 0, fees24hUsd: 0, fees24hNote: '', updatedAt: null }, feesAllTime: null, bootr: null, topCoins24h: null };
     const due = platformNumbersSection({ platform: true }, numbers, { day: '2026-10-24', slotAt: SLOT }) as { platformNumbers: Record<string, unknown> };
     expect(due.platformNumbers).toMatchObject({ available: true, totals: numbers.totals, post: { due: true, day: '2026-10-24', instruction: PLATFORM_NUMBERS_INSTRUCTION } });
-    expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/No market cap, no price, no returns, no predictions/);
+    expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/\$BOOTR's market cap or price only if you read it this turn \(your market data, read_market\), as of today\. No returns, no predictions, no buy or sell call, no hype/);
+    expect(PLATFORM_NUMBERS_MEANING).toMatch(/The platform-wide totals belong in the daily numbers post/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/with the date/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/One post only/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/never as a cashtag/);

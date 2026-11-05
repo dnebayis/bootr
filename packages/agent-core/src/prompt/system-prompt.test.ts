@@ -84,31 +84,35 @@ describe('buildSystemPrompt', () => {
   });
   it('gives the platform account its hard rules as a never-list, and keeps them out of coin agents', () => {
     const platform = buildSystemPrompt(parseAgentConfig({ ...baseConfig, xHandle: 'AgentBootr', platform: true }));
-    expect(platform).toMatch(/Never talk about price/);
+    expect(platform).toMatch(/Never predict anything, in any direction/);
     expect(platform).toMatch(/no "wen"/);
-    expect(platform).toMatch(/Never tell anyone to buy, hold or sell anything, never talk about its price/);
+    expect(platform).toMatch(/no "buy", "hold" or "sell", no "don't miss", no "early", no return or profit talk, no comparison implying gain, no rise or fall read as an opportunity, no promises/);
     expect(platform).toMatch(/Never speak for another coin's agent/);
     expect(platform).toMatch(/Never post about your own treasury operations: fee claims, swaps, refuels, gas/);
     expect(platform).toMatch(/One original post per slot at most, and skipping the slot is normal/);
     expect(platform).toMatch(/When in doubt, do not post\./);
-    expect(platform).toMatch(/Replies: answer questions about how Bootr works in plain words\. Never argue\. Never discuss prices/);
+    expect(platform).toMatch(/Replies: answer questions about how Bootr works in plain words\. Never argue\. Asked about \$BOOTR's numbers, give the figure from your data with its time; asked where a price goes, say in one line that you do not predict/);
     expect(platform).toMatch(/never answer an insult with an insult/);
     expect(platform).toMatch(/Emoji are fine in small doses \(one or two, never strings\)[^\n]*No shouting, no cashtags other than \$BOOTR/);
-    // the daily numbers post is the one place for the platform totals; price and market cap stay out everywhere
-    expect(platform).toMatch(/Never talk about price, market cap, charts or returns\./);
-    expect(platform).toMatch(/coins launched, agents awake, what was traded in the last day, fees earned by agents and creators, \$BOOTR burned, holders\) are facts you may state once a day, in the numbers post/);
+    // real market figures are allowed, from this turn's data and with their time; the platform-wide totals stay in the numbers post
+    expect(platform).toMatch(/You may state real market figures: 24 h volume, market cap, current price, holders, burned amount, trades\. Only as read this turn \(your market data, read_market, read_coin, platformNumbers, coinFees\), never from memory or an old post, always with its time/);
+    expect(platform).toMatch(/Promote Bootr and \$BOOTR proudly, in your own words/);
+    expect(platform).toMatch(/no favourites among them/);
+    expect(platform).not.toMatch(/Never talk about price|never talk about its price|Never discuss prices/);
+    expect(platform).toMatch(/The platform-wide totals \(coins launched, agents awake, what was traded across Bootr in the last day, fees earned by agents and creators\) are for the numbers post the platformNumbers section asks for, once a day, with the date; in no other original post\./);
     expect(platform).toMatch(/Rotate what you post about: never two original posts of the same kind in a row/);
     expect(platform).toMatch(/AI and agent news at most one post in four/);
     expect(platform).toMatch(/The watchlist section is for engaging with the people who build Base[^\n]*publish_reply is only for people who wrote to you/);
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));
     for (const rule of PLATFORM_RULES) expect(coin).not.toContain(rule);
+    expect(coin).not.toMatch(/You may state real market figures|Promote Bootr/);
     // what changed on Bootr comes from its own section, in the rotation, and never at the cost of anything else
     expect(platform).toMatch(/platformUpdate, when present, is one change live on Bootr: say it once, in your own voice, in an original post with its link\. It uses a regular slot and follows the rotation; skip nothing else for it\./);
     expect(platform).toMatch(/a question to a builder, the numbers, a live change on Bootr\)/);
     expect(coin).not.toContain('platformUpdate');
     // what $BOOTR funds comes from its own trades, never from Bootr as a whole
-    expect(platform).toMatch(/say what its own trades fund, from coinFees/);
+    expect(platform).toMatch(/Say what its own trades fund, from coinFees/);
     expect(platform).not.toMatch(/say what it funds/);
     // the fee rule binds every agent
     for (const prompt of [platform, coin]) expect(prompt).toMatch(/Fees, burns and who receives what: state them only from that coin's split in your data \(coinFees for your coin, read_coin for another\) and only about that coin\. Never generalize one coin's split to all coins or to Bootr; if you lack the number, do not state it\. Explaining a locked split is allowed; your own recent claims and swaps are not\./);
