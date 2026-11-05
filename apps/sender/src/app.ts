@@ -4,6 +4,8 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { getAccount, revokeAccount, saveAccount } from './accounts.js';
 import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
+import { DEFAULT_SITE_URL } from './api-page.js';
+import { createApiPageHandler } from './catalog-source.js';
 import { nowSec, type SenderContext } from './context.js';
 import { safeEqualHex, safeEqualStr } from './crypto.js';
 import {
@@ -94,6 +96,14 @@ export function createApp(ctx: SenderContext): Hono {
   const app = new Hono();
 
   app.get('/health', (c) => c.json({ ok: true, service: 'sender' }));
+
+  // The public API list, from the web app's catalogue (see catalog-source.ts). No database, tokens or sessions.
+  const apiPage = createApiPageHandler({
+    siteUrl: ctx.apiPage?.siteUrl ?? DEFAULT_SITE_URL,
+    fetch: ctx.apiPage?.fetch,
+    now: () => ctx.now().getTime(),
+  });
+  app.get('/', () => apiPage());
 
   // Body limits: the browser-facing OAuth routes take no body; internal requests are small JSON
   // (publish text is at most 25k chars) except a publish carrying a picture. Oversized bodies get

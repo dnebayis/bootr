@@ -37,6 +37,7 @@ export function buildContext(config: Config = loadConfig()): {
       ratePerMinute: config.SENDER_PUBLIC_RATE_LIMIT_PER_MIN,
       trustProxy: config.SENDER_TRUST_PROXY,
     },
+    apiPage: { siteUrl: config.SENDER_SITE_URL },
   };
   return { ctx, config, close };
 }
