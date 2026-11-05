@@ -93,7 +93,9 @@ export async function PUT(req: NextRequest, ctx: RouteContext<'/api/coin/[id]/im
 
   const pinata = pinataEnv();
   if (!pinata.jwt && !pinata.mock) return fail(503, 'upload_unavailable', 'Image uploads are not configured on this deployment, so the image cannot be changed right now.');
-  const auth = await authorize({ message: form.get('message') ?? undefined, signature: form.get('signature') ?? undefined }, g.token);
+  // A multipart body turns every line end of a text field into CRLF; the message was signed with LF.
+  const message = form.get('message');
+  const auth = await authorize({ message: typeof message === 'string' ? message.replace(/\r\n/g, '\n') : undefined, signature: form.get('signature') ?? undefined }, g.token);
   if ('refused' in auth) return auth.refused;
   const sha = await sha256Hex(checked.bytes);
   try {

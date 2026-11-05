@@ -122,6 +122,12 @@ describe('real mode', () => {
     expect(store.set).toHaveBeenCalledWith(coin, 'ipfs://bafkqaaa', creator);
   });
 
+  it('checks the message as it was signed, whatever multipart did to its line ends', async () => {
+    verify.mockResolvedValue(signedBy(creator));
+    expect((await PUT(request(coin, 'PUT', form(png(), { message: 'line one\nline two', signature: '0xs' })), ctx(coin))).status).toBe(200);
+    expect(verify.mock.calls[0]![0]).toMatchObject({ message: 'line one\nline two', signature: '0xs' });
+  });
+
   it('anyone else is refused before anything is pinned', async () => {
     verify.mockResolvedValue(signedBy(other));
     const res = await put();
