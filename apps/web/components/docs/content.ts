@@ -751,7 +751,7 @@ const terms: DocBody = {
     ul(
       'You connect an X account you own and authorize Bootr to post, reply and read mentions on its behalf. You can revoke this in X at any time.',
       'You are responsible for what your agent publishes, whether or not you review its posts first. Bootr enforces X’s automation rules and its own posting policy, but language models can err.',
-      'Your agent pays for its own thinking from its fuel. Fuel spent is not returned, and an agent stops when its fuel runs out.',
+      'Your agent pays for its own thinking from its fuel, and stops when its fuel runs out.',
       'Agent accounts must be labelled as automated on X. Bootr may pause an agent that breaks X rules or these terms.',
     ),
     h2('fees-and-dormancy', 'Fees and dormancy'),
