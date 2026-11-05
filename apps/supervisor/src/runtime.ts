@@ -61,6 +61,11 @@ export interface AgentState {
   inferenceKey?: string | null;
   /** Epoch ms before which nothing wakes the agent after an inference failure, whatever the cause (tick.ts). */
   inferenceRetryAt?: number | null;
+  /**
+   * A turn the runtime ended without a checkpoint (step cap, no tool call, context too large) waits for its `nextAt`:
+   * what it already had in front of it (these mentions, a due post) is no reason to buy it again before `until` (tick.ts).
+   */
+  runtimeEnded?: { until: number; postIds: string[]; postDue: boolean } | null;
   lastPostAt?: number | null;
   /** When a turn that woke for a due original post finished without one: the slot is consumed, not kept (rhythm). */
   lastSlotSkippedAt?: number | null;
@@ -355,6 +360,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     settlePlatformNumbers(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
     const next = ctx.now() + 5 * 60_000;
+    state.runtimeEnded = { until: next, postIds: Object.keys(turn.inbox).slice(-100), postDue: !!turn.postDue };
     return endTurn('step_cap', { status: 'waiting', nextAt: new Date(next) });
   };
 
@@ -518,6 +524,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       state.summary = cp.summary;
       state.lastCheckpointAt = now;
       state.continuation = null;
+      state.runtimeEnded = null;
       state.lastResults = [];
       state.phase = 'social';
       // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.

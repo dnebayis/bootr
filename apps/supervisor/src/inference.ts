@@ -224,6 +224,13 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
   return recordResponse(ctx, key, res);
 }
 
+/** The one line an operator refunds from: that a refund is due, to whom and how much (the signed amount if the relay named none). */
+function logRefundDue(ctx: SupervisorContext, key: string, row: { agentId: string; receipt: Record<string, unknown> | null } | undefined, charged: unknown, detail: Record<string, unknown>): void {
+  const signed = (row?.receipt as { payment?: { payload?: { authorization?: { value?: unknown } } } } | null)?.payment?.payload?.authorization?.value;
+  const chargedMicroUsdc = String(charged ?? signed ?? 'unknown');
+  ctx.log.error({ key, agentId: row?.agentId, chargedMicroUsdc, ...detail }, `paid inference failed at the relay: refund due to the agent: ${chargedMicroUsdc} micro-USDC`);
+}
+
 async function recordResponse(ctx: SupervisorContext, key: string, res: Response): Promise<RelayResult> {
   const now = new Date(ctx.now());
   let body: unknown = null;
@@ -249,7 +256,7 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
   // Paid and the attempts are spent (`credit_exhausted`): final for this key, and the operator owes the agent.
   if (relay?.refundDue === true) {
     const row = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
-    ctx.log.error({ key, agentId: row?.agentId, code, requestId: relay.requestId, chargedMicroUsdc: relay.chargedMicroUsdc }, 'paid inference failed at the relay: refund due to the agent');
+    logRefundDue(ctx, key, row, relay.chargedMicroUsdc, { code, requestId: relay.requestId });
     await ctx.db.update(inference).set({ status: 'failed', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error: code };
   }
@@ -296,7 +303,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
     return { kind: 'failed', key, error: 'no_payment_signed' };
   }
   const proof = paymentProofHeaders(payment);
-  let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null } | null = null;
+  let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null; chargedMicroUsdc?: string | null } | null = null;
   try {
     const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { headers: proof, signal: AbortSignal.timeout(15_000) });
     if (res.status === 404) status = { status: 'failed', retrySafe: true };
@@ -321,7 +328,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
   }
   if (status.status === 'failed' || status.retrySafe === true) {
     const error = status.refundDue ? 'relay_failed_refund_due' : `relay_${status.status ?? 'failed'}`;
-    if (status.refundDue) ctx.log.error({ key, agentId: row.agentId, reason: status.statusReason ?? null }, 'paid inference failed at the relay: refund due to the agent');
+    if (status.refundDue) logRefundDue(ctx, key, row, status.chargedMicroUsdc, { reason: status.statusReason ?? null });
     await ctx.db.update(inference).set({ status: 'failed', error, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error };
   }

@@ -71,7 +71,9 @@ export function decisionDue(input: {
 /**
  * The one-minute pulse keeps transports responsive but is not, by itself, a
  * reason to spend a model turn. Run when the scheduled wake arrived, or when
- * a concrete reason exists and the runtime is waiting.
+ * a concrete reason exists and the runtime is waiting. Continuation is not one
+ * of those reasons: an interrupted turn chose its `nextAt` and resumes then,
+ * otherwise every turn that ends without a checkpoint re-buys itself at once.
  */
 export function wakeDecision(input: WakeInput): WakeDecision {
   const { now } = input;
@@ -95,6 +97,7 @@ export function wakeDecision(input: WakeInput): WakeDecision {
   });
   const scheduledNow = scheduled <= now;
   if (scheduledNow) reasons.unshift('scheduled');
-  const run = scheduledNow || (reasons.length > 0 && input.status === 'waiting');
+  const passesNextAt = reasons.some((r) => r !== 'continuation');
+  const run = scheduledNow || (passesNextAt && input.status === 'waiting');
   return { run, reasons: run ? reasons : [], nextAt: Math.min(scheduled, now + PULSE_MS) };
 }

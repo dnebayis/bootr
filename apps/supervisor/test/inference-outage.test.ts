@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { wakeDecision } from '@bootr/agent-core';
 import { actions, agents, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { generateImage } from '../src/images.js';
+import { generateImage, IMAGE_WINDOW_MS, MAX_IMAGES_PER_DAY } from '../src/images.js';
 import { processAgent, tick } from '../src/tick.js';
 import type { AgentState, Turn } from '../src/runtime.js';
 import { spenderAccount } from '../src/spender.js';
@@ -107,7 +107,7 @@ describe.each([
       expect(relay.upstreamFetch).toHaveBeenCalledTimes(3);
       expect(sim.signed).toBe(1);
       expect(relay.facilitator.settle).toHaveBeenCalledTimes(1);
-      expect(refund).toHaveBeenCalledWith(expect.objectContaining({ key: firstKey, agentId: AGENT_ID, code: 'credit_exhausted', chargedMicroUsdc: expect.any(String) }), expect.stringContaining('refund due'));
+      expect(refund).toHaveBeenCalledWith(expect.objectContaining({ key: firstKey, agentId: AGENT_ID, code: 'credit_exhausted', chargedMicroUsdc: expect.stringMatching(/^\d+$/) }), expect.stringMatching(/refund due to the agent: \d+ micro-USDC$/));
       expect((await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, firstKey) }))?.status).toBe('failed');
       rt = await runtimeRow(w);
       expect(stateOf(rt).inferenceKey).toBeNull();
@@ -210,8 +210,8 @@ describe('the backoff holds against every wake', () => {
       expect(stopped.turn).toBeTruthy();
       const retryAt = stopped.nextAt.getTime();
 
-      // the wake rule alone would run: this is why the hold sits in front of it
-      expect(wakeDecision({ now: retryAt - MINUTE, enabled: true, status: 'waiting', nextAt: retryAt, continuation: true }).run).toBe(true);
+      // the wake rule alone would run on a mention: this is why the hold sits in front of it
+      expect(wakeDecision({ now: retryAt - MINUTE, enabled: true, status: 'waiting', nextAt: retryAt, inbox: [{ postId: '900', status: 'pending', eligible: true, seenAt: null, deferredUntil: null }] }).run).toBe(true);
 
       w.sender.items = [{ postId: '900', authorId: '555', conversationId: '900', status: 'pending', observedAt: new Date(w.ctx.now()).toISOString(), post: { id: '900', text: 'hello @bootr_agent', authorId: '555', conversationId: '900' } as (typeof w.sender.items)[number]['post'] }];
       const config = agentConfig(w.ctx.now(), { revision: 2 });
@@ -318,7 +318,7 @@ describe('the other failures keep their own rule', () => {
       const start = w.ctx.now();
       await tick(w.ctx);
       expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
-      expect(refund).toHaveBeenCalledWith(expect.objectContaining({ key, agentId: AGENT_ID }), expect.stringContaining('refund due'));
+      expect(refund).toHaveBeenCalledWith(expect.objectContaining({ key, agentId: AGENT_ID, chargedMicroUsdc: '1000' }), expect.stringContaining('refund due to the agent: 1000 micro-USDC'));
       const after = await runtimeRow(w);
       expect(stateOf(after).inferenceKey).toBeNull();
       expect(after.cycle).toBe(1);
@@ -339,6 +339,227 @@ describe('the other failures keep their own rule', () => {
       const config = agentConfig(w.ctx.now()) as unknown as Parameters<typeof generateImage>[2];
       expect(await generateImage(w.ctx, agent, config, pending, { prompt: 'a fox', altText: 'a fox' }, 0)).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
       expect((await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, 'image:act_img') }))?.status).toBe('unknown');
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+/** A model that never finishes: every thought is paid and asks for one more read. */
+const neverFinishes = () =>
+  jsonResponse({
+    id: 'gen',
+    choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_market', type: 'function', function: { name: 'read_market', arguments: '{}' } }] } }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.00001 },
+  });
+
+const mention = (postId: string, verified = true) => ({
+  postId,
+  authorId: `3${postId}`,
+  conversationId: postId,
+  status: 'pending',
+  observedAt: '2026-10-24T11:59:00Z',
+  seenAt: null,
+  deferredUntil: null,
+  post: { id: postId, authorId: `3${postId}`, text: `@bootr_agent gm ${postId}`, conversationId: postId, author: { id: `3${postId}`, username: `user${postId}`, verified, verifiedType: (verified ? 'blue' : 'none') as 'blue' | 'none' } },
+});
+
+const setState = async (w: TestWorld, patch: Partial<AgentState>, row: Record<string, unknown> = {}) => {
+  const rt = await runtimeRow(w);
+  await w.db.update(runtimes).set({ state: { ...stateOf(rt), ...patch } as unknown as Record<string, unknown>, ...row }).where(eq(runtimes.agentId, AGENT_ID));
+};
+
+describe('a turn the runtime ended waits for its nextAt', () => {
+  it('repeated step_cap turns buy 96 thoughts an hour, ticking every 30 s with a due post and an unanswered mention waiting', async () => {
+    const { w, sim } = await outage(neverFinishes);
+    try {
+      await seedAgent(w);
+      w.sender.items = [mention('1001')];
+      const started: number[] = [];
+      let before = 0;
+      const start = w.ctx.now();
+      for (let t = 0; t < 120; t++) {
+        w.setNow(start + t * 30_000);
+        const report = await tick(w.ctx);
+        expect(report.errors).toEqual([]);
+        if (sim.signed > before) started.push(t * 30);
+        before = sim.signed;
+      }
+      expect(sim.signed).toBe(96);
+      expect(started).toEqual(Array.from({ length: 12 }, (_, i) => i * 300));
+      const rt = await runtimeRow(w);
+      expect(stateOf(rt).continuation?.progress).toContain('step cap reached');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('wakes early only for what the ended turn did not see: a new mention, a post that came due since', async () => {
+    const { w, sim } = await outage(neverFinishes);
+    try {
+      const agent = await seedAgent(w);
+      w.sender.items = [mention('1001')];
+      await setState(w, { lastPostAt: w.ctx.now() - 60_000 }); // no post due in the first turn
+      await tick(w.ctx);
+      expect(sim.signed).toBe(8);
+
+      await minutes(w, 1);
+      expect(sim.signed).toBe(8);
+
+      w.sender.items = [mention('1001'), mention('1002')];
+      w.setNow(w.ctx.now() + MINUTE);
+      const woken = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(woken?.ran).toBe(true);
+      expect(woken?.reasons).toEqual(['continuation', 'pending_mention']);
+      expect(sim.signed).toBe(16);
+      await minutes(w, 1);
+      expect(sim.signed).toBe(16);
+
+      await setState(w, { lastPostAt: w.ctx.now() - 3 * 3_600_000 }); // the post came due after that turn began
+      w.setNow(w.ctx.now() + MINUTE);
+      const due = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(due?.reasons).toContain('original_post_due');
+      expect(sim.signed).toBe(24);
+      // that turn had the post in front of it: it does not buy itself again before its nextAt
+      await minutes(w, 4);
+      expect(sim.signed).toBe(24);
+      await minutes(w, 1);
+      expect(sim.signed).toBe(32);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('does not strand an action waiting to resume: continuation or not, it runs at its own nextAt', async () => {
+    const w = await makeWorld({ script: [finishResponse(Date.parse('2026-10-24T20:00:00Z'))] });
+    try {
+      await seedAgent(w);
+      const now = w.ctx.now();
+      const pending = { id: 'act_market', cycleKey: 'cycle:act_market', action: { tool: 'read_market', input: {} }, status: 'sent', createdAt: now, attempts: 1, nextAt: now + 2 * MINUTE };
+      await w.db.insert(actions).values({ actionId: pending.id, agentId: AGENT_ID, cycleKey: pending.cycleKey, action: pending.action, status: 'sent', createdAt: new Date(now), updatedAt: new Date(now) });
+      await setState(w, { lastPostAt: now, continuation: { progress: 'interrupted', recentSteps: [] } }, { pending, nextAt: new Date(now + 2 * MINUTE) });
+      await minutes(w, 1);
+      expect((await runtimeRow(w)).pending).toMatchObject({ status: 'sent' });
+      await minutes(w, 1);
+      const rt = await runtimeRow(w);
+      expect(rt.pending).toBeNull();
+      expect(stateOf(rt).continuation).toBeNull();
+      expect((await w.db.query.actions.findFirst({ where: eq(actions.actionId, pending.id) }))?.status).toBe('completed');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('does not strand a held action: its receipt reconciles and the turn goes on at once', async () => {
+    const w = await makeWorld({ script: [toolCallResponse('publish_post', { text: 'hello world from a test' }), finishResponse(Date.parse('2026-10-24T20:00:00Z'))] });
+    try {
+      await seedAgent(w);
+      w.sender.publishStatus = 'held';
+      await tick(w.ctx);
+      const held = await runtimeRow(w);
+      expect(held.status).toBe('held');
+      await setState(w, { continuation: { progress: 'interrupted', recentSteps: [] } }, { nextAt: new Date(w.ctx.now() + 3_600_000) });
+      w.sender.receipts[(held.pending as { id: string }).id] = { status: 'sent', providerPostId: '777' };
+      await minutes(w, 1);
+      const rt = await runtimeRow(w);
+      expect(rt.status).toBe('waiting');
+      expect(rt.pending).toBeNull();
+      expect(stateOf(rt).continuation).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('does not strand an unresolved response: an unknown key is reconciled at its nextAt with continuation set', async () => {
+    const w = await makeWorld({ script: [finishResponse(Date.parse('2026-10-24T20:00:00Z'))] });
+    try {
+      await seedAgent(w);
+      const now = w.ctx.now();
+      const key = 'inference:open';
+      const payment = { x402Version: 2, scheme: 'exact', network: 'eip155:84532', payload: { signature: '0xsig', authorization: { from: '0xk', to: '0xp', value: '1000', validAfter: '0', validBefore: '9', nonce: '0xn' } } };
+      await w.db.insert(inferenceTable).values({ idempotencyKey: key, agentId: AGENT_ID, cycle: 0, requestHash: '0x00', request: { model: 'm', messages: [] }, status: 'unknown', receipt: { payment }, createdAt: new Date(now), updatedAt: new Date(now) });
+      await setState(w, { inferenceKey: key, lastPostAt: now, continuation: { progress: 'interrupted', recentSteps: [] } }, { nextAt: new Date(now + 2 * MINUTE) });
+      w.inference.state.requests = { status: 'succeeded' };
+      const relayCalls = () => w.inference.calls.filter((c) => c.url.includes('/v1/requests/')).length;
+      await minutes(w, 1);
+      expect(relayCalls()).toBe(0);
+      await minutes(w, 1);
+      expect(relayCalls()).toBe(1);
+      const rt = await runtimeRow(w);
+      expect(stateOf(rt).inferenceKey).toBeNull();
+      expect((await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, key) }))?.status).toBe('succeeded');
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('mention auto-close and a held credit', () => {
+  it('leaves the inbox alone while the key is held and closes once the credit is settled', async () => {
+    const { w, sim, relay } = await outage(refused);
+    try {
+      await seedAgent(w);
+      const resolved: string[] = [];
+      (w.sender.client as unknown as { resolve: unknown }).resolve = async (body: { postId: string }) => {
+        resolved.push(body.postId);
+        w.sender.items = w.sender.items.filter((i) => i.postId !== body.postId);
+        return { item: {} };
+      };
+      await tick(w.ctx);
+      const key = stateOf(await runtimeRow(w)).inferenceKey!;
+      w.sender.items = [mention('2001', false)];
+
+      // the retained turn retries the credit: no fresh turn, no close, no payment
+      await minutes(w, 2);
+      expect(relay.upstreamFetch).toHaveBeenCalledTimes(2);
+      expect(stateOf(await runtimeRow(w)).inferenceKey).toBe(key);
+      expect(resolved).toEqual([]);
+
+      // a fresh turn with the key still held (the turn was lost to a crash): the guard holds, the credit is what runs
+      await w.db.update(runtimes).set({ turn: null }).where(eq(runtimes.agentId, AGENT_ID));
+      sim.provider = completion;
+      await minutes(w, 4);
+      expect(resolved).toEqual([]);
+      expect(sim.signed).toBe(1);
+      const settled = await runtimeRow(w);
+      expect(stateOf(settled).inferenceKey).toBeNull();
+      expect((await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, key) }))?.status).toBe('succeeded');
+      expect(settled.failures).toBe(0);
+
+      // the key is gone: the next fresh turn closes it before paying for a thought
+      await w.db.update(runtimes).set({ nextAt: new Date(w.ctx.now()) }).where(eq(runtimes.agentId, AGENT_ID));
+      await minutes(w, 1);
+      expect(resolved).toEqual(['2001']);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('the daily image cap counts paid attempts', () => {
+  it('stops new payments at the cap while the provider fails, and still lets an open credit resume', async () => {
+    const { w, sim, relay } = await outage(refused);
+    try {
+      const agent = await seedAgent(w);
+      const config = agentConfig(w.ctx.now()) as unknown as Parameters<typeof generateImage>[2];
+      const attempt = (id: string) => generateImage(w.ctx, agent, config, { id } as Parameters<typeof generateImage>[3], { prompt: 'a fox', altText: 'a fox' }, 0);
+      for (let i = 1; i <= MAX_IMAGES_PER_DAY; i++) {
+        expect(await attempt(`act_${i}`)).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
+        expect(sim.signed).toBe(i);
+      }
+      expect(await attempt('act_new')).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours` });
+      expect(sim.signed).toBe(MAX_IMAGES_PER_DAY);
+
+      // the action's own key costs nothing: resumed at the cap, it spends its credit
+      const upstream = relay.upstreamFetch.mock.calls.length;
+      expect((await attempt('act_1')).kind).toBe('unknown');
+      expect(relay.upstreamFetch.mock.calls.length).toBe(upstream + 1);
+      expect(sim.signed).toBe(MAX_IMAGES_PER_DAY);
+
+      // the window moves on
+      w.setNow(w.ctx.now() + IMAGE_WINDOW_MS + 1000);
+      expect(await attempt('act_tomorrow')).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
+      expect(sim.signed).toBe(MAX_IMAGES_PER_DAY + 1);
     } finally {
       await w.close();
     }

@@ -44,8 +44,12 @@ describe('wakeDecision', () => {
     const soon = wakeDecision({ ...base, schedule: { due: false, nextAt: now + 20_000, mayCompose: true } });
     expect(soon).toEqual({ run: false, reasons: [], nextAt: now + 20_000 });
   });
-  it('runs on continuation, reply retry and config revision change', () => {
-    expect(wakeDecision({ ...base, continuation: true }).reasons).toEqual(['continuation']);
+  it('continuation alone waits for nextAt, and comes along once something else wakes the runtime', () => {
+    expect(wakeDecision({ ...base, continuation: true })).toMatchObject({ run: false, reasons: [] });
+    expect(wakeDecision({ ...base, continuation: true, nextAt: now }).reasons).toEqual(['scheduled', 'continuation']);
+    expect(wakeDecision({ ...base, continuation: true, replyRetryDue: true }).reasons).toEqual(['continuation', 'reply_retry']);
+  });
+  it('runs on reply retry and config revision change', () => {
     expect(wakeDecision({ ...base, replyRetryDue: true }).reasons).toEqual(['reply_retry']);
     expect(wakeDecision({ ...base, configRevision: 4 }).reasons).toEqual(['config_changed']);
   });

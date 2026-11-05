@@ -10,9 +10,9 @@
  * palette without copying it; `imageStyle.notes` are the creator's words on top ("flat colours, no text").
  */
 import { imageStyleSchema, maxQuoteFor, type AgentConfig, type ImageStyle, type PendingAction, type ToolInput } from '@bootr/agent-core';
-import { and, count, eq, gte } from 'drizzle-orm';
+import { and, count, eq, gte, like, ne, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { images } from './db/schema.js';
+import { images, inference } from './db/schema.js';
 import { relayRequest } from './inference.js';
 
 /** Relay id of the image model when the agent config names none (`config.imageModel`): Nano Banana Pro. */
@@ -98,22 +98,34 @@ export async function imagesInWindow(ctx: SupervisorContext, agentId: string): P
   return row?.n ?? 0;
 }
 
+/** Image calls a payment was signed for in the window, failed ones included; each new action is a new key and a new payment. */
+async function paidImageAttempts(ctx: SupervisorContext, agentId: string, exceptKey: string): Promise<number> {
+  const since = new Date(ctx.now() - IMAGE_WINDOW_MS);
+  const [row] = await ctx.db
+    .select({ n: count() })
+    .from(inference)
+    .where(and(eq(inference.agentId, agentId), like(inference.idempotencyKey, 'image:%'), ne(inference.idempotencyKey, exceptKey), gte(inference.createdAt, since), sql`${inference.receipt}->'payment' is not null`));
+  return row?.n ?? 0;
+}
+
 export type GenerateImageOutcome = { kind: 'completed'; result: { imageId: string; alt: string; mime: string; bytes: number } } | { kind: 'failed'; error: string } | { kind: 'unknown'; error: string };
 
 /**
  * Executes `generate_image` for a bound action. Idempotent per `pending.id`: an image already stored for the
  * action is returned again, and the relay call is keyed by the action so an interrupted attempt is reconciled,
- * never re-bought. The daily cap counts stored images (paid, successful ones).
+ * never re-bought. The daily cap counts every paid attempt, so a provider that keeps failing cannot drain the agent.
  */
 export async function generateImage(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, pending: PendingAction, input: ToolInput<'generate_image'>, cycle = 0): Promise<GenerateImageOutcome> {
   const existing = await ctx.db.query.images.findFirst({ where: eq(images.actionId, pending.id) });
   if (existing) return { kind: 'completed', result: { imageId: existing.id, alt: existing.alt, mime: existing.mime, bytes: existing.sizeBytes } };
 
-  const made = await imagesInWindow(ctx, agent.agentId);
+  // The action's own key is left out: resuming it costs nothing, so the cap must not strand a credit.
+  const key = `image:${pending.id}`;
+  const made = Math.max(await imagesInWindow(ctx, agent.agentId), await paidImageAttempts(ctx, agent.agentId, key));
   if (made >= MAX_IMAGES_PER_DAY) return { kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours` };
 
   const model = imageModelOf(config);
-  const res = await relayRequest(ctx, agent, { key: `image:${pending.id}`, cycle, request: imageRequest(model, input, imageStyleOf(config)), maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
+  const res = await relayRequest(ctx, agent, { key, cycle, request: imageRequest(model, input, imageStyleOf(config)), maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
   // A credit is resumed like an unknown outcome: the same action, so the same key and no second payment.
   if (res.kind === 'unknown' || res.kind === 'credit') return { kind: 'unknown', error: res.error };
   if (res.kind === 'failed') return { kind: 'failed', error: `image_failed: ${res.error}` };

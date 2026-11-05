@@ -167,8 +167,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const state = runtime.state as unknown as AgentState;
     const now = ctx.now();
     // After an inference failure no cause (continuation, mention, due post, config change, digest) wakes the agent
-    // before the backoff ends, since a wake is a paid attempt. wakeDecision lets any reason pass `nextAt`, so this
-    // sits in front of it; leases, the pauses, reconciliation and the sleep rule above still run.
+    // before the backoff ends, since a wake is a paid attempt. wakeDecision lets a mention, a due post or a config
+    // change pass `nextAt`, so this sits in front of it; leases, the pauses, reconciliation and the sleep rule above still run.
     if (state.inferenceRetryAt && state.inferenceRetryAt > now) {
       await postSocial(ctx, agent, config, runtime, 'awake');
       return { ran: false, reasons: ['inference_backoff'] };
@@ -190,6 +190,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     const quota = quotaHold(state.postQuotaUntil, now);
     const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
+    // A turn the runtime just ended: only something it has not seen may wake the agent before its `nextAt`.
+    const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
     const pending = runtime.pending as unknown as PendingAction | null;
     const status: RuntimeStatus = runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : runtime.status === 'running' ? 'working' : 'waiting';
     const decision = wakeDecision({
@@ -198,9 +200,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       status,
       nextAt: quota ? Math.max(runtime.nextAt.getTime(), quota.until) : runtime.nextAt.getTime(),
       leaseUntil: null,
-      inbox: quota ? [] : views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+      inbox: quota ? [] : views.filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
       replyRetryDue: false,
-      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose } : null,
+      schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose && !ended?.postDue } : null,
       continuation: !!state.continuation || !!runtime.turn,
       configRevision: config.revision,
       lastDecision: runtime.lastDecisionAt ? { at: runtime.lastDecisionAt.getTime(), revision: runtime.lastDecisionRevision ?? -1 } : null,
