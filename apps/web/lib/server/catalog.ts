@@ -1,4 +1,5 @@
 import { TOOL_LIST, toFunctionDefinitions, type ToolEffect } from '@bootr/agent-core/tools';
+import { TRENDING_MAX_TRADERS, TRENDING_WALLET_TRADES_CAP, TRENDING_WALLET_VOLUME_CAP_USD, TRENDING_WINDOW_HOURS } from '@bootr/shared/trending';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import type { ModelsResponse } from '@/lib/models';
@@ -297,6 +298,20 @@ function launchBody(): JsonSchema {
   };
 }
 
+const TOKEN_FILTERS: Record<string, JsonSchema> = {
+  creator: ADDRESS,
+  source: { enum: ['bootr', 'clanker'] },
+  from: { type: 'integer', description: 'Launched at or after, unix seconds.' },
+  to: { type: 'integer', description: 'Launched at or before, unix seconds.' },
+  hasAgent: { type: 'boolean' },
+  graduated: { type: 'boolean' },
+  agentStatus: { enum: ['awake', 'sleeping', 'paused', 'dormant', 'claimed'] },
+};
+const PAGE: Record<string, JsonSchema> = {
+  limit: { type: 'integer', minimum: 1, maximum: 100, default: 48 },
+  after: { type: 'string', description: 'The endCursor of the previous page. The order can move between pages, so dedupe by id.' },
+};
+
 function indexerEndpoints(indexer: string): CatalogEndpoint[] {
   const get = (path: string, description: string, shape: string, parameters?: CatalogEndpoint['parameters']): CatalogEndpoint => ({
     service: 'indexer',
@@ -346,6 +361,40 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
       'Up to 20 coins by name, symbol, X handle or an address prefix (coin, treasury, creator), largest market cap first.',
       '[token row plus agent: {id, status}]; an empty q answers []',
       { query: { type: 'object', properties: { q: { type: 'string', maxLength: 64 } }, additionalProperties: false } },
+    ),
+    get(
+      '/tokens/list',
+      'Coins with filters and a sort: creator, launch path, launch date, has an agent, graduated, agent status.',
+      '{items: [token row plus agent: {id, status}], pageInfo: {endCursor, hasNextPage}, readAt}; 400 with {error, message} on a malformed filter',
+      { query: { type: 'object', properties: { ...TOKEN_FILTERS, sort: { enum: ['bumped', 'launched', 'mcap', 'volume24h', 'holders', 'graduated'], default: 'bumped' }, ...PAGE }, additionalProperties: false } },
+    ),
+    get(
+      '/tokens/trending',
+      `Coins traded in the last ${TRENDING_WINDOW_HOURS} hours, highest trending score first. The score counts different wallets, up to ${TRENDING_MAX_TRADERS}, times the log of their volume and trades, with each wallet counted for at most $${TRENDING_WALLET_VOLUME_CAP_USD} and ${TRENDING_WALLET_TRADES_CAP} trades. It measures recent trading activity only.`,
+      '{items: [token row plus agent: {id, status} and trending: {score, volumeUsd, trades, traders}], pageInfo: {endCursor, hasNextPage}, windowHours, readAt}; 400 with {error, message} on a malformed filter',
+      { query: { type: 'object', properties: { ...TOKEN_FILTERS, ...PAGE }, additionalProperties: false } },
+    ),
+    get(
+      '/leaderboards/{board}',
+      'One ranked board of agents or coins. A period exists only where the data can answer it, and a row without a real value is left out rather than estimated.',
+      '{board, period, periods, unit: usd|count|percent, readAt, indexedAt, ranked, unknown, items: [{rank, value, detail?, token: {id, name, symbol, image, creator, kernel, agentId, source, xHandle, launchedAt}, agent: {id, status}|null}]}; 400 period the board lacks, 404 unknown board',
+      {
+        path: pathParam('board', { enum: ['agent-fees', 'agent-activity', 'volume', 'holders', 'burned'] }),
+        query: {
+          type: 'object',
+          properties: {
+            period: { enum: ['24h', '7d', 'all', 'now'], description: 'agent-fees, volume, burned: 24h, 7d, all. agent-activity: 24h. holders: now. Default: the first of these.' },
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+          },
+          additionalProperties: false,
+        },
+      },
+    ),
+    get(
+      '/creator/{address}',
+      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker count once their fees are collected. At most 200 coins.',
+      '{address, readAt, indexedAt, totals: {coins, agents, earnedUsd, claimedUsd}, coins: [token row plus agent and creatorFees: {earnedUsd, claimedUsd}]}; 400 malformed address; no coins answers empty lists',
+      { path: pathParam('address', ADDRESS) },
     ),
     get(
       '/token/{id}/fees',

@@ -16,6 +16,7 @@ import {
 import type { Address } from 'viem';
 import { env } from './env';
 import { mock, subscribeMock } from './mock';
+import { hasFilters, NO_FILTERS, tokenListRequest, type TokenFilters } from './token-filters';
 import type {
   Agent,
   AgentActivity,
@@ -27,10 +28,14 @@ import type {
   ApprovalDecision,
   AgentPosts,
   AgentWithToken,
+  BoardId,
+  BoardPeriod,
+  CreatorProfile,
   DailyStat,
   FeesByKind,
   FuelEvent,
   Holding,
+  Leaderboard,
   PlatformStats,
   StreamHint,
   Token,
@@ -116,17 +121,23 @@ type Paged<T> = { items: T[]; pageInfo: { endCursor: string | null; hasNextPage:
 
 // ---------------------------------------------------------------- fetchers
 
-const ORDER: Record<TokenTab, { orderBy: string; where?: Record<string, unknown> }> = {
+const ORDER: Record<Exclude<TokenTab, 'trending'>, { orderBy: string; where?: Record<string, unknown> }> = {
   newest: { orderBy: 'launchedAt' },
   graduated: { orderBy: 'graduatedAt', where: { graduated: true } },
   mcap: { orderBy: 'marketCapUsd' },
   active: { orderBy: 'volume24hUsd' },
 };
 
-export async function fetchTokens(tab: TokenTab, after: string | null = null, limit = PAGE_SIZE): Promise<TokenPage> {
+export async function fetchTokens(tab: TokenTab, after: string | null = null, limit = PAGE_SIZE, filters: TokenFilters = NO_FILTERS): Promise<TokenPage> {
   if (env.useMock) {
     await delay();
-    return mock.tokens(tab, after, limit);
+    return mock.tokenList(tab, filters, after, limit);
+  }
+  if (tab === 'trending' || hasFilters(filters)) {
+    const { path, params } = tokenListRequest(tab, filters);
+    params.set('limit', String(limit));
+    if (after) params.set('after', after);
+    return rest<TokenPage>(`${path}?${params}`);
   }
   if (tab === 'newest') {
     // Bump order (last trade, else launch): Ponder's GraphQL cannot sort on coalesce(), the indexer's REST route can.
@@ -153,6 +164,22 @@ export async function fetchTokens(tab: TokenTab, after: string | null = null, li
     { where, orderBy, after, limit },
   );
   return data.tokens;
+}
+
+export async function fetchLeaderboard(board: BoardId, period: BoardPeriod): Promise<Leaderboard> {
+  if (env.useMock) {
+    await delay();
+    return mock.leaderboard(board, period);
+  }
+  return rest<Leaderboard>(`/leaderboards/${board}?period=${period}`);
+}
+
+export async function fetchCreatorProfile(address: string): Promise<CreatorProfile> {
+  if (env.useMock) {
+    await delay();
+    return mock.creatorProfile(address);
+  }
+  return rest<CreatorProfile>(`/creator/${address.toLowerCase()}`);
 }
 
 export async function fetchToken(id: string): Promise<TokenDetail | null> {
@@ -372,7 +399,9 @@ export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: str
 
 export const qk = {
   tokens: (tab: TokenTab, after?: string | null) => ['tokens', tab, after ?? null] as const,
-  tokenFeed: (tab: TokenTab) => ['tokens', 'feed', tab] as const,
+  tokenFeed: (tab: TokenTab, filters: TokenFilters = NO_FILTERS) => ['tokens', 'feed', tab, filters] as const,
+  leaderboard: (board: BoardId, period: BoardPeriod) => ['leaderboard', board, period] as const,
+  creator: (address: string) => ['creator', address.toLowerCase()] as const,
   token: (id: string) => ['token', id.toLowerCase()] as const,
   fees: (id: string) => ['token', id.toLowerCase(), 'fees'] as const,
   agent: (kernel: string) => ['agent', kernel.toLowerCase()] as const,
@@ -401,13 +430,21 @@ export function useTokens({ tab, after = null }: { tab: TokenTab; after?: string
 }
 
 /** Infinite feed for the home grid. */
-export function useTokenFeed(tab: TokenTab) {
+export function useTokenFeed(tab: TokenTab, filters: TokenFilters = NO_FILTERS) {
   return useInfiniteQuery({
-    queryKey: qk.tokenFeed(tab),
-    queryFn: ({ pageParam }) => fetchTokens(tab, pageParam),
+    queryKey: qk.tokenFeed(tab, filters),
+    queryFn: ({ pageParam }) => fetchTokens(tab, pageParam, PAGE_SIZE, filters),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => (last.pageInfo.hasNextPage ? last.pageInfo.endCursor : undefined),
   });
+}
+
+export function useLeaderboard(board: BoardId, period: BoardPeriod) {
+  return useQuery({ queryKey: qk.leaderboard(board, period), queryFn: () => fetchLeaderboard(board, period), staleTime: 15_000, refetchInterval: 60_000, retry: 1 });
+}
+
+export function useCreatorProfile(address: string | undefined) {
+  return useQuery({ queryKey: qk.creator(address ?? ''), queryFn: () => fetchCreatorProfile(address!), enabled: !!address, staleTime: 15_000, retry: 1 });
 }
 
 export function useToken(id: string | undefined) {

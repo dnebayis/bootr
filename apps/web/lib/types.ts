@@ -8,7 +8,7 @@ export type AgentStatus = 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed
 export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
 /** Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker) or the Clanker wrapper (docs/design/clanker-launch.md). */
 export type LaunchSource = 'bootr' | 'clanker';
-export type TokenTab = 'newest' | 'graduated' | 'mcap' | 'active';
+export type TokenTab = 'newest' | 'trending' | 'graduated' | 'mcap' | 'active';
 
 export interface Agent {
   id: Address; // kernel
@@ -131,6 +131,48 @@ export interface PlatformStats {
 export interface TokenPage {
   items: Token[];
   pageInfo: { endCursor: string | null; hasNextPage: boolean };
+}
+
+/** A coin on a creator's public page: the token row, its agent and what was booked to the creator. */
+export interface CreatorCoin extends Token {
+  creatorFees: { earnedUsd: number; claimedUsd: number };
+}
+
+/** `GET /creator/:address`. */
+export interface CreatorProfile {
+  address: Address;
+  readAt: number;
+  indexedAt: number | null;
+  totals: { coins: number; agents: number; earnedUsd: number; claimedUsd: number };
+  coins: CreatorCoin[];
+}
+
+export type BoardId = 'agent-fees' | 'agent-activity' | 'volume' | 'holders' | 'burned';
+export type BoardPeriod = '24h' | '7d' | 'all' | 'now';
+
+/** One ranked row of `GET /leaderboards/:board`. `kernel` is null for a coin launched without an agent. */
+export interface LeaderboardRow {
+  rank: number;
+  value: number;
+  detail?: { lastPostAt?: number | null; amountToken?: string };
+  token: Pick<Token, 'id' | 'name' | 'symbol' | 'image' | 'creator' | 'source' | 'xHandle'> & { kernel: Address | null; agentId: string | null };
+  agent: Pick<Agent, 'id' | 'status'> | null;
+}
+
+export interface Leaderboard {
+  board: BoardId;
+  period: BoardPeriod;
+  periods: BoardPeriod[];
+  unit: 'usd' | 'count' | 'percent';
+  /** When this board was read, unix s. */
+  readAt: number;
+  /** When market figures were last refreshed, unix s; null before the first refresh. */
+  indexedAt: number | null;
+  /** Rows with a value, of which `items` is the top. */
+  ranked: number;
+  /** Rows nobody knows a value for: counted, never ranked. */
+  unknown: number;
+  items: LeaderboardRow[];
 }
 
 export interface TokenDetail extends Token {
