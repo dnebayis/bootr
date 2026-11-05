@@ -11,6 +11,7 @@
 import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
 import { WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { env } from '@/lib/env';
+import { SWAP_CONTRACTS } from '@/lib/swap/core';
 import { AGENT_TOOLS, TOOL_GROUPS } from './agent-tools';
 import { GRAPHQL_EXAMPLES } from './graphql-examples';
 import type { DocSlug } from './pages';
@@ -163,6 +164,16 @@ const launch: DocBody = {
 const fees: DocBody = {
   lead: 'What a swap pays depends on how the coin launched. Through RWAGMI it pays 1%, taken in WETH by the pool’s hook: 90% goes to the coin’s recipients, split by the preset chosen at launch, and 10% to RWAGMI, with nothing on top. Through Clanker the recipients share the whole swap fee (1% for every coin except $BOOTR, the platform’s own, which uses 2%) and Clanker charges 20% of it on top, so a trader pays 1.2% (2.4% on $BOOTR); see [Through Clanker](#clanker). A coin’s own numbers are its `source`, `lpFeeBps` and `feeSlots` in the [indexer](/docs/api#graphql).',
   blocks: [
+    h2('trading', 'Trading on the coin page'),
+    p('The Trade panel on a coin’s page buys and sells on the coin’s own Uniswap v4 pool, through Uniswap’s Universal Router. Each swap is your own transaction: your wallet signs it, nothing passes through Bootr, and Bootr adds no fee. You pay the pool’s fee below and the network fee.'),
+    ul(
+      'The pool is paired with WETH, and you pay and receive ETH: the same transaction wraps and unwraps it.',
+      'What you receive, the fee and the price impact come from Uniswap’s v4 quoter and the pool’s own price, read again every few seconds, not from indexed prices.',
+      '**Minimum received** is the quote less your slippage setting, 1% by default and at most 20%. It is part of the transaction: below it the swap reverts on chain. So does a transaction not included within 20 minutes.',
+      'A sell needs two approvals, the coin to Permit2 and Permit2 to the router, each for exactly the amount you sell. The sell uses them up, and the Permit2 approval lasts 30 minutes. A smart wallet such as Base Account confirms both and the sell at once; other wallets ask three times. An approval you already gave that covers the sell is used as it is.',
+      'On a coin launched through Clanker, the panel reads the hook and the quote: in the first seconds it says swaps are blocked, then it shows the higher fee this swap would pay. See [Launch through RWAGMI or Clanker](/docs/launch#launch-through).',
+      'The page also links to another site that can swap the coin, which has its own fees and terms.',
+    ),
     h2('presets', 'Presets through RWAGMI'),
     table(
       ['Recipient', 'Share of the 90%', 'Standard (of volume)', 'Buyback & burn (of volume)'],
@@ -273,7 +284,7 @@ cast send $LOCKER "settleAndClaim(bytes32[],address,address)" "[<poolId>]" $WETH
     ),
     h2('gas', 'Who pays the agent’s gas'),
     p('The agent pays the gas of its own transactions (fee claims, swaps, float top-ups) out of its fee share. Its treasury keeps a small EntryPoint deposit of ETH for that; when it runs low, the treasury unwraps some of its WETH fees into ETH. The creator deposits the first gas when launching (the Gas field, 0.001 ETH by default), so the agent can claim its first fees before it has earned anything; a coin launched without gas waits until someone adds some. Bootr itself pays no agent gas.'),
-    p('The creator can add gas with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas is not a purchase of the coin and it is not refundable: it can only ever be spent as gas, the agent’s session key cannot move ETH, and nobody, including Bootr, can withdraw it. The same holds for fuel (USDC). To buy a coin, use its Trade link.'),
+    p('The creator can add gas with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas is not a purchase of the coin and it is not refundable: it can only ever be spent as gas, the agent’s session key cannot move ETH, and nobody, including Bootr, can withdraw it. The same holds for fuel (USDC). To buy a coin, use the Trade panel on its page.'),
   ],
 };
 
@@ -396,6 +407,9 @@ const contractRows: [string, string, string][] = [
   ['ERC-8004 IdentityRegistry', A.erc8004.identityRegistry!, 'Agent identities; each agent’s NFT is owned by its treasury.'],
   ['ERC-8004 ReputationRegistry', A.erc8004.reputationRegistry!, 'Public feedback on agents.'],
   ['Uniswap v4 PoolManager', A.uniswap.poolManager, 'Every coin’s pool; swaps are its `Swap` events.'],
+  ['Uniswap Universal Router', A.uniswap.universalRouter, 'What a coin page’s Trade panel swaps through.'],
+  ['Uniswap v4 Quoter', SWAP_CONTRACTS.quoter, 'Where the Trade panel’s quotes come from.'],
+  ['Permit2', A.uniswap.permit2, 'Holds the exact approval of a sell from the Trade panel.'],
   ['Uniswap v3 SwapRouter02', A.uniswap.swapRouter02, 'What `BootrSwapHelper` swaps WETH to USDC through.'],
   ['WETH', A.weth, 'Paired asset and fee currency.'],
   ['USDC', A.usdc, 'Fuel and inference payments.'],
@@ -746,7 +760,7 @@ const terms: DocBody = {
     ul(
       'Launching is a transaction you sign yourself. You choose RWAGMI or Clanker before you sign, and the choice cannot be changed. Once mined, fee splits, recipients and the dormancy period are permanent, and so is the metadata written on chain with a coin launched through Clanker.',
       'RWAGMI and Clanker are independent third-party protocols, with their own contracts, fees and terms. Bootr does not control them or their websites. Fees differ by launch path, including what they charge; see [Fee math and claims](/docs/fees).',
-      'Trading happens on Uniswap v4 through third-party interfaces. Bootr does not execute trades and does not set prices.',
+      'Trading happens on Uniswap v4. Buying or selling with the Trade panel on a coin’s page is your own transaction: your wallet signs it, it goes to Uniswap’s contracts, and Bootr holds nothing and adds no fee. Bootr shows a quote and the minimum you would accept; it does not execute trades, set prices or reverse a swap. A swap can fail, and it costs the network fee when it does. The page also links to other sites, which have their own terms.',
       'Coins launched here have no issuer promise of value, utility or returns. See [Risks](/docs/risks).',
     ),
     h2('agents-and-x', 'Agents and X accounts'),
