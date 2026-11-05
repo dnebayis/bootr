@@ -17,7 +17,7 @@ export function MobileNavView({ pathname }: { pathname: string | null }) {
     <Drawer.Root open={open} onOpenChange={setOpen} direction="bottom">
       <Drawer.Trigger
         aria-label="Open menu"
-        className="inline-flex size-8 items-center justify-center rounded-sm text-ink hover:bg-canvas-sub md:hidden"
+        className="inline-flex size-8 items-center justify-center rounded-sm text-ink hover:bg-canvas-sub lg:hidden"
       >
         <MenuIcon />
       </Drawer.Trigger>

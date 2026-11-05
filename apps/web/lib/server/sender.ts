@@ -77,6 +77,27 @@ export async function fetchTokenCreator(kernel: string): Promise<TokenCreator | 
   };
 }
 
+/**
+ * Who launched a coin, by the coin's own address (server side). Unlike `fetchTokenCreator` it asks for nothing about an agent,
+ * so it also answers for a coin launched without one. Null for an unknown coin; throws when the indexer cannot answer.
+ */
+export async function fetchCoinCreator(coin: string): Promise<{ creator: string } | null> {
+  const base = (process.env.NEXT_PUBLIC_INDEXER_URL ?? '').replace(/\/$/, '');
+  if (!base) throw new Error('no indexer configured');
+  const res = await fetch(`${base}/graphql`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: 'query CoinCreator($id: String!) { token(id: $id) { creator } }', variables: { id: coin.toLowerCase() } }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`indexer responded ${res.status}`);
+  const json = (await res.json()) as { data?: { token?: { creator?: unknown } | null }; errors?: unknown[] };
+  if (json.errors?.length || !json.data) throw new Error('indexer answered with errors');
+  const creator = json.data.token?.creator;
+  return typeof creator === 'string' && creator ? { creator } : null;
+}
+
 /** Opaque client state echoed back by the sender; URL-safe, ≤ 128 chars. */
 export function isClientState(v: string): boolean {
   return /^[\w.~-]{1,128}$/.test(v);

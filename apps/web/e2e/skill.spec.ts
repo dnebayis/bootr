@@ -39,17 +39,30 @@ test.describe('on a phone', () => {
   });
 });
 
+const headerOverflow = () => {
+  const header = document.querySelector('header')!;
+  return header.scrollWidth - header.clientWidth;
+};
+
 test.describe('on a tablet', () => {
   test.use({ viewport: { width: 768, height: 600 } });
 
-  test('all six nav items and the wallet button fit the header', async ({ page }) => {
+  test('the menu holds the nav items, and the wallet button fits the header', async ({ page }) => {
     await page.goto('/skill');
-    await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link')).toHaveCount(6);
-    const overflow = await page.evaluate(() => {
-      const header = document.querySelector('header')!;
-      return header.scrollWidth - header.clientWidth;
-    });
-    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(page.getByRole('button', { name: 'Open menu' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /connect wallet/i })).toBeVisible();
+    expect(await page.evaluate(headerOverflow)).toBeLessThanOrEqual(0);
+  });
+});
+
+test.describe('on a small laptop', () => {
+  test.use({ viewport: { width: 1024, height: 700 } });
+
+  test('all seven nav items and the wallet button fit the header', async ({ page }) => {
+    await page.goto('/skill');
+    await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link')).toHaveCount(7);
+    await expect(page.getByRole('button', { name: /connect wallet/i })).toBeVisible();
+    expect(await page.evaluate(headerOverflow)).toBeLessThanOrEqual(0);
   });
 });
 
