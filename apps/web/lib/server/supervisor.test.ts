@@ -141,6 +141,13 @@ describe('sanitizeFuel', () => {
     });
     expect(sanitizeFuel(null)).toEqual({ days: 7, since: '1970-01-01T00:00:00.000Z', byModel: [] });
   });
+
+  it('keeps when the first paid thought was and how many were charged with no answer', () => {
+    const f = sanitizeFuel({ days: 7, since: '2026-10-29T00:00:00.000Z', firstAt: '2026-11-04T13:05:00.000Z', byModel: [{ model: 'x/y', thoughts: 5, chargedMicroUsdc: '500', paidFailures: 2 }, { model: 'a/b', thoughts: 5, chargedMicroUsdc: '500', paidFailures: 'many' }] });
+    expect(f.firstAt).toBe('2026-11-04T13:05:00.000Z');
+    expect(f.byModel).toEqual([{ model: 'x/y', thoughts: 5, chargedMicroUsdc: '500', paidFailures: 2 }, { model: 'a/b', thoughts: 5, chargedMicroUsdc: '500' }]);
+    expect(sanitizeFuel({ firstAt: 'not a date' })).not.toHaveProperty('firstAt');
+  });
 });
 
 describe('sanitizeApprovals', () => {

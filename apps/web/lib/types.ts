@@ -238,8 +238,10 @@ export interface AgentFuel {
   days: number;
   /** ISO 8601: the start of the window. */
   since: string;
-  /** Most thoughts first; `chargedMicroUsdc` is a decimal string of micro-USDC. */
-  byModel: { model: string; thoughts: number; chargedMicroUsdc: string }[];
+  /** The earliest paid thought in the window: what a spending rate divides by. Absent when there were none. */
+  firstAt?: string;
+  /** Most thoughts first; `chargedMicroUsdc` is a decimal string of micro-USDC. `paidFailures`: thoughts charged that returned nothing. */
+  byModel: { model: string; thoughts: number; chargedMicroUsdc: string; paidFailures?: number }[];
 }
 
 // ---------------------------------------------------------------- post approval queue (supervisor, via /api/agent/[kernel]/approvals/*)

@@ -98,7 +98,7 @@ function decideModelOf(raw: unknown): string | null {
 
 /** The fuel metering as the coin page renders it: whole thoughts, micro-USDC as digits, model ids only. */
 export function sanitizeFuel(raw: unknown): AgentFuel {
-  const o = (raw ?? {}) as { days?: unknown; since?: unknown; byModel?: unknown };
+  const o = (raw ?? {}) as { days?: unknown; since?: unknown; firstAt?: unknown; byModel?: unknown };
   const days = Number(o.days);
   const byModel: AgentFuel['byModel'] = [];
   for (const it of Array.isArray(o.byModel) ? o.byModel : []) {
@@ -107,9 +107,11 @@ export function sanitizeFuel(raw: unknown): AgentFuel {
     const thoughts = Number(r.thoughts);
     const charged = typeof r.chargedMicroUsdc === 'string' ? r.chargedMicroUsdc : typeof r.chargedMicroUsdc === 'number' ? String(Math.round(r.chargedMicroUsdc)) : '';
     if (!model || !MODEL_ID_RE.test(model) || !Number.isInteger(thoughts) || thoughts < 0 || !/^\d{1,18}$/.test(charged)) continue;
-    byModel.push({ model, thoughts, chargedMicroUsdc: charged });
+    const paidFailures = Number(r.paidFailures);
+    byModel.push({ model, thoughts, chargedMicroUsdc: charged, ...(Number.isInteger(paidFailures) && paidFailures > 0 ? { paidFailures } : {}) });
   }
-  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), byModel };
+  const firstAt = iso(o.firstAt);
+  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), ...(firstAt ? { firstAt } : {}), byModel };
 }
 
 const HTTPS_RE = /^https:\/\/[^\s/?#]+[^\s]*$/i;
