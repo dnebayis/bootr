@@ -323,7 +323,7 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     get(
       '/market/{token}',
       'Market snapshot of one coin, by coin or treasury address, with its last 10 trades.',
-      `{token, kernel, symbol, name, source, poolId, priceUsd, priceWeth, marketCapUsd, liquidityUsd, volume24hUsd, volume7dUsd, fees24hUsd, change24hPct, trades24h, holders, graduated, lpFeeBps, protocolBps, ethPriceUsd, updatedAt, trades: [{side, trader, amountToken, amountPaired, priceUsd, valueUsd, timestamp, txHash}]}; ${addressErrors}`,
+      `{token, kernel, symbol, name, source, poolId, priceUsd, priceWeth, marketCapUsd, liquidityUsd, volume24hUsd, volume7dUsd, fees24hUsd, change24hPct, trades24h, holders, graduated, lpFeeBps, agentBps, creatorBps, burnBps, platformBps, protocolBps, ethPriceUsd, updatedAt, trades: [{side, trader, amountToken, amountPaired, priceUsd, valueUsd, timestamp, txHash}]}; ${addressErrors}`,
       { path: pathParam('token', ADDRESS) },
     ),
     get(

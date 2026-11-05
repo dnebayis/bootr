@@ -107,6 +107,14 @@ describe('buildSystemPrompt', () => {
     expect(platform).toMatch(/platformUpdate, when present, is one change live on Bootr: say it once, in your own voice, in an original post with its link\. It uses a regular slot and follows the rotation; skip nothing else for it\./);
     expect(platform).toMatch(/a question to a builder, the numbers, a live change on Bootr\)/);
     expect(coin).not.toContain('platformUpdate');
+    // what $BOOTR funds comes from its own trades, never from Bootr as a whole
+    expect(platform).toMatch(/say what its own trades fund, from coinFees/);
+    expect(platform).not.toMatch(/say what it funds/);
+    // the fee rule binds every agent
+    for (const prompt of [platform, coin]) expect(prompt).toMatch(/Fees, burns and who receives what: state them only from that coin's split in your data \(coinFees for your coin, read_coin for another\) and only about that coin\. Never generalize one coin's split to all coins or to Bootr; if you lack the number, do not state it\. Explaining a locked split is allowed; your own recent claims and swaps are not\./);
+    // and it sits next to the older rules without replacing them
+    expect(coin).toMatch(/No price predictions, no buy or sell calls/);
+    expect(coin).toMatch(/never post about it, or about your treasury or fee operations/);
     expect(coin).not.toMatch(/When in doubt, do not post/);
   });
 });

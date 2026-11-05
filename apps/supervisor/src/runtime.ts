@@ -33,6 +33,7 @@ import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, ty
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
+import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
@@ -220,6 +221,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(review ? { review } : {}),
       // What the agent can still spend on thinking (one database read, no RPC; omitted when it cannot be read): fuel.ts.
       ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
+      // How its own coin's trades pay their fee, in percentages, from the market snapshot above (no extra read): coin-fees.ts.
+      ...coinFeesSection(config, inputs.market),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.

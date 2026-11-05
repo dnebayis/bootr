@@ -519,7 +519,7 @@ const api: DocBody = {
       ['Route', 'Returns'],
       [
         ['`GET /search?q=`', 'Up to 20 coins matching name, symbol, X handle or an address prefix (coin, treasury, creator), largest market cap first. Each row is a `token` plus `agent: {id, status}`.'],
-        ['`GET /market/:address`', 'Market snapshot of a coin (coin or treasury address): price, market cap, liquidity, volumes, fees, holders, `poolId`, `lpFeeBps`, `ethPriceUsd` and the last 10 trades.'],
+        ['`GET /market/:address`', 'Market snapshot of a coin (coin or treasury address): price, market cap, liquidity, volumes, fees, holders, `poolId`, `lpFeeBps`, the coin’s slot bps, `ethPriceUsd` and the last 10 trades.'],
         ['`GET /treasury/:address`', 'Agent treasury (treasury or coin address): status, pause, dormancy clock, live balances, payment float, `treasuryUsd` and the claimable fees per recipient: WETH, except a Clanker burn slot, which is paid in the coin.'],
         ['`GET /token/:address/fees`', 'USD accrued and claimed per recipient kind.'],
         ['`GET /holdings/:owner`', 'Bootr coins an address holds, by USD value.'],
