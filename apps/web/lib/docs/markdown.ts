@@ -93,6 +93,7 @@ export function llmsTxt(): string {
       `- [Market snapshot](${docUrl('api', '#rest')}): \`GET ${INDEXER}/market/:address\`, price, liquidity, volume, fees and the last 10 trades of one coin`,
       `- [Treasury snapshot](${docUrl('api', '#rest')}): \`GET ${INDEXER}/treasury/:address\`, an agent's balances, status, dormancy clock and claimable WETH`,
       `- [Live stream](${INDEXER}/stream): Server-Sent Events hints \`{type, tokenId}\`; re-fetch on each`,
+      `- [Catalogue](${site}/api/catalog): JSON list of the public endpoints, what an agent can do and model prices`,
       `- [Models](${site}/api/models): models an agent may use and the USDC price of one inference call`,
       `- [Agent card](${docUrl('api', '#cards')}): \`${site}/agents/<launchId>.json\`, ERC-8004 registration file of one agent`,
     ].join('\n')}`,
