@@ -147,7 +147,7 @@ describe('matches the routes', () => {
       if (m) expect(e.rateLimit, e.url).toEqual({ limit: Number(m[1]), windowSeconds: Number(m[2]), per: 'ip' });
       else expect(e.rateLimit, e.url).toBeUndefined();
     }
-    expect(web.filter((e) => e.rateLimit).length).toBe(2);
+    expect(web.filter((e) => e.rateLimit).length).toBe(3);
   });
 
   it('claims any-origin only where the route sends the header', () => {
