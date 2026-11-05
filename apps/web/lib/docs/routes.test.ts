@@ -53,3 +53,14 @@ describe('/docs/<slug>.md', () => {
     }
   });
 });
+
+describe('the image build', () => {
+  it('keeps route folders named *.md, which .dockerignore would otherwise drop (they answered 404 in production)', () => {
+    const ignore = readFileSync(new URL('../../../../.dockerignore', import.meta.url), 'utf8').split('\n').map((l) => l.trim());
+    const excluded = ignore.indexOf('**/*.md');
+    expect(excluded).toBeGreaterThanOrEqual(0);
+    expect(ignore.indexOf('!apps/web/app/**/*.md')).toBeGreaterThan(excluded);
+    expect(ignore.indexOf('!apps/web/app/**/*.md/**')).toBeGreaterThan(excluded);
+  });
+});
+

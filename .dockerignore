@@ -37,6 +37,9 @@ docs
 brand
 **/*.md
 !apps/*/README.md
+# Next route folders named like files (/skill/skill.md, /docs/fees.md, /docs.md): they are code, not docs.
+!apps/web/app/**/*.md
+!apps/web/app/**/*.md/**
 # Foundry project: only its manifest (a workspace member listed in pnpm-lock.yaml); the apps embed copied ABIs.
 packages/contracts/*
 !packages/contracts/package.json
