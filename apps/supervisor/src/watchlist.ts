@@ -1,6 +1,6 @@
 /**
  * The watchlist: X accounts the platform's own agent (@AgentBootr, `config.platform`) follows, the people who build
- * Base and its agent ecosystem (`PLATFORM_WATCHLIST`, comma-separated handles; default `base,jessepollak,clanker_world`).
+ * Base and its agent ecosystem (`PLATFORM_WATCHLIST`, comma-separated handles; default `bootrfun,base,jessepollak,clanker_world`).
  * Their latest original posts of the week are read through the sender (`POST /internal/read/timeline`, the agent's
  * own token, two X calls per read) at most once per handle per WATCHLIST_READ_INTERVAL_MS, at most
  * WATCHLIST_READS_PER_TURN handles per turn, and handed to the agent as the `watchlist` observation section.
@@ -28,7 +28,7 @@ export const WATCHLIST_READS_PER_TURN = 2;
 export const WATCHLIST_MAX_HANDLES = 20;
 export const WATCHLIST_POSTS_PER_ACCOUNT = 3;
 export const WATCHLIST_TEXT_CHARS = 280;
-export const DEFAULT_WATCHLIST = 'base,jessepollak,clanker_world';
+export const DEFAULT_WATCHLIST = 'bootrfun,base,jessepollak,clanker_world';
 const HANDLE = /^[A-Za-z0-9_]{1,15}$/;
 const CURSOR_PREFIX = 'watchlist:';
 

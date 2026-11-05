@@ -3,7 +3,8 @@
  * mentioned handles). Two steps on what the model gave:
  *  - credits naming nobody in the text are dropped (the model credits what it read; such a credit carries nothing to X);
  *  - a mention of another Bootr agent (the agent directory, or a launch in the platform feed) is credited with that
- *    coin's page, so the host can welcome @newcoinagent without inventing a "source".
+ *    coin's page, so the host can welcome @newcoinagent without inventing a "source";
+ *  - a mention of @bootrfun, Bootr's official account, is credited with the site.
  * A mention of anyone else still needs the model's own credit; otherwise the gate refuses the post, as designed.
  */
 import { creditedAttributions, mentionedHandles } from '@bootr/agent-core';
@@ -17,6 +18,8 @@ export interface Attribution {
 }
 
 const HANDLE = /^[a-z0-9_]{1,15}$/;
+/** Bootr's official X account: known to every agent, credited with the site, never looked up. */
+export const BOOTR_OFFICIAL_HANDLE = 'bootrfun';
 // Our own indexer's addresses (tests use short hex ids); the page path is what matters to the gate.
 const ADDRESS = /^0x[0-9a-f]{1,40}$/;
 
@@ -75,6 +78,7 @@ export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'n
   // Which mentions are Bootr agents (the per-tick directory, re-read once when a handle is unknown: a coin launched
   // a minute ago is exactly what the host welcomes), and the coin page each one is credited with.
   const coinPages = new Map<string, string>();
+  if (mentions.includes(BOOTR_OFFICIAL_HANDLE)) coinPages.set(BOOTR_OFFICIAL_HANDLE, `${site}/`);
   for (const fresh of [false, true]) {
     const directory = await agentDirectory(ctx, { fresh });
     for (const h of mentions) {

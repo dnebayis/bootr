@@ -92,7 +92,7 @@ during which original posts wait; replies still go out. Both are plain config, n
 [`docs/agent-identity.md`](../agent-identity.md) "Platform agent"); it waits for quiet hours and a free slot like any post.
 `PLATFORM_NUMBERS_AT` (default `15`) is the hour in UTC (`HH`) at which the platform agent writes its daily numbers post
 (`apps/supervisor/src/platform-numbers.ts`), once per UTC day, held like any post. `PLATFORM_WATCHLIST` (default
-`base,jessepollak,clanker_world`) is the comma-separated list of X handles whose latest posts the platform agent reads
+`bootrfun,base,jessepollak,clanker_world`) is the comma-separated list of X handles whose latest posts the platform agent reads
 (`apps/supervisor/src/watchlist.ts`; one read per handle per six hours through the sender) and may engage with in an
 original post.
 

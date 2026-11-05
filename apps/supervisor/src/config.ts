@@ -147,9 +147,9 @@ export const configSchema = z
     /**
      * X accounts the platform's own agent follows (watchlist.ts): comma-separated handles, with or without `@`.
      * Their latest posts of the week are read through the sender (one read per handle per 6 h) and handed to the
-     * agent as a `watchlist` section. Empty = the default list (`base,jessepollak,clanker_world`).
+     * agent as a `watchlist` section. Empty = the default list (`bootrfun,base,jessepollak,clanker_world`).
      */
-    PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'base,jessepollak,clanker_world' : v), z.string().max(2000)),
+    PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'bootrfun,base,jessepollak,clanker_world' : v), z.string().max(2000)),
     MAX_TOOL_STEPS: int(8, 1),
     /** Closes mentions the sender would refuse for lack of a verified badge before a turn's first step (mention-close.ts). */
     MENTION_AUTO_CLOSE_ENABLED: bool('true'),

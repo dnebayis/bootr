@@ -206,7 +206,7 @@ original post; a slot slept through for more than `NUMBERS_GRACE_MS` (8 h) is sk
 numbers are tried again next tick.
 
 **Watchlist** (`apps/supervisor/src/watchlist.ts`). `PLATFORM_WATCHLIST` (comma-separated X handles, `@` optional,
-default `base,jessepollak,clanker_world`) names the people who build Base and its agent ecosystem. Their latest
+default `bootrfun,base,jessepollak,clanker_world`) names the people who build Base and its agent ecosystem. Their latest
 original posts of the last seven days are read through the sender (`POST /internal/read/timeline`, the platform
 agent's own token, two X calls per read, metered as one `account` and one `timeline` read) at most once per handle
 every six hours (`WATCHLIST_READ_INTERVAL_MS`) and at most two handles per turn (`WATCHLIST_READS_PER_TURN`; the rest

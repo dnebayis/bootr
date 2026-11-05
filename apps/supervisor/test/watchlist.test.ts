@@ -37,8 +37,8 @@ beforeEach(() => resetWatchlistCache());
 
 describe('parseWatchlist and the post shape', () => {
   it('reads comma-separated handles, drops the @ and the junk, de-duplicates and caps the list', () => {
-    expect(DEFAULT_WATCHLIST).toBe('base,jessepollak,clanker_world');
-    expect(parseWatchlist(DEFAULT_WATCHLIST)).toEqual(['base', 'jessepollak', 'clanker_world']);
+    expect(DEFAULT_WATCHLIST).toBe('bootrfun,base,jessepollak,clanker_world');
+    expect(parseWatchlist(DEFAULT_WATCHLIST)).toEqual(['bootrfun', 'base', 'jessepollak', 'clanker_world']);
     expect(parseWatchlist(' @Base, jessepollak ,JESSEPOLLAK,, not a handle, too_long_for_a_handle_x, ok_1 ')).toEqual(['base', 'jessepollak', 'ok_1']);
     expect(parseWatchlist('')).toEqual([]);
     expect(parseWatchlist(undefined)).toEqual([]);
@@ -151,7 +151,7 @@ describe('the watchlist section', () => {
     try {
       w.setNow(NOW);
       expect(w.ctx.config.PLATFORM_WATCHLIST).toBe(DEFAULT_WATCHLIST);
-      w.sender.timelines = { base: tl('base', 1), jessepollak: tl('jessepollak', 1), clanker_world: tl('clanker_world', 1) };
+      w.sender.timelines = { bootrfun: tl('bootrfun', 1), base: tl('base', 1), jessepollak: tl('jessepollak', 1), clanker_world: tl('clanker_world', 1) };
       const agent = await seedAgent(w, {
         config: { platform: true, xHandle: 'AgentBootr', postIntervalMs: 6 * H, socialStartedAt: new Date(NOW - 10 * H).toISOString() },
         runtime: { nextAt: new Date(NOW + 6 * H), lastDecisionAt: new Date(NOW - 60_000) },
@@ -159,9 +159,9 @@ describe('the watchlist section', () => {
       const r = (await processAgent(w.ctx, agent, await runtimeRow(w)))!;
       expect(r.ran).toBe(true);
       const section = firstObservation(w).watchlist as { accounts: { handle: string; latestPosts: unknown[] }[] };
-      expect(section.accounts.map((a) => a.handle)).toEqual(['base', 'jessepollak']);
+      expect(section.accounts.map((a) => a.handle)).toEqual(['bootrfun', 'base']);
       expect(section.accounts[0]!.latestPosts).toHaveLength(1);
-      expect(w.sender.timelineReads).toEqual(['base', 'jessepollak']);
+      expect(w.sender.timelineReads).toEqual(['bootrfun', 'base']);
       expect((await runtimeRow(w)).turn).toBeNull();
     } finally {
       await w.close();
