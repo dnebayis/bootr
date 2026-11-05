@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { DOC_CONTENT } from '@/components/docs/content';
-import { DOC_PAGES, docPath, type DocSlug } from '@/components/docs/pages';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { DOC_PAGES, docMarkdownPath, docPath, type DocSlug } from '@/components/docs/pages';
 import { inlineText, mapLinks, parseInline } from './inline';
 import { absolutize, blockToMarkdown, llmsFullTxt, llmsTxt, pageToMarkdown } from './markdown';
 
@@ -26,11 +28,19 @@ describe('inline markup', () => {
 });
 
 describe('markdown rendering', () => {
-  it('makes site links absolute and anchors page-relative', () => {
-    expect(absolutize('/docs/fees', 'api')).toBe(`${SITE}/docs/fees`);
-    expect(absolutize('#dormancy', 'agents')).toBe(`${SITE}/docs/agents#dormancy`);
-    expect(absolutize('#x', '')).toBe(`${SITE}/docs#x`);
+  it('makes site links absolute, anchors page-relative and docs links Markdown', () => {
+    expect(absolutize('/docs/fees', 'api')).toBe(`${SITE}/docs/fees.md`);
+    expect(absolutize('/docs/fees#claiming', 'api')).toBe(`${SITE}/docs/fees.md#claiming`);
+    expect(absolutize('/docs', 'api')).toBe(`${SITE}/docs.md`);
+    expect(absolutize('#dormancy', 'agents')).toBe(`${SITE}/docs/agents.md#dormancy`);
+    expect(absolutize('#x', '')).toBe(`${SITE}/docs.md#x`);
+    expect(absolutize('/api/models', 'agents')).toBe(`${SITE}/api/models`);
+    expect(absolutize('/docsy', 'agents')).toBe(`${SITE}/docsy`);
     expect(absolutize('https://basescan.org/a', 'contracts')).toBe('https://basescan.org/a');
+  });
+
+  it('keeps a heading’s id as an explicit anchor', () => {
+    expect(blockToMarkdown({ t: 'h2', id: 'since-rwagmi', text: 'This release' }, '')).toBe('<a id="since-rwagmi"></a>\n\n## This release');
   });
 
   it('renders tables with aligned numeric columns and escaped pipes', () => {
@@ -48,6 +58,57 @@ describe('markdown rendering', () => {
       const md = pageToMarkdown(p.slug);
       expect(md.startsWith(`# ${p.title}\n\nSource: ${SITE}${docPath(p.slug)}`)).toBe(true);
       expect(md).not.toMatch(/\]\((?!https?:\/\/)/);
+    }
+  });
+});
+
+describe('generated Markdown', () => {
+  const site = (href: string) => (href.startsWith(`${SITE}/`) ? href.slice(SITE.length) : null);
+  const pages = DOC_PAGES.map((p) => ({ slug: p.slug, md: pageToMarkdown(p.slug) }));
+
+  it('links only to Markdown pages and anchors that exist, and to site routes that exist', () => {
+    const app = path.resolve(import.meta.dirname, '../../app');
+    const anchors = new Map(pages.map((p) => [docMarkdownPath(p.slug), new Set([...p.md.matchAll(/^<a id="([\w-]+)"><\/a>$/gm)].map((m) => m[1]))]));
+    let checked = 0;
+    for (const { slug, md } of pages) {
+      for (const m of md.matchAll(/\]\(([^)\s]+)\)/g)) {
+        const local = site(m[1]!);
+        expect(/^https?:\/\//.test(m[1]!), `${slug}: ${m[1]}`).toBe(true);
+        if (!local) continue;
+        checked++;
+        const [route, hash] = local.split('#') as [string, string | undefined];
+        if (route.startsWith('/docs')) {
+          expect(anchors.has(route), `${slug}: ${m[1]}`).toBe(true);
+          if (hash) expect(anchors.get(route)!.has(hash), `${slug}: ${m[1]}`).toBe(true);
+        } else {
+          const dir = path.join(app, route);
+          const file = [path.join(dir, 'route.ts'), path.join(dir, 'page.tsx'), path.join(app, `${path.basename(route, '.xml')}.ts`)];
+          expect(file.some((f) => existsSync(f)), `${slug}: ${m[1]}`).toBe(true);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  it('is well-formed: closed fences, even tables, no stray HTML', () => {
+    for (const { slug, md } of pages) {
+      // Fenced code is opaque: take it out, then look at what is left.
+      const open = /^(`{3,})[\w-]*\n[\s\S]*?^\1$/gm;
+      const prose = md.replace(open, '');
+      expect(prose.match(/^`{3,}/gm), `${slug}: unclosed fence`).toBeNull();
+      const text = prose.replace(/^<a id="[\w-]+"><\/a>$/gm, '');
+      for (const line of text.split('\n')) {
+        expect(line.replace(/`[^`]*`/g, ''), `${slug}: raw HTML`).not.toMatch(/<[a-z/]/i);
+        expect(line.replace(/`[^`]*`/g, '').match(/\*\*/g)?.length ?? 0, `${slug}: bold: ${line}`).toSatisfy((n: number) => n % 2 === 0);
+      }
+      const lines = text.split('\n');
+      lines.forEach((line, i) => {
+        if (!/^\| .*(---:?) \|$/.test(line)) return;
+        const cols = (s: string) => s.replace(/\\\|/g, '').split('|').length;
+        expect(cols(lines[i - 1]!), `${slug}: header ${lines[i - 1]}`).toBe(cols(line));
+        for (let j = i + 1; lines[j]?.startsWith('|'); j++) expect(cols(lines[j]!), `${slug}: row ${lines[j]}`).toBe(cols(line));
+      });
+      expect(text.match(/^# /gm), `${slug}: one title`).toHaveLength(1);
     }
   });
 });
@@ -121,10 +182,11 @@ describe('llms.txt', () => {
     }
   });
 
-  it('links every docs page and the full text with absolute bootr.fun URLs', () => {
-    for (const p of DOC_PAGES) expect(txt).toContain(`- [${p.title}](${SITE}${docPath(p.slug)}): ${p.description}`);
+  it('links every docs page as Markdown and the full text with absolute bootr.fun URLs', () => {
+    for (const p of DOC_PAGES) expect(txt).toContain(`- [${p.title}](${SITE}${docMarkdownPath(p.slug)}): ${p.description}`);
     expect(txt).toContain(`(${SITE}/llms-full.txt)`);
     expect(txt).not.toMatch(/\]\((?!https:\/\/)/);
+    expect(txt).not.toMatch(/\/docs(\/[\w-]+)?(#[\w-]+)?\)/);
   });
 
   it('full text carries every page in reading order', () => {

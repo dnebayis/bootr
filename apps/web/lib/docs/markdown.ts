@@ -1,10 +1,10 @@
 /**
- * Markdown renderings of the docs (`components/docs/content.ts`) for language models: /llms.txt (an index in
- * the llmstxt.org format) and /llms-full.txt (every page in full). Built from the same blocks as /docs, so
- * the text can never drift from the site. Pure: no request or runtime APIs, so the routes prerender.
+ * Markdown renderings of the docs (`components/docs/content.ts`) for language models: /docs/<slug>.md (one page),
+ * /llms.txt (an index in the llmstxt.org format) and /llms-full.txt (every page in full). Built from the same blocks
+ * as /docs, so the text can never drift from the site. Pure: no request or runtime APIs, so the routes prerender.
  */
 import { DOC_CONTENT, type Block } from '@/components/docs/content';
-import { DOC_GROUPS, DOC_PAGES, docPage, docPath, type DocSlug } from '@/components/docs/pages';
+import { DOC_GROUPS, DOC_PAGES, docMarkdownPath, docPage, docPath, type DocSlug } from '@/components/docs/pages';
 import { env } from '@/lib/env';
 import { mapLinks } from './inline';
 
@@ -19,9 +19,19 @@ export function docUrl(slug: DocSlug, hash = ''): string {
   return `${env.siteUrl}${docPath(slug)}${hash}`;
 }
 
-/** Site-relative links become absolute; `#anchor` resolves against the page it appears on. */
+/** Absolute URL of a page's Markdown (and optional anchor): what the Markdown itself links to. */
+export function docMarkdownUrl(slug: DocSlug, hash = ''): string {
+  return `${env.siteUrl}${docMarkdownPath(slug)}${hash}`;
+}
+
+/**
+ * Site-relative links become absolute; `#anchor` resolves against the page it appears on. A link to a docs page
+ * goes to its Markdown, so a reader of Markdown stays in Markdown.
+ */
 export function absolutize(href: string, slug: DocSlug): string {
-  if (href.startsWith('#')) return docUrl(slug, href);
+  if (href.startsWith('#')) return docMarkdownUrl(slug, href);
+  const page = /^\/docs(?:\/([\w-]+))?(#.*)?$/.exec(href);
+  if (page) return docMarkdownUrl((page[1] ?? '') as DocSlug, page[2]);
   if (href.startsWith('/')) return `${env.siteUrl}${href}`;
   return href;
 }
@@ -40,10 +50,11 @@ function fence(code: string): string {
 
 export function blockToMarkdown(b: Block, slug: DocSlug): string {
   switch (b.t) {
+    // The explicit anchor keeps the page's ids: renderers would otherwise derive their own from the heading text.
     case 'h2':
-      return `## ${inline(b.text, slug)}`;
+      return `<a id="${b.id}"></a>\n\n## ${inline(b.text, slug)}`;
     case 'h3':
-      return `### ${inline(b.text, slug)}`;
+      return `<a id="${b.id}"></a>\n\n### ${inline(b.text, slug)}`;
     case 'p':
       return inline(b.text, slug);
     case 'ul':
@@ -76,11 +87,23 @@ export function pageToMarkdown(slug: DocSlug): string {
   return parts.join('\n\n');
 }
 
+/** The answer of `/docs/<slug>.md`, cached like /llms.txt, with the HTML page as the canonical copy. */
+export function markdownResponse(slug: DocSlug): Response {
+  return new Response(`${pageToMarkdown(slug)}\n`, {
+    headers: {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600, s-maxage=86400',
+      'Access-Control-Allow-Origin': '*',
+      Link: `<${docUrl(slug)}>; rel="canonical"`,
+    },
+  });
+}
+
 /** /llms.txt: H1, blockquote summary, then one H2 per docs group with `- [title](url): description`. */
 export function llmsTxt(): string {
   const site = env.siteUrl;
   const sections = DOC_GROUPS.map((group) => {
-    const links = DOC_PAGES.filter((p) => p.group === group).map((p) => `- [${p.title}](${docUrl(p.slug)}): ${p.description}`);
+    const links = DOC_PAGES.filter((p) => p.group === group).map((p) => `- [${p.title}](${docMarkdownUrl(p.slug)}): ${p.description}`);
     return `## ${group === 'Start' ? 'Docs' : group}\n\n${links.join('\n')}`;
   });
   return [
@@ -90,11 +113,11 @@ export function llmsTxt(): string {
     ...sections,
     `## APIs\n\n${[
       `- [Indexer GraphQL](${INDEXER}/graphql): coins, agents, trades, fee slots, claims and daily stats (POST, introspection on; server-side only, CORS allows bootr.fun)`,
-      `- [Market snapshot](${docUrl('api', '#rest')}): \`GET ${INDEXER}/market/:address\`, price, liquidity, volume, fees and the last 10 trades of one coin`,
-      `- [Treasury snapshot](${docUrl('api', '#rest')}): \`GET ${INDEXER}/treasury/:address\`, an agent's balances, status, dormancy clock and claimable WETH`,
+      `- [Market snapshot](${docMarkdownUrl('api', '#rest')}): \`GET ${INDEXER}/market/:address\`, price, liquidity, volume, fees and the last 10 trades of one coin`,
+      `- [Treasury snapshot](${docMarkdownUrl('api', '#rest')}): \`GET ${INDEXER}/treasury/:address\`, an agent's balances, status, dormancy clock and claimable WETH`,
       `- [Live stream](${INDEXER}/stream): Server-Sent Events hints \`{type, tokenId}\`; re-fetch on each`,
       `- [Models](${site}/api/models): models an agent may use and the USDC price of one inference call`,
-      `- [Agent card](${docUrl('api', '#cards')}): \`${site}/agents/<launchId>.json\`, ERC-8004 registration file of one agent`,
+      `- [Agent card](${docMarkdownUrl('api', '#cards')}): \`${site}/agents/<launchId>.json\`, ERC-8004 registration file of one agent`,
     ].join('\n')}`,
     `## Optional\n\n- [Full documentation](${site}/llms-full.txt): every page above as Markdown in one file\n- [Sitemap](${site}/sitemap.xml): all public pages`,
   ].join('\n\n') + '\n';
