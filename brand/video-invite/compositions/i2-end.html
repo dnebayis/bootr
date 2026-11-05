@@ -1,0 +1,53 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; }
+    #e-shake { position: absolute; inset: 0; }
+    #e-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #e-sq { position: relative; width: 288px; height: 288px; }
+    #e-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #e-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #e-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+  </style>
+  <div id="root" data-composition-id="i2" data-width="1920" data-height="1080">
+    <div id="e-shake" data-layout-allow-overflow>
+      <div id="e-word">bootr</div>
+      <div id="e-cursor" data-layout-ignore></div>
+      <div id="e-box" data-layout-ignore>
+        <div id="e-sq">
+          <svg id="e-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+            <mask id="e-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+              <rect width="24" height="24" fill="#fff"></rect>
+              <path id="e-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+              <path id="e-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            </mask>
+            <rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#e-m)"></rect>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const Ti = 0.6;
+    gsap.set(["#e-word", "#e-cursor", "#e-box"], { opacity: 0 });
+    gsap.set(["#e-cup", "#e-stem"], { opacity: 0 });
+    tl.set("#e-shake", { x: 0, y: 0 }, 0);
+    tl.set("#e-box", { opacity: 1 }, Ti - 0.56);
+    tl.set("#e-cup", { opacity: 1 }, Ti - 0.55);
+    tl.fromTo("#e-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, Ti - 0.55);
+    tl.set("#e-stem", { opacity: 1 }, Ti - 0.183);
+    tl.fromTo("#e-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.183, ease: "power3.in", immediateRender: false }, Ti - 0.183);
+    tl.fromTo("#e-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out", immediateRender: false }, Ti);
+    tl.to("#e-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#e-shake", { x, y }, Ti + d));
+    tl.fromTo("#e-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut", immediateRender: false }, Ti + 0.45);
+    tl.set(["#e-word", "#e-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#e-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut", immediateRender: false }, Ti + 0.5);
+    tl.fromTo("#e-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut", immediateRender: false }, Ti + 0.5);
+    tl.set("#e-cursor", { opacity: 0 }, Ti + 1.5);
+    window.__timelines["i2"] = tl;
+  </script>
+</template>
