@@ -228,7 +228,7 @@ did exactly this before commit `c5e0280` replaced them with the RWAGMI versions;
 5. **Listing and verification**: unknown whether the site indexes direct deployments on its own; `index-by-address`
    is the explicit path. Ask Clanker (docs "contact" page) to add the wrapper to the trusted-contract list so coins
    are not shown as Unverified; without it, the `context.platform = bootr.fun` is displayed but unverified.
-6. **v5**: one docs page mentions "v4 and v5"; no v5 contracts are published. Re-check before the deploy.
+6. **v5**: live since this was written (factory `0x572e88D3cD7f23E4241EB6ceDD96667271bF09A0`, 5 Nov 2026), with a buy and sell tax instead of an LP fee. Bootr still launches on v4; see `docs/research/bankr-clanker-gaps-2026-11.md`.
 7. **Token address prediction**: `ClankerDeployer`'s salt derivation was not read; the wrapper uses the returned
    address and `predictToken` is dropped for this path (the web shows the address after the receipt, as v1 did).
 8. **Pending fees view**: no `pendingQuote` equivalent; the agent's snapshot may under-report until collection.

@@ -2,13 +2,15 @@
 
 Written 2026-11-05. Marks: **V** checked by us in a primary source or on chain, **R** reported by a research agent from a primary source and not rechecked, **U** unverified or our inference. Figures are as read on that date.
 
+The full feature comparison is in [bankr-clanker-gaps-2026-11.md](bankr-clanker-gaps-2026-11.md) and new primitive ideas in [new-primitives-2026-11.md](new-primitives-2026-11.md). Corrected later on 5 Nov: the Club gate and agent uniqueness below.
+
 ## Conclusion
 
 The opening is real but smaller than it looks, and it is not "take Bankr's place".
 
 - Bankr will almost certainly keep its own migrating coins on its own stack (U). Those coins are not up for grabs.
-- The gap we can use is access: Bankr launches are now for paying members, and its chat, social and API launches default to Robinhood Chain (V).
-- Bootr's difference is not "another launcher". It is that a coin gets an agent with its own treasury, on narrow keys, without custody. Bankr's custody incidents make that a stronger pitch (R).
+- The gap we can use is access, though it is unsettled: a Bankr support article of 19 Oct says launches are for Club members only, while its access docs list launches on every tier (V, both). Its chat, social and API launches do default to Robinhood Chain (V).
+- Bootr's difference is not "another launcher" and not only "an agent per coin": Clanker Droids are also one token, one droid (V). It is the agent's own treasury, X account and on-chain identity, on narrow keys, without custody. Bankr's custody incidents make that a stronger pitch (R).
 - A gasless tweet-to-launch copy is the wrong first move. A tweet that returns a signing link gets the same reach without a hot wallet, fee escrow or impersonation exposure.
 - One finding matters more than the opportunity: X requires prior written approval for any AI reply bot, which covers Bootr's agents today (V).
 
@@ -44,7 +46,7 @@ DefiLlama, fees, read 5 Nov (V; all chains unless noted):
 | Trader fee | 1.75% (R) | 1.2% Clanker, 1% RWAGMI |
 | Creator share of volume | 0.665% plus a 15% supply vest (R) | 0.65% Clanker, 0.585% RWAGMI, no buyback preset (fork test) |
 | Wallet | Privy-based, not exportable, server signs (R) | The creator's own wallet; agents on narrow session keys |
-| Agent per coin | No | Yes |
+| Agent per coin | Agent-first, not per coin | Yes (Clanker Droids are too) |
 | Launch for someone else's handle | Yes, wallet made for that handle, no consent step documented (R) | No |
 
 ## What Bankr has taught the market (R unless marked)
