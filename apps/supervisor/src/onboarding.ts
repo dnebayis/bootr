@@ -346,12 +346,20 @@ async function backfillFromAgentCard(ctx: SupervisorContext, pending: AgentRow[]
   }
 }
 
-/** Parses the stored config; `null` while the X account is not connected yet. */
+/**
+ * Parses the stored config; `null` while the X account is not connected yet. The platform agent's persona is code
+ * (`PLATFORM_IDENTITY_LINES`), while `identityText` in its row is a copy from launch or the last console edit, so it is
+ * composed afresh here: a persona change holds from the next tick, and a stale copy can never contradict
+ * `PLATFORM_RULES`. The creator's text and job lines are kept. A coin agent's stored text is its launch commitment and
+ * stays as it is.
+ */
 export function agentConfigOf(agent: AgentRow): AgentConfig | null {
   const raw = agent.config;
   if (!raw.xHandle || !raw.xUserId) return null;
   try {
-    return parseAgentConfig(raw);
+    if (raw.platform !== true) return parseAgentConfig(raw);
+    const creatorIdentity = typeof raw.creatorIdentity === 'string' ? raw.creatorIdentity : '';
+    return parseAgentConfig({ ...raw, identityText: withCreatorIdentity(raw, creatorIdentity).identityText });
   } catch {
     return null;
   }

@@ -122,6 +122,8 @@ job description of the host, in plain words, one line per topic:
 
 The platform launch keeps a creator text in front of these lines like any other launch (`composeIdentityText`), and
 the creator's job lines (a custom worker) are appended after them.
+These lines are read from code on every tick (`agentConfigOf`), not from the copy in the agent's row, so a persona change
+holds from the next tick after a deploy, for this agent only.
 
 **Rules** (`PLATFORM_RULES` in `packages/agent-core/src/prompt/system-prompt.ts`, the `PLATFORM ACCOUNT` section
 between VOICE and BOOTR RULES, appended only when `config.platform` is true). The agent never:

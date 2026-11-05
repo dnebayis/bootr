@@ -393,6 +393,21 @@ describe('creator identity from the agent card', () => {
     }
   });
 
+  it('reads the platform persona from code, so a copy stored before a persona change cannot contradict the rules', () => {
+    const stale = 'You run Bootr. What you never do: talk about price, market cap, charts or returns.';
+    const row = (over: Record<string, unknown>) => ({ config: agentConfig(0, { agentURI: CARD_URI, identityText: stale, ...over }) }) as unknown as Parameters<typeof agentConfigOf>[0];
+    const fresh = defaultIdentity('Test Coin', 'TEST', CARD_URI, true);
+    expect(agentConfigOf(row({ platform: true, creatorIdentity: '' }))!.identityText).toBe(fresh);
+    expect(agentConfigOf(row({ platform: true, creatorIdentity: null }))!.identityText).toBe(fresh);
+    expect(agentConfigOf(row({ platform: true, creatorIdentity: IDENTITY }))!.identityText).toBe(`${IDENTITY}\n\n${fresh}`);
+    // the creator's job lines of a custom worker stay
+    const custom = agentConfigOf(row({ platform: true, creatorIdentity: '', workerTemplate: 'custom', workerPreset: CUSTOM_PRESET }))!;
+    for (const line of CUSTOM_PRESET.identity) expect(custom.identityText).toContain(line);
+    expect(custom.identityText).not.toContain(stale);
+    // a coin agent keeps what is stored
+    expect(agentConfigOf(row({ creatorIdentity: '' }))!.identityText).toBe(stale);
+  });
+
   it('lets the platform persona promote $BOOTR and state real figures, without predictions; a coin agent gets none of it', () => {
     const platform = defaultIdentity('Bootr', 'BOOTR', CARD_URI, true);
     expect(platform).toMatch(/Promote it and Bootr proudly, in your own words/);
