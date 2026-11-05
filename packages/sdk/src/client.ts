@@ -57,14 +57,24 @@ const SEED_WORD_COUNTS = new Set([12, 15, 18, 21, 24]);
 export function looksLikeKey(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const words = value.trim().split(/\s+/);
-  return KEY_LIKE.test(value.trim()) || (SEED_WORD_COUNTS.has(words.length) && words.every((w) => /^[a-z]+$/.test(w)));
+  return (
+    KEY_LIKE.test(value.trim()) ||
+    (SEED_WORD_COUNTS.has(words.length) && words.every((w) => /^[a-z]+$/.test(w)))
+  );
 }
 
-export const KEY_REFUSAL = 'That looks like a private key or a seed phrase. Bootr never needs one and nothing was sent. If it is real, treat it as exposed and move the funds to a new wallet.';
+export const KEY_REFUSAL =
+  'That looks like a private key or a seed phrase. Bootr never needs one and nothing was sent. If it is real, treat it as exposed and move the funds to a new wallet.';
 
 function requireAddress(value: string, name: string): Address {
   if (looksLikeKey(value)) throw new BootrApiError(KEY_REFUSAL, 'key_refused', null);
-  if (!isAddress(value, { strict: false })) throw new BootrApiError(`${name} must be a 0x address of 40 hex characters.`, 'invalid_request', null, { field: name });
+  if (!isAddress(value, { strict: false }))
+    throw new BootrApiError(
+      `${name} must be a 0x address of 40 hex characters.`,
+      'invalid_request',
+      null,
+      { field: name },
+    );
   return getAddress(value);
 }
 
@@ -91,12 +101,24 @@ export class Bootr {
     try {
       res = await this.fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (err) {
-      throw new BootrApiError(`Could not reach ${new URL(url).host}: ${(err as Error).name === 'TimeoutError' ? 'it did not answer in time' : 'the request failed'}. From a browser page this also means the route sends no CORS headers: call it from a server.`, 'unreachable', null);
+      throw new BootrApiError(
+        `Could not reach ${new URL(url).host}: ${(err as Error).name === 'TimeoutError' ? 'it did not answer in time' : 'the request failed'}. From a browser page this also means the route sends no CORS headers: call it from a server.`,
+        'unreachable',
+        null,
+      );
     }
-    const body = await res.json().catch(() => null) as { error?: unknown; message?: unknown; field?: unknown; reason?: unknown } | null;
+    const body = (await res.json().catch(() => null)) as {
+      error?: unknown;
+      message?: unknown;
+      field?: unknown;
+      reason?: unknown;
+    } | null;
     if (!res.ok) {
       const code = typeof body?.error === 'string' ? body.error : 'http_error';
-      const message = typeof body?.message === 'string' ? body.message : `${new URL(url).pathname} answered ${res.status}.`;
+      const message =
+        typeof body?.message === 'string'
+          ? body.message
+          : `${new URL(url).pathname} answered ${res.status}.`;
       const retryAfter = Number(res.headers.get('retry-after')) || undefined;
       throw new BootrApiError(message, code, res.status, {
         ...(typeof body?.field === 'string' ? { field: body.field } : {}),
@@ -104,7 +126,12 @@ export class Bootr {
         ...(retryAfter ? { retryAfter } : {}),
       });
     }
-    if (body === null) throw new BootrApiError(`${new URL(url).pathname} did not answer with JSON.`, 'bad_response', res.status);
+    if (body === null)
+      throw new BootrApiError(
+        `${new URL(url).pathname} did not answer with JSON.`,
+        'bad_response',
+        res.status,
+      );
     return body;
   }
 
@@ -112,7 +139,11 @@ export class Bootr {
   catalog(options: { refresh?: boolean } = {}): Promise<Catalog> {
     const fresh = this.cached && Date.now() - this.cached.at < CATALOG_TTL_MS;
     if (!fresh || options.refresh) {
-      const catalog = this.send(`${this.siteUrl}/api/catalog`, { method: 'GET' }, this.timeoutMs) as Promise<Catalog>;
+      const catalog = this.send(
+        `${this.siteUrl}/api/catalog`,
+        { method: 'GET' },
+        this.timeoutMs,
+      ) as Promise<Catalog>;
       this.cached = { at: Date.now(), catalog };
       catalog.catch(() => {
         this.cached = null;
@@ -124,8 +155,15 @@ export class Bootr {
   /** The catalog entry of a route. Throws `not_listed` when this deployment does not offer it. */
   async endpoint(route: RouteName): Promise<CatalogEndpoint> {
     const { method, path } = ROUTES[route];
-    const found = (await this.catalog()).endpoints.find((e) => e.method === method && pathOf(e.url) === path);
-    if (!found) throw new BootrApiError(`${this.siteUrl} does not list ${method} ${path} in its catalog: this deployment does not offer it yet.`, 'not_listed', null);
+    const found = (await this.catalog()).endpoints.find(
+      (e) => e.method === method && pathOf(e.url) === path,
+    );
+    if (!found)
+      throw new BootrApiError(
+        `${this.siteUrl} does not list ${method} ${path} in its catalog: this deployment does not offer it yet.`,
+        'not_listed',
+        null,
+      );
     return found;
   }
 
@@ -133,17 +171,25 @@ export class Bootr {
    * Calls any route by name. `params` fills the path's `{name}` parameters and the rest goes in the query string, or
    * in the JSON body when `body` is given. The named methods below are this with types.
    */
-  async call<T = unknown>(route: RouteName, params: RouteParams = {}, options: { body?: unknown; timeoutMs?: number } = {}): Promise<T> {
+  async call<T = unknown>(
+    route: RouteName,
+    params: RouteParams = {},
+    options: { body?: unknown; timeoutMs?: number } = {},
+  ): Promise<T> {
     const { method, path } = ROUTES[route];
     const endpoint = await this.endpoint(route);
     const names = pathParams(path);
     let url = endpoint.url;
     for (const name of names) {
       const value = params[name];
-      if (value === undefined || value === '') throw new BootrApiError(`${name} is required.`, 'invalid_request', null, { field: name });
+      if (value === undefined || value === '')
+        throw new BootrApiError(`${name} is required.`, 'invalid_request', null, { field: name });
       if (looksLikeKey(value)) throw new BootrApiError(KEY_REFUSAL, 'key_refused', null);
       // The indexer keys on lowercase addresses; the site's own routes checksum what they read.
-      const text = endpoint.service === 'indexer' && isAddress(String(value), { strict: false }) ? String(value).toLowerCase() : String(value);
+      const text =
+        endpoint.service === 'indexer' && isAddress(String(value), { strict: false })
+          ? String(value).toLowerCase()
+          : String(value);
       url = url.replace(`{${name}}`, encodeURIComponent(text));
     }
     const query = new URLSearchParams();
@@ -152,8 +198,15 @@ export class Bootr {
       if (looksLikeKey(value)) throw new BootrApiError(KEY_REFUSAL, 'key_refused', null);
       query.set(name, String(value));
     }
-    const qs = query.toString() ? `?${query}` : "";
-    const init: RequestInit = options.body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(options.body) };
+    const qs = query.toString() ? `?${query}` : '';
+    const init: RequestInit =
+      options.body === undefined
+        ? { method }
+        : {
+            method,
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(options.body),
+          };
     return (await this.send(url + qs, init, options.timeoutMs ?? this.timeoutMs)) as T;
   }
 
@@ -221,19 +274,49 @@ export class Bootr {
     const wallet = requireAddress(address, 'address');
     const auth = (await this.endpoint('launch')).auth as SiweAuth;
     const { nonce, expiresIn } = await this.call<{ nonce: string; expiresIn: number }>('nonce');
-    const message = createSiweMessage({ domain: auth.domain, uri: auth.uri, version: '1', chainId: auth.chainId, address: wallet, nonce, statement: auth.statement });
-    return { message, address: wallet, chainId: auth.chainId, statement: auth.statement, expiresIn };
+    const message = createSiweMessage({
+      domain: auth.domain,
+      uri: auth.uri,
+      version: '1',
+      chainId: auth.chainId,
+      address: wallet,
+      nonce,
+      statement: auth.statement,
+    });
+    return {
+      message,
+      address: wallet,
+      chainId: auth.chainId,
+      statement: auth.statement,
+      expiresIn,
+    };
   }
 
   /**
    * Step two: with the wallet's signature of that message, the server pins the image, stores the agent's text and
    * answers with the transactions the wallet must send, in order. Refuses an answer that names another wallet or chain.
    */
-  async prepareLaunch(input: { message: string; signature: Hex; launch: LaunchInput }): Promise<PreparedLaunch> {
-    const prepared = await this.call<PreparedLaunch>('launch', {}, { body: input, timeoutMs: Math.max(this.timeoutMs, LAUNCH_TIMEOUT_MS) });
+  async prepareLaunch(input: {
+    message: string;
+    signature: Hex;
+    launch: LaunchInput;
+  }): Promise<PreparedLaunch> {
+    const prepared = await this.call<PreparedLaunch>(
+      'launch',
+      {},
+      { body: input, timeoutMs: Math.max(this.timeoutMs, LAUNCH_TIMEOUT_MS) },
+    );
     const signed = parseSiweMessage(input.message);
-    if (!signed.address || !isAddressEqual(prepared.creator, signed.address) || prepared.chainId !== signed.chainId) {
-      throw new BootrApiError('The answer names another wallet or chain than the signed message. Do not send anything from it.', 'mismatch', null);
+    if (
+      !signed.address ||
+      !isAddressEqual(prepared.creator, signed.address) ||
+      prepared.chainId !== signed.chainId
+    ) {
+      throw new BootrApiError(
+        'The answer names another wallet or chain than the signed message. Do not send anything from it.',
+        'mismatch',
+        null,
+      );
     }
     return prepared;
   }
@@ -245,6 +328,8 @@ export function createBootr(options: BootrOptions = {}): Bootr {
 }
 
 /** A claim or launch step as a wallet library takes it (viem's `sendTransaction`, for one). */
-export function toTransaction(tx: { target: Address; data: Hex; value: string } | { to: Address; data: Hex; value: string }): { to: Address; data: Hex; value: bigint } {
+export function toTransaction(
+  tx: { target: Address; data: Hex; value: string } | { to: Address; data: Hex; value: string },
+): { to: Address; data: Hex; value: bigint } {
   return { to: 'target' in tx ? tx.target : tx.to, data: tx.data, value: BigInt(tx.value) };
 }

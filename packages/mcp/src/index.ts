@@ -13,26 +13,36 @@ const INSTRUCTIONS = `Bootr is a launchpad on Base where every coin comes with a
 
 const CATALOG_WAIT_MS = 5000;
 
-const bootr = createBootr(process.env.BOOTR_SITE_URL ? { siteUrl: process.env.BOOTR_SITE_URL } : {});
+const bootr = createBootr(
+  process.env.BOOTR_SITE_URL ? { siteUrl: process.env.BOOTR_SITE_URL } : {},
+);
 
 const catalog: Catalog | null = await Promise.race([
   bootr.catalog().catch(() => null),
   new Promise<null>((resolve) => setTimeout(resolve, CATALOG_WAIT_MS, null).unref()),
 ]);
 // stdout carries the protocol, so everything for people goes to stderr.
-if (!catalog) console.error(`[bootr-mcp] could not read the catalog of ${bootr.siteUrl}: tool schemas are loose until a restart; calls still try the site.`);
+if (!catalog)
+  console.error(
+    `[bootr-mcp] could not read the catalog of ${bootr.siteUrl}: tool schemas are loose until a restart; calls still try the site.`,
+  );
 
 const tools = buildTools(catalog);
 
 serveStdio(() => {
-  const server = new McpServer({ name: 'bootr-mcp-server', version: '0.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer(
+    { name: 'bootr-mcp-server', version: '0.1.0' },
+    { instructions: INSTRUCTIONS },
+  );
   for (const tool of tools) {
     server.registerTool(
       tool.name,
       {
         title: tool.title,
         description: tool.description,
-        inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema as Parameters<typeof fromJsonSchema>[0]),
+        inputSchema: fromJsonSchema<Record<string, unknown>>(
+          tool.inputSchema as Parameters<typeof fromJsonSchema>[0],
+        ),
         annotations: tool.annotations,
       },
       (args) => tool.run(bootr, args),

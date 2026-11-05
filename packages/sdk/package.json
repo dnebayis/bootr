@@ -2,9 +2,19 @@
   "name": "@bootr/sdk",
   "version": "0.1.0",
   "description": "Typed client for Bootr's public API: read coins and agents, prepare launches and fee claims as unsigned transactions. Holds no key and sends nothing.",
-  "keywords": ["bootr", "base", "launchpad", "agents", "unsigned-transactions"],
+  "keywords": [
+    "bootr",
+    "base",
+    "launchpad",
+    "agents",
+    "unsigned-transactions"
+  ],
   "homepage": "https://bootr.fun/docs/api#developer-tools",
-  "repository": { "type": "git", "url": "git+https://github.com/dnebayis/bootr.git", "directory": "packages/sdk" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dnebayis/bootr.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,10 +25,17 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=18.3" },
-  "publishConfig": { "access": "public" },
+  "engines": {
+    "node": ">=18.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",

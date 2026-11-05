@@ -4,13 +4,24 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// Each call starts a real process, which takes a while when the whole workspace runs its tests at once.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 /** The built command as a user runs it, as a real process, against a small HTTP server speaking the catalog's routes. */
 const BIN = path.resolve(import.meta.dirname, '../dist/cli.js');
 const OWNER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const KEY = `0x${'ab'.repeat(32)}`;
-const CLAIM = { target: OWNER, data: '0x12', value: '0', path: 'clanker', amountWei: '5', sendFrom: null, description: 'Pays WETH.' };
+const CLAIM = {
+  target: OWNER,
+  data: '0x12',
+  value: '0',
+  path: 'clanker',
+  amountWei: '5',
+  sendFrom: null,
+  description: 'Pays WETH.',
+};
 
 let server: Server;
 let site: string;
@@ -28,17 +39,55 @@ beforeAll(async () => {
       };
       const url = req.url!;
       if (url === '/api/catalog') {
-        const web = [['GET', '/api/agent/claim/{address}'], ['POST', '/api/agent/nonce'], ['GET', '/market/{token}'], ['GET', '/search'], ['GET', '/treasury/{kernel}'], ['GET', '/platform/feed'], ['GET', '/token/{id}/fees'], ['GET', '/api/agents/{id}/posts']];
+        const web = [
+          ['GET', '/api/agent/claim/{address}'],
+          ['POST', '/api/agent/nonce'],
+          ['GET', '/market/{token}'],
+          ['GET', '/search'],
+          ['GET', '/treasury/{kernel}'],
+          ['GET', '/platform/feed'],
+          ['GET', '/token/{id}/fees'],
+          ['GET', '/api/agents/{id}/posts'],
+        ];
         return send(200, {
           endpoints: [
-            ...web.map(([method, p]) => ({ method, url: `${site}${p}`, auth: { type: 'none' } })),
-            { method: 'POST', url: `${site}/api/agent/launch`, auth: { type: 'siwe', statement: 'Prepare a Bootr launch.', domain: new URL(site).host, uri: site, chainId: 8453 } },
+            ...web.map(([method, p]) => ({
+              service: p!.startsWith('/api/') ? 'web' : 'indexer',
+              method,
+              url: `${site}${p}`,
+              auth: { type: 'none' },
+            })),
+            {
+              method: 'POST',
+              url: `${site}/api/agent/launch`,
+              auth: {
+                type: 'siwe',
+                statement: 'Prepare a Bootr launch.',
+                domain: new URL(site).host,
+                uri: site,
+                chainId: 8453,
+              },
+            },
           ],
         });
       }
-      if (url.startsWith('/api/agent/claim/')) return send(200, { address: OWNER, asset: '0x42', totalWei: '5', coins: { bootr: [], clanker: [] }, claims: [CLAIM], note: 'Nothing was signed or sent.' });
-      if (url === '/api/agent/nonce') return send(200, { nonce: 'abcdef0123456789', expiresIn: 600 });
-      if (url === '/api/agent/launch') return send(200, { creator: OWNER, chainId: 8453, transactions: [{ step: 'approve', to: OWNER, data: '0x', value: '0', note: '' }] });
+      if (url.startsWith('/api/agent/claim/'))
+        return send(200, {
+          address: OWNER,
+          asset: '0x42',
+          totalWei: '5',
+          coins: { bootr: [], clanker: [] },
+          claims: [CLAIM],
+          note: 'Nothing was signed or sent.',
+        });
+      if (url === '/api/agent/nonce')
+        return send(200, { nonce: 'abcdef0123456789', expiresIn: 600 });
+      if (url === '/api/agent/launch')
+        return send(200, {
+          creator: OWNER,
+          chainId: 8453,
+          transactions: [{ step: 'approve', to: OWNER, data: '0x', value: '0', note: '' }],
+        });
       if (url.startsWith('/market/')) return send(200, { symbol: 'AA' });
       if (url.startsWith('/search')) return send(200, [{ symbol: 'BB' }]);
       if (url.startsWith('/treasury/')) return send(404, { error: 'not_found' });
@@ -58,7 +107,9 @@ afterAll(() => {
 
 async function bootr(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await promisify(execFile)(process.execPath, [BIN, ...args], { env: { ...process.env, BOOTR_SITE_URL: site } });
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, [BIN, ...args], {
+      env: { ...process.env, BOOTR_SITE_URL: site },
+    });
     return { code: 0, stdout, stderr };
   } catch (e) {
     const err = e as { code: number; stdout: string; stderr: string };
@@ -88,7 +139,11 @@ describe('read commands', () => {
   });
 
   it('reports a refusal on stderr with exit code 1', async () => {
-    expect(await bootr('agent', OWNER)).toMatchObject({ code: 1, stdout: '', stderr: expect.stringContaining('not_found') });
+    expect(await bootr('agent', OWNER)).toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: expect.stringContaining('not_found'),
+    });
   });
 });
 
@@ -106,16 +161,41 @@ describe('prepare commands', () => {
     const { message } = JSON.parse(stdout) as { message: string };
     expect(message).toContain('Prepare a Bootr launch.');
     await writeFile(path.join(dir, 'message.txt'), `${message}\n`);
-    await writeFile(path.join(dir, 'launch.json'), JSON.stringify({ name: 'A', symbol: 'AA', identity: 'x'.repeat(20), image: { url: 'https://x/a.png' } }));
+    await writeFile(
+      path.join(dir, 'launch.json'),
+      JSON.stringify({
+        name: 'A',
+        symbol: 'AA',
+        identity: 'x'.repeat(20),
+        image: { url: 'https://x/a.png' },
+      }),
+    );
     await writeFile(path.join(dir, 'coin.png'), 'png-bytes');
-    const out = await bootr('prepare', 'launch', '--spec', path.join(dir, 'launch.json'), '--message', path.join(dir, 'message.txt'), '--signature', '0xabcd', '--image', path.join(dir, 'coin.png'));
+    const out = await bootr(
+      'prepare',
+      'launch',
+      '--spec',
+      path.join(dir, 'launch.json'),
+      '--message',
+      path.join(dir, 'message.txt'),
+      '--signature',
+      '0xabcd',
+      '--image',
+      path.join(dir, 'coin.png'),
+    );
     expect(out.code).toBe(0);
     expect(out.stderr).toContain('Nothing was signed or sent');
     expect((JSON.parse(out.stdout) as { transactions: object[] }).transactions).toHaveLength(1);
-    const sent = JSON.parse(seen.at(-1)!.body) as { message: string; signature: string; launch: { image: { dataUrl: string } } };
+    const sent = JSON.parse(seen.at(-1)!.body) as {
+      message: string;
+      signature: string;
+      launch: { image: { dataUrl: string } };
+    };
     expect(sent.message).toBe(message);
     expect(sent.signature).toBe('0xabcd');
-    expect(sent.launch.image.dataUrl).toBe(`data:image/png;base64,${Buffer.from('png-bytes').toString('base64')}`);
+    expect(sent.launch.image.dataUrl).toBe(
+      `data:image/png;base64,${Buffer.from('png-bytes').toString('base64')}`,
+    );
   });
 });
 
@@ -142,6 +222,15 @@ describe('keys', () => {
 describe('help', () => {
   it('lists the commands and the promise', async () => {
     const { stdout } = await bootr('--help');
-    for (const s of ['coin', 'agent', 'feed', 'fees', 'prepare claim', 'prepare launch', 'never asks for a private key']) expect(stdout).toContain(s);
+    for (const s of [
+      'coin',
+      'agent',
+      'feed',
+      'fees',
+      'prepare claim',
+      'prepare launch',
+      'never asks for a private key',
+    ])
+      expect(stdout).toContain(s);
   });
 });

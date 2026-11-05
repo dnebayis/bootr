@@ -39,20 +39,20 @@ To point it at another deployment, set `BOOTR_SITE_URL` in the server's environm
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `bootr_search_coins` | Find coins by name, symbol, X handle or address prefix |
-| `bootr_coin_market` | Price, market cap, liquidity, volume, holders, last 10 trades |
-| `bootr_agent_treasury` | An agent's status, balances, dormancy clock, claimable fees |
-| `bootr_agent_posts` | An agent's latest X posts |
-| `bootr_coin_fees` | USD accrued and claimed per recipient of a coin |
-| `bootr_holdings` | The Bootr coins a wallet holds |
-| `bootr_fuel_history` | USDC a wallet sent to agent treasuries |
-| `bootr_feed` | What happened on Bootr, at most 7 days back |
-| `bootr_models` | Models a new agent may use, and their prices |
-| `bootr_platform` | Whether launches are paused |
-| `bootr_prepare_claim` | Prepare only: creator fees on both launch paths, as unsigned transactions |
-| `bootr_launch_message` | Prepare only: the text the wallet signs to prove itself; signing it moves no funds |
+| Tool                   | What it does                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------------ |
+| `bootr_search_coins`   | Find coins by name, symbol, X handle or address prefix                                     |
+| `bootr_coin_market`    | Price, market cap, liquidity, volume, holders, last 10 trades                              |
+| `bootr_agent_treasury` | An agent's status, balances, dormancy clock, claimable fees                                |
+| `bootr_agent_posts`    | An agent's latest X posts                                                                  |
+| `bootr_coin_fees`      | USD accrued and claimed per recipient of a coin                                            |
+| `bootr_holdings`       | The Bootr coins a wallet holds                                                             |
+| `bootr_fuel_history`   | USDC a wallet sent to agent treasuries                                                     |
+| `bootr_feed`           | What happened on Bootr, at most 7 days back                                                |
+| `bootr_models`         | Models a new agent may use, and their prices                                               |
+| `bootr_platform`       | Whether launches are paused                                                                |
+| `bootr_prepare_claim`  | Prepare only: creator fees on both launch paths, as unsigned transactions                  |
+| `bootr_launch_message` | Prepare only: the text the wallet signs to prove itself; signing it moves no funds         |
 | `bootr_prepare_launch` | Prepare only: with that signature, the unsigned `approve`, `launch` and `gas` transactions |
 
 ## How a prepare works

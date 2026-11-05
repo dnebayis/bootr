@@ -39,8 +39,25 @@ export interface Catalog {
   chainId: number;
   docs: string;
   endpoints: CatalogEndpoint[];
-  agentTools: { runBy: 'agent'; publiclyCallable: false; note: string; tools: { name: string; description: string; capability: string | null; effect: string; parameters: JsonSchema }[] };
-  pricing: { source: string; currency: string; paidToolCalls: boolean; note: string; models: { id: string; label: string; provider: string; pricePerThoughtUsd: number | null }[] };
+  agentTools: {
+    runBy: 'agent';
+    publiclyCallable: false;
+    note: string;
+    tools: {
+      name: string;
+      description: string;
+      capability: string | null;
+      effect: string;
+      parameters: JsonSchema;
+    }[];
+  };
+  pricing: {
+    source: string;
+    currency: string;
+    paidToolCalls: boolean;
+    note: string;
+    models: { id: string; label: string; provider: string; pricePerThoughtUsd: number | null }[];
+  };
 }
 
 export interface PlatformSwitches {
@@ -50,12 +67,25 @@ export interface PlatformSwitches {
 
 export interface ModelList {
   source: 'relay' | 'fallback';
-  models: { id: string; label: string; provider: string; pricePerThoughtUsd?: number | null; pricePerImageUsd?: number | null }[];
+  models: {
+    id: string;
+    label: string;
+    provider: string;
+    pricePerThoughtUsd?: number | null;
+    pricePerImageUsd?: number | null;
+  }[];
 }
 
 export interface AgentPosts {
   handle: string | null;
-  items: { id: string; kind: 'post' | 'reply'; text: string; postId: string; url: string; createdAt: string }[];
+  items: {
+    id: string;
+    kind: 'post' | 'reply';
+    text: string;
+    postId: string;
+    url: string;
+    createdAt: string;
+  }[];
 }
 
 export interface MarketSnapshot {
@@ -85,7 +115,16 @@ export interface Treasury {
   paused: boolean;
   balances: { usdc: string; weth: string; eth: string; ownToken: string };
   treasuryUsd: number;
-  claimable: { recipient: Address; recipientKind: string; asset: Address; symbol: string; amount: string; amountUsd: number; pending: string; settled: string }[];
+  claimable: {
+    recipient: Address;
+    recipientKind: string;
+    asset: Address;
+    symbol: string;
+    amount: string;
+    amountUsd: number;
+    pending: string;
+    settled: string;
+  }[];
   [field: string]: unknown;
 }
 
@@ -103,11 +142,21 @@ export interface CoinFees {
   source: 'bootr' | 'clanker';
   lpFeeBps: number;
   protocolBps: number;
-  byKind: Record<'agent' | 'creator' | 'burn' | 'platform', { accruedUsd: number; claimedUsd: number }>;
+  byKind: Record<
+    'agent' | 'creator' | 'burn' | 'platform',
+    { accruedUsd: number; claimedUsd: number }
+  >;
 }
 
 export interface Holding {
-  token: { id: Address; name: string; symbol: string; image: string; priceUsd: number; marketCapUsd: number };
+  token: {
+    id: Address;
+    name: string;
+    symbol: string;
+    image: string;
+    priceUsd: number;
+    marketCapUsd: number;
+  };
   balance: string;
   valueUsd: number;
 }
@@ -202,7 +251,9 @@ export interface LaunchInput {
   identity: string;
   image: { url: string } | { dataUrl: string };
   model?: string;
-  worker?: string | { capabilities?: Record<string, boolean>; postIntervalMs: number; jobLines?: string[] };
+  worker?:
+    | string
+    | { capabilities?: Record<string, boolean>; postIntervalMs: number; jobLines?: string[] };
   buyback?: boolean;
   launchThrough?: 'bootr' | 'clanker';
   fuelUsdc?: string | number;

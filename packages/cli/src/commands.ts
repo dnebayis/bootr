@@ -1,7 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { parseArgs } from 'node:util';
-import { BootrApiError, createBootr, KEY_REFUSAL, looksLikeKey, type Bootr, type LaunchInput } from '@bootr/sdk';
+import {
+  BootrApiError,
+  createBootr,
+  KEY_REFUSAL,
+  looksLikeKey,
+  type Bootr,
+  type LaunchInput,
+} from '@bootr/sdk';
 
 /**
  * The `bootr` command: reads and unsigned transactions over `@bootr/sdk`. All answers go to stdout as JSON, so they
@@ -47,9 +54,16 @@ const OPTIONS = {
   help: { type: 'boolean', short: 'h' },
 } as const;
 
-const NOT_SENT = 'Nothing was signed or sent. Your own wallet sends these, in order, if you decide to.';
+const NOT_SENT =
+  'Nothing was signed or sent. Your own wallet sends these, in order, if you decide to.';
 
-const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+const IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+};
 
 export class UsageError extends Error {}
 
@@ -74,24 +88,47 @@ async function imageAsDataUrl(file: string): Promise<{ dataUrl: string }> {
   return { dataUrl: `data:${type};base64,${(await readFile(file)).toString('base64')}` };
 }
 
-async function prepareLaunch(bootr: Bootr, values: { spec?: string; message?: string; signature?: string; image?: string }) {
-  const spec = JSON.parse(await readFile(need(values.spec, '--spec <launch.json>'), 'utf8')) as LaunchInput;
-  const message = await readFile(need(values.message, '--message <file holding the signed text>'), 'utf8');
+async function prepareLaunch(
+  bootr: Bootr,
+  values: { spec?: string; message?: string; signature?: string; image?: string },
+) {
+  const spec = JSON.parse(
+    await readFile(need(values.spec, '--spec <launch.json>'), 'utf8'),
+  ) as LaunchInput;
+  const message = await readFile(
+    need(values.message, '--message <file holding the signed text>'),
+    'utf8',
+  );
   const signature = need(values.signature, '--signature <0x...>');
-  if (!/^0x[0-9a-fA-F]+$/.test(signature)) throw new UsageError('--signature must be the wallet’s signature, as 0x hex.');
+  if (!/^0x[0-9a-fA-F]+$/.test(signature))
+    throw new UsageError('--signature must be the wallet’s signature, as 0x hex.');
   const launch = values.image ? { ...spec, image: await imageAsDataUrl(values.image) } : spec;
-  return bootr.prepareLaunch({ message: message.trimEnd(), signature: signature as `0x${string}`, launch });
+  return bootr.prepareLaunch({
+    message: message.trimEnd(),
+    signature: signature as `0x${string}`,
+    launch,
+  });
 }
 
 /** Runs one command and returns what it prints. Exported for the tests. */
-export async function run(argv: string[], env: Record<string, string | undefined> = process.env): Promise<{ data?: unknown; text?: string; notice?: string }> {
+export async function run(
+  argv: string[],
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ data?: unknown; text?: string; notice?: string }> {
   // parseArgs prints nothing itself and refuses any flag not listed above, which is every spelling of a key flag.
-  const { values, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: OPTIONS,
+    allowPositionals: true,
+    strict: true,
+  });
   if (values.help || positionals.length === 0) return { text: USAGE };
   for (const value of [...positionals, values.signature]) {
     if (looksLikeKey(value)) throw new UsageError(KEY_REFUSAL);
   }
-  const bootr = createBootr(values.site ?? env.BOOTR_SITE_URL ? { siteUrl: values.site ?? env.BOOTR_SITE_URL } : {});
+  const bootr = createBootr(
+    (values.site ?? env.BOOTR_SITE_URL) ? { siteUrl: values.site ?? env.BOOTR_SITE_URL } : {},
+  );
   const [command, subject, extra] = positionals;
 
   switch (command) {
@@ -101,24 +138,50 @@ export async function run(argv: string[], env: Record<string, string | undefined
       return { data: isAddressLike(query) ? await bootr.market(query) : await bootr.search(query) };
     }
     case 'agent':
-      if (values.posts) return { data: await bootr.agentPosts(need(subject, 'an agent id'), { limit: integer(values.limit, 'limit') }) };
+      if (values.posts)
+        return {
+          data: await bootr.agentPosts(need(subject, 'an agent id'), {
+            limit: integer(values.limit, 'limit'),
+          }),
+        };
       return { data: await bootr.treasury(need(subject, 'a coin or treasury address')) };
     case 'feed':
       return { data: await bootr.feed({ since: integer(values.since, 'since') }) };
     case 'fees':
       if (values.coin) return { data: await bootr.coinFees(need(subject, 'a coin address')) };
       {
-        const { address, totalWei, asset, coins, claims } = await bootr.prepareClaim(need(subject, 'a wallet address'));
-        return { data: { address, asset, totalWei, coins, claims: claims.map(({ path, amountWei, sendFrom }) => ({ path, amountWei, sendFrom })) }, notice: 'To claim, run: bootr prepare claim <address>' };
+        const { address, totalWei, asset, coins, claims } = await bootr.prepareClaim(
+          need(subject, 'a wallet address'),
+        );
+        return {
+          data: {
+            address,
+            asset,
+            totalWei,
+            coins,
+            claims: claims.map(({ path, amountWei, sendFrom }) => ({ path, amountWei, sendFrom })),
+          },
+          notice: 'To claim, run: bootr prepare claim <address>',
+        };
       }
     case 'prepare':
       switch (subject) {
         case 'claim':
-          return { data: await bootr.prepareClaim(need(extra, 'a wallet address')), notice: NOT_SENT };
+          return {
+            data: await bootr.prepareClaim(need(extra, 'a wallet address')),
+            notice: NOT_SENT,
+          };
         case 'launch-message':
-          return { data: await bootr.launchMessage(need(extra, 'a wallet address')), notice: 'Sign "message" with your own wallet, then run: bootr prepare launch. It lasts 10 minutes, and the first attempt spends it.' };
+          return {
+            data: await bootr.launchMessage(need(extra, 'a wallet address')),
+            notice:
+              'Sign "message" with your own wallet, then run: bootr prepare launch. It lasts 10 minutes, and the first attempt spends it.',
+          };
         case 'launch':
-          return { data: await prepareLaunch(bootr, values), notice: `${NOT_SENT} A launch costs real money and cannot be undone: check every amount first.` };
+          return {
+            data: await prepareLaunch(bootr, values),
+            notice: `${NOT_SENT} A launch costs real money and cannot be undone: check every amount first.`,
+          };
         default:
           throw new UsageError('prepare takes: claim, launch-message or launch.');
       }
@@ -128,7 +191,11 @@ export async function run(argv: string[], env: Record<string, string | undefined
 }
 
 /** The exit code. Refusals print the API's own message and code, never the input. */
-export async function main(argv: string[], out: (s: string) => void, err: (s: string) => void): Promise<number> {
+export async function main(
+  argv: string[],
+  out: (s: string) => void,
+  err: (s: string) => void,
+): Promise<number> {
   try {
     const { data, text, notice } = await run(argv);
     if (text) out(text);
@@ -140,7 +207,10 @@ export async function main(argv: string[], out: (s: string) => void, err: (s: st
       err(`${e.code}: ${e.message}\n`);
       return 1;
     }
-    const message = (e as NodeJS.ErrnoException).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'Unknown option. This command never takes a private key: your own wallet signs. See bootr --help.' : (e as Error).message;
+    const message =
+      (e as NodeJS.ErrnoException).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION'
+        ? 'Unknown option. This command never takes a private key: your own wallet signs. See bootr --help.'
+        : (e as Error).message;
     err(`${message}\n`);
     return 2;
   }
