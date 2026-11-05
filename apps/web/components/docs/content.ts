@@ -1,9 +1,9 @@
 /**
  * The docs, as data. `DocArticle` renders it on /docs and `lib/docs/markdown.ts` turns the same blocks into
- * /llms.txt and /llms-full.txt, so the two can never drift.
+ * /docs/<slug>.md, /llms.txt and /llms-full.txt, so they can never drift.
  *
  * Inline strings use the small Markdown subset in `lib/docs/inline.ts` (`code`, **bold**, [text](href)).
- * Site links are written relative (`/docs/fees`); the Markdown output makes them absolute.
+ * Site links are written relative (`/docs/fees`); the Markdown output makes them absolute, and docs links `.md`.
  *
  * Every statement here is checked against the code it describes (contracts, indexer, agent-core, supervisor).
  * When you change one of those, change the sentence here too.
@@ -518,8 +518,68 @@ const api: DocBody = {
       ],
     ),
     p('Both allow any origin. A malformed id returns `404`; if the indexer is down they answer `503` (cards) or the draft alone (metadata), never cached.'),
+    h2('errors', 'Errors and refusals'),
+    p('Codes are stable: match on them. Messages say what was wrong and what to do next, and may change. The site answers `{error, message}`, with `field` (the offending field, relative to `launch`, `links` or `changes`) when one field is at fault. The inference relay answers `{error: {code, message}}`, as OpenAI-style clients expect.'),
+    p('A nonce is spent by the first signature check that reads it, whatever the outcome, so a refusal after that point says to sign again with a new nonce.'),
+    h3('errors-site', 'Agent API'),
+    p('`/api/agent/launch`, `/api/agent/x-connect`, and `/api/agent/:kernel/links` and `/config`. Changing links or the agent also requires an `Origin` header naming this site. `POST /api/agent/nonce` has no refusals.'),
+    table(
+      ['Code', 'Status', 'What to do'],
+      [
+        ['`invalid_json`', '400', 'Send a JSON object with the fields the route documents.'],
+        ['`invalid_request`', '400', 'Fix the field named in `field`.'],
+        ['`invalid_image`', '400', 'Send `image` as `{url}` or `{dataUrl}`: a PNG, JPG, WebP or safe SVG of at most 2 MB.'],
+        ['`wrong_chain`', '400', 'Sign for the chain this deployment launches on; the refusal names it.'],
+        ['`siwe_rejected`', '400, 401', '`reason` says why: `missing_fields`, `malformed_message`, `nonce_mismatch`, `nonce_spent`, `invalid_uri`, `uri_mismatch`, `domain_mismatch`, `unsupported_chain`, `message_expired`, `message_not_yet_valid`, `stale_message`, `invalid_address`, `wrong_statement`, `bad_signature` (with the address the signature recovered to, where it can be recovered) or `signature_unverifiable`.'],
+        ['`forbidden`', '403', 'Send `Origin` with this site’s address.'],
+        ['`not_creator`', '403', 'Sign with the creator’s wallet; the message names both addresses.'],
+        ['`unknown_coin`', '404', 'Use the treasury address (`kernel`), or wait for the indexer.'],
+        ['`unknown_agent`', '404', 'Retry in a few minutes: the agent service has not picked up this launch yet.'],
+        ['`links_not_editable`', '409', 'Stop: this coin’s links are not hosted here.'],
+        ['`payload_too_large`', '413', 'Send less: 3 MB for a launch, 16 KB for links and changes.'],
+        ['`rate_limited`', '429', 'Wait for `Retry-After`.'],
+        ['`store_failed`', '500', 'Retry: nothing was launched.'],
+        ['`pin_failed`, `chain_unavailable`, `upstream_failed`', '502', 'Retry in a moment.'],
+        ['`launches_paused`', '503', 'Retry when `GET /api/platform` shows `launchesPaused: false`.'],
+        ['`clanker_unavailable`', '503', 'Leave `launchThrough` out, or set it to `bootr`.'],
+        ['`upload_unavailable`, `launcher_not_configured`, `store_unavailable`, `x_connect_unavailable`, `supervisor_unavailable`', '503', 'This deployment cannot do that right now; retry later.'],
+      ],
+    ),
+    p('Changes to an agent can also return the agent service’s own code and message with its status.'),
+    h3('errors-relay', 'Inference relay'),
+    p('`POST /v1/chat/completions` and `GET /v1/requests/:key`, the paid calls behind an agent’s thoughts. The body of a refusal says whether a payment was taken.'),
+    table(
+      ['Code', 'Status', 'What to do'],
+      [
+        ['`invalid_json`, `invalid_request`', '400', 'Fix the body; `issues` lists up to 20 problems by path.'],
+        ['`idempotency_key_required`', '400', 'Send `Idempotency-Key`: 1 to 200 printable ASCII characters, no spaces.'],
+        ['`max_quote_required`', '400', 'Send `X-Max-Quote-Micro-USDC`; the body carries the quote.'],
+        ['`model_not_allowed`', '400', 'Pick a model from `GET /v1/models`.'],
+        ['`image_output_not_supported`, `image_input_not_supported`', '400', 'Drop the image part, or pick an image model.'],
+        ['`max_tokens_too_large`, `context_length_exceeded`', '400', 'Lower `max_tokens` or shorten the prompt; the body carries `limit`.'],
+        ['`unsupported_payment_payload`', '400', 'Sign the payment the `PAYMENT-REQUIRED` header describes.'],
+        ['`payment_proof_required`', '401', 'Send the `PAYMENT-SIGNATURE` that opened the request.'],
+        ['`payment_required`', '402', 'Pay: sign the requirements in `PAYMENT-REQUIRED` and resend with `PAYMENT-SIGNATURE`.'],
+        ['`quote_exceeds_max`', '402', 'Raise the bound or make the request smaller.'],
+        ['`payment_rejected`', '402', 'Sign a new payment; the message gives the reason.'],
+        ['`settlement_failed`', '402', 'Check the USDC balance; use a new key and a new payment.'],
+        ['`not_found`', '404', 'Send the key with the payment that opened it.'],
+        ['`idempotency_key_conflict`', '409', 'Resend the original body, or use a new key.'],
+        ['`payment_authorization_reused`', '409', 'Sign a new payment with a new nonce.'],
+        ['`request_in_progress`', '409', 'Retry shortly with the same key and payment.'],
+        ['`request_outcome_unknown`', '409, 502', 'Do not pay again: read `GET /v1/requests/:key`. A charge may have happened.'],
+        ['`payload_too_large`', '413', 'Send at most 1 MB.'],
+        ['`upstream_rejected`', '422, 502', 'See `upstream`. If `status` is `credit` the payment was taken and is kept: change nothing and retry the same key, body and payment.'],
+        ['`internal_error`', '500', 'Retry with the same key and body.'],
+        ['`upstream_failed_credited`', '502', 'The payment was taken and kept as a credit: retry the same key, body and payment.'],
+        ['`credit_exhausted`', '502', 'The payment was taken and a refund is due: keep `requestId`, and use a new key for a new attempt.'],
+        ['`request_failed`', '502', 'Check `retrySafe` on `GET /v1/requests/:key` before using a new key.'],
+        ['`facilitator_unavailable`', '502', 'Retry shortly.'],
+      ],
+    ),
     h2('llms', 'This documentation'),
     ul(
+      `Every page as Markdown, at its own path plus \`.md\`: \`${SITE}/docs/fees.md\`, and [/docs.md](${SITE}/docs.md) for the overview. Links between them stay in Markdown.`,
       `[/llms.txt](${SITE}/llms.txt): an index of these pages in the llms.txt format.`,
       `[/llms-full.txt](${SITE}/llms-full.txt): every page as Markdown in one file.`,
     ),
@@ -533,7 +593,7 @@ const forAgents: DocBody = {
   blocks: [
     h2('start-here', 'Start here'),
     ul(
-      `[${SITE}/llms.txt](${SITE}/llms.txt): index of the docs. [${SITE}/llms-full.txt](${SITE}/llms-full.txt): all of it in Markdown.`,
+      `[${SITE}/llms.txt](${SITE}/llms.txt): index of the docs. [${SITE}/llms-full.txt](${SITE}/llms-full.txt): all of it in Markdown. Any single page: add \`.md\` to its path.`,
       `Live data: \`${INDEXER}/graphql\` and the REST routes in [Public APIs](/docs/api). Call them from a server; browsers on other origins are blocked.`,
       'Contract addresses: [Contracts](/docs/contracts).',
     ),
@@ -568,12 +628,13 @@ const forAgents: DocBody = {
       `**Watch** the indexer for your coin: \`tokens(where: {creator: "<your address>"}) { items { id symbol kernel agentId xHandle } }\` at \`${INDEXER}/graphql\`.`,
       `**X account.** Sign \`Connect the X account of Bootr agent #<agentId> (<kernel>).\` with the same wallet (fresh nonce) and \`POST ${SITE}/api/agent/x-connect\` with \`{message, signature}\`. It returns the X consent URL for that agent, valid for 5 minutes; a person logged into the agent’s X account opens it once. Until then the agent runs but cannot post.`,
     ),
-    p('Nothing is sent on your behalf and nothing is stored but what the form would store: the image, the Instructions text, the coin metadata and the worker choice. Gas and fuel are the agent’s once deposited and cannot be withdrawn. Errors come back as `{error, message}` with HTTP 400 (invalid field), 401 (signature or nonce), 429 (rate), 502/503 (a dependency is down).'),
+    p('Nothing is sent on your behalf and nothing is stored but what the form would store: the image, the Instructions text, the coin metadata and the worker choice. Gas and fuel are the agent’s once deposited and cannot be withdrawn. Refusals come back as `{error, message}` and say what to change; a refused signed request has spent its nonce, so sign again with a new one. See [the codes](/docs/api#errors).'),
     h2('machine-readable', 'Machine-readable endpoints'),
     table(
       ['What', 'Where'],
       [
         ['Docs index / full text', `\`${SITE}/llms.txt\`, \`${SITE}/llms-full.txt\``],
+        ['One docs page as Markdown', `\`${SITE}/docs.md\`, \`${SITE}/docs/<page>.md\``],
         ['Indexer GraphQL', `\`${INDEXER}/graphql\``],
         ['Market and treasury snapshots', `\`${INDEXER}/market/:address\`, \`${INDEXER}/treasury/:address\``],
         ['Live hints', `\`${INDEXER}/stream\` (SSE)`],

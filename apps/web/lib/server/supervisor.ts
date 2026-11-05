@@ -303,91 +303,91 @@ function cleanText(v: unknown): string | null {
  * of at most IMAGE_NOTES_MAX plain characters). Unknown keys are dropped, always-on powers cannot be switched off.
  * Returns the error to show.
  */
-export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string } {
-  if (!input || typeof input !== 'object') return { ok: false, message: 'changes must be an object' };
+export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
+  if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
   const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
   const changes: AgentConfigChanges = {};
   if (o.imageModel !== undefined) {
-    if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, message: 'Pick an image model from the list.' };
+    if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, field: 'imageModel', message: 'imageModel must be an image model id, such as google/gemini-3-pro-image.' };
     changes.imageModel = o.imageModel;
   }
   if (o.imageStyle !== undefined) {
-    if (!o.imageStyle || typeof o.imageStyle !== 'object') return { ok: false, message: 'imageStyle must be an object' };
+    if (!o.imageStyle || typeof o.imageStyle !== 'object') return { ok: false, field: 'imageStyle', message: 'imageStyle must be an object' };
     const s = o.imageStyle as { reference?: unknown; notes?: unknown };
     const style: Partial<AgentImageStyle> = {};
     if (s.reference !== undefined) {
-      if (s.reference !== null && httpsUrl(s.reference) === null) return { ok: false, message: 'The reference image must be an https URL, or empty for none.' };
+      if (s.reference !== null && httpsUrl(s.reference) === null) return { ok: false, field: 'imageStyle.reference', message: 'The reference image must be an https URL, or empty for none.' };
       style.reference = s.reference as string | null;
     }
     if (s.notes !== undefined) {
       const notes = cleanText(s.notes)?.replace(/\s+/g, ' ');
-      if (notes == null || notes.length > IMAGE_NOTES_MAX) return { ok: false, message: `Style notes are plain text of at most ${IMAGE_NOTES_MAX} characters.` };
+      if (notes == null || notes.length > IMAGE_NOTES_MAX) return { ok: false, field: 'imageStyle.notes', message: `Style notes are plain text of at most ${IMAGE_NOTES_MAX} characters.` };
       style.notes = notes;
     }
     if (Object.keys(style).length) changes.imageStyle = style;
   }
   if (o.requireApproval !== undefined) {
-    if (typeof o.requireApproval !== 'boolean') return { ok: false, message: 'requireApproval must be true or false' };
+    if (typeof o.requireApproval !== 'boolean') return { ok: false, field: 'requireApproval', message: 'requireApproval must be true or false' };
     changes.requireApproval = o.requireApproval;
   }
   if (o.routing !== undefined) {
-    if (!o.routing || typeof o.routing !== 'object' || Array.isArray(o.routing)) return { ok: false, message: 'routing must be an object' };
+    if (!o.routing || typeof o.routing !== 'object' || Array.isArray(o.routing)) return { ok: false, field: 'routing', message: 'routing must be an object' };
     const m = (o.routing as { decideModel?: unknown }).decideModel;
-    if (m !== null && (typeof m !== 'string' || !MODEL_ID_RE.test(m))) return { ok: false, message: 'Pick a deciding model from the list, or switch economy mode off.' };
+    if (m !== null && (typeof m !== 'string' || !MODEL_ID_RE.test(m))) return { ok: false, field: 'routing.decideModel', message: 'routing.decideModel must be a model id from GET /api/models, or null to switch economy mode off.' };
     changes.routing = { decideModel: m };
   }
   if (o.instructions !== undefined) {
     const text = cleanText(o.instructions);
     if (text === null || text.length < INSTRUCTIONS_MIN || text.length > INSTRUCTIONS_MAX) {
-      return { ok: false, message: `Instructions must be plain text of ${INSTRUCTIONS_MIN} to ${INSTRUCTIONS_MAX} characters.` };
+      return { ok: false, field: 'instructions', message: `Instructions must be plain text of ${INSTRUCTIONS_MIN} to ${INSTRUCTIONS_MAX} characters.` };
     }
     changes.instructions = text;
   }
   if (o.model !== undefined) {
-    if (typeof o.model !== 'string' || !MODEL_ID_RE.test(o.model)) return { ok: false, message: 'Pick a model from the list.' };
+    if (typeof o.model !== 'string' || !MODEL_ID_RE.test(o.model)) return { ok: false, field: 'model', message: 'model must be a model id from GET /api/models.' };
     changes.model = o.model;
   }
   if (o.worker !== undefined) {
-    if (!o.worker || typeof o.worker !== 'object') return { ok: false, message: 'worker must be an object' };
+    if (!o.worker || typeof o.worker !== 'object') return { ok: false, field: 'worker', message: 'worker must be an object' };
     const w = o.worker as { capabilities?: unknown; postIntervalMs?: unknown; jobLines?: unknown };
     const worker: NonNullable<AgentConfigChanges['worker']> = {};
     if (w.capabilities !== undefined) {
-      if (!w.capabilities || typeof w.capabilities !== 'object') return { ok: false, message: 'capabilities must be an object' };
+      if (!w.capabilities || typeof w.capabilities !== 'object') return { ok: false, field: 'worker.capabilities', message: 'capabilities must be an object' };
       const caps = w.capabilities as Record<string, unknown>;
       const out: Partial<Record<CapabilityKey, boolean>> = {};
       for (const k of CAPABILITY_KEYS) {
         if (caps[k] === undefined) continue;
-        if (typeof caps[k] !== 'boolean') return { ok: false, message: `${k} must be true or false` };
-        if (ALWAYS_ON_CAPABILITIES.includes(k) && caps[k] === false) return { ok: false, message: `${k} is always on.` };
+        if (typeof caps[k] !== 'boolean') return { ok: false, field: `worker.capabilities.${k}`, message: `${k} must be true or false` };
+        if (ALWAYS_ON_CAPABILITIES.includes(k) && caps[k] === false) return { ok: false, field: `worker.capabilities.${k}`, message: `${k} is always on.` };
         out[k] = caps[k] as boolean;
       }
       worker.capabilities = out;
     }
     if (w.jobLines !== undefined) {
-      if (!Array.isArray(w.jobLines) || w.jobLines.some((l) => typeof l !== 'string')) return { ok: false, message: 'jobLines must be an array of strings' };
+      if (!Array.isArray(w.jobLines) || w.jobLines.some((l) => typeof l !== 'string')) return { ok: false, field: 'worker.jobLines', message: 'jobLines must be an array of strings' };
       const lines = (w.jobLines as string[]).map((l) => l.trim()).filter(Boolean);
-      if (lines.length > WORKER_BOUNDS.maxJobLines || lines.some((l) => l.length > WORKER_BOUNDS.maxJobLineChars)) return { ok: false, message: `At most ${WORKER_BOUNDS.maxJobLines} job lines of ${WORKER_BOUNDS.maxJobLineChars} characters.` };
+      if (lines.length > WORKER_BOUNDS.maxJobLines || lines.some((l) => l.length > WORKER_BOUNDS.maxJobLineChars)) return { ok: false, field: 'worker.jobLines', message: `At most ${WORKER_BOUNDS.maxJobLines} job lines of ${WORKER_BOUNDS.maxJobLineChars} characters.` };
       worker.jobLines = lines;
     }
     if (w.postIntervalMs !== undefined) {
       const n = Number(w.postIntervalMs);
       if (!Number.isInteger(n) || n < WORKER_BOUNDS.minPostIntervalMs || n > WORKER_BOUNDS.maxPostIntervalMs) {
-        return { ok: false, message: 'Cadence must be between 30 minutes and 7 days.' };
+        return { ok: false, field: 'worker.postIntervalMs', message: `Cadence must be between 30 minutes and 7 days: postIntervalMs from ${WORKER_BOUNDS.minPostIntervalMs} to ${WORKER_BOUNDS.maxPostIntervalMs}.` };
       }
       worker.postIntervalMs = n;
     }
     if (w.jobLines !== undefined) {
-      if (!Array.isArray(w.jobLines) || w.jobLines.length > WORKER_BOUNDS.maxJobLines) return { ok: false, message: `At most ${WORKER_BOUNDS.maxJobLines} job lines.` };
+      if (!Array.isArray(w.jobLines) || w.jobLines.length > WORKER_BOUNDS.maxJobLines) return { ok: false, field: 'worker.jobLines', message: `At most ${WORKER_BOUNDS.maxJobLines} job lines.` };
       const lines: string[] = [];
       for (const l of w.jobLines) {
         const line = cleanText(l)?.replace(/\s+/g, ' ');
-        if (line == null || line.length > WORKER_BOUNDS.maxJobLineChars) return { ok: false, message: `Each job line is plain text of at most ${WORKER_BOUNDS.maxJobLineChars} characters.` };
+        if (line == null || line.length > WORKER_BOUNDS.maxJobLineChars) return { ok: false, field: 'worker.jobLines', message: `Each job line is plain text of at most ${WORKER_BOUNDS.maxJobLineChars} characters.` };
         if (line) lines.push(line);
       }
       worker.jobLines = lines;
     }
     if (Object.keys(worker).length) changes.worker = worker;
   }
-  if (Object.keys(changes).length === 0) return { ok: false, message: 'Nothing to change.' };
+  if (Object.keys(changes).length === 0) return { ok: false, field: 'changes', message: 'Nothing to change.' };
   return { ok: true, changes };
 }

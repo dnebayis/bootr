@@ -4,6 +4,7 @@ import { base, baseSepolia } from 'viem/chains';
 import { entryPointAbi } from '@/lib/gas';
 import { ipfsGatewayUrl, UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
+import { checkLinks } from '@/lib/coin-link-rules';
 import { clankerTokenMetadata } from '@/lib/contract-metadata';
 import { contracts, USDC_DECIMALS } from '@/lib/contracts';
 import { chainAddresses } from '@/lib/chains';
@@ -15,7 +16,8 @@ import { FALLBACK_MODELS, filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/m
 import { readConfig } from '@/lib/server/admin-config';
 import { pinataEnv } from '@/lib/server/env';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
-import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeLinks, normalizeSource, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
+import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeSource, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
+import { NEW_NONCE, quoted, rateLimitMessage, readJsonObject } from '@/lib/server/refusals';
 import { verifySiwe } from '@/lib/server/siwe-verify';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
@@ -41,8 +43,8 @@ type LaunchInput = {
   launchThrough?: unknown;
 };
 
-function fail(status: number, error: string, message: string, headers: Record<string, string> = {}) {
-  return NextResponse.json({ error, message }, { status, headers: { ...NO_STORE, ...headers } });
+function fail(status: number, error: string, message: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
+  return NextResponse.json({ error, message, ...extra }, { status, headers: { ...NO_STORE, ...headers } });
 }
 
 const DECIMAL = /^\d+(\.\d+)?$/;
@@ -61,42 +63,44 @@ function resolveWorker(input: unknown): ResolvedWorker | null {
   return { id: custom.id, hash: custom.hash, draft: { kind: CUSTOM_WORKER_ID, preset } };
 }
 
+const IMAGE_SHAPE = 'image is required: {url} (a public https URL) or {dataUrl} (data:image/<type>;base64,<data>).';
+
 /** The image, from an https URL (fetched here, ≤ 2 MB) or a data: URL; checked by its bytes like the form upload. */
 async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/svg+xml' } | { error: string }> {
-  if (!image || typeof image !== 'object') return { error: 'image must be {url} or {dataUrl}' };
+  if (!image || typeof image !== 'object') return { error: IMAGE_SHAPE };
   const { url, dataUrl } = image as { url?: unknown; dataUrl?: unknown };
   let bytes: Uint8Array;
   if (typeof dataUrl === 'string') {
     const m = /^data:(image\/[a-z+]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-    if (!m) return { error: 'dataUrl must be data:image/<type>;base64,<data>' };
+    if (!m) return { error: 'image.dataUrl must be data:image/<type>;base64,<data>, with a lowercase type and no line breaks.' };
     bytes = Uint8Array.from(Buffer.from(m[2], 'base64'));
   } else if (typeof url === 'string') {
     let u: URL;
     try {
       u = new URL(url);
     } catch {
-      return { error: 'image.url is not a URL' };
+      return { error: 'image.url is not a URL: send a public https URL, or use image.dataUrl.' };
     }
-    if (u.protocol !== 'https:') return { error: 'image.url must be https' };
+    if (u.protocol !== 'https:') return { error: 'image.url must use https: host the image there, or use image.dataUrl.' };
     let res: Response;
     try {
       res = await fetch(u, { signal: AbortSignal.timeout(8000), redirect: 'follow', headers: { accept: 'image/*' } });
     } catch {
-      return { error: 'image.url could not be fetched' };
+      return { error: 'image.url could not be fetched within 8 seconds: check that it is public, or use image.dataUrl.' };
     }
-    if (!res.ok) return { error: `image.url responded ${res.status}` };
+    if (!res.ok) return { error: `image.url responded ${res.status}: check that it is public, or use image.dataUrl.` };
     const len = Number(res.headers.get('content-length') ?? 0);
-    if (len > UPLOAD_MAX_BYTES) return { error: 'image must be at most 2 MB' };
+    if (len > UPLOAD_MAX_BYTES) return { error: `image is ${len} bytes: it must be at most 2 MB.` };
     bytes = new Uint8Array(await res.arrayBuffer());
   } else {
-    return { error: 'image must be {url} or {dataUrl}' };
+    return { error: IMAGE_SHAPE };
   }
-  if (bytes.length === 0 || bytes.length > UPLOAD_MAX_BYTES) return { error: 'image must be 1 byte to 2 MB' };
+  if (bytes.length === 0 || bytes.length > UPLOAD_MAX_BYTES) return { error: `image is ${bytes.length} bytes: it must be 1 byte to 2 MB.` };
   const type = sniffImage(bytes);
-  if (!type) return { error: 'image must be a PNG, JPG, WebP or SVG' };
+  if (!type) return { error: 'image is not a PNG, JPG, WebP or SVG (checked by its bytes, not its name): send one of those.' };
   if (type === 'image/svg+xml') {
     const problem = svgProblem(bytes);
-    if (problem) return { error: `SVG refused: ${problem}` };
+    if (problem) return { error: `SVG refused: ${problem}. Remove that from the file, or send a PNG.` };
   }
   return { bytes, type };
 }
@@ -114,73 +118,72 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
  */
 export async function POST(req: NextRequest) {
   const retryAfter = limiter.hit(clientIp(req.headers));
-  if (retryAfter) return fail(429, 'rate_limited', 'Too many requests. Try again in a minute.', { 'Retry-After': String(retryAfter) });
-  if (Number(req.headers.get('content-length') ?? 0) > 3 * 1024 * 1024) return fail(413, 'payload_too_large', 'Body must be at most 3 MB.');
-  let body: { message?: unknown; signature?: unknown; launch?: LaunchInput };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return fail(400, 'invalid_json', 'Body is not valid JSON.');
-  }
-  const v = await verifySiwe(body, { statement: STATEMENT });
-  if (!v.ok) return fail(v.status, 'siwe_rejected', v.error);
+  if (retryAfter) return fail(429, 'rate_limited', rateLimitMessage(5, retryAfter), {}, { 'Retry-After': String(retryAfter) });
+  if (Number(req.headers.get('content-length') ?? 0) > 3 * 1024 * 1024) return fail(413, 'payload_too_large', 'Body must be at most 3 MB: send a smaller image, or host it and pass image.url.');
+  const body = await readJsonObject<{ message?: unknown; signature?: unknown; launch?: LaunchInput }>(req);
+  if (!body) return fail(400, 'invalid_json', 'Body must be a JSON object: {message, signature, launch}.');
+  const v = await verifySiwe(body, { statement: STATEMENT, statementText: 'Prepare a Bootr launch.' });
+  if (!v.ok) return fail(v.status, 'siwe_rejected', v.error, { reason: v.reason });
   const creator = v.address;
   const chainId = v.msg.chainId;
-  if (chainId !== env.chainId) return fail(400, 'wrong_chain', `This deployment launches on chain ${env.chainId}.`);
+  // The signature has spent its nonce from here on, so every refusal also says to sign again.
+  const refuse = (status: number, error: string, message: string, extra: Record<string, unknown> = {}) => fail(status, error, `${message} ${NEW_NONCE}`, extra);
+  const invalid = (field: string, message: string) => refuse(400, 'invalid_request', message, { field });
+  if (chainId !== env.chainId) return refuse(400, 'wrong_chain', `The message is signed for chain ${chainId}, but this deployment launches on chain ${env.chainId}: set chainId to ${env.chainId}.`);
 
   const platform = await readConfig().catch(() => null);
-  if (platform?.launchesPaused) return fail(503, 'launches_paused', 'Launches are paused by the platform.');
+  if (platform?.launchesPaused) return refuse(503, 'launches_paused', 'Launches are paused by the platform: GET /api/platform shows launchesPaused, retry when it is false.');
 
   const l = (body.launch ?? {}) as LaunchInput;
   const name = typeof l.name === 'string' ? l.name.trim() : '';
   const symbol = typeof l.symbol === 'string' ? l.symbol.trim().toUpperCase() : '';
-  if (!name || name.length > 48) return fail(400, 'invalid_request', 'name is required (1 to 48 characters).');
-  if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return fail(400, 'invalid_request', 'symbol must be 2 to 10 letters or digits.');
+  if (!name || name.length > 48) return invalid('name', `name is required (1 to 48 characters), got ${name.length} characters.`);
+  if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return invalid('symbol', `symbol must be 2 to 10 letters or digits, got ${quoted(l.symbol)}.`);
   const identity = normalizeIdentity(l.identity);
-  if (identity === null) return fail(400, 'invalid_request', `identity must be plain text of ${MIN_IDENTITY_CHARS} to ${MAX_IDENTITY_CHARS} characters.`);
+  if (identity === null) return invalid('identity', `identity must be plain text of ${MIN_IDENTITY_CHARS} to ${MAX_IDENTITY_CHARS} characters.`);
   const allowed = filterAllowedModels(FALLBACK_MODELS, platform?.allowedModels ?? []);
   const model = typeof l.model === 'string' && l.model ? l.model : RECOMMENDED_MODEL;
   if (!allowed.some((m) => m.id === model)) {
-    return fail(400, 'invalid_request', `model must be one of: ${allowed.map((m) => m.id).join(', ')}`);
+    return invalid('model', `model must be one of: ${allowed.map((m) => m.id).join(', ')}; got ${quoted(l.model)}.`);
   }
   // The worker: a template id, or a custom preset {capabilities, postIntervalMs, jobLines} hashed like a template and
   // published in the agent card (`bootr.worker`) so the supervisor can verify the hash the launch writes on-chain.
   const worker = resolveWorker(l.worker);
   if (!worker) {
-    return fail(
-      400,
-      'invalid_request',
-      `worker must be one of ${WORKER_TEMPLATES.map((w) => w.id).join(', ')}, or {capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs: ${WORKER_BOUNDS.minPostIntervalMs}..${WORKER_BOUNDS.maxPostIntervalMs}, jobLines: up to ${WORKER_BOUNDS.maxJobLines} lines of ${WORKER_BOUNDS.maxJobLineChars} characters}`,
+    return invalid(
+      'worker',
+      `worker must be one of ${WORKER_TEMPLATES.map((w) => w.id).join(', ')}, or {capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs: ${WORKER_BOUNDS.minPostIntervalMs}..${WORKER_BOUNDS.maxPostIntervalMs}, jobLines: up to ${WORKER_BOUNDS.maxJobLines} lines of ${WORKER_BOUNDS.maxJobLineChars} characters}; got ${quoted(l.worker)}.`,
     );
   }
   const buyback = l.buyback === true;
   const launchThrough = normalizeSource(l.launchThrough);
-  if (launchThrough === null) return fail(400, 'invalid_request', 'launchThrough must be bootr (default) or clanker.');
+  if (launchThrough === null) return invalid('launchThrough', `launchThrough must be bootr (default) or clanker, got ${quoted(l.launchThrough)}.`);
   const fuel = typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '20';
-  if (!DECIMAL.test(fuel)) return fail(400, 'invalid_request', 'fuelUsdc must be a decimal USDC amount.');
+  if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
-  if (!DECIMAL.test(devBuy)) return fail(400, 'invalid_request', 'devBuyEth must be a decimal ETH amount.');
+  if (!DECIMAL.test(devBuy)) return invalid('devBuyEth', `devBuyEth must be a decimal ETH amount such as "0.01", got ${quoted(l.devBuyEth)}.`);
   const gas = l.gasEth === undefined ? GAS_DEFAULT_ETH : String(l.gasEth);
-  if (!DECIMAL.test(gas)) return fail(400, 'invalid_request', 'gasEth must be a decimal ETH amount (0 allowed).');
+  if (!DECIMAL.test(gas)) return invalid('gasEth', `gasEth must be a decimal ETH amount (0 allowed), got ${quoted(l.gasEth)}.`);
   const gasWei = parseEther(gas);
-  if (gasWei !== 0n && gasWei < parseEther(GAS_MIN_ETH)) return fail(400, 'invalid_request', `gasEth must be 0 or at least ${GAS_MIN_ETH}.`);
+  if (gasWei !== 0n && gasWei < parseEther(GAS_MIN_ETH)) return invalid('gasEth', `gasEth must be 0 or at least ${GAS_MIN_ETH}, got ${quoted(gas)}.`);
   const xHandle = typeof l.xHandle === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(l.xHandle.replace(/^@/, '')) ? l.xHandle.replace(/^@/, '') : null;
   // Optional coin links (website any https URL; x the project's account as an x.com URL or a handle; telegram on
   // t.me; discord on discord.gg / discord.com/invite).
-  const links = normalizeLinks(l.links);
-  if (!links) return fail(400, 'invalid_request', 'links must be https URLs: website, telegram (t.me), discord (discord.gg); x an x.com link or a handle.');
+  const checkedLinks = checkLinks(l.links);
+  if (!checkedLinks.ok) return invalid(`links.${checkedLinks.field}`, `${checkedLinks.message} links must be https URLs: website, telegram (t.me), discord (discord.gg); x an x.com link or a handle.`);
+  const links = checkedLinks.links;
 
   const pinata = pinataEnv();
-  if (!pinata.jwt && !pinata.mock) return fail(503, 'upload_unavailable', 'Image pinning is not configured on this deployment.');
+  if (!pinata.jwt && !pinata.mock) return refuse(503, 'upload_unavailable', 'Image pinning is not configured on this deployment, so it cannot take a launch right now. Nothing was stored.');
   const img = await loadImage(l.image);
-  if ('error' in img) return fail(400, 'invalid_image', img.error);
+  if ('error' in img) return refuse(400, 'invalid_image', img.error, { field: 'image' });
 
   // Both launchers share the ABI; the Clanker one is optional per deployment (mock mode answers for both).
   const launcher = (launchThrough === 'clanker' ? contracts.clankerLauncher : contracts.launcher) ?? (env.useMock ? zeroAddress : null);
   if (!launcher) {
     return launchThrough === 'clanker'
-      ? fail(503, 'clanker_unavailable', 'Launching through Clanker is not available on this deployment.')
-      : fail(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment.');
+      ? refuse(503, 'clanker_unavailable', 'Launching through Clanker is not available on this deployment: leave launchThrough out, or set it to bootr.', { field: 'launchThrough' })
+      : refuse(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment, so it cannot take a launch right now.');
   }
 
   const draftId = crypto.randomUUID();
@@ -188,15 +191,15 @@ export async function POST(req: NextRequest) {
   try {
     ({ cid } = await pinFile(img.bytes, img.type, `bootr/${draftId}/${(await sha256Hex(img.bytes)).slice(0, 16)}`, { draftId, creator }));
   } catch (err) {
-    return fail(502, 'pin_failed', err instanceof PinError ? err.message : 'Image pinning failed.');
+    return refuse(502, 'pin_failed', `${err instanceof PinError ? err.message : 'Image pinning failed'}. Nothing was launched: try again in a moment.`);
   }
   const imageUrl = ipfsGatewayUrl(cid);
   const draftCoin = { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links };
   try {
     const saved = await saveDraftIdentity(draftId, identity, null, { coin: draftCoin, worker: worker.draft, source: launchThrough });
-    if (!saved.ok) return fail(500, 'store_failed', 'Could not store the launch draft.');
+    if (!saved.ok) return refuse(500, 'store_failed', 'Could not store the launch draft. Nothing was launched: try again in a moment.');
   } catch {
-    return fail(503, 'store_unavailable', 'The launch draft store is not writable.');
+    return refuse(503, 'store_unavailable', 'The launch draft store is not writable. Nothing was launched: try again in a moment.');
   }
 
   // Launcher state: fee and minimum fuel from the chain (fallbacks in mock mode or when the RPC is down).
@@ -217,11 +220,11 @@ export async function POST(req: NextRequest) {
       defaults = defaultsFromTuple(tuple as LaunchDefaultsTuple);
       predictedKernel = kernel as Address;
     } catch {
-      return fail(502, 'chain_unavailable', 'Could not read the launcher. Try again in a moment.');
+      return refuse(502, 'chain_unavailable', 'Could not read the launcher. Nothing was launched: try again in a moment.');
     }
   }
   const fuelUnits = parseUnits(fuel, USDC_DECIMALS);
-  if (fuelUnits < defaults.minFuelUsdc) return fail(400, 'invalid_request', `fuelUsdc must be at least ${Number(defaults.minFuelUsdc) / 1e6} USDC.`);
+  if (fuelUnits < defaults.minFuelUsdc) return invalid('fuelUsdc', `fuelUsdc must be at least ${Number(defaults.minFuelUsdc) / 1e6} USDC, got ${quoted(fuel)}.`);
   const devBuyWei = parseEther(devBuy);
 
   const params = {

@@ -31,15 +31,20 @@ export function docPath(slug: DocSlug): string {
   return slug ? `/docs/${slug}` : '/docs';
 }
 
+/** The page as Markdown: `/docs/fees.md`, `/docs.md` for the overview (`app/docs/<slug>.md/route.ts`). */
+export function docMarkdownPath(slug: DocSlug): string {
+  return `${docPath(slug)}.md`;
+}
+
 export function docPage(slug: string): DocPageMeta | undefined {
   return DOC_PAGES.find((p) => p.slug === slug);
 }
 
-/** `<link rel="alternate" type="text/plain" href="/llms.txt">` on every docs page. */
+/** `<link rel="alternate" type="text/plain" href="/llms.txt">` on every docs page; each page adds its own Markdown. */
 export const DOCS_ALTERNATES = { types: { 'text/plain': '/llms.txt' } };
 
 export function docMetadata(slug: DocSlug) {
   const page = docPage(slug)!;
   // Page metadata replaces the layout's `alternates` as a whole, so the text/plain link is repeated here.
-  return { title: page.title, description: page.description, alternates: { canonical: docPath(slug), ...DOCS_ALTERNATES } };
+  return { title: page.title, description: page.description, alternates: { canonical: docPath(slug), types: { ...DOCS_ALTERNATES.types, 'text/markdown': docMarkdownPath(slug) } } };
 }
