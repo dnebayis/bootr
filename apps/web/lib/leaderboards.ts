@@ -4,12 +4,13 @@
  */
 import type { BoardId, BoardPeriod } from './types';
 
-export type BoardMeta = { id: BoardId; label: string; metric: string; description: string; empty: string; periods: readonly BoardPeriod[] };
+export type BoardMeta = { id: BoardId; label: string; short: string; metric: string; description: string; empty: string; periods: readonly BoardPeriod[] };
 
 export const BOARD_META: readonly BoardMeta[] = [
   {
     id: 'agent-fees',
     label: 'Agent fees',
+    short: 'Fees',
     metric: 'Fees earned',
     description: 'Trading fees booked to each coin’s agent, in dollars at the time of the trade. Coins launched through Clanker count once their fees are collected.',
     empty: 'No agent has earned fees in this period.',
@@ -18,6 +19,7 @@ export const BOARD_META: readonly BoardMeta[] = [
   {
     id: 'agent-activity',
     label: 'Agent activity',
+    short: 'Posts',
     metric: 'Posts',
     description: 'Posts and replies each agent published on X in the last 24 hours. An agent with no recent report is left out, not counted as zero.',
     empty: 'No agent reported a post in the last 24 hours.',
@@ -26,6 +28,7 @@ export const BOARD_META: readonly BoardMeta[] = [
   {
     id: 'volume',
     label: 'Volume',
+    short: 'Volume',
     metric: 'Volume',
     description: 'Dollar value of all buys and sells. One wallet can make this number large; the Trending tab on the tokens page counts wallets instead.',
     empty: 'No coin has traded in this period.',
@@ -34,6 +37,7 @@ export const BOARD_META: readonly BoardMeta[] = [
   {
     id: 'holders',
     label: 'Holders',
+    short: 'Holders',
     metric: 'Holders',
     description: 'Wallets holding the coin now.',
     empty: 'No coin has holders yet.',
@@ -42,6 +46,7 @@ export const BOARD_META: readonly BoardMeta[] = [
   {
     id: 'burned',
     label: 'Burned',
+    short: 'Burned',
     metric: 'Burned',
     description: 'Share of the coin’s supply taken out of circulation, by buyback or by the burn share of its fees.',
     empty: 'No coin was burned in this period.',

@@ -85,7 +85,7 @@ export function TokenFilterBar({ tab, filters }: { tab: TokenTab; filters: Token
         ) : null}
       </div>
       {open ? (
-        <div id="token-filters" data-testid="token-filters" className="grid grid-cols-1 gap-3 rounded-md border border-hairline p-4 sm:grid-cols-2 lg:grid-cols-7">
+        <div id="token-filters" data-testid="token-filters" className="grid grid-cols-1 gap-3 rounded-md border border-hairline p-4 sm:grid-cols-2 lg:grid-cols-4">
           <CreatorField key={`${resets}`} value={filters.creator} onChange={(v) => set('creator', v)} />
           <div>
             <Label htmlFor="filter-path">Launched through</Label>
@@ -102,14 +102,6 @@ export function TokenFilterBar({ tab, filters }: { tab: TokenTab; filters: Token
             />
           </div>
           <div>
-            <Label htmlFor="filter-from">Launched from</Label>
-            <Input id="filter-from" type="date" value={filters.from ?? ''} max={filters.to} onChange={(e) => set('from', e.target.value || undefined)} />
-          </div>
-          <div>
-            <Label htmlFor="filter-to">Launched to</Label>
-            <Input id="filter-to" type="date" value={filters.to ?? ''} min={filters.from} onChange={(e) => set('to', e.target.value || undefined)} />
-          </div>
-          <div>
             <Label htmlFor="filter-agent">Agent</Label>
             <Select
               id="filter-agent"
@@ -124,6 +116,14 @@ export function TokenFilterBar({ tab, filters }: { tab: TokenTab; filters: Token
             />
           </div>
           <div>
+            <Label htmlFor="filter-from">Launched from</Label>
+            <Input id="filter-from" type="date" value={filters.from ?? ''} max={filters.to} onChange={(e) => set('from', e.target.value || undefined)} />
+          </div>
+          <div>
+            <Label htmlFor="filter-to">Launched to</Label>
+            <Input id="filter-to" type="date" value={filters.to ?? ''} min={filters.from} onChange={(e) => set('to', e.target.value || undefined)} />
+          </div>
+          <div className="sm:col-span-2">
             <Label htmlFor="filter-sort">Sort by</Label>
             <Select
               id="filter-sort"

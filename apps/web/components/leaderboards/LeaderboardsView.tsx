@@ -144,7 +144,7 @@ export function LeaderboardsView() {
   const meta = BOARD_META.find((b) => b.id === id)!;
   return (
     <div className="flex flex-col gap-4">
-      <nav aria-label="Leaderboards" className="-mb-px flex gap-5 overflow-x-auto border-b border-hairline">
+      <nav aria-label="Leaderboards" className="-mb-px flex gap-5 border-b border-hairline">
         {BOARD_META.map((b) => (
           <Link
             key={b.id}
@@ -154,7 +154,8 @@ export function LeaderboardsView() {
             aria-current={b.id === id ? 'page' : undefined}
             className={cn('whitespace-nowrap border-b py-2.5 text-sm transition-colors duration-150', b.id === id ? 'border-ink text-ink' : 'border-transparent text-mute hover:text-ink')}
           >
-            {b.label}
+            <span className="max-sm:hidden">{b.label}</span>
+            <span className="sm:hidden">{b.short}</span>
           </Link>
         ))}
       </nav>

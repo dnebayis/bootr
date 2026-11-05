@@ -6,6 +6,9 @@ import { coinImageStatement } from '@/lib/coin-image';
 import { GET as images } from '@/app/api/coin-images/route';
 import { DELETE, IMAGE_STATEMENT, PUT } from './route';
 
+// `connection()` needs a request scope, which a direct handler call does not have.
+vi.mock('next/server', async (original) => ({ ...(await original<typeof import('next/server')>()), connection: async () => {} }));
+
 const ORIGIN = 'http://localhost:3000';
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 type Ctx = RouteContext<'/api/coin/[id]/image'>;
