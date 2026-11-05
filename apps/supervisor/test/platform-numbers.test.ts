@@ -183,6 +183,7 @@ describe('the numbers and the section', () => {
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/never as a cashtag/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/never the phrase 'fees earned'/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/call finish and say so/);
+    expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/\$BOOTR's burn comes from \$BOOTR's own trades: never say every trade on Bootr burns anything/);
   });
 });
 

@@ -33,6 +33,7 @@ import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, ty
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
+import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
@@ -41,6 +42,7 @@ import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
+import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
 import { watchlistSection } from './watchlist.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
@@ -76,6 +78,12 @@ export interface AgentState {
   lastDigestWeek?: string | null;
   /** UTC day (`YYYY-MM-DD`) of the last daily numbers post the platform agent closed (platform-numbers.ts). */
   lastNumbersDay?: string | null;
+  /** UTC day (`YYYY-MM-DD`) of the last platform update that went out (platform-updates.ts). */
+  lastUpdateDay?: string | null;
+  /** Ids of the platform updates already announced (platform-updates.ts). */
+  announcedUpdates?: string[];
+  /** The platform update the latest turn was shown: the only one a publish can mark announced (platform-updates.ts). */
+  offeredUpdate?: string | null;
 }
 
 export function initialState(): AgentState {
@@ -184,7 +192,7 @@ export function scheduleFor(config: AgentConfig, state: AgentState, now: number)
   return jitteredSchedule(config, scheduleAnchor(state), now);
 }
 
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory) {
+async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null) {
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory);
   const eligible = views.filter((v) => v.eligible);
@@ -213,6 +221,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(review ? { review } : {}),
       // What the agent can still spend on thinking (one database read, no RPC; omitted when it cannot be read): fuel.ts.
       ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
+      // How its own coin's trades pay their fee, in percentages, from the market snapshot above (no extra read): coin-fees.ts.
+      ...coinFeesSection(config, inputs.market),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
@@ -225,6 +235,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...weeklyDigestSection(config, inputs.digest ?? null, tools),
       // The platform's numbers and the daily numbers post (platform agent only): platform-numbers.ts.
       ...platformNumbersSection(config, config.platform ? await cachedPlatformNumbers(ctx, config) : null, inputs.numbers ?? null),
+      // One change that is live on Bootr, at most one a day (platform agent only): platform-updates.ts.
+      ...platformUpdateSection(config, update),
       // The people the host follows and their latest posts (platform agent only): watchlist.ts.
       ...(await watchlistSection(ctx, agent, config)),
     },
@@ -288,7 +300,10 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   const tools = toolsForPhase(routing, availableTools(ctx, config));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
   inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
-  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory);
+  // A publish that settled while no turn was open (tick.ts `reconcilePending`) counts before this turn is shown anything.
+  settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, ctx.now());
+  const update = offerPlatformUpdate(config, state, ctx.now(), !!inputs.schedule?.due && !inputs.digest && !inputs.numbers);
+  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update);
   const turn: Turn = {
     startedAt: ctx.now(),
     steps: 0,
@@ -339,6 +354,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const settle = async (): Promise<ActionResult | null> => {
     const pending = broker.pending;
     if (pending) {
+      settlePlatformUpdate(config, state, pending, ctx.now());
       await ctx.db
         .update(actions)
         .set({ status: pending.status, result: (pending.result as unknown as Record<string, unknown>) ?? null, receipt: (pending.result?.receipt as Record<string, unknown> | undefined) ?? null, updatedAt: new Date(ctx.now()) })

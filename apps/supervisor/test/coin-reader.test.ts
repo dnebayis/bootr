@@ -87,6 +87,30 @@ describe('parseCoinQuery', () => {
   });
 });
 
+describe('the fee split in read_coin', () => {
+  const clanker = { source: 'clanker', lpFeeBps: 10_000, agentBps: 500, creatorBps: 5_000, burnBps: 1_500, platformBps: 3_000, protocolBps: 2_000 };
+  const rwagmi = { source: 'bootr', lpFeeBps: 10_000, agentBps: 450, creatorBps: 5_850, burnBps: 0, platformBps: 2_700, protocolBps: 1_000 };
+
+  it('asks the indexer for the fields', () => {
+    for (const query of [READ_COIN_BY_ADDRESS, READ_COIN_BY_SYMBOL]) for (const field of Object.keys(clanker)) expect(query).toContain(field);
+  });
+
+  it("states this coin's own split on either launch path, says when there is no burn, and states nothing without the data", () => {
+    const line = (row: Record<string, unknown>) => coinSummaryLines(owl(row), [], 'https://bootr.fun').lines.find((l) => l.startsWith('Fee split'));
+    expect(line(clanker)).toBe("Fee split (locked at launch, this coin's trades only): a trade pays 1.2%, of which Clanker takes 0.2%. The rest goes to agent 5%, creator 50%, burn 15%, platform 30%.");
+    expect(line(rwagmi)).toBe("Fee split (locked at launch, this coin's trades only): a trade pays 1%, of which RWAGMI takes 0.1%. The rest goes to agent 5%, creator 65%, platform 30%. No burn on this coin.");
+    expect(line({})).toBeUndefined();
+  });
+
+  it('survives the cap', () => {
+    const links = Array.from({ length: 4 }, (_, i) => `https://example.com/${'x'.repeat(150)}${i}`);
+    const many = owl({ ...clanker, name: 'N'.repeat(200), milestones: { items: Array.from({ length: 8 }, (_, i) => ({ kind: 'holders', value: 25 * (i + 1), timestamp: sec('2026-11-03T18:00:00Z') - i })) } });
+    const text = fitSummary(coinSummaryLines(many, links, 'https://bootr.fun/').lines, READ_COIN_MAX_CHARS);
+    expect(text.length).toBeLessThanOrEqual(READ_COIN_MAX_CHARS);
+    expect(text).toContain('burn 15%, platform 30%.');
+  });
+});
+
 describe('readCoin', () => {
   it('finds a coin by symbol, renders a dated summary without prices and reads the card links under the read_url rules', async () => {
     const s = stub(bySymbol([owl()]));

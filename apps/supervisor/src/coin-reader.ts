@@ -2,7 +2,8 @@
  * `read_coin` executor: the facts about one Bootr coin, by symbol or by coin / treasury address, read from
  * the indexer's GraphQL (indexer-client.ts) and the coin's agent card (agent-card.ts), rendered as a short
  * dated summary of at most READ_COIN_MAX_CHARS characters. Launch date, agent handle and status, what the
- * agent did lately (last post, posts in 24 h, fee claims), milestones, holders, links and the coin page.
+ * agent did lately (last post, posts in 24 h, fee claims), its locked fee split (coin-fees.ts), milestones, holders,
+ * links and the coin page.
  * Never a price or a market cap.
  *
  * Everything that comes back is third-party content (coin names, handles, card links): control characters
@@ -11,6 +12,7 @@
  */
 import type { ActionOutcome } from '@bootr/agent-core';
 import { fetchAgentCard } from './agent-card.js';
+import { coinFeeSplit, feeSplitLine } from './coin-fees.js';
 import type { Config } from './config.js';
 import type { SupervisorContext } from './context.js';
 import { clean, handleOf, iso, money, plural, shortAddress, symbolOf } from './platform-feed.js';
@@ -22,7 +24,7 @@ const MAX_CANDIDATES = 5;
 const MAX_LINKS = 4;
 const CARD_TIMEOUT_MS = 5_000;
 
-const SELECTION = `id name symbol kernel creator launchedAt xHandle agentUri holders lastTradeAt agentStatus
+const SELECTION = `id name symbol kernel creator launchedAt xHandle agentUri holders lastTradeAt agentStatus source lpFeeBps agentBps creatorBps burnBps platformBps protocolBps
       agent { status statusChangedAt lastPostAt postsCount24h feesClaimedUsd }
       feeClaims(where: { recipientKind: "agent" }, orderBy: "timestamp", orderDirection: "desc", limit: 3) { items { amountUsd timestamp } }
       milestones(orderBy: "timestamp", orderDirection: "desc", limit: 8) { items { kind value timestamp } }`;
@@ -105,6 +107,7 @@ export function coinSummaryLines(row: Row, links: readonly string[], siteUrl: st
     .filter((m) => m.at !== null);
   const totalClaimed = num(agent.feesClaimedUsd) ?? 0;
   const latestClaim = claims[0] ? { usd: num(claims[0].amountUsd) ?? 0, at: num(claims[0].timestamp) } : null;
+  const split = coinFeeSplit(row);
 
   const lines = [
     `${str(row.name, 48) || 'Unnamed'} (${symbolOf(row.symbol)}) launched on Bootr ${whenOr(num(row.launchedAt), 'at an unknown date')} by ${shortAddress(row.creator)}. Coin ${coin}, treasury ${shortAddress(row.kernel)}.`,
@@ -115,6 +118,7 @@ export function coinSummaryLines(row: Row, links: readonly string[], siteUrl: st
         : totalClaimed > 0
           ? `${money(totalClaimed)} of fees claimed in total.`
           : 'No agent fee claims yet.'),
+    ...(split ? [feeSplitLine(split)] : []),
     milestones.length ? `Milestones (newest first): ${milestones.map((m) => `${MILESTONE_WORDS(m.kind, m.value)} ${iso(m.at!)}`).join('; ')}.` : 'Milestones: none yet.',
     `Holders: ${Math.max(0, Math.floor(num(row.holders) ?? 0))}. Last trade: ${whenOr(num(row.lastTradeAt), 'none yet')}.`,
     ...(links.length ? [`Links: ${links.join(', ')}`] : []),
