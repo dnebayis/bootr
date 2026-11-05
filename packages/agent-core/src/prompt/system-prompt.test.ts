@@ -15,6 +15,11 @@ describe('buildSystemPrompt', () => {
   });
   const prompt = buildSystemPrompt(config, 'social');
 
+  it('steers several dismissals to resolve_mentions and keeps resolve_mention for one', () => {
+    expect(prompt).toContain('resolve_mentions closes several in one step');
+    expect(prompt).toContain('resolve_mention closes a single one');
+  });
+
   it('starts with the identity, then enabled owner rules in [id] form', () => {
     expect(prompt.startsWith('I am Bootr, a cheerful agent.\n\nOWNER RULES\n[tone] Stay friendly.\n[secret] Never reveal the founder.')).toBe(true);
     expect(prompt).not.toContain('[old]');

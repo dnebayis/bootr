@@ -125,6 +125,43 @@ function errorText(err: unknown): string {
   return String(err);
 }
 
+function isTransportError(err: unknown): boolean {
+  return err instanceof Error && /abort|timeout|fetch failed|ECONN|network/i.test(errorText(err));
+}
+
+/** Sender calls in flight at once while closing a list of mentions. */
+const RESOLVE_CONCURRENCY = 5;
+
+export interface MentionResolutions {
+  resolved: string[];
+  failed: { postId: string; error: string; transport: boolean }[];
+}
+
+/**
+ * Closes several mentions, one sender call each (the sender's resolve is safe to repeat), for `resolve_mentions` and
+ * the triage pass (triage.ts). Never throws: an id that failed comes back in `failed` with its error.
+ */
+export async function resolveMentions(ctx: SupervisorContext, agentId: string, items: readonly { postId: string; reason: string }[], outcome: 'skip' | 'opt_out' | 'defer', reviewAt?: string): Promise<MentionResolutions> {
+  const out: MentionResolutions = { resolved: [], failed: [] };
+  for (let i = 0; i < items.length; i += RESOLVE_CONCURRENCY) {
+    const round = await Promise.all(
+      items.slice(i, i + RESOLVE_CONCURRENCY).map(async ({ postId, reason }) => {
+        try {
+          await ctx.sender.resolve({ agentId, postId, outcome, reason, ...(reviewAt ? { reviewAt } : {}) });
+          return { postId, failure: null };
+        } catch (err) {
+          return { postId, failure: { postId, error: err instanceof SenderError ? `sender:${err.code}` : errorText(err), transport: isTransportError(err) } };
+        }
+      }),
+    );
+    for (const { postId, failure } of round) {
+      if (failure) out.failed.push(failure);
+      else out.resolved.push(postId);
+    }
+  }
+  return out;
+}
+
 /** Execute a bound action. Throws nothing: every failure becomes an outcome. */
 export async function executeAction(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, pending: PendingAction, env: BrokerEnv): Promise<ActionOutcome> {
   const action = pending.action;
@@ -139,8 +176,7 @@ export async function executeAction(ctx: SupervisorContext, agent: AgentRow, con
     }
     if (isPolicyError(err)) return failed(err.message, err.retryAt);
     const text = errorText(err);
-    const transport = err instanceof Error && /abort|timeout|fetch failed|ECONN|network/i.test(text);
-    if (transport && TOOLS[action.tool].effect !== 'read') return { kind: 'unknown', error: text };
+    if (isTransportError(err) && TOOLS[action.tool].effect !== 'read') return { kind: 'unknown', error: text };
     return failed(text);
   }
 }
@@ -222,6 +258,17 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const res = await ctx.sender.resolve({ agentId, postId: action.input.postId, outcome: action.input.outcome, reason: action.input.reason, ...(action.input.reviewAt ? { reviewAt: action.input.reviewAt } : {}) });
       env.inbox.delete(action.input.postId);
       return { kind: 'completed', result: { postId: action.input.postId, outcome: action.input.outcome, ...res } };
+    }
+    case 'resolve_mentions': {
+      const { outcome, reason, reviewAt } = action.input;
+      const { resolved, failed: errors } = await resolveMentions(ctx, agentId, [...new Set(action.input.postIds)].map((postId) => ({ postId, reason })), outcome, reviewAt);
+      for (const postId of resolved) env.inbox.delete(postId);
+      if (resolved.length === 0) {
+        const error = `resolve_mentions_failed: ${errors.map((e) => `${e.postId}: ${e.error}`).join('; ')}`;
+        // Nothing is known to have reached the sender: the same list may be sent again (a repeat resolve is harmless).
+        return errors.every((e) => e.transport) ? { kind: 'unknown', error } : failed(error);
+      }
+      return { kind: 'completed', result: { outcome, resolved, failed: errors.map(({ postId, error }) => ({ postId, error })) } };
     }
     case 'remember': {
       const rec = await ctx.memories.remember(agentId, { text: action.input.text, ...(action.input.sources ? { sources: action.input.sources } : {}), ...(action.input.tags ? { tags: action.input.tags } : {}) });
