@@ -93,6 +93,75 @@ describe('validatePost for the platform account', () => {
     expect(platformPostRisk('The launch tx went through at 10:42 UTC.')).toBeNull();
     expect(platformPostRisk('Three agents launched this week; the 4x4 grid on the home page shows them.')).toBeNull();
   });
+  it('lets neutral market figures through', () => {
+    for (const text of [
+      '$BOOTR did $690k in volume today.',
+      'market cap is $190k',
+      "$BOOTR's market cap is about $190k as of 5 November.",
+      'The price of $BOOTR is $0.00019 today.',
+      '$BOOTR has 1,240 holders and about 12M tokens burned so far, as of today.',
+      '820 trades on $BOOTR in the last 24 hours.',
+      'Volume across Bootr was $700k today, and market cap of the busiest coin is $190k.',
+      'The price was lower than this morning. It is $0.00019 now.',
+      'The chart and the coin page are one click apart: https://bootr.fun/token/0xabc',
+      'Market cap today: $190k. Chart: https://dexscreener.com/base/0xb1c3',
+    ]) expect(platform(text), text).toBeNull();
+  });
+  it('does not refuse ordinary sentences that share a word with a call', () => {
+    for (const text of [
+      'Early days for agents on Base.',
+      "We're early in the docs rewrite, more this week.",
+      'Agents hold about 2% each here, and the agent gains a new tool today.',
+      "A coin's fee share returns to its treasury.",
+      'A non-profit asked how agents pay for their own thinking.',
+      'The target of this page is builders.',
+      'Prices of models are listed on one page.',
+      'This agent will post one sourced finding a day.',
+    ]) expect(platform(text), text).toBeNull();
+  });
+  it('refuses explicit calls: predictions, targets, nudges, profit talk, bargains', () => {
+    for (const text of [
+      'buy now',
+      'Buy $BOOTR today.',
+      'The price will go up.',
+      'price will double',
+      'The price is going to rise.',
+      'Market cap will hit $1m.',
+      '$BOOTR is going to hit $1m.',
+      '$BOOTR to $1m.',
+      'Next target $1m.',
+      'Price target: 1 dollar.',
+      'To the moon.',
+      "Don't miss this one.",
+      'Don’t miss this one.',
+      'You are early.',
+      "We're still early!",
+      '$BOOTR is still early.',
+      'Get in early.',
+      'Hold $BOOTR.',
+      'Keep holding.',
+      'hold your bags',
+      'NFA, but look at this volume.',
+      'Not financial advice.',
+      'Huge gains for holders.',
+      'Holders are in profit today.',
+      'Only a $190k market cap.',
+      'Still a low market cap.',
+      'At a discount after that fall.',
+    ]) expect(platform(text), text).toBe('platform_price_talk_forbidden');
+  });
+  it('reaches the same verdict through the publish path, and only for the platform account', () => {
+    const risk = { platform: true, publicAddresses: ['0xb1c3a6ac90e324c4072ad4b2a71c5d9382f9565c'] };
+    const token = '0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c';
+    expect(postValidation(`$BOOTR did $690k in volume today. Chart: https://dexscreener.com/base/${token}`, [], 'original', false, risk)).toEqual({ ok: true });
+    expect(postValidation(`Coin page: https://bootr.fun/token/${token}`, [], 'original', false, risk)).toEqual({ ok: true });
+    // a chart by pool id, or another address, is refused by the rules every agent has
+    expect(postValidation(`Chart: https://dexscreener.com/base/0x${'8'.repeat(64)}`, [], 'original', false, risk)).toEqual({ ok: false, code: 'social_secret_material_forbidden' });
+    expect(postValidation(`Chart: https://dexscreener.com/base/0x${'a'.repeat(40)}`, [], 'original', false, risk)).toEqual({ ok: false, code: 'social_private_address_forbidden' });
+    // a coin agent never went through this gate
+    expect(postValidation('The price will go up. Do not miss it, NFA.')).toEqual({ ok: true });
+    expect(postValidation('market cap is $190k')).toEqual({ ok: true });
+  });
   it('allows only $BOOTR as a cashtag', () => {
     expect(platform('$BOOTR launched from the treasury wallet.')).toBeNull();
     expect(platform('$QENG launched today.')).toBe('platform_foreign_cashtag_forbidden');

@@ -392,6 +392,19 @@ describe('creator identity from the agent card', () => {
       await world.close();
     }
   });
+
+  it('lets the platform persona promote $BOOTR and state real figures, without predictions; a coin agent gets none of it', () => {
+    const platform = defaultIdentity('Bootr', 'BOOTR', CARD_URI, true);
+    expect(platform).toMatch(/Promote it and Bootr proudly, in your own words/);
+    expect(platform).toMatch(/\$BOOTR's own figures \(24 h volume, market cap, current price, holders, burned, trades\) may appear in any post when they carry the story: only as read this turn, never from memory or an old post/);
+    expect(platform).toMatch(/What you never do: predict anything, in any direction; name a target; tell anyone to buy, hold or sell; say "don't miss" or "early"/);
+    expect(platform).toMatch(/play favourites among the coins/);
+    expect(platform).toMatch(/post about your own treasury operations/);
+    expect(platform).not.toMatch(/never its price|Never market cap|talk about price|never discuss prices/i);
+    const coin = defaultIdentity('Test Coin', 'TEST', CARD_URI, false, TEMPLATE_LINES);
+    expect(coin).not.toMatch(/Promote|market cap|current price/);
+    expect(coin).toMatch(/never promise outcomes/);
+  });
 });
 
 /** A creator-defined worker as the launch form builds it (`customWorker`) and the card publishes it (`bootr.worker`). */

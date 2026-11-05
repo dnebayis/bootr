@@ -47,10 +47,29 @@ const TREASURY_TALK = new RegExp(
   'i',
 );
 
-/** Price, buy and hype vocabulary, plus "10x"-style multipliers and "wen". */
+/**
+ * Buy, sell and hype vocabulary, explicit market calls, plus "10x"-style multipliers and "wen". Neutral figures pass:
+ * the platform agent may state a price, a market cap, a volume or link a chart ("$BOOTR did $690k in volume today",
+ * "market cap is $190k"), so those words alone are not here. What it says about them is: a prediction, a target, a
+ * nudge, profit talk, a figure framed as a bargain. The patterns stay narrow because a refusal loses the post.
+ */
 const PRICE_TALK = new RegExp(
   [
-    "\\b(?:buy|buying|bought|sell|selling|sold|pump(?:ed|ing|s)?|dump(?:ed|ing|s)?|moon(?:ed|ing|s)?|mooning|wen|ath|lfg|wagmi|ngmi|bullish|bearish|undervalued|overvalued|cheap|dip|dips|rug|rugged|degen|ape|aped|aping|send it|to the moon|price target|price (?:prediction|call|action)|market cap|mcap|chart)\\b",
+    "\\b(?:buy|buying|bought|sell|selling|sold|pump(?:ed|ing|s)?|dump(?:ed|ing|s)?|moon(?:ed|ing|s)?|mooning|wen|ath|lfg|wagmi|ngmi|bullish|bearish|undervalued|overvalued|cheap|dip|dips|rug|rugged|degen|ape|aped|aping|send it|to the moon|price target|price (?:prediction|call|action))\\b",
+    // A prediction: "price will", "$BOOTR to $1m", "will go up", "going to hit $1m", "target $1m".
+    "\\b(?:price|market cap|mcap|valuation)\\s+(?:will|won['’]?t|is going to|is gonna|gonna|can only)\\b",
+    "\\b(?:will|won['’]?t|could|might|may|should|going to|gonna|about to|set to|bound to)\\s+(?:go up|go down|rise|fall|soar|skyrocket|explode|rally|double|triple|recover|bounce)\\b",
+    "\\b(?:will|going to|gonna)\\s+(?:hit|reach|flip)\\s+\\$?\\d",
+    "\\$bootr\\s+to\\s+\\$?\\d",
+    "\\btargets?\\s+(?:of\\s+)?\\$\\d",
+    // A nudge: "don't miss", "last chance", "you're early", "hold $BOOTR", and the disclaimers that only follow a call.
+    "\\b(?:don['’]?t|do not|dont)\\s+miss\\b|\\blast chance\\b|\\b(?:not|before it['’]?s) too late\\b",
+    "\\b(?:you|we)(?:['’]?re| are)\\s+(?:still\\s+)?early(?=\\s*(?:[.!?,…]|$|to\\b|here\\b))|\\$bootr\\b[^.!?\\n]{0,30}\\bstill early\\b|\\bget(?:ting)?\\s+in\\s+early\\b|\\bearly\\s+(?:entry|buyers?)\\b",
+    "\\bhodl\\b|\\bdiamond hands\\b|\\bkeep holding\\b|\\bhold(?:ing)?\\s+(?:\\$[a-z]|your\\s+(?:bags?|coins?|tokens?)|bags?\\b)",
+    "\\bnfa\\b|\\bnot financial advice\\b|\\bdyor\\b",
+    // Profit talk, and a figure framed as a bargain. "Gains" and "returns" alone are ordinary words.
+    "(?<![a-z0-9-])profits?\\b|\\bprofitable\\b|\\broi\\b|\\bget rich\\b|\\bup only\\b|\\b(?:your|big|huge|massive|quick|easy|high|guaranteed)\\s+(?:gains|returns)\\b",
+    "\\b(?:only|just)\\s+(?:a\\s+)?\\$?\\d[\\d.,]*\\s*[kmb]?\\s+(?:market cap|mcap)\\b|\\b(?:low|tiny|small)\\s+(?:market cap|mcap)\\b|\\bat a discount\\b|\\bhidden gem\\b",
     '(?<![a-z0-9])\\d+(?:[.,]\\d+)?\\s?(?:x|×)(?![a-z0-9])',
   ].join('|'),
   'i',
@@ -103,7 +122,7 @@ export function creditedAttributions<T extends { username: string }>(text: strin
  * - x_post_requires_at_most_one_cashtag
  * - invalid_source_credit (bad handle, non-https url, credentials in url, duplicate)
  * - mentions_require_source_credit (more than 3 mentions, or mention/credit sets differ)
- * - any PlatformCode when `risk.platform` is true (treasury talk, price talk, foreign cashtags, shouting, emoji strings)
+ * - any PlatformCode when `risk.platform` is true (treasury talk, market calls, foreign cashtags, shouting, emoji strings)
  */
 export function validatePost(
   text: unknown,

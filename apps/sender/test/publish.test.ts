@@ -119,6 +119,20 @@ describe('idempotent publish', () => {
     expect(long.body.status).toBe('sent');
   });
 
+  it('platform account: a neutral market figure goes out, a market call is rejected; other agents are not checked', async () => {
+    acceptPosts(env.fake, env.clock);
+    const send = (actionId: string, text: string, platform?: boolean) =>
+      env.call('POST', '/internal/publish', { ...req, actionId, text, ...(platform ? { platform } : {}) });
+    expect((await send('act-figure-1', '$BOOTR did $690k in volume today.', true)).body.status).toBe('sent');
+    expect((await send('act-figure-2', 'market cap is $190k', true)).body.status).toBe('sent');
+    for (const [i, text] of ['buy now', 'price will go up', "don't miss this", 'NFA'].entries()) {
+      const res = await send(`act-call-${i}`, text, true);
+      expect(res.body.status, text).toBe('rejected');
+      expect(res.body.receipt.error).toBe('policy:platform_price_talk_forbidden');
+    }
+    expect((await send('act-coin-agent', 'price will go up')).body.status).toBe('sent');
+  });
+
   it('refuses to publish for an agent without a connected account (nothing recorded)', async () => {
     const res = await env.call('POST', '/internal/publish', { ...req, agentId: 'agent-unknown' });
     expect(res.status).toBe(409);

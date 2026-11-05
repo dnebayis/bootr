@@ -47,7 +47,7 @@ export const publishSchema = z.object({
     .max(128)
     .regex(/^[A-Za-z0-9:_.-]+$/),
   text: z.string().min(1).max(25_000),
-  /** The platform's own agent: the stricter platform post rules apply (no treasury talk, no price talk, ...). */
+  /** The platform's own agent: the stricter platform post rules apply (no treasury talk, no market calls, ...). */
   platform: z.boolean().optional(),
   replyTo: xId.nullish(),
   /** Informational only: the author is always resolved by the sender (inbox, else X). */

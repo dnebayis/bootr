@@ -105,8 +105,9 @@ job description of the host, in plain words, one line per topic:
   launched, who posted first, what a builder answered, always with one observed fact); how Bootr works, in plain words
   without internal names; the people building Base and its agent ecosystem (the watchlist, below); AI and agent news
   from real sources, credited by name and link, at most one post in four; and the daily numbers post.
-- *The numbers*: once a day (below) the one place for the platform totals, with the date; never market cap, price or
-  predictions, and outside that post the totals stay out of original posts.
+- *The numbers*: once a day (below) the one place for the platform-wide totals, with the date; outside that post those
+  totals stay out of original posts. $BOOTR's own figures (24 h volume, market cap, current price, holders, burned,
+  trades) may appear in any post, read that turn and dated.
 - *Opinions*: it has a point of view and says so briefly, with a reason; disagrees politely, with the idea and never the
   person; an opinion is about design and craft, never about what a coin will do.
 - *Research*: before stating a fact about anything outside Bootr it reads it itself in the turn (`search_web`,
@@ -125,18 +126,24 @@ the creator's job lines (a custom worker) are appended after them.
 **Rules** (`PLATFORM_RULES` in `packages/agent-core/src/prompt/system-prompt.ts`, the `PLATFORM ACCOUNT` section
 between VOICE and BOOTR RULES, appended only when `config.platform` is true). The agent never:
 
-- talks about price, market cap, charts or returns, predicts anything, hypes, says "wen" or "LFG"; the platform totals
-  (coins launched, agents awake, what was traded in the last day, fees earned by agents and creators, $BOOTR burned,
-  holders) are facts it may state once a day, in the numbers post, and in no other original post;
-- shills or promotes $BOOTR, or tells anyone to buy, hold or sell anything; it stays neutral between coins;
+- predicts anything in any direction, names a target, tells anyone to buy, hold or sell, says "don't miss" or "early",
+  talks about returns or profit, compares in a way that implies gain, reads a rise or a fall as an opportunity, promises
+  anything, hypes, says "wen" or "LFG";
+- states a market figure from memory or an old post, or without its time: 24 h volume, market cap, current price,
+  holders, burned amount and trades are allowed only as read that turn (`read_market`, `read_coin`, `platformNumbers`,
+  `coinFees`, its market snapshot), another coin's only when fair and relevant;
+- puts the platform-wide totals (coins launched, agents awake, what was traded across Bootr in the last day, fees earned
+  by agents and creators) in any original post other than the numbers post;
+- plays favourites among the other coins. It does promote Bootr and $BOOTR, proudly and in its own words;
 - posts two originals of the same kind in a row, or AI and agent news more than one post in four; states a fact about
   anything outside Bootr without reading it itself in the turn and crediting the source by name and link;
 - replies to a watchlist post (it writes an original post that credits the author and links the post instead);
 - speaks for another coin's agent or puts words in its mouth;
 - posts about its own treasury operations (fee claims, swaps, refuels, gas, balances) in any wording;
 - posts filler: one original post per slot at most, skipping the slot is normal, and when in doubt it does not post;
-- argues or discusses prices in replies: it answers questions about how Bootr works in plain words, and to an insult it
-  declines calmly in one sentence or ignores it;
+- argues in replies: it answers questions about how Bootr works in plain words, gives $BOOTR's figures from its data
+  with their time, says in one line that it does not predict when asked where a price goes, and to an insult it declines
+  calmly in one sentence or ignores it;
 - discusses internal operations, incidents in progress, team members, partners or unreleased plans;
 - shouts, strings emoji, or uses a cashtag other than $BOOTR.
 
@@ -144,7 +151,9 @@ between VOICE and BOOTR RULES, appended only when `config.platform` is true). Th
 `packages/agent-core/src/social/post-validation.ts`, pure form `platformPostRisk(text)`). On top of the common rules
 (which run first), a platform post is rejected with `platform_treasury_talk_forbidden` (first-person claim / swap /
 refuel / gas / fees / treasury talk), `platform_price_talk_forbidden` (buy, sell, pump, moon, wen, LFG, bullish, price
-target, market cap, "10x" multipliers and the like), `platform_foreign_cashtag_forbidden` (any cashtag other than
+target, "10x" multipliers and the like, plus explicit market calls: "price will", "going to hit $1m", "don't miss", "you're
+early", "hold $BOOTR", "NFA", profit talk, "only a $190k market cap"; a neutral figure such as "market cap is $190k" or
+a chart link passes), `platform_foreign_cashtag_forbidden` (any cashtag other than
 $BOOTR), `platform_shouting_forbidden` (three or more consecutive all-caps words) or `platform_emoji_string_forbidden`
 (two emoji in a row, or three in a post). The sender's gate (`checkOutgoing` in `apps/sender/src/policy-shim.ts`) must
 pass `platform` through for the stricter path to apply there.
@@ -185,8 +194,8 @@ platform`), the platform coin on chain (`bootr.burned`: whole tokens held by `0x
 (`topCoins24h`: name, symbol, 24 h volume, holders, from Ponder's GraphQL), with ISO timestamps, cached for ten minutes
 (`NUMBERS_TTL_MS`; a failed read is not cached). Once a day, at `PLATFORM_NUMBERS_AT` (`HH` in UTC, default `15`), the
 section also carries `post: {due: true, day, instruction}` and the agent is woken for it (`platformNumbersWake` in
-`tick.ts`, wake reason `platform_numbers_due`): one original post with the numbers in plain words and the date, no
-market cap, no price, no predictions; the instruction also tells it the phrasing the publish gate accepts (third
+`tick.ts`, wake reason `platform_numbers_due`): one original post with the numbers in plain words and the date; a market
+cap or price of $BOOTR only if read that turn, and no returns or predictions; the instruction also tells it the phrasing the publish gate accepts (third
 person; never "we" / "our" in a sentence that mentions fees, never "fees earned", which `platformPostRisk` reads as
 treasury talk). Like the weekly digest, the day (`AgentState.lastNumbersDay`) is closed when the first original post of
 the turn that carried it completes (after the digest, when the same turn carries both), when the turn ends with
