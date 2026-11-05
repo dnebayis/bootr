@@ -1,5 +1,6 @@
 import { countTokens } from 'gpt-tokenizer/encoding/o200k_base';
 import { z } from 'zod';
+import { boundedText } from './bounded.js';
 
 /**
  * Pricing for the relay. All money values are micro-USDC (1e-6 USDC), which equals USDC's
@@ -280,7 +281,7 @@ export function computeQuote(
       ok: false,
       error: {
         code: 'model_not_allowed',
-        message: `model "${req.model}" is not offered by this relay`,
+        message: `model ${JSON.stringify(boundedText(req.model, 80))} is not offered by this relay; GET /v1/models lists the models it serves`,
       },
     };
   }
@@ -290,7 +291,7 @@ export function computeQuote(
       ok: false,
       error: {
         code: 'image_output_not_supported',
-        message: `model "${req.model}" cannot generate images; drop "image" from modalities`,
+        message: `model "${req.model}" cannot generate images; drop "image" from modalities, or pick a model whose output_modalities in GET /v1/models include image`,
       },
     };
   }
@@ -301,7 +302,7 @@ export function computeQuote(
       ok: false,
       error: {
         code: 'image_input_not_supported',
-        message: `model "${req.model}" does not take image_url content parts; use an image model`,
+        message: `model "${req.model}" does not take image_url content parts; remove them, or use an image model from GET /v1/models`,
       },
     };
   }
@@ -310,7 +311,7 @@ export function computeQuote(
       ok: false,
       error: {
         code: 'max_tokens_too_large',
-        message: `max_tokens ${req.max_tokens} exceeds the limit ${price.maxOutputTokens} for ${req.model}`,
+        message: `max_tokens ${req.max_tokens} exceeds the limit ${price.maxOutputTokens} for ${req.model}; lower it to at most ${price.maxOutputTokens}`,
         limit: price.maxOutputTokens,
       },
     };
@@ -321,7 +322,7 @@ export function computeQuote(
       ok: false,
       error: {
         code: 'context_length_exceeded',
-        message: `estimated prompt (${estimatedInputTokens}) + max_tokens (${req.max_tokens}) exceeds ${price.contextLength}`,
+        message: `estimated prompt (${estimatedInputTokens}) + max_tokens (${req.max_tokens}) exceeds ${price.contextLength} for ${req.model}; shorten the prompt or lower max_tokens`,
         limit: price.contextLength,
         estimated: estimatedInputTokens,
       },

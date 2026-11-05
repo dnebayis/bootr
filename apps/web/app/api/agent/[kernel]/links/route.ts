@@ -7,6 +7,7 @@ import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
 import { isAllowedOrigin } from '@/lib/server/env';
 import { clientIp, RateLimiter } from '@/lib/server/ipfs';
+import { creatorRefusal, kernelMessage, NEW_NONCE, originRefusal, otherCoinMessage, rateLimitMessage, readJsonObject, unknownCoinMessage } from '@/lib/server/refusals';
 import { updateLaunchDraftLinks } from '@/lib/server/launch-drafts';
 import { fetchTokenCreator } from '@/lib/server/sender';
 import { verifySiwe } from '@/lib/server/siwe-verify';
@@ -17,8 +18,8 @@ const limiter = new RateLimiter(10, 60_000);
 /** The statement the coin page asks the creator to sign; the agent id and the kernel are read back from it. */
 export const LINKS_STATEMENT = /^Update the links of Bootr coin \$([A-Za-z0-9_]{1,16}) \(#(\d{1,20}), (0x[0-9a-fA-F]{40})\)\.$/;
 
-const NOT_HOSTED = 'This coin’s contract metadata is not hosted on Bootr, so its links cannot be changed here.';
-const NO_DRAFT = 'Bootr holds no launch record for this coin, so its links cannot be changed here.';
+const NOT_HOSTED = 'This coin’s contract metadata is not hosted on Bootr, so its links cannot be changed here. Retrying will not help.';
+const NO_DRAFT = 'Bootr holds no launch record for this coin, so its links cannot be changed here. Retrying will not help.';
 
 function fail(status: number, error: string, message: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
   return NextResponse.json({ error, message, ...extra }, { status, headers: { ...NO_STORE, ...headers } });
@@ -55,48 +56,44 @@ export function launchIdOfContractUri(metadata: string | null | undefined): stri
  */
 export async function PUT(req: NextRequest, ctx: RouteContext<'/api/agent/[kernel]/links'>) {
   const origin = req.headers.get('origin');
-  if (!origin || !(isAllowedOrigin(origin) || sameHost(origin, req.headers.get('host')))) return fail(403, 'forbidden', 'cross-origin request rejected');
+  if (!origin || !(isAllowedOrigin(origin) || sameHost(origin, req.headers.get('host')))) return fail(403, 'forbidden', originRefusal(origin));
   const retryAfter = limiter.hit(clientIp(req.headers));
-  if (retryAfter) return fail(429, 'rate_limited', 'Too many requests. Try again in a minute.', {}, { 'Retry-After': String(retryAfter) });
+  if (retryAfter) return fail(429, 'rate_limited', rateLimitMessage(10, retryAfter), {}, { 'Retry-After': String(retryAfter) });
   const { kernel } = await ctx.params;
-  if (!isAddress(kernel, { strict: false })) return fail(400, 'invalid_request', 'kernel must be an address');
-  if (Number(req.headers.get('content-length') ?? 0) > 16_384) return fail(413, 'payload_too_large', 'Body too large.');
-  let body: { message?: unknown; signature?: unknown; links?: unknown };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return fail(400, 'invalid_json', 'Body is not valid JSON.');
-  }
-  if (!body.links || typeof body.links !== 'object') return fail(400, 'invalid_request', 'links must be an object with website, x, telegram and discord.');
+  if (!isAddress(kernel, { strict: false })) return fail(400, 'invalid_request', kernelMessage(kernel), { field: 'kernel' });
+  if (Number(req.headers.get('content-length') ?? 0) > 16_384) return fail(413, 'payload_too_large', 'Body must be at most 16 KB: {message, signature, links}.');
+  const body = await readJsonObject<{ message?: unknown; signature?: unknown; links?: unknown }>(req);
+  if (!body) return fail(400, 'invalid_json', 'Body must be a JSON object: {message, signature, links}.');
+  if (!body.links || typeof body.links !== 'object') return fail(400, 'invalid_request', 'links must be an object with website, x, telegram and discord.', { field: 'links' });
   const checked = checkLinks(body.links);
   if (!checked.ok) return fail(400, 'invalid_request', checked.message, { field: checked.field });
   const links: CoinLinks = checked.links;
 
   if (env.useMock) {
     const coin = mock.coinOfKernel(kernel);
-    if (!coin) return fail(404, 'unknown_coin', 'No indexed coin has that treasury.');
+    if (!coin) return fail(404, 'unknown_coin', unknownCoinMessage(kernel));
     if (isAgentsOwnX(links.x, coin.xHandle)) return fail(400, 'invalid_request', AGENT_OWN_X_ERROR, { field: 'x' });
     const r = mock.updateCoinLinks(kernel, links);
     if (!r.ok) return fail(r.status, r.error, r.message);
     return NextResponse.json(r.links, { headers: NO_STORE });
   }
 
-  const v = await verifySiwe(body, { statement: LINKS_STATEMENT });
-  if (!v.ok) return fail(v.status, 'siwe_rejected', v.error);
+  const v = await verifySiwe(body, { statement: LINKS_STATEMENT, statementText: 'Update the links of Bootr coin $<SYMBOL> (#<agentId>, <kernel>).' });
+  if (!v.ok) return fail(v.status, 'siwe_rejected', v.error, { reason: v.reason });
   const [, , agentId, statementKernel] = LINKS_STATEMENT.exec(v.msg.statement ?? '')!;
-  if (statementKernel!.toLowerCase() !== kernel.toLowerCase()) return fail(400, 'invalid_request', 'The signed message names another coin.');
+  if (statementKernel!.toLowerCase() !== kernel.toLowerCase()) return fail(400, 'invalid_request', otherCoinMessage(statementKernel!, kernel), { field: 'statement' });
   let token: Awaited<ReturnType<typeof fetchTokenCreator>>;
   try {
     token = await fetchTokenCreator(kernel);
   } catch (err) {
     console.warn('coin links: indexer failed', (err as Error).message);
-    return fail(502, 'upstream_failed', 'Could not reach the indexer.');
+    return fail(502, 'upstream_failed', `Could not reach the indexer. Try again in a moment. ${NEW_NONCE}`);
   }
-  if (!token) return fail(404, 'unknown_coin', 'No indexed coin has that treasury.');
+  if (!token) return fail(404, 'unknown_coin', `${unknownCoinMessage(kernel)} ${NEW_NONCE}`);
   if (token.agentId !== agentId || token.creator.toLowerCase() !== v.address.toLowerCase()) {
-    return fail(403, 'not_creator', 'Only the wallet that launched the coin can change its links.');
+    return fail(403, 'not_creator', creatorRefusal('change its links', v.address, token, agentId!));
   }
-  if (isAgentsOwnX(links.x, token.xHandle)) return fail(400, 'invalid_request', AGENT_OWN_X_ERROR, { field: 'x' });
+  if (isAgentsOwnX(links.x, token.xHandle)) return fail(400, 'invalid_request', `${AGENT_OWN_X_ERROR} ${NEW_NONCE}`, { field: 'x' });
   const launchId = launchIdOfContractUri(token.metadata);
   if (!launchId) return fail(409, 'links_not_editable', NOT_HOSTED);
   const r = await updateLaunchDraftLinks(launchId, links);

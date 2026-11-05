@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createFacilitatorConfig } from '@coinbase/x402';
-import { decodePaymentSignatureHeader } from '@x402/core/http';
+import { decodePaymentRequiredHeader, decodePaymentSignatureHeader } from '@x402/core/http';
 import {
   HTTPFacilitatorClient,
   type FacilitatorClient,
@@ -19,6 +19,7 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { UptoEvmScheme } from '@x402/evm/upto/server';
 import { HonoAdapter, x402HTTPResourceServer, x402ResourceServer } from '@x402/hono';
 import type { Context } from 'hono';
+import { boundedText } from './bounded.js';
 import { FACILITATOR_TIMEOUT_MS, isCdpFacilitator } from './config.js';
 import { microUsdcToDollarString } from './pricing.js';
 import { stableStringify } from './request.js';
@@ -203,6 +204,20 @@ export function createPaymentGate(opts: PaymentGateOptions): PaymentGate {
       }
     },
   };
+}
+
+/**
+ * Why the x402 library refused a presented payment. It answers such a 402 with an empty body and the reason inside
+ * the PAYMENT-REQUIRED header; the relay repeats it in its error body so a client need not decode the header.
+ */
+export function refusedPaymentReason(headers: Record<string, string>): string {
+  const header = headers['PAYMENT-REQUIRED'];
+  if (!header) return 'payment_invalid';
+  try {
+    return boundedText(decodePaymentRequiredHeader(header).error ?? 'payment_invalid', 200);
+  } catch {
+    return 'payment_invalid';
+  }
 }
 
 function isAmbiguousReason(reason: string): boolean {
