@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { parseAgentConfig } from '@bootr/agent-core';
 import { actions, runtimes } from '../src/db/schema.js';
-import { MAX_JITTER_FRACTION, SLOT_WINDOW_MS, applyRhythm, formatQuietHours, jitterMs, jitteredSchedule, originalPostGate, originalPostView, parseQuietHours, quietUntil, slotsUsed } from '../src/rhythm.js';
+import { MAX_JITTER_FRACTION, SLOT_WINDOW_MS, applyQuotaHold, applyRhythm, quotaHold, formatQuietHours, jitterMs, jitteredSchedule, originalPostGate, originalPostView, parseQuietHours, quietUntil, slotsUsed } from '../src/rhythm.js';
 import { scheduleFor } from '../src/runtime.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, KERNEL, agentConfig, finishResponse, makeWorld, seedAgent, testConfig, toolCallResponse, type TestWorld } from './helpers.js';
@@ -269,6 +269,71 @@ describe('rhythm in the tick', () => {
       const posts = await w.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));
       expect(posts.find((a) => (a.action as { tool: string }).tool === 'publish_post')?.status).toBe('failed');
       expect((await runtimeRow(w)).state).toMatchObject({ lastPostAt: null });
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('x quota', () => {
+  it('quotaHold holds only until retryAt; applyQuotaHold closes the schedule and says why', () => {
+    const now = T0;
+    expect(quotaHold(null, now)).toBeNull();
+    expect(quotaHold(now - 1, now)).toBeNull();
+    const hold = quotaHold(now + 2 * H, now)!;
+    expect(hold.reason).toBe('x_quota');
+    expect(hold.until).toBe(now + 2 * H);
+    expect(hold.message).toMatch(/publish_post and publish_reply fail/);
+    const config = agentConfig(now, { socialStartedAt: new Date(now - 10 * H).toISOString() });
+    const schedule = jitteredSchedule(parseAgentConfig(config), null, now)!;
+    expect(schedule.due).toBe(true);
+    const held = applyQuotaHold(schedule, hold)!;
+    expect(held).toMatchObject({ due: false, mayCompose: false, held: { reason: 'x_quota' } });
+    expect(applyQuotaHold(schedule, null)).toBe(schedule);
+    expect((originalPostView(held).waiting as { reason: string }).reason).toBe('x_quota');
+  });
+
+  it('a quota_exceeded publish holds posts and mention wakes until retryAt, then the agent runs again', async () => {
+    const w = await makeWorld({
+      script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 30 * 60_000), toolCallResponse('publish_post', { text: 'Back again after the quota opened, in my own voice.' }), finishResponse(T0 + 10 * H)],
+    });
+    try {
+      const now = w.ctx.now();
+      const retryAt = new Date(now + 3 * H).toISOString();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      w.sender.quotaExceeded = retryAt;
+      const r1 = await tick(w.ctx);
+      expect(r1.ran).toEqual([AGENT_ID]);
+      expect(r1.errors).toEqual([]);
+      expect(lastToolMessages(w)[0]).toMatch(/quota_exceeded/);
+      expect((await runtimeRow(w)).state).toMatchObject({ postQuotaUntil: Date.parse(retryAt) });
+      const calls = () => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+      const bought = calls();
+      // a pending mention and a passed runtime wake: still no model turn while the quota is used up
+      w.sender.items = [
+        {
+          postId: '2001',
+          authorId: '42',
+          conversationId: '2001',
+          status: 'pending',
+          observedAt: new Date(now).toISOString(),
+          seenAt: null,
+          deferredUntil: null,
+          post: { id: '2001', authorId: '42', text: '@bootr_agent hello?', createdAt: new Date(now).toISOString(), conversationId: '2001', author: { id: '42', username: 'user42', verified: true, verifiedType: 'blue' } },
+        },
+      ];
+      w.setNow(now + H);
+      const r2 = await tick(w.ctx);
+      expect(r2.ran).toEqual([]);
+      expect(calls()).toBe(bought);
+      // the quota opens: the agent runs and the post goes out
+      w.sender.quotaExceeded = null;
+      w.sender.items = [];
+      w.setNow(now + 3 * H + 60_000);
+      const r3 = await tick(w.ctx);
+      expect(r3.ran).toEqual([AGENT_ID]);
+      expect(w.sender.published).toHaveLength(1);
+      expect((await runtimeRow(w)).state).toMatchObject({ postQuotaUntil: null });
     } finally {
       await w.close();
     }

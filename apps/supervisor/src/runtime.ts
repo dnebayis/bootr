@@ -45,6 +45,8 @@ import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 
 export const LEASE_MS = 60_000;
+/** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
+export const QUOTA_FALLBACK_HOLD_MS = 3_600_000;
 
 export interface AgentState {
   phase: 'boot' | 'social';
@@ -58,6 +60,8 @@ export interface AgentState {
   lastPostAt?: number | null;
   /** When a turn that woke for a due original post finished without one: the slot is consumed, not kept (rhythm). */
   lastSlotSkippedAt?: number | null;
+  /** Epoch ms until which the sender refuses this agent's publishes (`quota_exceeded`, its `retryAt`); see rhythm.ts. */
+  postQuotaUntil?: number | null;
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
@@ -523,7 +527,14 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     }
     const result = await settle();
     if (result) {
+      if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'failed' && result.error === 'sender:quota_exceeded') {
+        // The sender's rolling 24 h quota is used up: hold posts and mention wakes until its retryAt (rhythm.ts).
+        const until = pending.nextAt ?? ctx.now() + QUOTA_FALLBACK_HOLD_MS;
+        state.postQuotaUntil = until;
+        log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x quota used up; posts held');
+      }
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
+        state.postQuotaUntil = null;
         // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
         if (action.tool === 'publish_post') turn.posted = true;
         if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();

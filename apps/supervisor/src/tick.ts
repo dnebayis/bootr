@@ -14,7 +14,7 @@ import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepPostMetrics } from './post-performance.js';
-import { applyRhythm } from './rhythm.js';
+import { applyQuotaHold, applyRhythm, quotaHold } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
@@ -178,16 +178,19 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).
     const directory = await agentDirectory(ctx);
     const views = inboxViews(config, inbox, now, directory);
-    const schedule = await applyRhythm(ctx, scheduleFor(config, state, now), now);
+    // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
+    // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
+    const quota = quotaHold(state.postQuotaUntil, now);
+    const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
     const pending = runtime.pending as unknown as PendingAction | null;
     const status: RuntimeStatus = runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : runtime.status === 'running' ? 'working' : 'waiting';
     const decision = wakeDecision({
       now,
       enabled: agent.status === 'active',
       status,
-      nextAt: runtime.nextAt.getTime(),
+      nextAt: quota ? Math.max(runtime.nextAt.getTime(), quota.until) : runtime.nextAt.getTime(),
       leaseUntil: null,
-      inbox: views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+      inbox: quota ? [] : views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
       replyRetryDue: false,
       schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose } : null,
       continuation: !!state.continuation || !!runtime.turn,
