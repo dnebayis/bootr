@@ -9,7 +9,7 @@ test('token page links the hosted agent card, which carries the registry binding
   // Last card: seeded fixtures only (the mock simulator prepends tokens the server does not know).
   const href = await page.locator('main a[href^="/token/0x"]').last().getAttribute('href');
   await page.goto(href!);
-  await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
 
   const card = page.getByRole('link', { name: 'ERC-8004 JSON' });
   await expect(card).toBeVisible();

@@ -39,7 +39,7 @@ test('token page renders agent, fee split and trades', async ({ page }) => {
   const href = await first.getAttribute('href');
   expect(href).toBeTruthy();
   await page.goto(href!);
-  await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Locked fee split' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recent trades' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Trade', exact: true })).toBeVisible();
@@ -64,7 +64,7 @@ test("token page lists the coin's own links, its X account apart from the agent'
   const other = page.locator('a[href^="/token/0x"]', { hasText: 'Paper Hands Club' }).first();
   await expect(other).toBeVisible();
   await page.goto((await other.getAttribute('href'))!);
-  await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
   await expect(page.getByTestId('token-links')).toHaveCount(0);
 });
 
@@ -96,7 +96,7 @@ test('agent panel counts the spender float in treasury USDC (mock mode)', async 
   let shown = false;
   for (const href of hrefs) {
     await page.goto(href);
-    await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
     await expect(page.getByText('USDC', { exact: true }).first()).toBeVisible();
     const note = page.getByTestId('usdc-spender-note');
     if ((await note.count()) > 0) {
@@ -180,7 +180,7 @@ test.describe('renders without requestAnimationFrame (background tab)', () => {
 
     const href = await page.locator('main a[href^="/token/0x"]').first().getAttribute('href');
     await page.goto(href!);
-    await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Agent', exact: true })).toBeVisible();
 
     await page.goto('/token/0x0000000000000000000000000000000000000001');
     await expect(page.getByRole('heading', { name: 'Token not found.' })).toBeVisible();
