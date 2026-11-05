@@ -14,23 +14,33 @@ import type {
   AgentApproval,
   AgentApprovals,
   AgentConfig,
-  ApprovalDecision,
   AgentConfigChanges,
   AgentFuel,
   AgentPost,
   AgentStatus,
   AgentWithToken,
+  ApprovalDecision,
+  BoardId,
+  BoardPeriod,
+  CreatorProfile,
   DailyStat,
   FeesByKind,
   FuelEvent,
   Holding,
   LaunchSource,
+  Leaderboard,
+  LeaderboardRow,
   PlatformStats,
   StreamHint,
   Token,
   TokenDetail,
+  TokenPage,
+  TokenTab,
   Trade,
 } from './types';
+import { TRENDING_WINDOW_HOURS, trendingScore, type TrendingWallet } from '@bootr/shared/trending';
+import { BOARD_META } from './leaderboards';
+import { dayEndUnix, dayStartUnix, type TokenFilters } from './token-filters';
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -106,6 +116,8 @@ interface Store {
   approvals: Map<string, AgentApproval[]>;
   /** The coin's own links (what the hosted contract URI would carry), keyed by the token's `metadata` URL. */
   links: Map<string, CoinPageLinks>;
+  /** The creators' off-chain images, by lowercase coin address. */
+  images: Map<string, string>;
 }
 
 let store: Store | null = null;
@@ -312,7 +324,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links, images: new Map() };
 }
 
 export function mockStore(): Store {
@@ -383,6 +395,37 @@ export function subscribeMock(listener: (h: StreamHint) => void): () => void {
 
 const clone = <T,>(v: T): T => structuredClone(v);
 
+/** Same meaning as the indexer's filters on `/tokens/list`. */
+function matchesFilters(t: Token, f: TokenFilters): boolean {
+  if (f.creator && t.creator.toLowerCase() !== f.creator) return false;
+  if (f.path && (t.source ?? 'bootr') !== f.path) return false;
+  if (f.from && t.launchedAt < dayStartUnix(f.from)) return false;
+  if (f.to && t.launchedAt > dayEndUnix(f.to)) return false;
+  if (f.agent === 'yes' && !t.agent) return false;
+  if (f.agent === 'no' && t.agent) return false;
+  return true;
+}
+
+/** Per-wallet trades inside the window, scored by the function the indexer uses. */
+function mockTrending(trades: Trade[], now: number): number {
+  const wallets = new Map<string, TrendingWallet>();
+  for (const tr of trades) {
+    if (tr.timestamp < now - TRENDING_WINDOW_HOURS * 3600) continue;
+    const w = wallets.get(tr.trader) ?? { volumeUsd: 0, trades: 0 };
+    w.volumeUsd += tr.valueUsd;
+    w.trades += 1;
+    wallets.set(tr.trader, w);
+  }
+  return trendingScore([...wallets.values()]);
+}
+
+/** A stable number in 0..1 per (address, salt), for mock figures with no field in the store. */
+function stable(id: string, salt: string): number {
+  let h = 2166136261;
+  for (const ch of `${id.toLowerCase()}:${salt}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return mulberry32(h >>> 0)();
+}
+
 export const mock = {
   /**
    * Deterministic WETH fee balance (wei) for mock mode; some are zero. `scope` is a pool id for the unsettled
@@ -433,6 +476,103 @@ export const mock = {
     const items = list.slice(start, start + limit);
     const next = start + limit;
     return clone({ items, pageInfo: { endCursor: next < list.length ? String(next) : null, hasNextPage: next < list.length } });
+  },
+  /** The tokens page with filters and a sort, what `/tokens/list` and `/tokens/trending` answer on the real indexer. */
+  tokenList(tab: TokenTab, filters: TokenFilters, after: string | null, limit: number): TokenPage {
+    const s = mockStore();
+    let list = s.tokens.filter((t) => matchesFilters(t, filters));
+    if (tab === 'trending') {
+      const now = Math.floor(Date.now() / 1000);
+      const scored = list.map((t) => ({ t, score: mockTrending(s.trades.get(t.id.toLowerCase()) ?? [], now) }));
+      list = scored.filter((x) => x.score > 0).sort((a, b) => b.score - a.score).map((x) => x.t);
+    } else {
+      if (tab === 'graduated') list = list.filter((t) => t.graduated).sort((a, b) => (b.graduatedAt ?? 0) - (a.graduatedAt ?? 0));
+      else if (tab === 'mcap') list.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
+      else if (tab === 'active') list = list.filter((t) => t.agent?.status === 'awake').sort((a, b) => b.volume24hUsd - a.volume24hUsd);
+      else list.sort((a, b) => (b.lastTradeAt ?? b.launchedAt) - (a.lastTradeAt ?? a.launchedAt));
+      if (filters.sort === 'bumped') list.sort((a, b) => (b.lastTradeAt ?? b.launchedAt) - (a.lastTradeAt ?? a.launchedAt));
+      if (filters.sort === 'launched') list.sort((a, b) => b.launchedAt - a.launchedAt);
+      if (filters.sort === 'mcap') list.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
+      if (filters.sort === 'volume24h') list.sort((a, b) => b.volume24hUsd - a.volume24hUsd);
+      if (filters.sort === 'holders') list.sort((a, b) => b.holders - a.holders);
+    }
+    const start = after ? Number(after) : 0;
+    const next = start + limit;
+    return clone({ items: list.slice(start, next), pageInfo: { endCursor: next < list.length ? String(next) : null, hasNextPage: next < list.length } });
+  },
+  /** One board, what `GET /leaderboards/:board` answers on the real indexer. */
+  leaderboard(board: BoardId, period: BoardPeriod): Leaderboard {
+    const s = mockStore();
+    const now = Math.floor(Date.now() / 1000);
+    const part = period === '24h' ? 0.04 : period === '7d' ? 0.3 : 1;
+    const figure = (t: Token): { value: number | null; detail?: LeaderboardRow['detail'] } => {
+      const agent = s.agents.get(t.kernel.toLowerCase());
+      if (board === 'volume') return { value: period === '24h' ? t.volume24hUsd : period === '7d' ? t.volume7dUsd : t.volume7dUsd * 3 };
+      if (board === 'holders') return { value: t.holders };
+      if (board === 'agent-fees') return { value: t.volume7dUsd * 0.01 * 4 * (t.agentBps / 10000) * part };
+      // Every fifth agent has sent no report: unknown, not zero.
+      if (board === 'agent-activity') return stable(t.id, 'report') < 0.2 ? { value: null } : { value: agent?.postsCount24h ?? 0, detail: { lastPostAt: agent?.lastPostAt ?? null } };
+      if (t.burnBps === 0) return { value: 0 };
+      const pct = 0.02 + stable(t.id, 'burned') * 6 * part;
+      return { value: Math.round(pct * 10_000) / 10_000, detail: { amountToken: (BigInt(Math.round(pct * 1e7)) * 10n ** 18n).toString() } };
+    };
+    const rows = s.tokens.map((t) => ({ t, ...figure(t) }));
+    const known = rows.filter((r): r is typeof r & { value: number } => r.value !== null && r.value > 0).sort((a, b) => b.value - a.value);
+    const periods = BOARD_META.find((b) => b.id === board)!.periods;
+    return clone({
+      board,
+      period,
+      periods: [...periods],
+      unit: board === 'burned' ? ('percent' as const) : board === 'holders' || board === 'agent-activity' ? ('count' as const) : ('usd' as const),
+      readAt: now,
+      indexedAt: now - 40,
+      ranked: known.length,
+      unknown: rows.filter((r) => r.value === null).length,
+      items: known.slice(0, 50).map((r, i) => ({
+        rank: i + 1,
+        value: r.value,
+        ...(r.detail ? { detail: r.detail } : {}),
+        token: { id: r.t.id, name: r.t.name, symbol: r.t.symbol, image: r.t.image, creator: r.t.creator, source: r.t.source, xHandle: r.t.xHandle, kernel: r.t.kernel, agentId: r.t.agentId },
+        agent: r.t.agent ?? null,
+      })),
+    });
+  },
+  /** What `GET /api/coin-images` answers. */
+  coinImages(): Record<string, string> {
+    return Object.fromEntries(mockStore().images);
+  },
+  /** The creator's image edit on the mock store; null goes back to the coin's own image. The token rows are not touched. */
+  setCoinImage(token: string, image: string | null) {
+    const { images } = mockStore();
+    if (image) images.set(token.toLowerCase(), image);
+    else images.delete(token.toLowerCase());
+  },
+  /** The mock coin with that address, as the image route reads it from the indexer: `null` when unknown. */
+  coinOfId(id: string): { creator: Address } | null {
+    const t = mockStore().tokens.find((x) => x.id.toLowerCase() === id.toLowerCase());
+    return t ? { creator: t.creator } : null;
+  },
+  /** One creator's public record, what `GET /creator/:address` answers on the real indexer. */
+  creatorProfile(address: string): CreatorProfile {
+    const creator = address.toLowerCase() as Address;
+    const coins = mockStore()
+      .tokens.filter((t) => t.creator.toLowerCase() === creator)
+      .map((t) => {
+        const { accruedUsd, claimedUsd } = mock.fees(t.id).byKind.creator;
+        return { ...t, creatorFees: { earnedUsd: accruedUsd, claimedUsd } };
+      });
+    return clone({
+      address: creator,
+      readAt: Math.floor(Date.now() / 1000),
+      indexedAt: Math.floor(Date.now() / 1000) - 40,
+      totals: {
+        coins: coins.length,
+        agents: coins.filter((c) => c.agent).length,
+        earnedUsd: coins.reduce((s, c) => s + c.creatorFees.earnedUsd, 0),
+        claimedUsd: coins.reduce((s, c) => s + c.creatorFees.claimedUsd, 0),
+      },
+      coins,
+    });
   },
   /** The coin's own links by its `metadata` URL (mock stand-in for the hosted contract URI); none for most coins. */
   coinLinks(metadata: string): CoinPageLinks {

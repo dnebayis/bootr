@@ -8,6 +8,7 @@
  * `pinFileToIPFS` endpoint is only still recommended for folder uploads, which we do not need.
  * `network=public` matters: v3 uploads default to the private network, which no public gateway serves.
  */
+import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { pinataEnv } from './env';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/ipfs must not be imported in the browser');
@@ -71,6 +72,33 @@ export function svgProblem(b: Uint8Array): string | null {
     if (!m[2]!.startsWith('#')) return 'external references are not allowed (only url(#id))';
   }
   return null;
+}
+
+const DECLARED: Record<string, ImageKind> = {
+  'image/png': 'image/png',
+  'image/jpeg': 'image/jpeg',
+  'image/jpg': 'image/jpeg',
+  'image/pjpeg': 'image/jpeg',
+  'image/webp': 'image/webp',
+  'image/svg+xml': 'image/svg+xml',
+};
+
+export type ImageCheck = { ok: true; bytes: Uint8Array; type: ImageKind } | { ok: false; status: number; error: string; message: string };
+
+/** An uploaded image as both upload routes accept it: at most 2 MB, type from its bytes and matching its label, SVGs screened. */
+export async function checkImageFile(file: FormDataEntryValue | null): Promise<ImageCheck> {
+  if (!(file instanceof File) || file.size === 0) return { ok: false, status: 400, error: 'invalid_request', message: 'Expected multipart/form-data with a "file" field.' };
+  if (file.size > UPLOAD_MAX_BYTES) return { ok: false, status: 413, error: 'payload_too_large', message: 'Image must be at most 2 MB.' };
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const type = sniffImage(bytes);
+  if (!type) return { ok: false, status: 415, error: 'unsupported_type', message: 'Use a PNG, JPG, WebP or SVG image.' };
+  const declared = file.type ? DECLARED[file.type.toLowerCase()] : type;
+  if (declared !== type) return { ok: false, status: 415, error: 'unsupported_type', message: 'The file content does not match its type. Use a PNG, JPG, WebP or SVG image.' };
+  if (type === 'image/svg+xml') {
+    const problem = svgProblem(bytes);
+    if (problem) return { ok: false, status: 415, error: 'unsafe_svg', message: `SVG refused: ${problem}.` };
+  }
+  return { ok: true, bytes, type };
 }
 
 export async function sha256Hex(b: Uint8Array): Promise<string> {

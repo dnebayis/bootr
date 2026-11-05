@@ -37,7 +37,7 @@ export function dexscreenerUrl(target: string, opts?: { embed?: boolean; theme?:
 }
 
 /**
- * Where "Trade" sends people: LlamaSwap (swap.defillama.com), a meta-aggregator that routes through Uniswap v4
+ * Where "Swap on another site" sends people (the trade panel itself swaps on the coin's own pool): LlamaSwap (swap.defillama.com), a meta-aggregator that routes through Uniswap v4
  * and the other Base DEXes, ETH in, the coin out. `NEXT_PUBLIC_SWAP_LINK_BASE` or the admin console's
  * `swapLinkBase` replaces the prefix; the token address is appended. Base Sepolia has no aggregator, so the
  * link points at Uniswap there.

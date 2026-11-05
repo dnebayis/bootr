@@ -9,6 +9,8 @@ pnpm --filter web typecheck
 pnpm --filter web lint
 pnpm --filter web build
 pnpm --filter web test:e2e     # Playwright smoke tests (builds + starts on :3210, mock mode)
+# Trade panel calldata on a Base fork (real buys and sells on $BOOTR and OWL): base-anvil --fork-url <Base RPC> --port 8646, then
+SWAP_FORK_RPC=http://127.0.0.1:8646 pnpm --filter web exec vitest run lib/swap/swap.fork.test.ts
 ```
 
 Container (build from the repo root; `NEXT_PUBLIC_*` are build args, everything else is runtime env; production setup in
@@ -47,7 +49,7 @@ Public (inlined at build time):
 | `NEXT_PUBLIC_SITE_URL` | Canonical origin for metadata/sitemap (default `https://bootr.fun`). Also the only origin accepted for SIWE sign-in (domain/URI) and for same-origin checks on admin and X-connect POSTs; `X-Forwarded-Host`/`Host` are never trusted. Under `next dev`, localhost origins are accepted too. Must be the exact origin users load (redirect `www.` to it), or admin sign-in and X connect are refused. |
 | `NEXT_PUBLIC_INFERENCE_URL` | Inference relay origin. Only read server-side by `/api/models` when `INFERENCE_URL` is unset; the browser never calls the relay. |
 | `NEXT_PUBLIC_SENDER_PUBLIC_URL` | Browser-facing X sender origin: `/api/x/start` redirects the OAuth popup to its signed `/oauth/start`. |
-| `NEXT_PUBLIC_SWAP_LINK_BASE` | Trade link prefix, token address appended (LlamaSwap on Base otherwise, Uniswap on Sepolia). |
+| `NEXT_PUBLIC_SWAP_LINK_BASE` | Prefix of the trade panel's "Swap on another site" link, token address appended (LlamaSwap on Base otherwise, Uniswap on Sepolia). |
 | `NEXT_PUBLIC_LAUNCHER_ADDRESS` | `BootrLauncher`. |
 | `NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS` | `BootrClankerLauncher`, the "Launch through Clanker" path (optional; the choice is hidden while unset). |
 | `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS` | `AgentGuardian`. |
@@ -90,7 +92,7 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | Route | |
 |---|---|
 | `/` | $BOOTR box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
-| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade link, last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
+| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade panel (buy and sell on the coin's Uniswap v4 pool from the user's own wallet, `lib/swap`), last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
 | `/launch` | 01 Coin, 02 Mind (model, searchable), 03 Kind (Trader / Researcher / Community / Custom with the Powers grid and Cadence), 04 Character (Instructions and job lines), 05 X account, 06 Fuel & options, with a sticky summary card (cost line, fee split, risk line, Launch). A custom kind's preset is hashed like a template (`customWorker`), saved with the draft (`POST /api/launch/draft`, field `worker`) and published in the agent card as `bootr.worker` ([`docs/design/agent-launch-v2.md`](../../docs/design/agent-launch-v2.md)); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |

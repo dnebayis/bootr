@@ -200,7 +200,7 @@ Derived:
 * **Web** (`apps/web/lib/indexer.ts`): GraphQL at `/graphql` (`tokens`, `token { agent clankerPool }`,
   `trades`, `agents { tokenRef }`, `dailyStats`, `platformStats(id: "global")`, `sourceStats(id)`), REST `/search`,
   `/token/:id/fees` (with `source`, `lpFeeBps`, `protocolBps`), `/platform/fees` (totals per launch path),
-  `/holdings/:owner`, `/fuel/:from`, and SSE `/stream` hints
+  `/holdings/:owner`, `/fuel/:from`, `/tokens/list`, `/tokens/trending`, `/leaderboards/:board`, `/creator/:address`, and SSE `/stream` hints
   (`{type: 'launch'|'trade'|'agent', tokenId}`; clients re-fetch).
 * **Supervisor**: `GET /market/:token` (coin or kernel address; carries `source`, `lpFeeBps`, `protocolBps`),
   `GET /platform/feed?since=<unix>`

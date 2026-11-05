@@ -2,7 +2,8 @@ import { db } from 'ponder:api';
 import schema from 'ponder:schema';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { and, client, desc, eq, graphql, gt, gte, ilike, inArray, or, sql } from 'ponder';
+import { and, client, desc, eq, graphql, gt, gte, ilike, inArray, lte, or, sql } from 'ponder';
+import { TRENDING_WINDOW_HOURS, trendingScore, type TrendingWallet } from '@bootr/shared/trending';
 import { isAddress, type Address } from 'viem';
 
 import { B20TokenAbi } from '../../abis/B20Token';
@@ -17,6 +18,25 @@ import { verifyRequest } from '../lib/hmac';
 import { toUnits, usd } from '../lib/price';
 import { rpcClient } from '../lib/rpc';
 import { parseSocialPatch, socialStore, type AgentSocial } from '../lib/social-store';
+import {
+  BOARDS,
+  BOARD_DEFAULT,
+  BOARD_MAX,
+  boardPeriod,
+  isBoardId,
+  knownPostCount,
+  pageOf,
+  parsePage,
+  parseTokenFilters,
+  parseTokenList,
+  percentOfSupply,
+  periodStart,
+  rankRows,
+  type BoardId,
+  type BoardPeriod,
+  type TokenFilters,
+  type TokenSort,
+} from './lists';
 import { FEED_LIMIT, composePlatformFeed, feedNameRefs, feedWindow } from './platform-feed';
 import { composePlatformFees } from './platform-fees';
 import { publish, subscribe } from './stream';
@@ -142,6 +162,289 @@ app.get('/tokens/bumped', async (c) => {
   const hasNextPage = rows.length > limit;
   const items = await withAgent(rows.slice(0, limit));
   return c.json(j({ items, pageInfo: { endCursor: hasNextPage ? String(offset + limit) : null, hasNextPage } }));
+});
+
+// ------------------------------------------------------------------ public lists
+
+const nowS = () => Math.floor(Date.now() / 1000);
+
+/** When the market figures were last refreshed (the snapshot handler), null before the first one. */
+async function indexedAt(): Promise<number | null> {
+  const [s] = await db.select({ at: schema.platformStats.updatedAt }).from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1);
+  return s?.at ?? null;
+}
+
+function tokenConditions(f: TokenFilters) {
+  return [
+    ...(f.creator ? [eq(schema.token.creator, f.creator as Address)] : []),
+    ...(f.source ? [eq(schema.token.source, f.source)] : []),
+    ...(f.from !== undefined ? [gte(schema.token.launchedAt, f.from)] : []),
+    ...(f.to !== undefined ? [lte(schema.token.launchedAt, f.to)] : []),
+    ...(f.hasAgent === true ? [sql`${schema.token.kernel} is not null`] : []),
+    ...(f.hasAgent === false ? [sql`${schema.token.kernel} is null`] : []),
+    ...(f.graduated !== undefined ? [eq(schema.token.graduated, f.graduated)] : []),
+    ...(f.agentStatus ? [eq(schema.token.agentStatus, f.agentStatus)] : []),
+  ];
+}
+
+const TOKEN_ORDER: Record<TokenSort, () => ReturnType<typeof desc>[]> = {
+  bumped: () => [desc(sql`coalesce(${schema.token.lastTradeAt}, ${schema.token.launchedAt})`), desc(schema.token.launchedAt)],
+  launched: () => [desc(schema.token.launchedAt)],
+  mcap: () => [desc(schema.token.marketCapUsd)],
+  volume24h: () => [desc(schema.token.volume24hUsd)],
+  holders: () => [desc(schema.token.holders)],
+  graduated: () => [sql`${schema.token.graduatedAt} desc nulls last`],
+};
+
+/**
+ * Coins with filters and a sort, for the tokens page and for programs: `creator`, `source` (`bootr` | `clanker`),
+ * `from` / `to` (launch time, unix s), `hasAgent`, `graduated`, `agentStatus`; `sort` = `bumped` (default) | `launched`
+ * | `mcap` | `volume24h` | `holders` | `graduated`. Offset cursor in `after`, like `/tokens/bumped`.
+ */
+app.get('/tokens/list', async (c) => {
+  const q = parseTokenList(c.req.query());
+  if (typeof q === 'string') return c.json({ error: 'invalid_request', message: q }, 400);
+  const conds = tokenConditions(q.filters);
+  const rows = await db
+    .select()
+    .from(schema.token)
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(...TOKEN_ORDER[q.sort](), desc(schema.token.id))
+    .limit(q.limit + 1)
+    .offset(q.offset);
+  const hasNextPage = rows.length > q.limit;
+  const items = await withAgent(rows.slice(0, q.limit));
+  return c.json(j({ items, pageInfo: { endCursor: hasNextPage ? String(q.offset + q.limit) : null, hasNextPage }, readAt: nowS() }));
+});
+
+/** A read that is the same for everyone, kept for a few seconds: these routes are public and aggregate whole tables. */
+const LIST_TTL_MS = 15_000;
+const listCache = new Map<string, { at: number; value: Promise<unknown> }>();
+function cached<T>(key: string, read: () => Promise<T>): Promise<T> {
+  const hit = listCache.get(key);
+  if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.value as Promise<T>;
+  const value = read();
+  listCache.set(key, { at: Date.now(), value });
+  value.catch(() => listCache.delete(key));
+  return value;
+}
+
+type TrendingEntry = { score: number; volumeUsd: number; trades: number; traders: number };
+
+/** Every coin traded inside the window with its score (`@bootr/shared/trending`), read per (coin, wallet). */
+function trendingScores(): Promise<{ readAt: number; scores: Map<string, TrendingEntry> }> {
+  return cached('trending', async () => {
+    const readAt = nowS();
+    const rows = await db
+      .select({
+        token: schema.trade.token,
+        volumeUsd: sql<number>`coalesce(sum(${schema.trade.valueUsd}), 0)`,
+        trades: sql<number>`count(*)`,
+      })
+      .from(schema.trade)
+      .where(gte(schema.trade.timestamp, readAt - TRENDING_WINDOW_HOURS * 3600))
+      .groupBy(schema.trade.token, schema.trade.trader);
+    const perCoin = new Map<string, TrendingWallet[]>();
+    for (const r of rows) {
+      const wallet = { volumeUsd: Number(r.volumeUsd), trades: Number(r.trades) };
+      const list = perCoin.get(r.token);
+      if (list) list.push(wallet);
+      else perCoin.set(r.token, [wallet]);
+    }
+    const scores = new Map<string, TrendingEntry>();
+    for (const [token, wallets] of perCoin) {
+      scores.set(token, {
+        score: trendingScore(wallets),
+        volumeUsd: usd(wallets.reduce((s, w) => s + w.volumeUsd, 0)),
+        trades: wallets.reduce((s, w) => s + w.trades, 0),
+        traders: wallets.length,
+      });
+    }
+    return { readAt, scores };
+  });
+}
+
+/**
+ * Coins by trending score, highest first: recent trades counted per wallet with caps, so one wallet cannot lift a coin
+ * (`packages/shared/src/trending.ts`). Takes the filters of `/tokens/list`. A coin with no trade in the window is not listed.
+ * Each item is a token row plus `trending: {score, volumeUsd, trades, traders}` over the window.
+ */
+app.get('/tokens/trending', async (c) => {
+  const query = c.req.query();
+  const filters = parseTokenFilters(query);
+  if (typeof filters === 'string') return c.json({ error: 'invalid_request', message: filters }, 400);
+  const { limit, offset } = parsePage(query);
+  const { readAt, scores } = await trendingScores();
+  const ids = [...scores.keys()] as Address[];
+  const rows = ids.length
+    ? await db
+        .select()
+        .from(schema.token)
+        .where(and(inArray(schema.token.id, ids), ...tokenConditions(filters)))
+    : [];
+  const ranked = rows
+    .map((t) => ({ t, trending: scores.get(t.id)! }))
+    .sort((a, b) => b.trending.score - a.trending.score || b.trending.traders - a.trending.traders || a.t.id.localeCompare(b.t.id));
+  const page = pageOf(ranked, offset, limit);
+  const withAgents = await withAgent(page.items.map((r) => r.t));
+  return c.json(
+    j({
+      items: withAgents.map((t, i) => ({ ...t, trending: page.items[i]!.trending })),
+      pageInfo: page.pageInfo,
+      windowHours: TRENDING_WINDOW_HOURS,
+      readAt,
+    }),
+  );
+});
+
+/** What a board row says about its coin; the coin's own page has the rest. */
+const boardToken = (t: TokenRow) => ({
+  id: t.id,
+  name: t.name,
+  symbol: t.symbol,
+  image: t.image,
+  creator: t.creator,
+  kernel: t.kernel as string | null,
+  agentId: t.agentId as bigint | null,
+  source: t.source,
+  xHandle: t.xHandle,
+  launchedAt: t.launchedAt,
+});
+
+type BoardRow = { token: ReturnType<typeof boardToken>; value: number | null; detail?: Record<string, unknown> };
+
+async function readBoard(board: BoardId, period: BoardPeriod, now: number): Promise<BoardRow[]> {
+  const since = periodStart(period, now);
+  const tokens = await db.select().from(schema.token);
+  const of = (t: TokenRow, value: number | null, detail?: Record<string, unknown>): BoardRow => ({ token: boardToken(t), value, ...(detail ? { detail } : {}) });
+
+  if (board === 'volume') {
+    const pick = (t: TokenRow) => (period === '24h' ? t.volume24hUsd : period === '7d' ? t.volume7dUsd : t.volumeTotalUsd);
+    return tokens.map((t) => of(t, pick(t)));
+  }
+  if (board === 'holders') return tokens.map((t) => of(t, t.holders));
+  if (board === 'agent-activity') {
+    const social = await socialMap();
+    return tokens
+      .filter((t) => (t.kernel as string | null) !== null)
+      .map((t) => {
+        const report = social.get(t.kernel);
+        return of(t, knownPostCount(report, now), { lastPostAt: report?.lastPostAt ?? null });
+      });
+  }
+  if (board === 'agent-fees') {
+    const rows = await db
+      .select({ token: schema.feeAccrual.token, usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)` })
+      .from(schema.feeAccrual)
+      .where(and(eq(schema.feeAccrual.recipientKind, 'agent'), ...(since !== null ? [gte(schema.feeAccrual.timestamp, since)] : [])))
+      .groupBy(schema.feeAccrual.token);
+    const byToken = new Map(tokens.map((t) => [t.id as string, t]));
+    return rows.flatMap((r) => {
+      const t = byToken.get(r.token);
+      return t ? [of(t, usd(Number(r.usd)))] : [];
+    });
+  }
+  // burned: a share of supply compares coins of any size, which a count of coins or a dollar figure at burn time does not.
+  if (since === null) {
+    return tokens.filter((t) => t.burnedTotal > 0n).map((t) => of(t, percentOfSupply(t.burnedTotal, t.totalSupply), { amountToken: t.burnedTotal }));
+  }
+  const rows = await db
+    .select({ token: schema.burn.token, amount: sql<string>`coalesce(sum(${schema.burn.amountToken}), 0)` })
+    .from(schema.burn)
+    .where(gte(schema.burn.timestamp, since))
+    .groupBy(schema.burn.token);
+  const byToken = new Map(tokens.map((t) => [t.id as string, t]));
+  return rows.flatMap((r) => {
+    const t = byToken.get(r.token);
+    if (!t) return [];
+    const amount = BigInt(String(r.amount).split('.')[0]!);
+    return [of(t, percentOfSupply(amount, t.totalSupply), { amountToken: amount })];
+  });
+}
+
+/**
+ * One leaderboard: `agent-fees` (USD accrued to the agent slot; Clanker coins count once the fees are collected),
+ * `agent-activity` (posts in the last 24 h as the supervisor reported them; no fresh report = unknown, counted in `unknown`
+ * and never ranked), `volume`, `holders`, `burned` (percent of supply). `period` is limited to what the data can answer;
+ * see `periods` in the answer. `readAt` is when this was read, `indexedAt` when market figures were last refreshed.
+ * Rows without a value are left out rather than filled.
+ */
+app.get('/leaderboards/:board', async (c) => {
+  const board = c.req.param('board');
+  if (!isBoardId(board)) return c.json({ error: 'not_found', message: `Boards: ${Object.keys(BOARDS).join(', ')}.` }, 404);
+  const period = boardPeriod(board, c.req.query('period'));
+  const { periods, unit } = BOARDS[board];
+  if (!period) return c.json({ error: 'invalid_request', message: `period must be one of ${periods.join(', ')}` }, 400);
+  const limit = Math.min(BOARD_MAX, Math.max(1, Math.floor(Number(c.req.query('limit'))) || BOARD_DEFAULT));
+  const { readAt, rows, at } = await cached(`board:${board}:${period}`, async () => {
+    const now = nowS();
+    const [read, at] = await Promise.all([readBoard(board, period, now), indexedAt()]);
+    return { readAt: now, rows: read, at };
+  });
+  const { items, ranked, unknown } = rankRows(rows, limit);
+  const kernels = items.flatMap((r) => (r.token.kernel ? [r.token.kernel as Address] : []));
+  const agents = kernels.length ? await db.select({ id: schema.agent.id, status: schema.agent.status }).from(schema.agent).where(inArray(schema.agent.id, kernels)) : [];
+  const statusOf = new Map(agents.map((a) => [a.id as string, a]));
+  return c.json(
+    j({
+      board,
+      period,
+      periods,
+      unit,
+      readAt,
+      indexedAt: at,
+      ranked,
+      unknown,
+      items: items.map((r) => ({ ...r, agent: r.token.kernel ? (statusOf.get(r.token.kernel) ?? null) : null })),
+    }),
+  );
+});
+
+/**
+ * One creator's public record, no wallet connection needed: `coins` (token rows plus `creatorFees: {earnedUsd, claimedUsd}`,
+ * newest first, at most 200) and `totals`. Fees are what the indexer booked for this coin's creator slot; Clanker coins count once
+ * the fees are collected. An address with no coins answers empty lists, not 404.
+ */
+app.get('/creator/:address', async (c) => {
+  const address = c.req.param('address');
+  if (!isAddr(address)) return c.json({ error: 'invalid address' }, 400);
+  const creator = lc(address) as Address;
+  const rows = await db.select().from(schema.token).where(eq(schema.token.creator, creator)).orderBy(desc(schema.token.launchedAt)).limit(200);
+  const ids = rows.map((t) => t.id);
+  const [coins, earned, claimed, at] = await Promise.all([
+    withAgent(rows),
+    ids.length
+      ? db
+          .select({ token: schema.feeAccrual.token, usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)` })
+          .from(schema.feeAccrual)
+          .where(and(inArray(schema.feeAccrual.token, ids), eq(schema.feeAccrual.recipientKind, 'creator')))
+          .groupBy(schema.feeAccrual.token)
+      : [],
+    ids.length
+      ? db
+          .select({ token: schema.feeClaim.token, usd: sql<number>`coalesce(sum(${schema.feeClaim.amountUsd}), 0)` })
+          .from(schema.feeClaim)
+          .where(and(inArray(schema.feeClaim.token, ids), eq(schema.feeClaim.recipientKind, 'creator')))
+          .groupBy(schema.feeClaim.token)
+      : [],
+    indexedAt(),
+  ]);
+  const earnedBy = new Map(earned.map((r) => [r.token as string, usd(Number(r.usd))]));
+  const claimedBy = new Map(claimed.map((r) => [r.token as string, usd(Number(r.usd))]));
+  return c.json(
+    j({
+      address: creator,
+      readAt: nowS(),
+      indexedAt: at,
+      totals: {
+        coins: rows.length,
+        agents: coins.filter((t) => !!t.agent).length,
+        earnedUsd: usd([...earnedBy.values()].reduce((s, v) => s + v, 0)),
+        claimedUsd: usd([...claimedBy.values()].reduce((s, v) => s + v, 0)),
+      },
+      coins: coins.map((t) => ({ ...t, creatorFees: { earnedUsd: earnedBy.get(t.id) ?? 0, claimedUsd: claimedBy.get(t.id) ?? 0 } })),
+    }),
+  );
 });
 
 /** `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}` for one coin. */

@@ -55,7 +55,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
       <body className="flex min-h-dvh flex-col overflow-x-clip">
         <Providers>
           {/* The app's own stacking context: Base UI popups portal to <body>, outside it, so they always sit on top. */}
-          <div className="isolate flex min-h-dvh flex-col">
+          <div className="isolate flex min-h-dvh flex-col overflow-x-clip">
             <a
               href="#main"
               className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-50 focus:rounded-sm focus:bg-ink focus:px-3 focus:py-1.5 focus:text-on-ink"

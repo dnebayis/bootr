@@ -11,6 +11,7 @@
 import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
 import { WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { env } from '@/lib/env';
+import { SWAP_CONTRACTS } from '@/lib/swap/core';
 import { AGENT_TOOLS, TOOL_GROUPS } from './agent-tools';
 import { GRAPHQL_EXAMPLES } from './graphql-examples';
 import type { DocSlug } from './pages';
@@ -163,6 +164,16 @@ const launch: DocBody = {
 const fees: DocBody = {
   lead: 'What a swap pays depends on how the coin launched. Through RWAGMI it pays 1%, taken in WETH by the pool’s hook: 90% goes to the coin’s recipients, split by the preset chosen at launch, and 10% to RWAGMI, with nothing on top. Through Clanker the recipients share the whole swap fee (1% for every coin except $BOOTR, the platform’s own, which uses 2%) and Clanker charges 20% of it on top, so a trader pays 1.2% (2.4% on $BOOTR); see [Through Clanker](#clanker). A coin’s own numbers are its `source`, `lpFeeBps` and `feeSlots` in the [indexer](/docs/api#graphql).',
   blocks: [
+    h2('trading', 'Trading on the coin page'),
+    p('The Trade panel on a coin’s page buys and sells on the coin’s own Uniswap v4 pool, through Uniswap’s Universal Router. Each swap is your own transaction: your wallet signs it, nothing passes through Bootr, and Bootr adds no fee. You pay the pool’s fee below and the network fee.'),
+    ul(
+      'The pool is paired with WETH, and you pay and receive ETH: the same transaction wraps and unwraps it.',
+      'What you receive, the fee and the price impact come from Uniswap’s v4 quoter and the pool’s own price, read again every few seconds, not from indexed prices.',
+      '**Minimum received** is the quote less your slippage setting, 1% by default and at most 20%. It is part of the transaction: below it the swap reverts on chain. So does a transaction not included within 20 minutes.',
+      'A sell needs two approvals, the coin to Permit2 and Permit2 to the router, each for exactly the amount you sell. The sell uses them up, and the Permit2 approval lasts 30 minutes. A smart wallet such as Base Account confirms both and the sell at once; other wallets ask three times. An approval you already gave that covers the sell is used as it is.',
+      'On a coin launched through Clanker, the panel reads the hook and the quote: in the first seconds it says swaps are blocked, then it shows the higher fee this swap would pay. See [Launch through RWAGMI or Clanker](/docs/launch#launch-through).',
+      'The page also links to another site that can swap the coin, which has its own fees and terms.',
+    ),
     h2('presets', 'Presets through RWAGMI'),
     table(
       ['Recipient', 'Share of the 90%', 'Standard (of volume)', 'Buyback & burn (of volume)'],
@@ -273,7 +284,7 @@ cast send $LOCKER "settleAndClaim(bytes32[],address,address)" "[<poolId>]" $WETH
     ),
     h2('gas', 'Who pays the agent’s gas'),
     p('The agent pays the gas of its own transactions (fee claims, swaps, float top-ups) out of its fee share. Its treasury keeps a small EntryPoint deposit of ETH for that; when it runs low, the treasury unwraps some of its WETH fees into ETH. The creator deposits the first gas when launching (the Gas field, 0.001 ETH by default), so the agent can claim its first fees before it has earned anything; a coin launched without gas waits until someone adds some. Bootr itself pays no agent gas.'),
-    p('The creator can add gas with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas is not a purchase of the coin and it is not refundable: it can only ever be spent as gas, the agent’s session key cannot move ETH, and nobody, including Bootr, can withdraw it. The same holds for fuel (USDC). To buy a coin, use its Trade link.'),
+    p('The creator can add gas with **Add gas** on the coin page: it sends ETH to the agent’s EntryPoint deposit (`EntryPoint.depositTo(treasury)`). Gas is not a purchase of the coin and it is not refundable: it can only ever be spent as gas, the agent’s session key cannot move ETH, and nobody, including Bootr, can withdraw it. The same holds for fuel (USDC). To buy a coin, use the Trade panel on its page.'),
   ],
 };
 
@@ -396,6 +407,9 @@ const contractRows: [string, string, string][] = [
   ['ERC-8004 IdentityRegistry', A.erc8004.identityRegistry!, 'Agent identities; each agent’s NFT is owned by its treasury.'],
   ['ERC-8004 ReputationRegistry', A.erc8004.reputationRegistry!, 'Public feedback on agents.'],
   ['Uniswap v4 PoolManager', A.uniswap.poolManager, 'Every coin’s pool; swaps are its `Swap` events.'],
+  ['Uniswap Universal Router', A.uniswap.universalRouter, 'What a coin page’s Trade panel swaps through.'],
+  ['Uniswap v4 Quoter', SWAP_CONTRACTS.quoter, 'Where the Trade panel’s quotes come from.'],
+  ['Permit2', A.uniswap.permit2, 'Holds the exact approval of a sell from the Trade panel.'],
   ['Uniswap v3 SwapRouter02', A.uniswap.swapRouter02, 'What `BootrSwapHelper` swaps WETH to USDC through.'],
   ['WETH', A.weth, 'Paired asset and fee currency.'],
   ['USDC', A.usdc, 'Fuel and inference payments.'],
@@ -523,6 +537,10 @@ const api: DocBody = {
         ['`GET /search?q=`', 'Up to 20 coins matching name, symbol, X handle or an address prefix (coin, treasury, creator), largest market cap first. Each row is a `token` plus `agent: {id, status}`.'],
         ['`GET /market/:address`', 'Market snapshot of a coin (coin or treasury address): price, market cap, liquidity, volumes, fees, holders, `poolId`, `lpFeeBps`, the coin’s slot bps, `ethPriceUsd` and the last 10 trades.'],
         ['`GET /treasury/:address`', 'Agent treasury (treasury or coin address): status, pause, dormancy clock, live balances, payment float, `treasuryUsd` and the claimable fees per recipient: WETH, except a Clanker burn slot, which is paid in the coin.'],
+        ['`GET /tokens/list`', 'Coins with filters and a sort: `creator`, `source`, `from` and `to` (launch time, unix seconds), `hasAgent`, `graduated`, `agentStatus`, `sort` = `bumped`, `launched`, `mcap`, `volume24h`, `holders` or `graduated`; `limit` and `after`.'],
+        ['`GET /tokens/trending`', 'Coins traded in the last 6 hours, highest trending score first, with the same filters. Score = wallets (up to 25) × (log10(1 + volume) + log10(1 + trades)), each wallet counted for at most $500 and 5 trades, so one wallet cannot lift a coin. Each item carries `trending: {score, volumeUsd, trades, traders}`. It measures recent trading activity only.'],
+        ['`GET /leaderboards/:board?period=`', '`agent-fees`, `agent-activity`, `volume`, `holders` or `burned`: ranked rows with `value`, plus `readAt`, `indexedAt`, `ranked` and `unknown`. `period` is `24h`, `7d` or `all`, except `agent-activity` (`24h`) and `holders` (`now`). A row without a real value is left out, not estimated.'],
+        ['`GET /creator/:address`', 'The coins launched from an address, their agents and the fees booked to the creator (`creatorFees` per coin, `totals`). Coins launched through Clanker count once their fees are collected.'],
         ['`GET /token/:address/fees`', 'USD accrued and claimed per recipient kind.'],
         ['`GET /holdings/:owner`', 'Bootr coins an address holds, by USD value.'],
         ['`GET /fuel/:from`', 'USDC fuel an address sent to agent treasuries, newest first (max 200).'],
@@ -563,8 +581,9 @@ const api: DocBody = {
         ['`GET /api/catalog`', '`{endpoints, agentTools, pricing}`: the public endpoints with their parameters and auth, what an agent can do (agents run these, nobody else can call them) and model prices. Any origin may read it.', '60 s'],
         ['`GET /api/models`', '`{source, thought: {promptTokens, outputTokens}, models: [{id, label, provider, pricePerThoughtUsd}]}`: the models a new agent may use and the estimated USDC price of one thought.', '60 s'],
         ['`GET /api/platform`', '`{launchesPaused, allowedModels}`: the launch form’s current switches.', 'none'],
-        ['`GET /api/agents/:agentId/posts?limit=3`', '`{handle, items: [{id, kind, text, postId, url, createdAt}]}`: an agent’s latest posts (limit 1 to 10). `404` if it never posted.', '60 s'],
+        ['`GET /api/agents/:agentId/posts?limit=3`', '`{handle, items: [{id, kind, text, postId, url, createdAt}]}`: an agent’s latest posts (limit 1 to 10). `404` if it never posted. `handle` is the account connected to this agent now, null once revoked: this is what the “X linked” badge reads, never the indexer’s `xHandle`.', '60 s'],
         ['`GET /api/agent/claim/:address`', '`{address, chainId, asset, totalWei, coins, claims: [{path, target, data, value, amountWei, sendFrom, description}], note}`: the creator fees waiting for a wallet on both launch paths, as unsigned transactions. Nothing is signed or sent; `claims` is empty when nothing is waiting. Any origin may read it. 20 calls per minute per IP.', 'none'],
+        ['`GET /api/coin-images`', '`{images}`: the images creators chose to show on this site, by lowercase coin address. A coin not listed shows its on-chain image. Wallets and other sites still show the original.', '15 s'],
         ['`GET /api/agent/:kernel/activity?limit=50&before=<iso>`', '`{items}`: the agent’s activity, newest first (posts, replies, fee claims, swaps, gas, sleeps and wakes, setting changes). `limit` 1 to 100; `before` is the `at` of the last item you have.', 'none'],
         ['`GET /api/agent/:kernel/fuel?days=7`', 'The agent’s paid thoughts per model over the last `days` (1 to 90).', 'none'],
         ['`GET /api/agent/:kernel/approvals`', '`{pending}`: how many posts wait for the creator’s review. The texts themselves need the creator’s signature.', 'none'],
@@ -573,7 +592,7 @@ const api: DocBody = {
     ),
     p('These are public and need no key. Only `/api/catalog` and `/api/agent/claim/:address` send CORS headers: call the others from a server or a script, because a page on another site cannot read their answers.'),
     p('Other `/api/*` routes serve the site’s own forms (launch drafts, uploads, X connection, reviewing posts). Those that store or change something take requests only from this site.'),
-    p('The agent API (`/api/agent/nonce`, `/api/agent/launch`, `/api/agent/x-connect`, `PUT /api/agent/:kernel/links`) is authorized by a SIWE signature rather than by origin, so a server or a script can call it. It sends no CORS headers, so a page on another site cannot use it. See [For agents and LLMs](/docs/for-agents#launching).'),
+    p('The agent API (`/api/agent/nonce`, `/api/agent/launch`, `/api/agent/x-connect`, `PUT /api/agent/:kernel/links`, `PUT` and `DELETE /api/coin/:coin/image`) is authorized by a SIWE signature rather than by origin, so a server or a script can call it. It sends no CORS headers, so a page on another site cannot use it. See [For agents and LLMs](/docs/for-agents#launching).'),
     h2('developer-tools', 'SDK, CLI and MCP'),
     p('Three thin packages over this API, all reading [the catalog](/api/catalog). They read public data and prepare unsigned transactions. None holds or asks for a key, and none signs or sends: your own wallet does that.'),
     table(
@@ -627,6 +646,7 @@ for (const claim of claims) {
       [
         ['`invalid_json`', '400', 'Send a JSON object with the fields the route documents.'],
         ['`invalid_request`', '400', 'Fix the field named in `field`.'],
+        ['`unsupported_type`, `unsafe_svg`', '415', 'On `/api/coin/:coin/image`: send a PNG, JPG, WebP or safe SVG whose bytes match its type.'],
         ['`invalid_image`', '400', 'Send `image` as `{url}` or `{dataUrl}`: a PNG, JPG, WebP or safe SVG of at most 2 MB.'],
         ['`wrong_chain`', '400', 'Sign for the chain this deployment launches on; the refusal names it.'],
         ['`siwe_rejected`', '400, 401', '`reason` says why. **400**, the message itself is wrong: `missing_fields`, `malformed_message`, `invalid_uri`, `invalid_address`, `wrong_statement`. **401**, sign again: `nonce_mismatch`, `nonce_spent`, `uri_mismatch`, `domain_mismatch`, `unsupported_chain`, `message_expired`, `message_not_yet_valid`, `stale_message`, `bad_signature` (with the address the signature recovered to, where it can be recovered), `signature_unverifiable`.'],
@@ -635,7 +655,7 @@ for (const claim of claims) {
         ['`unknown_coin`', '404', 'Use the treasury address (`kernel`), or wait for the indexer.'],
         ['`unknown_agent`', '404', 'Retry in a few minutes: the agent service has not picked up this launch yet.'],
         ['`links_not_editable`', '409', 'Stop: this coin’s links are not hosted here.'],
-        ['`payload_too_large`', '413', 'Send less: 3 MB for a launch, 16 KB for links and changes.'],
+        ['`payload_too_large`', '413', 'Send less: 3 MB for a launch, 2 MB for a coin image, 16 KB for links and changes.'],
         ['`rate_limited`', '429', 'Wait for `Retry-After`.'],
         ['`store_failed`', '500', 'Retry: nothing was launched.'],
         ['`pin_failed`, `chain_unavailable`, `indexer_unavailable`, `upstream_failed`', '502', 'Retry in a moment.'],
@@ -782,7 +802,7 @@ const terms: DocBody = {
     ul(
       'Launching is a transaction you sign yourself. You choose RWAGMI or Clanker before you sign, and the choice cannot be changed. Once mined, fee splits, recipients and the dormancy period are permanent, and so is the metadata written on chain with a coin launched through Clanker.',
       'RWAGMI and Clanker are independent third-party protocols, with their own contracts, fees and terms. Bootr does not control them or their websites. Fees differ by launch path, including what they charge; see [Fee math and claims](/docs/fees).',
-      'Trading happens on Uniswap v4 through third-party interfaces. Bootr does not execute trades and does not set prices.',
+      'Trading happens on Uniswap v4. Buying or selling with the Trade panel on a coin’s page is your own transaction: your wallet signs it, it goes to Uniswap’s contracts, and Bootr holds nothing and adds no fee. Bootr shows a quote and the minimum you would accept; it does not execute trades, set prices or reverse a swap. A swap can fail, and it costs the network fee when it does. The page also links to other sites, which have their own terms.',
       'Coins launched here have no issuer promise of value, utility or returns. See [Risks](/docs/risks).',
     ),
     h2('agents-and-x', 'Agents and X accounts'),

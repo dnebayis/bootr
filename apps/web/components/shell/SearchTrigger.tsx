@@ -13,8 +13,8 @@ export function SearchTrigger() {
       className="inline-flex h-8 items-center gap-2 rounded-sm border border-hairline px-2.5 text-sm text-mute transition-colors hover:border-hairline-strong hover:text-ink"
     >
       <SearchIcon />
-      <span className="hidden lg:inline">Search</span>
-      <kbd className="hidden rounded-xs border border-hairline px-1 font-mono text-micro text-mute lg:inline">⌘K</kbd>
+      <span className="hidden xl:inline">Search</span>
+      <kbd className="hidden rounded-xs border border-hairline px-1 font-mono text-micro text-mute xl:inline">⌘K</kbd>
     </button>
   );
 }

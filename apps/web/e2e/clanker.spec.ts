@@ -8,7 +8,7 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 
 /**
  * Launch through RWAGMI or Clanker (docs/design/clanker-launch.md, task D). Mock mode offers both paths; a Clanker coin
- * shows its source label, the whole-fee split with Clanker's 20% on top, and still links to the swap aggregator.
+ * shows its source label, the whole-fee split with Clanker's 20% on top, and still links to the swap aggregator from its trade panel.
  */
 test('launch form offers RWAGMI and Clanker; the summary and fee preview follow the choice, the coin page shows the source', async ({ page }) => {
   await page.goto('/launch');
@@ -56,7 +56,7 @@ test('launch form offers RWAGMI and Clanker; the summary and fee preview follow 
   const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Locked fee split' }) });
   await expect(panel.getByTestId('fee-sentence')).toContainText('a trader pays 1.20% in total');
   await expect(panel.getByText('locked in Clanker’s LP locker')).toBeVisible();
-  await expect(page.getByRole('link', { name: /Trade/ })).toHaveAttribute('href', /^https:\/\/(app\.uniswap\.org|swap\.defillama\.com)\//);
+  await expect(page.getByRole('link', { name: /Swap on another site/ })).toHaveAttribute('href', /^https:\/\/(app\.uniswap\.org|swap\.defillama\.com)\//);
 });
 
 test('the mock Clanker coin shows its label, the whole-fee split and the swap link; a Bootr coin shows none of it', async ({ page }) => {
@@ -69,7 +69,7 @@ test('the mock Clanker coin shows its label, the whole-fee split and the swap li
   await expect(page.getByRole('heading', { name: 'Locked fee split' })).toBeVisible();
   await expect(page.getByTestId('fee-sentence')).toContainText('The swap fee is 1.00%, all of it to the recipients above, plus 20% on top for Clanker (0.20%)');
   await expect(page.getByText('Clanker', { exact: true })).toBeVisible(); // the legend's launcher entry
-  await expect(page.getByRole('link', { name: /Trade/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Swap on another site/ })).toBeVisible();
   // The creator (everyone in mock mode) gets one line with the WETH waiting in Clanker's fee locker and the claim.
   const line = page.getByTestId('clanker-fee-line');
   await expect(line).toContainText('Your claimable fees:');

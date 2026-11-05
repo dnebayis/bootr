@@ -42,7 +42,7 @@ test('token page renders agent, fee split and trades', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Agent' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Locked fee split' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recent trades' })).toBeVisible();
-  await expect(page.getByRole('link', { name: /Trade/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Trade', exact: true })).toBeVisible();
   await expect(page.getByText(/Inactive for \d+ days/)).toBeVisible();
 });
 

@@ -8,10 +8,10 @@ import { useToken } from '@/lib/indexer';
 import { useCoinLinks } from '@/lib/coin-links';
 import { useNow } from '@/lib/hooks';
 import { age, num, pct, price, shortAddr, usd } from '@/lib/format';
-import { chainBadge, clankerWorldUrl, explorer, swapLink } from '@/lib/chains';
+import { chainBadge, clankerWorldUrl, explorer } from '@/lib/chains';
 import { Badge } from '@/components/ui/Badge';
 import { CopyButton } from '@/components/ui/CopyButton';
-import { buttonClass, LinkButton } from '@/components/ui/Button';
+import { buttonClass } from '@/components/ui/Button';
 import { Panel, Empty } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { changeClass, Usd } from '@/components/ui/Ticker';
@@ -21,12 +21,14 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { Isometric } from '@/components/art/Isometric';
 import { AgentPanel } from './AgentPanel';
+import { XLinkedBadge } from './XLinkedBadge';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
 import { CreatorConsole } from './CreatorConsole';
 import { CreatorXBanner } from './CreatorXBanner';
 import { ClankerFeeLine } from './ClankerFeeLine';
 import { FeeSplit } from './FeeSplit';
+import { TradePanel } from './TradePanel';
 import { TradesTable } from './TradesTable';
 
 export function TokenSkeleton() {
@@ -113,9 +115,9 @@ export function TokenView({ address }: { address: string }) {
               <Badge tone="mono">{chainBadge(token.chainId)}</Badge>
               <span className="inline-flex items-center gap-1" data-testid="token-creator">
                 <span className="text-mute">by</span>
-                <a href={explorer.address(token.creator)} target="_blank" rel="noopener noreferrer" className="hover:text-link" title={token.creator}>
+                <Link href={`/u/${token.creator}`} className="hover:text-link" title={token.creator}>
                   {shortAddr(token.creator, 6, 4)}
-                </a>
+                </Link>
                 <CopyButton value={token.creator} label="Copy creator address" />
               </span>
               {token.source === 'clanker' ? (
@@ -131,7 +133,15 @@ export function TokenView({ address }: { address: string }) {
                 </a>
               ) : null}
             </div>
-            <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <AgentStatusLine token={token} agent={token.agent} now={now} />
+              <XLinkedBadge agentId={token.agentId} />
+              {token.kernel ? (
+                <Link href={`/agent/${token.kernel}`} className="text-caption text-link hover:underline">
+                  Agent page
+                </Link>
+              ) : null}
+            </div>
             {links.data && (links.data.website || links.data.x || links.data.telegram || links.data.discord) ? (
               <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="token-links">
                 {[
@@ -161,9 +171,9 @@ export function TokenView({ address }: { address: string }) {
             <div className="text-caption text-mute">Price</div>
             <div className="font-mono text-display-sm font-medium text-ink tabular">${price(token.priceUsd)}</div>
           </div>
-          <LinkButton href={swapLink(token.id)} external variant="primary" size="lg">
-            Trade <ArrowUpRightIcon />
-          </LinkButton>
+          <a href="#trade" className={buttonClass('primary', 'lg')}>
+            Trade
+          </a>
         </div>
       </header>
 
@@ -183,15 +193,19 @@ export function TokenView({ address }: { address: string }) {
         <Stat label="Age">{age(token.launchedAt, now)}</Stat>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="flex min-w-0 flex-col gap-6">
+      {/* On a phone the trade panel comes first; on a wide screen it heads the side column. */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:grid-rows-[auto_1fr]">
+        <div className="min-w-0 lg:col-start-2 lg:row-start-1">
+          <TradePanel token={token} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-6 lg:col-start-1 lg:row-span-2 lg:row-start-1">
           <DexChart target={token.poolId || token.id} />
           <FeeSplit token={token} />
           <Panel title="Recent trades" bodyClassName="p-0">
             <TradesTable trades={token.trades} symbol={token.symbol} now={now} />
           </Panel>
         </div>
-        <aside className="flex flex-col gap-6">
+        <aside className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-start-2">
           <AgentPanel token={token} now={now} />
           {isCreator ? <CreatorConsole token={token} agent={token.agent} /> : null}
           <ActivityTape token={token} now={now} />

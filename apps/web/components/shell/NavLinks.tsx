@@ -7,7 +7,7 @@ import { NAV_ITEMS, isActive } from './nav-items';
 
 export function NavLinksView({ pathname }: { pathname: string | null }) {
   return (
-    <nav aria-label="Primary" className="hidden items-center gap-1 md:flex">
+    <nav aria-label="Primary" className="hidden items-center gap-1 lg:flex">
       {NAV_ITEMS.map((item) => {
         const active = pathname ? isActive(pathname, item.href) : false;
         return (

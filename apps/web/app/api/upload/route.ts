@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { ipfsGatewayUrl, UPLOAD_MAX_BYTES, type UploadResult } from '@/lib/ipfs';
 import { isAllowedOrigin, pinataEnv } from '@/lib/server/env';
-import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem, type ImageKind } from '@/lib/server/ipfs';
+import { checkImageFile, clientIp, PinError, pinFile, RateLimiter, sha256Hex, type ImageKind } from '@/lib/server/ipfs';
 import { isDraftId } from '@/lib/server/sender';
 
 /**
@@ -33,15 +33,6 @@ function sameOrigin(req: NextRequest): boolean {
   if (origin && isAllowedOrigin(origin)) return true;
   return req.headers.get('sec-fetch-site') === 'same-origin';
 }
-
-const DECLARED: Record<string, ImageKind> = {
-  'image/png': 'image/png',
-  'image/jpeg': 'image/jpeg',
-  'image/jpg': 'image/jpeg',
-  'image/pjpeg': 'image/jpeg',
-  'image/webp': 'image/webp',
-  'image/svg+xml': 'image/svg+xml',
-};
 
 export async function POST(req: NextRequest) {
   if (!sameOrigin(req)) return fail(403, 'forbidden', 'cross-origin request rejected');
@@ -86,17 +77,10 @@ export async function POST(req: NextRequest) {
     draftId = String(form.get('draftId') ?? '');
     if (!(file instanceof File) || file.size === 0) return fail(400, 'invalid_request', 'Expected multipart/form-data with a "file" field.');
     if (!isDraftId(draftId)) return fail(400, 'invalid_request', 'draftId must be a launch draft uuid');
-    if (file.size > UPLOAD_MAX_BYTES) return fail(413, 'payload_too_large', 'Image must be at most 2 MB.');
-    bytes = new Uint8Array(await file.arrayBuffer());
-    const sniffed = sniffImage(bytes);
-    if (!sniffed) return fail(415, 'unsupported_type', 'Use a PNG, JPG, WebP or SVG image.');
-    const declared = file.type ? DECLARED[file.type.toLowerCase()] : sniffed;
-    if (declared !== sniffed) return fail(415, 'unsupported_type', 'The file content does not match its type. Use a PNG, JPG, WebP or SVG image.');
-    if (sniffed === 'image/svg+xml') {
-      const problem = svgProblem(bytes);
-      if (problem) return fail(415, 'unsafe_svg', `SVG refused: ${problem}.`);
-    }
-    type = sniffed;
+    const checked = await checkImageFile(file);
+    if (!checked.ok) return fail(checked.status, checked.error, checked.message);
+    bytes = checked.bytes;
+    type = checked.type;
   } else {
     return fail(400, 'invalid_request', 'kind must be "image" or "json"');
   }

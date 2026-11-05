@@ -27,13 +27,24 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { CreatorFees } from './CreatorFees';
 import { ClankerCreatorFees } from './ClankerCreatorFees';
 
-function Rows({ n = 3 }: { n?: number }) {
+export function Rows({ n = 3 }: { n?: number }) {
   return (
     <div className="flex flex-col gap-2 p-5">
       {Array.from({ length: n }, (_, i) => (
         <Skeleton key={i} className="h-9" />
       ))}
     </div>
+  );
+}
+
+/** A coin's image, name and symbol, as every list here and on the public creator page shows them. */
+export function CoinLabel({ token }: { token: Pick<Token, 'image' | 'symbol' | 'name'> }) {
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <TokenImage src={token.image} symbol={token.symbol} size={28} className="rounded-xs" />
+      <span className="truncate text-sm text-ink">{token.name}</span>
+      <span className="font-mono text-caption text-mute">${token.symbol}</span>
+    </span>
   );
 }
 
@@ -71,14 +82,14 @@ function AgentRow({ token, now, gas }: { token: Token; now: number; gas: KernelG
   return (
     <tr className="border-t border-hairline">
       <td className={td}>
-        <Link href={`/token/${token.id}`} className="flex items-center gap-2.5 hover:text-link">
-          <TokenImage src={token.image} symbol={token.symbol} size={28} className="rounded-xs" />
-          <span className="text-sm text-ink">{token.name}</span>
-          <span className="font-mono text-caption text-mute">${token.symbol}</span>
+        <Link href={`/token/${token.id}`} className="hover:text-link">
+          <CoinLabel token={token} />
         </Link>
       </td>
       <td className={td}>
-        <StatusDot status={status} withLabel />
+        <Link href={`/agent/${token.kernel}`} className="hover:text-link" title="The agent’s public page">
+          <StatusDot status={status} withLabel />
+        </Link>
       </td>
       <td className={`${td} text-right font-mono text-sm tabular`}>{usd(agent.data?.treasuryUsd, { compact: false })}</td>
       <td className={td}>
@@ -136,6 +147,9 @@ export function ProfileView() {
         <a href={explorer.address(address)} target="_blank" rel="noopener noreferrer" className="hover:text-link">
           {shortAddr(address, 10, 8)}
         </a>
+        <Link href={`/u/${address}`} className="text-link hover:underline">
+          Public page
+        </Link>
         {env.useMock ? <span>· mock data</span> : null}
       </div>
 
@@ -184,11 +198,7 @@ export function ProfileView() {
               {launched.data.map((t) => (
                 <li key={t.id}>
                   <Link href={`/token/${t.id}`} className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-canvas-sub">
-                    <span className="flex min-w-0 items-center gap-2.5">
-                      <TokenImage src={t.image} symbol={t.symbol} size={28} className="rounded-xs" />
-                      <span className="truncate text-sm text-ink">{t.name}</span>
-                      <span className="font-mono text-caption text-mute">${t.symbol}</span>
-                    </span>
+                    <CoinLabel token={t} />
                     <span className="font-mono text-sm text-ink tabular">{usd(t.marketCapUsd)}</span>
                   </Link>
                 </li>

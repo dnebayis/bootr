@@ -22,6 +22,7 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
 import { ApprovalQueue } from './ApprovalQueue';
+import { CoinImageForm } from './CoinImageForm';
 import { CoinLinksForm } from './CoinLinksForm';
 import { useCreatorSignature } from './creator-signature';
 import { FuelForm } from './FuelForm';
@@ -467,6 +468,10 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
         )}
 
         {cfg ? <ApprovalQueue token={token} reviewing={cfg.requireApproval} /> : null}
+
+        <div className="border-t border-hairline pt-4">
+          <CoinImageForm token={token} />
+        </div>
 
         <div className="border-t border-hairline pt-4">
           <CoinLinksForm token={token} />
