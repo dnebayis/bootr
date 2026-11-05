@@ -95,7 +95,7 @@ Do not assume defaults the user has not seen: leaving out \`fuelUsdc\` still mov
 
 Before you start, read \`GET ${site}/api/platform\`: if \`launchesPaused\` is true, stop. The wallet needs USDC for fuel, and ETH on Base for the launch fee, any dev buy, the agent's gas and network fees.
 
-The user runs this in their own terminal, after \`npm install viem\` (Node 18 or later), with \`BOOTR_WALLET_KEY\` set in their own shell. Do not run it for them with a key you can see.
+The user runs this in their own terminal, after \`npm install viem\` (Node 18 or later), with the coin's image next to it as \`coin.png\` and \`BOOTR_WALLET_KEY\` (the key as 0x hex) set in their own shell. Do not run it for them with a key you can see.
 
 \`\`\`js
 // launch.mjs
@@ -151,8 +151,18 @@ const res = await fetch(\`\${SITE}/api/agent/launch\`, {
 });
 const prepared = await res.json();
 if (!res.ok) throw new Error(\`\${prepared.error}: \${prepared.message}\`);
-if (prepared.mock || prepared.chainId !== base.id || prepared.creator.toLowerCase() !== account.address.toLowerCase()) {
-  throw new Error('This answer is not for this wallet on Base mainnet. Nothing was sent.');
+// Step 4 of the Launch Flow: the answer must name this wallet, Base mainnet and these contracts.
+const same = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+const launcher = { bootr: '${A.bootr.launcher}', clanker: '${A.bootr.clankerLauncher}' }[launch.launchThrough ?? 'bootr'];
+const contractOf = { approve: '${A.usdc}', launch: launcher, gas: '${A.entryPointV07}' };
+if (
+  prepared.mock ||
+  prepared.chainId !== base.id ||
+  !same(prepared.creator, account.address) ||
+  !same(prepared.launcher, launcher) ||
+  !prepared.transactions.every((tx) => same(tx.to, contractOf[tx.step]))
+) {
+  throw new Error('This answer is not for this wallet and these contracts on Base mainnet. Nothing was sent.');
 }
 
 // Nothing has been sent yet. The person holding the wallet decides here.
@@ -297,7 +307,7 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | Field | Default | Rules |
 | --- | --- | --- |
 | \`launchThrough\` | \`bootr\` | \`bootr\` or \`clanker\`. Permanent for the coin |
-| \`buyback\` | \`false\` | \`true\` picks the buyback and burn preset. Permanent for the coin |
+| \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin |
 | \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls |
 | \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins |
 | \`gasEth\` | \`0.001\` | \`0\`, or at least \`0.0001\`. The agent's first gas, deposited after the launch. With \`0\` the agent waits until someone adds gas |
@@ -340,6 +350,8 @@ ${feeRow('Creator', 'creator')}
 ${feeRow('Buyback and burn', 'burn')}
 ${feeRow('Platform', 'platform')}
 
+A new pool on the Clanker path also opens with Clanker's anti-sniper fee, and nothing like it exists on the Bootr path. Read from a Base fork with the launcher's current settings: a swap within about 4 seconds of the launch reverts, the next ones pay about 55%, falling to about 5% at 14 seconds, and from about 16 seconds a swap pays the normal 1.20%. Those fees go to the same recipients. \`devBuyEth\` runs inside the launch transaction and is not affected, so a creator who wants coins at the start should use it instead of buying right after. Tell the user this before they choose the Clanker path.
+
 The presets split what reaches the recipients. Standard is agent ${pct(FALLBACK_STANDARD.agentBps)}, creator ${pct(FALLBACK_STANDARD.creatorBps)}, platform ${pct(FALLBACK_STANDARD.platformBps)}. Buyback and burn (\`buyback: true\`) is agent ${pct(FALLBACK_BUYBACK.agentBps)}, creator ${pct(FALLBACK_BUYBACK.creatorBps)}, burn ${pct(FALLBACK_BUYBACK.burnBps)}, platform ${pct(FALLBACK_BUYBACK.platformBps)}.
 
 The burn share works differently per path. Through Bootr it goes to a contract made for the coin, whose WETH is swapped for the coin and burned by a call only the launcher's owner can make. Through Clanker it is converted into the coin and sent to the dead address.
@@ -380,7 +392,7 @@ const res = await fetch(\`\${SITE}/api/agent/\${kernel}/links\`, {
 // the normalised links: { "website": "https://example.org", "x": "https://x.com/project", "telegram": null, "discord": null }
 \`\`\`
 
-A page on another site cannot call this route: a browser sends its own \`Origin\`, and anything but this site is refused. A script sends no \`Origin\` and needs none, since the signature is what authorizes the change. The statement is \`Update the links of Bootr coin $<SYMBOL> (#<agentId>, <kernel>).\`. Read the current links from \`${site}/tokens/<launchId>.json\` first if you only change one. \`x\` is the project's account: the agent's own account is refused here, since the coin page already shows it. On the Clanker path, this changes the coin page and the document at that URL, not Clanker's page.
+A page on another site cannot call this route: a browser sends its own \`Origin\`, and anything but this site is refused. A script sends no \`Origin\` and needs none, since the signature is what authorizes the change. The statement is \`Update the links of Bootr coin $<SYMBOL> (#<agentId>, <kernel>).\`. If you only change one, read the others first from \`${site}/tokens/<launchId>.json\`: \`website\`, then the \`x\`, \`telegram\` and \`discord\` entries of \`socialMediaUrls\`. Its \`x\` entries can include the agent's own account after the project's, so keep only the project's, and do not use its \`website\` entry, which falls back to this site. The launch id is in the launch answer and in the coin's \`metadata\` in the indexer: the URL itself, or \`contractUri\` inside the JSON on the Clanker path. \`x\` is the project's account: the agent's own account is refused here, since the coin page already shows it. On the Clanker path, this changes the coin page and the document at that URL, not Clanker's page.
 
 ### Other things the creator can do
 
@@ -391,7 +403,7 @@ These are transactions or wallet actions. The same rule applies: show the amount
 | Add fuel | A plain USDC \`transfer\` to the treasury address, or the coin page. Anyone can do it, and it cannot be taken back |
 | Add gas | \`EntryPoint.depositTo(kernel)\` with ETH, or the coin page. Anyone can do it, and it cannot be taken back |
 | Claim creator fees, Bootr path | On the coin page or \`${site}/profile\`, or \`settleAndClaim([poolId], WETH, you)\` on RWAGMI's locker \`${A.rwagmiLockerV3}\`, with the coin's \`poolId\` from the indexer |
-| Claim creator fees, Clanker path | On the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call |
+| Claim creator fees, Clanker path | On the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
 | Pause or resume the agent | \`pauseAgent(kernel)\` or \`unpauseAgent(kernel)\` on AgentGuardian \`${A.bootr.guardian}\`, or \`${site}/profile\`. Only the creator can. It moves no funds |
 
 ## What an Agent Can and Can't Do With Its Treasury

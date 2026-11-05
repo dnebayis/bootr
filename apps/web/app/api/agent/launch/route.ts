@@ -157,10 +157,12 @@ export async function POST(req: NextRequest) {
       `worker must be one of ${WORKER_TEMPLATES.map((w) => w.id).join(', ')}, or {capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs: ${WORKER_BOUNDS.minPostIntervalMs}..${WORKER_BOUNDS.maxPostIntervalMs}, jobLines: up to ${WORKER_BOUNDS.maxJobLines} lines of ${WORKER_BOUNDS.maxJobLineChars} characters}; got ${quoted(l.worker)}.`,
     );
   }
+  // Both are permanent or move money, so a value this route cannot read is refused, never taken for the default.
+  if (l.buyback !== undefined && typeof l.buyback !== 'boolean') return invalid('buyback', `buyback must be true or false, got ${quoted(l.buyback)}.`);
   const buyback = l.buyback === true;
   const launchThrough = normalizeSource(l.launchThrough);
   if (launchThrough === null) return invalid('launchThrough', `launchThrough must be bootr (default) or clanker, got ${quoted(l.launchThrough)}.`);
-  const fuel = typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '20';
+  const fuel = l.fuelUsdc === undefined ? '20' : typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '';
   if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
   if (!DECIMAL.test(devBuy)) return invalid('devBuyEth', `devBuyEth must be a decimal ETH amount such as "0.01", got ${quoted(l.devBuyEth)}.`);

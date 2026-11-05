@@ -174,7 +174,7 @@ describe('matches the routes', () => {
     const src = source(`${SITE}/api/agent/launch`);
     expect(src).toContain("GAS_DEFAULT_ETH = '0.001'");
     expect(src).toContain("GAS_MIN_ETH = '0.0001'");
-    expect(src).toContain(": '20';");
+    expect(src).toContain("l.fuelUsdc === undefined ? '20'");
     const launch = JSON.stringify(web.find((e) => e.url.endsWith('/api/agent/launch'))?.parameters?.body);
     for (const s of ['default 0.001', 'at least 0.0001', 'default 20']) expect(launch).toContain(s);
   });
