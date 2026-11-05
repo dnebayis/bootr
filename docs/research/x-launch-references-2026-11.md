@@ -11,7 +11,7 @@ Docs mention X only for Solana. The live API and chain show it also launches on 
 | Who sends the deploy | One bot EOA `0xd9aCd656…6e58`, nonce 423,273, for all 20 sampled social launches (V) |
 | Factory | v4 `0xE85A59c6…83a9` for 19 of 20, even after v5 went live (V) |
 | Fee slots | One recipient, 100% of the LP fee: `recipient` = `admin` = the author's wallet, with `clankerFee` and `pairedFee` of 10000 (15 of 15 with the field) (V). No platform slot; Clanker's protocol fee sits on top |
-| Author's wallet | One address per X numeric id (same author, same address, V). 8 of 14 had never sent a tx and held 0 ETH, and others were active (V). clanker.world uses Privy (V in its bundle). Wallets created or looked up per X account, reached by signing in: U |
+| Author's wallet | One address per X numeric id (same author, same address, V). 9 of 14 had never sent a tx and held 0 ETH, and the other 5 were active (V). clanker.world uses Privy (V in its bundle). Wallets created or looked up per X account, reached by signing in: U |
 | Sniper protection | Descending tax 80% to 5% over 15 s (15 of 15) (V) |
 | Provenance | `social_context` = interface `clanker`, platform `twitter`, messageId = post URL, id = numeric X id, username (V) |
 | Gas | 0.0000246 ETH for the sampled launch (V) |
@@ -61,6 +61,10 @@ Farming warning (V): 24 of 50 recent launches show a recipient different from th
 ## Effect on Bootr's draft design
 
 Replace the draft's fixed parser and shared escrow key with: free-text conversation, a confirm step when unsure, and one wallet per X numeric id. Clanker's sniper config, one-recipient shape and social context format can be mirrored directly on the v4 path. X's written approval rule for AI reply bots still applies, and neither reference's approval status is known.
+
+## The wallet primitive
+
+Privy's user-creation API accepts `linked_accounts` of type `twitter_oauth` with `subject`, `name` and `username`, together with `wallets` to create for that user, so a wallet can exist before the person's first login (V: https://docs.privy.io/api-reference/users/create.md). Its docs say a user can access a pregenerated wallet and its assets after logging in (V). Who can sign before login, and the price, were not confirmed. No Bootr fork or live test has been run on this yet.
 
 ## Sources
 
