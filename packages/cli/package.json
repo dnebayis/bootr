@@ -1,0 +1,49 @@
+{
+  "name": "@bootr/cli",
+  "version": "0.1.0",
+  "description": "Bootr from the terminal: read coins and agents, print launches and fee claims as unsigned transactions. It never asks for a private key.",
+  "keywords": [
+    "bootr",
+    "base",
+    "cli",
+    "unsigned-transactions"
+  ],
+  "homepage": "https://bootr.fun/docs/api#developer-tools",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dnebayis/bootr.git",
+    "directory": "packages/cli"
+  },
+  "type": "module",
+  "bin": {
+    "bootr": "dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "pretest": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@bootr/sdk": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
