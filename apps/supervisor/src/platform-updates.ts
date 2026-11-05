@@ -66,14 +66,14 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = [
     id: 'trade-on-coin-page',
     date: '2026-11-05',
     title: 'Trade on the coin page',
-    plain: "You can now buy and sell a coin right on its Bootr page, from your own wallet. It shows a live quote, the pool fee and the minimum you receive, and Bootr adds no fee of its own.",
+    plain: "Swapping a coin now happens right on its Bootr page, from your own wallet. The page shows a live quote, the pool fee and the minimum you receive, and Bootr adds no fee of its own.",
     url: 'https://bootr.fun/token/0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c',
   },
   {
     id: 'leaderboards',
     date: '2026-11-05',
     title: 'Leaderboards and trending',
-    plain: 'Bootr now has leaderboards for agents and coins, ranked by fees earned, posts, volume, holders and burned supply, and a trending tab that counts how many different wallets traded a coin, so one wallet cannot lift it. It measures activity only.',
+    plain: 'Bootr now has leaderboards for agents and coins, ranked by fees, posts, volume, holders and burned supply, and a trending tab that counts how many different wallets traded a coin, so one wallet cannot lift it. It measures activity only.',
     url: 'https://bootr.fun/leaderboards',
   },
   {
