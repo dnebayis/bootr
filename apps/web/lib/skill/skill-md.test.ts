@@ -197,7 +197,7 @@ describe('matches the agent API', () => {
   it('states the launch defaults the route applies', () => {
     expect(LAUNCH).toContain("GAS_DEFAULT_ETH = '0.001'");
     expect(LAUNCH).toContain("GAS_MIN_ETH = '0.0001'");
-    expect(LAUNCH).toContain(": '20';");
+    expect(LAUNCH).toContain("l.fuelUsdc === undefined ? '20'");
     const reference = section('Launch Configuration Reference');
     expect(reference).toContain('| `gasEth` | `0.001` |');
     expect(reference).toContain('at least `0.0001`');
@@ -251,6 +251,13 @@ describe('fee split', () => {
     expect(row('A trader pays per swap')).toContain('1.20%');
     expect(fees).toContain('`buyback: true`');
   });
+
+  it('warns of the anti-sniper fee on a new Clanker pool, and points at the dev buy', () => {
+    expect(fees).toMatch(/anti-sniper fee/);
+    expect(fees).toMatch(/about 55%/);
+    expect(fees).toMatch(/about 16 seconds/);
+    expect(fees).toMatch(/`devBuyEth` runs inside the launch transaction/);
+  });
 });
 
 describe('safety', () => {
@@ -291,6 +298,19 @@ describe('the Quick Start example', () => {
     expect(example).toMatch(/Type "launch" to sign and send/);
     expect(example.indexOf('prompt.question')).toBeLessThan(example.indexOf('wallet.sendTransaction'));
     expect(example).toContain("receipt.status !== 'success'");
+  });
+
+  it('enforces the checks of step 4 before anyone is asked to sign', () => {
+    const a = addresses[BASE_MAINNET_CHAIN_ID];
+    const checks = example.slice(example.indexOf('// Step 4'), example.indexOf('prompt.question'));
+    expect(checks).toContain('prepared.mock');
+    expect(checks).toContain('prepared.chainId !== base.id');
+    expect(checks).toContain('same(prepared.creator, account.address)');
+    expect(checks).toContain('same(prepared.launcher, launcher)');
+    expect(checks).toContain('same(tx.to, contractOf[tx.step])');
+    for (const x of [a.bootr.launcher!, a.bootr.clankerLauncher!, a.usdc, a.entryPointV07]) expect(checks).toContain(x);
+    // A step this list does not name is refused, not sent.
+    for (const step of LAUNCH.matchAll(/step: '(\w+)'/g)) expect(checks).toContain(`${step[1]}: `);
   });
 
   it('imports only what the viem package exports', () => {
