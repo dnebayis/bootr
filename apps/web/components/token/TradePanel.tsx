@@ -62,7 +62,7 @@ export function TradePanel({ token }: { token: Token }) {
   if (!key) {
     return (
       <Panel id="trade" title="Trade" className="scroll-mt-20">
-        <p className="text-sm text-body">Trading on this page works for coins on Base.</p>
+        <p className="text-sm text-body">This coin cannot be traded on this page.</p>
         <ExternalLink href={elsewhere} className="mt-3 inline-flex text-caption">
           Swap on another site
         </ExternalLink>
@@ -147,7 +147,8 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
     try {
       await switchChain.mutateAsync({ chainId: tradeChainId });
     } catch (e) {
-      setProblem(SwapFailure.from(e).message);
+      const failure = SwapFailure.from(e);
+      setProblem(failure.code === 'rejected' ? failure.message : new SwapFailure('wrong_chain').message);
     }
   };
 

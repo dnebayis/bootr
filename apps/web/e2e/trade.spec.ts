@@ -70,18 +70,25 @@ test('an amount larger than the pool reads as no liquidity', async ({ page }) =>
   await expect(page.getByTestId('trade-error')).toContainText('does not have enough liquidity');
 });
 
-test('a wallet on another network is asked to switch', async ({ page }) => {
+test('a wallet on another network is asked to switch, and a failed switch reads in words', async ({ page }) => {
   await fakeInjectedWallet(page);
   await page.addInitScript(() => {
     const w = window as unknown as { ethereum: { request: (a: { method: string }) => Promise<unknown> } };
     const inner = w.ethereum.request;
-    w.ethereum.request = async (a) => (a.method === 'eth_chainId' ? '0x1' : inner(a));
+    w.ethereum.request = async (a) => {
+      if (a.method === 'eth_chainId') return '0x2105';
+      if (a.method === 'wallet_switchEthereumChain') throw Object.assign(new Error('cannot switch'), { code: -32000 });
+      return inner(a);
+    };
   });
   await page.goto(await firstCoin(page));
   const panel = page.locator('#trade');
   await panel.getByRole('button', { name: 'Connect wallet' }).click();
   await page.getByRole('menuitem', { name: /Browser wallet/ }).click();
-  await expect(panel.getByRole('button', { name: /^Switch to/ })).toBeVisible();
+  const switchButton = panel.getByRole('button', { name: /^Switch to/ });
+  await expect(switchButton).toBeVisible();
+  await switchButton.click();
+  await expect(panel.getByTestId('trade-error')).toContainText('Your wallet is on another network.');
 });
 
 test('the panel keeps to phone width', async ({ page }) => {

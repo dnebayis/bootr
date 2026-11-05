@@ -25,7 +25,7 @@ const MESSAGES: Record<SwapFailureCode, string> = {
   not_connected: 'Connect a wallet to swap.',
   wrong_chain: 'Your wallet is on another network. Switch to Base to swap.',
   no_balance: 'Your balance is too low for this amount.',
-  rejected: 'You rejected the request in your wallet. Nothing was sent.',
+  rejected: 'You rejected the request in your wallet, so the swap did not go through.',
   slippage: 'The price moved past your slippage setting, so the swap did not go through. Get a new quote, or raise the setting.',
   no_liquidity: 'The pool does not have enough liquidity for this amount. Try a smaller amount.',
   no_pool: 'This coin has no trading pool yet.',
