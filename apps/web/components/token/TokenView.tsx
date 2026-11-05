@@ -21,6 +21,7 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { Isometric } from '@/components/art/Isometric';
 import { AgentPanel } from './AgentPanel';
+import { XLinkedBadge } from './XLinkedBadge';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
 import { CreatorConsole } from './CreatorConsole';
@@ -113,9 +114,9 @@ export function TokenView({ address }: { address: string }) {
               <Badge tone="mono">{chainBadge(token.chainId)}</Badge>
               <span className="inline-flex items-center gap-1" data-testid="token-creator">
                 <span className="text-mute">by</span>
-                <a href={explorer.address(token.creator)} target="_blank" rel="noopener noreferrer" className="hover:text-link" title={token.creator}>
+                <Link href={`/u/${token.creator}`} className="hover:text-link" title={token.creator}>
                   {shortAddr(token.creator, 6, 4)}
-                </a>
+                </Link>
                 <CopyButton value={token.creator} label="Copy creator address" />
               </span>
               {token.source === 'clanker' ? (
@@ -131,7 +132,15 @@ export function TokenView({ address }: { address: string }) {
                 </a>
               ) : null}
             </div>
-            <AgentStatusLine token={token} agent={token.agent} now={now} className="mt-1.5" />
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <AgentStatusLine token={token} agent={token.agent} now={now} />
+              <XLinkedBadge agentId={token.agentId} />
+              {token.kernel ? (
+                <Link href={`/agent/${token.kernel}`} className="text-caption text-link hover:underline">
+                  Agent page
+                </Link>
+              ) : null}
+            </div>
             {links.data && (links.data.website || links.data.x || links.data.telegram || links.data.discord) ? (
               <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="token-links">
                 {[
