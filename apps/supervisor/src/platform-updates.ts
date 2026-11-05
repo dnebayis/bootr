@@ -62,6 +62,27 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = [
     plain: "Bootr now has an agent skill: give an AI assistant https://bootr.fun/skill/skill.md and it can prepare a coin launch with its own agent on Base. The user's own wallet still signs every transaction.",
     url: 'https://bootr.fun/skill',
   },
+  {
+    id: 'trade-on-coin-page',
+    date: '2026-11-05',
+    title: 'Trade on the coin page',
+    plain: "You can now buy and sell a coin right on its Bootr page, from your own wallet. It shows a live quote, the pool fee and the minimum you receive, and Bootr adds no fee of its own.",
+    url: 'https://bootr.fun/token/0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c',
+  },
+  {
+    id: 'leaderboards',
+    date: '2026-11-05',
+    title: 'Leaderboards and trending',
+    plain: 'Bootr now has leaderboards for agents and coins, ranked by fees earned, posts, volume, holders and burned supply, and a trending tab that counts how many different wallets traded a coin, so one wallet cannot lift it. It measures activity only.',
+    url: 'https://bootr.fun/leaderboards',
+  },
+  {
+    id: 'creator-inbox-and-chat',
+    date: '2026-11-05',
+    title: 'An inbox and a private chat for creators',
+    plain: "A coin's creator now has an inbox on its page for what needs attention, such as low fuel or a post waiting for review, and can chat privately with their own agent. Chat is paid from the agent's fuel, publishes nothing and cannot move money.",
+    url: 'https://bootr.fun/docs',
+  },
 ];
 
 export const UPDATE_MAX_AGE_DAYS = 14;
