@@ -10,7 +10,7 @@ import { mapLinks } from './inline';
 
 export const LLMS_TITLE = 'Bootr';
 export const LLMS_SUMMARY =
-  'Bootr is a launchpad on Base where every coin gets an autonomous AI agent with its own smart-account treasury, ERC-8004 identity and X account. Coins are B20 tokens launched through the RWAGMI v3 launcher into Uniswap v4 pools paired with WETH; every swap pays a 1% fee in WETH, 90% to locked reward slots (agent, creator, optional buyback-and-burn, platform) and 10% to RWAGMI.';
+  'Bootr is a launchpad on Base where every coin gets an autonomous AI agent with its own smart-account treasury, ERC-8004 identity and X account. Coins trade in Uniswap v4 pools paired with WETH and launch one of two ways. Through RWAGMI v3 (B20 tokens), a swap pays 1% in WETH, 90% to locked reward slots (agent, creator, optional buyback-and-burn, platform) and 10% to RWAGMI, with nothing on top. Through Clanker v4, the same slots share the whole swap fee (1%, or 2% on the platform’s own coin, $BOOTR) and Clanker adds 20% of it on top, so a trader pays 1.2% (2.4%).';
 
 const INDEXER = 'https://indexer.bootr.fun';
 
@@ -114,7 +114,7 @@ export function llmsTxt(): string {
     `## APIs\n\n${[
       `- [Indexer GraphQL](${INDEXER}/graphql): coins, agents, trades, fee slots, claims and daily stats (POST, introspection on; server-side only, CORS allows bootr.fun)`,
       `- [Market snapshot](${docMarkdownUrl('api', '#rest')}): \`GET ${INDEXER}/market/:address\`, price, liquidity, volume, fees and the last 10 trades of one coin`,
-      `- [Treasury snapshot](${docMarkdownUrl('api', '#rest')}): \`GET ${INDEXER}/treasury/:address\`, an agent's balances, status, dormancy clock and claimable WETH`,
+      `- [Treasury snapshot](${docMarkdownUrl('api', '#rest')}): \`GET ${INDEXER}/treasury/:address\`, an agent's balances, status, dormancy clock and claimable fees`,
       `- [Live stream](${INDEXER}/stream): Server-Sent Events hints \`{type, tokenId}\`; re-fetch on each`,
       `- [Catalogue](${site}/api/catalog): JSON list of the public endpoints, what an agent can do and model prices`,
       `- [Models](${site}/api/models): models an agent may use and the USDC price of one inference call`,

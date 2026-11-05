@@ -2,13 +2,14 @@ import { NextRequest } from 'next/server';
 import { SiweMessage } from 'siwe';
 import { privateKeyToAccount } from 'viem/accounts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { FALLBACK_MODELS } from '@/lib/models';
 import { issueNonce } from '@/lib/server/siwe-verify';
 import { POST as postConfig } from './[kernel]/config/route';
 import { PUT as putLinks } from './[kernel]/links/route';
 import { POST as launch } from './launch/route';
 import { POST as xConnect } from './x-connect/route';
 
-const h = vi.hoisted(() => ({ chainDown: false, fetchTokenCreator: vi.fn() }));
+const h = vi.hoisted(() => ({ chainDown: false, fetchTokenCreator: vi.fn(), relayModels: vi.fn(), allowedModels: null as string[] | null }));
 
 // The signature check without an RPC: a real ECDSA check, or the chain being down.
 vi.mock('viem', async (original) => {
@@ -31,6 +32,14 @@ vi.mock('@/lib/env', async (original) => {
 vi.mock('@/lib/server/sender', async (original) => {
   const actual = await original<typeof import('@/lib/server/sender')>();
   return { ...actual, fetchTokenCreator: h.fetchTokenCreator };
+});
+vi.mock('@/lib/server/relay-models', async (original) => {
+  const actual = await original<typeof import('@/lib/server/relay-models')>();
+  return { ...actual, relayModels: h.relayModels };
+});
+vi.mock('@/lib/server/admin-config', async (original) => {
+  const actual = await original<typeof import('@/lib/server/admin-config')>();
+  return { ...actual, readConfig: async () => ({ ...(await actual.readConfig()), ...(h.allowedModels ? { allowedModels: h.allowedModels } : {}) }) };
 });
 
 // Throwaway keys (the same one as e2e/agent-api.spec.ts): their addresses own nothing.
@@ -76,6 +85,9 @@ const read = async (res: Response) => ({ status: res.status, raw: await res.clon
 
 beforeEach(() => {
   h.chainDown = false;
+  h.allowedModels = null;
+  h.relayModels.mockReset();
+  h.relayModels.mockResolvedValue({ models: FALLBACK_MODELS });
   h.fetchTokenCreator.mockReset();
   h.fetchTokenCreator.mockResolvedValue({ creator: CREATOR, agentId: AGENT, symbol: 'ABC', metadata: null, xHandle: null });
 });
@@ -186,6 +198,20 @@ describe('the launch fields', () => {
     expect(body.message).toContain('fresh nonce');
   });
 
+  it('checks model against the relay and the allow-list, like GET /api/models', async () => {
+    const id = 'openai/gpt-5.5';
+    const fields = { model: id, image: { dataUrl: 'not an image' } };
+    h.allowedModels = [id];
+    // Allowed, and the relay is down or does not list it: refused.
+    expect((await refuse(fields)).body.field).toBe('model');
+    // Allowed and on the relay's list: past the model check, to the next field.
+    h.relayModels.mockResolvedValue({ models: [...FALLBACK_MODELS, { id, label: id, provider: 'OpenAI', pricePerThoughtUsd: 0.1 }] });
+    expect((await refuse(fields)).body.field).not.toBe('model');
+    // On the relay's list, not allowed: refused.
+    h.allowedModels = ['anthropic/claude-haiku-4.5'];
+    expect((await refuse(fields)).body.field).toBe('model');
+  });
+
   it('keeps a long value out of the answer', async () => {
     const { raw, body } = await refuse({ symbol: 'x'.repeat(100_000), model: 'y'.repeat(100_000) });
     expect(body.field).toBe('symbol');
@@ -267,6 +293,21 @@ describe('the creator routes', () => {
     const missing = await read(await postConfig(none, kernelCtx));
     expect(missing.status).toBe(403);
     expect(missing.body.message).toContain('no Origin header');
+  });
+
+  it('takes links from a program with no Origin: the signature and the creator check still decide', async () => {
+    const put = (body: unknown) => new NextRequest(`https://bootr.fun/api/agent/${KERNEL}/links`, { method: 'PUT', headers: { 'content-type': 'application/json', 'x-real-ip': '10.9.200.1' }, body: JSON.stringify(body) });
+    const unsigned = await read(await putLinks(put({ links: {} }), kernelCtx));
+    expect(unsigned.status).toBe(400);
+    expect(unsigned.body.error).toBe('siwe_rejected');
+    expect(unsigned.body.reason).toBe('missing_fields');
+    const stranger = await read(await putLinks(put({ ...(await signed(LINKS)), links: {} }), kernelCtx));
+    expect(stranger.status).toBe(403);
+    expect(stranger.body.error).toBe('not_creator');
+    const foreign = await read(await putLinks(request(`/api/agent/${KERNEL}/links`, { ...(await signed(LINKS)), links: {} }, { origin: 'https://evil.example' }), kernelCtx));
+    expect(foreign.status).toBe(403);
+    expect(foreign.body.error).toBe('forbidden');
+    expect(foreign.body.message).toContain('A script sends no Origin');
   });
 
   it('names the bad kernel, bounded, and the field in changes', async () => {

@@ -2,8 +2,9 @@
 
 An x402-paid LLM relay for Bootr. Each AI agent pays per request in USDC on Base from its own
 smart-account wallet. The relay forwards the request to OpenRouter using the platform's API key.
-No LLM provider accepts x402 USDC directly, so the relay is the seller, and it never serves a
-completion that has not been paid for.
+OpenRouter does not take x402, so the relay is the seller, and it never serves a completion that
+has not been paid for. Some gateways do take x402 directly (BlockRun, see
+`docs/research/blockrun-vs-openrouter.md`); the relay does not use them.
 
 ## How it works
 

@@ -39,6 +39,24 @@ describe('PUT /api/agent/[kernel]/links (mock mode)', () => {
     expect(((await noLinks.json()) as { message: string }).message).toMatch(/links must be an object/);
   });
 
+  it('refuses a browser on another site, sandboxed pages included, and takes a program with no Origin', async () => {
+    for (const origin of ['https://evil.example', 'null', 'https://bootr.fun.evil.example', '']) {
+      const refused = await put(coin.kernel, { links: { x: '@bootrfun' } }, { origin });
+      expect(refused.status, origin).toBe(403);
+      expect(((await refused.json()) as { error: string }).error).toBe('forbidden');
+    }
+    const none = new NextRequest(`${ORIGIN}/api/agent/${coin.kernel}/links`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.8' },
+      body: JSON.stringify({ links: { telegram: 'https://telegram.org/x' } }),
+    });
+    expect(none.headers.get('origin')).toBeNull();
+    // Past the Origin check: the link rules answer, not the 403.
+    const res = await PUT(none, { params: Promise.resolve({ kernel: coin.kernel }) } as unknown as RouteContext<'/api/agent/[kernel]/links'>);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { field: string }).field).toBe('telegram');
+  });
+
   it('validates each link with the launch form rules and names the field', async () => {
     const res = await put(coin.kernel, { links: { website: 'https://quiet.engine', telegram: 'https://telegram.org/x' } });
     expect(res.status).toBe(400);

@@ -41,4 +41,16 @@ describe('the refusal codes on /docs/api', () => {
     const row = DOC_CONTENT.api.blocks.flatMap((b) => (b.t === 'table' ? b.rows : [])).find((r) => r[0] === '`siwe_rejected`')!;
     for (const r of reasons) expect(row[2], r).toContain(`\`${r}\``);
   });
+
+  it('puts each SIWE reason under the status the check answers with', () => {
+    const src = read('web/lib/server/siwe-verify.ts');
+    const statuses = [...src.matchAll(/status: (\d+), reason: '(\w+)'/g), ...src.matchAll(/spent\((\d+), '(\w+)'/g)].map((m) => [m[2]!, m[1]!] as const);
+    expect(statuses.length).toBeGreaterThan(10);
+    const row = DOC_CONTENT.api.blocks.flatMap((b) => (b.t === 'table' ? b.rows : [])).find((r) => r[0] === '`siwe_rejected`')!;
+    const [at400, at401] = row[2]!.split('**401**');
+    expect(at401).toBeDefined();
+    for (const [reason, status] of statuses) expect(status === '400' ? at400 : at401, `${reason} is ${status}`).toContain(`\`${reason}\``);
+    expect(at400).not.toContain('bad_signature');
+    expect(at401).not.toContain('missing_fields');
+  });
 });

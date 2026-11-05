@@ -112,3 +112,18 @@ test('agent API: the creator gets an X connect URL for its agent (mock mode)', a
   expect(body.url).toContain('agentId=10388');
   expect(body.expiresIn).toBe(300);
 });
+
+test('agent API: links refuses a page on another site and takes a script with no Origin', async ({ request }) => {
+  const kernel = '0x00000000000000000000000000000000000000aa';
+  // A link that fails its check, so nothing is stored: the 400 shows the request got past the Origin check.
+  const data = { links: { telegram: 'https://telegram.org/x' } };
+  const headers = { 'x-real-ip': '10.7.0.9' };
+  for (const origin of ['https://evil.example', 'null']) {
+    const refused = await request.put(`/api/agent/${kernel}/links`, { data, headers: { ...headers, origin } });
+    expect(refused.status(), origin).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toBe('forbidden');
+  }
+  const script = await request.put(`/api/agent/${kernel}/links`, { data, headers });
+  expect(script.status()).toBe(400);
+  expect(((await script.json()) as { field: string }).field).toBe('telegram');
+});

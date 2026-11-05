@@ -7,7 +7,7 @@ import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
 import { isAllowedOrigin } from '@/lib/server/env';
 import { clientIp, RateLimiter } from '@/lib/server/ipfs';
-import { creatorRefusal, kernelMessage, NEW_NONCE, originRefusal, otherCoinMessage, rateLimitMessage, readJsonObject, unknownCoinMessage } from '@/lib/server/refusals';
+import { creatorRefusal, kernelMessage, linksOriginRefusal, NEW_NONCE, otherCoinMessage, rateLimitMessage, readJsonObject, unknownCoinMessage } from '@/lib/server/refusals';
 import { updateLaunchDraftLinks } from '@/lib/server/launch-drafts';
 import { fetchTokenCreator } from '@/lib/server/sender';
 import { verifySiwe } from '@/lib/server/siwe-verify';
@@ -51,12 +51,14 @@ export function launchIdOfContractUri(metadata: string | null | undefined): stri
  * launch form's rules (lib/coin-link-rules.ts); `x` may be `@handle` and is stored as `https://x.com/<handle>`;
  * the agent's own account is refused as the project's X link (the page shows it on its own line). The answer
  * is the normalised links. 409 when the coin's contract URI is not hosted here or no draft backs it: such links
- * cannot be edited. Same-origin only; 10 requests per minute per IP. In mock mode the signature is not checked
+ * cannot be edited. The signature and the creator check are what authorize this; `Origin` only keeps other sites' pages
+ * out: a browser always sends it on a PUT, so one that is present must be this site, and none means a program (a script,
+ * another agent). 10 requests per minute per IP. In mock mode the signature is not checked
  * and the mock store is updated.
  */
 export async function PUT(req: NextRequest, ctx: RouteContext<'/api/agent/[kernel]/links'>) {
   const origin = req.headers.get('origin');
-  if (!origin || !(isAllowedOrigin(origin) || sameHost(origin, req.headers.get('host')))) return fail(403, 'forbidden', originRefusal(origin));
+  if (origin !== null && !(isAllowedOrigin(origin) || sameHost(origin, req.headers.get('host')))) return fail(403, 'forbidden', linksOriginRefusal(origin));
   const retryAfter = limiter.hit(clientIp(req.headers));
   if (retryAfter) return fail(429, 'rate_limited', rateLimitMessage(10, retryAfter), {}, { 'Retry-After': String(retryAfter) });
   const { kernel } = await ctx.params;

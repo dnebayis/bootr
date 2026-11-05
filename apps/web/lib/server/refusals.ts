@@ -29,6 +29,11 @@ export function originRefusal(origin: string | null): string {
   return `${seen}: this route takes requests with Origin: ${env.siteUrl}, authenticated by the creator’s signed message.`;
 }
 
+/** For the one signed route a program may call with no Origin at all: only a foreign Origin is refused. */
+export function linksOriginRefusal(origin: string): string {
+  return `Origin ${quoted(origin, 100)} is not allowed: from a browser this route takes Origin: ${env.siteUrl}. A script sends no Origin header; the creator’s signed message authorizes the change.`;
+}
+
 export function kernelMessage(kernel: string): string {
   return `kernel must be the 0x address of the agent’s treasury, got ${quoted(kernel)}.`;
 }

@@ -160,13 +160,30 @@ describe('matches the agent API', () => {
   const errors = section('Error Handling');
 
   it('lists every error code the three routes return, and none they do not', () => {
-    const codes = (src: string) => [...src.matchAll(/fail\(\s*\d+,\s*'([a-z_]+)'/g)].map((m) => m[1]!);
+    const codes = (src: string) => [...src.matchAll(/(?:fail|refuse)\(\s*\d+,\s*'([a-z_]+)'/g)].map((m) => m[1]!);
     const real = new Set([...codes(LAUNCH), ...codes(X_CONNECT), ...codes(LINKS), 'siwe_rejected']);
     expect(real.size).toBeGreaterThan(15);
     for (const code of real) expect(errors, code).toContain(`\`${code}\``);
     const table = errors.split('\n').filter((l) => /^\| \d/.test(l));
     const listed = table.flatMap((l) => [...l.split('|')[2]!.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]!));
     expect(listed.filter((c) => !real.has(c))).toEqual([]);
+  });
+
+  it('puts each signature reason under its status, and leaves nothing it no longer does', () => {
+    const src = read('lib/server/siwe-verify.ts');
+    const statuses = [...src.matchAll(/status: (\d+), reason: '(\w+)'/g), ...src.matchAll(/spent\((\d+), '(\w+)'/g)].map((m) => [m[2]!, m[1]!] as const);
+    const line = errors.split('\n').find((l) => l.startsWith('`siwe_rejected` also'))!;
+    const [at400, at401] = line.split('are 400');
+    // nonce_mismatch is only the console pages' cookie nonce; the agent API never answers it.
+    for (const [reason, status] of statuses.filter(([r]) => r !== 'nonce_mismatch')) expect(status === '400' ? at400 : at401, `${reason} is ${status}`).toContain(`\`${reason}\``);
+    expect(errors).not.toMatch(/plain 500/);
+  });
+
+  it('sends no Origin from a script, and says a page on another site is refused', () => {
+    const post = section('Post-Launch Operations');
+    expect(post).not.toMatch(/origin: SITE/i);
+    expect(post).toContain('a browser sends its own `Origin`');
+    expect(errors).not.toContain('Send `Origin:');
   });
 
   it('documents every field of the launch body', () => {
