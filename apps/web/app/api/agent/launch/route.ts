@@ -12,9 +12,10 @@ import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
 import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
-import { FALLBACK_MODELS, filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
+import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { pinataEnv } from '@/lib/server/env';
+import { relayModels } from '@/lib/server/relay-models';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeSource, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
 import { NEW_NONCE, quoted, rateLimitMessage, readJsonObject } from '@/lib/server/refusals';
@@ -141,7 +142,8 @@ export async function POST(req: NextRequest) {
   if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return invalid('symbol', `symbol must be 2 to 10 letters or digits, got ${quoted(l.symbol)}.`);
   const identity = normalizeIdentity(l.identity);
   if (identity === null) return invalid('identity', `identity must be plain text of ${MIN_IDENTITY_CHARS} to ${MAX_IDENTITY_CHARS} characters.`);
-  const allowed = filterAllowedModels(FALLBACK_MODELS, platform?.allowedModels ?? []);
+  // The same list as GET /api/models: the relay's, or the built-in one when the relay is down.
+  const allowed = filterAllowedModels((await relayModels()).models, platform?.allowedModels ?? []);
   const model = typeof l.model === 'string' && l.model ? l.model : RECOMMENDED_MODEL;
   if (!allowed.some((m) => m.id === model)) {
     return invalid('model', `model must be one of: ${allowed.map((m) => m.id).join(', ')}; got ${quoted(l.model)}.`);
