@@ -55,7 +55,7 @@ abstract contract SecurityForkBase is Test {
     // ZeroDev permission modules (packages/shared/src/addresses.ts, Base Sepolia)
     address constant ECDSA_SIGNER = 0x6A6F069E2a08c2468e7724Ab3250CdBFBA14D4FF;
     address constant GAS_POLICY = 0xaeFC5AbC67FfD258abD0A3E54f65E70326F84b23;
-    address constant RATE_LIMIT_POLICY = 0xf63d4139B25c836334edD76641356c6b74C86873;
+    address constant RATE_LIMIT_POLICY = 0x6A06358E6b283921DECEAbe7e8A3741d506ccA9B;
     address constant TIMESTAMP_POLICY = 0xB9f8f524bE6EcD8C945b1b87f9ae5C192FdCE20F;
 
     bytes4 constant PID = bytes4(keccak256("bootr.session.v1"));
@@ -275,8 +275,8 @@ abstract contract SecurityForkBase is Test {
         enableData[0] = abi.encodePacked(NOT_FOR_VALIDATE_SIG, address(callPolicy), abi.encode(_productionRules(kernel)));
         // GasPolicy: abi.encode(uint128 allowed, bool enforcePaymaster, address allowedPaymaster)
         enableData[1] = abi.encodePacked(NOT_FOR_VALIDATE_SIG, GAS_POLICY, abi.encode(uint128(1e17), false, address(0)));
-        // RateLimitPolicy: interval(6) ‖ count(6) ‖ startAt(6)
-        enableData[2] = abi.encodePacked(NOT_FOR_VALIDATE_SIG, RATE_LIMIT_POLICY, uint48(3600), uint48(60), uint48(0));
+        // RateLimitPolicy with reset: interval(6) ‖ count(6)
+        enableData[2] = abi.encodePacked(NOT_FOR_VALIDATE_SIG, RATE_LIMIT_POLICY, uint48(3600), uint48(60));
         // TimestampPolicy: abi.encode(uint48 validAfter, uint48 validUntil)
         enableData[3] = abi.encodePacked(
             FOR_ALL_VALIDATION, TIMESTAMP_POLICY, abi.encode(uint48(0), uint48(vm.getBlockTimestamp() + 30 days))
