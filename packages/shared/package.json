@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./addresses": "./src/addresses.ts",
     "./config": "./src/config.ts",
+    "./fuel": "./src/fuel.ts",
     "./workers": "./src/workers.ts"
   },
   "scripts": {

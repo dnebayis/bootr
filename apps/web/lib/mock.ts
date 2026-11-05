@@ -654,7 +654,7 @@ export const mock = {
           { model: cfg.model, thoughts: turns, chargedMicroUsdc: String(turns * 9_400) },
         ]
       : [{ model: cfg.model, thoughts: turns * 5, chargedMicroUsdc: String(turns * 5 * 9_400) }];
-    return { days, since, byModel };
+    return { days, since, firstAt: since, byModel };
   },
   /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
   agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {

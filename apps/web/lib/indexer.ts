@@ -311,7 +311,7 @@ export async function fetchAgentFuel(kernel: string): Promise<AgentFuel> {
   const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/fuel`, { cache: 'no-store' });
   if (!res.ok) throw new IndexerError(`Agent fuel responded ${res.status}`);
   const json = (await res.json()) as Partial<AgentFuel>;
-  return { days: typeof json.days === 'number' ? json.days : 7, since: typeof json.since === 'string' ? json.since : '', byModel: Array.isArray(json.byModel) ? json.byModel : [] };
+  return { days: typeof json.days === 'number' ? json.days : 7, since: typeof json.since === 'string' ? json.since : '', ...(typeof json.firstAt === 'string' ? { firstAt: json.firstAt } : {}), byModel: Array.isArray(json.byModel) ? json.byModel : [] };
 }
 
 export const ACTIVITY_PAGE = 30;

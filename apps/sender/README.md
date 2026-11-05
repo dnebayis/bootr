@@ -69,6 +69,7 @@ with other services without clashing with their drizzle journals.
 | `X_CLIENT_ID` / `X_CLIENT_SECRET`     | yes      |                                    | the platform's X app (confidential client)                               |
 | `X_REDIRECT_URI`                      | yes      |                                    | must point to `GET /oauth/callback` and be registered on X               |
 | `SENDER_OAUTH_RETURN_URL`             | no       | unset (JSON)                       | browser redirect after the callback                                      |
+| `SENDER_SITE_URL`                     | no       | `https://bootr.fun`                | the web app; the page at `GET /` reads `<this>/api/catalog`              |
 | `PORT`                                | no       | `3002`                             |                                                                          |
 | `SENDER_RECONCILE_INTERVAL_MS`        | no       | `60000`                            | `0` disables the in-process reconciler                                   |
 | `SENDER_DEFAULT_POSTS_PER_DAY`        | no       | `24`                               | rolling 24h window                                                       |
@@ -78,6 +79,16 @@ with other services without clashing with their drizzle journals.
 | `X_TIMEOUT_MS`                        | no       | `15000`                            | per X request; a timed-out publish becomes `held`                        |
 | `SENDER_PUBLIC_RATE_LIMIT_PER_MIN`    | no       | `120`                              | requests per minute per client IP on `/public/*`; `0` disables. In production the web app's `/api/agents/:id/posts` proxy is the main caller (one IP, cached 60 s per agent) |
 | `SENDER_TRUST_PROXY`                  | no       | `0`                                | `1`: key the rate limit on the right-most `X-Forwarded-For` entry (exactly one trusted proxy in front). Otherwise the socket address is used and forwarding headers are ignored |
+
+## API page
+
+`GET /` is a plain HTML list of Bootr's public APIs, built from the web app's `GET /api/catalog`
+(`SENDER_SITE_URL`). The sender keeps the catalogue in memory for 5 minutes with a 3 s fetch timeout and one
+fetch at a time. When a refresh fails it keeps serving what it has and retries after 30 s; with nothing fetched
+yet the page says so and links the catalogue and docs, still `200`. The path touches no database, tokens or
+sessions. Only what the catalogue lists appears, so `/public/*`, OAuth and `/internal` are not on the page.
+Catalogue text is escaped and only http(s) URLs become links. One self-contained response: inline CSS, no
+JS, a strict CSP, `Cache-Control: public, max-age=300`.
 
 ## Public read API
 
@@ -144,6 +155,7 @@ service (H-1) are the boundary rather than an audience string.
 
 | Method | Path                                                 | Auth                    | Purpose                                                                 |
 | ------ | ---------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| GET    | `/`                                                  | none                    | HTML list of the public APIs (see "API page")                           |
 | GET    | `/health`                                            | none                    | liveness                                                                |
 | GET    | `/oauth/start?agentId=&state=&ts=&sig=[&reconnect=1][&redirect=1]` | start signature or HMAC | sets the browser binding cookie; returns `{url}` (X authorize URL), or a 302 with `redirect=1`. With HMAC: `{url}` of a signed start link |
 | GET    | `/oauth/callback?code=&state=`                       | signed state + cookie   | same browser, single use; exchanges the code, stores tokens, records `users/me` id and handle; never replaces another connected account without `reconnect=1` |

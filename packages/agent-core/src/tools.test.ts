@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
-import { TOOL_NAMES, type AgentConfig } from './types.js';
+import { MAX_RESOLVE_BATCH, TOOL_NAMES, type AgentConfig } from './types.js';
 
 const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> => ({
   capabilities: { xRead: false, xReply: false, xPublish: false, research: false, memory: false, treasury: false, images: false, ...Object.fromEntries(on.map((k) => [k, true])) },
@@ -10,13 +10,32 @@ const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> =>
 describe('tool catalog', () => {
   it('defines every tool with a capability, effect and schema', () => {
     expect(TOOL_LIST.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(TOOL_LIST).toHaveLength(19);
+    expect(TOOL_LIST).toHaveLength(20);
     expect(TOOLS.read_coin).toMatchObject({ capability: 'research', effect: 'read', idempotent: true });
     expect(TOOLS.treasury_execute.effect).toBe('money');
     expect(TOOLS.treasury_execute.idempotent).toBe(false);
     expect(TOOLS.publish_reply.idempotent).toBe(false);
     expect(TOOLS.read_mentions.effect).toBe('read');
     expect(TOOLS.finish.capability).toBeNull();
+  });
+
+  it('resolve_mentions lives next to resolve_mention, bounded and with the same outcomes', () => {
+    expect(TOOLS.resolve_mentions).toMatchObject({ capability: 'xReply', effect: 'write', idempotent: true });
+    expect(toolEnabled(caps(['xReply']), 'resolve_mention')).toBe(true);
+    expect(toolEnabled(caps(['xReply']), 'resolve_mentions')).toBe(true);
+    expect(toolEnabled(caps(['xRead']), 'resolve_mentions')).toBe(false);
+    const ids = Array.from({ length: MAX_RESOLVE_BATCH }, (_, i) => String(1000 + i));
+    expect(parseToolInput('resolve_mentions', { postIds: ids, outcome: 'skip', reason: 'noise' }).postIds).toHaveLength(MAX_RESOLVE_BATCH);
+    expect(() => parseToolInput('resolve_mentions', { postIds: [...ids, '9999'], outcome: 'skip', reason: 'noise' })).toThrow();
+    expect(() => parseToolInput('resolve_mentions', { postIds: [], outcome: 'skip', reason: 'noise' })).toThrow();
+    expect(() => parseToolInput('resolve_mentions', { postIds: ['not-an-id'], outcome: 'skip', reason: 'noise' })).toThrow();
+    expect(() => parseToolInput('resolve_mentions', { postIds: ['1'], outcome: 'answer', reason: 'noise' })).toThrow();
+    expect(() => parseToolInput('resolve_mentions', { postIds: ['1'], outcome: 'skip', reason: ' ' })).toThrow();
+    expect(() => parseToolInput('resolve_mentions', { postIds: ['1'], outcome: 'skip', reason: 'x'.repeat(501) })).toThrow();
+    const [def] = toFunctionDefinitions([TOOLS.resolve_mentions]);
+    const params = def?.function.parameters as { properties: Record<string, Record<string, unknown>>; required: string[] };
+    expect(params.required).toEqual(['postIds', 'outcome', 'reason']);
+    expect(params.properties.postIds).toMatchObject({ type: 'array', maxItems: MAX_RESOLVE_BATCH, minItems: 1 });
   });
 
   it('hides tools whose capability is disabled', () => {

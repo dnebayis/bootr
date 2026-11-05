@@ -182,6 +182,9 @@ export interface InboxEntry {
 
 const text = (max: number) => z.string().trim().min(1).max(max);
 
+/** Most ids one `resolve_mentions` call takes. */
+export const MAX_RESOLVE_BATCH = 20;
+
 export const toolInputSchemas = {
   read_mentions: z.object({}).strict(),
   read_x_thread: z.object({ postId: xIdSchema }).strict(),
@@ -208,6 +211,15 @@ export const toolInputSchemas = {
       postId: xIdSchema,
       outcome: z.enum(['skip', 'opt_out', 'defer']),
       reason: text(1000),
+      reviewAt: isoDateSchema.optional(),
+    })
+    .strict(),
+  // One reason for the whole list, at most what the sender stores for a mention (apps/sender/src/inbox.ts).
+  resolve_mentions: z
+    .object({
+      postIds: z.array(xIdSchema).min(1).max(MAX_RESOLVE_BATCH),
+      outcome: z.enum(['skip', 'opt_out', 'defer']),
+      reason: text(500),
       reviewAt: isoDateSchema.optional(),
     })
     .strict(),

@@ -27,6 +27,18 @@ describe('config', () => {
     expect(c.SENDER_OAUTH_RETURN_URL).toBeUndefined();
   });
 
+  it('defaults SENDER_SITE_URL, also when the compose file passes it empty', () => {
+    expect(loadConfig(base).SENDER_SITE_URL).toBe('https://bootr.fun');
+    expect(loadConfig({ ...base, SENDER_SITE_URL: '' }).SENDER_SITE_URL).toBe('https://bootr.fun');
+    expect(loadConfig({ ...base, SENDER_SITE_URL: 'https://staging.test' }).SENDER_SITE_URL).toBe('https://staging.test');
+  });
+
+  it('refuses a SENDER_SITE_URL that is not http(s)', () => {
+    for (const bad of ['javascript:alert(1)', 'ftp://bootr.fun', 'bootr.fun']) {
+      expect(() => loadConfig({ ...base, SENDER_SITE_URL: bad })).toThrow();
+    }
+  });
+
   it('requires SENDER_SERVICE_KEY of at least 32 characters (no fallback)', () => {
     expect(() => loadConfig({ ...base, SENDER_SERVICE_KEY: 'k'.repeat(31) })).toThrow(
       /at least 32/,

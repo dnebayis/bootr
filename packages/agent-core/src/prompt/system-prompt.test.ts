@@ -15,6 +15,11 @@ describe('buildSystemPrompt', () => {
   });
   const prompt = buildSystemPrompt(config, 'social');
 
+  it('steers several dismissals to resolve_mentions and keeps resolve_mention for one', () => {
+    expect(prompt).toContain('resolve_mentions closes several in one step');
+    expect(prompt).toContain('resolve_mention closes a single one');
+  });
+
   it('starts with the identity, then enabled owner rules in [id] form', () => {
     expect(prompt.startsWith('I am Bootr, a cheerful agent.\n\nOWNER RULES\n[tone] Stay friendly.\n[secret] Never reveal the founder.')).toBe(true);
     expect(prompt).not.toContain('[old]');
@@ -119,6 +124,13 @@ describe('buildObservation / compactView', () => {
     lastResults: [big(2000)],
     continuation: { progress: { step: 1 }, recentSteps: [big(2000)] },
   };
+
+  it('keeps a small extra section such as fuel through every compaction step', () => {
+    const fuel = { spendableUsdc: '1.78', thoughtsLeft: 19, low: true };
+    const view = buildObservation({ ...parts, extra: { fuel } }, 5000);
+    expect(view.contextWindow?.compacted).toContain('bounded complete incoming conversations');
+    expect(view.fuel).toEqual(fuel);
+  });
 
   it('returns the view untouched when it fits', () => {
     const view = buildObservation(parts, 1_000_000);

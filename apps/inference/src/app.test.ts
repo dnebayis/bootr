@@ -863,3 +863,133 @@ describe('upto scheme', () => {
     expect(settledRequirements.amount).toBe(quote.toString());
   });
 });
+
+describe('refusals name the fix', () => {
+  const required = { 'idempotency-key': 'k-msg', 'x-max-quote-micro-usdc': '1000000' };
+  type Refusal = {
+    error: { code: string; message: string };
+    issues?: { path: unknown[]; message: string }[];
+    upstream?: { truncated?: boolean; text?: string };
+  };
+  const refusal = async (res: Response) => ({
+    status: res.status,
+    raw: await res.clone().text(),
+    body: (await res.json()) as Refusal,
+  });
+
+  it('a schema refusal names the path, and keeps a 1 MB body out of the answer', async () => {
+    const t = createTestApp();
+    const many = await refusal(
+      await post(t, { ...chatBody(), messages: Array.from({ length: 50_000 }, () => ({})) }, required),
+    );
+    expect(many.status).toBe(400);
+    expect(many.body.error.code).toBe('invalid_request');
+    expect(many.body.error.message).toContain('messages.0.role');
+    expect(many.body.error.message).toContain('and 49999 more');
+    expect(many.body.issues).toHaveLength(20);
+    expect(many.raw.length).toBeLessThan(10_000);
+
+    // Zod's enum message quotes the value it refused.
+    const long = await refusal(
+      await post(t, { ...chatBody(), modalities: ['x'.repeat(100_000)] }, required),
+    );
+    expect(long.status).toBe(400);
+    expect(long.body.error.message).toContain('modalities.0');
+    expect(long.raw.length).toBeLessThan(2_000);
+  });
+
+  it('an unknown model is bounded and points at the list', async () => {
+    const t = createTestApp();
+    const { status, raw, body } = await refusal(
+      await post(t, { ...chatBody(), model: 'm'.repeat(100_000) }, required),
+    );
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('model_not_allowed');
+    expect(body.error.message).toContain('GET /v1/models');
+    expect(raw.length).toBeLessThan(500);
+  });
+
+  it('a missing header says what to send', async () => {
+    const t = createTestApp();
+    const noKey = await refusal(await post(t, chatBody(), { 'x-max-quote-micro-usdc': '1' }));
+    expect(noKey.body.error.message).toContain('a UUID works');
+    const noMax = await refusal(await post(t, chatBody(), { 'idempotency-key': 'k' }));
+    expect(noMax.body.error.message).toContain(quoteFor(chatBody()).toString());
+  });
+
+  it('the 402s say the price and how to pay', async () => {
+    const t = createTestApp();
+    const body = chatBody();
+    const quote = quoteFor(body).toString();
+    const unpaid = await refusal(await post(t, body, required));
+    expect(unpaid.status).toBe(402);
+    expect(unpaid.body.error.message).toContain(`${quote} micro-USDC`);
+    expect(unpaid.body.error.message).toContain('PAYMENT-SIGNATURE');
+    const over = await refusal(
+      await post(t, body, { 'idempotency-key': 'k-over', 'x-max-quote-micro-usdc': '1' }),
+    );
+    expect(over.status).toBe(402);
+    expect(over.body.error.code).toBe('quote_exceeds_max');
+    expect(over.body.error.message).toContain(quote);
+  });
+
+  it('a refused payment has a code and a reason in the body, not only in the header', async () => {
+    const t = createTestApp();
+    const body = chatBody();
+    const first = await post(t, body, required);
+    const header = first.headers.get('payment-required')!;
+    const accepted = decodePaymentRequiredHeader(header);
+    const tampered: PaymentPayload = {
+      x402Version: 2,
+      resource: accepted.resource,
+      accepted: { ...accepted.accepts[0]!, amount: '1' },
+      payload: {},
+    };
+    const res = await post(t, body, {
+      ...required,
+      'payment-signature': encodePaymentSignatureHeader(tampered),
+    });
+    expect(res.headers.get('payment-required')).toBeTruthy();
+    const { status, body: refused } = await refusal(res);
+    expect(status).toBe(402);
+    expect(refused.error.code).toBe('payment_rejected');
+    expect(refused.error.message).toContain('No matching payment requirements');
+    expect(refused.error.message).toContain('nothing was charged');
+    expect(t.facilitator.verify).not.toHaveBeenCalled();
+  });
+
+  it("cuts a provider's long error down", async () => {
+    const t = createTestApp({
+      upstreamFetch: async () => jsonResponse({ error: { message: 'e'.repeat(50_000) } }, 400),
+    });
+    const { payer } = payerFor(t);
+    const { status, raw, body } = await refusal(await paidPost(payer, chatBody(), 'k-long'));
+    expect(status).toBe(422);
+    expect(body.error.code).toBe('upstream_rejected');
+    expect(body.upstream?.truncated).toBe(true);
+    expect(raw.length).toBeLessThan(4_000);
+  });
+
+  it('an unknown route answers with a code too', async () => {
+    const t = createTestApp();
+    const { status, body } = await refusal(await t.app.request(`${URL_BASE}/v1/nope`));
+    expect(status).toBe(404);
+    expect(body.error.code).toBe('not_found');
+    expect(body.error.message).toContain('POST /v1/chat/completions');
+  });
+
+  it('an unexpected failure before a request is claimed is a coded 500', async () => {
+    const t = createTestApp();
+    const { payer, payments } = payerFor(t);
+    await paidPost(payer, chatBody(), 'k-500');
+    vi.spyOn(t.store, 'get').mockRejectedValueOnce(new Error('db password=do-not-repeat'));
+    const res = await post(t, chatBody(), {
+      'idempotency-key': 'k-500',
+      ...paymentProofHeaders(payments.get('k-500')!),
+    });
+    const { status, raw, body } = await refusal(res);
+    expect(status).toBe(500);
+    expect(body.error.code).toBe('internal_error');
+    expect(raw).not.toContain('do-not-repeat');
+  });
+});
