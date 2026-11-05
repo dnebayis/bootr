@@ -55,6 +55,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = [
     plain: 'Every public Bootr endpoint is now listed on one plain page at https://api.bootr.fun, and programs can read the same list at https://bootr.fun/api/catalog.',
     url: 'https://api.bootr.fun',
   },
+  {
+    id: 'agent-skill',
+    date: '2026-11-05',
+    title: 'Launch from your AI assistant',
+    plain: "Bootr now has an agent skill: give an AI assistant https://bootr.fun/skill/skill.md and it can prepare a coin launch with its own agent on Base. The user's own wallet still signs every transaction.",
+    url: 'https://bootr.fun/skill',
+  },
 ];
 
 export const UPDATE_MAX_AGE_DAYS = 14;

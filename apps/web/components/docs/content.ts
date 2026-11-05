@@ -120,6 +120,7 @@ const launch: DocBody = {
         ['Listed on', 'bootr.fun', 'bootr.fun and clanker.world'],
       ],
     ),
+    p('A new pool through Clanker opens with Clanker’s anti-sniper fee; through RWAGMI there is none. With the launcher’s current settings, as read from a Base fork: a swap within about 4 seconds of the launch reverts, the next ones pay about 55%, falling to about 5% at 14 seconds, and from about 16 seconds a swap pays the normal fee. Those fees go to the same recipients. A dev buy runs inside the launch transaction and is not affected.'),
     p('Through Clanker the contract is `BootrClankerLauncher`, with the same `launch(params)`. The token address is not predictable before the transaction, so the form reads it from the `AgentLaunched` event. The steps above describe the RWAGMI path; on the Clanker path step 3 calls Clanker’s factory and step 4 writes the slots into Clanker’s locker, with the launcher as the admin of every slot, so the split is locked the same way.'),
     h2('what-you-pay', 'What you pay'),
     table(
