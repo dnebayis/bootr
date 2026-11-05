@@ -8,7 +8,7 @@
  *     records the real post in `sv_actions` (the activity tape shows "Posted on X" like any other post), or
  *   - rejects: the row is marked and the note reaches the agent as a short observation on its next turn
  *     (`takeFeedback`); a pending row older than `APPROVAL_TTL_MS` is rejected by the system with the note "expired".
- * TODO(notify): a Telegram (or other) notifier hooks in at `notifyPending` when an item is queued.
+ * A queued item raises the creator's notification at once (`notifyPending`, notifications.ts); sending is the notifier's job.
  */
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
@@ -21,6 +21,7 @@ import { inboxViews, publicAddressesOf, type BrokerEnv } from './broker/index.js
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, approvals, type ApprovalDecision, type ApprovalKind, type ApprovalStatus } from './db/schema.js';
 import { loadImage, mediaFor } from './images.js';
+import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { SenderError, type ReplyEligibility } from './sender-client.js';
 
@@ -109,9 +110,13 @@ function queuedResult(row: Pick<ApprovalRow, 'id' | 'kind' | 'createdAt' | 'meta
   };
 }
 
-/** Placeholder for the creator notification (Telegram, email): nothing is sent today. */
-function notifyPending(_ctx: SupervisorContext, _agent: AgentRow, _row: ApprovalRow): void {
-  // TODO(notify): hook a Telegram notifier here (the creator's chat id would live in the agent config).
+/** Puts "posts waiting" in the creator's inbox now. It is a row of our own and nothing else: a failure here never touches the turn. */
+async function notifyPending(ctx: SupervisorContext, agent: AgentRow): Promise<void> {
+  try {
+    await raiseNotification(ctx, agent.agentId, 'review_waiting', { pending: await pendingCount(ctx, agent.agentId) });
+  } catch (err) {
+    ctx.log.warn({ agentId: agent.agentId, err }, 'review notification failed');
+  }
 }
 
 /**
@@ -185,7 +190,7 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     .returning();
   const stored = row ?? (await ctx.db.query.approvals.findFirst({ where: eq(approvals.id, pending.id) }))!;
   ctx.log.info({ agentId: agent.agentId, approvalId: stored.id, kind }, 'publish queued for the creator\'s review');
-  notifyPending(ctx, agent, stored);
+  await notifyPending(ctx, agent);
   return { kind: 'completed', result: queuedResult(stored) };
 }
 

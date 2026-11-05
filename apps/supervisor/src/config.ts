@@ -196,6 +196,12 @@ export const configSchema = z
      */
     BUILDER_CODES_ENABLED: bool('true'),
     BUILDER_CODES_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://api.base.dev/v1/agents/builder-codes' : v), z.string().url()),
+    /** Telegram bot for creator notifications (notifications.ts, telegram.ts). Unset: only the console inbox works. Held by the supervisor alone. */
+    TELEGRAM_BOT_TOKEN: optionalString,
+    /** How often the notifier looks at agents and sends what is due. Runs apart from the tick. */
+    NOTIFY_SWEEP_MS: int(60_000, 1000),
+    /** How long one agent may go between health checks (each reads its balances and the X account once). */
+    NOTIFY_CHECK_MS: int(300_000, 1000),
     LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),
   })
   .transform((c) => {

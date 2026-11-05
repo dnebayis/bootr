@@ -1,4 +1,5 @@
-import { boolean, customType, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { boolean, customType, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * Every table is prefixed `sv_` because the supervisor shares a Postgres database with the
@@ -274,3 +275,96 @@ export const cursors = pgTable('sv_cursors', {
   value: text('value').notNull(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
+
+export const notificationEvents = ['review_waiting', 'review_expiring', 'fuel_low', 'gas_out', 'agent_asleep', 'agent_stopped', 'x_revoked', 'key_rotation'] as const;
+export type NotificationEvent = (typeof notificationEvents)[number];
+
+/**
+ * What the creator is told (notifications.ts). One open row per (agent, event): an event that stays true updates its
+ * row, `resolved_at` closes it, and the next time it is true starts a new row. `data` holds only numbers and our own
+ * reason codes; the text is built from them when it is shown or sent, never from anything a third party wrote.
+ */
+export const notifications = pgTable(
+  'sv_notifications',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    event: text('event', { enum: notificationEvents }).notNull(),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    firstAt: ts('first_at').notNull(),
+    lastSeenAt: ts('last_seen_at').notNull(),
+    /** The last Telegram send; carried into a new row when the event comes back, so a flapping event cannot repeat early. */
+    lastSentAt: ts('last_sent_at'),
+    sendCount: integer('send_count').notNull().default(0),
+    /** No send before this (a chat Telegram refused for another reason than a block). */
+    nextAttemptAt: ts('next_attempt_at'),
+    resolvedAt: ts('resolved_at'),
+  },
+  (t) => [
+    uniqueIndex('sv_notifications_open_idx').on(t.agentId, t.event).where(sql`${t.resolvedAt} is null`),
+    index('sv_notifications_agent_idx').on(t.agentId, t.lastSeenAt),
+  ],
+);
+
+/** Per-agent notification settings and the sweep's clock. */
+export const notificationSettings = pgTable('sv_notification_settings', {
+  agentId: text('agent_id').primaryKey(),
+  /** Events the creator turned off (`NotificationEvent[]`): shown nowhere and never sent. */
+  optOut: jsonb('opt_out').$type<string[]>().notNull().default([]),
+  /** When the health sweep last looked at this agent. */
+  checkedAt: ts('checked_at'),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+});
+
+/** A creator wallet's linked Telegram chat; one wallet, one chat, for all of its coins. */
+export const telegramLinks = pgTable(
+  'sv_telegram_links',
+  {
+    /** Lowercase wallet address. */
+    creator: text('creator').primaryKey(),
+    chatId: text('chat_id').notNull(),
+    linkedAt: ts('linked_at').notNull(),
+  },
+  (t) => [index('sv_telegram_links_chat_idx').on(t.chatId)],
+);
+
+/** One-time deep-link tokens; only the sha256 is stored. */
+export const telegramLinkTokens = pgTable('sv_telegram_link_tokens', {
+  tokenHash: text('token_hash').primaryKey(),
+  creator: text('creator').notNull(),
+  expiresAt: ts('expires_at').notNull(),
+  usedAt: ts('used_at'),
+  createdAt: ts('created_at').notNull(),
+});
+
+export const chatRoles = ['creator', 'agent'] as const;
+export type ChatRole = (typeof chatRoles)[number];
+export const chatStatuses = ['open', 'done', 'failed'] as const;
+export type ChatStatus = (typeof chatStatuses)[number];
+
+/**
+ * The private chat between a creator and their agent (chat.ts). Never published, never on the activity tape. An agent
+ * row is `open` while its paid request is out; the partial unique index keeps it to one per agent at a time.
+ */
+export const chatMessages = pgTable(
+  'sv_chat_messages',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    role: text('role', { enum: chatRoles }).notNull(),
+    text: text('text').notNull(),
+    status: text('status', { enum: chatStatuses }).notNull().default('done'),
+    /** `sv_inference.idempotency_key` of the paid request behind an agent row. */
+    inferenceKey: text('inference_key'),
+    chargedMicroUsdc: text('charged_micro_usdc'),
+    /** The memory note this reply stored, if any. */
+    memoryId: text('memory_id'),
+    error: text('error'),
+    createdAt: ts('created_at').notNull(),
+    updatedAt: ts('updated_at').notNull(),
+  },
+  (t) => [
+    index('sv_chat_messages_agent_idx').on(t.agentId, t.createdAt),
+    uniqueIndex('sv_chat_messages_open_idx').on(t.agentId).where(sql`${t.status} = 'open'`),
+  ],
+);

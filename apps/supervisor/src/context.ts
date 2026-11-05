@@ -11,6 +11,7 @@ import type { Logger } from './log.js';
 import type { MemoryStore } from './memories.js';
 import { cachedPlatformFeed } from './platform-feed.js';
 import type { SenderClient } from './sender-client.js';
+import type { TelegramClient } from './telegram.js';
 
 export type AgentRow = typeof schema.agents.$inferSelect;
 export type RuntimeRow = typeof schema.runtimes.$inferSelect;
@@ -24,6 +25,8 @@ export interface SupervisorContext {
   sender: SenderClient;
   indexer: IndexerClient;
   memories: MemoryStore;
+  /** Creator notifications over Telegram; absent without `TELEGRAM_BOT_TOKEN`, when only the console inbox works. */
+  telegram?: TelegramClient | null;
   sessionSigner: LocalAccount;
   adminSigner: AdminSigner | null;
   /** The agent's x402 spender EOA (derived from SPENDER_MASTER_KEY; spender.ts). */
