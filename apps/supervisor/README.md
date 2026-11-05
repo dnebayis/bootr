@@ -484,11 +484,14 @@ system message until it ends).
 
 ### Fuel by model (`/internal/agents/:id/fuel`)
 
-`?days=` (default 7, 1..90). Answer `{ "agentId", "days", "since", "byModel": [{ "model", "thoughts", "chargedMicroUsdc" }] }`:
-succeeded `sv_inference` rows since then grouped by the model their request named (`request.model`), most thoughts
-first, `chargedMicroUsdc` summed from the relay receipts. Images show under their image model. With economy mode on
-this is where the split between the decide model and the writer shows; the web renders it under the economy mode
-switch on the coin page.
+`?days=` (default 7, 1..90). Answer `{ "agentId", "days", "since", "firstAt", "byModel": [{ "model", "thoughts", "chargedMicroUsdc", "paidFailures"? }] }`:
+paid `sv_inference` rows since then grouped by the model their request named (`request.model`), most thoughts first.
+A paid row is one that succeeded, or one that failed after the money moved: a model refusal on the settle-first `exact`
+scheme, or a credit the relay gave up on. `chargedMicroUsdc` is summed from the relay receipts, and from the signed
+amount for a paid failure (it has no receipt); `paidFailures` counts those, and is absent when there are none.
+`firstAt` is the earliest paid row (null without any), which a spending rate divides by. Images show under their image
+model. With economy mode on this is where the split between the decide model and the writer shows; the web renders it
+under the economy mode switch on the coin page.
 
 ### Activity tape (`/internal/agents/:id/activity`)
 

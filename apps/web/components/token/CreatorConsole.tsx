@@ -11,7 +11,8 @@ import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, f
 import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
-import { useAgentFuel, useApprovalCount } from '@/lib/indexer';
+import { fuelOutlook } from '@/lib/fuel-outlook';
+import { useAgentActivity, useAgentFuel, useApprovalCount } from '@/lib/indexer';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -128,6 +129,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const config = useAgentConfig(token.kernel);
   const approvals = useApprovalCount(token.kernel);
   const fuel = useAgentFuel(token.kernel);
+  const activity = useAgentActivity(token.kernel);
   const pendingReviews = approvals.data?.pending ?? 0;
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
   const imageModels = useQuery({ queryKey: ['models', 'image'], queryFn: fetchImageModels, staleTime: 60_000 });
@@ -167,9 +169,15 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
     if (!rows.length) return null;
     const total = rows.reduce((n, r) => n + r.thoughts, 0);
     const spent = rows.reduce((n, r) => n + Number(r.chargedMicroUsdc), 0);
+    const unanswered = rows.reduce((n, r) => n + (r.paidFailures ?? 0), 0);
     const parts = rows.slice(0, 3).map((r) => `${r.thoughts} on ${modelLabel(r.model)} (${formatMicroUsdc(r.chargedMicroUsdc)})`);
-    return `Last ${fuel.data!.days} days: ${total} thoughts, ${formatMicroUsdc(spent)}: ${parts.join(', ')}.`;
+    return `Last ${fuel.data!.days} days: ${total} thoughts, ${formatMicroUsdc(spent)}${unanswered > 0 ? ` (${unanswered} charged with no answer)` : ''}: ${parts.join(', ')}.`;
   }, [fuel.data]);
+  // Runway and warnings; an agent that is not running has no rate to speak of. The clock is when the numbers were read.
+  const outlook = useMemo(
+    () => (inactive ? null : fuelOutlook({ fuel: fuel.data, spenderUsdc: agent?.spenderUsdc, treasuryUsdc: agent?.treasuryUsdc, activity: activity.data?.pages[0]?.items ?? [], now: fuel.dataUpdatedAt || activity.dataUpdatedAt })),
+    [inactive, fuel.data, fuel.dataUpdatedAt, agent?.spenderUsdc, agent?.treasuryUsdc, activity.data, activity.dataUpdatedAt],
+  );
   const imageModelGroups = useMemo(() => {
     const list = imageModels.data?.models ?? [];
     const current = draft?.imageModel;
@@ -221,6 +229,20 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
       action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}
     >
       <div data-testid="creator-console" className="flex flex-col gap-4">
+        {outlook && (outlook.runway || outlook.warnings.length > 0) ? (
+          <div className="flex flex-col gap-2" data-testid="fuel-outlook">
+            {outlook.runway ? (
+              <p className="text-sm text-ink" data-testid="fuel-runway">
+                {outlook.runway}
+              </p>
+            ) : null}
+            {outlook.warnings.map((w) => (
+              <p key={w.key} role="status" data-testid={`fuel-warning-${w.key}`} className={cn('rounded-xs px-3 py-2 text-caption', w.tone === 'danger' ? 'border border-danger text-danger' : 'bg-warning-surface text-warning')}>
+                {w.text}
+              </p>
+            ))}
+          </div>
+        ) : null}
         {config.isPending ? (
           <div className="flex flex-col gap-3">
             <Skeleton className="h-24" />
