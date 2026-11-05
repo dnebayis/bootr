@@ -730,10 +730,10 @@ const risks: DocBody = {
 
 const terms: DocBody = {
   lead: 'Bootr is a self-service interface to public smart contracts on Base. By using it you agree to the terms below.',
-  updated: '29 October 2026',
+  updated: '5 November 2026',
   blocks: [
     h2('what-bootr-is', 'What Bootr is'),
-    p('Bootr is a website and a set of services that let you launch a coin through the RWAGMI v3 launcher, attach an autonomous agent to it, and connect that agent to an X account you control. The contracts are public, non-custodial and permissionless. Bootr never holds your wallet keys.'),
+    p('Bootr is a website and a set of services that let you launch a coin through RWAGMI v3 or Clanker v4, attach an autonomous agent to it, and connect that agent to an X account you control. The contracts are public and non-custodial. Bootr never holds your wallet keys. You can use Bootr through the website, its API or an assistant following its skill; these terms apply to all of them, and you remain responsible for what your wallet signs.'),
     h2('eligibility', 'Eligibility'),
     ul(
       'You must be of legal age in your jurisdiction and allowed to use crypto assets there.',
@@ -742,18 +742,20 @@ const terms: DocBody = {
     ),
     h2('launching-and-trading', 'Launching and trading'),
     ul(
-      'Launching is a transaction you sign yourself. Once mined, fee splits, recipients and the dormancy period are permanent.',
+      'Launching is a transaction you sign yourself. You choose RWAGMI or Clanker before you sign, and the choice cannot be changed. Once mined, fee splits, recipients and the dormancy period are permanent, and so is the metadata written on chain with a coin launched through Clanker.',
+      'RWAGMI and Clanker are independent third-party protocols, with their own contracts, fees and terms. Bootr does not control them or their websites. Fees differ by launch path, including what they charge; see [Fee math and claims](/docs/fees).',
       'Trading happens on Uniswap v4 through third-party interfaces. Bootr does not execute trades and does not set prices.',
       'Coins launched here have no issuer promise of value, utility or returns. See [Risks](/docs/risks).',
     ),
     h2('agents-and-x', 'Agents and X accounts'),
     ul(
       'You connect an X account you own and authorize Bootr to post, reply and read mentions on its behalf. You can revoke this in X at any time.',
-      'You are responsible for what your agent publishes. Bootr enforces X’s automation rules and its own posting policy, but language models can err.',
+      'You are responsible for what your agent publishes, whether or not you review its posts first. Bootr enforces X’s automation rules and its own posting policy, but language models can err.',
+      'Your agent pays for its own thinking from its fuel. Fuel spent is not returned, and an agent stops when its fuel runs out.',
       'Agent accounts must be labelled as automated on X. Bootr may pause an agent that breaks X rules or these terms.',
     ),
     h2('fees-and-dormancy', 'Fees and dormancy'),
-    p('Fee splits are described in [Fee math and claims](/docs/fees). A treasury with no on-chain activity for the dormancy period can be claimed by the platform as described in [Agents](/docs/agents#dormancy). These rules are enforced by the contracts, not by discretion.'),
+    p('Fee splits for each launch path are described in [Fee math and claims](/docs/fees). A treasury with no on-chain activity for the dormancy period can be claimed by the platform as described in [Agents](/docs/agents#dormancy). These rules are enforced by the contracts, not by discretion.'),
     h2('no-warranty', 'No warranty, limited liability'),
     p('Bootr is provided as is, without warranty of any kind. To the fullest extent permitted by law, Bootr and its contributors are not liable for any loss arising from the contracts, the agents, X, third-party services or your own transactions. Nothing here is financial, legal or tax advice.'),
     h2('changes', 'Changes'),
