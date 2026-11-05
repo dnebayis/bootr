@@ -4,7 +4,6 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { PolicyFlags } from '@zerodev/permissions';
 import { ADDR, CLANKER_FEE_LOCKER, CLANKER_LP_LOCKER, GUARDIAN, KERNEL, PAYTO, POOL_ID, RWAGMI_LP_LOCKER, SESSION_PK, SPENDER, TOKEN } from './helpers.js';
 import {
-  buildPolicies,
   buildDeinitData,
   buildValidatorData,
   CALL_POLICY_RULES_VERSION,
@@ -95,13 +94,6 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(actual).toBe(expected.toLowerCase());
   });
 
-  it('a key stored with the plain rate limit policy keeps its 18-byte init data, whatever the address spelling', () => {
-    const plain = '0xf63d4139b25c836334edd76641356c6b74c86873' as const;
-    const p = params({ policyAddresses: { ...params().policyAddresses, rateLimitPolicy: plain } });
-    const [, rate] = buildPolicies(p);
-    expect(rate!.getPolicyData()).toBe('0x000000000e1000000000003c000000000000');
-  });
-
   it('production policy set: every entry is flags||address||initData, signer last with SKIP_SIGNATURE, flags as designed', () => {
     const p = params();
     const data = buildValidatorData(p);
@@ -109,7 +101,6 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(entries).toHaveLength(5); // call, gas, rate, timestamp, signer
     const parsed = entries.map((e) => ({ flags: slice(e, 0, 2), module: getAddress(slice(e, 2, 22)), data: e.length > 46 ? slice(e, 22) : ('0x' as Hex) }));
     expect(parsed.map((e) => e.module)).toEqual([p.policyAddresses.callPolicy, p.policyAddresses.gasPolicy, p.policyAddresses.rateLimitPolicy, p.policyAddresses.timestampPolicy, p.policyAddresses.ecdsaSigner]);
-    expect(parsed[2]!.module).toBe(getAddress('0x6a06358e6b283921deceabe7e8a3741d506cca9b'));
     // the signer's flags become the permission's permissionFlag: SKIP_SIGNATURE closes ERC-1271 (C-01)
     expect(parsed.map((e) => e.flags)).toEqual([PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.NOT_FOR_VALIDATE_SIG, PolicyFlags.FOR_ALL_VALIDATION, PolicyFlags.NOT_FOR_VALIDATE_SIG]);
     expect(SIGNER_FLAGS).toBe('0x0002');
@@ -117,8 +108,8 @@ describe('validatorData layout (contracts/src/README.md)', () => {
     expect(parsed[4]!.data.toLowerCase()).toBe(signer.address.toLowerCase());
     // timestamp policy init data = abi.encode(uint48 validAfter, uint48 validUntil)
     expect(parsed[3]!.data).toBe(encodeAbiParameters(parseAbiParameters('uint48, uint48'), [0, 1_800_000_000]));
-    // rate limit with reset: interval(6) || count(6), 60 userOps per 3600 s
-    expect(parsed[2]!.data).toBe('0x000000000e1000000000003c');
+    // rate limit: interval(6) || count(6) || startAt(6)
+    expect(parsed[2]!.data).toBe(`0x${(3600).toString(16).padStart(12, '0')}${(60).toString(16).padStart(12, '0')}${'0'.repeat(12)}`);
     // call policy init data = abi.encode(Rule[]) with the five allow-list rules (checked in detail below)
     expect(parsed[0]!.data).toBe(encodeCallPolicyData(callPolicyRules(p)));
     expect(parsed[0]!.module).toBe(CALL_POLICY);

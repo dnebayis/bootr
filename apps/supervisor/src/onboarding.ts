@@ -603,7 +603,7 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
     usdcTransferCap: BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP),
     usdcWindowSeconds: ctx.config.SESSION_USDC_WINDOW_SECONDS,
     gasAllowanceWei: BigInt(ctx.config.SESSION_GAS_ALLOWANCE_WEI),
-    ratePerHour: ctx.config.SESSION_RATE_LIMIT_PER_HOUR,
+    ratePerHour: ctx.config.SESSION_USEROP_LIMIT,
     validUntil: validUntilSec,
     signatureCallers: null,
     sessionSigner: ctx.sessionSigner.address,

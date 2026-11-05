@@ -165,7 +165,14 @@ export const configSchema = z
     SEARCH_API_KEY: optionalString,
     /** Session key policy knobs. */
     SESSION_KEY_VALIDITY_DAYS: int(30, 1),
-    SESSION_RATE_LIMIT_PER_HOUR: int(60, 1),
+    /**
+     * UserOps a session key may send over its whole life (`count` of ZeroDev's plain RateLimitPolicy, which never
+     * resets, whatever its `interval`): $BOOTR's key stopped for good after 60, with PolicyFailed(2). Each use also
+     * moves the policy's `validAfter` by an hour from 0, so the count must stay below now / 3600 (about 498k). The
+     * policy with reset (`0x6a06...`) reads TIMESTAMP during validation and the bundler refuses it. The real limits are
+     * the call policy, GasPolicy and the key's validity; keys are rotated before they expire, which resets this too.
+     */
+    SESSION_USEROP_LIMIT: int(100_000, 1),
     /** Max USDC (6 dp units) the session key may move to the agent's spender per window (BootrCallPolicy SUM_PER_WINDOW). */
     SESSION_USDC_TRANSFER_CAP: int(50_000_000, 1),
     /** Length of that window in seconds (fixed grid anchored at the permission install). */

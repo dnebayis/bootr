@@ -104,6 +104,7 @@ export interface SessionPolicyParams {
   usdcWindowSeconds: number;
   /** GasPolicy cumulative allowance in wei. */
   gasAllowanceWei: bigint;
+  /** Stored name; the policy's `count`, a total over the key's life (config `SESSION_USEROP_LIMIT`). */
   ratePerHour: number;
   /** Unix seconds. */
   validUntil: number;
@@ -292,28 +293,15 @@ export function callPolicyEntry(p: SessionPolicyParams): PolicyEntry {
   return { flags: PolicyFlags.NOT_FOR_VALIDATE_SIG, module: p.policyAddresses.callPolicy, data: encodeCallPolicyData(callPolicyRules(p)) };
 }
 
-/** The rate limit policy address as the SDK spells it, so `toRateLimitPolicy` recognises it. */
-function sdkRateLimitAddress(address: Address): Address {
-  // Not exported by the package; `@zerodev/permissions/_esm/constants.js`, spelled exactly.
-  for (const known of ['0xf63d4139B25c836334edD76641356c6b74C86873', '0x6a06358e6b283921deceabe7e8a3741d506cca9b']) {
-    if (known.toLowerCase() === address.toLowerCase()) return known as Address;
-  }
-  return address;
-}
-
 /**
  * ZeroDev policies in install order (after the call policy). Gas and rate-limit policies are flagged
  * `NOT_FOR_VALIDATE_SIG`; the signature path is closed anyway by the signer's SKIP_SIGNATURE flag. The legacy
  * signature-caller policy is only produced for stored legacy policies.
  */
 export function buildPolicies(p: SessionPolicyParams) {
-  // ZeroDev's plain RateLimitPolicy (`0xf63d...`, `count` is a lifetime total) and the one with reset (`0x6a06...`, `count`
-  // per `interval`) take different init data, chosen by an exact string match on the address (the SDK spells them
-  // differently), so the configured or stored address is mapped to the SDK's spelling. Keys installed with the plain
-  // one stop after `count` userOps ($BOOTR's did after 60, PolicyFailed(2)) until they are rotated.
   const gasPolicy = toGasPolicy({ policyAddress: p.policyAddresses.gasPolicy, policyFlag: PolicyFlags.NOT_FOR_VALIDATE_SIG, allowed: p.gasAllowanceWei });
   const rateLimitPolicy = toRateLimitPolicy({
-    policyAddress: sdkRateLimitAddress(p.policyAddresses.rateLimitPolicy),
+    policyAddress: p.policyAddresses.rateLimitPolicy,
     policyFlag: PolicyFlags.NOT_FOR_VALIDATE_SIG,
     count: p.ratePerHour,
     interval: 3600,

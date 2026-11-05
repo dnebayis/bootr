@@ -132,7 +132,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SEARCH_API_URL`, `SEARCH_API_KEY` | no | | Exa or Brave; unset hides `search_web` from the model |
 | `SESSION_KEY_VALIDITY_DAYS` | no | `30` | TimestampPolicy `validUntil` |
 | `SESSION_ROTATE_BEFORE_DAYS` | no | `3` | rotate this long before expiry |
-| `SESSION_RATE_LIMIT_PER_HOUR` | no | `60` | Userops per hour (ZeroDev's RateLimitPolicy with reset). Keys installed before 2026-11-05 use the plain policy, where this number is a lifetime total: they stop after it and must be rotated |
+| `SESSION_USEROP_LIMIT` | no | `100000` | UserOps over a key's whole life (ZeroDev's plain RateLimitPolicy never resets its count). Keys installed earlier with 60 stop after it and must be rotated. The policy with reset is refused by the bundler (banned opcode TIMESTAMP) |
 | `SESSION_USDC_TRANSFER_CAP` | no | `50000000` | USDC (6 dp units) the session key may move to the agent's spender per window, enforced on-chain by BootrCallPolicy's `SUM_PER_WINDOW` (summed over batches and over the window) |
 | `SESSION_USDC_WINDOW_SECONDS` | no | `86400` | length of that window (fixed grid anchored at the permission install) |
 | `SPENDER_MIN_USDC` | no | `5` | the fee policy tops the spender up when its USDC drops below this |
@@ -172,7 +172,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
        `[0 ‖ uint64(32) ‖ abi.encode(now)] ‖ 0xff ‖ ecdsa` (the call policy's time slot, so the window can roll without
        reading `block.timestamp`); see the contract README for the semantics. ZeroDev's CallPolicy is **not** used: hooked permissions force `executeUserOp`-wrapped
        callData, which it cannot parse (it reverts in `checkUserOpPolicy`).
-     - GasPolicy (cumulative wei allowance), RateLimitPolicy with reset (`SESSION_RATE_LIMIT_PER_HOUR` per 3600 s), both ZeroDev
+     - GasPolicy (cumulative wei allowance), RateLimitPolicy (`SESSION_USEROP_LIMIT` userOps per key, not per hour), both ZeroDev
        modules flagged `NOT_FOR_VALIDATE_SIG` so they do not gate ERC-1271;
      - TimestampPolicy (`validUntil = now + SESSION_KEY_VALIDITY_DAYS`), for userOps and signatures;
      - ECDSASigner with the `SESSION_SIGNER_PRIVATE_KEY` address, flagged **SKIP_SIGNATURE** (`0x0002`): Kernel stores

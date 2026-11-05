@@ -187,7 +187,7 @@ export const addresses = {
       // ZeroDev CallPolicy v0.0.5; not used by Bootr (see bootr.callPolicy).
       callPolicy: '0x85770b902D1e503D5f5141d9eaC16d0d08eEaDd2',
       gasPolicy: '0xaeFC5AbC67FfD258abD0A3E54f65E70326F84b23',
-      rateLimitPolicy: '0x6A06358E6b283921DECEAbe7e8A3741d506ccA9B',
+      rateLimitPolicy: '0xf63d4139B25c836334edD76641356c6b74C86873',
       sudoPolicy: '0x67b436caD8a6D025DF6C82C5BB43fbF11fC5B9B7',
       timestampPolicy: '0xB9f8f524bE6EcD8C945b1b87f9ae5C192FdCE20F',
       signaturePolicy: '0xF6A936c88D97E6fad13b98d2FD731Ff17eeD591d',
@@ -248,7 +248,7 @@ export const addresses = {
       ecdsaSigner: '0x6A6F069E2a08c2468e7724Ab3250CdBFBA14D4FF',
       callPolicy: '0x85770b902D1e503D5f5141d9eaC16d0d08eEaDd2',
       gasPolicy: '0xaeFC5AbC67FfD258abD0A3E54f65E70326F84b23',
-      rateLimitPolicy: '0x6A06358E6b283921DECEAbe7e8A3741d506ccA9B',
+      rateLimitPolicy: '0xf63d4139B25c836334edD76641356c6b74C86873',
       sudoPolicy: '0x67b436caD8a6D025DF6C82C5BB43fbF11fC5B9B7',
       timestampPolicy: '0xB9f8f524bE6EcD8C945b1b87f9ae5C192FdCE20F',
       signaturePolicy: '0xF6A936c88D97E6fad13b98d2FD731Ff17eeD591d',
