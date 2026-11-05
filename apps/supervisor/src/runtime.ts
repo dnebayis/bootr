@@ -34,6 +34,7 @@ import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requ
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
+import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
@@ -198,6 +199,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       tools: tools.map((t) => t.name),
       stepBudget: ctx.config.MAX_TOOL_STEPS,
       ...(review ? { review } : {}),
+      // What the agent can still spend on thinking (one database read, no RPC; omitted when it cannot be read): fuel.ts.
+      ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
