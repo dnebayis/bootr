@@ -164,9 +164,17 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       }
     }
 
-    // 3. Inputs for the wake decision.
     const state = runtime.state as unknown as AgentState;
     const now = ctx.now();
+    // After an inference failure no cause (continuation, mention, due post, config change, digest) wakes the agent
+    // before the backoff ends, since a wake is a paid attempt. wakeDecision lets any reason pass `nextAt`, so this
+    // sits in front of it; leases, the pauses, reconciliation and the sleep rule above still run.
+    if (state.inferenceRetryAt && state.inferenceRetryAt > now) {
+      await postSocial(ctx, agent, config, runtime, 'awake');
+      return { ran: false, reasons: ['inference_backoff'] };
+    }
+
+    // 3. Inputs for the wake decision.
     let inbox: SenderInboxItem[] = [];
     if (config.capabilities.xRead) {
       try {

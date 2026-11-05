@@ -114,7 +114,8 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
 
   const model = imageModelOf(config);
   const res = await relayRequest(ctx, agent, { key: `image:${pending.id}`, cycle, request: imageRequest(model, input, imageStyleOf(config)), maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
-  if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
+  // A credit is resumed like an unknown outcome: the same action, so the same key and no second payment.
+  if (res.kind === 'unknown' || res.kind === 'credit') return { kind: 'unknown', error: res.error };
   if (res.kind === 'failed') return { kind: 'failed', error: `image_failed: ${res.error}` };
 
   const parsed = parseImageResponse(res.body);
