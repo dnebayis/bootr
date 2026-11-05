@@ -12,7 +12,7 @@ const finish = () => finishResponse(T0 + H);
 
 function mention(postId: string): SenderInboxItem {
   const authorId = `3${postId}`;
-  return { postId, authorId, conversationId: postId, status: 'pending', observedAt: '2026-10-24T11:59:00Z', seenAt: null, deferredUntil: null, post: { id: postId, authorId, text: '@bootr_agent gm', conversationId: postId, author: { id: authorId, username: `user${authorId}`, verified: false, verifiedType: 'none' } } };
+  return { postId, authorId, conversationId: postId, status: 'pending', observedAt: '2026-10-24T11:59:00Z', seenAt: null, deferredUntil: null, post: { id: postId, authorId, text: '@bootr_agent gm', conversationId: postId, author: { id: authorId, username: `user${authorId}`, verified: true, verifiedType: 'blue' } } };
 }
 
 type Post = { body: { messages: { content: string }[]; tools: { function: { name: string } }[] } };

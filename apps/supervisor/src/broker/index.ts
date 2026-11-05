@@ -139,7 +139,7 @@ export interface MentionResolutions {
 
 /**
  * Closes several mentions, one sender call each (the sender's resolve is safe to repeat), for `resolve_mentions` and
- * the triage pass (triage.ts). Never throws: an id that failed comes back in `failed` with its error.
+ * the auto-close pass (mention-close.ts). Never throws: an id that failed comes back in `failed` with its error.
  */
 export async function resolveMentions(ctx: SupervisorContext, agentId: string, items: readonly { postId: string; reason: string }[], outcome: 'skip' | 'opt_out' | 'defer', reviewAt?: string): Promise<MentionResolutions> {
   const out: MentionResolutions = { resolved: [], failed: [] };

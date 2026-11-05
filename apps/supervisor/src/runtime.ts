@@ -36,11 +36,11 @@ import { actions, runtimes } from './db/schema.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
+import { autoCloseMentions } from './mention-close.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
-import { triageInbox } from './triage.js';
 import { watchlistSection } from './watchlist.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
@@ -69,10 +69,6 @@ export interface AgentState {
   lastDigestWeek?: string | null;
   /** UTC day (`YYYY-MM-DD`) of the last daily numbers post the platform agent closed (platform-numbers.ts). */
   lastNumbersDay?: string | null;
-  /** Mentions the triage pass already classified as worth answering (triage.ts); they are not paid for again. */
-  triagedIds?: string[];
-  /** Relay key of a triage call whose outcome is unknown (triage.ts); reconciled, never bought twice. */
-  triageKey?: string | null;
 }
 
 export function initialState(): AgentState {
@@ -284,7 +280,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   const routing = startRouting(config);
   const tools = toolsForPhase(routing, availableTools(ctx, config));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
-  inputs = { ...inputs, inbox: await triageInbox(ctx, agent, runtime, config, inputs.inbox, directory, inputs.treasury, lease) };
+  inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
   const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory);
   const turn: Turn = {
     startedAt: ctx.now(),
@@ -566,7 +562,7 @@ function lastToolCallId(messages: ChatMessage[]): string | undefined {
 /** Keeps the persisted state inside agent-core's 12 KB budget by dropping the least important fields first. */
 export function trimState(state: AgentState): AgentState {
   if (stateFits(state)) return state;
-  const copy: AgentState = { ...state, lastResults: [], triagedIds: [] };
+  const copy: AgentState = { ...state, lastResults: [] };
   if (stateFits(copy)) return copy;
   copy.continuation = copy.continuation ? { progress: copy.continuation.progress.slice(0, 500), recentSteps: copy.continuation.recentSteps.slice(-3) } : null;
   if (stateFits(copy)) return copy;
