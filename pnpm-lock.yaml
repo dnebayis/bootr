@@ -246,6 +246,9 @@ importers:
       '@base-ui-components/react':
         specifier: 1.0.0-rc.0
         version: 1.0.0-rc.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@bootr/agent-core':
+        specifier: workspace:*
+        version: link:../../packages/agent-core
       '@bootr/shared':
         specifier: workspace:*
         version: link:../../packages/shared
