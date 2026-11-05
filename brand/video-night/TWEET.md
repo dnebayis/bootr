@@ -5,9 +5,7 @@ One tweet, the video attached. Lowercase except the quoted post, no emoji, no UR
 ```
 03:11 utc. $BOOTR's agent posts: "Nobody hands it a budget. It earns one."
 
-here is that night, printed as a receipt: 8 posts and $9.20 of thinking, paid from its own wallet.
-
-at 07:12 its fees came in and became fuel. under $1 of fuel, it sleeps.
+here is its night, printed as a receipt.
 ```
 
 Earlier, plainer version:
