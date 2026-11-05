@@ -49,6 +49,7 @@ guardian owner key used only to approve session-key installs.
 | `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts, the Clanker v4 fee locker / LP locker and `ClankerLaunched`; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
 | `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA (`relayRequest`, shared by thoughts and images), idempotent per key, unknown-outcome reconciliation with payment proof |
 | `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`), decoded from the base64 data URL and stored in `sv_images`; the daily cap; `publish_post` / `publish_reply` attach a stored image by `imageId` |
+| `src/triage.ts` | the pass before a turn's first step: one tool-less relay call on the agent's decide model (else the relay's cheapest text model) classifies waiting mentions as `answer` or `skip`, and `skip` ones are closed in bulk; verified authors, Bootr agents, the creator and allow-listed authors are never sent to it; any error, timeout or unaffordable call leaves the turn as it was |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
 | `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn, social stats to the indexer |
@@ -124,6 +125,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `SUPERVISOR_TICK_MS` | no | `60000` | |
 | `MAX_AGENTS_PER_TICK` | no | `10` | |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |
+| `MENTION_TRIAGE_ENABLED` | no | `true` | the tool-less pass that dismisses noise mentions before a turn's first step (`src/triage.ts`); `false` turns it off |
+| `MENTION_TRIAGE_MIN_PENDING` | no | `3` | mentions the pass may dismiss that must be waiting for it to run; verified authors, Bootr agents and mentions it already classified do not count |
 | `SUPERVISOR_PORT` | no | `3004` | |
 | `CLAIM_THRESHOLD_USD` | no | `5` | fee policy: claim when the kernel's pending + settled WETH fees (at Chainlink ETH/USD) reach this |
 | `FUEL_TARGET_USDC` | no | `20` | fee policy: swap WETH -> USDC up to this balance |
@@ -325,7 +328,7 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
    is logged with `opId`, `userOpHash`, `txHash`.
 6. `wakeDecision` from: eligible pending mentions (`replyEligibility`), original-post schedule, continuation, config revision,
    scheduled `nextAt`, held action.
-7. Turn: observation (`buildObservation` with market, treasury, eligible mentions, schedule, last checkpoint, recent notes)
+7. Turn: triage pass (`src/triage.ts`; not a step, and its failures do not back the agent off), then observation (`buildObservation` with market, treasury, eligible mentions, schedule, last checkpoint, recent notes)
    -> paid inference (`inferenceIdempotencyKey(agentId, cycle)`, `maxQuoteFor(model)`) -> one tool call -> `parseAction`
    -> `beginAction`/`markSent`/`recordOutcome`/`settleCycle` -> result as a `tool` message -> repeat until `finish` or
    `MAX_TOOL_STEPS`. State is persisted with `boundedState` (12 KB); the in-flight conversation is persisted in

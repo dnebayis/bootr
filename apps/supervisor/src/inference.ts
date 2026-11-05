@@ -50,6 +50,8 @@ export interface RelayCall {
   request: Record<string, unknown>;
   /** The most this call may cost (`X-Max-Quote-Micro-USDC` and the payer's hard cap). */
   maxQuoteMicroUsdc: bigint;
+  /** Overrides `INFERENCE_TIMEOUT_MS` for a call that must not hold the turn that long (triage.ts). */
+  timeoutMs?: number;
 }
 
 function withAssistant(res: RelayResult): InferenceResult {
@@ -143,7 +145,7 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
     }
     if (existing.status === 'failed') return { kind: 'failed', key, error: existing.error ?? 'failed' };
     // pending (crashed mid-flight) or unknown: reconcile by key, never pay again.
-    return reconcileRelay(ctx, key);
+    return reconcileRelay(ctx, key, call.timeoutMs);
   }
 
   await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle: call.cycle, requestHash, request, status: 'pending', createdAt: now(), updatedAt: now() });
@@ -168,7 +170,7 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
       method: 'POST',
       headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': maxQuote.toString() },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(ctx.config.INFERENCE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(call.timeoutMs ?? ctx.config.INFERENCE_TIMEOUT_MS),
     });
   } catch (err) {
     const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -226,7 +228,7 @@ export async function reconcileInference(ctx: SupervisorContext, key: string): P
 }
 
 /** `reconcileInference` for any relay call (thought or image); the body is returned uninterpreted. */
-export async function reconcileRelay(ctx: SupervisorContext, key: string): Promise<RelayResult> {
+export async function reconcileRelay(ctx: SupervisorContext, key: string, timeoutMs?: number): Promise<RelayResult> {
   const row = await ctx.db.query.inference.findFirst({ where: eq(inference.idempotencyKey, key) });
   if (!row) return { kind: 'failed', key, error: 'unknown_key' };
   if (row.status === 'succeeded' && row.response) {
@@ -242,7 +244,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
   const proof = paymentProofHeaders(payment);
   let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null } | null = null;
   try {
-    const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { headers: proof, signal: AbortSignal.timeout(15_000) });
+    const res = await ctx.fetch(new URL(`/v1/requests/${encodeURIComponent(key)}`, ctx.config.INFERENCE_PROVIDER_URL).toString(), { headers: proof, signal: AbortSignal.timeout(Math.min(15_000, timeoutMs ?? 15_000)) });
     if (res.status === 404) status = { status: 'failed', retrySafe: true };
     else if (res.ok) status = (await res.json()) as typeof status;
     else ctx.log.warn({ key, status: res.status }, 'relay refused the reconcile read');
@@ -256,7 +258,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
         method: 'POST',
         headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': '0', ...proof },
         body: JSON.stringify(row.request),
-        signal: AbortSignal.timeout(ctx.config.INFERENCE_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs ?? ctx.config.INFERENCE_TIMEOUT_MS),
       });
       return recordResponse(ctx, key, res);
     } catch (err) {
