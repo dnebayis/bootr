@@ -19,7 +19,7 @@ import {
 import { createX402Payer, paymentProofHeaders, readReceipt, X402PaymentRefusedError, type BootrReceipt } from '@bootr/inference/client';
 import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, or, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { inference } from './db/schema.js';
 
@@ -104,28 +104,67 @@ export async function runInference(ctx: SupervisorContext, agent: AgentRow, _con
 export interface ThoughtTotals {
   /** Relay model id as the request named it (`request.model`); images show under their image model. */
   model: string;
-  /** Paid relay calls that succeeded. */
+  /** Relay calls the agent paid for: the ones that succeeded and the ones that failed after the money moved. */
   thoughts: number;
-  /** Sum of the relay receipts' `chargedMicroUsdc` (micro-USDC, as a decimal string). */
+  /** What those calls cost in micro-USDC, as a decimal string. */
   chargedMicroUsdc: string;
+  /** How many of `thoughts` were charged and returned nothing; absent when none were. */
+  paidFailures?: number;
 }
 
 /**
- * Metering for the creator: succeeded relay calls since `since`, grouped by the model each one ran on, most
- * thoughts first. With economy mode on this is where the split between the decide model and the writer shows.
+ * A failed row whose payment still settled. On the settle-first `exact` scheme the relay takes the money before it
+ * calls the model, so a model refusal (`upstream_rejected`) leaves the payment spent; `upto` settles after the model
+ * answers, so a refusal there costs nothing. A credit the relay gave up on is spent until someone refunds it.
  */
-export async function thoughtsByModel(ctx: SupervisorContext, agentId: string, since: Date): Promise<ThoughtTotals[]> {
+const PAID_FAILURE = sql`(${inference.status} = 'failed' and (${inference.error} in ('credit_exhausted', 'relay_failed_refund_due') or (${inference.error} = 'upstream_rejected' and ${inference.receipt}->'payment'->'accepted'->>'scheme' = 'exact')))`;
+/** Every call that took money: filtering on `succeeded` alone hid paid failures from the metering. */
+const PAID_CALL = or(eq(inference.status, 'succeeded'), PAID_FAILURE)!;
+/** The relay's receipt when there is one; a paid failure has none, so the amount it signed for (`exact` charges exactly that). */
+const CHARGED_MICRO_USDC = sql`coalesce(${inference.receipt}->'relay'->>'chargedMicroUsdc', case when ${PAID_FAILURE} then ${inference.receipt}->'payment'->'accepted'->>'amount' end)::numeric`;
+
+/**
+ * Metering for the creator: paid relay calls since `since`, grouped by the model each one ran on, most thoughts
+ * first, and when the earliest of them happened (what a spending rate divides by; null when there were none). With
+ * economy mode on this is where the split between the decide model and the writer shows.
+ */
+export async function fuelReport(ctx: SupervisorContext, agentId: string, since: Date): Promise<{ byModel: ThoughtTotals[]; firstAt: Date | null }> {
   const rows = await ctx.db
     .select({
       model: sql<string>`coalesce(${inference.request}->>'model', '')`,
       thoughts: sql<number>`count(*)::int`,
-      charged: sql<string>`coalesce(sum((${inference.receipt}->'relay'->>'chargedMicroUsdc')::numeric), 0)::text`,
+      charged: sql<string>`coalesce(sum(${CHARGED_MICRO_USDC}), 0)::text`,
+      paidFailures: sql<number>`count(*) filter (where ${inference.status} <> 'succeeded')::int`,
+      firstAtSec: sql<number>`extract(epoch from min(${inference.createdAt}))::float8`,
     })
     .from(inference)
-    .where(and(eq(inference.agentId, agentId), eq(inference.status, 'succeeded'), gte(inference.createdAt, since)))
+    .where(and(eq(inference.agentId, agentId), PAID_CALL, gte(inference.createdAt, since)))
     .groupBy(sql`1`)
     .orderBy(sql`2 desc, 1`);
-  return rows.map((r) => ({ model: r.model, thoughts: Number(r.thoughts), chargedMicroUsdc: String(r.charged).replace(/\.0+$/, '') }));
+  const byModel = rows.map((r) => {
+    const paidFailures = Number(r.paidFailures);
+    return { model: r.model, thoughts: Number(r.thoughts), chargedMicroUsdc: String(r.charged).replace(/\.0+$/, ''), ...(paidFailures > 0 ? { paidFailures } : {}) };
+  });
+  const firstSec = rows.reduce<number | null>((min, r) => (min === null || Number(r.firstAtSec) < min ? Number(r.firstAtSec) : min), null);
+  return { byModel, firstAt: firstSec === null ? null : new Date(firstSec * 1000) };
+}
+
+export async function thoughtsByModel(ctx: SupervisorContext, agentId: string, since: Date): Promise<ThoughtTotals[]> {
+  return (await fuelReport(ctx, agentId, since)).byModel;
+}
+
+/** The latest paid thoughts (images excluded), so the average follows the model the agent runs on now. */
+export const RECENT_THOUGHTS = 40;
+
+/** What the agent's latest paid thoughts cost: one indexed read, for the turn's `fuel` section (fuel.ts). */
+export async function recentThoughtCost(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<{ thoughts: number; spentMicroUsdc: number }> {
+  const rows = await ctx.db
+    .select({ charged: sql<string>`${CHARGED_MICRO_USDC}::text` })
+    .from(inference)
+    .where(and(eq(inference.agentId, agentId), PAID_CALL, sql`${inference.request}->'modalities' is null`, sql`${CHARGED_MICRO_USDC} is not null`))
+    .orderBy(desc(inference.createdAt))
+    .limit(RECENT_THOUGHTS);
+  return { thoughts: rows.length, spentMicroUsdc: rows.reduce((sum, r) => sum + Number(r.charged), 0) };
 }
 
 /**

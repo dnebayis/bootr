@@ -125,6 +125,13 @@ describe('buildObservation / compactView', () => {
     continuation: { progress: { step: 1 }, recentSteps: [big(2000)] },
   };
 
+  it('keeps a small extra section such as fuel through every compaction step', () => {
+    const fuel = { spendableUsdc: '1.78', thoughtsLeft: 19, low: true };
+    const view = buildObservation({ ...parts, extra: { fuel } }, 5000);
+    expect(view.contextWindow?.compacted).toContain('bounded complete incoming conversations');
+    expect(view.fuel).toEqual(fuel);
+  });
+
   it('returns the view untouched when it fits', () => {
     const view = buildObservation(parts, 1_000_000);
     expect(view.observedAt).toBe('2026-07-01T00:00:00.000Z');

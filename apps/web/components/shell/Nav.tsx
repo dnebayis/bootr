@@ -11,7 +11,7 @@ import { CommandPalette } from './CommandPalette';
 export function Nav() {
   return (
     <header className="sticky top-0 z-40 border-b border-hairline bg-canvas">
-      <div className="mx-auto flex h-[72px] items-center gap-8 px-4 md:px-6">
+      <div className="mx-auto flex h-[72px] items-center gap-3 px-4 md:px-6 lg:gap-8">
         <Link href="/" aria-label="Bootr home" className="shrink-0">
           <Wordmark size="nav" />
         </Link>

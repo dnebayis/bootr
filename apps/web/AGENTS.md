@@ -10,12 +10,14 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Docs and /llms.txt
 
-- `/docs`, `/llms.txt` and `/llms-full.txt` are generated from one source: `components/docs/content.ts` (blocks) and
-  `components/docs/pages.ts` (page list). Edit those, never the routes; `lib/docs/markdown.ts` does the Markdown.
+- `/docs`, `/docs/<slug>.md`, `/llms.txt` and `/llms-full.txt` are generated from one source: `components/docs/content.ts`
+  (blocks) and `components/docs/pages.ts` (page list). Edit those, never the routes; `lib/docs/markdown.ts` does the Markdown.
 - Every statement there describes code elsewhere (contracts, indexer, agent-core, supervisor, sender). Check the code
   before changing a sentence, and change the sentence when you change that code. The tool list mirrors
   `packages/agent-core/src/tools.ts` and the GraphQL examples `apps/indexer/ponder.schema.ts`; tests fail on drift.
 - Public docs never mention HMAC-protected `/internal/*` routes, the supervisor's admin API, the admin console or
   `/api/admin/*`. `lib/docs/markdown.test.ts` checks for the obvious strings.
 - Docs pages are static routes (`app/docs/<slug>/page.tsx`): do not read `params` there (Cache Components +
-  instant navigation).
+  instant navigation). A new page also needs its `app/docs/<slug>.md/route.ts`; `lib/docs/routes.test.ts` fails without it.
+- The refusal codes on `/docs/api` mirror the agent API routes and the inference relay; `lib/docs/refusal-codes.test.ts`
+  fails on a code the table lacks.

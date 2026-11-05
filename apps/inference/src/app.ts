@@ -4,6 +4,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { InferenceRequest, PaymentRecord, StoredResponse } from './db/schema.js';
+import { boundedJson, boundedText } from './bounded.js';
 import { actualChargeMicroUsdc, computeQuote, type PriceTable, type Usage } from './pricing.js';
 import type { Reconciler } from './reconcile.js';
 import {
@@ -22,6 +23,7 @@ import {
   paymentIdentity,
   presentedPayment,
   readEip3009Authorization,
+  refusedPaymentReason,
   type PaymentGate,
   type VerifiedPayment,
 } from './x402.js';
@@ -62,6 +64,28 @@ function errorBody(code: string, message: string, extra: Record<string, unknown>
 
 function respond(c: Context, status: number, body: unknown, headers: Record<string, string> = {}) {
   return c.json(body as object, status as ContentfulStatusCode, headers);
+}
+
+const IN_PROGRESS =
+  'this request is still being processed; retry in a few seconds with the same Idempotency-Key and payment, or read GET /v1/requests/:key';
+
+/** Schema issues in a refusal: a few of them, without the raw values zod copies in (a 1 MB body stays a short answer). */
+const MAX_ISSUES = 20;
+
+function schemaRefusal(issues: { code: string; path: (string | number)[]; message: string }[]) {
+  const view = issues.slice(0, MAX_ISSUES).map((i) => ({
+    code: i.code,
+    path: i.path.slice(0, 8),
+    message: boundedText(i.message, 200),
+  }));
+  const first = view[0];
+  const where = first?.path.length ? `${boundedText(first.path.join('.'), 100)}: ` : '';
+  const more = issues.length > 1 ? ` (and ${issues.length - 1} more, see issues)` : '';
+  return errorBody(
+    'invalid_request',
+    `request does not match the supported schema: ${where}${first?.message ?? 'invalid'}${more}. Fix it and send again; nothing was charged`,
+    { issues: view },
+  );
 }
 
 export function buildReceipt(row: InferenceRequest): Receipt {
@@ -135,6 +159,30 @@ export function createApp(deps: AppDeps): Hono {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? console;
 
+  app.notFound((c) =>
+    respond(
+      c,
+      404,
+      errorBody(
+        'not_found',
+        `no route ${c.req.method} ${boundedText(c.req.path, 100)}; this relay serves GET /v1/models, POST /v1/chat/completions and GET /v1/requests/:key`,
+      ),
+    ),
+  );
+
+  // Only what runs outside `guarded` lands here (lookups before a request is claimed).
+  app.onError((err, c) => {
+    log.error(`unhandled error: ${String(err)}`);
+    return respond(
+      c,
+      500,
+      errorBody(
+        'internal_error',
+        'unexpected server error; retry with the same Idempotency-Key and body (a known key never takes a new payment)',
+      ),
+    );
+  });
+
   app.get('/health', (c) => c.json({ ok: true, service: 'inference', network: deps.network }));
 
   app.get('/v1/models', (c) =>
@@ -191,7 +239,14 @@ export function createApp(deps: AppDeps): Hono {
     }
     const row = await deps.store.get(presented.identity.payer, key);
     if (!row || !sameProof(row, presented.identity.proofHash))
-      return respond(c, 404, errorBody('not_found', 'no request with this Idempotency-Key'));
+      return respond(
+        c,
+        404,
+        errorBody(
+          'not_found',
+          'no request with this Idempotency-Key for this payment; send the key and the PAYMENT-SIGNATURE that opened it',
+        ),
+      );
     return c.json(requestView(await deps.reconcile(row)));
   });
 
@@ -203,7 +258,10 @@ export function createApp(deps: AppDeps): Hono {
         respond(
           c,
           413,
-          errorBody('payload_too_large', `request body exceeds ${MAX_BODY_BYTES} bytes`),
+          errorBody(
+            'payload_too_large',
+            `request body exceeds ${MAX_BODY_BYTES} bytes; send fewer or shorter messages, and link images by URL`,
+          ),
         ),
     }),
     async (c) => {
@@ -212,7 +270,10 @@ export function createApp(deps: AppDeps): Hono {
         return respond(
           c,
           400,
-          errorBody('idempotency_key_required', 'a valid Idempotency-Key header is required'),
+          errorBody(
+            'idempotency_key_required',
+            'the Idempotency-Key header is missing or invalid: send 1 to 200 printable ASCII characters without spaces (a UUID works), and reuse it when you retry this request',
+          ),
         );
       }
       const key = keyParse.data;
@@ -221,17 +282,18 @@ export function createApp(deps: AppDeps): Hono {
       try {
         raw = await c.req.json();
       } catch {
-        return respond(c, 400, errorBody('invalid_json', 'request body must be JSON'));
-      }
-      const parsed = chatRequestSchema.safeParse(raw);
-      if (!parsed.success) {
         return respond(
           c,
           400,
-          errorBody('invalid_request', 'request does not match the supported schema', {
-            issues: parsed.error.issues,
-          }),
+          errorBody(
+            'invalid_json',
+            'request body must be JSON: an OpenAI-style chat completion with model, messages and max_tokens',
+          ),
         );
+      }
+      const parsed = chatRequestSchema.safeParse(raw);
+      if (!parsed.success) {
+        return respond(c, 400, schemaRefusal(parsed.error.issues));
       }
       const req = parsed.data;
       const requestHash = hashRequest(req);
@@ -259,7 +321,7 @@ export function createApp(deps: AppDeps): Hono {
           400,
           errorBody(
             'max_quote_required',
-            `the ${MAX_QUOTE_HEADER} header (micro-USDC) is required`,
+            `the ${MAX_QUOTE_HEADER} header is missing or not a whole number: set it to the most you will pay in micro-USDC (this request quotes ${quote.quoteMicroUsdc})`,
             {
               quoteMicroUsdc: quote.quoteMicroUsdc.toString(),
             },
@@ -281,7 +343,7 @@ export function createApp(deps: AppDeps): Hono {
           402,
           errorBody(
             'quote_exceeds_max',
-            'the quote exceeds X-Max-Quote-Micro-USDC; retry with a higher bound or a smaller request',
+            `the quote (${quote.quoteMicroUsdc} micro-USDC) exceeds ${MAX_QUOTE_HEADER} (${maxParse.data}); retry with a higher bound, a lower max_tokens or a shorter prompt`,
             {
               ...quoteDetails,
               maxQuoteMicroUsdc: maxParse.data.toString(),
@@ -297,7 +359,11 @@ export function createApp(deps: AppDeps): Hono {
         gate = await deps.gate.process(
           c,
           quote.quoteMicroUsdc,
-          errorBody('payment_required', 'pay the quote via x402', quoteDetails),
+          errorBody(
+            'payment_required',
+            `this request costs ${quote.quoteMicroUsdc} micro-USDC: sign the x402 payment described in the PAYMENT-REQUIRED header, then send the same body and Idempotency-Key with it in a PAYMENT-SIGNATURE header`,
+            quoteDetails,
+          ),
         );
       } catch (err) {
         log.error(`x402 verify failed: ${String(err)}`);
@@ -306,13 +372,22 @@ export function createApp(deps: AppDeps): Hono {
           502,
           errorBody(
             'facilitator_unavailable',
-            'payment verification is unavailable; nothing was charged',
+            'payment verification is unavailable; nothing was charged. Retry shortly with the same Idempotency-Key and payment',
           ),
         );
       }
       if (gate.kind === 'respond') {
         const { status, headers, body } = gate.response;
-        return respond(c, status, body ?? {}, { ...headers, ...quoteHeaders });
+        // x402 v2 says why a presented payment was refused only in the header, and answers with an empty body.
+        const refused = !body || (typeof body === 'object' && Object.keys(body).length === 0);
+        const shown = refused
+          ? errorBody(
+              'payment_rejected',
+              `the payment was refused (${refusedPaymentReason(headers)}); nothing was charged. Sign a new payment for the requirements in the PAYMENT-REQUIRED header of this response and send it with the same Idempotency-Key`,
+              quoteDetails,
+            )
+          : body;
+        return respond(c, status, shown, { ...headers, ...quoteHeaders });
       }
       const payment = gate.payment;
       const identity = paymentIdentity(payment.payload);
@@ -322,7 +397,7 @@ export function createApp(deps: AppDeps): Hono {
           400,
           errorBody(
             'unsupported_payment_payload',
-            'the payment names no payer; nothing was charged',
+            'the payment names no payer; nothing was charged. Sign the payment the PAYMENT-REQUIRED header describes with the x402 exact or upto scheme',
           ),
         );
       }
@@ -354,14 +429,21 @@ export function createApp(deps: AppDeps): Hono {
           409,
           errorBody(
             'payment_authorization_reused',
-            'this payment authorization already funded another request; sign a new one',
+            'this payment authorization already funded another request; sign a new one (each request needs its own nonce)',
           ),
         );
       }
       if (claimed === 'key_exists') {
         const row = await deps.store.get(identity.payer, key);
         if (row) return handleExisting(c, row, requestHash, req);
-        return respond(c, 409, errorBody('request_in_progress', 'retry later'));
+        return respond(
+          c,
+          409,
+          errorBody(
+            'request_in_progress',
+            'this request is still being processed; retry in a few seconds with the same Idempotency-Key and payment',
+          ),
+        );
       }
 
       const ref = { payer: identity.payer, key, requestId };
@@ -404,7 +486,7 @@ export function createApp(deps: AppDeps): Hono {
   function unknownBody(requestId: string, key: string, reason: string) {
     return errorBody(
       'request_outcome_unknown',
-      `outcome unknown (${reason}). Do not pay for a replacement; reconcile via GET /v1/requests/${encodeURIComponent(key)}`,
+      `outcome unknown (${boundedText(reason, 200)}). Do not pay for a replacement; reconcile via GET /v1/requests/${encodeURIComponent(key)}`,
       { status: 'unknown', requestId },
     );
   }
@@ -460,7 +542,7 @@ export function createApp(deps: AppDeps): Hono {
       headers,
       body: errorBody(
         'settlement_failed',
-        `payment settlement was refused (${reason}); nothing was charged`,
+        `payment settlement was refused (${boundedText(reason, 200)}); nothing was charged. Check the payer's USDC balance and sign a new payment under a new Idempotency-Key`,
         { requestId: a.requestId },
       ),
     };
@@ -532,8 +614,12 @@ export function createApp(deps: AppDeps): Hono {
         headers: {},
         body: errorBody(
           'upstream_rejected',
-          'the model provider rejected the request; nothing was charged',
-          { requestId: a.requestId, upstreamStatus: upstream.status, upstream: upstream.body },
+          'the model provider rejected the request; nothing was charged. See upstream for its reason, change the request and send it under a new Idempotency-Key',
+          {
+            requestId: a.requestId,
+            upstreamStatus: upstream.status,
+            upstream: boundedJson(upstream.body),
+          },
         ),
       };
       await deps.store.update(
@@ -692,7 +778,7 @@ export function createApp(deps: AppDeps): Hono {
         headers: {},
         body: errorBody(
           'credit_exhausted',
-          `the paid request failed upstream ${row.upstreamAttempts} times (${reason}); a refund of ${charged} micro-USDC is due`,
+          `the paid request failed upstream ${row.upstreamAttempts} times (${boundedText(reason, 200)}); a refund of ${charged} micro-USDC is due. This key will not run again: keep the requestId, and use a new key and payment for a new attempt`,
           {
             requestId: row.requestId,
             status: 'failed',
@@ -718,11 +804,11 @@ export function createApp(deps: AppDeps): Hono {
           headers: {},
           body: errorBody(
             'upstream_rejected',
-            `the model provider rejected the request; the payment is kept as a credit (${retry})`,
+            `the model provider rejected the request; the payment is kept as a credit (${retry}). See upstream for its reason`,
             {
               requestId: row.requestId,
               upstreamStatus: rejected.status,
-              upstream: rejected.body,
+              upstream: boundedJson(rejected.body),
               status: 'credit',
               credit,
             },
@@ -733,7 +819,7 @@ export function createApp(deps: AppDeps): Hono {
           headers: {},
           body: errorBody(
             'upstream_failed_credited',
-            `the model provider did not answer (${reason}); the payment is kept as a credit (${retry})`,
+            `the model provider did not answer (${boundedText(reason, 200)}); the payment is kept as a credit (${retry})`,
             { requestId: row.requestId, status: 'credit', credit },
           ),
         };
@@ -758,7 +844,7 @@ export function createApp(deps: AppDeps): Hono {
         409,
         errorBody(
           'idempotency_key_conflict',
-          'this Idempotency-Key was already used with a different request body',
+          'this Idempotency-Key was already used with a different request body; resend that body, or use a new key and a new payment for this one',
         ),
       );
     }
@@ -778,7 +864,10 @@ export function createApp(deps: AppDeps): Hono {
         const stored = current.response ?? {
           status: 502,
           headers: {},
-          body: errorBody('request_failed', 'request failed'),
+          body: errorBody(
+            'request_failed',
+            'this request failed and will not run again; check GET /v1/requests/:key (retrySafe) before using a new Idempotency-Key',
+          ),
         };
         return respond(c, stored.status, stored.body, { ...stored.headers, ...replay });
       }
@@ -794,7 +883,7 @@ export function createApp(deps: AppDeps): Hono {
           return respond(
             c,
             409,
-            errorBody('request_in_progress', 'this request is still being processed', {
+            errorBody('request_in_progress', IN_PROGRESS, {
               status: 'in_flight',
               requestId: current.requestId,
             }),
@@ -811,7 +900,7 @@ export function createApp(deps: AppDeps): Hono {
         return respond(
           c,
           409,
-          errorBody('request_in_progress', 'this request is still being processed', {
+          errorBody('request_in_progress', IN_PROGRESS, {
             status: 'in_flight',
             requestId: current.requestId,
           }),
