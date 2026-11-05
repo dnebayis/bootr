@@ -116,6 +116,8 @@ interface Store {
   approvals: Map<string, AgentApproval[]>;
   /** The coin's own links (what the hosted contract URI would carry), keyed by the token's `metadata` URL. */
   links: Map<string, CoinPageLinks>;
+  /** The creators' off-chain images, by lowercase coin address. */
+  images: Map<string, string>;
 }
 
 let store: Store | null = null;
@@ -322,7 +324,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), approvals: new Map(), links, images: new Map() };
 }
 
 export function mockStore(): Store {
@@ -534,6 +536,21 @@ export const mock = {
         agent: r.t.agent ?? null,
       })),
     });
+  },
+  /** What `GET /api/coin-images` answers. */
+  coinImages(): Record<string, string> {
+    return Object.fromEntries(mockStore().images);
+  },
+  /** The creator's image edit on the mock store; null goes back to the coin's own image. The token rows are not touched. */
+  setCoinImage(token: string, image: string | null) {
+    const { images } = mockStore();
+    if (image) images.set(token.toLowerCase(), image);
+    else images.delete(token.toLowerCase());
+  },
+  /** The mock coin with that address, as the image route reads it from the indexer: `null` when unknown. */
+  coinOfId(id: string): { creator: Address } | null {
+    const t = mockStore().tokens.find((x) => x.id.toLowerCase() === id.toLowerCase());
+    return t ? { creator: t.creator } : null;
   },
   /** One creator's public record, what `GET /creator/:address` answers on the real indexer. */
   creatorProfile(address: string): CreatorProfile {

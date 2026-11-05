@@ -14,6 +14,7 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 import type { Address } from 'viem';
+import { applyCoinImage, type CoinImageMap } from './coin-image';
 import { env } from './env';
 import { mock, subscribeMock } from './mock';
 import { hasFilters, NO_FILTERS, tokenListRequest, type TokenFilters } from './token-filters';
@@ -119,6 +120,33 @@ const PLATFORM_FIELDS = /* GraphQL */ `
 
 type Paged<T> = { items: T[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
 
+// ---------------------------------------------------------------- coin images
+
+const COIN_IMAGES_TTL_MS = 30_000;
+let coinImagesMemo: { at: number; images: Promise<CoinImageMap> } | null = null;
+
+/** The creators' off-chain images. If they cannot be read, coins show their on-chain image: never an error. */
+function coinImages(): Promise<CoinImageMap> {
+  if (env.useMock) return Promise.resolve(mock.coinImages());
+  if (coinImagesMemo && Date.now() - coinImagesMemo.at < COIN_IMAGES_TTL_MS) return coinImagesMemo.images;
+  const images = fetch('/api/coin-images')
+    .then((r) => (r.ok ? (r.json() as Promise<{ images?: CoinImageMap }>) : {}))
+    .then((j: { images?: CoinImageMap }) => j.images ?? {})
+    .catch((): CoinImageMap => ({}));
+  coinImagesMemo = { at: Date.now(), images };
+  return images;
+}
+
+/** After the creator saved: the next fetch reads the new images. */
+export function forgetCoinImages() {
+  coinImagesMemo = null;
+}
+
+async function withImages<T extends { id: string; image: string }>(tokens: T[]): Promise<(T & { imageOnChain?: string })[]> {
+  const images = await coinImages();
+  return tokens.map((t) => applyCoinImage(t, images));
+}
+
 // ---------------------------------------------------------------- fetchers
 
 const ORDER: Record<Exclude<TokenTab, 'trending'>, { orderBy: string; where?: Record<string, unknown> }> = {
@@ -129,6 +157,11 @@ const ORDER: Record<Exclude<TokenTab, 'trending'>, { orderBy: string; where?: Re
 };
 
 export async function fetchTokens(tab: TokenTab, after: string | null = null, limit = PAGE_SIZE, filters: TokenFilters = NO_FILTERS): Promise<TokenPage> {
+  const page = await readTokens(tab, after, limit, filters);
+  return { ...page, items: await withImages(page.items) };
+}
+
+async function readTokens(tab: TokenTab, after: string | null, limit: number, filters: TokenFilters): Promise<TokenPage> {
   if (env.useMock) {
     await delay();
     return mock.tokenList(tab, filters, after, limit);
@@ -167,25 +200,33 @@ export async function fetchTokens(tab: TokenTab, after: string | null = null, li
 }
 
 export async function fetchLeaderboard(board: BoardId, period: BoardPeriod): Promise<Leaderboard> {
+  let read: Leaderboard;
   if (env.useMock) {
     await delay();
-    return mock.leaderboard(board, period);
+    read = mock.leaderboard(board, period);
+  } else {
+    read = await rest<Leaderboard>(`/leaderboards/${board}?period=${period}`);
   }
-  return rest<Leaderboard>(`/leaderboards/${board}?period=${period}`);
+  const images = await coinImages();
+  return { ...read, items: read.items.map((r) => ({ ...r, token: applyCoinImage(r.token, images) })) };
 }
 
 export async function fetchCreatorProfile(address: string): Promise<CreatorProfile> {
+  let read: CreatorProfile;
   if (env.useMock) {
     await delay();
-    return mock.creatorProfile(address);
+    read = mock.creatorProfile(address);
+  } else {
+    read = await rest<CreatorProfile>(`/creator/${address.toLowerCase()}`);
   }
-  return rest<CreatorProfile>(`/creator/${address.toLowerCase()}`);
+  return { ...read, coins: await withImages(read.coins) };
 }
 
 export async function fetchToken(id: string): Promise<TokenDetail | null> {
   if (env.useMock) {
     await delay();
-    return mock.token(id);
+    const t = mock.token(id);
+    return t ? applyCoinImage(t, await coinImages()) : null;
   }
   const data = await gql<{ token: (Token & { agent: Agent | null }) | null; trades: Paged<TokenDetail['trades'][number]> }>(
     `query Token($id: String!) {
@@ -195,7 +236,7 @@ export async function fetchToken(id: string): Promise<TokenDetail | null> {
     { id: id.toLowerCase() },
   );
   if (!data.token) return null;
-  return { ...data.token, agent: data.token.agent ?? null, trades: data.trades.items };
+  return applyCoinImage({ ...data.token, agent: data.token.agent ?? null, trades: data.trades.items }, await coinImages());
 }
 
 export async function fetchAgent(kernel: string): Promise<Agent | null> {
@@ -210,6 +251,11 @@ export async function fetchAgent(kernel: string): Promise<Agent | null> {
 }
 
 export async function fetchAgents(): Promise<AgentWithToken[]> {
+  const [agents, images] = await Promise.all([readAgents(), coinImages()]);
+  return agents.map((a) => ({ ...a, tokenInfo: a.tokenInfo ? applyCoinImage(a.tokenInfo, images) : null }));
+}
+
+async function readAgents(): Promise<AgentWithToken[]> {
   if (env.useMock) {
     await delay();
     return mock.agents();
@@ -257,16 +303,16 @@ export async function fetchSearch(q: string): Promise<Token[]> {
   if (!q.trim()) return [];
   if (env.useMock) {
     await delay(80);
-    return mock.search(q);
+    return withImages(mock.search(q));
   }
   const res = await rest<Token[] | { items: Token[] }>(`/search?q=${encodeURIComponent(q.trim())}`);
-  return Array.isArray(res) ? res : res.items;
+  return withImages(Array.isArray(res) ? res : res.items);
 }
 
 export async function fetchTokensByCreator(creator: string): Promise<Token[]> {
   if (env.useMock) {
     await delay();
-    return mock.tokensByCreator(creator);
+    return withImages(mock.tokensByCreator(creator));
   }
   const data = await gql<{ tokens: Paged<Token> }>(
     `query ByCreator($creator: String!) {
@@ -274,7 +320,7 @@ export async function fetchTokensByCreator(creator: string): Promise<Token[]> {
     }`,
     { creator: creator.toLowerCase() },
   );
-  return data.tokens.items;
+  return withImages(data.tokens.items);
 }
 
 /**
@@ -282,6 +328,11 @@ export async function fetchTokensByCreator(creator: string): Promise<Token[]> {
  * Returns [] until the endpoint exists.
  */
 export async function fetchHoldings(owner: string): Promise<Holding[]> {
+  const [holdings, images] = await Promise.all([readHoldings(owner), coinImages()]);
+  return holdings.map((h) => ({ ...h, token: applyCoinImage(h.token, images) }));
+}
+
+async function readHoldings(owner: string): Promise<Holding[]> {
   if (env.useMock) {
     await delay();
     return mock.holdings();

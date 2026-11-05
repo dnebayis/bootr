@@ -157,6 +157,15 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
     {
       service: 'web',
       method: 'GET',
+      url: `${site}/api/coin-images`,
+      description: 'The images creators chose to show on this site in place of the on-chain one. A coin not listed has no override. Wallets and other sites still show the original.',
+      auth: NONE,
+      cors: 'none',
+      response: { contentType: JSON_TYPE, shape: '{images: {<lowercase coin address>: <image URI>}}' },
+    },
+    {
+      service: 'web',
+      method: 'GET',
       url: `${site}/agents/{id}.json`,
       description: 'The ERC-8004 registration file of one agent. A launch not indexed yet answers a minimal file with registrations: [].',
       auth: NONE,

@@ -41,7 +41,10 @@ export interface Token {
   chainId: number;
   name: string;
   symbol: string;
+  /** What Bootr shows: the creator's off-chain choice when there is one (`lib/coin-image.ts`), else the on-chain image. */
   image: string;
+  /** The on-chain image, present only when `image` is an override. */
+  imageOnChain?: string;
   creator: Address;
   kernel: Address;
   burner: Address | null;
@@ -194,7 +197,7 @@ export interface FuelEvent {
 }
 
 export interface Holding {
-  token: Pick<Token, 'id' | 'name' | 'symbol' | 'image' | 'priceUsd' | 'marketCapUsd'>;
+  token: Pick<Token, 'id' | 'name' | 'symbol' | 'image' | 'imageOnChain' | 'priceUsd' | 'marketCapUsd'>;
   balance: string; // base units, 18 decimals
   valueUsd: number;
 }

@@ -394,6 +394,8 @@ const res = await fetch(\`\${SITE}/api/agent/\${kernel}/links\`, {
 
 A page on another site cannot call this route: a browser sends its own \`Origin\`, and anything but this site is refused. A script sends no \`Origin\` and needs none, since the signature is what authorizes the change. The statement is \`Update the links of Bootr coin $<SYMBOL> (#<agentId>, <kernel>).\`. If you only change one, read the others first from \`${site}/tokens/<launchId>.json\`: \`website\`, then the \`x\`, \`telegram\` and \`discord\` entries of \`socialMediaUrls\`. Its \`x\` entries can include the agent's own account after the project's, so keep only the project's, and do not use its \`website\` entry, which falls back to this site. The launch id is in the launch answer and in the coin's \`metadata\` in the indexer: the URL itself, or \`contractUri\` inside the JSON on the Clanker path. \`x\` is the project's account: the agent's own account is refused here, since the coin page already shows it. On the Clanker path, this changes the coin page and the document at that URL, not Clanker's page.
 
+To change the image Bootr shows, send \`PUT ${site}/api/coin/<coin>/image\` as multipart form data with \`file\` (PNG, JPG, WebP or SVG, at most 2 MB), \`message\` and \`signature\`, signed the same way. The statement is \`Update the image of Bootr coin $<SYMBOL> (<coin>).\`. \`DELETE\` on the same URL with \`{ message, signature }\` goes back to the original. The image set at launch stays on chain, so wallets and other sites may keep showing it. Say so before you change it.
+
 ### Other things the creator can do
 
 These are transactions or wallet actions. The same rule applies: show the amount and get a yes.
