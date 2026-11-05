@@ -46,7 +46,10 @@ Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi
 └── packages
     ├── contracts    Foundry project: BootrLauncher, AgentGuardian, BuybackBurner, BootrCallPolicy, BootrSwapHelper
     ├── shared       Chain addresses and shared zod env schemas (@bootr/shared)
-    └── agent-core   Agent worker types and ported Claus-derived modules (@bootr/agent-core)
+    ├── agent-core   Agent worker types and ported Claus-derived modules (@bootr/agent-core)
+    ├── sdk          Typed client over the public API; no key, sends nothing (@bootr/sdk, public)
+    ├── cli          The bootr command: reads and unsigned transactions (@bootr/cli, public)
+    └── mcp          Stdio MCP server: reads and prepare-only tools (@bootr/mcp, public)
 ```
 
 How the pieces fit:
@@ -123,6 +126,7 @@ Root scripts (`build`, `lint`, `typecheck`, `test`) run across all workspaces wi
 | inference  | `pnpm --filter inference dev`                                                  | HTTP on `INFERENCE_PORT` (default 3003); see `apps/inference/README.md`                             |
 | contracts  | `pnpm --filter @bootr/contracts setup && pnpm --filter @bootr/contracts build` | `setup` installs forge-std and OpenZeppelin into `lib/`                                             |
 | agent-core | `pnpm --filter @bootr/agent-core test`                                         | vitest                                                                                              |
+| sdk, cli, mcp | `pnpm --filter "./packages/{sdk,cli,mcp}" test`                              | vitest; cli and mcp run as real processes. The Base fork path is `packages/mcp/test/fork-e2e.mjs`   |
 
 ### Contract tests
 

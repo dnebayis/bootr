@@ -5,7 +5,7 @@ import { DOC_CONTENT, type Block } from '@/components/docs/content';
 
 const apps = path.resolve(import.meta.dirname, '../../..');
 const read = (f: string) => readFileSync(path.join(apps, f), 'utf8');
-const WEB_ROUTES = [...['launch', 'nonce', 'x-connect', '[kernel]/links', '[kernel]/config'].map((r) => `web/app/api/agent/${r}/route.ts`), 'web/app/api/coin/[id]/image/route.ts'];
+const WEB_ROUTES = [...['launch', 'nonce', 'x-connect', 'claim/[id]', '[kernel]/links', '[kernel]/config'].map((r) => `web/app/api/agent/${r}/route.ts`), 'web/app/api/coin/[id]/image/route.ts'];
 
 /** The rows of the code table under a heading, by code. */
 function documented(heading: string): Set<string> {

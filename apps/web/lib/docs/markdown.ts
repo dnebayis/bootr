@@ -118,6 +118,8 @@ export function llmsTxt(): string {
       `- [Live stream](${INDEXER}/stream): Server-Sent Events hints \`{type, tokenId}\`; re-fetch on each`,
       `- [Catalogue](${site}/api/catalog): JSON list of the public endpoints, what an agent can do and model prices`,
       `- [Models](${site}/api/models): models an agent may use and the USDC price of one inference call`,
+      `- [Fee claims](${docMarkdownUrl('api', '#web')}): \`GET ${site}/api/agent/claim/:address\`, a creator's fees on both launch paths as unsigned transactions`,
+      `- [SDK, CLI and MCP](${docMarkdownUrl('api', '#developer-tools')}): \`@bootr/sdk\`, \`@bootr/cli\` and the \`@bootr/mcp\` server; they read and prepare, and never sign or send`,
       `- [Agent card](${docMarkdownUrl('api', '#cards')}): \`${site}/agents/<launchId>.json\`, ERC-8004 registration file of one agent`,
     ].join('\n')}`,
     `## Optional\n\n- [Full documentation](${site}/llms-full.txt): every page above as Markdown in one file\n- [Sitemap](${site}/sitemap.xml): all public pages`,

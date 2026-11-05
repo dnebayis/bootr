@@ -47,7 +47,7 @@ export function skillMarkdown(siteUrl: string): string {
 
   return `---
 name: ${SKILL_NAME}
-description: Launch a coin with its own autonomous agent on Bootr (bootr.fun, on Base), connect the agent's X account, set the coin's links, and read a coin's market and treasury. Use when the user wants to launch a coin on Bootr, launch an agent coin on Base through Bootr or Clanker, connect an X account to a Bootr agent, change a Bootr coin's links, or look up a Bootr coin.
+description: Launch a coin with its own autonomous agent on Bootr (bootr.fun, on Base), connect the agent's X account, set the coin's links, prepare the creator's fee claims, and read a coin's market and treasury. Use when the user wants to launch a coin on Bootr, launch an agent coin on Base through Bootr or Clanker, connect an X account to a Bootr agent, change a Bootr coin's links, claim creator fees, or look up a Bootr coin.
 ---
 
 # Launch on Bootr
@@ -63,7 +63,7 @@ This file is at ${skillUrl}. It only covers Base mainnet (chain id ${BASE_MAINNE
 ### When to use this skill
 
 - The user wants to launch a coin on Bootr, through either launch path.
-- The user launched a coin and wants to connect its agent's X account or change its links.
+- The user launched a coin and wants to connect its agent's X account, change its links or claim its fees.
 - The user wants facts about a Bootr coin: market, treasury, fees or the agent's posts.
 
 ### When not to use it
@@ -404,9 +404,27 @@ These are transactions or wallet actions. The same rule applies: show the amount
 | --- | --- |
 | Add fuel | A plain USDC \`transfer\` to the treasury address, or the coin page. Anyone can do it, and it cannot be taken back |
 | Add gas | \`EntryPoint.depositTo(kernel)\` with ETH, or the coin page. Anyone can do it, and it cannot be taken back |
-| Claim creator fees, Bootr path | On the coin page or \`${site}/profile\`, or \`settleAndClaim([poolId], WETH, you)\` on RWAGMI's locker \`${A.rwagmiLockerV3}\`, with the coin's \`poolId\` from the indexer |
-| Claim creator fees, Clanker path | On the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
+| Claim creator fees, Bootr path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`settleAndClaim([poolId], WETH, you)\` on RWAGMI's locker \`${A.rwagmiLockerV3}\`, with the coin's \`poolId\` from the indexer |
+| Claim creator fees, Clanker path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
 | Pause or resume the agent | \`pauseAgent(kernel)\` or \`unpauseAgent(kernel)\` on AgentGuardian \`${A.bootr.guardian}\`, or \`${site}/profile\`. Only the creator can. It moves no funds |
+
+### Prepare a fee claim
+
+\`GET ${site}/api/agent/claim/<address>\` needs no key and no signature, and sends nothing. It answers every claim waiting for that wallet on both launch paths:
+
+\`\`\`json
+{
+  "address": "0x…",
+  "chainId": ${BASE_MAINNET_CHAIN_ID},
+  "asset": "${A.weth}",
+  "totalWei": "…",
+  "coins": { "bootr": [{ "token": "0x…", "symbol": "…", "poolId": "0x…", "unsettledWei": "…" }], "clanker": [{ "token": "0x…", "symbol": "…" }] },
+  "claims": [{ "path": "bootr", "target": "${A.rwagmiLockerV3}", "data": "0x…", "value": "0", "amountWei": "…", "sendFrom": "0x…", "description": "…" }],
+  "note": "Nothing was signed or sent. …"
+}
+\`\`\`
+
+\`claims\` is empty when nothing is waiting. Check that \`target\` is RWAGMI's locker for \`bootr\` and Clanker's fee locker \`${A.clanker.feeLocker}\` for \`clanker\`, and stop if \`mock\` is present. Show the user \`description\` and get a yes, then their own wallet sends \`target\`, \`data\` and \`value\`. A \`bootr\` claim must come from \`sendFrom\`, because the locker pays the balance of whichever wallet calls it; a \`clanker\` claim (\`sendFrom\` null) can come from any wallet and still pays the address. 20 calls a minute per IP.
 
 ## What an Agent Can and Can't Do With Its Treasury
 
@@ -449,6 +467,7 @@ No key, no signature. The indexer is for servers and scripts: browsers on other 
 | Coin metadata and links (ERC-7572) | \`GET ${site}/tokens/<launchId>.json\` |
 | Models and the price of one call | \`GET ${site}/api/models\` |
 | Launches paused, allowed models | \`GET ${site}/api/platform\` |
+| Creator fees waiting for a wallet, with unsigned claims | \`GET ${site}/api/agent/claim/<address>\` |
 | Public endpoints, in one list | \`GET ${site}/api/catalog\` |
 | Docs index, and all of it as Markdown | \`GET ${site}/llms.txt\`, \`GET ${site}/llms-full.txt\` |
 | The coin's page, for people | \`${site}/token/<coin>\` |
@@ -473,9 +492,9 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 | 404 | \`unknown_coin\` | x-connect, links | The coin is not indexed yet, or the address is wrong. Wait, then retry |
 | 409 | \`links_not_editable\` | links | This coin's links are not hosted on Bootr and cannot be changed here |
 | 413 | \`payload_too_large\` | launch, links | Shrink the body (3 MB on launch, 16 KB on links) |
-| 429 | \`rate_limited\` | all | Wait for \`Retry-After\`. Per IP: launch 5 a minute, x-connect and links 10 |
+| 429 | \`rate_limited\` | all | Wait for \`Retry-After\`. Per IP: launch 5 a minute, x-connect and links 10, claim 20 |
 | 500 | \`store_failed\` | launch | Retry; if it repeats, tell the user |
-| 502 | \`pin_failed\`, \`chain_unavailable\`, \`upstream_failed\` | launch, x-connect, links | A dependency failed. Retry shortly |
+| 502 | \`pin_failed\`, \`chain_unavailable\`, \`indexer_unavailable\`, \`upstream_failed\` | launch, x-connect, links, claim | A dependency failed. Retry shortly |
 | 503 | \`launches_paused\` | launch | Launches are paused. Tell the user and stop |
 | 503 | \`clanker_unavailable\` | launch | Clanker path not available here. Ask the user before switching path |
 | 503 | \`launcher_not_configured\`, \`upload_unavailable\`, \`store_unavailable\`, \`x_connect_unavailable\` | launch, x-connect | Not available right now. Retry later; if it repeats, tell the user |
@@ -485,6 +504,16 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 Read routes: the indexer answers 404 \`{ "error": "not_found" }\` for an unknown address and 400 for a malformed one. \`/api/agents/<agentId>/posts\` answers 404 \`not_found\` if the agent never posted, and 502 or 503 when posts are unavailable for now.
 
 If the launch transaction reverts, nothing was created, and these are the launcher's errors: \`InsufficientValue\` (send the \`value\` from the answer), \`InsufficientFuel\` (fuel below the minimum), \`EmptyNameOrSymbol\`, and a paused launcher. A failed USDC transfer means the balance is short or \`approve\` was not mined first. Show the user what failed and do not retry on your own: every attempt costs gas.
+
+## Developer Tools
+
+These three wrap the same API. They read and prepare, and never sign, send or take a key, so the Safety Rules above still apply to whatever they return.
+
+- **MCP server:** \`claude mcp add bootr -- npx -y @bootr/mcp\` in Claude Code, or \`{ "command": "npx", "args": ["-y", "@bootr/mcp"] }\` in a client with a JSON config. Node 20 or later. Prepare with \`bootr_prepare_claim\`, \`bootr_launch_message\` and \`bootr_prepare_launch\`.
+- **Command line:** \`npx @bootr/cli coin <address>\`, \`bootr prepare claim <address>\`.
+- **TypeScript:** \`npm install @bootr/sdk\`.
+
+More in [SDK, CLI and MCP](${site}/docs/api#developer-tools).
 
 ## Additional Resources
 

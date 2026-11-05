@@ -147,7 +147,7 @@ describe('matches the routes', () => {
       if (m) expect(e.rateLimit, e.url).toEqual({ limit: Number(m[1]), windowSeconds: Number(m[2]), per: 'ip' });
       else expect(e.rateLimit, e.url).toBeUndefined();
     }
-    expect(web.filter((e) => e.rateLimit).length).toBe(2);
+    expect(web.filter((e) => e.rateLimit).length).toBe(3);
   });
 
   it('claims any-origin only where the route sends the header', () => {
@@ -177,6 +177,14 @@ describe('matches the routes', () => {
     expect(src).toContain("l.fuelUsdc === undefined ? '20'");
     const launch = JSON.stringify(web.find((e) => e.url.endsWith('/api/agent/launch'))?.parameters?.body);
     for (const s of ['default 0.001', 'at least 0.0001', 'default 20']) expect(launch).toContain(s);
+  });
+
+  it('lists every route the SDK calls, by method and path', () => {
+    const src = readFileSync(path.join(REPO, 'packages/sdk/src/routes.ts'), 'utf8');
+    const routes = [...src.matchAll(/method: '(GET|POST)', path: '([^']+)'/g)].map((m) => `${m[1]} ${m[2]}`);
+    expect(routes.length).toBeGreaterThan(10);
+    const listed = catalog().endpoints.map((e) => `${e.method} ${e.url.replace(e.service === 'web' ? SITE : INDEXER, '')}`);
+    for (const r of routes) expect(listed, r).toContain(r);
   });
 
   it('is linked from the docs', () => {

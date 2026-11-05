@@ -194,7 +194,7 @@ describe('renderApiPage', () => {
     expect(html).toContain(`<span>Site and agent API</span><code class="url">${SITE}</code>`);
     expect(html).toContain(`<span>Indexer</span><code class="url">${INDEXER}</code>`);
     expect(html.match(new RegExp(`<code class="url">${INDEXER}</code>`, 'g'))).toHaveLength(1);
-    for (const url of [`${SITE}/api/catalog`, `${SITE}/llms.txt`, `${SITE}/skill/skill.md`]) {
+    for (const url of [`${SITE}/api/catalog`, `${SITE}/llms.txt`, `${SITE}/skill/skill.md`, `${SITE}/docs/api#developer-tools`]) {
       expect(hrefs(html)).toContain(url);
     }
   });

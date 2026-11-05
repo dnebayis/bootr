@@ -1,0 +1,54 @@
+{
+  "name": "@bootr/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions. Nothing is signed or sent.",
+  "keywords": [
+    "bootr",
+    "base",
+    "mcp",
+    "model-context-protocol",
+    "unsigned-transactions"
+  ],
+  "homepage": "https://bootr.fun/docs/api#developer-tools",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dnebayis/bootr.git",
+    "directory": "packages/mcp"
+  },
+  "type": "module",
+  "bin": {
+    "bootr-mcp": "dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "pretest": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "tsc -p tsconfig.build.json",
+    "e2e:fork": "node test/fork-e2e.mjs"
+  },
+  "dependencies": {
+    "@bootr/sdk": "workspace:^",
+    "@modelcontextprotocol/server": "^2.4.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "viem": "^2.35.0",
+    "vitest": "^3.0.0"
+  }
+}

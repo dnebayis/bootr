@@ -220,6 +220,20 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
     {
       service: 'web',
       method: 'GET',
+      url: `${site}/api/agent/claim/{address}`,
+      description: 'The fee claims waiting for a creator on both launch paths, as unsigned transactions for their own wallet to send. No key and no signature, and nothing is sent.',
+      auth: NONE,
+      cors: 'any-origin',
+      rateLimit: { limit: 20, windowSeconds: 60, per: 'ip' },
+      parameters: { path: pathParam('address', ADDRESS) },
+      response: {
+        contentType: JSON_TYPE,
+        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}]}, claims: [{path: bootr|clanker, target, data, value, amountWei, sendFrom: address|null, description}], note}; errors {error, message} with 400, 429, 502',
+      },
+    },
+    {
+      service: 'web',
+      method: 'GET',
       url: `${site}/llms.txt`,
       description: 'An index of the documentation in the llms.txt format.',
       auth: NONE,
