@@ -109,7 +109,8 @@ export function classifySwapError(e: unknown, ctx?: Context): SwapFailureCode {
   for (const { code, names, selectors } of KNOWN) {
     if (names.some((n) => text.includes(n)) || selectors.some((s) => lower.includes(s))) return code;
   }
-  if (codes.includes(4902) || /does not match the target chain|chain mismatch|chain not configured|unrecognized chain/.test(lower)) return 'wrong_chain';
+  if (codes.includes(4902) || /does not match the|chain mismatch|chain not configured|unrecognized chain/.test(lower)) return 'wrong_chain';
+  if (/connector not connected|connector not found/.test(lower)) return 'not_connected';
   if (/transfer_from_failed|transfer amount exceeds balance/.test(lower)) return 'no_balance';
   if (/insufficient funds|exceeds the balance of the account/.test(lower)) return 'gas';
   const reverted = /revert|execution failed|wrappederror|unexpectedrevertbytes/.test(lower);
