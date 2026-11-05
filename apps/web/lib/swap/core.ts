@@ -1,0 +1,363 @@
+/**
+ * Buying and selling a coin on its Uniswap v4 pool, in the user's own wallet: no React, no wagmi, no env, so the panel
+ * and the Base fork test (`swap.fork.test.ts`) run the same bytes.
+ *
+ * Every Bootr coin has one pool paired with WETH, on either launch path, and people hold ETH, so:
+ *
+ * - Buy: `WRAP_ETH` into the router, `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin goes to the
+ *   caller), `UNWRAP_WETH` of whatever the swap did not use back to the caller.
+ * - Sell: `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin is pulled through Permit2, WETH stays
+ *   in the router), `UNWRAP_WETH` to the caller with the same minimum.
+ *
+ * The router keeps nothing between transactions and Bootr adds no fee: the only recipient in the calldata is the caller.
+ */
+import {
+  concat,
+  encodeAbiParameters,
+  encodeFunctionData,
+  encodePacked,
+  erc20Abi,
+  keccak256,
+  type Address,
+  type Hex,
+} from 'viem';
+import { addresses } from '@bootr/shared/addresses';
+
+export type SwapSide = 'buy' | 'sell';
+export type PoolSource = 'bootr' | 'clanker';
+
+export type PoolKey = {
+  currency0: Address;
+  currency1: Address;
+  fee: number;
+  tickSpacing: number;
+  hooks: Address;
+};
+
+/** A transaction, ready for the wallet. */
+export type SwapTx = { to: Address; data: Hex; value: bigint };
+
+const A = addresses[8453];
+
+/**
+ * Base mainnet only: RWAGMI has no Base Sepolia deployment and the Clanker path is mainnet-only.
+ * Quoter and StateView: developers.uniswap.org/docs/protocols/v4/deployments, Base mainnet row;
+ * `V4Quoter.poolManager()` reads as the PoolManager in the shared address book.
+ */
+export const SWAP_CONTRACTS = {
+  chainId: 8453,
+  quoter: '0x0d5e0f971ed27fbff6c2837bf31316121532048d' as Address,
+  stateView: '0xa3c0c9b65bad0b08107aa264b0f3db444b867a71' as Address,
+  universalRouter: A.uniswap.universalRouter as Address,
+  permit2: A.uniswap.permit2 as Address,
+  weth: A.weth as Address,
+  rwagmiHook: A.rwagmiHookV3 as Address,
+  clankerHook: A.clanker.hookStaticFeeV2 as Address,
+} as const;
+
+/** `LPFeeLibrary.DYNAMIC_FEE_FLAG`: Clanker pools are dynamic-fee pools, the hook sets the fee. */
+const DYNAMIC_FEE_FLAG = 0x800000;
+const TICK_SPACING = 200;
+
+/** Universal Router commands (`Commands.sol`). */
+const CMD = { WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 } as const;
+/** v4-periphery `Actions.sol`. */
+const ACTION = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE: 0x0b, SETTLE_ALL: 0x0c, TAKE: 0x0e } as const;
+/** v4-periphery `ActionConstants.sol`: placeholders the router maps to the caller, to itself and to "what is owed". */
+const MSG_SENDER: Address = '0x0000000000000000000000000000000000000001';
+const ADDRESS_THIS: Address = '0x0000000000000000000000000000000000000002';
+const OPEN_DELTA = 0n;
+
+export const DEFAULT_SLIPPAGE_BPS = 100;
+export const MAX_SLIPPAGE_BPS = 2_000;
+/** A transaction not included by then reverts instead of filling at a price from long ago. */
+export const SWAP_DEADLINE_SECONDS = 20 * 60;
+/** A Permit2 allowance outlives a sell's signing and confirmation by a little, no more. */
+export const PERMIT2_EXPIRY_SECONDS = 30 * 60;
+
+export const universalRouterAbi = [
+  {
+    type: 'function',
+    name: 'execute',
+    stateMutability: 'payable',
+    inputs: [
+      { name: 'commands', type: 'bytes' },
+      { name: 'inputs', type: 'bytes[]' },
+      { name: 'deadline', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export const permit2Abi = [
+  {
+    type: 'function',
+    name: 'allowance',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'token', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [
+      { name: 'amount', type: 'uint160' },
+      { name: 'expiration', type: 'uint48' },
+      { name: 'nonce', type: 'uint48' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint160' },
+      { name: 'expiration', type: 'uint48' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/** The pool key each launch path builds for a coin (`BootrLauncher.poolKeyFor`, `BootrClankerLauncher.poolKeyFor`). */
+export function poolKeyOf(token: Address, source: PoolSource): PoolKey {
+  const coinFirst = BigInt(token) < BigInt(SWAP_CONTRACTS.weth);
+  return {
+    currency0: coinFirst ? token : SWAP_CONTRACTS.weth,
+    currency1: coinFirst ? SWAP_CONTRACTS.weth : token,
+    fee: source === 'clanker' ? DYNAMIC_FEE_FLAG : 0,
+    tickSpacing: TICK_SPACING,
+    hooks: source === 'clanker' ? SWAP_CONTRACTS.clankerHook : SWAP_CONTRACTS.rwagmiHook,
+  };
+}
+
+/** `PoolIdLibrary.toId(key)`. */
+export function poolIdOf(key: PoolKey): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: 'address' }, { type: 'address' }, { type: 'uint24' }, { type: 'int24' }, { type: 'address' }],
+      [key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks],
+    ),
+  );
+}
+
+/**
+ * The key to trade on, or null when it does not hash to the coin's indexed pool id. The id commits to all five fields,
+ * so a coin on an unexpected hook gets no trade rather than a trade on the wrong pool.
+ */
+export function verifiedPoolKey(token: Address, source: PoolSource, poolId: string): PoolKey | null {
+  const key = poolKeyOf(token, source);
+  return poolIdOf(key).toLowerCase() === poolId.toLowerCase() ? key : null;
+}
+
+/** True when the swap's input is currency0 (`zeroForOne`). Buying spends WETH, selling spends the coin. */
+export function zeroForOne(key: PoolKey, side: SwapSide): boolean {
+  const currency0IsWeth = BigInt(key.currency0) === BigInt(SWAP_CONTRACTS.weth);
+  return side === 'buy' ? currency0IsWeth : !currency0IsWeth;
+}
+
+/** `quoted` less the slippage allowance, rounded down. */
+export function minReceived(quoted: bigint, slippageBps: number): bigint {
+  return (quoted * BigInt(10_000 - slippageBps)) / 10_000n;
+}
+
+function exactInSingle(key: PoolKey, side: SwapSide, amountIn: bigint, amountOutMinimum: bigint): Hex {
+  return encodeAbiParameters(
+    [
+      {
+        type: 'tuple',
+        components: [
+          {
+            name: 'poolKey',
+            type: 'tuple',
+            components: [
+              { name: 'currency0', type: 'address' },
+              { name: 'currency1', type: 'address' },
+              { name: 'fee', type: 'uint24' },
+              { name: 'tickSpacing', type: 'int24' },
+              { name: 'hooks', type: 'address' },
+            ],
+          },
+          { name: 'zeroForOne', type: 'bool' },
+          { name: 'amountIn', type: 'uint128' },
+          { name: 'amountOutMinimum', type: 'uint128' },
+          { name: 'hookData', type: 'bytes' },
+        ],
+      },
+    ],
+    [{ poolKey: key, zeroForOne: zeroForOne(key, side), amountIn, amountOutMinimum, hookData: '0x' }],
+  );
+}
+
+const packedBytes = (values: readonly number[]): Hex => encodePacked(values.map(() => 'uint8'), [...values]);
+
+function v4Swap(actions: readonly number[], params: readonly Hex[]): Hex {
+  return encodeAbiParameters([{ type: 'bytes' }, { type: 'bytes[]' }], [packedBytes(actions), [...params]]);
+}
+
+const settleParams = (currency: Address, amount: bigint, payerIsUser: boolean) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], [currency, amount, payerIsUser]);
+const settleAllParams = (currency: Address, maxAmount: bigint) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [currency, maxAmount]);
+const takeParams = (currency: Address, recipient: Address, amount: bigint) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], [currency, recipient, amount]);
+const wethParams = (recipient: Address, amount: bigint) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [recipient, amount]);
+
+function execute(commands: readonly number[], inputs: readonly Hex[], deadline: bigint): Hex {
+  return encodeFunctionData({
+    abi: universalRouterAbi,
+    functionName: 'execute',
+    args: [packedBytes(commands), [...inputs], deadline],
+  });
+}
+
+type SwapArgs = {
+  key: PoolKey;
+  coin: Address;
+  amountIn: bigint;
+  /** The on-chain floor: the transaction reverts below it. */
+  minOut: bigint;
+  /** Unix seconds. */
+  deadline: bigint;
+  /** ERC-8021 builder code suffix; the router's ABI decoding ignores trailing bytes. */
+  dataSuffix?: Hex;
+};
+
+const suffixed = (data: Hex, suffix?: Hex): Hex => (suffix ? concat([data, suffix]) : data);
+
+/** ETH to coin. `value` is the amount in; nothing else leaves the wallet. */
+export function buildBuyTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+  const data = execute(
+    [CMD.WRAP_ETH, CMD.V4_SWAP, CMD.UNWRAP_WETH],
+    [
+      wethParams(ADDRESS_THIS, amountIn),
+      v4Swap(
+        [ACTION.SWAP_EXACT_IN_SINGLE, ACTION.SETTLE, ACTION.TAKE],
+        [
+          exactInSingle(key, 'buy', amountIn, minOut),
+          settleParams(SWAP_CONTRACTS.weth, OPEN_DELTA, false),
+          takeParams(coin, MSG_SENDER, OPEN_DELTA),
+        ],
+      ),
+      // A swap that stops at the end of the pool's liquidity leaves WETH in the router: it comes back as ETH.
+      wethParams(MSG_SENDER, 0n),
+    ],
+    deadline,
+  );
+  return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: amountIn };
+}
+
+/** Coin to ETH. Needs the allowances of `approvalCalls`. */
+export function buildSellTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+  const data = execute(
+    [CMD.V4_SWAP, CMD.UNWRAP_WETH],
+    [
+      v4Swap(
+        [ACTION.SWAP_EXACT_IN_SINGLE, ACTION.SETTLE_ALL, ACTION.TAKE],
+        [
+          exactInSingle(key, 'sell', amountIn, minOut),
+          settleAllParams(coin, amountIn),
+          takeParams(SWAP_CONTRACTS.weth, ADDRESS_THIS, OPEN_DELTA),
+        ],
+      ),
+      wethParams(MSG_SENDER, minOut),
+    ],
+    deadline,
+  );
+  return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: 0n };
+}
+
+export type Allowances = {
+  /** `coin.allowance(owner, permit2)`. */
+  token: bigint;
+  /** `permit2.allowance(owner, coin, router)`. */
+  permit2Amount: bigint;
+  /** Unix seconds. */
+  permit2Expiration: number;
+};
+
+export type ApprovalCall = SwapTx & { kind: 'token' | 'permit2' };
+
+/**
+ * What a sell of `amount` still needs, with exact amounts and nothing more. The sell spends both allowances, so neither
+ * stays open afterwards. An allowance that already covers the sell is left alone.
+ */
+export function approvalCalls({
+  coin,
+  amount,
+  allowances,
+  now,
+  dataSuffix,
+}: {
+  coin: Address;
+  amount: bigint;
+  allowances: Allowances;
+  /** Unix seconds. */
+  now: number;
+  dataSuffix?: Hex;
+}): ApprovalCall[] {
+  const calls: ApprovalCall[] = [];
+  if (allowances.token < amount) {
+    calls.push({
+      kind: 'token',
+      to: coin,
+      value: 0n,
+      data: suffixed(
+        encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [SWAP_CONTRACTS.permit2, amount] }),
+        dataSuffix,
+      ),
+    });
+  }
+  // The allowance has to last through signing and confirming the sell itself.
+  if (allowances.permit2Amount < amount || allowances.permit2Expiration < now + 120) {
+    calls.push({
+      kind: 'permit2',
+      to: SWAP_CONTRACTS.permit2,
+      value: 0n,
+      data: suffixed(
+        encodeFunctionData({
+          abi: permit2Abi,
+          functionName: 'approve',
+          args: [coin, SWAP_CONTRACTS.universalRouter, amount, now + PERMIT2_EXPIRY_SECONDS],
+        }),
+        dataSuffix,
+      ),
+    });
+  }
+  return calls;
+}
+
+/** The output before any fee or price impact, at the pool's current price. */
+export function idealOut(amountIn: bigint, sqrtPriceX96: bigint, inputIsCurrency0: boolean): bigint {
+  if (sqrtPriceX96 === 0n) return 0n;
+  const q192 = 1n << 192n;
+  const price = sqrtPriceX96 * sqrtPriceX96;
+  return inputIsCurrency0 ? (amountIn * price) / q192 : (amountIn * q192) / price;
+}
+
+/** 1 - a / b as a percent, never below 0. */
+export function shortfallPct(a: bigint, b: bigint): number {
+  if (b <= 0n) return 0;
+  const ppm = 1_000_000n - (a * 1_000_000n) / b;
+  return ppm <= 0n ? 0 : Number(ppm) / 10_000;
+}
+
+/** The price impact: how much worse `amountIn` fills than a tiny reference swap on the same pool. */
+export function impactPct(amountIn: bigint, amountOut: bigint, refIn: bigint, refOut: bigint): number {
+  if (refIn === amountIn) return 0;
+  return shortfallPct(amountOut * refIn, refOut * amountIn);
+}
+
+/** Clanker's launch fee, as the coin's hook reports it. */
+export type LaunchWindow = {
+  /** The hook has not switched its anti-sniper module off for this pool yet. */
+  armed: boolean;
+  /** Unix seconds: the module has no effect after this, even if nobody has traded to switch it off. */
+  endsAt: number;
+};
+
+/** Whether the hook's window is running at `now` (unix seconds). */
+export function launchWindowActive(w: LaunchWindow | null | undefined, now: number): boolean {
+  return !!w && w.armed && now < w.endsAt;
+}
