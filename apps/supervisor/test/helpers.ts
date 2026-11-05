@@ -280,6 +280,8 @@ export interface MockSender {
   publishStatus: 'sent' | 'held' | 'rejected';
   /** When set, `publish` answers 503 `consent_lookup_failed` (X unreachable for the consent check) with this retryAt. */
   consentLookupFails: string | null;
+  /** When set, `publish` answers 429 `quota_exceeded` (the agent's 24 h post quota is used up) with this retryAt. */
+  quotaExceeded: string | null;
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
   optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
@@ -296,12 +298,13 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
     async publish(body: { actionId: string; text: string; replyTo?: string; replyEligibility?: { eligible: boolean; reason?: string } }) {
       if (m.consentLookupFails) throw new SenderError(503, 'consent_lookup_failed', { error: 'consent_lookup_failed', retryAt: m.consentLookupFails }, true, Date.parse(m.consentLookupFails));
+      if (m.quotaExceeded) throw new SenderError(429, 'quota_exceeded', { error: 'quota_exceeded', limit: 24, window: '24h', retryAt: m.quotaExceeded }, true, Date.parse(m.quotaExceeded));
       m.published.push(body);
       const reasons: string[] = [];
       if (body.replyTo && !body.replyEligibility?.eligible) reasons.push(`reply_not_eligible:${body.replyEligibility?.reason ?? 'missing_eligibility'}`);

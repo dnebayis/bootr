@@ -16,6 +16,10 @@
  * The wake side (`applyRhythm`, called from tick.ts) turns a held slot into `mayCompose: false` so the schedule
  * does not wake the agent; the publish side (`originalPostGate`, called by the broker on `publish_post`) refuses
  * the post with a clear tool error if the agent tries anyway or if the window filled up meanwhile.
+ *
+ * 4. X quota (per agent): when the sender refuses a publish with `quota_exceeded`, the runtime keeps its
+ *    `retryAt` (`AgentState.postQuotaUntil`) and the tick neither wakes the agent for a post nor for a mention
+ *    until then (`quotaHold` / `applyQuotaHold`), so no model turn is bought for a post that cannot go out.
  */
 import { originalPostSchedule, publicChannelBlocked, sha256Hex, type AgentConfig, type PostSchedule } from '@bootr/agent-core';
 import { and, gt, inArray, ne, sql } from 'drizzle-orm';
@@ -43,7 +47,7 @@ export function jitterMs(kernel: string, intervalMs: number): number {
   return Math.floor((word / 0x1_0000_0000) * MAX_JITTER_FRACTION * intervalMs);
 }
 
-export type HoldReason = 'quiet_hours' | 'no_slot';
+export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota';
 
 export interface Hold {
   reason: HoldReason;
@@ -195,6 +199,29 @@ export async function applyRhythm(ctx: Pick<SupervisorContext, 'db' | 'config'>,
   const gate = await originalPostGate(ctx, now);
   if (gate.open) return schedule;
   return { ...schedule, due: false, mayCompose: false, missedIntervals: 0, held: gate.hold };
+}
+
+/**
+ * The agent's own X posting quota (apps/sender: posts + replies per rolling 24 h) is used up: the last publish was
+ * refused with `sender:quota_exceeded` and `until` is the sender's `retryAt`. Null once that time has passed.
+ */
+export function quotaHold(until: number | null | undefined, now: number): Hold | null {
+  if (!until || !Number.isFinite(until) || until <= now) return null;
+  const at = new Date(until).toISOString();
+  return {
+    reason: 'x_quota',
+    until,
+    message: `x_quota: your X posting quota (original posts and replies in the last 24 hours) is used up until ${at}. publish_post and publish_reply fail until then: do not call them. Mentions wait for you; you are woken when the quota opens.`,
+  };
+}
+
+/**
+ * The quota side of the wake rule: while the quota is used up, the schedule neither wakes the agent nor tells it
+ * to post (any schedule, due or not, carries the hold so the observation says why and until when).
+ */
+export function applyQuotaHold(schedule: RhythmSchedule | null, hold: Hold | null): RhythmSchedule | null {
+  if (!schedule || !hold) return schedule;
+  return { ...schedule, due: false, mayCompose: false, missedIntervals: 0, held: hold };
 }
 
 /** The `social.originalPost` section of the observation. While held, `nextAt` is when it is worth trying again. */
