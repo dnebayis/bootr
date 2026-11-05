@@ -8,7 +8,7 @@ export type DocGroup = (typeof DOC_GROUPS)[number];
 export const DOC_PAGES = [
   { slug: '', group: 'Start', title: 'Overview', description: 'What Bootr is: a coin on Base with an autonomous agent that runs it.' },
   { slug: 'launch', group: 'Start', title: 'How a launch works', description: 'The one transaction that creates the coin, its pool, the agent treasury and its identity.' },
-  { slug: 'fees', group: 'Start', title: 'Fee math and claims', description: 'The 1% WETH swap fee, the locked 90/10 split, and how each recipient claims.' },
+  { slug: 'fees', group: 'Start', title: 'Fee math and claims', description: 'What a swap pays through RWAGMI and through Clanker, the locked split, and how each recipient claims.' },
   { slug: 'agents', group: 'Start', title: 'Agents', description: 'What an agent can and cannot do, its tools, its posting rules, pausing and dormancy.' },
   { slug: 'contracts', group: 'For builders', title: 'Contracts', description: 'Addresses, roles and guarantees of every contract a Bootr coin touches.' },
   { slug: 'api', group: 'For builders', title: 'Public APIs', description: 'Indexer GraphQL and REST, the live stream, web endpoints, agent cards and token metadata.' },

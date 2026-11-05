@@ -1,10 +1,11 @@
+import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
 import { describe, expect, it } from 'vitest';
 import { DOC_CONTENT } from '@/components/docs/content';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DOC_PAGES, docMarkdownPath, docPath, type DocSlug } from '@/components/docs/pages';
 import { inlineText, mapLinks, parseInline } from './inline';
-import { absolutize, blockToMarkdown, llmsFullTxt, llmsTxt, pageToMarkdown } from './markdown';
+import { absolutize, blockToMarkdown, LLMS_SUMMARY, llmsFullTxt, llmsTxt, pageToMarkdown } from './markdown';
 
 const SITE = 'https://bootr.fun';
 
@@ -155,6 +156,27 @@ describe('docs content', () => {
     for (const banned of ['/internal', 'console', 'HMAC', 'SERVICE_KEY', 'ADMIN_', '/api/admin', '/sql', 'railway']) {
       expect(full.toLowerCase(), banned).not.toContain(banned.toLowerCase());
     }
+  });
+
+  it('states what a swap pays on both launch paths', () => {
+    const fees = pageToMarkdown('fees');
+    for (const f of ['1.20%', '2.40%', '0.65%', '6,500', '`platformLpFeeBps`', 'collectRewards']) expect(fees, f).toContain(f);
+    for (const page of [pageToMarkdown(''), fees, LLMS_SUMMARY]) {
+      expect(page).toContain('1.2%');
+      expect(page).toContain('2.4%');
+    }
+  });
+
+  it('lists every launcher and the Clanker contracts, and the session key limit the supervisor sets', () => {
+    const contracts = pageToMarkdown('contracts');
+    const A = addresses[BASE_MAINNET_CHAIN_ID];
+    for (const a of [A.bootr.launcher!, A.bootr.clankerLauncher!, A.bootr.launchGate!, A.clanker.factory, A.clanker.feeLocker, A.clanker.lpLockerFeeConversion, A.clanker.hookStaticFeeV2]) {
+      expect(contracts, a).toContain(a);
+    }
+    const agents = pageToMarkdown('agents');
+    expect(agents).toContain('100,000 operations');
+    expect(agents).not.toContain('per hour');
+    for (const f of ['collectRewards(token)', 'claim(feeOwner, token)']) expect(agents, f).toContain(f);
   });
 
   it('keeps the RWAGMI fee facts', () => {
