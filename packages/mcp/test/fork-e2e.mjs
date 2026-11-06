@@ -9,7 +9,7 @@
  * and has to pay the WETH it promised. Only an anvil fork is ever written to, and the script refuses anything else.
  *
  * What must be running (the script does not start them):
- *   base-anvil --fork-url <Base RPC> --port 8555 --block-time 2 --chain-id 8453
+ *   base-anvil --fork-url <Base RPC> --port 8555 --block-time 0.2 --chain-id 8453
  *     (Base's own anvil: the RWAGMI path needs its B20 precompile, and plain anvil reverts the launch)
  *   the indexer (apps/indexer) on that fork: CHAIN_ID=8453 BASE_RPC_URL=http://127.0.0.1:8555
  *     BOOTR_LAUNCHERS=<launcher>@<fork block> BOOTR_CLANKER_LAUNCHERS=<clanker launcher>@<fork block>
@@ -18,6 +18,13 @@
  *     NEXT_PUBLIC_LAUNCHER_ADDRESS NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS NEXT_PUBLIC_SUPERVISOR_SESSION_KEY
  *
  * Image pinning is the one stand-in: PINATA_MOCK computes the CID instead of uploading to IPFS.
+ *
+ * What a base-anvil fork proves for Denim (base-anvil 1.6.0-v1.1.0, built 2026-06-15, before Denim went live; measured
+ * 2026-11-06): with `--block-time 0.2` it mines five blocks a second, and about five in a row share one whole-second
+ * timestamp, as on Base; `evm_setNextBlockTimestamp` may repeat a timestamp, so a test can place a block exactly. The contracts
+ * and state are the real ones at the fork block. It does not prove Denim's own rules: no BaseTime predeploy, no millisecond RPC
+ * timestamps (`timestampMs`), no sequencer ordering or real base fee under load, and Denim's B20 changes (transfers to a
+ * token's own address, transfer executor policy) may be missing from a build this old. Test those on Base itself.
  *
  * Run: SITE=http://localhost:3200 RPC=http://127.0.0.1:8555 node packages/mcp/test/fork-e2e.mjs
  * E2E_DEBUG_TX=<file> keeps the last transaction there, so a revert can be traced with `cast call --trace`.

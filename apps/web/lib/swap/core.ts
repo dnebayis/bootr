@@ -355,7 +355,20 @@ export type LaunchWindow = {
   armed: boolean;
   /** Unix seconds: the module has no effect after this, even if nobody has traded to switch it off. */
   endsAt: number;
+  /** Unix seconds: when the pool was created. */
+  startedAt: number;
 };
+
+/**
+ * Seconds after a launch in which a nameless revert is put down to Clanker's block on swaps. On chain the block lasts two
+ * blocks, 0.4 s at Base's 200 ms; the rest is the difference between this device's clock and the chain's.
+ */
+export const LAUNCH_BLOCK_SEC = 5;
+
+/** Whether Clanker may still be refusing swaps on this pool at `now` (unix seconds). */
+export function launchBlocksSwaps(w: LaunchWindow | null | undefined, now: number): boolean {
+  return !!w && w.armed && now < w.startedAt + LAUNCH_BLOCK_SEC;
+}
 
 /** Whether the hook's window is running at `now` (unix seconds). */
 export function launchWindowActive(w: LaunchWindow | null | undefined, now: number): boolean {

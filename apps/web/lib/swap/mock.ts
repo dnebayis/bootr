@@ -1,7 +1,7 @@
 /**
  * The trade panel in mock mode (no chain): figures shaped like the live ones, from the fixture's own price and liquidity.
- * A coin launched seconds ago behaves like a new Clanker coin on a Base fork: no swaps for 4 seconds, then a fee that falls
- * to normal at 16.
+ * A coin launched seconds ago behaves like a new Clanker coin on a Base fork at 200 ms blocks: no swaps for half a second,
+ * then a fee from about 71% that falls with the clock to normal at 16 seconds.
  */
 import { parseEther } from 'viem';
 import { traderPaysPct, feeModelOf } from '../fee-split';
@@ -18,11 +18,11 @@ export function mockQuote(token: Pick<Token, 'priceUsd' | 'liquidityUsd' | 'laun
   const now = Date.now() / 1000;
   const clanker = token.source === 'clanker';
   const age = now - token.launchedAt;
-  const launchWindow = clanker ? { armed: age < 120, endsAt: token.launchedAt + 120 } : null;
-  if (clanker && age < 4) throw new SwapFailure('launch_window');
+  const launchWindow = clanker ? { armed: age < 120, startedAt: token.launchedAt, endsAt: token.launchedAt + 120 } : null;
+  if (clanker && age < 0.6) throw new SwapFailure('launch_window');
 
   const normalFee = traderPaysPct(feeModelOf(token));
-  const feePct = clanker && age < 16 ? Math.max(normalFee, 55 - (age - 4) * 4.2) : normalFee;
+  const feePct = clanker && age < 16 ? Math.max(normalFee, 5 + 66 * ((15 - Math.floor(age)) / 15) ** 2) : normalFee;
 
   const priceEth = (token.priceUsd || 0.0001) / ETH_USD;
   const amount = Number(amountIn) / 1e18;

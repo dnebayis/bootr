@@ -7,9 +7,11 @@ import { B20TokenAbi } from '../abis/B20Token';
 import { Erc20Abi } from '../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../abis/Multicall3';
 import { PoolManagerAbi } from '../abis/PoolManager';
+import { safeMessage } from '../rpc-budget';
 import { fetchAdminConfig } from './lib/admin-config';
 import { decodeAgentBalances, type AgentBalances } from './lib/balances';
-import { indexerEnv } from './lib/env';
+import { snapshotSpacingSec } from './lib/blocks';
+import { indexerEnv, snapshotBlockSources } from './lib/env';
 import { decodeLiquidity, decodeSlot0, poolLiquiditySlot, poolStateSlot } from './lib/pool';
 import { toUnits, usd } from './lib/price';
 import { rpcClient } from './lib/rpc';
@@ -31,7 +33,8 @@ import {
 import { dayId, dayStart, historicalSnapshotDue } from './lib/time';
 
 /**
- * Periodic snapshot (every INDEXER_SNAPSHOT_INTERVAL blocks, default 30 ~ 60 s on Base).
+ * Periodic snapshot, every 60 s of chain time: 300 of today's 200 ms blocks (`INDEXER_SNAPSHOT_INTERVAL`), and 30 of the
+ * 2 s blocks before Denim, each era its own Ponder source (`snapshotSources`, lib/blocks.ts).
  *
  * Near the chain tip ("live": block younger than 15 min) it also refreshes ETH/USD, pool state
  * (PoolManager.extsload), kernel balances plus each agent's spender USDC float (one multicall), the
@@ -155,17 +158,17 @@ async function scanFuel(
       cursor = end + 1n;
     }
   } catch (err) {
-    console.warn(`[indexer] USDC fuel scan failed at block ${cursor}: ${(err as Error).message}`);
+    console.warn(`[indexer] USDC fuel scan failed at block ${cursor}: ${safeMessage(err)}`);
   }
   return { scannedTo: cursor - 1n, perKernel };
 }
 
-ponder.on('BootrSnapshot:block', async ({ event, context }) => {
+async function snapshot({ event, context }: { event: { block: { timestamp: bigint; number: bigint } }; context: Ctx }) {
   const env = indexerEnv();
   const now = Number(event.block.timestamp);
   const bn = event.block.number;
   const live = now >= Math.floor(Date.now() / 1000) - LIVE_WINDOW_SEC;
-  if (!live && !historicalSnapshotDue(now, env.snapshotInterval)) return;
+  if (!live && !historicalSnapshotDue(now, snapshotSpacingSec(env.chainId, bn, env.snapshotInterval))) return;
 
   const ethUsd = await getEthUsd(context, bn, live);
 
@@ -197,14 +200,14 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
     try {
       social = await socialStore().all();
     } catch (err) {
-      console.warn(`[indexer] social store read failed: ${(err as Error).message}`);
+      console.warn(`[indexer] social store read failed: ${safeMessage(err)}`);
     }
     // spender address: the supervisor's latest push, else the last mirrored value
     const spenders = new Map(agents.map((a) => [a.id, social?.has(a.id) ? social.get(a.id)!.spender : a.spender] as const));
     try {
       ({ pools, balances } = await readChainState(context, tokens, agents, spenders));
     } catch (err) {
-      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${(err as Error).message}`);
+      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${safeMessage(err)}`);
     }
   }
 
@@ -357,4 +360,7 @@ ponder.on('BootrSnapshot:block', async ({ event, context }) => {
       })
       .onConflictDoUpdate({ activeAgents: active, awakeAgents: awake });
   }
-});
+}
+
+ponder.on('BootrSnapshot:block', snapshot);
+if (snapshotBlockSources().preDenim) ponder.on('BootrSnapshotPreDenim:block', snapshot);

@@ -38,12 +38,15 @@ describe('classifySwapError', () => {
   });
 
   it('an unnamed revert during the launch window is the launch window', () => {
-    const launchWindow = { armed: true, endsAt: 1000 };
-    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow, now: 999 })).toBe('launch_window');
+    const launchWindow = { armed: true, startedAt: 880, endsAt: 1000 };
+    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow, now: 880 })).toBe('launch_window');
+    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow, now: 884 })).toBe('launch_window');
+    // The launch fee still runs here, but swaps go through: this revert has another cause.
+    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow, now: 885 })).toBe('reverted');
     expect(classifySwapError({ message: 'execution reverted' }, { launchWindow, now: 1000 })).toBe('reverted');
-    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow: { armed: false, endsAt: 1000 }, now: 999 })).toBe('reverted');
+    expect(classifySwapError({ message: 'execution reverted' }, { launchWindow: { armed: false, startedAt: 880, endsAt: 1000 }, now: 881 })).toBe('reverted');
     // A floor is a floor, even then.
-    expect(classifySwapError({ message: 'execution reverted', data: '0x8b063d73' }, { launchWindow, now: 999 })).toBe('slippage');
+    expect(classifySwapError({ message: 'execution reverted', data: '0x8b063d73' }, { launchWindow, now: 881 })).toBe('slippage');
   });
 
   it('keeps a failure already classified', () => {

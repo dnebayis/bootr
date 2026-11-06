@@ -4,7 +4,17 @@
  * has to be `base-anvil`:
  *
  *   base-anvil --fork-url <Base RPC> --port 8646
- *   SWAP_FORK_RPC=http://127.0.0.1:8646 pnpm --filter web exec vitest run lib/swap/swap.fork.test.ts
+ *   SWAP_FORK_RPC=http://127.0.0.1:8646 pnpm --filter web exec vitest run lib/swap/swap.fork.test.ts --testTimeout=120000
+ *
+ * The launch fee tests mine each block themselves, at Base's five blocks a second with five in a row on one timestamp, so
+ * this fork runs without `--block-time`.
+ *
+ * What a base-anvil fork proves for Denim (base-anvil 1.6.0-v1.1.0, built 2026-06-15, before Denim went live; measured
+ * 2026-11-06): with `--block-time 0.2` it mines five blocks a second, and about five in a row share one whole-second
+ * timestamp, as on Base; `evm_setNextBlockTimestamp` may repeat a timestamp, so a test can place a block exactly. The contracts
+ * and state are the real ones at the fork block. It does not prove Denim's own rules: no BaseTime predeploy, no millisecond RPC
+ * timestamps (`timestampMs`), no sequencer ordering or real base fee under load, and Denim's B20 changes (transfers to a
+ * token's own address, transfer executor policy) may be missing from a build this old. Test those on Base itself.
  *
  * Only anvil's own test key signs here. Nothing reaches a live chain.
  */
@@ -14,9 +24,9 @@ import { base } from 'viem/chains';
 import * as Attribution from 'ox/erc8021/Attribution';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { clankerLauncherAbi } from '../abi/launcher';
-import { approvalCalls, buildBuyTx, buildSellTx, launchWindowActive, minReceived, permit2Abi, poolIdOf, SWAP_CONTRACTS, verifiedPoolKey, type PoolKey, type SwapSide, type SwapTx } from './core';
+import { approvalCalls, buildBuyTx, buildSellTx, idealOut, launchWindowActive, minReceived, permit2Abi, poolIdOf, shortfallPct, SWAP_CONTRACTS, verifiedPoolKey, zeroForOne, type PoolKey, type SwapSide, type SwapTx } from './core';
 import { classifySwapError } from './errors';
-import { quoteSwap } from './quote';
+import { quoteSwap, stateViewAbi } from './quote';
 
 const RPC = process.env.SWAP_FORK_RPC ?? '';
 
@@ -237,79 +247,137 @@ describe.skipIf(!RPC)('swap on a Base fork', () => {
   });
 
   /**
-   * A coin launched on the fork, seconds old: what the panel reads from the hook and the quoter, second by second, and
-   * what a real swap does at those moments.
+   * A coin launched on the fork, block by block as on Base since Denim: a block every 200 ms, five in a row sharing one
+   * whole-second timestamp. Each row is a real buy mined at that block, from the state right after the launch. What this
+   * proves: what the deployed Clanker contracts do given those block numbers and timestamps. What it does not: anvil mines
+   * on request, so the sequencer's real ordering, priority fees and flashblocks are not in it, and a launch can sit at any
+   * of the five places in its second, which is why every place is measured.
    */
-  it('reads Clanker\'s launch fee on a brand-new coin', async () => {
-    const launcher = '0x387f1B0aC128D534E822c344D829645336BDAbbB' as Address;
-    const hash = await wallet.writeContract({
-      address: launcher,
-      abi: clankerLauncherAbi,
-      functionName: 'launch',
-      value: parseEther('0.0005'),
-      args: [launchArgs('07')],
-    });
-    const receipt = await client.waitForTransactionReceipt({ hash });
-    expect(receipt.status).toBe('success');
-    const launched = await client.getContractEvents({ address: launcher, abi: clankerLauncherAbi, eventName: 'ClankerLaunched', fromBlock: receipt.blockNumber, toBlock: receipt.blockNumber });
-    const token = launched[0]!.args.token!;
-    const key = verifiedPoolKey(token, 'clanker', launched[0]!.args.poolId!)!;
-    expect(key).not.toBeNull();
-    const launchedAt = Number((await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+  describe('Clanker launch fee at 200 ms blocks', () => {
+    const LAUNCHER = '0x387f1B0aC128D534E822c344D829645336BDAbbB' as Address;
+    const BLOCKS_PER_SECOND = 5;
+    const amountIn = parseEther('0.0001');
 
-    const amountIn = parseEther('0.001');
-    const atSecond = async (after: number) => {
-      await test.setNextBlockTimestamp({ timestamp: BigInt(launchedAt + after) });
-      await test.mine({ blocks: 1 });
+    /** One launch, with `place` blocks of its second already gone. */
+    const launchAt = async (place: number, salt: string) => {
+      const hash = await wallet.writeContract({ address: LAUNCHER, abi: clankerLauncherAbi, functionName: 'launch', value: parseEther('0.0005'), args: [launchArgs(salt)] });
+      const receipt = await client.waitForTransactionReceipt({ hash });
+      expect(receipt.status).toBe('success');
+      const launched = await client.getContractEvents({ address: LAUNCHER, abi: clankerLauncherAbi, eventName: 'ClankerLaunched', fromBlock: receipt.blockNumber, toBlock: receipt.blockNumber });
+      const token = launched[0]!.args.token!;
+      const key = verifiedPoolKey(token, 'clanker', launched[0]!.args.poolId!)!;
+      const launchedAt = Number((await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+      /** The timestamp of the block `k` blocks after the launch. */
+      const tsOf = (k: number) => launchedAt + Math.floor((place + k) / BLOCKS_PER_SECOND);
+      return { token, key, launchedAt, tsOf };
     };
-    const rows: string[] = [];
-    for (const after of [0, 2, 4, 8, 12, 16, 20, 30]) {
-      if (after > 0) await atSecond(after);
-      const clock = Number((await client.getBlock()).timestamp);
-      const q = await quote(key, 'buy', amountIn).then(
-        (r) => `fee ${r.feePct}%, hook window ${launchWindowActive(r.launchWindow, clock)}`,
-        (e: { code?: string }) => `no quote: ${e.code}`,
-      );
-      rows.push(`t+${clock - launchedAt}s: ${q}`);
-    }
-    console.log(`launch fee on a new Clanker coin\n${rows.join('\n')}`);
-    expect(rows[0]).toContain('no quote: launch_window');
-    expect(rows[1]).toContain('no quote: launch_window');
-    expect(rows.at(-1)).toContain('fee 1.19');
-  }, 120_000);
 
-  it('a real buy reverts in the first seconds, and pays the launch fee right after', async () => {
-    const launcher = '0x387f1B0aC128D534E822c344D829645336BDAbbB' as Address;
-    const hash = await wallet.writeContract({
-      address: launcher,
-      abi: clankerLauncherAbi,
-      functionName: 'launch',
-      value: parseEther('0.0005'),
-      args: [launchArgs('08')],
-    });
-    const receipt = await client.waitForTransactionReceipt({ hash });
-    const launched = await client.getContractEvents({ address: launcher, abi: clankerLauncherAbi, eventName: 'ClankerLaunched', fromBlock: receipt.blockNumber, toBlock: receipt.blockNumber });
-    const token = launched[0]!.args.token!;
-    const key = verifiedPoolKey(token, 'clanker', launched[0]!.args.poolId!)!;
-    const launchedAt = Number((await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
-    const amountIn = parseEther('0.001');
-    const deadline = BigInt(launchedAt + 1200);
+    /** A real buy mined exactly `k` blocks after the launch: reverted, or what it paid against the pool's own rate. */
+    const buyAtBlock = async (launch: Awaited<ReturnType<typeof launchAt>>, k: number) => {
+      const { token, key, launchedAt, tsOf } = launch;
+      for (let i = 1; i < k; i++) {
+        await test.setNextBlockTimestamp({ timestamp: BigInt(tsOf(i)) });
+        await test.mine({ blocks: 1 });
+      }
+      const [sqrtPriceX96] = await client.readContract({ address: SWAP_CONTRACTS.stateView, abi: stateViewAbi, functionName: 'getSlot0', args: [poolIdOf(key)] });
+      const before = await coinBalance(token);
+      await test.setNextBlockTimestamp({ timestamp: BigInt(tsOf(k)) });
+      const tx = buildBuyTx({ key, coin: token, amountIn, minOut: 1n, deadline: BigInt(launchedAt + 1200) });
+      // A fixed gas limit: gas estimation would stop a revert before it is mined at that block.
+      const hash = await wallet.sendTransaction({ to: tx.to, data: tx.data, value: tx.value, gas: 3_000_000n });
+      const receipt = await client.waitForTransactionReceipt({ hash });
+      if (receipt.status !== 'success') return { k, at: tsOf(k) - launchedAt, reverted: true as const, feePct: null };
+      const received = (await coinBalance(token)) - before;
+      const feePct = shortfallPct(received, idealOut(amountIn, sqrtPriceX96, zeroForOne(key, 'buy')));
+      return { k, at: tsOf(k) - launchedAt, reverted: false as const, feePct };
+    };
 
-    const window = { armed: true, endsAt: launchedAt + 120 };
-    const early = await expectRevert(buildBuyTx({ key, coin: token, amountIn, minOut: 1n, deadline }));
-    expect(classifySwapError(early, { launchWindow: window, now: launchedAt })).toBe('launch_window');
+    /** The same measurement at each block of `ks`, each from the state right after the launch. */
+    const curve = async (place: number, ks: readonly number[]) => {
+      const launch = await launchAt(place, `curve-${place}`);
+      const rows: Awaited<ReturnType<typeof buyAtBlock>>[] = [];
+      for (const k of ks) {
+        const id = await test.snapshot();
+        rows.push(await buyAtBlock(launch, k));
+        await test.revert({ id });
+      }
+      return rows;
+    };
 
-    // Base makes a block every 2 seconds, and the module counts blocks as well as seconds.
-    for (const after of [2, 4, 6]) {
-      await test.setNextBlockTimestamp({ timestamp: BigInt(launchedAt + after) });
-      await test.mine({ blocks: 1 });
-    }
-    const q = await quote(key, 'buy', amountIn);
-    const tx = buildBuyTx({ key, coin: token, amountIn, minOut: minReceived(q.amountOut, 100), deadline });
-    await test.setNextBlockTimestamp({ timestamp: BigInt(launchedAt + 8) });
-    await send(tx);
-    const received = await coinBalance(token);
-    console.log(`buy at t+8s on a new Clanker coin: ${formatEther(amountIn)} ETH -> ${formatEther(received)} coin; the quote at t+6s said ${formatEther(q.amountOut)} with a fee of ${q.feePct}%`);
-    expect(received).toBeGreaterThanOrEqual(minReceived(q.amountOut, 100));
-  }, 120_000);
+    const show = (r: { k: number; at: number; reverted: boolean; feePct: number | null }) => `block +${r.k} (${(r.k * 0.2).toFixed(1)} s, timestamp +${r.at} s): ${r.reverted ? 'reverted' : `paid ${r.feePct!.toFixed(2)}%`}`;
+
+    it('measures the curve from the places a launch can have in its second', async () => {
+      // +1 and +2 are the blocks Clanker holds back; then every few seconds to past the end of the fall.
+      const ks = [1, 2, 3, 4, 5, 8, 10, 15, 20, 25, 30, 40, 50, 60, 70, 74, 75, 76, 77, 78, 79, 80, 81, 85, 90, 100];
+      for (const place of [0, 2, 4]) {
+        const rows = await curve(place, ks);
+        console.log(`launch fee, launch at place ${place} of its second:\n${rows.map(show).join('\n')}`);
+        expect(rows[0]!.reverted).toBe(true);
+        expect(rows[1]!.reverted).toBe(true);
+        const first = rows[2]!;
+        expect(first.reverted).toBe(false);
+        // The fall goes by the timestamp: +0 s where the launch was early in its second, +1 s where it was late.
+        expect(first.feePct!).toBeCloseTo(first.at === 0 ? 70.6 : 62.96, 0);
+        const byAt = (at: number) => rows.filter((r) => r.at === at).map((r) => r.feePct!);
+        for (const fee of byAt(6)) expect(fee).toBeCloseTo(30.39, 0);
+        for (const fee of byAt(15)) expect(fee).toBeCloseTo(4.96, 0);
+        for (const r of rows.filter((x) => x.at >= 16)) expect(r.feePct!).toBeCloseTo(1.2, 1);
+        // 16 by the clock, not by a block count: blocks +76 to +80 by the place in the second.
+        const normalFrom = rows.find((r) => r.at >= 16)!;
+        expect(normalFrom.k).toBeGreaterThanOrEqual(76);
+        expect(normalFrom.k).toBeLessThanOrEqual(80);
+      }
+    }, 600_000);
+
+    it('the panel reads it: blocked, then the raised fee, then the normal one', async () => {
+      const launch = await launchAt(0, 'panel');
+      const { key, launchedAt, tsOf } = launch;
+      const windowOf = { armed: true, startedAt: launchedAt, endsAt: launchedAt + 120 };
+      const buy = buildBuyTx({ key, coin: launch.token, amountIn, minOut: 1n, deadline: BigInt(launchedAt + 1200) });
+      const early = await expectRevert(buy);
+      expect(classifySwapError(early, { launchWindow: windowOf, now: launchedAt })).toBe('launch_window');
+
+      const rows: string[] = [];
+      let at = 0;
+      const toBlock = async (k: number) => {
+        for (at += 1; at <= k; at++) {
+          await test.setNextBlockTimestamp({ timestamp: BigInt(tsOf(at)) });
+          await test.mine({ blocks: 1 });
+        }
+        at = k;
+      };
+      for (const k of [0, 1, 2, 3, 4, 5, 10, 30, 75, 80, 85]) {
+        if (k > 0) await toBlock(k);
+        const clock = Number((await client.getBlock()).timestamp);
+        // This fork's clock is not the wall clock the panel goes by on Base.
+        const q = await quoteSwap(client, { key, side: 'buy', amountIn, now: clock }).then(
+          (r) => `fee ${r.feePct?.toFixed(2)}%, window running ${launchWindowActive(r.launchWindow, clock)}`,
+          (e: { code?: string }) => `no quote: ${e.code}`,
+        );
+        rows.push(`block +${k} (timestamp +${clock - launchedAt} s): ${q}`);
+      }
+      console.log(`what the panel reads on a new Clanker coin at 200 ms blocks\n${rows.join('\n')}`);
+      // Blocks +0 to +2 are held back; a read at the latest block sees what that block would do.
+      for (const row of rows.slice(0, 3)) expect(row).toContain('no quote: launch_window');
+      expect(rows[3]).toContain('fee 70.60%');
+      expect(rows.at(-1)).toContain('fee 1.20%');
+    }, 300_000);
+
+    it('a buy with the panel\'s calldata and minimum goes through right after the blocked blocks', async () => {
+      const launch = await launchAt(0, 'buy');
+      const { token, key, launchedAt, tsOf } = launch;
+      for (const k of [1, 2, 3]) {
+        await test.setNextBlockTimestamp({ timestamp: BigInt(tsOf(k)) });
+        await test.mine({ blocks: 1 });
+      }
+      const size = parseEther('0.001');
+      const q = await quote(key, 'buy', size);
+      const tx = buildBuyTx({ key, coin: token, amountIn: size, minOut: minReceived(q.amountOut, 100), deadline: BigInt(launchedAt + 1200) });
+      await test.setNextBlockTimestamp({ timestamp: BigInt(tsOf(4)) });
+      await send(tx);
+      const received = await coinBalance(token);
+      console.log(`buy at block +4 on a new Clanker coin: ${formatEther(size)} ETH -> ${formatEther(received)} coin; the quote at block +3 said ${formatEther(q.amountOut)} with a fee of ${q.feePct}%`);
+      expect(received).toBeGreaterThanOrEqual(minReceived(q.amountOut, 100));
+    }, 120_000);
+  });
 });

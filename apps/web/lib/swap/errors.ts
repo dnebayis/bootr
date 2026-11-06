@@ -4,7 +4,7 @@
  * sits inside `ExecutionFailed`, `WrappedError` or `UnexpectedRevertBytes`).
  */
 import { toFunctionSelector } from 'viem';
-import { launchWindowActive, type LaunchWindow } from './core';
+import { launchBlocksSwaps, type LaunchWindow } from './core';
 
 export type SwapFailureCode =
   | 'not_connected'
@@ -30,7 +30,7 @@ const MESSAGES: Record<SwapFailureCode, string> = {
   no_liquidity: 'The pool does not have enough liquidity for this amount. Try a smaller amount.',
   no_pool: 'This coin has no trading pool yet.',
   launch_window:
-    'This coin launched moments ago. Clanker blocks swaps for the first seconds after a launch, then charges a very high fee that falls over about 15 seconds. Try again shortly.',
+    'This coin launched moments ago. Clanker blocks swaps for about the first half second after a launch, then charges a very high fee that falls to the normal fee about 16 seconds after the launch. Try again in a moment.',
   approval: 'The approval for this sell is missing or has expired. Start the sell again to approve it.',
   expired: 'This swap waited too long and expired. Get a new quote and try again.',
   gas: 'Your wallet does not have enough ETH for the network fee.',
@@ -114,8 +114,9 @@ export function classifySwapError(e: unknown, ctx?: Context): SwapFailureCode {
   if (/transfer_from_failed|transfer amount exceeds balance/.test(lower)) return 'no_balance';
   if (/insufficient funds|exceeds the balance of the account/.test(lower)) return 'gas';
   const reverted = /revert|execution failed|wrappederror|unexpectedrevertbytes/.test(lower);
-  // A revert the hook gives no useful name to, in the seconds Clanker's launch fee runs: that is the cause.
-  if (reverted && launchWindowActive(ctx?.launchWindow, ctx?.now ?? Date.now() / 1000)) return 'launch_window';
+  // A revert the hook gives no useful name to, right after the launch: that is the cause. Later in the launch fee's run a
+  // swap goes through at the higher fee, so a revert then has another cause.
+  if (reverted && launchBlocksSwaps(ctx?.launchWindow, ctx?.now ?? Date.now() / 1000)) return 'launch_window';
   if (reverted) return 'reverted';
   if (/failed to fetch|fetch failed|network|timeout|timed out|http request failed|rate limit|429|503/.test(lower)) return 'network';
   return 'reverted';

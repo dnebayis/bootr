@@ -10,7 +10,7 @@ pnpm --filter web lint
 pnpm --filter web build
 pnpm --filter web test:e2e     # Playwright smoke tests (builds + starts on :3210, mock mode)
 # Trade panel calldata on a Base fork (real buys and sells on $BOOTR and OWL): base-anvil --fork-url <Base RPC> --port 8646, then
-SWAP_FORK_RPC=http://127.0.0.1:8646 pnpm --filter web exec vitest run lib/swap/swap.fork.test.ts
+SWAP_FORK_RPC=http://127.0.0.1:8646 pnpm --filter web exec vitest run lib/swap/swap.fork.test.ts --testTimeout=120000
 ```
 
 Container (build from the repo root; `NEXT_PUBLIC_*` are build args, everything else is runtime env; production setup in

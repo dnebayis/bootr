@@ -45,7 +45,7 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
     protocolBps
     feeSlots { items { slot recipient recipientKind bps } }
     clankerPool { hook locker mevModule startingTick lpFeeBps }
-    trades(orderBy: "timestamp", orderDirection: "desc", limit: 5) {
+    trades(orderBy: "blockNumber", orderDirection: "desc", limit: 5) {
       items { side valueUsd priceUsd trader timestamp txHash }
     }
   }
