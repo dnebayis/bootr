@@ -1,0 +1,55 @@
+{
+ "capturedAt": "2026-11-06T12:55:59.102Z",
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "25826912-3380-4c78-ba54-0d92e1c40d1d",
+  "x-fallback-model": "nvidia/nemotron-3-super-120b",
+  "x-fallback-used": "true",
+  "x-free-model": "true",
+  "x-local-test": "false",
+  "x-original-model": "poolside/laguna-xs-2.1"
+ },
+ "body": {
+  "id": "chatcmpl-ab3d1351-f6e9-46bc-86e6-15d2dcf57a82",
+  "object": "chat.completion",
+  "created": 1793969758,
+  "model": "nvidia/nemotron-3-super-120b",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "role": "assistant",
+     "content": "",
+     "reasoning_content": "The user wants me to call the finish function with specific parameters: memory \"m\", agenda \"a\", summary \"s\". Let me do that directly.",
+     "tool_calls": [
+      {
+       "id": "call-08de8d50-f2e2-4cba-8536-2da4ee0e2cd5",
+       "type": "function",
+       "function": {
+        "name": "finish",
+        "arguments": "{\"memory\":\"m\",\"agenda\":\"a\",\"summary\":\"s\"}"
+       }
+      }
+     ]
+    },
+    "finish_reason": "tool_calls"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 394,
+   "completion_tokens": 77,
+   "total_tokens": 471,
+   "prompt_tokens_details": {
+    "audio_tokens": null,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": null,
+    "audio_tokens": null,
+    "reasoning_tokens": 31,
+    "rejected_prediction_tokens": null
+   }
+  }
+ }
+}

@@ -3,6 +3,7 @@
  * replays stored results for a known key without charging again. The agent's spender EOA pays with a
  * plain EIP-712 EIP-3009 authorization (spender.ts); the kernel only funds the spender and signs nothing.
  * "Never buy a replacement": a request whose outcome is unknown is reconciled by key, never re-paid.
+ * With direct mode on (blockrun.ts) the same key pays BlockRun instead, under the same rule.
  */
 import {
   buildInferenceRequest,
@@ -21,6 +22,7 @@ import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
 import { and, desc, eq, gte, notLike, or, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
+import { DIRECT_PAID_LOST, DIRECT_ROUTE, directAllowed, directRequest, reconcileDirect } from './blockrun.js';
 import { inference } from './db/schema.js';
 
 export interface ModelToolCall {
@@ -111,6 +113,10 @@ export interface ThoughtTotals {
   chargedMicroUsdc: string;
   /** How many of `thoughts` were charged and returned nothing; absent when none were. */
   paidFailures?: number;
+  /** How many of `thoughts` paid BlockRun directly instead of the relay; absent when none did. */
+  directThoughts?: number;
+  /** How many direct thoughts BlockRun answered with another model than the one asked for; absent when none. */
+  fallbackModels?: number;
 }
 
 /**
@@ -118,10 +124,10 @@ export interface ThoughtTotals {
  * calls the model, so a model refusal (`upstream_rejected`) leaves the payment spent; `upto` settles after the model
  * answers, so a refusal there costs nothing. A credit the relay gave up on is spent until someone refunds it.
  */
-const PAID_FAILURE = sql`(${inference.status} = 'failed' and (${inference.error} in ('credit_exhausted', 'relay_failed_refund_due') or (${inference.error} = 'upstream_rejected' and ${inference.receipt}->'payment'->'accepted'->>'scheme' = 'exact')))`;
+const PAID_FAILURE = sql`(${inference.status} = 'failed' and (${inference.error} in ('credit_exhausted', 'relay_failed_refund_due', ${DIRECT_PAID_LOST}) or (${inference.error} = 'upstream_rejected' and ${inference.receipt}->'payment'->'accepted'->>'scheme' = 'exact')))`;
 /** Every call that took money: filtering on `succeeded` alone hid paid failures from the metering. */
 const PAID_CALL = or(eq(inference.status, 'succeeded'), PAID_FAILURE)!;
-/** The relay's receipt when there is one; a paid failure has none, so the amount it signed for (`exact` charges exactly that). */
+/** The receipt when there is one; a paid failure has none, so the amount it signed for (`exact` charges exactly that, for `upto` it is the most it can have cost). */
 const CHARGED_MICRO_USDC = sql`coalesce(${inference.receipt}->'relay'->>'chargedMicroUsdc', case when ${PAID_FAILURE} then ${inference.receipt}->'payment'->'accepted'->>'amount' end)::numeric`;
 
 /**
@@ -136,6 +142,8 @@ export async function fuelReport(ctx: SupervisorContext, agentId: string, since:
       thoughts: sql<number>`count(*)::int`,
       charged: sql<string>`coalesce(sum(${CHARGED_MICRO_USDC}), 0)::text`,
       paidFailures: sql<number>`count(*) filter (where ${inference.status} <> 'succeeded')::int`,
+      directThoughts: sql<number>`count(*) filter (where ${inference.receipt}->>'route' = ${DIRECT_ROUTE})::int`,
+      fallbackModels: sql<number>`count(*) filter (where ${inference.receipt}->'direct'->>'fallback' = 'true')::int`,
       firstAtSec: sql<number>`extract(epoch from min(${inference.createdAt}))::float8`,
     })
     .from(inference)
@@ -144,7 +152,9 @@ export async function fuelReport(ctx: SupervisorContext, agentId: string, since:
     .orderBy(sql`2 desc, 1`);
   const byModel = rows.map((r) => {
     const paidFailures = Number(r.paidFailures);
-    return { model: r.model, thoughts: Number(r.thoughts), chargedMicroUsdc: String(r.charged).replace(/\.0+$/, ''), ...(paidFailures > 0 ? { paidFailures } : {}) };
+    const directThoughts = Number(r.directThoughts);
+    const fallbackModels = Number(r.fallbackModels);
+    return { model: r.model, thoughts: Number(r.thoughts), chargedMicroUsdc: String(r.charged).replace(/\.0+$/, ''), ...(paidFailures > 0 ? { paidFailures } : {}), ...(directThoughts > 0 ? { directThoughts } : {}), ...(fallbackModels > 0 ? { fallbackModels } : {}) };
   });
   const firstSec = rows.reduce<number | null>((min, r) => (min === null || Number(r.firstAtSec) < min ? Number(r.firstAtSec) : min), null);
   return { byModel, firstAt: firstSec === null ? null : new Date(firstSec * 1000) };
@@ -171,7 +181,8 @@ export async function recentThoughtCost(ctx: Pick<SupervisorContext, 'db'>, agen
 /**
  * Pays the relay for one request from the agent's spender, idempotently per `call.key`: a key already paid for
  * is replayed from `sv_inference` (or reconciled at the relay when its outcome is unknown) and never paid again.
- * Thoughts (`runInference`) and images (`images.ts`) share this path.
+ * Thoughts (`runInference`), chat (`chat.ts`) and images (`images.ts`) share this path; direct mode only ever takes
+ * a call before any signature exists, so one key is never paid on both routes.
  */
 export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<RelayResult> {
   const { key, request } = call;
@@ -189,6 +200,12 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
   }
 
   await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle: call.cycle, requestHash, request, status: 'pending', createdAt: now(), updatedAt: now() });
+  if (await directAllowed(ctx, agent, request)) {
+    const direct = await directRequest(ctx, agent, call);
+    if (direct.kind !== 'failover') return direct;
+    // No signature exists for this key, so the relay can take it without any risk of a second payment.
+    ctx.log.info({ key, agentId: agent.agentId, reason: direct.reason }, 'direct mode passed this thought to the relay');
+  }
   const maxQuote = call.maxQuoteMicroUsdc;
   const spender = ctx.spenderFor(agent);
   let paymentSigned = false;
@@ -302,6 +319,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
     await ctx.db.update(inference).set({ status: 'failed', error: 'no_payment_signed', updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error: 'no_payment_signed' };
   }
+  if ((row.receipt as { route?: unknown } | null)?.route === DIRECT_ROUTE) return reconcileDirect(ctx, row);
   const proof = paymentProofHeaders(payment);
   let status: { status?: string; retrySafe?: boolean; refundDue?: boolean; statusReason?: string | null; chargedMicroUsdc?: string | null } | null = null;
   try {

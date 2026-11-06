@@ -1,0 +1,52 @@
+{
+ "capturedAt": "2026-11-06T12:56:02.993Z",
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "a7765c4f-3771-4692-aecc-94f850d1e3ba",
+  "x-free-model": "true",
+  "x-local-test": "false"
+ },
+ "body": {
+  "id": "chatcmpl-042ea2b5-b023-4175-abad-3ec2d96b7a79",
+  "object": "chat.completion",
+  "created": 1793969761,
+  "model": "nvidia/nemotron-3.5-lightning",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "role": "assistant",
+     "content": "",
+     "reasoning_content": "The user says: \"Nothing happened today. Call finish with memory \"m\", agenda \"a\", summary \"s\".\" So we need to call the finish function with memory, agenda, summary. The user presumably expects to pass literal strings \"m\", \"a\", \"s\"? The request: \"Call finish with memory \"m\", agenda \"a\", summary \"s\".\" So we set memory: \"m\", agenda: \"a\", summary: \"s\". Use finish tool.",
+     "tool_calls": [
+      {
+       "id": "call-10fea0f6-6fb6-46e0-8c79-9706f3176686",
+       "type": "function",
+       "function": {
+        "name": "finish",
+        "arguments": "{\"agenda\":\"a\",\"summary\":\"s\",\"memory\":\"m\"}"
+       }
+      }
+     ]
+    },
+    "finish_reason": "tool_calls"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 394,
+   "completion_tokens": 145,
+   "total_tokens": 539,
+   "prompt_tokens_details": {
+    "audio_tokens": null,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": null,
+    "audio_tokens": null,
+    "reasoning_tokens": 99,
+    "rejected_prediction_tokens": null
+   }
+  }
+ }
+}

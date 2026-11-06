@@ -123,6 +123,8 @@ export interface ChainState {
   receipts: Record<string, Log[]>;
   /** Unix seconds returned by `getBlock` for any block. */
   blockTimestamp: bigint;
+  /** Payment nonces already spent: `bytes32` hex for USDC's EIP-3009, a decimal string for Permit2 (direct mode). */
+  spentNonces?: Set<string>;
   /** Chainlink `updatedAt` (unix seconds); defaults to `blockTimestamp` (fresh). */
   feedUpdatedAt?: bigint;
 }
@@ -172,6 +174,21 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
           if (addr === ADDR.weth) return state.weth;
           if (addr === entryPoint07Address) return holder === KERNEL ? state.deposit : 0n;
           return state.token;
+        }
+        case 'allowance':
+          return 0n;
+        case 'nonces':
+          return 0n;
+        case 'authorizationState':
+          return state.spentNonces?.has(String((args.args as [Address, Hex])[1]).toLowerCase()) ?? false;
+        case 'nonceBitmap': {
+          const wordPos = (args.args as [Address, bigint])[1];
+          let word = 0n;
+          for (const spent of state.spentNonces ?? []) {
+            if (!/^\d+$/.test(spent)) continue;
+            if (BigInt(spent) >> 8n === wordPos) word |= 1n << (BigInt(spent) & 0xffn);
+          }
+          return word;
         }
         case 'windowOf':
           return [state.fundingWindow.windowEnd, state.fundingWindow.spent, state.fundingWindow.windowSeconds, state.fundingWindow.cap];

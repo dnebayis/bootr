@@ -1,0 +1,18 @@
+{
+ "capturedAt": "2026-11-06T12:56:14.691Z",
+ "status": 400,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "22bdc3c8-5713-4655-ade9-0c775856bbba"
+ },
+ "body": {
+  "error": {
+   "message": "messages must include at least one user, assistant, or tool message \u2014 system-only payloads are not accepted",
+   "type": "invalid_request_error",
+   "code": "EMPTY_CONVERSATION",
+   "param": "messages"
+  },
+  "message": "messages must include at least one user, assistant, or tool message \u2014 system-only payloads are not accepted",
+  "code": "EMPTY_CONVERSATION"
+ }
+}

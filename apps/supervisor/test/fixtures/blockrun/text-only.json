@@ -1,0 +1,41 @@
+{
+ "capturedAt": "2026-11-06T12:56:05.869Z",
+ "status": 200,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "371090ba-5095-44db-b0b0-a007aa92907f",
+  "x-free-model": "true",
+  "x-local-test": "false"
+ },
+ "body": {
+  "id": "chatcmpl-630a87b2-e9e0-4011-9672-6918e74d0d8b",
+  "object": "chat.completion",
+  "created": 1793969765,
+  "model": "nvidia/nemotron-3.5-bolt",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "role": "assistant",
+     "content": "ok"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 14,
+   "completion_tokens": 2,
+   "total_tokens": 16,
+   "prompt_tokens_details": {
+    "audio_tokens": null,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": null,
+    "audio_tokens": null,
+    "reasoning_tokens": 0,
+    "rejected_prediction_tokens": null
+   }
+  }
+ }
+}

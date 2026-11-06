@@ -1,0 +1,15 @@
+{
+ "capturedAt": "2026-11-06T12:56:30.078Z",
+ "status": 402,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "6b92be51-927e-4c80-9c8d-9dc2969678c3"
+ },
+ "body": {
+  "error": "Payment verification failed",
+  "message": "Email hello@blockrun.ai for help.",
+  "code": "PAYMENT_INVALID",
+  "debug": "Verification failed (status 400): {\"correlationId\":\"a564423349604616-IAD\",\"errorLink\":\"https://docs.cdp.coinbase.com/api-reference/v2/errors#invalid-request\",\"errorMessage\":\"request body has an error: Error at \\\"/paymentPayload/payload\\\": input does not contain the discriminator property \\\"type\\\"\",\"errorType\":\"invalid_request\"}\n",
+  "payer": "unknown"
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "capturedAt": "2026-11-06T12:56:11.894Z",
+ "status": 400,
+ "headers": {
+  "content-type": "application/json",
+  "x-blockrun-gateway-request-id": "3b1eff0c-1fb1-452e-9ebd-d415ab20ed4a"
+ },
+ "body": {
+  "error": "Unknown model: x-ai/grok-4.20. Try one of: openai/gpt-6-astra, openai/gpt-6.1-sol, openai/gpt-6-sol, openai/gpt-6-luna. Full list: GET /v1/models"
+ }
+}

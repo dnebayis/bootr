@@ -100,6 +100,24 @@ export const configSchema = z
     INFERENCE_PAYTO_ADDRESS: address,
     INFERENCE_TIMEOUT_MS: int(150_000, 1000),
     INFERENCE_MAX_OUTPUT_TOKENS: int(1024, 16),
+    /**
+     * Direct mode (blockrun.ts): the agent's spender pays BlockRun over x402 instead of paying the relay. `off` is the
+     * default; `agents` turns it on for the ids in BLOCKRUN_DIRECT_AGENTS; `all` for every agent. Anything direct mode
+     * cannot pay for before a signature exists goes to the relay, so the relay must stay deployed.
+     */
+    BLOCKRUN_DIRECT_MODE: z.preprocess((v) => (v === '' || v === undefined ? 'off' : v), z.enum(['off', 'agents', 'all'])),
+    BLOCKRUN_DIRECT_AGENTS: z.string().default(''),
+    BLOCKRUN_BASE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://blockrun.ai/api/v1' : v), z.string().url()),
+    /** The only address direct mode ever signs for; a 402 naming another one is refused and goes to the relay. */
+    BLOCKRUN_PAYTO_ADDRESS: addressWithDefault('0xe9030014F5DAe217d0A152f02A043567b16c1aBf'),
+    /** Also pay with `exact` where `upto` is not offered. Off: `exact` costs about what the relay charges, and on small prompts more. */
+    BLOCKRUN_ALLOW_EXACT: bool('false'),
+    /** Ask for prompt caching on Claude models (`prompt_cache`), which `upto` should bill at the cache rates. */
+    BLOCKRUN_PROMPT_CACHE: bool('true'),
+    /** Above BlockRun's own 120 s upstream limit, so its 504 arrives before we give up on it. */
+    BLOCKRUN_TIMEOUT_MS: int(150_000, 1000),
+    /** After a direct failure the agent's thoughts use the relay for this long. */
+    BLOCKRUN_HOLD_MS: int(1_800_000, 0),
     INDEXER_URL: z.string().url(),
     /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
     SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),
