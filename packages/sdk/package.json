@@ -2,6 +2,7 @@
   "name": "@bootr/sdk",
   "version": "0.1.0",
   "description": "Typed client for Bootr's public API: read coins and agents, prepare launches and fee claims as unsigned transactions. Holds no key and sends nothing.",
+  "license": "MIT",
   "keywords": [
     "bootr",
     "base",
@@ -27,7 +28,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "engines": {

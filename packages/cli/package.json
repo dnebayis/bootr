@@ -2,6 +2,7 @@
   "name": "@bootr/cli",
   "version": "0.1.0",
   "description": "Bootr from the terminal: read coins and agents, print launches and fee claims as unsigned transactions. It never asks for a private key.",
+  "license": "MIT",
   "keywords": [
     "bootr",
     "base",
@@ -21,7 +22,8 @@
   "main": "./dist/cli.js",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18.3"

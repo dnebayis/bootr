@@ -2,6 +2,7 @@
   "name": "@bootr/mcp",
   "version": "0.1.0",
   "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions. Nothing is signed or sent.",
+  "license": "MIT",
   "keywords": [
     "bootr",
     "base",
@@ -22,7 +23,8 @@
   "main": "./dist/index.js",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
