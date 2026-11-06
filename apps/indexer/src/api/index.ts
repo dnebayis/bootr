@@ -45,8 +45,7 @@ import {
   composeClaimedByKind,
   composeCreatorFees,
   distinctRecipients,
-  logIndexOfId,
-  splitWalletClaims,
+    splitWalletClaims,
   walletsHoldingSeveralKinds,
   type CreditWindow,
   type WalletClaim,
@@ -119,7 +118,8 @@ async function splitClaimsOf(pair: WalletSlots): Promise<WalletClaimSplit> {
     .select({
       id: schema.feeClaim.id,
       asset: schema.feeClaim.asset,
-      timestamp: schema.feeClaim.timestamp,
+      blockNumber: schema.feeClaim.blockNumber,
+      logIndex: schema.feeClaim.logIndex,
       amount: schema.feeClaim.amount,
       amountUsd: schema.feeClaim.amountUsd,
     })
@@ -127,15 +127,15 @@ async function splitClaimsOf(pair: WalletSlots): Promise<WalletClaimSplit> {
     .where(and(eq(schema.feeClaim.token, pair.token as Address), eq(schema.feeClaim.recipient, pair.recipient as Address)));
   const claims: WalletClaim[] = rows.map((r) => ({
     asset: r.asset,
-    timestamp: r.timestamp,
-    logIndex: logIndexOfId(r.id),
+    blockNumber: BigInt(r.blockNumber),
+    logIndex: r.logIndex,
     amount: BigInt(r.amount),
     amountUsd: r.amountUsd,
   }));
   const windows: CreditWindow[] = [];
   for (const asset of new Set(claims.map((c) => c.asset))) {
     // `chainOrder` in SQL. Postgres counts the windows, so the read stays one row per (claim, slot) however many collections a coin has.
-    const order = sql`(${schema.feeCredit.timestamp}::bigint * 1000000 + split_part(${schema.feeCredit.id}, '-', 2)::bigint)`;
+    const order = sql`(${schema.feeCredit.blockNumber}::bigint * 1000000 + ${schema.feeCredit.logIndex}::bigint)`;
     const thresholds = sql.raw(`array[${claimThresholds(claims.filter((c) => c.asset === asset)).join(',')}]::bigint[]`);
     const credited = await db
       .select({
@@ -618,7 +618,7 @@ app.get('/market/:token', async (c) => {
     .select()
     .from(schema.trade)
     .where(eq(schema.trade.token, t.id))
-    .orderBy(desc(schema.trade.timestamp), desc(schema.trade.id))
+    .orderBy(desc(schema.trade.blockNumber), desc(schema.trade.logIndex))
     .limit(10);
   const stats = await db.select().from(schema.platformStats).where(eq(schema.platformStats.id, 'global')).limit(1);
   return c.json(

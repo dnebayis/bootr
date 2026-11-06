@@ -77,6 +77,7 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
     feeUsd,
     timestamp: m.timestamp,
     blockNumber: m.blockNumber,
+    logIndex: m.logIndex,
     txHash: m.txHash,
   });
 

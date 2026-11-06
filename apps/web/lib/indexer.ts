@@ -107,8 +107,18 @@ const AGENT_FIELDS = /* GraphQL */ `
   lastPostAt postsCount24h
 `;
 
+type OrderedTrade = TokenDetail['trades'][number] & { blockNumber: string; logIndex: number };
+
+/** Newest first by block, then log index: a timestamp is shared by about five blocks, and GraphQL sorts by one column only. */
+export function newestTradesFirst<T extends { blockNumber: string; logIndex: number }>(trades: readonly T[]): T[] {
+  return [...trades].sort((a, b) => {
+    const blocks = BigInt(b.blockNumber) - BigInt(a.blockNumber);
+    return blocks === 0n ? b.logIndex - a.logIndex : blocks > 0n ? 1 : -1;
+  });
+}
+
 const TRADE_FIELDS = /* GraphQL */ `
-  id token trader side amountToken amountPaired priceUsd valueUsd timestamp txHash
+  id token trader side amountToken amountPaired priceUsd valueUsd timestamp blockNumber logIndex txHash
 `;
 
 const DAILY_FIELDS = /* GraphQL */ `
@@ -231,15 +241,15 @@ export async function fetchToken(id: string): Promise<TokenDetail | null> {
     const t = mock.token(id);
     return t ? applyCoinImage(t, await coinImages()) : null;
   }
-  const data = await gql<{ token: (Token & { agent: Agent | null }) | null; trades: Paged<TokenDetail['trades'][number]> }>(
+  const data = await gql<{ token: (Token & { agent: Agent | null }) | null; trades: Paged<OrderedTrade> }>(
     `query Token($id: String!) {
       token(id: $id) { ${TOKEN_FIELDS.replace('agent { id status }', `agent { ${AGENT_FIELDS} }`)} }
-      trades(where: { token: $id }, orderBy: "timestamp", orderDirection: "desc", limit: 20) { items { ${TRADE_FIELDS} } }
+      trades(where: { token: $id }, orderBy: "blockNumber", orderDirection: "desc", limit: 20) { items { ${TRADE_FIELDS} } }
     }`,
     { id: id.toLowerCase() },
   );
   if (!data.token) return null;
-  return applyCoinImage({ ...data.token, agent: data.token.agent ?? null, trades: data.trades.items }, await coinImages());
+  return applyCoinImage({ ...data.token, agent: data.token.agent ?? null, trades: newestTradesFirst(data.trades.items) }, await coinImages());
 }
 
 export async function fetchAgent(kernel: string): Promise<Agent | null> {

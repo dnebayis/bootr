@@ -2,8 +2,7 @@
  * One wallet holding several reward slots of a coin (e.g. the platform wallet launching a coin of its own: creator and
  * platform). The lockers keep one balance per (recipient, asset) and a claim pays all of it, and the ledger's
  * `feeBalance` row is per (recipient, asset, coin) and keeps the kind of the first slot booked, so every such claim is
- * stored under one kind. This file tells the shares apart again at read time, from data the indexer already has, so it
- * needs no reindex:
+ * stored under one kind. This file tells the shares apart again at read time, from data the indexer already has:
  *
  * - `feeCredit` holds what each slot was credited, exactly (the locker's own per-slot amounts). A claim pays the whole
  *   balance, so what has been claimed is a prefix of the credit stream, and the share of each slot in it follows from
@@ -41,17 +40,15 @@ export function walletsHoldingSeveralKinds(rows: readonly SlotRow[]): WalletSlot
   return [...byPair.values()].filter((e) => new Set(e.slotKinds.values()).size > 1);
 }
 
-/** Where an event sits in the chain: one block has one timestamp on Base, and log indexes count across the whole block. */
-export function chainOrder(timestamp: number, logIndex: number): bigint {
-  return BigInt(timestamp) * 1_000_000n + BigInt(logIndex);
+/**
+ * Where an event sits in the chain: by block, then by log index, which counts across the whole block. A timestamp says
+ * nothing here: since Denim about five blocks share one second, and a later block can hold a smaller log index.
+ */
+export function chainOrder(blockNumber: bigint, logIndex: number): bigint {
+  return blockNumber * 1_000_000n + BigInt(logIndex);
 }
 
-/** `feeClaim` and `feeCredit` ids both start `<txHash>-<logIndex>-`. */
-export function logIndexOfId(id: string): number {
-  return Number(id.split('-')[1]);
-}
-
-export type WalletClaim = { asset: string; timestamp: number; logIndex: number; amount: bigint; amountUsd: number };
+export type WalletClaim = { asset: string; blockNumber: bigint; logIndex: number; amount: bigint; amountUsd: number };
 
 /** Credits to one slot in one asset, summed per window: window `k` is what was credited after claim `k - 1` and before claim `k` of that asset. */
 export type CreditWindow = { asset: string; window: number; slot: number; amount: bigint };
@@ -68,7 +65,12 @@ export type WalletClaimSplit = {
 
 /** Claims of one asset, oldest first, and the thresholds that cut credits into windows. */
 export function claimThresholds(claims: readonly WalletClaim[]): bigint[] {
-  return claims.map((c) => chainOrder(c.timestamp, c.logIndex)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return claims.map((c) => chainOrder(c.blockNumber, c.logIndex)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** The window of a credit at `order`, as `width_bucket(order, thresholds)` answers it in the query: the claims at or before it. */
+export function creditWindow(order: bigint, thresholds: readonly bigint[]): number {
+  return thresholds.filter((t) => t <= order).length;
 }
 
 export function splitWalletClaims(slotKinds: ReadonlyMap<number, RecipientKind>, claims: readonly WalletClaim[], windows: readonly CreditWindow[]): WalletClaimSplit {
@@ -78,7 +80,7 @@ export function splitWalletClaims(slotKinds: ReadonlyMap<number, RecipientKind>,
   let exact = true;
 
   for (const asset of new Set(claims.map((c) => c.asset))) {
-    const ordered = claims.filter((c) => c.asset === asset).sort((a, b) => (chainOrder(a.timestamp, a.logIndex) < chainOrder(b.timestamp, b.logIndex) ? -1 : 1));
+    const ordered = claims.filter((c) => c.asset === asset).sort((a, b) => (chainOrder(a.blockNumber, a.logIndex) < chainOrder(b.blockNumber, b.logIndex) ? -1 : 1));
     const claimed = ordered.reduce((s, c) => s + c.amount, 0n);
     let paidOut = 0n;
     for (const w of windows) {
