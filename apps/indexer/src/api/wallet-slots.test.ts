@@ -7,8 +7,8 @@ import {
   claimThresholds,
   composeClaimedByKind,
   composeCreatorFees,
+  creditWindow,
   distinctRecipients,
-  logIndexOfId,
   splitWalletClaims,
   walletsHoldingSeveralKinds,
   type CreditWindow,
@@ -25,7 +25,7 @@ const slotKinds = new Map<number, RecipientKind>([
   [1, 'creator'],
   [3, 'platform'],
 ]);
-const claim = (timestamp: number, logIndex: number, amount: bigint, amountUsd: number): WalletClaim => ({ asset: WETH, timestamp, logIndex, amount, amountUsd });
+const claim = (block: number, logIndex: number, amount: bigint, amountUsd: number): WalletClaim => ({ asset: WETH, blockNumber: BigInt(block), logIndex, amount, amountUsd });
 const win = (window: number, slot: number, amount: bigint): CreditWindow => ({ asset: WETH, window, slot, amount });
 
 describe('walletsHoldingSeveralKinds', () => {
@@ -62,14 +62,50 @@ describe('walletsHoldingSeveralKinds', () => {
 
 describe('chain order', () => {
   it('orders by block, then by the log index inside the block', () => {
-    expect(chainOrder(100, 5) < chainOrder(100, 6)).toBe(true);
-    expect(chainOrder(100, 999) < chainOrder(101, 0)).toBe(true);
-    expect(claimThresholds([claim(200, 1, 1n, 1), claim(100, 9, 1n, 1)])).toEqual([chainOrder(100, 9), chainOrder(200, 1)]);
+    expect(chainOrder(100n, 5) < chainOrder(100n, 6)).toBe(true);
+    expect(chainOrder(100n, 999) < chainOrder(101n, 0)).toBe(true);
+    expect(claimThresholds([claim(200, 1, 1n, 1), claim(100, 9, 1n, 1)])).toEqual([chainOrder(100n, 9), chainOrder(200n, 1)]);
   });
 
-  it('reads the log index of both id shapes', () => {
-    expect(logIndexOfId('0xabc-341-0xcoin')).toBe(341);
-    expect(logIndexOfId('0xabc-52-3-0')).toBe(52);
+  it('puts a credit in the window of the claim that came after it, as width_bucket does', () => {
+    const thresholds = [chainOrder(100n, 5), chainOrder(200n, 5)];
+    expect(creditWindow(chainOrder(100n, 4), thresholds)).toBe(0);
+    expect(creditWindow(chainOrder(100n, 6), thresholds)).toBe(1);
+    expect(creditWindow(chainOrder(200n, 6), thresholds)).toBe(2);
+  });
+
+  it('splits by block, never by timestamp, when two blocks share one second', () => {
+    // Blocks 1000 and 1001 carry the same timestamp, as about five blocks in a row do since Denim. A sweep credits both
+    // slots late in block 1000; the wallet claims it early in block 1001, at a smaller log index; a new credit follows.
+    const TIMESTAMP = 1_793_901_601;
+    const credits = [
+      { block: 1000n, logIndex: 80, slot: 1, amount: 60n },
+      { block: 1000n, logIndex: 81, slot: 3, amount: 40n },
+      { block: 1001n, logIndex: 90, slot: 1, amount: 500n },
+    ];
+    const paid = claim(1001, 7, 100n, 100);
+    const windowsBy = (orderOfCredit: (c: (typeof credits)[number]) => bigint, thresholds: bigint[]) => {
+      const sums = new Map<string, CreditWindow>();
+      for (const c of credits) {
+        const window = creditWindow(orderOfCredit(c), thresholds);
+        const key = `${window}-${c.slot}`;
+        const entry = sums.get(key) ?? win(window, c.slot, 0n);
+        entry.amount += c.amount;
+        sums.set(key, entry);
+      }
+      return [...sums.values()];
+    };
+
+    const right = splitWalletClaims(slotKinds, [paid], windowsBy((c) => chainOrder(c.block, c.logIndex), claimThresholds([paid])));
+    expect(right.exact).toBe(true);
+    expect(right.byKind.creator!.amount).toBe(60n);
+    expect(right.byKind.platform!.amount).toBe(40n);
+
+    // The old order, timestamp then log index, puts the sweep after the claim and the later credit before it: 500 for the
+    // creator, nothing for the platform, against a claim of 100.
+    const oldOrder = (logIndex: number) => BigInt(TIMESTAMP) * 1_000_000n + BigInt(logIndex);
+    const wrong = splitWalletClaims(slotKinds, [paid], windowsBy((c) => oldOrder(c.logIndex), [oldOrder(paid.logIndex)]));
+    expect(wrong.exact).toBe(false);
   });
 });
 
@@ -125,7 +161,7 @@ describe('splitWalletClaims', () => {
     const COINASSET = '0x00000000000000000000000000000000000000c0';
     const s = splitWalletClaims(
       slotKinds,
-      [claim(100, 1, 100n, 10), { asset: COINASSET, timestamp: 100, logIndex: 2, amount: 50n, amountUsd: 5 }],
+      [claim(100, 1, 100n, 10), { asset: COINASSET, blockNumber: 100n, logIndex: 2, amount: 50n, amountUsd: 5 }],
       [win(0, 1, 60n), win(0, 3, 40n), { asset: COINASSET, window: 0, slot: 3, amount: 50n }],
     );
     expect(s.exact).toBe(true);

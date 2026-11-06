@@ -287,10 +287,13 @@ export const trade = onchainTable(
     timestamp: t.integer().notNull(),
     /** extra */
     blockNumber: t.bigint().notNull(),
+    /** extra: with `blockNumber` the order of trades; a timestamp is shared by about five blocks since Denim. */
+    logIndex: t.integer().notNull(),
     txHash: t.hex().notNull(),
   }),
   (table) => ({
     tokenTsIdx: index().on(table.token, table.timestamp),
+    tokenBlockIdx: index().on(table.token, table.blockNumber, table.logIndex),
     tsIdx: index().on(table.timestamp),
     traderIdx: index().on(table.trader),
   }),
@@ -379,6 +382,9 @@ export const feeClaim = onchainTable(
     amount: t.bigint().notNull(),
     amountUsd: t.doublePrecision().notNull(),
     timestamp: t.integer().notNull(),
+    /** With `logIndex` the order against `feeCredit`; a timestamp is shared by about five blocks since Denim. */
+    blockNumber: t.bigint().notNull(),
+    logIndex: t.integer().notNull(),
     txHash: t.hex().notNull(),
   }),
   (table) => ({
@@ -432,6 +438,9 @@ export const feeCredit = onchainTable(
     amount: t.bigint().notNull(),
     amountUsd: t.doublePrecision().notNull(),
     timestamp: t.integer().notNull(),
+    /** With `logIndex` the order against `feeClaim`. */
+    blockNumber: t.bigint().notNull(),
+    logIndex: t.integer().notNull(),
     txHash: t.hex().notNull(),
   }),
   (table) => ({

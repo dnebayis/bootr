@@ -67,6 +67,8 @@ if (enabledSources().RwagmiLpLockerV3) {
       amount,
       amountUsd,
       timestamp: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+      logIndex: event.log.logIndex,
       txHash: event.transaction.hash,
     });
     await context.db
@@ -185,6 +187,8 @@ async function recordClaim(
       amount: part,
       amountUsd,
       timestamp: meta.ts,
+      blockNumber: meta.blockNumber,
+      logIndex: meta.logIndex,
       txHash: meta.txHash,
     });
     await context.db.update(schema.feeBalance, { id: row.id }).set((r) => ({

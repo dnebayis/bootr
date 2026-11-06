@@ -58,13 +58,13 @@ Chain: Base mainnet (8453). Coins come through two launch paths, told apart by `
 | `postsCount24h` | int | set by supervisor via REST |
 
 ### `trade`
-`id` (txhash-logindex), `token`, `trader`, `side` (`buy`\|`sell`), `amountToken`, `amountPaired`, `priceUsd`, `valueUsd`, `timestamp`, `txHash`.
+`id` (txhash-logindex), `token`, `trader`, `side` (`buy`\|`sell`), `amountToken`, `amountPaired`, `priceUsd`, `valueUsd`, `timestamp`, `blockNumber`, `logIndex`, `txHash`. Order trades by `blockNumber` then `logIndex`: since Denim about five blocks share one `timestamp`.
 
 ### `feeAccrual`
 `id`, `token`, `recipient`, `recipientKind` (`agent`\|`creator`\|`burn`\|`platform`), `asset` (hex), `amount`, `amountUsd`, `timestamp`, `txHash`. bootr: one row per Bootr reward slot and swap: `PoolFeeTakenV3` (gross fee) × slot `bps / 10000`; `asset` is always WETH. The exact credits the locker made on settlement (`RwagmiLpLockerV3.PoolFeesSettledV3(poolId, currency, slot, recipient, amount)`) are in `feeCredit`; the two can differ by a few wei. clanker: one row per reward slot and locker collection (`ClankerLpLockerFeeConversion.ClaimedRewards(token, amount0, amount1, rewards0[], rewards1[])`, index = slot), the exact amount after fee-preference conversion: `asset` WETH for the agent / creator / platform slots, the coin itself for the burn slot (recipient `0x…dEaD`); the same rows are in `feeCredit`.
 
 ### `feeClaim`
-`id`, `token`, `recipient`, `recipientKind` (`burn` included: the dead address claiming the coin), `asset`, `amount`, `amountUsd`, `timestamp`, `txHash`. From `RwagmiLpLockerV3.QuoteRewardsClaimedV3(recipient, currency, to, amount)` (bootr) or `ClankerFeeLocker.ClaimTokens(feeOwner, token, amountClaimed)` / `ClaimTokensPermissioned` (clanker): a claim pays the recipient's whole balance of the asset across all its coins, so it is split over the per-coin outstanding balances (one row per coin).
+`id`, `token`, `recipient`, `recipientKind` (`burn` included: the dead address claiming the coin), `asset`, `amount`, `amountUsd`, `timestamp`, `blockNumber`, `logIndex`, `txHash`. From `RwagmiLpLockerV3.QuoteRewardsClaimedV3(recipient, currency, to, amount)` (bootr) or `ClankerFeeLocker.ClaimTokens(feeOwner, token, amountClaimed)` / `ClaimTokensPermissioned` (clanker): a claim pays the recipient's whole balance of the asset across all its coins, so it is split over the per-coin outstanding balances (one row per coin).
 
 ### `burn`
 `id`, `token`, `amountToken`, `amountWethSpent`, `timestamp`, `txHash`. bootr: BuybackBurner events; clanker: the burn slot's claim of the coin to `0x…dEaD` (`amountWethSpent` 0, the locker already swapped). Both feed `token.burnedTotal`.
