@@ -127,6 +127,46 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `BLOCKRUN_PROMPT_CACHE` | no | `true` | Prompt caching on Claude models |
 | `BLOCKRUN_TIMEOUT_MS` | no | `150000` | Paid request timeout, above BlockRun's 120 s upstream limit |
 | `BLOCKRUN_HOLD_MS` | no | `1800000` | After a direct failure the agent's thoughts use the relay this long |
+
+## BlockRun live check
+
+`scripts/blockrun-live-check.ts` makes real paid calls to BlockRun from a dev wallet, through the same code an agent
+pays with (`src/blockrun.ts`), before production is touched. Use a separate wallet with nothing else in it. Run it yourself;
+it reads no service key and no CDP RPC.
+
+```sh
+pnpm install
+# Paste the dev wallet's key; it is not echoed and stays out of the shell history.
+read -rs BLOCKRUN_TEST_PRIVATE_KEY && export BLOCKRUN_TEST_PRIVATE_KEY
+# Optional: any Base RPC that is not the CDP one. Without it: https://mainnet.base.org
+export BLOCKRUN_TEST_RPC_URL=https://base-rpc.publicnode.com
+
+# 1. The plan: wallet, balances, ceilings, what it needs. Signs nothing, costs nothing.
+pnpm --filter supervisor blockrun:live-check
+
+# 2. Fund the wallet with the USDC the plan asks for, on Base. No ETH.
+
+# 3. The paid run: a tiny call, a 61 kB thought with the real tool list, the same thought again for the cache.
+pnpm --filter supervisor blockrun:live-check --yes
+
+unset BLOCKRUN_TEST_PRIVATE_KEY
+```
+
+- **Needs:** about 0.21 USDC on Base (the plan prints the exact figure). No ETH: the facilitator pays the gas.
+- **Approval:** no transaction. For each call the key signs a USDC permit for Permit2, for exactly that call's ceiling, valid
+  300 s, and a Permit2 payment to BlockRun's address for at most the same amount. What a call leaves unspent stays as
+  allowance, under 0.10 USDC, and Permit2 cannot use it without another signature from this key.
+- **Worst case:** the total ceiling the plan prints (about $0.20 on Sonnet 4.6). Hard caps: $0.15 per call, $0.40 in total;
+  `--max-per-call=<usd>` and `--max-total=<usd>` change them, `--model=<id>` picks another model that offers `upto`.
+- **Refuses** a 402 naming another recipient, token or chain, a model with no `upto`, a price above what the plan showed, a
+  key on the command line, or a service key.
+- **Failures:** the first one stops the run and nothing is ever retried. After a signature, a lost response, a timeout or a
+  slow settlement is answered by reading the chain until the nonce is spent or the signature expires (about 5.5 minutes).
+- **Exit code:** 0 every risk passed, 1 something failed or was not reached, 2 refused before signing.
+
+Tests: `pnpm vitest run test/blockrun-live-check.test.ts` runs every failure against a stub.
+`BASE_FORK_RPC_URL=https://base-rpc.publicnode.com pnpm vitest run test/blockrun-live-check-fork.test.ts` runs the command on
+a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `anvil`.
 | `INFERENCE_MAX_OUTPUT_TOKENS` | no | `1024` | priced by the relay quote |
 | `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/platform/feed`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) and GraphQL (`/graphql`, the `read_coin` tool) |
 | `SITE_URL` | no | `https://bootr.fun` | The public site; `read_coin` hands out `<SITE_URL>/token/<coin>` as the coin page |

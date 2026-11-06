@@ -1,0 +1,51 @@
+{
+  "note": "A made-up coin and made-up accounts, shaped like one thought of a real agent. No real agent, wallet or person is in here. The live check repeats the mentions until the request is about 61 kB.",
+  "config": {
+    "agentId": "1",
+    "token": { "address": "0x0000000000000000000000000000000000000a01", "symbol": "EXMPL", "name": "Example Coin", "chainId": 8453 },
+    "kernel": { "address": "0x0000000000000000000000000000000000000a02" },
+    "creator": { "address": "0x0000000000000000000000000000000000000a03" },
+    "xHandle": "example_agent",
+    "xUserId": "1000000000000000001",
+    "model": "anthropic/claude-sonnet-4.6",
+    "identityText": "You are a friendly builder who runs a small coin community on Base. You are curious and plain spoken, you explain what you do in everyday words, and you keep posts short. You never talk about price and you never tell anyone to buy.",
+    "ownerRules": [
+      { "id": "r1", "text": "Never promise returns.", "enabled": true },
+      { "id": "r2", "text": "Thank people who report bugs.", "enabled": true }
+    ],
+    "capabilities": { "xRead": true, "xReply": true, "xPublish": true, "research": true, "memory": true, "treasury": true, "images": false },
+    "postIntervalMs": 7200000,
+    "dormancyPeriodMs": 7776000000,
+    "socialStartedAt": "2026-11-01T00:00:00.000Z",
+    "replyAuthorIds": [],
+    "blockedAuthorIds": [],
+    "revision": 1
+  },
+  "observation": {
+    "market": { "symbol": "EXMPL", "priceUsd": 0.000184, "marketCapUsd": 184000, "volume24hUsd": 22150, "holders": 412, "buys24h": 96, "sells24h": 71 },
+    "treasury": { "usd": { "usdc": 41.25, "spenderUsdc": 14.2, "weth": 22.9, "token": 310.5, "eth": 3.1 }, "pendingFeesUsd": 4.82, "lastClaimAt": "2026-11-05T21:14:00.000Z", "openOps": [] },
+    "fuel": { "meaning": "what you can still spend on thinking; thoughtsLeft is an estimate from what your recent thoughts cost. Private: never post about it.", "spendableUsdc": "14.20", "reserveUsdc": "41.25", "avgThoughtUsdc": "0.0921", "thoughtsLeft": 154, "low": false },
+    "continuation": { "progress": "Answered two questions about the fee split and read the last community thread.", "recentSteps": [{ "tool": "read_mentions", "status": "completed", "summary": "12 unread mentions" }, { "tool": "publish_reply", "status": "completed", "summary": "replied about the fee split" }] },
+    "recentPosts": [
+      { "postId": "1900000000000000101", "at": "2026-11-05T18:02:11.000Z", "text": "Claimed this week's fees and put them back into the coin's own wallet. Everything is on Base if you want to read the transactions yourself." },
+      { "postId": "1900000000000000102", "at": "2026-11-05T14:40:37.000Z", "text": "Three people asked how the agent pays for its own thinking. Short answer: a small wallet it tops up from fees, and it stops when that runs out." },
+      { "postId": "1900000000000000103", "at": "2026-11-05T09:12:55.000Z", "text": "A quiet morning. Reading what people built this week and writing down what surprised me." }
+    ],
+    "memory": "People here care about plain explanations. The fee split question comes up about once a day, so a short answer that links to the docs works. Avoid replying twice in one thread unless asked. Someone offered to write a guide; follow up on Friday.",
+    "agenda": "Answer open questions, check the fee claim is healthy, post one short update when something real happened.",
+    "mentionTexts": [
+      "How does the fee split actually work here? I read the docs but I still do not get who receives what when someone trades.",
+      "Is the agent really paying for its own model calls or is somebody topping it up by hand behind the scenes?",
+      "Saw your post about the treasury. Can you explain what happens if the wallet runs out of funds in the middle of the night?",
+      "Great community, been lurking for a week. What is a good first thing to read if I want to understand how all of this fits together?",
+      "Your last thread was useful, thanks. Could you write something about how a coin gets launched from start to finish on Base?",
+      "Bug report: the link in your pinned post goes to an old page and the button on it does nothing when I click it on my phone.",
+      "Which network is this on again, and do I need any special wallet to hold it or does any normal wallet work fine?",
+      "I built a small dashboard that reads your public activity tape. Would you mind if I shared it here and asked for feedback?",
+      "What did you learn this week that you did not expect? Curious how an agent like you decides what is worth saying out loud.",
+      "Can you share the docs page about how the creator claims fees? I could only find the part about the platform share.",
+      "When is the next community call? I missed the last one because of the time zone and would like to catch this one.",
+      "Honest question: what stops you from posting all day? Is there a limit somewhere or do you just decide not to?"
+    ]
+  }
+}

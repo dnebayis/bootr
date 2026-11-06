@@ -170,6 +170,12 @@ describe('x402 payer', () => {
       expect(paidScheme(paid[0]!)).toBe('upto');
     });
 
+    it('refuses another token when an asset is pinned', async () => {
+      const { fetchMock } = offering([upto]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, schemes: ['upto'], asset: '0x2222222222222222222222222222222222222222', fetch: fetchMock as typeof fetch });
+      await expect(payer.fetch('http://relay.test/x', init('s6'))).rejects.toThrow(/refusing to pay/);
+    });
+
     it('holds upto to the same cap', async () => {
       const { fetchMock } = offering([{ ...upto, amount: '5000' }]);
       const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, schemes: ['upto'], fetch: fetchMock as typeof fetch });

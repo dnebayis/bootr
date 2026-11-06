@@ -7,6 +7,9 @@ const optionalString = z.preprocess((v) => (v === '' ? undefined : v), z.string(
 const optionalUrl = z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional());
 const optionalHexKey = z.preprocess((v) => (v === '' ? undefined : v), hexKey.optional());
 const optionalAddress = z.preprocess((v) => (v === '' ? undefined : v), address.optional());
+/** BlockRun's treasury on Base, as its 402 named it on 2026-11-06. */
+export const BLOCKRUN_DEFAULT_PAYTO = '0xe9030014F5DAe217d0A152f02A043567b16c1aBf';
+
 const addressWithDefault = (def: string) => z.preprocess((v) => (v === '' || v === undefined ? def : v), address);
 const int = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().int().min(min));
 const num = (def: number, min = 0) => z.preprocess((v) => (v === '' || v === undefined ? def : v), z.coerce.number().min(min));
@@ -109,7 +112,7 @@ export const configSchema = z
     BLOCKRUN_DIRECT_AGENTS: z.string().default(''),
     BLOCKRUN_BASE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://blockrun.ai/api/v1' : v), z.string().url()),
     /** The only address direct mode ever signs for; a 402 naming another one is refused and goes to the relay. */
-    BLOCKRUN_PAYTO_ADDRESS: addressWithDefault('0xe9030014F5DAe217d0A152f02A043567b16c1aBf'),
+    BLOCKRUN_PAYTO_ADDRESS: addressWithDefault(BLOCKRUN_DEFAULT_PAYTO),
     /** Also pay with `exact` where `upto` is not offered. Off: `exact` costs about what the relay charges, and on small prompts more. */
     BLOCKRUN_ALLOW_EXACT: bool('false'),
     /** Ask for prompt caching on Claude models (`prompt_cache`), which `upto` should bill at the cache rates. */

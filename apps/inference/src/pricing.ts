@@ -235,6 +235,13 @@ export function estimateInputTokens(req: EstimatableRequest): number {
   return counted + PER_MESSAGE_OVERHEAD * req.messages.length + PER_REQUEST_OVERHEAD + IMAGE_INPUT_TOKENS_PER_IMAGE * imageInputsOf(req.messages);
 }
 
+/** The o200k_base count alone, without the quote's bytes/2 floor: the nearest local figure to what a provider bills. */
+export function countInputTokens(req: EstimatableRequest): number {
+  const parts: string[] = req.messages.map((m) => JSON.stringify(m));
+  if (req.tools?.length) parts.push(JSON.stringify(req.tools));
+  return parts.reduce((n, part) => n + countTokens(part), 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Quotes
 // ---------------------------------------------------------------------------------------------

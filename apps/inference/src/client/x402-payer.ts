@@ -90,6 +90,8 @@ export interface X402PayerOptions {
   networks?: readonly Network[];
   /** If set, refuse to pay any other recipient. */
   payTo?: Address | readonly Address[];
+  /** If set, refuse to pay in any other token. */
+  asset?: Address;
   /**
    * Schemes this payer may sign, most wanted first. Default `['exact']`. `upto` (Permit2) settles what the call
    * really cost, up to the signed amount; it needs `readContract` for the gas-sponsored allowance.
@@ -204,7 +206,8 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
               schemes.includes(r.scheme as PayerScheme) &&
               BigInt(r.amount) <= cap &&
               (opts.maxTimeoutSeconds === undefined || r.maxTimeoutSeconds <= opts.maxTimeoutSeconds) &&
-              (!allowedPayTo || allowedPayTo.has(getAddress(r.payTo as Address))),
+              (!allowedPayTo || allowedPayTo.has(getAddress(r.payTo as Address))) &&
+              (!opts.asset || getAddress(r.asset as Address) === getAddress(opts.asset)),
           )
           .sort((a, b) => schemes.indexOf(a.scheme as PayerScheme) - schemes.indexOf(b.scheme as PayerScheme)),
       );

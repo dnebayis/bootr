@@ -21,7 +21,8 @@ import { createX402Payer, X402PaymentRefusedError, type BootrReceipt, type Payer
 import { decodePaymentResponseHeader } from '@x402/core/http';
 import type { PaymentPayload } from '@x402/core/types';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { decodeEventLog, erc20Abi, getAddress, isAddressEqual, type Address, type Hex } from 'viem';
+import { decodeEventLog, erc20Abi, getAddress, isAddressEqual, type Address, type Hex, type LocalAccount } from 'viem';
+import type { ChainContext } from './chain.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { inference } from './db/schema.js';
 import type { RelayCall, RelayResult } from './inference.js';
@@ -32,11 +33,11 @@ export const DIRECT_UNPAID = 'direct_failed_unpaid';
 /** The nonce was used and no answer reached us: the agent paid and got nothing. */
 export const DIRECT_PAID_LOST = 'direct_paid_no_response';
 export const INSUFFICIENT_FLOAT = 'insufficient_float';
+/** The chain enforces a signature's deadline; this covers an RPC a little behind the head. */
+export const DEADLINE_GRACE_SECONDS = 30;
 
 /** BlockRun's validity window is 300 s; a longer one would keep an unknown outcome open for no reason. */
 const MAX_SIGNATURE_SECONDS = 600;
-/** The chain enforces the deadline; this covers an RPC a little behind the head. */
-const DEADLINE_GRACE_SECONDS = 30;
 /** The unpaid request only asks for a price. */
 const PROBE_TIMEOUT_MS = 15_000;
 const IN_FLIGHT_MARGIN_MS = 5_000;
@@ -47,7 +48,7 @@ const nonceBitmapAbi = [{ type: 'function', name: 'nonceBitmap', stateMutability
 
 export type DirectOutcome = RelayResult | { kind: 'failover'; reason: string };
 
-class InsufficientFloatError extends Error {}
+export class InsufficientFloatError extends Error {}
 
 type DirectConfig = SupervisorContext['config'];
 
@@ -94,44 +95,72 @@ export async function directAllowed(ctx: SupervisorContext, agent: Pick<AgentRow
   return !recent;
 }
 
-/** One direct attempt for a row `relayRequest` just opened. `failover` means no signature exists for this key. */
-export async function directRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<DirectOutcome> {
-  const { key } = call;
-  const now = () => new Date(ctx.now());
-  const spender = ctx.spenderFor(agent);
-  const schemes: PayerScheme[] = ctx.config.BLOCKRUN_ALLOW_EXACT ? ['upto', 'exact'] : ['upto'];
-  const out: { signed: PaymentPayload | null } = { signed: null };
+/**
+ * What a paid direct request needs from the world. The supervisor's context provides it, and so does the owner's live
+ * check (`scripts/blockrun-live-check.ts`), so that command proves this path rather than a copy of it.
+ */
+export interface DirectWorld {
+  chain: Pick<ChainContext, 'chainId' | 'publicClient' | 'addresses'>;
+  fetch: typeof fetch;
+}
 
+export type DirectPayConfig = Pick<DirectConfig, 'BLOCKRUN_BASE_URL' | 'BLOCKRUN_PAYTO_ADDRESS' | 'BLOCKRUN_ALLOW_EXACT' | 'BLOCKRUN_PROMPT_CACHE' | 'BLOCKRUN_TIMEOUT_MS'>;
+
+export function directUrl(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>): string {
+  return `${config.BLOCKRUN_BASE_URL.replace(/\/+$/, '')}/chat/completions`;
+}
+
+/**
+ * The request itself: one unpaid POST for the price, at most one signature, one paid POST. `onPayment` runs before the
+ * signature leaves this process, so an error thrown there means nothing is out there. Throws what the payer throws.
+ */
+export function directPost(world: DirectWorld, config: DirectPayConfig, opts: { signer: LocalAccount; key: string; request: Record<string, unknown>; maxQuoteMicroUsdc: bigint; onPayment: (payload: PaymentPayload) => void | Promise<void> }): Promise<Response> {
+  const schemes: PayerScheme[] = config.BLOCKRUN_ALLOW_EXACT ? ['upto', 'exact'] : ['upto'];
   const payer = createX402Payer({
-    signer: spender,
-    maxPaymentMicroUsdc: call.maxQuoteMicroUsdc,
-    networks: [`eip155:${ctx.chain.chainId}` as `eip155:${string}`],
-    payTo: ctx.config.BLOCKRUN_PAYTO_ADDRESS as Address,
+    signer: opts.signer,
+    maxPaymentMicroUsdc: opts.maxQuoteMicroUsdc,
+    networks: [`eip155:${world.chain.chainId}` as `eip155:${string}`],
+    payTo: config.BLOCKRUN_PAYTO_ADDRESS as Address,
+    asset: world.chain.addresses.usdc,
     schemes,
     maxTimeoutSeconds: MAX_SIGNATURE_SECONDS,
-    readContract: (args) => ctx.chain.publicClient.readContract(args as never),
+    readContract: (args) => world.chain.publicClient.readContract(args as never),
     // Our headers stay here: BlockRun has no use for them and the timeout differs between asking and paying.
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const req = new Request(input, init);
       const headers = new Headers(req.headers);
       headers.delete('Idempotency-Key');
       headers.delete('X-Max-Quote-Micro-USDC');
-      return ctx.fetch(req.url, { method: req.method, headers, body: await req.text(), signal: AbortSignal.timeout(headers.has('PAYMENT-SIGNATURE') ? ctx.config.BLOCKRUN_TIMEOUT_MS : PROBE_TIMEOUT_MS) });
+      return world.fetch(req.url, { method: req.method, headers, body: await req.text(), signal: AbortSignal.timeout(headers.has('PAYMENT-SIGNATURE') ? config.BLOCKRUN_TIMEOUT_MS : PROBE_TIMEOUT_MS) });
     }) as typeof fetch,
-    // Runs before the signature leaves this process: a thrown error here means nothing is out there.
-    onPayment: async ({ payload }) => {
-      await requireFloat(ctx, spender.address, BigInt(payload.accepted.amount));
-      await ctx.db.update(inference).set({ receipt: { route: DIRECT_ROUTE, payment: payload as unknown as Record<string, unknown> }, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
-      out.signed = payload;
-    },
+    onPayment: ({ payload }) => opts.onPayment(payload),
   });
+  return payer.fetch(directUrl(config), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'Idempotency-Key': opts.key, 'X-Max-Quote-Micro-USDC': opts.maxQuoteMicroUsdc.toString() },
+    body: JSON.stringify(directBody(config, opts.request)),
+  });
+}
+
+/** One direct attempt for a row `relayRequest` just opened. `failover` means no signature exists for this key. */
+export async function directRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<DirectOutcome> {
+  const { key } = call;
+  const now = () => new Date(ctx.now());
+  const spender = ctx.spenderFor(agent);
+  const out: { signed: PaymentPayload | null } = { signed: null };
 
   let res: Response;
   try {
-    res = await payer.fetch(`${ctx.config.BLOCKRUN_BASE_URL.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': call.maxQuoteMicroUsdc.toString() },
-      body: JSON.stringify(directBody(ctx.config, call.request)),
+    res = await directPost(ctx, ctx.config, {
+      signer: spender,
+      key,
+      request: call.request,
+      maxQuoteMicroUsdc: call.maxQuoteMicroUsdc,
+      onPayment: async (payload) => {
+        await requireFloat(ctx, spender.address, BigInt(payload.accepted.amount));
+        await ctx.db.update(inference).set({ receipt: { route: DIRECT_ROUTE, payment: payload as unknown as Record<string, unknown> }, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+        out.signed = payload;
+      },
     });
   } catch (err) {
     if (err instanceof InsufficientFloatError) {
@@ -148,10 +177,10 @@ export async function directRequest(ctx: SupervisorContext, agent: AgentRow, cal
 }
 
 /** Reads the spender's USDC before signing. A failed read lets the payment go: BlockRun's own check refuses it at no cost. */
-async function requireFloat(ctx: SupervisorContext, spender: Address, amount: bigint): Promise<void> {
+export async function requireFloat(world: Pick<DirectWorld, 'chain'>, spender: Address, amount: bigint): Promise<void> {
   let balance: bigint;
   try {
-    balance = await ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [spender] });
+    balance = await world.chain.publicClient.readContract({ address: world.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [spender] });
   } catch {
     return;
   }
@@ -179,7 +208,22 @@ function normalized(body: Record<string, unknown>): Record<string, unknown> {
   return { ...body, choices };
 }
 
-async function recordDirectResponse(ctx: SupervisorContext, agent: AgentRow, key: string, res: Response, payment: PaymentPayload, requested: string): Promise<RelayResult> {
+/** A paid response read: either a real answer (`answer`, normalised) or the reason it is not one. */
+export interface DirectResponse {
+  status: number;
+  /** The normalised body when this is the answer that was paid for; null otherwise. */
+  answer: Record<string, unknown> | null;
+  /** Why it is no answer, in the form `sv_inference.error` keeps it. */
+  error: string | null;
+  fallback: boolean;
+  servedModel: unknown;
+  settled: boolean;
+  contextTruncated: boolean;
+  removedMessages: string | null;
+  gatewayId: string | null;
+}
+
+export async function readDirectResponse(res: Response): Promise<DirectResponse> {
   let body: unknown = null;
   try {
     body = await res.json();
@@ -189,32 +233,41 @@ async function recordDirectResponse(ctx: SupervisorContext, agent: AgentRow, key
   const answered = res.ok && !!body && Array.isArray((body as { choices?: unknown }).choices) && (body as { choices: unknown[] }).choices.length > 0;
   // BlockRun can swap a paid model for a free one when a wallet cannot pay (changelog 2026-04-27). The agent did not ask for that model.
   const freeStandIn = res.headers.get('x-free-model') === 'true' || res.headers.get('x-health-reroute') === 'true';
-  if (!answered || freeStandIn) {
-    const code = codeOf(body);
-    return holdForChain(ctx, key, freeStandIn ? 'direct_free_model_substituted' : `direct_http_${res.status}${code ? `_${code}` : ''}`);
-  }
+  const code = codeOf(body);
+  const ok = answered && !freeStandIn;
+  return {
+    status: res.status,
+    answer: ok ? normalized(body as Record<string, unknown>) : null,
+    error: ok ? null : freeStandIn ? 'direct_free_model_substituted' : `direct_http_${res.status}${code ? `_${code}` : ''}`,
+    fallback: res.headers.get('x-fallback-used') === 'true',
+    servedModel: res.headers.get('x-fallback-model') ?? res.headers.get('x-served-model') ?? (body as { model?: unknown } | null)?.model ?? null,
+    settled: res.headers.get('x-payment-settled') !== 'false',
+    contextTruncated: res.headers.get('x-context-truncated') === 'true',
+    removedMessages: res.headers.get('x-messages-removed'),
+    gatewayId: res.headers.get('x-blockrun-gateway-request-id'),
+  };
+}
 
-  const receipt = await directReceipt(ctx, agent, key, res, payment, body as Record<string, unknown>);
-  const fallback = res.headers.get('x-fallback-used') === 'true';
-  const servedModel = res.headers.get('x-fallback-model') ?? (body as { model?: unknown }).model ?? null;
-  const settled = res.headers.get('x-payment-settled') !== 'false';
+async function recordDirectResponse(ctx: SupervisorContext, agent: AgentRow, key: string, res: Response, payment: PaymentPayload, requested: string): Promise<RelayResult> {
+  const read = await readDirectResponse(res);
+  if (!read.answer) return holdForChain(ctx, key, read.error ?? `direct_http_${res.status}`);
+  const { fallback, servedModel, settled, contextTruncated } = read;
+  const receipt = await directReceipt(ctx, agent, key, res, payment, read);
   if (fallback) ctx.log.warn({ key, agentId: agent.agentId, requested, servedModel }, 'BlockRun answered with a fallback model');
   if (!settled) ctx.log.warn({ key, agentId: agent.agentId, chargedMicroUsdc: receipt.chargedMicroUsdc }, 'BlockRun served the call and has not settled it; the signed amount stays counted');
-  const contextTruncated = res.headers.get('x-context-truncated') === 'true';
-  if (contextTruncated) ctx.log.warn({ key, agentId: agent.agentId, removed: res.headers.get('x-messages-removed') }, 'BlockRun trimmed the prompt to fit');
+  if (contextTruncated) ctx.log.warn({ key, agentId: agent.agentId, removed: read.removedMessages }, 'BlockRun trimmed the prompt to fit');
   const merged = {
     route: DIRECT_ROUTE,
     payment: payment as unknown as Record<string, unknown>,
     relay: receipt as unknown as Record<string, unknown>,
     direct: { scheme: payment.accepted.scheme, servedModel, fallback, settled, contextTruncated },
   };
-  const stored = normalized(body as Record<string, unknown>);
-  await ctx.db.update(inference).set({ status: 'succeeded', response: stored, receipt: merged, error: null, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
-  return { kind: 'ok', key, body: stored, receipt, replayed: false };
+  await ctx.db.update(inference).set({ status: 'succeeded', response: read.answer, receipt: merged, error: null, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+  return { kind: 'ok', key, body: read.answer, receipt, replayed: false };
 }
 
-/** The relay's receipt shape, so `/fuel`, the average thought cost and the chat charges read a direct call like any other. */
-async function directReceipt(ctx: SupervisorContext, agent: AgentRow, key: string, res: Response, payment: PaymentPayload, body: Record<string, unknown>): Promise<BootrReceipt> {
+/** What a paid response says about its settlement: the transaction and BlockRun's own claim of the amount, either possibly absent. */
+export function settlementClaim(res: Response): { tx: Hex | null; claimed: bigint | null } {
   let settle: { transaction?: string; amount?: string } | null = null;
   const header = res.headers.get('payment-response');
   if (header) {
@@ -224,34 +277,38 @@ async function directReceipt(ctx: SupervisorContext, agent: AgentRow, key: strin
       settle = null;
     }
   }
-  const tx = settle?.transaction || res.headers.get('x-payment-receipt') || null;
+  return { tx: ((settle?.transaction || res.headers.get('x-payment-receipt')) as Hex | undefined) ?? null, claimed: /^\d+$/.test(settle?.amount ?? '') ? BigInt(settle!.amount!) : null };
+}
+
+/** The relay's receipt shape, so `/fuel`, the average thought cost and the chat charges read a direct call like any other. */
+async function directReceipt(ctx: SupervisorContext, agent: AgentRow, key: string, res: Response, payment: PaymentPayload, read: DirectResponse): Promise<BootrReceipt> {
+  const { tx, claimed } = settlementClaim(res);
   const signed = BigInt(payment.accepted.amount);
   let charged = signed;
   // `exact` settles the signed amount. `upto` settles less: the chain says how much, then BlockRun's header; failing both, the signed amount stays counted.
   if (payment.accepted.scheme !== 'exact') {
-    const onChain = tx ? await settledOnChain(ctx, tx as Hex, ctx.spenderFor(agent).address, payment.accepted.payTo as Address) : null;
-    const claimed = /^\d+$/.test(settle?.amount ?? '') ? BigInt(settle!.amount!) : null;
+    const onChain = tx ? await settledOnChain(ctx, tx, ctx.spenderFor(agent).address, payment.accepted.payTo as Address) : null;
     const known = onChain ?? claimed;
     if (known !== null && known <= signed) charged = known;
     if (known !== null && known > signed) ctx.log.error({ key, agentId: agent.agentId, known: known.toString(), signed: signed.toString() }, 'BlockRun settled above the signed amount');
   }
   return {
-    requestId: res.headers.get('x-blockrun-gateway-request-id') ?? String(body.id ?? key),
+    requestId: read.gatewayId ?? String(read.answer?.id ?? key),
     quoteMicroUsdc: signed.toString(),
     chargedMicroUsdc: charged.toString(),
     paymentTxOrId: tx,
     network: payment.accepted.network,
-    usage: (body.usage as Record<string, unknown> | undefined) ?? null,
+    usage: (read.answer?.usage as Record<string, unknown> | undefined) ?? null,
   };
 }
 
 /** USDC moved from the spender to BlockRun in this transaction, or null when it cannot be read yet. */
-async function settledOnChain(ctx: SupervisorContext, tx: Hex, from: Address, to: Address): Promise<bigint | null> {
+export async function settledOnChain(world: Pick<DirectWorld, 'chain'>, tx: Hex, from: Address, to: Address): Promise<bigint | null> {
   try {
-    const { logs } = await ctx.chain.publicClient.getTransactionReceipt({ hash: tx });
+    const { logs } = await world.chain.publicClient.getTransactionReceipt({ hash: tx });
     let total: bigint | null = null;
     for (const log of logs) {
-      if (!isAddressEqual(log.address, ctx.chain.addresses.usdc)) continue;
+      if (!isAddressEqual(log.address, world.chain.addresses.usdc)) continue;
       try {
         const event = decodeEventLog({ abi: erc20Abi, eventName: 'Transfer', data: log.data, topics: log.topics });
         if (isAddressEqual(event.args.from, from) && isAddressEqual(event.args.to, to)) total = (total ?? 0n) + event.args.value;
@@ -278,7 +335,7 @@ export function paymentAuthorization(payment: PaymentPayload): { scheme: 'exact'
 }
 
 /** Whether the payment's nonce has been spent on chain: USDC's EIP-3009 state for `exact`, Permit2's nonce bitmap for `upto`. */
-export async function paymentSettled(ctx: Pick<SupervisorContext, 'chain'>, auth: NonNullable<ReturnType<typeof paymentAuthorization>>): Promise<boolean> {
+export async function paymentSettled(ctx: Pick<DirectWorld, 'chain'>, auth: NonNullable<ReturnType<typeof paymentAuthorization>>): Promise<boolean> {
   if (auth.scheme === 'exact') {
     return ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: authorizationStateAbi, functionName: 'authorizationState', args: [auth.from, auth.nonce as Hex] });
   }
