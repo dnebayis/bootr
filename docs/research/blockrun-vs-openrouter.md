@@ -4,6 +4,41 @@ Decision memo, researched 2026-11-02. No code was changed. Every live observatio
 catalogue, 402 quotes, health) was taken on 2026-11-02 against `https://blockrun.ai` and is a
 snapshot. Anything marked **unverified** was not confirmed from a primary source.
 
+
+## Update 2026-11-06: the quote changed, and only `upto` saves money
+
+Checked live against unpaid `POST /api/v1/chat/completions` (402 bodies), `GET /api/v1/models`, OpenRouter
+`GET /api/v1/models` and the changelog. This section overrides the numbers below where they differ.
+
+- **`exact` now quotes the full `max_tokens`** (changelog 2026-11-03; it was half from 2026-10-30). `exact` and `upto`
+  show the same amount in the 402; `exact` settles it, `upto` settles what the call really cost (actual tokens + $0.001).
+- **`upto` is offered on the Claude ids only**: no `upto` row for `openai/gpt-5.4-mini`, `openai/gpt-4.1-mini`,
+  `openai/gpt-5.4-nano`, `google/gemini-3.5-flash-lite` on 2026-11-06. The 402 also advertises `eip2612GasSponsoring`,
+  so a spender with no ETH can sign the Permit2 allowance (not proven until a paid call).
+- BlockRun estimates input about like the relay does (about 1 token per 2 bytes), so both quote about twice the real input.
+- Settlement is after the model answers. Failed calls are never settled and the authorization is released; rejections
+  caused by the caller's input do settle. There is no refund path and no chat replay after a lost response.
+- Sonnet 5.5 is $2/$10 on both BlockRun and OpenRouter, a third below Sonnet 4.6.
+
+One thought of the `$BOOTR` agent as it runs today: 61 kB request (the 0.1175 USDC relay quote this size gives matches the
+0.1167 median of its on-chain payments), 16.8k real input tokens (o200k count), about 300 output tokens, `max_tokens` 1024.
+
+| USDC per thought | Real cost at OpenRouter | Charged from fuel by the relay | BlockRun `exact` | BlockRun `upto` |
+|---|---|---|---|---|
+| Sonnet 4.6 | 0.0548 | 0.1175 | 0.1029 | 0.0558 |
+| Sonnet 5.5 | 0.0366 | not in the price table | 0.0689 | 0.0376 |
+| Haiku 4.5 | 0.0183 | 0.0392 | 0.0350 | 0.0193 |
+| GPT-5.4 mini | 0.0139 | 0.0303 | 0.0272 | not offered |
+| GPT-4.1 mini | 0.0072 | 0.0153 | 0.0142 | not offered |
+| GPT-5.4 nano | 0.0037 | 0.0082 | 0.0081 | not offered |
+
+On a 20 kB prompt `exact` is **dearer** than the relay on the cheap models (nano 0.00421 vs 0.00374, Gemini Flash-Lite
+0.00646 vs 0.00626, GPT-4.1 mini 0.00650 vs 0.00636), because the flat $0.001 outweighs the relay's 10% margin. So direct
+mode pays with `upto` only by default and leaves everything else on the relay.
+
+The relay's real cost above excludes OpenRouter's credit purchase fee (reported 5.5%, still unverified from a primary
+source) and the CDP facilitator ($0.001 per settlement after 1,000 a month, https://docs.cdp.coinbase.com/x402/support/faq).
+
 ## Verdict
 
 BlockRun can be wired in as a **second upstream behind a config switch** with about a day of work,
