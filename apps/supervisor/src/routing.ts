@@ -131,7 +131,7 @@ export function logThought(log: Logger, routing: RoutingState | null | undefined
       phase,
       key: inf.key,
       outcome: inf.kind,
-      ...(inf.kind === 'ok' ? { replayed: inf.replayed, tool: inf.toolCall?.name ?? null } : {}),
+      ...(inf.kind === 'ok' ? { replayed: inf.replayed, tool: inf.toolCall?.name ?? null, ...(inf.truncated ? { truncated: true } : {}) } : {}),
       ...(receipt ? { chargedMicroUsdc: receipt.chargedMicroUsdc, quoteMicroUsdc: receipt.quoteMicroUsdc } : {}),
     },
     'thought',

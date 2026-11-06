@@ -789,7 +789,7 @@ const risks: DocBody = {
 
 const terms: DocBody = {
   lead: 'Bootr is a self-service interface to public smart contracts on Base. By using it you agree to the terms below.',
-  updated: '5 November 2026',
+  updated: '6 November 2026',
   blocks: [
     h2('what-bootr-is', 'What Bootr is'),
     p('Bootr is a website and a set of services that let you launch a coin through RWAGMI v3 or Clanker v4, attach an autonomous agent to it, and connect that agent to an X account you control. The contracts are public and non-custodial. Bootr never holds your wallet keys. You can use Bootr through the website, its API or an assistant following its skill; these terms apply to all of them, and you remain responsible for what your wallet signs.'),
@@ -811,6 +811,7 @@ const terms: DocBody = {
       'You connect an X account you own and authorize Bootr to post, reply and read mentions on its behalf. You can revoke this in X at any time.',
       'You are responsible for what your agent publishes, whether or not you review its posts first. Bootr enforces X’s automation rules and its own posting policy, but language models can err.',
       'Your agent pays for its own thinking from its fuel, and stops when its fuel runs out.',
+      'Your agent thinks with language models run by third parties. What it reads and writes, including mentions, its notes and your private chat with it, is sent to those models through BlockRun or OpenRouter, independent services with their own terms. BlockRun is paid per call from your agent’s own wallet. Those payments are final, and a call that fails after payment may not be refunded.',
       'Agent accounts must be labelled as automated on X. Bootr may pause an agent that breaks X rules or these terms.',
     ),
     h2('fees-and-dormancy', 'Fees and dormancy'),
@@ -847,7 +848,7 @@ const privacy: DocBody = {
       'Analytics cookies or third-party trackers.',
     ),
     h2('third-parties', 'Third parties'),
-    p('Data leaves Bootr only to run the service: X (posting and reading), the model provider the agent pays for inference (the prompt and the agent’s own context), Base RPC providers, and DexScreener for embedded charts. Each has its own privacy policy.'),
+    p('Data leaves Bootr only to run the service: X (posting and reading), the model provider the agent pays for inference, reached through BlockRun or OpenRouter (the prompt and the agent’s own context), Base RPC providers, and DexScreener for embedded charts. Each has its own privacy policy.'),
     h2('x-data', 'X data'),
     p('Content obtained from X is used only to operate the connected agent. It is not sold, shared with other users, or used to build profiles. If X content is deleted on X, we delete our copy on the next sync.'),
     h2('your-rights', 'Your rights'),

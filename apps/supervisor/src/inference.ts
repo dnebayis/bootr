@@ -22,7 +22,7 @@ import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
 import { and, desc, eq, gte, notLike, or, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { DIRECT_PAID_LOST, DIRECT_ROUTE, directAllowed, directRequest, reconcileDirect } from './blockrun.js';
+import { DIRECT_PAID_LOST, DIRECT_ROUTE, DIRECT_UNAVAILABLE, directRequest, directRoute, reconcileDirect } from './blockrun.js';
 import { inference } from './db/schema.js';
 
 export interface ModelToolCall {
@@ -34,7 +34,7 @@ export interface ModelToolCall {
 }
 
 export type InferenceResult =
-  | { kind: 'ok'; key: string; message: ChatMessage; toolCall: ModelToolCall | null; receipt: BootrReceipt | null; replayed: boolean }
+  | { kind: 'ok'; key: string; message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean; receipt: BootrReceipt | null; replayed: boolean }
   | { kind: 'unknown'; key: string; error: string }
   /** The relay holds the payment for this key (`status: 'credit'`): retry this key, a new one would pay again. */
   | { kind: 'credit'; key: string; error: string }
@@ -71,8 +71,12 @@ function errorCode(status: number, body: unknown): string {
   return `http_${status}`;
 }
 
-export function parseAssistant(body: Record<string, unknown>): { message: ChatMessage; toolCall: ModelToolCall | null } {
-  const choice = (body.choices as { message?: Record<string, unknown> }[] | undefined)?.[0];
+/** Output limit reached, in the words of OpenAI's and Anthropic's APIs. */
+const OUTPUT_LIMIT_REASONS: readonly unknown[] = ['length', 'max_tokens', 'MAX_TOKENS'];
+
+/** `truncated`: the tool call's JSON is unfinished, or the provider says the output limit ended it. Such a call never runs as written. */
+export function parseAssistant(body: Record<string, unknown>): { message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean } {
+  const choice = (body.choices as { message?: Record<string, unknown>; finish_reason?: unknown }[] | undefined)?.[0];
   const msg = choice?.message ?? {};
   const toolCalls = (msg.tool_calls as { id: string; type: 'function'; function: { name: string; arguments: string } }[] | undefined) ?? [];
   const first = toolCalls[0];
@@ -81,14 +85,15 @@ export function parseAssistant(body: Record<string, unknown>): { message: ChatMe
     content: typeof msg.content === 'string' ? msg.content : null,
     ...(first ? { tool_calls: [first] } : {}),
   };
-  if (!first) return { message, toolCall: null };
+  if (!first) return { message, toolCall: null, truncated: false };
   let input: unknown = first.function.arguments;
+  let parsed = true;
   try {
     input = JSON.parse(first.function.arguments || '{}');
   } catch {
-    /* keep raw string; parseAction will reject it */
+    parsed = false; // keep raw string; parseAction rejects it
   }
-  return { message, toolCall: { id: first.id, name: first.function.name, input, raw: first.function.arguments } };
+  return { message, toolCall: { id: first.id, name: first.function.name, input, raw: first.function.arguments }, truncated: !parsed || OUTPUT_LIMIT_REASONS.includes(choice?.finish_reason) };
 }
 
 /** One request on `model` (the agent's own model unless economy mode routes the step to its decide model; routing.ts). */
@@ -200,9 +205,21 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
   }
 
   await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle: call.cycle, requestHash, request, status: 'pending', createdAt: now(), updatedAt: now() });
-  if (await directAllowed(ctx, agent, request)) {
+  const route = await directRoute(ctx, agent);
+  if (route.route === 'wait') {
+    await ctx.db.update(inference).set({ status: 'failed', error: route.error, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'failed', key, error: route.error };
+  }
+  if (route.route === 'direct') {
     const direct = await directRequest(ctx, agent, call);
     if (direct.kind !== 'failover') return direct;
+    if (!ctx.config.BLOCKRUN_RELAY_FALLBACK) {
+      // No funded relay behind this: the agent waits with the runtime's backoff and no money leaves.
+      const error = `${DIRECT_UNAVAILABLE}: ${direct.reason}`.slice(0, 300);
+      ctx.log.warn({ key, agentId: agent.agentId, reason: direct.reason }, 'BlockRun could not serve this call; waiting, nothing paid');
+      await ctx.db.update(inference).set({ status: 'failed', error, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+      return { kind: 'failed', key, error };
+    }
     // No signature exists for this key, so the relay can take it without any risk of a second payment.
     ctx.log.info({ key, agentId: agent.agentId, reason: direct.reason }, 'direct mode passed this thought to the relay');
   }

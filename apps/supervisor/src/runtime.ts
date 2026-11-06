@@ -114,6 +114,8 @@ export interface Turn {
   postDue?: boolean;
   /** An original post completed (or was queued for review) in this turn. */
   posted?: boolean;
+  /** The last tool call was cut off at the output limit: the next thought gets INFERENCE_RETRY_OUTPUT_TOKENS. */
+  outputBoost?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,7 +461,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       let request;
       for (;;) {
         try {
-          request = buildRequest(config, turn.messages, tools(), ctx.config.INFERENCE_MAX_OUTPUT_TOKENS, modelFor(config, turn.routing));
+          request = buildRequest(config, turn.messages, tools(), turn.outputBoost ? ctx.config.INFERENCE_RETRY_OUTPUT_TOKENS : ctx.config.INFERENCE_MAX_OUTPUT_TOKENS, modelFor(config, turn.routing));
           break;
         } catch (err) {
           if (err instanceof PolicyError && err.code === 'context_too_large' && compactMessages(turn.messages)) continue;
@@ -483,6 +485,19 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       return backOff(inf);
     }
     state.inferenceRetryAt = null;
+
+    // Cut off at the output limit: the call is not carried out, and its broken JSON must not go back to the provider,
+    // which would refuse the next request. The model is told why, and gets room for one retry.
+    if (inf.truncated && inf.toolCall) {
+      broker = { ...broker, cycle: broker.cycle + 1 };
+      log.warn({ key: inf.key, tool: inf.toolCall.name, boosted: !!turn.outputBoost }, 'tool call cut off at the output limit');
+      turn.outputBoost = true;
+      turn.recentSteps.push({ tool: inf.toolCall.name, status: 'truncated', summary: 'cut off at the output limit' });
+      turn.messages.push({ role: 'user', content: `Your ${inf.toolCall.name} call was cut off because it was too long, so it was not carried out. Make it again, shorter. For finish: keep memory, agenda and summary brief and archive details with remember.` });
+      await persist();
+      continue;
+    }
+    turn.outputBoost = false;
 
     turn.messages.push(inf.message);
     if (!inf.toolCall) {

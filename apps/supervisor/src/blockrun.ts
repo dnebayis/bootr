@@ -1,24 +1,30 @@
 /**
- * Direct mode: the agent's spender pays BlockRun (https://blockrun.ai, x402 on Base) for a thought instead of paying
- * the relay. Off by default; `relayRequest` (inference.ts) calls in here for agents the config names.
+ * Direct mode: the agent's spender pays BlockRun (x402 on Base) for a thought, a chat message or a picture instead of
+ * paying the relay. Off by default; `relayRequest` (inference.ts) calls in here for agents the config names. Its point is
+ * that no OpenRouter credit is needed: each agent pays from its own wallet.
  *
  * Money rules. A key is paid on one route only.
- *  - **The relay takes over only while no signature exists.** Everything BlockRun answers before we sign (a model it
- *    does not offer, a quote above the cap, no `upto`, another recipient, an outage) sends this same key to the relay.
+ *  - **No fallback unless the relay is funded (BLOCKRUN_RELAY_FALLBACK).** A relay without OpenRouter credit takes the
+ *    agent's money and cannot answer: the 2026-11-04 outage. So by default a BlockRun that cannot serve a call ends it
+ *    with `direct_unavailable`: nothing signed, nothing paid, the runtime's backoff decides when to try again.
+ *  - **With the fallback on, the relay takes over only while no signature exists.** Everything BlockRun answers before
+ *    we sign (a model it does not offer, a quote above the cap, another recipient, an outage) sends this key to the relay.
  *  - **Once a signature exists the key never leaves BlockRun.** Whatever comes back other than a real answer, the row
  *    stays `unknown` and only the chain closes it: the payment's nonce used means the money moved and no answer came
  *    (`direct_paid_no_response`: lost, BlockRun has no refund path and no chat replay); the signature's deadline passed
  *    with the nonce unused means nobody can ever settle it (`direct_failed_unpaid`: nothing lost). BlockRun documents
  *    that failed calls release the authorization, but we do not pay a second time on its word.
- *  - **A failure moves the agent to the relay** for BLOCKRUN_HOLD_MS, so an outage costs one held thought, not one
- *    signature per retry. The runtime's `inferenceRetryAt` backoff applies on top, as on the relay.
+ *  - **A failure holds the agent** for BLOCKRUN_HOLD_MS: on the relay with the fallback on, and with it off, after money
+ *    was lost, no signature at all (`direct_hold_after_paid_loss`). An unpaid failure costs nothing, so without the relay
+ *    the runtime's `inferenceRetryAt` backoff alone paces the retries.
  *  - **The most one call can cost is `maxQuoteMicroUsdc`**, the same cap as the relay (`maxQuoteFor`), and only
- *    BLOCKRUN_PAYTO_ADDRESS can be paid. Under `upto` BlockRun settles the real cost up to that amount.
+ *    BLOCKRUN_PAYTO_ADDRESS can be paid. BlockRun documents that `upto` settles the real cost; measured on 2026-11-06 it
+ *    settled the whole ceiling, which is still below the relay's charge. Non-Claude models offer `exact` only.
  *
- * Images stay on the relay: BlockRun's chat endpoint has no image models and its image API has another shape.
+ * Pictures use BlockRun's image API (`exact`, a fixed price), translated here into the chat shape `images.ts` reads.
  */
 import { createX402Payer, X402PaymentRefusedError, type BootrReceipt, type PayerScheme } from '@bootr/inference/client';
-import { decodePaymentResponseHeader } from '@x402/core/http';
+import { decodePaymentResponseHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentPayload } from '@x402/core/types';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { decodeEventLog, erc20Abi, getAddress, isAddressEqual, type Address, type Hex, type LocalAccount } from 'viem';
@@ -26,6 +32,7 @@ import type { ChainContext } from './chain.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { inference } from './db/schema.js';
 import type { RelayCall, RelayResult } from './inference.js';
+import { assertPublicHost } from './web-reader.js';
 
 export const DIRECT_ROUTE = 'blockrun';
 /** The signature expired unused: the agent lost nothing. */
@@ -33,6 +40,10 @@ export const DIRECT_UNPAID = 'direct_failed_unpaid';
 /** The nonce was used and no answer reached us: the agent paid and got nothing. */
 export const DIRECT_PAID_LOST = 'direct_paid_no_response';
 export const INSUFFICIENT_FLOAT = 'insufficient_float';
+/** BlockRun could not serve this call and no relay is funded to take it: nothing signed, nothing paid. */
+export const DIRECT_UNAVAILABLE = 'direct_unavailable';
+/** Money was lost at BlockRun within the hold, and no relay is funded: no new signature until the hold ends. */
+export const DIRECT_HOLD = 'direct_hold_after_paid_loss';
 /** The chain enforces a signature's deadline; this covers an RPC a little behind the head. */
 export const DEADLINE_GRACE_SECONDS = 30;
 
@@ -41,6 +52,10 @@ const MAX_SIGNATURE_SECONDS = 600;
 /** The unpaid request only asks for a price. */
 const PROBE_TIMEOUT_MS = 15_000;
 const IN_FLIGHT_MARGIN_MS = 5_000;
+/** How long a call waits for a slow picture before leaving the rest to the reconcile. */
+const IMAGE_INLINE_WAIT_MS = 90_000;
+const IMAGE_POLL_MS = 3_000;
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const PERMIT2: Address = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
 
 const authorizationStateAbi = [{ type: 'function', name: 'authorizationState', stateMutability: 'view', inputs: [{ name: 'authorizer', type: 'address' }, { name: 'nonce', type: 'bytes32' }], outputs: [{ name: '', type: 'bool' }] }] as const;
@@ -58,9 +73,31 @@ export function directEnabled(config: Pick<DirectConfig, 'BLOCKRUN_DIRECT_MODE' 
   return config.BLOCKRUN_DIRECT_AGENTS.split(',').map((s) => s.trim()).includes(agentId);
 }
 
+/**
+ * Launch-form models BlockRun does not list, with the model that takes their place in direct mode, each at or under the
+ * relay's price (BlockRun's list, 2026-11-06). The first is the same model under another name; the other three are
+ * different models. Without an entry here an agent on such a model could never think once the relay is gone.
+ */
+export const DIRECT_SUBSTITUTES: Readonly<Record<string, string>> = {
+  'google/gemini-3.1-pro-preview': 'google/gemini-3.1-pro',
+  'x-ai/grok-4.20': 'xai/grok-4.3',
+  'deepseek/deepseek-v3.2': 'deepseek/deepseek-chat',
+  'meta-llama/llama-4-maverick': 'deepseek/deepseek-chat',
+};
+
+/** BlockRun's id for the relay's image models (pricing.ts); a picture from any other id waits or uses the relay. */
+export const DIRECT_IMAGE_MODELS: Readonly<Record<string, string>> = {
+  'google/gemini-2.5-flash-image': 'google/nano-banana',
+  'google/gemini-3.1-flash-image': 'google/nano-banana-2',
+  'google/gemini-3-pro-image': 'google/nano-banana-pro',
+  'openai/gpt-5-image-mini': 'openai/gpt-image-1',
+  'openai/gpt-5.4-image-2': 'openai/gpt-image-2',
+};
+
 /** BlockRun's id for a relay model id; the two catalogues differ on a few vendor prefixes. An id it lacks is refused before any signature. */
 export function directModel(model: string): string {
-  if (model === 'google/gemini-3.1-pro-preview') return 'google/gemini-3.1-pro';
+  const substitute = DIRECT_SUBSTITUTES[model];
+  if (substitute) return substitute;
   return model.replace(/^x-ai\//, 'xai/').replace(/^z-ai\//, 'zai/').replace(/^moonshotai\//, 'moonshot/');
 }
 
@@ -83,16 +120,19 @@ export function directBody(config: Pick<DirectConfig, 'BLOCKRUN_PROMPT_CACHE'>, 
   };
 }
 
-/** True when this call may try BlockRun: the agent is switched on, it is no image, and no direct failure is recent. */
-export async function directAllowed(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, request: Record<string, unknown>): Promise<boolean> {
-  if (!directEnabled(ctx.config, agent.agentId) || request.modalities !== undefined) return false;
+/** Where a new call goes: BlockRun, the relay (direct mode off, or a recent failure with the fallback on), or nowhere yet. */
+export type DirectRoute = { route: 'direct' } | { route: 'relay' } | { route: 'wait'; error: string };
+
+export async function directRoute(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>): Promise<DirectRoute> {
+  if (!directEnabled(ctx.config, agent.agentId)) return { route: 'relay' };
   const since = new Date(ctx.now() - ctx.config.BLOCKRUN_HOLD_MS);
-  const [recent] = await ctx.db
-    .select({ key: inference.idempotencyKey })
+  const recent = await ctx.db
+    .select({ error: inference.error })
     .from(inference)
     .where(and(eq(inference.agentId, agent.agentId), inArray(inference.status, ['unknown', 'failed']), sql`${inference.receipt}->>'route' = ${DIRECT_ROUTE}`, gte(inference.updatedAt, since)))
-    .limit(1);
-  return !recent;
+    .limit(20);
+  if (ctx.config.BLOCKRUN_RELAY_FALLBACK) return recent.length ? { route: 'relay' } : { route: 'direct' };
+  return recent.some((r) => r.error === DIRECT_PAID_LOST) ? { route: 'wait', error: DIRECT_HOLD } : { route: 'direct' };
 }
 
 /**
@@ -110,12 +150,17 @@ export function directUrl(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>): stri
   return `${config.BLOCKRUN_BASE_URL.replace(/\/+$/, '')}/chat/completions`;
 }
 
+export function directImageUrl(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>, path: 'generations' | 'image2image'): string {
+  return `${config.BLOCKRUN_BASE_URL.replace(/\/+$/, '')}/images/${path}`;
+}
+
 /**
  * The request itself: one unpaid POST for the price, at most one signature, one paid POST. `onPayment` runs before the
  * signature leaves this process, so an error thrown there means nothing is out there. Throws what the payer throws.
  */
-export function directPost(world: DirectWorld, config: DirectPayConfig, opts: { signer: LocalAccount; key: string; request: Record<string, unknown>; maxQuoteMicroUsdc: bigint; onPayment: (payload: PaymentPayload) => void | Promise<void> }): Promise<Response> {
-  const schemes: PayerScheme[] = config.BLOCKRUN_ALLOW_EXACT ? ['upto', 'exact'] : ['upto'];
+export function directPost(world: DirectWorld, config: DirectPayConfig, opts: { signer: LocalAccount; key: string; request: Record<string, unknown>; maxQuoteMicroUsdc: bigint; onPayment: (payload: PaymentPayload) => void | Promise<void>; imagePath?: 'generations' | 'image2image' }): Promise<Response> {
+  // A picture has one fixed price and BlockRun takes it with `exact` only.
+  const schemes: PayerScheme[] = opts.imagePath ? ['exact'] : config.BLOCKRUN_ALLOW_EXACT ? ['upto', 'exact'] : ['upto'];
   const payer = createX402Payer({
     signer: opts.signer,
     maxPaymentMicroUsdc: opts.maxQuoteMicroUsdc,
@@ -135,15 +180,16 @@ export function directPost(world: DirectWorld, config: DirectPayConfig, opts: { 
     }) as typeof fetch,
     onPayment: ({ payload }) => opts.onPayment(payload),
   });
-  return payer.fetch(directUrl(config), {
+  return payer.fetch(opts.imagePath ? directImageUrl(config, opts.imagePath) : directUrl(config), {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'Idempotency-Key': opts.key, 'X-Max-Quote-Micro-USDC': opts.maxQuoteMicroUsdc.toString() },
-    body: JSON.stringify(directBody(config, opts.request)),
+    body: JSON.stringify(opts.imagePath ? opts.request : directBody(config, opts.request)),
   });
 }
 
 /** One direct attempt for a row `relayRequest` just opened. `failover` means no signature exists for this key. */
 export async function directRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<DirectOutcome> {
+  if (call.request.modalities !== undefined) return directImageRequest(ctx, agent, call);
   const { key } = call;
   const now = () => new Date(ctx.now());
   const spender = ctx.spenderFor(agent);
@@ -354,6 +400,12 @@ export async function reconcileDirect(ctx: SupervisorContext, row: typeof infere
   if (row.status === 'pending' && ctx.now() - row.updatedAt.getTime() < ctx.config.BLOCKRUN_TIMEOUT_MS + IN_FLIGHT_MARGIN_MS) return { kind: 'unknown', key, error: 'direct_in_flight' };
   const payment = (row.receipt as { payment?: PaymentPayload } | null)?.payment;
   const auth = payment ? paymentAuthorization(payment) : null;
+  // A slow picture: the job settles on the first poll that sees it done, so polling is what finishes it.
+  const pollUrl = (row.receipt as { imageJob?: { pollUrl?: unknown } } | null)?.imageJob?.pollUrl;
+  if (payment && typeof pollUrl === 'string') {
+    const finished = await pollImage(ctx, row, payment, pollUrl);
+    if (finished) return finished;
+  }
   if (!payment || !auth) {
     ctx.log.error({ key, agentId: row.agentId }, 'direct payment on this row cannot be read; it stays open for an operator');
     return { kind: 'unknown', key, error: row.error ?? 'direct_unreadable_payment' };
@@ -377,4 +429,159 @@ export async function reconcileDirect(ctx: SupervisorContext, row: typeof infere
     return { kind: 'failed', key, error: DIRECT_UNPAID };
   }
   return { kind: 'unknown', key, error: row.error ?? 'direct_pending' };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pictures: BlockRun's image API, read back in the chat shape `images.ts` parses
+// ---------------------------------------------------------------------------------------------
+
+/** The body BlockRun's image API takes, from the chat-shaped request `imageRequest` builds; null for a model it lacks. */
+export function directImageBody(request: Record<string, unknown>): { body: Record<string, unknown>; reference: string | null } | null {
+  const model = DIRECT_IMAGE_MODELS[String(request.model)];
+  if (!model) return null;
+  const messages = (request.messages ?? []) as { role?: string; content?: unknown }[];
+  const parts: string[] = [];
+  let reference: string | null = null;
+  for (const m of messages) {
+    if (typeof m.content === 'string') parts.push(m.content);
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content as { type?: string; text?: string; image_url?: { url?: string } }[]) {
+        if (part.type === 'text' && part.text) parts.push(part.text);
+        if (part.type === 'image_url' && part.image_url?.url) reference = part.image_url.url;
+      }
+    }
+  }
+  return { body: { model, prompt: parts.join('\n\n'), size: '1024x1024', n: 1 }, reference };
+}
+
+/** Downloads a picture over https from a public host, as a data URI; null when it is not one or too large. */
+async function pictureAsDataUri(ctx: Pick<SupervisorContext, 'fetch' | 'resolveHost'>, url: string): Promise<string | null> {
+  if (url.startsWith('data:image/')) return url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return null;
+    await assertPublicHost(parsed.hostname, ctx.resolveHost);
+    const res = await ctx.fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) return null;
+    const type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    if (!type.startsWith('image/')) return null;
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > IMAGE_MAX_BYTES) return null;
+    return `data:${type};base64,${bytes.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** A finished job or response as the chat shape `parseImageResponse` reads; null when the picture cannot be had. */
+async function imageAnswer(ctx: Pick<SupervisorContext, 'fetch' | 'resolveHost'>, body: { id?: unknown; data?: { url?: unknown }[]; price?: unknown }): Promise<Record<string, unknown> | null> {
+  const url = body.data?.[0]?.url;
+  if (typeof url !== 'string') return null;
+  const dataUri = (await pictureAsDataUri(ctx, url)) ?? (await pictureAsDataUri(ctx, url));
+  if (!dataUri) return null;
+  return { id: body.id ?? null, price: body.price ?? null, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: null, images: [{ image_url: { url: dataUri } }] } }] };
+}
+
+async function recordImage(ctx: SupervisorContext, key: string, answer: Record<string, unknown>, payment: PaymentPayload, tx: string | null): Promise<RelayResult> {
+  const charged = payment.accepted.amount;
+  const receipt: BootrReceipt = { requestId: String(answer.id ?? key), quoteMicroUsdc: charged, chargedMicroUsdc: charged, paymentTxOrId: tx, network: payment.accepted.network, usage: null };
+  const merged = { route: DIRECT_ROUTE, payment: payment as unknown as Record<string, unknown>, relay: receipt as unknown as Record<string, unknown>, direct: { scheme: payment.accepted.scheme, servedModel: null, fallback: false, settled: true, contextTruncated: false } };
+  await ctx.db.update(inference).set({ status: 'succeeded', response: answer, receipt: merged, error: null, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+  return { kind: 'ok', key, body: answer, receipt, replayed: false };
+}
+
+/** A poll address BlockRun gave, only if it is on BlockRun's own origin: the poll carries the payment. */
+function pollAddress(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>, value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const base = new URL(config.BLOCKRUN_BASE_URL);
+    const url = new URL(value, base);
+    return url.origin === base.origin ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One poll of a slow picture. Null while it is still running or cannot be read: the chain and the deadline decide then. */
+async function pollImage(ctx: SupervisorContext, row: Pick<typeof inference.$inferSelect, 'idempotencyKey' | 'agentId'>, payment: PaymentPayload, url: string): Promise<RelayResult | null> {
+  const key = row.idempotencyKey;
+  let res: Response;
+  let body: { id?: unknown; status?: unknown; data?: { url?: unknown }[]; price?: unknown; payment?: { tx_hash?: unknown } } | null;
+  try {
+    res = await ctx.fetch(url, { headers: { 'X-Payment': encodePaymentSignatureHeader(payment) }, signal: AbortSignal.timeout(15_000) });
+    body = (await res.json()) as typeof body;
+  } catch {
+    return null;
+  }
+  if (res.ok && body?.status !== 'queued' && body?.status !== 'in_progress' && Array.isArray(body?.data)) {
+    const answer = await imageAnswer(ctx, body);
+    if (answer) return recordImage(ctx, key, answer, payment, typeof body.payment?.tx_hash === 'string' ? body.payment.tx_hash : null);
+    return null;
+  }
+  if (body?.status === 'failed') {
+    ctx.log.warn({ key, agentId: row.agentId }, 'BlockRun could not make the picture: nothing was charged');
+    await ctx.db.update(inference).set({ status: 'failed', error: DIRECT_UNPAID, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+    return { kind: 'failed', key, error: DIRECT_UNPAID };
+  }
+  return null;
+}
+
+async function directImageRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<DirectOutcome> {
+  const { key } = call;
+  const now = () => new Date(ctx.now());
+  const translated = directImageBody(call.request);
+  if (!translated) return { kind: 'failover', reason: `no_image_model: ${String(call.request.model)}` };
+  const { body, reference } = translated;
+  // BlockRun takes the reference as a data URI. A coin picture that cannot be fetched only costs the likeness.
+  const image = reference ? await pictureAsDataUri(ctx, reference) : null;
+  if (reference && !image) ctx.log.warn({ key, agentId: agent.agentId }, 'could not read the reference picture; generating without it');
+  const spender = ctx.spenderFor(agent);
+  const out: { signed: PaymentPayload | null } = { signed: null };
+  let res: Response;
+  try {
+    res = await directPost(ctx, ctx.config, {
+      signer: spender,
+      key,
+      request: { ...body, ...(image ? { image } : {}) },
+      maxQuoteMicroUsdc: call.maxQuoteMicroUsdc,
+      imagePath: image ? 'image2image' : 'generations',
+      onPayment: async (payload) => {
+        await requireFloat(ctx, spender.address, BigInt(payload.accepted.amount));
+        await ctx.db.update(inference).set({ receipt: { route: DIRECT_ROUTE, payment: payload as unknown as Record<string, unknown> }, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+        out.signed = payload;
+      },
+    });
+  } catch (err) {
+    if (err instanceof InsufficientFloatError) {
+      await ctx.db.update(inference).set({ status: 'failed', error: INSUFFICIENT_FLOAT, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+      return { kind: 'failed', key, error: INSUFFICIENT_FLOAT };
+    }
+    const error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    if (!out.signed) return { kind: 'failover', reason: err instanceof X402PaymentRefusedError ? `refused: ${error}` : `unreachable: ${error}` };
+    return holdForChain(ctx, key, `direct_transport: ${error}`);
+  }
+  if (!out.signed) return { kind: 'failover', reason: `unpaid_http_${res.status}` };
+  const payment: PaymentPayload = out.signed;
+
+  const parsed = (await res.json().catch(() => null)) as { id?: unknown; poll_url?: unknown; data?: { url?: unknown }[]; price?: unknown; code?: unknown; error?: unknown } | null;
+  if (res.status === 202) {
+    const pollUrl = pollAddress(ctx.config, parsed?.poll_url);
+    if (!pollUrl) return holdForChain(ctx, key, 'direct_image_no_poll_address');
+    await ctx.db.update(inference).set({ receipt: { route: DIRECT_ROUTE, payment: payment as unknown as Record<string, unknown>, imageJob: { pollUrl } }, status: 'unknown', error: 'direct_image_in_progress', updatedAt: now() }).where(eq(inference.idempotencyKey, key));
+    const until = ctx.now() + IMAGE_INLINE_WAIT_MS;
+    while (ctx.now() < until) {
+      await new Promise((r) => setTimeout(r, ctx.config.BLOCKRUN_IMAGE_POLL_MS ?? IMAGE_POLL_MS));
+      const finished = await pollImage(ctx, { idempotencyKey: key, agentId: agent.agentId }, payment, pollUrl);
+      if (finished) return finished;
+      if (ctx.config.BLOCKRUN_IMAGE_POLL_MS === 0) break;
+    }
+    return { kind: 'unknown', key, error: 'direct_image_in_progress' };
+  }
+  if (res.ok && parsed && Array.isArray(parsed.data)) {
+    const answer = await imageAnswer(ctx, parsed);
+    if (answer) return recordImage(ctx, key, answer, payment, settlementClaim(res).tx);
+    return holdForChain(ctx, key, 'direct_image_unreadable');
+  }
+  const code = codeOf(parsed);
+  return holdForChain(ctx, key, `direct_http_${res.status}${code ? `_${code}` : ''}`);
 }

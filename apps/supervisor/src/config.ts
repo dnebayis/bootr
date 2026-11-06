@@ -113,14 +113,23 @@ export const configSchema = z
     BLOCKRUN_BASE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://blockrun.ai/api/v1' : v), z.string().url()),
     /** The only address direct mode ever signs for; a 402 naming another one is refused and goes to the relay. */
     BLOCKRUN_PAYTO_ADDRESS: addressWithDefault(BLOCKRUN_DEFAULT_PAYTO),
-    /** Also pay with `exact` where `upto` is not offered. Off: `exact` costs about what the relay charges, and on small prompts more. */
-    BLOCKRUN_ALLOW_EXACT: bool('false'),
+    /** Pay with `exact` where `upto` is not offered: every non-Claude model. Its fixed quote is at or under the relay's at real thought sizes. */
+    BLOCKRUN_ALLOW_EXACT: bool('true'),
+    /**
+     * Whether a call BlockRun cannot serve may go to the relay. Off by default: a relay with no OpenRouter credit takes the
+     * payment and cannot answer. Turn on only while OpenRouter is funded; with it off, an outage means waiting, unpaid.
+     */
+    BLOCKRUN_RELAY_FALLBACK: bool('false'),
     /** Ask for prompt caching on Claude models (`prompt_cache`), which `upto` should bill at the cache rates. */
     BLOCKRUN_PROMPT_CACHE: bool('true'),
     /** Above BlockRun's own 120 s upstream limit, so its 504 arrives before we give up on it. */
     BLOCKRUN_TIMEOUT_MS: int(150_000, 1000),
-    /** After a direct failure the agent's thoughts use the relay for this long. */
+    /** After a direct failure: on the relay this long with the fallback on; with it off, no new signature this long after money was lost. */
     BLOCKRUN_HOLD_MS: int(1_800_000, 0),
+    /** Between polls of a slow picture; 0 polls once and leaves the rest to the reconcile. */
+    BLOCKRUN_IMAGE_POLL_MS: int(3_000, 0),
+    /** `max_tokens` for the one retry after a tool call was cut off at INFERENCE_MAX_OUTPUT_TOKENS. */
+    INFERENCE_RETRY_OUTPUT_TOKENS: int(4096, 16),
     INDEXER_URL: z.string().url(),
     /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
     SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),

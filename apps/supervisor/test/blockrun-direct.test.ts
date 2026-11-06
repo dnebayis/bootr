@@ -11,9 +11,9 @@ import type { PaymentPayload } from '@x402/core/types';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { encodeAbiParameters, encodeEventTopics, erc20Abi, getAddress, verifyTypedData, type Address, type Hex, type Log } from 'viem';
-import { buildInferenceRequest, TOOL_LIST, type ChatMessage } from '@bootr/agent-core';
-import { DIRECT_PAID_LOST, DIRECT_UNPAID, directBody, directEnabled, directModel, INSUFFICIENT_FLOAT, paymentAuthorization } from '../src/blockrun.js';
-import { sendChatMessage } from '../src/chat.js';
+import { buildInferenceRequest, maxQuoteFor, TOOL_LIST, type ChatMessage } from '@bootr/agent-core';
+import { DIRECT_HOLD, DIRECT_IMAGE_MODELS, DIRECT_PAID_LOST, DIRECT_SUBSTITUTES, DIRECT_UNPAID, directBody, directEnabled, directModel, INSUFFICIENT_FLOAT, paymentAuthorization } from '../src/blockrun.js';
+import { CHAT_MAX_QUOTE_MICRO_USDC, sendChatMessage } from '../src/chat.js';
 import { inference as inferenceTable, runtimes } from '../src/db/schema.js';
 import { generateImage } from '../src/images.js';
 import { fuelReport, parseAssistant, reconcileRelay, recentThoughtCost, relayRequest, runInference, type RelayCall } from '../src/inference.js';
@@ -109,11 +109,16 @@ interface Sim {
   payTo: Address;
   /** Answer to the unpaid request when not the 402 quote. */
   probe: (() => Response) | null;
+  /** Answer to a poll of a slow picture. */
+  poll: ((req: Request) => Response) | null;
+  /** Anything outside BlockRun and the relay: picture downloads. */
+  outside: ((req: Request) => Response) | null;
   /** Answer to a paid request. Default: the captured tool call, settled for `ACTUAL`. */
   paid: (p: PaymentPayload, settle: () => void) => Response | Promise<Response>;
   signatures: PaymentPayload[];
   probes: string[];
   bodies: Record<string, unknown>[];
+  urls: string[];
   headersSeen: Headers[];
 }
 
@@ -131,7 +136,7 @@ function paidAnswer(body: Record<string, unknown>, over: { amount?: string | nul
 
 /** A world with direct mode on, the real relay behind `INFERENCE_PROVIDER_URL` and the BlockRun simulator. */
 async function direct(config: Record<string, string> = {}) {
-  const w = await makeWorld({ chain: { spentNonces: new Set() }, config: { INFERENCE_PAYTO_ADDRESS: PAY_TO, BLOCKRUN_DIRECT_MODE: 'all', BLOCKRUN_BASE_URL: BLOCKRUN, ...config } });
+  const w = await makeWorld({ chain: { spentNonces: new Set() }, config: { INFERENCE_PAYTO_ADDRESS: PAY_TO, BLOCKRUN_DIRECT_MODE: 'all', BLOCKRUN_BASE_URL: BLOCKRUN, BLOCKRUN_RELAY_FALLBACK: 'true', BLOCKRUN_ALLOW_EXACT: 'false', ...config } });
   // The x402 library stamps signature deadlines from the real clock, so this world runs on it too.
   w.setNow(Date.now());
   w.state.blockTimestamp = BigInt(Math.floor(Date.now() / 1000));
@@ -142,6 +147,8 @@ async function direct(config: Record<string, string> = {}) {
     offerUpto: true,
     payTo: BLOCKRUN_PAYTO,
     probe: null,
+    poll: null,
+    outside: null,
     paid: (_p, settle) => {
       settle();
       return paidAnswer(toolCallBody());
@@ -149,20 +156,24 @@ async function direct(config: Record<string, string> = {}) {
     signatures: [],
     probes: [],
     bodies: [],
+    urls: [],
     headersSeen: [],
   };
   const required = fixture('payment-required').requirements as { accepts: Record<string, unknown>[] };
   w.ctx.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const req = new Request(input, init);
+    if (req.url.startsWith('https://') && !req.url.startsWith('https://blockrun.test') && sim.outside) return sim.outside(req);
+    if (req.method === 'GET' && req.url.startsWith('https://blockrun.test')) return sim.poll!(req);
     if (!req.url.startsWith(BLOCKRUN)) {
       if (req.method === 'POST' && req.headers.get('PAYMENT-SIGNATURE')) relayPayments.push(req.headers.get('Idempotency-Key'));
       return relay.appFetch(req);
     }
     sim.headersSeen.push(req.headers);
+    sim.urls.push(req.url);
     sim.bodies.push(JSON.parse(await req.clone().text()) as Record<string, unknown>);
     const signature = req.headers.get('PAYMENT-SIGNATURE');
     if (!signature) {
-      sim.probes.push((JSON.parse(await req.text()) as { model: string }).model);
+      sim.probes.push(`${(JSON.parse(await req.text()) as { model: string }).model}`);
       if (sim.probe) return sim.probe();
       const accepts = required.accepts
         .filter((a) => sim.offerUpto || a.scheme !== 'upto')
@@ -272,7 +283,7 @@ describe('same model behaviour on real response shapes', () => {
       };
       const res = await relayRequest(w.ctx, agent, thought());
       if (res.kind !== 'ok') throw new Error(res.kind);
-      expect(parseAssistant(res.body)).toEqual({ message: { role: 'assistant', content: 'ok' }, toolCall: null });
+      expect(parseAssistant(res.body)).toEqual({ message: { role: 'assistant', content: 'ok' }, toolCall: null, truncated: false });
     } finally {
       await w.close();
     }
@@ -765,21 +776,6 @@ describe('the other paid paths', () => {
     }
   });
 
-  it('an image request stays on the relay: BlockRun is not even asked', async () => {
-    const { w, sim, relayPayments, relay } = await direct();
-    try {
-      const pngB64 = Buffer.from([137, 80, 78, 71, 1, 2, 3]).toString('base64');
-      relay.upstreamFetch.mockImplementation(async () => jsonResponse({ id: 'i', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: null, images: [{ image_url: { url: `data:image/png;base64,${pngB64}` } }] } }], usage: { prompt_tokens: 10, completion_tokens: 1290, total_tokens: 1300, completion_tokens_details: { image_tokens: 1290 } } }));
-      const agent = await seedAgent(w, { config: { model: MODEL, capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: true } } });
-      const res = await generateImage(w.ctx, agent, { imageModel: 'google/gemini-2.5-flash-image' } as never, { id: 'act_1' } as never, { prompt: 'a cat', altText: 'a cat' } as never);
-      expect(res.kind).toBe('completed');
-      expect(sim.probes).toEqual([]);
-      expect(relayPayments).toEqual(['image:act_1']);
-    } finally {
-      await w.close();
-    }
-  });
-
   it('after a direct failure every path of that agent uses the relay until the hold ends', async () => {
     const { w, sim, relayPayments } = await direct({ BLOCKRUN_HOLD_MS: String(30 * MINUTE) });
     try {
@@ -838,5 +834,328 @@ describe('what one payment can spend', () => {
     } finally {
       await w.close();
     }
+  });
+});
+
+const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+const PNG_URI = `data:image/png;base64,${PNG.toString('base64')}`;
+const imageAction = { id: 'act_1' } as never;
+const imageInput = { prompt: 'a cat', altText: 'a cat' } as never;
+const imageSettled = (url: string, tx: string = TX) => new Response(JSON.stringify({ id: 'job-1', created: 1, data: [{ url, backed_up: true }], price: { amount: '0.106', currency: 'USD' }, payment: { status: 'settled', tx_hash: tx, network: 'eip155:84532' } }), { status: 200, headers: { 'content-type': 'application/json', 'x-payment-receipt': tx, 'payment-response': Buffer.from(JSON.stringify({ success: true, transaction: tx, network: 'eip155:84532' })).toString('base64') } });
+
+describe('full direct: no relay behind it', () => {
+  const FULL = { BLOCKRUN_RELAY_FALLBACK: 'false', BLOCKRUN_ALLOW_EXACT: 'true', BLOCKRUN_IMAGE_POLL_MS: '0' };
+  const runtimeRow = async (w: TestWorld) => (await w.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+  const minutes = async (w: TestWorld, n: number, each?: () => void) => {
+    for (let i = 0; i < n; i++) {
+      w.setNow(w.ctx.now() + MINUTE);
+      await tick(w.ctx);
+      each?.();
+    }
+  };
+
+  it('is the default: an unset BLOCKRUN_RELAY_FALLBACK means no relay', async () => {
+    const { w, sim, relayPayments, relay } = await direct({ BLOCKRUN_RELAY_FALLBACK: '' });
+    try {
+      expect(w.ctx.config.BLOCKRUN_RELAY_FALLBACK).toBe(false);
+      const agent = await seedAgent(w);
+      sim.probe = () => jsonResponse({ code: 'MODEL_UNAVAILABLE' }, 503);
+      const res = await relayRequest(w.ctx, agent, thought());
+      expect(res).toMatchObject({ kind: 'failed', error: expect.stringContaining('direct_unavailable') });
+      expect(sim.signatures).toEqual([]);
+      expect(relayPayments).toEqual([]);
+      expect(relay.facilitator.settle).not.toHaveBeenCalled();
+      expect((await fuelReport(w.ctx, AGENT_ID, new Date(0))).byModel).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('two hours of BlockRun down: no signature, no payment to anyone, backoff growing, and it recovers by itself', async () => {
+    const { w, sim, relayPayments, relay } = await direct(FULL);
+    try {
+      await seedAgent(w, { config: { model: MODEL } });
+      sim.probe = () => jsonResponse({ code: 'MODEL_UNAVAILABLE' }, 503);
+      await tick(w.ctx);
+      expect((await runtimeRow(w)).failures).toBe(1);
+      await minutes(w, 120);
+      expect(sim.signatures).toEqual([]);
+      expect(relayPayments).toEqual([]);
+      expect(relay.facilitator.settle).not.toHaveBeenCalled();
+      expect(relay.upstreamFetch).not.toHaveBeenCalled();
+      expect(w.state.spentNonces!.size).toBe(0);
+      const down = await runtimeRow(w);
+      expect(down.failures).toBeGreaterThan(5);
+      expect(sim.probes.length).toBeLessThan(25); // capped backoff, not one try a minute
+
+      sim.probe = null;
+      sim.paid = (_p, settle) => {
+        settle();
+        return paidAnswer(finishThought(w.ctx.now() + 60 * MINUTE));
+      };
+      await minutes(w, 16);
+      expect(sim.signatures).toHaveLength(1);
+      expect((await runtimeRow(w)).failures).toBe(0);
+      expect(relayPayments).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('two hours of failing after the signature: every signature dies unused, nothing moves, the relay is never paid', async () => {
+    const { w, sim, relayPayments, relay } = await direct(FULL);
+    try {
+      await seedAgent(w, { config: { model: MODEL } });
+      sim.paid = () => jsonResponse({ code: 'MODEL_UNAVAILABLE' }, 503);
+      await tick(w.ctx);
+      await minutes(w, 120);
+      expect(sim.signatures.length).toBeGreaterThan(0);
+      expect(sim.signatures.length).toBeLessThan(15);
+      expect(w.state.spentNonces!.size).toBe(0);
+      expect(relayPayments).toEqual([]);
+      expect(relay.facilitator.settle).not.toHaveBeenCalled();
+      expect((await fuelReport(w.ctx, AGENT_ID, new Date(0))).byModel).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('after money was lost there is no new signature until the hold ends', async () => {
+    const { w, sim, relayPayments } = await direct({ ...FULL, BLOCKRUN_HOLD_MS: String(30 * MINUTE) });
+    try {
+      const agent = await seedAgent(w);
+      sim.paid = (_p, settle) => {
+        settle();
+        return jsonResponse({ code: 'TIMEOUT' }, 504);
+      };
+      await relayRequest(w.ctx, agent, thought('inference:a'));
+      expect(await reconcileRelay(w.ctx, 'inference:a')).toMatchObject({ kind: 'failed', error: DIRECT_PAID_LOST });
+      expect(sim.signatures).toHaveLength(1);
+      expect(await relayRequest(w.ctx, agent, thought('inference:b'))).toMatchObject({ kind: 'failed', error: DIRECT_HOLD });
+      expect(sim.signatures).toHaveLength(1);
+      expect(sim.probes).toHaveLength(1);
+      expect(relayPayments).toEqual([]);
+      w.setNow(w.ctx.now() + 31 * MINUTE);
+      sim.paid = (_p, settle) => {
+        settle();
+        return paidAnswer(toolCallBody());
+      };
+      expect((await relayRequest(w.ctx, agent, thought('inference:c'))).kind).toBe('ok');
+      expect(sim.signatures).toHaveLength(2);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a model with no upto pays exact, the whole quote, from the same wallet', async () => {
+    const { w, sim, relayPayments } = await direct(FULL);
+    try {
+      const agent = await seedAgent(w);
+      sim.offerUpto = false;
+      sim.quote = 27_244n;
+      const call = { ...thought(), request: { ...thought().request, model: 'openai/gpt-5.4-mini' }, maxQuoteMicroUsdc: BigInt(maxQuoteFor('openai/gpt-5.4-mini')) };
+      expect((await relayRequest(w.ctx, agent, call)).kind).toBe('ok');
+      expect(sim.signatures[0]!.accepted.scheme).toBe('exact');
+      expect(relayPayments).toEqual([]);
+      expect((await rowOf(w)).receipt).toMatchObject({ relay: { chargedMicroUsdc: '27244' }, direct: { scheme: 'exact' } });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('launch-form models BlockRun lacks go out under their stand-in, and the row keeps the name the agent chose', async () => {
+    const { w, sim } = await direct(FULL);
+    try {
+      const agent = await seedAgent(w);
+      sim.offerUpto = false;
+      sim.quote = 20_000n;
+      const call = { ...thought(), request: { ...thought().request, model: 'x-ai/grok-4.20' }, maxQuoteMicroUsdc: BigInt(maxQuoteFor('x-ai/grok-4.20')) };
+      expect((await relayRequest(w.ctx, agent, call)).kind).toBe('ok');
+      expect(sim.probes).toEqual(['xai/grok-4.3']);
+      expect((await rowOf(w)).request.model).toBe('x-ai/grok-4.20');
+      expect(DIRECT_SUBSTITUTES['deepseek/deepseek-v3.2']).toBe('deepseek/deepseek-chat');
+      expect(DIRECT_SUBSTITUTES['meta-llama/llama-4-maverick']).toBe('deepseek/deepseek-chat');
+    } finally {
+      await w.close();
+    }
+  });
+
+  describe('pictures', () => {
+    const IMAGE_MODEL = 'google/gemini-3-pro-image';
+    const world = async () => {
+      const made = await direct(FULL);
+      made.sim.offerUpto = false;
+      made.sim.quote = 106_000n;
+      const agent = await seedAgent(made.w, { config: { model: MODEL, imageModel: IMAGE_MODEL } });
+      return { ...made, agent };
+    };
+    const config = (over: Record<string, unknown> = {}) => ({ imageModel: IMAGE_MODEL, imageStyle: { reference: null, notes: '' }, ...over }) as never;
+
+    it('a data URI answer: paid once with exact, stored, and fuel counts it as the picture it is', async () => {
+      const { w, sim, agent, relayPayments } = await world();
+      try {
+        sim.paid = (_p, settle) => {
+          settle();
+          return imageSettled(PNG_URI);
+        };
+        const res = await generateImage(w.ctx, agent, config(), imageAction, imageInput);
+        expect(res).toMatchObject({ kind: 'completed', result: { mime: 'image/png', bytes: PNG.length } });
+        expect(sim.probes).toEqual(['google/nano-banana-pro']);
+        expect(sim.bodies[0]).toMatchObject({ model: 'google/nano-banana-pro', size: '1024x1024', n: 1 });
+        expect(String(sim.bodies[0]!.prompt)).toContain('a cat');
+        expect(sim.signatures).toHaveLength(1);
+        expect(sim.signatures[0]!.accepted.scheme).toBe('exact');
+        expect(relayPayments).toEqual([]);
+        const row = await rowOf(w, 'image:act_1');
+        expect(row.receipt).toMatchObject({ route: 'blockrun', relay: { chargedMicroUsdc: '106000', paymentTxOrId: TX } });
+        expect(await recentThoughtCost(w.ctx, AGENT_ID)).toEqual({ thoughts: 0, spentMicroUsdc: 0 });
+        // the same action again is the stored picture, no second payment
+        expect((await generateImage(w.ctx, agent, config(), imageAction, imageInput)).kind).toBe('completed');
+        expect(sim.signatures).toHaveLength(1);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('a hosted answer is downloaded; a non-image answer is no picture', async () => {
+      const { w, sim, agent } = await world();
+      try {
+        sim.outside = () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+        sim.paid = (_p, settle) => {
+          settle();
+          return imageSettled('https://cdn.test/pic.png');
+        };
+        expect(await generateImage(w.ctx, agent, config(), imageAction, imageInput)).toMatchObject({ kind: 'completed', result: { bytes: PNG.length } });
+        sim.outside = () => new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } });
+        expect((await generateImage(w.ctx, agent, config(), { id: 'act_2' } as never, imageInput)).kind).toBe('unknown');
+        expect(await reconcileRelay(w.ctx, 'image:act_2')).toMatchObject({ kind: 'failed', error: DIRECT_PAID_LOST });
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('with a reference it uses the edit endpoint, sending the picture as a data URI', async () => {
+      const { w, sim, agent } = await world();
+      try {
+        sim.outside = () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+        sim.paid = (_p, settle) => {
+          settle();
+          return imageSettled(PNG_URI);
+        };
+        const res = await generateImage(w.ctx, agent, config({ imageStyle: { reference: 'https://cdn.test/coin.png', notes: 'flat' } }), imageAction, imageInput);
+        expect(res.kind).toBe('completed');
+        expect(sim.urls.at(-1)).toContain('/images/image2image');
+        expect(sim.bodies.at(-1)).toMatchObject({ model: 'google/nano-banana-pro', image: PNG_URI });
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('a reference on a private host is not fetched, and the picture is made without it', async () => {
+      const { w, sim, agent } = await world();
+      try {
+        w.ctx.resolveHost = async () => [{ address: '10.0.0.1' }];
+        sim.outside = () => {
+          throw new Error('must not be fetched');
+        };
+        sim.paid = (_p, settle) => {
+          settle();
+          return imageSettled(PNG_URI);
+        };
+        const res = await generateImage(w.ctx, agent, config({ imageStyle: { reference: 'https://cdn.test/coin.png', notes: '' } }), imageAction, imageInput);
+        expect(res.kind).toBe('completed');
+        expect(sim.urls.at(-1)).toContain('/images/generations');
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('a slow picture: unknown until the poll sees it done, and only then paid', async () => {
+      const { w, sim, agent } = await world();
+      try {
+        let done = false;
+        sim.paid = () => new Response(JSON.stringify({ id: 'job-1', status: 'queued', poll_url: '/api/v1/images/generations/job-1', payment_status: 'verified' }), { status: 202 });
+        sim.poll = (req) => {
+          expect(req.headers.get('x-payment')).toBeTruthy();
+          if (!done) return jsonResponse({ id: 'job-1', status: 'in_progress' }, 202);
+          w.state.spentNonces!.add(nonceKey(sim.signatures[0]!));
+          return imageSettled(PNG_URI);
+        };
+        expect(await generateImage(w.ctx, agent, config(), imageAction, imageInput)).toMatchObject({ kind: 'unknown' });
+        expect(w.state.spentNonces!.size).toBe(0);
+        done = true;
+        expect(await generateImage(w.ctx, agent, config(), imageAction, imageInput)).toMatchObject({ kind: 'completed' });
+        expect(sim.signatures).toHaveLength(1);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('a slow picture that fails, or a poll address on another origin, costs nothing', async () => {
+      const { w, sim, agent } = await world();
+      try {
+        sim.paid = () => new Response(JSON.stringify({ id: 'job-1', status: 'queued', poll_url: '/api/v1/images/generations/job-1' }), { status: 202 });
+        sim.poll = () => jsonResponse({ id: 'job-1', status: 'failed', payment_status: 'not_charged' });
+        expect(await generateImage(w.ctx, agent, config(), imageAction, imageInput)).toMatchObject({ kind: 'failed', error: expect.stringContaining(DIRECT_UNPAID) });
+
+        sim.paid = () => new Response(JSON.stringify({ id: 'job-2', status: 'queued', poll_url: 'https://elsewhere.test/poll' }), { status: 202 });
+        sim.outside = () => {
+          throw new Error('the payment must not go to another origin');
+        };
+        expect((await generateImage(w.ctx, agent, config(), { id: 'act_2' } as never, imageInput)).kind).toBe('unknown');
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('BlockRun down, or a model it lacks: the action fails unpaid and the relay hears nothing', async () => {
+      const { w, sim, agent, relayPayments } = await world();
+      try {
+        sim.probe = () => jsonResponse({ error: 'overloaded' }, 503);
+        const down = await generateImage(w.ctx, agent, config(), imageAction, imageInput);
+        expect(down).toMatchObject({ kind: 'failed', error: expect.stringContaining('direct_unavailable') });
+        const lacks = await generateImage(w.ctx, agent, { imageModel: 'x/unknown-image', imageStyle: { reference: null, notes: '' } } as never, { id: 'act_2' } as never, imageInput);
+        expect(lacks).toMatchObject({ kind: 'failed', error: expect.stringContaining('no_image_model') });
+        expect(sim.signatures).toEqual([]);
+        expect(relayPayments).toEqual([]);
+      } finally {
+        await w.close();
+      }
+    });
+  });
+});
+
+describe('maxQuoteFor stays above what BlockRun can quote, so no agent silently stops', () => {
+  /** BlockRun's list prices, USD per million, 2026-11-06. */
+  const RATES: Record<string, [number, number]> = {
+    'anthropic/claude-haiku-4.5': [1, 5],
+    'anthropic/claude-sonnet-4.6': [3, 15],
+    'openai/gpt-5.4-mini': [0.75, 4.5],
+    'openai/gpt-4.1-mini': [0.4, 1.6],
+    'google/gemini-3.5-flash-lite': [0.3, 2.5],
+    'deepseek/deepseek-v3.2': [0.14, 0.28],
+    'x-ai/grok-4.20': [1.25, 2.5],
+    'meta-llama/llama-4-maverick': [0.14, 0.28],
+  };
+  const WORST_INPUT_TOKENS = 200_000; // MAX_CONTEXT_BYTES at BlockRun's one token per two bytes
+  const WORST_OUTPUT_TOKENS = 4096; // INFERENCE_RETRY_OUTPUT_TOKENS
+
+  it.each(Object.entries(RATES))('%s', (model, [input, output]) => {
+    const ceiling = WORST_INPUT_TOKENS * input + WORST_OUTPUT_TOKENS * output + 1000;
+    expect(ceiling).toBeLessThan(maxQuoteFor(model));
+  });
+
+  it('every launch-form model has a direct id, itself or a stand-in', () => {
+    for (const model of Object.keys(RATES)) expect(directModel(model) === model || DIRECT_SUBSTITUTES[model]).toBeTruthy();
+  });
+
+  it.each(Object.entries({ 'google/gemini-2.5-flash-image': 53_500, 'google/gemini-3.1-flash-image': 95_500, 'google/gemini-3-pro-image': 106_000, 'openai/gpt-5-image-mini': 22_000, 'openai/gpt-5.4-image-2': 64_000 }))('picture on %s', (model, price) => {
+    expect(DIRECT_IMAGE_MODELS[model]).toBeTruthy();
+    expect(price).toBeLessThan(maxQuoteFor(model));
+  });
+
+  it('a private chat of a real thought size fits the chat cap on the models agents use', () => {
+    // 61 kB at 1 token per 2 bytes, 400 output tokens: the largest measured prompt on the dearest launch-form model
+    expect(30_500 * 3 + 400 * 15 + 1000).toBeLessThan(CHAT_MAX_QUOTE_MICRO_USDC);
   });
 });
