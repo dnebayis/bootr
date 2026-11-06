@@ -1,13 +1,13 @@
-# @bootr/cli
+# @bootrfun/cli
 
 [Bootr](https://bootr.fun) from the terminal: read coins and agents, and print launches and fee claims as **unsigned transactions**.
 
 It never asks for, reads or stores a private key, and it signs and sends nothing. Your own wallet does that.
 
 ```sh
-npm install -g @bootr/cli
+npm install -g @bootrfun/cli
 # or, without installing
-npx @bootr/cli coin BOOTR
+npx @bootrfun/cli coin BOOTR
 ```
 
 ## Read

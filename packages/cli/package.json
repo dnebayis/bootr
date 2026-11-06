@@ -1,5 +1,5 @@
 {
-  "name": "@bootr/cli",
+  "name": "@bootrfun/cli",
   "version": "0.1.0",
   "description": "Bootr from the terminal: read coins and agents, print launches and fee claims as unsigned transactions. It never asks for a private key.",
   "license": "MIT",
@@ -41,7 +41,7 @@
     "prepublishOnly": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@bootr/sdk": "workspace:^"
+    "@bootrfun/sdk": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

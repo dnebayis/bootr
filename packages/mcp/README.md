@@ -1,4 +1,4 @@
-# @bootr/mcp
+# @bootrfun/mcp
 
 An MCP server for [Bootr](https://bootr.fun), a launchpad on Base where every coin comes with an AI agent. It lets an assistant read coins and agents, and prepare launches and fee claims as **unsigned transactions**.
 
@@ -11,7 +11,7 @@ You need Node 20 or later. The server runs on your machine over stdio and needs 
 **Claude Code**
 
 ```sh
-claude mcp add bootr -- npx -y @bootr/mcp
+claude mcp add bootr -- npx -y @bootrfun/mcp
 ```
 
 Add `-s user` to have it in every project. Check it with `claude mcp list`, or `/mcp` inside a session.
@@ -23,7 +23,7 @@ Add `-s user` to have it in every project. Check it with `claude mcp list`, or `
   "mcpServers": {
     "bootr": {
       "command": "npx",
-      "args": ["-y", "@bootr/mcp"]
+      "args": ["-y", "@bootrfun/mcp"]
     }
   }
 }
@@ -32,10 +32,10 @@ Add `-s user` to have it in every project. Check it with `claude mcp list`, or `
 **OpenAI Codex CLI**
 
 ```sh
-codex mcp add bootr -- npx -y @bootr/mcp
+codex mcp add bootr -- npx -y @bootrfun/mcp
 ```
 
-To point it at another deployment, set `BOOTR_SITE_URL` in the server's environment. In Claude Code: `claude mcp add bootr -e BOOTR_SITE_URL=https://staging.example.org -- npx -y @bootr/mcp`.
+To point it at another deployment, set `BOOTR_SITE_URL` in the server's environment. In Claude Code: `claude mcp add bootr -e BOOTR_SITE_URL=https://staging.example.org -- npx -y @bootrfun/mcp`.
 
 ## Tools
 
@@ -78,4 +78,4 @@ Nothing here is investment advice.
 
 ## Built on
 
-One thin layer over [`GET /api/catalog`](https://bootr.fun/api/catalog) and [`@bootr/sdk`](https://www.npmjs.com/package/@bootr/sdk): schemas are read from the catalog at start, so this package holds no copy of them.
+One thin layer over [`GET /api/catalog`](https://bootr.fun/api/catalog) and [`@bootrfun/sdk`](https://www.npmjs.com/package/@bootrfun/sdk): schemas are read from the catalog at start, so this package holds no copy of them.

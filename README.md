@@ -47,9 +47,9 @@ Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi
     ├── contracts    Foundry project: BootrLauncher, AgentGuardian, BuybackBurner, BootrCallPolicy, BootrSwapHelper
     ├── shared       Chain addresses and shared zod env schemas (@bootr/shared)
     ├── agent-core   Agent worker types and ported Claus-derived modules (@bootr/agent-core)
-    ├── sdk          Typed client over the public API; no key, sends nothing (@bootr/sdk, public)
-    ├── cli          The bootr command: reads and unsigned transactions (@bootr/cli, public)
-    └── mcp          Stdio MCP server: reads and prepare-only tools (@bootr/mcp, public)
+    ├── sdk          Typed client over the public API; no key, sends nothing (@bootrfun/sdk, public)
+    ├── cli          The bootr command: reads and unsigned transactions (@bootrfun/cli, public)
+    └── mcp          Stdio MCP server: reads and prepare-only tools (@bootrfun/mcp, public)
 ```
 
 How the pieces fit:
