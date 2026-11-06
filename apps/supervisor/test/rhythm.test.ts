@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { parseAgentConfig } from '@bootr/agent-core';
 import { actions, runtimes } from '../src/db/schema.js';
-import { MAX_JITTER_FRACTION, SLOT_WINDOW_MS, applyQuotaHold, applyRhythm, quotaHold, formatQuietHours, jitterMs, jitteredSchedule, originalPostGate, originalPostView, parseQuietHours, quietUntil, slotsUsed } from '../src/rhythm.js';
+import { MAX_JITTER_FRACTION, SLOT_WINDOW_MS, X_CREDITS_RETRY_MS, applyQuotaHold, applyRhythm, creditsHold, isXCreditsError, quotaHold, formatQuietHours, jitterMs, jitteredSchedule, originalPostGate, originalPostView, parseQuietHours, quietUntil, slotsUsed } from '../src/rhythm.js';
 import { scheduleFor } from '../src/runtime.js';
+import { SenderError, type SenderInboxItem } from '../src/sender-client.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, KERNEL, agentConfig, finishResponse, makeWorld, seedAgent, testConfig, toolCallResponse, type TestWorld } from './helpers.js';
 
@@ -334,6 +335,84 @@ describe('x quota', () => {
       expect(r3.ran).toEqual([AGENT_ID]);
       expect(w.sender.published).toHaveLength(1);
       expect((await runtimeRow(w)).state).toMatchObject({ postQuotaUntil: null });
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+function mention(postId: string, at: number): SenderInboxItem {
+  return {
+    postId,
+    authorId: '42',
+    conversationId: postId,
+    status: 'pending' as const,
+    observedAt: new Date(at).toISOString(),
+    seenAt: null,
+    deferredUntil: null,
+    post: { id: postId, authorId: '42', text: '@bootr_agent hello?', createdAt: new Date(at).toISOString(), conversationId: postId, author: { id: '42', username: 'user42', verified: true, verifiedType: 'blue' } },
+  };
+}
+
+describe('x credits', () => {
+  it('recognises X 402 errors from a publish receipt and from a mention read', () => {
+    expect(isXCreditsError('sender_rejected:http_402(402): credits depleted')).toBe(true);
+    expect(isXCreditsError('x_http_402')).toBe(true);
+    expect(isXCreditsError('credits depleted')).toBe(true);
+    expect(isXCreditsError('sender:quota_exceeded')).toBe(false);
+    expect(isXCreditsError('sender_rejected:policy:social_runtime_jargon_forbidden')).toBe(false);
+    expect(isXCreditsError('http_4020')).toBe(false);
+    expect(isXCreditsError(null)).toBe(false);
+    expect(creditsHold(T0 - 1, T0)).toBeNull();
+    expect(creditsHold(T0 + 60_000, T0)).toMatchObject({ reason: 'x_credits', until: T0 + 60_000 });
+  });
+
+  it('a publish refused with 402 holds posts and mention wakes for X_CREDITS_RETRY_MS, then the agent tries again', async () => {
+    const w = await makeWorld({
+      script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 10 * 60_000), toolCallResponse('publish_post', { text: 'Back again after the credits came in, in my own voice.' }), finishResponse(T0 + 10 * H)],
+    });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      w.sender.publishError = 'http_402(402): credits depleted';
+      const r1 = await tick(w.ctx);
+      expect(r1.ran).toEqual([AGENT_ID]);
+      expect(r1.errors).toEqual([]);
+      expect(lastToolMessages(w)[0]).toMatch(/credits depleted/);
+      expect((await runtimeRow(w)).state).toMatchObject({ postCreditsUntil: now + X_CREDITS_RETRY_MS });
+      const calls = () => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+      const bought = calls();
+      // a pending mention and a passed runtime wake inside the hold: no model turn
+      w.sender.items = [mention('3001', now)];
+      w.setNow(now + 15 * 60_000);
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect(calls()).toBe(bought);
+      // the hold ends, the credits are back: the agent runs and the post goes out
+      w.sender.publishError = null;
+      w.sender.items = [];
+      w.setNow(now + X_CREDITS_RETRY_MS + 60_000);
+      const r3 = await tick(w.ctx);
+      expect(r3.ran).toEqual([AGENT_ID]);
+      expect((w.sender.receipts[Object.keys(w.sender.receipts).pop()!] as { status: string }).status).toBe('sent');
+      expect((await runtimeRow(w)).state).toMatchObject({ postCreditsUntil: null });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a mention read answered 402 buys no turn on that tick, even with a due post', async () => {
+    const w = await makeWorld({ script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 10 * H)] });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      w.sender.readMentionsError = new SenderError(502, 'x_http_402', { error: 'x_http_402' }, false);
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
+      // credits back: the next tick runs the due post
+      w.sender.readMentionsError = null;
+      w.setNow(now + 60_000);
+      expect((await tick(w.ctx)).ran).toEqual([AGENT_ID]);
+      expect(w.sender.published).toHaveLength(1);
     } finally {
       await w.close();
     }
