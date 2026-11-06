@@ -93,7 +93,7 @@ export const GRAPHQL_EXAMPLES: { id: string; title: string; about: string; query
   {
     id: 'fees-by-source',
     title: 'Fee totals per launch path',
-    about: '`sourceStats` has one row per launch path (`id` = `bootr` or `clanker`): coins, volume, the gross swap fees traders paid (`feesTotalUsd`), what accrued to each slot kind, and what was claimed. The REST helper `/platform/fees` returns both rows and their sum.',
+    about: '`sourceStats` has one row per launch path (`id` = `bootr` or `clanker`): coins, volume, the gross swap fees traders paid (`feesTotalUsd`), what accrued to each slot kind, and what was claimed. The REST helper `/platform/fees` returns both rows and their sum. `feesPlatformClaimedUsd` here counts claims booked under the platform kind; a wallet holding the platform slot and another one of a coin books its claims under the other, and only `/platform/fees` adds its platform share back.',
     query: `query FeesBySource {
   sourceStatss(orderBy: "id", orderDirection: "asc") {
     items {

@@ -8,6 +8,7 @@ import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
 import { appChain } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
+import { otherSharesInBalance } from '@/lib/creator-fees';
 import { env } from '@/lib/env';
 import { units } from '@/lib/format';
 import { mock } from '@/lib/mock';
@@ -81,6 +82,7 @@ export function CreatorFees({ owner, tokens, loading }: { owner: Address; tokens
   const pendingPools = tokens.filter((_, i) => (unsettled[i] ?? 0n) > 0n).map((t) => t.poolId);
 
   const reading = live && reads.isPending && tokens.length > 0;
+  const alsoHolds = otherSharesInBalance(owner, tokens);
 
   return (
     <Panel
@@ -147,6 +149,7 @@ export function CreatorFees({ owner, tokens, loading }: { owner: Address; tokens
           </div>
           <p className="border-t border-hairline px-5 py-2.5 text-caption text-mute">
             Every claim also pays out your settled WETH from all coins; a coin&rsquo;s unsettled fees are settled into it in the same transaction.
+            {alsoHolds ? ` ${alsoHolds}` : null}
           </p>
         </>
       )}

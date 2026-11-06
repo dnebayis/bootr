@@ -48,6 +48,8 @@ export interface Token {
   creator: Address;
   kernel: Address;
   burner: Address | null;
+  /** Who receives the platform share; a wallet can hold it and the creator share of the same coin. */
+  platformRecipient?: Address;
   agentId: string;
   poolId: Hex;
   pairedToken: Address;
@@ -97,7 +99,8 @@ export interface Trade {
 }
 
 export interface FeesByKind {
-  byKind: Record<RecipientKind, { accruedUsd: number; claimedUsd: number }>;
+  /** `claimedUsd` is null when a wallet holding this kind and another has claims that could not be told apart. */
+  byKind: Record<RecipientKind, { accruedUsd: number; claimedUsd: number | null }>;
 }
 
 export interface DailyStat {
@@ -138,7 +141,16 @@ export interface TokenPage {
 
 /** A coin on a creator's public page: the token row, its agent and what was booked to the creator. */
 export interface CreatorCoin extends Token {
-  creatorFees: { earnedUsd: number; claimedUsd: number };
+  creatorFees: {
+    earnedUsd: number;
+    /** The creator share alone. Null when the wallet also holds another share of the coin and the two could not be told apart. */
+    claimedUsd: number | null;
+    /** Wei of WETH, as strings. Older indexers omit them and `otherShares`. */
+    earnedWeth?: string;
+    claimedWeth?: string | null;
+    /** Other shares this wallet holds on this coin, kept out of the figures above. */
+    otherShares?: { kind: RecipientKind; earnedUsd: number; claimedUsd: number | null }[];
+  };
 }
 
 /** `GET /creator/:address`. */
@@ -146,7 +158,7 @@ export interface CreatorProfile {
   address: Address;
   readAt: number;
   indexedAt: number | null;
-  totals: { coins: number; agents: number; earnedUsd: number; claimedUsd: number };
+  totals: { coins: number; agents: number; earnedUsd: number; claimedUsd: number | null; earnedWeth?: string; claimedWeth?: string | null };
   coins: CreatorCoin[];
 }
 

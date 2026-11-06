@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { composePlatformFees, type SourceStatsRow } from './platform-fees';
+import type { WalletClaimSplit } from './wallet-slots';
 
 const row = (over: Partial<SourceStatsRow> & { id: string }): SourceStatsRow => ({
   tokens: 0,
@@ -17,6 +18,23 @@ const row = (over: Partial<SourceStatsRow> & { id: string }): SourceStatsRow => 
 });
 
 describe('GET /platform/fees', () => {
+  const split = (exact: boolean, usd: number): WalletClaimSplit => ({ exact, bookedUsd: usd * 2, byKind: { creator: { amount: 1n, usd }, platform: { amount: 1n, usd } } });
+
+  it('adds the platform share of a wallet holding two slots, which the stored rollup books as the creator', () => {
+    const body = composePlatformFees([row({ id: 'clanker', feesPlatformClaimedUsd: 43.84 })], [{ source: 'clanker', split: split(true, 5670.5) }]);
+    expect(body.bySource.clanker.feesPlatformClaimedUsd).toBeCloseTo(5714.34, 6);
+    expect(body.bySource.clanker.feesPlatformClaimedExact).toBe(true);
+    expect(body.total.feesPlatformClaimedUsd).toBeCloseTo(5714.34, 6);
+  });
+
+  it('adds nothing it cannot state, and says so', () => {
+    const body = composePlatformFees([row({ id: 'clanker', feesPlatformClaimedUsd: 43.84 })], [{ source: 'clanker', split: split(false, 5670.5) }]);
+    expect(body.bySource.clanker.feesPlatformClaimedUsd).toBe(43.84);
+    expect(body.bySource.clanker.feesPlatformClaimedExact).toBe(false);
+    expect(body.bySource.bootr.feesPlatformClaimedExact).toBe(true);
+    expect(body.total.feesPlatformClaimedExact).toBe(false);
+  });
+
   it('reports both launch paths and their sum, zeros for a path with no row yet', () => {
     const body = composePlatformFees([
       row({ id: 'bootr', tokens: 3, volumeTotalUsd: 10_000, feesTotalUsd: 100, feesAgentUsd: 4.5, feesCreatorUsd: 58.5, feesPlatformUsd: 27, feesClaimedUsd: 20, feesPlatformClaimedUsd: 10, updatedAt: 1_800_000_000 }),
@@ -29,9 +47,10 @@ describe('GET /platform/fees', () => {
       byKind: { agent: 4.5, creator: 58.5, burn: 0, platform: 27 },
       feesClaimedUsd: 20,
       feesPlatformClaimedUsd: 10,
+      feesPlatformClaimedExact: true,
       updatedAt: 1_800_000_000,
     });
-    expect(body.bySource.clanker).toEqual({ tokens: 0, volumeTotalUsd: 0, feesTotalUsd: 0, byKind: { agent: 0, creator: 0, burn: 0, platform: 0 }, feesClaimedUsd: 0, feesPlatformClaimedUsd: 0, updatedAt: null });
+    expect(body.bySource.clanker).toEqual({ tokens: 0, volumeTotalUsd: 0, feesTotalUsd: 0, byKind: { agent: 0, creator: 0, burn: 0, platform: 0 }, feesClaimedUsd: 0, feesPlatformClaimedUsd: 0, feesPlatformClaimedExact: true, updatedAt: null });
     expect(body.total).toEqual(body.bySource.bootr);
   });
 
