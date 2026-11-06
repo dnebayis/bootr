@@ -14,10 +14,10 @@ export const HOUR_SEC = 3_600;
 
 /**
  * Whether a snapshot block far behind the chain tip does the full recompute: the first snapshot of each UTC hour.
- * Stateless, so a replay always picks the same blocks. `blockSec` is Base's 2 s block time (mainnet and Sepolia):
- * snapshots `intervalBlocks * blockSec` seconds apart land exactly once in that window of an hour, and an interval
- * of an hour or more is always due.
+ * Stateless, so a replay always picks the same blocks. `spacingSec` is the time between snapshots at that block
+ * (`snapshotSpacingSec`, which knows Base's block time before and after Denim): snapshots that far apart land exactly once
+ * in that window of an hour, and a spacing of an hour or more is always due.
  */
-export function historicalSnapshotDue(blockTimestamp: number, intervalBlocks: number, blockSec = 2): boolean {
-  return blockTimestamp % HOUR_SEC < intervalBlocks * blockSec;
+export function historicalSnapshotDue(blockTimestamp: number, spacingSec: number): boolean {
+  return blockTimestamp % HOUR_SEC < spacingSec;
 }

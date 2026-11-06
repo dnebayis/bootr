@@ -1,6 +1,7 @@
 import { getAddresses, type ChainAddresses } from '@bootr/shared/addresses';
 import { getAddress, isAddress, type Address } from 'viem';
 
+import { DEFAULT_SNAPSHOT_INTERVAL, snapshotSources } from './blocks';
 import { corsPolicy, type CorsPolicy } from './cors';
 
 /**
@@ -177,9 +178,6 @@ const minBlock = (a: number | 'latest', b: number | 'latest'): number | 'latest'
   return Math.min(a, b);
 };
 
-/** Seconds per block: Base mainnet 2 s, Base Sepolia 200 ms (measured 2026-10-24). */
-export const BLOCK_TIME_SEC: Record<number, number> = { 8453: 2, 84532: 0.2 };
-
 export type IndexerEnv = {
   chainId: 8453 | 84532;
   chainName: 'base' | 'baseSepolia';
@@ -215,6 +213,7 @@ export type IndexerEnv = {
   /** Start block of the sources shared by both paths (coins, PoolManager, guardian, reputation, snapshot). */
   anyStartBlock: number | 'latest';
   ethUsdFeed: Address;
+  /** Blocks between snapshots at today's block time, 300 = 60 s (`INDEXER_SNAPSHOT_INTERVAL`); `snapshotSources` covers the era before Denim. */
   snapshotInterval: number;
   bootToken: Address | null;
   adminConfigUrl: string;
@@ -255,15 +254,13 @@ export function indexerEnv(): IndexerEnv {
   if (!configured.length) {
     console.warn(`[indexer] no RPC url configured for chain ${chainId}; falling back to the public endpoint ${rpcUrl}`);
   }
-  // Default: one snapshot per ~60 s of chain time.
-  const defaultInterval = Math.round(60 / BLOCK_TIME_SEC[chainId]!);
   const addresses = getAddresses(chainId);
   const rwagmi = rwagmiStack(chainId);
   // Env wins; otherwise the deployment recorded in @bootr/shared (null until deployed).
   const { launchers, startBlock } = resolveLaunchers(process.env, chainId, addresses.bootr.launcher);
   const { clankerLaunchers, clankerStartBlock } = resolveClankerLaunchers(process.env, launchers);
   const clanker = clankerStack(chainId);
-  const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || defaultInterval);
+  const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || DEFAULT_SNAPSHOT_INTERVAL);
   cached = {
     chainId,
     chainName: chainId === 8453 ? 'base' : 'baseSepolia',
@@ -281,7 +278,7 @@ export function indexerEnv(): IndexerEnv {
     clankerStartBlock: typeof clankerStartBlock === 'number' && clanker ? Math.max(clankerStartBlock, clanker.startBlock) : clankerStartBlock,
     anyStartBlock: minBlock(launchers.length && rwagmi ? startBlock : 'latest', clankerLaunchers.length && clanker ? clankerStartBlock : 'latest'),
     ethUsdFeed: optAddress('CHAINLINK_ETH_USD_FEED') ?? CHAINLINK_ETH_USD[chainId]!,
-    snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : defaultInterval,
+    snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : DEFAULT_SNAPSHOT_INTERVAL,
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
     adminConfigUrl: str(process.env.ADMIN_CONFIG_URL),
     serviceKey: indexerServiceKey(),
@@ -311,6 +308,15 @@ function clankerStack(chainId: number): ClankerStack | null {
   const feeLocker = optAddress('CLANKER_FEE_LOCKER_ADDRESS') ?? d?.feeLocker ?? null;
   if (!factory || !hook || !locker || !feeLocker) return null;
   return { factory, hook, locker, feeLocker, startBlock: d?.startBlock ?? 0 };
+}
+
+/**
+ * The snapshot handler's block sources: from the earliest known launcher block of either path (a known Bootr block even
+ * when its path is off), one source per block-time era (`snapshotSources`).
+ */
+export function snapshotBlockSources(env: IndexerEnv = indexerEnv()) {
+  const start = minBlock(env.startBlock, env.clankerStartBlock);
+  return snapshotSources(env.chainId, start, env.snapshotInterval);
 }
 
 /**
