@@ -51,7 +51,7 @@ Public endpoints: `bootr.fun` (web: the app, `/api/*`, agent cards at `/agents/<
 4. The indexer manages its own schema. `DATABASE_SCHEMA=bootr_v1` is fixed: bump it (`bootr_v2`, ...) whenever
    the indexing code changes, because Ponder refuses to reuse a schema built by another app version, and drop the
    old one afterwards (`docker exec <indexer container> ./node_modules/.bin/ponder db prune`). A fresh schema
-   backfills from `BOOTR_START_BLOCK` (53219209): about 70 minutes on the CDP RPC at `INDEXER_MAX_RPS=40`;
+   backfills from `BOOTR_START_BLOCK` (53219209): about 70 minutes on the CDP RPC at Ponder's own rate, longer under the `INDEXER_RPC_BU_PER_SEC` budget when little is in the RPC cache;
    `/ready` returns 503 until then while `/health` is already 200. Unlike Railway's per-deployment schemas, the
    previous index is **not** kept serving during a backfill: a schema bump means roughly an hour without token
    data on the site, so do it at a quiet time.
@@ -187,9 +187,10 @@ delivery line.
   do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale, "resize disk too") to
   CX33 (8 GB / 80 GB) or CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale,
   the site is down for a few minutes while the server reboots.
-- The supervisor and the indexer share one CDP RPC key. During a backfill (40 req/s) the supervisor's launch poll
-  logs `rate limited` on `eth_getLogs` and retries next tick; harmless, it stops when the backfill ends. Lower
-  `INDEXER_MAX_RPS` to 25 if it persists.
+- The supervisor and the indexer share one CDP RPC key, whose limit is 7,500 billing units per 5 s. Following Base's 200 ms
+  blocks takes about 1,000 BU/s of that, and the supervisor retries a rate-limited read for up to 8 s. Ponder is held to
+  `INDEXER_RPC_BU_PER_SEC` (1300 by default), so after a restart it catches up in about 12 minutes rather than saturating the
+  key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`).
 - One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop). Compose stops the old
   supervisor before starting the new one, so there is no overlap of two tick loops, but a deploy still interrupts
   an in-flight tick: deploy when no on-chain operation is pending.
