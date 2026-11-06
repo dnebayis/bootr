@@ -20,6 +20,9 @@
  * 4. X quota (per agent): when the sender refuses a publish with `quota_exceeded`, the runtime keeps its
  *    `retryAt` (`AgentState.postQuotaUntil`) and the tick neither wakes the agent for a post nor for a mention
  *    until then (`quotaHold` / `applyQuotaHold`), so no model turn is bought for a post that cannot go out.
+ * 5. X credits (the X app's pay-per-use credits): when X answers 402 `credits depleted` to a publish or to a
+ *    mention read, the same hold applies with reason `x_credits` (`creditsHold`). There is no `retryAt`: a publish
+ *    holds for `X_CREDITS_RETRY_MS`, and a mention read that still answers 402 holds the current tick.
  */
 import { originalPostSchedule, publicChannelBlocked, sha256Hex, type AgentConfig, type PostSchedule } from '@bootr/agent-core';
 import { and, gt, inArray, ne, sql } from 'drizzle-orm';
@@ -47,7 +50,7 @@ export function jitterMs(kernel: string, intervalMs: number): number {
   return Math.floor((word / 0x1_0000_0000) * MAX_JITTER_FRACTION * intervalMs);
 }
 
-export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota';
+export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota' | 'x_credits';
 
 export interface Hold {
   reason: HoldReason;
@@ -212,6 +215,25 @@ export function quotaHold(until: number | null | undefined, now: number): Hold |
     reason: 'x_quota',
     until,
     message: `x_quota: your X posting quota (original posts and replies in the last 24 hours) is used up until ${at}. publish_post and publish_reply fail until then: do not call them. Mentions wait for you; you are woken when the quota opens.`,
+  };
+}
+
+/** How long a 402 `credits depleted` publish holds the agent before one new try (X sends no retry time). */
+export const X_CREDITS_RETRY_MS = 30 * 60_000;
+
+/** X refused for lack of credits (HTTP 402): a publish error (`sender_rejected:http_402...`) or a read (`x_http_402`). */
+export function isXCreditsError(error: string | null | undefined): boolean {
+  return !!error && /(^|[^0-9])http_402(?![0-9])|credits depleted/i.test(error);
+}
+
+/** The X app is out of credits until `until` (a guess, see `X_CREDITS_RETRY_MS`). Null once that time has passed. */
+export function creditsHold(until: number | null | undefined, now: number): Hold | null {
+  if (!until || !Number.isFinite(until) || until <= now) return null;
+  const at = new Date(until).toISOString();
+  return {
+    reason: 'x_credits',
+    until,
+    message: `x_credits: X refuses posts and replies for now (the X app is out of API credits). publish_post and publish_reply fail: do not call them. Mentions wait for you; you are woken to try again at ${at}.`,
   };
 }
 

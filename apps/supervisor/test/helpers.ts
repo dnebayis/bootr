@@ -282,6 +282,10 @@ export interface MockSender {
   consentLookupFails: string | null;
   /** When set, `publish` answers 429 `quota_exceeded` (the agent's 24 h post quota is used up) with this retryAt. */
   quotaExceeded: string | null;
+  /** When set, a publish the sender would send is rejected with this receipt error (e.g. X's `http_402(402): credits depleted`). */
+  publishError: string | null;
+  /** When set, `readMentions` throws this. */
+  readMentionsError: Error | null;
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
   optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
@@ -298,7 +302,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -309,8 +313,8 @@ export function mockSender(): MockSender {
       const reasons: string[] = [];
       if (body.replyTo && !body.replyEligibility?.eligible) reasons.push(`reply_not_eligible:${body.replyEligibility?.reason ?? 'missing_eligibility'}`);
       for (const h of body.text.match(/@([A-Za-z0-9_]+)/g) ?? []) if (m.optedOutHandles.has(h.slice(1).toLowerCase())) reasons.push('mention_opted_out');
-      const status = reasons.length ? 'rejected' : m.publishStatus;
-      const error = reasons.length ? `policy:${reasons[0]}` : m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null;
+      const status = reasons.length || m.publishError ? 'rejected' : m.publishStatus;
+      const error = reasons.length ? `policy:${reasons[0]}` : m.publishError ? m.publishError : m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null;
       const providerPostId = status === 'sent' ? String(++n) : null;
       m.receipts[body.actionId] = { status, providerPostId, error };
       return { status, providerPostId, receipt: { actionId: body.actionId, agentId: 'a', kind: body.replyTo ? 'reply' : 'post', status, providerPostId, error } };
@@ -321,6 +325,7 @@ export function mockSender(): MockSender {
       return { actionId, agentId: 'a', kind: 'post', ...r };
     },
     async readMentions() {
+      if (m.readMentionsError) throw m.readMentionsError;
       return { throttled: false, items: m.items };
     },
     async readThread() {

@@ -40,7 +40,7 @@ import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhas
 import { autoCloseMentions } from './mention-close.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
-import { jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
+import { X_CREDITS_RETRY_MS, isXCreditsError, jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
 import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
 import { watchlistSection } from './watchlist.js';
@@ -73,6 +73,8 @@ export interface AgentState {
   lastSlotSkippedAt?: number | null;
   /** Epoch ms until which the sender refuses this agent's publishes (`quota_exceeded`, its `retryAt`); see rhythm.ts. */
   postQuotaUntil?: number | null;
+  /** Epoch ms until which publishes are held because X answered 402 `credits depleted`; see rhythm.ts. */
+  postCreditsUntil?: number | null;
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
@@ -580,8 +582,15 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         state.postQuotaUntil = until;
         log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x quota used up; posts held');
       }
+      if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'failed' && isXCreditsError(result.error)) {
+        // The X app is out of API credits (402): hold posts and mention wakes, then try once more (rhythm.ts).
+        const until = ctx.now() + X_CREDITS_RETRY_MS;
+        state.postCreditsUntil = until;
+        log.warn({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
+      }
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
         state.postQuotaUntil = null;
+        state.postCreditsUntil = null;
         // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
         if (action.tool === 'publish_post') turn.posted = true;
         if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();
