@@ -9,16 +9,17 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { encodeFunctionData, erc20Abi, formatUnits, getAddress, isHex, pad, parseUnits, size, type Address, type Hex } from 'viem';
-import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, readEntryPointDeposit, type GasView } from './gas.js';
+import { encodeFunctionData, erc20Abi, formatUnits, getAddress, isHex, pad, parseAbi, parseUnits, size, type Abi, type Address, type Hex } from 'viem';
+import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, type GasView } from './gas.js';
 import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
 import type { LaunchSource } from './chain.js';
 import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
-import { entryPoint07Address } from 'viem/account-abstraction';
+import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
 import { encodeKernelExecute, type KernelCall } from './kernel.js';
 import { agentSource, clankerLockersFor } from './launch-source.js';
+import { defaultUnlessRateLimited } from './rpc-retry.js';
 
 export interface SerializedCall {
   to: string;
@@ -76,18 +77,23 @@ export interface TreasurySnapshot {
  */
 export async function ethUsdPrice(ctx: SupervisorContext): Promise<number | null> {
   try {
-    const [roundId, answer, , updatedAt, answeredInRound] = await ctx.chain.publicClient.readContract({ address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' });
-    if (answer <= 0n) return null;
-    const nowSec = BigInt(Math.floor(ctx.now() / 1000));
-    const maxAge = BigInt(ctx.config.CHAINLINK_MAX_AGE_SECONDS);
-    if (updatedAt === 0n || updatedAt + maxAge < nowSec || answeredInRound < roundId) {
-      ctx.log.warn({ roundId: roundId.toString(), updatedAt: updatedAt.toString(), answeredInRound: answeredInRound.toString() }, 'chainlink ETH/USD stale; price unavailable');
-      return null;
-    }
-    return Number(answer) / 1e8;
+    return ethUsdFromRound(ctx, await ctx.chain.publicClient.readContract({ address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' }));
   } catch {
     return null;
   }
+}
+
+type ChainlinkRound = readonly [roundId: bigint, answer: bigint, startedAt: bigint, updatedAt: bigint, answeredInRound: bigint];
+
+function ethUsdFromRound(ctx: SupervisorContext, [roundId, answer, , updatedAt, answeredInRound]: ChainlinkRound): number | null {
+  if (answer <= 0n) return null;
+  const nowSec = BigInt(Math.floor(ctx.now() / 1000));
+  const maxAge = BigInt(ctx.config.CHAINLINK_MAX_AGE_SECONDS);
+  if (updatedAt === 0n || updatedAt + maxAge < nowSec || answeredInRound < roundId) {
+    ctx.log.warn({ roundId: roundId.toString(), updatedAt: updatedAt.toString(), answeredInRound: answeredInRound.toString() }, 'chainlink ETH/USD stale; price unavailable');
+    return null;
+  }
+  return Number(answer) / 1e8;
 }
 
 const ZERO_BYTES32: Hex = `0x${'0'.repeat(64)}`;
@@ -110,43 +116,78 @@ export async function poolIdFor(ctx: SupervisorContext, agent: Pick<AgentRow, 't
   }
 }
 
-/** The claimable-fee reads of one launch source: pending (pool side) and settled (payable) WETH, plus the pool id shown. */
-async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: LaunchSource): Promise<{ poolId: Hex | null; pending: Promise<bigint>; settled: Promise<bigint> }> {
-  const { publicClient, addresses, rwagmi } = ctx.chain;
+interface ContractRead {
+  address: Address;
+  abi: Abi;
+  functionName: string;
+  args?: readonly unknown[];
+}
+
+type ReadResult = { status: 'success'; result: unknown } | { status: 'failure'; error: unknown };
+
+/** Same address on every chain we run on. Its `getEthBalance` puts the ETH balance in the batch. */
+const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const multicall3BalanceAbi = parseAbi(['function getEthBalance(address addr) view returns (uint256 balance)']);
+
+/** The claimable-fee reads of one launch source: pending (pool side, null when there is nothing to read) and settled (payable) WETH, plus the pool id shown. */
+async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: LaunchSource): Promise<{ poolId: Hex | null; pending: ContractRead | null; settled: ContractRead }> {
+  const { addresses, rwagmi } = ctx.chain;
   const kernel = agent.kernel as Address;
   if (source === 'clanker') {
     // Clanker: the fee locker's balance is all that can be read; fees still in the LP position have no view
     // (docs/design/clanker-launch.md section 7.8), so `pending` is 0 until `collectRewards` moves them.
     const { feeLocker, details } = clankerLockersFor(ctx, agent);
-    const settled = publicClient.readContract({ address: feeLocker, abi: clankerFeeLockerAbi, functionName: 'availableFees', args: [kernel, addresses.weth] }).catch(() => 0n);
-    return { poolId: details?.poolId ?? null, pending: Promise.resolve(0n), settled };
+    const settled = { address: feeLocker, abi: clankerFeeLockerAbi, functionName: 'availableFees', args: [kernel, addresses.weth] };
+    return { poolId: details?.poolId ?? null, pending: null, settled };
   }
   const poolId = await poolIdFor(ctx, agent);
   // Unsettled fees sit on the pool (`pendingQuote`); settled ones on the kernel's per-currency balance (`claimableQuote`).
-  const pending = poolId ? publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'pendingQuote', args: [poolId, kernel] }).catch(() => 0n) : Promise.resolve(0n);
-  const settled = publicClient.readContract({ address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'claimableQuote', args: [kernel, addresses.weth] }).catch(() => 0n);
+  const pending = poolId ? { address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'pendingQuote', args: [poolId, kernel] } : null;
+  const settled = { address: rwagmi.lpLocker, abi: rwagmiLpLockerV3Abi, functionName: 'claimableQuote', args: [kernel, addresses.weth] };
   return { poolId, pending, settled };
 }
 
+/**
+ * One multicall for the whole snapshot, so it costs one RPC call and not ten, all from the same block. A contract that
+ * reverts is told apart from a read that never happened: the coin balance and the fee reads default to 0 on a revert
+ * as they always did, but a rate-limited read rejects, so the caller sees an unknown treasury and never a zero.
+ */
 export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRow): Promise<TreasurySnapshot> {
   const { publicClient, addresses } = ctx.chain;
   const kernel = agent.kernel as Address;
   const token = agent.token as Address;
   const spender = ctx.spenderFor(agent).address;
   const source = agentSource(agent);
-  const bal = (asset: Address, holder: Address = kernel) => publicClient.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
+  const bal = (asset: Address, holder: Address = kernel): ContractRead => ({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
   const { poolId, pending, settled } = await claimableReads(ctx, agent, source);
-  const [eth, deposit, weth, usdc, spenderUsdc, own, pendingWeth, settledWeth, price] = await Promise.all([
-    publicClient.getBalance({ address: kernel }),
-    readEntryPointDeposit(ctx, kernel),
-    bal(addresses.weth),
-    bal(addresses.usdc),
-    bal(addresses.usdc, spender),
-    bal(token).catch(() => 0n),
-    pending,
+  const reads = {
+    eth: { address: MULTICALL3_ADDRESS, abi: multicall3BalanceAbi, functionName: 'getEthBalance', args: [kernel] },
+    deposit: { address: entryPoint07Address, abi: entryPoint07Abi as Abi, functionName: 'balanceOf', args: [kernel] },
+    weth: bal(addresses.weth),
+    usdc: bal(addresses.usdc),
+    spenderUsdc: bal(addresses.usdc, spender),
+    own: bal(token),
     settled,
-    ethUsdPrice(ctx),
-  ]);
+    price: { address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' },
+    ...(pending ? { pending } : {}),
+  } satisfies Record<string, ContractRead>;
+  const names = Object.keys(reads);
+  const results = (await publicClient.multicall({ contracts: Object.values(reads) as never, allowFailure: true })) as unknown as ReadResult[];
+  const resultOf = (name: string) => results[names.indexOf(name)];
+  const required = (name: string): bigint => {
+    const r = resultOf(name)!;
+    if (r.status === 'failure') throw r.error;
+    return r.result as bigint;
+  };
+  const orZero = (name: string): bigint => {
+    const r = resultOf(name);
+    if (!r) return 0n;
+    return r.status === 'success' ? (r.result as bigint) : defaultUnlessRateLimited(0n)(r.error);
+  };
+  const [eth, deposit, weth, usdc, spenderUsdc] = [required('eth'), required('deposit'), required('weth'), required('usdc'), required('spenderUsdc')];
+  const [own, pendingWeth, settledWeth] = [orZero('own'), orZero('pending'), orZero('settled')];
+  const round = resultOf('price')!;
+  const price = round.status === 'success' ? ethUsdFromRound(ctx, round.result as ChainlinkRound) : null;
   const gas = gasReading({ deposit, balance: eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) });
   const claimWeth = pendingWeth + settledWeth;
   const wethHuman = Number(formatUnits(weth, 18));

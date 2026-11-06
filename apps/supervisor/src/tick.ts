@@ -144,11 +144,22 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       log.warn({ err }, 'treasury read failed');
       return null;
     });
+    // An unknown balance is not an empty one: it neither puts an awake agent to sleep nor wakes a sleeping one, which
+    // would otherwise reach the wake decision as `waiting` and could buy a turn with no fuel. Next tick reads again.
+    if (!treasury && runtime.status === 'sleeping') {
+      await postSocial(ctx, agent, config, runtime, 'sleeping');
+      return { ran: false, reasons: ['treasury_unknown'], skipped: 'treasury_unknown' };
+    }
     if (treasury) {
-      await runFeePolicy(ctx, agent, treasury).catch((err) => log.warn({ err }, 'fee policy failed'));
+      const policy = await runFeePolicy(ctx, agent, treasury).catch((err) => {
+        log.warn({ err }, 'fee policy failed');
+        return null;
+      });
       // fuel = kernel USDC (the reservoir) + spender USDC (what actually pays the relay)
       const fuel = (t: typeof treasury) => t.usd.usdc + t.usd.spenderUsdc;
-      const after = fuel(treasury) < SLEEP_USDC ? await readTreasuryOnChain(ctx, agent).catch(() => treasury) : treasury;
+      // Read again only when the policy moved money or failed partway: otherwise the snapshot from a moment ago stands.
+      const moved = !policy || policy.claim || policy.gas || policy.swap || policy.fund;
+      const after = fuel(treasury) < SLEEP_USDC && moved ? await readTreasuryOnChain(ctx, agent).catch(() => treasury) : treasury;
       const sleeping = fuel(after) < SLEEP_USDC;
       if (sleeping && runtime.status !== 'held') {
         if (runtime.status !== 'sleeping') {
