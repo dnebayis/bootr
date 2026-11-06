@@ -1,0 +1,52 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #ffffff; }
+    .abs { position: absolute; white-space: nowrap; }
+    .big { font-weight: 600; letter-spacing: -0.035em; }
+    .mono { font-family: 'Geist Mono', monospace; font-weight: 500; }
+
+    #tw { position: absolute; inset: 0; background: #0a0b0d; }
+    #th { left: 96px; top: 60px; font-size: 128px; line-height: 150px; }
+    #tl { position: absolute; left: 112px; top: 300px; width: 6px; height: 600px; background: #ffffff; transform-origin: 50% 0%; }
+    .node { left: 96px; width: 38px; height: 38px; border-radius: 19px; background: #ffffff; }
+    .it { left: 176px; font-size: 92px; line-height: 110px; }
+    .id { right: 96px; font-size: 36px; line-height: 44px; color: #a3a9b5; }
+    #tb { position: absolute; left: 1100px; top: 876px; width: 724px; height: 60px; display: flex; gap: 6px; }
+    #tb i { display: block; height: 60px; }
+
+  </style>
+  <div data-hf-id="hf-h3ux" id="root" data-composition-id="w3" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-d8m2" id="tw" data-layout-allow-overlap><div data-hf-id="hf-tnfu" class="abs big" id="th">one transaction.</div><div data-hf-id="hf-866d" id="tl"></div><div data-hf-id="hf-gnrc" class="abs node" id="n0" style="top:292px"></div><div data-hf-id="hf-ac1o" class="abs big it" id="it0" style="top:252px">the coin</div><div data-hf-id="hf-bz6q" class="abs mono id" id="id0" style="top:282px">100,000,000,000 coins. no mint, no admin.</div><div data-hf-id="hf-jhbo" class="abs node" id="n1" style="top:442px"></div><div data-hf-id="hf-j3sk" class="abs big it" id="it1" style="top:402px">its pool</div><div data-hf-id="hf-m1m6" class="abs mono id" id="id1" style="top:432px">uniswap v4, paired with weth</div><div data-hf-id="hf-mnx5" class="abs node" id="n2" style="top:592px"></div><div data-hf-id="hf-t6u8" class="abs big it" id="it2" style="top:552px">my wallet</div><div data-hf-id="hf-yfza" class="abs mono id" id="id2" style="top:582px">its own treasury</div><div data-hf-id="hf-w07x" class="abs node" id="n3" style="top:742px"></div><div data-hf-id="hf-2xkb" class="abs big it" id="it3" style="top:702px">my identity</div><div data-hf-id="hf-zmfc" class="abs mono id" id="id3" style="top:732px">an onchain agent id</div><div data-hf-id="hf-ukya" class="abs node" id="n4" style="top:892px"></div><div data-hf-id="hf-publ" class="abs big it" id="it4" style="top:852px">a locked fee split</div><div data-hf-id="hf-3gej" id="tb"><i data-hf-id="hf-2w2y" style="width:5%;background:#3c8aff"></i><i data-hf-id="hf-0i4p" style="width:65%;background:#0000ff"></i><i data-hf-id="hf-1o32" style="width:30%;background:#b8a581"></i></div></div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const typeIn = (s, t, d) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-20px 100% -30px 0px)" }, { clipPath: "inset(-20px -20px -30px 0px)", duration: d || 0.24, ease: "steps(10)", immediateRender: false }, t);
+    };
+    const pop = (s, t, o) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { scale: 0, transformOrigin: "50% 50%" }, Object.assign({ scale: 1, duration: 0.3, ease: "back.out(2.5)", stagger: 0.006, immediateRender: false }, o || {}), t); };
+    const land = (s, t) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { x: -40 }, { x: 0, duration: 0.3, ease: "expo.out", immediateRender: false }, t); };
+
+    gsap.set(["#th", ".node", ".it", ".id", "#tb"], { opacity: 0 }); gsap.set("#tl", { scaleY: 0 });
+    tl.fromTo("#tw", { clipPath: "circle(0px at 1574px 950px)" }, { clipPath: "circle(2300px at 1574px 950px)", duration: 0.34, ease: "power2.in", immediateRender: false }, 0);
+    typeIn("#th", 0.567, 0.3);
+    pop("#n0", 1.844); land("#it0", 1.844);
+    typeIn("#id0", 1.844, 0.25);
+    pop("#n1", 2.634); land("#it1", 2.634);
+    typeIn("#id1", 2.634, 0.25);
+    tl.to("#tl", { scaleY: 0.250, duration: 0.2, ease: "power3.out" }, 2.634);
+    pop("#n2", 3.539); land("#it2", 3.539);
+    typeIn("#id2", 3.539, 0.25);
+    tl.to("#tl", { scaleY: 0.500, duration: 0.2, ease: "power3.out" }, 3.539);
+    pop("#n3", 4.329); land("#it3", 4.329);
+    typeIn("#id3", 4.329, 0.25);
+    tl.to("#tl", { scaleY: 0.750, duration: 0.2, ease: "power3.out" }, 4.329);
+    pop("#n4", 5.432); land("#it4", 5.432);
+    tl.to("#tl", { scaleY: 1.000, duration: 0.2, ease: "power3.out" }, 5.432);
+    tl.set("#tb", { opacity: 1 }, 5.954); tl.fromTo("#tb", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.35, ease: "power3.out", immediateRender: false }, 5.954);
+    window.__timelines["w3"] = tl;
+  </script>
+</template>

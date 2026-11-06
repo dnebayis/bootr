@@ -1,0 +1,62 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #ffffff; }
+    .abs { position: absolute; white-space: nowrap; }
+    .big { font-weight: 600; letter-spacing: -0.035em; }
+    .mono { font-family: 'Geist Mono', monospace; font-weight: 500; }
+
+    #e-shake { position: absolute; inset: 0; }
+    #e-box { position: absolute; left: 816px; top: 396px; width: 288px; height: 288px; }
+    #e-sq { position: relative; width: 288px; height: 288px; }
+    #e-mark { position: absolute; left: 0; top: 0; width: 288px; height: 288px; display: block; }
+    #e-word { position: absolute; left: 832px; top: 399px; font-size: 256px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; color: #ffffff; white-space: nowrap; }
+    #e-cursor { position: absolute; left: 832px; top: 435px; width: 118px; height: 182px; background: #ffffff; }
+
+  </style>
+  <div data-hf-id="hf-t6kn" id="root" data-composition-id="w9" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-j48w" id="e-shake" data-layout-allow-overflow>
+      <div data-hf-id="hf-8enz" id="e-word">bootr</div>
+      <div data-hf-id="hf-l30c" id="e-cursor" data-layout-ignore></div>
+      <div data-hf-id="hf-7kqp" id="e-box" data-layout-ignore><div data-hf-id="hf-do7r" id="e-sq">
+        <svg data-hf-id="hf-rql7" id="e-mark" viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr">
+          <mask data-hf-id="hf-lwgq" id="e-m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+            <rect data-hf-id="hf-bymw" width="24" height="24" fill="#fff"></rect>
+            <path data-hf-id="hf-8205" id="e-cup" d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+            <path data-hf-id="hf-b3ad" id="e-stem" d="M12 4.75V12" pathLength="1" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path>
+          </mask>
+          <rect data-hf-id="hf-5usv" width="24" height="24" rx="5" fill="#ffffff" mask="url(#e-m)"></rect>
+        </svg>
+      </div></div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const typeIn = (s, t, d) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-20px 100% -30px 0px)" }, { clipPath: "inset(-20px -20px -30px 0px)", duration: d || 0.24, ease: "steps(10)", immediateRender: false }, t);
+    };
+    const pop = (s, t, o) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { scale: 0, transformOrigin: "50% 50%" }, Object.assign({ scale: 1, duration: 0.3, ease: "back.out(2.5)", stagger: 0.006, immediateRender: false }, o || {}), t); };
+    const land = (s, t) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { x: -40 }, { x: 0, duration: 0.3, ease: "expo.out", immediateRender: false }, t); };
+
+    const Ti = 0.55;
+    gsap.set(["#e-word", "#e-cursor", "#e-box", "#e-cup", "#e-stem"], { opacity: 0 });
+    tl.set("#e-shake", { x: 0, y: 0 }, 0);
+    tl.set("#e-box", { opacity: 1 }, Ti - 0.5);
+    tl.set("#e-cup", { opacity: 1 }, Ti - 0.5);
+    tl.fromTo("#e-cup", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.32, ease: "expo.out", immediateRender: false }, Ti - 0.5);
+    tl.set("#e-stem", { opacity: 1 }, Ti - 0.18);
+    tl.fromTo("#e-stem", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.18, ease: "power3.in", immediateRender: false }, Ti - 0.18);
+    tl.fromTo("#e-sq", { scaleX: 1, scaleY: 1, transformOrigin: "50% 100%" }, { scaleX: 1.06, scaleY: 0.9, duration: 0.06, ease: "power2.out", immediateRender: false }, Ti);
+    tl.to("#e-sq", { scaleX: 1, scaleY: 1, duration: 0.4, ease: "back.out(2.2)" }, Ti + 0.06);
+    [[0, 7, -5], [0.033, -6, 4], [0.066, 4, -3], [0.1, -2, 2], [0.133, 0, 0]].forEach(([d, x, y]) => tl.set("#e-shake", { x, y }, Ti + d));
+    tl.fromTo("#e-box", { x: 0 }, { x: -382, duration: 0.65, ease: "power3.inOut", immediateRender: false }, Ti + 0.45);
+    tl.set(["#e-word", "#e-cursor"], { opacity: 1 }, Ti + 0.5);
+    tl.fromTo("#e-word", { clipPath: "inset(-20px 100% -20px 0px)" }, { clipPath: "inset(-20px 0% -20px 0px)", duration: 0.85, ease: "power2.inOut", immediateRender: false }, Ti + 0.5);
+    tl.fromTo("#e-cursor", { x: 0 }, { x: 640, duration: 0.85, ease: "power2.inOut", immediateRender: false }, Ti + 0.5);
+    tl.set("#e-cursor", { opacity: 0 }, Ti + 1.5);
+    window.__timelines["w9"] = tl;
+  </script>
+</template>
