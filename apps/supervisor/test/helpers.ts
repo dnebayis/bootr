@@ -173,6 +173,8 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
           if (addr === entryPoint07Address) return holder === KERNEL ? state.deposit : 0n;
           return state.token;
         }
+        case 'getEthBalance':
+          return state.eth;
         case 'windowOf':
           return [state.fundingWindow.windowEnd, state.fundingWindow.spent, state.fundingWindow.windowSeconds, state.fundingWindow.cap];
         case 'deploymentInfo': {
@@ -228,6 +230,18 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
     },
     async getBalance() {
       return state.eth;
+    },
+    // Late-bound on purpose: a test that replaces `readContract` changes what the batch reads too.
+    async multicall({ contracts }: { contracts: { address: Address; functionName: string; args?: unknown[] }[] }) {
+      const client = publicClient as unknown as { readContract: (a: unknown) => Promise<unknown> };
+      return Promise.all(
+        contracts.map((c) =>
+          client.readContract(c).then(
+            (result) => ({ status: 'success', result }),
+            (error: unknown) => ({ status: 'failure', error }),
+          ),
+        ),
+      );
     },
     async estimateFeesPerGas() {
       return { ...state.fees };
