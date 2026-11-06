@@ -144,8 +144,11 @@ export interface CoinFees {
   protocolBps: number;
   byKind: Record<
     'agent' | 'creator' | 'burn' | 'platform',
-    { accruedUsd: number; claimedUsd: number }
+    /** `claimedUsd` is null for a kind whose share cannot be told apart from another held by the same wallet. */
+    { accruedUsd: number; claimedUsd: number | null }
   >;
+  /** Wallets holding two kinds on this coin: one claim pays both. */
+  sharedWallets?: { recipient: Address; kinds: string[]; claimedUsd: number; toldApart: boolean }[];
 }
 
 export interface Holding {
