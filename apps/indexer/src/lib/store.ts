@@ -6,6 +6,7 @@ import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
 import { ChainlinkAggregatorAbi } from '../../abis/ChainlinkAggregator';
+import { secondsBetweenBlocks } from './blocks';
 import { indexerEnv } from './env';
 import { classifyRecipient, DEAD_ADDRESS as DEAD, type LaunchSource, type RecipientKind } from './fees';
 import { chainlinkToUsd, coinPriceInWeth, liquidityUsd, toUnits, unitPrice, usd } from './price';
@@ -21,8 +22,8 @@ export const GLOBAL = 'global';
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 export const DEAD_ADDRESS = DEAD;
 export const DEFAULT_GRADUATION_THRESHOLD_USD = 50_000;
-/** Re-read Chainlink at most every N blocks from event handlers (snapshot refreshes more often). */
-const ETH_USD_MAX_AGE_BLOCKS = 300n;
+/** Re-read Chainlink at most this often from event handlers, in chain time (a live snapshot refreshes more often). */
+const ETH_USD_MAX_AGE_SEC = 600;
 
 export const lc = <T extends string>(a: T) => a.toLowerCase() as T;
 export const num = (v: bigint) => Number(v);
@@ -32,10 +33,11 @@ export const num = (v: bigint) => Number(v);
 /** ETH/USD from the cached price row, refreshing from Chainlink when stale. */
 export async function getEthUsd(context: Ctx, blockNumber: bigint, force = false): Promise<number> {
   const row = await context.db.find(schema.priceFeed, { id: 'ETH/USD' });
-  if (!force && row && row.priceUsd > 0 && blockNumber - row.blockNumber < ETH_USD_MAX_AGE_BLOCKS) {
+  const env = indexerEnv();
+  if (!force && row && row.priceUsd > 0 && secondsBetweenBlocks(env.chainId, row.blockNumber, blockNumber) < ETH_USD_MAX_AGE_SEC) {
     return row.priceUsd;
   }
-  const feed = indexerEnv().ethUsdFeed;
+  const feed = env.ethUsdFeed;
   try {
     const [, answer, , updatedAt] = await context.client.readContract({
       abi: ChainlinkAggregatorAbi,

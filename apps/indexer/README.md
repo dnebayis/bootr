@@ -80,7 +80,7 @@ Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deplo
 | `CLANKER_FACTORY_ADDRESS` / `CLANKER_HOOK_ADDRESS` / `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` | no | Override the Clanker v4 stack (defaults in `CLANKER_V4`, `src/lib/env.ts`: factory `0xE85A59c6…83a9`, static fee hook V2 `0xb429d62f…28CC`, LP locker `0xffA37784…0762` (the enabled one, not the `0x63D2…` the docs list), fee locker `0xF3622742…5D68`; none on Base Sepolia). All four are needed. |
 | `INDEXER_DATABASE_URL` | prod | Postgres. Empty = PGlite in `.ponder/pglite`. (`DATABASE_URL` is deliberately not used, so other services' DB does not switch the indexer to Postgres.) |
 | `DATABASE_SCHEMA` | prod | Required by `ponder start` on Postgres. |
-| `INDEXER_SNAPSHOT_INTERVAL` | no | Blocks between snapshots. Default ~60 s (30 on Base, 300 on Base Sepolia). |
+| `INDEXER_SNAPSHOT_INTERVAL` | no | Blocks between snapshots at today's 200 ms block time. Default 300, one snapshot per 60 s. Leave it empty unless you mean to change the time: the 2 s blocks before Denim keep the same time on their own grid (30 blocks), see "Snapshots across Denim". Part of Ponder's build id. |
 | `INDEXER_SERVICE_KEY` | for REST writes | HMAC key for `POST /internal/agent/:kernel/social` and for signing `ADMIN_CONFIG_URL` requests (`SENDER_SERVICE_KEY` still accepted with a deprecation warning). |
 | `ADMIN_CONFIG_URL` | no | e.g. `https://bootr.fun/api/admin/config`; supplies `graduationThresholdUsd` (default 50000). |
 | `BOOT_TOKEN_ADDRESS` | no | Platform BOOT coin (fallback when admin config has no `bootToken`). |
@@ -142,7 +142,27 @@ first one).
 | `RwagmiLpLockerV3` | `PoolFeesSettledV3`, `QuoteRewardsClaimedV3` | Settlement credits a slot's recipient (`feeCredit`, `feeBalance.settled`; RWAGMI's slot skipped). A claim pays a recipient's settled balance across all its coins: `feeClaim`, split across coins by `settled - claimed`. |
 | `AgentGuardian` | `Activity`, `AgentPaused`, `DormantClaimed`, `SessionKeyApproved`, `SessionKeyApprovalRevoked`, `SessionKeyUninstalled`, `SessionNonceInvalidated` | Agent status inputs, `dormantClaim`, `sessionKey`. |
 | ERC-8004 `ReputationRegistry` | `NewFeedback`, `FeedbackRevoked` | `agent.reputationScore` = mean of `value / 10^valueDecimals` over non-revoked feedback. Registry address from `@bootr/shared` (mainnet `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`). |
-| `BootrSnapshot` block handler | every `INDEXER_SNAPSHOT_INTERVAL` blocks | See below. |
+| `BootrSnapshot` and `BootrSnapshotPreDenim` block handlers | every 60 s of chain time | See below. |
+
+### Snapshots across Denim
+
+Ponder's block `interval` counts blocks over a source's whole range, and Base has two block times: 2 s up to block
+53556126 and 200 ms from block 53556127 (18:00:01 UTC on 2026-11-05). So the snapshot has two sources, one handler:
+
+| Source | Range | Interval | Live cost |
+| --- | --- | --- | --- |
+| `BootrSnapshotPreDenim` | first launcher block to 53556126 | 30 blocks = 60 s | never live |
+| `BootrSnapshot` | 53556127 onward | 300 blocks = 60 s | one snapshot a minute |
+
+Far behind the tip only the first snapshot of each UTC hour does the work (`historicalSnapshotDue`, given the spacing of
+its era by `snapshotSpacingSec`). A fixed 300 would have made history a 10 minute grid and a fixed 30 a 6 second one
+forever. The pre-Denim source keeps the 30-block grid so that Ponder's sync cache, kept per (interval, offset), serves it
+without a single RPC call as long as the first launcher block is unchanged, and its hourly snapshots land on the same
+blocks as before. The new grid is fetched once, one `eth_getBlockByNumber` (100 BU) per minute of history since the fork,
+and is cached after that. Base Sepolia, and a range starting after the fork, has the `BootrSnapshot` source alone.
+
+Everything else that counted blocks as time counts seconds now: the ETH/USD freshness of event handlers is 10 minutes in
+both eras (`secondsBetweenBlocks`).
 
 ### Derived vs on-chain
 

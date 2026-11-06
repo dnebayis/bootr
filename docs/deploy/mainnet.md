@@ -230,7 +230,7 @@ variables), from `.env.mainnet.example`:
 | `BUNDLER_URL`, `PAYMASTER_URL` | CDP mainnet bundler URL; `PAYMASTER_URL` **empty** (self-funded gas); `GAS_MIN_WEI=200000000000000`, `GAS_TARGET_WEI=1000000000000000`; `ENABLE_MODE_SELF_BUNDLE=true`, `ENABLE_MODE_MAX_PREFUND_WEI=5000000000000000` |
 | `SWAP_SLIPPAGE_BPS` | `100` (on-chain cap 300) |
 | `SESSION_USDC_TRANSFER_CAP` | `50000000` (50 USDC / day per agent to its spender); review `SESSION_GAS_ALLOWANCE_WEI`, `SESSION_RATE_LIMIT_PER_HOUR`, `SESSION_KEY_VALIDITY_DAYS` |
-| Indexer | new `DATABASE_SCHEMA` (or per-deployment), `INDEXER_SNAPSHOT_INTERVAL` default (30 blocks), `BOOT_TOKEN_ADDRESS` after step 6 |
+| Indexer | new `DATABASE_SCHEMA` (or per-deployment), `INDEXER_SNAPSHOT_INTERVAL` empty (300 blocks, 60 s; the pre-Denim history keeps 60 s on its own 30-block grid), `BOOT_TOKEN_ADDRESS` after step 6 |
 | Web | `NEXT_PUBLIC_SITE_URL=https://bootr.fun`, `NEXT_PUBLIC_INDEXER_URL=https://indexer.bootr.fun`, `NEXT_PUBLIC_SENDER_PUBLIC_URL=https://api.bootr.fun`, `NEXT_PUBLIC_SWAP_LINK_BASE` empty (LlamaSwap on Base), `NEXT_PUBLIC_BOOT_X_URL=https://x.com/bootrfun`, `NEXT_PUBLIC_USE_MOCK=` (empty) |
 
 Deploy: one Coolify deploy builds and starts everything (coolify.md section 2); the compose file orders the

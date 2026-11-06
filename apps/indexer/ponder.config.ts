@@ -14,7 +14,7 @@ import { RwagmiHookV3Abi } from './abis/RwagmiHookV3';
 import { RwagmiLauncherV3Abi } from './abis/RwagmiLauncherV3';
 import { RwagmiLpLockerV3Abi } from './abis/RwagmiLpLockerV3';
 import { indexerRpc } from './rpc-budget';
-import { enabledSources, indexerEnv } from './src/lib/env';
+import { enabledSources, indexerEnv, snapshotBlockSources } from './src/lib/env';
 
 /**
  * Single-chain config selected by CHAIN_ID (84532 Base Sepolia by default, 8453 Base).
@@ -184,6 +184,8 @@ const allContracts = {
   },
 } as const;
 
+const snapshots = snapshotBlockSources(env);
+
 const contracts = Object.fromEntries(
   Object.entries(allContracts).filter(([name]) => enabled[name as keyof typeof enabled]),
 ) as unknown as typeof allContracts;
@@ -200,12 +202,12 @@ export default createConfig({
     baseSepolia: { id: 84532; rpc: string };
   },
   contracts,
+  // One snapshot per 60 s of chain time: 30 blocks before Denim, 300 after it (`snapshotSources`, src/lib/blocks.ts).
   blocks: {
-    BootrSnapshot: {
-      chain,
-      // The earliest known launcher block of either path (as before: a known Bootr block even when its path is off).
-      startBlock: startBlock === 'latest' ? clankerStartBlock : clankerStartBlock === 'latest' ? startBlock : Math.min(startBlock, clankerStartBlock),
-      interval: env.snapshotInterval,
-    },
+    BootrSnapshot: { chain, ...snapshots.main },
+    ...(snapshots.preDenim ? { BootrSnapshotPreDenim: { chain, ...snapshots.preDenim } } : {}),
+  } as unknown as {
+    BootrSnapshot: { chain: typeof chain; startBlock: number | 'latest'; interval: number };
+    BootrSnapshotPreDenim: { chain: typeof chain; startBlock: number | 'latest'; endBlock: number; interval: number };
   },
 });
