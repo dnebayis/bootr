@@ -4,7 +4,7 @@ import { clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLpLockerV3Abi, swapHelpe
 import { treasuryOps } from '../src/db/schema.js';
 import { encodeUnwrapCall, gasStatusOf, gasTopUp, wethAbi } from '../src/gas.js';
 import { CALL_POLICY_RULES_VERSION } from '../src/session-key.js';
-import { UNKNOWN_OP_TTL_MS } from '../src/treasury.js';
+import { LANDED_SCAN_BLOCKS, UNKNOWN_OP_TTL_MS } from '../src/treasury.js';
 import { reconcileOps } from '../src/treasury.js';
 import { isBundlerRefusal } from '../src/treasury.js';
 import { CLANKER_PENDING_NOTE, claimOpFor, clampSlippageBps, encodeClaimCall, encodeClankerClaimCalls, encodeSwapCalls, ethUsdPrice, fundingBudget, minUsdcOut, poolIdFor, readTreasuryOnChain, runFeePolicy, spenderTopUp, wethNeededFor } from '../src/treasury.js';
@@ -114,6 +114,119 @@ describe('fee claim policy', () => {
     } finally {
       await w.close();
     }
+  });
+
+  describe('an op the bundler has no receipt for', () => {
+    const HASH = `0x${'ab'.repeat(32)}` as Hex;
+    const TX = `0x${'cd'.repeat(32)}` as Hex;
+    type GetLogsArgs = { address: string; args: { userOpHash: Hex }; fromBlock: bigint; toBlock: bigint };
+    /** The chain's answer to the op's event, and every read asked of it. */
+    const onChain = (w: Awaited<ReturnType<typeof makeWorld>>, answer: (a: GetLogsArgs) => unknown[]) => {
+      const reads: GetLogsArgs[] = [];
+      (w.ctx.chain.publicClient as unknown as { getLogs: (a: GetLogsArgs) => Promise<unknown[]> }).getLogs = async (a) => {
+        reads.push(a);
+        return answer(a);
+      };
+      return reads;
+    };
+    const closeable = async (w: Awaited<ReturnType<typeof makeWorld>>) => {
+      const agent = await seedAgent(w);
+      w.kernel.receipt = null as never;
+      const sentAt = new Date(w.ctx.now() - UNKNOWN_OP_TTL_MS - 11 * 60_000);
+      await w.db.insert(treasuryOps).values({ ...stuckOp(agent.agentId, 'no_receipt_after_10m', new Date(w.ctx.now() - UNKNOWN_OP_TTL_MS - 1000)), sentAt });
+      return agent;
+    };
+
+    it('records a landed op as confirmed instead of failed, so it is not repeated', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+      try {
+        const agent = await closeable(w);
+        const reads = onChain(w, () => [{ args: { userOpHash: HASH, success: true }, transactionHash: TX }]);
+        const changed = await reconcileOps(w.ctx, agent);
+        expect(changed.map((c) => c.result.status)).toEqual(['confirmed']);
+        const [row] = await w.db.select().from(treasuryOps);
+        expect(row!.status).toBe('confirmed');
+        expect(row!.txHash).toBe(TX);
+        expect(row!.error).toBeNull();
+        expect(reads[0]!.address.toLowerCase()).toBe('0x0000000071727de22e5e9d8baf0edac6f37da032');
+        expect(reads[0]!.args.userOpHash).toBe(HASH);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('records a landed op that reverted as reverted, with its transaction', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+      try {
+        const agent = await closeable(w);
+        onChain(w, () => [{ args: { userOpHash: HASH, success: false }, transactionHash: TX }]);
+        expect((await reconcileOps(w.ctx, agent)).map((c) => c.result.status)).toEqual(['failed']);
+        const [row] = await w.db.select().from(treasuryOps);
+        expect(row!.error).toBe('reverted_onchain');
+        expect(row!.txHash).toBe(TX);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('closes the op as failed only after a whole bounded scan found nothing', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+      try {
+        const agent = await closeable(w);
+        const reads = onChain(w, () => []);
+        expect((await reconcileOps(w.ctx, agent)).map((c) => c.result.status)).toEqual(['failed']);
+        expect((await w.db.select().from(treasuryOps))[0]!.error).toContain('no_receipt_after_1h');
+        expect(reads.length).toBeGreaterThan(0);
+        expect(reads.length).toBeLessThanOrEqual(Number(LANDED_SCAN_BLOCKS) / w.ctx.config.LAUNCH_LOG_CHUNK_BLOCKS + 1);
+        for (const r of reads) expect(r.toBlock - r.fromBlock).toBeLessThan(BigInt(w.ctx.config.LAUNCH_LOG_CHUNK_BLOCKS));
+        expect(reads.at(-1)!.toBlock - reads[0]!.fromBlock).toBeLessThanOrEqual(LANDED_SCAN_BLOCKS);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('starts the scan before the op was sent, in Base blocks of five a second', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n, blockNumber: 54_000_000n } });
+      try {
+        const agent = await closeable(w);
+        w.state.blockTimestamp = BigInt(Math.floor(w.ctx.now() / 1000));
+        const reads = onChain(w, () => []);
+        await reconcileOps(w.ctx, agent);
+        const age = BigInt(Math.floor(UNKNOWN_OP_TTL_MS / 1000) + 11 * 60);
+        expect(reads[0]!.fromBlock).toBeLessThanOrEqual(54_000_000n - age * 5n);
+        expect(reads[0]!.fromBlock).toBeGreaterThan(54_000_000n - age * 5n - 1_000n);
+        expect(reads.at(-1)!.toBlock).toBe(54_000_000n);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('keeps the op open when the chain cannot be read', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+      try {
+        const agent = await closeable(w);
+        onChain(w, () => {
+          throw new Error('rate limited');
+        });
+        expect(await reconcileOps(w.ctx, agent)).toEqual([]);
+        expect((await w.db.select().from(treasuryOps))[0]!.status).toBe('unknown');
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('checks an op the bundler refused as well: a refusal can be a repeat of one that went through', async () => {
+      const w = await makeWorld({ chain: { usdc: 50_000_000n } });
+      try {
+        const agent = await seedAgent(w);
+        w.kernel.receipt = null as never;
+        await w.db.insert(treasuryOps).values(stuckOp(agent.agentId, 'submit_error: AA25 invalid account nonce', new Date(w.ctx.now() - 60_000)));
+        onChain(w, () => [{ args: { userOpHash: HASH, success: true }, transactionHash: TX }]);
+        expect((await reconcileOps(w.ctx, agent)).map((c) => c.result.status)).toEqual(['confirmed']);
+      } finally {
+        await w.close();
+      }
+    });
   });
 
   it('counts pending (unsettled) plus settled WETH, settles through the pool, and leaves USDC alone when already fuelled', async () => {

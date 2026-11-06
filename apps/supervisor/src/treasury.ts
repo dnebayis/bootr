@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { encodeFunctionData, erc20Abi, formatUnits, getAddress, isHex, pad, parseAbi, parseUnits, size, type Abi, type Address, type Hex } from 'viem';
+import { encodeFunctionData, erc20Abi, formatUnits, getAbiItem, getAddress, isHex, pad, parseAbi, parseUnits, size, type Abi, type Address, type Hex } from 'viem';
 import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, type GasView } from './gas.js';
 import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
 import type { LaunchSource } from './chain.js';
@@ -534,6 +534,41 @@ export function isBundlerRefusal(error: string | null | undefined): boolean {
   return !!error && error.startsWith('submit_error:') && /user operation rejected|validation reverted|banned opcode|\bAA[0-9]{2}\b/i.test(error);
 }
 
+/** Base makes five blocks a second since Denim (2026-11-05), and Base Sepolia does too. */
+const BLOCKS_PER_SECOND = 5n;
+/** Scanned ahead of the send time, so a little clock difference cannot hide the op. */
+const LANDED_SCAN_MARGIN_BLOCKS = 150n;
+/**
+ * How far after its send an op is looked for, 80 minutes: an op is `sent` for 10 minutes and `unknown` for an hour before it
+ * is closed. On a topic filter, in chunks of LAUNCH_LOG_CHUNK_BLOCKS: 12 eth_getLogs at the default, once per op closed.
+ */
+export const LANDED_SCAN_BLOCKS = 80n * 60n * BLOCKS_PER_SECOND;
+
+const userOperationEvent = getAbiItem({ abi: entryPoint07Abi, name: 'UserOperationEvent' });
+
+/**
+ * The op's own `UserOperationEvent`, from the chain. A bundler's `eth_getUserOperationReceipt` looks at a limited number of
+ * recent blocks, which at five blocks a second can be minutes, and knows nothing of a self-bundled op after a restart. So no
+ * receipt says little: only this read may close an op as failed. Null means it is not there; a failed read rejects.
+ */
+export async function findLandedUserOp(ctx: SupervisorContext, op: TreasuryOpRow): Promise<{ success: boolean; receipt: { transactionHash: Hex } } | null> {
+  const { publicClient } = ctx.chain;
+  const blockNumber = await publicClient.getBlockNumber();
+  const head = await publicClient.getBlock({ blockNumber });
+  const sentSec = BigInt(Math.floor((op.sentAt ?? op.createdAt).getTime() / 1000));
+  const blocksAgo = head.timestamp > sentSec ? (head.timestamp - sentSec) * BLOCKS_PER_SECOND : 0n;
+  const from = blockNumber > blocksAgo + LANDED_SCAN_MARGIN_BLOCKS ? blockNumber - blocksAgo - LANDED_SCAN_MARGIN_BLOCKS : 0n;
+  const end = from + LANDED_SCAN_BLOCKS < blockNumber ? from + LANDED_SCAN_BLOCKS : blockNumber;
+  const chunk = BigInt(ctx.config.LAUNCH_LOG_CHUNK_BLOCKS);
+  for (let fromBlock = from; fromBlock <= end; fromBlock += chunk) {
+    const toBlock = fromBlock + chunk - 1n < end ? fromBlock + chunk - 1n : end;
+    const logs = await publicClient.getLogs({ address: entryPoint07Address, event: userOperationEvent, args: { userOpHash: op.userOpHash as Hex }, fromBlock, toBlock });
+    const log = logs.find((l) => l.args.userOpHash?.toLowerCase() === op.userOpHash?.toLowerCase());
+    if (log?.transactionHash) return { success: log.args.success === true, receipt: { transactionHash: log.transactionHash } };
+  }
+  return null;
+}
+
 /** Resolves `sent`/`unknown` ops by their userOp hash. Returns the ops whose status changed. */
 export async function reconcileOps(ctx: SupervisorContext, agent: AgentRow): Promise<{ op: TreasuryOpRow; result: ExecuteResult }[]> {
   const open = await openOps(ctx, agent.agentId);
@@ -553,6 +588,17 @@ export async function reconcileOps(ctx: SupervisorContext, agent: AgentRow): Pro
     if (op.status === 'unknown') {
       const refused = isBundlerRefusal(op.error);
       if (refused || ctx.now() - op.updatedAt.getTime() > UNKNOWN_OP_TTL_MS) {
+        // A landed op recorded as failed would be repeated, with real money. A failed read closes nothing: next tick asks again.
+        const landed = await findLandedUserOp(ctx, op).catch((err: unknown) => {
+          ctx.log.warn({ agentId: agent.agentId, opId: op.opId, error: rpcErrorText(err) }, 'could not read the EntryPoint for a treasury op; it stays open');
+          return 'unread' as const;
+        });
+        if (landed === 'unread') continue;
+        if (landed) {
+          ctx.log.warn({ agentId: agent.agentId, opId: op.opId, txHash: landed.receipt.transactionHash }, 'treasury op had landed though the bundler has no receipt');
+          changed.push({ op, result: await settleReceipt(ctx, op, op.userOpHash as Hex, landed) });
+          continue;
+        }
         const error = refused ? (op.error as string) : `no_receipt_after_1h: ${op.error ?? ''}`;
         await ctx.db.update(treasuryOps).set({ status: 'failed', error, ...(refused ? {} : { updatedAt: new Date(ctx.now()) }) }).where(eq(treasuryOps.opId, op.opId));
         ctx.log.warn({ agentId: agent.agentId, opId: op.opId, error }, 'unknown treasury op closed as failed');
