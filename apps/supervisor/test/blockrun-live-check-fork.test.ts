@@ -13,12 +13,13 @@ import { getAddresses } from '@bootr/shared/addresses';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import type { PaymentPayload, PaymentRequired } from '@x402/core/types';
 import { toFacilitatorEvmSigner } from '@x402/evm';
+import { ExactEvmScheme } from '@x402/evm/exact/facilitator';
 import { UptoEvmScheme } from '@x402/evm/upto/facilitator';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPublicClient, createTestClient, createWalletClient, encodeAbiParameters, erc20Abi, http, keccak256, type Address, type Hex, type PublicClient } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
-import { EXIT_FAILED, EXIT_OK, runLiveCheck } from '../scripts/blockrun-live-check.js';
+import { EXIT_FAILED, EXIT_OK, referencePng, runLiveCheck } from '../scripts/blockrun-live-check.js';
 import { BLOCKRUN_DEFAULT_PAYTO } from '../src/config.js';
 
 const RPC = process.env.BASE_FORK_RPC_URL;
@@ -30,18 +31,22 @@ const PAYTO = BLOCKRUN_DEFAULT_PAYTO as Address;
 /** Anvil's public first test key: plays the facilitator's gas wallet on the fork. */
 const facilitator = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 const FUNDED = 1_000_000n;
-const TINY_CEILING = 2000n;
-const THOUGHT_CEILING = 99_484n;
-const AMOUNTS = [1072n, 66_400n, 18_100n];
+/** BlockRun's live quotes, 2026-11-06. */
+const QUOTES: Record<string, { ceiling: bigint; upto: boolean }> = {
+  'anthropic/claude-haiku-4.5': { ceiling: 14_411n, upto: true },
+  'openai/gpt-4.1-mini': { ceiling: 13_724n, upto: false },
+  'openai/gpt-image-1': { ceiling: 22_000n, upto: false },
+};
+/** What each call settles: upto at its real cost, exact at its quote. */
+const AMOUNTS = [5_500n, 13_724n, 22_000n];
+const TOTAL_CEILING = 50_135n;
 
 const required = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/blockrun/payment-required.json', import.meta.url)), 'utf8')).requirements as PaymentRequired;
 const finish = { id: 'call_f', type: 'function', function: { name: 'finish', arguments: JSON.stringify({ memory: 'm', agenda: 'a', summary: 's', nextAt: '2026-11-06T18:00:00.000Z' }) } };
-const usage = (read: number, write: number) => ({ prompt_tokens: 16_800, completion_tokens: 300, total_tokens: 17_100, prompt_tokens_details: { cached_tokens: read, cached_creation_tokens: write } });
-const MODEL = 'anthropic/claude-sonnet-4.6';
-const answers = [
-  { id: 'c1', model: MODEL, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }], usage: { prompt_tokens: 14, completion_tokens: 2, total_tokens: 16 } },
-  { id: 'c2', model: MODEL, choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [finish] } }], usage: usage(0, 14_000) },
-  { id: 'c3', model: MODEL, choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [finish] } }], usage: usage(14_000, 0) },
+const answers: Record<string, unknown>[] = [
+  { id: 'c1', model: 'anthropic/claude-haiku-4.5', choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [finish] } }], usage: { prompt_tokens: 4200, completion_tokens: 60, total_tokens: 4260 } },
+  { id: 'c2', model: 'openai/gpt-4.1-mini', choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [finish] } }], usage: { prompt_tokens: 16_800, completion_tokens: 60, total_tokens: 16_860 } },
+  { id: 'job', created: 1, data: [{ url: referencePng() }], price: { amount: '0.022', currency: 'USD' } },
 ];
 
 describe.skipIf(!RPC)('the live check on a Base fork', () => {
@@ -49,8 +54,7 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
   const publicClient = createPublicClient({ chain: base, transport: http(ANVIL) });
   const testClient = createTestClient({ chain: base, mode: 'anvil', transport: http(ANVIL) });
   const walletClient = createWalletClient({ account: facilitator, chain: base, transport: http(ANVIL) });
-  const upto = new UptoEvmScheme(
-    toFacilitatorEvmSigner({
+  const signer = toFacilitatorEvmSigner({
       address: facilitator.address,
       readContract: (args) => publicClient.readContract({ ...args, account: facilitator.address } as never),
       verifyTypedData: (args) => publicClient.verifyTypedData(args as never),
@@ -58,8 +62,9 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
       sendTransaction: (args) => walletClient.sendTransaction(args as never),
       waitForTransactionReceipt: (args) => publicClient.waitForTransactionReceipt(args as never),
       getCode: (args) => publicClient.getCode(args as never),
-    }),
-  );
+  });
+  const upto = new UptoEvmScheme(signer);
+  const exact = new ExactEvmScheme(signer);
   const balance = (holder: Address) => publicClient.readContract({ address: USDC, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
   const allowance = (holder: Address) => publicClient.readContract({ address: USDC, abi: erc20Abi, functionName: 'allowance', args: [holder, PERMIT2] });
 
@@ -94,20 +99,22 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
             res.writeHead(status, { 'content-type': 'application/json', ...headers });
             res.end(JSON.stringify(body));
           };
-          if (req.url === '/api/v1/models') return send(200, { data: [{ id: MODEL, pricing: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } }] });
-          if (req.url === '/or/models') return send(200, { data: [{ id: MODEL, pricing: { prompt: '0.000003', completion: '0.000015', input_cache_read: '0.0000003', input_cache_write: '0.00000375' } }] });
-          const accepts = required.accepts.map((a) => ({ ...a, amount: ((JSON.parse(raw) as { max_tokens: number }).max_tokens === 32 ? TINY_CEILING : THOUGHT_CEILING).toString(), extra: a.scheme === 'upto' ? { ...a.extra, facilitatorAddress: facilitator.address } : a.extra }));
+          if (req.url === '/api/v1/models') return send(200, { data: [{ id: 'anthropic/claude-haiku-4.5', pricing: { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 } }, { id: 'openai/gpt-4.1-mini', pricing: { input: 0.4, output: 1.6, cache_read: 0.1 } }] });
+          if (req.url === '/or/models') return send(200, { data: [{ id: 'anthropic/claude-haiku-4.5', pricing: { prompt: '0.000001', completion: '0.000005' } }, { id: 'openai/gpt-4.1-mini', pricing: { prompt: '0.0000004', completion: '0.0000016' } }] });
+          const quote = QUOTES[(JSON.parse(raw) as { model: string }).model]!;
+          const accepts = required.accepts.filter((a) => a.scheme !== 'upto' || quote.upto).map((a) => ({ ...a, amount: quote.ceiling.toString(), extra: a.scheme === 'upto' ? { ...a.extra, facilitatorAddress: facilitator.address } : a.extra }));
           const signature = req.headers['payment-signature'] as string | undefined;
           if (!signature) return send(402, { x402Version: 2 }, { 'payment-required': encodePaymentRequiredHeader({ ...required, accepts }) });
           const payload: PaymentPayload = decodePaymentSignatureHeader(signature);
-          const requirement = accepts.find((a) => a.scheme === 'upto')!;
-          const verified = await upto.verify(payload, requirement);
+          const requirement = accepts.find((a) => a.scheme === payload.accepted.scheme)!;
+          const scheme = requirement.scheme === 'upto' ? upto : exact;
+          const verified = await scheme.verify(payload, requirement);
           if (!verified.isValid) return send(402, { error: 'Payment verification failed', code: 'PAYMENT_INVALID', debug: verified.invalidReason });
           const i = paid++;
           await behave({
             i,
             settle: async () => {
-              const settled = await upto.settle(payload, { ...requirement, amount: AMOUNTS[i]!.toString() });
+              const settled = await scheme.settle(payload, { ...requirement, amount: AMOUNTS[i]!.toString() });
               if (!settled.success) throw new Error(`settle failed: ${settled.errorReason}`);
               return settled.transaction as Hex;
             },
@@ -155,7 +162,8 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
       expect(code).toBe(EXIT_OK);
       expect(output).toContain('Not paying without --yes');
       expect(output).toContain(s.wallet);
-      expect(output).toContain('Total ceiling $0.200968');
+      expect(output).toContain('Total ceiling $0.050135');
+      expect(TOTAL_CEILING).toBe(50_135n);
       expect(output).not.toContain(s.key.slice(2));
       expect(s.paid()).toBe(0);
       expect(await balance(s.wallet)).toBe(FUNDED);
@@ -176,12 +184,13 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
       expect(code, output).toBe(EXIT_OK);
       expect(s.paid()).toBe(3);
       const total = AMOUNTS[0]! + AMOUNTS[1]! + AMOUNTS[2]!;
+      expect(total).toBeLessThanOrEqual(TOTAL_CEILING);
       expect(await balance(s.wallet)).toBe(FUNDED - total);
       expect((await balance(PAYTO)) - payToBefore).toBe(total);
       expect(await publicClient.getBalance({ address: s.wallet })).toBe(0n);
-      // Only the last call's unspent ceiling is left, and Permit2 cannot use it without a new signature.
-      expect(await allowance(s.wallet)).toBe(THOUGHT_CEILING - AMOUNTS[2]!);
-      expect(output).toContain('Moved       $0.066400, tx 0x');
+      // Only the upto call's unspent ceiling is left, and Permit2 cannot use it without a new signature.
+      expect(await allowance(s.wallet)).toBe(QUOTES['anthropic/claude-haiku-4.5']!.ceiling - AMOUNTS[0]!);
+      expect(output).toContain('Moved       $0.013724, tx 0x');
       expect(output.trim().split('\n').at(-1)).toBe('PASS');
       const txs = [...output.matchAll(/Moved +\$[\d.]+, tx (0x[0-9a-f]{64})/g)].map((m) => m[1] as Hex);
       expect(new Set(txs).size).toBe(3);
@@ -202,8 +211,8 @@ describe.skipIf(!RPC)('the live check on a Base fork', () => {
       expect(s.paid()).toBe(1);
       expect(await balance(s.wallet)).toBe(FUNDED - AMOUNTS[0]!);
       expect(output).toContain('Reading the chain instead of retrying');
-      expect(output).toMatch(/Moved +\$0\.001072, tx 0x[0-9a-f]{64}/);
-      expect(output).toMatch(/One signature, one payment: the wallet went down by \$0\.001072; the settled calls add up to \$0\.001072/);
+      expect(output).toMatch(/Moved +\$0\.005500, tx 0x[0-9a-f]{64}/);
+      expect(output).toMatch(/PASS +It pays from its own wallet, with no ETH: 1 payment, one per signature, \$0\.005500 in all/);
     } finally {
       await s.close();
     }

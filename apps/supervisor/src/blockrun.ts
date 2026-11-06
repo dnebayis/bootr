@@ -474,7 +474,7 @@ async function pictureAsDataUri(ctx: Pick<SupervisorContext, 'fetch' | 'resolveH
 }
 
 /** A finished job or response as the chat shape `parseImageResponse` reads; null when the picture cannot be had. */
-async function imageAnswer(ctx: Pick<SupervisorContext, 'fetch' | 'resolveHost'>, body: { id?: unknown; data?: { url?: unknown }[]; price?: unknown }): Promise<Record<string, unknown> | null> {
+export async function imageAnswer(ctx: Pick<SupervisorContext, 'fetch' | 'resolveHost'>, body: { id?: unknown; data?: { url?: unknown }[]; price?: unknown }): Promise<Record<string, unknown> | null> {
   const url = body.data?.[0]?.url;
   if (typeof url !== 'string') return null;
   const dataUri = (await pictureAsDataUri(ctx, url)) ?? (await pictureAsDataUri(ctx, url));
@@ -491,7 +491,7 @@ async function recordImage(ctx: SupervisorContext, key: string, answer: Record<s
 }
 
 /** A poll address BlockRun gave, only if it is on BlockRun's own origin: the poll carries the payment. */
-function pollAddress(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>, value: unknown): string | null {
+export function pollAddress(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>, value: unknown): string | null {
   if (typeof value !== 'string') return null;
   try {
     const base = new URL(config.BLOCKRUN_BASE_URL);
@@ -502,23 +502,31 @@ function pollAddress(config: Pick<DirectConfig, 'BLOCKRUN_BASE_URL'>, value: unk
   }
 }
 
-/** One poll of a slow picture. Null while it is still running or cannot be read: the chain and the deadline decide then. */
-async function pollImage(ctx: SupervisorContext, row: Pick<typeof inference.$inferSelect, 'idempotencyKey' | 'agentId'>, payment: PaymentPayload, url: string): Promise<RelayResult | null> {
-  const key = row.idempotencyKey;
+export type ImageJob = { state: 'done'; answer: Record<string, unknown>; tx: string | null } | { state: 'failed' } | { state: 'pending' };
+
+/** One poll of a slow picture. `pending` while it runs or cannot be read: the chain and the deadline decide then. */
+export async function readImageJob(world: Pick<SupervisorContext, 'fetch' | 'resolveHost'>, payment: PaymentPayload, url: string): Promise<ImageJob> {
   let res: Response;
   let body: { id?: unknown; status?: unknown; data?: { url?: unknown }[]; price?: unknown; payment?: { tx_hash?: unknown } } | null;
   try {
-    res = await ctx.fetch(url, { headers: { 'X-Payment': encodePaymentSignatureHeader(payment) }, signal: AbortSignal.timeout(15_000) });
+    res = await world.fetch(url, { headers: { 'X-Payment': encodePaymentSignatureHeader(payment) }, signal: AbortSignal.timeout(15_000) });
     body = (await res.json()) as typeof body;
   } catch {
-    return null;
+    return { state: 'pending' };
   }
+  if (body?.status === 'failed') return { state: 'failed' };
   if (res.ok && body?.status !== 'queued' && body?.status !== 'in_progress' && Array.isArray(body?.data)) {
-    const answer = await imageAnswer(ctx, body);
-    if (answer) return recordImage(ctx, key, answer, payment, typeof body.payment?.tx_hash === 'string' ? body.payment.tx_hash : null);
-    return null;
+    const answer = await imageAnswer(world, body);
+    return answer ? { state: 'done', answer, tx: typeof body.payment?.tx_hash === 'string' ? body.payment.tx_hash : null } : { state: 'pending' };
   }
-  if (body?.status === 'failed') {
+  return { state: 'pending' };
+}
+
+async function pollImage(ctx: SupervisorContext, row: Pick<typeof inference.$inferSelect, 'idempotencyKey' | 'agentId'>, payment: PaymentPayload, url: string): Promise<RelayResult | null> {
+  const key = row.idempotencyKey;
+  const job = await readImageJob(ctx, payment, url);
+  if (job.state === 'done') return recordImage(ctx, key, job.answer, payment, job.tx);
+  if (job.state === 'failed') {
     ctx.log.warn({ key, agentId: row.agentId }, 'BlockRun could not make the picture: nothing was charged');
     await ctx.db.update(inference).set({ status: 'failed', error: DIRECT_UNPAID, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error: DIRECT_UNPAID };

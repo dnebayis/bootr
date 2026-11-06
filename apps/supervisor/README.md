@@ -123,16 +123,21 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `BLOCKRUN_DIRECT_AGENTS` | no | empty | Agent ids for `agents`, comma-separated |
 | `BLOCKRUN_BASE_URL` | no | `https://blockrun.ai/api/v1` | |
 | `BLOCKRUN_PAYTO_ADDRESS` | no | `0xe9030014F5DAe217d0A152f02A043567b16c1aBf` | The only address direct mode may pay |
-| `BLOCKRUN_ALLOW_EXACT` | no | `false` | Also pay `exact` where `upto` is not offered; costs about what the relay charges |
+| `BLOCKRUN_ALLOW_EXACT` | no | `true` | Pay `exact` where `upto` is not offered: every non-Claude model |
+| `BLOCKRUN_RELAY_FALLBACK` | no | `false` | Let a call BlockRun cannot serve go to the relay. Only while OpenRouter is funded; off, an outage means waiting, unpaid |
 | `BLOCKRUN_PROMPT_CACHE` | no | `true` | Prompt caching on Claude models |
 | `BLOCKRUN_TIMEOUT_MS` | no | `150000` | Paid request timeout, above BlockRun's 120 s upstream limit |
-| `BLOCKRUN_HOLD_MS` | no | `1800000` | After a direct failure the agent's thoughts use the relay this long |
+| `BLOCKRUN_HOLD_MS` | no | `1800000` | After a direct failure: on the relay this long with the fallback on; with it off, no new signature this long after money was lost |
+| `BLOCKRUN_IMAGE_POLL_MS` | no | `3000` | Between polls of a slow picture |
+| `INFERENCE_RETRY_OUTPUT_TOKENS` | no | `4096` | `max_tokens` for the one retry after a tool call was cut off at the output limit |
 
 ## BlockRun live check
 
 `scripts/blockrun-live-check.ts` makes real paid calls to BlockRun from a dev wallet, through the same code an agent
 pays with (`src/blockrun.ts`), before production is touched. Use a separate wallet with nothing else in it. Run it yourself;
-it reads no service key and no CDP RPC.
+it reads no service key and no CDP RPC. It judges full direct mode: the agent pays from its own wallet, at no more than the
+relay charges, tool calls work on Claude and on another model, pictures work, no other model answers. Whether `upto` settles
+less than its ceiling is reported, not judged.
 
 ```sh
 pnpm install
@@ -146,20 +151,22 @@ pnpm --filter supervisor blockrun:live-check
 
 # 2. Fund the wallet with the USDC the plan asks for, on Base. No ETH.
 
-# 3. The paid run: a tiny call, a 61 kB thought with the real tool list, the same thought again for the cache.
+# 3. The paid run: a tool call on Claude Haiku, a thought-sized tool call on GPT-4.1 mini, a picture from a reference.
 pnpm --filter supervisor blockrun:live-check --yes
 
 unset BLOCKRUN_TEST_PRIVATE_KEY
 ```
 
-- **Needs:** about 0.21 USDC on Base (the plan prints the exact figure). No ETH: the facilitator pays the gas.
-- **Approval:** no transaction. For each call the key signs a USDC permit for Permit2, for exactly that call's ceiling, valid
-  300 s, and a Permit2 payment to BlockRun's address for at most the same amount. What a call leaves unspent stays as
-  allowance, under 0.10 USDC, and Permit2 cannot use it without another signature from this key.
-- **Worst case:** the total ceiling the plan prints (about $0.20 on Sonnet 4.6). Hard caps: $0.15 per call, $0.40 in total;
-  `--max-per-call=<usd>` and `--max-total=<usd>` change them, `--model=<id>` picks another model that offers `upto`.
-- **Refuses** a 402 naming another recipient, token or chain, a model with no `upto`, a price above what the plan showed, a
-  key on the command line, or a service key.
+- **Needs:** about 0.051 USDC on Base (the plan prints the exact figure; `--full` adds a real Sonnet thought and its repeat,
+  about 0.25 in all). No ETH: the facilitator pays the gas.
+- **Approval:** no transaction. An `upto` call signs a USDC permit for Permit2, for exactly that call's ceiling, valid 300 s,
+  and a Permit2 payment to BlockRun's address for at most the same amount; what it leaves unspent stays as allowance, and
+  Permit2 cannot use it without another signature from this key. An `exact` call signs one transfer of its exact price.
+- **Worst case:** the total ceiling the plan prints, about $0.05. Hard caps: $0.15 per call, $0.40 in total;
+  `--max-per-call=<usd>` and `--max-total=<usd>` change them, `--model=<id>` picks the Claude model for the first call and
+  `--no-prompt-cache` leaves out the caching request, to see whether it changes what `upto` settles.
+- **Refuses** a 402 naming another recipient, token or chain, a price above what the plan showed, a key on the command line,
+  or a service key.
 - **Failures:** the first one stops the run and nothing is ever retried. After a signature, a lost response, a timeout or a
   slow settlement is answered by reading the chain until the nonce is spent or the signature expires (about 5.5 minutes).
 - **Exit code:** 0 every risk passed, 1 something failed or was not reached, 2 refused before signing.

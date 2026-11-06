@@ -82,14 +82,15 @@ holds the mainnet values and placeholders.
 | indexer (schema) | | `DATABASE_SCHEMA=auto` (since 2026-11-04): each image indexes into `bootr_<first 7 of its commit>` and drops the automatic schemas of older images except the newest previous one at start (`apps/indexer/scripts/schema-janitor.mjs`). Ponder refuses to reuse a schema built by a different app version, so a fixed name (`bootr_v3`) had to be bumped or dropped by hand after every indexer change; `auto` removes that step. Every indexer change still backfills from scratch (about 7 minutes since 77cca45; it took 20 before the snapshot handler was thinned during backfill), during which the site shows stale or partial data. |
 | supervisor | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL`, `TELEGRAM_BOT_TOKEN` (optional, creator notifications) | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `BOOTR_CLANKER_LAUNCHER_ADDRESS` (the `BootrClankerLauncher` once deployed, [`docs/design/clanker-launch.md`](../design/clanker-launch.md); empty until then; the poller follows it next to `BOOTR_LAUNCHER_ADDRESS` from the same cursor, so set it before the first Clanker launch or lower the cursor), `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` (defaults are the verified Base mainnet lockers; override only if Clanker rotates them), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty, `GAS_MIN_WEI`, `GAS_TARGET_WEI` ([`docs/gas-model.md`](../gas-model.md)), `BUILDER_CODES_*`, `SESSION_*`, `SPENDER_*`, `CHAINLINK_MAX_AGE_SECONDS`, `PLATFORM_POST_SLOTS_PER_10M`, `PLATFORM_QUIET_HOURS_UTC`, `PLATFORM_DIGEST_AT`, `PLATFORM_NUMBERS_AT`, `PLATFORM_WATCHLIST`, `LOG_LEVEL` |
 
-Direct mode (supervisor, `apps/supervisor/src/blockrun.ts`): an agent's spender pays BlockRun over x402 for a thought
-instead of paying the relay. Off unless `BLOCKRUN_DIRECT_MODE` says otherwise: `agents` with the ids in
-`BLOCKRUN_DIRECT_AGENTS`, or `all`. It adds no secret, so no `env -u` list changes; the optional `BLOCKRUN_BASE_URL`,
-`BLOCKRUN_PAYTO_ADDRESS`, `BLOCKRUN_ALLOW_EXACT`, `BLOCKRUN_PROMPT_CACHE`, `BLOCKRUN_TIMEOUT_MS` and `BLOCKRUN_HOLD_MS` have
-safe defaults. Keep the relay deployed and its OpenRouter key funded: images always use it, and so does any thought direct
-mode cannot pay for before signing (a model BlockRun lacks or offers without `upto`, a quote above the cap, an outage) and
-every thought for 30 minutes after a direct failure. A failed direct call holds the thought until the chain shows the
-payment settled or its 300 s signature expired, so one thought is never paid on both routes.
+Direct mode (supervisor, `apps/supervisor/src/blockrun.ts`): an agent's spender pays BlockRun over x402 for its thoughts,
+chat and pictures, so no OpenRouter credit is needed. Off unless `BLOCKRUN_DIRECT_MODE` says otherwise: `agents` with the ids
+in `BLOCKRUN_DIRECT_AGENTS`, or `all`. It adds no secret, so no `env -u` list changes. `BLOCKRUN_RELAY_FALLBACK` (default
+`false`) decides what happens when BlockRun cannot serve a call: off, the agent waits with backoff and nothing is paid; on, the
+relay takes it, so set it only while OpenRouter is funded, because a relay with no credit takes the payment and cannot answer.
+A failed call that was already signed holds the thought until the chain shows the payment settled or its signature expired, so
+one thought is never paid on both routes. The optional `BLOCKRUN_BASE_URL`, `BLOCKRUN_PAYTO_ADDRESS`, `BLOCKRUN_ALLOW_EXACT`,
+`BLOCKRUN_PROMPT_CACHE`, `BLOCKRUN_TIMEOUT_MS`, `BLOCKRUN_HOLD_MS` and `BLOCKRUN_IMAGE_POLL_MS` have safe defaults. Agents not
+in direct mode still pay the relay: stop funding OpenRouter only with `BLOCKRUN_DIRECT_MODE=all` and the fallback off.
 
 Creator notifications (supervisor, `apps/supervisor/src/notifications.ts`): the console inbox always works. For Telegram,
 create a bot with BotFather and put its token in `TELEGRAM_BOT_TOKEN`; empty means inbox only and nothing fails. The

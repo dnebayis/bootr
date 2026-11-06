@@ -6,36 +6,44 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { countInputTokens } from '@bootr/inference';
 import { getAddresses } from '@bootr/shared/addresses';
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import type { PaymentPayload, PaymentRequired } from '@x402/core/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { encodeAbiParameters, encodeEventTopics, erc20Abi, type Address, type Hex, type PublicClient } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
-import { costMicro, EXIT_FAILED, EXIT_OK, EXIT_REFUSED, parseArgs, redact, runLiveCheck, thoughtRequest, tinyRequest, tokensOf, type LiveCheckDeps } from '../scripts/blockrun-live-check.js';
+import { costMicro, EXIT_FAILED, EXIT_OK, EXIT_REFUSED, parseArgs, redact, referencePng, runLiveCheck, thoughtRequest, tokensOf, type LiveCheckDeps } from '../scripts/blockrun-live-check.js';
 import { paymentAuthorization } from '../src/blockrun.js';
 import { BLOCKRUN_DEFAULT_PAYTO } from '../src/config.js';
-import { parseAssistant } from '../src/inference.js';
+import { parseImageResponse } from '../src/images.js';
 
 const USDC = getAddresses(8453).usdc;
 const PAYTO = BLOCKRUN_DEFAULT_PAYTO as Address;
 const txOf = (i: number): Hex => `0x${String(i + 1).repeat(64)}`;
-const TINY_CEILING = 2000n;
-const THOUGHT_CEILING = 99_484n;
-const MODEL = 'anthropic/claude-sonnet-4.6';
 const required = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/blockrun/payment-required.json', import.meta.url)), 'utf8')).requirements as PaymentRequired;
-const capturedToolCall = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/blockrun/tool-call.json', import.meta.url)), 'utf8')).body as Record<string, unknown>;
 
-const SONNET = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+/** Ceilings by BlockRun model, as quoted live on 2026-11-06; upto where BlockRun offers it. */
+const QUOTES: Record<string, { ceiling: bigint; upto: boolean; rates?: { input: number; output: number; cacheRead: number; cacheWrite: number } }> = {
+  'anthropic/claude-haiku-4.5': { ceiling: 14_411n, upto: true, rates: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } },
+  'openai/gpt-4.1-mini': { ceiling: 13_724n, upto: false, rates: { input: 0.4, output: 1.6, cacheRead: 0.1, cacheWrite: 0.4 } },
+  'openai/gpt-image-1': { ceiling: 22_000n, upto: false },
+  'anthropic/claude-sonnet-4.6': { ceiling: 99_484n, upto: true, rates: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+};
+const CHEAP_TOTAL = 14_411n + 13_724n + 22_000n;
+const PNG_URI = referencePng();
+
 const finishCall = { id: 'call_f', type: 'function', function: { name: 'finish', arguments: JSON.stringify({ memory: 'm', agenda: 'a', summary: 's', nextAt: '2026-11-06T18:00:00.000Z' }) } };
+const toolAnswer = (model: string, usage: Record<string, unknown>, finish_reason = 'tool_calls', call: unknown = finishCall) => ({ id: 'c', model, choices: [{ index: 0, finish_reason, message: { role: 'assistant', content: '', tool_calls: [call] } }], usage });
+const smallUsage = { prompt_tokens: 4200, completion_tokens: 60, total_tokens: 4260 };
 const thoughtUsage = (read: number, write: number) => ({ prompt_tokens: 16_800, completion_tokens: 300, total_tokens: 17_100, prompt_tokens_details: { cached_tokens: read, cached_creation_tokens: write } });
-const answers = [
-  { id: 'c1', model: MODEL, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }], usage: { prompt_tokens: 14, completion_tokens: 2, total_tokens: 16 } },
-  { ...capturedToolCall, model: MODEL, choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [finishCall] } }], usage: thoughtUsage(0, 14_000) },
-  { ...capturedToolCall, model: MODEL, choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [finishCall] } }], usage: thoughtUsage(14_000, 0) },
-];
-const priceOf = (i: number) => BigInt(Math.round(costMicro(tokensOf(answers[i]!.usage)!, SONNET))) + 1000n;
+/** Default answers, one per planned call. */
+const answers: Record<number, Record<string, unknown>> = {
+  0: toolAnswer('anthropic/claude-haiku-4.5', smallUsage),
+  1: toolAnswer('openai/gpt-4.1-mini', thoughtUsage(0, 0)),
+  3: toolAnswer('anthropic/claude-sonnet-4.6', thoughtUsage(0, 14_000)),
+  4: toolAnswer('anthropic/claude-sonnet-4.6', thoughtUsage(14_000, 0)),
+};
+const imageBody = (url = PNG_URI, tx?: string) => ({ id: 'job', created: 1, data: [{ url }], price: { amount: '0.022', currency: 'USD' }, payment: { status: 'settled', tx_hash: tx, network: 'eip155:8453' } });
 
 interface World {
   usdc: bigint;
@@ -44,7 +52,6 @@ interface World {
   chainId: number;
   spent: Set<string>;
   transfers: { value: bigint; tx: Hex }[];
-  /** Reads of the payment's nonce fail while this is true. */
   blind: boolean;
 }
 
@@ -57,11 +64,12 @@ function fakeChain(w: World, spender: Address): PublicClient {
       if (args.functionName === 'balanceOf') return w.usdc;
       if (args.functionName === 'allowance') return w.allowance;
       if (args.functionName === 'nonces') return 0n;
+      if (w.blind) throw new Error('rpc down');
+      if (args.functionName === 'authorizationState') return w.spent.has(String((args.args as [Address, Hex])[1]).toLowerCase());
       if (args.functionName === 'nonceBitmap') {
-        if (w.blind) throw new Error('rpc down');
         const wordPos = (args.args as [Address, bigint])[1];
         let word = 0n;
-        for (const n of w.spent) if (BigInt(n) >> 8n === wordPos) word |= 1n << (BigInt(n) & 0xffn);
+        for (const n of w.spent) if (/^\d+$/.test(n) && BigInt(n) >> 8n === wordPos) word |= 1n << (BigInt(n) & 0xffn);
         return word;
       }
       throw new Error(`unmocked ${args.functionName}`);
@@ -76,17 +84,34 @@ function fakeChain(w: World, spender: Address): PublicClient {
   } as unknown as PublicClient;
 }
 
+interface PaidCtx {
+  i: number;
+  payload: PaymentPayload;
+  res: ServerResponse;
+  req: IncomingMessage;
+  settle: (amount?: bigint) => void;
+  /** The default success for this call: settles and answers. */
+  ok: (amount?: bigint, headers?: Record<string, string>) => void;
+  json: (status: number, body: unknown, headers?: Record<string, string>) => void;
+}
+
 interface Sim {
   signatures: PaymentPayload[];
   unpaid: number;
-  /** Overrides each row of the 402. */
-  rowOver: (body: { max_tokens: number }, nth: number) => Record<string, unknown>;
-  dropUpto: boolean;
-  /** Runs once, the next time the check waits between chain reads: what lands on chain while it reads. */
+  rowOver: (model: string, nth: number) => Record<string, unknown>;
+  noSchemes: boolean;
   afterPoll: (() => void) | null;
   unpaidReply: ((res: ServerResponse) => void) | null;
-  paid: (ctx: { i: number; payload: PaymentPayload; res: ServerResponse; req: IncomingMessage; settle: (amount?: bigint) => void; ok: (amount?: bigint, headers?: Record<string, string>) => void; json: (status: number, body: unknown, headers?: Record<string, string>) => void }) => void;
+  poll: ((res: ServerResponse) => void) | null;
+  paid: (ctx: PaidCtx) => void;
 }
+
+const defaultAmount = (i: number, model: string): bigint => {
+  const q = QUOTES[model]!;
+  if (!q.rates) return q.ceiling;
+  if (!q.upto) return q.ceiling;
+  return BigInt(Math.round(costMicro(tokensOf(answers[i]!.usage)!, q.rates))) + 1000n;
+};
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -97,15 +122,7 @@ async function scenario(setup: (sim: Sim, w: World) => void, opts: { argv?: stri
   const key = generatePrivateKey();
   const spender = privateKeyToAccount(key).address;
   const w: World = { usdc: opts.fundUsdc ?? 1_000_000n, eth: 0n, allowance: 0n, chainId: 8453, spent: new Set(), transfers: [], blind: false };
-  const sim: Sim = {
-    signatures: [],
-    unpaid: 0,
-    rowOver: () => ({}),
-    dropUpto: false,
-    afterPoll: null,
-    unpaidReply: null,
-    paid: ({ ok }) => ok(),
-  };
+  const sim: Sim = { signatures: [], unpaid: 0, rowOver: () => ({}), noSchemes: false, afterPoll: null, unpaidReply: null, poll: null, paid: ({ ok }) => ok() };
   setup(sim, w);
   const server = createServer((req, res) => {
     let raw = '';
@@ -115,23 +132,25 @@ async function scenario(setup: (sim: Sim, w: World) => void, opts: { argv?: stri
         res.writeHead(status, { 'content-type': 'application/json', ...headers });
         res.end(JSON.stringify(body));
       };
-      if (req.url === '/api/v1/models') return send(200, { data: [{ id: MODEL, pricing: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } }] });
-      if (req.url === '/or/models') return send(200, { data: [{ id: MODEL, pricing: { prompt: '0.000003', completion: '0.000015', input_cache_read: '0.0000003', input_cache_write: '0.00000375' } }] });
+      if (req.url === '/api/v1/models') return send(200, { data: Object.entries(QUOTES).filter(([, q]) => q.rates).map(([id, q]) => ({ id, pricing: { input: q.rates!.input, output: q.rates!.output, cache_read: q.rates!.cacheRead, cache_write: q.rates!.cacheWrite } })) });
+      if (req.url === '/or/models') return send(200, { data: Object.entries(QUOTES).filter(([, q]) => q.rates).map(([id, q]) => ({ id, pricing: { prompt: String(q.rates!.input / 1e6), completion: String(q.rates!.output / 1e6), input_cache_read: String(q.rates!.cacheRead / 1e6), input_cache_write: String(q.rates!.cacheWrite / 1e6) } })) });
+      if (req.method === 'GET') return sim.poll!(res);
+      const body = JSON.parse(raw) as { model: string };
       const signature = req.headers['payment-signature'] as string | undefined;
+      const quote = QUOTES[body.model]!;
       if (!signature) {
         sim.unpaid += 1;
         if (sim.unpaidReply) return sim.unpaidReply(res);
-        const body = JSON.parse(raw) as { max_tokens: number };
-        const amount = (body.max_tokens === 32 ? TINY_CEILING : THOUGHT_CEILING).toString();
-        const over = sim.rowOver(body, sim.unpaid);
-        const accepts = required.accepts.filter((a) => !sim.dropUpto || a.scheme !== 'upto').map((a) => ({ ...a, amount, ...over }));
+        const over = sim.rowOver(body.model, sim.unpaid);
+        const accepts = required.accepts.filter((a) => (a.scheme === 'upto' ? quote.upto : true)).filter(() => !sim.noSchemes).map((a) => ({ ...a, amount: quote.ceiling.toString(), ...over }));
         return send(402, { x402Version: 2 }, { 'payment-required': encodePaymentRequiredHeader({ ...required, accepts }) });
       }
       const payload = decodePaymentSignatureHeader(signature);
       sim.signatures.push(payload);
       const i = sim.signatures.length - 1;
-      const settle = (amount: bigint = priceOf(i)) => {
-        w.spent.add((paymentAuthorization(payload)!.nonce as bigint).toString());
+      const settle = (amount: bigint = defaultAmount(i, body.model)) => {
+        const nonce = paymentAuthorization(payload)!.nonce;
+        w.spent.add(typeof nonce === 'bigint' ? nonce.toString() : nonce.toLowerCase());
         w.usdc -= amount;
         w.transfers.push({ value: amount, tx: txOf(i) });
       };
@@ -143,9 +162,10 @@ async function scenario(setup: (sim: Sim, w: World) => void, opts: { argv?: stri
         settle,
         json: send,
         ok: (amount, headers) => {
-          const value = amount ?? priceOf(i);
+          const value = amount ?? defaultAmount(i, body.model);
           settle(value);
-          send(200, answers[i], { 'payment-response': Buffer.from(JSON.stringify({ success: true, transaction: txOf(i), network: 'eip155:8453', payer: spender, amount: value.toString() })).toString('base64'), 'x-payment-receipt': txOf(i), ...headers });
+          const answer = body.model === 'openai/gpt-image-1' ? imageBody(PNG_URI, txOf(i)) : answers[i];
+          send(200, answer, { 'payment-response': Buffer.from(JSON.stringify({ success: true, transaction: txOf(i), network: 'eip155:8453', payer: spender, amount: value.toString() })).toString('base64'), 'x-payment-receipt': txOf(i), ...headers });
         },
       });
     });
@@ -177,30 +197,40 @@ async function scenario(setup: (sim: Sim, w: World) => void, opts: { argv?: stri
   return { code, text, lines, sim, w, env, key, spender };
 }
 
-const verdict = (text: string, risk: string) => text.split('\n').find((l) => l.includes(risk))?.trim() ?? '';
+const verdict = (text: string, goal: string) => text.split('\n').find((l) => l.includes(goal))?.trim() ?? '';
 
 describe('before anything is signed', () => {
-  it('without --yes it prints the whole plan and stops', async () => {
+  it('without --yes it prints the whole plan, the worst case and what the wallet needs, and stops', async () => {
     const r = await scenario(() => {}, { argv: [] });
     expect(r.code).toBe(EXIT_OK);
     expect(r.sim.signatures).toEqual([]);
-    for (const part of [r.spender, '1.000000 USDC', '0 ETH', MODEL, 'upto', PAYTO, USDC, 'ceiling $0.002000', 'ceiling $0.099484', 'Total ceiling $0.200968', '$0.150000 per call', '$0.400000 in total', 'at least 0.200968 USDC', 'ETH         none', 'no transaction', 'exactly that call', 'Permit2 allowance now: 0.000000 USDC', 'Not paying without --yes', 'Nothing was signed']) {
-      expect(r.text).toContain(part);
+    for (const part of [r.spender, '1.000000 USDC', '0 ETH', 'anthropic/claude-haiku-4.5, upto', 'openai/gpt-4.1-mini, exact', 'openai/gpt-image-1, exact', PAYTO, USDC, 'ceiling $0.014411', 'ceiling $0.013724', 'ceiling $0.022000', 'Total ceiling $0.050135', 'worst case', '$0.150000 per call', '$0.400000 in total', 'at least 0.050135 USDC', 'ETH         none', 'no transaction', 'exactly', 'Permit2 allowance now: 0.000000 USDC', 'relay would charge', 'Not paying without --yes', 'Nothing was signed']) {
+      expect(r.text, part).toContain(part);
     }
     // the key is taken out of the environment once read
     expect(r.env.BLOCKRUN_TEST_PRIVATE_KEY).toBeUndefined();
   });
 
+  it('--full adds the real Sonnet thought and its repeat', async () => {
+    const r = await scenario(() => {}, { argv: ['--full'] });
+    expect(r.text).toContain('a real thought on Sonnet: anthropic/claude-sonnet-4.6, upto');
+    expect(r.text).toContain('Total ceiling $0.249103');
+  });
+
   it('the realistic request is about 61 kB of the real prompt and tools, identical each time', () => {
-    const a = thoughtRequest(MODEL);
+    const a = thoughtRequest('anthropic/claude-sonnet-4.6');
     const size = Buffer.byteLength(JSON.stringify(a));
     expect(size).toBeGreaterThan(60_000);
     expect(size).toBeLessThan(62_000);
-    expect(JSON.stringify(thoughtRequest(MODEL))).toBe(JSON.stringify(a));
+    expect(JSON.stringify(thoughtRequest('anthropic/claude-sonnet-4.6'))).toBe(JSON.stringify(a));
     const names = (a.tools as { function: { name: string } }[]).map((t) => t.function.name);
     expect(names).toEqual(expect.arrayContaining(['finish', 'publish_post', 'publish_reply', 'read_mentions', 'treasury_prepare']));
     expect((a.messages as { role: string }[]).map((m) => m.role)).toEqual(['system', 'user']);
-    expect(tinyRequest(MODEL).tools).toEqual([]);
+  });
+
+  it('the reference picture is a real PNG that the image path reads', () => {
+    const parsed = parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: referencePng() } }] } }] });
+    expect(parsed).toMatchObject({ ok: true, mime: 'image/png' });
   });
 
   it.each([
@@ -224,9 +254,9 @@ describe('before anything is signed', () => {
     expect(r.sim.unpaid).toBe(0);
   });
 
-  it('an unknown argument is refused', () => {
+  it('parses flags and refuses unknown ones', () => {
     expect(() => parseArgs(['--force'])).toThrow(/Unknown argument/);
-    expect(parseArgs(['--max-per-call=0.05', '--max-total=0.1'])).toMatchObject({ maxPerCall: 50_000n, maxTotal: 100_000n });
+    expect(parseArgs(['--max-per-call=0.05', '--max-total=0.1', '--full', '--no-prompt-cache'])).toMatchObject({ maxPerCall: 50_000n, maxTotal: 100_000n, full: true, promptCache: false });
   });
 
   it('redacts the key and a keyed RPC from any line', () => {
@@ -244,11 +274,10 @@ describe('before anything is signed', () => {
     expect(r.sim.signatures).toEqual([]);
   });
 
-  it('refuses a model with no upto', async () => {
-    const r = await scenario((s) => void (s.dropUpto = true));
+  it('refuses a 402 with no scheme it can pay', async () => {
+    const r = await scenario((s) => void (s.noSchemes = true));
     expect(r.code).toBe(EXIT_REFUSED);
-    expect(r.text).toMatch(/does not offer upto/);
-    expect(r.sim.signatures).toEqual([]);
+    expect(r.text).toMatch(/neither upto nor exact/);
   });
 
   it('refuses an RPC on another chain', async () => {
@@ -258,22 +287,22 @@ describe('before anything is signed', () => {
   });
 
   it('holds to the caps, by default and when lowered', async () => {
-    const perCall = await scenario((s) => void (s.rowOver = (b) => (b.max_tokens === 32 ? {} : { amount: '150001' })));
+    const perCall = await scenario((s) => void (s.rowOver = () => ({ amount: '150001' })));
     expect(perCall.code).toBe(EXIT_REFUSED);
     expect(perCall.text).toMatch(/above the \$0\.150000 cap per call/);
-    const total = await scenario((s) => void (s.rowOver = (b) => (b.max_tokens === 32 ? {} : { amount: '150000' })), { argv: ['--yes', '--max-total=0.2'] });
+    const lowered = await scenario(() => {}, { argv: ['--yes', '--max-total=0.01'] });
+    expect(lowered.code).toBe(EXIT_REFUSED);
+    expect(lowered.text).toMatch(/above the \$0\.010000 total cap/);
+    const total = await scenario((s) => void (s.rowOver = () => ({ amount: '149000' })));
     expect(total.code).toBe(EXIT_REFUSED);
-    expect(total.text).toMatch(/above the \$0\.200000 total cap/);
-    const defaultTotal = await scenario((s) => void (s.rowOver = (b) => (b.max_tokens === 32 ? { amount: '149000' } : { amount: '149000' })));
-    expect(defaultTotal.code).toBe(EXIT_REFUSED);
-    expect(defaultTotal.text).toMatch(/above the \$0\.400000 total cap/);
-    for (const r of [perCall, total, defaultTotal]) expect(r.sim.signatures).toEqual([]);
+    expect(total.text).toMatch(/above the \$0\.400000 total cap/);
+    for (const r of [perCall, lowered, total]) expect(r.sim.signatures).toEqual([]);
   });
 
   it('refuses a wallet short of the total ceiling, naming the amount', async () => {
-    const r = await scenario(() => {}, { fundUsdc: 200_000n });
+    const r = await scenario(() => {}, { fundUsdc: CHEAP_TOTAL - 1n });
     expect(r.code).toBe(EXIT_REFUSED);
-    expect(r.text).toMatch(/holds 0\.200000 USDC and needs at least 0\.200968 USDC/);
+    expect(r.text).toMatch(/needs at least 0\.050135 USDC/);
     expect(r.sim.signatures).toEqual([]);
   });
 
@@ -288,79 +317,212 @@ describe('before anything is signed', () => {
     expect(r.text).toMatch(/answered 400 to the unpaid request/);
   });
 
-  it('a price raised after the plan is refused, not paid', async () => {
+  it.each([
+    ['a price raised', { amount: '14412' }],
+    ['a recipient swapped', { payTo: '0x9999999999999999999999999999999999999999' }],
+    ['a token swapped', { asset: '0x9999999999999999999999999999999999999999' }],
+  ])('%s after the plan is refused, not paid', async (_name, over) => {
     let probes = 0;
     const r = await scenario((s) => {
       s.rowOver = () => {
         probes += 1;
-        return probes > 2 ? { amount: '2001' } : {};
+        return probes > 3 ? over : {};
       };
     });
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.sim.signatures).toEqual([]);
     expect(r.text).toMatch(/no signature left this machine/);
   });
-
-  it('a recipient swapped after the plan is refused, not paid', async () => {
-    let probes = 0;
-    const r = await scenario((s) => {
-      s.rowOver = () => {
-        probes += 1;
-        return probes > 2 ? { payTo: '0x9999999999999999999999999999999999999999' } : {};
-      };
-    });
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.sim.signatures).toEqual([]);
-  });
 });
 
 describe('a clean run', () => {
-  it('pays three calls, one signature each, prints each measurement and passes every risk', async () => {
+  it('pays each call once from its own wallet, at no more than the relay, and passes the goal', async () => {
     const r = await scenario(() => {});
     expect(r.code).toBe(EXIT_OK);
-    expect(r.sim.signatures).toHaveLength(3);
-    expect(r.sim.signatures.every((p) => p.accepted.scheme === 'upto')).toBe(true);
-    expect(r.w.transfers.map((t) => t.value)).toEqual([priceOf(0), priceOf(1), priceOf(2)]);
-    expect(r.w.usdc).toBe(1_000_000n - priceOf(0) - priceOf(1) - priceOf(2));
+    expect(r.sim.signatures.map((p) => p.accepted.scheme)).toEqual(['upto', 'exact', 'exact']);
+    expect(r.w.transfers).toHaveLength(3);
     // the permit is for exactly that call's ceiling
-    const permit = (r.sim.signatures[1]!.extensions as { eip2612GasSponsoring: { info: { amount: string; spender: string } } }).eip2612GasSponsoring.info;
-    expect(permit.amount).toBe(THOUGHT_CEILING.toString());
+    const permit = (r.sim.signatures[0]!.extensions as { eip2612GasSponsoring: { info: { amount: string; spender: string } } }).eip2612GasSponsoring.info;
+    expect(permit.amount).toBe('14411');
     expect(permit.spender).toBe('0x000000000022D473030F116dDEE9F6B43aC78BA3');
-    for (const part of ['HTTP        200', `Served by   ${MODEL}, fallback: no`, 'Answer      text: ok', 'Answer      tool call finish, arguments valid', 'cache read 14000', 'Ceiling     $0.099484', `Moved       $0.066400, tx ${txOf(1)}`, 'BlockRun list price for these tokens + $0.001: $0.066400', 'OpenRouter for the same tokens: $0.065400', 'Relay quote for this request: $0.1']) {
-      expect(r.text).toContain(part);
+    for (const part of ['HTTP        200', 'Served by   anthropic/claude-haiku-4.5, fallback: no', 'Answer      tool call finish, arguments valid', 'Ceiling     $0.014411 (upto)', 'Ceiling     $0.013724 (exact)', 'Picture     readable: image/png', `tx ${txOf(2)}`, 'Relay charge for this request: $0.015', 'OpenRouter for the same tokens', 'BlockRun list price for these tokens + $0.001']) {
+      expect(r.text, part).toContain(part);
     }
-    expect(r.text).not.toContain('FAIL');
     expect(r.lines.at(-1)).toBe('PASS');
-    for (const risk of ['BlockRun accepts our upto payment', 'sponsored permit', 'upto settles the real cost', 'PAYMENT-RESPONSE', 'Claude accepts our tool request', 'prompt cache is read', 'Latency', 'The model asked for', 'Local token count', 'One signature, one payment']) {
-      expect(verdict(r.text, risk), risk).toMatch(/^PASS/);
+    for (const goal of ['pays from its own wallet', 'costs no more than the relay', 'Tool calls work on Claude', 'Tool calls work on other models', 'Pictures work', 'The model asked for']) {
+      expect(verdict(r.text, goal), goal).toMatch(/^PASS/);
     }
-    expect(verdict(r.text, '5.5%')).toMatch(/^NOT TESTED/);
-    // the token check really compared
-    expect(countInputTokens(thoughtRequest(MODEL) as never)).toBeGreaterThan(14_000);
+    expect(r.text).toContain('upto settled');
   });
 
-  it('parses the same tool call the supervisor would', () => {
-    expect(parseAssistant(answers[1] as never).toolCall?.name).toBe('finish');
+  it('--full also measures the real thought and the prompt cache, without judging them', async () => {
+    const r = await scenario(() => {}, { argv: ['--yes', '--full'] });
+    expect(r.code).toBe(EXIT_OK);
+    expect(r.sim.signatures).toHaveLength(5);
+    expect(r.text).toContain('Prompt cache on the repeat: 14000 tokens read');
+    expect(r.text).toContain('A real thought: billed 16800 input tokens');
+  });
+
+  it('upto settling its whole ceiling passes the goal when that is still under the relay, and says so', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, ok, payload }) => ok(i === 0 ? BigInt(payload.accepted.amount) : undefined);
+    });
+    expect(r.code).toBe(EXIT_OK);
+    expect(r.text).toContain('upto settled $0.014411 of $0.014411');
+  });
+});
+
+describe('failing the goal', () => {
+  it('moving more than the relay charges fails that goal', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, ok }) => ok(i === 1 ? 13_000n : undefined);
+    });
+    expect(verdict(r.text, 'costs no more than the relay')).toMatch(/^PASS/);
+    const dearer = await scenario((s) => {
+      s.rowOver = (model) => (model === 'openai/gpt-4.1-mini' ? { amount: '20000' } : {});
+      s.paid = ({ i, ok }) => ok(i === 1 ? 20_000n : undefined);
+    });
+    expect(dearer.code).toBe(EXIT_FAILED);
+    expect(verdict(dearer.text, 'costs no more than the relay')).toMatch(/^FAIL/);
+  });
+
+  it('a fallback model stops the run and fails that goal', async () => {
+    const r = await scenario((s) => void (s.paid = ({ ok }) => ok(undefined, { 'x-fallback-used': 'true', 'x-fallback-model': 'anthropic/claude-sonnet-4.5' })));
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.sim.signatures).toHaveLength(1);
+    expect(r.text).toContain('Served by   anthropic/claude-sonnet-4.5, fallback: YES');
+    expect(verdict(r.text, 'The model asked for')).toMatch(/^FAIL/);
+  });
+
+  it('a tool call cut off at the output limit is not "the tools were rejected": it is named and the run goes on', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, ok, json, settle }) => {
+        if (i !== 0) return ok();
+        settle(14_411n);
+        json(200, toolAnswer('anthropic/claude-haiku-4.5', { prompt_tokens: 4200, completion_tokens: 1024 }, 'length', { id: 'x', type: 'function', function: { name: 'finish', arguments: '{"memory":"a very long note that ne' } }), { 'x-payment-receipt': txOf(i) });
+      };
+    });
+    expect(r.sim.signatures).toHaveLength(3);
+    expect(r.text).toContain('CUT OFF at the output limit');
+    expect(verdict(r.text, 'Tool calls work on Claude')).toMatch(/^PASS.*cut off/);
+    expect(r.code).toBe(EXIT_OK);
+  });
+
+  it('arguments the tool rejects that were not cut off are a real failure', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, json, settle }) => {
+        settle(10_000n);
+        json(200, toolAnswer('anthropic/claude-haiku-4.5', smallUsage, 'tool_calls', { id: 'x', type: 'function', function: { name: 'finish', arguments: '{"nope":1}' } }), { 'x-payment-receipt': txOf(i) });
+      };
+    });
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.sim.signatures).toHaveLength(1);
+    expect(r.text).toContain('arguments INVALID');
+    expect(verdict(r.text, 'Tool calls work on Claude')).toMatch(/^FAIL/);
+  });
+
+  it('text instead of a tool call stops the run', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, json, settle }) => {
+        settle(10_000n);
+        json(200, { id: 'c', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }], usage: smallUsage }, { 'x-payment-receipt': txOf(i) });
+      };
+    });
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.text).toContain('text instead of a tool call');
+  });
+
+  it('a rejection of our request that settles: stops, the money counted, no next call', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ settle, json }) => {
+        settle(5000n);
+        json(400, { error: { message: 'tools: Extra inputs are not permitted', code: 'INVALID_PARAMETER' } });
+      };
+    });
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.sim.signatures).toHaveLength(1);
+    expect(r.text).toContain('direct_http_400_INVALID_PARAMETER');
+    expect(r.text).toContain('lost $0.005000');
+    expect(verdict(r.text, 'Pictures work')).toMatch(/^NOT REACHED/);
+  });
+});
+
+describe('pictures', () => {
+  it('a slow picture is polled, and paid once, on the first poll that sees it done', async () => {
+    let polls = 0;
+    let settled = false;
+    const r = await scenario((s, w) => {
+      s.paid = ({ i, ok, json, payload }) => {
+        if (i !== 2) return ok();
+        json(202, { id: 'job', status: 'queued', poll_url: '/api/v1/images/generations/job', payment_status: 'verified' });
+        s.poll = (res) => {
+          polls += 1;
+          const done = polls >= 2;
+          res.writeHead(done ? 200 : 202, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(done ? imageBody(PNG_URI, txOf(2)) : { id: 'job', status: 'in_progress' }));
+          if (done && !settled) {
+            settled = true;
+            w.spent.add((paymentAuthorization(payload)!.nonce as Hex).toLowerCase());
+            w.usdc -= 22_000n;
+            w.transfers.push({ value: 22_000n, tx: txOf(2) });
+          }
+        };
+      };
+    });
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(r.sim.signatures).toHaveLength(3);
+    expect(r.w.transfers).toHaveLength(3);
+    expect(r.text).toContain('A slow picture');
+    expect(verdict(r.text, 'Pictures work')).toMatch(/^PASS/);
+    expect(r.code).toBe(EXIT_OK);
+  });
+
+  it('a picture BlockRun could not make is not charged', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, ok, json }) => {
+        if (i !== 2) return ok();
+        json(202, { id: 'job', status: 'queued', poll_url: '/api/v1/images/generations/job' });
+        s.poll = (res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ id: 'job', status: 'failed', payment_status: 'not_charged' }));
+        };
+      };
+    });
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.text).toContain('nothing was charged');
+    expect(verdict(r.text, 'Pictures work')).toMatch(/^FAIL/);
+    expect(r.w.transfers).toHaveLength(2);
+  });
+
+  it('a slow picture pointing the poll at another origin is not polled with the payment', async () => {
+    const r = await scenario((s) => {
+      s.paid = ({ i, ok, json }) => {
+        if (i !== 2) return ok();
+        json(202, { id: 'job', status: 'queued', poll_url: 'https://elsewhere.test/poll' });
+      };
+    });
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.text).toContain('no poll address');
   });
 });
 
 describe('failures stop the run and never pay twice', () => {
-  it('first call refused by BlockRun after signing, nothing settled: reads the chain until the signature is dead', async () => {
+  it('refused after signing, nothing settled: reads the chain until the signature is dead', async () => {
     const r = await scenario((s) => void (s.paid = ({ json }) => json(402, { error: 'Payment verification failed', code: 'PAYMENT_INVALID' })));
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.sim.signatures).toHaveLength(1);
     expect(r.text).toContain('direct_http_402_PAYMENT_INVALID');
     expect(r.text).toContain('The signature expired unused: nothing was charged');
     expect(r.text).toContain('Moved       $0.000000');
-    expect(verdict(r.text, 'BlockRun accepts our upto payment')).toMatch(/^FAIL/);
-    expect(verdict(r.text, 'Claude accepts our tool request')).toMatch(/^NOT REACHED/);
+    expect(verdict(r.text, 'pays from its own wallet')).toMatch(/^FAIL/);
+    expect(verdict(r.text, 'Pictures work')).toMatch(/^NOT REACHED/);
     expect(r.lines.at(-1)).toMatch(/^FAIL/);
   });
 
   it('response lost after settling: finds the money on chain by logs, one payment, no retry', async () => {
     const r = await scenario((s) => {
       s.paid = ({ settle, req }) => {
-        settle();
+        settle(14_000n);
         req.socket.destroy();
       };
     });
@@ -368,25 +530,18 @@ describe('failures stop the run and never pay twice', () => {
     expect(r.sim.signatures).toHaveLength(1);
     expect(r.w.transfers).toHaveLength(1);
     expect(r.text).toContain('Reading the chain instead of retrying');
-    expect(r.text).toContain(`Moved       $0.001072, tx ${txOf(0)}`);
-    expect(r.text).toContain('lost $0.001072');
-    expect(verdict(r.text, 'One signature, one payment')).toMatch(/^PASS/);
+    expect(r.text).toContain(`Moved       $0.014000, tx ${txOf(0)}`);
+    expect(r.text).toContain('lost $0.014000');
+    expect(verdict(r.text, 'pays from its own wallet')).toMatch(/^PASS.*one per signature/);
   });
 
   it('timeout, then a late settlement: still one payment, read from the chain', async () => {
-    const r = await scenario(
-      (s) => {
-        // no answer at all; it settles while the check is reading the chain
-        s.paid = ({ settle }) => void (s.afterPoll = () => settle(1500n));
-      },
-      { timeoutMs: 200 },
-    );
+    const r = await scenario((s) => void (s.paid = ({ settle }) => void (s.afterPoll = () => settle(1500n))), { timeoutMs: 200 });
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.sim.signatures).toHaveLength(1);
     expect(r.w.transfers).toHaveLength(1);
     expect(r.text).toMatch(/No response/);
     expect(r.text).toContain(`Moved       $0.001500, tx ${txOf(0)}`);
-    expect(r.text).toContain('lost $0.001500');
   });
 
   it('timeout and nothing ever settles: nothing charged', async () => {
@@ -396,20 +551,19 @@ describe('failures stop the run and never pay twice', () => {
     expect(r.text).toContain('nothing was charged');
   });
 
-  it('settlement delayed: the answer arrives, the transfer lands later, and the real amount is what gets printed', async () => {
+  it('settlement delayed: the answer arrives, the transfer lands later, and the real amount is printed', async () => {
     const r = await scenario((s) => {
-      s.paid = ({ i, json, settle }) => {
-        json(200, answers[i], { 'x-payment-settled': 'false' });
-        s.afterPoll = () => settle();
+      s.paid = ({ i, json, settle, ok }) => {
+        if (i !== 0) return ok();
+        json(200, answers[0], { 'x-payment-settled': 'false' });
+        s.afterPoll = () => settle(9_000n);
       };
     });
     expect(r.sim.signatures).toHaveLength(3);
     expect(r.text).toContain('Settlement not confirmed in the response');
-    expect(r.text).toContain(`Moved       $0.066400, tx ${txOf(1)}`);
+    expect(r.text).toContain(`Moved       $0.009000, tx ${txOf(0)}`);
     expect(r.text).toContain('BlockRun says it settled nothing it reports');
-    expect(verdict(r.text, 'PAYMENT-RESPONSE')).toMatch(/^FAIL/);
-    expect(verdict(r.text, 'upto settles the real cost')).toMatch(/^PASS/);
-    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.code).toBe(EXIT_OK);
   });
 
   it('answered and never settled: says so, stops', async () => {
@@ -419,79 +573,10 @@ describe('failures stop the run and never pay twice', () => {
     expect(r.text).toContain('never settled');
   });
 
-  it('Claude rejects our tools through BlockRun and the rejection settles: stops at call 2, money counted, no call 3', async () => {
-    const r = await scenario((s) => {
-      s.paid = ({ i, ok, json, settle }) => {
-        if (i === 0) return ok();
-        settle(5000n);
-        json(400, { error: { message: 'tools: Extra inputs are not permitted', code: 'INVALID_PARAMETER' } });
-      };
-    });
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.sim.signatures).toHaveLength(2);
-    expect(r.text).toContain('direct_http_400_INVALID_PARAMETER');
-    expect(r.text).toContain('lost $0.005000');
-    expect(verdict(r.text, 'Claude accepts our tool request')).toMatch(/^FAIL/);
-    expect(verdict(r.text, 'prompt cache is read')).toMatch(/^NOT REACHED/);
-  });
-
-  it('text instead of a tool call on the realistic call stops the run', async () => {
-    const r = await scenario((s) => {
-      s.paid = ({ i, ok, json, settle }) => {
-        if (i === 0) return ok();
-        settle(60_000n);
-        json(200, { ...answers[0], usage: thoughtUsage(0, 0) }, { 'x-payment-receipt': txOf(i) });
-      };
-    });
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.sim.signatures).toHaveLength(2);
-    expect(r.text).toContain('text instead of a tool call');
-  });
-
-  it('a tool call the catalog rejects is reported', async () => {
-    const r = await scenario((s) => {
-      s.paid = ({ i, ok, json, settle }) => {
-        if (i === 0) return ok();
-        settle(60_000n);
-        json(200, { ...answers[1], choices: [{ index: 0, message: { role: 'assistant', content: '', tool_calls: [{ id: 'x', type: 'function', function: { name: 'finish', arguments: '{"nope":1}' } }] } }] }, { 'x-payment-receipt': txOf(i) });
-      };
-    });
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.text).toContain('arguments INVALID');
-  });
-
-  it('a fallback model stops the run and fails that risk', async () => {
-    const r = await scenario((s) => void (s.paid = ({ ok }) => ok(undefined, { 'x-fallback-used': 'true', 'x-fallback-model': 'anthropic/claude-sonnet-4.5' })));
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.sim.signatures).toHaveLength(1);
-    expect(r.text).toContain('Served by   anthropic/claude-sonnet-4.5, fallback: YES');
-    expect(verdict(r.text, 'The model asked for')).toMatch(/^FAIL/);
-  });
-
   it('a free model standing in is not an answer', async () => {
     const r = await scenario((s) => void (s.paid = ({ i, json }) => json(200, answers[i], { 'x-free-model': 'true' })));
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.text).toContain('direct_free_model_substituted');
-  });
-
-  it('settling the whole ceiling is caught as not the real cost', async () => {
-    const r = await scenario((s) => void (s.paid = ({ i, ok }) => ok(i === 0 ? TINY_CEILING : THOUGHT_CEILING)));
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(verdict(r.text, 'upto settles the real cost')).toMatch(/^FAIL/);
-  });
-
-  it('no cache read on the repeat fails only that risk', async () => {
-    const r = await scenario((s) => {
-      s.paid = ({ i, ok, json, settle }) => {
-        if (i < 2) return ok();
-        settle(priceOf(1));
-        json(200, answers[1], { 'x-payment-receipt': txOf(i) });
-      };
-    });
-    expect(r.code).toBe(EXIT_FAILED);
-    expect(r.sim.signatures).toHaveLength(3);
-    expect(verdict(r.text, 'prompt cache is read')).toMatch(/^FAIL/);
-    expect(verdict(r.text, 'Claude accepts our tool request')).toMatch(/^PASS/);
   });
 
   it('a chain that cannot be read: says it does not know, tells the owner to check, does not retry', async () => {
@@ -508,7 +593,7 @@ describe('failures stop the run and never pay twice', () => {
   });
 
   it('settling above the signed amount is called out', async () => {
-    const r = await scenario((s) => void (s.paid = ({ ok }) => ok(TINY_CEILING + 1n)));
+    const r = await scenario((s) => void (s.paid = ({ ok }) => ok(14_412n)));
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.text).toContain('above the signed');
   });

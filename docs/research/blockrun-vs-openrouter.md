@@ -39,6 +39,21 @@ mode pays with `upto` only by default and leaves everything else on the relay.
 The relay's real cost above excludes OpenRouter's credit purchase fee (reported 5.5%, still unverified from a primary
 source) and the CDP facilitator ($0.001 per settlement after 1,000 a month, https://docs.cdp.coinbase.com/x402/support/faq).
 
+## Update 2026-11-06, after the first paid calls: `upto` settled the whole ceiling
+
+Two paid calls from a dev wallet. Both went through the x402 `upto` proxy's `settleWithPermit`, and in both the settled amount
+passed on chain equals the signed maximum: 2000 of 2000 and 99484 of 99484 micro-USDC, while the second call's tokens at list
+price come to 82392. Our payload was right; BlockRun chooses the settled amount and passed the ceiling.
+
+Over 30 days, 75,065 USDC transfers reached BlockRun's address and only these 2 went through the `upto` proxy, so nobody else
+gives evidence either way. The proxy itself works: of the first 1,500 of its 41,052 settlements, one other seller settled below
+the authorization on all 1,479 of its own.
+
+The goal changed the same day: no saving needed, agents pay from their own wallets and no OpenRouter credit is needed. A
+ceiling-settling `upto` meets that, because BlockRun's quote is below the relay's on every launch-form model at real thought
+sizes (Sonnet 4.6 at 61 kB: 0.0995 against 0.1179). Only at 20 kB is it dearer, on GPT-4.1 mini (+1.4%) and Gemini 3.5 Flash-Lite
+(+2.5%), from the flat $0.001.
+
 ## Verdict
 
 BlockRun can be wired in as a **second upstream behind a config switch** with about a day of work,
