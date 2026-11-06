@@ -7,8 +7,9 @@ import { HttpRequestError, http, type Transport } from 'viem';
  * 50 requests per second" the docs quote for an average call.
  *
  * Ponder 0.18 has no setting for this: `maxRequestsPerSecond` is deprecated and ignored, and its own dynamic limit starts
- * at 20 requests a second (2,000 BU/s) and only comes down after 429s, which the supervisor's reads then share. Base's
- * 200 ms blocks cost about 1,000 BU/s to follow, so the room left is narrow.
+ * at 20 requests a second (up to 2,000 BU/s) and only comes down after 429s, which the supervisor's reads then share. Base's
+ * 200 ms blocks (Denim, 2026-11-05) cost about 750 BU/s to follow, ten times what 2 s blocks did, and a restart refetches the
+ * 180 s reorg window, about 1,000 blocks, so the room left is narrow.
  *
  * This file sits beside ponder.config.ts and not under src/ on purpose: Ponder's build id hashes every file under src/
  * and the config's `contracts`, `accounts`, `blocks` and `ordering`, never `chains`. Changing the budget or this file
