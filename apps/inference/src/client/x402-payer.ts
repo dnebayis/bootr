@@ -4,7 +4,8 @@
  * Wraps `fetch`: on an x402 `402` (one carrying a `PAYMENT-REQUIRED` header) it signs an
  * EIP-3009 `transferWithAuthorization` for USDC with the agent's wallet, via the x402 v2 client
  * libraries (`@x402/fetch` re-exports of `x402Client` / `x402HTTPClient` + `@x402/evm`'s
- * `ExactEvmScheme`), and retries the request exactly once with the `PAYMENT-SIGNATURE` header.
+ * `ExactEvmScheme`, or `UptoEvmScheme` when the caller allows it), and retries the request exactly once
+ * with the `PAYMENT-SIGNATURE` header.
  *
  * Safety rules, mirroring the supervisor's "never buy a replacement":
  *  - An `Idempotency-Key` header is required. Retries of the same logical request must reuse it;
@@ -37,6 +38,7 @@
 import { encodePaymentSignatureHeader } from '@x402/core/http';
 import type { Network, PaymentPayload, PaymentRequirements } from '@x402/core/types';
 import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { UptoEvmScheme } from '@x402/evm/upto/client';
 import { x402Client, x402HTTPClient } from '@x402/fetch';
 import { getAddress, type Address, type Hex } from 'viem';
 
@@ -88,6 +90,20 @@ export interface X402PayerOptions {
   networks?: readonly Network[];
   /** If set, refuse to pay any other recipient. */
   payTo?: Address | readonly Address[];
+  /**
+   * Schemes this payer may sign, most wanted first. Default `['exact']`. `upto` (Permit2) settles what the call
+   * really cost, up to the signed amount; it needs `readContract` for the gas-sponsored allowance.
+   */
+  schemes?: readonly PayerScheme[];
+  /** Chain reads for `upto`: the Permit2 allowance and the USDC permit nonce. */
+  readContract?: (args: {
+    address: Address;
+    abi: readonly unknown[];
+    functionName: string;
+    args?: readonly unknown[];
+  }) => Promise<unknown>;
+  /** Refuse a requirement whose signature would stay usable longer than this, so an unknown outcome stays short. */
+  maxTimeoutSeconds?: number;
   fetch?: typeof globalThis.fetch;
   /**
    * Called after signing and before sending the payment. Persist `payload` (it contains the
@@ -95,6 +111,8 @@ export interface X402PayerOptions {
    */
   onPayment?: (event: PaymentEvent) => void | Promise<void>;
 }
+
+export type PayerScheme = 'exact' | 'upto';
 
 export class X402PaymentRefusedError extends Error {
   constructor(message: string) {
@@ -124,6 +142,7 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
   const signer = toSigner(opts.signer);
   const doFetch = opts.fetch ?? globalThis.fetch;
   const networks = opts.networks ?? (['eip155:8453', 'eip155:84532'] as Network[]);
+  const schemes = opts.schemes ?? (['exact'] as const);
   const allowedPayTo = opts.payTo
     ? new Set(
         (Array.isArray(opts.payTo) ? opts.payTo : [opts.payTo]).map((a) =>
@@ -169,16 +188,25 @@ export function createX402Payer(opts: X402PayerOptions): X402Payer {
 
       // A fresh client per call: the cap differs per request.
       const client = new x402Client();
-      for (const network of networks) client.register(network, new ExactEvmScheme(signer));
+      for (const network of networks) {
+        if (schemes.includes('exact')) client.register(network, new ExactEvmScheme(signer));
+        if (schemes.includes('upto')) {
+          const uptoSigner = { ...signer, readContract: opts.readContract };
+          client.register(network, new UptoEvmScheme(uptoSigner as ConstructorParameters<typeof UptoEvmScheme>[0]));
+        }
+      }
       // Keep "default assets only" (USDC); the USD cap is replaced by our exact atomic cap.
       client.setSpendControls({ maxAmountPerPayment: false });
       client.registerPolicy((_version, reqs) =>
-        reqs.filter(
-          (r) =>
-            r.scheme === 'exact' &&
-            BigInt(r.amount) <= cap &&
-            (!allowedPayTo || allowedPayTo.has(getAddress(r.payTo as Address))),
-        ),
+        reqs
+          .filter(
+            (r) =>
+              schemes.includes(r.scheme as PayerScheme) &&
+              BigInt(r.amount) <= cap &&
+              (opts.maxTimeoutSeconds === undefined || r.maxTimeoutSeconds <= opts.maxTimeoutSeconds) &&
+              (!allowedPayTo || allowedPayTo.has(getAddress(r.payTo as Address))),
+          )
+          .sort((a, b) => schemes.indexOf(a.scheme as PayerScheme) - schemes.indexOf(b.scheme as PayerScheme)),
       );
       const http = new x402HTTPClient(client);
 

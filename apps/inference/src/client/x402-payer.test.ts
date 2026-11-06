@@ -1,4 +1,4 @@
-import { encodePaymentRequiredHeader } from '@x402/core/http';
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from '@x402/core/http';
 import type { PaymentRequired } from '@x402/core/types';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { describe, expect, it, vi } from 'vitest';
@@ -121,6 +121,66 @@ describe('x402 payer', () => {
     await expect(payer.fetch('http://relay.test/x', init('k4'))).rejects.toBeInstanceOf(
       X402PaymentRefusedError,
     );
+  });
+
+  describe('schemes', () => {
+    const upto = {
+      scheme: 'upto',
+      network: NETWORK,
+      asset: BASE_SEPOLIA_USDC,
+      amount: '500',
+      payTo: PAY_TO,
+      maxTimeoutSeconds: 300,
+      extra: { name: 'USDC', version: '2', facilitatorAddress: '0x4c934c63C786157Fefd990945b25eA60a0FB0205' },
+    };
+    const offering = (accepts: Record<string, unknown>[]) => {
+      const paid: Request[] = [];
+      const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const req = new Request(input, init);
+        if (req.headers.get('payment-signature')) {
+          paid.push(req);
+          return new Response('{}', { status: 200 });
+        }
+        const required = { ...paymentRequired('500'), accepts } as PaymentRequired;
+        return new Response('{}', { status: 402, headers: { 'PAYMENT-REQUIRED': encodePaymentRequiredHeader(required) } });
+      });
+      return { fetchMock, paid };
+    };
+    const paidScheme = (req: Request) => decodePaymentSignatureHeader(req.headers.get('payment-signature')!).accepted.scheme;
+    const signer = () => privateKeyToAccount(generatePrivateKey());
+
+    it('signs exact by default and ignores an upto offer', async () => {
+      const { fetchMock, paid } = offering([upto, paymentRequired('500').accepts[0]!]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, fetch: fetchMock as typeof fetch });
+      await payer.fetch('http://relay.test/x', init('s1'));
+      expect(paidScheme(paid[0]!)).toBe('exact');
+    });
+
+    it('refuses when only upto is offered and upto is not allowed', async () => {
+      const { fetchMock } = offering([upto]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, fetch: fetchMock as typeof fetch });
+      await expect(payer.fetch('http://relay.test/x', init('s2'))).rejects.toBeInstanceOf(X402PaymentRefusedError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('picks the first allowed scheme, whatever order the server lists them in', async () => {
+      const { fetchMock, paid } = offering([paymentRequired('500').accepts[0]!, upto]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, schemes: ['upto', 'exact'], fetch: fetchMock as typeof fetch });
+      await payer.fetch('http://relay.test/x', init('s3'));
+      expect(paidScheme(paid[0]!)).toBe('upto');
+    });
+
+    it('holds upto to the same cap', async () => {
+      const { fetchMock } = offering([{ ...upto, amount: '5000' }]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, schemes: ['upto'], fetch: fetchMock as typeof fetch });
+      await expect(payer.fetch('http://relay.test/x', init('s4'))).rejects.toThrow(/refusing to pay/);
+    });
+
+    it('refuses a signature that would stay valid too long', async () => {
+      const { fetchMock } = offering([{ ...upto, maxTimeoutSeconds: 86_400 }]);
+      const payer = createX402Payer({ signer: signer(), maxPaymentMicroUsdc: 1000n, schemes: ['upto'], maxTimeoutSeconds: 600, fetch: fetchMock as typeof fetch });
+      await expect(payer.fetch('http://relay.test/x', init('s5'))).rejects.toThrow(/refusing to pay/);
+    });
   });
 
   it('passes through a quote rejection untouched', async () => {
