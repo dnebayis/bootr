@@ -256,7 +256,8 @@ describe('fee split', () => {
 
   it('warns of the anti-sniper fee on a new Clanker pool, and points at the dev buy', () => {
     expect(fees).toMatch(/anti-sniper fee/);
-    expect(fees).toMatch(/about 55%/);
+    expect(fees).toMatch(/about 63 to 71%/);
+    expect(fees).toMatch(/about the first half second/);
     expect(fees).toMatch(/about 16 seconds/);
     expect(fees).toMatch(/`devBuyEth` runs inside the launch transaction/);
   });

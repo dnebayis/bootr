@@ -96,12 +96,12 @@ async function readLaunchWindow(client: QuoteClient, key: PoolKey): Promise<Laun
     ],
   });
   if (armed.status !== 'success' || createdAt.status !== 'success' || maxDelay.status !== 'success') return null;
-  return { armed: armed.result, endsAt: Number(createdAt.result) + Number(maxDelay.result) };
+  return { armed: armed.result, startedAt: Number(createdAt.result), endsAt: Number(createdAt.result) + Number(maxDelay.result) };
 }
 
 export async function quoteSwap(
   client: QuoteClient,
-  { key, side, amountIn }: { key: PoolKey; side: SwapSide; amountIn: bigint },
+  { key, side, amountIn, now }: { key: PoolKey; side: SwapSide; amountIn: bigint; now?: number },
 ): Promise<SwapQuote> {
   const direction = zeroForOne(key, side);
   const refIn = referenceAmount(amountIn);
@@ -127,7 +127,7 @@ export async function quoteSwap(
 
   const sqrtPriceX96 = slot0.status === 'success' ? slot0.result[0] : null;
   if (sqrtPriceX96 === 0n) throw new SwapFailure('no_pool');
-  if (main.status !== 'success') throw SwapFailure.from(main.error, { launchWindow });
+  if (main.status !== 'success') throw SwapFailure.from(main.error, { launchWindow, ...(now !== undefined ? { now } : {}) });
 
   const amountOut = main.result[0];
   if (amountOut === 0n) throw new SwapFailure('no_liquidity');
