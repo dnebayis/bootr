@@ -11,6 +11,7 @@ import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
 import { Erc20Abi } from '../../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../../abis/Multicall3';
 import { RwagmiLpLockerV3Abi } from '../../abis/RwagmiLpLockerV3';
+import { safeMessage } from '../../rpc-budget';
 import { corsMiddleware } from '../lib/cors';
 import { indexerEnv } from '../lib/env';
 import { DEAD_ADDRESS, RECIPIENT_KINDS, type LaunchSource, type RecipientKind } from '../lib/fees';
@@ -796,7 +797,7 @@ app.get('/treasury/:kernel', async (c) => {
     }
     if (spender) spenderUsdc = val(i) ?? spenderUsdc;
   } catch (err) {
-    console.warn(`[indexer] /treasury live read failed: ${(err as Error).message}`);
+    console.warn(`[indexer] /treasury live read failed: ${safeMessage(err)}`);
   }
   const treasuryUsd = usd(
     toUnits(balances.usdc + spenderUsdc, 6) +

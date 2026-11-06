@@ -44,8 +44,13 @@ RPC rate: CDP limits billing units, not requests (7,500 BU per 5 s per project, 
 `eth_getLogs` on the 35-50% whose bloom matches a filter, about 750 BU/s in all. `INDEXER_RPC_BU_PER_SEC` is what Ponder
 may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional second
 RPC for what the budget cannot cover and for what the first one answers 429 to. Both live in `chains` and `rpc-budget.ts`,
-outside Ponder's build id, so changing them needs no new `DATABASE_SCHEMA`. Ponder 0.18 ignores `maxRequestsPerSecond`, so the
-old `INDEXER_MAX_RPS` does nothing. The USDC fuel scan and the REST API's live reads use `src/lib/rpc.ts`, outside the budget.
+outside Ponder's build id, so changing them needs no new `DATABASE_SCHEMA`. The USDC fuel scan and the REST API's live reads
+(`src/lib/rpc.ts`) spend from the same budget and wait out a 429 for about 8 s.
+
+Keys in logs: viem names the full url in its errors and Ponder logs an error whole, so a url string in Ponder's chain config
+would print the key on any failed request. `rpc-budget.ts` therefore gives Ponder a transport that scrubs every error for any
+url with a path, query or credentials, budget or not, and keeps plain strings for urls with nothing to hide. Keep RPC urls out
+of anything else that logs. With the transport, Ponder's own lines name `hostname: custom_transport` and no url.
 
 Coins come through two launch paths, both on **Base mainnet only** (`token.source`):
 

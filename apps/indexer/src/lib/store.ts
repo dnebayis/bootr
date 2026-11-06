@@ -6,6 +6,7 @@ import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
 import { ChainlinkAggregatorAbi } from '../../abis/ChainlinkAggregator';
+import { safeMessage } from '../../rpc-budget';
 import { secondsBetweenBlocks } from './blocks';
 import { indexerEnv } from './env';
 import { classifyRecipient, DEAD_ADDRESS as DEAD, type LaunchSource, type RecipientKind } from './fees';
@@ -53,7 +54,7 @@ export async function getEthUsd(context: Ctx, blockNumber: bigint, force = false
       return priceUsd;
     }
   } catch (err) {
-    console.warn(`[indexer] Chainlink ETH/USD read failed at block ${blockNumber}: ${(err as Error).message}`);
+    console.warn(`[indexer] Chainlink ETH/USD read failed at block ${blockNumber}: ${safeMessage(err)}`);
   }
   return row?.priceUsd ?? 0;
 }

@@ -2,6 +2,7 @@ import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 import { decodeEventLog, decodeFunctionData, type Address, type Hex, type Log } from 'viem';
 
+import { safeMessage } from '../rpc-budget';
 import { B20TokenAbi } from '../abis/B20Token';
 import { BootrClankerLauncherAbi } from '../abis/BootrClankerLauncher';
 import { BootrLauncherAbi } from '../abis/BootrLauncher';
@@ -526,7 +527,7 @@ if (enabledSources().BootrLauncher) {
       });
       rewards = info.rewards.map((r) => ({ admin: lc(r.admin), recipient: lc(r.recipient), bps: Number(r.bps) }));
     } catch (err) {
-      console.warn(`[indexer] launchInfo(${token}) failed, using the AgentLaunched defaults: ${(err as Error).message}`);
+      console.warn(`[indexer] launchInfo(${token}) failed, using the AgentLaunched defaults: ${safeMessage(err)}`);
     }
     if (rewards.length === 0) rewards = defaultSlots(a, event.log.address, burner);
     const kinds = classifySlots(rewards, { kernel, creator, burner, platformRecipient }, 'bootr');
@@ -629,7 +630,7 @@ if (enabledSources().BootrClankerLauncher) {
         const r = await context.client.readContract({ abi: ClankerLpLockerFeeConversionAbi, address: clanker.locker, functionName: 'tokenRewards', args: [a.token] });
         info = { poolKey: r.poolKey, rewardBps: r.rewardBps.map(Number), rewardAdmins: r.rewardAdmins, rewardRecipients: r.rewardRecipients };
       } catch (err) {
-        console.warn(`[indexer] tokenRewards(${token}) failed, using the AgentLaunched defaults: ${(err as Error).message}`);
+        console.warn(`[indexer] tokenRewards(${token}) failed, using the AgentLaunched defaults: ${safeMessage(err)}`);
       }
     }
     // Without locker data the defaults apply; the burn slot (when the preset has one) is the dead address.
