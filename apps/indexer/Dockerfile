@@ -59,7 +59,7 @@ COPY tsconfig.base.json ./
 # the service user; node_modules stays root-owned.
 COPY --chown=node:node apps/indexer/abis apps/indexer/abis
 COPY --chown=node:node apps/indexer/src apps/indexer/src
-COPY --chown=node:node apps/indexer/ponder.config.ts apps/indexer/ponder.schema.ts apps/indexer/ponder-env.d.ts apps/indexer/tsconfig.json apps/indexer/
+COPY --chown=node:node apps/indexer/ponder.config.ts apps/indexer/rpc-budget.ts apps/indexer/ponder.schema.ts apps/indexer/ponder-env.d.ts apps/indexer/tsconfig.json apps/indexer/
 COPY --chown=node:node apps/indexer/scripts/start.sh apps/indexer/scripts/schema-janitor.mjs apps/indexer/scripts/
 RUN chown node:node apps/indexer
 # The commit this image was built from (CI passes it); `DATABASE_SCHEMA=auto` names the schema after it.
