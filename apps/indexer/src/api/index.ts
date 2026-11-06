@@ -40,6 +40,19 @@ import {
 import { FEED_LIMIT, composePlatformFeed, feedNameRefs, feedWindow } from './platform-feed';
 import { composePlatformFees } from './platform-fees';
 import { publish, subscribe } from './stream';
+import {
+  claimThresholds,
+  composeClaimedByKind,
+  composeCreatorFees,
+  distinctRecipients,
+  logIndexOfId,
+  splitWalletClaims,
+  walletsHoldingSeveralKinds,
+  type CreditWindow,
+  type WalletClaim,
+  type WalletClaimSplit,
+  type WalletSlots,
+} from './wallet-slots';
 
 const env = indexerEnv();
 const app = new Hono();
@@ -98,6 +111,55 @@ async function withAgent(tokens: TokenRow[]) {
     model: social.get(t.kernel)?.model ?? t.model,
     agent: byId.get(t.kernel) ?? null,
   }));
+}
+
+/** Splits one wallet's claims on one coin over the slots it holds, from `feeCredit` (see `wallet-slots.ts`). */
+async function splitClaimsOf(pair: WalletSlots): Promise<WalletClaimSplit> {
+  const rows = await db
+    .select({
+      id: schema.feeClaim.id,
+      asset: schema.feeClaim.asset,
+      timestamp: schema.feeClaim.timestamp,
+      amount: schema.feeClaim.amount,
+      amountUsd: schema.feeClaim.amountUsd,
+    })
+    .from(schema.feeClaim)
+    .where(and(eq(schema.feeClaim.token, pair.token as Address), eq(schema.feeClaim.recipient, pair.recipient as Address)));
+  const claims: WalletClaim[] = rows.map((r) => ({
+    asset: r.asset,
+    timestamp: r.timestamp,
+    logIndex: logIndexOfId(r.id),
+    amount: BigInt(r.amount),
+    amountUsd: r.amountUsd,
+  }));
+  const windows: CreditWindow[] = [];
+  for (const asset of new Set(claims.map((c) => c.asset))) {
+    // `chainOrder` in SQL. Postgres counts the windows, so the read stays one row per (claim, slot) however many collections a coin has.
+    const order = sql`(${schema.feeCredit.timestamp}::bigint * 1000000 + split_part(${schema.feeCredit.id}, '-', 2)::bigint)`;
+    const thresholds = sql.raw(`array[${claimThresholds(claims.filter((c) => c.asset === asset)).join(',')}]::bigint[]`);
+    const credited = await db
+      .select({
+        window: sql<number>`width_bucket(${order}, ${thresholds})`,
+        slot: schema.feeCredit.slot,
+        amount: sql<string>`sum(${schema.feeCredit.amount})`,
+      })
+      .from(schema.feeCredit)
+      .where(and(eq(schema.feeCredit.token, pair.token as Address), eq(schema.feeCredit.recipient, pair.recipient as Address), eq(schema.feeCredit.asset, asset as Address)))
+      .groupBy(sql`1`, schema.feeCredit.slot);
+    for (const c of credited) windows.push({ asset, window: Number(c.window), slot: c.slot, amount: BigInt(c.amount) });
+  }
+  return splitWalletClaims(pair.slotKinds, claims, windows);
+}
+
+/** The wallets holding slots of more than one kind on `ids` (every coin when omitted), with their claims split. */
+async function walletsWithSeveralSlots(ids?: readonly Address[]) {
+  if (ids && ids.length === 0) return [];
+  const slots = await db
+    .select({ token: schema.feeSlot.token, recipient: schema.feeSlot.recipient, slot: schema.feeSlot.slot, recipientKind: schema.feeSlot.recipientKind })
+    .from(schema.feeSlot)
+    .where(ids ? inArray(schema.feeSlot.token, [...ids]) : undefined);
+  const pairs = walletsHoldingSeveralKinds(slots);
+  return Promise.all(pairs.map(async (pair) => ({ token: pair.token, recipient: pair.recipient, split: await splitClaimsOf(pair) })));
 }
 
 async function findToken(idOrKernel: string): Promise<TokenRow | undefined> {
@@ -401,9 +463,13 @@ app.get('/leaderboards/:board', async (c) => {
 });
 
 /**
- * One creator's public record, no wallet connection needed: `coins` (token rows plus `creatorFees: {earnedUsd, claimedUsd}`,
- * newest first, at most 200) and `totals`. Fees are what the indexer booked for this coin's creator slot; Clanker coins count once
- * the fees are collected. An address with no coins answers empty lists, not 404.
+ * One creator's public record, no wallet connection needed: `coins` (token rows plus `creatorFees`, newest first, at most
+ * 200) and `totals`. Fees are what the indexer booked for this coin's creator slot; Clanker coins count once the fees are
+ * collected. `creatorFees`: `{earnedUsd, claimedUsd, earnedWeth, claimedWeth, otherShares}`. When the wallet also holds
+ * another slot of a coin its claims pay both at once: `claimedUsd` is the creator share alone, the other shares are in
+ * `otherShares: [{kind, earnedUsd, claimedUsd}]`, and `claimedUsd` is null if the two cannot be told apart exactly.
+ * Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. An address with
+ * no coins answers empty lists, not 404.
  */
 app.get('/creator/:address', async (c) => {
   const address = c.req.param('address');
@@ -411,26 +477,58 @@ app.get('/creator/:address', async (c) => {
   const creator = lc(address) as Address;
   const rows = await db.select().from(schema.token).where(eq(schema.token.creator, creator)).orderBy(desc(schema.token.launchedAt)).limit(200);
   const ids = rows.map((t) => t.id);
-  const [coins, earned, claimed, at] = await Promise.all([
+  const weth = lc(env.addresses.weth);
+  const [coins, earned, claimed, several, at] = await Promise.all([
     withAgent(rows),
     ids.length
       ? db
-          .select({ token: schema.feeAccrual.token, usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)` })
+          .select({
+            token: schema.feeAccrual.token,
+            usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)`,
+            weth: sql<string>`coalesce(sum(${schema.feeAccrual.amount}) filter (where ${schema.feeAccrual.asset} = ${weth}), 0)`,
+          })
           .from(schema.feeAccrual)
           .where(and(inArray(schema.feeAccrual.token, ids), eq(schema.feeAccrual.recipientKind, 'creator')))
           .groupBy(schema.feeAccrual.token)
       : [],
     ids.length
       ? db
-          .select({ token: schema.feeClaim.token, usd: sql<number>`coalesce(sum(${schema.feeClaim.amountUsd}), 0)` })
+          .select({
+            token: schema.feeClaim.token,
+            usd: sql<number>`coalesce(sum(${schema.feeClaim.amountUsd}), 0)`,
+            weth: sql<string>`coalesce(sum(${schema.feeClaim.amount}) filter (where ${schema.feeClaim.asset} = ${weth}), 0)`,
+          })
           .from(schema.feeClaim)
           .where(and(inArray(schema.feeClaim.token, ids), eq(schema.feeClaim.recipientKind, 'creator')))
           .groupBy(schema.feeClaim.token)
       : [],
+    walletsWithSeveralSlots(ids),
     indexedAt(),
   ]);
-  const earnedBy = new Map(earned.map((r) => [r.token as string, usd(Number(r.usd))]));
-  const claimedBy = new Map(claimed.map((r) => [r.token as string, usd(Number(r.usd))]));
+  const mine = several.filter((w) => w.recipient === creator);
+  const sharedIds = mine.map((w) => w.token as Address);
+  const earnedOfWallet = sharedIds.length
+    ? await db
+        .select({
+          token: schema.feeAccrual.token,
+          kind: schema.feeAccrual.recipientKind,
+          usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)`,
+        })
+        .from(schema.feeAccrual)
+        .where(and(inArray(schema.feeAccrual.token, sharedIds), eq(schema.feeAccrual.recipient, creator)))
+        .groupBy(schema.feeAccrual.token, schema.feeAccrual.recipientKind)
+    : [];
+  const earnedByKind = new Map<string, Partial<Record<RecipientKind, number>>>();
+  for (const r of earnedOfWallet) earnedByKind.set(r.token, { ...earnedByKind.get(r.token), [r.kind]: usd(Number(r.usd)) });
+  const booked = (list: readonly { token: string; usd: number; weth: string }[]) =>
+    new Map(list.map((r) => [r.token as string, { usd: usd(Number(r.usd)), weth: BigInt(r.weth) }]));
+  const fees = composeCreatorFees({
+    ids,
+    earned: booked(earned),
+    claimed: booked(claimed),
+    splits: new Map(mine.map((w) => [w.token, w.split])),
+    earnedByKind,
+  });
   return c.json(
     j({
       address: creator,
@@ -439,20 +537,23 @@ app.get('/creator/:address', async (c) => {
       totals: {
         coins: rows.length,
         agents: coins.filter((t) => !!t.agent).length,
-        earnedUsd: usd([...earnedBy.values()].reduce((s, v) => s + v, 0)),
-        claimedUsd: usd([...claimedBy.values()].reduce((s, v) => s + v, 0)),
+        ...fees.totals,
       },
-      coins: coins.map((t) => ({ ...t, creatorFees: { earnedUsd: earnedBy.get(t.id) ?? 0, claimedUsd: claimedBy.get(t.id) ?? 0 } })),
+      coins: coins.map((t) => ({ ...t, creatorFees: fees.coins.get(t.id)! })),
     }),
   );
 });
 
-/** `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}` for one coin. */
+/**
+ * `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}, sharedWallets}` for one coin.
+ * A wallet holding two slots of the coin has its claims told apart per kind (`claimedUsd` null when that cannot be done
+ * exactly); `sharedWallets: [{recipient, kinds, claimedUsd, toldApart}]` names such wallets and what they claimed together.
+ */
 app.get('/token/:id/fees', async (c) => {
   const id = c.req.param('id');
   if (!isAddr(id)) return c.json({ error: 'invalid token address' }, 400);
   const token = lc(id) as Address;
-  const [t, acc, cl] = await Promise.all([
+  const [t, acc, cl, several] = await Promise.all([
     findToken(token),
     db
       .select({ kind: schema.feeAccrual.recipientKind, usd: sql<number>`coalesce(sum(${schema.feeAccrual.amountUsd}), 0)` })
@@ -460,28 +561,51 @@ app.get('/token/:id/fees', async (c) => {
       .where(eq(schema.feeAccrual.token, token))
       .groupBy(schema.feeAccrual.recipientKind),
     db
-      .select({ kind: schema.feeClaim.recipientKind, usd: sql<number>`coalesce(sum(${schema.feeClaim.amountUsd}), 0)` })
+      .select({
+        kind: schema.feeClaim.recipientKind,
+        recipient: schema.feeClaim.recipient,
+        usd: sql<number>`coalesce(sum(${schema.feeClaim.amountUsd}), 0)`,
+      })
       .from(schema.feeClaim)
       .where(eq(schema.feeClaim.token, token))
-      .groupBy(schema.feeClaim.recipientKind),
+      .groupBy(schema.feeClaim.recipientKind, schema.feeClaim.recipient),
+    walletsWithSeveralSlots([token]),
   ]);
-  const byKind = Object.fromEntries(RECIPIENT_KINDS.map((k) => [k, { accruedUsd: 0, claimedUsd: 0 }])) as Record<
+  const { claimed, sharedWallets } = composeClaimedByKind(
+    cl.map((r) => ({ kind: r.kind, recipient: r.recipient, usd: Number(r.usd) })),
+    several,
+  );
+  const byKind = Object.fromEntries(RECIPIENT_KINDS.map((k) => [k, { accruedUsd: 0, claimedUsd: claimed[k] }])) as Record<
     RecipientKind,
-    { accruedUsd: number; claimedUsd: number }
+    { accruedUsd: number; claimedUsd: number | null }
   >;
   for (const r of acc) if (r.kind in byKind) byKind[r.kind as RecipientKind].accruedUsd = usd(Number(r.usd));
-  for (const r of cl) if (r.kind in byKind) byKind[r.kind as RecipientKind].claimedUsd = usd(Number(r.usd));
-  return c.json({ token, source: t?.source ?? null, lpFeeBps: t?.lpFeeBps ?? null, protocolBps: t?.protocolBps ?? null, byKind });
+  return c.json({ token, source: t?.source ?? null, lpFeeBps: t?.lpFeeBps ?? null, protocolBps: t?.protocolBps ?? null, byKind, sharedWallets });
 });
 
 /**
  * Platform fee totals per launch path (`sourceStats`): `{total, bySource: {bootr, clanker}}`, each with `tokens`,
  * `volumeTotalUsd`, `feesTotalUsd` (gross, what traders paid), `byKind` (accrued to agent / creator / burn /
- * platform), `feesClaimedUsd`, `feesPlatformClaimedUsd`, `updatedAt`.
+ * platform), `feesClaimedUsd`, `feesPlatformClaimedUsd`, `feesPlatformClaimedExact`, `updatedAt`. The stored rollup
+ * counts claims by the kind they were booked under; the platform share of a wallet holding two slots is added here.
  */
 app.get('/platform/fees', async (c) => {
-  const rows = await db.select().from(schema.sourceStats);
-  return c.json(j(composePlatformFees(rows)));
+  const [rows, several] = await Promise.all([db.select().from(schema.sourceStats), walletsWithSeveralSlots()]);
+  const sources = several.length
+    ? await db
+        .select({ id: schema.token.id, source: schema.token.source })
+        .from(schema.token)
+        .where(inArray(schema.token.id, several.map((w) => w.token as Address)))
+    : [];
+  const sourceOf = new Map(sources.map((t) => [t.id as string, t.source]));
+  return c.json(
+    j(
+      composePlatformFees(
+        rows,
+        several.map((w) => ({ source: sourceOf.get(w.token) === 'clanker' ? ('clanker' as const) : ('bootr' as const), split: w.split })),
+      ),
+    ),
+  );
 });
 
 /** Compact market snapshot for the supervisor's `read_market`. Accepts a coin or kernel address. */
@@ -569,12 +693,13 @@ app.get('/treasury/:kernel', async (c) => {
   const weth = env.addresses.weth;
   const coin = t.id as Address;
   const launchSource: LaunchSource = t.source === 'clanker' ? 'clanker' : 'bootr';
-  const recipients: { recipient: Address; recipientKind: RecipientKind }[] = [
+  // One row per wallet: a wallet holding two slots has one balance, shown once (`alsoKinds` names its other slots).
+  const recipients = distinctRecipients<{ recipient: Address; recipientKind: RecipientKind }>([
     { recipient: kernel, recipientKind: 'agent' },
     { recipient: t.creator as Address, recipientKind: 'creator' },
     ...(t.burner ? [{ recipient: t.burner as Address, recipientKind: 'burn' as const }] : []),
     { recipient: t.platformRecipient as Address, recipientKind: 'platform' },
-  ];
+  ]);
   // The locker to ask: the RWAGMI LP locker (pending + claimable) or the Clanker fee locker (available).
   const locker = launchSource === 'bootr' ? (env.rwagmi?.locker ?? null) : null;
   const feeLocker = launchSource === 'clanker' ? (env.clanker?.feeLocker ?? null) : null;
@@ -594,6 +719,8 @@ app.get('/treasury/:kernel', async (c) => {
   const claimable: {
     recipient: Address;
     recipientKind: RecipientKind;
+    /** extra: the wallet's other slots on this coin, when it holds several: this balance pays them too. */
+    alsoKinds?: RecipientKind[];
     asset: Address;
     symbol: string;
     amount: bigint;
