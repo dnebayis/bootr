@@ -187,10 +187,11 @@ delivery line.
   do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale, "resize disk too") to
   CX33 (8 GB / 80 GB) or CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale,
   the site is down for a few minutes while the server reboots.
-- The supervisor and the indexer share one CDP RPC key, whose limit is 7,500 billing units per 5 s. Following Base's 200 ms
-  blocks takes about 1,000 BU/s of that, and the supervisor retries a rate-limited read for up to 8 s. Ponder is held to
-  `INDEXER_RPC_BU_PER_SEC` (1300 by default), so after a restart it catches up in about 12 minutes rather than saturating the
-  key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`).
+- The supervisor and the indexer share one CDP RPC key, whose limit is 7,500 billing units per 5 s. Since the Denim fork
+  (2026-11-05 18:00 UTC) Base has 5 blocks a second, and following them takes about half of that, and the supervisor
+  retries a rate-limited read for up to 8 s. A restart must fetch Ponder's 180 s reorg window again, now about 1,000 blocks.
+  Ponder is held to `INDEXER_RPC_BU_PER_SEC` (1300 by default), which should still catch up in about 5 minutes without
+  saturating the key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`).
 - One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop). Compose stops the old
   supervisor before starting the new one, so there is no overlap of two tick loops, but a deploy still interrupts
   an in-flight tick: deploy when no on-chain operation is pending.
