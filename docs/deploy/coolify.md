@@ -175,11 +175,25 @@ Hermes scheduled jobs (`hermes cron list` on the server; scripts in `/root/.herm
 | Job | When | What |
 | --- | --- | --- |
 | Bootr daily check | 05:30 UTC (08:30 Istanbul) | `bootr-check.sh` collects load, memory (incl. dockerd RSS/swap), disk, container health, public endpoint codes, certificate expiry, backup age, fail2ban and SSH counts, pending apt updates, reboot-required and error-line counts per service; Hermes summarises it in Turkish to the owner on Telegram. It may restart Docker when dockerd is bloated (RSS > 600 MB or swap > 1.5 GB) and prune build cache/images when the disk passes 80%; it never reboots, never changes firewall/SSH/fail2ban, never runs apt upgrade, never touches volumes or secrets |
-| Bootr watchdog | every 15 min, no LLM | `bootr-watchdog.sh` prints only when something is wrong (a public endpoint not 200, an unhealthy Bootr container, disk ≥ 85%, < 300 MB RAM available, backup older than 30 h); empty output sends nothing, so a healthy day is silent |
+| Bootr watchdog | every 15 min, no LLM | `bootr-watchdog.sh` prints only when something is wrong (a public endpoint not 200, an unhealthy Bootr container, disk ≥ 85%, < 300 MB RAM available, backup older than 30 h; indexer lag and 429 count once the lines below are added on the server); empty output sends nothing, so a healthy day is silent |
 
 Both deliver to `telegram:<owner's user id>` (a bare `telegram` target does not resolve). Trigger one by hand with
 `hermes cron run <job id>`; `hermes cron runs <job id>` lists the attempts and `~/.hermes/logs/gateway.log` the
 delivery line.
+
+Indexer lag and 429 checks for `bootr-watchdog.sh`. The script lives on the server, not in this repo, so add these lines
+there. `/status` is Ponder's public view of the last indexed block. Since Denim the indexer follows five blocks a second, so
+it falls behind quickly when the RPC budget is short, and `Status: 429` is the line Ponder logs for each refused request (no
+key in it, `apps/indexer/README.md`). A backfill after a new schema trips the lag check on its own: expected for its 10 minutes.
+
+```sh
+ts=$(curl -fsS --max-time 10 https://indexer.bootr.fun/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["base"]["block"]["timestamp"])')
+lag=$(( $(date +%s) - ${ts:-0} ))
+[ "$lag" -gt 120 ] && echo "indexer ${lag}s behind the chain"
+c=$(docker ps --filter name=indexer --format '{{.ID}}' | head -1)
+n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
+[ "$n" -gt 50 ] && echo "indexer: $n RPC 429s in 15 min"
+```
 
 ## 7. Known limits of the small box
 
