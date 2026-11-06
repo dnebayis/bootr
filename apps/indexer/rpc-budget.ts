@@ -70,10 +70,65 @@ export function isRateLimited(err: unknown): boolean {
   return false;
 }
 
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s"'`<>)\]}]+/gi;
+
+/** Every url in a text cut down to its origin: a provider keeps the API key in the path or the query. */
+export function scrubUrls(text: string): string {
+  return text.replace(URL_IN_TEXT, (found) => {
+    try {
+      return new URL(found).origin;
+    } catch {
+      return '[url]';
+    }
+  });
+}
+
+/**
+ * Takes the urls out of an error and everything it wraps, in place, so its class, `code`, `status` and `details` stay what
+ * Ponder and viem go by. viem names the full url in `message`, `metaMessages` and `url`, and Ponder logs the error whole.
+ */
+export function scrubError<T>(err: T): T {
+  const seen = new Set<object>();
+  let e: unknown = err;
+  for (let depth = 0; e && typeof e === 'object' && !seen.has(e) && depth < 8; depth++) {
+    seen.add(e);
+    const target = e as Record<string, unknown>;
+    for (const key of Object.getOwnPropertyNames(target)) {
+      if (key === 'cause') continue;
+      const value = target[key];
+      try {
+        if (typeof value === 'string') target[key] = scrubUrls(value);
+        else if (Array.isArray(value)) target[key] = value.map((v: unknown) => (typeof v === 'string' ? scrubUrls(v) : v));
+      } catch {
+        // A read-only field stays as it was; `message` and `stack` of an Error are writable.
+      }
+    }
+    e = target.cause;
+  }
+  return err;
+}
+
+/** An error's message for a log line, for callers that do not know where the error came from. */
+export function safeMessage(err: unknown): string {
+  return scrubUrls(err instanceof Error ? err.message : String(err));
+}
+
+function parseUrl(url: string): URL {
+  try {
+    return new URL(url);
+  } catch {
+    // Node's own error carries the input, which holds the key.
+    throw new Error('An RPC url in BASE_RPC_URL, BASE_SEPOLIA_RPC_URL or BASE_RPC_FALLBACK_URL is not a valid url');
+  }
+}
+
 /** The form Ponder recognises (`status === 429` pauses its provider and retries), naming only the origin: the path holds the API key. */
 function rateLimitedError(url: string, body: unknown): HttpRequestError {
-  return new HttpRequestError({ body: body as { [x: string]: unknown }, details: 'rate limited', status: 429, url: new URL(url).origin });
+  return new HttpRequestError({ body: body as { [x: string]: unknown }, details: 'rate limited', status: 429, url: parseUrl(url).origin });
 }
+
+/** Spends nothing: for a provider without a budget, whose errors still have to lose their url. */
+const NO_BUDGET: Budget = { take: async () => {}, tryTake: () => true };
 
 export interface BudgetedTransportOptions {
   url: string;
@@ -81,19 +136,21 @@ export interface BudgetedTransportOptions {
   /** Takes what the primary has no budget for, and what it answers 429 to. Without one, requests wait for the budget. */
   fallbackUrl?: string;
   budget?: Budget;
+  /** viem's own retries of a failed request (5xx, a dropped connection), which Ponder does not need: it retries by itself. */
+  httpRetries?: number;
 }
 
 export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
   const budget = opts.budget ?? createBudget(opts.buPerSecond);
   return ({ chain, timeout }) => {
-    const connect = (url: string) => http(url, { retryCount: 0 })({ chain, retryCount: 0, timeout });
+    const connect = (url: string) => http(url, { retryCount: opts.httpRetries ?? 0 })({ chain, retryCount: 0, timeout });
     const primary = connect(opts.url);
     const spare = opts.fallbackUrl ? connect(opts.fallbackUrl) : null;
     const send = async (transport: typeof primary, url: string, args: { method: string; params?: unknown }) => {
       try {
         return await transport.request(args as never);
       } catch (err) {
-        throw isRateLimited(err) ? rateLimitedError(url, args) : err;
+        throw isRateLimited(err) ? rateLimitedError(url, args) : scrubError(err);
       }
     };
     const request = async (args: { method: string; params?: unknown }) => {
@@ -114,15 +171,104 @@ export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
   };
 }
 
-/** The `rpc` of Ponder's chain config. `INDEXER_RPC_BU_PER_SEC`: unset = the CDP default on a CDP url and no budget elsewhere (other providers count differently), 0 = no budget. */
-export function indexerRpc(args: { urls: readonly string[]; budget?: string; fallbackUrl?: string }): string | string[] | Transport {
-  const [url, listed] = args.urls;
+export interface IndexerRpcArgs {
+  urls: readonly string[];
+  /** `INDEXER_RPC_BU_PER_SEC`: unset = the CDP default on a CDP url and no budget elsewhere (other providers count differently), 0 = no budget. */
+  budget?: string;
+  fallbackUrl?: string;
+}
+
+function budgetOf(args: IndexerRpcArgs): number {
+  const [url] = args.urls;
   if (!url) throw new Error('indexerRpc needs an RPC url');
-  const fallbackUrl = args.fallbackUrl?.trim() || listed;
   const raw = args.budget?.trim();
-  const parsed = raw ? Number(raw) : new URL(url).hostname.endsWith('developer.coinbase.com') ? DEFAULT_CDP_BUDGET : 0;
+  const parsed = raw ? Number(raw) : parseUrl(url).hostname.endsWith('developer.coinbase.com') ? DEFAULT_CDP_BUDGET : 0;
   if (!Number.isFinite(parsed) || parsed < 0) throw new Error('INDEXER_RPC_BU_PER_SEC must be a number of billing units per second, 0 for no budget');
-  if (parsed > 0) return budgetedTransport({ url, buPerSecond: parsed, ...(fallbackUrl ? { fallbackUrl } : {}) });
-  if (fallbackUrl) return [url, fallbackUrl];
-  return args.urls.length > 1 ? [...args.urls] : url;
+  return parsed;
+}
+
+const SHARED_BUDGETS = Symbol.for('bootr.indexer.rpc-budgets');
+
+/**
+ * One budget per process, for Ponder and for the indexer's own reads (`src/lib/rpc.ts`) together: the limit is per key. It
+ * sits on `globalThis` because Ponder loads ponder.config.ts and src/ through its own module runner, which may give each a
+ * copy of this file.
+ */
+function sharedBudget(buPerSecond: number): Budget {
+  const store = globalThis as unknown as Record<symbol, Map<number, Budget> | undefined>;
+  const budgets = (store[SHARED_BUDGETS] ??= new Map<number, Budget>());
+  let budget = budgets.get(buPerSecond);
+  if (!budget) {
+    budget = createBudget(buPerSecond);
+    budgets.set(buPerSecond, budget);
+  }
+  return budget;
+}
+
+/** The transport of every indexer read: within the shared budget, the second url as fallback, no url in any error. */
+export function indexerTransport(args: IndexerRpcArgs & { httpRetries?: number }): Transport {
+  const buPerSecond = budgetOf(args);
+  const [url, listed] = args.urls;
+  const fallbackUrl = args.fallbackUrl?.trim() || listed;
+  return budgetedTransport({
+    url: url!,
+    buPerSecond,
+    budget: buPerSecond > 0 ? sharedBudget(buPerSecond) : NO_BUDGET,
+    ...(fallbackUrl ? { fallbackUrl } : {}),
+    ...(args.httpRetries !== undefined ? { httpRetries: args.httpRetries } : {}),
+  });
+}
+
+/** Whether a url has anything in it to hide: a provider's key sits in the path, the query or the credentials. */
+function holdsSecret(raw: string): boolean {
+  const u = parseUrl(raw);
+  return (u.pathname !== '' && u.pathname !== '/') || u.search !== '' || u.username !== '' || u.password !== '';
+}
+
+/**
+ * The `rpc` of Ponder's chain config. A url string goes to Ponder's own HTTP client, which puts the full url in its errors
+ * and logs them whole, and Ponder has no setting against that. So a plain string is only for urls with nothing to hide
+ * (a public endpoint, a local fork); anything else, or anything with a budget, gets a transport that scrubs its errors.
+ */
+export function indexerRpc(args: IndexerRpcArgs): string | string[] | Transport {
+  const buPerSecond = budgetOf(args);
+  const fallbackUrl = args.fallbackUrl?.trim() || args.urls[1];
+  const all = [...args.urls, ...(fallbackUrl ? [fallbackUrl] : [])];
+  if (buPerSecond > 0 || all.some(holdsSecret)) return indexerTransport(args);
+  if (fallbackUrl) return [args.urls[0]!, fallbackUrl];
+  return args.urls[0]!;
+}
+
+/** Delays before the retries, in ms: about 8 s in all, past CDP's 5 second window, plus up to a quarter of jitter on each. */
+export const RATE_LIMIT_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000, 4_000];
+
+export interface RetryOptions {
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
+}
+
+/**
+ * Waits out a 429 for a caller that has no retry of its own (Ponder has one; the fuel scan and the REST reads do not). The
+ * same behaviour as the supervisor's `withRateLimitRetry`: a refused request did nothing, so asking again is safe.
+ */
+export function withRateLimitRetry(inner: Transport, opts: RetryOptions = {}): Transport {
+  const delays = opts.delaysMs ?? RATE_LIMIT_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const random = opts.random ?? Math.random;
+  return (params) => {
+    const transport = inner(params);
+    const request = async (...args: Parameters<typeof transport.request>) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await transport.request(...args);
+        } catch (err) {
+          const delay = delays[attempt];
+          if (delay === undefined || !isRateLimited(err)) throw err;
+          await sleep(delay * (1 + random() / 4));
+        }
+      }
+    };
+    return { ...transport, request: request as typeof transport.request };
+  };
 }

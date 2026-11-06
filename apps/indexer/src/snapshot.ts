@@ -7,6 +7,7 @@ import { B20TokenAbi } from '../abis/B20Token';
 import { Erc20Abi } from '../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../abis/Multicall3';
 import { PoolManagerAbi } from '../abis/PoolManager';
+import { safeMessage } from '../rpc-budget';
 import { fetchAdminConfig } from './lib/admin-config';
 import { decodeAgentBalances, type AgentBalances } from './lib/balances';
 import { snapshotSpacingSec } from './lib/blocks';
@@ -157,7 +158,7 @@ async function scanFuel(
       cursor = end + 1n;
     }
   } catch (err) {
-    console.warn(`[indexer] USDC fuel scan failed at block ${cursor}: ${(err as Error).message}`);
+    console.warn(`[indexer] USDC fuel scan failed at block ${cursor}: ${safeMessage(err)}`);
   }
   return { scannedTo: cursor - 1n, perKernel };
 }
@@ -199,14 +200,14 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
     try {
       social = await socialStore().all();
     } catch (err) {
-      console.warn(`[indexer] social store read failed: ${(err as Error).message}`);
+      console.warn(`[indexer] social store read failed: ${safeMessage(err)}`);
     }
     // spender address: the supervisor's latest push, else the last mirrored value
     const spenders = new Map(agents.map((a) => [a.id, social?.has(a.id) ? social.get(a.id)!.spender : a.spender] as const));
     try {
       ({ pools, balances } = await readChainState(context, tokens, agents, spenders));
     } catch (err) {
-      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${(err as Error).message}`);
+      console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${safeMessage(err)}`);
     }
   }
 

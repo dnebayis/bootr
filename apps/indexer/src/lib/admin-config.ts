@@ -1,5 +1,6 @@
 import { getAddress, isAddress, type Address } from 'viem';
 
+import { safeMessage, scrubUrls } from '../../rpc-budget';
 import { indexerEnv } from './env';
 import { adminConfigHeaders } from './hmac';
 
@@ -33,7 +34,7 @@ export async function fetchAdminConfig(): Promise<RemoteConfig | null> {
     else if (o.bootToken === null) value.bootToken = null;
     warned = false;
   } catch (err) {
-    if (!warned) console.warn(`[indexer] admin config fetch failed (${env.adminConfigUrl}): ${(err as Error).message}`);
+    if (!warned) console.warn(`[indexer] admin config fetch failed (${scrubUrls(env.adminConfigUrl)}): ${safeMessage(err)}`);
     warned = true;
   }
   cache = { at: Date.now(), value };

@@ -181,12 +181,8 @@ const minBlock = (a: number | 'latest', b: number | 'latest'): number | 'latest'
 export type IndexerEnv = {
   chainId: 8453 | 84532;
   chainName: 'base' | 'baseSepolia';
-  /** First RPC url (used for ad-hoc viem reads). */
-  rpcUrl: string;
-  /** Every configured RPC url; Ponder load-balances across them when there is more than one. */
+  /** Every configured RPC url: the first is the primary, the second the fallback (`rpc-budget.ts`). */
   rpcUrls: string[];
-  /** Ponder `maxRequestsPerSecond` for the chain (all rpc urls together). Keeps a shared CDP key under its quota. */
-  maxRps: number;
   addresses: ChainAddresses;
   /**
    * Every BootrLauncher followed, each with its deploy block (`BOOTR_LAUNCHERS`, else the single
@@ -249,10 +245,9 @@ export function indexerEnv(): IndexerEnv {
     .map((u) => u.trim())
     .filter(Boolean);
   const rpcUrls = configured.length ? configured : [PUBLIC_RPC[chainId]!];
-  const rpcUrl = rpcUrls[0]!;
-  const maxRps = Number(str(process.env.INDEXER_MAX_RPS) || 50);
+
   if (!configured.length) {
-    console.warn(`[indexer] no RPC url configured for chain ${chainId}; falling back to the public endpoint ${rpcUrl}`);
+    console.warn(`[indexer] no RPC url configured for chain ${chainId}; falling back to the public endpoint ${rpcUrls[0]}`);
   }
   const addresses = getAddresses(chainId);
   const rwagmi = rwagmiStack(chainId);
@@ -264,9 +259,7 @@ export function indexerEnv(): IndexerEnv {
   cached = {
     chainId,
     chainName: chainId === 8453 ? 'base' : 'baseSepolia',
-    rpcUrl,
     rpcUrls,
-    maxRps,
     addresses,
     launchers,
     clankerLaunchers,

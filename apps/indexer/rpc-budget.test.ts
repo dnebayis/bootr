@@ -1,9 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
+import { HttpRequestError, TimeoutError, createPublicClient, http, parseAbi } from 'viem';
 import { base } from 'viem/chains';
 
-import { budgetedTransport, costOf, createBudget, indexerRpc, isRateLimited, type Budget } from './rpc-budget';
+import { budgetedTransport, costOf, createBudget, indexerRpc, indexerTransport, isRateLimited, safeMessage, scrubError, scrubUrls, withRateLimitRetry, type Budget } from './rpc-budget';
 
 type Reply = { status: number; body: unknown };
 
@@ -124,14 +125,131 @@ describe('indexerRpc', () => {
     expect(typeof indexerRpc({ urls: [other], budget: '500' })).toBe('function');
   });
 
-  it('leaves other providers to Ponder, and 0 turns the budget off', () => {
-    expect(indexerRpc({ urls: [other] })).toBe(other);
-    expect(indexerRpc({ urls: [cdp], budget: '0' })).toBe(cdp);
-    expect(indexerRpc({ urls: [other], fallbackUrl: cdp })).toEqual([other, cdp]);
-    expect(indexerRpc({ urls: [other, cdp] })).toEqual([other, cdp]);
+  it('leaves urls with nothing to hide to Ponder', () => {
+    expect(indexerRpc({ urls: ['https://mainnet.base.org'] })).toBe('https://mainnet.base.org');
+    expect(indexerRpc({ urls: ['http://127.0.0.1:8555'] })).toBe('http://127.0.0.1:8555');
+    expect(indexerRpc({ urls: ['https://mainnet.base.org'], fallbackUrl: 'https://base.llamarpc.com' })).toEqual(['https://mainnet.base.org', 'https://base.llamarpc.com']);
+  });
+
+  it('never gives Ponder a url holding a key, also with the budget off', () => {
+    expect(typeof indexerRpc({ urls: [other] })).toBe('function');
+    expect(typeof indexerRpc({ urls: [cdp], budget: '0' })).toBe('function');
+    expect(typeof indexerRpc({ urls: ['https://mainnet.base.org'], fallbackUrl: other })).toBe('function');
+    expect(typeof indexerRpc({ urls: ['https://user:pass@base.example.org'] })).toBe('function');
+    expect(typeof indexerRpc({ urls: ['https://base.example.org?key=abc'] })).toBe('function');
+  });
+
+  it('keeps a bad url out of the error it throws', () => {
+    expect(() => indexerRpc({ urls: ['not a url SECRETKEY'] })).toThrow(/not a valid url/);
+    expect(() => indexerRpc({ urls: ['not a url SECRETKEY'] })).not.toThrow(/SECRETKEY/);
   });
 
   it('refuses a budget that is not a number', () => {
     expect(() => indexerRpc({ urls: [cdp], budget: 'lots' })).toThrow(/INDEXER_RPC_BU_PER_SEC/);
+  });
+});
+
+describe('scrubbing', () => {
+  const keyed = 'https://api.developer.coinbase.com/rpc/v1/base/SECRETKEY?x=1';
+
+  it('cuts every url down to its origin and leaves the rest of the text', () => {
+    expect(scrubUrls(`failed. URL: ${keyed} (retry)`)).toBe('failed. URL: https://api.developer.coinbase.com (retry)');
+    expect(scrubUrls('wss://a.example/SECRETKEY and https://b.example/SECRETKEY')).toBe('wss://a.example and https://b.example');
+    expect(scrubUrls('no url here: execution reverted')).toBe('no url here: execution reverted');
+  });
+
+  it('takes the url out of a viem error and all it wraps, keeping what the callers go by', () => {
+    const inner = new TimeoutError({ body: { method: 'eth_call' }, url: keyed });
+    const outer = new HttpRequestError({ body: {}, cause: inner, status: 503, url: keyed });
+    expect(outer.message).toContain('SECRETKEY');
+    const same = scrubError(outer);
+    expect(same).toBe(outer);
+    expect(same.status).toBe(503);
+    expect(same).toBeInstanceOf(HttpRequestError);
+    expect(inner).toBeInstanceOf(TimeoutError);
+    for (const e of [outer, inner]) {
+      expect(e.message).not.toContain('SECRETKEY');
+      expect(e.stack).not.toContain('SECRETKEY');
+      expect(JSON.stringify(e)).not.toContain('SECRETKEY');
+    }
+    expect(same.url).toBe('https://api.developer.coinbase.com');
+  });
+
+  it('survives what is not an error', () => {
+    expect(scrubError(undefined)).toBeUndefined();
+    expect(scrubError('text')).toBe('text');
+    const loop: { cause?: unknown; message: string } = { message: keyed };
+    loop.cause = loop;
+    expect(scrubError(loop).message).toBe('https://api.developer.coinbase.com');
+  });
+
+  it('gives a log line without the url', () => {
+    expect(safeMessage(new Error(`boom ${keyed}`))).toBe('boom https://api.developer.coinbase.com');
+    expect(safeMessage(keyed)).toBe('https://api.developer.coinbase.com');
+  });
+
+  it('keeps the key out of a real failed request that is not a 429', async () => {
+    const down = await rpcServer(() => ({ status: 500, body: { error: { code: -32603, message: 'internal' } } }));
+    const err = (await connect(budgetedTransport({ url: down.url, buPerSecond: 1_000 }))
+      .request({ method: 'eth_getLogs', params: [] } as never)
+      .catch((e: unknown) => e)) as Error;
+    expect(err.message).not.toContain('SECRETKEY');
+    expect(err.stack).not.toContain('SECRETKEY');
+    expect(JSON.stringify(err)).not.toContain('SECRETKEY');
+  });
+
+  it('keeps the key out of an unreachable host and a client wrapping the error', async () => {
+    const unreachable = 'http://127.0.0.1:9/rpc/v1/base/SECRETKEY';
+    const client = createPublicClient({ transport: indexerTransport({ urls: [unreachable], budget: '0' }) });
+    const err = (await client
+      .readContract({ address: '0x0000000000000000000000000000000000000001', abi: parseAbi(['function f() view returns (uint256)']), functionName: 'f' })
+      .catch((e: unknown) => e)) as Error;
+    expect(err.message).not.toContain('SECRETKEY');
+    expect(err.stack).not.toContain('SECRETKEY');
+    // The plain viem transport is what this replaces: it does print the key.
+    const plain = createPublicClient({ transport: http(unreachable, { retryCount: 0 }) });
+    await expect(plain.getBlockNumber()).rejects.toThrow(/SECRETKEY/);
+  });
+});
+
+describe('withRateLimitRetry', () => {
+  const noWait = { sleep: async () => {}, random: () => 0 };
+
+  it('waits out a 429 and answers', async () => {
+    let calls = 0;
+    const rpc = await rpcServer(() => (++calls < 3 ? limited() : ok()));
+    const t = withRateLimitRetry(budgetedTransport({ url: rpc.url, buPerSecond: 1_000 }), noWait)({ chain: base, retryCount: 0, timeout: 2_000 });
+    await expect(t.request({ method: 'eth_chainId' } as never)).resolves.toBe('0x1');
+    expect(calls).toBe(3);
+  });
+
+  it('gives up after the last delay, still without the key', async () => {
+    const rpc = await rpcServer(limited);
+    const t = withRateLimitRetry(budgetedTransport({ url: rpc.url, buPerSecond: 1_000 }), { ...noWait, delaysMs: [1, 1] })({ chain: base, retryCount: 0, timeout: 2_000 });
+    const err = (await t.request({ method: 'eth_chainId' } as never).catch((e: unknown) => e)) as Error;
+    expect(isRateLimited(err)).toBe(true);
+    expect(err.message).not.toContain('SECRETKEY');
+    expect(rpc.methods).toHaveLength(3);
+  });
+
+  it('does not retry what is not a rate limit', async () => {
+    const rpc = await rpcServer(() => ({ status: 200, body: { error: { code: 3, message: 'execution reverted' } } }));
+    const t = withRateLimitRetry(budgetedTransport({ url: rpc.url, buPerSecond: 1_000 }), noWait)({ chain: base, retryCount: 0, timeout: 2_000 });
+    await expect(t.request({ method: 'eth_call', params: [] } as never)).rejects.toThrow();
+    expect(rpc.methods).toHaveLength(1);
+  });
+});
+
+describe('indexerTransport', () => {
+  it('shares one budget between the transports of a process', async () => {
+    const rpc = await rpcServer(ok);
+    // 100 BU at 400 BU/s: the half second of burst covers two calls, the third has to wait. Both clients draw on the same budget.
+    const a = indexerTransport({ urls: [rpc.url], budget: '400' })({ chain: base, retryCount: 0, timeout: 2_000 });
+    const b = indexerTransport({ urls: [rpc.url], budget: '400' })({ chain: base, retryCount: 0, timeout: 2_000 });
+    const t0 = Date.now();
+    await a.request({ method: 'eth_getLogs', params: [] } as never);
+    await b.request({ method: 'eth_getLogs', params: [] } as never);
+    await a.request({ method: 'eth_getLogs', params: [] } as never);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
   });
 });

@@ -2,6 +2,8 @@ import { desc, gte } from 'ponder';
 import { db } from 'ponder:api';
 import schema from 'ponder:schema';
 
+import { safeMessage } from '../../rpc-budget';
+
 /**
  * `/stream` hint hub. One poller per process reads the newest launches, trades and agent status
  * changes every 2 s while at least one client is connected and fans out `{type, tokenId}` hints.
@@ -85,6 +87,6 @@ async function poll() {
     }
     for (const h of out) publish(h);
   } catch (err) {
-    console.warn(`[indexer] /stream poll failed: ${(err as Error).message}`);
+    console.warn(`[indexer] /stream poll failed: ${safeMessage(err)}`);
   }
 }
