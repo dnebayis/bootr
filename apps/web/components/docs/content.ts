@@ -121,7 +121,7 @@ const launch: DocBody = {
         ['Listed on', 'bootr.fun', 'bootr.fun and clanker.world'],
       ],
     ),
-    p('A new pool through Clanker opens with Clanker’s anti-sniper fee; through RWAGMI there is none. With the launcher’s current settings, as read from a Base fork: a swap within about 4 seconds of the launch reverts, the next ones pay about 55%, falling to about 5% at 14 seconds, and from about 16 seconds a swap pays the normal fee. Those fees go to the same recipients. A dev buy runs inside the launch transaction and is not affected.'),
+    p('A new pool through Clanker opens with Clanker’s anti-sniper fee; through RWAGMI there is none. With the launcher’s current settings, as measured on a Base fork at today’s 200 ms blocks: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal fee. That point comes from the clock, not from a number of blocks. Those fees go to the same recipients. A dev buy runs inside the launch transaction and is not affected.'),
     p('Through Clanker the contract is `BootrClankerLauncher`, with the same `launch(params)`. The token address is not predictable before the transaction, so the form reads it from the `AgentLaunched` event. The steps above describe the RWAGMI path; on the Clanker path step 3 calls Clanker’s factory and step 4 writes the slots into Clanker’s locker, with the launcher as the admin of every slot, so the split is locked the same way.'),
     h2('what-you-pay', 'What you pay'),
     table(
@@ -171,7 +171,7 @@ const fees: DocBody = {
       'What you receive, the fee and the price impact come from Uniswap’s v4 quoter and the pool’s own price, read again every few seconds, not from indexed prices.',
       '**Minimum received** is the quote less your slippage setting, 1% by default and at most 20%. It is part of the transaction: below it the swap reverts on chain. So does a transaction not included within 20 minutes.',
       'A sell needs two approvals, the coin to Permit2 and Permit2 to the router, each for exactly the amount you sell. The sell uses them up, and the Permit2 approval lasts 30 minutes. A smart wallet such as Base Account confirms both and the sell at once; other wallets ask three times. An approval you already gave that covers the sell is used as it is.',
-      'On a coin launched through Clanker, the panel reads the hook and the quote: in the first seconds it says swaps are blocked, then it shows the higher fee this swap would pay. See [Launch through RWAGMI or Clanker](/docs/launch#launch-through).',
+      'On a coin launched through Clanker, the panel reads the quote: in about the first half second it says swaps are blocked, then it shows the higher fee this swap would pay, until the normal fee returns about 16 seconds after the launch. See [Launch through RWAGMI or Clanker](/docs/launch#launch-through).',
       'The page also links to another site that can swap the coin, which has its own fees and terms.',
     ),
     h2('presets', 'Presets through RWAGMI'),

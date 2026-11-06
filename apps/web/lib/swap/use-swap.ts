@@ -38,7 +38,7 @@ import { quoteSwap, type SwapQuote } from './quote';
 export const tradeChainId = env.useMock ? appChain.id : SWAP_CONTRACTS.chainId;
 
 const QUOTE_POLL_MS = 12_000;
-/** Clanker's launch fee changes every block for its first seconds. */
+/** Clanker's launch fee falls every second for its first 16 seconds. */
 const QUOTE_POLL_LAUNCH_MS = 4_000;
 const BALANCE_POLL_MS = 15_000;
 

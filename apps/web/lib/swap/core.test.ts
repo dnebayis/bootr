@@ -6,6 +6,7 @@ import {
   buildSellTx,
   idealOut,
   impactPct,
+  launchBlocksSwaps,
   launchWindowActive,
   minReceived,
   permit2Abi,
@@ -210,9 +211,13 @@ describe('figures', () => {
   });
 
   it('the launch window runs only while armed and before its end', () => {
-    expect(launchWindowActive({ armed: true, endsAt: 100 }, 99)).toBe(true);
-    expect(launchWindowActive({ armed: true, endsAt: 100 }, 100)).toBe(false);
-    expect(launchWindowActive({ armed: false, endsAt: 100 }, 99)).toBe(false);
+    expect(launchWindowActive({ armed: true, startedAt: 0, endsAt: 100 }, 99)).toBe(true);
+    expect(launchWindowActive({ armed: true, startedAt: 0, endsAt: 100 }, 100)).toBe(false);
+    expect(launchWindowActive({ armed: false, startedAt: 0, endsAt: 100 }, 99)).toBe(false);
     expect(launchWindowActive(null, 99)).toBe(false);
+    expect(launchBlocksSwaps({ armed: true, startedAt: 10, endsAt: 130 }, 10)).toBe(true);
+    expect(launchBlocksSwaps({ armed: true, startedAt: 10, endsAt: 130 }, 15)).toBe(false);
+    expect(launchBlocksSwaps({ armed: false, startedAt: 10, endsAt: 130 }, 10)).toBe(false);
+    expect(launchBlocksSwaps(null, 10)).toBe(false);
   });
 });
