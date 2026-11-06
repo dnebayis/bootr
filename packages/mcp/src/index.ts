@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createBootr, type Catalog } from '@bootr/sdk';
+import { createBootr, type Catalog } from '@bootrfun/sdk';
 import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { buildTools } from './tools.js';

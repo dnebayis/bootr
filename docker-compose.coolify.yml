@@ -116,7 +116,11 @@ services:
       BOOT_TOKEN_ADDRESS: ${BOOT_TOKEN_ADDRESS:-}
       INDEXER_CORS_ORIGIN: ${INDEXER_CORS_ORIGIN:-https://bootr.fun}
       ADMIN_CONFIG_URL: ${ADMIN_CONFIG_URL:-https://bootr.fun/api/admin/config}
-      INDEXER_MAX_RPS: ${INDEXER_MAX_RPS:-25}
+      # Billing units per second Ponder may spend. Empty = 1300 on a CDP url (limit 1500, shared with the supervisor and
+      # web), no budget elsewhere; 0 = no budget. No new DATABASE_SCHEMA needed (apps/indexer/rpc-budget.ts).
+      INDEXER_RPC_BU_PER_SEC: ${INDEXER_RPC_BU_PER_SEC:-}
+      # Optional second RPC for what the budget cannot cover and for what the first one answers 429 to. Indexer only.
+      BASE_RPC_FALLBACK_URL: ${BASE_RPC_FALLBACK_URL:-}
 
   web:
     <<: *restart

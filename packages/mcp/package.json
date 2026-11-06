@@ -1,7 +1,8 @@
 {
-  "name": "@bootr/mcp",
+  "name": "@bootrfun/mcp",
   "version": "0.1.0",
   "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions. Nothing is signed or sent.",
+  "license": "MIT",
   "keywords": [
     "bootr",
     "base",
@@ -22,7 +23,8 @@
   "main": "./dist/index.js",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -41,7 +43,7 @@
     "e2e:fork": "node test/fork-e2e.mjs"
   },
   "dependencies": {
-    "@bootr/sdk": "workspace:^",
+    "@bootrfun/sdk": "workspace:^",
     "@modelcontextprotocol/server": "^2.4.0"
   },
   "devDependencies": {

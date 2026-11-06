@@ -37,7 +37,15 @@ web shows agents without an X handle.
 
 `ponder dev` hot-reloads on any change under `apps/indexer`; with PGlite that reload can abort in-flight
 queries ("PGlite is closed", exit code 75). Restart it after editing, or run `ponder start` for long
-backfills. `INDEXER_MAX_RPS` (default 50) caps the JSON-RPC rate across all configured urls.
+backfills.
+
+RPC rate: CDP limits billing units, not requests (7,500 BU per 5 s per project, 100 BU for `eth_getLogs` and
+`eth_getBlockByNumber`). Since the Denim fork Base has 5 blocks a second, and each costs one `eth_getBlockByNumber` plus an
+`eth_getLogs` on the 35-50% whose bloom matches a filter, about 750 BU/s in all. `INDEXER_RPC_BU_PER_SEC` is what Ponder
+may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional second
+RPC for what the budget cannot cover and for what the first one answers 429 to. Both live in `chains` and `rpc-budget.ts`,
+outside Ponder's build id, so changing them needs no new `DATABASE_SCHEMA`. Ponder 0.18 ignores `maxRequestsPerSecond`, so the
+old `INDEXER_MAX_RPS` does nothing. The USDC fuel scan and the REST API's live reads use `src/lib/rpc.ts`, outside the budget.
 
 Coins come through two launch paths, both on **Base mainnet only** (`token.source`):
 

@@ -1,0 +1,54 @@
+<template>
+  <style>
+    @font-face { font-family: 'Geist'; font-weight: 500; src: url('assets/fonts/Geist-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+    #root { position: absolute; inset: 0; overflow: hidden; font-family: 'Geist', sans-serif; color: #ffffff; }
+    .abs { position: absolute; white-space: nowrap; }
+    .big { font-weight: 600; letter-spacing: -0.035em; }
+    .mono { font-family: 'Geist Mono', monospace; font-weight: 500; }
+
+    .door { position: absolute; top: 0; width: 960px; height: 1080px; }
+    #dl { left: 0; background: #85e2ff; color: #0a0b0d; }
+    #dr { left: 960px; background: #ffffff; color: #8763d1; }
+    .dlogo { position: absolute; display: block; }
+    #lr { left: 310px; top: 110px; width: 340px; height: 340px; }
+    #lc { left: 280px; top: 80px; width: 400px; height: 400px; }
+    .dn { position: absolute; left: 0; width: 960px; top: 480px; text-align: center; font-weight: 600; font-size: 132px; line-height: 150px; letter-spacing: -0.04em; white-space: nowrap; }
+    .knob { position: absolute; top: 370px; width: 36px; height: 36px; border-radius: 18px; }
+    #kl { left: 900px; background: #0a0b0d; }
+    #kr { left: 24px; background: #8763d1; }
+    #band { position: absolute; left: 0; top: 820px; width: 1920px; height: 260px; background: #0000ff; }
+    #bs { position: absolute; left: 96px; top: 70px; width: 120px; height: 120px; display: block; }
+    #bl { left: 256px; top: 62px; font-size: 116px; line-height: 136px; color: #ffffff; }
+    #btn { position: absolute; left: 1324px; top: 52px; width: 500px; height: 156px; background: #ffffff; border-radius: 16px; color: #0a0b0d; text-align: center; font-size: 88px; line-height: 156px; font-weight: 600; letter-spacing: -0.03em; }
+    #cur { position: absolute; left: 0; top: 0; width: 72px; height: 72px; display: block; }
+
+  </style>
+  <div data-hf-id="hf-3c7i" id="root" data-composition-id="w2" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-a85t" id="dw" data-layout-allow-overflow data-layout-allow-overlap>
+      <div data-hf-id="hf-rqhy" class="door" id="dl"><img data-hf-id="hf-87jk" class="dlogo" id="lr" src="assets/logos/rwagmi-black.png" alt="RWAGMI"><div data-hf-id="hf-zqu7" class="dn">rwagmi</div><div data-hf-id="hf-fibv" class="knob" id="kl"></div></div>
+      <div data-hf-id="hf-r2bk" class="door" id="dr"><img data-hf-id="hf-p5rd" class="dlogo" id="lc" src="assets/logos/clanker.png" alt="Clanker"><div data-hf-id="hf-17r0" class="dn">clanker</div><div data-hf-id="hf-1cwl" class="knob" id="kr"></div></div>
+      <div data-hf-id="hf-36fc" id="band"><svg data-hf-id="hf-boor" id="bs" viewBox="0 0 23 24" fill="none" role="img" aria-label="Base"><path data-hf-id="hf-s8yr" d="M1.35433 23.24C0.451444 23.24 0 22.7899 0 21.8898V2.08683C0 1.1867 0.451444 0.736633 1.35433 0.736633H21.2178C22.1207 0.736633 22.5722 1.1867 22.5722 2.08683V21.8898C22.5722 22.7899 22.1207 23.24 21.2178 23.24H1.35433Z" fill="#ffffff"></path></svg><div data-hf-id="hf-pkwu" class="abs big" id="bl">on base.</div><div data-hf-id="hf-ci7c" id="btn">Launch</div></div>
+      <svg data-hf-id="hf-ypdq" id="cur" viewBox="0 0 24 24" data-layout-ignore><path data-hf-id="hf-33c9" d="M4 2 L4 20 L9 15.5 L12.5 22 L15.5 20.5 L12 14 L19 14 Z" fill="#ffffff" stroke="#0a0b0d" stroke-width="1.6" stroke-linejoin="round"></path></svg>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const typeIn = (s, t, d) => {
+      tl.set(s, { opacity: 1 }, t);
+      tl.fromTo(s, { clipPath: "inset(-20px 100% -30px 0px)" }, { clipPath: "inset(-20px -20px -30px 0px)", duration: d || 0.24, ease: "steps(10)", immediateRender: false }, t);
+    };
+    const pop = (s, t, o) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { scale: 0, transformOrigin: "50% 50%" }, Object.assign({ scale: 1, duration: 0.3, ease: "back.out(2.5)", stagger: 0.006, immediateRender: false }, o || {}), t); };
+    const land = (s, t) => { tl.set(s, { opacity: 1 }, t); tl.fromTo(s, { x: -40 }, { x: 0, duration: 0.3, ease: "expo.out", immediateRender: false }, t); };
+
+    gsap.set("#dl", { x: -960 }); gsap.set("#dr", { x: 960 }); gsap.set("#band", { y: 260 }); gsap.set("#cur", { x: 1760, y: 1100 });
+    tl.fromTo("#dl", { x: -960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 0);
+    tl.fromTo("#dr", { x: 960 }, { x: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 1.335);
+    tl.set("#dr", { x: 960 }, 0);
+    tl.fromTo("#band", { y: 260 }, { y: 0, duration: 0.35, ease: "expo.out", immediateRender: false }, 2.09);
+    tl.to("#cur", { x: 1560, y: 900, duration: 0.8, ease: "power3.inOut" }, 3.05);
+    tl.to("#btn", { scale: 0.93, duration: 0.06 }, 3.95);
+    window.__timelines["w2"] = tl;
+  </script>
+</template>

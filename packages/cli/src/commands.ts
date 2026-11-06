@@ -8,10 +8,10 @@ import {
   looksLikeKey,
   type Bootr,
   type LaunchInput,
-} from '@bootr/sdk';
+} from '@bootrfun/sdk';
 
 /**
- * The `bootr` command: reads and unsigned transactions over `@bootr/sdk`. All answers go to stdout as JSON, so they
+ * The `bootr` command: reads and unsigned transactions over `@bootrfun/sdk`. All answers go to stdout as JSON, so they
  * pipe into `jq` or a wallet tool; notices go to stderr. There is no flag, prompt or file for a private key, and
  * nothing here signs or sends.
  */

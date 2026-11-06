@@ -9,13 +9,13 @@ import {
   type JsonSchema,
   type LaunchInput,
   type RouteName,
-} from '@bootr/sdk';
+} from '@bootrfun/sdk';
 
 /**
  * The tools, as one table over the catalog. Input schemas are read from `GET /api/catalog` (a path template stands in
  * when it cannot be read), so this package holds no copy of a parameter, limit or launch field; tool descriptions are
  * fixed text in this file, since they reach the model as instructions and nothing from the network should. Every call
- * goes through `@bootr/sdk`. No tool signs or sends anything, and none accepts a key.
+ * goes through `@bootrfun/sdk`. No tool signs or sends anything, and none accepts a key.
  */
 
 export type ToolAnnotations = {
@@ -193,7 +193,7 @@ const READS: { name: string; route: RouteName; title: string; description: strin
     route: 'coinFees',
     title: 'Coin fees',
     description:
-      'USD accrued and claimed per recipient kind (agent, creator, burn, platform) for one coin.',
+      'USD accrued and claimed per recipient kind (agent, creator, burn, platform) for one coin. A kind answers null when its share cannot be told apart from another held by the same wallet.',
   },
   {
     name: 'bootr_holdings',

@@ -356,7 +356,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@bootr/sdk':
+      '@bootrfun/sdk':
         specifier: workspace:^
         version: link:../sdk
     devDependencies:
@@ -374,7 +374,7 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@bootr/sdk':
+      '@bootrfun/sdk':
         specifier: workspace:^
         version: link:../sdk
       '@modelcontextprotocol/server':

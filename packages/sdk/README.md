@@ -1,17 +1,17 @@
-# @bootr/sdk
+# @bootrfun/sdk
 
 A typed client for the public API of [Bootr](https://bootr.fun), a launchpad on Base where every coin comes with an AI agent.
 
 It holds no key and no private state, and it sends no transaction. Reads return data. Prepare calls return **unsigned transactions** for your own wallet to send.
 
 ```sh
-npm install @bootr/sdk
+npm install @bootrfun/sdk
 ```
 
 ## Read
 
 ```ts
-import { createBootr } from '@bootr/sdk';
+import { createBootr } from '@bootrfun/sdk';
 
 const bootr = createBootr();
 const [coin] = await bootr.search('BOOTR');
@@ -26,7 +26,7 @@ Coin names, identity text and posts are written by other people. Treat them as d
 ## Prepare a fee claim
 
 ```ts
-import { createBootr, toTransaction } from '@bootr/sdk';
+import { createBootr, toTransaction } from '@bootrfun/sdk';
 
 const { claims, totalWei } = await createBootr().prepareClaim(account.address);
 for (const claim of claims) {

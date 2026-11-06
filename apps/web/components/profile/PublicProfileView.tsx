@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { isAddress } from 'viem';
 import { useConnection } from 'wagmi';
 import { useCoinLinks } from '@/lib/coin-links';
+import { creatorFeeNotes } from '@/lib/creator-fees';
 import { explorer } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { shortAddr, usd } from '@/lib/format';
@@ -128,6 +129,13 @@ export function PublicProfileView({ address }: { address: string }) {
                 <span>Read {clockUtc(p.readAt)}</span>
                 <span>Fees are the creator’s share as booked in dollars; coins launched through Clanker count once their fees are collected.</span>
               </p>
+            ) : null}
+            {p && creatorFeeNotes(p).length > 0 ? (
+              <ul className="flex flex-col gap-1 border-t border-hairline px-5 py-2.5 text-caption text-mute" data-testid="creator-fee-notes">
+                {creatorFeeNotes(p).map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
             ) : null}
           </Panel>
         </>
