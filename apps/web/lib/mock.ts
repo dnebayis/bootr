@@ -26,6 +26,7 @@ import type {
   ApprovalDecision,
   BoardId,
   BoardPeriod,
+  CreatorCoin,
   CreatorProfile,
   DailyStat,
   FeesByKind,
@@ -153,6 +154,24 @@ const CREATORS: Address[] = [
   '0x1111111111111111111111111111111111111111',
   '0x2222222222222222222222222222222222222222',
 ];
+
+/** Mock wallets that hold the creator and the platform share of one coin: the shares told apart, and not. */
+const TWO_SLOT_WALLETS: Record<string, CreatorCoin['creatorFees']> = {
+  '0x3333333333333333333333333333333333333333': {
+    earnedUsd: 7650.81,
+    claimedUsd: 7751.57,
+    earnedWeth: '3250024800138206000',
+    claimedWeth: '3249735281041840478',
+    otherShares: [{ kind: 'platform', earnedUsd: 5597.85, claimedUsd: 5670.5 }],
+  },
+  '0x4444444444444444444444444444444444444444': {
+    earnedUsd: 7650.81,
+    claimedUsd: null,
+    earnedWeth: '3250024800138206000',
+    claimedWeth: null,
+    otherShares: [{ kind: 'platform', earnedUsd: 5597.85, claimedUsd: null }],
+  },
+};
 
 function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number): { token: Token; agent: Agent } {
   const id = hex(rand, 20) as Address;
@@ -563,12 +582,18 @@ export const mock = {
   /** One creator's public record, what `GET /creator/:address` answers on the real indexer. */
   creatorProfile(address: string): CreatorProfile {
     const creator = address.toLowerCase() as Address;
-    const coins = mockStore()
-      .tokens.filter((t) => t.creator.toLowerCase() === creator)
-      .map((t) => {
-        const { accruedUsd, claimedUsd } = mock.fees(t.id).byKind.creator;
-        return { ...t, creatorFees: { earnedUsd: accruedUsd, claimedUsd } };
-      });
+    const twoSlots = TWO_SLOT_WALLETS[creator];
+    const coins: CreatorCoin[] = twoSlots
+      ? mockStore()
+          .tokens.slice(0, 1)
+          .map((t) => ({ ...t, creator, platformRecipient: creator, creatorFees: twoSlots }))
+      : mockStore()
+          .tokens.filter((t) => t.creator.toLowerCase() === creator)
+          .map((t) => {
+            const { accruedUsd, claimedUsd } = mock.fees(t.id).byKind.creator;
+            return { ...t, creatorFees: { earnedUsd: accruedUsd, claimedUsd } };
+          });
+    const known = coins.filter((c) => c.creatorFees.claimedUsd !== null);
     return clone({
       address: creator,
       readAt: Math.floor(Date.now() / 1000),
@@ -577,7 +602,9 @@ export const mock = {
         coins: coins.length,
         agents: coins.filter((c) => c.agent).length,
         earnedUsd: coins.reduce((s, c) => s + c.creatorFees.earnedUsd, 0),
-        claimedUsd: coins.reduce((s, c) => s + c.creatorFees.claimedUsd, 0),
+        claimedUsd: coins.length > 0 && known.length === 0 ? null : known.reduce((s, c) => s + (c.creatorFees.claimedUsd ?? 0), 0),
+        earnedWeth: twoSlots?.earnedWeth,
+        claimedWeth: twoSlots?.claimedWeth,
       },
       coins,
     });

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import type { Address } from 'viem';
+import { otherSharesInBalance } from '@/lib/creator-fees';
 import { feeModelOf, pctLabel, swapFeePct } from '@/lib/fee-split';
 import { dayLabel, units } from '@/lib/format';
 import type { Token } from '@/lib/types';
@@ -22,6 +23,7 @@ const td = 'px-5 py-2.5';
 export function ClankerCreatorFees({ owner, tokens }: { owner: Address; tokens: Token[] }) {
   const fees = useClankerFees({ owner, enabled: tokens.length > 0, label: 'Claim Clanker fees' });
   if (tokens.length === 0) return null;
+  const alsoHolds = otherSharesInBalance(owner, tokens);
 
   return (
     <Panel title="Creator fees, Clanker coins" bodyClassName="p-0" action={<span className="text-caption text-mute">Paid in WETH from Clanker&rsquo;s fee locker.</span>}>
@@ -65,6 +67,7 @@ export function ClankerCreatorFees({ owner, tokens }: { owner: Address; tokens: 
         </div>
         <p className="border-t border-hairline px-5 py-2.5 text-caption text-mute">
           Your share of the trading fees of your Clanker coins arrives as WETH in Clanker&rsquo;s fee locker. Claim sends it to your wallet.
+          {alsoHolds ? ` ${alsoHolds}` : null}
         </p>
       </div>
     </Panel>
