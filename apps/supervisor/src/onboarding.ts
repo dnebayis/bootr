@@ -21,6 +21,7 @@ import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
 import { agentSource, clankerDetailsOf, clankerLockersFor, type ClankerLaunchDetails } from './launch-source.js';
 import { initialState } from './runtime.js';
+import { defaultUnlessRateLimited } from './rpc-retry.js';
 import type { SenderAccount } from './sender-client.js';
 import { SenderError } from './sender-client.js';
 import {
@@ -507,8 +508,9 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   if (existing) return null;
   const { publicClient } = ctx.chain;
   const [name, symbol] = await Promise.all([
-    publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'name' }).catch(() => 'Unknown'),
-    publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'symbol' }).catch(() => 'TOKEN'),
+    // A rate-limited read must not store these for good: it fails the poll, the cursor stays, and the next tick registers the coin.
+    publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'name' }).catch(defaultUnlessRateLimited('Unknown')),
+    publicClient.readContract({ address: launch.token, abi: erc20Abi, functionName: 'symbol' }).catch(defaultUnlessRateLimited('TOKEN')),
   ]);
   const now = new Date(ctx.now());
   const log = ctx.log.child({ agentId });
