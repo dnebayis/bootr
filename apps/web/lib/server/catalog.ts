@@ -367,7 +367,7 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     get(
       '/treasury/{kernel}',
       'An agent’s treasury, by treasury or coin address: status, dormancy clock, balances and claimable fees. Reads the chain on each request, so please cache.',
-      `{kernel, token, symbol, source, lpFeeBps, agentId, status, paused, lastActivityAt, dormancyPeriod, dormantSince, balances: {usdc, weth, eth, ownToken}, balancesSource: live|indexed, spender, spenderUsdc, treasuryUsd, fuelReceivedUsdc, feesClaimedUsd, claimable: [{recipient, recipientKind, asset, symbol, amount, amountUsd, pending, settled}], claimableAgentUsd, ethPriceUsd}; ${addressErrors}`,
+      `{kernel, token, symbol, source, lpFeeBps, agentId, status, paused, lastActivityAt, dormancyPeriod, dormantSince, balances: {usdc, weth, eth, ownToken}, balancesSource: live|indexed, spender, spenderUsdc, treasuryUsd, fuelReceivedUsdc, feesClaimedUsd, claimable: [{recipient, recipientKind, alsoKinds?, asset, symbol, amount, amountUsd, pending, settled}] (one row per wallet; alsoKinds: its other slots, paid by the same balance), claimableAgentUsd, ethPriceUsd}; ${addressErrors}`,
       { path: pathParam('kernel', ADDRESS) },
     ),
     {
@@ -415,14 +415,14 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     ),
     get(
       '/creator/{address}',
-      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker count once their fees are collected. At most 200 coins.',
-      '{address, readAt, indexedAt, totals: {coins, agents, earnedUsd, claimedUsd}, coins: [token row plus agent and creatorFees: {earnedUsd, claimedUsd}]}; 400 malformed address; no coins answers empty lists',
+      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker count once their fees are collected. Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. When the wallet also holds another share of a coin, one claim pays both: claimedUsd counts the creator share alone, or is null when the shares cannot be told apart exactly. At most 200 coins.',
+      '{address, readAt, indexedAt, totals: {coins, agents, earnedUsd, claimedUsd, earnedWeth, claimedWeth}, coins: [token row plus agent and creatorFees: {earnedUsd, claimedUsd, earnedWeth, claimedWeth, otherShares: [{kind, earnedUsd, claimedUsd}]}]}; claimedUsd and claimedWeth can be null; WETH in wei strings; 400 malformed address; no coins answers empty lists',
       { path: pathParam('address', ADDRESS) },
     ),
     get(
       '/token/{id}/fees',
-      'USD accrued and claimed per recipient kind for one coin.',
-      '{token, source, lpFeeBps, protocolBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}}; 400 malformed address',
+      'USD accrued and claimed per recipient kind for one coin. A wallet holding two kinds has its claims told apart; a kind is null when that cannot be done exactly.',
+      '{token, source, lpFeeBps, protocolBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd|null}}, sharedWallets: [{recipient, kinds, claimedUsd, toldApart}]}; 400 malformed address',
       { path: pathParam('id', ADDRESS) },
     ),
     get(

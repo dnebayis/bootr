@@ -193,7 +193,7 @@ const READS: { name: string; route: RouteName; title: string; description: strin
     route: 'coinFees',
     title: 'Coin fees',
     description:
-      'USD accrued and claimed per recipient kind (agent, creator, burn, platform) for one coin.',
+      'USD accrued and claimed per recipient kind (agent, creator, burn, platform) for one coin. A kind answers null when its share cannot be told apart from another held by the same wallet.',
   },
   {
     name: 'bootr_holdings',
