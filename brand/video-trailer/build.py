@@ -5,6 +5,7 @@ T = json.load(open('assets/voice/timing.json'))
 # Bed: ElevenLabs Music, 120 BPM, bars on 0.1 + 2k; full energy from 16.1, last hit 42.9.
 V = {'n1': 4.0, 'n2': 9.4, 'n3': 12.4, 'a1': 16.3, 'n4': 17.3, 'n5': 20.2, 'n6': 24.3, 'n7': 28.6, 'n8': 30.9, 'a2': 40.6}
 MARK = 42.9
+BED_OFF = 1.4
 TOTAL = 46.5
 F = 1 / 30
 
@@ -226,6 +227,7 @@ def add(name, f, hit, vol, **kw):
     clips.append(dict(name=name, f=f, start=round(max(hit + F - PEAK[f], 0), 3), dur=DUR[f], vol=vol, extra=kw))
 
 
+add('open', 'braam-el.mp3', 0.55, 0.5)
 add('born', 'boom-el.mp3', 12.1, 0.5)
 add('wake', 'boom-el.mp3', 16.1, 0.55)
 for i in range(4):
@@ -236,6 +238,7 @@ add('post', 'boom-el.mp3', 24.6, 0.4)
 for i in range(7):
     add(f'clock{i}', 'key-press.mp3', 28.6 + 0.5 * i, 0.35)
 add('cannot', 'boom-el.mp3', V['n8'], 0.5)
+add('stop', 'boom-el.mp3', 28.1, 0.45)
 add('rules', 'braam-el.mp3', 32.1, 0.6)
 for i in range(1, 4):
     add(f'rule{i}', 'boom-el.mp3', 32.1 + 2 * i, 0.5)
@@ -251,7 +254,7 @@ for c in clips:
     ends[tr] = c['start'] + c['dur']
 aud = '\n'.join('      <audio id="sfx-{n}" class="clip" src="assets/sfx/{f}" data-start="{s}" data-duration="{d}"{ex} data-volume="{v}" data-track-index="{t}" data-audio-group="sfx"></audio>'.format(
     n=c['name'], f=c['f'], s=c['start'], d=c['dur'], ex=''.join(f' {k}="{v}"' for k, v in c['extra'].items()), v=c['vol'], t=c['track']) for c in clips)
-voice = '\n'.join(f'      <audio id="{n}" class="clip" src="assets/voice/{n}.mp3" data-start="{t}" data-duration="{T[n]["dur"]}" data-volume="1" data-track-index="1" data-audio-group="voice"></audio>' for n, t in V.items())
+voice = '\n'.join(f'      <audio id="{n}" class="clip" src="assets/voice/{n}.mp3" data-start="{round(t - T[n]["lead"], 3)}" data-duration="{T[n]["dur"]}" data-volume="1" data-track-index="1" data-audio-group="voice"></audio>' for n, t in V.items())
 hosts = '\n'.join(f'      <div id="{c}" data-composition-id="{c}" data-composition-src="compositions/{c}.html" data-start="{s}" data-duration="{round(e - s, 3)}" data-track-index="{i + 1}" data-track-kind="graphics" data-width="1920" data-height="1080" style="z-index:{i + 1}"></div>' for i, (c, s, e) in enumerate(scenes))
 open('index.html', 'w').write(f'''<!doctype html>
 <html lang="en">
@@ -269,10 +272,11 @@ open('index.html', 'w').write(f'''<!doctype html>
     <div id="root" data-composition-id="main" data-start="0" data-duration="{TOTAL}" data-width="1920" data-height="1080">
 {hosts}
 
-      <!-- Music: ElevenLabs Music, 120 BPM, cut out for the stop (28.1 to 32.1), up for the mark. -->
-      <audio id="bed-a" class="clip" src="assets/audio/bed-trailer.mp3" data-start="0" data-media-start="0" data-duration="28.1" data-volume="0.42" data-fade-out="0.08" data-track-index="3" data-audio-group="music"></audio>
-      <audio id="bed-b" class="clip" src="assets/audio/bed-trailer.mp3" data-start="32.1" data-media-start="32.1" data-duration="{round(MARK - 0.1 - 32.1, 3)}" data-volume="0.38" data-track-index="3" data-audio-group="music"></audio>
-      <audio id="bed-c" class="clip" src="assets/audio/bed-trailer.mp3" data-start="{round(MARK - 0.1, 3)}" data-media-start="{round(MARK - 0.1, 3)}" data-duration="{round(TOTAL - MARK + 0.1, 3)}" data-volume="0.8" data-fade-out="1.5" data-track-index="3" data-audio-group="music"></audio>
+      <!-- Music: the ElevenLabs track from the user's orchestral prompt, one continuous take from media {BED_OFF} s so its last hit (44.3) lands on the mark. Dipped, not cut, for the stop. -->
+      <audio id="bed-a" class="clip" src="assets/audio/bed-orchestral.mp3" data-start="0" data-media-start="{BED_OFF}" data-duration="28.1" data-volume="0.4" data-fade-out="0.3" data-track-index="3" data-audio-group="music"></audio>
+      <audio id="bed-b" class="clip" src="assets/audio/bed-orchestral.mp3" data-start="28.1" data-media-start="{round(28.1 + BED_OFF, 3)}" data-duration="4.0" data-volume="0.14" data-fade-in="0.3" data-fade-out="0.2" data-track-index="3" data-audio-group="music"></audio>
+      <audio id="bed-c" class="clip" src="assets/audio/bed-orchestral.mp3" data-start="32.1" data-media-start="{round(32.1 + BED_OFF, 3)}" data-duration="{round(MARK - 0.15 - 32.1, 3)}" data-volume="0.42" data-fade-in="0.15" data-track-index="3" data-audio-group="music"></audio>
+      <audio id="bed-d" class="clip" src="assets/audio/bed-orchestral.mp3" data-start="{round(MARK - 0.15, 3)}" data-media-start="{round(MARK - 0.15 + BED_OFF, 3)}" data-duration="{round(TOTAL - MARK + 0.15, 3)}" data-volume="0.75" data-fade-in="0.1" data-fade-out="1.5" data-track-index="3" data-audio-group="music"></audio>
 
       <!-- Voices: ElevenLabs premade Brian (narrator) and Callum (the agent). -->
 {voice}

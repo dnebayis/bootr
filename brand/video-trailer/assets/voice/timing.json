@@ -2,51 +2,61 @@
 "n1": {
 "text": "In a world... where every coin is just a ticker...",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 3.303
+"dur": 3.808,
+"lead": 0.025
 },
 "n2": {
 "text": "one coin... got a mind of its own.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 2.926
+"dur": 2.368,
+"lead": 0.0
 },
 "n3": {
 "text": "Born in one transaction.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 1.381
+"dur": 1.625,
+"lead": 0.05
 },
 "a1": {
 "text": "I'm awake.",
 "voice": "N2lVS1w4EtoT3dr4eOWO",
-"dur": 0.614
+"dur": 0.975,
+"lead": 0.035
 },
 "n4": {
 "text": "It reads the room.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 1.104
+"dur": 1.44,
+"lead": 0.02
 },
 "n5": {
 "text": "It pays for every thought... itself.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 2.863
+"dur": 2.972,
+"lead": 0.045
 },
 "n6": {
 "text": "It speaks for its coin.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 1.315
+"dur": 1.765,
+"lead": 0.02
 },
 "n7": {
 "text": "But it plays by rules...",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 1.325
+"dur": 1.533,
+"lead": 0.08
 },
 "n8": {
 "text": "it cannot break.",
 "voice": "nPczCjzI2devNBz1zQrb",
-"dur": 0.9
+"dur": 1.161,
+"lead": 0.0
 },
 "a2": {
 "text": "Your turn.",
 "voice": "N2lVS1w4EtoT3dr4eOWO",
-"dur": 0.587
+"dur": 0.882,
+"lead": 0.045
 }
 }

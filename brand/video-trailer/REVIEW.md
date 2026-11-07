@@ -6,5 +6,12 @@ Fixed on review: "for base." ran out of the rating box; n2 and n3 overlapped; th
 
 Left as is: "$YOURS" grows over its neighbours in the wall on purpose, the rest are dimmed to near black.
 
+Sound fixes (8 nov): voices regenerated with their natural tails and 20 ms fades (the first take trimmed them mid-sound); the score is now the continuous ElevenLabs track from the user's orchestral prompt, from media 1.4 s so its last hit lands on the mark (the sectioned score had near-silent gaps between its pulses); the stop dips the music to 0.14 instead of cutting it. Render checked for gaps below -38 dB.
+
 Not checked: the voices and score by ear. Brian and Callum were picked from ElevenLabs' premade descriptions, since the key cannot list voices.
-Re-render step: `ffmpeg -i in.mp4 -c:v copy -af "volume=1.2dB,alimiter=limit=0.85:level=disabled" -c:a aac -b:a 192k out.mp4`. Voice clips carry +7 dB baked in. Loudness about -16 LUFS, measured only.
+
+Sound fixes, 8 nov:
+- Voices regenerated with their natural tails and 20 ms fades; the first take trimmed them mid-sound.
+- The score is now the continuous ElevenLabs track from the user's orchestral prompt (`bed-orchestral.mp3`), from media 1.4 s so its last hit lands on the mark. The sectioned score had near-silent gaps between its pulses.
+- The stop dips the music to 0.14 instead of cutting it; a boom marks it, a braam opens the film.
+- Render checked: no gap below -38 dB outside the deliberate dip. -16.2 LUFS with no post step.

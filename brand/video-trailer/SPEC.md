@@ -4,7 +4,7 @@ GOAL: an action-trailer parody that tells how Bootr works and lands on the rules
 
 OUTPUT: HyperFrames, 1920x1080, 30 fps, 46.5 s.
 
-SOUND (all ElevenLabs): score from a sectioned Music plan (`bed-trailer.mp3`, 120 BPM, bars on 0.1 + 2k, full energy from 16.1, last hit 42.9), cut out from 28.1 to 32.1 for the stop. Narrator: premade Brian. The agent: premade Callum. Braam, boom and whoosh from Sound Effects.
+SOUND (all ElevenLabs): score `bed-orchestral.mp3` (the user's orchestral prompt), played from media 1.4 s so its last hit lands on the mark at 42.9, dipped to 0.14 from 28.1 to 32.1 for the stop. Narrator: premade Brian. The agent: premade Callum. Braam, boom and whoosh from Sound Effects.
 
 LOOK: black #000000 and Base Blue #0000ff, white type, Geist 600 cards at 130-230 px, Geist Mono for small lines, a white flash on each cut, a shake on each hit.
 
