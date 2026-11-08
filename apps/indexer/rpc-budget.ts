@@ -118,7 +118,7 @@ function parseUrl(url: string): URL {
     return new URL(url);
   } catch {
     // Node's own error carries the input, which holds the key.
-    throw new Error('An RPC url in BASE_RPC_URL, BASE_SEPOLIA_RPC_URL or BASE_RPC_FALLBACK_URL is not a valid url');
+    throw new Error('An RPC url in BASE_RPC_URL, BASE_SEPOLIA_RPC_URL, BASE_RPC_FALLBACK_URL or INDEXER_BLOCKS_RPC_URL is not a valid url');
   }
 }
 
@@ -138,14 +138,31 @@ export interface BudgetedTransportOptions {
   budget?: Budget;
   /** viem's own retries of a failed request (5xx, a dropped connection), which Ponder does not need: it retries by itself. */
   httpRetries?: number;
+  /**
+   * A url for the block reads alone (`BLOCK_READ_METHODS`), which spend nothing from the budget. Following 200 ms blocks
+   * costs one `eth_getBlockByNumber` and one `eth_getLogs` per block, and the public Base endpoint serves the first
+   * (measured 2026-11-08: 180 of 180 full blocks answered at 3 a second) but refuses the second (180 of 180 `eth_getLogs`
+   * answered 429), so this url takes half the load off the keyed one. A failed read goes to the primary as if there were
+   * no such url, and the url is left alone for `BLOCKS_URL_REST_MS` so a dead endpoint costs one failure, not one per block.
+   */
+  blocksUrl?: string;
+  now?: () => number;
 }
+
+/** The methods `blocksUrl` serves: the block tail and the finality search, never logs or state. */
+export const BLOCK_READ_METHODS: ReadonlySet<string> = new Set(['eth_getBlockByNumber', 'eth_getBlockByHash', 'eth_blockNumber']);
+/** How long the blocks url is left alone after a failed read. */
+export const BLOCKS_URL_REST_MS = 10_000;
 
 export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
   const budget = opts.budget ?? createBudget(opts.buPerSecond);
+  const now = opts.now ?? Date.now;
   return ({ chain, timeout }) => {
     const connect = (url: string) => http(url, { retryCount: opts.httpRetries ?? 0 })({ chain, retryCount: 0, timeout });
     const primary = connect(opts.url);
     const spare = opts.fallbackUrl ? connect(opts.fallbackUrl) : null;
+    const blocks = opts.blocksUrl ? connect(opts.blocksUrl) : null;
+    let blocksRestUntil = 0;
     const send = async (transport: typeof primary, url: string, args: { method: string; params?: unknown }) => {
       try {
         return await transport.request(args as never);
@@ -154,6 +171,14 @@ export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
       }
     };
     const request = async (args: { method: string; params?: unknown }) => {
+      if (blocks && BLOCK_READ_METHODS.has(args.method) && now() >= blocksRestUntil) {
+        try {
+          return await send(blocks, opts.blocksUrl!, args);
+        } catch (err) {
+          blocksRestUntil = now() + BLOCKS_URL_REST_MS;
+          console.warn(`[indexer] block read failed on the blocks url (${parseUrl(opts.blocksUrl!).origin}); using the primary for ${BLOCKS_URL_REST_MS / 1000} s: ${safeMessage(err)}`);
+        }
+      }
       const cost = costOf(args.method);
       if (!spare) {
         await budget.take(cost);
@@ -176,6 +201,8 @@ export interface IndexerRpcArgs {
   /** `INDEXER_RPC_BU_PER_SEC`: unset = the CDP default on a CDP url and no budget elsewhere (other providers count differently), 0 = no budget. */
   budget?: string;
   fallbackUrl?: string;
+  /** `INDEXER_BLOCKS_RPC_URL`: where the block reads go (`budgetedTransport`); empty = the primary, as before. */
+  blocksUrl?: string;
 }
 
 function budgetOf(args: IndexerRpcArgs): number {
@@ -210,11 +237,14 @@ export function indexerTransport(args: IndexerRpcArgs & { httpRetries?: number }
   const buPerSecond = budgetOf(args);
   const [url, listed] = args.urls;
   const fallbackUrl = args.fallbackUrl?.trim() || listed;
+  const blocksUrl = args.blocksUrl?.trim();
+  if (blocksUrl) parseUrl(blocksUrl);
   return budgetedTransport({
     url: url!,
     buPerSecond,
     budget: buPerSecond > 0 ? sharedBudget(buPerSecond) : NO_BUDGET,
     ...(fallbackUrl ? { fallbackUrl } : {}),
+    ...(blocksUrl ? { blocksUrl } : {}),
     ...(args.httpRetries !== undefined ? { httpRetries: args.httpRetries } : {}),
   });
 }
@@ -234,7 +264,8 @@ export function indexerRpc(args: IndexerRpcArgs): string | string[] | Transport 
   const buPerSecond = budgetOf(args);
   const fallbackUrl = args.fallbackUrl?.trim() || args.urls[1];
   const all = [...args.urls, ...(fallbackUrl ? [fallbackUrl] : [])];
-  if (buPerSecond > 0 || all.some(holdsSecret)) return indexerTransport(args);
+  // A blocks url is a routing rule, which only the transport applies.
+  if (buPerSecond > 0 || args.blocksUrl?.trim() || all.some(holdsSecret)) return indexerTransport(args);
   if (fallbackUrl) return [args.urls[0]!, fallbackUrl];
   return args.urls[0]!;
 }

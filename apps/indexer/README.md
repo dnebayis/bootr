@@ -40,12 +40,23 @@ queries ("PGlite is closed", exit code 75). Restart it after editing, or run `po
 backfills.
 
 RPC rate: CDP limits billing units, not requests (7,500 BU per 5 s per project, 100 BU for `eth_getLogs` and
-`eth_getBlockByNumber`). Since the Denim fork Base has 5 blocks a second, and each costs one `eth_getBlockByNumber` plus an
-`eth_getLogs` on the 35-50% whose bloom matches a filter, about 750 BU/s in all. `INDEXER_RPC_BU_PER_SEC` is what Ponder
-may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional second
-RPC for what the budget cannot cover and for what the first one answers 429 to. Both live in `chains` and `rpc-budget.ts`,
-outside Ponder's build id, so changing them needs no new `DATABASE_SCHEMA`. The USDC fuel scan and the REST API's live reads
-(`src/lib/rpc.ts`) spend from the same budget and wait out a 429 for about 8 s.
+`eth_getBlockByNumber`). Since the Denim fork Base has 5 blocks a second, and Ponder's realtime sync costs one
+`eth_getBlockByNumber` plus one `eth_getLogs` for every one of them: measured on 2026-11-08 over 60 s of production
+(`ponder_rpc_request_duration_count` at `:42069/metrics`), 300 blocks took 304 `eth_getBlockByNumber` and 301
+`eth_getLogs`, about 1,000 BU/s. The bloom check never skips a block because `BootrToken` is a factory source (Ponder
+matches a factory's children on the `Transfer` topic alone, which every block has) and `PoolManager:Swap` is in nearly every
+block too; `pollingInterval` changes nothing, since every block between two polls is fetched one by one; a `ws` newHeads url
+would save the header only, and the body is fetched again as soon as the bloom matches. `INDEXER_RPC_BU_PER_SEC` is what
+Ponder may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional
+second RPC for what the budget cannot cover and for what the first one answers 429 to. `INDEXER_BLOCKS_RPC_URL` is an
+optional url for the block reads alone (`eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_blockNumber`), which spend
+nothing from the budget: the public `https://mainnet.base.org` served 12 full blocks a second for a minute without a
+refusal in a probe from one IP, and refused every `eth_getLogs` (429), which is why only the block reads go there; a
+failed block read goes to the primary and the url is left alone for 10 s. With it the keyed url carries about 500 BU/s
+for the tail instead of 1,000. The public endpoint publishes no rate limit ("not suitable for production apps"), so
+watch the indexer lag line for a while after turning it on. All three live in `chains` and `rpc-budget.ts`, outside Ponder's
+build id, so changing them needs no new `DATABASE_SCHEMA`. The USDC fuel scan and the REST API's live reads (`src/lib/rpc.ts`)
+spend from the same budget and wait out a 429 for about 8 s.
 
 Keys in logs: viem names the full url in its errors and Ponder logs an error whole, so a url string in Ponder's chain config
 would print the key on any failed request. `rpc-budget.ts` therefore gives Ponder a transport that scrubs every error for any

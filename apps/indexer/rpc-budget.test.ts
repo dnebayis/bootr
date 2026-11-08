@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { HttpRequestError, TimeoutError, createPublicClient, http, parseAbi } from 'viem';
 import { base } from 'viem/chains';
 
-import { budgetedTransport, costOf, createBudget, indexerRpc, indexerTransport, isRateLimited, safeMessage, scrubError, scrubUrls, withRateLimitRetry, type Budget } from './rpc-budget';
+import { BLOCKS_URL_REST_MS, budgetedTransport, costOf, createBudget, indexerRpc, indexerTransport, isRateLimited, safeMessage, scrubError, scrubUrls, withRateLimitRetry, type Budget } from './rpc-budget';
 
 type Reply = { status: number; body: unknown };
 
@@ -114,6 +114,45 @@ describe('budgetedTransport', () => {
     expect(primary.methods).toEqual(['eth_getLogs']);
     expect(fallback.methods).toEqual(['eth_getLogs']);
   });
+
+  it('sends the block reads to the blocks url, spending nothing, and everything else to the primary', async () => {
+    const primary = await rpcServer(ok);
+    const blocks = await rpcServer(ok);
+    // a budget that refuses everything: a block read that spent from it would wait here forever
+    const t = connect(budgetedTransport({ url: primary.url, blocksUrl: blocks.url, buPerSecond: 1_000, budget: { take: async () => {}, tryTake: () => true } }));
+    await t.request({ method: 'eth_getBlockByNumber', params: ['latest', true] } as never);
+    await t.request({ method: 'eth_getBlockByHash', params: ['0x1', true] } as never);
+    await t.request({ method: 'eth_blockNumber', params: [] } as never);
+    await t.request({ method: 'eth_getLogs', params: [] } as never);
+    await t.request({ method: 'eth_call', params: [] } as never);
+    expect(blocks.methods).toEqual(['eth_getBlockByNumber', 'eth_getBlockByHash', 'eth_blockNumber']);
+    expect(primary.methods).toEqual(['eth_getLogs', 'eth_call']);
+  });
+
+  it('a block read the blocks url fails goes to the primary, and the blocks url rests before it is asked again', async () => {
+    const primary = await rpcServer(ok);
+    const blocks = await rpcServer(limited);
+    let clock = 1_000_000;
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (line: string) => void warnings.push(line);
+    try {
+      const t = connect(budgetedTransport({ url: primary.url, blocksUrl: blocks.url, buPerSecond: 1_000, now: () => clock }));
+      await expect(t.request({ method: 'eth_getBlockByNumber', params: ['latest', true] } as never)).resolves.toBe('0x1');
+      clock += BLOCKS_URL_REST_MS - 1;
+      await expect(t.request({ method: 'eth_getBlockByNumber', params: ['0x2', true] } as never)).resolves.toBe('0x1');
+      expect(blocks.methods).toEqual(['eth_getBlockByNumber']);
+      expect(primary.methods).toEqual(['eth_getBlockByNumber', 'eth_getBlockByNumber']);
+      clock += 1;
+      await t.request({ method: 'eth_getBlockByNumber', params: ['0x3', true] } as never);
+      expect(blocks.methods).toHaveLength(2);
+      expect(warnings).toHaveLength(2);
+      expect(warnings.join('\n')).toContain('127.0.0.1');
+      expect(warnings.join('\n')).not.toContain('SECRETKEY');
+    } finally {
+      console.warn = warn;
+    }
+  });
 });
 
 describe('indexerRpc', () => {
@@ -123,6 +162,11 @@ describe('indexerRpc', () => {
   it('budgets a CDP url by default and any url when asked', () => {
     expect(typeof indexerRpc({ urls: [cdp] })).toBe('function');
     expect(typeof indexerRpc({ urls: [other], budget: '500' })).toBe('function');
+  });
+
+  it('applies a blocks url through the transport, since Ponder itself cannot route by method', () => {
+    expect(typeof indexerRpc({ urls: ['https://mainnet.base.org'], budget: '0', blocksUrl: 'https://mainnet.base.org' })).toBe('function');
+    expect(indexerRpc({ urls: ['https://mainnet.base.org'], budget: '0', blocksUrl: '' })).toBe('https://mainnet.base.org');
   });
 
   it('leaves urls with nothing to hide to Ponder', () => {
