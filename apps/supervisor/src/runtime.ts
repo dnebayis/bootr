@@ -30,6 +30,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
+import { rpcErrorText } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
@@ -429,7 +430,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     state.inferenceKey = inf.kind === 'credit' ? inf.key : null;
     state.inferenceRetryAt = plan.nextAt;
     state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
-    return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: inf.error });
+    return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: rpcErrorText(inf.error) });
   };
 
   // Unknown inference or a credit from a previous attempt: never pay for a replacement.

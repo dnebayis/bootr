@@ -14,6 +14,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { SLEEP_USDC } from './fuel.js';
+import { rpcErrorText } from './log.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, isXCreditsError, quotaHold } from './rhythm.js';
@@ -97,8 +98,8 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
       const result = await processAgent(ctx, agent, runtime);
       if (result?.ran) report.ran.push(agent.agentId);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      report.errors.push({ agentId: agent.agentId, error });
+      // The report is logged whole: a viem message names the RPC URL, key and all, so it is scrubbed here (log.ts).
+      report.errors.push({ agentId: agent.agentId, error: rpcErrorText(err) });
       ctx.log.error({ agentId: agent.agentId, err }, 'agent tick failed');
     }
   }
@@ -264,7 +265,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       const { interruptionPlan } = await import('@bootr/agent-core');
       const plan = interruptionPlan(pending ? 1 : 0, failures, ctx.now());
       log.error({ err, failures, nextAt: plan.nextAt }, 'turn crashed; backing off');
-      await saveRuntime(ctx, agent.agentId, { status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: err instanceof Error ? err.message.slice(0, 500) : String(err) });
+      // Stored in the runtime row and shown in the console: never with a keyed URL in it.
+      await saveRuntime(ctx, agent.agentId, { status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: rpcErrorText(err) });
     }
     const fresh = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) });
     if (fresh) await postSocial(ctx, agent, config, fresh, 'awake');
