@@ -7,6 +7,7 @@ import { actions, agents, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { DEFAULT_COIN_IMAGE_MODEL } from '../src/images.js';
 import { agentConfigOf, defaultIdentity, PLATFORM_CAPABILITIES, PLATFORM_POST_INTERVAL_MS } from '../src/onboarding.js';
+import { DEFAULT_SERVICES_POLICY } from '@bootr/agent-core';
 import { AGENT_ID, CREATOR, KERNEL, makeWorld, seedAgent, SUPERVISOR_KEY, type TestWorld } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
@@ -53,7 +54,8 @@ describe('GET /internal/agents/:id/config', () => {
         creator: CREATOR,
         model: 'openai/gpt-4.1-mini',
         instructions: INSTRUCTIONS,
-        worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
+        // `services` (paid web services) is a console switch like the others, off on every v1 preset
+        worker: { kind: 'community', capabilities: { ...COMMUNITY.preset.capabilities, services: false }, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
         workerHash: COMMUNITY.hash,
         postsPerDay: 24,
         requireApproval: false,
@@ -61,6 +63,7 @@ describe('GET /internal/agents/:id/config', () => {
         // a coin agent's default image model is the cheaper one (images.ts); the platform agent keeps Nano Banana Pro
         imageModel: DEFAULT_COIN_IMAGE_MODEL,
         imageStyle: { reference: null, notes: '' },
+        services: DEFAULT_SERVICES_POLICY,
         revision: 1,
         updatedAt: expect.any(String),
       });
@@ -95,7 +98,7 @@ describe('PUT /internal/agents/:id/config', () => {
       expect(body.instructions).toBe(next);
       expect(body.model).toBe('anthropic/claude-sonnet-4.5');
       // treasury stays on (always-on), the rest of the community powers are kept, the two switches flipped
-      expect(body.worker).toEqual({ kind: 'community', capabilities: { ...COMMUNITY.preset.capabilities, research: true, images: true }, postIntervalMs: 4 * 3_600_000, jobLines: COMMUNITY.preset.identity });
+      expect(body.worker).toEqual({ kind: 'community', capabilities: { ...COMMUNITY.preset.capabilities, research: true, images: true, services: false }, postIntervalMs: 4 * 3_600_000, jobLines: COMMUNITY.preset.identity });
       expect(await (await get(`/internal/agents/${AGENT_ID}/config`)).json()).toEqual(body);
 
       // the stored config the tick parses (`agentConfigOf` on the sv_agents row) carries all of it: live next tick

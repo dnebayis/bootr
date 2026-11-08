@@ -211,6 +211,13 @@ export const configSchema = z
     SWAP_SLIPPAGE_BPS: int(100, 1),
     /** Chainlink ETH/USD answers older than this are treated as unavailable (no swap, no USD figures). */
     CHAINLINK_MAX_AGE_SECONDS: int(3600, 1),
+    /**
+     * The x402 service catalogue `discover_services` reads (CDP's Bazaar discovery API, public, no key): `/search` and
+     * `/resources` under this base. Listings are third-party text shown to the model as data.
+     */
+    X402_DISCOVERY_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://api.cdp.coinbase.com/platform/v2/x402/discovery' : v), z.string().url()),
+    /** How long one paid service call may take, asking and paying together (services.ts). */
+    SERVICES_TIMEOUT_MS: int(30_000, 1000),
     /** Optional web search API (Exa or Brave). Without it `search_web` is hidden from the model. */
     SEARCH_API_URL: optionalUrl,
     SEARCH_API_KEY: optionalString,

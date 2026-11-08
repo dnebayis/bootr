@@ -19,6 +19,7 @@ import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
 import { fuelReport, reconcileInference } from './inference.js';
+import { servicesReport } from './services.js';
 import { createTelegramLink, removeTelegramLink } from './telegram.js';
 import { providerHold } from './provider-hold.js';
 import type { AgentState } from './runtime.js';
@@ -183,7 +184,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     return c.json({ items: await agentActivity(ctx, agent, runtime, { limit, before }) });
   });
 
-  /** `?days=7` (1..90): paid calls since then, grouped by the model each ran on, and when the first was (inference.ts `fuelReport`). */
+  /** `?days=7` (1..90): paid calls since then, grouped by the model each ran on, and when the first was (inference.ts `fuelReport`), plus what paid web services cost (`services`, by host; services.ts). */
   app.get('/internal/agents/:id/fuel', async (c) => {
     const id = c.req.param('id');
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
@@ -192,8 +193,8 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const days = daysRaw === undefined ? 7 : Number(daysRaw);
     if (!Number.isInteger(days) || days < 1 || days > 90) return c.json({ error: 'invalid_days', message: 'days must be an integer of 1..90' }, 400);
     const since = new Date(ctx.now() - days * 86_400_000);
-    const report = await fuelReport(ctx, id, since);
-    return c.json({ agentId: id, days, since: since.toISOString(), firstAt: report.firstAt?.toISOString() ?? null, byModel: report.byModel });
+    const [report, services] = await Promise.all([fuelReport(ctx, id, since), servicesReport(ctx, id, since)]);
+    return c.json({ agentId: id, days, since: since.toISOString(), firstAt: report.firstAt?.toISOString() ?? null, byModel: report.byModel, services });
   });
 
   /** `?status=pending` (default) | `all`: the review queue (approvals.ts); pending items carry their image as base64. */

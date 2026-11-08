@@ -196,6 +196,47 @@ export const images = pgTable(
   (t) => [index('sv_images_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
+export const serviceCallStatuses = ['pending', 'paid', 'succeeded', 'failed', 'unknown'] as const;
+export type ServiceCallStatus = (typeof serviceCallStatuses)[number];
+
+/**
+ * Paid web services (`x402_fetch`, services.ts): one row per call the model asked for, keyed by the agent-core action
+ * id, so the same action never pays twice. `pending` before any signature (nothing can have moved); `paid` once the
+ * spender signed, until the answer or the chain settles it; `succeeded` with the answer; `failed` with no money owed
+ * (refused, unpaid, or paid and lost: `error` says which); `unknown` when the money may have moved and no answer came,
+ * closed by the chain alone (`reconcileServiceCall`). `quote_micro_usdc` is what was signed for, `charged_micro_usdc`
+ * what the chain says moved (null until known). The public tape shows host, amount and the model's reason.
+ */
+export const serviceCalls = pgTable(
+  'sv_service_calls',
+  {
+    /** The agent-core action id (`sv_actions.action_id`) of the `x402_fetch` call. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    url: text('url').notNull(),
+    host: text('host').notNull(),
+    method: text('method').notNull(),
+    /** The model's reason, plain text, public. */
+    reason: text('reason').notNull(),
+    status: text('status', { enum: serviceCallStatuses }).notNull().default('pending'),
+    /** The cap this call ran under (min of the model's price, the per-call cap and what the day had left). */
+    capMicroUsdc: text('cap_micro_usdc').notNull(),
+    quoteMicroUsdc: text('quote_micro_usdc'),
+    chargedMicroUsdc: text('charged_micro_usdc'),
+    /** The signed x402 payment (its nonce and deadline close the row from the chain). */
+    payment: jsonb('payment').$type<Record<string, unknown>>(),
+    payTo: text('pay_to'),
+    txHash: text('tx_hash'),
+    httpStatus: integer('http_status'),
+    /** The answer as handed to the model (bounded text), kept for the replay of the same action id. */
+    result: jsonb('result').$type<Record<string, unknown> | null>(),
+    error: text('error'),
+    createdAt: ts('created_at').notNull(),
+    updatedAt: ts('updated_at').notNull(),
+  },
+  (t) => [index('sv_service_calls_agent_created_idx').on(t.agentId, t.createdAt), index('sv_service_calls_agent_status_idx').on(t.agentId, t.status)],
+);
+
 export const approvalKinds = ['post', 'reply'] as const;
 export type ApprovalKind = (typeof approvalKinds)[number];
 export const approvalStatuses = ['pending_approval', 'approved', 'rejected', 'failed'] as const;

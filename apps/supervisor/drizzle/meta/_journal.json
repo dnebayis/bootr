@@ -64,6 +64,13 @@
       "when": 1793908280603,
       "tag": "0008_notifications_and_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794161523991,
+      "tag": "0009_service_calls",
+      "breakpoints": true
     }
   ]
 }

@@ -25,6 +25,7 @@ import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
 import { SenderError, type SenderInboxItem } from './sender-client.js';
 import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, type AgentChainState } from './treasury.js';
+import { openServiceCalls, reconcileServiceCall } from './services.js';
 
 export { SLEEP_USDC };
 
@@ -183,8 +184,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       return { ran: false, reasons: ['keys_revoked'], skipped: 'keys_revoked' };
     }
 
-    // 1. Reconcile money and pending effects (never re-send).
+    // 1. Reconcile money and pending effects (never re-send). Paid service calls left open close from the chain alone.
     await reconcileOps(ctx, agent).catch((err) => log.warn({ err }, 'treasury reconcile failed'));
+    await reconcileServiceCalls(ctx, agent).catch((err) => log.warn({ err }, 'service call reconcile failed'));
     runtime = await reconcilePending(ctx, agent, runtime);
     if (runtime.status === 'paused') return { ran: false, reasons: ['paused'], skipped: 'paused' };
 
@@ -304,6 +306,11 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
   } finally {
     await releaseLease(ctx, agent.agentId, lease);
   }
+}
+
+/** Closes `paid` / `unknown` service calls whose action is no longer pending (a crashed turn) from the chain; the pending one goes through `reconcilePending`. */
+export async function reconcileServiceCalls(ctx: SupervisorContext, agent: AgentRow): Promise<void> {
+  for (const row of await openServiceCalls(ctx, agent.agentId)) await reconcileServiceCall(ctx, row);
 }
 
 /** Settles a held/sent pending action from receipts (sender, treasury) without re-sending it. */

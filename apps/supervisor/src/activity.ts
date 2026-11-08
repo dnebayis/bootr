@@ -6,15 +6,18 @@
  *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake.
  *   - `sv_approvals`: posts waiting for the creator's review, approvals (the sent post is its own `post` row) and
  *     rejections; texts and notes stay private (this is a public read).
- * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer`;
+ *   - `sv_service_calls`: paid web services (`x402_fetch`): host, amount and the model's reason, answered or lost.
+ * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer` | `service`;
  * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { approvalActivity } from './approvals.js';
 import { actions, images, treasuryOps } from './db/schema.js';
+import { tapeServiceCalls, type ServiceCallRow } from './services.js';
+import { formatUnits } from 'viem';
 
-export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status' | 'approval_pending' | 'approval_approved' | 'approval_rejected';
+export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'service' | 'status' | 'approval_pending' | 'approval_approved' | 'approval_rejected';
 
 export interface ActivityItem {
   /** ISO timestamp. */
@@ -50,7 +53,7 @@ export function shortAmount(raw: string, decimals: number): string {
   return out.includes('.') ? out.replace(/0+$/, '').replace(/\.$/, '') : out;
 }
 
-const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode' };
+const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps' };
 
 function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
   const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown };
@@ -106,6 +109,15 @@ function opItem(chainId: number, op: TreasuryOpRow): ActivityItem | null {
   return { at, kind, summary, ...(op.txHash ? { txHash: op.txHash, url: explorerTxUrl(chainId, op.txHash) } : {}) };
 }
 
+/** A paid service call on the public ledger: who was paid how much, and the model's reason; a free answer shows without an amount. */
+export function serviceItem(chainId: number, row: ServiceCallRow): ActivityItem {
+  const charged = BigInt(row.chargedMicroUsdc ?? row.quoteMicroUsdc ?? '0');
+  const amount = `${shortAmount(formatUnits(charged, 6), 6)} USDC`;
+  const lost = row.status !== 'succeeded';
+  const summary = charged === 0n ? `Used a free service at ${row.host} for: ${row.reason}` : lost ? `Paid ${amount} to ${row.host} for: ${row.reason}. No answer came back` : `Paid ${amount} to ${row.host} for: ${row.reason}`;
+  return { at: row.updatedAt.toISOString(), kind: 'service', summary, ...(row.txHash ? { txHash: row.txHash, url: explorerTxUrl(chainId, row.txHash) } : {}) };
+}
+
 /** The current status as one tape item (no history is kept; see the module comment). */
 export function statusItem(agent: AgentRow, runtime: RuntimeRow | null): ActivityItem {
   const at = (runtime?.updatedAt ?? agent.updatedAt).toISOString();
@@ -142,7 +154,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
   // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
   const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image') or ${actions.action}->>'kind' = 'config_updated')`;
-  const [actionRows, opRows, approvalItems] = await Promise.all([
+  const [actionRows, opRows, approvalItems, serviceRows] = await Promise.all([
     ctx.db
       .select()
       .from(actions)
@@ -156,6 +168,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
       .orderBy(desc(treasuryOps.updatedAt))
       .limit(limit),
     approvalActivity(ctx, agent, limit, before),
+    tapeServiceCalls(ctx, agent.agentId, limit, before),
   ]);
   const items: ActivityItem[] = [];
   const alts = await imageAlts(ctx, actionRows);
@@ -171,6 +184,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
     if (item && (!before || Date.parse(item.at) < before.getTime())) items.push(item);
   }
   for (const item of approvalItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
+  for (const row of serviceRows) items.push(serviceItem(ctx.chain.chainId, row));
   const status = statusItem(agent, runtime);
   if (!before || Date.parse(status.at) < before.getTime()) items.push(status);
   items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));

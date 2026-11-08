@@ -123,7 +123,7 @@ describe('the watchlist section', () => {
     try {
       w.setNow(NOW);
       w.sender.timelines = { base: tl('base', 1), jessepollak: tl('jessepollak', 2) };
-      const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false };
+      const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false };
       expect(await watchlistSection(w.ctx, { agentId: AGENT_ID }, { platform: false, capabilities: caps })).toEqual({});
       expect(await watchlistSection(w.ctx, { agentId: AGENT_ID }, { platform: true, capabilities: { ...caps, xRead: false } })).toEqual({});
       expect(w.sender.timelineReads).toEqual([]);
@@ -139,7 +139,7 @@ describe('the watchlist section', () => {
     const empty = await makeWorld({ config: { PLATFORM_WATCHLIST: ' , ' } });
     try {
       expect(empty.ctx.config.PLATFORM_WATCHLIST).toBe(' , ');
-      const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false };
+      const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false };
       expect(await watchlistSection(empty.ctx, { agentId: AGENT_ID }, { platform: true, capabilities: caps })).toEqual({});
     } finally {
       await empty.close();

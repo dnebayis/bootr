@@ -6,7 +6,7 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, type ImageStyle } from '@bootr/agent-core';
+import { DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -50,12 +50,24 @@ export interface AgentConfigView {
   imageModel: string;
   /** The reference picture and notes every generated image follows (images.ts). */
   imageStyle: ImageStyle;
+  /**
+   * The money bounds of the Paid services power (services.ts), whether or not the power is on: per-call and daily caps
+   * in micro-USDC (the console shows USDC) and the host allow and deny lists. The daily cap is the most this power can
+   * cost in a day, whatever the model does.
+   */
+  services: ServicesPolicy;
   revision: number;
   updatedAt: string;
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services';
+
+/** The stored `services` block, or the defaults when it is missing or malformed. */
+export function servicesOf(config: Record<string, unknown>): ServicesPolicy {
+  const parsed = servicesPolicySchema.safeParse(config.services ?? {});
+  return parsed.success ? parsed.data : DEFAULT_SERVICES_POLICY;
+}
 
 /** The worker preset in force for a stored config: live capabilities and cadence, stored or template job lines. */
 function currentPreset(config: Record<string, unknown>): WorkerPreset {
@@ -92,6 +104,7 @@ export function configView(agent: AgentRow): AgentConfigView {
     routing: { decideModel: decideModelOf({ model: typeof config.model === 'string' ? config.model : '', routing: routingOf(config) }) },
     imageModel: imageModelOf(config),
     imageStyle: imageStyleOf(config),
+    services: servicesOf(config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
   };
@@ -115,6 +128,8 @@ export interface ConfigUpdateBody {
   imageModel?: unknown;
   /** Partial `{reference?: https url | null, notes?: string}`, merged onto the stored style. */
   imageStyle?: unknown;
+  /** Partial `{perCallMicroUsdc?, dailyMicroUsdc?, allow?, deny?}`, merged onto the stored services policy. */
+  services?: unknown;
 }
 
 /** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
@@ -266,6 +281,25 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
       config.imageStyle = parsed.data;
       fields.push('imageStyle');
+    }
+  }
+
+  // Paid services caps: a partial block merged onto the policy in force, then the whole thing re-validated (hard ceilings).
+  if (body.services !== undefined) {
+    if (!body.services || typeof body.services !== 'object' || Array.isArray(body.services)) return reject(400, 'invalid_services', 'services must be an object');
+    const current = servicesOf(before);
+    const patch = body.services as Partial<Record<keyof ServicesPolicy, unknown>>;
+    const parsed = servicesPolicySchema.safeParse({
+      perCallMicroUsdc: patch.perCallMicroUsdc !== undefined ? patch.perCallMicroUsdc : current.perCallMicroUsdc,
+      dailyMicroUsdc: patch.dailyMicroUsdc !== undefined ? patch.dailyMicroUsdc : current.dailyMicroUsdc,
+      allow: patch.allow !== undefined ? (Array.isArray(patch.allow) ? patch.allow.map((h) => (typeof h === 'string' ? h.trim().toLowerCase() : h)) : patch.allow) : current.allow,
+      deny: patch.deny !== undefined ? (Array.isArray(patch.deny) ? patch.deny.map((h) => (typeof h === 'string' ? h.trim().toLowerCase() : h)) : patch.deny) : current.deny,
+    });
+    if (!parsed.success) return reject(400, 'invalid_services', `services caps must be whole micro-USDC amounts (per call at most ${SERVICES_PER_CALL_MAX_MICRO_USDC}, per day at most ${SERVICES_DAILY_MAX_MICRO_USDC}) and the host lists hostnames or *.example.com patterns, at most 64 each`);
+    if (parsed.data.perCallMicroUsdc > parsed.data.dailyMicroUsdc) return reject(400, 'invalid_services', 'the per-call cap cannot exceed the daily cap');
+    if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
+      config.services = parsed.data;
+      fields.push('services');
     }
   }
 

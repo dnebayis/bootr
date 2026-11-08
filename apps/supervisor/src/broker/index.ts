@@ -29,6 +29,8 @@ import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fu
 import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
 import { readCoin } from '../coin-reader.js';
 import { readUrl, searchWeb } from '../web-reader.js';
+import { discoverServices, reconcileServiceCall, serviceFetch } from '../services.js';
+import { serviceCalls } from '../db/schema.js';
 import { generateImage, loadImage, mediaFor, WITHOUT_PICTURE } from '../images.js';
 import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
@@ -381,6 +383,16 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (res.status === 'unknown') return { kind: 'unknown', error: `treasury_outcome_unknown:${res.opId}:${res.userOpHash}` };
       return failed(`treasury_failed: ${res.error}`);
     }
+    case 'discover_services':
+      return { kind: 'completed', result: await discoverServices(ctx, agent, config, action.input) };
+    case 'x402_fetch': {
+      // Keyed by the action id: the same decision never pays twice (services.ts). An unknown outcome holds the action
+      // until the chain closes it (`resolvePending`).
+      const res = await serviceFetch(ctx, agent, config, pending.id, action.input);
+      if (res.kind === 'completed') return { kind: 'completed', result: res.result, ...(res.receipt ? { receipt: res.receipt } : {}) };
+      if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
+      return failed(res.error);
+    }
     case 'generate_image': {
       // The messages received this turn: a picture is never made because somebody asked for one (image-rules.ts).
       const receivedTexts = [...env.inbox.values()].map((item) => (typeof item.post?.text === 'string' ? item.post.text : ''));
@@ -521,6 +533,14 @@ export async function resolvePending(ctx: SupervisorContext, agent: AgentRow, pe
       if (err instanceof SenderError && err.status === 404) return { resolved: true, outcome: { kind: 'failed', error: 'sender_receipt_missing' } };
       return { resolved: false, reason: errorText(err) };
     }
+  }
+  if (tool === 'x402_fetch') {
+    const row = await ctx.db.query.serviceCalls.findFirst({ where: and(eq(serviceCalls.id, pending.id), eq(serviceCalls.agentId, agent.agentId)) });
+    if (!row) return { resolved: true, outcome: { kind: 'failed', error: 'services_call_not_found' } };
+    const res = await reconcileServiceCall(ctx, row);
+    if (res.kind === 'completed') return { resolved: true, outcome: { kind: 'completed', result: res.result, ...(row.txHash ? { receipt: { txHash: row.txHash } } : {}) }, ...(row.txHash ? { receipt: { txHash: row.txHash } } : {}) };
+    if (res.kind === 'failed') return { resolved: true, outcome: { kind: 'failed', error: res.error } };
+    return { resolved: false, reason: res.error };
   }
   if (tool === 'treasury_execute') {
     const opId = (pending.action as Action & { tool: 'treasury_execute' }).input.preparedId;
