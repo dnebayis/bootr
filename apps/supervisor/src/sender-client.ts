@@ -99,6 +99,14 @@ export interface ReplyEligibility {
   reason?: string;
 }
 
+/** `GET`/`POST /internal/quota/:agentId` answer (apps/sender/src/app.ts `quotaView`). */
+export interface SenderQuota {
+  agentId: string;
+  postsPerDay: number;
+  mentionReadIntervalSec: number;
+  lastMentionsReadAt: string | null;
+}
+
 export class SenderError extends Error {
   constructor(
     readonly status: number,
@@ -220,6 +228,19 @@ export class SenderClient {
       to: toAgentId,
       ...(connectedBefore ? { connectedBefore } : {}),
     });
+  }
+
+  /** `GET /internal/quota/:agentId`: the agent's posting quota as the sender holds it (apps/sender/src/quota.ts). */
+  quota(agentId: string) {
+    return this.call<SenderQuota>('GET', `/internal/quota/${encodeURIComponent(agentId)}`);
+  }
+
+  /**
+   * `POST /internal/quota/:agentId`: sets the agent's posts per day (original posts and replies, rolling 24 h) and the
+   * mention-read interval; `null` returns a field to the sender's default. The sender's `setQuota` does the write.
+   */
+  setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null }) {
+    return this.call<SenderQuota>('POST', `/internal/quota/${encodeURIComponent(agentId)}`, patch);
   }
 
   metering(agentId: string, month: string) {

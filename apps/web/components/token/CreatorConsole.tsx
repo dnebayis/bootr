@@ -4,7 +4,7 @@ import { Fragment, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Address } from 'viem';
-import { ALWAYS_ON_CAPABILITIES, CADENCE_OPTIONS, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, WORKER_BOUNDS } from '@bootr/shared/workers';
+import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, POSTS_PER_DAY, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { qk, useAgentConfig } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
@@ -12,6 +12,7 @@ import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types'
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { fuelOutlook } from '@/lib/fuel-outlook';
+import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { useAgentActivity, useAgentFuel, useApprovalCount } from '@/lib/indexer';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
@@ -39,7 +40,8 @@ const POWERS = CAPABILITY_KEYS.filter((k) => !ALWAYS_ON_CAPABILITIES.includes(k)
 type Draft = {
   instructions: string;
   capabilities: Record<CapabilityKey, boolean>;
-  postIntervalMs: number;
+  /** The daily budget of posts and replies; the cadence is derived from it by the supervisor. */
+  postsPerDay: number;
   model: string;
   requireApproval: boolean;
   imageModel: string;
@@ -56,7 +58,7 @@ function draftOf(c: AgentConfig): Draft {
   return {
     instructions: c.instructions,
     capabilities: { ...c.worker.capabilities },
-    postIntervalMs: c.worker.postIntervalMs,
+    postsPerDay: c.postsPerDay,
     model: c.model,
     requireApproval: c.requireApproval,
     imageModel: c.imageModel || DEFAULT_IMAGE_MODEL,
@@ -86,10 +88,10 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   for (const k of POWERS) if (d.capabilities[k] !== config.worker.capabilities[k]) caps[k] = d.capabilities[k];
   const worker: NonNullable<AgentConfigChanges['worker']> = {};
   if (Object.keys(caps).length) worker.capabilities = caps;
-  if (d.postIntervalMs !== config.worker.postIntervalMs) worker.postIntervalMs = d.postIntervalMs;
   const lines = d.jobLines.map((l) => l.trim()).filter(Boolean);
   if (JSON.stringify(lines) !== JSON.stringify(config.worker.jobLines)) worker.jobLines = lines;
   if (Object.keys(worker).length) changes.worker = worker;
+  if (d.postsPerDay !== config.postsPerDay) changes.postsPerDay = d.postsPerDay;
   if (d.requireApproval !== config.requireApproval) changes.requireApproval = d.requireApproval;
   if (d.decideModel !== config.routing.decideModel) changes.routing = { decideModel: d.decideModel };
   if (d.imageModel !== (config.imageModel || DEFAULT_IMAGE_MODEL)) changes.imageModel = d.imageModel;
@@ -112,16 +114,9 @@ export function editedLabel(revision: number): string {
   return revision === 0 ? 'not edited yet' : revision === 1 ? 'edited once' : `edited ${revision} times`;
 }
 
-function cadenceLabel(ms: number): string {
-  const known = CADENCE_OPTIONS.find((o) => o.ms === ms);
-  if (known) return known.label;
-  const h = ms / 3_600_000;
-  return h >= 24 ? `Every ${Math.round(h / 24)} d` : h >= 1 ? `Every ${Math.round(h * 10) / 10} h` : `Every ${Math.round(ms / 60_000)} min`;
-}
-
 /**
  * The creator's panel on the coin page: the inbox (NotificationInbox), the agent's instructions, powers (with the image model and image style under
- * Images), the post review switch, cadence and model (from the supervisor via `/api/agent/:kernel/config`, saved with
+ * Images), the post review switch, posts per day (the one pacing control; the cadence follows it) and model (from the supervisor via `/api/agent/:kernel/config`, saved with
  * a wallet signature through `POST` on the same route), the review queue (ApprovalQueue), the private chat (AgentChat), the coin's links
  * (CoinLinksForm), then the existing Fuel and Add gas actions. Shown only to the creator's wallet (everyone in mock
  * mode, where saving skips the signature).
@@ -188,10 +183,11 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
     return groupByProvider(known);
   }, [imageModels.data, draft?.imageModel]);
   const imagePrice = imageModels.data?.models.find((m) => m.id === draft?.imageModel)?.pricePerImageUsd ?? null;
-  const cadenceOptions = useMemo(() => {
-    const ms = draft?.postIntervalMs;
-    return ms && !CADENCE_OPTIONS.some((o) => o.ms === ms) ? [{ ms, label: cadenceLabel(ms) }, ...CADENCE_OPTIONS] : [...CADENCE_OPTIONS];
-  }, [draft?.postIntervalMs]);
+  // Posts per day: the cadence it implies (the stored one while the budget is unchanged) and the rough daily fuel cost,
+  // from what the agent's thoughts cost lately, else the model's listed price.
+  const budgetInterval = cfg && draft ? shownInterval(draft.postsPerDay, { postsPerDay: cfg.postsPerDay, postIntervalMs: cfg.worker.postIntervalMs }) : null;
+  const measuredCost = useMemo(() => measuredThoughtCost(fuel.data), [fuel.data]);
+  const budgetNote = draft && budgetInterval != null ? postBudgetNote({ postsPerDay: draft.postsPerDay, intervalMs: budgetInterval, measuredMicroUsdc: measuredCost, listedUsd: priceOf(draft.model) }) : '';
 
   const save = async () => {
     if (!cfg || !changes || !instructionsOk || !styleOk) return;
@@ -387,17 +383,33 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                 ) : null}
               </div>
             </fieldset>
+            <div data-testid="posts-per-day">
+              <Label
+                htmlFor="console-posts-per-day"
+                hint={
+                  <span className="font-mono tabular" data-testid="posts-per-day-value">
+                    {draft.postsPerDay} a day · {cadenceLabel(budgetInterval ?? cfg.worker.postIntervalMs).toLowerCase()}
+                  </span>
+                }
+              >
+                Posts per day
+              </Label>
+              <input
+                id="console-posts-per-day"
+                type="range"
+                min={POSTS_PER_DAY.min}
+                max={POSTS_PER_DAY.max}
+                step={1}
+                value={draft.postsPerDay}
+                onChange={(e) => update({ postsPerDay: Number(e.target.value) })}
+                aria-valuetext={`${draft.postsPerDay} posts and replies a day`}
+                className="block h-6 w-full cursor-pointer accent-ink"
+              />
+              <p className="mt-1.5 text-micro text-mute" data-testid="posts-per-day-note">
+                {budgetNote}
+              </p>
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="console-cadence">Cadence</Label>
-                <Select id="console-cadence" value={String(draft.postIntervalMs)} onChange={(e) => update({ postIntervalMs: Number(e.target.value) })}>
-                  {cadenceOptions.map((o) => (
-                    <option key={o.ms} value={o.ms}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
               <div>
                 <Label htmlFor="console-model">Model</Label>
                 <Select id="console-model" value={draft.model} onChange={(e) => update({ model: e.target.value })}>

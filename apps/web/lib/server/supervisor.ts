@@ -6,7 +6,7 @@
  *
  * Web Crypto only (route handlers). Shapes are the contract in docs/design/agent-launch-v2.md.
  */
-import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
+import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
 import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentChat, AgentChatMessage, AgentNotification, AgentNotifications, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
@@ -149,6 +149,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     instructions: str(o.instructions, 4000) ?? '',
     worker: w,
     workerHash: (str(o.workerHash, 66) && HASH_RE.test(o.workerHash as string) ? (o.workerHash as Hex) : `0x${'0'.repeat(64)}`) as Hex,
+    postsPerDay: Number.isInteger(o.postsPerDay) && (o.postsPerDay as number) >= 1 ? (o.postsPerDay as number) : POSTS_PER_DAY.default,
     requireApproval: o.requireApproval === true,
     routing: { decideModel: decideModelOf(o.routing) },
     imageModel: str(o.imageModel, 120) ?? '',
@@ -434,7 +435,7 @@ function cleanText(v: unknown): string | null {
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
   const changes: AgentConfigChanges = {};
   if (o.imageModel !== undefined) {
     if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, field: 'imageModel', message: 'imageModel must be an image model id, such as google/gemini-3-pro-image.' };
@@ -458,6 +459,13 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
   if (o.requireApproval !== undefined) {
     if (typeof o.requireApproval !== 'boolean') return { ok: false, field: 'requireApproval', message: 'requireApproval must be true or false' };
     changes.requireApproval = o.requireApproval;
+  }
+  if (o.postsPerDay !== undefined) {
+    const n = o.postsPerDay;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < POSTS_PER_DAY.min || n > POSTS_PER_DAY.max) {
+      return { ok: false, field: 'postsPerDay', message: `Posts per day must be a whole number from ${POSTS_PER_DAY.min} to ${POSTS_PER_DAY.max}: original posts and replies together, over a rolling day.` };
+    }
+    changes.postsPerDay = n;
   }
   if (o.routing !== undefined) {
     if (!o.routing || typeof o.routing !== 'object' || Array.isArray(o.routing)) return { ok: false, field: 'routing', message: 'routing must be an object' };

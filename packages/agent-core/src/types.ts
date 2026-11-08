@@ -99,6 +99,11 @@ export const agentConfigSchema = z
     capabilities: capabilitiesSchema.default({}),
     /** Minimum spacing between original posts. */
     postIntervalMs: z.number().int().min(60_000).max(7 * 24 * 60 * 60 * 1000).default(DEFAULT_POST_INTERVAL_MS),
+    /**
+     * The creator's daily budget of posts and replies (the sender's rolling 24 h quota, `@bootr/shared/workers`
+     * POSTS_PER_DAY); `postIntervalMs` is derived from it when the creator sets it. Absent = the sender's default.
+     */
+    postsPerDay: z.number().int().min(1).max(2400).optional(),
     /** How long without any activity before the agent is considered dormant. */
     dormancyPeriodMs: z.number().int().min(60_000).default(DEFAULT_DORMANCY_PERIOD_MS),
     /** When the social loop started; original-post scheduling anchors here. */

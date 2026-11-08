@@ -8,6 +8,11 @@
 export const MIN_FUEL_SAMPLE = 10;
 /** A rate needs at least this much history behind it; one busy first turn says nothing about a day. */
 export const MIN_RUNWAY_HISTORY_MS = 6 * 60 * 60 * 1000;
+/**
+ * Thoughts one post or reply takes, for the console's rough cost of a daily budget: a turn reads its observation,
+ * decides, drafts, publishes and finishes, about five paid thoughts, under the default cap of eight steps.
+ */
+export const THOUGHTS_PER_POST = 5;
 /** Below this many thoughts fuel counts as low: three full turns at the default cap of eight steps. */
 export const LOW_FUEL_THOUGHTS = 24;
 
