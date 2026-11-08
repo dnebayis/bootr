@@ -44,8 +44,8 @@ html = f'''<!doctype html>
       #logo svg {{ width: 60px; height: 60px; display: block; }}
       #logo span {{ font-size: 54px; font-weight: 600; letter-spacing: -0.04em; line-height: 60px; }}
       #live {{ left: 96px; top: 238px; font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 32px; line-height: 40px; padding: 10px 22px; border: 3px solid rgba(255,255,255,0.6); border-radius: 999px; }}
-      #head {{ left: 96px; top: 330px; font-size: 128px; line-height: 132px; font-weight: 600; letter-spacing: -0.05em; white-space: normal; width: 1100px; }}
-      #via {{ left: 100px; top: 616px; font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 34px; line-height: 42px; color: #d6d6ff; }}
+      #head {{ left: 96px; top: 290px; font-size: 128px; line-height: 132px; font-weight: 600; letter-spacing: -0.05em; white-space: normal; width: 1100px; }}
+      #via {{ left: 100px; top: 576px; font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 34px; line-height: 42px; color: #d6d6ff; }}
       #face {{ left: 1300px; top: 150px; }}
       #rule {{ left: 96px; top: 760px; width: 1728px; height: 3px; background: rgba(255,255,255,0.35); }}
       .it {{ position: absolute; top: 806px; width: 580px; white-space: nowrap; }}
@@ -56,7 +56,6 @@ html = f'''<!doctype html>
   <body>
     <div id="root" data-composition-id="main" data-start="0" data-duration="1" data-width="1920" data-height="1080">
       <div class="abs" id="logo">{BOOTR}<span>bootr</span></div>
-      <div class="abs" id="live">live now</div>
       <div class="abs" id="head">agents now pay for their own thinking.</div>
       <div class="abs" id="via">from their own wallet, straight to BlockRunAI.</div>
       <div class="abs" id="face">{face(face_cells, 520)}</div>
