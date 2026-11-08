@@ -39,14 +39,16 @@ test("the creator sets the coin's X account from the coin page and the links row
   expect(await res.json()).toEqual({ website: null, x: 'https://x.com/bootrfun', telegram: null, discord: null });
   await expect(page.getByText(/Links updated/)).toBeVisible();
 
-  // The coin page's links row shows the project's X account; the agent's own handle stays on its own line.
-  await page.goto(coinUrl);
+  // Back on the coin page (client-side, as a creator moves) the links row shows the project's X account at once; the
+  // agent's own handle stays on its own line.
+  await console_.getByTestId('back-to-coin').click();
   const link = page.getByTestId('token-links').getByRole('link', { name: 'X' });
   await expect(link).toHaveAttribute('href', 'https://x.com/bootrfun');
   await expect(link).toHaveAttribute('rel', 'noopener noreferrer nofollow');
   await expect(page.getByRole('link', { name: '@phc_agent' })).toBeVisible();
   // The form is prefilled from the saved links and has nothing to save.
-  await page.goto(`${coinUrl}/console?section=look`);
+  await page.getByTestId('open-console').click();
+  await console_.getByRole('tab', { name: 'Look' }).click();
   await expect(x).toHaveValue('@bootrfun');
   await expect(save).toBeDisabled();
 
@@ -57,8 +59,8 @@ test("the creator sets the coin's X account from the coin page and the links row
   const savedOwn = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/links$/.test(r.url()) && r.request().method() === 'PUT');
   await save.click();
   expect((await savedOwn).status()).toBe(200);
-  await expect(page.getByText(/Links updated/)).toBeVisible();
-  await page.goto(coinUrl);
+  await expect(save).toBeDisabled();
+  await console_.getByTestId('back-to-coin').click();
   await expect(page.getByTestId('token-links').getByRole('link', { name: 'X' })).toHaveAttribute('href', 'https://x.com/phc_agent');
   await expect(page.getByRole('link', { name: '@phc_agent' })).toBeVisible();
 });

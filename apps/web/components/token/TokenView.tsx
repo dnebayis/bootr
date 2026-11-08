@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { isAddress } from 'viem';
 import { useConnection } from 'wagmi';
@@ -25,8 +24,7 @@ import { AgentPanel } from './AgentPanel';
 import { XLinkedBadge } from './XLinkedBadge';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
-import { CreatorConsole } from './CreatorConsole';
-import type { ConsoleSection } from '@/lib/console-sections';
+import { FirstSteps } from './FirstSteps';
 import { CreatorXBanner } from './CreatorXBanner';
 import { ClankerFeeLine } from './ClankerFeeLine';
 import { FeeSplit } from './FeeSplit';
@@ -83,7 +81,6 @@ export function TokenView({ address }: { address: string }) {
   const links = useCoinLinks(token?.metadata);
   const { address: wallet } = useConnection();
   const isCreator = env.useMock || (!!wallet && !!token?.creator && wallet.toLowerCase() === token.creator.toLowerCase());
-  const [consoleSection, setConsoleSection] = useState<ConsoleSection>('mind');
 
   if (!valid) return <NotFound address={address} reason="That is not a valid token address." />;
 
@@ -210,7 +207,8 @@ export function TokenView({ address }: { address: string }) {
         </div>
         <aside className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-start-2">
           <AgentPanel token={token} now={now} />
-          {isCreator ? <CreatorConsole token={token} agent={token.agent} section={consoleSection} onSectionChange={setConsoleSection} /> : null}
+          {/* The creator's first steps while the agent is new; the console itself is its own page, reached from the Trade panel. */}
+          {isCreator ? <FirstSteps token={token} agent={token.agent} /> : null}
           <ActivityTape token={token} now={now} />
         </aside>
       </div>

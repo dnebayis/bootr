@@ -7,7 +7,8 @@ import { isAddress } from 'viem';
 import { useConnection } from 'wagmi';
 import { env } from '@/lib/env';
 import { useNow } from '@/lib/hooks';
-import { useAgentConfig, useToken } from '@/lib/indexer';
+import { useAgentConfig, useApprovalCount, useToken } from '@/lib/indexer';
+import { Badge } from '@/components/ui/Badge';
 import { parseSection, type ConsoleSection } from '@/lib/console-sections';
 import { Panel } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -63,6 +64,8 @@ export function ConsolePage({ address }: { address: string }) {
   const [section, setSection] = useSection();
   // The revision for the header; the console itself reads the same query.
   const config = useAgentConfig(token?.kernel, !!token && isCreator);
+  const approvals = useApprovalCount(token?.kernel, !!token && isCreator);
+  const pendingReviews = approvals.data?.pending ?? 0;
   // Marks the page for the shell: the mascot (bottom right, Mascot.css) stays off the save bar. Client-only, so the
   // static shell needs no route data.
   useEffect(() => {
@@ -108,6 +111,11 @@ export function ConsolePage({ address }: { address: string }) {
               <h1 id="console-title" className="text-display-sm font-semibold text-ink">
                 Creator console
               </h1>
+              {pendingReviews > 0 ? (
+                <span data-testid="approvals-pending">
+                  <Badge tone="ink">{pendingReviews} pending</Badge>
+                </span>
+              ) : null}
               <span className="truncate text-sm text-body">
                 {token.name} <span className="font-mono text-mute">${token.symbol}</span>
               </span>

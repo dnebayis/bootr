@@ -14,12 +14,12 @@ import { cn } from '@/components/ui/cn';
  * and agent (localStorage, best effort). Rendered only on the client after the config has loaded, so reading storage
  * at mount cannot disagree with a server render.
  */
-export function OnboardingCard({ kernel, items, onGo }: { kernel: string; items: OnboardingItem[]; onGo: (target: ConsoleSection | 'x') => void }) {
+export function OnboardingCard({ kernel, items, onGo, className }: { kernel: string; items: OnboardingItem[]; onGo: (target: ConsoleSection | 'x') => void; className?: string }) {
   const [hidden, setHidden] = useState(() => readOnboardingHidden(kernel));
   if (hidden || onboardingPending(items) || onboardingComplete(items)) return null;
   const done = items.filter((i) => i.done).length;
   return (
-    <section aria-labelledby="onboarding-title" className="rounded-sm border border-hairline" data-testid="onboarding-checklist" data-done={done}>
+    <section aria-labelledby="onboarding-title" className={cn('rounded-sm border border-hairline bg-canvas', className)} data-testid="onboarding-checklist" data-done={done}>
       <header className="flex items-center justify-between gap-3 border-b border-hairline px-3 py-1.5">
         <h3 id="onboarding-title" className="text-caption font-medium text-ink">
           First steps{' '}

@@ -42,6 +42,7 @@ test('posts per day: one control sets the budget, the note explains the cadence 
   await expect(console_.getByTestId('config-revision')).toHaveText('edited once');
   await expect(slider).toHaveValue('12');
   await expect(block.getByTestId('posts-per-day-value')).toHaveText(/12 a day · every 4 h/);
-  // The tape says what changed.
+  // Back on the coin page, the tape says what changed.
+  await console_.getByTestId('back-to-coin').click();
   await expect(page.getByText(/changed posts per day, cadence/)).toBeVisible();
 });
