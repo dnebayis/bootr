@@ -255,6 +255,11 @@ export interface AgentConfig {
   instructions: string;
   worker: AgentWorkerConfig;
   workerHash: Hex;
+  /**
+   * The creator's daily budget of posts and replies together, over a rolling day (the posting service's quota;
+   * `POSTS_PER_DAY` in `@bootr/shared/workers`). Setting it also sets `worker.postIntervalMs` (`postIntervalForPostsPerDay`).
+   */
+  postsPerDay: number;
   /** Posts and replies wait in the review queue until the creator approves them (default on for the platform's agent). */
   requireApproval: boolean;
   /** Economy mode: the cheaper model a turn starts on for reading and deciding; null = the whole turn runs on `model`. */
@@ -283,6 +288,8 @@ export interface AgentConfigChanges {
     postIntervalMs?: number;
     jobLines?: string[];
   };
+  /** Posts and replies per rolling day (2..48); the cadence follows it, overriding `worker.postIntervalMs` in the same request. */
+  postsPerDay?: number;
   requireApproval?: boolean;
   imageModel?: string;
   /** Partial: a missing field keeps its stored value; `reference: null` removes the picture. */
