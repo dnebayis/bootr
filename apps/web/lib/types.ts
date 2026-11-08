@@ -274,6 +274,19 @@ export interface AgentConfig {
   revision: number;
   /** ISO 8601. */
   updatedAt: string;
+  /**
+   * A hold X put on the account's posting, while it lasts (today only the 403 "not permitted" hold); null when the
+   * account may post. The coin page shows the creator a panel with the way out (`lib/x-hold.ts`).
+   */
+  xHold: AgentXHold | null;
+}
+
+export interface AgentXHold {
+  reason: 'forbidden';
+  /** ISO 8601: when the hold ends on its own. */
+  until: string;
+  /** Refusals in a row (6 h, 12 h, then a day). */
+  strikes: number;
 }
 
 export interface AgentImageStyle {

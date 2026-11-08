@@ -11,7 +11,7 @@ import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { actions, agents } from './db/schema.js';
+import { actions, agents, runtimes } from './db/schema.js';
 import { requiresApproval } from './approvals.js';
 import { relayImageModels } from './image-models.js';
 import { imageModelOf, imageStyleOf } from './images.js';
@@ -58,6 +58,30 @@ export interface AgentConfigView {
   services: ServicesPolicy;
   revision: number;
   updatedAt: string;
+  /**
+   * A hold X put on the account's posting, for the coin page to show the creator while it lasts: today only the
+   * 403 "not permitted" hold (runtime.ts `postForbiddenUntil`, rhythm.ts `forbiddenHold`). Null when the account may post.
+   * Read-only; a reconnect from the page ends it (`liftForbiddenHoldOnReconnect`).
+   */
+  xHold: XHoldView | null;
+}
+
+export interface XHoldView {
+  reason: 'forbidden';
+  /** ISO 8601: when the hold ends on its own. */
+  until: string;
+  /** Refusals in a row (6 h, 12 h, then a day). */
+  strikes: number;
+}
+
+/** The X hold in force on the agent's runtime state, or null: none set, or its time has passed. */
+export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<XHoldView | null> {
+  const row = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agentId), columns: { state: true } });
+  const state = (row?.state ?? {}) as { postForbiddenUntil?: unknown; postForbiddenStrikes?: unknown };
+  const until = typeof state.postForbiddenUntil === 'number' && Number.isFinite(state.postForbiddenUntil) ? state.postForbiddenUntil : null;
+  if (until === null || until <= ctx.now()) return null;
+  const strikes = typeof state.postForbiddenStrikes === 'number' && Number.isFinite(state.postForbiddenStrikes) && state.postForbiddenStrikes >= 1 ? Math.floor(state.postForbiddenStrikes) : 1;
+  return { reason: 'forbidden', until: new Date(until).toISOString(), strikes };
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
@@ -88,7 +112,7 @@ function workerKind(config: Record<string, unknown>): ResolvedWorker['id'] {
   return t === 'trader' || t === 'researcher' || t === 'community' || t === CUSTOM_WORKER_ID ? t : 'community';
 }
 
-export function configView(agent: AgentRow): AgentConfigView {
+export function configView(agent: AgentRow, xHold: XHoldView | null = null): AgentConfigView {
   const config = agent.config;
   const preset = currentPreset(config);
   return {
@@ -107,6 +131,7 @@ export function configView(agent: AgentRow): AgentConfigView {
     services: servicesOf(config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
+    xHold,
   };
 }
 

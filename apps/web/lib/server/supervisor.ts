@@ -9,7 +9,7 @@
 import { isImageModel } from '@bootr/agent-core';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type ApprovalDecision, type WorkerKind } from '@/lib/types';
+import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXHold, type ApprovalDecision, type WorkerKind } from '@/lib/types';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -169,6 +169,16 @@ function imageStyle(raw: unknown): AgentImageStyle {
   return { reference: httpsUrl(s.reference), notes: str(s.notes, IMAGE_NOTES_MAX) ?? '' };
 }
 
+/** The X hold as the page shows it: a forbidden hold with a readable end, else null. */
+export function sanitizeXHold(raw: unknown): AgentXHold | null {
+  const h = (raw && typeof raw === 'object' ? raw : null) as { reason?: unknown; until?: unknown; strikes?: unknown } | null;
+  if (!h || h.reason !== 'forbidden') return null;
+  const until = iso(h.until);
+  if (!until) return null;
+  const strikes = Number(h.strikes);
+  return { reason: 'forbidden', until, strikes: Number.isInteger(strikes) && strikes >= 1 ? strikes : 1 };
+}
+
 /** The config as the coin page renders it; null when the body is not a config. */
 export function sanitizeConfig(raw: unknown): AgentConfig | null {
   const o = (raw ?? {}) as Record<string, unknown>;
@@ -194,6 +204,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     services: servicesPolicy(o.services),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
+    xHold: sanitizeXHold(o.xHold),
   };
 }
 

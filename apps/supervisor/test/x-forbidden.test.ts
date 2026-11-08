@@ -146,6 +146,106 @@ describe('x forbidden (403)', () => {
     }
   });
 
+  it('a reconnect lifts the hold at once: a connectedAt past the hold clears it, closes the notice and the kept slot is tried', async () => {
+    const w = await makeWorld({
+      script: [
+        toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }),
+        finishResponse(T0 + 10 * 60_000),
+        toolCallResponse('publish_post', { text: 'Back after the creator reconnected, in my own voice.' }),
+        finishResponse(T0 + 7 * H),
+      ],
+    });
+    try {
+      const lines = captureLog(w);
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      const account = { agentId: AGENT_ID, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000', connectedAt: new Date(now - 5 * 24 * H).toISOString() };
+      w.sender.accounts = { [AGENT_ID]: account };
+      w.sender.publishError = FORBIDDEN;
+      expect((await tick(w.ctx)).ran).toEqual([AGENT_ID]);
+      expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: now + X_FORBIDDEN_HOLD_MS, postForbiddenStrikes: 1, postForbiddenAt: now });
+
+      // the account as it was before the hold: nothing changes, no turn is bought
+      const calls = () => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+      const bought = calls();
+      w.setNow(now + 20 * 60_000);
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: now + X_FORBIDDEN_HOLD_MS, postForbiddenStrikes: 1 });
+      expect(lines.some((l) => l.msg === 'x account reconnected; the 403 hold is lifted')).toBe(false);
+
+      // the creator reconnects X at +30 min: the next tick lifts the hold, closes the notice and the slot goes out
+      w.sender.accounts = { [AGENT_ID]: { ...account, connectedAt: new Date(now + 30 * 60_000).toISOString() } };
+      w.sender.publishError = null;
+      w.setNow(now + 31 * 60_000);
+      const r = await tick(w.ctx);
+      expect(r.ran).toEqual([AGENT_ID]);
+      expect(r.errors).toEqual([]);
+      expect(calls()).toBe(bought + 2);
+      expect(lines.find((l) => l.msg === 'x account reconnected; the 403 hold is lifted')).toMatchObject({ level: 30, agentId: AGENT_ID, heldAt: new Date(now).toISOString(), strikes: 1 });
+      expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: null, postForbiddenStrikes: 0, postForbiddenAt: null });
+      expect(w.sender.published).toHaveLength(2);
+      const [closed] = await w.db.select().from(notifications).where(eq(notifications.agentId, AGENT_ID));
+      expect(closed).toMatchObject({ event: 'x_forbidden' });
+      expect(closed!.resolvedAt).not.toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('an older connectedAt, a disconnected account or a sender that does not answer leave the hold alone', async () => {
+    const w = await makeWorld({ script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 10 * 60_000)] });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      w.sender.publishError = FORBIDDEN;
+      expect((await tick(w.ctx)).ran).toEqual([AGENT_ID]);
+      const held = { postForbiddenUntil: now + X_FORBIDDEN_HOLD_MS, postForbiddenStrikes: 1, postForbiddenAt: now };
+      expect((await runtimeRow(w)).state).toMatchObject(held);
+      const base = { agentId: AGENT_ID, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000' };
+      const cases: (typeof w.sender.accounts)[] = [
+        { [AGENT_ID]: { ...base, connectedAt: new Date(now - H).toISOString() } }, // connected before the hold
+        { [AGENT_ID]: { ...base, connectedAt: new Date(now).toISOString() } }, // the same moment: not after it
+        { [AGENT_ID]: { ...base, connected: false, revoked: true, connectedAt: new Date(now + H).toISOString() } }, // a revoked row
+        { [AGENT_ID]: { ...base } }, // no connectedAt at all
+        null, // the default account, no connectedAt
+      ];
+      let at = now;
+      for (const accounts of cases) {
+        w.sender.accounts = accounts;
+        at += 10 * 60_000;
+        w.setNow(at);
+        expect((await tick(w.ctx)).ran).toEqual([]);
+        expect((await runtimeRow(w)).state).toMatchObject(held);
+      }
+      const [open] = await w.db.select().from(notifications).where(eq(notifications.agentId, AGENT_ID));
+      expect(open).toMatchObject({ event: 'x_forbidden', resolvedAt: null });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a hold saved before postForbiddenAt existed starts at until minus its length', async () => {
+    const w = await makeWorld({ script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 3 * H)] });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      const row = await runtimeRow(w);
+      // what the live row looked like on 2026-11-08: a hold with no postForbiddenAt
+      await w.db.update(runtimes).set({ state: { ...(row.state as Record<string, unknown>), postForbiddenUntil: now + X_FORBIDDEN_HOLD_MS, postForbiddenStrikes: 1 } }).where(eq(runtimes.agentId, AGENT_ID));
+      const base = { agentId: AGENT_ID, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000' };
+      w.sender.accounts = { [AGENT_ID]: { ...base, connectedAt: new Date(now - H).toISOString() } };
+      w.setNow(now + 10 * 60_000);
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: now + X_FORBIDDEN_HOLD_MS, postForbiddenStrikes: 1 });
+      w.sender.accounts = { [AGENT_ID]: { ...base, connectedAt: new Date(now + 5 * 60_000).toISOString() } };
+      w.setNow(now + 20 * 60_000);
+      expect((await tick(w.ctx)).ran).toEqual([AGENT_ID]);
+      expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: null, postForbiddenStrikes: 0, postForbiddenAt: null });
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a duplicate-content 403 is an ordinary refusal: logged, no hold', async () => {
     const w = await makeWorld({ script: [toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }), finishResponse(T0 + 3 * H)] });
     try {

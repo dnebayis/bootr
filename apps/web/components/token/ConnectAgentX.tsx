@@ -6,8 +6,21 @@ import { toast } from 'sonner';
 import { useConnection, useSignMessage } from 'wagmi';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
+import { qk } from '@/lib/indexer';
 import type { Token } from '@/lib/types';
 import { XConnect } from '@/components/launch/XConnect';
+
+/**
+ * `fresh`: the agent has no X account yet. `again`: X dropped the connection (the inbox's `x_revoked`). `forbidden`: X
+ * refuses the account's posts (403; the inbox's `x_forbidden` and the coin page's hold panel, CreatorXBanner.tsx): the same
+ * reconnect, and the supervisor lifts the hold on its next pass once the sender's row shows the new connection.
+ */
+export type ConnectAgentXVariant = 'fresh' | 'again' | 'forbidden';
+
+const CAPTION: Record<Exclude<ConnectAgentXVariant, 'fresh'>, string> = {
+  again: 'Sign a message with your wallet, then authorise the same X account the agent has been using. It picks up again within a few minutes.',
+  forbidden: 'Sign a message with your wallet, then authorise the same X account again. The pause ends within a few minutes of the reconnect.',
+};
 
 /**
  * The coin page's "connect X later" path, shown only to the creator of a coin whose agent has no X account
@@ -15,9 +28,11 @@ import { XConnect } from '@/components/launch/XConnect';
  * through the indexer, that the wallet created the coin), which registers this browser for the agent id;
  * the usual X OAuth popup then runs against the real agent id, and the supervisor finishes onboarding on
  * its next tick once the sender reports the account. With `again` (the inbox, after X dropped the connection) the same
- * flow restores it; the agent only posts as the account it was set up with, so the text asks for that one.
+ * flow restores it; the agent only posts as the account it was set up with, so the text asks for that one. `variant`
+ * picks the words (`again` is the short form of `variant="again"`).
  */
-export function ConnectAgentX({ token, again = false }: { token: Token; again?: boolean }) {
+export function ConnectAgentX({ token, again = false, variant }: { token: Token; again?: boolean; variant?: ConnectAgentXVariant }) {
+  const kind: ConnectAgentXVariant = variant ?? (again ? 'again' : 'fresh');
   const { address } = useConnection();
   const { signMessageAsync } = useSignMessage();
   const queryClient = useQueryClient();
@@ -61,9 +76,9 @@ export function ConnectAgentX({ token, again = false }: { token: Token; again?: 
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-sm border border-hairline p-3" data-testid="connect-agent-x">
-      {again ? (
-        <p className="text-caption text-body">Sign a message with your wallet, then authorise the same X account the agent has been using. It picks up again within a few minutes.</p>
+    <div className="flex flex-col gap-2 rounded-sm border border-hairline p-3" data-testid="connect-agent-x" data-variant={kind}>
+      {kind !== 'fresh' ? (
+        <p className="text-caption text-body">{CAPTION[kind]}</p>
       ) : (
         <p className="text-caption text-body">
           This agent has no X account yet, so it cannot post. As the creator you can connect one now: sign a message with your wallet, then authorise a fresh X
@@ -77,9 +92,10 @@ export function ConnectAgentX({ token, again = false }: { token: Token; again?: 
         claim={claim}
         onHandle={(h) => {
           if (!h) return;
-          toast.success(`@${h} connected. The agent starts shortly.`);
+          toast.success(kind === 'forbidden' ? `@${h} connected again. The pause ends on the next supervisor pass.` : `@${h} connected. The agent starts shortly.`);
           void queryClient.invalidateQueries({ queryKey: ['agent'] });
           void queryClient.invalidateQueries({ queryKey: ['token'] });
+          void queryClient.invalidateQueries({ queryKey: qk.agentConfig(token.kernel) });
         }}
       />
     </div>

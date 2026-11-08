@@ -15,15 +15,19 @@ async function openConsole(page: Page) {
 test('the inbox lists what needs the creator, turns an event off and connects Telegram', async ({ page }) => {
   const console_ = await openConsole(page);
   const inbox = console_.getByTestId('notification-inbox');
-  await expect(inbox.getByTestId('notification-count')).toHaveText('2 open');
+  await expect(inbox.getByTestId('notification-count')).toHaveText('3 open');
   await inbox.getByRole('button', { name: 'Open inbox' }).click();
   await expect(inbox.locator('[data-event="fuel_low"][data-state="active"]')).toContainText('Low on fuel');
   await expect(inbox.locator('[data-event="gas_out"][data-state="resolved"]')).toContainText('cleared');
+  // the two notices that ask for the X account again carry the way to do it (lib/notification-reconnect.ts)
+  await expect(inbox.locator('[data-event="x_revoked"][data-state="active"]').getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ })).toBeVisible();
+  await expect(inbox.locator('[data-event="x_forbidden"][data-state="active"]').getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ })).toBeVisible();
+  await expect(inbox.locator('[data-event="fuel_low"]').getByTestId('connect-agent-x')).toHaveCount(0);
 
   await inbox.getByTestId('notification-settings-toggle').click();
   await inbox.getByRole('switch', { name: 'Low on fuel' }).click();
   await expect(inbox.locator('[data-event="fuel_low"]')).toHaveCount(0);
-  await expect(inbox.getByTestId('notification-count')).toHaveText('1 open');
+  await expect(inbox.getByTestId('notification-count')).toHaveText('2 open');
   await inbox.getByRole('switch', { name: 'Low on fuel' }).click();
   await expect(inbox.locator('[data-event="fuel_low"]')).toHaveCount(1);
 

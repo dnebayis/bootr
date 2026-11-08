@@ -966,6 +966,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
+    xHold: null,
   };
 }
 
@@ -988,6 +989,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     revision: 0,
     updatedAt: new Date().toISOString(),
+    xHold: null,
   };
 }
 
@@ -1096,6 +1098,7 @@ function inboxFor(kernel: string): MockInbox {
       items: [
         { id: 'ntf_mock_1', event: 'fuel_low', title: 'Low on fuel', body: 'About 1 day of fuel left at the recent rate. Add fuel to keep the agent thinking.', tone: 'warning', state: 'active', firstAt: at(5), lastSeenAt: at(0.1), resolvedAt: null },
         { id: 'ntf_mock_2', event: 'x_revoked', title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect the same X account again from the inbox in the creator console.', tone: 'danger', state: 'active', firstAt: at(2), lastSeenAt: at(0.1), resolvedAt: null },
+        { id: 'ntf_mock_4', event: 'x_forbidden', title: 'X refused posting for this account', body: 'X answered “not permitted” when the agent tried to post, so posts and replies are paused. Log in to the X account and check for a lock, a restriction or a notice from X; if the connection was changed, connect it again from the creator console. It tries again in about 6 hours; while X keeps refusing, each pause is longer and no fuel is spent on posting.', tone: 'danger', state: 'active', firstAt: at(1), lastSeenAt: at(0.1), resolvedAt: null },
         { id: 'ntf_mock_3', event: 'gas_out', title: 'Out of gas', body: 'The agent cannot claim fees, trade or refuel until someone adds gas on the coin page.', tone: 'danger', state: 'resolved', firstAt: at(60), lastSeenAt: at(30), resolvedAt: at(30) },
       ],
     };

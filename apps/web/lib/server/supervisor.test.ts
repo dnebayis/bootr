@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, validateChanges } from './supervisor';
+import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXHold, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -141,6 +141,19 @@ describe('sanitizeConfig', () => {
   it('returns null without a kernel, creator or worker', () => {
     expect(sanitizeConfig({ agentId: '1', kernel: KERNEL })).toBeNull();
     expect(sanitizeConfig(null)).toBeNull();
+  });
+
+  it('keeps the X 403 hold with a readable end and at least one strike, and nothing else as a hold', () => {
+    const minimal = { agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } };
+    expect(sanitizeConfig(minimal)!.xHold).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xHold: null })!.xHold).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xHold: { reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 2 } })!.xHold).toEqual({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 2 });
+    expect(sanitizeConfig({ ...minimal, xHold: { reason: 'forbidden', until: Date.parse('2026-11-09T02:00:00Z'), strikes: '3' } })!.xHold).toEqual({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 3 });
+    expect(sanitizeConfig({ ...minimal, xHold: { reason: 'forbidden', until: '2026-11-09T02:00:00.000Z' } })!.xHold).toMatchObject({ strikes: 1 });
+    expect(sanitizeConfig({ ...minimal, xHold: { reason: 'forbidden', until: 'soon', strikes: 1 } })!.xHold).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xHold: { reason: 'quota', until: '2026-11-09T02:00:00.000Z', strikes: 1 } })!.xHold).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xHold: 'forbidden' })!.xHold).toBeNull();
+    expect(sanitizeXHold({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 1 })).toEqual({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 1 });
   });
 });
 

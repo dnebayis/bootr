@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ago } from '@/lib/format';
 import { fetchNotifications, qk, ReviewError, saveNotificationSettings, telegramAction, useNotificationCount } from '@/lib/indexer';
+import { offersXReconnect } from '@/lib/notification-reconnect';
 import type { AgentNotification, AgentNotifications, Token } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Switch } from '@/components/ui/Field';
@@ -30,7 +31,7 @@ function Item({ item, token }: { item: AgentNotification; token: Token }) {
         </span>
       </div>
       <p className={cn('text-caption', item.state === 'resolved' ? 'text-mute' : 'text-body')}>{item.body}</p>
-      {item.event === 'x_revoked' && item.state === 'active' ? (
+      {offersXReconnect(item) ? (
         <div className="mt-1">
           <ConnectAgentX token={token} again />
         </div>
