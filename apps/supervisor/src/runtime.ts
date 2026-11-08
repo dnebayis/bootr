@@ -47,7 +47,7 @@ import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhas
 import { autoCloseMentions } from './mention-close.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
-import { X_CREDITS_RETRY_MS, forbiddenHoldMs, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type RhythmSchedule } from './rhythm.js';
+import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
 import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
 import { watchlistSection } from './watchlist.js';
@@ -91,6 +91,12 @@ export interface AgentState {
    * is later means the creator reconnected X since, and the hold ends at once (`liftForbiddenHoldOnReconnect`).
    */
   postForbiddenAt?: number | null;
+  /**
+   * The X hold the model was told about (`noteHoldSet`, when its publish was refused) and, once the hold is over, when
+   * and how it ended (`trackHoldEnd` in the tick, `liftForbiddenHoldOnReconnect`): the next turn's first observation
+   * then says so once (`holdEnded`, rhythm.ts `holdEndedMessage`) and the note goes. Null when no hold is on record.
+   */
+  postHoldEndedNote?: PostHoldEnded | null;
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
@@ -191,10 +197,39 @@ export async function liftForbiddenHoldOnReconnect(ctx: SupervisorContext, agent
   const heldAt = state.postForbiddenAt ?? state.postForbiddenUntil - forbiddenHoldMs(state.postForbiddenStrikes ?? 1);
   if (connectedAt <= heldAt) return false;
   ctx.log.info({ agentId: agent.agentId, connectedAt: account.connectedAt, heldAt: new Date(heldAt).toISOString(), strikes: state.postForbiddenStrikes ?? 0 }, 'x account reconnected; the 403 hold is lifted');
+  // The next turn hears that the hold is over and why, so its own note about the block does not outlive it.
+  state.postHoldEndedNote = { reason: 'x_forbidden', until: state.postForbiddenUntil, at: ctx.now(), how: 'reconnect', connectedAt };
   state.postForbiddenUntil = null;
   state.postForbiddenStrikes = 0;
   state.postForbiddenAt = null;
   await resolveNotification(ctx, agent.agentId, 'x_forbidden');
+  return true;
+}
+
+/**
+ * A hold was just set on the state and the model has seen the refusal that caused it: the hold is on record so the turn
+ * after it ends can be told (`trackHoldEnd`, `holdEndedMessage`). Replaces any earlier note: a new hold makes "the hold
+ * ended" untrue.
+ */
+export function noteHoldSet(state: AgentState, reason: StateHoldReason, until: number): void {
+  state.postHoldEndedNote = { reason, until, at: null };
+}
+
+/**
+ * The tick's view of the state holds against the note (`hold` is the X hold kept in the state right now, null when none):
+ * a hold on the state with no note (set before this field existed, or by hand) is put on record; a note whose hold is
+ * gone is marked ended, `expired` when its time ran out and `cleared` when the state was emptied before it (an operator,
+ * a migration). A note already waiting for delivery is left alone. Mutates `state`; true when it changed.
+ */
+export function trackHoldEnd(state: AgentState, hold: Hold | null, now: number): boolean {
+  const note = state.postHoldEndedNote ?? null;
+  if (hold && (hold.reason === 'x_quota' || hold.reason === 'x_credits' || hold.reason === 'x_forbidden')) {
+    if (note && note.at === null && note.reason === hold.reason && note.until === hold.until) return false;
+    noteHoldSet(state, hold.reason, hold.until);
+    return true;
+  }
+  if (!note || note.at !== null) return false;
+  state.postHoldEndedNote = { ...note, at: now, how: note.until > now ? 'cleared' : 'expired' };
   return true;
 }
 
@@ -282,6 +317,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
   const memories = await ctx.memories.recent(agent.agentId, 5);
   const schedule = inputs.schedule;
   const review = await reviewSection(ctx, agent);
+  // An X hold the model was told about is over (rhythm.ts `holdEndedMessage`): said once, here, before anything else.
+  const holdEnded = state.postHoldEndedNote?.at != null ? state.postHoldEndedNote : null;
   return buildObservation({
     now,
     market: inputs.market ? { snapshot: inputs.market } : null,
@@ -296,6 +333,7 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
     continuation: state.continuation ?? null,
     extra: {
       wakeReasons: inputs.reasons,
+      ...(holdEnded ? { holdEnded: holdEndedMessage(holdEnded) } : {}),
       ineligibleMentions: views.length - eligible.length,
       checkpoint: { memory: state.memory, agenda: state.agenda, summary: state.summary, at: state.lastCheckpointAt ? new Date(state.lastCheckpointAt).toISOString() : null },
       recentNotes: memories,
@@ -393,6 +431,8 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, ctx.now());
   const update = offerPlatformUpdate(config, state, ctx.now(), !!inputs.schedule?.due && !inputs.digest && !inputs.numbers);
   const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update);
+  // The ended-hold note is delivered in this observation and in no later one: it goes with the same write as the turn.
+  if (state.postHoldEndedNote?.at != null) state.postHoldEndedNote = null;
   const turn: Turn = {
     startedAt: ctx.now(),
     steps: 0,
@@ -410,7 +450,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     numbersDay: inputs.numbers?.day ?? null,
     postDue: inputs.reasons.includes('original_post_due'),
   };
-  await saveRuntime(ctx, agent.agentId, { turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
+  await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
 }
 
@@ -725,6 +765,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         state.postForbiddenUntil = until;
         state.postForbiddenStrikes = strikes;
         state.postForbiddenAt = ctx.now();
+        noteHoldSet(state, 'x_forbidden', until);
         if (action.tool === 'publish_post') turn.postHeld = true;
         log.warn({ tool: action.tool, actionId: pending.id, strikes, until: new Date(until).toISOString() }, 'x refuses this account\'s posts (403); posts held and the creator told');
         await raiseNotification(ctx, agent.agentId, 'x_forbidden', { strikes, hours: Math.round((until - ctx.now()) / 3_600_000), until: new Date(until).toISOString() });
@@ -738,6 +779,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         // The sender's rolling 24 h quota is used up: hold posts and mention wakes until its retryAt (rhythm.ts).
         const until = pending.nextAt ?? ctx.now() + QUOTA_FALLBACK_HOLD_MS;
         state.postQuotaUntil = until;
+        noteHoldSet(state, 'x_quota', until);
         if (action.tool === 'publish_post') turn.postHeld = true;
         log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x quota used up; posts held');
       }
@@ -745,12 +787,15 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         // The X app is out of API credits (402): hold posts and mention wakes, then try once more (rhythm.ts).
         const until = ctx.now() + X_CREDITS_RETRY_MS;
         state.postCreditsUntil = until;
+        noteHoldSet(state, 'x_credits', until);
         if (action.tool === 'publish_post') turn.postHeld = true;
         log.warn({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
       }
       if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
         state.postQuotaUntil = null;
         state.postCreditsUntil = null;
+        // The post went out: there is no hold left to report on, and nothing to say about one that just ended.
+        state.postHoldEndedNote = null;
         if (state.postForbiddenUntil || state.postForbiddenStrikes) {
           state.postForbiddenUntil = null;
           state.postForbiddenStrikes = 0;

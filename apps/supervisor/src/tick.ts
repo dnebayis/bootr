@@ -19,7 +19,7 @@ import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionK
 import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
-import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
+import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
@@ -261,7 +261,12 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
     // X forbids the account (403 on a publish): the same hold for hours, reason `x_forbidden` (rhythm.ts `forbiddenHold`).
-    const quota = quotaHold(state.postQuotaUntil, now) ?? creditsHold(readOutOfCredits ? now + ctx.config.SUPERVISOR_TICK_MS : state.postCreditsUntil, now) ?? forbiddenHold(state.postForbiddenUntil, now);
+    const stateHold = quotaHold(state.postQuotaUntil, now) ?? creditsHold(state.postCreditsUntil, now) ?? forbiddenHold(state.postForbiddenUntil, now);
+    const quota = readOutOfCredits ? (quotaHold(state.postQuotaUntil, now) ?? creditsHold(now + ctx.config.SUPERVISOR_TICK_MS, now)) : stateHold;
+    // A hold the model was told about that is no longer on the state (ran out, cleared, or lifted above) is marked ended:
+    // the next turn's first observation says so once (runtime.ts `trackHoldEnd`, rhythm.ts `holdEndedMessage`). The
+    // one-tick credits hold of a 402 mention read is not on the state and never reaches the model, so it is not tracked.
+    if (trackHoldEnd(state, stateHold, now)) await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
     const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
     // A turn the runtime just ended: only something it has not seen may wake the agent before its `nextAt`.
     const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
