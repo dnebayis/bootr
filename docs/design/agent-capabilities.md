@@ -254,6 +254,19 @@ one turn with every tool. Proposal:
 | **`BootrPayouts`** (new) | Payouts | per-kernel payee list and `perDay` cap set by the creator (from the guardian), `propose` callable by the kernel (through the session key, one rule: `payouts.propose(kernel == msg.sender, …)`), `execute` after `delay` by anyone, `cancel` by the creator; holds no funds until execution pulls USDC from the kernel through an allowance the policy grants (`USDC.approve(payouts, SUM_PER_WINDOW)`) | new rule(s) on new keys; a `payouts` power switch |
 | no change to `AgentGuardian` | all | `approveSessionKey` already accepts any policy set; `pauseAgent` stops every userOp | the open BOOTR-02 point (the admin can approve a sudo policy) is unchanged by this work and is the ceiling above every tier; move `ADMIN_PRIVATE_KEY` out of the supervisor container before Trade ships |
 
+**Decision 2026-11-08 (owner): the new contracts are upgradeable and extensible.** Trade and Payouts will gain
+features over time and the platform cannot redeploy a contract and re-point every agent for each one. So
+`BootrTradeHelper` and `BootrPayouts` ship behind a proxy (UUPS, OpenZeppelin `UUPSUpgradeable`) with the logic in
+separate feature modules the proxy's core calls by registered selector, so a new feature is a new module registered
+to the same address, and a fix is one implementation swap; every session-key rule and every creator's caps keep
+pointing at the proxy address. What keeps the trust story intact: the upgrade right sits with a timelock (48 h
+minimum, announced on the tape and in every creator's inbox), the guardian's `pauseAgent` still stops everything
+regardless of the implementation, the constructor ceilings become immutables on the proxy that no implementation
+may exceed, and the storage layout follows ERC-7201 namespaces so modules cannot collide. The rows above that say
+"immutable, no owner" read as "immutable ceilings, upgradeable logic under a timelock" from this date. Public copy
+names it in plain words: "the rules can be improved by the platform with two days' notice; the caps you set and the
+pause button cannot be changed by anyone but you".
+
 Public copy to change when Trade ships (`apps/web/components/docs/content.ts`): "cannot trade any token" becomes
 "trades only with the Trade power on, only between WETH, USDC and its own coin, within the caps shown on its page";
 the risks page's owner-powers table and the terms (still naming RWAGMI only) need the same pass.
@@ -333,6 +346,8 @@ run on a coin agent for a few days.
   caps alone (cheaper, weaker).
 - Moving `ADMIN_PRIVATE_KEY` out of the supervisor container before any on-chain power ships (the ceiling above every
   tier, BOOTR-02).
+- Decided 2026-11-08: Trade and Payouts are upgradeable (proxy + feature modules + timelock), see section 4. Open:
+  the timelock length (48 h proposed) and who holds the upgrade key (a multisig is recommended before the first upgrade).
 
 ## 10. What I could not verify
 
