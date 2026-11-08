@@ -9,7 +9,7 @@
 import { isImageModel } from '@bootr/agent-core';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXHold, type ApprovalDecision, type WorkerKind } from '@/lib/types';
+import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type WorkerKind } from '@/lib/types';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -179,6 +179,13 @@ export function sanitizeXHold(raw: unknown): AgentXHold | null {
   return { reason: 'forbidden', until, strikes: Number.isInteger(strikes) && strikes >= 1 ? strikes : 1 };
 }
 
+const X_CONNECTIONS: readonly AgentXConnection[] = ['connected', 'revoked', 'none'];
+
+/** The X connection word, or null for anything else (the page then shows nothing new). */
+export function sanitizeXConnection(raw: unknown): AgentXConnection | null {
+  return typeof raw === 'string' && (X_CONNECTIONS as readonly string[]).includes(raw) ? (raw as AgentXConnection) : null;
+}
+
 /** The config as the coin page renders it; null when the body is not a config. */
 export function sanitizeConfig(raw: unknown): AgentConfig | null {
   const o = (raw ?? {}) as Record<string, unknown>;
@@ -205,6 +212,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
     xHold: sanitizeXHold(o.xHold),
+    xConnection: sanitizeXConnection(o.xConnection),
   };
 }
 

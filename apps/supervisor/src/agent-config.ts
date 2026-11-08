@@ -64,6 +64,21 @@ export interface AgentConfigView {
    * Read-only; a reconnect from the page ends it (`liftForbiddenHoldOnReconnect`).
    */
   xHold: XHoldView | null;
+  /**
+   * The X connection as the sender holds it: `connected`, `revoked` (X dropped it; the creator must connect the same
+   * account again, and no hold can end before that) or `none` (no account row). Null when the sender could not be asked:
+   * the page then shows nothing new. Read-only.
+   */
+  xConnection: XConnectionView | null;
+}
+
+export type XConnectionView = 'connected' | 'revoked' | 'none';
+
+/** The sender's account row as the three words the page needs; null when the sender does not answer. */
+export async function xConnectionOf(ctx: Pick<SupervisorContext, 'sender'>, agentId: string): Promise<XConnectionView | null> {
+  const account = await ctx.sender.account(agentId).catch(() => null);
+  if (!account) return null;
+  return account.revoked ? 'revoked' : account.connected ? 'connected' : 'none';
 }
 
 export interface XHoldView {
@@ -112,7 +127,7 @@ function workerKind(config: Record<string, unknown>): ResolvedWorker['id'] {
   return t === 'trader' || t === 'researcher' || t === 'community' || t === CUSTOM_WORKER_ID ? t : 'community';
 }
 
-export function configView(agent: AgentRow, xHold: XHoldView | null = null): AgentConfigView {
+export function configView(agent: AgentRow, xHold: XHoldView | null = null, xConnection: XConnectionView | null = null): AgentConfigView {
   const config = agent.config;
   const preset = currentPreset(config);
   return {
@@ -132,6 +147,7 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null): Age
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
     xHold,
+    xConnection,
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXHold, validateChanges } from './supervisor';
+import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -154,6 +154,17 @@ describe('sanitizeConfig', () => {
     expect(sanitizeConfig({ ...minimal, xHold: { reason: 'quota', until: '2026-11-09T02:00:00.000Z', strikes: 1 } })!.xHold).toBeNull();
     expect(sanitizeConfig({ ...minimal, xHold: 'forbidden' })!.xHold).toBeNull();
     expect(sanitizeXHold({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 1 })).toEqual({ reason: 'forbidden', until: '2026-11-09T02:00:00.000Z', strikes: 1 });
+  });
+
+  it('keeps the X connection word (connected, revoked, none) and turns anything else into null', () => {
+    const minimal = { agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } };
+    expect(sanitizeConfig(minimal)!.xConnection).toBeNull();
+    for (const word of ['connected', 'revoked', 'none'] as const) expect(sanitizeConfig({ ...minimal, xConnection: word })!.xConnection).toBe(word);
+    expect(sanitizeConfig({ ...minimal, xConnection: null })!.xConnection).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xConnection: 'lost' })!.xConnection).toBeNull();
+    expect(sanitizeConfig({ ...minimal, xConnection: true })!.xConnection).toBeNull();
+    expect(sanitizeXConnection('revoked')).toBe('revoked');
+    expect(sanitizeXConnection({ revoked: true })).toBeNull();
   });
 });
 

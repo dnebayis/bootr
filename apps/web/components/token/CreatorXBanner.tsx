@@ -5,7 +5,7 @@ import { env } from '@/lib/env';
 import { useNow } from '@/lib/hooks';
 import { useAgentConfig } from '@/lib/indexer';
 import type { Token } from '@/lib/types';
-import { activeXHold, formatHoldEnd, xHoldCopy } from '@/lib/x-hold';
+import { activeXHold, formatHoldEnd, xHoldCopy, xRevokedCopy, xTrouble } from '@/lib/x-hold';
 import { XLogoIcon } from '@/components/ui/Icons';
 import { Isometric } from '@/components/art/Isometric';
 import { ConnectAgentX } from './ConnectAgentX';
@@ -15,9 +15,11 @@ import { ConnectAgentX } from './ConnectAgentX';
  * and the indexer shows it as sleeping, until one is connected. Shown only to the creator's wallet (everyone
  * in mock mode) and never for a claimed or dormant agent. Visitors get the Posts section's note instead.
  *
- * With an X account, the same place carries the one other X problem that needs the creator: X refusing the account's
- * posts (403 "not permitted"), read from `AgentConfig.xHold` while the supervisor's hold lasts (lib/x-hold.ts). The
- * panel says what X did and until when, and the Connect X button reconnects the account, which ends the hold at once.
+ * With an X account, the same place carries the two X problems that need the creator (lib/x-hold.ts `xTrouble`): the
+ * connection lost (`AgentConfig.xConnection === 'revoked'`: X dropped it, as when the creator resets the app's access on
+ * X; the inbox's `x_revoked`) and, failing that, X refusing the account's posts (403 "not permitted", `AgentConfig.xHold`
+ * while the supervisor's hold lasts). Each panel says what happened, and the Connect X button reconnects the same
+ * account, which brings the agent back on the next pass and ends a hold at once.
  */
 export function CreatorXBanner({ token }: { token: Token }) {
   const { address } = useConnection();
@@ -29,21 +31,23 @@ export function CreatorXBanner({ token }: { token: Token }) {
   const now = useNow();
   if (!eligible) return null;
   if (token.xHandle) {
-    const hold = activeXHold(config.data?.xHold, now);
-    if (!hold) return null;
-    const copy = xHoldCopy(token.xHandle, formatHoldEnd(hold.until, now));
+    const trouble = xTrouble(config.data?.xConnection, config.data?.xHold, now);
+    if (!trouble) return null;
+    const hold = trouble === 'hold' ? activeXHold(config.data?.xHold, now) : null;
+    const copy = trouble === 'revoked' ? xRevokedCopy(token.xHandle) : xHoldCopy(token.xHandle, formatHoldEnd(hold!.until, now));
+    const id = trouble === 'revoked' ? 'creator-x-revoked' : 'creator-x-hold';
     return (
-      <section aria-labelledby="creator-x-hold" className="rounded-md border border-danger bg-canvas-soft p-4" data-testid="creator-x-hold" data-until={hold.until}>
+      <section aria-labelledby={id} className="rounded-md border border-danger bg-canvas-soft p-4" data-testid={id} data-until={hold?.until}>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
           <Isometric kind="antenna" size={48} className="hidden shrink-0 text-body sm:block" />
           <div className="min-w-0 flex-1">
-            <h2 id="creator-x-hold" className="inline-flex items-center gap-2 text-base font-semibold text-ink">
+            <h2 id={id} className="inline-flex items-center gap-2 text-base font-semibold text-ink">
               <XLogoIcon /> {copy.title}
             </h2>
             <p className="mt-1 text-sm text-body">{copy.body}</p>
           </div>
           <div className="w-full md:w-[360px] md:shrink-0">
-            <ConnectAgentX token={token} variant="forbidden" />
+            <ConnectAgentX token={token} variant={trouble === 'revoked' ? 'again' : 'forbidden'} />
           </div>
         </div>
       </section>

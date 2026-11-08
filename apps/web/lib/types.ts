@@ -279,7 +279,14 @@ export interface AgentConfig {
    * account may post. The coin page shows the creator a panel with the way out (`lib/x-hold.ts`).
    */
   xHold: AgentXHold | null;
+  /**
+   * The X connection as the posting service holds it: `connected`, `revoked` (X dropped it; the creator must connect the
+   * same account again) or `none` (no account). Null when the service could not be asked: the page shows nothing new.
+   */
+  xConnection: AgentXConnection | null;
 }
+
+export type AgentXConnection = 'connected' | 'revoked' | 'none';
 
 export interface AgentXHold {
   reason: 'forbidden';
