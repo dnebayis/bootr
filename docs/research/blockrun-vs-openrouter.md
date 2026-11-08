@@ -5,6 +5,26 @@ catalogue, 402 quotes, health) was taken on 2026-11-02 against `https://blockrun
 snapshot. Anything marked **unverified** was not confirmed from a primary source.
 
 
+## Update 2026-11-08: the decision, and what was verified for it
+
+The owner decided to move every agent to BlockRun at once, no trial, after one local paid check. What this repo now
+holds for it is in `docs/deploy/blockrun-rollout.md`; the models agents may use are the catalog in
+`packages/agent-core/src/models/catalog.ts`, built from `GET https://blockrun.ai/api/v1/models` and one unpaid 402 per id
+on 2026-11-08 (nothing signed, nothing paid):
+
+- `upto` is now offered on the Claude ids **and** the DeepSeek ids (`deepseek/deepseek-chat`, `deepseek/deepseek-v4-pro`);
+  every other chat model and every image model is `exact` only.
+- A 17-token prompt with `max_tokens` 1024 quotes input + 1024 × output rate + $0.001 on every id (Haiku 6137 micro-USDC,
+  Sonnet 4.6 16411, Grok 4.3 3582, GPT-5.4 mini 5621); the floor is 2000 (DeepSeek Chat). So the quote is prompt + the
+  whole output allowance + the flat fee, which the catalog's `thoughtQuoteMicroUsdc` reproduces.
+- Pictures: Nano Banana 53500, Nano Banana 2 95500, Nano Banana Pro 106000, GPT Image 1 22000, GPT Image 2 64000
+  micro-USDC, each the listed `per_image` price plus the fee.
+- `x-ai/grok-4.20`, `deepseek/deepseek-v3.2`, `meta-llama/llama-4-maverick`, `moonshotai/kimi-k2.6`,
+  `qwen/qwen3-235b-a22b-2507`, `mistralai/mistral-medium-3.1`, `z-ai/glm-4.6`, `openai/gpt-5-nano` and the relay's image ids
+  are not BlockRun ids: an unknown id answers 400 `Unknown model: <id>`. The catalog maps each to a stand-in; the
+  supervisor treats that 400 as `model_missing` (the agent's own problem, never a fleet-wide hold).
+- The same `payTo` as before: `0xe9030014F5DAe217d0A152f02A043567b16c1aBf`, `eip155:8453`.
+
 ## Update 2026-11-06: the quote changed, and only `upto` saves money
 
 Checked live against unpaid `POST /api/v1/chat/completions` (402 bodies), `GET /api/v1/models`, OpenRouter

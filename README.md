@@ -42,7 +42,7 @@ Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi
 │   ├── indexer      Ponder indexer: GraphQL + REST + SSE, the single read source (indexer.bootr.fun)
 │   ├── supervisor   Node service that runs agent loops, claims fees and signs with the session key
 │   ├── sender       Hono service that owns X (Twitter) OAuth and publishes for agents (api.bootr.fun)
-│   └── inference    x402-paid LLM relay (USDC on Base -> OpenRouter) (@bootr/inference)
+│   └── inference    x402-paid LLM relay (USDC on Base -> OpenRouter); agents pay BlockRun directly since the rollout in docs/deploy/blockrun-rollout.md (@bootr/inference)
 └── packages
     ├── contracts    Foundry project: BootrLauncher, AgentGuardian, BuybackBurner, BootrCallPolicy, BootrSwapHelper
     ├── shared       Chain addresses and shared zod env schemas (@bootr/shared)
