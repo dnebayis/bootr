@@ -5,7 +5,7 @@ import { agentActivity, shortAmount } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { actions, agents, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
-import { DEFAULT_IMAGE_MODEL } from '../src/images.js';
+import { DEFAULT_COIN_IMAGE_MODEL } from '../src/images.js';
 import { agentConfigOf, defaultIdentity, PLATFORM_CAPABILITIES, PLATFORM_POST_INTERVAL_MS } from '../src/onboarding.js';
 import { AGENT_ID, CREATOR, KERNEL, makeWorld, seedAgent, SUPERVISOR_KEY, type TestWorld } from './helpers.js';
 
@@ -57,7 +57,8 @@ describe('GET /internal/agents/:id/config', () => {
         workerHash: COMMUNITY.hash,
         requireApproval: false,
         routing: { decideModel: null },
-        imageModel: DEFAULT_IMAGE_MODEL,
+        // a coin agent's default image model is the cheaper one (images.ts); the platform agent keeps Nano Banana Pro
+        imageModel: DEFAULT_COIN_IMAGE_MODEL,
         imageStyle: { reference: null, notes: '' },
         revision: 1,
         updatedAt: expect.any(String),

@@ -29,7 +29,8 @@ import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fu
 import { SWAP_MAX_SLIPPAGE_BPS } from '../abi.js';
 import { readCoin } from '../coin-reader.js';
 import { readUrl, searchWeb } from '../web-reader.js';
-import { generateImage, loadImage, mediaFor } from '../images.js';
+import { generateImage, loadImage, mediaFor, WITHOUT_PICTURE } from '../images.js';
+import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
@@ -172,6 +173,11 @@ export async function executeAction(ctx: SupervisorContext, agent: AgentRow, con
       if (err.code === 'storage_unavailable_after_send') return { kind: 'unknown', error: err.code };
       // The consent check could not reach X: nothing was recorded or sent; retry the same action later.
       if (err.code === 'consent_lookup_failed') return failed('sender:consent_lookup_failed', err.retryAt ?? ctx.now() + CONSENT_RETRY_MS);
+      // The connected X account was authorized without the right to upload pictures (`media.write`); the creator must reconnect it.
+      if (err.code === 'media_not_authorized') {
+        ctx.log.warn({ agentId: agent.agentId, actionId: pending.id }, 'picture not sent: the X account was connected without the media.write scope; the creator must reconnect it from the console');
+        return failed(`image_not_authorized: your X account was connected without permission to upload pictures; nothing was posted. ${WITHOUT_PICTURE} Your creator can reconnect the account from the console to allow pictures.`);
+      }
       return failed(`sender:${err.code}`, err.retryAt);
     }
     if (isPolicyError(err)) return failed(err.message, err.retryAt);
@@ -219,7 +225,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return { kind: 'completed', result: { authorId: action.input.authorId, replies: mine, notes: notes.items, nextBeforePostId: null } };
     }
     case 'publish_reply': {
-      const media = await mediaForAction(ctx, agentId, action.input.imageId);
+      const media = await mediaForAction(ctx, agentId, action.input.imageId, config);
       if (media.error) return failed(media.error);
       // Agent-to-agent cap: at most N answers to another Bootr agent in one thread (agent-directory.ts).
       const capped = await conversationGuard(ctx, agent, config, pending, env);
@@ -243,7 +249,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return publishOutcome(res, item?.authorId, item?.conversationId);
     }
     case 'publish_post': {
-      const media = await mediaForAction(ctx, agentId, action.input.imageId);
+      const media = await mediaForAction(ctx, agentId, action.input.imageId, config);
       if (media.error) return failed(media.error);
       // Platform rhythm: quiet hours and the platform-wide slot window (rhythm.ts); this action's own row is not a used slot.
       const gate = await originalPostGate(ctx, ctx.now(), { excludeActionId: pending.id });
@@ -331,7 +337,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return failed(`treasury_failed: ${res.error}`);
     }
     case 'generate_image': {
-      const res = await generateImage(ctx, agent, config, pending, action.input, env.cycle ?? 0);
+      // The messages received this turn: a picture is never made because somebody asked for one (image-rules.ts).
+      const receivedTexts = [...env.inbox.values()].map((item) => (typeof item.post?.text === 'string' ? item.post.text : ''));
+      const res = await generateImage(ctx, agent, config, pending, action.input, { cycle: env.cycle ?? 0, receivedTexts });
       if (res.kind === 'completed') return { kind: 'completed', result: res.result };
       if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
       return failed(res.error);
@@ -344,10 +352,13 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
 }
 
 /** The sender `media` for a post's optional `imageId`: the agent's own stored image, else a failure the model can act on. */
-async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: string | undefined): Promise<{ media?: ReturnType<typeof mediaFor>; error?: string }> {
+async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: string | undefined, config: Pick<AgentConfig, 'platform'>): Promise<{ media?: ReturnType<typeof mediaFor>; error?: string }> {
   if (!imageId) return {};
   const image = await loadImage(ctx, agentId, imageId);
-  if (!image) return { error: `image_not_found: ${imageId} (make one with generate_image first)` };
+  if (!image) return { error: `image_not_found: ${imageId} (a picture you made this turn with generate_image, else none). ${WITHOUT_PICTURE}` };
+  // The alt text is public text: the same gates as the post, once more at the moment it leaves (image-rules.ts).
+  const alt = altTextRisk(image.alt, { platform: config.platform === true });
+  if (alt) return { error: `${alt.message}. ${WITHOUT_PICTURE}` };
   return { media: mediaFor(image) };
 }
 

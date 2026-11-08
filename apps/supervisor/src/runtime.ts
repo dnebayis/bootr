@@ -36,6 +36,7 @@ import { actions, runtimes } from './db/schema.js';
 import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { fuelSection } from './fuel.js';
+import { pictureSection } from './picture-hint.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { autoCloseMentions } from './mention-close.js';
 import { postPerformanceSection } from './post-performance.js';
@@ -225,6 +226,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(review ? { review } : {}),
       // What the agent can still spend on thinking (one database read, no RPC; omitted when it cannot be read): fuel.ts.
       ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
+      // Whether a picture fits this turn, what one costs and how many are left today (images on only): picture-hint.ts.
+      ...(await pictureSection(ctx, agent, config, tools, inputs, directory)),
       // How its own coin's trades pay their fee, in percentages, from the market snapshot above (no extra read): coin-fees.ts.
       ...coinFeesSection(config, inputs.market),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.

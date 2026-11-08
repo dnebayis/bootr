@@ -20,7 +20,8 @@ import { agentDirectory, conversationGuard } from './agent-directory.js';
 import { inboxViews, publicAddressesOf, type BrokerEnv } from './broker/index.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, approvals, type ApprovalDecision, type ApprovalKind, type ApprovalStatus } from './db/schema.js';
-import { loadImage, mediaFor } from './images.js';
+import { loadImage, mediaFor, WITHOUT_PICTURE } from './images.js';
+import { altTextRisk } from './image-rules.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { SenderError, type ReplyEligibility } from './sender-client.js';
@@ -142,7 +143,10 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
 
   if (action.input.imageId) {
     const image = await loadImage(ctx, agent.agentId, action.input.imageId);
-    if (!image) return { kind: 'failed', error: `image_not_found: ${action.input.imageId} (make one with generate_image first)` };
+    if (!image) return { kind: 'failed', error: `image_not_found: ${action.input.imageId} (a picture you made this turn with generate_image, else none). ${WITHOUT_PICTURE}` };
+    // The alt text is public text: the same gates as the post, before the creator sees the item (image-rules.ts).
+    const alt = altTextRisk(image.alt, { platform: agent.config.platform === true });
+    if (alt) return { kind: 'failed', error: `${alt.message}. ${WITHOUT_PICTURE}` };
   }
   // The agent-to-agent caps apply to a reviewed post too: the creator's approval does not undo a loop.
   const capped = await conversationGuard(ctx, agent, { platform: agent.config.platform === true }, pending, env);

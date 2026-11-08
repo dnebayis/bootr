@@ -4,7 +4,9 @@ import { parseAgentConfig } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
 import { availableTools, executeAction, type BrokerEnv } from '../src/broker/index.js';
 import { actions, images as imagesTable, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { DEFAULT_IMAGE_MODEL, MAX_IMAGES_PER_DAY, imageRequest, imageStyleOf, parseImageResponse } from '../src/images.js';
+import { computeQuote, DEFAULT_PRICE_TABLE } from '@bootr/inference';
+import { maxQuoteFor } from '@bootr/agent-core';
+import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, IMAGE_TEXT_TOKENS, IMAGE_TOKENS_PER_IMAGE, MAX_IMAGES_PER_DAY, MAX_KNOWN_IMAGE_TOKENS, imageMaxTokens, imageModelOf, imageRequest, imageStyleOf, parseImageResponse, WITHOUT_PICTURE } from '../src/images.js';
 import { tick } from '../src/tick.js';
 import { agentConfig, AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse } from './helpers.js';
 
@@ -36,9 +38,46 @@ describe('generate_image', () => {
     }
   });
 
+  it('sizes max_tokens for the picture itself: the 256 ceiling that boxed in the first live picture (2026-11-08) is gone', () => {
+    // OpenRouter counts the picture as completion tokens (1120 for a 1K Gemini 3 picture): a ceiling below that
+    // cannot hold a picture and the model answers with words or nothing, paid. Every known model gets its own figure
+    // plus the text headroom; an unknown model gets the largest known figure.
+    for (const [model, tokens] of Object.entries(IMAGE_TOKENS_PER_IMAGE)) expect(imageMaxTokens(model)).toBe(tokens + IMAGE_TEXT_TOKENS);
+    expect(imageMaxTokens(DEFAULT_IMAGE_MODEL)).toBeGreaterThan(1120);
+    expect(imageMaxTokens(DEFAULT_IMAGE_MODEL)).toBeGreaterThan(256);
+    expect(imageMaxTokens('vendor/unknown-image')).toBe(MAX_KNOWN_IMAGE_TOKENS + IMAGE_TEXT_TOKENS);
+    // the relay's own figure wins when the listing gives one
+    expect(imageMaxTokens(DEFAULT_IMAGE_MODEL, 2000)).toBe(2000 + IMAGE_TEXT_TOKENS);
+    // and the bigger ceiling still fits under the quote cap the supervisor sends for every image model the relay prices
+    for (const [model, price] of Object.entries(DEFAULT_PRICE_TABLE.models)) {
+      if (!price.imageOutputMicroUsdcPerKTokens) continue;
+      const req = imageRequest(model, { prompt: 'a fox on a hill, flat colours, evening light, the hill is the shape of a coin'.repeat(3), altText: 'A fox sitting on a green hill at dusk'.repeat(3) }, { reference: 'https://cdn.bootr.fun/coins/test.png', notes: 'flat colours, no text' });
+      const quote = computeQuote(DEFAULT_PRICE_TABLE, req as never);
+      expect(quote.ok, `${model} quotes`).toBe(true);
+      if (quote.ok) expect(Number(quote.quote.quoteMicroUsdc), `${model} quote under the cap`).toBeLessThanOrEqual(maxQuoteFor(model));
+    }
+  });
+
+  it('the first live picture, replayed: a ceiling-hit answer carries no picture and the reason names the ceiling', () => {
+    // What a model boxed in by max_tokens sends back: finish_reason "length", words or nothing, no images[]
+    const cut = parseImageResponse({ choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }], usage: { completion_tokens: 256 } });
+    expect(cut).toEqual({ ok: false, finishReason: 'length', error: 'image_not_generated (the model ran out of output tokens before a picture fit)' });
+    const refused = parseImageResponse({ choices: [{ message: { content: 'I cannot draw that.' }, finish_reason: 'stop' }] });
+    expect(refused).toEqual({ ok: false, finishReason: 'stop', error: 'image_not_generated: I cannot draw that.' });
+  });
+
+  it('picks the cheaper model for a coin agent and Nano Banana Pro for the platform agent unless the creator chose one', () => {
+    expect(imageModelOf({})).toBe(DEFAULT_COIN_IMAGE_MODEL);
+    expect(imageModelOf({ platform: false })).toBe(DEFAULT_COIN_IMAGE_MODEL);
+    expect(imageModelOf({ platform: true })).toBe(DEFAULT_IMAGE_MODEL);
+    expect(imageModelOf({ platform: true, imageModel: 'openai/gpt-5.4-image-2' })).toBe('openai/gpt-5.4-image-2');
+    expect(imageModelOf({ imageModel: 'openai/gpt-5.4-image-2' })).toBe('openai/gpt-5.4-image-2');
+    expect(DEFAULT_COIN_IMAGE_MODEL).not.toBe(DEFAULT_IMAGE_MODEL);
+  });
+
   it('builds a one-image relay request and reads the base64 picture back', () => {
     const req = imageRequest(DEFAULT_IMAGE_MODEL, { prompt: 'a fox on a hill', altText: 'A fox sitting on a green hill at dusk' });
-    expect(req).toMatchObject({ model: 'google/gemini-3-pro-image', modalities: ['image', 'text'], max_tokens: 256, stream: false });
+    expect(req).toMatchObject({ model: 'google/gemini-3-pro-image', modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS, stream: false });
     expect(JSON.stringify(req.messages)).toContain('a fox on a hill');
     expect(JSON.stringify(req.messages)).toContain('A fox sitting on a green hill at dusk');
     // without a style: plain text, no picture attached, no reference talk
@@ -48,7 +87,7 @@ describe('generate_image', () => {
 
     const ok = parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: DATA_URL } }] } }] });
     expect(ok).toEqual({ ok: true, mime: 'image/png', bytes: PNG_BYTES });
-    expect(parseImageResponse({ choices: [{ message: { content: 'I cannot draw that.' } }] })).toEqual({ ok: false, error: 'image_not_generated: I cannot draw that.' });
+    expect(parseImageResponse({ choices: [{ message: { content: 'I cannot draw that.' } }] })).toEqual({ ok: false, finishReason: null, error: 'image_not_generated: I cannot draw that.' });
     expect(parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: 'https://example.com/x.png' } }] } }] })).toMatchObject({ ok: false, error: expect.stringMatching(/^image_unreadable/) });
     expect(parseImageResponse({ choices: [{ message: { images: [{ image_url: { url: 'data:image/gif;base64,AAAA' } }] } }] })).toMatchObject({ ok: false, error: expect.stringMatching(/unsupported type/) });
   });
@@ -87,14 +126,15 @@ describe('generate_image', () => {
       const posts = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'));
       expect(posts).toHaveLength(1);
       expect(posts[0]!.headers.get('idempotency-key')).toBe('image:act_img1');
-      expect(posts[0]!.headers.get('x-max-quote-micro-usdc')).toBe('250000');
-      expect(posts[0]!.body).toMatchObject({ model: DEFAULT_IMAGE_MODEL, modalities: ['image', 'text'] });
+      // a coin agent: the cheaper default model and its quote cap; max_tokens holds the picture (1120) and the words
+      expect(posts[0]!.headers.get('x-max-quote-micro-usdc')).toBe(String(maxQuoteFor(DEFAULT_COIN_IMAGE_MODEL)));
+      expect(posts[0]!.body).toMatchObject({ model: DEFAULT_COIN_IMAGE_MODEL, modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS });
       // the coin picture rides along as the style reference
       expect((posts[0]!.body as { messages: { content: unknown }[] }).messages[1]!.content).toEqual([{ type: 'text', text: expect.stringContaining('a fox on a hill') }, { type: 'image_url', image_url: { url: 'https://cdn.bootr.fun/coins/test.png' } }]);
 
       const rows = await w.db.select().from(imagesTable);
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ id: 'img_img1', agentId: AGENT_ID, actionId: 'act_img1', alt: 'A fox on a hill', mime: 'image/png', sizeBytes: PNG_BYTES.length, model: DEFAULT_IMAGE_MODEL });
+      expect(rows[0]).toMatchObject({ id: 'img_img1', agentId: AGENT_ID, actionId: 'act_img1', alt: 'A fox on a hill', mime: 'image/png', sizeBytes: PNG_BYTES.length, model: DEFAULT_COIN_IMAGE_MODEL });
       expect(Buffer.from(rows[0]!.bytes)).toEqual(PNG_BYTES);
       const paid = await w.db.select().from(inferenceTable).where(eq(inferenceTable.idempotencyKey, 'image:act_img1'));
       expect(paid[0]).toMatchObject({ status: 'succeeded', agentId: AGENT_ID, cycle: 3 });
@@ -115,7 +155,8 @@ describe('generate_image', () => {
       const agent = await seedAgent(w, { config: withImages });
       const config = parseAgentConfig(agent.config);
       const none = await executeAction(w.ctx, agent, config, pending('act_img2', 'generate_image', { prompt: 'x', altText: 'y' }), env());
-      expect(none).toEqual({ kind: 'failed', error: 'image_not_generated: I will not draw that.' });
+      // the model is told what happened and what to do: post without a picture, no second try this turn
+      expect(none).toEqual({ kind: 'failed', error: `image_not_generated: I will not draw that. ${WITHOUT_PICTURE}` });
       expect(await w.db.select().from(imagesTable)).toHaveLength(0);
 
       const held = await executeAction(w.ctx, agent, config, pending('act_img3', 'generate_image', { prompt: 'x', altText: 'y' }), env());
@@ -137,7 +178,7 @@ describe('generate_image', () => {
         await w.db.insert(imagesTable).values({ id: `img_old${i}`, agentId: AGENT_ID, actionId: `act_old${i}`, alt: 'old', mime: 'image/png', bytes: PNG_BYTES, sizeBytes: PNG_BYTES.length, model: DEFAULT_IMAGE_MODEL, createdAt: new Date(now - (i + 1) * 3_600_000) });
       }
       const capped = await executeAction(w.ctx, agent, config, pending('act_img4', 'generate_image', { prompt: 'x', altText: 'y' }), env());
-      expect(capped).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours` });
+      expect(capped).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours. ${WITHOUT_PICTURE}` });
       expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
 
       // a day later the oldest one left the window
