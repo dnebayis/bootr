@@ -4,10 +4,31 @@ import { decrypt, encrypt } from './crypto.js';
 import { accounts, type AccountRow } from './db/schema.js';
 import { refreshTokens, type TokenSet } from './oauth.js';
 import { log } from './log.js';
-import type { XResult } from './x-client.js';
+import { meterRead } from './metering.js';
+import type { XResult, XUser } from './x-client.js';
 
 /** Refresh when the access token has less than this left. */
 const REFRESH_MARGIN_MS = 2 * 60 * 1000;
+
+/** `verifiedType` is asked of X again no sooner than this after the last attempt. */
+export const VERIFIED_REFRESH_MS = 24 * 60 * 60 * 1000;
+
+/** X's `verified_type` values whose accounts may post beyond 280 characters (Premium, Premium Business, government). */
+export const LONG_POST_VERIFIED_TYPES: readonly string[] = ['blue', 'business', 'government'];
+
+/**
+ * Whether the account may post beyond 280 characters, from X's `verified_type`: true for blue, business and
+ * government, false for `none` (or any other value), null when it was never read.
+ */
+export function premiumOf(verifiedType: string | null | undefined): boolean | null {
+  if (verifiedType == null || verifiedType === '') return null;
+  return LONG_POST_VERIFIED_TYPES.includes(verifiedType);
+}
+
+/** The `verifiedType` to store from a `users/me` answer: the string X sent, or null when the field is missing. */
+export function verifiedTypeOf(user: Pick<XUser, 'verified_type'> | undefined): string | null {
+  return typeof user?.verified_type === 'string' && user.verified_type ? user.verified_type : null;
+}
 
 export const aadAccess = (agentId: string) => `access:${agentId}`;
 export const aadRefresh = (agentId: string) => `refresh:${agentId}`;
@@ -30,7 +51,7 @@ export async function saveAccount(
   ctx: SenderContext,
   agentId: string,
   tokens: TokenSet,
-  user: { id: string; username: string },
+  user: { id: string; username: string; verifiedType?: string | null },
   opts: { replace?: boolean } = { replace: true },
 ): Promise<'saved' | 'conflict'> {
   const now = ctx.now();
@@ -38,6 +59,9 @@ export async function saveAccount(
     agentId,
     xUserId: user.id,
     xHandle: user.username,
+    // `undefined` (a caller without the users/me answer) leaves Premium unknown until the first refresh.
+    verifiedType: user.verifiedType ?? null,
+    verifiedCheckedAt: user.verifiedType === undefined ? null : now,
     encryptedAccessToken: encrypt(tokens.accessToken, ctx.encryptionKey, aadAccess(agentId)),
     encryptedRefreshToken: tokens.refreshToken
       ? encrypt(tokens.refreshToken, ctx.encryptionKey, aadRefresh(agentId))
@@ -172,6 +196,32 @@ export async function withToken<T>(
     };
   }
   return { ok: true, data: res.data, account: t.account };
+}
+
+/**
+ * Keeps `verifiedType` current: when it was never read, or the last attempt is more than VERIFIED_REFRESH_MS old, one
+ * `users/me` read (metered as `users_me`) stores what X says now. Any attempt, failed or not, sets `verifiedCheckedAt`,
+ * so the account costs at most one such read a day whatever the outcome; a failed read leaves `verifiedType` as it was.
+ * Called from the read path that already looks the account up (`GET /internal/account/:agentId`), never on its own.
+ * Returns the row as it is afterwards; a revoked account is returned untouched.
+ */
+export async function refreshVerifiedType(ctx: SenderContext, account: AccountRow): Promise<AccountRow> {
+  if (account.revokedAt) return account;
+  const now = ctx.now();
+  const checked = account.verifiedCheckedAt?.getTime() ?? 0;
+  if (now.getTime() - checked < VERIFIED_REFRESH_MS) return account;
+  const res = await withToken(ctx, account.agentId, (token) => ctx.x.me(token));
+  const set: Partial<typeof accounts.$inferInsert> = { verifiedCheckedAt: now, updatedAt: now };
+  if (res.ok) {
+    await meterRead(ctx, account.agentId, 'users_me', 1);
+    const verifiedType = verifiedTypeOf(res.data.data);
+    if (verifiedType) set.verifiedType = verifiedType;
+    else log.warn('users/me answered without verified_type', { agentId: account.agentId });
+  } else {
+    log.warn('verified_type refresh failed; kept the stored value', { agentId: account.agentId, reason: res.error });
+  }
+  await ctx.db.update(accounts).set(set).where(eq(accounts.agentId, account.agentId));
+  return { ...account, ...set } as AccountRow;
 }
 
 /**

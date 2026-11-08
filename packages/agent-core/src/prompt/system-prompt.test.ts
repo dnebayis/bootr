@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOOTR_RULES, CHAT_RULES, PLATFORM_RULES, ROUTING_RULES, VOICE_RULES, buildChatPrompt, buildObservation, buildSystemPrompt, compactView, observationFits, type ObservationView } from './system-prompt.js';
+import { BOOTR_RULES, CHAT_RULES, LENGTH_RULE_PREMIUM, PLATFORM_RULES, ROUTING_RULES, VOICE_RULES, buildChatPrompt, buildObservation, buildSystemPrompt, compactView, lengthRuleFor, observationFits, voiceRulesFor, type ObservationView } from './system-prompt.js';
 import { parseAgentConfig } from '../types.js';
 import { baseConfig } from '../test/fixtures.js';
 
@@ -117,6 +117,27 @@ describe('buildSystemPrompt', () => {
     expect(prompt).not.toContain('PLATFORM ACCOUNT');
     expect(prompt).toMatch(/Never narrate your own machinery/);
     expect(prompt).toMatch(/Private stays private/);
+  });
+  it("the VOICE length line follows the account's post limit: 280 without X Premium, the default otherwise", () => {
+    expect(VOICE_RULES).toContain(LENGTH_RULE_PREMIUM);
+    expect(LENGTH_RULE_PREMIUM).toMatch(/under 280 characters\. Go longer only for a thought worth a thread/);
+    expect(lengthRuleFor(4000)).toBe(LENGTH_RULE_PREMIUM);
+    expect(lengthRuleFor(280)).toMatch(/at most 280 characters: this X account has no Premium and X refuses anything longer outright/);
+    expect(voiceRulesFor(null)).toBe(VOICE_RULES);
+    expect(voiceRulesFor(4000)).toBe(VOICE_RULES);
+    expect(voiceRulesFor(280)).toHaveLength(VOICE_RULES.length);
+    expect(voiceRulesFor(280)).not.toContain(LENGTH_RULE_PREMIUM);
+    const free = buildSystemPrompt(config, 'social', { postLimit: 280 });
+    expect(free).toContain(lengthRuleFor(280));
+    expect(free).not.toContain(LENGTH_RULE_PREMIUM);
+    expect(free).not.toContain('Go longer only for a thought worth a thread');
+    for (const rule of VOICE_RULES.filter((r) => r !== LENGTH_RULE_PREMIUM)) expect(free).toContain(rule);
+    expect(free.indexOf('VOICE\n')).toBeGreaterThan(free.indexOf('@bootragent'));
+    expect(free.indexOf('BOOTR RULES\n')).toBeGreaterThan(free.indexOf('VOICE\n'));
+    // the phase and the limit combine; 4000 or no limit is the prompt as before
+    expect(buildSystemPrompt(config, 'social', { phase: 'write', postLimit: 280 })).toMatch(/ECONOMY MODE\n.*writing half/s);
+    expect(buildSystemPrompt(config, 'social', { postLimit: 4000 })).toBe(prompt);
+    expect(buildSystemPrompt(config, 'social', { postLimit: null })).toBe(prompt);
   });
   it('speaks as the launchpad with platform conduct when config.platform is set', () => {
     const platform = buildSystemPrompt(parseAgentConfig({ ...baseConfig, xHandle: 'bootrfun', platform: true }));

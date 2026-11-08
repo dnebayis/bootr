@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PolicyError } from '../errors.js';
-import { countCashtags, linkedHosts, PLATFORM_LINK_HOSTS, platformPostRisk, postValidation, validatePost } from './post-validation.js';
+import { countCashtags, linkedHosts, NON_PREMIUM_POST_LIMIT, PLATFORM_LINK_HOSTS, POST_LIMITS, platformPostRisk, postLength, postLimitsFor, postValidation, validatePost } from './post-validation.js';
 
 const code = (fn: () => void) => {
   try {
@@ -11,6 +11,22 @@ const code = (fn: () => void) => {
   }
   return null;
 };
+
+describe('postLimitsFor', () => {
+  it('caps originals at 280 only for an account known to have no Premium; true or unknown keeps the defaults', () => {
+    expect(POST_LIMITS).toEqual({ short: 280, original: 4000 });
+    expect(NON_PREMIUM_POST_LIMIT).toBe(280);
+    expect(postLimitsFor(false)).toEqual({ short: 280, original: 280 });
+    expect(postLimitsFor(true)).toBe(POST_LIMITS);
+    expect(postLimitsFor(null)).toBe(POST_LIMITS);
+    expect(postLimitsFor(undefined)).toBe(POST_LIMITS);
+  });
+  it('counts code points, as validatePost does (an emoji is one, a URL is its letters)', () => {
+    expect(postLength('x'.repeat(347))).toBe(347);
+    expect(postLength('\u{1F600}\u{1F600}')).toBe(2);
+    expect(postLength('https://bootr.fun/token/0xabc')).toBe(29);
+  });
+});
 
 describe('validatePost', () => {
   it('accepts a plain short post and a long original', () => {

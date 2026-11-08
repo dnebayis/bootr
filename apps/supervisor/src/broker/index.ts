@@ -15,6 +15,7 @@ import {
   type ActionOutcome,
   type AgentConfig,
   type PendingAction,
+  type ToolAccountOptions,
   type ToolDefinition,
   type ToolName,
 } from '@bootr/agent-core';
@@ -45,8 +46,12 @@ async function attributionsFor(ctx: SupervisorContext, agentId: string, text: st
   return credited.length ? { attributions: credited } : {};
 }
 
-export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig): ToolDefinition[] {
-  return toolsFor(config).filter((t) => {
+/**
+ * The agent's tool catalog: agent-core's `toolsFor` (capabilities, owner rules, and with `account.premium` the account's
+ * own post limit in `publish_post`'s description) minus the tools this deployment cannot serve.
+ */
+export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig, account: ToolAccountOptions = {}): ToolDefinition[] {
+  return toolsFor(config, account).filter((t) => {
     if (t.name === 'search_web') return !!(ctx.config.SEARCH_API_URL && ctx.config.SEARCH_API_KEY);
     return true;
   });

@@ -5,7 +5,26 @@ import type { Attribution } from '../types.js';
 
 export type PostFormat = 'short' | 'original';
 
+/** The defaults: what an account with X Premium may send (replies are 280 everywhere). */
 export const POST_LIMITS: Record<PostFormat, number> = { short: 280, original: 4000 };
+/** An original post from an account without X Premium: X refuses a longer one with a bare 403 "not permitted". */
+export const NON_PREMIUM_POST_LIMIT = 280;
+
+/**
+ * The post limits of one X account: `premium === false` caps originals at NON_PREMIUM_POST_LIMIT; `true` or unknown
+ * (`null`, `undefined`) keeps POST_LIMITS. Callers without the account's flag use POST_LIMITS as before.
+ */
+export function postLimitsFor(premium: boolean | null | undefined): Record<PostFormat, number> {
+  return premium === false ? { ...POST_LIMITS, original: NON_PREMIUM_POST_LIMIT } : POST_LIMITS;
+}
+
+/**
+ * How long a post is for the limits here: code points, as `validatePost` counts. X weighs its own count (a URL is 23,
+ * some characters 2); that weighting is not reproduced, so a post full of links is counted long and a few scripts short.
+ */
+export function postLength(text: string): number {
+  return [...text].length;
+}
 export const MAX_ATTRIBUTIONS = 3;
 export const MAX_MENTIONS = 3;
 
@@ -184,7 +203,7 @@ export function validatePost(
   const invalid = format === 'original' ? 'invalid_original_post' : 'invalid_short_post';
   if (typeof text !== 'string') throw new PolicyError(invalid);
   if (!text.trim() && !hasMedia) throw new PolicyError(invalid);
-  if ([...text].length > POST_LIMITS[format]) throw new PolicyError(invalid);
+  if (postLength(text) > POST_LIMITS[format]) throw new PolicyError(invalid);
   if (!Array.isArray(attributions) || attributions.length > MAX_ATTRIBUTIONS) throw new PolicyError(invalid);
   if (risk.platform) {
     const platformCode = platformPostRisk(text);

@@ -15,6 +15,13 @@
       "when": 1793109771286,
       "tag": "0001_oauth_states_action_x_user",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794176306645,
+      "tag": "0002_account_verified_type",
+      "breakpoints": true
     }
   ]
 }

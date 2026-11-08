@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
+import { POST_LIMITS, postLimitsFor } from './social/post-validation.js';
 import { DRAFT_INTENT_TOOL_NAME, MAX_RESOLVE_BATCH, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
 
 export type ToolEffect = 'read' | 'write' | 'money';
@@ -35,6 +36,15 @@ function define<N extends ToolName>(
   idempotent: boolean,
 ): ToolDefinition<N> {
   return { name, description, input: toolInputSchemas[name], capability, effect, idempotent };
+}
+
+/**
+ * The `publish_post` description for an account whose original posts may run to `limit` characters: 4000 with X
+ * Premium, 280 without (X refuses a longer one with a bare 403, so the model must know the real number).
+ */
+export function publishPostDescription(limit: number): string {
+  const cap = limit < POST_LIMITS.original ? `up to ${limit} characters (this X account has no Premium; X refuses longer posts)` : `up to ${limit} characters`;
+  return `Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, ${cap}, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.`;
 }
 
 export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
@@ -89,7 +99,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   publish_post: define(
     'publish_post',
-    'Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, up to 4000 characters, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.',
+    publishPostDescription(POST_LIMITS.original),
     'xPublish',
     'write',
     false,
@@ -225,8 +235,18 @@ export function toolEnabled(config: Pick<AgentConfig, 'capabilities' | 'ownerRul
   return !publicChannelBlocked(config.ownerRules, name);
 }
 
-export function toolsFor(config: Pick<AgentConfig, 'capabilities' | 'ownerRules'>): ToolDefinition[] {
-  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name));
+/** What the account may send, for the tools that say so: `premium` from the sender's account row (null = unknown, the defaults). */
+export interface ToolAccountOptions {
+  premium?: boolean | null;
+}
+
+/**
+ * The tools the model sees, with the account's own limits in their descriptions: `publish_post` names 280 characters
+ * for an account without X Premium (`postLimitsFor`). Without `opts` (or with `premium` unknown) the catalog as is.
+ */
+export function toolsFor(config: Pick<AgentConfig, 'capabilities' | 'ownerRules'>, opts: ToolAccountOptions = {}): ToolDefinition[] {
+  const limit = postLimitsFor(opts.premium).original;
+  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name)).map((tool) => (tool.name === 'publish_post' && limit !== POST_LIMITS.original ? { ...tool, description: publishPostDescription(limit) } : tool));
 }
 
 export function toolByName(name: string): ToolDefinition | undefined {

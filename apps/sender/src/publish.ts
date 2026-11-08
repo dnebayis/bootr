@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { getAccessToken } from './accounts.js';
+import { postLength, postLimitsFor } from '@bootr/agent-core';
+import { getAccessToken, premiumOf } from './accounts.js';
 import { MEDIA_SCOPE } from './oauth.js';
 import type { SenderContext } from './context.js';
 import { canonicalJson, sha256Hex } from './crypto.js';
@@ -95,6 +96,25 @@ export type PublishInput = z.infer<typeof publishSchema>;
 
 /** First reconciliation check after an ambiguous outcome. */
 export const FIRST_CHECK_DELAY_MS = 15 * 60 * 1000;
+
+/** The receipt error code of an original post longer than the connected account may send. */
+export const POST_TOO_LONG_CODE = 'post_too_long_for_account';
+
+/**
+ * X's own limit for the account, checked before X is contacted: an account without Premium (`premium === false`,
+ * from its `verified_type`) may send originals of at most 280 characters, and X answers a longer one with a bare 403
+ * "You are not permitted to perform this action" (the one 403 the supervisor treats as an account hold). Replies are
+ * capped at 280 by policy already. With Premium, or while Premium is unknown (null), nothing is refused here. The
+ * length is code points (agent-core `postLength`); X's weighting (a URL counts 23, some characters 2) is not reproduced.
+ * Returns the receipt error, `post_too_long_for_account: ...`, or null.
+ */
+export function postTooLongForAccount(text: string, kind: 'post' | 'reply', premium: boolean | null): string | null {
+  if (kind !== 'post' || premium !== false) return null;
+  const limit = postLimitsFor(premium).original;
+  const length = postLength(text);
+  if (length <= limit) return null;
+  return `${POST_TOO_LONG_CODE}: this X account has no Premium: posts are limited to ${limit} characters (this one is ${length}). Shorten it and publish again.`;
+}
 
 export type PublishResult =
   | {
@@ -257,6 +277,8 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     if (mentioned.optedOut) reasons.push('mention_opted_out');
   }
   reasons.push(...replyReasons);
+  // The account's own length limit (no X Premium: 280), after the policy gates and before X; recorded and final too.
+  const tooLong = reasons.length === 0 ? postTooLongForAccount(input.text, kind, premiumOf(tok.account.verifiedType)) : null;
 
   const base = {
     actionId: input.actionId,
@@ -270,10 +292,10 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     createdAt: ctx.now(),
   } as const;
 
-  if (reasons.length > 0) {
+  if (reasons.length > 0 || tooLong) {
     await ctx.db
       .insert(actions)
-      .values({ ...base, status: 'rejected', error: `policy:${reasons.join(',')}`, attempts: 0 })
+      .values({ ...base, status: 'rejected', error: reasons.length > 0 ? `policy:${reasons.join(',')}` : tooLong!, attempts: 0 })
       .onConflictDoNothing();
     const row = await getAction(ctx, input.actionId);
     return row!.bodyHash === hash ? ok(ctx, row!) : existing(ctx, row!, input, hash);
