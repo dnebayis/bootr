@@ -343,15 +343,18 @@ export function mockSender(): MockSender {
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
-    async publish(body: { actionId: string; text: string; replyTo?: string; replyEligibility?: { eligible: boolean; reason?: string } }) {
+    async publish(body: { agentId?: string; actionId: string; text: string; replyTo?: string; replyEligibility?: { eligible: boolean; reason?: string } }) {
       if (m.consentLookupFails) throw new SenderError(503, 'consent_lookup_failed', { error: 'consent_lookup_failed', retryAt: m.consentLookupFails }, true, Date.parse(m.consentLookupFails));
       if (m.quotaExceeded) throw new SenderError(429, 'quota_exceeded', { error: 'quota_exceeded', limit: 24, window: '24h', retryAt: m.quotaExceeded }, true, Date.parse(m.quotaExceeded));
       m.published.push(body);
       const reasons: string[] = [];
       if (body.replyTo && !body.replyEligibility?.eligible) reasons.push(`reply_not_eligible:${body.replyEligibility?.reason ?? 'missing_eligibility'}`);
       for (const h of body.text.match(/@([A-Za-z0-9_]+)/g) ?? []) if (m.optedOutHandles.has(h.slice(1).toLowerCase())) reasons.push('mention_opted_out');
-      const status = reasons.length || m.publishError ? 'rejected' : m.publishStatus;
-      const error = reasons.length ? `policy:${reasons[0]}` : m.publishError ? m.publishError : m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null;
+      // apps/sender/src/publish.ts `postTooLongForAccount`: an original over 280 characters from an account without Premium never reaches X.
+      const length = [...body.text].length;
+      const tooLong = !reasons.length && !body.replyTo && m.accounts?.[body.agentId ?? '']?.premium === false && length > 280 ? `post_too_long_for_account: this X account has no Premium: posts are limited to 280 characters (this one is ${length}). Shorten it and publish again.` : null;
+      const status = reasons.length || tooLong || m.publishError ? 'rejected' : m.publishStatus;
+      const error = reasons.length ? `policy:${reasons[0]}` : tooLong ? tooLong : m.publishError ? m.publishError : m.publishStatus === 'rejected' ? 'policy:invalid_short_post' : null;
       const providerPostId = status === 'sent' ? String(++n) : null;
       m.receipts[body.actionId] = { status, providerPostId, error };
       return { status, providerPostId, receipt: { actionId: body.actionId, agentId: 'a', kind: body.replyTo ? 'reply' : 'post', status, providerPostId, error } };

@@ -13,6 +13,7 @@ import {
   interruptionPlan,
   markSent,
   parseAction,
+  postLimitsFor,
   reconcile,
   recordOutcome,
   resumeAction,
@@ -140,6 +141,17 @@ export interface Turn {
   outputBoost?: boolean;
   /** The earliest `reviewAt` of a mention this turn deferred (ISO): the one concrete reason to wake before the cadence floor. */
   reviewAt?: string | null;
+  /**
+   * Whether the X account may post beyond 280 characters (the sender's `premium`, read once at the start of the turn):
+   * false caps `publish_post` at 280 in its description, the prompt and the observation; null = unknown, the defaults.
+   */
+  premium?: boolean | null;
+}
+
+/** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
+export async function accountPremium(ctx: Pick<SupervisorContext, 'sender'>, agentId: string): Promise<boolean | null> {
+  const account = await ctx.sender.account(agentId).catch(() => null);
+  return typeof account?.premium === 'boolean' ? account.premium : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +287,7 @@ export function errorCodeOf(error: string | null | undefined): string {
   return (error ?? '').trim().split(/\s/)[0]!.replace(/:$/, '').slice(0, 120);
 }
 
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null) {
+async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null) {
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory);
   const eligible = views.filter((v) => v.eligible);
@@ -290,7 +302,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       messages: verifiedFirst(eligible).map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, verified: isVerifiedAuthor(v.post), post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}) })),
       threadContexts: [],
       repliesAvailable: eligible.length > 0,
-      originalPost: schedule ? originalPostView(schedule) : null,
+      // `maxChars`: what this X account may send in one original post (280 without Premium; the tool and the prompt say the same).
+      originalPost: schedule ? { ...originalPostView(schedule), maxChars: postLimitsFor(premium).original } : null,
     },
     lastResults: state.lastResults ?? [],
     continuation: state.continuation ?? null,
@@ -386,20 +399,23 @@ function compactMessages(messages: ChatMessage[]): boolean {
 export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
   const routing = startRouting(config);
-  const tools = toolsForPhase(routing, availableTools(ctx, config));
+  // The account's post limit for this turn: the sender's `premium` (one internal read; it also keeps the sender's flag fresh).
+  const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
+  const tools = toolsForPhase(routing, availableTools(ctx, config, { premium }));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
   inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
   // A publish that settled while no turn was open (tick.ts `reconcilePending`) counts before this turn is shown anything.
   settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, ctx.now());
   const update = offerPlatformUpdate(config, state, ctx.now(), !!inputs.schedule?.due && !inputs.digest && !inputs.numbers);
-  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update);
+  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update, premium);
   const turn: Turn = {
     startedAt: ctx.now(),
     steps: 0,
     nudged: false,
     reasons: inputs.reasons,
+    premium,
     messages: [
-      { role: 'system', content: buildSystemPrompt(config, 'social', { phase: phaseOf(routing) }) },
+      { role: 'system', content: buildSystemPrompt(config, 'social', { phase: phaseOf(routing), postLimit: postLimitsFor(premium).original }) },
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
@@ -425,7 +441,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const log = ctx.log.child({ agentId: agent.agentId });
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
-  const catalog = availableTools(ctx, config);
+  const catalog = availableTools(ctx, config, { premium: turn.premium ?? null });
   /** The functions of the current economy-mode phase (routing.ts); the catalog itself when the mode is off. */
   const tools = () => toolsForPhase(turn.routing, catalog);
   const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };

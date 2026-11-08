@@ -113,6 +113,37 @@ describe('X OAuth 2.0 PKCE', () => {
     expect(acct.body).toMatchObject({ connected: true, handle: 'agent_nine', xUserId: '2000' });
   });
 
+  it("connect stores X's verified_type and the account view says whether the account has Premium", async () => {
+    const connect = async (agentId: string, me: Record<string, unknown>) => {
+      const s = await start(agentId, `st-${agentId}`);
+      env.fake.on('POST', '/2/oauth2/token', () => json({ access_token: `at-${agentId}`, refresh_token: `rt-${agentId}`, expires_in: 7200 }));
+      env.fake.on('GET', '/2/users/me', ({ url }) => {
+        expect(url.searchParams.get('user.fields')).toBe('username,verified,verified_type');
+        return json({ data: me });
+      });
+      expect((await callback(s.state, s.cookie)).status).toBe(200);
+      return (await env.call('GET', `/internal/account/${agentId}`)).body;
+    };
+    // @BRIANBRAINAI's case: verified_type none, no Premium
+    expect(await connect('agent-free', { id: '3001', username: 'brian', verified: false, verified_type: 'none' })).toMatchObject({ connected: true, verifiedType: 'none', premium: false });
+    // the platform account and a business account post long; government counts as long-post capable too
+    expect(await connect('agent-blue', { id: '3002', username: 'bootr', verified: true, verified_type: 'blue' })).toMatchObject({ verifiedType: 'blue', premium: true });
+    expect(await connect('agent-biz', { id: '3003', username: 'biz', verified: true, verified_type: 'business' })).toMatchObject({ verifiedType: 'business', premium: true });
+    expect(await connect('agent-gov', { id: '3004', username: 'gov', verified: true, verified_type: 'government' })).toMatchObject({ verifiedType: 'government', premium: true });
+    // one users/me per connect (metered as users_me); the account view did not ask X again the same day
+    expect(env.fake.count('GET', '/2/users/me')).toBe(4);
+    const rows = await env.db.execute(sql`select agent_id, verified_type, verified_checked_at from sender_accounts order by agent_id`);
+    expect(rows.rows.map((r) => [r.agent_id, r.verified_type, r.verified_checked_at !== null])).toEqual([
+      ['agent-biz', 'business', true],
+      ['agent-blue', 'blue', true],
+      ['agent-free', 'none', true],
+      ['agent-gov', 'government', true],
+    ]);
+    // an answer without the field: Premium stays unknown (null), and so does the view
+    const unknown = await connect('agent-old', { id: '3005', username: 'old' });
+    expect(unknown).toMatchObject({ connected: true, verifiedType: null, premium: null });
+  });
+
   it('refuses a callback from another browser (no or wrong binding cookie)', async () => {
     xUser('2000', 'agent_nine');
     const s = await start('agent-9', 'st');

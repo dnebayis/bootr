@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
-import { getAccount, revokeAccount, saveAccount } from './accounts.js';
+import { getAccount, premiumOf, refreshVerifiedType, revokeAccount, saveAccount, verifiedTypeOf } from './accounts.js';
 import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
 import { DEFAULT_SITE_URL } from './api-page.js';
 import { createApiPageHandler } from './catalog-source.js';
@@ -242,7 +242,7 @@ export function createApp(ctx: SenderContext): Hono {
       ctx,
       opened.agentId,
       tokens.tokens,
-      { id: me.data.data.id, username: me.data.data.username },
+      { id: me.data.data.id, username: me.data.data.username, verifiedType: verifiedTypeOf(me.data.data) },
       { replace: opened.reconnect },
     );
     await meterRead(ctx, opened.agentId, 'users_me', 1);
@@ -382,9 +382,16 @@ export function createApp(ctx: SenderContext): Hono {
     return c.json(res);
   });
 
+  /**
+   * GET /internal/account/:agentId
+   * The account as the sender holds it. `premium` is whether X lets it post beyond 280 characters (from X's
+   * `verified_type`: blue, business or government); null until the first `users/me` read answers. This is the read
+   * path that keeps `verifiedType` fresh: at most one `users/me` a day per account (`refreshVerifiedType`).
+   */
   internal.get('/account/:agentId', async (c) => {
     const agentId = c.req.param('agentId');
-    const a = await getAccount(ctx, agentId);
+    let a = await getAccount(ctx, agentId);
+    if (a && !a.revokedAt) a = await refreshVerifiedType(ctx, a);
     return c.json({
       agentId,
       connected: !!a && !a.revokedAt,
@@ -394,6 +401,8 @@ export function createApp(ctx: SenderContext): Hono {
       scopes: a?.scopes ?? null,
       expiresAt: a?.expiresAt.toISOString() ?? null,
       connectedAt: a?.connectedAt.toISOString() ?? null,
+      verifiedType: a?.verifiedType ?? null,
+      premium: premiumOf(a?.verifiedType),
     });
   });
 

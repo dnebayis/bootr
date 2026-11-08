@@ -14,6 +14,7 @@ import {
   PUBLISHING_TOOLS,
   buildSystemPrompt,
   draftIntentInputSchema,
+  postLimitsFor,
   type AgentConfig,
   type ChatMessage,
   type DraftIntent,
@@ -75,6 +76,8 @@ export interface RoutedTurn {
   messages: ChatMessage[];
   recentSteps: { tool: string; status: string; summary: string }[];
   routing?: RoutingState | null;
+  /** The account's Premium flag (runtime.ts `Turn.premium`): the writer's prompt names the same post limit as the first one. */
+  premium?: boolean | null;
 }
 
 function toolMessage(toolCallId: string, content: unknown): ChatMessage {
@@ -104,7 +107,7 @@ export function handleIntent(config: AgentConfig, turn: RoutedTurn, tools: reado
   routing.phase = 'write';
   routing.intent = intent;
   const system = turn.messages[0];
-  if (system && system.role === 'system') system.content = buildSystemPrompt(config, 'social', { phase: 'write' });
+  if (system && system.role === 'system') system.content = buildSystemPrompt(config, 'social', { phase: 'write', postLimit: postLimitsFor(turn.premium ?? null).original });
   turn.messages.push(
     toolMessage(call.id, {
       decided: true,

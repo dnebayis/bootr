@@ -51,6 +51,10 @@ export interface SenderAccount {
   scopes?: string;
   expiresAt?: string;
   connectedAt?: string | null;
+  /** X's `verified_type` (blue, business, government, none); null until the sender read it. */
+  verifiedType?: string | null;
+  /** Whether X lets the account post beyond 280 characters (Premium, Business or government); null = not known yet. */
+  premium?: boolean | null;
 }
 
 export interface SenderRebind {

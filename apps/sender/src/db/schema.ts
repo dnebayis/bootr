@@ -31,6 +31,13 @@ export const accounts = pgTable('sender_accounts', {
   revokedAt: ts('revoked_at'),
   connectedAt: ts('connected_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
+  /**
+   * X's `verified_type` for the account (`blue`, `business`, `government`, `none`), read from `GET /2/users/me` at
+   * connect and refreshed at most once a day (src/accounts.ts `refreshVerifiedType`). Null until read: Premium unknown.
+   */
+  verifiedType: text('verified_type'),
+  /** When `verifiedType` was last asked of X (success or not): the once-a-day bound. */
+  verifiedCheckedAt: ts('verified_checked_at'),
 });
 
 export const actionKinds = ['post', 'reply'] as const;

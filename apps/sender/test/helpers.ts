@@ -87,7 +87,7 @@ export class Clock {
   }
 }
 
-export async function setup(opts: { connect?: boolean } = {}) {
+export async function setup(opts: { connect?: boolean; verifiedType?: string | null } = {}) {
   const pg = new PGlite();
   const db = drizzle(pg, { schema }) as unknown as Db;
   await migrate(drizzle(pg), {
@@ -131,7 +131,7 @@ export async function setup(opts: { connect?: boolean } = {}) {
         expiresAt: new Date(clock.now().getTime() + 2 * 3600_000),
         scopes: 'tweet.read tweet.write users.read offline.access media.write',
       },
-      { id: AGENT_X_ID, username: AGENT_HANDLE },
+      { id: AGENT_X_ID, username: AGENT_HANDLE, ...(opts.verifiedType !== undefined ? { verifiedType: opts.verifiedType } : {}) },
     );
   }
   const app = createApp(ctx);

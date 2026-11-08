@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
+import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, publishPostDescription, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
 import { MAX_RESOLVE_BATCH, TOOL_NAMES, type AgentConfig } from './types.js';
 
 const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> => ({
@@ -19,6 +19,27 @@ describe('tool catalog', () => {
     expect(TOOLS.publish_reply.idempotent).toBe(false);
     expect(TOOLS.read_mentions.effect).toBe('read');
     expect(TOOLS.finish.capability).toBeNull();
+  });
+
+  it("publish_post names the account's own post limit: 4000 by default, 280 for an account without X Premium", () => {
+    expect(TOOLS.publish_post.description).toBe(publishPostDescription(4000));
+    expect(TOOLS.publish_post.description).toContain('up to 4000 characters');
+    expect(TOOLS.publish_post.description).not.toMatch(/Premium/);
+    const config = caps(['xPublish', 'xReply']);
+    const byName = (tools: ReturnType<typeof toolsFor>) => Object.fromEntries(tools.map((t) => [t.name, t.description]));
+    // unknown or Premium: the catalog as is (the same objects)
+    expect(toolsFor(config).find((t) => t.name === 'publish_post')).toBe(TOOLS.publish_post);
+    expect(toolsFor(config, { premium: null }).find((t) => t.name === 'publish_post')).toBe(TOOLS.publish_post);
+    expect(toolsFor(config, { premium: true }).find((t) => t.name === 'publish_post')).toBe(TOOLS.publish_post);
+    // no Premium: the description says 280 and why; everything else about the tool is unchanged, replies untouched
+    const free = toolsFor(config, { premium: false });
+    const post = free.find((t) => t.name === 'publish_post')!;
+    expect(post.description).toContain('up to 280 characters (this X account has no Premium; X refuses longer posts)');
+    expect(post.description).not.toContain('4000');
+    expect(post).toMatchObject({ name: 'publish_post', capability: 'xPublish', effect: 'write', idempotent: false, input: TOOLS.publish_post.input });
+    expect(byName(free).publish_reply).toBe(TOOLS.publish_reply.description);
+    expect(free.map((t) => t.name)).toEqual(toolsFor(config).map((t) => t.name));
+    expect(toFunctionDefinitions(free).find((f) => f.function.name === 'publish_post')!.function.description).toContain('up to 280 characters');
   });
 
   it('resolve_mentions lives next to resolve_mention, bounded and with the same outcomes', () => {
