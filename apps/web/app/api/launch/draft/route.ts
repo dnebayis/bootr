@@ -1,5 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { maybeSweepDrafts } from '@/lib/server/draft-sweep';
 import { isAllowedOrigin } from '@/lib/server/env';
+import { clientIp, RateLimiter } from '@/lib/server/ipfs';
+import { rateLimitMessage } from '@/lib/server/refusals';
 import {
   MAX_IDENTITY_CHARS,
   MIN_IDENTITY_CHARS,
@@ -17,6 +20,9 @@ import {
 } from '@/lib/server/launch-drafts';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
+/** Writes per minute per IP: the form writes a draft once or twice per launch. */
+const PER_MINUTE = 20;
+const limiter = new RateLimiter(PER_MINUTE, 60_000);
 
 /**
  * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, x, telegram, discord}},
@@ -27,9 +33,15 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`); a custom `worker` is published in the
  * agent card as `bootr.worker`, where the supervisor recomputes the hash the launch wrote on-chain.
  * Same-origin only. The first write owns the draft id (HttpOnly cookie); a write without the owner's
- * cookie for an id that already has a text answers 409.
+ * cookie for an id that already has a text answers 409. 20 writes per minute per IP; the store holds at most
+ * MAX_DRAFTS drafts (503 `store_full` for a new id past that), and drafts that never launched are swept a day
+ * after their last write (lib/server/draft-sweep.ts).
  */
 export async function POST(req: NextRequest) {
+  const retryAfter = limiter.hit(clientIp(req.headers));
+  if (retryAfter) {
+    return NextResponse.json({ error: 'rate_limited', message: rateLimitMessage(PER_MINUTE, retryAfter) }, { status: 429, headers: { ...NO_STORE, 'Retry-After': String(retryAfter) } });
+  }
   const origin = req.headers.get('origin');
   // Same-origin: the configured site origin, or the host this request was served from (same scheme-less host
   // as the Origin header, so a preview or e2e server on another port qualifies while evil.com never does).
@@ -75,8 +87,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'store_unavailable', message: 'The launch draft store is not writable.' }, { status: 503, headers: NO_STORE });
   }
   if (!saved.ok) {
+    if (saved.reason === 'full') {
+      return NextResponse.json({ error: 'store_full', message: 'The launch draft store is full right now. Try again in a few minutes.' }, { status: 503, headers: { ...NO_STORE, 'Retry-After': '300' } });
+    }
     return NextResponse.json({ error: 'draft_owned', message: 'This draft id already has an identity saved by another browser.' }, { status: 409, headers: NO_STORE });
   }
+  // Housekeeping, at most every ten minutes and never on this request's time: drafts that never launched go after a day.
+  void maybeSweepDrafts();
   const res = NextResponse.json({ ok: true, identity }, { headers: NO_STORE });
   res.cookies.set(OWNER_COOKIE, ownerCookieValue(cookie, body.draftId, saved.ownerTag), {
     httpOnly: true,

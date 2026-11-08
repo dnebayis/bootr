@@ -118,7 +118,7 @@ export async function setup(opts: { connect?: boolean } = {}) {
     encryptionKey: ENC_KEY,
     serviceKey: SERVICE_KEY,
     now: clock.now,
-    defaults: { postsPerDay: 24, mentionReadIntervalSec: 300 },
+    defaults: { postsPerDay: 24, mentionReadIntervalSec: 300, readsPerDay: 400 },
     xTimeoutMs: 15_000,
   };
   if (opts.connect !== false) {

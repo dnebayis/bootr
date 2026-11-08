@@ -1,12 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { createPublicClient, getAddress, http, isAddress, type Address, type Hex } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { getAddress, isAddress, type Address, type Hex } from 'viem';
 import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { builderDataSuffix } from '@/lib/attribution';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
+import { serverPublicClient } from '@/lib/server/chain';
 import { buildClaims } from '@/lib/server/claim';
 import { clientIp, RateLimiter } from '@/lib/server/ipfs';
 import { rateLimitMessage } from '@/lib/server/refusals';
@@ -53,8 +53,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     unsettled = bootrCoins.map((c) => mock.claimable(owner, c.poolId));
     clankerAvailable = mock.clankerFees(owner);
   } else {
-    const chain = env.chainId === 8453 ? base : baseSepolia;
-    const client = createPublicClient({ chain, transport: http((env.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL) || undefined) });
+    const client = serverPublicClient(env.chainId);
     const locker = contracts.lpLocker;
     const feeLocker = contracts.clankerFeeLocker;
     try {

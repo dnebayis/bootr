@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { withToken } from './accounts.js';
 import type { SenderContext } from './context.js';
 import { meterRead } from './metering.js';
+import { requireReads } from './read-budget.js';
 import type { XPartialError, XTweet } from './x-client.js';
 
 /**
@@ -76,6 +77,8 @@ export async function readMetrics(
   input: z.infer<typeof metricsSchema>,
 ): Promise<{ ok: true; items: PostMetrics[]; missing: string[]; nonPublic: boolean } | Fail> {
   const ids = [...new Set(input.postIds)];
+  const refused = await requireReads(ctx, input.agentId, 1);
+  if (refused) return refused;
   const read = (nonPublic: boolean) =>
     withToken(ctx, input.agentId, (token) => ctx.x.getPosts(token, ids, { nonPublic }));
 

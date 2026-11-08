@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PolicyError } from '../errors.js';
-import { countCashtags, platformPostRisk, postValidation, validatePost } from './post-validation.js';
+import { countCashtags, linkedHosts, PLATFORM_LINK_HOSTS, platformPostRisk, postValidation, validatePost } from './post-validation.js';
 
 const code = (fn: () => void) => {
   try {
@@ -199,5 +199,50 @@ describe('creditedAttributions', () => {
     // the model credited what it read without naming it: before, the gate refused; now the credit is simply dropped
     expect(() => validatePost('bootr is where every coin gets an agent.', credits, 'short')).toThrow(/mentions_require_source_credit/);
     expect(() => validatePost('bootr is where every coin gets an agent.', creditedAttributions('bootr is where every coin gets an agent.', credits), 'short')).not.toThrow();
+  });
+});
+
+describe('links in platform posts', () => {
+  const risk = { platform: true };
+  const platform = (text: string, attributions: unknown = []) => code(() => validatePost(text, attributions, 'original', false, risk));
+  const token = '0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c';
+
+  it('allows the launchpad, X, the explorer, Clanker and the chart', () => {
+    expect(PLATFORM_LINK_HOSTS).toEqual(['bootr.fun', 'x.com', 'twitter.com', 'basescan.org', 'clanker.world', 'dexscreener.com']);
+    expect(platform(`Coin page: https://bootr.fun/token/${token}`)).toBeNull();
+    expect(platform('The launch form: https://www.bootr.fun/launch')).toBeNull();
+    expect(platform('The thread: https://x.com/bootrfun/status/1986000000000000000')).toBeNull();
+    expect(platform(`The contract: https://basescan.org/address/${token}`)).toBeNull();
+    expect(platform(`On Clanker: https://clanker.world/clanker/${token}`)).toBeNull();
+    expect(platform(`Chart: https://dexscreener.com/base/${token}`)).toBeNull();
+    expect(platform('The docs are at bootr.fun/docs and the coin pages under bootr.fun/token.')).toBeNull();
+  });
+
+  it('refuses every other site, explicit or bare, since X links bare domains too', () => {
+    expect(platform('Claim your $BOOTR airdrop at https://bootr-claim.fun/airdrop')).toBe('platform_link_forbidden');
+    expect(platform('Claim here: www.bootr-rewards.com/claim')).toBe('platform_link_forbidden');
+    expect(platform('Connect your wallet at bootr-fun.com to claim.')).toBe('platform_link_forbidden');
+    expect(platform('Looks official: https://bootr.fun.evil.xyz/token')).toBe('platform_link_forbidden');
+    expect(platform('A login at http://x.com.login-check.io/')).toBe('platform_link_forbidden');
+    expect(platform(`Details at https://dexscreener.com/base/${token} and https://pastebin.com/raw/abc`)).toBe('platform_link_forbidden');
+    expect(linkedHosts('see https://a.example/x, www.b.com/y and c.xyz/z plus jesse.base.eth and e.g. this, v1.2.3 too')).toEqual(['a.example', 'www.b.com', 'c.xyz']);
+    // a link at the end of a clause keeps its host, not the comma or full stop after it
+    expect(linkedHosts('listed at https://api.bootr.fun, and read at bootr.fun/api/catalog.')).toEqual(['api.bootr.fun', 'bootr.fun']);
+    expect(platform('Every public endpoint is listed at https://api.bootr.fun, and programs can read https://bootr.fun/api/catalog.')).toBeNull();
+  });
+
+  it('allows the source a post credits, and only that one', () => {
+    const credit = [{ username: 'jessepollak', sourceUrl: 'https://jesse.xyz/posts/agents' }];
+    expect(platform('Read @jessepollak on agents: https://jesse.xyz/posts/agents', credit)).toBeNull();
+    expect(platform('Read https://jesse.xyz/posts/agents')).toBe('platform_link_forbidden');
+    expect(platform('Read @jessepollak on agents: https://jesse.xyz/posts/agents and https://other.example/', credit)).toBe('platform_link_forbidden');
+    // a credit the model got wrong is no licence: the strict attribution check still runs after
+    expect(platform('Read @jessepollak: https://jesse.xyz/posts/agents', [{ username: 'jessepollak', sourceUrl: 'not a url' }])).toBe('invalid_source_credit');
+  });
+
+  it('reaches the same verdict through the publish path, and leaves coin agents free to link anywhere', () => {
+    expect(postValidation('Claim at https://bootr-claim.fun/airdrop', [], 'original', false, { platform: true })).toEqual({ ok: false, code: 'platform_link_forbidden' });
+    expect(postValidation('Claim at https://bootr-claim.fun/airdrop', [], 'original')).toEqual({ ok: true });
+    expect(postValidation('Our site: www.some-coin.xyz/about', [], 'short')).toEqual({ ok: true });
   });
 });

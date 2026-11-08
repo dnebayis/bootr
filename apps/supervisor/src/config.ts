@@ -134,12 +134,25 @@ export const configSchema = z
     /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
     SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),
     SUPERVISOR_TICK_MS: int(60_000, 1000),
+    /** Awake runtimes (waiting, held, running) processed per tick, ordered by `nextAt`. */
     MAX_AGENTS_PER_TICK: int(10, 1),
     /**
      * How often a sleeping or paused agent's chain state (refuel, guardian unpause) is read; every tick otherwise.
      * A creator who refuels waits at most this long for the agent to wake. One RPC call per read (tick.ts).
      */
     REST_CHECK_MS: int(300_000, 0),
+     * Sleeping runtimes checked per tick, in their own sweep (tick.ts): one treasury read each, least recently checked
+     * first, so refuelling is noticed without sleeping coins ever taking an awake agent's slot. Empty = MAX_AGENTS_PER_TICK.
+     */
+    MAX_SLEEPING_PER_TICK: z.preprocess((v) => (v === '' || v === undefined ? undefined : v), z.coerce.number().int().min(0).optional()),
+    /**
+     * Hard ceiling on one agent tool call (broker/index.ts). Agents run one at a time, so a tool that never answers
+     * would stall every agent; past this a read tool fails and a write or money tool ends `unknown`, to be settled by
+     * reconciliation. Above the longest legitimate tool: a treasury op waits USER_OP_RECEIPT_TIMEOUT_MS for its receipt.
+     */
+    TOOL_TIMEOUT_MS: int(180_000, 1000),
+    /** The same ceiling for read tools (web, X, chain, indexer reads), which have nothing to reconcile. */
+    TOOL_READ_TIMEOUT_MS: int(60_000, 1000),
     /**
      * Platform posting rhythm (rhythm.ts): at most this many original posts across every Bootr agent per 10-minute
      * window. An agent whose post is due but finds the window full waits for a later tick; its slot is not lost.

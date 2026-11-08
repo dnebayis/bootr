@@ -1,6 +1,6 @@
 import { SiweMessage } from 'siwe';
-import { createPublicClient, http, isAddress, isHex, recoverMessageAddress, type Address, type Hex } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { isAddress, isHex, recoverMessageAddress, type Address, type Hex } from 'viem';
+import { serverPublicClient } from './chain';
 import { isAllowedOrigin, siteOrigin } from './env';
 import { NEW_NONCE, quoted } from './refusals';
 import { consumeNonce, rememberNonce } from './server-state';
@@ -96,9 +96,9 @@ export async function verifySiwe(
   // request on the RPC key the indexer shares. Smart accounts (ERC-1271, ERC-6492) still go to the chain below.
   const recovered = await recoverMessageAddress({ message: body.message, signature: body.signature as Hex }).catch(() => null);
   if (recovered && recovered.toLowerCase() === msg.address.toLowerCase()) return { ok: true, msg, address: msg.address as Address };
-  const chain = msg.chainId === 8453 ? base : baseSepolia;
-  const rpc = msg.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL;
-  const client = createPublicClient({ chain, transport: http(rpc || undefined) });
+  // A smart account's signature (ERC-1271 / ERC-6492) is checked on the chain through a client that refuses CCIP-Read
+  // (lib/server/chain.ts): the account is the caller's own contract, so its reverts must not make this server fetch URLs.
+  const client = serverPublicClient(msg.chainId);
   let valid = false;
   let unverifiable = false;
   try {

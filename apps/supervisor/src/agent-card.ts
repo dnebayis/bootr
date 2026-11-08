@@ -11,9 +11,11 @@
  * `normalizeCreatorIdentity`; it only ever fills the identity slot of the system prompt, below OWNER RULES.
  */
 import { httpsUrlSchema, PolicyError, normalizeCreatorIdentity } from '@bootr/agent-core';
+import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { assertPublicHost } from './web-reader.js';
 
-const MAX_CARD_BYTES = 256 * 1024;
+/** Bytes of a card read at most; a longer body is cancelled at this point and the card counts as unreadable. */
+export const MAX_CARD_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
 
 export interface AgentCardOptions {
@@ -75,11 +77,12 @@ export async function fetchAgentCard(agentURI: string, opts: AgentCardOptions = 
       await assertPublicHost(current.hostname, opts.resolve);
       res = await doFetch(current.toString(), {
         redirect: 'manual',
-        headers: { 'user-agent': 'BootrSupervisor/1.0 (+https://bootr.fun)', accept: 'application/json' },
+        headers: { 'user-agent': 'BootrSupervisor/1.0 (+https://bootr.fun)', accept: 'application/json', ...IDENTITY_ENCODING },
         signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
       });
       const location = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && location) {
+        await res.body?.cancel().catch(() => undefined);
         current = new URL(location, current);
         res = null;
         continue;
@@ -96,9 +99,10 @@ export async function fetchAgentCard(agentURI: string, opts: AgentCardOptions = 
   if (!res.ok) return 'none';
   let body: string;
   try {
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.byteLength > MAX_CARD_BYTES) return 'none';
-    body = buf.toString('utf8');
+    // Streamed under the cap: a card that is larger, or a compressed bomb, is cut off there and never buffered.
+    const { bytes, exceeded } = await readBodyCapped(res, MAX_CARD_BYTES);
+    if (exceeded) return 'none';
+    body = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8');
   } catch {
     return 'retry';
   }

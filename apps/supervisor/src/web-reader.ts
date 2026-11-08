@@ -1,52 +1,22 @@
 /**
  * `read_url` / `search_web` executors. Public https only: the host is resolved first and every
  * address must be public (no loopback, link-local, RFC1918, CGNAT, multicast or IPv6 private ranges),
- * redirects are followed manually with the same check, bodies are capped and reduced to text.
+ * redirects are followed manually with the same check, bodies are read as a stream under a byte cap
+ * (`@bootr/shared/public-fetch`, shared with the web's launch route) and reduced to text.
  */
-import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
 import { PolicyError } from '@bootr/agent-core';
+import { IDENTITY_ENCODING, publicHostProblem, readBodyCapped, type Resolve } from '@bootr/shared/public-fetch';
+
+export { isPrivateIp } from '@bootr/shared/public-fetch';
 
 export const MAX_TEXT_CHARS = 4000;
-const MAX_BODY_BYTES = 1_000_000;
+/** Bytes of a page read at most; the rest of the body is cancelled, never buffered. */
+export const MAX_BODY_BYTES = 1_000_000;
 const MAX_REDIRECTS = 3;
 
-export function isPrivateIp(ip: string): boolean {
-  const v = isIP(ip);
-  if (v === 4) {
-    const [a, b] = ip.split('.').map(Number) as [number, number, number, number];
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    if (a >= 224) return true;
-    return false;
-  }
-  if (v === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === '::1' || lower === '::') return true;
-    if (lower.startsWith('fe80') || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('ff')) return true;
-    if (lower.startsWith('::ffff:')) return isPrivateIp(lower.slice(7));
-    return false;
-  }
-  return true;
-}
-
-export async function assertPublicHost(hostname: string, resolve: (h: string) => Promise<{ address: string }[]> = (h) => lookup(h, { all: true })): Promise<void> {
-  const host = hostname.replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) throw new PolicyError('url_private_host');
-  if (isIP(host)) {
-    if (isPrivateIp(host)) throw new PolicyError('url_private_host');
-    return;
-  }
-  let records: { address: string }[];
-  try {
-    records = await resolve(host);
-  } catch {
-    throw new PolicyError('url_unresolvable_host');
-  }
-  if (!records.length || records.some((r) => isPrivateIp(r.address))) throw new PolicyError('url_private_host');
+export async function assertPublicHost(hostname: string, resolve?: Resolve): Promise<void> {
+  const problem = await publicHostProblem(hostname, resolve);
+  if (problem) throw new PolicyError(problem);
 }
 
 export function htmlToText(html: string): string {
@@ -94,10 +64,11 @@ export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Prom
     await assertPublicHost(current.hostname, opts.resolve);
     res = await doFetch(current.toString(), {
       redirect: 'manual',
-      headers: { 'user-agent': 'BootrAgent/1.0 (+https://bootr.fun)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5' },
+      headers: { 'user-agent': 'BootrAgent/1.0 (+https://bootr.fun)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5', ...IDENTITY_ENCODING },
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      await res.body?.cancel().catch(() => undefined);
       current = new URL(res.headers.get('location') as string, current);
       continue;
     }
@@ -105,8 +76,10 @@ export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Prom
   }
   if (!res) throw new PolicyError('url_unreachable');
   const contentType = res.headers.get('content-type');
-  const buf = Buffer.from(await res.arrayBuffer());
-  const body = buf.subarray(0, MAX_BODY_BYTES).toString('utf8');
+  // The body is read as a stream and cut at MAX_BODY_BYTES: a page that never ends, or a compressed bomb that fetch
+  // inflates, costs at most that much memory.
+  const { bytes, exceeded } = await readBodyCapped(res, MAX_BODY_BYTES);
+  const body = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8');
   const isHtml = !contentType || /html|xml/i.test(contentType);
   const full = isHtml ? htmlToText(body) : body.replace(/\s+/g, ' ').trim();
   return {
@@ -116,7 +89,7 @@ export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Prom
     contentType,
     fetchedAt: new Date().toISOString(),
     text: full.slice(0, MAX_TEXT_CHARS),
-    truncated: full.length > MAX_TEXT_CHARS,
+    truncated: exceeded || full.length > MAX_TEXT_CHARS,
     untrusted: true,
   };
 }

@@ -9,7 +9,7 @@ are in [`mainnet.md`](./mainnet.md).
 
 | Piece | Where |
 | --- | --- |
-| Server | Hetzner CX23 (2 vCPU, 4 GB RAM + 4 GB swap, 40 GB NVMe), Ubuntu 26.04, Helsinki, hostname `ubuntu-4gb-hel1-1`, IPv4 `77.42.90.52`. SSH as `root` with a key only (no password login) |
+| Server | Hetzner CX33 since 2026-11-05 (4 vCPU, 8 GB RAM of which 7.6 GB usable, 80 GB NVMe; a CX23 with 4 GB before that), Ubuntu 26.04, Helsinki, hostname `ubuntu-4gb-hel1-1`, IPv4 `77.42.90.52`. SSH as `root` with a key only (no password login) |
 | Network | Hetzner Cloud Firewall `bootr-1`: inbound TCP 22, 80, 443, 6001-6002 and ICMP, everything else dropped at the edge. ufw on the host mirrors it; Docker-published ports bypass ufw, which is why the cloud firewall is the one that counts |
 | Coolify | v4.5.x, installed with the official `install.sh`; panel at `https://coolify.bootr.fun`; API enabled, token in `/root/.coolify-token` (mode 600, never in the repo); `/data/coolify/source/.env` backed up off-server |
 | Source | GitHub `dnebayis/bootr` (private), branch `main`. Coolify clones it with a read-only deploy key (registered on the repo and in Coolify → Keys & Tokens) |
@@ -207,10 +207,19 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
 
 ## 7. Known limits of the small box
 
-- 4 GB RAM: the five services idle at ~2.5 GB; a web build pushes into swap. Do not run two builds at once, and
-  do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale, "resize disk too") to
-  CX33 (8 GB / 80 GB) or CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale,
-  the site is down for a few minutes while the server reboots.
+- 7.6 GB usable RAM (CX33; 4 GB on the CX23 before 2026-11-05): the five services idle at ~2.5 GB. Do not run two
+  builds at once, and do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale,
+  "resize disk too") to CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale, the site
+  is down for a few minutes while the server reboots.
+- Memory ceilings: every container in `docker-compose.coolify.yml` has a `mem_limit`: postgres 1 GB, indexer 1.5 GB
+  (Ponder's sync cache and reorg window; a full resync is its hungriest hour), web 1 GB, supervisor 1 GB, sender
+  512 MB, inference 512 MB: 5.5 GB together, leaving about 2 GB for the OS, Docker, Coolify's proxy and Hermes
+  (~330 MB). A container that passes its limit is killed by the kernel and comes back through `restart:
+  unless-stopped`; the others are untouched, which is the point: a hostile response, a leak or a runaway query costs
+  one service a restart, not the box. `docker stats` shows the use against the limits; an OOM kill shows as
+  `OOMKilled: true` in `docker inspect <container>` and as a restart in the Coolify logs. Raise a limit in the compose
+  file (and redeploy) rather than removing it; the bomb tests in `apps/supervisor/test/response-bomb.test.ts` and
+  `apps/web/lib/server/image-fetch.test.ts` show what the services themselves cap, so the limit is the second line.
 - The supervisor and the indexer share one CDP RPC key, whose limit is 7,500 billing units per 5 s. Since the Denim fork
   (2026-11-05 18:00 UTC) Base has 5 blocks a second, and following them takes about half of that, and the supervisor
   retries a rate-limited read for up to 8 s. A restart must fetch Ponder's 180 s reorg window again, now about 1,000 blocks.

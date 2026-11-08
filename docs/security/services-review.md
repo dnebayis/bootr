@@ -328,6 +328,7 @@ The `inflight` refresh lock is per process. Two sender replicas refreshing at on
 ### L-5. Indexer exposure
 
 **Status (2026-10-27):** Not in this change (indexer owner): `/sql/*` is still public.
+**Status (2026-11-08):** `/sql/*` removed (`apps/indexer/src/api/index.ts`); no Bootr client used it. Ponder's own `/metrics` and `/status` stay public: Ponder registers them in front of the app, so they cannot be guarded from the API code (see `docs/security/fixes-2026-11-08.md`).
 
 - `app.use('/sql/*', client(...))` exposes Ponder's read-only SQL-over-HTTP, including up to 1000 live queries. Neither the web app nor the supervisor uses it. Remove it, or put it behind auth.
 - With `NEXT_PUBLIC_WEB_ORIGIN` empty, CORS is `*` and `authorization` is an allowed header. There is no ambient credential, so impact is low, but production should fail closed.

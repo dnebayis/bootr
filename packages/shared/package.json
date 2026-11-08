@@ -10,6 +10,7 @@
     "./addresses": "./src/addresses.ts",
     "./config": "./src/config.ts",
     "./fuel": "./src/fuel.ts",
+    "./public-fetch": "./src/public-fetch.ts",
     "./trending": "./src/trending.ts",
     "./workers": "./src/workers.ts"
   },

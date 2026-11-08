@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { SiweMessage } from 'siwe';
-import { createPublicClient, http, isAddress, isHex, recoverMessageAddress, type Hex } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { isAddress, isHex, recoverMessageAddress, type Hex } from 'viem';
+import { serverPublicClient } from '@/lib/server/chain';
 import {
   ADMIN_COOKIE,
   NONCE_COOKIE,
@@ -73,9 +73,7 @@ export async function POST(req: NextRequest) {
   const recovered = await recoverMessageAddress({ message: body.message, signature: body.signature as Hex }).catch(() => null);
   let valid = !!recovered && recovered.toLowerCase() === msg.address.toLowerCase();
   if (!valid) {
-    const chain = msg.chainId === 8453 ? base : baseSepolia;
-    const rpc = msg.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL;
-    const client = createPublicClient({ chain, transport: http(rpc || undefined) });
+    const client = serverPublicClient(msg.chainId);
     try {
       valid = await client.verifyMessage({ address: msg.address, message: body.message, signature: body.signature as Hex });
     } catch {

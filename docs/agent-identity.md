@@ -165,8 +165,11 @@ refuel / gas / fees / treasury talk), `platform_price_talk_forbidden` (buy, sell
 target, "10x" multipliers and the like, plus explicit market calls: "price will", "going to hit $1m", "don't miss", "you're
 early", "hold $BOOTR", "NFA", profit talk, "only a $190k market cap"; a neutral figure such as "market cap is $190k" or
 a chart link passes), `platform_foreign_cashtag_forbidden` (any cashtag other than
-$BOOTR), `platform_shouting_forbidden` (three or more consecutive all-caps words) or `platform_emoji_string_forbidden`
-(two emoji in a row, or three in a post). The sender's gate (`checkOutgoing` in `apps/sender/src/policy-shim.ts`) must
+$BOOTR), `platform_shouting_forbidden` (three or more consecutive all-caps words), `platform_emoji_string_forbidden`
+(two emoji in a row, or three in a post) or `platform_link_forbidden` (a link, `https://` or bare, to any site other
+than bootr.fun, x.com, basescan.org, clanker.world, dexscreener.com and the source the post credits in its
+attributions; `PLATFORM_LINK_HOSTS`, since an injected model could otherwise post a phishing link in the launchpad's
+own voice). The sender's gate (`checkOutgoing` in `apps/sender/src/policy-shim.ts`) must
 pass `platform` through for the stricter path to apply there.
 
 **Defaults** (`apps/supervisor/src/onboarding.ts`): cadence `PLATFORM_POST_INTERVAL_MS` = 6 hours (coin agents use
@@ -318,7 +321,11 @@ other on X without looping (`apps/supervisor/src/agent-directory.ts`):
   `web-data` volume next to `admin-config.json` (see `docs/deploy/coolify.md` section 4). Unset, it falls back to the
   directory of `ADMIN_CONFIG_PATH`, else `<cwd>/data/launch-drafts` (git-ignored). Without a persistent
   volume a redeploy loses texts of launches the supervisor has not read yet.
-- Files are small (under 1 KB) and are not pruned. A draft that never launches leaves one file behind.
+- Files are small (under 1 KB). The store holds at most 5,000 drafts (`MAX_DRAFTS`; a new id past that is refused
+  with 503 `store_full`), the route takes 20 writes per minute per IP, and a sweep started by a draft write at most
+  every ten minutes (`lib/server/draft-sweep.ts`) removes drafts that never launched once they are a day past their
+  last write. A draft goes only after a caught-up indexer (`/ready`) says no coin carries its id; with the indexer
+  down or resyncing nothing is removed, since a launched coin's card and contract URI read its draft for good.
 - The text is public: it is served to anyone who requests the agent card.
 - Agents registered before this change have no `creatorIdentity` field; while still onboarding they are
   treated like `null` and get the card read once.

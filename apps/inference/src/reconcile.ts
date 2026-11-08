@@ -37,7 +37,8 @@ const authorizationStateAbi = [
 ] as const;
 
 export function createRpcAuthorizationChecker(rpcUrl: string): AuthorizationChecker {
-  const client = createPublicClient({ transport: http(rpcUrl) });
+  // No CCIP-Read: the asset is a payer-named address, and an OffchainLookup revert must not make the relay fetch URLs.
+  const client = createPublicClient({ transport: http(rpcUrl), ccipRead: false });
   return {
     async isUsed({ asset, authorizer, nonce }) {
       return client.readContract({

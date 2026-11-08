@@ -21,9 +21,14 @@
 x-restart: &restart
   restart: unless-stopped
 
+# Memory ceilings per container (docs/deploy/coolify.md section 7). The CX33 has 7.6 GB usable; the six containers may
+# take 5.5 GB together, which leaves about 2 GB for the OS, Docker, Coolify's proxy and Hermes. A container that passes
+# its limit is killed and restarted by its `restart` policy instead of taking the box down with it; a hostile response
+# or a leak costs one service a restart, nothing else.
 services:
   postgres:
     <<: *restart
+    mem_limit: 1g
     image: postgres:17-bookworm
     environment:
       POSTGRES_USER: bootr
@@ -39,10 +44,11 @@ services:
 
   sender:
     <<: *restart
+    mem_limit: 512m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-sender:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BUNDLER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u INDEXER_SERVICE_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BASE_RPC_FALLBACK_URL -u BUNDLER_URL -u PAYMASTER_URL -u ENABLE_MODE_BUNDLER_URL -u ENABLE_MODE_PAYMASTER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u INDEXER_SERVICE_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,14 +66,17 @@ services:
       SENDER_OAUTH_RETURN_URL: ${SENDER_OAUTH_RETURN_URL:-https://bootr.fun/launch}
       SENDER_DEFAULT_POSTS_PER_DAY: ${SENDER_DEFAULT_POSTS_PER_DAY:-}
       SENDER_DEFAULT_MENTION_INTERVAL_SEC: ${SENDER_DEFAULT_MENTION_INTERVAL_SEC:-}
+      # X reads per agent per UTC day (apps/sender/src/read-budget.ts); empty = 400, 0 = no budget.
+      SENDER_DEFAULT_READS_PER_DAY: ${SENDER_DEFAULT_READS_PER_DAY:-}
       SENDER_SITE_URL: ${SENDER_SITE_URL:-}
 
   inference:
     <<: *restart
+    mem_limit: 512m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-inference:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BUNDLER_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node scripts/migrate.mjs && exec node dist/main.js'"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BASE_RPC_FALLBACK_URL -u BUNDLER_URL -u PAYMASTER_URL -u ENABLE_MODE_BUNDLER_URL -u ENABLE_MODE_PAYMASTER_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node scripts/migrate.mjs && exec node dist/main.js'"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,10 +95,12 @@ services:
 
   indexer:
     <<: *restart
+    # Ponder holds its sync cache and reorg window in memory; a full resync is its hungriest hour.
+    mem_limit: 1536m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-indexer:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u BUNDLER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh scripts/start.sh"]
+    command: ["sh", "-c", "exec env -u BUNDLER_URL -u PAYMASTER_URL -u ENABLE_MODE_BUNDLER_URL -u ENABLE_MODE_PAYMASTER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh scripts/start.sh"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,10 +138,11 @@ services:
 
   web:
     <<: *restart
+    mem_limit: 1g
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-web:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u BUNDLER_URL -u INFERENCE_RPC_URL -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_FALLBACK_URL -u BUNDLER_URL -u PAYMASTER_URL -u ENABLE_MODE_BUNDLER_URL -u ENABLE_MODE_PAYMASTER_URL -u INFERENCE_RPC_URL -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u SERVICE_PASSWORD_POSTGRES node server.js"]
     depends_on:
       - indexer
       - sender
@@ -161,10 +173,11 @@ services:
 
   supervisor:
     <<: *restart
+    mem_limit: 1g
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-supervisor:${IMAGE_TAG:-main}
     pull_policy: always
-    command: ["sh", "-c", "exec env -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
+    command: ["sh", "-c", "exec env -u BASE_RPC_FALLBACK_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES sh -c 'node dist/db/migrate.js && exec node dist/index.js'"]
     # One replica only: the tick loop must not run twice.
     depends_on:
       postgres:
@@ -221,6 +234,11 @@ services:
       BLOCKRUN_HOLD_MS: ${BLOCKRUN_HOLD_MS:-}
       BLOCKRUN_IMAGE_POLL_MS: ${BLOCKRUN_IMAGE_POLL_MS:-}
       INFERENCE_RETRY_OUTPUT_TOKENS: ${INFERENCE_RETRY_OUTPUT_TOKENS:-}
+      # Ceiling on one agent tool call (apps/supervisor/src/broker/index.ts): 180 s, 60 s for reads. Not secrets.
+      TOOL_TIMEOUT_MS: ${TOOL_TIMEOUT_MS:-}
+      TOOL_READ_TIMEOUT_MS: ${TOOL_READ_TIMEOUT_MS:-}
+      # Sleeping runtimes checked per tick in their own sweep (tick.ts); empty = MAX_AGENTS_PER_TICK.
+      MAX_SLEEPING_PER_TICK: ${MAX_SLEEPING_PER_TICK:-}
       PLATFORM_TREASURY_ADDRESS: ${PLATFORM_TREASURY_ADDRESS}
       BUILDER_CODES_ENABLED: ${BUILDER_CODES_ENABLED:-}
       BUILDER_CODES_URL: ${BUILDER_CODES_URL:-}
