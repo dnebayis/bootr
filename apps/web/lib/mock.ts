@@ -1074,6 +1074,7 @@ const MOCK_EVENTS: readonly { key: string; label: string }[] = [
   { key: 'agent_asleep', label: 'Agent asleep' },
   { key: 'agent_stopped', label: 'Agent stopped' },
   { key: 'x_revoked', label: 'X connection lost' },
+  { key: 'x_forbidden', label: 'X refused posting' },
   { key: 'key_rotation', label: 'Treasury permission renewal' },
   { key: 'model_changed', label: 'Model changed by the platform' },
   { key: 'model_unavailable', label: 'Model not available' },

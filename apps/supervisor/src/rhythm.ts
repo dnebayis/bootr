@@ -23,6 +23,10 @@
  * 5. X credits (the X app's pay-per-use credits): when X answers 402 `credits depleted` to a publish or to a
  *    mention read, the same hold applies with reason `x_credits` (`creditsHold`). There is no `retryAt`: a publish
  *    holds for `X_CREDITS_RETRY_MS`, and a mention read that still answers 402 holds the current tick.
+ * 6. X forbids the account (403 "not permitted", not a duplicate): the account is locked, restricted or its token
+ *    lost write access, which no retry fixes. The same hold applies with reason `x_forbidden` for hours
+ *    (`forbiddenHoldMs`, doubling on each repeat up to a day), the creator is told (`x_forbidden` notification), and
+ *    a publish that later goes through clears both.
  */
 import { originalPostSchedule, publicChannelBlocked, sha256Hex, type AgentConfig, type PostSchedule } from '@bootr/agent-core';
 import { and, gt, inArray, ne, sql } from 'drizzle-orm';
@@ -50,7 +54,7 @@ export function jitterMs(kernel: string, intervalMs: number): number {
   return Math.floor((word / 0x1_0000_0000) * MAX_JITTER_FRACTION * intervalMs);
 }
 
-export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota' | 'x_credits';
+export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota' | 'x_credits' | 'x_forbidden';
 
 export interface Hold {
   reason: HoldReason;
@@ -234,6 +238,35 @@ export function creditsHold(until: number | null | undefined, now: number): Hold
     reason: 'x_credits',
     until,
     message: `x_credits: X refuses posts and replies for now (the X app is out of API credits). publish_post and publish_reply fail: do not call them. Mentions wait for you; you are woken to try again at ${at}.`,
+  };
+}
+
+/** The first hold after X refused a publish as forbidden (403); each repeat doubles it, up to `X_FORBIDDEN_HOLD_MAX_MS`. */
+export const X_FORBIDDEN_HOLD_MS = 6 * HOUR_MS;
+export const X_FORBIDDEN_HOLD_MAX_MS = DAY_MS;
+
+/** How long the `strikes`-th forbidden refusal in a row holds the account: 6 h, 12 h, then a day. */
+export function forbiddenHoldMs(strikes: number): number {
+  const n = Number.isFinite(strikes) && strikes >= 1 ? Math.floor(strikes) : 1;
+  return Math.min(X_FORBIDDEN_HOLD_MAX_MS, X_FORBIDDEN_HOLD_MS * 2 ** (n - 1));
+}
+
+/**
+ * X refused the publish because the account may not post (the sender's `forbidden(403)`: "You are not permitted to
+ * perform this action"). A duplicate post is also a 403 but comes back as `duplicate_content`, which is not this.
+ */
+export function isXForbiddenError(error: string | null | undefined): boolean {
+  return !!error && /(^|[^a-z_])forbidden\(403\)/i.test(error);
+}
+
+/** The X account may not post until `until` (see `forbiddenHoldMs`). Null once that time has passed. */
+export function forbiddenHold(until: number | null | undefined, now: number): Hold | null {
+  if (!until || !Number.isFinite(until) || until <= now) return null;
+  const at = new Date(until).toISOString();
+  return {
+    reason: 'x_forbidden',
+    until,
+    message: `x_forbidden: X refused your last post because this account is not permitted to post right now (locked, restricted or its connection lost the right to write). publish_post and publish_reply are held until ${at}: do not call them. Your creator was told to check the X account; you are woken to try again at ${at}.`,
   };
 }
 

@@ -110,7 +110,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   finish: define(
     'finish',
-    'Checkpoint and stop this turn: concise memory (max 16000 chars), agenda (max 12000), short factual summary (max 4000) and the ISO time you want to wake next (1 minute to 24 hours ahead). Pending eligible mentions wake you earlier.',
+    'Checkpoint and stop this turn: concise memory (max 16000 chars), agenda (max 12000), short factual summary (max 4000) and the ISO time you want to wake next (1 minute to 24 hours ahead). Pending eligible mentions and your due original post wake you on their own, so a coin agent\'s wake is never set before its next post slot (except for a mention it deferred to an earlier reviewAt); ask for the slot or later.',
     null,
     'write',
     true,

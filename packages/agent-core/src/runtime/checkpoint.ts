@@ -10,16 +10,27 @@ export interface Checkpoint {
   memory: string;
   agenda: string;
   summary: string;
-  /** ISO time, clamped to [now + 1 min, now + 24 h]. */
+  /** ISO time, clamped to [now + max(1 min, bounds.floorMs), now + 24 h]. */
   nextAt: string;
   nextAtMs: number;
+  /** The wake time the model asked for (epoch ms), before the clamp. */
+  requestedMs: number;
+}
+
+export interface CheckpointBounds {
+  /**
+   * The earliest wake the caller allows, as a delay from `now` (the runtime's cadence floor for a coin agent: its next
+   * original-post slot, since mentions and a due post wake it on their own). Never under CHECKPOINT_MIN_DELAY_MS; a
+   * floor past CHECKPOINT_MAX_DELAY_MS yields the maximum.
+   */
+  floorMs?: number;
 }
 
 /**
  * Validate a `finish` call. Oversized fields are rejected (the model should
  * archive details with `remember`); the requested wake time is clamped.
  */
-export function checkpoint(args: Record<string, unknown>, now: number = Date.now()): Checkpoint {
+export function checkpoint(args: Record<string, unknown>, now: number = Date.now(), bounds: CheckpointBounds = {}): Checkpoint {
   const { memory, agenda, summary, nextAt } = args;
   if (typeof memory !== 'string' || typeof agenda !== 'string' || typeof summary !== 'string' || typeof nextAt !== 'string')
     throw new PolicyError('invalid_checkpoint');
@@ -27,8 +38,9 @@ export function checkpoint(args: Record<string, unknown>, now: number = Date.now
     throw new PolicyError('checkpoint_too_large', { message: 'checkpoint_too_large: keep concise notes and archive details with remember' });
   const requested = Date.parse(nextAt);
   if (!Number.isFinite(requested)) throw new PolicyError('invalid_next_time');
-  const nextAtMs = Math.max(now + CHECKPOINT_MIN_DELAY_MS, Math.min(now + CHECKPOINT_MAX_DELAY_MS, requested));
-  return { memory, agenda, summary, nextAt: new Date(nextAtMs).toISOString(), nextAtMs };
+  const floor = Number.isFinite(bounds.floorMs) && (bounds.floorMs as number) > CHECKPOINT_MIN_DELAY_MS ? (bounds.floorMs as number) : CHECKPOINT_MIN_DELAY_MS;
+  const nextAtMs = Math.min(now + CHECKPOINT_MAX_DELAY_MS, Math.max(now + floor, requested));
+  return { memory, agenda, summary, nextAt: new Date(nextAtMs).toISOString(), nextAtMs, requestedMs: requested };
 }
 
 /** Deep-copies a worker state and refuses anything over 12 KB of JSON. */
