@@ -22,6 +22,16 @@ export function sectionLabel(id: ConsoleSection): string {
   return CONSOLE_SECTIONS.find((s) => s.id === id)!.label;
 }
 
+/** A `?section=` value from the URL; null for anything that is not a section. */
+export function parseSection(value: string | null | undefined): ConsoleSection | null {
+  return CONSOLE_SECTIONS.some((s) => s.id === value) ? (value as ConsoleSection) : null;
+}
+
+/** The console page of a coin, at a section when one is given. */
+export function consoleHref(tokenId: string, section?: ConsoleSection): string {
+  return `/token/${tokenId}/console${section ? `?section=${section}` : ''}`;
+}
+
 /** Which sections hold unsaved edits (the dot on the tab and the save bar's note), in tab order. */
 export function changedSections(changes: AgentConfigChanges | null): ConsoleSection[] {
   if (!changes) return [];

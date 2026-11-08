@@ -7,6 +7,7 @@ async function openConsole(page: Page) {
   await page.goto('/?tab=active');
   await page.locator('a[href^="/token/0x"]').first().click();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+  await page.goto(`${new URL(page.url()).pathname}/console`);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_).toBeVisible();
   return console_;

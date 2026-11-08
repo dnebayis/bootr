@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS } from './console-sections';
+import { changedSections, CONSOLE_SECTIONS, consoleHref, parseSection, sectionLabel, SETTINGS_SECTIONS } from './console-sections';
+
+describe('parseSection / consoleHref', () => {
+  it('accepts only real sections', () => {
+    expect(parseSection('powers')).toBe('powers');
+    expect(parseSection('Powers')).toBeNull();
+    expect(parseSection(null)).toBeNull();
+    expect(parseSection('')).toBeNull();
+  });
+  it('builds the console page link', () => {
+    expect(consoleHref('0xabc')).toBe('/token/0xabc/console');
+    expect(consoleHref('0xabc', 'fuel')).toBe('/token/0xabc/console?section=fuel');
+  });
+});
 
 describe('changedSections', () => {
   it('is empty without changes', () => {
