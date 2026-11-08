@@ -67,6 +67,7 @@ describe('GET /internal/agents/:id/config', () => {
         revision: 1,
         updatedAt: expect.any(String),
         xHold: null,
+        xConnection: 'connected',
       });
       expect((await api(world).get('/internal/agents/404/config')).status).toBe(404);
       // a custom worker reports its stored preset
@@ -101,6 +102,38 @@ describe('GET /internal/agents/:id/config xHold', () => {
       world.setNow(now);
       await world.db.update(runtimes).set({ state: { ...(row.state as Record<string, unknown>), postForbiddenUntil: null, postForbiddenStrikes: 0 } }).where(eq(runtimes.agentId, AGENT_ID));
       expect(await read()).toBeNull();
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('GET /internal/agents/:id/config xConnection', () => {
+  it("says connected, revoked or none from the sender's account row, and null when the sender does not answer", async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig() });
+      const read = async () => ((await (await api(world).get(`/internal/agents/${AGENT_ID}/config`)).json()) as { xConnection: unknown }).xConnection;
+      expect(await read()).toBe('connected');
+      // what the sender said of Brian Brain's agent on 2026-11-08 after the creator reset the app's access on X
+      world.sender.accounts = { [AGENT_ID]: { agentId: AGENT_ID, connected: false, revoked: true, handle: 'brianbrain', xUserId: '77' } };
+      expect(await read()).toBe('revoked');
+      // the PUT answer carries it too
+      const put = await api(world).put(`/internal/agents/${AGENT_ID}/config`, { by: CREATOR, requireApproval: true });
+      expect(put.status).toBe(200);
+      expect(((await put.json()) as { xConnection: unknown }).xConnection).toBe('revoked');
+      // no account row at all
+      world.sender.accounts = {};
+      expect(await read()).toBe('none');
+      // the sender down: null, and the rest of the config still answers
+      const account = world.ctx.sender.account;
+      world.ctx.sender.account = async () => {
+        throw new Error('sender unreachable');
+      };
+      const res = await api(world).get(`/internal/agents/${AGENT_ID}/config`);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { xConnection: unknown; agentId: string }).xConnection).toBeNull();
+      world.ctx.sender.account = account;
     } finally {
       await world.close();
     }

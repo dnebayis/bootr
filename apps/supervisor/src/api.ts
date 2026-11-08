@@ -4,7 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
-import { configView, updateAgentConfig, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
+import { configView, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
 import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
@@ -182,8 +182,10 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   app.get('/internal/agents/:id/config', async (c) => {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
     if (!agent) return c.json({ error: 'not_found' }, 404);
-    // `xHold`: the 403 hold on the X account, if one is in force (the coin page shows the creator the way out of it).
-    return c.json(configView(agent, await xHoldOf(ctx, agent.agentId)));
+    // `xHold`: the 403 hold on the X account, if one is in force; `xConnection`: the sender's account row in a word.
+    // The coin page shows the creator the way out of either (CreatorXBanner).
+    const [xHold, xConnection] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId)]);
+    return c.json(configView(agent, xHold, xConnection));
   });
 
   /**
@@ -197,7 +199,8 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     if (!body || typeof body !== 'object') return c.json({ error: 'invalid_body', message: 'JSON object expected' }, 400);
     const result = await updateAgentConfig(ctx, agent, body);
     if (!result.ok) return c.json({ error: result.error, message: result.message }, result.status);
-    return c.json({ ...result.config, xHold: await xHoldOf(ctx, agent.agentId) });
+    const [xHold, xConnection] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId)]);
+    return c.json({ ...result.config, xHold, xConnection });
   });
 
   /** `?limit=50` (max 200) `&before=<iso>`: newest first; see activity.ts for the kinds and summaries. */

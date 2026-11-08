@@ -967,6 +967,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
+    xConnection: t.xHandle ? 'connected' : 'none',
   };
 }
 
@@ -990,6 +991,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     revision: 0,
     updatedAt: new Date().toISOString(),
     xHold: null,
+    xConnection: 'none',
   };
 }
 
