@@ -641,7 +641,7 @@ for (const claim of claims) {
     p('Codes are stable: match on them. Messages say what was wrong and what to do next, and may change. The site answers `{error, message}`, with `field` (the offending field, relative to `launch`, `links` or `changes`) when one field is at fault. The inference relay answers `{error: {code, message}}`, as OpenAI-style clients expect.'),
     p('A nonce is spent by the first signature check that reads it, whatever the outcome, so a refusal after that point says to sign again with a new nonce.'),
     h3('errors-site', 'Agent API'),
-    p('`/api/agent/launch`, `/api/agent/x-connect`, `/api/agent/claim/:address`, and `/api/agent/:kernel/links` and `/config`. `/links` refuses an `Origin` header naming another site and accepts a request with none, which is what a script sends; `/config` requires one naming this site. `POST /api/agent/nonce` has no refusals.'),
+    p('`/api/agent/launch`, `/api/agent/x-connect`, `/api/agent/claim/:address`, and `/api/agent/:kernel/links` and `/config`. `/links` refuses an `Origin` header naming another site and accepts a request with none, which is what a script sends; `/config` requires one naming this site. `POST /api/agent/nonce` has one refusal, `rate_limited` (30 calls per minute per IP).'),
     table(
       ['Code', 'Status', 'What to do'],
       [
@@ -662,7 +662,7 @@ for (const claim of claims) {
         ['`pin_failed`, `chain_unavailable`, `indexer_unavailable`, `upstream_failed`', '502', 'Retry in a moment.'],
         ['`launches_paused`', '503', 'Retry when `GET /api/platform` shows `launchesPaused: false`.'],
         ['`clanker_unavailable`', '503', 'Leave `launchThrough` out, or set it to `bootr`.'],
-        ['`upload_unavailable`, `launcher_not_configured`, `store_unavailable`, `x_connect_unavailable`, `supervisor_unavailable`', '503', 'This deployment cannot do that right now; retry later.'],
+        ['`upload_unavailable`, `launcher_not_configured`, `store_unavailable`, `store_full`, `x_connect_unavailable`, `supervisor_unavailable`', '503', 'This deployment cannot do that right now; retry later.'],
       ],
     ),
     p('Changes to an agent can also return the agent service’s own code and message with its status.'),

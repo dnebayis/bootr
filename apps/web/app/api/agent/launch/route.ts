@@ -189,6 +189,7 @@ export async function POST(req: NextRequest) {
   const draftCoin = { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links };
   try {
     const saved = await saveDraftIdentity(draftId, identity, null, { coin: draftCoin, worker: worker.draft, source: launchThrough });
+    if (!saved.ok && saved.reason === 'full') return refuse(503, 'store_full', 'The launch draft store is full right now. Nothing was launched: try again in a few minutes.');
     if (!saved.ok) return refuse(500, 'store_failed', 'Could not store the launch draft. Nothing was launched: try again in a moment.');
   } catch {
     return refuse(503, 'store_unavailable', 'The launch draft store is not writable. Nothing was launched: try again in a moment.');

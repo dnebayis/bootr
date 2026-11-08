@@ -290,7 +290,11 @@ other on X without looping (`apps/supervisor/src/agent-directory.ts`):
   `web-data` volume next to `admin-config.json` (see `docs/deploy/coolify.md` section 4). Unset, it falls back to the
   directory of `ADMIN_CONFIG_PATH`, else `<cwd>/data/launch-drafts` (git-ignored). Without a persistent
   volume a redeploy loses texts of launches the supervisor has not read yet.
-- Files are small (under 1 KB) and are not pruned. A draft that never launches leaves one file behind.
+- Files are small (under 1 KB). The store holds at most 5,000 drafts (`MAX_DRAFTS`; a new id past that is refused
+  with 503 `store_full`), the route takes 20 writes per minute per IP, and a sweep started by a draft write at most
+  every ten minutes (`lib/server/draft-sweep.ts`) removes drafts that never launched once they are a day past their
+  last write. A draft goes only after a caught-up indexer (`/ready`) says no coin carries its id; with the indexer
+  down or resyncing nothing is removed, since a launched coin's card and contract URI read its draft for good.
 - The text is public: it is served to anyone who requests the agent card.
 - Agents registered before this change have no `creatorIdentity` field; while still onboarding they are
   treated like `null` and get the card read once.

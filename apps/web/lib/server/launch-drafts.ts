@@ -17,8 +17,12 @@
  * `LAUNCH_DRAFTS_DIR` points the store at a persistent volume in production (`/data/launch-drafts` on
  * Railway, set in apps/web/Dockerfile). Unset = next to the admin config (`ADMIN_CONFIG_PATH`'s
  * directory), else `<cwd>/data/launch-drafts`. Read at call time, not at build.
+ *
+ * Bounds: at most MAX_DRAFTS files (a new id is refused past that), and `sweepDrafts` removes drafts that never
+ * launched once they are DRAFT_TTL_S old, after the indexer has said no coin carries the id. A launched coin's
+ * draft is kept for good: its agent card and contract URI read it.
  */
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { normalizeLinks, type CoinLinks } from '@/lib/coin-link-rules';
@@ -182,24 +186,102 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export type SaveResult = { ok: true; ownerTag: string } | { ok: false; reason: 'owned' };
+export type SaveResult = { ok: true; ownerTag: string } | { ok: false; reason: 'owned' | 'full' };
+
+/** Draft files kept at most; a new draft id is refused past this until the sweep has made room (`reason: 'full'`). */
+export const MAX_DRAFTS = 5000;
+/** A draft that never launched is removed this long after its last write. The form writes it right before the launch tx. */
+export const DRAFT_TTL_S = 24 * 60 * 60;
+/** Stale drafts looked up per sweep, so one sweep is a bounded amount of indexer work. */
+export const SWEEP_LOOKUPS = 25;
+/** A temp file older than this was left by a crash mid-write. */
+const TMP_TTL_S = 60 * 60;
+const DRAFT_FILE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
+
+/** Draft files in the store (0 when the directory does not exist yet). */
+export async function countDrafts(opts: { dir?: string } = {}): Promise<number> {
+  try {
+    return (await readdir(opts.dir ?? draftsDir())).filter((n) => DRAFT_FILE.test(n)).length;
+  } catch {
+    return 0;
+  }
+}
+
+export type SweepResult = { removed: string[]; checked: number; stopped: boolean };
+
+/**
+ * Removes drafts that never launched: files last written more than DRAFT_TTL_S ago whose id `launched` says no
+ * indexed coin carries (false). `launched` answers null when it cannot know (indexer unreachable or not caught up)
+ * and the sweep stops there keeping everything, because a launched coin's card and contract URI read its draft for
+ * good, so a draft only ever goes on a definite no. Temp files left by a crash go too. At most `limit` lookups.
+ */
+export async function sweepDrafts(launched: (draftId: string) => Promise<boolean | null>, opts: { dir?: string; now?: number; limit?: number } = {}): Promise<SweepResult> {
+  const dir = opts.dir ?? draftsDir();
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  const limit = opts.limit ?? SWEEP_LOOKUPS;
+  const result: SweepResult = { removed: [], checked: 0, stopped: false };
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return result;
+  }
+  const ageOf = async (name: string): Promise<number | null> => {
+    try {
+      return now - Math.floor((await stat(path.join(dir, name))).mtimeMs / 1000);
+    } catch {
+      return null;
+    }
+  };
+  for (const name of names) {
+    if (!name.endsWith('.tmp')) continue;
+    const age = await ageOf(name);
+    if (age !== null && age > TMP_TTL_S) {
+      await unlink(path.join(dir, name)).catch(() => undefined);
+      result.removed.push(name);
+    }
+  }
+  for (const name of names.filter((n) => DRAFT_FILE.test(n)).sort()) {
+    if (result.checked >= limit) break;
+    const age = await ageOf(name);
+    if (age === null || age < DRAFT_TTL_S) continue;
+    const draftId = name.slice(0, -5);
+    result.checked += 1;
+    let isLaunched: boolean | null;
+    try {
+      isLaunched = await launched(draftId);
+    } catch {
+      isLaunched = null;
+    }
+    if (isLaunched === null) {
+      result.stopped = true;
+      break;
+    }
+    if (isLaunched) continue;
+    await unlink(path.join(dir, name)).catch(() => undefined);
+    result.removed.push(draftId);
+  }
+  return result;
+}
 
 /**
  * Stores `identity` (already normalized), `opts.coin`, `opts.worker` and `opts.source` (default `bootr`) under `draftId`. A new draft id gets a fresh owner
  * tag; an existing one is only replaced when `ownerTag` matches the stored tag, else `{ok: false, reason: 'owned'}`.
+ * A new id is refused with `{ok: false, reason: 'full'}` once the store holds `opts.cap` (default MAX_DRAFTS) drafts.
  * Writes are atomic (temp file + rename).
  */
 export async function saveDraftIdentity(
   draftId: string,
   identity: string,
   ownerTag: string | null,
-  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource } = {},
+  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource; cap?: number } = {},
 ): Promise<SaveResult> {
   const dir = opts.dir ?? draftsDir();
   const now = opts.now ?? Math.floor(Date.now() / 1000);
   const file = fileFor(dir, draftId);
   const existing = await readDraft(dir, draftId);
   if (existing && !(ownerTag && OWNER_TAG.test(ownerTag) && timingSafeEqual(ownerTag, existing.ownerTag))) return { ok: false, reason: 'owned' };
+  if (!existing && (await countDrafts({ dir })) >= (opts.cap ?? MAX_DRAFTS)) return { ok: false, reason: 'full' };
   const tag = existing ? existing.ownerTag : randomTag();
   const next: DraftFile = { identity, coin: opts.coin ?? null, worker: opts.worker ?? null, source: opts.source ?? 'bootr', ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
   await mkdir(dir, { recursive: true });
