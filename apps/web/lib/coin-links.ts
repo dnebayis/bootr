@@ -4,8 +4,8 @@ import { mock } from './mock';
 import { xHandleOfUrl } from './x-link';
 
 /**
- * The coin's own links as the token page shows them (all optional). `x` is the project's X account, never the
- * agent's handle (the page shows that on its own line).
+ * The coin's own links as the token page shows them (all optional). `x` is the X account the creator entered for the
+ * coin, the agent's own account included: a coin whose only X account is its agent's still gets an X button.
  */
 export type CoinPageLinks = { website: string | null; x: string | null; telegram: string | null; discord: string | null };
 
@@ -32,10 +32,10 @@ export function ownContractUri(metadata: string | null | undefined): string | nu
 
 /**
  * The links in a hosted contract URI document (`lib/contract-metadata.ts`). `socialMediaUrls` lists the project's
- * X account and the agent's under the same `x` platform (project first); the agent's entry, the only one coins
- * launched before the field existed carry, is skipped by `agentXHandle`.
+ * X account and the agent's under the same `x` platform (project first); the first valid one is the coin's X link,
+ * so a coin whose only entry is the agent's account (every coin launched before the project field existed) shows it.
  */
-export function pickCoinLinks(json: unknown, agentXHandle: string | null | undefined): CoinPageLinks {
+export function pickCoinLinks(json: unknown): CoinPageLinks {
   if (!json || typeof json !== 'object') return NO_COIN_LINKS;
   const o = json as { external_link?: unknown; website?: unknown; socialMediaUrls?: unknown };
   const urls = Array.isArray(o.socialMediaUrls) ? (o.socialMediaUrls as { platform?: unknown; url?: unknown }[]) : [];
@@ -47,15 +47,11 @@ export function pickCoinLinks(json: unknown, agentXHandle: string | null | undef
   const guessed = external && !external.toLowerCase().startsWith(`${site}/`) && external.toLowerCase() !== site ? external : null;
   // `website` is what the creator entered, even when it is this site; documents without the field fall back to the guess.
   const website = 'website' in o ? https(o.website) : guessed;
-  const agent = (agentXHandle ?? '').toLowerCase();
   const x =
     urls
       .filter((u) => u.platform === 'x')
       .map((u) => https(u.url))
-      .find((url): url is string => {
-        const handle = url ? xHandleOfUrl(url) : null;
-        return !!handle && handle.toLowerCase() !== agent;
-      }) ?? null;
+      .find((url): url is string => !!url && xHandleOfUrl(url) !== null) ?? null;
   return { website, x, telegram: of('telegram'), discord: of('discord') };
 }
 
@@ -63,27 +59,27 @@ export function pickCoinLinks(json: unknown, agentXHandle: string | null | undef
  * The react-query key of a coin's links: what `useCoinLinks` reads and what the creator's links form writes after a
  * save (`queryClient.setQueryData`), so the links row changes at once without a second fetch.
  */
-export function coinLinksKey(metadata: string | null | undefined, agentXHandle: string | null | undefined) {
+export function coinLinksKey(metadata: string | null | undefined) {
   const path = env.useMock ? null : ownContractUri(metadata);
   const mockKey = env.useMock && metadata ? metadata : null;
-  return ['coin-links', path ?? mockKey, agentXHandle ?? null] as const;
+  return ['coin-links', path ?? mockKey] as const;
 }
 
 /**
  * The coin's website, X account, Telegram and Discord, read from its hosted ERC-7572 contract URI (set in the
- * launch form, `lib/contract-metadata.ts`; changed later by the creator through `PUT /api/agent/[kernel]/links`). `agentXHandle` is the agent's own handle, kept out of `x`. Coins
- * whose contract URI is not hosted here (or none at all) show no links. Mock mode reads the mock store instead.
+ * launch form, `lib/contract-metadata.ts`; changed later by the creator through `PUT /api/agent/[kernel]/links`).
+ * Coins whose contract URI is not hosted here (or none at all) show no links. Mock mode reads the mock store instead.
  */
-export function useCoinLinks(metadata: string | null | undefined, agentXHandle: string | null | undefined) {
+export function useCoinLinks(metadata: string | null | undefined) {
   const path = env.useMock ? null : ownContractUri(metadata);
   const mockKey = env.useMock && metadata ? metadata : null;
   return useQuery({
-    queryKey: coinLinksKey(metadata, agentXHandle),
+    queryKey: coinLinksKey(metadata),
     queryFn: async (): Promise<CoinPageLinks> => {
       if (mockKey) return mock.coinLinks(mockKey);
       const res = await fetch(path!, { cache: 'no-store' });
       if (!res.ok) return NO_COIN_LINKS;
-      return pickCoinLinks(await res.json().catch(() => null), agentXHandle);
+      return pickCoinLinks(await res.json().catch(() => null));
     },
     enabled: !!path || !!mockKey,
     staleTime: 5 * 60_000,

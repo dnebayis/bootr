@@ -301,6 +301,11 @@ function init(): Store {
     if (i === CLANKER_INDEX) clankerize(token);
     // The newest coin carries project links, its X account among them (distinct from its agent's handle).
     if (i === 0) links.set(token.metadata, { website: 'https://ledgerowl.example', x: 'https://x.com/ledgerowl', telegram: 'https://t.me/ledgerowl', discord: null });
+    // The second one's only X account is its agent's own, as coins launched before the project X field carry it.
+    if (i === 1) {
+      token.xHandle ??= 'qeng_agent';
+      links.set(token.metadata, { website: null, x: `https://x.com/${token.xHandle}`, telegram: null, discord: null });
+    }
     tokens.push(token);
     agents.set(agent.id.toLowerCase(), agent);
     trades.set(token.id.toLowerCase(), makeTrades(token, rand, now));

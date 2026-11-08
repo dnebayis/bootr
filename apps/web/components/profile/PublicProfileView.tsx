@@ -22,7 +22,7 @@ import { XLinkedBadge } from '@/components/token/XLinkedBadge';
 import { CoinLabel, Rows } from './ProfileView';
 
 function CoinLinks({ coin }: { coin: CreatorCoin }) {
-  const links = useCoinLinks(coin.metadata, coin.xHandle);
+  const links = useCoinLinks(coin.metadata);
   const list = [
     { label: 'Website', href: links.data?.website },
     { label: 'X', href: links.data?.x },

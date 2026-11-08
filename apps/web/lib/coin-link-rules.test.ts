@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_OWN_X_ERROR, checkLinks, isAgentsOwnX, LINK_ERRORS, NO_LINKS, normalizeLink, normalizeLinks, sameLinks } from './coin-link-rules';
+import { checkLinks, LINK_ERRORS, NO_LINKS, normalizeLink, normalizeLinks, sameLinks } from './coin-link-rules';
 
 describe('coin link rules', () => {
   it('normalizes each kind the way the launch form does', () => {
@@ -31,12 +31,9 @@ describe('coin link rules', () => {
     expect(normalizeLinks({})).toEqual(NO_LINKS);
   });
 
-  it("knows the agent's own account and compares link sets", () => {
-    expect(isAgentsOwnX('https://x.com/QENG_agent', 'qeng_agent')).toBe(true);
-    expect(isAgentsOwnX('https://x.com/quietengine', 'qeng_agent')).toBe(false);
-    expect(isAgentsOwnX(null, 'qeng_agent')).toBe(false);
-    expect(isAgentsOwnX('https://x.com/quietengine', null)).toBe(false);
-    expect(AGENT_OWN_X_ERROR).toMatch(/agent’s own account/);
+  it("takes any X profile as the coin's X, the agent's own account included, and compares link sets", () => {
+    // Whatever X account the creator enters is shown; the agent's own handle is no exception.
+    expect(checkLinks({ x: '@QENG_agent' })).toEqual({ ok: true, links: { ...NO_LINKS, x: 'https://x.com/QENG_agent' } });
     expect(sameLinks(NO_LINKS, { ...NO_LINKS })).toBe(true);
     expect(sameLinks(NO_LINKS, { ...NO_LINKS, x: 'https://x.com/bootrfun' })).toBe(false);
   });
