@@ -83,6 +83,8 @@ test('agent panel shows gas with a status chip and an Add gas form (mock mode)',
   const gas = page.getByTestId('agent-gas');
   await expect(gas).toContainText(/\d ETH/);
   await expect(gas.getByTestId('gas-status')).toHaveAttribute('data-status', /^(ok|low|empty)$/);
+  // Where the gas sits and when it was read, so a figure that differs from the wallet's ETH balance explains itself.
+  await expect(page.getByTestId('agent-gas-detail')).toContainText(/^[\d.]+ ETH prepaid for gas · [\d.]+ ETH in the wallet · read just now$/);
   await page.getByRole('button', { name: 'Add gas' }).click();
   const amount = page.getByRole('textbox', { name: 'Add gas amount in ETH' });
   await expect(amount).toHaveValue('0.001');
