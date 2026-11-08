@@ -460,7 +460,7 @@ export function LaunchForm() {
 
         <Section n={2} title="Mind" description="The model that thinks for the agent. Each thought is paid from its fuel.">
           <div>
-            <Label htmlFor="model" hint={models.data?.source === 'fallback' ? 'Estimated prices' : 'Price per thought'}>
+            <Label htmlFor="model" hint="Price per thought at BlockRun">
               Model
             </Label>
             <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)]">
@@ -493,7 +493,7 @@ export function LaunchForm() {
             ) : null}
             <p className="mt-1 text-caption text-mute">
               A thought is one model call: the agent reads its context (about {THOUGHT.promptTokens.toLocaleString('en-US')} tokens) and decides what to do next (up to{' '}
-              {THOUGHT.outputTokens.toLocaleString('en-US')} tokens). Each one is paid in USDC from the agent&rsquo;s fuel.
+              {THOUGHT.outputTokens.toLocaleString('en-US')} tokens). Each one is paid in USDC from the agent&rsquo;s fuel to BlockRun, the service that runs the models for it.
             </p>
           </div>
         </Section>

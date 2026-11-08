@@ -14,7 +14,7 @@ const REPO = path.resolve(import.meta.dirname, '../../../../..');
 const APP = path.join(REPO, 'apps/web/app');
 const SITE = 'https://site.example';
 const INDEXER = 'https://indexer.example';
-const NO_MODELS = { source: 'fallback', thought: { promptTokens: 4000, outputTokens: 1024 }, models: [] } as const;
+const NO_MODELS = { source: 'blockrun', thought: { promptTokens: 4000, outputTokens: 1024 }, models: [] } as const;
 const catalog = (indexerUrl = INDEXER) => buildCatalog({ siteUrl: SITE, indexerUrl, chainId: 8453, models: { ...NO_MODELS, models: [] } });
 
 /** The URL of an endpoint without its origin, `{name}` kept. */

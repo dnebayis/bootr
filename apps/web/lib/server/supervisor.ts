@@ -108,10 +108,14 @@ export function sanitizeFuel(raw: unknown): AgentFuel {
     const charged = typeof r.chargedMicroUsdc === 'string' ? r.chargedMicroUsdc : typeof r.chargedMicroUsdc === 'number' ? String(Math.round(r.chargedMicroUsdc)) : '';
     if (!model || !MODEL_ID_RE.test(model) || !Number.isInteger(thoughts) || thoughts < 0 || !/^\d{1,18}$/.test(charged)) continue;
     const paidFailures = Number(r.paidFailures);
-    byModel.push({ model, thoughts, chargedMicroUsdc: charged, ...(Number.isInteger(paidFailures) && paidFailures > 0 ? { paidFailures } : {}) });
+    const directThoughts = Number(r.directThoughts);
+    byModel.push({ model, thoughts, chargedMicroUsdc: charged, ...(Number.isInteger(paidFailures) && paidFailures > 0 ? { paidFailures } : {}), ...(Number.isInteger(directThoughts) && directThoughts > 0 ? { directThoughts } : {}) });
   }
   const firstAt = iso(o.firstAt);
-  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), ...(firstAt ? { firstAt } : {}), byModel };
+  const thoughts = byModel.reduce((n, r) => n + r.thoughts, 0);
+  const direct = byModel.reduce((n, r) => n + (r.directThoughts ?? 0), 0);
+  const paidTo: AgentFuel['paidTo'] = thoughts === 0 ? null : direct > 0 ? 'blockrun' : 'bootr';
+  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), ...(firstAt ? { firstAt } : {}), byModel, paidTo };
 }
 
 const HTTPS_RE = /^https:\/\/[^\s/?#]+[^\s]*$/i;

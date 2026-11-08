@@ -308,7 +308,7 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | --- | --- | --- |
 | \`launchThrough\` | \`bootr\` | \`bootr\` or \`clanker\`. Permanent for the coin |
 | \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin |
-| \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls |
+| \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls, which go to BlockRun, the service that runs the models, at the prices \`GET /api/models\` shows |
 | \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins |
 | \`gasEth\` | \`0.001\` | \`0\`, or at least \`0.0001\`. The agent's first gas, deposited after the launch. With \`0\` the agent waits until someone adds gas |
 | \`model\` | \`${RECOMMENDED_MODEL}\` | A model id from \`GET ${site}/api/models\` |

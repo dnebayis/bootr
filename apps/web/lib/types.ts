@@ -304,8 +304,13 @@ export interface AgentFuel {
   since: string;
   /** The earliest paid thought in the window: what a spending rate divides by. Absent when there were none. */
   firstAt?: string;
-  /** Most thoughts first; `chargedMicroUsdc` is a decimal string of micro-USDC. `paidFailures`: thoughts charged that returned nothing. */
-  byModel: { model: string; thoughts: number; chargedMicroUsdc: string; paidFailures?: number }[];
+  /**
+   * Most thoughts first; `chargedMicroUsdc` is a decimal string of micro-USDC. `paidFailures`: thoughts charged that
+   * returned nothing. `directThoughts`: thoughts the agent paid BlockRun for from its own wallet (absent when none).
+   */
+  byModel: { model: string; thoughts: number; chargedMicroUsdc: string; paidFailures?: number; directThoughts?: number }[];
+  /** Who the agent paid for its thoughts in the window: BlockRun from its own wallet, Bootr's own service, or nobody yet (absent from older readers). */
+  paidTo?: 'blockrun' | 'bootr' | null;
 }
 
 // ---------------------------------------------------------------- post approval queue (supervisor, via /api/agent/[kernel]/approvals/*)

@@ -1,28 +1,46 @@
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_IMAGE_MODELS, formatThoughtPrice, groupByProvider, imagePriceUsd, modelLabel, thoughtPriceUsd } from './models';
+import { MODEL_CATALOG, mindModels } from '@bootr/agent-core';
+import { CATALOG_IMAGE_MODELS, CATALOG_MODELS, cheapestModel, filterAllowedModels, formatThoughtPrice, groupByProvider, imagePriceUsd, modelLabel, RECOMMENDED_MODEL, thoughtPriceUsd } from './models';
 
-describe('imagePriceUsd', () => {
-  it('mirrors the relay quote for one picture: text tokens at the text rates, the picture at the image rate, then the margin', () => {
-    // Nano Banana Pro: 2000 * 2000 + 256 * 12000 + 1120 * 120000 = 4_000_000 + 3_072_000 + 134_400_000 micro-USDC*tokens / 1000
-    const pro = imagePriceUsd({ inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120_000, imageOutputTokensPerImage: 1120 });
-    const cost = 4000 + 3072 + 134_400;
-    expect(pro).toBeCloseTo((cost + Math.ceil(cost * 0.1) + 100) / 1_000_000, 9);
-    expect(pro).toBeGreaterThan(0.14);
-    expect(pro).toBeLessThan(0.16);
-    // the floor applies to a model priced at nothing
-    expect(imagePriceUsd({ inputMicroUsdcPerKTokens: 0, outputMicroUsdcPerKTokens: 0, imageOutputMicroUsdcPerKTokens: 0, imageOutputTokensPerImage: 0 })).toBe(0.001);
+describe('the priced lists', () => {
+  it('price every mind per thought the way BlockRun quotes one, with its fee', () => {
+    // Haiku 4.5: 4000 * 1 + 1024 * 5 micro-USDC + the 1000 micro-USDC fee
+    expect(thoughtPriceUsd({ inputMicroUsdcPerKTokens: 1000, outputMicroUsdcPerKTokens: 5000 })).toBeCloseTo(0.01012, 9);
+    // the floor applies to a model priced at next to nothing
+    expect(thoughtPriceUsd({ inputMicroUsdcPerKTokens: 0, outputMicroUsdcPerKTokens: 0 })).toBe(0.002);
+    expect(CATALOG_MODELS.map((m) => m.id)).toEqual(mindModels().map((m) => m.id));
+    for (const m of CATALOG_MODELS) {
+      expect(m.pricePerThoughtUsd).toBeGreaterThan(0.001);
+      expect(m.pricePerThoughtUsd).toBeLessThan(0.1);
+      expect(m.label).not.toContain('/');
+    }
+    expect(CATALOG_MODELS.find((m) => m.id === RECOMMENDED_MODEL)).toMatchObject({ label: 'Claude Haiku 4.5', provider: 'Anthropic' });
   });
 
-  it('prices the built-in image models and labels them', () => {
-    const ids = FALLBACK_IMAGE_MODELS.map((m) => m.id);
-    expect(ids).toEqual(['google/gemini-3-pro-image', 'google/gemini-3.1-flash-image', 'openai/gpt-5.4-image-2']);
-    for (const m of FALLBACK_IMAGE_MODELS) {
-      expect(m.pricePerImageUsd).toBeGreaterThan(0.05);
+  it('price every picture at BlockRun’s fixed price plus the fee, and label the image models', () => {
+    expect(imagePriceUsd(94_500)).toBe(0.0955);
+    const ids = CATALOG_IMAGE_MODELS.map((m) => m.id);
+    expect(ids).toEqual(['google/nano-banana-2', 'google/nano-banana-pro', 'google/nano-banana', 'openai/gpt-image-2', 'openai/gpt-image-1']);
+    for (const m of CATALOG_IMAGE_MODELS) {
+      expect(m.pricePerImageUsd).toBeGreaterThan(0.02);
       expect(m.pricePerImageUsd).toBeLessThan(0.2);
     }
-    expect(modelLabel('google/gemini-3-pro-image')).toBe('Nano Banana Pro (Gemini 3 Pro Image)');
-    expect(FALLBACK_IMAGE_MODELS[0]).toMatchObject({ provider: 'Google' });
-    expect(formatThoughtPrice(FALLBACK_IMAGE_MODELS[1]!.pricePerImageUsd)).toMatch(/^\$0\.0\d+$/);
+    expect(modelLabel('google/nano-banana-pro')).toBe('Nano Banana Pro');
+    expect(modelLabel('google/gemini-3-pro-image')).toBe('Nano Banana Pro');
+    expect(CATALOG_IMAGE_MODELS[0]).toMatchObject({ provider: 'Google' });
+    expect(formatThoughtPrice(CATALOG_IMAGE_MODELS[0]!.pricePerImageUsd)).toBe('$0.0955');
+  });
+
+  it('matches an allow-list entry by full id or by its bare, dot-insensitive name', () => {
+    expect(filterAllowedModels(CATALOG_MODELS, ['claude-haiku-4-5', 'OPENAI/GPT-4.1-MINI']).map((m) => m.id)).toEqual(['anthropic/claude-haiku-4.5', 'openai/gpt-4.1-mini']);
+    expect(filterAllowedModels(CATALOG_MODELS, [])).toEqual([]);
+  });
+
+  it('finds the cheapest mind for economy mode, never the writer itself', () => {
+    const cheapest = cheapestModel(CATALOG_MODELS);
+    expect(cheapest?.id).toBe('deepseek/deepseek-chat');
+    expect(cheapestModel(CATALOG_MODELS, 'deepseek/deepseek-chat')?.id).not.toBe('deepseek/deepseek-chat');
+    expect(MODEL_CATALOG.find((m) => m.id === cheapest!.id)?.role).toBe('economy');
   });
 });
 
@@ -37,8 +55,8 @@ describe('groupByProvider', () => {
       ['Anthropic', ['anthropic/b']],
       ['OpenAI', ['openai/c', 'openai/a']],
     ]);
-    const images = groupByProvider(FALLBACK_IMAGE_MODELS);
+    const images = groupByProvider(CATALOG_IMAGE_MODELS);
     expect(images.map((g) => g.provider)).toEqual(['OpenAI', 'Google']);
-    expect(images[1]!.models.map((m) => m.id)).toEqual(['google/gemini-3.1-flash-image', 'google/gemini-3-pro-image']);
+    expect(images[1]!.models.map((m) => m.id)).toEqual(['google/nano-banana', 'google/nano-banana-2', 'google/nano-banana-pro']);
   });
 });
