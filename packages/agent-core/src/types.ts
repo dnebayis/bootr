@@ -33,7 +33,7 @@ export const ownerRuleSchema = z.object({
 });
 export type OwnerRule = z.infer<typeof ownerRuleSchema>;
 
-export const CAPABILITIES = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images'] as const;
+export const CAPABILITIES = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images', 'services'] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 export const capabilitiesSchema = z.object({
@@ -44,8 +44,49 @@ export const capabilitiesSchema = z.object({
   memory: z.boolean().default(false),
   treasury: z.boolean().default(false),
   images: z.boolean().default(false),
+  /** Paid services: `discover_services` and `x402_fetch` (pays any x402 endpoint from the agent's own float, under `services`). */
+  services: z.boolean().default(false),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
+
+/**
+ * The money bounds of the `services` power (apps/supervisor/src/services.ts enforces them; the creator sets them in
+ * the console). Amounts are micro-USDC (6 dp). `allow` and `deny` are host patterns: a hostname, or `*.example.com`
+ * for a host and every subdomain; an empty `allow` list means any public https host not in `deny`. The ceilings here
+ * are hard: the console cannot set more, so the worst case of a day on this power is `dailyMicroUsdc` whatever the
+ * model or a leaked spender key does, and never more than the float the treasury funds (50 USDC per day).
+ */
+export const SERVICES_PER_CALL_MAX_MICRO_USDC = 5_000_000;
+export const SERVICES_DAILY_MAX_MICRO_USDC = 50_000_000;
+export const SERVICES_DEFAULT_PER_CALL_MICRO_USDC = 50_000;
+export const SERVICES_DEFAULT_DAILY_MICRO_USDC = 1_000_000;
+export const hostPatternSchema = z.string().regex(/^(\*\.)?([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i, 'expected a hostname or *.example.com');
+export const servicesPolicySchema = z.object({
+  perCallMicroUsdc: z.number().int().min(1).max(SERVICES_PER_CALL_MAX_MICRO_USDC).default(SERVICES_DEFAULT_PER_CALL_MICRO_USDC),
+  dailyMicroUsdc: z.number().int().min(1).max(SERVICES_DAILY_MAX_MICRO_USDC).default(SERVICES_DEFAULT_DAILY_MICRO_USDC),
+  allow: z.array(hostPatternSchema).max(64).default([]),
+  deny: z.array(hostPatternSchema).max(64).default([]),
+});
+export type ServicesPolicy = z.infer<typeof servicesPolicySchema>;
+export const DEFAULT_SERVICES_POLICY: ServicesPolicy = servicesPolicySchema.parse({});
+
+/** Whether `host` matches a pattern: exact (case-insensitive) or `*.example.com` for the host itself and its subdomains. */
+export function hostMatches(host: string, pattern: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  const p = pattern.toLowerCase();
+  if (p.startsWith('*.')) {
+    const base = p.slice(2);
+    return h === base || h.endsWith('.' + base);
+  }
+  return h === p;
+}
+
+/** `deny` wins; then an empty `allow` list allows every host, a non-empty one only what it names. */
+export function servicesHostAllowed(policy: Pick<ServicesPolicy, 'allow' | 'deny'>, host: string): boolean {
+  if (policy.deny.some((p) => hostMatches(host, p))) return false;
+  if (policy.allow.length === 0) return true;
+  return policy.allow.some((p) => hostMatches(host, p));
+}
 
 /**
  * Economy mode: a turn starts on a cheaper `decideModel` (reading, deciding, memory and treasury work) and switches
@@ -97,6 +138,8 @@ export const agentConfigSchema = z
     platform: z.boolean().default(false),
     ownerRules: z.array(ownerRuleSchema).max(64).default([]),
     capabilities: capabilitiesSchema.default({}),
+    /** Bounds of the `services` power; absent = `DEFAULT_SERVICES_POLICY` (the power itself is `capabilities.services`). */
+    services: servicesPolicySchema.optional(),
     /** Minimum spacing between original posts. */
     postIntervalMs: z.number().int().min(60_000).max(7 * 24 * 60 * 60 * 1000).default(DEFAULT_POST_INTERVAL_MS),
     /**
@@ -286,6 +329,26 @@ export const toolInputSchemas = {
     })
     .strict(),
   generate_image: z.object({ prompt: text(2000), altText: text(1000) }).strict(),
+  discover_services: z
+    .object({
+      query: text(200),
+      /** Only services priced at or under this, in micro-USDC; default: your per-call cap. */
+      maxPriceMicroUsdc: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).max(20).optional(),
+    })
+    .strict(),
+  x402_fetch: z
+    .object({
+      url: httpsUrlSchema,
+      method: z.enum(['GET', 'POST']).optional(),
+      /** JSON body of a POST (an object), or query parameters of a GET (string values). */
+      body: z.record(z.unknown()).optional(),
+      /** The most you will pay for this call, in micro-USDC; never above your per-call cap. */
+      maxPriceMicroUsdc: z.number().int().min(1).optional(),
+      /** Why you need it, in plain words: it goes on the public ledger next to the amount. */
+      reason: text(200),
+    })
+    .strict(),
 } as const;
 
 export type ToolName = keyof typeof toolInputSchemas;
