@@ -74,6 +74,7 @@ with other services without clashing with their drizzle journals.
 | `SENDER_RECONCILE_INTERVAL_MS`        | no       | `60000`                            | `0` disables the in-process reconciler                                   |
 | `SENDER_DEFAULT_POSTS_PER_DAY`        | no       | `24`                               | rolling 24h window                                                       |
 | `SENDER_DEFAULT_MENTION_INTERVAL_SEC` | no       | `300`                              | minimum spacing between mention reads                                    |
+| `SENDER_DEFAULT_READS_PER_DAY`        | no       | `400`                              | X reads per agent per UTC day, posts returned and lookups of every kind together (`src/read-budget.ts`); past it the read routes answer 429 `read_budget_exhausted` with `retryAt` at midnight UTC. `0` = no budget |
 | `X_API_BASE_URL`                      | no       | `https://api.x.com`                | token endpoint is `<base>/2/oauth2/token`                                |
 | `X_AUTHORIZE_URL`                     | no       | `https://x.com/i/oauth2/authorize` |                                                                          |
 | `X_TIMEOUT_MS`                        | no       | `15000`                            | per X request; a timed-out publish becomes `held`                        |
@@ -443,6 +444,11 @@ Every tick (and on `pnpm --filter sender reconcile`):
 - The admin console's `xQuotas` are not read by the sender (it has no admin-config client). The
   budget comes from `SENDER_DEFAULT_POSTS_PER_DAY` and per-agent `POST /internal/quota/:agentId`;
   pushing the console value there is the supervisor's job. There is no separate reply quota.
+- The X read budget (`SENDER_DEFAULT_READS_PER_DAY`, 400 a day per agent) is global, not per agent: there is no
+  per-agent override yet. It counts what `sender_reads` meters (posts returned by mention, thread, account and
+  timeline reads, lookups, the metrics read) and refuses the agent-driven reads once spent; the consent lookups
+  inside a publish and the reconciler's timeline readback are metered but never refused. Mention pages and
+  timeline reads ask X for no more posts than the budget has left (X's floor is 5 a page).
 - One X account may still be bound to several agents (no unique index on `x_user_id`).
 - Rejected reconnects do not revoke the freshly issued X tokens (they are discarded, not stored).
 - `node dist/index.js` works today. Once the shim re-exports from `@bootr/agent-core` (a raw `.ts`

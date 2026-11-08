@@ -29,7 +29,7 @@ describe('POST /internal/read/timeline', () => {
     env.fake.on('GET', `/2/users/${USER.id}/tweets`, ({ url }) => {
       const now = env.clock.now().getTime();
       expect(url.searchParams.get('exclude')).toBe('replies,retweets');
-      expect(url.searchParams.get('max_results')).toBe('100');
+      expect(url.searchParams.get('max_results')).toBe('5'); // one page of `max` posts, X's floor; X bills per post returned
       expect(Date.parse(url.searchParams.get('start_time')!)).toBe(now - TIMELINE_WINDOW_MS);
       expect(Date.parse(url.searchParams.get('end_time')!)).toBe(now - 10_000);
       expect(url.searchParams.get('tweet.fields')).toContain('public_metrics');
@@ -54,7 +54,7 @@ describe('POST /internal/read/timeline', () => {
     const metered = await env.db.select().from(reads).where(eq(reads.agentId, AGENT));
     expect(metered.map((r) => [r.kind, r.count]).sort()).toEqual([
       ['account', 1],
-      ['timeline', 1],
+      ['timeline', 3], // the posts X returned, which is what X bills
     ]);
     expect(JSON.stringify(res.body)).not.toContain('access-token-secret');
   });

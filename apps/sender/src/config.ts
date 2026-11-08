@@ -43,6 +43,11 @@ export const configSchema = z.object({
   X_TIMEOUT_MS: num(z.coerce.number().int().positive(), 15_000),
   SENDER_DEFAULT_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 24),
   SENDER_DEFAULT_MENTION_INTERVAL_SEC: num(z.coerce.number().int().nonnegative(), 300),
+  /**
+   * X reads one agent may make per UTC day, posts returned and account lookups of every kind together
+   * (src/read-budget.ts); past it the read routes answer 429 `read_budget_exhausted` until midnight UTC. 0 = no budget.
+   */
+  SENDER_DEFAULT_READS_PER_DAY: num(z.coerce.number().int().nonnegative(), 400),
   /** Requests per minute per client IP on the public read API (`GET /public/posts/:agentId`); 0 = off. */
   SENDER_PUBLIC_RATE_LIMIT_PER_MIN: num(z.coerce.number().int().nonnegative(), 120),
   /** `1`/`true`: rate-limit by the right-most X-Forwarded-For entry (one trusted proxy in front). */

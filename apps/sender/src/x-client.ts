@@ -180,7 +180,7 @@ export class XClient {
   userTimeline(
     token: string,
     userId: string,
-    opts: { startTime: string; endTime: string; paginationToken?: string; exclude?: 'replies' | 'retweets' | 'replies,retweets' },
+    opts: { startTime: string; endTime: string; paginationToken?: string; exclude?: 'replies' | 'retweets' | 'replies,retweets'; maxResults?: number },
   ): Promise<XResult<XListResponse>> {
     return this.request(token, 'GET', `/2/users/${encodeURIComponent(userId)}/tweets`, {
       rateKey: 'timeline',
@@ -189,7 +189,8 @@ export class XClient {
         end_time: opts.endTime,
         pagination_token: opts.paginationToken,
         exclude: opts.exclude,
-        max_results: 100,
+        // X bills per post returned: callers that want one page of the newest few ask for just that (5 is X's minimum).
+        max_results: opts.maxResults ?? 100,
         'tweet.fields': TWEET_FIELDS,
       },
     });

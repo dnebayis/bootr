@@ -211,7 +211,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
         inbox = (await ctx.sender.readMentions(agent.agentId)).items;
       } catch (err) {
         readOutOfCredits = err instanceof SenderError && isXCreditsError(err.code);
-        log.warn({ err }, 'mention read failed');
+        // The agent's own X read budget for the day is spent (sender read-budget.ts): expected, once a tick until midnight UTC.
+        if (err instanceof SenderError && err.code === 'read_budget_exhausted') log.info({ retryAt: err.retryAt }, 'mention read skipped: X read budget used up for today');
+        else log.warn({ err }, 'mention read failed');
       }
     }
     // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).

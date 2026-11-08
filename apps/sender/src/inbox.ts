@@ -7,6 +7,7 @@ import { meterRead } from './metering.js';
 import { toXPost, type XPost } from './normalize.js';
 import { consentCommand } from './policy-shim.js';
 import { claimMentionRead } from './quota.js';
+import { budgetExhausted, maxResultsWithin, readBudget, requireReads } from './read-budget.js';
 import type { XListResponse, XTweet, XUser } from './x-client.js';
 
 const xId = z.string().regex(/^\d{1,25}$/);
@@ -166,6 +167,9 @@ export async function readMentions(
       message: 'X account unavailable',
     };
   }
+  // The read budget comes before the mention slot: an agent past it gets the refusal that says so, and keeps its slot.
+  let budget = await readBudget(ctx, input.agentId);
+  if (budget.remaining <= 0) return budgetExhausted(ctx, budget);
   const slot = await claimMentionRead(ctx, input.agentId);
   if (!slot.ok) {
     return {
@@ -183,8 +187,14 @@ export async function readMentions(
   const users = new Map<string, XUser>();
   let paginationToken: string | undefined;
   for (let page = 0; page < MAX_MENTION_PAGES; page++) {
+    if (page > 0) {
+      budget = await readBudget(ctx, input.agentId);
+      if (budget.remaining <= 0) break;
+    }
+    // Each page asks X for no more posts than the budget has left (X's floor is 5).
+    const maxResults = maxResultsWithin(budget.remaining);
     const res = await withToken(ctx, input.agentId, (token, acct) =>
-      ctx.x.mentions(token, acct.xUserId, { sinceId, paginationToken }),
+      ctx.x.mentions(token, acct.xUserId, { sinceId, paginationToken, maxResults }),
     );
     if (!res.ok) {
       if (page === 0) return res;
@@ -273,6 +283,13 @@ export async function readThread(
       break;
     }
     const id: string = current;
+    // One post, one read unit: the walk stops where the day's budget ends, and a walk that cannot start says why.
+    const refused = await requireReads(ctx, input.agentId, 1);
+    if (refused) {
+      if (chain.length === 0) return refused;
+      truncated = true;
+      break;
+    }
     const res = await withToken(ctx, input.agentId, (token) => ctx.x.getPost(token, id));
     if (!res.ok) {
       if (chain.length === 0) return res;
@@ -307,21 +324,28 @@ export async function readAccount(
   input: z.infer<typeof accountReadSchema>,
 ): Promise<{ ok: true; user: XUser; latestPostAt: string | null | undefined; activity: AccountActivity } | Fail> {
   const username = input.username.replace(/^@/, '');
+  const refused = await requireReads(ctx, input.agentId, 1);
+  if (refused) return refused;
   const res = await withToken(ctx, input.agentId, (token) => ctx.x.userByUsername(token, username));
   if (!res.ok) return res;
   if (!res.data.data)
     return { ok: false, status: 404, error: 'x_not_found', message: 'user not found' };
   await meterRead(ctx, input.agentId, 'account', 1);
   const user = res.data.data;
-  // The account's latest post within the recency window (one timeline page, newest first). A read that fails
-  // (rate limit, protected account) leaves the activity unknown rather than failing the lookup.
+  // The account's latest post within the recency window: one timeline page of the newest five posts (X's smallest
+  // page; the newest one is all that is needed), each a read unit. A read that fails (rate limit, protected account)
+  // or a budget with nothing left leaves the activity unknown rather than failing the lookup.
   let latestPostAt: string | null | undefined;
   try {
     const now = Date.now();
-    const tl = await withToken(ctx, input.agentId, (token) =>
-      ctx.x.userTimeline(token, user.id, { startTime: new Date(now - ACCOUNT_RECENT_MS).toISOString().replace(/\.\d{3}Z$/, 'Z'), endTime: new Date(now - 10_000).toISOString().replace(/\.\d{3}Z$/, 'Z') }),
-    );
-    if (tl.ok) {
+    const tl =
+      (await readBudget(ctx, input.agentId)).remaining >= 1
+        ? await withToken(ctx, input.agentId, (token) =>
+            ctx.x.userTimeline(token, user.id, { startTime: new Date(now - ACCOUNT_RECENT_MS).toISOString().replace(/\.\d{3}Z$/, 'Z'), endTime: new Date(now - 10_000).toISOString().replace(/\.\d{3}Z$/, 'Z'), maxResults: 5 }),
+          )
+        : null;
+    if (tl?.ok) {
+      await meterRead(ctx, input.agentId, 'timeline', tl.data.data?.length ?? 0);
       const times = (tl.data.data ?? []).map((t) => t.created_at).filter((v): v is string => typeof v === 'string').sort();
       latestPostAt = times.length ? times[times.length - 1]! : null;
     }
@@ -362,18 +386,23 @@ export async function readTimeline(
 ): Promise<{ ok: true; user: { id: string; username: string; name?: string }; posts: TimelinePost[] } | Fail> {
   const username = input.username.replace(/^@/, '');
   const max = Math.min(input.max ?? DEFAULT_TIMELINE_POSTS, MAX_TIMELINE_POSTS);
+  const refused = await requireReads(ctx, input.agentId, 1);
+  if (refused) return refused;
   const res = await withToken(ctx, input.agentId, (token) => ctx.x.userByUsername(token, username));
   if (!res.ok) return res;
   if (!res.data.data) return { ok: false, status: 404, error: 'x_not_found', message: 'user not found' };
   await meterRead(ctx, input.agentId, 'account', 1);
   const user = res.data.data;
+  const budget = await readBudget(ctx, input.agentId);
+  if (budget.remaining < 1) return budgetExhausted(ctx, budget);
   const now = ctx.now().getTime();
   const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  // X returns the newest first, so one page of `max` posts is the whole read; every post returned is a read unit.
   const tl = await withToken(ctx, input.agentId, (token) =>
-    ctx.x.userTimeline(token, user.id, { startTime: iso(now - TIMELINE_WINDOW_MS), endTime: iso(now - 10_000), exclude: 'replies,retweets' }),
+    ctx.x.userTimeline(token, user.id, { startTime: iso(now - TIMELINE_WINDOW_MS), endTime: iso(now - 10_000), exclude: 'replies,retweets', maxResults: maxResultsWithin(budget.remaining, max) }),
   );
   if (!tl.ok) return tl;
-  await meterRead(ctx, input.agentId, 'timeline', 1);
+  await meterRead(ctx, input.agentId, 'timeline', tl.data.data?.length ?? 0);
   const posts = (tl.data.data ?? [])
     .map(toTimelinePost)
     .sort((a, b) => cmpId(b.id, a.id))

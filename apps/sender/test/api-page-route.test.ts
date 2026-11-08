@@ -48,7 +48,7 @@ function appWith(doFetch: typeof fetch, now: () => Date = () => new Date()) {
     encryptionKey: ENC_KEY,
     serviceKey: SERVICE_KEY,
     now,
-    defaults: { postsPerDay: 24, mentionReadIntervalSec: 300 },
+    defaults: { postsPerDay: 24, mentionReadIntervalSec: 300, readsPerDay: 400 },
     xTimeoutMs: 1_000,
     apiPage: { siteUrl: 'https://site.test', fetch: fetchMock },
   };

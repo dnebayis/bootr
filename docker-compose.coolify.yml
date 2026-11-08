@@ -66,6 +66,8 @@ services:
       SENDER_OAUTH_RETURN_URL: ${SENDER_OAUTH_RETURN_URL:-https://bootr.fun/launch}
       SENDER_DEFAULT_POSTS_PER_DAY: ${SENDER_DEFAULT_POSTS_PER_DAY:-}
       SENDER_DEFAULT_MENTION_INTERVAL_SEC: ${SENDER_DEFAULT_MENTION_INTERVAL_SEC:-}
+      # X reads per agent per UTC day (apps/sender/src/read-budget.ts); empty = 400, 0 = no budget.
+      SENDER_DEFAULT_READS_PER_DAY: ${SENDER_DEFAULT_READS_PER_DAY:-}
       SENDER_SITE_URL: ${SENDER_SITE_URL:-}
 
   inference:

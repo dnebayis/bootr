@@ -30,6 +30,7 @@ export function buildContext(config: Config = loadConfig()): {
     defaults: {
       postsPerDay: config.SENDER_DEFAULT_POSTS_PER_DAY,
       mentionReadIntervalSec: config.SENDER_DEFAULT_MENTION_INTERVAL_SEC,
+      readsPerDay: config.SENDER_DEFAULT_READS_PER_DAY,
     },
     oauthReturnUrl: config.SENDER_OAUTH_RETURN_URL,
     xTimeoutMs: config.X_TIMEOUT_MS,

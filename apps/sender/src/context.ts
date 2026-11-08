@@ -10,7 +10,8 @@ export interface SenderContext {
   encryptionKey: Buffer;
   serviceKey: string;
   now: () => Date;
-  defaults: { postsPerDay: number; mentionReadIntervalSec: number };
+  /** `readsPerDay`: X read units per agent per UTC day (src/read-budget.ts); 0 = no budget. */
+  defaults: { postsPerDay: number; mentionReadIntervalSec: number; readsPerDay: number };
   /** Where /oauth/callback redirects the browser; unset = JSON. */
   oauthReturnUrl?: string;
   /** X request timeout; used to decide when a `pending` row is stale. */
