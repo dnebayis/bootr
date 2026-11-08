@@ -155,24 +155,37 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await tape.getByRole('tab', { name: 'Posts' }).click();
   await expect(tape.locator('li[data-kind="fee_claim"]')).toHaveCount(0);
 
-  // Creator console (everyone is the creator in mock mode): prefilled from /api/agent/[kernel]/config, saved with a POST.
+  // Creator console (everyone is the creator in mock mode) on its own page: prefilled from /api/agent/[kernel]/config, saved with a POST.
+  // Six sections (Mind, Posting, Powers, Look, Inbox, Fuel); Mind opens first and the save bar stays under every settings section.
+  const coinUrl = new URL(page.url()).pathname;
+  await page.goto(`${coinUrl}/console`);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_).toBeVisible();
   await expect(console_.getByTestId('config-revision')).toHaveText('not edited yet');
+  const tab = (name: string) => console_.getByRole('tab', { name });
+  await expect(tab('Mind')).toHaveAttribute('aria-selected', 'true');
   const instructions = console_.getByLabel('Instructions');
   await expect(instructions).not.toHaveValue('');
-  expect(await console_.getByRole('switch').count()).toBe(8);
-  await expect(console_.getByText('Memory · always on')).toBeVisible();
+  await expect(console_.getByLabel('Model')).toBeVisible();
+  // Economy mode on Mind, post review on Posting, the six powers on Powers: eight switches in all.
+  expect(await console_.getByRole('switch').count()).toBe(1);
+  await tab('Posting').click();
+  expect(await console_.getByRole('switch').count()).toBe(1);
   // Post approval mode: on by default in mock mode, with the pending count on the console title.
   const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
   await expect(review).toHaveAttribute('aria-checked', 'true');
   await expect(console_.getByTestId('approvals-pending')).toHaveText('2 pending');
   await expect(console_.locator('#console-posts-per-day')).toBeVisible();
-  await expect(console_.getByLabel('Model')).toBeVisible();
+  await tab('Powers').click();
+  expect(await console_.getByRole('switch').count()).toBe(6);
+  await expect(console_.getByText('Memory · always on')).toBeVisible();
   const save = console_.getByRole('button', { name: 'Save changes' });
   await expect(save).toBeDisabled();
-  await instructions.fill('Post one dated fact about the pool per cycle and never tell anyone to buy.');
   await console_.getByRole('switch', { name: 'Web research' }).click();
+  await expect(console_.getByTestId('console-dirty-powers')).toBeVisible();
+  await tab('Mind').click();
+  await instructions.fill('Post one dated fact about the pool per cycle and never tell anyone to buy.');
+  await expect(console_.getByTestId('console-save-state')).toHaveText('Unsaved changes in Mind, Powers');
   await expect(save).toBeEnabled();
   const saved = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/config$/.test(r.url()) && r.request().method() === 'POST');
   await save.click();
@@ -180,11 +193,9 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await expect(page.getByText(/Agent updated/)).toBeVisible();
   await expect(console_.getByTestId('config-revision')).toHaveText('edited once');
   await expect(save).toBeDisabled();
-  // The edit lands on the tape.
-  await tape.getByRole('tab', { name: 'All' }).click();
-  await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('instructions, capabilities');
 
-  // The review queue: one signature (skipped in mock mode) opens the agent's queued posts; Approve sends, Reject notes.
+  // The review queue lives on the Inbox section: one signature (skipped in mock mode) opens the agent's queued posts; Approve sends, Reject notes.
+  await tab('Inbox').click();
   const queue = console_.getByTestId('approval-queue');
   await expect(queue.getByTestId('approval-queue-count')).toHaveText('2 pending');
   const listed = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/approvals\/list$/.test(r.url()) && r.request().method() === 'POST');
@@ -206,22 +217,33 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await expect(page.getByText(/Rejected\. The agent will see your note/)).toBeVisible();
   await expect(queue.getByTestId('approval-queue-empty')).toBeVisible();
   await expect(console_.getByTestId('approvals-pending')).toHaveCount(0);
-  // Both decisions land on the tape: the approved post as a post with its link, the rejection as a note-free row.
-  await expect(tape.locator('li[data-kind="approval_approved"]').first()).toContainText('Post approved by the creator');
-  await expect(tape.locator('li[data-kind="approval_rejected"]').first()).toContainText('Reply rejected by the creator');
-  await expect(tape.locator('li[data-kind="post"]').first()).toContainText('Week in numbers');
-  // Switching review off is a config change like any other.
+  // Switching review off is a config change like any other; the save bar follows the edit onto a non-settings tab.
+  await tab('Posting').click();
   await review.click();
+  await tab('Inbox').click();
+  await expect(console_.getByTestId('console-save-bar')).toHaveAttribute('data-dirty', 'true');
   await expect(save).toBeEnabled();
   const savedAgain = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/config$/.test(r.url()) && r.request().method() === 'POST');
   await save.click();
   expect((await savedAgain).status()).toBe(200);
   await expect(console_.getByTestId('config-revision')).toHaveText('edited 2 times');
+  await tab('Posting').click();
   await expect(review).toHaveAttribute('aria-checked', 'false');
-  await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('post review');
 
-  // Fuel and gas live in the console now.
+  // Fuel and gas live in the console, on the Fuel section.
+  await tab('Fuel').click();
   await expect(console_.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
   await expect(console_.getByRole('button', { name: 'Add gas' })).toBeVisible();
+
+  // Back on the coin page every edit and decision is on the tape: the config edits (the newest first), the approved post
+  // as a post with its link, the rejection as a note-free row.
+  await console_.getByTestId('back-to-coin').click();
+  await expect(page).toHaveURL(new RegExp(`${coinUrl}$`));
+  await expect(tape).toBeVisible();
+  await expect(tape.locator('li[data-kind="config_updated"]').first()).toContainText('post review');
+  await expect(tape.locator('li[data-kind="config_updated"]', { hasText: 'instructions, capabilities' })).toHaveCount(1);
+  await expect(tape.locator('li[data-kind="approval_approved"]').first()).toContainText('Post approved by the creator');
+  await expect(tape.locator('li[data-kind="approval_rejected"]').first()).toContainText('Reply rejected by the creator');
+  await expect(tape.locator('li[data-kind="post"]').first()).toContainText('Week in numbers');
   await expect(page.getByTestId('agent-wallet')).toBeVisible();
 });

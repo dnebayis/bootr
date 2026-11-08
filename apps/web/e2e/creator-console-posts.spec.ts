@@ -7,6 +7,7 @@ async function openConsole(page: Page) {
   await page.goto('/?tab=active');
   await page.locator('a[href^="/token/0x"]').first().click();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+  await page.goto(`${new URL(page.url()).pathname}/console`);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_).toBeVisible();
   return console_;
@@ -14,6 +15,7 @@ async function openConsole(page: Page) {
 
 test('posts per day: one control sets the budget, the note explains the cadence and the fuel, and a save records it', async ({ page }) => {
   const console_ = await openConsole(page);
+  await console_.getByRole('tab', { name: 'Posting' }).click();
   const block = console_.getByTestId('posts-per-day');
   const slider = block.locator('#console-posts-per-day');
   await expect(slider).toHaveValue('24');
@@ -40,6 +42,7 @@ test('posts per day: one control sets the budget, the note explains the cadence 
   await expect(console_.getByTestId('config-revision')).toHaveText('edited once');
   await expect(slider).toHaveValue('12');
   await expect(block.getByTestId('posts-per-day-value')).toHaveText(/12 a day · every 4 h/);
-  // The tape says what changed.
+  // Back on the coin page, the tape says what changed.
+  await console_.getByTestId('back-to-coin').click();
   await expect(page.getByText(/changed posts per day, cadence/)).toBeVisible();
 });

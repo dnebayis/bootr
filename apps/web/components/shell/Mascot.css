@@ -54,3 +54,8 @@
 @media (prefers-reduced-motion: reduce) {
   .bootr-mascot-character, .bootr-mascot-arm { animation: none; }
 }
+
+/* The creator console page (components/token/ConsolePage.tsx marks the body): the mascot would sit on the save bar. */
+body[data-page='console'] .bootr-mascot {
+  display: none;
+}

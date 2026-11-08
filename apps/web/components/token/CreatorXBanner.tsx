@@ -37,7 +37,7 @@ export function CreatorXBanner({ token }: { token: Token }) {
     const copy = trouble === 'revoked' ? xRevokedCopy(token.xHandle) : xHoldCopy(token.xHandle, formatHoldEnd(hold!.until, now));
     const id = trouble === 'revoked' ? 'creator-x-revoked' : 'creator-x-hold';
     return (
-      <section aria-labelledby={id} className="rounded-md border border-danger bg-canvas-soft p-4" data-testid={id} data-until={hold?.until}>
+      <section id="connect-x" aria-labelledby={id} className="rounded-md border border-danger bg-canvas-soft p-4" data-testid={id} data-until={hold?.until}>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
           <Isometric kind="antenna" size={48} className="hidden shrink-0 text-body sm:block" />
           <div className="min-w-0 flex-1">
@@ -54,7 +54,8 @@ export function CreatorXBanner({ token }: { token: Token }) {
     );
   }
   return (
-    <section aria-labelledby="creator-x-banner" className="rounded-md border border-warning bg-canvas-soft p-4" data-testid="creator-x-banner">
+    // `id="connect-x"`: the console's first-steps card scrolls here for "Connect an X account".
+    <section id="connect-x" aria-labelledby="creator-x-banner" className="rounded-md border border-warning bg-canvas-soft p-4" data-testid="creator-x-banner">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
         <Isometric kind="antenna" size={48} className="hidden shrink-0 text-body sm:block" />
         <div className="min-w-0 flex-1">

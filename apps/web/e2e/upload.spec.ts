@@ -216,8 +216,14 @@ test('launch form uploads the image to IPFS and launches with it (mock mode)', a
   await expect(page.getByTestId('connect-agent-x')).toBeVisible();
   await expect(page.getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ })).toBeVisible();
   await expect(page.getByTestId('agent-wallet')).toContainText(/0x[0-9a-fA-F]{4}…[0-9a-fA-F]{4}/);
-  await expect(page.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add gas' })).toBeVisible();
   await page.getByTestId('connect-agent-x').getByRole('button', { name: /Connect X/ }).click();
   await expect(page.getByText(/connected\. The agent starts shortly/)).toBeVisible();
+  // The creator's Fuel and Add gas actions are on the console page's Fuel section (reached from the coin page's card: a
+  // mock launch lives in this tab's store, so no full reload here).
+  await page.getByTestId('open-console').click();
+  await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}\/console$/);
+  await page.getByRole('tab', { name: 'Fuel' }).click();
+  const fuelTab = page.getByTestId('console-fuel');
+  await expect(fuelTab.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
+  await expect(fuelTab.getByRole('button', { name: 'Add gas' })).toBeVisible();
 });

@@ -24,7 +24,8 @@ import { AgentPanel } from './AgentPanel';
 import { XLinkedBadge } from './XLinkedBadge';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
-import { CreatorConsole } from './CreatorConsole';
+import { FirstSteps } from './FirstSteps';
+import { CreatorConsoleLink } from './CreatorConsoleLink';
 import { CreatorXBanner } from './CreatorXBanner';
 import { ClankerFeeLine } from './ClankerFeeLine';
 import { FeeSplit } from './FeeSplit';
@@ -166,14 +167,18 @@ export function TokenView({ address }: { address: string }) {
             ) : null}
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-caption text-mute">Price</div>
-            <div className="font-mono text-display-sm font-medium text-ink tabular">${price(token.priceUsd)}</div>
+        <div className="flex flex-col gap-2 sm:items-end">
+          <div className="flex items-center justify-between gap-4 sm:justify-end">
+            <div className="text-right">
+              <div className="text-caption text-mute">Price</div>
+              <div className="font-mono text-display-sm font-medium text-ink tabular">${price(token.priceUsd)}</div>
+            </div>
+            <a href="#trade" className={buttonClass('primary', 'lg')}>
+              Trade
+            </a>
           </div>
-          <a href="#trade" className={buttonClass('primary', 'lg')}>
-            Trade
-          </a>
+          {/* The creator's way into the console, right under Trade; nothing for anyone else. */}
+          <CreatorConsoleLink token={token} size="md" className="w-full sm:w-auto" />
         </div>
       </header>
 
@@ -207,7 +212,8 @@ export function TokenView({ address }: { address: string }) {
         </div>
         <aside className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-start-2">
           <AgentPanel token={token} now={now} />
-          {isCreator ? <CreatorConsole token={token} agent={token.agent} /> : null}
+          {/* The creator's first steps while the agent is new; the console itself is its own page, reached from the Trade panel. */}
+          {isCreator ? <FirstSteps token={token} agent={token.agent} /> : null}
           <ActivityTape token={token} now={now} />
         </aside>
       </div>

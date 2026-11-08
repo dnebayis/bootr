@@ -85,6 +85,9 @@ test('agent panel shows gas with a status chip and an Add gas form (mock mode)',
   await expect(gas.getByTestId('gas-status')).toHaveAttribute('data-status', /^(ok|low|empty)$/);
   // Where the gas sits and when it was read, so a figure that differs from the wallet's ETH balance explains itself.
   await expect(page.getByTestId('agent-gas-detail')).toHaveText(/^[\d.]+ ETH prepaid for gas[\d.]+ ETH in the walletread just now$/);
+  // The Add gas form is on the creator console page's Fuel section (everyone is the creator in mock mode).
+  await page.goto(`${href}/console?section=fuel`);
+  await expect(page.getByRole('tab', { name: 'Fuel' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('button', { name: 'Add gas' }).click();
   const amount = page.getByRole('textbox', { name: 'Add gas amount in ETH' });
   await expect(amount).toHaveValue('0.001');

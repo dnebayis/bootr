@@ -48,26 +48,35 @@ export function Tabs<T extends string | number = string>({
   );
 }
 
-export type TabListVariant = 'segment' | 'underline';
+export type TabListVariant = 'segment' | 'underline' | 'rail';
 
 const VariantContext = createContext<TabListVariant>('segment');
 
 const lists: Record<TabListVariant, string> = {
   segment: 'inline-flex rounded-sm border border-hairline p-0.5',
-  underline: 'flex gap-4 border-b border-hairline',
+  underline: 'flex border-b border-hairline',
+  // The dense underline strip on a phone; from `lg` a vertical rail of rows (the creator console page).
+  rail: 'flex gap-2 overflow-x-auto border-b border-hairline [scrollbar-width:none] lg:flex-col lg:gap-0.5 lg:overflow-visible lg:border-b-0',
 };
+
+/** The space between underline tabs: 16px, or 8px (`dense`) where six tabs must fit a 320px column. */
+const underlineGaps = { regular: 'gap-4', dense: 'gap-2' } as const;
+
+const underlineTab = 'relative -mb-px h-9 px-0.5 text-sm text-mute hover:text-ink data-active:text-ink data-active:shadow-[inset_0_-1px_0_var(--ink)]';
 
 const tabs: Record<TabListVariant, string> = {
   segment:
     'h-6 rounded-xs px-2 font-mono text-micro text-mute hover:text-ink data-active:bg-ink data-active:text-on-ink data-active:hover:text-on-ink',
-  underline: 'relative -mb-px h-9 px-0.5 text-sm text-mute hover:text-ink data-active:text-ink data-active:shadow-[inset_0_-1px_0_var(--ink)]',
+  underline: underlineTab,
+  // Rail rows: `canvas-sub` fill and a 2px ink bar on the left for the active one (the ⌘K selection, in ink).
+  rail: `${underlineTab} lg:mb-0 lg:h-8 lg:w-full lg:justify-start lg:rounded-sm lg:px-2.5 lg:hover:bg-canvas-sub lg:data-active:bg-canvas-sub lg:data-active:shadow-[inset_2px_0_0_var(--ink)]`,
 };
 
-/** The `role="tablist"` container. Give it an `aria-label`. */
-export function TabList({ className, children, variant = 'segment', ...rest }: { 'aria-label'?: string; className?: string; children: ReactNode; variant?: TabListVariant }) {
+/** The `role="tablist"` container. Give it an `aria-label`. `dense` tightens the gap of underline tabs (the creator console's six tabs). */
+export function TabList({ className, children, variant = 'segment', dense, ...rest }: { 'aria-label'?: string; className?: string; children: ReactNode; variant?: TabListVariant; dense?: boolean }) {
   return (
     <VariantContext.Provider value={variant}>
-      <BaseTabs.List className={cn(lists[variant], className)} {...rest}>
+      <BaseTabs.List className={cn(lists[variant], variant === 'underline' && underlineGaps[dense ? 'dense' : 'regular'], className)} data-variant={variant} {...rest}>
         {children}
       </BaseTabs.List>
     </VariantContext.Provider>
@@ -89,7 +98,7 @@ export function Tab({ value, children, count, className, disabled }: { value: st
       )}
     >
       {children}
-      {count !== undefined ? <span className={cn('font-mono tabular text-mute', variant === 'segment' && 'group-data-active:text-on-ink/70')}>{count}</span> : null}
+      {count !== undefined ? <span className={cn('font-mono tabular text-mute', variant === 'segment' && 'group-data-active:text-on-ink/70', variant === 'rail' && 'lg:ml-auto')}>{count}</span> : null}
     </BaseTabs.Tab>
   );
 }

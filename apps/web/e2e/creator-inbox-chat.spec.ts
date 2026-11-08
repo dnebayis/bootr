@@ -7,8 +7,11 @@ async function openConsole(page: Page) {
   await page.goto('/?tab=active');
   await page.locator('a[href^="/token/0x"]').first().click();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+  // The inbox, the review queue and the chat share the console page's Inbox section.
+  await page.goto(`${new URL(page.url()).pathname}/console?section=inbox`);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_).toBeVisible();
+  await expect(console_.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true');
   return console_;
 }
 

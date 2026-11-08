@@ -128,6 +128,8 @@ interface Store {
   links: Map<string, CoinPageLinks>;
   /** The creators' off-chain images, by lowercase coin address. */
   images: Map<string, string>;
+  /** Lowercase kernels of brand-new agents (`freshen`): no X account, no instructions, no fuel, no gas, an empty tape. */
+  fresh: Set<string>;
 }
 
 let store: Store | null = null;
@@ -256,6 +258,48 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
 
 /** The one mock coin launched through Clanker (`Basewatch`): the fourth newest, so the newest coin stays a Bootr coin. */
 const CLANKER_INDEX = 3;
+/** The one mock coin whose agent is brand new (`Night Shift`): the fifth newest, so the tests' "first card" keeps a working agent. */
+const FRESH_INDEX = 4;
+
+/**
+ * A coin just launched by a creator who has done nothing yet: no X account, a sleeping agent, an empty treasury,
+ * no fuel ever received, no trades. With `fresh` in the store it also gets no gas, no instructions, no fuel rows,
+ * nothing in the inbox or the review queue and only the launch on its tape, so the creator console's first-steps
+ * card shows every step undone.
+ */
+function freshen(token: Token, agent: Agent) {
+  token.xHandle = null;
+  token.graduated = false;
+  token.graduatedAt = null;
+  token.marketCapUsd = 4200;
+  token.priceUsd = token.marketCapUsd / 1e9;
+  token.liquidityUsd = 760;
+  token.volume24hUsd = 0;
+  token.volume7dUsd = 0;
+  token.fees24hUsd = 0;
+  token.holders = 1;
+  token.change24hPct = 0;
+  token.agent = { id: agent.id, status: 'sleeping' };
+  agent.status = 'sleeping';
+  agent.lastActivityAt = token.launchedAt;
+  agent.dormantSince = null;
+  agent.treasuryUsdc = '0';
+  agent.treasuryWeth = '0';
+  agent.treasuryEth = '0';
+  agent.treasuryOwnToken = '0';
+  agent.spenderUsdc = '0';
+  agent.treasuryUsd = 0;
+  agent.fuelReceivedUsdc = '0';
+  agent.feesClaimedUsd = 0;
+  agent.reputationScore = null;
+  agent.reputationCount = 0;
+  agent.lastPostAt = null;
+  agent.postsCount24h = 0;
+}
+
+function isFresh(kernel: string): boolean {
+  return mockStore().fresh.has(kernel.toLowerCase());
+}
 const DEAD = '0x000000000000000000000000000000000000dEaD' as Address;
 
 /** Turns a mock token into a Clanker-path coin: the slots share the whole 1% fee, a burn share goes to the dead address. */
@@ -297,9 +341,14 @@ function init(): Store {
   const trades = new Map<string, Trade[]>();
   let launchedAt = now - 60 * 4;
   const links = new Map<string, CoinPageLinks>();
+  const fresh = new Set<string>();
   NAMES.forEach(([name, symbol], i) => {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
     if (i === CLANKER_INDEX) clankerize(token);
+    if (i === FRESH_INDEX) {
+      freshen(token, agent);
+      fresh.add(token.kernel.toLowerCase());
+    }
     // The newest coin carries project links, its X account among them (distinct from its agent's handle).
     if (i === 0) links.set(token.metadata, { website: 'https://ledgerowl.example', x: 'https://x.com/ledgerowl', telegram: 'https://t.me/ledgerowl', discord: null });
     // The second one's only X account is its agent's own, as coins launched before the project X field carry it.
@@ -309,7 +358,9 @@ function init(): Store {
     }
     tokens.push(token);
     agents.set(agent.id.toLowerCase(), agent);
-    trades.set(token.id.toLowerCase(), makeTrades(token, rand, now));
+    // The fresh coin's trades are still drawn so the other coins' numbers stay where they were; it keeps none.
+    const tradeList = makeTrades(token, rand, now);
+    trades.set(token.id.toLowerCase(), i === FRESH_INDEX ? [] : tradeList);
     launchedAt -= Math.floor(600 + rand() * 3600 * 9);
   });
 
@@ -357,7 +408,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), links, images: new Map() };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), links, images: new Map(), fresh };
 }
 
 export function mockStore(): Store {
@@ -379,6 +430,8 @@ export function subscribeMock(listener: (h: StreamHint) => void): () => void {
       s.seq++;
       for (let k = 0; k < 3; k++) {
         const t = s.tokens[Math.floor(rand() * Math.min(30, s.tokens.length))]!;
+        // A brand-new coin stays untraded, so its agent's first-steps card keeps its meaning.
+        if (s.fresh.has(t.kernel.toLowerCase())) continue;
         const move = 1 + (rand() - 0.42) * 0.5;
         t.marketCapUsd = Math.max(1500, t.marketCapUsd * move);
         t.priceUsd = t.marketCapUsd / 1e9;
@@ -488,6 +541,7 @@ export const mock = {
    * ETH balance. Most kernels are well funded; about one in five is low and one in ten is out of gas.
    */
   gas(kernel: string): { deposit: bigint; balance: bigint } {
+    if (isFresh(kernel)) return { deposit: 0n, balance: 0n };
     let h = 2166136261;
     for (const ch of `${kernel.toLowerCase()}:gas`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
     const r = mulberry32(h >>> 0);
@@ -903,6 +957,7 @@ export const mock = {
   agentFuel(kernel: string, days = 7): AgentFuel {
     const cfg = configFor(kernel);
     const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    if (isFresh(kernel)) return { days, since, byModel: [], paidTo: null, picturesPaidTo: null };
     const decide = cfg.routing.decideModel;
     const turns = 6 * days;
     const byModel = decide
@@ -1003,6 +1058,7 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
   const tx = () => hex(r, 32);
   const postUrl = (n: number) => `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(parseInt(t.agentId, 10) || 0) * 10n + BigInt(n))}`;
   const items: AgentActivityItem[] = [];
+  if (isFresh(t.kernel)) return [{ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` }];
   if (t.xHandle) {
     items.push(
       { at: at(1800), kind: 'post', summary: 'Posted: Treasury rebalanced: 40 USDC moved to WETH after the 24h volume crossed the weekly median.', url: postUrl(3) },
@@ -1046,7 +1102,7 @@ function configFor(kernel: string): AgentConfig {
   let cfg = s.configs.get(key);
   if (!cfg) {
     const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
-    cfg = t ? buildConfig(t) : orphanConfig(kernel as Address);
+    cfg = t ? buildConfig(t, s.fresh.has(key) ? '' : DEFAULT_INSTRUCTIONS) : orphanConfig(kernel as Address);
     s.configs.set(key, cfg);
   }
   return cfg;
@@ -1057,6 +1113,7 @@ const MOCK_IMAGE_SVG = `data:image/svg+xml;base64,${typeof btoa === 'function' ?
 
 /** The review queue of a known token: two pending items (one with a picture, one reply) and one decided earlier. */
 function buildApprovals(t: Token): AgentApproval[] {
+  if (isFresh(t.kernel)) return [];
   const now = Date.now();
   const at = (ageS: number) => new Date(now - ageS * 1000).toISOString();
   const expiry = (ageS: number) => new Date(now - ageS * 1000 + 48 * 3_600_000).toISOString();
@@ -1097,7 +1154,9 @@ function inboxFor(kernel: string): MockInbox {
       available: true,
       optOut: [],
       telegram: { available: true, linked: false, linkedAt: null },
-      items: [
+      items: isFresh(key)
+        ? []
+        : [
         { id: 'ntf_mock_1', event: 'fuel_low', title: 'Low on fuel', body: 'About 1 day of fuel left at the recent rate. Add fuel to keep the agent thinking.', tone: 'warning', state: 'active', firstAt: at(5), lastSeenAt: at(0.1), resolvedAt: null },
         { id: 'ntf_mock_2', event: 'x_revoked', title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect the same X account again from the inbox in the creator console.', tone: 'danger', state: 'active', firstAt: at(2), lastSeenAt: at(0.1), resolvedAt: null },
         { id: 'ntf_mock_4', event: 'x_forbidden', title: 'X refused posting for this account', body: 'X answered “not permitted” when the agent tried to post, so posts and replies are paused. Log in to the X account and check for a lock, a restriction or a notice from X; if the connection was changed, connect it again from the creator console. It tries again in about 6 hours; while X keeps refusing, each pause is longer and no fuel is spent on posting.', tone: 'danger', state: 'active', firstAt: at(1), lastSeenAt: at(0.1), resolvedAt: null },
