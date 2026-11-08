@@ -161,7 +161,7 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await expect(console_.getByTestId('config-revision')).toHaveText('not edited yet');
   const instructions = console_.getByLabel('Instructions');
   await expect(instructions).not.toHaveValue('');
-  expect(await console_.getByRole('switch').count()).toBe(7);
+  expect(await console_.getByRole('switch').count()).toBe(8);
   await expect(console_.getByText('Memory · always on')).toBeVisible();
   // Post approval mode: on by default in mock mode, with the pending count on the console title.
   const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
