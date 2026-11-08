@@ -249,6 +249,10 @@ describe('generate_image', () => {
       expect(tape.map((t) => t.summary)).toContain('Made an image: A fox on a hill');
       expect(tape.find((t) => t.kind === 'image')).toBeTruthy();
       expect(tape.map((t) => t.summary)).toContain('Posted on X');
+      // the post item carries the picture's id and alt text for the web (no bytes on a public read)
+      const post = tape.find((t) => t.kind === 'post')!;
+      expect(post.image).toEqual({ id: `img_${image.actionId.replace(/^act_/, '')}`, alt: 'A fox on a hill' });
+      expect(JSON.stringify(post)).not.toContain(PNG_BYTES.toString('base64'));
     } finally {
       await w.close();
     }

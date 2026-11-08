@@ -9,10 +9,10 @@
  * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer`;
  * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { approvalActivity } from './approvals.js';
-import { actions, treasuryOps } from './db/schema.js';
+import { actions, images, treasuryOps } from './db/schema.js';
 
 export type ActivityKind = 'post' | 'reply' | 'image' | 'config' | 'claim' | 'swap' | 'gas' | 'fuel' | 'transfer' | 'status' | 'approval_pending' | 'approval_approved' | 'approval_rejected';
 
@@ -25,6 +25,13 @@ export interface ActivityItem {
   txHash?: string;
   /** The post on X or the tx on the explorer. */
   url?: string;
+  /**
+   * A `post` or `reply` that went out with a picture: the picture's id and alt text (the alt text is public: X shows
+   * it). The bytes are not served here (an image row is a few hundred KB and the tape is a public read); the web can
+   * show the alt text as a caption or let the X link carry the picture, and a `GET .../images/:id` route would be the
+   * place to serve bytes if a thumbnail is ever wanted. `alt` is null when the stored picture is gone (retention).
+   */
+  image?: { id: string; alt: string | null };
 }
 
 export const ACTIVITY_DEFAULT_LIMIT = 50;
@@ -115,6 +122,14 @@ export function statusItem(agent: AgentRow, runtime: RuntimeRow | null): Activit
   return { at, kind: 'status', summary };
 }
 
+/** The alt texts of the pictures the listed posts carry, in one read (none when no post carries one). */
+async function imageAlts(ctx: Pick<SupervisorContext, 'db'>, rows: (typeof actions.$inferSelect)[]): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.map((r) => (r.action as { input?: { imageId?: unknown } }).input?.imageId).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  if (!ids.length) return new Map();
+  const found = await ctx.db.select({ id: images.id, alt: images.alt }).from(images).where(inArray(images.id, ids));
+  return new Map(found.map((r) => [r.id, r.alt]));
+}
+
 export interface ActivityQuery {
   limit?: number | undefined;
   /** Only items strictly older than this instant. */
@@ -143,9 +158,13 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
     approvalActivity(ctx, agent, limit, before),
   ]);
   const items: ActivityItem[] = [];
+  const alts = await imageAlts(ctx, actionRows);
   for (const row of actionRows) {
     const item = actionItem(row, xHandle);
-    if (item) items.push(item);
+    if (!item) continue;
+    const imageId = (row.action as { input?: { imageId?: unknown } }).input?.imageId;
+    if ((item.kind === 'post' || item.kind === 'reply') && typeof imageId === 'string' && imageId) item.image = { id: imageId, alt: alts.get(imageId) ?? null };
+    items.push(item);
   }
   for (const op of opRows) {
     const item = opItem(ctx.chain.chainId, op);

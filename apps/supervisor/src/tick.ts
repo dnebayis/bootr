@@ -14,6 +14,7 @@ import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { SLEEP_USDC } from './fuel.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
+import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, isXCreditsError, quotaHold } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
@@ -58,6 +59,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await sweepPostMetrics(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'post metrics sweep failed');
+  }
+  // Pictures: the relay's base64 answers after a day, stored pictures after a month (image-retention.ts; hourly).
+  try {
+    await sweepImages(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'image retention sweep failed');
   }
 
   const due = await ctx.db
