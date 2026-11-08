@@ -37,7 +37,7 @@ html = f'''<!doctype html>
     <div id="root" data-composition-id="main" data-start="0" data-duration="1" data-width="1920" data-height="1080">
       <div class="abs" id="soon">soon</div>
       <div class="abs" id="marks">
-        <div class="mk"><div class="art">{BOOTR}</div><div class="nm">bootr</div></div>
+        <div class="mk"><div class="art">{BOOTR}</div><div class="nm">bootr.fun</div></div>
         <div id="x">×</div>
         <div class="mk"><div class="art"><img src="assets/logos/blockrun.png" alt="BlockRun" /></div><div class="nm">BlockRunAI</div></div>
       </div>
