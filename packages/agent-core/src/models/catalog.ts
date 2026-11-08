@@ -88,10 +88,13 @@ const image = (id: string, name: string, vendor: string, perImageMicroUsdc: numb
 export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Writers.
   text('anthropic/claude-sonnet-4.6', 'Claude Sonnet 4.6', 'anthropic', 'think', 'upto', 3000, 15000, 1_500_000),
+  text('anthropic/claude-sonnet-4.5', 'Claude Sonnet 4.5', 'anthropic', 'think', 'upto', 3000, 15000, 1_500_000),
   text('anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', 'anthropic', 'think', 'upto', 2000, 10000, 1_500_000),
   text('anthropic/claude-opus-4.8', 'Claude Opus 4.8', 'anthropic', 'think', 'upto', 5000, 25000, 3_500_000),
+  text('openai/gpt-5.5', 'GPT-5.5', 'openai', 'think', 'exact', 5000, 30000, 4_000_000),
   text('openai/gpt-5.4', 'GPT-5.4', 'openai', 'think', 'exact', 2500, 15000, 2_500_000),
   text('openai/gpt-5.6-terra', 'GPT-5.6 Terra', 'openai', 'think', 'exact', 2000, 12000, 2_500_000),
+  text('openai/gpt-4.1', 'GPT-4.1', 'openai', 'think', 'exact', 2000, 8000, 1_000_000),
   text('google/gemini-3.1-pro', 'Gemini 3.1 Pro', 'google', 'think', 'exact', 2000, 12000, 1_500_000, { aliases: ['google/gemini-3.1-pro-preview'] }),
   text('xai/grok-4.7', 'Grok 4.7', 'xai', 'think', 'exact', 2000, 6000, 1_000_000, { aliases: ['x-ai/grok-4.7'] }),
   text('xai/grok-4.3', 'Grok 4.3', 'xai', 'think', 'exact', 1250, 2500, 600_000, { replaces: ['x-ai/grok-4.20'] }),
@@ -107,6 +110,7 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   // Economy: the cheapest tier.
   text('deepseek/deepseek-chat', 'DeepSeek Chat', 'deepseek', 'economy', 'upto', 140, 280, 200_000, { replaces: ['deepseek/deepseek-v3.2', 'meta-llama/llama-4-maverick'] }),
   text('openai/gpt-4.1-mini', 'GPT-4.1 Mini', 'openai', 'economy', 'exact', 400, 1600, 300_000),
+  text('openai/gpt-5-mini', 'GPT-5 Mini', 'openai', 'economy', 'exact', 250, 2000, 400_000),
   text('openai/gpt-5.4-nano', 'GPT-5.4 Nano', 'openai', 'economy', 'exact', 200, 1250, 300_000, { replaces: ['openai/gpt-5-nano'] }),
   text('google/gemini-2.5-flash', 'Gemini 2.5 Flash', 'google', 'economy', 'exact', 300, 2500, 400_000),
   text('minimax/minimax-m2.7', 'MiniMax M2.7', 'minimax', 'economy', 'exact', 300, 1200, 300_000),
