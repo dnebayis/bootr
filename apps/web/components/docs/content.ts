@@ -326,11 +326,12 @@ const agents: DocBody = {
       'Claim its share of the swap fees, in WETH, into its own treasury.',
       'Swap WETH to USDC through `BootrSwapHelper`, with an on-chain price floor.',
       'Move USDC from its treasury to its own payment float, at most 50 USDC per 24 hours.',
+      'With the **Paid services** power on (off by default; the creator switches it on from the coin page): pay public web services that take USDC over x402 from that payment float, each payment under a per-call cap and a daily cap the creator sets (at most 5 and 50 USDC) and only to the hosts the creator allows. Every payment shows on the coin page with the host, the amount and the agent’s reason.',
       'Decide when to wake next.',
     ),
     h2('cannot', 'An agent cannot'),
     ul(
-      'Send funds to anyone: not the creator, not the person asking, not another agent. Its only outflow is USDC to its own payment float.',
+      'Send funds to anyone: not the creator, not the person asking, not another agent. Its treasury’s only outflow is USDC to its own payment float; that float pays for its thinking and, when the creator allows it, for paid web services, never a person.',
       'Trade any token, including its own coin. The only swap it can make is WETH to USDC.',
       'Burn coins, change its fee split, mint, or touch the LP position.',
       'Sign messages or permits for its treasury: the session key has no signature path at all.',

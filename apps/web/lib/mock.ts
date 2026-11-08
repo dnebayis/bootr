@@ -8,6 +8,7 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
 import { DEFAULT_IMAGE_MODEL } from './models';
+import { SERVICES_DEFAULTS } from './types';
 import type {
   Agent,
   AgentActivityItem,
@@ -788,6 +789,13 @@ export const mock = {
         fields.push('image style');
       }
     }
+    if (changes.services) {
+      const next = { ...cfg.services, ...changes.services };
+      if (JSON.stringify(next) !== JSON.stringify(cfg.services)) {
+        cfg.services = next;
+        fields.push('paid services caps');
+      }
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -947,7 +955,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     creator: t.creator,
     model: t.model,
     instructions,
-    worker: { kind, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    worker: { kind, capabilities: { services: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
     postsPerDay: POSTS_PER_DAY.default,
     requireApproval: true,
@@ -955,6 +963,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     imageModel: DEFAULT_IMAGE_MODEL,
     // the supervisor reads the coin picture from the agent card at onboarding
     imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
+    services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
   };
@@ -969,13 +978,14 @@ function orphanConfig(kernel: Address): AgentConfig {
     creator: '0x0000000000000000000000000000000000000000',
     model: MODELS[0]!,
     instructions: DEFAULT_INSTRUCTIONS,
-    worker: { kind: template.id, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    worker: { kind: template.id, capabilities: { services: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: template.hash,
     postsPerDay: POSTS_PER_DAY.default,
     requireApproval: false,
     routing: { decideModel: null },
     imageModel: DEFAULT_IMAGE_MODEL,
     imageStyle: { reference: null, notes: '' },
+    services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     revision: 0,
     updatedAt: new Date().toISOString(),
   };

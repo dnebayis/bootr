@@ -8,7 +8,7 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityK
 import { qk, useAgentConfig } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
-import type { Agent, AgentConfig, AgentConfigChanges, Token } from '@/lib/types';
+import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentConfig, type AgentConfigChanges, type Token } from '@/lib/types';
 import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { fuelOutlook } from '@/lib/fuel-outlook';
@@ -52,7 +52,36 @@ type Draft = {
   decideModel: string | null;
   /** The worker's job lines (up to WORKER_BOUNDS.maxJobLines, each up to maxJobLineChars). */
   jobLines: string[];
+  /** Paid services caps as typed, in USDC, and the host lists as comma- or newline-separated text. */
+  servicesPerCallUsdc: string;
+  servicesDailyUsdc: string;
+  servicesAllow: string;
+  servicesDeny: string;
 };
+
+/** "0.05" -> 50000; null when the text is not a USDC amount with at most 6 decimals. */
+export function parseUsdcMicro(text: string): number | null {
+  const t = text.trim();
+  if (!/^\d+(\.\d{1,6})?$/.test(t)) return null;
+  const [whole, frac = ''] = t.split('.');
+  return Number(whole) * 1_000_000 + Number((frac + '000000').slice(0, 6));
+}
+
+export function formatUsdcMicro(micro: number): string {
+  return (micro / 1_000_000).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+const HOST_PATTERN = /^(\*\.)?[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})*$/;
+
+/** Hosts typed one per line or comma-separated, lower-cased; null when one of them is not a hostname or *.example.com. */
+export function parseHosts(text: string): string[] | null {
+  const hosts = text
+    .split(/[\n,]/)
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (hosts.length > 64 || hosts.some((h) => !HOST_PATTERN.test(h))) return null;
+  return [...new Set(hosts)];
+}
 
 function draftOf(c: AgentConfig): Draft {
   return {
@@ -66,6 +95,22 @@ function draftOf(c: AgentConfig): Draft {
     imageNotes: c.imageStyle.notes,
     jobLines: [...c.worker.jobLines],
     decideModel: c.routing.decideModel,
+    servicesPerCallUsdc: formatUsdcMicro(c.services.perCallMicroUsdc),
+    servicesDailyUsdc: formatUsdcMicro(c.services.dailyMicroUsdc),
+    servicesAllow: c.services.allow.join('\n'),
+    servicesDeny: c.services.deny.join('\n'),
+  };
+}
+
+/** The services caps the draft asks for; null fields are invalid as typed. */
+export function servicesDraft(d: Pick<Draft, 'servicesPerCallUsdc' | 'servicesDailyUsdc' | 'servicesAllow' | 'servicesDeny'>) {
+  const perCall = parseUsdcMicro(d.servicesPerCallUsdc);
+  const daily = parseUsdcMicro(d.servicesDailyUsdc);
+  return {
+    perCallMicroUsdc: perCall !== null && perCall >= 1 && perCall <= SERVICES_PER_CALL_MAX_MICRO_USDC ? perCall : null,
+    dailyMicroUsdc: daily !== null && daily >= 1 && daily <= SERVICES_DAILY_MAX_MICRO_USDC ? daily : null,
+    allow: parseHosts(d.servicesAllow),
+    deny: parseHosts(d.servicesDeny),
   };
 }
 
@@ -101,6 +146,13 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   const notes = d.imageNotes.trim().replace(/\s+/g, ' ');
   if (notes !== config.imageStyle.notes) style.notes = notes;
   if (Object.keys(style).length) changes.imageStyle = style;
+  const sd = servicesDraft(d);
+  const services: NonNullable<AgentConfigChanges['services']> = {};
+  if (sd.perCallMicroUsdc !== null && sd.perCallMicroUsdc !== config.services.perCallMicroUsdc) services.perCallMicroUsdc = sd.perCallMicroUsdc;
+  if (sd.dailyMicroUsdc !== null && sd.dailyMicroUsdc !== config.services.dailyMicroUsdc) services.dailyMicroUsdc = sd.dailyMicroUsdc;
+  if (sd.allow && JSON.stringify(sd.allow) !== JSON.stringify(config.services.allow)) services.allow = sd.allow;
+  if (sd.deny && JSON.stringify(sd.deny) !== JSON.stringify(config.services.deny)) services.deny = sd.deny;
+  if (Object.keys(services).length) changes.services = services;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -153,6 +205,8 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const notesLen = draft?.imageNotes.trim().replace(/\s+/g, ' ').length ?? 0;
   const notesOk = notesLen <= IMAGE_NOTES_MAX;
   const styleOk = referenceOk && notesOk;
+  const sd = draft ? servicesDraft(draft) : null;
+  const servicesOk = !sd || (sd.perCallMicroUsdc !== null && sd.dailyMicroUsdc !== null && sd.perCallMicroUsdc <= sd.dailyMicroUsdc && sd.allow !== null && sd.deny !== null);
   const inactive = agent?.status === 'paused' || agent?.status === 'dormant' || agent?.status === 'claimed';
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
@@ -190,7 +244,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   const budgetNote = draft && budgetInterval != null ? postBudgetNote({ postsPerDay: draft.postsPerDay, intervalMs: budgetInterval, measuredMicroUsdc: measuredCost, listedUsd: priceOf(draft.model) }) : '';
 
   const save = async () => {
-    if (!cfg || !changes || !instructionsOk || !styleOk) return;
+    if (!cfg || !changes || !instructionsOk || !styleOk || !servicesOk) return;
     setSaving(true);
     try {
       const signed = await sign(`Update the agent of Bootr coin $${token.symbol} (#${token.agentId}, ${token.kernel}).`);
@@ -286,6 +340,39 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                       </span>
                       <Switch id={`power-${k}`} label={CAPABILITIES[k].label} checked={draft.capabilities[k]} onChange={(v) => update({ capabilities: { ...draft.capabilities, [k]: v } })} />
                     </li>
+                    {k === 'services' && draft.capabilities.services ? (
+                      <li className="flex flex-col gap-3 bg-canvas-soft px-3 py-3" data-testid="services-caps">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <Label htmlFor="console-services-per-call" hint={<span className="font-mono tabular">USDC</span>}>
+                              Most per call
+                            </Label>
+                            <Input id="console-services-per-call" value={draft.servicesPerCallUsdc} onChange={(e) => update({ servicesPerCallUsdc: e.target.value })} inputMode="decimal" aria-invalid={!sd || sd.perCallMicroUsdc === null} placeholder="0.05" />
+                          </div>
+                          <div>
+                            <Label htmlFor="console-services-daily" hint={<span className="font-mono tabular">USDC</span>}>
+                              Most per day
+                            </Label>
+                            <Input id="console-services-daily" value={draft.servicesDailyUsdc} onChange={(e) => update({ servicesDailyUsdc: e.target.value })} inputMode="decimal" aria-invalid={!sd || sd.dailyMicroUsdc === null || (sd.perCallMicroUsdc !== null && sd.perCallMicroUsdc > sd.dailyMicroUsdc)} placeholder="1" />
+                          </div>
+                        </div>
+                        <p className={cn('text-micro', servicesOk ? 'text-mute' : 'text-danger')} data-testid="services-worst-case">
+                          {servicesOk && sd?.dailyMicroUsdc != null
+                            ? `Worst case: ${formatUsdcMicro(sd.dailyMicroUsdc)} USDC a day leaves the agent's fuel for services, whatever it is told. Each payment is public on the coin page with the agent's reason. Per call at most ${SERVICES_PER_CALL_MAX_MICRO_USDC / 1e6} USDC, per day at most ${SERVICES_DAILY_MAX_MICRO_USDC / 1e6}.`
+                            : `Amounts are USDC with up to 6 decimals; per call at most ${SERVICES_PER_CALL_MAX_MICRO_USDC / 1e6} and never above the daily cap, per day at most ${SERVICES_DAILY_MAX_MICRO_USDC / 1e6}. Hosts are names like api.example.com or *.example.com.`}
+                        </p>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <Label htmlFor="console-services-allow">Only these hosts</Label>
+                            <Textarea id="console-services-allow" value={draft.servicesAllow} onChange={(e) => update({ servicesAllow: e.target.value })} aria-invalid={!sd || sd.allow === null} rows={3} placeholder={'empty: any public host\napi.example.com\n*.data.example'} />
+                          </div>
+                          <div>
+                            <Label htmlFor="console-services-deny">Never these hosts</Label>
+                            <Textarea id="console-services-deny" value={draft.servicesDeny} onChange={(e) => update({ servicesDeny: e.target.value })} aria-invalid={!sd || sd.deny === null} rows={3} placeholder={'one per line'} />
+                          </div>
+                        </div>
+                      </li>
+                    ) : null}
                     {k === 'images' && draft.capabilities.images ? (
                       <li className="flex flex-col gap-3 bg-canvas-soft px-3 py-3" data-testid="image-style">
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -469,7 +556,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </div>
             <div className="flex flex-col gap-2">
               {canSign ? (
-                <Button type="submit" variant="ink" size="md" className="w-full" disabled={!changes || !instructionsOk || !styleOk} loading={saving} loadingLabel="Saving…">
+                <Button type="submit" variant="ink" size="md" className="w-full" disabled={!changes || !instructionsOk || !styleOk || !servicesOk} loading={saving} loadingLabel="Saving…">
                   Save changes
                 </Button>
               ) : (

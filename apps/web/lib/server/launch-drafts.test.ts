@@ -23,7 +23,7 @@ import {
 const DRAFT = '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e6f';
 const OTHER = '3b241101-e2bb-4255-8caf-4136c566a962';
 const TEXT = 'A patient onchain analyst for small Base coins. Short, plain, no hype.';
-const CAPS = { xRead: true, xReply: false, xPublish: true, research: true, memory: true, treasury: true, images: false };
+const CAPS = { xRead: true, xReply: false, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false };
 
 describe('normalizeIdentity', () => {
   it('accepts plain text between 20 and 600 characters, normalized', () => {
@@ -236,7 +236,7 @@ describe('normalizeWorker', () => {
     expect(w).toEqual({
       kind: 'custom',
       preset: {
-        capabilities: { xRead: true, xReply: false, xPublish: true, research: false, memory: true, treasury: true, images: false },
+        capabilities: { xRead: true, xReply: false, xPublish: true, research: false, memory: true, treasury: true, images: false, services: false },
         postIntervalMs: 2 * H,
         identity: ['Your job is the weather.', 'Cite sources.'],
       },

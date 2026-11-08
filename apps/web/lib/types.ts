@@ -268,6 +268,8 @@ export interface AgentConfig {
   imageModel: string;
   /** How its pictures look: a public https reference picture (the coin's image by default) and the creator's notes. */
   imageStyle: AgentImageStyle;
+  /** The money bounds of the Paid services power, whether or not it is on: the daily cap is the most it can cost in a day. */
+  services: AgentServicesPolicy;
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -278,6 +280,19 @@ export interface AgentImageStyle {
   reference: string | null;
   notes: string;
 }
+
+/** Caps of the Paid services power in micro-USDC (6 dp), and host patterns (`api.example.com`, `*.example.com`). */
+export interface AgentServicesPolicy {
+  perCallMicroUsdc: number;
+  dailyMicroUsdc: number;
+  allow: string[];
+  deny: string[];
+}
+
+/** Hard ceilings of the services caps (`SERVICES_*_MAX_MICRO_USDC` in packages/agent-core). */
+export const SERVICES_PER_CALL_MAX_MICRO_USDC = 5_000_000;
+export const SERVICES_DAILY_MAX_MICRO_USDC = 50_000_000;
+export const SERVICES_DEFAULTS: AgentServicesPolicy = { perCallMicroUsdc: 50_000, dailyMicroUsdc: 1_000_000, allow: [], deny: [] };
 
 /** What the creator may change from the coin page; only the fields present are applied. */
 export interface AgentConfigChanges {
@@ -295,6 +310,8 @@ export interface AgentConfigChanges {
   /** Partial: a missing field keeps its stored value; `reference: null` removes the picture. */
   imageStyle?: Partial<AgentImageStyle>;
   routing?: { decideModel: string | null };
+  /** Partial: a missing field keeps its stored value. */
+  services?: Partial<AgentServicesPolicy>;
 }
 
 /** `GET /api/agent/[kernel]/fuel` (the supervisor's `GET /internal/agents/:id/fuel`): paid thoughts per model over the last `days`. */

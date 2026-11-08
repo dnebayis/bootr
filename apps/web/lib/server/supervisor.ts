@@ -8,7 +8,7 @@
  */
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import type { AgentActivity, AgentActivityItem, AgentApproval, AgentApprovals, AgentChat, AgentChatMessage, AgentNotification, AgentNotifications, AgentConfig, AgentConfigChanges, AgentFuel, AgentImageStyle, AgentWorkerConfig, ApprovalDecision, WorkerKind } from '@/lib/types';
+import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type ApprovalDecision, type WorkerKind } from '@/lib/types';
 import { supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -127,6 +127,28 @@ export function httpsUrl(v: unknown): string | null {
   }
 }
 
+/** A hostname or `*.example.com`, lower-cased; null for anything else. */
+export function hostPattern(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const h = v.trim().toLowerCase();
+  return h.length <= 253 && /^(\*\.)?[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})*$/.test(h) ? h : null;
+}
+
+function hostList(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.map(hostPattern).filter((h): h is string => h !== null).slice(0, 64) : [];
+}
+
+function microUsdc(raw: unknown, max: number, fallback: number): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= max ? n : fallback;
+}
+
+/** The services caps as the console shows them: defaults for anything missing or out of bounds. */
+function servicesPolicy(raw: unknown): AgentServicesPolicy {
+  const s = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return { perCallMicroUsdc: microUsdc(s.perCallMicroUsdc, SERVICES_PER_CALL_MAX_MICRO_USDC, SERVICES_DEFAULTS.perCallMicroUsdc), dailyMicroUsdc: microUsdc(s.dailyMicroUsdc, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS.dailyMicroUsdc), allow: hostList(s.allow), deny: hostList(s.deny) };
+}
+
 function imageStyle(raw: unknown): AgentImageStyle {
   const s = (raw && typeof raw === 'object' ? raw : {}) as { reference?: unknown; notes?: unknown };
   return { reference: httpsUrl(s.reference), notes: str(s.notes, IMAGE_NOTES_MAX) ?? '' };
@@ -154,6 +176,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     routing: { decideModel: decideModelOf(o.routing) },
     imageModel: str(o.imageModel, 120) ?? '',
     imageStyle: imageStyle(o.imageStyle),
+    services: servicesPolicy(o.services),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -435,8 +458,36 @@ function cleanText(v: unknown): string | null {
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.services !== undefined) {
+    if (!o.services || typeof o.services !== 'object' || Array.isArray(o.services)) return { ok: false, field: 'services', message: 'services must be an object' };
+    const s = o.services as Partial<Record<keyof AgentServicesPolicy, unknown>>;
+    const out: Partial<AgentServicesPolicy> = {};
+    if (s.perCallMicroUsdc !== undefined) {
+      const n = Number(s.perCallMicroUsdc);
+      if (!Number.isInteger(n) || n < 1 || n > SERVICES_PER_CALL_MAX_MICRO_USDC) return { ok: false, field: 'services.perCallMicroUsdc', message: `The per-call cap is a whole number of micro-USDC from 1 to ${SERVICES_PER_CALL_MAX_MICRO_USDC} (${SERVICES_PER_CALL_MAX_MICRO_USDC / 1e6} USDC).` };
+      out.perCallMicroUsdc = n;
+    }
+    if (s.dailyMicroUsdc !== undefined) {
+      const n = Number(s.dailyMicroUsdc);
+      if (!Number.isInteger(n) || n < 1 || n > SERVICES_DAILY_MAX_MICRO_USDC) return { ok: false, field: 'services.dailyMicroUsdc', message: `The daily cap is a whole number of micro-USDC from 1 to ${SERVICES_DAILY_MAX_MICRO_USDC} (${SERVICES_DAILY_MAX_MICRO_USDC / 1e6} USDC).` };
+      out.dailyMicroUsdc = n;
+    }
+    for (const key of ['allow', 'deny'] as const) {
+      if (s[key] === undefined) continue;
+      if (!Array.isArray(s[key]) || (s[key] as unknown[]).length > 64) return { ok: false, field: `services.${key}`, message: `services.${key} is a list of at most 64 hosts.` };
+      const hosts: string[] = [];
+      for (const h of s[key] as unknown[]) {
+        const p = hostPattern(h);
+        if (!p) return { ok: false, field: `services.${key}`, message: 'Hosts are names like api.example.com, or *.example.com for a host and its subdomains.' };
+        hosts.push(p);
+      }
+      out[key] = hosts;
+    }
+    if (!Object.keys(out).length) return { ok: false, field: 'services', message: 'Nothing to change.' };
+    changes.services = out;
+  }
   if (o.imageModel !== undefined) {
     if (typeof o.imageModel !== 'string' || !/^[\w.:/-]{1,80}$/.test(o.imageModel)) return { ok: false, field: 'imageModel', message: 'imageModel must be an image model id, such as google/gemini-3-pro-image.' };
     changes.imageModel = o.imageModel;

@@ -113,7 +113,14 @@ describe('sanitizeConfig', () => {
       updatedAt: 1_700_000_000,
     });
     expect(cfg).toMatchObject({ agentId: '42', model: 'openai/gpt-4.1-mini', revision: 3, worker: { kind: 'custom', postIntervalMs: 3_600_000, jobLines: ['a'] } });
-    expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false });
+    expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false, services: false });
+    // services caps: defaults for anything missing or out of bounds, host patterns lower-cased, junk dropped
+    expect(cfg!.services).toEqual({ perCallMicroUsdc: 50_000, dailyMicroUsdc: 1_000_000, allow: [], deny: [] });
+    expect(sanitizeConfig({ ...{ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } }, services: { perCallMicroUsdc: 20_000, dailyMicroUsdc: 9e9, allow: ['API.Example.com', '*.data.example', 'bad host', 7], deny: [] } })!.services).toEqual({ perCallMicroUsdc: 20_000, dailyMicroUsdc: 1_000_000, allow: ['api.example.com', '*.data.example'], deny: [] });
+    expect(validateChanges({ services: { perCallMicroUsdc: 20_000, allow: ['API.example.com'] } })).toEqual({ ok: true, changes: { services: { perCallMicroUsdc: 20_000, allow: ['api.example.com'] } } });
+    expect(validateChanges({ services: { dailyMicroUsdc: 60_000_000 } })).toMatchObject({ ok: false, field: 'services.dailyMicroUsdc' });
+    expect(validateChanges({ services: { deny: ['not a host'] } })).toMatchObject({ ok: false, field: 'services.deny' });
+    expect(validateChanges({ services: {} })).toMatchObject({ ok: false, message: 'Nothing to change.' });
     expect(cfg!.updatedAt).toBe('2023-11-14T22:13:20.000Z');
     expect(cfg!.requireApproval).toBe(false);
     expect(cfg!.routing).toEqual({ decideModel: null });

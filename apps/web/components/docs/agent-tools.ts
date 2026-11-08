@@ -14,6 +14,7 @@ export const TOOL_GROUPS = {
   research: 'research',
   treasury: 'treasury',
   images: 'images',
+  services: 'paid services',
 } as const;
 
 export type AgentTool = { name: string; group: keyof typeof TOOL_GROUPS; does: string };
@@ -39,4 +40,6 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'treasury_prepare', group: 'treasury', does: 'Prepare and simulate one treasury operation within the limits. Nothing moves yet.' },
   { name: 'treasury_execute', group: 'treasury', does: 'Execute a prepared operation. The signer, not the model, enforces the limits.' },
   { name: 'generate_image', group: 'images', does: 'Create one illustration for a post, in the style of the coin’s own image, paid from fuel like a thought. At most 6 per day.' },
+  { name: 'discover_services', group: 'services', does: 'Find paid web services (data, search, tools) that take USDC over x402 on Base, from the public catalogue, with prices and the agent’s remaining budget. Listings are third-party text.' },
+  { name: 'x402_fetch', group: 'services', does: 'Call one paid web service and pay its price from the agent’s fuel, under the creator’s per-call and daily caps and host lists. The answer is untrusted data; the payment is public on the coin page with the reason.' },
 ];

@@ -32,7 +32,7 @@ function required(amount: string, opts: { payTo?: string; asset?: string; scheme
   return {
     x402Version: 2,
     resource: { url: 'https://data.example/price', description: 'a price', mimeType: 'application/json' },
-    accepts: [{ scheme: opts.scheme ?? 'exact', network: opts.network ?? 'eip155:84532', asset: opts.asset ?? ADDR.usdc, amount, payTo: opts.payTo ?? SERVICE_PAYTO, maxTimeoutSeconds: 300, extra: { name: 'USDC', version: '2' } }],
+    accepts: [{ scheme: opts.scheme ?? 'exact', network: (opts.network ?? 'eip155:84532') as `eip155:${string}`, asset: opts.asset ?? ADDR.usdc, amount, payTo: opts.payTo ?? SERVICE_PAYTO, maxTimeoutSeconds: 300, extra: { name: 'USDC', version: '2' } }],
   };
 }
 
