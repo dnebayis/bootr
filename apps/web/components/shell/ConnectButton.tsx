@@ -148,7 +148,6 @@ export function ConnectButton({
         align="end"
         className={popup}
         container={menuContainer}
-        aria-label="Choose a wallet"
         trigger={
           <Button variant="ink" size="md" loading={connect.isPending} loadingLabel="Connecting…" className={cn(block && 'w-full')}>
             Connect wallet

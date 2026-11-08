@@ -12,8 +12,10 @@ test('connect menu lists Base Account first, then Coinbase Wallet and the browse
   const button = page.getByRole('button', { name: 'Connect wallet' }).filter({ visible: true }).first();
   await expect(button).toBeEnabled();
   await button.click();
-  const menu = page.getByRole('menu', { name: 'Choose a wallet' });
+  // The menu is named by its trigger (Base UI sets aria-labelledby); "Choose a wallet" is its visible caption.
+  const menu = page.getByRole('menu', { name: 'Connect wallet' });
   await expect(menu).toBeVisible();
+  await expect(menu).toContainText('Choose a wallet');
   const items = menu.getByRole('menuitem');
   await expect(items.nth(0)).toContainText('Sign in with Base');
   await expect(items.nth(0)).toContainText('Passkey smart wallet');
@@ -24,6 +26,83 @@ test('connect menu lists Base Account first, then Coinbase Wallet and the browse
   if (process.env.NEXT_PUBLIC_WC_PROJECT_ID) expect(labels.at(-1)).toContain('WalletConnect');
   else expect(labels.join(' ')).not.toContain('WalletConnect');
   expect(errors.filter((e) => /hydrat/i.test(e))).toEqual([]);
+});
+
+/** Every menu item lies inside the viewport: the whole list is visible, not just its top edge. */
+async function expectMenuOnScreen(page: import('@playwright/test').Page, menu: import('@playwright/test').Locator) {
+  const viewport = page.viewportSize()!;
+  const items = menu.getByRole('menuitem');
+  const n = await items.count();
+  expect(n).toBeGreaterThanOrEqual(3);
+  for (let i = 0; i < n; i++) {
+    const box = (await items.nth(i).boundingBox())!;
+    expect(box.x, `item ${i} starts past the left edge`).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, `item ${i} runs past the right edge`).toBeLessThanOrEqual(viewport.width);
+    expect(box.y, `item ${i} starts above the top`).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, `item ${i} runs below the bottom`).toBeLessThanOrEqual(viewport.height);
+  }
+}
+
+test.describe('on a phone', () => {
+  // Phone-shaped, touch, mobile user agent: no browser wallet is injected, as on a real phone outside a wallet app.
+  test.use({
+    viewport: { width: 375, height: 812 },
+    isMobile: true,
+    hasTouch: true,
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  });
+
+  test('the drawer’s Connect wallet opens the wallet list on screen, above the button', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Open menu' }).click();
+    const drawer = page.getByRole('dialog');
+    const button = drawer.getByRole('button', { name: 'Connect wallet' });
+    await expect(button).toBeVisible();
+    await button.click();
+    const menu = page.getByRole('menu', { name: 'Connect wallet' });
+    await expect(menu).toBeVisible();
+    const items = menu.getByRole('menuitem');
+    await expect(items.nth(0)).toContainText('Sign in with Base');
+    await expect(items.nth(1)).toContainText('Coinbase Wallet');
+    await expect(items.nth(2)).toContainText('Browser wallet');
+    await expectMenuOnScreen(page, menu);
+    // The button is the last thing in the bottom sheet, so the list opens upward.
+    const menuBox = (await menu.boundingBox())!;
+    const buttonBox = (await button.boundingBox())!;
+    expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(buttonBox.y + 1);
+    // Still part of the drawer: opening the list did not close it.
+    await expect(drawer).toBeVisible();
+  });
+
+  test('a left-aligned Connect wallet (profile) keeps the list inside the screen', async ({ page }) => {
+    await page.goto('/profile');
+    await page.getByRole('main').getByRole('button', { name: 'Connect wallet' }).click();
+    const menu = page.getByRole('menu', { name: 'Connect wallet' });
+    await expect(menu).toBeVisible();
+    await expectMenuOnScreen(page, menu);
+  });
+
+  test('the coin page Trade panel lists the wallets on screen', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('a[href^="/token/0x"]').first().click();
+    await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
+    const button = page.getByRole('main').getByRole('button', { name: 'Connect wallet' }).first();
+    await button.scrollIntoViewIfNeeded();
+    await button.click();
+    const menu = page.getByRole('menu', { name: 'Connect wallet' });
+    await expect(menu).toBeVisible();
+    await expectMenuOnScreen(page, menu);
+  });
+
+  test('a browser wallet still connects from the drawer when one is injected (wallet in-app browser)', async ({ page }) => {
+    await fakeInjectedWallet(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Open menu' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Connect wallet' }).click();
+    await page.getByRole('menuitem', { name: /Browser wallet/ }).click();
+    await expect(page.getByRole('dialog').getByRole('button', { name: /0x0000/ })).toBeVisible();
+  });
 });
 
 test('profile shows creator fees with claim controls (mock mode)', async ({ page }) => {

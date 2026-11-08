@@ -30,7 +30,6 @@ export function Menu({
   onOpenChange,
   className,
   container,
-  'aria-label': ariaLabel,
 }: {
   /** The opener; must accept a ref and DOM event props (`Button` does). */
   trigger: ReactElement<Record<string, unknown>>;
@@ -48,15 +47,13 @@ export function Menu({
    * focus trap and outside-press detection instead of being treated as a press outside the layer.
    */
   container?: HTMLElement | null | RefObject<HTMLElement | null>;
-  /** Accessible name for the popup, for a menu whose items are not self-explanatory as a set. */
-  'aria-label'?: string;
 }) {
   return (
     <BaseMenu.Root open={open} onOpenChange={(o) => onOpenChange?.(o)} modal={false}>
       <BaseMenu.Trigger render={trigger} />
       <BaseMenu.Portal container={container}>
         <BaseMenu.Positioner side={side} align={align} sideOffset={6} className="z-50 outline-none">
-          <BaseMenu.Popup aria-label={ariaLabel} className={cn('min-w-48 rounded-md p-1 outline-none', floatSurface, fade, className)}>
+          <BaseMenu.Popup className={cn('min-w-48 rounded-md p-1 outline-none', floatSurface, fade, className)}>
             {children}
           </BaseMenu.Popup>
         </BaseMenu.Positioner>
