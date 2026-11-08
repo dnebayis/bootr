@@ -8,7 +8,7 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
-import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
+import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, POSTS_PER_DAY, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
 import { agentLaunchedEvent, clankerLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
@@ -255,6 +255,8 @@ export function buildLaunchConfig(
     ownerRules: [],
     capabilities: platform ? { ...PLATFORM_CAPABILITIES } : { ...preset.capabilities },
     postIntervalMs: platform ? PLATFORM_POST_INTERVAL_MS : preset.postIntervalMs,
+    // The sender's default quota (posts and replies per rolling day); the creator changes it from the console (agent-config.ts).
+    postsPerDay: POSTS_PER_DAY.default,
     workerTemplate: worker.id,
     ...(worker.id === CUSTOM_WORKER_ID ? { workerPreset: { capabilities: { ...preset.capabilities }, postIntervalMs: preset.postIntervalMs, identity: [...preset.identity] } } : {}),
     workerHash: launch.workerHash,

@@ -36,6 +36,7 @@ import { actions, runtimes } from './db/schema.js';
 import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
+import { postBudgetSection } from './post-budget.js';
 import { fuelSection } from './fuel.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { autoCloseMentions } from './mention-close.js';
@@ -236,6 +237,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await recentPostsSection(ctx, agent.agentId)),
       // Whether a coin agent may say it runs on Bootr in this post (one in six; empty for the platform agent): bootr-promotion.ts.
       ...(await bootrPromotionSection(ctx, agent.agentId, config)),
+      // What is left of the creator's daily budget of posts and replies, so the model paces itself: post-budget.ts.
+      ...(await postBudgetSection(ctx, agent.agentId, config)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.

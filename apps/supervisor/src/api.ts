@@ -149,7 +149,10 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     return c.json(configView(agent));
   });
 
-  /** Body `{by, instructions?, model?, allowedModels?, worker?: {capabilities?, postIntervalMs?, jobLines?}, requireApproval?, imageModel?, imageStyle?: {reference?, notes?}}`; see agent-config.ts. */
+  /**
+   * Body `{by, instructions?, model?, allowedModels?, worker?: {capabilities?, postIntervalMs?, jobLines?}, postsPerDay?, requireApproval?, imageModel?, imageStyle?: {reference?, notes?}}`;
+   * see agent-config.ts. `postsPerDay` is also written to the sender's quota and derives the cadence; 503 when the sender cannot be reached.
+   */
   app.put('/internal/agents/:id/config', async (c) => {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
     if (!agent) return c.json({ error: 'not_found' }, 404);
