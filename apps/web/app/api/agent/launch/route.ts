@@ -15,6 +15,7 @@ import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient } from '@/lib/server/chain';
 import { pinataEnv } from '@/lib/server/env';
+import { fetchImageFromUrl } from '@/lib/server/image-fetch';
 import { relayModels } from '@/lib/server/relay-models';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS, normalizeIdentity, normalizeSource, saveDraftIdentity, type DraftWorker } from '@/lib/server/launch-drafts';
@@ -76,23 +77,10 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
     if (!m) return { error: 'image.dataUrl must be data:image/<type>;base64,<data>, with a lowercase type and no line breaks.' };
     bytes = Uint8Array.from(Buffer.from(m[2], 'base64'));
   } else if (typeof url === 'string') {
-    let u: URL;
-    try {
-      u = new URL(url);
-    } catch {
-      return { error: 'image.url is not a URL: send a public https URL, or use image.dataUrl.' };
-    }
-    if (u.protocol !== 'https:') return { error: 'image.url must use https: host the image there, or use image.dataUrl.' };
-    let res: Response;
-    try {
-      res = await fetch(u, { signal: AbortSignal.timeout(8000), redirect: 'follow', headers: { accept: 'image/*' } });
-    } catch {
-      return { error: 'image.url could not be fetched within 8 seconds: check that it is public, or use image.dataUrl.' };
-    }
-    if (!res.ok) return { error: `image.url responded ${res.status}: check that it is public, or use image.dataUrl.` };
-    const len = Number(res.headers.get('content-length') ?? 0);
-    if (len > UPLOAD_MAX_BYTES) return { error: `image is ${len} bytes: it must be at most 2 MB.` };
-    bytes = new Uint8Array(await res.arrayBuffer());
+    // Public https hosts only, redirects checked hop by hop, the body streamed under the 2 MB cap (lib/server/image-fetch.ts).
+    const fetched = await fetchImageFromUrl(url, UPLOAD_MAX_BYTES);
+    if (!fetched.ok) return { error: fetched.error };
+    bytes = fetched.bytes;
   } else {
     return { error: IMAGE_SHAPE };
   }

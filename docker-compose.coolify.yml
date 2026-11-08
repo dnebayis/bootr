@@ -21,9 +21,14 @@
 x-restart: &restart
   restart: unless-stopped
 
+# Memory ceilings per container (docs/deploy/coolify.md section 7). The CX33 has 7.6 GB usable; the six containers may
+# take 5.5 GB together, which leaves about 2 GB for the OS, Docker, Coolify's proxy and Hermes. A container that passes
+# its limit is killed and restarted by its `restart` policy instead of taking the box down with it; a hostile response
+# or a leak costs one service a restart, nothing else.
 services:
   postgres:
     <<: *restart
+    mem_limit: 1g
     image: postgres:17-bookworm
     environment:
       POSTGRES_USER: bootr
@@ -39,6 +44,7 @@ services:
 
   sender:
     <<: *restart
+    mem_limit: 512m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-sender:${IMAGE_TAG:-main}
     pull_policy: always
@@ -64,6 +70,7 @@ services:
 
   inference:
     <<: *restart
+    mem_limit: 512m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-inference:${IMAGE_TAG:-main}
     pull_policy: always
@@ -86,6 +93,8 @@ services:
 
   indexer:
     <<: *restart
+    # Ponder holds its sync cache and reorg window in memory; a full resync is its hungriest hour.
+    mem_limit: 1536m
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-indexer:${IMAGE_TAG:-main}
     pull_policy: always
@@ -124,6 +133,7 @@ services:
 
   web:
     <<: *restart
+    mem_limit: 1g
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-web:${IMAGE_TAG:-main}
     pull_policy: always
@@ -158,6 +168,7 @@ services:
 
   supervisor:
     <<: *restart
+    mem_limit: 1g
     # Built by GitHub Actions (.github/workflows/images.yml); IMAGE_TAG = a `sha-<commit>` tag to pin or roll back.
     image: ghcr.io/dnebayis/bootr-supervisor:${IMAGE_TAG:-main}
     pull_policy: always
