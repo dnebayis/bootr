@@ -1,18 +1,35 @@
 /**
- * Model catalogue for the launch form. Browser-safe (no env, no Node APIs): the server route
- * `app/api/models/route.ts` builds the list from the relay's `GET /v1/models`, the form renders it.
+ * The models the launch form and the creator console offer, priced the way the agent pays for them at BlockRun.
+ * Browser-safe (no env, no Node APIs): the list and its prices come from the model catalog in agent-core
+ * (`MODEL_CATALOG`), the server route `app/api/models/route.ts` applies the admin allow-list, the form renders it.
  */
+import {
+  BLOCKRUN_CALL_FEE_MICRO_USDC,
+  BLOCKRUN_MIN_QUOTE_MICRO_USDC,
+  DEFAULT_MIND_MODEL,
+  DEFAULT_PLATFORM_IMAGE_MODEL,
+  imageModels,
+  mindModels,
+  MODEL_VENDORS,
+  modelDisplayName,
+  pictureQuoteMicroUsdc,
+  THOUGHT_SIZE,
+  thoughtQuoteMicroUsdc,
+  vendorName,
+  type CatalogModel,
+} from '@bootr/agent-core';
 
 export type ModelOption = {
   id: string;
   label: string;
   provider: string;
-  /** Estimated USDC cost of one thought (see THOUGHT), null when the relay gave no price. */
+  /** Estimated USDC cost of one thought (see THOUGHT), null when the model is not priced. */
   pricePerThoughtUsd: number | null;
 };
 
 export type ModelsResponse = {
-  source: 'relay' | 'fallback';
+  /** Where the list and its prices come from: the catalog of the models BlockRun serves. */
+  source: 'blockrun';
   thought: typeof THOUGHT;
   models: ModelOption[];
 };
@@ -22,157 +39,76 @@ export type ImageModelOption = {
   id: string;
   label: string;
   provider: string;
-  /** Estimated USDC cost of one picture (see IMAGE), null when the relay gave no price. */
+  /** Estimated USDC cost of one picture, null when the model is not priced. */
   pricePerImageUsd: number | null;
 };
 
 export type ImageModelsResponse = {
-  source: 'relay' | 'fallback';
+  source: 'blockrun';
   image: typeof IMAGE;
   models: ImageModelOption[];
 };
 
 /** Default model for new agents: cheap, fast, good at short tool-using turns. */
-export const RECOMMENDED_MODEL = 'anthropic/claude-haiku-4.5';
-/** The supervisor's default image model (apps/supervisor/src/images.ts): Nano Banana Pro. */
-export const DEFAULT_IMAGE_MODEL = 'google/gemini-3-pro-image';
+export const RECOMMENDED_MODEL = DEFAULT_MIND_MODEL;
+/** The supervisor's default image model for the platform agent (apps/supervisor/src/images.ts). */
+export const DEFAULT_IMAGE_MODEL = DEFAULT_PLATFORM_IMAGE_MODEL;
 
 /**
  * One thought = one paid inference call by the supervisor. The prompt (identity, recent state,
  * tool definitions) is typically ~4k tokens; output is capped at INFERENCE_MAX_OUTPUT_TOKENS (1024),
- * and the relay's default x402 `exact` scheme charges that cap, so the estimate uses it.
+ * and BlockRun quotes the whole allowance, so the estimate uses it.
  */
-export const THOUGHT = { promptTokens: 4000, outputTokens: 1024 } as const;
+export const THOUGHT = THOUGHT_SIZE;
 
-/**
- * One picture = one `generate_image` call: a short prompt plus the reference picture (the relay allows 1600 prompt
- * tokens per attached image), 256 text tokens next to the picture, and the picture's own output tokens
- * (`imageOutputTokensPerImage`, what the relay quotes one image as).
- */
-export const IMAGE = { promptTokens: 2000, outputTokens: 256 } as const;
+/** One picture = one `generate_image` call at BlockRun's fixed price per picture (no token arithmetic). */
+export const IMAGE = { promptTokens: 0, outputTokens: 0 } as const;
 
-/** Relay pricing defaults (apps/inference/src/pricing.ts): 10% + 100 micro-USDC margin, 1000 micro-USDC floor. */
-export const RELAY_MARGIN = { bps: 1000, fixedMicroUsdc: 100, minQuoteMicroUsdc: 1000 } as const;
+/** What BlockRun adds to every call: a flat fee, and a floor under the smallest quote (micro-USDC). */
+export const BLOCKRUN_FEES = { callFeeMicroUsdc: BLOCKRUN_CALL_FEE_MICRO_USDC, minQuoteMicroUsdc: BLOCKRUN_MIN_QUOTE_MICRO_USDC } as const;
 
-export type RelayPrice = { inputMicroUsdcPerKTokens: number; outputMicroUsdcPerKTokens: number };
-export type RelayImagePrice = RelayPrice & { imageOutputMicroUsdcPerKTokens: number; imageOutputTokensPerImage: number };
+export type TokenPrice = { inputMicroUsdcPerKTokens: number; outputMicroUsdcPerKTokens: number };
 
-/** Mirrors the relay's quote: ceil(token cost) + ceil(cost * bps / 1e4) + fixed, floored at the minimum quote. */
-export function thoughtPriceUsd(p: RelayPrice, margin: { bps: number; fixedMicroUsdc: number; minQuoteMicroUsdc?: number } = RELAY_MARGIN): number {
-  const cost = Math.ceil((p.inputMicroUsdcPerKTokens * THOUGHT.promptTokens + p.outputMicroUsdcPerKTokens * THOUGHT.outputTokens) / 1000);
-  const total = cost + Math.ceil((cost * margin.bps) / 10_000) + margin.fixedMicroUsdc;
-  return Math.max(total, margin.minQuoteMicroUsdc ?? RELAY_MARGIN.minQuoteMicroUsdc) / 1_000_000;
+/** Mirrors BlockRun's quote for one thought: the prompt and the whole output allowance at list price, plus the fee, floored. */
+export function thoughtPriceUsd(p: TokenPrice): number {
+  return thoughtQuoteMicroUsdc({ price: p })! / 1_000_000;
 }
 
-/** Mirrors the relay's quote for one picture: text tokens at the text rates, the image's tokens at the image rate, then the margin. */
-export function imagePriceUsd(p: RelayImagePrice, margin: { bps: number; fixedMicroUsdc: number; minQuoteMicroUsdc?: number } = RELAY_MARGIN): number {
-  const cost = Math.ceil(
-    (p.inputMicroUsdcPerKTokens * IMAGE.promptTokens + p.outputMicroUsdcPerKTokens * IMAGE.outputTokens + p.imageOutputMicroUsdcPerKTokens * p.imageOutputTokensPerImage) / 1000,
-  );
-  const total = cost + Math.ceil((cost * margin.bps) / 10_000) + margin.fixedMicroUsdc;
-  return Math.max(total, margin.minQuoteMicroUsdc ?? RELAY_MARGIN.minQuoteMicroUsdc) / 1_000_000;
+/** BlockRun's price for one picture plus its fee. */
+export function imagePriceUsd(perImageMicroUsdc: number): number {
+  return pictureQuoteMicroUsdc({ price: { perImageMicroUsdc } })! / 1_000_000;
 }
 
-/** Provider display order in the picker; relay ids are `<vendor>/<model>`. */
-export const PROVIDERS: { vendor: string; name: string }[] = [
-  { vendor: 'anthropic', name: 'Anthropic' },
-  { vendor: 'openai', name: 'OpenAI' },
-  { vendor: 'google', name: 'Google' },
-  { vendor: 'x-ai', name: 'xAI' },
-  { vendor: 'deepseek', name: 'DeepSeek' },
-  { vendor: 'moonshotai', name: 'Moonshot' },
-  { vendor: 'minimax', name: 'MiniMax' },
-  { vendor: 'qwen', name: 'Qwen' },
-  { vendor: 'meta-llama', name: 'Meta' },
-  { vendor: 'mistralai', name: 'Mistral' },
-  { vendor: 'z-ai', name: 'Z.ai' },
-];
-
-const LABELS: Record<string, string> = {
-  'anthropic/claude-opus-4.8': 'Claude Opus 4.8',
-  'anthropic/claude-sonnet-4.6': 'Claude Sonnet 4.6',
-  'anthropic/claude-sonnet-4.5': 'Claude Sonnet 4.5',
-  'anthropic/claude-haiku-4.5': 'Claude Haiku 4.5',
-  'openai/gpt-5.6-luna': 'GPT-5.6 Luna',
-  'openai/gpt-5.6-terra': 'GPT-5.6 Terra',
-  'openai/gpt-5.5': 'GPT-5.5',
-  'openai/gpt-5.4': 'GPT-5.4',
-  'openai/gpt-5.4-mini': 'GPT-5.4 mini',
-  'openai/gpt-5.4-nano': 'GPT-5.4 nano',
-  'openai/gpt-5-mini': 'GPT-5 mini',
-  'openai/gpt-5-nano': 'GPT-5 nano',
-  'openai/gpt-4.1': 'GPT-4.1',
-  'openai/gpt-4.1-mini': 'GPT-4.1 mini',
-  'google/gemini-3.8-flash': 'Gemini 3.8 Flash',
-  'google/gemini-3.1-pro-preview': 'Gemini 3.1 Pro (preview)',
-  'google/gemini-3.5-flash-lite': 'Gemini 3.5 Flash-Lite',
-  'google/gemini-2.5-flash': 'Gemini 2.5 Flash',
-  'x-ai/grok-4.7': 'Grok 4.7',
-  'x-ai/grok-4.20': 'Grok 4.20',
-  'deepseek/deepseek-v3.2': 'DeepSeek V3.2',
-  'moonshotai/kimi-k2.6': 'Kimi K2.6',
-  'minimax/minimax-m2.7': 'MiniMax M2.7',
-  'qwen/qwen3-235b-a22b-2507': 'Qwen3 235B A22B',
-  'meta-llama/llama-4-maverick': 'Llama 4 Maverick',
-  'mistralai/mistral-medium-3.1': 'Mistral Medium 3.1',
-  'z-ai/glm-4.6': 'GLM 4.6',
-  // image models
-  'google/gemini-3-pro-image': 'Nano Banana Pro (Gemini 3 Pro Image)',
-  'google/gemini-3.1-flash-image': 'Nano Banana 2 (Gemini 3.1 Flash Image)',
-  'google/gemini-2.5-flash-image': 'Gemini 2.5 Flash Image',
-  'openai/gpt-5.4-image-2': 'GPT Image 2',
-  'openai/gpt-5-image-mini': 'GPT Image mini',
-};
+/** Provider display order in the picker; ids are `<vendor>/<model>`. */
+export const PROVIDERS: readonly { vendor: string; name: string }[] = MODEL_VENDORS;
 
 export function providerName(id: string): string {
   const vendor = id.includes('/') ? id.slice(0, id.indexOf('/')) : '';
-  return PROVIDERS.find((p) => p.vendor === vendor)?.name ?? (vendor ? vendor : 'Other');
+  return vendor ? vendorName(vendor) : 'Other';
 }
 
 export function modelLabel(id: string): string {
-  if (LABELS[id]) return LABELS[id];
-  const bare = id.includes('/') ? id.slice(id.indexOf('/') + 1) : id;
-  return bare.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return modelDisplayName(id);
 }
 
-/**
- * Built-in list when the relay is unreachable or unset. Prices are the relay's default price table
- * (OpenRouter list prices, Oct 2026) run through `thoughtPriceUsd`; the relay is authoritative.
- */
-const FALLBACK_PRICES: Record<string, RelayPrice> = {
-  'anthropic/claude-haiku-4.5': { inputMicroUsdcPerKTokens: 1000, outputMicroUsdcPerKTokens: 5000 },
-  'anthropic/claude-sonnet-4.6': { inputMicroUsdcPerKTokens: 3000, outputMicroUsdcPerKTokens: 15000 },
-  'openai/gpt-5.4-mini': { inputMicroUsdcPerKTokens: 750, outputMicroUsdcPerKTokens: 4500 },
-  'openai/gpt-4.1-mini': { inputMicroUsdcPerKTokens: 400, outputMicroUsdcPerKTokens: 1600 },
-  'google/gemini-3.5-flash-lite': { inputMicroUsdcPerKTokens: 300, outputMicroUsdcPerKTokens: 2500 },
-  'deepseek/deepseek-v3.2': { inputMicroUsdcPerKTokens: 280, outputMicroUsdcPerKTokens: 420 },
-  'x-ai/grok-4.20': { inputMicroUsdcPerKTokens: 1250, outputMicroUsdcPerKTokens: 2500 },
-  'meta-llama/llama-4-maverick': { inputMicroUsdcPerKTokens: 188, outputMicroUsdcPerKTokens: 652 },
-};
+function mindOption(m: CatalogModel): ModelOption {
+  const quote = thoughtQuoteMicroUsdc(m);
+  return { id: m.id, label: m.name, provider: vendorName(m.vendor), pricePerThoughtUsd: quote === null ? null : quote / 1_000_000 };
+}
 
-export const FALLBACK_MODELS: ModelOption[] = Object.entries(FALLBACK_PRICES).map(([id, p]) => ({
-  id,
-  label: modelLabel(id),
-  provider: providerName(id),
-  pricePerThoughtUsd: thoughtPriceUsd(p),
-}));
+function imageOption(m: CatalogModel): ImageModelOption {
+  const quote = pictureQuoteMicroUsdc(m);
+  return { id: m.id, label: m.name, provider: vendorName(m.vendor), pricePerImageUsd: quote === null ? null : quote / 1_000_000 };
+}
 
-/**
- * Built-in image models when the relay is unreachable or unset: the relay's default price table (OpenRouter list
- * prices, 2026-11-04) run through `imagePriceUsd`; the relay is authoritative.
- */
-const FALLBACK_IMAGE_PRICES: Record<string, RelayImagePrice> = {
-  'google/gemini-3-pro-image': { inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120_000, imageOutputTokensPerImage: 1120 },
-  'google/gemini-3.1-flash-image': { inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, imageOutputMicroUsdcPerKTokens: 60_000, imageOutputTokensPerImage: 1120 },
-  'openai/gpt-5.4-image-2': { inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, imageOutputMicroUsdcPerKTokens: 30_000, imageOutputTokensPerImage: 4160 },
-};
+/** Every model an agent may think with, priced per thought. The admin allow-list narrows it (`filterAllowedModels`). */
+export const CATALOG_MODELS: readonly ModelOption[] = mindModels().map(mindOption);
+/** Every image model, priced per picture. */
+export const CATALOG_IMAGE_MODELS: readonly ImageModelOption[] = imageModels().map(imageOption);
 
-export const FALLBACK_IMAGE_MODELS: ImageModelOption[] = Object.entries(FALLBACK_IMAGE_PRICES).map(([id, p]) => ({
-  id,
-  label: modelLabel(id),
-  provider: providerName(id),
-  pricePerImageUsd: imagePriceUsd(p),
-}));
+/** The list the browser falls back to when `/api/models` cannot be reached: the whole catalog, unfiltered. */
+export const FALLBACK_MODELS: ModelOption[] = [...CATALOG_MODELS];
+export const FALLBACK_IMAGE_MODELS: ImageModelOption[] = [...CATALOG_IMAGE_MODELS];
 
 /** `anthropic/claude-haiku-4.5` and `claude-haiku-4-5` name the same model. */
 export function modelKey(id: string): string {

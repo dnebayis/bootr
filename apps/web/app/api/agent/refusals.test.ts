@@ -212,7 +212,7 @@ describe('the launch fields', () => {
   });
 
   it('checks model against the relay and the allow-list, like GET /api/models', async () => {
-    const id = 'openai/gpt-5.5';
+    const id = 'openai/gpt-9-test';
     const fields = { model: id, image: { dataUrl: 'not an image' } };
     h.allowedModels = [id];
     // Allowed, and the relay is down or does not list it: refused.

@@ -179,7 +179,9 @@ describe('no money or publish authority from chat', () => {
   it('chat.ts imports nothing that could post, sign or spend, beyond the paid thought itself', () => {
     const source = readFileSync(fileURLToPath(new URL('../src/chat.ts', import.meta.url)), 'utf8');
     const imports = [...source.matchAll(/from '(\.[^']+)'/g)].map((m) => m[1]!);
-    expect(imports.sort()).toEqual(['./context.js', './db/schema.js', './fuel.js', './inference.js', './onboarding.js', './recent-posts.js', './routing.js']);
+    // blockrun.js is read for `directEnabled` alone (which route prices the chat); nothing there is called with money
+    expect(imports.sort()).toEqual(['./blockrun.js', './context.js', './db/schema.js', './fuel.js', './inference.js', './onboarding.js', './recent-posts.js', './routing.js']);
+    expect([...source.matchAll(/import \{([^}]+)\} from '\.\/blockrun\.js'/g)].map((m) => m[1]!.trim())).toEqual(['directEnabled']);
     for (const forbidden of ['ctx.sender', 'ctx.kernelFor', 'ctx.adminSigner', 'ctx.sessionSigner', 'executeAction', 'saveRuntime', 'acquireLease', 'queueForApproval']) expect(source).not.toContain(forbidden);
   });
 });

@@ -90,7 +90,9 @@ relay takes it, so set it only while OpenRouter is funded, because a relay with 
 A failed call that was already signed holds the thought until the chain shows the payment settled or its signature expired, so
 one thought is never paid on both routes. The optional `BLOCKRUN_BASE_URL`, `BLOCKRUN_PAYTO_ADDRESS`, `BLOCKRUN_ALLOW_EXACT`,
 `BLOCKRUN_PROMPT_CACHE`, `BLOCKRUN_TIMEOUT_MS`, `BLOCKRUN_HOLD_MS` and `BLOCKRUN_IMAGE_POLL_MS` have safe defaults. Agents not
-in direct mode still pay the relay: stop funding OpenRouter only with `BLOCKRUN_DIRECT_MODE=all` and the fallback off.
+in direct mode still pay the relay: stop funding OpenRouter only with `BLOCKRUN_DIRECT_MODE=all` and the fallback off. The
+switch to `all` for every agent, the model migration that goes with it and what to watch afterwards are in
+[`blockrun-rollout.md`](./blockrun-rollout.md).
 
 Creator notifications (supervisor, `apps/supervisor/src/notifications.ts`): the console inbox always works. For Telegram,
 create a bot with BotFather and put its token in `TELEGRAM_BOT_TOKEN`; empty means inbox only and nothing fails. The

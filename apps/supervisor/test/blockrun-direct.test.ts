@@ -14,14 +14,15 @@ import { encodeAbiParameters, encodeEventTopics, erc20Abi, getAddress, verifyTyp
 import { buildInferenceRequest, maxQuoteFor, TOOL_LIST, type ChatMessage } from '@bootr/agent-core';
 import { DIRECT_HOLD, DIRECT_IMAGE_MODELS, DIRECT_PAID_LOST, DIRECT_SUBSTITUTES, DIRECT_UNPAID, directBody, directEnabled, directModel, INSUFFICIENT_FLOAT, paymentAuthorization } from '../src/blockrun.js';
 import { CHAT_MAX_QUOTE_MICRO_USDC, sendChatMessage } from '../src/chat.js';
-import { inference as inferenceTable, runtimes } from '../src/db/schema.js';
+import { agents as agentsTable, inference as inferenceTable, notifications as notificationsTable, runtimes } from '../src/db/schema.js';
 import { generateImage } from '../src/images.js';
 import { fuelReport, parseAssistant, reconcileRelay, recentThoughtCost, relayRequest, runInference, type RelayCall } from '../src/inference.js';
 import { fuelView } from '../src/fuel.js';
+import { providerHold } from '../src/provider-hold.js';
 import { tick } from '../src/tick.js';
 import type { AgentState } from '../src/runtime.js';
 import { createTestApp, jsonResponse, PAY_TO } from '../../inference/src/test/helpers.js';
-import { ADDR, AGENT_ID, makeWorld, seedAgent, SPENDER, type TestWorld } from './helpers.js';
+import { ADDR, AGENT_ID, agentConfig, makeWorld, seedAgent, SPENDER, type TestWorld } from './helpers.js';
 
 const BLOCKRUN = 'https://blockrun.test/api/v1';
 const BLOCKRUN_PAYTO: Address = '0xe9030014F5DAe217d0A152f02A043567b16c1aBf';
@@ -245,7 +246,9 @@ describe('the body BlockRun gets', () => {
     expect(noTools).not.toHaveProperty('tools');
     expect(noTools).not.toHaveProperty('tool_choice');
     expect(directModel('x-ai/grok-4.7')).toBe('xai/grok-4.7');
-    expect(directModel('z-ai/glm-4.6')).toBe('zai/glm-4.6');
+    // GLM 4.6 is gone from BlockRun: the catalog sends its agents to GLM 5.3
+    expect(directModel('z-ai/glm-4.6')).toBe('zai/glm-5.3');
+    expect(directModel('vendor/unlisted-model')).toBe('vendor/unlisted-model');
     expect(directModel('google/gemini-3.1-pro-preview')).toBe('google/gemini-3.1-pro');
   });
 });
@@ -871,6 +874,38 @@ describe('full direct: no relay behind it', () => {
     }
   });
 
+  it('a model BlockRun does not know: the creator is told, the fleet is not held, nothing is paid; the notice clears once the model is changed', async () => {
+    const { w, sim, relayPayments } = await direct(FULL);
+    try {
+      await seedAgent(w, { config: { model: 'vendor/retired-forever' } });
+      sim.probe = () => jsonResponse(fixture('error-unknown-model').body, 400);
+      await tick(w.ctx);
+      const row = await runtimeRow(w);
+      expect(row.failures).toBe(1);
+      expect(row.lastError).toContain('model_missing: vendor/retired-forever');
+      expect(sim.signatures).toEqual([]);
+      expect(relayPayments).toEqual([]);
+      // the creator's inbox names it; the owner's log carries the same line at error level (not asserted here)
+      const open = await w.db.select().from(notificationsTable).where(eq(notificationsTable.agentId, AGENT_ID));
+      expect(open.map((n) => [n.event, n.resolvedAt])).toEqual([['model_unavailable', null]]);
+      expect(open[0]!.data).toMatchObject({ model: 'vendor/retired-forever', field: 'model' });
+      // one agent's wrong model is not a provider outage: no fleet-wide hold
+      expect(providerHold(w.ctx.now())).toBeNull();
+      // the creator (or the migration) picks a served model: the next thought answers and the notice closes
+      await w.db.update(agentsTable).set({ config: { ...agentConfig(w.ctx.now(), { model: MODEL }), revision: 2 } }).where(eq(agentsTable.agentId, AGENT_ID));
+      sim.probe = null;
+      sim.paid = (_p, settle) => {
+        settle();
+        return paidAnswer(finishThought(w.ctx.now() + 60 * MINUTE));
+      };
+      await minutes(w, 20);
+      expect(sim.signatures).toHaveLength(1);
+      expect((await w.db.select().from(notificationsTable).where(eq(notificationsTable.agentId, AGENT_ID)))[0]!.resolvedAt).not.toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
   it('two hours of BlockRun down: no signature, no payment to anyone, backoff growing, and it recovers by itself', async () => {
     const { w, sim, relayPayments, relay } = await direct(FULL);
     try {
@@ -1115,7 +1150,7 @@ describe('full direct: no relay behind it', () => {
         const down = await generateImage(w.ctx, agent, config(), imageAction, imageInput);
         expect(down).toMatchObject({ kind: 'failed', error: expect.stringContaining('direct_unavailable') });
         const lacks = await generateImage(w.ctx, agent, { imageModel: 'x/unknown-image', imageStyle: { reference: null, notes: '' } } as never, { id: 'act_2' } as never, imageInput);
-        expect(lacks).toMatchObject({ kind: 'failed', error: expect.stringContaining('no_image_model') });
+        expect(lacks).toMatchObject({ kind: 'failed', error: expect.stringContaining('model_missing: x/unknown-image') });
         expect(sim.signatures).toEqual([]);
         expect(relayPayments).toEqual([]);
       } finally {
