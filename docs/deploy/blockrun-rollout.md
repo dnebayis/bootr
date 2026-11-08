@@ -1,7 +1,9 @@
 # Rollout: every agent pays BlockRun directly
 
-The owner's decision (2026-11-08): after one local paid check, every agent's thinking, chat and pictures move to
-BlockRun at once, paid from each agent's own wallet over x402, with no trial and no relay behind it. Models are
+The owner's decision (2026-11-08): after one local paid check, every agent's thinking and chat move to BlockRun at
+once, paid from each agent's own wallet over x402, with no trial and no relay behind it. Pictures stay on the relay
+(OpenRouter) at the relay's prices (`BLOCKRUN_IMAGE_ROUTE`, default `relay`; the same day's second decision), so
+OpenRouter stays funded for pictures alone (section 6). Models are
 reorganised to the catalog of what BlockRun serves (`packages/agent-core/src/models/catalog.ts`); agents on a model
 BlockRun does not serve are moved to the closest one it does and go on from where they were (memory, cadence, powers,
 X account and treasury untouched). Agents belong to third parties, so every change is on the agent's activity tape in
@@ -43,10 +45,12 @@ under what the relay charged. That is a report, not a stop.
 | `BLOCKRUN_PROMPT_CACHE` | unset (`true`) | caching on Claude |
 | `BLOCKRUN_PAYTO_ADDRESS` | unset | the default is BlockRun's treasury; set it only if BlockRun announces a new one |
 | `BLOCKRUN_DIRECT_AGENTS` | unset | only for `agents` mode |
-| `OPENROUTER_API_KEY` | leave as it is for now | the relay stays deployed to reconcile old rows and for rollback (step 7) |
+| `BLOCKRUN_IMAGE_ROUTE` | unset (`relay`) | pictures keep paying the relay (OpenRouter) at the relay's prices; `direct` would send them to BlockRun's image API. Set it on the web service too (the console's image list and prices follow it) |
+| `OPENROUTER_API_KEY` | leave as it is, funded | pictures go through the relay (section 6); the relay also reconciles old rows and is the rollback (step 7) |
 
-The relay (`inference` service) keeps running. Nothing in the web or the indexer changes its environment: the web's
-model list and prices come from the catalog in code.
+The relay (`inference` service) keeps running and keeps its OpenRouter credit. The web's mind list and thought prices
+come from the catalog in code; its image list and picture prices come from the relay while `BLOCKRUN_IMAGE_ROUTE` is
+`relay` (the web reads `INFERENCE_URL`, already set in the compose file). Nothing in the indexer changes.
 
 ## 3. Deploy
 
@@ -132,8 +136,15 @@ where created_at > now() - interval '1 hour'
 group by 1, 2 order by 1, 2;
 ```
 
-Expected: rows with `route = blockrun` and `status = succeeded`; no row with a null route and a payment (`receipt->'payment'
-is not null and receipt->>'route' is null` would be a relay payment, which must not happen with the fallback off).
+Expected: rows with `route = blockrun` and `status = succeeded`, and relay rows (a payment and no route) only for pictures
+(`idempotency_key like 'image:%'`): with the fallback off no thought or chat message pays the relay.
+
+```sql
+-- relay payments that are not pictures: must be none
+select idempotency_key, status, error from sv_inference
+where created_at > now() - interval '1 hour' and receipt->'payment' is not null and receipt->>'route' is null
+  and idempotency_key not like 'image:%';
+```
 
 **Paid failures.** `/fuel` per agent (`GET /internal/agents/:id/fuel?days=1`) shows `paidFailures`; fleet-wide:
 
@@ -178,26 +189,68 @@ group by 1 order by 3 desc;
 `other_model_answered > 0` means BlockRun answered with a fallback model (logged as `BlockRun answered with a fallback
 model`); the thought is delivered and counted, but a steady count is worth a mail to hello@blockrun.ai.
 
-**The first picture.** Images go through BlockRun's image API (`exact`, a fixed price per picture: Nano Banana 2 at
-0.0955 USDC, Pro at 0.106). The first one proves the path:
+**The first picture.** Pictures keep going through the relay to OpenRouter (`BLOCKRUN_IMAGE_ROUTE=relay`), paid from
+the spender at the relay's price (Nano Banana 2 about 0.075 USDC, Nano Banana Pro about 0.154; the relay's list,
+`picturePriceFor`), under the relay's model names (`google/gemini-3.1-flash-image` for `google/nano-banana-2`; the row
+keeps the catalog id). The first one proves the path is still open:
 
 ```sql
 select id, agent_id, model, size_bytes, created_at from sv_images order by created_at desc limit 5;
-select idempotency_key, status, error, receipt->'relay'->>'chargedMicroUsdc' as charged
+select idempotency_key, status, error, receipt->>'route' as route, receipt->'relay'->>'chargedMicroUsdc' as charged
 from sv_inference where idempotency_key like 'image:%' order by created_at desc limit 5;
 ```
 
-`direct_image_in_progress` on an open row is a slow picture: the reconcile polls BlockRun's job and the row closes on
-its own; `direct_image_unreadable` means the picture could not be downloaded (the payment is then judged by the chain).
+`route` is null on a picture row (the relay), `blockrun` only with `BLOCKRUN_IMAGE_ROUTE=direct`. An error starting
+`relay_pictures_unavailable` means OpenRouter refused the relay's own account (402: no credit; 401/403: the key): that
+first picture is paid and kept as a credit at the relay for its key, and from then on no agent buys a picture for 24
+hours (`GET /health` → `pictureHold`), each one told to post without. Fund OpenRouter; the hold ends by itself.
 
-**The creator console** shows "Paid to BlockRun from the agent's own wallet." under the fuel line once an agent has one
-direct thought in the window.
+With `BLOCKRUN_IMAGE_ROUTE=direct` instead: `direct_image_in_progress` on an open row is a slow picture (the reconcile
+polls BlockRun's job and the row closes on its own); `direct_image_unreadable` means the picture could not be downloaded
+(the payment is then judged by the chain).
 
-## 6. When it is safe to stop funding OpenRouter
+**The creator console** shows "Thoughts paid to BlockRun from the agent's own wallet; pictures paid through Bootr." under
+the fuel line once an agent has one direct thought in the window (just "Paid to BlockRun from the agent's own wallet."
+with `BLOCKRUN_IMAGE_ROUTE=direct`).
 
-The relay is paid by agents only when a call reaches it, and with `BLOCKRUN_RELAY_FALLBACK=false` none does. It still
-answers reconcile reads for rows paid before the switch. Stop funding OpenRouter (let the key's credit run out, or
-remove `OPENROUTER_API_KEY` and redeploy the `inference` service) once all of these hold:
+## 6. OpenRouter stays funded, for pictures
+
+OpenRouter is not switched off. Thoughts and chat no longer reach the relay (`BLOCKRUN_RELAY_FALLBACK=false`), but
+every picture still does (`BLOCKRUN_IMAGE_ROUTE=relay`, the default), and the relay pays itself from the agent before it
+asks OpenRouter: a relay without OpenRouter credit takes the picture's price and cannot deliver. The supervisor limits
+the damage to one picture (the first refusal holds every picture for 24 hours, section 5), but the right state is a
+funded key.
+
+**How much.** The relay's picture prices of 2026-11-04 (`apps/inference/src/pricing.ts`): what OpenRouter bills the key
+is about $0.069 for a Nano Banana 2 picture (every coin agent's default) and about $0.140 for a Nano Banana Pro picture
+(the platform agent's default); the agent pays the relay that plus the 10 % margin, 0.0754 and 0.1536 USDC. The cap is
+6 pictures per agent per rolling day (`MAX_IMAGES_PER_DAY`), so the most one coin agent can draw from the key in a month
+is 180 × $0.069 ≈ $12.30, and the platform agent 180 × $0.140 ≈ $25. In practice the runtime nudges a coin agent towards
+a picture about once every three days and the platform agent for the weekly digest and launch welcomes (about ten a
+month each): about $0.70 per coin agent and $1.40 for the platform agent a month. With ten coin agents, budget about
+$10 a month for OpenRouter and know the hard ceiling is about $150. The agents' USDC for pictures lands at
+`INFERENCE_PAYTO_ADDRESS` as before.
+
+**What to watch.** `GET /health` → `pictureHold` must be null; an error line `the relay cannot buy pictures from
+OpenRouter` in the supervisor log means the key is out of credit or refused, and pictures are off for a day. The rows:
+
+```sql
+-- pictures the relay's provider refused in the last day: should be none; one starts the 24 h hold
+select idempotency_key, agent_id, status, error, updated_at from sv_inference
+where idempotency_key like 'image:%' and error like 'relay_pictures_unavailable%' and updated_at > now() - interval '1 day';
+-- what pictures cost over the last 30 days
+select count(*) as pictures, sum((receipt->'relay'->>'chargedMicroUsdc')::numeric) / 1e6 as usdc_paid_to_relay
+from sv_inference where idempotency_key like 'image:%' and status = 'succeeded' and created_at > now() - interval '30 days';
+```
+
+A picture row the provider refused stays `unknown` with its payment kept as a credit at the relay for that key. Nothing
+is replayed during the hold (a replay would burn one of the relay's three attempts for the key), and the agent's turn
+moves on without the picture, so the credit is spent only if that very action is ever resumed; otherwise it stays at
+the relay, which is Bootr's own: the agent's money went nowhere else, and the row is the record of what is owed. The
+`usdc_paid_to_relay` query above counts only delivered pictures.
+
+**Stopping OpenRouter altogether** needs `BLOCKRUN_IMAGE_ROUTE=direct` first (pictures from BlockRun's image API at its
+fixed prices, 0.0955 and 0.106 USDC), then a week in which these are both zero:
 
 ```sql
 -- no open relay-paid row left (an unknown row with a payment and no route is a relay row still being reconciled)
@@ -208,9 +261,9 @@ select count(*) from sv_inference
 where created_at > now() - interval '7 days' and receipt->'payment' is not null and receipt->>'route' is distinct from 'blockrun';
 ```
 
-Both zero, and a week of `route = blockrun` rows behind you: OpenRouter credit can go. Keep the relay container running
-anyway until the open rows are gone; it costs nothing without traffic. Removing it altogether is a later change (the
-supervisor still requires `INFERENCE_PROVIDER_URL` and `INFERENCE_PAYTO_ADDRESS` in its config).
+Only then can the key's credit go. Keep the relay container running anyway until the open rows are gone; it costs
+nothing without traffic. Removing it altogether is a later change (the supervisor still requires
+`INFERENCE_PROVIDER_URL` and `INFERENCE_PAYTO_ADDRESS` in its config).
 
 ## 7. Rollback
 
@@ -242,7 +295,8 @@ with `{"by": <creator>, "model": ...}`). Claude, OpenAI and the renamed Gemini a
 | Piece | File |
 | --- | --- |
 | The catalog (ids, names, roles, schemes, prices, caps, retired ids) | `packages/agent-core/src/models/catalog.ts` |
-| Direct payment, `model_missing`, pictures over BlockRun's image API | `apps/supervisor/src/blockrun.ts` |
+| Direct payment, `model_missing`, pictures over BlockRun's image API (only with `BLOCKRUN_IMAGE_ROUTE=direct`) | `apps/supervisor/src/blockrun.ts` |
+| Pictures on the relay, the 24 h picture hold after a refused account, the price per route | `apps/supervisor/src/images.ts`, `apps/supervisor/src/image-models.ts`, `apps/supervisor/src/picture-hint.ts` |
 | The migration and its admin route | `apps/supervisor/src/model-migration.ts`, `POST /internal/admin/model-migration` |
 | The catalog check at start and on demand | `apps/supervisor/src/model-check.ts`, `POST /internal/admin/model-check`, `GET /health` |
 | Creator notices `model_changed`, `model_unavailable` | `apps/supervisor/src/notifications.ts` |

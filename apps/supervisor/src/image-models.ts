@@ -1,13 +1,15 @@
 /**
  * The image models a creator may pick (`imageModel` in the agent config) and what one picture costs on each.
  *
- * In direct mode (blockrun.ts) the list is the model catalog's image models (`@bootr/agent-core`), each at BlockRun's
- * fixed price per picture plus its per-call fee: no listing is fetched. Agents still on the relay read the relay's
- * `GET /v1/models` entries whose `output_modalities` include `image`, with their pricing (apps/inference/src/pricing.ts
- * prices them; the listing carries the relay's margin too), cached a few minutes per process; when the relay cannot be
- * reached the built-in list and its prices of 2026-11-04 stand in, marked as such, so the console and the turn keep working.
+ * The list follows the route a picture takes (`picturesOnBlockRun`). Pictures on the relay, the default whatever direct
+ * mode says (BLOCKRUN_IMAGE_ROUTE=relay): the relay's `GET /v1/models` entries whose `output_modalities` include `image`,
+ * with their pricing (apps/inference/src/pricing.ts prices them; the listing carries the relay's margin too), cached a
+ * few minutes per process; when the relay cannot be reached the built-in list and its prices of 2026-11-04 stand in,
+ * marked as such, so the console and the turn keep working. Pictures on BlockRun (BLOCKRUN_IMAGE_ROUTE=direct with
+ * direct mode on for the agent): the model catalog's image models (`@bootr/agent-core`), each at BlockRun's fixed price
+ * per picture plus its per-call fee; no listing is fetched.
  */
-import { BLOCKRUN_CALL_FEE_MICRO_USDC, catalogModel, imageModels, relayModelId } from '@bootr/agent-core';
+import { BLOCKRUN_CALL_FEE_MICRO_USDC, directModelId, imageModels, RELAY_DEFAULT_MARGIN, RELAY_IMAGE_PRICES_FALLBACK, RELAY_PICTURE_PROMPT_TOKENS, RELAY_PICTURE_TEXT_TOKENS, relayModelId, relayPictureMicroUsdc } from '@bootr/agent-core';
 import { directEnabled } from './blockrun.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 
@@ -33,15 +35,11 @@ export interface RelayImageCatalog {
   live: boolean;
 }
 
-/** The relay's image models as of 2026-11-04 (apps/inference/src/pricing.ts); the relay's own list wins when it answers. */
+/** The relay's image models as of 2026-11-04 (agent-core `RELAY_IMAGE_PRICES_FALLBACK`); the relay's own list wins when it answers. */
 export const FALLBACK_IMAGE_CATALOG: RelayImageCatalog = {
   live: false,
-  margin: { bps: 1000, fixedMicroUsdc: 100 },
-  models: [
-    { id: 'google/gemini-3-pro-image', inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120000, imageOutputTokensPerImage: 1120 },
-    { id: 'google/gemini-3.1-flash-image', inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, imageOutputMicroUsdcPerKTokens: 60000, imageOutputTokensPerImage: 1120 },
-    { id: 'openai/gpt-5.4-image-2', inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, imageOutputMicroUsdcPerKTokens: 30000, imageOutputTokensPerImage: 4160 },
-  ],
+  margin: { ...RELAY_DEFAULT_MARGIN },
+  models: RELAY_IMAGE_PRICES_FALLBACK.map((m) => ({ ...m })),
 };
 export const FALLBACK_IMAGE_MODELS: readonly string[] = FALLBACK_IMAGE_CATALOG.models.map((m) => m.id);
 
@@ -55,10 +53,11 @@ export const BLOCKRUN_IMAGE_CATALOG: RelayImageCatalog = {
 /**
  * Prompt tokens one picture request is billed for: the illustrator instructions, the prompt and the alt text (a few
  * hundred tokens) plus the style reference, which the relay prices as `IMAGE_INPUT_TOKENS_PER_IMAGE` (1600) prompt tokens.
+ * The figures live in agent-core (`relayPictureMicroUsdc`), where the web's console reads the same formula.
  */
-export const PICTURE_PROMPT_TOKENS = 2200;
+export const PICTURE_PROMPT_TOKENS = RELAY_PICTURE_PROMPT_TOKENS;
 /** Completion text tokens a picture answer carries besides the image (a sentence or two). */
-export const PICTURE_TEXT_TOKENS = 64;
+export const PICTURE_TEXT_TOKENS = RELAY_PICTURE_TEXT_TOKENS;
 
 const TTL_MS = 5 * 60_000;
 const TIMEOUT_MS = 5_000;
@@ -68,13 +67,19 @@ const cache = new WeakMap<object, { at: number; catalog: RelayImageCatalog }>();
 
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
 
+/** Whether pictures are bought from BlockRun for this agent (or, with no agent given, for the fleet as a whole). */
+export function picturesOnBlockRun(config: Pick<SupervisorContext['config'], 'BLOCKRUN_DIRECT_MODE' | 'BLOCKRUN_DIRECT_AGENTS' | 'BLOCKRUN_IMAGE_ROUTE'>, agent?: Pick<AgentRow, 'agentId'> | null): boolean {
+  if (config.BLOCKRUN_IMAGE_ROUTE !== 'direct') return false;
+  return agent ? directEnabled(config, agent.agentId) : config.BLOCKRUN_DIRECT_MODE === 'all';
+}
+
 /**
- * The image models this agent may draw with and their prices: the catalog at BlockRun's prices in direct mode (for every
- * agent with `all`, the named ones with `agents`; no agent given means the mode's general answer), else the relay's list,
- * or the built-in list (`live: false`) when the relay does not answer.
+ * The image models this agent may draw with and their prices: the catalog at BlockRun's prices when its pictures go to
+ * BlockRun (`picturesOnBlockRun`: BLOCKRUN_IMAGE_ROUTE=direct and direct mode on for it), else the relay's list, or the
+ * built-in list (`live: false`) when the relay does not answer.
  */
 export async function relayImageCatalog(ctx: Pick<SupervisorContext, 'config' | 'fetch' | 'now' | 'log'>, agent?: Pick<AgentRow, 'agentId'> | null): Promise<RelayImageCatalog> {
-  if (agent ? directEnabled(ctx.config, agent.agentId) : ctx.config.BLOCKRUN_DIRECT_MODE === 'all') return BLOCKRUN_IMAGE_CATALOG;
+  if (picturesOnBlockRun(ctx.config, agent)) return BLOCKRUN_IMAGE_CATALOG;
   const hit = cache.get(ctx.config);
   if (hit && ctx.now() - hit.at < TTL_MS) return hit.catalog;
   try {
@@ -104,11 +109,12 @@ export async function relayImageModels(ctx: Pick<SupervisorContext, 'config' | '
 }
 
 /**
- * The names a stored id goes by in a list: itself, the relay's name for the same model (`relayModelId`) and its catalog
- * id, so a config written under either naming finds its entry on either route.
+ * The names a stored id goes by in a list: itself, its catalog id, and the relay's name for that catalog model
+ * (`relayModelId`), so a config written under either naming finds its entry on either route.
  */
 function namesOf(id: string): string[] {
-  return [...new Set([id, relayModelId(id), catalogModel(id)?.id ?? id])];
+  const catalog = directModelId(id) ?? id;
+  return [...new Set([id, catalog, relayModelId(catalog)])];
 }
 
 function findIn(models: readonly RelayImageModel[], id: string): RelayImageModel | null {
@@ -138,12 +144,7 @@ export function imageTokensPerImage(catalog: RelayImageCatalog, id: string): num
 export function picturePriceMicroUsdc(model: RelayImageModel, margin: RelayImageCatalog['margin'] = FALLBACK_IMAGE_CATALOG.margin): number | null {
   // A fixed price per picture (BlockRun): the price plus the margin, which there is its flat fee.
   if (typeof model.perImageMicroUsdc === 'number') return Math.ceil(model.perImageMicroUsdc + (model.perImageMicroUsdc * margin.bps) / 10_000 + margin.fixedMicroUsdc);
-  if (model.imageOutputMicroUsdcPerKTokens === null || model.imageOutputTokensPerImage === null) return null;
-  const image = (model.imageOutputMicroUsdcPerKTokens * model.imageOutputTokensPerImage) / 1000;
-  const input = ((model.inputMicroUsdcPerKTokens ?? 0) * PICTURE_PROMPT_TOKENS) / 1000;
-  const text = ((model.outputMicroUsdcPerKTokens ?? 0) * PICTURE_TEXT_TOKENS) / 1000;
-  const cost = image + input + text;
-  return Math.ceil(cost + (cost * margin.bps) / 10_000 + margin.fixedMicroUsdc);
+  return relayPictureMicroUsdc(model, margin);
 }
 
 export interface PicturePrice {

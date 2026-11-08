@@ -21,7 +21,9 @@
  *    BLOCKRUN_PAYTO_ADDRESS can be paid. BlockRun documents that `upto` settles the real cost; measured on 2026-11-06 it
  *    settled the whole ceiling, which is still below the relay's charge. Non-Claude models offer `exact` only.
  *
- * Pictures use BlockRun's image API (`exact`, a fixed price), translated here into the chat shape `images.ts` reads.
+ * Pictures stay on the relay (OpenRouter) unless BLOCKRUN_IMAGE_ROUTE says `direct`: then they use BlockRun's image API
+ * (`exact`, a fixed price), translated here into the chat shape `images.ts` reads. The owner's decision of 2026-11-08:
+ * thoughts and chat pay BlockRun, pictures keep paying the relay, so OpenRouter stays funded for pictures alone.
  */
 import { catalogModel, retiredModelIds } from '@bootr/agent-core';
 import { createX402Payer, X402PaymentRefusedError, type BootrReceipt, type PayerScheme } from '@bootr/inference/client';
@@ -74,6 +76,11 @@ export function directEnabled(config: Pick<DirectConfig, 'BLOCKRUN_DIRECT_MODE' 
   return config.BLOCKRUN_DIRECT_AGENTS.split(',').map((s) => s.trim()).includes(agentId);
 }
 
+/** Whether this agent's pictures go to BlockRun's image API: direct mode on for it, and BLOCKRUN_IMAGE_ROUTE set to `direct`. */
+export function directPictures(config: Pick<DirectConfig, 'BLOCKRUN_DIRECT_MODE' | 'BLOCKRUN_DIRECT_AGENTS' | 'BLOCKRUN_IMAGE_ROUTE'>, agentId: string): boolean {
+  return config.BLOCKRUN_IMAGE_ROUTE === 'direct' && directEnabled(config, agentId);
+}
+
 /**
  * Retired text-model ids with the catalog model that takes their place (`@bootr/agent-core` MODEL_CATALOG: the same model
  * under BlockRun's name, or the closest model BlockRun serves). Without an entry an agent on such a model could never
@@ -116,10 +123,12 @@ export function directBody(config: Pick<DirectConfig, 'BLOCKRUN_PROMPT_CACHE'>, 
   };
 }
 
-/** Where a new call goes: BlockRun, the relay (direct mode off, or a recent failure with the fallback on), or nowhere yet. */
+/** Where a new call goes: BlockRun, the relay (direct mode off, a picture with pictures on the relay, or a recent failure with the fallback on), or nowhere yet. */
 export type DirectRoute = { route: 'direct' } | { route: 'relay' } | { route: 'wait'; error: string };
 
-export async function directRoute(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>): Promise<DirectRoute> {
+export async function directRoute(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, call: { picture?: boolean } = {}): Promise<DirectRoute> {
+  // A picture with BLOCKRUN_IMAGE_ROUTE=relay never looks at BlockRun, its holds or the fallback: those are about thoughts.
+  if (call.picture && ctx.config.BLOCKRUN_IMAGE_ROUTE !== 'direct') return { route: 'relay' };
   if (!directEnabled(ctx.config, agent.agentId)) return { route: 'relay' };
   const since = new Date(ctx.now() - ctx.config.BLOCKRUN_HOLD_MS);
   const recent = await ctx.db

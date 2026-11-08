@@ -911,7 +911,7 @@ export const mock = {
           { model: cfg.model, thoughts: turns, chargedMicroUsdc: String(turns * 9_400), directThoughts: turns },
         ]
       : [{ model: cfg.model, thoughts: turns * 5, chargedMicroUsdc: String(turns * 5 * 9_400), directThoughts: turns * 5 }];
-    return { days, since, firstAt: since, byModel, paidTo: 'blockrun' };
+    return { days, since, firstAt: since, byModel, paidTo: 'blockrun', picturesPaidTo: 'bootr' };
   },
   /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
   agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {

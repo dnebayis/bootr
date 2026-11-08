@@ -328,6 +328,11 @@ export interface AgentFuel {
   byModel: { model: string; thoughts: number; chargedMicroUsdc: string; paidFailures?: number; directThoughts?: number }[];
   /** Who the agent paid for its thoughts in the window: BlockRun from its own wallet, Bootr's own service, or nobody yet (absent from older readers). */
   paidTo?: 'blockrun' | 'bootr' | null;
+  /**
+   * Who its pictures are paid to: from the window's picture rows when there are any, else from the route pictures take
+   * (Bootr's own service by default, BlockRun only when the platform sends pictures there); null when nothing was paid yet.
+   */
+  picturesPaidTo?: 'blockrun' | 'bootr' | null;
 }
 
 // ---------------------------------------------------------------- post approval queue (supervisor, via /api/agent/[kernel]/approvals/*)

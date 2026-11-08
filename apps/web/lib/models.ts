@@ -6,6 +6,7 @@
 import {
   BLOCKRUN_CALL_FEE_MICRO_USDC,
   BLOCKRUN_MIN_QUOTE_MICRO_USDC,
+  catalogModel,
   DEFAULT_MIND_MODEL,
   DEFAULT_PLATFORM_IMAGE_MODEL,
   imageModels,
@@ -13,10 +14,16 @@ import {
   MODEL_VENDORS,
   modelDisplayName,
   pictureQuoteMicroUsdc,
+  RELAY_DEFAULT_MARGIN,
+  RELAY_IMAGE_PRICES_FALLBACK,
+  RELAY_PICTURE_PROMPT_TOKENS,
+  RELAY_PICTURE_TEXT_TOKENS,
+  relayPictureMicroUsdc,
   THOUGHT_SIZE,
   thoughtQuoteMicroUsdc,
   vendorName,
   type CatalogModel,
+  type RelayImagePrice,
 } from '@bootr/agent-core';
 
 export type ModelOption = {
@@ -44,8 +51,13 @@ export type ImageModelOption = {
 };
 
 export type ImageModelsResponse = {
-  source: 'blockrun';
-  image: typeof IMAGE;
+  /**
+   * Where the image list and its prices come from: `blockrun` (the catalog's fixed prices, pictures bought from BlockRun),
+   * `relay` (the relay's own list, pictures bought through Bootr's relay: the default route) or `fallback` (the relay's
+   * built-in list because its live list could not be read).
+   */
+  source: 'blockrun' | 'relay' | 'fallback';
+  image: typeof IMAGE | typeof RELAY_IMAGE;
   models: ImageModelOption[];
 };
 
@@ -63,6 +75,8 @@ export const THOUGHT = THOUGHT_SIZE;
 
 /** One picture = one `generate_image` call at BlockRun's fixed price per picture (no token arithmetic). */
 export const IMAGE = { promptTokens: 0, outputTokens: 0 } as const;
+/** One picture on the relay: the prompt with its style reference and a sentence of text, next to the picture's own tokens (agent-core `relayPictureMicroUsdc`). */
+export const RELAY_IMAGE = { promptTokens: RELAY_PICTURE_PROMPT_TOKENS, outputTokens: RELAY_PICTURE_TEXT_TOKENS } as const;
 
 /** What BlockRun adds to every call: a flat fee, and a floor under the smallest quote (micro-USDC). */
 export const BLOCKRUN_FEES = { callFeeMicroUsdc: BLOCKRUN_CALL_FEE_MICRO_USDC, minQuoteMicroUsdc: BLOCKRUN_MIN_QUOTE_MICRO_USDC } as const;
@@ -78,6 +92,32 @@ export function thoughtPriceUsd(p: TokenPrice): number {
 export function imagePriceUsd(perImageMicroUsdc: number): number {
   return pictureQuoteMicroUsdc({ price: { perImageMicroUsdc } })! / 1_000_000;
 }
+
+/** The relay's price for one picture (the same formula the supervisor tells the agent), or null when the entry carries no image price. */
+export function relayImagePriceUsd(price: RelayImagePrice, margin: { bps: number; fixedMicroUsdc: number } = RELAY_DEFAULT_MARGIN): number | null {
+  const micro = relayPictureMicroUsdc(price, margin);
+  return micro === null ? null : micro / 1_000_000;
+}
+
+/**
+ * The relay's image models as picker options: each under its catalog id (what the console stores and the supervisor
+ * accepts), labelled by its catalog name, priced the relay's way. A relay model the catalog does not know keeps its own id.
+ */
+export function relayImageOptions(models: readonly (RelayImagePrice & { id: string })[], margin: { bps: number; fixedMicroUsdc: number } = RELAY_DEFAULT_MARGIN): ImageModelOption[] {
+  const seen = new Set<string>();
+  const out: ImageModelOption[] = [];
+  for (const m of models) {
+    const known = catalogModel(m.id);
+    const id = known?.role === 'image' ? known.id : m.id;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: modelDisplayName(id), provider: known ? vendorName(known.vendor) : providerName(id), pricePerImageUsd: relayImagePriceUsd(m, margin) });
+  }
+  return out;
+}
+
+/** The relay's image list when its live list cannot be read: the prices of 2026-11-04 (agent-core `RELAY_IMAGE_PRICES_FALLBACK`). */
+export const FALLBACK_RELAY_IMAGE_MODELS: readonly ImageModelOption[] = relayImageOptions(RELAY_IMAGE_PRICES_FALLBACK);
 
 /** Provider display order in the picker; ids are `<vendor>/<model>`. */
 export const PROVIDERS: readonly { vendor: string; name: string }[] = MODEL_VENDORS;

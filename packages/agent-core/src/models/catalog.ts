@@ -218,6 +218,51 @@ export function pictureQuoteMicroUsdc(model: Pick<CatalogModel, 'price'>): numbe
   return model.price.perImageMicroUsdc + BLOCKRUN_CALL_FEE_MICRO_USDC;
 }
 
+/**
+ * The relay's price of one picture (pictures stay on the relay unless the supervisor's BLOCKRUN_IMAGE_ROUTE says
+ * `direct`): what the relay's `GET /v1/models` lists for the model, as the relay charges it. The picture's own output
+ * tokens at the image rate, the prompt at the input rate (RELAY_PICTURE_PROMPT_TOKENS: the instructions, the prompt,
+ * the alt text and the style reference the relay prices as 1600 prompt tokens), a sentence of text at the output rate
+ * (RELAY_PICTURE_TEXT_TOKENS), plus the relay's margin. The supervisor's picture hint and the web's console both read
+ * this one formula, so the agent and the creator see the same number. Null when the entry carries no image price.
+ */
+export const RELAY_PICTURE_PROMPT_TOKENS = 2200;
+export const RELAY_PICTURE_TEXT_TOKENS = 64;
+
+export interface RelayImagePrice {
+  /** Micro-USDC per 1K prompt tokens; null when the listing gave no price. */
+  inputMicroUsdcPerKTokens: number | null;
+  /** Micro-USDC per 1K completion (text) tokens; null when the listing gave no price. */
+  outputMicroUsdcPerKTokens: number | null;
+  /** Micro-USDC per 1K image output tokens; null when the listing gave no price. */
+  imageOutputMicroUsdcPerKTokens: number | null;
+  /** Output tokens the relay bills one picture as; null when the listing gave no figure. */
+  imageOutputTokensPerImage: number | null;
+}
+
+/** The relay's margin on every quote: basis points and a fixed amount in micro-USDC (its defaults as of 2026-11-04). */
+export const RELAY_DEFAULT_MARGIN = { bps: 1000, fixedMicroUsdc: 100 } as const;
+
+export function relayPictureMicroUsdc(price: RelayImagePrice, margin: { bps: number; fixedMicroUsdc: number } = RELAY_DEFAULT_MARGIN): number | null {
+  if (price.imageOutputMicroUsdcPerKTokens === null || price.imageOutputTokensPerImage === null) return null;
+  const image = (price.imageOutputMicroUsdcPerKTokens * price.imageOutputTokensPerImage) / 1000;
+  const input = ((price.inputMicroUsdcPerKTokens ?? 0) * RELAY_PICTURE_PROMPT_TOKENS) / 1000;
+  const text = ((price.outputMicroUsdcPerKTokens ?? 0) * RELAY_PICTURE_TEXT_TOKENS) / 1000;
+  const cost = image + input + text;
+  return Math.ceil(cost + (cost * margin.bps) / 10_000 + margin.fixedMicroUsdc);
+}
+
+/**
+ * The relay's image models and prices as of 2026-11-04 (apps/inference/src/pricing.ts), under the relay's own names:
+ * what the supervisor and the web fall back to when the relay's `GET /v1/models` cannot be read. The relay's live list
+ * wins whenever it answers.
+ */
+export const RELAY_IMAGE_PRICES_FALLBACK: readonly (RelayImagePrice & { id: string })[] = [
+  { id: 'google/gemini-3-pro-image', inputMicroUsdcPerKTokens: 2000, outputMicroUsdcPerKTokens: 12000, imageOutputMicroUsdcPerKTokens: 120000, imageOutputTokensPerImage: 1120 },
+  { id: 'google/gemini-3.1-flash-image', inputMicroUsdcPerKTokens: 500, outputMicroUsdcPerKTokens: 3000, imageOutputMicroUsdcPerKTokens: 60000, imageOutputTokensPerImage: 1120 },
+  { id: 'openai/gpt-5.4-image-2', inputMicroUsdcPerKTokens: 8000, outputMicroUsdcPerKTokens: 15000, imageOutputMicroUsdcPerKTokens: 30000, imageOutputTokensPerImage: 4160 },
+];
+
 /** One entry of BlockRun's `GET /v1/models`, as far as the check reads it (USD per million tokens, or per image). */
 export interface LiveModel {
   id: string;

@@ -10,16 +10,26 @@
  * palette without copying it; `imageStyle.notes` are the creator's words on top ("flat colours, no text").
  *
  * Before any money moves, in this order, each free: the hard rules on the prompt and alt text (image-rules.ts), the
- * "never on request" rule against the messages received this turn, the daily cap, and the fuel check (a picture must
- * leave the agent its thoughts, fuel.ts). Every failure is logged with its reason, without the picture bytes, so an
- * operator sees in the log why a picture did not happen; the model gets the same reason and what to do instead.
+ * "never on request" rule against the messages received this turn, the picture hold (below), the daily cap, and the
+ * fuel check (a picture must leave the agent its thoughts, fuel.ts). Every failure is logged with its reason, without
+ * the picture bytes, so an operator sees in the log why a picture did not happen; the model gets the same reason and
+ * what to do instead.
+ *
+ * The route. Pictures stay on the relay unless BLOCKRUN_IMAGE_ROUTE says `direct` (blockrun.ts), so they need the
+ * relay's OpenRouter credit even when every thought pays BlockRun. The relay pays itself first (`exact`) and only then
+ * asks OpenRouter, so when OpenRouter refuses the relay's own account (402 no credit, 403 the key refused, 401) the
+ * first picture is already paid and sits at the relay as a credit for its key. That first refusal starts the picture
+ * hold: for PICTURE_HOLD_MS no agent buys a picture on the relay (refused here, before any payment, with the plain
+ * words PICTURES_UNAVAILABLE_MESSAGE), the owner has one error line in the log, and `/health` shows `pictureHold`. The
+ * hold is read from `sv_inference` (an image row marked PICTURES_UNAVAILABLE inside the window), so it survives a restart.
  */
 import { DEFAULT_COIN_IMAGE_MODEL as CATALOG_COIN_IMAGE_MODEL, DEFAULT_PLATFORM_IMAGE_MODEL, imageStyleSchema, maxQuoteFor, relayModelId, type AgentConfig, type ImageStyle, type PendingAction, type ToolInput } from '@bootr/agent-core';
 import { and, count, desc, eq, gte, like, ne, sql } from 'drizzle-orm';
+import { directPictures } from './blockrun.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { images, inference } from './db/schema.js';
 import { pictureFuelCheck } from './fuel.js';
-import { imageTokensPerImage, picturePriceFor, relayImageCatalog } from './image-models.js';
+import { imageModelEntry, imageTokensPerImage, picturePriceFor, relayImageCatalog } from './image-models.js';
 import { imagePromptRisk, pictureRequested, REQUESTED_MESSAGE } from './image-rules.js';
 import { relayRequest } from './inference.js';
 
@@ -55,6 +65,15 @@ export const IMAGE_TOKENS_PER_IMAGE: Readonly<Record<string, number>> = {
 };
 export const MAX_KNOWN_IMAGE_TOKENS = Math.max(...Object.values(IMAGE_TOKENS_PER_IMAGE));
 export const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+
+/** The relay could not buy the picture from its provider: the relay's own account was refused (`sv_inference.error` prefix). */
+export const PICTURES_UNAVAILABLE = 'relay_pictures_unavailable';
+/** How long no agent buys a picture on the relay after such a refusal: the rest of the day. */
+export const PICTURE_HOLD_MS = 24 * 60 * 60 * 1000;
+/** What the model is told, and what the picture hint says, while the hold lasts. */
+export const PICTURES_UNAVAILABLE_MESSAGE = 'no picture right now: pictures are unavailable today, continue without one';
+/** Provider statuses that are about the relay's account, not about this request: no credit (402), the key refused (401, 403). */
+const ACCOUNT_REFUSALS: ReadonlySet<number> = new Set([401, 402, 403]);
 export type ImageMime = (typeof IMAGE_MIMES)[number];
 
 export interface StoredImage {
@@ -157,6 +176,27 @@ export async function imagesLeftToday(ctx: SupervisorContext, agentId: string): 
   return Math.max(0, MAX_IMAGES_PER_DAY - made);
 }
 
+export interface PictureHold {
+  until: number;
+  /** The stored error that started it, with the provider's status. */
+  error: string;
+}
+
+/**
+ * The fleet-wide picture hold: the latest image row the relay's provider refused inside PICTURE_HOLD_MS, if any. One
+ * refusal is enough, because the relay's account is the same for every agent.
+ */
+export async function pictureHold(ctx: Pick<SupervisorContext, 'db' | 'now'>): Promise<PictureHold | null> {
+  const since = new Date(ctx.now() - PICTURE_HOLD_MS);
+  const [row] = await ctx.db
+    .select({ error: inference.error, at: inference.updatedAt })
+    .from(inference)
+    .where(and(like(inference.idempotencyKey, 'image:%'), like(inference.error, `${PICTURES_UNAVAILABLE}%`), gte(inference.updatedAt, since)))
+    .orderBy(desc(inference.updatedAt))
+    .limit(1);
+  return row ? { until: row.at.getTime() + PICTURE_HOLD_MS, error: row.error ?? PICTURES_UNAVAILABLE } : null;
+}
+
 /** When the agent last stored a picture, or null. */
 export async function lastImageAt(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<number | null> {
   const row = await ctx.db.select({ at: images.createdAt }).from(images).where(eq(images.agentId, agentId)).orderBy(desc(images.createdAt)).limit(1);
@@ -200,6 +240,11 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
   if (risk) return refuse(risk.message);
   if (opts.receivedTexts && pictureRequested(opts.receivedTexts)) return refuse(REQUESTED_MESSAGE);
 
+  // On the relay (the default route), a picture the relay's provider refused earlier today holds every picture: nothing
+  // is bought, a resumed action spends nothing more, and its credit stays at the relay for its key.
+  const onRelay = !directPictures(ctx.config, agent.agentId);
+  if (onRelay && (await pictureHold(ctx))) return refuse(PICTURES_UNAVAILABLE_MESSAGE);
+
   // The action's own key is left out: resuming it costs nothing, so the cap must not strand a credit.
   const key = `image:${pending.id}`;
   const made = Math.max(await imagesInWindow(ctx, agent.agentId), await paidImageAttempts(ctx, agent.agentId, key));
@@ -207,6 +252,8 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
 
   const model = imageModelOf(config);
   const catalog = await relayImageCatalog(ctx, agent);
+  // The relay refuses a model its price table lacks before any payment; saying so here is free and names the way out.
+  if (onRelay && !imageModelEntry(catalog, model)) return refuse(`image_model_unavailable: ${model} is not offered for pictures on this route; the creator can pick another image model in the console`);
   const price = picturePriceFor(catalog, model);
   if (price) {
     const fuel = await pictureFuelCheck(ctx, agent, price.microUsdc);
@@ -215,6 +262,15 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
 
   const request = imageRequest(model, input, imageStyleOf(config), imageTokensPerImage(catalog, model));
   const res = await relayRequest(ctx, agent, { key, cycle: opts.cycle ?? 0, request, maxQuoteMicroUsdc: BigInt(maxQuoteFor(model)) });
+  // The relay's provider refused the relay's own account (no credit, or the key): not this agent's doing and not fixed
+  // by trying again. The row is marked so `pictureHold` holds every picture for the day; a paid one keeps its credit at
+  // the relay under this key (status unknown). One error line for the owner; the model is told to go on without.
+  if (onRelay && (res.kind === 'credit' || res.kind === 'failed') && res.upstreamStatus !== undefined && ACCOUNT_REFUSALS.has(res.upstreamStatus)) {
+    const error = `${PICTURES_UNAVAILABLE}: the relay's provider answered ${res.upstreamStatus} (${res.error})`;
+    await ctx.db.update(inference).set({ error, updatedAt: new Date(ctx.now()) }).where(eq(inference.idempotencyKey, key));
+    log.error({ key, model, upstreamStatus: res.upstreamStatus, paid: res.kind === 'credit', holdUntil: new Date(ctx.now() + PICTURE_HOLD_MS).toISOString() }, 'the relay cannot buy pictures from OpenRouter (no credit, or the key refused); no agent buys a picture for 24 hours; fund OpenRouter');
+    return { kind: 'failed', error: withoutPicture(PICTURES_UNAVAILABLE_MESSAGE) };
+  }
   // A credit is resumed like an unknown outcome: the same action, so the same key and no second payment.
   if (res.kind === 'unknown' || res.kind === 'credit') return { kind: 'unknown', error: res.error };
   if (res.kind === 'failed') {

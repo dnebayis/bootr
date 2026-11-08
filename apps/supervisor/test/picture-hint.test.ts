@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { pictureFits } from '../src/fuel.js';
-import { BLOCKRUN_IMAGE_CATALOG, FALLBACK_IMAGE_CATALOG, imageModelEntry, picturePriceFor, picturePriceMicroUsdc, relayImageCatalog, usdcText } from '../src/image-models.js';
-import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL } from '../src/images.js';
+import { BLOCKRUN_IMAGE_CATALOG, FALLBACK_IMAGE_CATALOG, imageModelEntry, picturePriceFor, picturePriceMicroUsdc, picturesOnBlockRun, relayImageCatalog, usdcText } from '../src/image-models.js';
+import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, PICTURES_UNAVAILABLE_MESSAGE } from '../src/images.js';
 import { PICTURE_FITS, PICTURE_NEVER, PICTURE_SPACING_MS, pictureHint } from '../src/picture-hint.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, finishResponse, makeWorld, seedAgent } from './helpers.js';
@@ -76,9 +76,34 @@ describe('the price of a picture, from the relay\'s list', () => {
     }
   });
 
-  it('in direct mode the list is the catalog at BlockRun’s fixed prices plus its fee, and no relay is asked', async () => {
+  it('with direct mode on and pictures on the relay (the default route), the list is still the relay’s, at the relay’s prices', async () => {
     const w = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'all' } });
     try {
+      expect(w.ctx.config.BLOCKRUN_IMAGE_ROUTE).toBe('relay');
+      expect(picturesOnBlockRun(w.ctx.config, { agentId: AGENT_ID })).toBe(false);
+      expect(picturesOnBlockRun(w.ctx.config)).toBe(false);
+      // the test relay answers '{}' to GET /v1/models: the relay's built-in list stands in, never BlockRun's catalog
+      const catalog = await relayImageCatalog(w.ctx, { agentId: AGENT_ID });
+      expect(catalog).not.toBe(BLOCKRUN_IMAGE_CATALOG);
+      expect(catalog.live).toBe(false);
+      expect(catalog.models.map((m) => m.id)).toEqual(['google/gemini-3-pro-image', 'google/gemini-3.1-flash-image', 'openai/gpt-5.4-image-2']);
+      // a catalog id finds the relay's entry for the same model, priced the relay's way: Nano Banana 2 about 0.075, not BlockRun's 0.0955
+      expect(picturePriceFor(catalog, DEFAULT_COIN_IMAGE_MODEL)).toEqual({ microUsdc: 75_442, live: false });
+      expect(picturePriceFor(catalog, 'google/gemini-3.1-flash-image')).toEqual({ microUsdc: 75_442, live: false });
+      expect(picturePriceFor(catalog, DEFAULT_IMAGE_MODEL)).toEqual({ microUsdc: 153_625, live: false });
+      // a catalog model the relay does not serve has no price
+      expect(picturePriceFor(catalog, 'openai/gpt-image-1')).toBeNull();
+      expect(imageModelEntry(catalog, 'openai/gpt-image-1')).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('with BLOCKRUN_IMAGE_ROUTE=direct the list is the catalog at BlockRun’s fixed prices plus its fee, and no relay is asked', async () => {
+    const w = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'all', BLOCKRUN_IMAGE_ROUTE: 'direct' } });
+    try {
+      expect(picturesOnBlockRun(w.ctx.config, { agentId: AGENT_ID })).toBe(true);
+      expect(picturesOnBlockRun(w.ctx.config)).toBe(true);
       w.ctx.fetch = (() => {
         throw new Error('no listing is fetched in direct mode');
       }) as unknown as typeof fetch;
@@ -92,12 +117,20 @@ describe('the price of a picture, from the relay\'s list', () => {
       expect(picturePriceFor(catalog, DEFAULT_IMAGE_MODEL)).toEqual({ microUsdc: 106_000, live: true });
       expect(picturePriceFor(catalog, 'vendor/unknown')).toBeNull();
       // with `agents`, only the named agent is on the catalog
-      const some = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'agents', BLOCKRUN_DIRECT_AGENTS: '7' } });
+      const some = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'agents', BLOCKRUN_DIRECT_AGENTS: '7', BLOCKRUN_IMAGE_ROUTE: 'direct' } });
       try {
         expect(await relayImageCatalog(some.ctx, { agentId: '7' })).toBe(BLOCKRUN_IMAGE_CATALOG);
         expect((await relayImageCatalog(some.ctx, { agentId: '8' })).live).toBe(false);
+        expect(picturesOnBlockRun(some.ctx.config)).toBe(false);
       } finally {
         await some.close();
+      }
+      // the route alone does nothing without direct mode
+      const off = await makeWorld({ config: { BLOCKRUN_IMAGE_ROUTE: 'direct' } });
+      try {
+        expect((await relayImageCatalog(off.ctx, { agentId: AGENT_ID })).live).toBe(false);
+      } finally {
+        await off.close();
       }
     } finally {
       await w.close();
@@ -141,6 +174,8 @@ describe('pictureHint: steady and bounded', () => {
 
   it('never suggests when the cap or the fuel says no, nor without a due post', () => {
     expect(pictureHint({ ...base, leftToday: 0 })).toMatchObject({ suggested: false, reason: expect.stringMatching(/daily limit/) });
+    // the picture hold (the relay's provider refused its account today) wins over everything and says so in the words the tool result uses
+    expect(pictureHint({ ...base, held: true, config: { platform: true }, digestDue: true })).toMatchObject({ suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE, costUsdc: '0.08' });
     expect(pictureHint({ ...base, affordable: false })).toMatchObject({ suggested: false, reason: expect.stringMatching(/too little fuel/) });
     expect(pictureHint({ ...base, postDue: false })).toMatchObject({ suggested: false, reason: expect.stringMatching(/replies are words/) });
     // the cap wins over everything

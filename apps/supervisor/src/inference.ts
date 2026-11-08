@@ -45,8 +45,9 @@ export type InferenceResult =
 export type RelayResult =
   | { kind: 'ok'; key: string; body: Record<string, unknown>; receipt: BootrReceipt | null; replayed: boolean }
   | { kind: 'unknown'; key: string; error: string }
-  | { kind: 'credit'; key: string; error: string }
-  | { kind: 'failed'; key: string; error: string };
+  /** `upstreamStatus`: the HTTP status the relay's own provider answered, when the relay says so (`upstream_rejected`). */
+  | { kind: 'credit'; key: string; error: string; upstreamStatus?: number }
+  | { kind: 'failed'; key: string; error: string; upstreamStatus?: number };
 
 export interface RelayCall {
   /** Idempotency key at the relay and primary key of `sv_inference`; the same key is never paid for twice. */
@@ -198,7 +199,8 @@ export function relayBody(request: Record<string, unknown>): string {
  * Pays the relay for one request from the agent's spender, idempotently per `call.key`: a key already paid for
  * is replayed from `sv_inference` (or reconciled at the relay when its outcome is unknown) and never paid again.
  * Thoughts (`runInference`), chat (`chat.ts`) and images (`images.ts`) share this path; direct mode only ever takes
- * a call before any signature exists, so one key is never paid on both routes.
+ * a call before any signature exists, so one key is never paid on both routes. A picture goes to BlockRun only with
+ * BLOCKRUN_IMAGE_ROUTE=direct (blockrun.ts `directRoute`); by default it pays the relay whatever direct mode says.
  */
 export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call: RelayCall): Promise<RelayResult> {
   const { key, request } = call;
@@ -216,7 +218,7 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
   }
 
   await ctx.db.insert(inference).values({ idempotencyKey: key, agentId: agent.agentId, cycle: call.cycle, requestHash, request, status: 'pending', createdAt: now(), updatedAt: now() });
-  const route = await directRoute(ctx, agent);
+  const route = await directRoute(ctx, agent, { picture: request.modalities !== undefined });
   if (route.route === 'wait') {
     await ctx.db.update(inference).set({ status: 'failed', error: route.error, updatedAt: now() }).where(eq(inference.idempotencyKey, key));
     return { kind: 'failed', key, error: route.error };
@@ -292,11 +294,13 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
     return { kind: 'ok', key, body: body as Record<string, unknown>, receipt, replayed: res.headers.get('x-bootr-idempotent-replay') === 'true' };
   }
   const code = errorCode(res.status, body);
-  const relay = body as { status?: unknown; refundDue?: unknown; requestId?: unknown; chargedMicroUsdc?: unknown } | null;
+  const relay = body as { status?: unknown; refundDue?: unknown; requestId?: unknown; chargedMicroUsdc?: unknown; upstreamStatus?: unknown } | null;
+  // What the relay's provider answered when it refused the relay (`upstream_rejected`): 402 and 403 are the relay's own account, not this request.
+  const upstream = typeof relay?.upstreamStatus === 'number' && Number.isInteger(relay.upstreamStatus) ? { upstreamStatus: relay.upstreamStatus } : {};
   // Paid and kept as a credit (`upstream_rejected` or `upstream_failed_credited`): the row stays open, so only this key is retried.
   if (relay?.status === 'credit') {
     await ctx.db.update(inference).set({ status: 'unknown', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
-    return { kind: 'credit', key, error: code };
+    return { kind: 'credit', key, error: code, ...upstream };
   }
   // Paid and the attempts are spent (`credit_exhausted`): final for this key, and the operator owes the agent.
   if (relay?.refundDue === true) {
@@ -311,7 +315,7 @@ async function recordResponse(ctx: SupervisorContext, key: string, res: Response
     return { kind: 'unknown', key, error: code };
   }
   await ctx.db.update(inference).set({ status: 'failed', error: code, updatedAt: now }).where(eq(inference.idempotencyKey, key));
-  return { kind: 'failed', key, error: code };
+  return { kind: 'failed', key, error: code, ...upstream };
 }
 
 /** The x402 payment persisted by `onPayment` (`receipt.payment`), or null when nothing was ever signed. */

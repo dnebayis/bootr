@@ -160,8 +160,10 @@ services:
       # Pinata (image and metadata pinning from the launch form).
       PINATA_JWT: ${PINATA_JWT}
       SENDER_URL: http://sender:3002
-      # The model list for the launch form is fetched server-side from the relay.
+      # The image model list and prices for the creator console are read server-side from the relay while pictures go
+      # through it (BLOCKRUN_IMAGE_ROUTE unset or `relay`, the same setting as the supervisor's); minds come from the catalog.
       INFERENCE_URL: http://inference:3003
+      BLOCKRUN_IMAGE_ROUTE: ${BLOCKRUN_IMAGE_ROUTE:-}
       # The coin page's agent config and activity (/api/agent/[kernel]/config, /activity) come from the supervisor's
       # internal API, signed with the key the supervisor also holds.
       SUPERVISOR_URL: http://supervisor:3004
@@ -231,6 +233,8 @@ services:
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}
+      # Where pictures are bought: unset = relay (OpenRouter stays funded for pictures), direct = BlockRun's image API. The web reads it too.
+      BLOCKRUN_IMAGE_ROUTE: ${BLOCKRUN_IMAGE_ROUTE:-}
       BLOCKRUN_HOLD_MS: ${BLOCKRUN_HOLD_MS:-}
       BLOCKRUN_IMAGE_POLL_MS: ${BLOCKRUN_IMAGE_POLL_MS:-}
       INFERENCE_RETRY_OUTPUT_TOKENS: ${INFERENCE_RETRY_OUTPUT_TOKENS:-}
