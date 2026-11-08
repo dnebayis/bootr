@@ -46,6 +46,8 @@ test('a creator page needs no wallet, and the badge is only there with an accoun
 test('the creator changes the image shown on Bootr, and the page says others may keep the original', async ({ page }) => {
   await page.goto('/');
   await page.locator('main a[href^="/token/0x"]').first().click();
+  // The coin's image is on the creator console's Look tab.
+  await page.getByRole('tab', { name: 'Look' }).click();
   const form = page.getByTestId('coin-image-form');
   await expect(form).toContainText('wallets and other sites may still show the original');
   await expect(form.getByRole('button', { name: 'Save image' })).toBeDisabled();

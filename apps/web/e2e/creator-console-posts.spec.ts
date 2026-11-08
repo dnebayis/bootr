@@ -14,6 +14,7 @@ async function openConsole(page: Page) {
 
 test('posts per day: one control sets the budget, the note explains the cadence and the fuel, and a save records it', async ({ page }) => {
   const console_ = await openConsole(page);
+  await console_.getByRole('tab', { name: 'Posting' }).click();
   const block = console_.getByTestId('posts-per-day');
   const slider = block.locator('#console-posts-per-day');
   await expect(slider).toHaveValue('24');

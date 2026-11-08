@@ -9,6 +9,8 @@ async function openConsole(page: Page) {
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}/);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_).toBeVisible();
+  // The inbox, the review queue and the chat share the Inbox tab.
+  await console_.getByRole('tab', { name: 'Inbox' }).click();
   return console_;
 }
 

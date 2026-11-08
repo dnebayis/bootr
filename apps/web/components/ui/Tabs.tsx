@@ -54,8 +54,11 @@ const VariantContext = createContext<TabListVariant>('segment');
 
 const lists: Record<TabListVariant, string> = {
   segment: 'inline-flex rounded-sm border border-hairline p-0.5',
-  underline: 'flex gap-4 border-b border-hairline',
+  underline: 'flex border-b border-hairline',
 };
+
+/** The space between underline tabs: 16px, or 8px (`dense`) where six tabs must fit a 320px column. */
+const underlineGaps = { regular: 'gap-4', dense: 'gap-2' } as const;
 
 const tabs: Record<TabListVariant, string> = {
   segment:
@@ -63,11 +66,11 @@ const tabs: Record<TabListVariant, string> = {
   underline: 'relative -mb-px h-9 px-0.5 text-sm text-mute hover:text-ink data-active:text-ink data-active:shadow-[inset_0_-1px_0_var(--ink)]',
 };
 
-/** The `role="tablist"` container. Give it an `aria-label`. */
-export function TabList({ className, children, variant = 'segment', ...rest }: { 'aria-label'?: string; className?: string; children: ReactNode; variant?: TabListVariant }) {
+/** The `role="tablist"` container. Give it an `aria-label`. `dense` tightens the gap of underline tabs (the creator console's six tabs). */
+export function TabList({ className, children, variant = 'segment', dense, ...rest }: { 'aria-label'?: string; className?: string; children: ReactNode; variant?: TabListVariant; dense?: boolean }) {
   return (
     <VariantContext.Provider value={variant}>
-      <BaseTabs.List className={cn(lists[variant], className)} {...rest}>
+      <BaseTabs.List className={cn(lists[variant], variant === 'underline' && underlineGaps[dense ? 'dense' : 'regular'], className)} {...rest}>
         {children}
       </BaseTabs.List>
     </VariantContext.Provider>

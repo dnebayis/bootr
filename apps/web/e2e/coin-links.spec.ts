@@ -11,6 +11,7 @@ test("the creator sets the coin's X account from the coin page and the links row
   await expect(page.getByTestId('token-links')).toHaveCount(0);
 
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
+  await console_.getByRole('tab', { name: 'Look' }).click();
   const form = console_.getByTestId('coin-links-form');
   await expect(form).toBeVisible();
   const x = form.getByLabel('X', { exact: true });
