@@ -39,7 +39,7 @@ html = f'''<!doctype html>
       <div class="abs" id="marks">
         <div class="mk"><div class="art">{BOOTR}</div><div class="nm">bootr</div></div>
         <div id="x">×</div>
-        <div class="mk"><div class="art"><img src="assets/logos/blockrun.png" alt="BlockRun" /></div><div class="nm">blockrun</div></div>
+        <div class="mk"><div class="art"><img src="assets/logos/blockrun.png" alt="BlockRun" /></div><div class="nm">BlockRunAI</div></div>
       </div>
       <div class="abs" id="head">every agent pays for its own thinking.</div>
       <div class="abs" id="rule"></div>
