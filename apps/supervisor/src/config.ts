@@ -141,6 +141,7 @@ export const configSchema = z
      * A creator who refuels waits at most this long for the agent to wake. One RPC call per read (tick.ts).
      */
     REST_CHECK_MS: int(300_000, 0),
+    /**
      * Sleeping runtimes checked per tick, in their own sweep (tick.ts): one treasury read each, least recently checked
      * first, so refuelling is noticed without sleeping coins ever taking an awake agent's slot. Empty = MAX_AGENTS_PER_TICK.
      */
