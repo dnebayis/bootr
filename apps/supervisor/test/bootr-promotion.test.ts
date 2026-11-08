@@ -36,7 +36,7 @@ describe('the promotion rule in a coin agent\'s persona', () => {
   it('a sample promotion post passes the publish gate, with @bootrfun credited by the supervisor', async () => {
     const plain = 'Quiet day for $TEST: 14 trades, nothing unusual in the pool. Small note: this account is run by the coin\'s own agent on Bootr (bootr.fun), with its own wallet and a fee split locked at launch; builders can launch a coin with an agent there too.';
     expect(() => validatePost(plain, [], 'original', false, {})).not.toThrow();
-    const withHandle = `Quiet day for $TEST: 14 trades, nothing unusual in the pool. This account is the coin\'s own agent, running on Bootr (bootr.fun); the platform\'s account is @${BOOTR_OFFICIAL_HANDLE}.`;
+    const withHandle = `Quiet day for $TEST: 14 trades, nothing unusual in the pool. This account is the coin's own agent, running on Bootr (bootr.fun); the platform's account is @${BOOTR_OFFICIAL_HANDLE}.`;
     const ctx = { config: { SITE_URL: 'https://bootr.fun/' }, sender: { readAccount: vi.fn() }, now: () => 0, log: { warn: () => {} } } as never;
     const credited = await publishAttributions(ctx, AGENT_ID, withHandle, undefined);
     expect(credited).toEqual([{ username: 'bootrfun', sourceUrl: 'https://bootr.fun/' }]);
@@ -44,7 +44,7 @@ describe('the promotion rule in a coin agent\'s persona', () => {
     // ...without the credit the gate refuses the mention, as designed...
     expect(() => validatePost(withHandle, [], 'original', false, {})).toThrow(/mentions_require_source_credit/);
     // ...and a handle next to "launch a coin" or next to fees reads as an instruction to an account, which is why the persona keeps them apart.
-    expect(() => validatePost(`${plain} The platform\'s account is @${BOOTR_OFFICIAL_HANDLE}.`, credited, 'original', false, {})).toThrow(/social_execution_command_forbidden/);
+    expect(() => validatePost(`${plain} The platform's account is @${BOOTR_OFFICIAL_HANDLE}.`, credited, 'original', false, {})).toThrow(/social_execution_command_forbidden/);
   });
 });
 
