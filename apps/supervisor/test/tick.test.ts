@@ -352,3 +352,75 @@ describe('admin revoke is the kill switch', () => {
     }
   });
 });
+
+describe('chain reads per visit (the RPC key is shared with the indexer\'s block tail)', () => {
+  it('reads an agent in one multicall per visit, re-reads a sleeping one every REST_CHECK_MS, and wakes it on the refuel it then sees', async () => {
+    const w = await makeWorld({ chain: { usdc: 0n, spenderUsdc: 0n } });
+    try {
+      const agent = await seedAgent(w);
+      const pc = w.ctx.chain.publicClient as unknown as { multicall: (a: unknown) => Promise<unknown> };
+      const inner = pc.multicall.bind(pc);
+      let multicalls = 0;
+      pc.multicall = async (a) => {
+        multicalls += 1;
+        return inner(a);
+      };
+      const poolIdReads = () => w.state.calls.filter((c) => c.fn === 'deploymentInfo').length;
+      const guardianReads = () => w.state.calls.filter((c) => c.fn === 'agentInfo').length;
+
+      // Awake: one batch carries the guardian flag, the balances, the fees and the price; the pool id is read once.
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).toBe('sleeping');
+      expect(multicalls).toBe(1);
+      expect(poolIdReads()).toBe(1);
+      expect(guardianReads()).toBe(1);
+
+      // The first tick asleep still reads (a quick refuel is seen at once) and starts the rest clock.
+      w.setNow(w.ctx.now() + 60_000);
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).toBe('sleeping');
+      expect(multicalls).toBe(2);
+      expect(poolIdReads()).toBe(1);
+
+      // Within REST_CHECK_MS a sleeping agent costs the chain nothing, even when it was refuelled meanwhile.
+      w.state.usdc = 25_000_000n;
+      w.setNow(w.ctx.now() + 60_000);
+      const resting = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(resting).toMatchObject({ ran: false, skipped: 'sleeping', reasons: ['resting'] });
+      expect(multicalls).toBe(2);
+      expect(guardianReads()).toBe(2);
+      expect((await runtimeRow(w)).status).toBe('sleeping');
+
+      // Once the rest is over the read sees the fuel and the agent wakes.
+      w.setNow(w.ctx.now() + w.ctx.config.REST_CHECK_MS);
+      const woken = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(woken?.skipped).not.toBe('sleeping');
+      expect(multicalls).toBe(3);
+      expect((await runtimeRow(w)).status).not.toBe('sleeping');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a guardian-paused agent is re-read every REST_CHECK_MS, and unpauses on the read that sees it', async () => {
+    const w = await makeWorld({ chain: { paused: true } });
+    try {
+      const agent = await seedAgent(w);
+      const guardianReads = () => w.state.calls.filter((c) => c.fn === 'agentInfo').length;
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).toBe('guardian_paused');
+      // first tick paused: reads, starts the clock
+      w.setNow(w.ctx.now() + 60_000);
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).toBe('guardian_paused');
+      const reads = guardianReads();
+      w.state.paused = false;
+      w.setNow(w.ctx.now() + 60_000);
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).toBe('paused');
+      expect(guardianReads()).toBe(reads);
+      expect((await runtimeRow(w)).pausedBy).toBe('guardian');
+      w.setNow(w.ctx.now() + w.ctx.config.REST_CHECK_MS);
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.skipped).not.toBe('paused');
+      expect(guardianReads()).toBe(reads + 1);
+      expect((await runtimeRow(w)).pausedBy).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+});

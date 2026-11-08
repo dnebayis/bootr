@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
 import { and, asc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
-import { guardianAbi, kernelAbi } from './abi.js';
+import { kernelAbi } from './abi.js';
 import { agentDirectory } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
@@ -21,7 +21,7 @@ import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
 import { SenderError, type SenderInboxItem } from './sender-client.js';
-import { readTreasuryOnChain, reconcileOps, runFeePolicy } from './treasury.js';
+import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, type AgentChainState } from './treasury.js';
 
 export { SLEEP_USDC };
 
@@ -107,8 +107,43 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const config = agentConfigOf(agent);
     if (!config) return { ran: false, reasons: ['config_incomplete'], skipped: 'config_incomplete' };
 
+    // Admin revoke is the platform's kill switch: `guardian.revokeAllSessionKeys` bumps the kernel's valid nonce
+    // (and `revokeSessionKey` uninstalls the permission), which leaves the stored session key dead. Mirror that
+    // into a sticky operator pause so the agent stops ticking instead of failing every minute; a fresh install
+    // through the admin API clears it.
+    // Not within the first minutes after an install: right after the install transaction a lagging RPC node can
+    // still answer with the pre-install state (hook = 0), which looks exactly like `revokeSessionKey`.
+    const installedFor = agent.sessionKeyInstalledAt ? ctx.now() - agent.sessionKeyInstalledAt.getTime() : -1;
+    const checkRevocation = !!agent.permissionId && installedFor >= REVOKE_CHECK_GRACE_MS && runtime.pausedBy !== 'operator';
+
+    // A sleeping or paused agent has one question for the chain (was it refuelled, was it unpaused), asked every
+    // REST_CHECK_MS and not every tick: with 200 ms blocks the RPC key is the scarce resource, not the minute. Its
+    // receipts are still reconciled below, and its social line still goes out.
+    const state0 = runtime.state as unknown as AgentState;
+    const resting = runtime.status === 'sleeping' || runtime.status === 'paused';
+    const restDue = !resting || ctx.now() - (state0.chainCheckedAt ?? 0) >= ctx.config.REST_CHECK_MS;
+    if (resting && !restDue) {
+      await reconcileOps(ctx, agent).catch((err) => log.warn({ err }, 'treasury reconcile failed'));
+      runtime = await reconcilePending(ctx, agent, runtime);
+      if (runtime.status === 'sleeping' || runtime.status === 'paused') {
+        await postSocial(ctx, agent, config, runtime, runtime.status);
+        return { ran: false, reasons: ['resting'], skipped: runtime.status };
+      }
+    }
+
+    // One multicall for the agent's chain state: guardian pause, session-key revocation and the treasury (treasury.ts).
+    const chainState: AgentChainState | null = await readAgentChainState(ctx, agent, { permissionId: checkRevocation ? (agent.permissionId as Hex) : null }).catch((err) => {
+      log.warn({ err }, 'chain state read failed');
+      return null;
+    });
+    // A read that answered counts as the check; a refused one (rate limit) is asked again next tick.
+    if (resting && chainState?.treasury) {
+      await saveRuntime(ctx, agent.agentId, { state: { ...state0, chainCheckedAt: ctx.now() } as unknown as Record<string, unknown> });
+      runtime = { ...runtime, state: { ...state0, chainCheckedAt: ctx.now() } as unknown as Record<string, unknown> };
+    }
+
     // Guardian pause (creator, on-chain) mirrors into the runtime; an operator pause is sticky.
-    const info = await ctx.chain.publicClient.readContract({ address: ctx.chain.guardian, abi: guardianAbi, functionName: 'agentInfo', args: [agent.kernel as Address] }).catch(() => null);
+    const info = chainState?.info ?? null;
     if (info?.paused && runtime.pausedBy !== 'operator') {
       if (runtime.status !== 'paused') await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'guardian' });
       return { ran: false, reasons: ['guardian_paused'], skipped: 'guardian_paused' };
@@ -118,20 +153,10 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       runtime = { ...runtime, status: 'waiting', pausedBy: null };
     }
 
-    // Admin revoke is the platform's kill switch: `guardian.revokeAllSessionKeys` bumps the kernel's valid nonce
-    // (and `revokeSessionKey` uninstalls the permission), which leaves the stored session key dead. Mirror that
-    // into a sticky operator pause so the agent stops ticking instead of failing every minute; a fresh install
-    // through the admin API clears it.
-    // Not within the first minutes after an install: right after the install transaction a lagging RPC node can
-    // still answer with the pre-install state (hook = 0), which looks exactly like `revokeSessionKey`.
-    const installedFor = agent.sessionKeyInstalledAt ? ctx.now() - agent.sessionKeyInstalledAt.getTime() : -1;
-    if (agent.permissionId && installedFor >= REVOKE_CHECK_GRACE_MS && runtime.pausedBy !== 'operator') {
-      const revoked = await sessionKeyRevokedOnChain(ctx, agent.kernel as Address, agent.permissionId as Hex);
-      if (revoked) {
-        await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'operator' });
-        log.warn({ permissionId: agent.permissionId, reason: revoked }, 'session keys revoked on-chain; agent paused (operator)');
-        return { ran: false, reasons: ['keys_revoked'], skipped: 'keys_revoked' };
-      }
+    if (checkRevocation && chainState?.revoked) {
+      await saveRuntime(ctx, agent.agentId, { status: 'paused', pausedBy: 'operator' });
+      log.warn({ permissionId: agent.permissionId, reason: chainState.revoked }, 'session keys revoked on-chain; agent paused (operator)');
+      return { ran: false, reasons: ['keys_revoked'], skipped: 'keys_revoked' };
     }
 
     // 1. Reconcile money and pending effects (never re-send).
@@ -139,11 +164,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     runtime = await reconcilePending(ctx, agent, runtime);
     if (runtime.status === 'paused') return { ran: false, reasons: ['paused'], skipped: 'paused' };
 
-    // 2. Sleep rule: no inference without fuel; refuel detection on each tick.
-    const treasury = await readTreasuryOnChain(ctx, agent).catch((err) => {
-      log.warn({ err }, 'treasury read failed');
-      return null;
-    });
+    // 2. Sleep rule: no inference without fuel; refuel detection from the snapshot read above.
+    const treasury = chainState?.treasury ?? null;
+    if (chainState && !treasury) log.warn({ err: chainState.treasuryError }, 'treasury read failed');
     // An unknown balance is not an empty one: it neither puts an awake agent to sleep nor wakes a sleeping one, which
     // would otherwise reach the wake decision as `waiting` and could buy a turn with no fuel. Next tick reads again.
     if (!treasury && runtime.status === 'sleeping') {

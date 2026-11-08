@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { base } from 'viem/chains';
 import { afterEach, describe, expect, it } from 'vitest';
-import { defaultUnlessRateLimited, isRateLimited, RATE_LIMIT_DELAYS_MS, withRateLimitRetry } from '../src/rpc-retry.js';
+import { billingUnitsOf, createRpcCounter, defaultUnlessRateLimited, isRateLimited, RATE_LIMIT_DELAYS_MS, withRateLimitRetry } from '../src/rpc-retry.js';
 import { readTreasuryOnChain, runFeePolicy } from '../src/treasury.js';
 import { tick } from '../src/tick.js';
 import { registerAgent } from '../src/onboarding.js';
@@ -241,5 +241,20 @@ describe('registering a launch', () => {
     } finally {
       await w.close();
     }
+  });
+});
+
+describe('createRpcCounter', () => {
+  it('counts every request the transport sends (retries included), by method and in CDP billing units; a drain resets it', async () => {
+    const rpc = await cdpLike(1);
+    const counter = createRpcCounter();
+    const client = createPublicClient({ chain: base, transport: withRateLimitRetry(http(rpc.url), { sleep: async () => {}, random: () => 0, counter }) });
+    expect(await client.readContract({ address: ZERO_ADDRESS, abi: erc20Abi, functionName: 'balanceOf', args: [ZERO_ADDRESS] })).toBe(7n);
+    expect(counter.peek()).toEqual({ requests: { eth_call: 2 }, total: 2, bu: 60, rateLimited: 1 });
+    expect(counter.drain()).toEqual({ requests: { eth_call: 2 }, total: 2, bu: 60, rateLimited: 1 });
+    expect(counter.peek()).toEqual({ requests: {}, total: 0, bu: 0, rateLimited: 0 });
+    expect(billingUnitsOf('eth_getLogs')).toBe(100);
+    expect(billingUnitsOf('eth_getBlockByNumber')).toBe(100);
+    expect(billingUnitsOf('eth_getBalance')).toBe(30);
   });
 });

@@ -2,7 +2,7 @@ import { getAddresses, type ChainAddresses } from '@bootr/shared/addresses';
 import { createPublicClient, http, isAddressEqual, type Address, type Chain, type PublicClient, type Transport } from 'viem';
 import { base, baseSepolia } from 'viem/chains';
 import type { Config } from './config.js';
-import { withRateLimitRetry } from './rpc-retry.js';
+import { createRpcCounter, withRateLimitRetry, type RpcCounter } from './rpc-retry.js';
 
 export const CHAINLINK_ETH_USD: Record<number, Address> = {
   8453: '0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70',
@@ -27,6 +27,8 @@ export interface ChainContext {
   chain: Chain;
   chainId: 8453 | 84532;
   publicClient: PublicClient<Transport, Chain>;
+  /** What `publicClient` sent since the last drain (rpc-retry.ts); the tick and notifier lines log it. Absent on a mocked chain. */
+  rpc?: RpcCounter;
   addresses: ChainAddresses;
   /** `BootrLauncher` (`BOOTR_LAUNCHER_ADDRESS`): the Bootr-source launcher. */
   launcher: Address;
@@ -62,11 +64,13 @@ export function createChainContext(
   config: Pick<Config, 'CHAIN_ID' | 'RPC_URL' | 'BOOTR_LAUNCHER_ADDRESS' | 'BOOTR_CLANKER_LAUNCHER_ADDRESS' | 'BOOTR_GUARDIAN_ADDRESS' | 'RWAGMI_LAUNCHER_V3_ADDRESS' | 'RWAGMI_LOCKER_V3_ADDRESS' | 'CLANKER_LOCKER_ADDRESS' | 'CLANKER_FEE_LOCKER_ADDRESS'>,
 ): ChainContext {
   const chain = chainFor(config.CHAIN_ID);
-  const publicClient = createPublicClient({ chain, transport: withRateLimitRetry(http(config.RPC_URL)) });
+  const rpc = createRpcCounter();
+  const publicClient = createPublicClient({ chain, transport: withRateLimitRetry(http(config.RPC_URL), { counter: rpc }) });
   return {
     chain,
     chainId: config.CHAIN_ID as 8453 | 84532,
     publicClient,
+    rpc,
     addresses: getAddresses(config.CHAIN_ID),
     launcher: config.BOOTR_LAUNCHER_ADDRESS as Address,
     clankerLauncher: (config.BOOTR_CLANKER_LAUNCHER_ADDRESS as Address | undefined) ?? null,

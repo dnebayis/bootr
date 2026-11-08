@@ -86,6 +86,8 @@ export interface AgentState {
   announcedUpdates?: string[];
   /** The platform update the latest turn was shown: the only one a publish can mark announced (platform-updates.ts). */
   offeredUpdate?: string | null;
+  /** Epoch ms of the last chain read while sleeping or paused; the next one waits `REST_CHECK_MS` (tick.ts). */
+  chainCheckedAt?: number | null;
 }
 
 export function initialState(): AgentState {

@@ -235,6 +235,29 @@ describe('the notifier pass', () => {
     await w.close();
   });
 
+  it('reads the kernel USDC, the spender USDC, the deposit and the ETH in one multicall', async () => {
+    const w = await makeWorld({ chain: { usdc: 0n, spenderUsdc: 0n } });
+    await seedAgent(w);
+    w.ctx.telegram = null;
+    const pc = w.ctx.chain.publicClient as unknown as { multicall: (a: unknown) => Promise<unknown>; getBalance: () => Promise<bigint> };
+    const inner = pc.multicall.bind(pc);
+    let multicalls = 0;
+    pc.multicall = async (a) => {
+      multicalls += 1;
+      return inner(a);
+    };
+    pc.getBalance = async () => {
+      throw new Error('a separate balance request');
+    };
+    const before = w.state.calls.length;
+    expect(await notifierPass(w.ctx)).toEqual({ checked: 1, sent: 0, failed: 0 });
+    expect(multicalls).toBe(1);
+    expect(w.state.calls.slice(before).map((c) => c.fn).sort()).toEqual(['balanceOf', 'balanceOf', 'balanceOf', 'getEthBalance']);
+    const view = await notificationsView(w.ctx, { agentId: AGENT_ID, creator: CREATOR });
+    expect(view.items.map((i) => i.event)).toEqual(expect.arrayContaining(['fuel_low']));
+    await w.close();
+  });
+
   it('works without a bot token: the inbox fills and nothing fails', async () => {
     const w = await makeWorld({ chain: { usdc: 0n, spenderUsdc: 0n } });
     await seedAgent(w);

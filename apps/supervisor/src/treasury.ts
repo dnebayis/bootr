@@ -9,11 +9,11 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { encodeFunctionData, erc20Abi, formatUnits, getAbiItem, getAddress, isHex, pad, parseAbi, parseUnits, size, type Abi, type Address, type Hex } from 'viem';
-import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, type GasView } from './gas.js';
-import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
-import type { LaunchSource } from './chain.js';
-import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, type SerializedSessionPolicy } from './session-key.js';
+import { encodeFunctionData, erc20Abi, formatUnits, getAbiItem, getAddress, isHex, pad, parseUnits, size, zeroAddress, type Abi, type Address, type Hex } from 'viem';
+import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasView } from './gas.js';
+import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, guardianAbi, kernelAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
+import type { ChainContext, LaunchSource } from './chain.js';
+import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, validationId, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
@@ -106,14 +106,34 @@ const isPoolId = (v: unknown): v is Hex => typeof v === 'string' && isHex(v) && 
  * (the launcher answers zeros; a Clanker-era coin keeps nothing to settle on this locker).
  */
 export async function poolIdFor(ctx: SupervisorContext, agent: Pick<AgentRow, 'token'>): Promise<Hex | null> {
+  const known = poolIds(ctx.chain).get(agent.token.toLowerCase());
+  if (known !== undefined) return known;
   try {
     const info = await ctx.chain.publicClient.readContract({ address: ctx.chain.rwagmi.launcher, abi: rwagmiLauncherV3Abi, functionName: 'deploymentInfo', args: [agent.token as Address] });
-    return isPoolId(info.primaryPoolId) ? info.primaryPoolId : null;
+    const poolId = isPoolId(info.primaryPoolId) ? info.primaryPoolId : null;
+    // A launched coin's pool never changes, and a coin the launcher does not know stays unknown to it: both answers keep.
+    poolIds(ctx.chain).set(agent.token.toLowerCase(), poolId);
+    return poolId;
   } catch (err) {
     ctx.log.warn({ token: agent.token, err }, 'deploymentInfo read failed; using the indexer pool id');
     const market = await ctx.indexer.market(agent.token);
     return isPoolId(market?.poolId) ? market.poolId : null;
   }
+}
+
+/**
+ * Pool ids the chain answered, per chain context (so per process, and per test world): `deploymentInfo` was read on every
+ * snapshot, once a minute per agent and again after each fee op, for a value that is fixed at launch. Only what the
+ * chain said is kept; the indexer fallback is asked again next time.
+ */
+const POOL_IDS = new WeakMap<ChainContext, Map<string, Hex | null>>();
+function poolIds(chain: ChainContext): Map<string, Hex | null> {
+  let map = POOL_IDS.get(chain);
+  if (!map) {
+    map = new Map();
+    POOL_IDS.set(chain, map);
+  }
+  return map;
 }
 
 interface ContractRead {
@@ -125,9 +145,6 @@ interface ContractRead {
 
 type ReadResult = { status: 'success'; result: unknown } | { status: 'failure'; error: unknown };
 
-/** Same address on every chain we run on. Its `getEthBalance` puts the ETH balance in the batch. */
-const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a173976CA11';
-const multicall3BalanceAbi = parseAbi(['function getEthBalance(address addr) view returns (uint256 balance)']);
 
 /** The claimable-fee reads of one launch source: pending (pool side, null when there is nothing to read) and settled (payable) WETH, plus the pool id shown. */
 async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: LaunchSource): Promise<{ poolId: Hex | null; pending: ContractRead | null; settled: ContractRead }> {
@@ -147,12 +164,30 @@ async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: L
   return { poolId, pending, settled };
 }
 
+/** What the tick asks the chain about an agent besides its treasury, answered from the same multicall. */
+export interface AgentChainState {
+  /** The treasury snapshot, or null when one of its required reads failed (`treasuryError` says how). */
+  treasury: TreasurySnapshot | null;
+  treasuryError: unknown;
+  /** `AgentGuardian.agentInfo(kernel)`: whether the creator paused the agent. Null when the read failed. */
+  info: { paused: boolean } | null;
+  /**
+   * The stored session key's state on the kernel, when `permissionId` was given: `'nonce_bumped'` when the kernel's valid
+   * nonce passed the permission's install nonce (admin `revokeAllSessionKeys`), `'uninstalled'` when the permission has no
+   * hook any more (`revokeSessionKey`), null when the key is live, was not asked about, or could not be read (never pause
+   * on a read error).
+   */
+  revoked: 'nonce_bumped' | 'uninstalled' | null;
+}
+
 /**
- * One multicall for the whole snapshot, so it costs one RPC call and not ten, all from the same block. A contract that
- * reverts is told apart from a read that never happened: the coin balance and the fee reads default to 0 on a revert
- * as they always did, but a rate-limited read rejects, so the caller sees an unknown treasury and never a zero.
+ * One multicall for everything the tick reads about an agent, so a visit costs one RPC call and not five, all from the
+ * same block: the treasury snapshot (balances, gas, fees, ETH/USD), the guardian's pause flag and, with a `permissionId`,
+ * the session key's revocation state. A contract that reverts is told apart from a read that never happened: the coin
+ * balance and the fee reads default to 0 on a revert as they always did, but a rate-limited read rejects, so the caller
+ * sees an unknown treasury and never a zero. The guardian and kernel reads answer null on any failure.
  */
-export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRow): Promise<TreasurySnapshot> {
+export async function readAgentChainState(ctx: SupervisorContext, agent: AgentRow, opts: { permissionId?: Hex | null } = {}): Promise<AgentChainState> {
   const { publicClient, addresses } = ctx.chain;
   const kernel = agent.kernel as Address;
   const token = agent.token as Address;
@@ -169,7 +204,14 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
     own: bal(token),
     settled,
     price: { address: ctx.chain.ethUsdFeed, abi: chainlinkAggregatorAbi, functionName: 'latestRoundData' },
+    info: { address: ctx.chain.guardian, abi: guardianAbi as Abi, functionName: 'agentInfo', args: [kernel] },
     ...(pending ? { pending } : {}),
+    ...(opts.permissionId
+      ? {
+          validation: { address: kernel, abi: kernelAbi as Abi, functionName: 'validationConfig', args: [validationId(opts.permissionId)] },
+          nonce: { address: kernel, abi: kernelAbi as Abi, functionName: 'currentNonce' },
+        }
+      : {}),
   } satisfies Record<string, ContractRead>;
   const names = Object.keys(reads);
   const results = (await publicClient.multicall({ contracts: Object.values(reads) as never, allowFailure: true })) as unknown as ReadResult[];
@@ -184,29 +226,60 @@ export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRo
     if (!r) return 0n;
     return r.status === 'success' ? (r.result as bigint) : defaultUnlessRateLimited(0n)(r.error);
   };
-  const [eth, deposit, weth, usdc, spenderUsdc] = [required('eth'), required('deposit'), required('weth'), required('usdc'), required('spenderUsdc')];
-  const [own, pendingWeth, settledWeth] = [orZero('own'), orZero('pending'), orZero('settled')];
-  const round = resultOf('price')!;
-  const price = round.status === 'success' ? ethUsdFromRound(ctx, round.result as ChainlinkRound) : null;
-  const gas = gasReading({ deposit, balance: eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) });
-  const claimWeth = pendingWeth + settledWeth;
-  const wethHuman = Number(formatUnits(weth, 18));
-  return {
-    kernel,
-    spender,
-    source,
-    observedAt: new Date(ctx.now()).toISOString(),
-    balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
-    claimable: { weth: formatUnits(claimWeth, 18), pending: formatUnits(pendingWeth, 18), settled: formatUnits(settledWeth, 18), poolId, ...(source === 'clanker' ? { note: CLANKER_PENDING_NOTE } : {}) },
-    gas: gasView(gas),
-    ethUsd: price,
-    usd: {
-      usdc: Number(formatUnits(usdc, 6)),
-      spenderUsdc: Number(formatUnits(spenderUsdc, 6)),
-      weth: price ? wethHuman * price : 0,
-      claimableWeth: price ? Number(formatUnits(claimWeth, 18)) * price : 0,
-    },
+  const ok = <T>(name: string): T | null => {
+    const r = resultOf(name);
+    return r && r.status === 'success' ? (r.result as T) : null;
   };
+
+  const agentInfo = ok<{ paused: boolean }>('info');
+  const info = agentInfo ? { paused: Boolean(agentInfo.paused) } : null;
+  let revoked: AgentChainState['revoked'] = null;
+  if (opts.permissionId) {
+    const validation = ok<{ hook: Address; nonce: number | bigint }>('validation');
+    const nonce = ok<number | bigint>('nonce');
+    if (validation && nonce !== null) {
+      if (validation.hook === zeroAddress) revoked = 'uninstalled';
+      else if (BigInt(validation.nonce) < BigInt(nonce)) revoked = 'nonce_bumped';
+    }
+  }
+
+  let treasury: TreasurySnapshot | null = null;
+  let treasuryError: unknown = null;
+  try {
+    const [eth, deposit, weth, usdc, spenderUsdc] = [required('eth'), required('deposit'), required('weth'), required('usdc'), required('spenderUsdc')];
+    const [own, pendingWeth, settledWeth] = [orZero('own'), orZero('pending'), orZero('settled')];
+    const round = resultOf('price')!;
+    const price = round.status === 'success' ? ethUsdFromRound(ctx, round.result as ChainlinkRound) : null;
+    const gas = gasReading({ deposit, balance: eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) });
+    const claimWeth = pendingWeth + settledWeth;
+    const wethHuman = Number(formatUnits(weth, 18));
+    treasury = {
+      kernel,
+      spender,
+      source,
+      observedAt: new Date(ctx.now()).toISOString(),
+      balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
+      claimable: { weth: formatUnits(claimWeth, 18), pending: formatUnits(pendingWeth, 18), settled: formatUnits(settledWeth, 18), poolId, ...(source === 'clanker' ? { note: CLANKER_PENDING_NOTE } : {}) },
+      gas: gasView(gas),
+      ethUsd: price,
+      usd: {
+        usdc: Number(formatUnits(usdc, 6)),
+        spenderUsdc: Number(formatUnits(spenderUsdc, 6)),
+        weth: price ? wethHuman * price : 0,
+        claimableWeth: price ? Number(formatUnits(claimWeth, 18)) * price : 0,
+      },
+    };
+  } catch (err) {
+    treasuryError = err;
+  }
+  return { treasury, treasuryError, info, revoked };
+}
+
+/** The treasury snapshot alone (one multicall); rejects when a required read failed. */
+export async function readTreasuryOnChain(ctx: SupervisorContext, agent: AgentRow): Promise<TreasurySnapshot> {
+  const state = await readAgentChainState(ctx, agent);
+  if (!state.treasury) throw state.treasuryError;
+  return state.treasury;
 }
 
 export interface FundingBudget {
