@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactElement, ReactNode } from 'react';
+import type { ReactElement, ReactNode, RefObject } from 'react';
 import Link from 'next/link';
 import { Menu as BaseMenu } from '@base-ui-components/react/menu';
 import { cn } from './cn';
@@ -29,23 +29,33 @@ export function Menu({
   open,
   onOpenChange,
   className,
+  container,
 }: {
   /** The opener; must accept a ref and DOM event props (`Button` does). */
   trigger: ReactElement<Record<string, unknown>>;
   children: ReactNode;
+  /** Preferred side and alignment; the popup flips and shifts on its own to stay inside the viewport. */
   side?: 'top' | 'bottom' | 'left' | 'right';
   align?: 'start' | 'center' | 'end';
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   /** Extra classes for the popup (width, for example). */
   className?: string;
+  /**
+   * Where the popup is portalled; `<body>` by default. Pass the content element of a modal layer
+   * (the mobile drawer) when the trigger sits inside one, so the popup stays inside that layer's
+   * focus trap and outside-press detection instead of being treated as a press outside the layer.
+   */
+  container?: HTMLElement | null | RefObject<HTMLElement | null>;
 }) {
   return (
     <BaseMenu.Root open={open} onOpenChange={(o) => onOpenChange?.(o)} modal={false}>
       <BaseMenu.Trigger render={trigger} />
-      <BaseMenu.Portal>
+      <BaseMenu.Portal container={container}>
         <BaseMenu.Positioner side={side} align={align} sideOffset={6} className="z-50 outline-none">
-          <BaseMenu.Popup className={cn('min-w-48 rounded-md p-1 outline-none', floatSurface, fade, className)}>{children}</BaseMenu.Popup>
+          <BaseMenu.Popup className={cn('min-w-48 rounded-md p-1 outline-none', floatSurface, fade, className)}>
+            {children}
+          </BaseMenu.Popup>
         </BaseMenu.Positioner>
       </BaseMenu.Portal>
     </BaseMenu.Root>
@@ -75,6 +85,8 @@ export function MenuItem({
   className?: string;
   'aria-label'?: string;
   'data-testid'?: string;
+  /** Any other `data-*` hook for tests and styling (`data-connector`, for example). */
+  [data: `data-${string}`]: string | undefined;
 }) {
   const cls = cn(itemClass, destructive && 'text-negative-text', className);
   const render = href ? (

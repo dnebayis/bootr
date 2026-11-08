@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Drawer } from 'vaul';
 import { MenuIcon } from '@/components/ui/Icons';
 import { cn } from '@/components/ui/cn';
@@ -13,6 +13,9 @@ import { ThemeToggle } from './ThemeToggle';
 
 export function MobileNavView({ pathname }: { pathname: string | null }) {
   const [open, setOpen] = useState(false);
+  // The connect menu is portalled into the drawer (not <body>), so the drawer's focus trap and
+  // outside-press dismissal treat it as part of the drawer; it opens upward from the bottom button.
+  const content = useRef<HTMLDivElement>(null);
   return (
     <Drawer.Root open={open} onOpenChange={setOpen} direction="bottom">
       <Drawer.Trigger
@@ -23,7 +26,7 @@ export function MobileNavView({ pathname }: { pathname: string | null }) {
       </Drawer.Trigger>
       <Drawer.Portal>
         <Drawer.Overlay className="fixed inset-0 z-50 bg-black/40" />
-        <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-lg border-t border-hairline bg-canvas pb-[max(16px,env(safe-area-inset-bottom))] outline-none">
+        <Drawer.Content ref={content} className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-lg border-t border-hairline bg-canvas pb-[max(16px,env(safe-area-inset-bottom))] outline-none">
           <div className="mx-auto mt-2 h-1 w-10 rounded-full bg-hairline-strong" aria-hidden="true" />
           <div className="flex items-center justify-between px-4 py-3">
             <Drawer.Title asChild>
@@ -51,7 +54,7 @@ export function MobileNavView({ pathname }: { pathname: string | null }) {
             })}
           </nav>
           <div className="px-4 pt-4">
-            <ConnectButton block />
+            <ConnectButton block menuContainer={content} />
           </div>
         </Drawer.Content>
       </Drawer.Portal>
