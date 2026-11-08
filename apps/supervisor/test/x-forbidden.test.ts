@@ -30,6 +30,13 @@ function lastToolMessages(w: TestWorld): string[] {
   return body.messages.filter((m) => m.role === 'tool').map((m) => m.content);
 }
 
+/** The observation of the latest turn: the first user message of the latest paid call. */
+function lastObservation(w: TestWorld): Record<string, unknown> {
+  const calls = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'));
+  const body = calls[calls.length - 1]!.body as { messages: { role: string; content: string }[] };
+  return JSON.parse(body.messages.find((m) => m.role === 'user')!.content) as Record<string, unknown>;
+}
+
 /** The world's log, captured: every line as its parsed object. */
 function captureLog(w: TestWorld): Record<string, unknown>[] {
   const lines: Record<string, unknown>[] = [];
@@ -65,7 +72,7 @@ describe('x forbidden (403)', () => {
     expect(forbiddenHoldMs(0)).toBe(X_FORBIDDEN_HOLD_MS);
     expect(forbiddenHold(T0 - 1, T0)).toBeNull();
     expect(forbiddenHold(T0 + H, T0)).toMatchObject({ reason: 'x_forbidden', until: T0 + H });
-    expect(forbiddenHold(T0 + H, T0)!.message).toMatch(/not permitted.*do not call them.*creator was told/s);
+    expect(forbiddenHold(T0 + H, T0)!.message).toMatch(/not permitted.*do not call them.*creator was told.*Note the time it ends in your agenda, not as a permanent fact: you will be told when it ends\.$/s);
   });
 
   it("the creator's notice names the problem and what to do, for the inbox and Telegram", () => {
@@ -184,6 +191,8 @@ describe('x forbidden (403)', () => {
       expect(lines.find((l) => l.msg === 'x account reconnected; the 403 hold is lifted')).toMatchObject({ level: 30, agentId: AGENT_ID, heldAt: new Date(now).toISOString(), strikes: 1 });
       expect((await runtimeRow(w)).state).toMatchObject({ postForbiddenUntil: null, postForbiddenStrikes: 0, postForbiddenAt: null });
       expect(w.sender.published).toHaveLength(2);
+      // the turn that posted was told the hold is over, up front (x-hold-ended.test.ts has the whole story)
+      expect(lastObservation(w).holdEnded).toMatch(/^x_hold_ended: X accepted this account again \(the 403 hold ended at 2026-10-24T12:31:00\.000Z; the connection was renewed at 2026-10-24T12:30:00\.000Z\)\./);
       const [closed] = await w.db.select().from(notifications).where(eq(notifications.agentId, AGENT_ID));
       expect(closed).toMatchObject({ event: 'x_forbidden' });
       expect(closed!.resolvedAt).not.toBeNull();

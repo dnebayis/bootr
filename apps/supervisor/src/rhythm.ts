@@ -27,6 +27,9 @@
  *    lost write access, which no retry fixes. The same hold applies with reason `x_forbidden` for hours
  *    (`forbiddenHoldMs`, doubling on each repeat up to a day), the creator is told (`x_forbidden` notification), and
  *    a publish that later goes through clears both.
+ * 7. Every X hold message ends with `HOLD_AGENDA_NOTE`, and the first turn after a hold (ran out, cleared, or a 403 lifted by
+ *    the creator's reconnect) opens with `holdEndedMessage` once (runtime.ts `postHoldEndedNote`), so a note the model
+ *    wrote itself during the hold ("do not post until the platform recovers") does not outlive it.
  */
 import { originalPostSchedule, publicChannelBlocked, sha256Hex, type AgentConfig, type PostSchedule } from '@bootr/agent-core';
 import { and, gt, inArray, ne, sql } from 'drizzle-orm';
@@ -209,6 +212,14 @@ export async function applyRhythm(ctx: Pick<SupervisorContext, 'db' | 'config'>,
 }
 
 /**
+ * Closes every X hold message (`quotaHold`, `creditsHold`, `forbiddenHold`). On 2026-11-09 one agent wrote "X platform
+ * blocker, do not post until the platform recovers" into its agenda during a 403 hold, and when the hold was lifted it
+ * trusted that note over the new observation and passed on its slot. The model is told to keep the hold as a dated
+ * entry, and `holdEndedMessage` tells it when the hold is over.
+ */
+export const HOLD_AGENDA_NOTE = 'Note the time it ends in your agenda, not as a permanent fact: you will be told when it ends.';
+
+/**
  * The agent's own X posting quota (apps/sender: posts + replies per rolling 24 h) is used up: the last publish was
  * refused with `sender:quota_exceeded` and `until` is the sender's `retryAt`. Null once that time has passed.
  */
@@ -218,7 +229,7 @@ export function quotaHold(until: number | null | undefined, now: number): Hold |
   return {
     reason: 'x_quota',
     until,
-    message: `x_quota: your X posting quota (original posts and replies in the last 24 hours) is used up until ${at}. publish_post and publish_reply fail until then: do not call them. Mentions wait for you; you are woken when the quota opens.`,
+    message: `x_quota: your X posting quota (original posts and replies in the last 24 hours) is used up until ${at}. publish_post and publish_reply fail until then: do not call them. Mentions wait for you; you are woken when the quota opens. ${HOLD_AGENDA_NOTE}`,
   };
 }
 
@@ -237,7 +248,7 @@ export function creditsHold(until: number | null | undefined, now: number): Hold
   return {
     reason: 'x_credits',
     until,
-    message: `x_credits: X refuses posts and replies for now (the X app is out of API credits). publish_post and publish_reply fail: do not call them. Mentions wait for you; you are woken to try again at ${at}.`,
+    message: `x_credits: X refuses posts and replies for now (the X app is out of API credits). publish_post and publish_reply fail: do not call them. Mentions wait for you; you are woken to try again at ${at}. ${HOLD_AGENDA_NOTE}`,
   };
 }
 
@@ -266,7 +277,7 @@ export function forbiddenHold(until: number | null | undefined, now: number): Ho
   return {
     reason: 'x_forbidden',
     until,
-    message: `x_forbidden: X refused your last post because this account is not permitted to post right now (locked, restricted or its connection lost the right to write). publish_post and publish_reply are held until ${at}: do not call them. Your creator was told to check the X account; you are woken to try again at ${at}.`,
+    message: `x_forbidden: X refused your last post because this account is not permitted to post right now (locked, restricted or its connection lost the right to write). publish_post and publish_reply are held until ${at}: do not call them. Your creator was told to check the X account; you are woken to try again at ${at}. ${HOLD_AGENDA_NOTE}`,
   };
 }
 
@@ -277,6 +288,49 @@ export function forbiddenHold(until: number | null | undefined, now: number): Ho
 export function applyQuotaHold(schedule: RhythmSchedule | null, hold: Hold | null): RhythmSchedule | null {
   if (!schedule || !hold) return schedule;
   return { ...schedule, due: false, mayCompose: false, missedIntervals: 0, held: hold };
+}
+
+/** The X holds that are kept in the agent's state (runtime.ts `postQuotaUntil`, `postCreditsUntil`, `postForbiddenUntil`). */
+export type StateHoldReason = Extract<HoldReason, 'x_quota' | 'x_credits' | 'x_forbidden'>;
+
+/**
+ * The X hold the model was last told about and, once it is over, how it ended (runtime.ts `AgentState.postHoldEndedNote`).
+ * `at` is null while the hold stands; set, the note waits for the next turn, whose first observation carries
+ * `holdEnded: holdEndedMessage(note)` once (runtime.ts `startTurn`).
+ */
+export interface PostHoldEnded {
+  reason: StateHoldReason;
+  /** Epoch ms the hold was to end. */
+  until: number;
+  /** Epoch ms the hold ended; null while it stands. */
+  at: number | null;
+  /** Ran out, lifted by the creator's X reconnect (`liftForbiddenHoldOnReconnect`), or cleared from the state before `until`. */
+  how?: 'expired' | 'reconnect' | 'cleared' | null;
+  /** The sender account's `connectedAt` that lifted a 403 hold. */
+  connectedAt?: number | null;
+}
+
+/**
+ * The one line the first observation after a hold carries (key `holdEnded`): which hold ended, when and how, that the
+ * model's own note about it is stale, and that a due post goes out this turn. No post text, one sentence per fact.
+ */
+export function holdEndedMessage(note: PostHoldEnded): string {
+  const iso = (ms: number | null | undefined) => new Date(ms ?? 0).toISOString();
+  const early = note.how === 'cleared' ? ` (lifted before its end at ${iso(note.until)})` : '';
+  const tail = 'Your earlier note that posting is blocked is out of date. Posting is allowed now; if an original post is due, publish it this turn.';
+  const again = 'If X refuses again, the hold returns and you will be told.';
+  switch (note.reason) {
+    case 'x_forbidden':
+      if (note.how === 'reconnect') {
+        const renewed = note.connectedAt ? `; the connection was renewed at ${iso(note.connectedAt)}` : '';
+        return `x_hold_ended: X accepted this account again (the 403 hold ended at ${iso(note.at)}${renewed}). ${tail}`;
+      }
+      return `x_hold_ended: the 403 hold on this account ended at ${iso(note.at)}${early}; X may accept your posts again. ${tail} ${again}`;
+    case 'x_quota':
+      return `x_hold_ended: your X posting quota opened again at ${iso(note.at)}${early}. ${tail}`;
+    case 'x_credits':
+      return `x_hold_ended: the X credits hold ended at ${iso(note.at)}${early}; X may accept your posts again. ${tail} ${again}`;
+  }
 }
 
 /** The `social.originalPost` section of the observation. While held, `nextAt` is when it is worth trying again. */
