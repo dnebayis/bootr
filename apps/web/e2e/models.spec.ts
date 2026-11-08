@@ -20,10 +20,13 @@ test('/api/models serves the catalog of the models BlockRun serves, priced per t
   const haiku = body.models.find((m: { id: string }) => m.id === 'anthropic/claude-haiku-4.5');
   expect(haiku).toMatchObject({ label: 'Claude Haiku 4.5', provider: 'Anthropic' });
   expect(haiku.pricePerThoughtUsd).toBeCloseTo(0.01012, 6);
-  // Image models carry BlockRun's fixed price per picture
+  // Image models follow the route pictures take: the relay's list (or its built-in one) by default, BlockRun's fixed prices with BLOCKRUN_IMAGE_ROUTE=direct
   const images = await (await request.get('/api/models?kind=image')).json();
-  expect(images.source).toBe('blockrun');
-  expect(images.models.find((m: { id: string }) => m.id === 'google/nano-banana-2')).toMatchObject({ label: 'Nano Banana 2', provider: 'Google', pricePerImageUsd: 0.0955 });
+  expect(['relay', 'fallback', 'blockrun']).toContain(images.source);
+  const banana = images.models.find((m: { id: string }) => m.id === 'google/nano-banana-2');
+  expect(banana).toMatchObject({ label: 'Nano Banana 2', provider: 'Google' });
+  if (images.source === 'blockrun') expect(banana.pricePerImageUsd).toBe(0.0955);
+  else expect(banana.pricePerImageUsd).toBeGreaterThan(0.05);
 });
 
 test('launch form groups models by provider and defaults to the recommended one', async ({ page }) => {

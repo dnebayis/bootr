@@ -14,7 +14,10 @@ import {
   MODEL_CATALOG,
   modelDisplayName,
   pictureQuoteMicroUsdc,
+  RELAY_DEFAULT_MARGIN,
+  RELAY_IMAGE_PRICES_FALLBACK,
   relayModelId,
+  relayPictureMicroUsdc,
   retiredModelIds,
   thoughtQuoteMicroUsdc,
   vendorName,
@@ -69,6 +72,22 @@ describe('the model catalog', () => {
     expect(pictureQuoteMicroUsdc(catalogModel('google/nano-banana-2')!)).toBe(95_500);
     expect(pictureQuoteMicroUsdc(catalogModel('openai/gpt-image-1')!)).toBe(22_000);
     expect(thoughtQuoteMicroUsdc(catalogModel('google/nano-banana')!)).toBeNull();
+  });
+
+  it('prices a picture on the relay as the relay charges it: image tokens, the prompt with its reference, a sentence of text, the margin', () => {
+    const byId = Object.fromEntries(RELAY_IMAGE_PRICES_FALLBACK.map((m) => [m.id, m]));
+    // Nano Banana 2 at the relay: 1120 image tokens at $60/M = 67 200, 2200 prompt tokens at $0.5/M = 1 100, 64 text tokens at $3/M = 192; +10 % and 100
+    expect(relayPictureMicroUsdc(byId['google/gemini-3.1-flash-image']!)).toBe(75_442);
+    expect(relayPictureMicroUsdc(byId['google/gemini-3-pro-image']!)).toBe(153_625);
+    expect(relayPictureMicroUsdc(byId['openai/gpt-5.4-image-2']!)).toBe(157_796);
+    // the relay's own margin wins when its list carries one
+    expect(relayPictureMicroUsdc(byId['google/gemini-3.1-flash-image']!, { bps: 0, fixedMicroUsdc: 0 })).toBe(68_492);
+    expect(RELAY_DEFAULT_MARGIN).toEqual({ bps: 1000, fixedMicroUsdc: 100 });
+    // no image price, no number; a missing text rate counts as zero
+    expect(relayPictureMicroUsdc({ inputMicroUsdcPerKTokens: 1, outputMicroUsdcPerKTokens: 1, imageOutputMicroUsdcPerKTokens: null, imageOutputTokensPerImage: null })).toBeNull();
+    expect(relayPictureMicroUsdc({ inputMicroUsdcPerKTokens: null, outputMicroUsdcPerKTokens: null, imageOutputMicroUsdcPerKTokens: 1000, imageOutputTokensPerImage: 1000 }, { bps: 0, fixedMicroUsdc: 0 })).toBe(1000);
+    // every relay image id names a catalog model, so the console can store the catalog id
+    for (const m of RELAY_IMAGE_PRICES_FALLBACK) expect(catalogModel(m.id)?.role).toBe('image');
   });
 
   it('gives every catalog id its own quote cap, retired ids the cap of their stand-in, and names the rest', () => {

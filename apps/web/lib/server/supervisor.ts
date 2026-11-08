@@ -6,10 +6,11 @@
  *
  * Web Crypto only (route handlers). Shapes are the contract in docs/design/agent-launch-v2.md.
  */
+import { isImageModel } from '@bootr/agent-core';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
 import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type ApprovalDecision, type WorkerKind } from '@/lib/types';
-import { supervisorEnv } from './env';
+import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/supervisor must not be imported in the browser');
@@ -96,8 +97,13 @@ function decideModelOf(raw: unknown): string | null {
   return typeof m === 'string' && MODEL_ID_RE.test(m) ? m : null;
 }
 
-/** The fuel metering as the coin page renders it: whole thoughts, micro-USDC as digits, model ids only. */
-export function sanitizeFuel(raw: unknown): AgentFuel {
+/**
+ * The fuel metering as the coin page renders it: whole thoughts, micro-USDC as digits, model ids only. `paidTo` reads
+ * the thought rows, `picturesPaidTo` the picture rows (an image model's row), else the route pictures take (`route`,
+ * the platform's BLOCKRUN_IMAGE_ROUTE): on the default `relay` route an agent paying BlockRun for thoughts pays Bootr
+ * for pictures, and the console says so.
+ */
+export function sanitizeFuel(raw: unknown, route: 'relay' | 'direct' = 'relay'): AgentFuel {
   const o = (raw ?? {}) as { days?: unknown; since?: unknown; firstAt?: unknown; byModel?: unknown };
   const days = Number(o.days);
   const byModel: AgentFuel['byModel'] = [];
@@ -112,10 +118,15 @@ export function sanitizeFuel(raw: unknown): AgentFuel {
     byModel.push({ model, thoughts, chargedMicroUsdc: charged, ...(Number.isInteger(paidFailures) && paidFailures > 0 ? { paidFailures } : {}), ...(Number.isInteger(directThoughts) && directThoughts > 0 ? { directThoughts } : {}) });
   }
   const firstAt = iso(o.firstAt);
-  const thoughts = byModel.reduce((n, r) => n + r.thoughts, 0);
-  const direct = byModel.reduce((n, r) => n + (r.directThoughts ?? 0), 0);
-  const paidTo: AgentFuel['paidTo'] = thoughts === 0 ? null : direct > 0 ? 'blockrun' : 'bootr';
-  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), ...(firstAt ? { firstAt } : {}), byModel, paidTo };
+  const whoPaid = (rows: AgentFuel['byModel']): 'blockrun' | 'bootr' | null => {
+    const calls = rows.reduce((n, r) => n + r.thoughts, 0);
+    const direct = rows.reduce((n, r) => n + (r.directThoughts ?? 0), 0);
+    return calls === 0 ? null : direct > 0 ? 'blockrun' : 'bootr';
+  };
+  const paidTo = whoPaid(byModel.filter((r) => !isImageModel(r.model)));
+  const fromPictures = whoPaid(byModel.filter((r) => isImageModel(r.model)));
+  const picturesPaidTo: AgentFuel['picturesPaidTo'] = fromPictures ?? (paidTo === 'blockrun' ? (route === 'direct' ? 'blockrun' : 'bootr') : paidTo);
+  return { days: Number.isInteger(days) && days > 0 ? days : 7, since: iso(o.since) ?? new Date(0).toISOString(), ...(firstAt ? { firstAt } : {}), byModel, paidTo, picturesPaidTo };
 }
 
 const HTTPS_RE = /^https:\/\/[^\s/?#]+[^\s]*$/i;
@@ -281,7 +292,7 @@ export async function getAgentFuel(agentId: string, days = 7): Promise<AgentFuel
   const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/fuel?days=${Math.min(90, Math.max(1, Math.trunc(days)))}`);
   if (res.status === 404) return { days, since: new Date(Date.now() - days * 86_400_000).toISOString(), byModel: [] };
   if (!res.ok) throw await errorOf(res);
-  return sanitizeFuel(await res.json());
+  return sanitizeFuel(await res.json(), pictureRoute());
 }
 
 /** `GET /internal/agents/:id/activity?limit=&before=`; newest first. `before` is the `at` of the last item shown. */

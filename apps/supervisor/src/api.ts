@@ -18,6 +18,7 @@ import { readGas, gasView } from './gas.js';
 import { fundingBudget } from './treasury.js';
 import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
+import { pictureHold } from './images.js';
 import { fuelReport, reconcileInference } from './inference.js';
 import { servicesReport } from './services.js';
 import { createTelegramLink, removeTelegramLink } from './telegram.js';
@@ -92,15 +93,21 @@ export async function panicRevoke(ctx: SupervisorContext, opts: { uninstall?: bo
 export function createApp(ctx: SupervisorContext, nowSec: () => number = () => Math.floor(ctx.now() / 1000)) {
   const app = new Hono<AuthEnv>();
 
-  /** `providerHold`: the fleet-wide wait while the model provider is down (provider-hold.ts), null when thoughts are being bought. */
-  app.get('/health', (c) => {
+  /**
+   * `providerHold`: the fleet-wide wait while the model provider is down (provider-hold.ts), null when thoughts are being
+   * bought. `pictureHold`: no picture is bought on the relay until then, because its provider refused the relay's account
+   * (images.ts `pictureHold`); null when pictures are being bought, or when the database could not say.
+   */
+  app.get('/health', async (c) => {
     const hold = providerHold(ctx.now());
     const catalog = lastCatalogCheck();
+    const pictures = await pictureHold(ctx).catch(() => null);
     return c.json({
       ok: true,
       chainId: ctx.chain.chainId,
       now: new Date(ctx.now()).toISOString(),
       providerHold: hold ? { until: new Date(hold.until).toISOString(), error: hold.error } : null,
+      pictureHold: pictures ? { until: new Date(pictures.until).toISOString(), error: pictures.error } : null,
       /** The last model-catalog check against BlockRun (model-check.ts): when, whether its list was read, the gaps, and agents on models it lacks. */
       modelCatalog: catalog ? { at: catalog.at, read: catalog.read, gaps: catalog.gaps.length, agentsOnMissingModels: catalog.agentsOnMissingModels.length } : null,
     });

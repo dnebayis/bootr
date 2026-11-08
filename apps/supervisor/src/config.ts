@@ -120,6 +120,13 @@ export const configSchema = z
      * payment and cannot answer. Turn on only while OpenRouter is funded; with it off, an outage means waiting, unpaid.
      */
     BLOCKRUN_RELAY_FALLBACK: bool('false'),
+    /**
+     * Where a picture is bought while direct mode is on. `relay` (the default): pictures stay on the relay (OpenRouter
+     * behind it), paid from the spender as before, under the relay's model names and the relay's prices, so OpenRouter
+     * must stay funded for them. `direct`: BlockRun's image API. Thoughts and chat never read this, and the relay
+     * fallback above is about thoughts only.
+     */
+    BLOCKRUN_IMAGE_ROUTE: z.preprocess((v) => (v === '' || v === undefined ? 'relay' : v), z.enum(['relay', 'direct'])),
     /** Ask for prompt caching on Claude models (`prompt_cache`), which `upto` should bill at the cache rates. */
     BLOCKRUN_PROMPT_CACHE: bool('true'),
     /** Above BlockRun's own 120 s upstream limit, so its 504 arrives before we give up on it. */

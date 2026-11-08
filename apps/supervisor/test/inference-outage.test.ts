@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { wakeDecision } from '@bootr/agent-core';
 import { actions, agents, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { generateImage, IMAGE_WINDOW_MS, MAX_IMAGES_PER_DAY, WITHOUT_PICTURE } from '../src/images.js';
+import { generateImage, IMAGE_WINDOW_MS, MAX_IMAGES_PER_DAY, PICTURE_HOLD_MS, pictureHold, PICTURES_UNAVAILABLE_MESSAGE, WITHOUT_PICTURE } from '../src/images.js';
+import { pictureHint } from '../src/picture-hint.js';
 import { processAgent, tick } from '../src/tick.js';
 import type { AgentState, Turn } from '../src/runtime.js';
 import { spenderAccount } from '../src/spender.js';
@@ -537,14 +538,15 @@ describe('mention auto-close and a held credit', () => {
 });
 
 describe('the daily image cap counts paid attempts', () => {
-  it('stops new payments at the cap while the provider fails, and still lets an open credit resume', async () => {
-    const { w, sim, relay } = await outage(refused);
+  it('stops new payments at the cap while the provider is down, and still lets an open credit resume', async () => {
+    // Down (5xx) is kept as a credit without a provider status, so only the cap bounds it; a refused account is held (below).
+    const { w, sim, relay } = await outage(down);
     try {
       const agent = await seedAgent(w);
       const config = agentConfig(w.ctx.now()) as unknown as Parameters<typeof generateImage>[2];
       const attempt = (id: string) => generateImage(w.ctx, agent, config, { id } as Parameters<typeof generateImage>[3], { prompt: 'a fox', altText: 'a fox' }, 0);
       for (let i = 1; i <= MAX_IMAGES_PER_DAY; i++) {
-        expect(await attempt(`act_${i}`)).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
+        expect(await attempt(`act_${i}`)).toEqual({ kind: 'unknown', error: 'upstream_failed_credited' });
         expect(sim.signed).toBe(i);
       }
       expect(await attempt('act_new')).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours. ${WITHOUT_PICTURE}` });
@@ -558,8 +560,48 @@ describe('the daily image cap counts paid attempts', () => {
 
       // the window moves on
       w.setNow(w.ctx.now() + IMAGE_WINDOW_MS + 1000);
-      expect(await attempt('act_tomorrow')).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
+      expect(await attempt('act_tomorrow')).toEqual({ kind: 'unknown', error: 'upstream_failed_credited' });
       expect(sim.signed).toBe(MAX_IMAGES_PER_DAY + 1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the provider refusing the relay’s account (402, no credit) holds every picture for a day after the first paid one', async () => {
+    const { w, sim, relay } = await outage(refused);
+    try {
+      const agent = await seedAgent(w);
+      vi.spyOn(w.ctx.log, 'child').mockReturnValue(w.ctx.log as never);
+      const owner = vi.spyOn(w.ctx.log, 'error');
+      const config = agentConfig(w.ctx.now()) as unknown as Parameters<typeof generateImage>[2];
+      const attempt = (id: string) => generateImage(w.ctx, agent, config, { id } as Parameters<typeof generateImage>[3], { prompt: 'a fox', altText: 'a fox' }, 0);
+      // the first picture is paid (the relay settles before it asks OpenRouter) and refused; the agent hears plain words
+      expect(await attempt('act_1')).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+      expect(sim.signed).toBe(1);
+      expect(owner).toHaveBeenCalledTimes(1);
+      expect(owner).toHaveBeenCalledWith(expect.objectContaining({ key: 'image:act_1', upstreamStatus: 402, paid: true }), expect.stringContaining('fund OpenRouter'));
+      const row = (await w.db.query.inference.findFirst({ where: eq(inferenceTable.idempotencyKey, 'image:act_1') }))!;
+      expect(row.status).toBe('unknown');
+      expect(row.error).toMatch(/^relay_pictures_unavailable: the relay's provider answered 402/);
+      const hold = (await pictureHold(w.ctx))!;
+      expect(hold.until).toBe(row.updatedAt.getTime() + PICTURE_HOLD_MS);
+
+      // every later picture is refused before any payment, and the paid key is not replayed (its credit stays whole at the relay)
+      const upstream = relay.upstreamFetch.mock.calls.length;
+      expect(await attempt('act_2')).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+      expect(await attempt('act_1')).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+      expect(sim.signed).toBe(1);
+      expect(relay.upstreamFetch.mock.calls.length).toBe(upstream);
+      expect(owner).toHaveBeenCalledTimes(1);
+      // the hint says so too
+      expect(pictureHint({ config: { platform: false }, model: 'google/nano-banana-2', priceMicroUsdc: 80_000, live: true, leftToday: 6, affordable: true, postDue: true, digestDue: false, newLaunch: false, lastImageAgoMs: null, held: true })).toMatchObject({ suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE });
+
+      // the next day one picture is tried again; the provider now pays out, and the agent has its picture
+      w.setNow(w.ctx.now() + PICTURE_HOLD_MS + 1000);
+      expect(await pictureHold(w.ctx)).toBeNull();
+      sim.provider = () => new Response(JSON.stringify({ id: 'img', choices: [{ message: { role: 'assistant', content: 'here', images: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]).toString('base64')}` } }] }, finish_reason: 'stop' }], usage: { prompt_tokens: 30, completion_tokens: 1300 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      expect((await attempt('act_tomorrow')).kind).toBe('completed');
+      expect(sim.signed).toBe(2);
     } finally {
       await w.close();
     }

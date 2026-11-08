@@ -54,6 +54,15 @@ export function inferenceUrl(): string {
 }
 
 /**
+ * Where the agents' pictures are bought, the same setting the supervisor reads (BLOCKRUN_IMAGE_ROUTE): `relay`, the
+ * default, means pictures pay Bootr's relay (OpenRouter behind it) and the console shows the relay's image models and
+ * prices; `direct` means BlockRun's image API and the catalog's fixed prices. Thoughts always show BlockRun's prices.
+ */
+export function pictureRoute(): 'relay' | 'direct' {
+  return str(process.env.BLOCKRUN_IMAGE_ROUTE) === 'direct' ? 'direct' : 'relay';
+}
+
+/**
  * Key that authenticates the indexer's signed `GET /api/admin/config` (INDEXER_SERVICE_KEY).
  * Migration only: while INDEXER_SERVICE_KEY is unset, SENDER_SERVICE_KEY is accepted (a warning is
  * logged at startup). An INDEXER_SERVICE_KEY that is set but too short disables service reads.

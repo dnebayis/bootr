@@ -14,8 +14,8 @@ import { averageThoughtCost } from '@bootr/shared/fuel';
 import type { AgentDirectory } from './agent-directory.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { pictureFits } from './fuel.js';
-import { picturePriceFor, relayImageCatalog, usdcText } from './image-models.js';
-import { imageModelOf, imagesLeftToday, lastImageAt } from './images.js';
+import { picturePriceFor, picturesOnBlockRun, relayImageCatalog, usdcText } from './image-models.js';
+import { imageModelOf, imagesLeftToday, lastImageAt, pictureHold, PICTURES_UNAVAILABLE_MESSAGE } from './images.js';
 import { recentThoughtCost } from './inference.js';
 import type { RhythmSchedule } from './rhythm.js';
 import type { TreasurySnapshot } from './treasury.js';
@@ -61,9 +61,10 @@ export interface PictureInputs {
   digest?: WeeklyDigestPlan | null;
 }
 
-/** The pure decision from the numbers; exported for tests and for the section. */
-export function pictureHint(args: { config: Pick<AgentConfig, 'platform'>; model: string; priceMicroUsdc: number | null; live: boolean; leftToday: number; affordable: boolean | null; postDue: boolean; digestDue: boolean; newLaunch: boolean; lastImageAgoMs: number | null }): PictureHint {
+/** The pure decision from the numbers; exported for tests and for the section. `held`: the picture hold is on (images.ts `pictureHold`). */
+export function pictureHint(args: { config: Pick<AgentConfig, 'platform'>; model: string; priceMicroUsdc: number | null; live: boolean; leftToday: number; affordable: boolean | null; postDue: boolean; digestDue: boolean; newLaunch: boolean; lastImageAgoMs: number | null; held?: boolean }): PictureHint {
   const base = { meaning: PICTURE_MEANING, model: args.model, costUsdc: args.priceMicroUsdc !== null ? usdcText(args.priceMicroUsdc) : null, ...(args.priceMicroUsdc !== null && !args.live ? { approx: true as const } : {}), leftToday: args.leftToday, ...(args.affordable !== null ? { affordable: args.affordable } : {}), fits: PICTURE_FITS, never: PICTURE_NEVER };
+  if (args.held) return { ...base, suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE };
   if (args.leftToday <= 0) return { ...base, suggested: false, reason: 'no picture today: the daily limit is used up' };
   if (args.affordable === false) return { ...base, suggested: false, reason: 'no picture now: it would leave too little fuel for thinking' };
   if (args.config.platform === true && args.digestDue) return { ...base, suggested: true, reason: 'the weekly digest is due; one picture for it fits' };
@@ -83,14 +84,14 @@ export async function pictureSection(ctx: SupervisorContext, agent: AgentRow, co
     const model = imageModelOf(config);
     const catalog = await relayImageCatalog(ctx, agent);
     const price = picturePriceFor(catalog, model);
-    const [leftToday, lastAt] = await Promise.all([imagesLeftToday(ctx, agent.agentId), lastImageAt(ctx, agent.agentId)]);
+    const [leftToday, lastAt, hold] = await Promise.all([imagesLeftToday(ctx, agent.agentId), lastImageAt(ctx, agent.agentId), picturesOnBlockRun(ctx.config, agent) ? null : pictureHold(ctx)]);
     let affordable: boolean | null = null;
     if (inputs.treasury && price) {
       const cost = await recentThoughtCost(ctx, agent.agentId);
       affordable = pictureFits(Math.round(inputs.treasury.usd.spenderUsdc * 1e6), averageThoughtCost(cost.spentMicroUsdc, cost.thoughts), price.microUsdc);
     }
     const newLaunch = (directory?.entries ?? []).some((e) => e.agentId !== agent.agentId && !e.platform && now - e.launchedAt <= WELCOME_WINDOW_MS);
-    const hint = pictureHint({ config, model, priceMicroUsdc: price?.microUsdc ?? null, live: price?.live ?? false, leftToday, affordable, postDue: !!inputs.schedule?.due && !inputs.schedule?.held, digestDue: !!inputs.digest, newLaunch, lastImageAgoMs: lastAt === null ? null : now - lastAt });
+    const hint = pictureHint({ config, model, priceMicroUsdc: price?.microUsdc ?? null, live: price?.live ?? false, leftToday, affordable, postDue: !!inputs.schedule?.due && !inputs.schedule?.held, digestDue: !!inputs.digest, newLaunch, lastImageAgoMs: lastAt === null ? null : now - lastAt, held: hold !== null });
     return { picture: hint };
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'picture hint failed; turn goes on without the section');

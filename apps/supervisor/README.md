@@ -50,7 +50,7 @@ guardian owner key used only to approve session-key installs.
 | `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA (`relayRequest`, shared by thoughts and images), idempotent per key, unknown-outcome reconciliation with payment proof |
 | `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`, `max_tokens` sized for the picture's own tokens), decoded from the base64 data URL and stored in `sv_images`; the daily cap; the fuel check; `publish_post` / `publish_reply` attach a stored image by `imageId` |
 | `src/image-rules.ts` | the hard rules for pictures in code: never on request, no real people, no other project's logo, no charts or numbers; the alt text passes the same gates as a post (checked before the paid call and again where a picture meets a post or the review queue) |
-| `src/image-models.ts` | the relay's image models with their prices (`GET /v1/models`), the built-in list when the relay is down, the price of one picture |
+| `src/image-models.ts` | the image models an agent may draw with and the price of one picture, by the route its pictures take (`BLOCKRUN_IMAGE_ROUTE`): the relay's list (`GET /v1/models`, the built-in list when the relay is down) or, with pictures on BlockRun, the catalog at BlockRun's fixed prices |
 | `src/picture-hint.ts` | the `picture` section of the observation: the model in force, the price, how many pictures are left today, whether the fuel allows one and whether one is suggested now |
 | `src/image-retention.ts` | the hourly sweep: day-old relay answers of image calls emptied, month-old pictures deleted unless a pending review item refers to them |
 | `src/mention-close.ts` | the pass before a turn's first step: mentions whose only exclusion is `verified_audience_required`, from an author X reports as unverified, are closed in bulk with no model call; verified authors, Bootr agents, the creator, allow-listed authors, authors without verification data and deferred mentions stay; any error leaves the turn as it was |
@@ -123,12 +123,13 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `INDEXER_SERVICE_KEY` | yes | | HMAC key of the indexer's `/internal/agent/:kernel/social` (32+ characters, the indexer's own key) |
 | `INFERENCE_PROVIDER_URL`, `INFERENCE_PAYTO_ADDRESS` | yes | | apps/inference relay and its USDC recipient (the payer refuses any other payee) |
 | `INFERENCE_TIMEOUT_MS` | no | `150000` | |
-| `BLOCKRUN_DIRECT_MODE` | no | `off` | `off`, `agents` or `all`: the spender pays BlockRun directly (`src/blockrun.ts`) for thoughts, chat and pictures. With it on, the model catalog (`@bootr/agent-core` MODEL_CATALOG) is held against BlockRun's live list at start and every 6 h (`src/model-check.ts`), and the image models offered are the catalog's. Rollout: `docs/deploy/blockrun-rollout.md` |
+| `BLOCKRUN_DIRECT_MODE` | no | `off` | `off`, `agents` or `all`: the spender pays BlockRun directly (`src/blockrun.ts`) for thoughts and chat (pictures too only with `BLOCKRUN_IMAGE_ROUTE=direct`). With it on, the model catalog (`@bootr/agent-core` MODEL_CATALOG) is held against BlockRun's live list at start and every 6 h (`src/model-check.ts`). Rollout: `docs/deploy/blockrun-rollout.md` |
 | `BLOCKRUN_DIRECT_AGENTS` | no | empty | Agent ids for `agents`, comma-separated |
 | `BLOCKRUN_BASE_URL` | no | `https://blockrun.ai/api/v1` | |
 | `BLOCKRUN_PAYTO_ADDRESS` | no | `0xe9030014F5DAe217d0A152f02A043567b16c1aBf` | The only address direct mode may pay |
 | `BLOCKRUN_ALLOW_EXACT` | no | `true` | Pay `exact` where `upto` is not offered: every model but the Claude and DeepSeek ids (2026-11-08) |
-| `BLOCKRUN_RELAY_FALLBACK` | no | `false` | Let a call BlockRun cannot serve go to the relay. Only while OpenRouter is funded; off, an outage means waiting, unpaid |
+| `BLOCKRUN_RELAY_FALLBACK` | no | `false` | Let a thought or chat message BlockRun cannot serve go to the relay. Only while OpenRouter is funded; off, an outage means waiting, unpaid. Says nothing about pictures |
+| `BLOCKRUN_IMAGE_ROUTE` | no | `relay` | Where pictures are bought with direct mode on. `relay`: the relay (OpenRouter), under the relay's model names and prices, so OpenRouter stays funded for pictures (`docs/deploy/blockrun-rollout.md` section 6); when the relay's provider refuses its account (402 no credit, 401/403 the key), the first picture is kept as a credit at the relay, every picture is held for 24 h (`src/images.ts` `pictureHold`, shown on `/health` as `pictureHold`), the model is told to post without one and the owner has one error line. `direct`: BlockRun's image API at the catalog's fixed prices. The web reads the same variable for the console's image list |
 | `BLOCKRUN_PROMPT_CACHE` | no | `true` | Prompt caching on Claude models |
 | `BLOCKRUN_TIMEOUT_MS` | no | `150000` | Paid request timeout, above BlockRun's 120 s upstream limit |
 | `BLOCKRUN_HOLD_MS` | no | `1800000` | After a direct failure: on the relay this long with the fallback on; with it off, no new signature this long after money was lost |
@@ -653,10 +654,15 @@ is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.
 - `recall_conversation` is served from the supervisor's own action log and notes; the sender has no inbox-history endpoint.
 - Images (`generate_image`, the `images` power): one picture per call, paid from the spender like a thought
   (`sv_inference` key `image:<actionId>`, so a retried step never pays twice; an unknown relay outcome holds the
-  step and is reconciled by key). The relay request is a chat completion on `config.imageModel` (the platform agent
-  defaults to `google/gemini-3-pro-image`, Nano Banana Pro, `DEFAULT_IMAGE_MODEL`; a coin agent to
-  `google/gemini-3.1-flash-image`, Nano Banana 2, `DEFAULT_COIN_IMAGE_MODEL`) with `modalities: ["image", "text"]`,
-  the prompt and the alt text. `max_tokens` is the model's tokens per image (the relay's `image_output_tokens_per_image`,
+  step and is reconciled by key). Pictures stay on the relay whatever direct mode says, unless `BLOCKRUN_IMAGE_ROUTE`
+  is `direct` (then BlockRun's image API, `src/blockrun.ts`). The relay request is a chat completion on
+  `config.imageModel` (the platform agent defaults to `google/nano-banana-pro`, Nano Banana Pro, `DEFAULT_IMAGE_MODEL`,
+  which the relay knows as `google/gemini-3-pro-image`; a coin agent to `google/nano-banana-2`, Nano Banana 2,
+  `DEFAULT_COIN_IMAGE_MODEL`, the relay's `google/gemini-3.1-flash-image`) with `modalities: ["image", "text"]`,
+  the prompt and the alt text. When the relay's own provider refuses the relay's account (402 no credit, 401/403 the
+  key), the picture already paid stays a credit at the relay for its key, every picture is held for 24 h before any
+  payment (`pictureHold`, on `/health`), the model is told "no picture right now ... continue without one" and the
+  owner has one error line: fund OpenRouter. `max_tokens` is the model's tokens per image (the relay's `image_output_tokens_per_image`,
   else `IMAGE_TOKENS_PER_IMAGE`) plus `IMAGE_TEXT_TOKENS` (1024): OpenRouter counts the picture as completion tokens
   (1120 for a 1K Gemini 3 picture), and the 256 ceiling this sent until 2026-11-08 could not hold one, which is the
   one cause the code shows for the first live picture (the weekly digest of that day) failing as `image_not_generated`.

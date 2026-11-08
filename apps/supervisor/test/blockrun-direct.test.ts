@@ -15,7 +15,10 @@ import { buildInferenceRequest, maxQuoteFor, TOOL_LIST, type ChatMessage } from 
 import { DIRECT_HOLD, DIRECT_IMAGE_MODELS, DIRECT_PAID_LOST, DIRECT_SUBSTITUTES, DIRECT_UNPAID, directBody, directEnabled, directModel, INSUFFICIENT_FLOAT, paymentAuthorization } from '../src/blockrun.js';
 import { CHAT_MAX_QUOTE_MICRO_USDC, sendChatMessage } from '../src/chat.js';
 import { agents as agentsTable, inference as inferenceTable, notifications as notificationsTable, runtimes } from '../src/db/schema.js';
-import { generateImage } from '../src/images.js';
+import { createApp } from '../src/api.js';
+import { BLOCKRUN_IMAGE_CATALOG, picturePriceFor, relayImageCatalog, relayImageModels } from '../src/image-models.js';
+import { generateImage, PICTURE_HOLD_MS, pictureHold, PICTURES_UNAVAILABLE, PICTURES_UNAVAILABLE_MESSAGE, WITHOUT_PICTURE } from '../src/images.js';
+import { pictureSection } from '../src/picture-hint.js';
 import { fuelReport, parseAssistant, reconcileRelay, recentThoughtCost, relayRequest, runInference, type RelayCall } from '../src/inference.js';
 import { fuelView } from '../src/fuel.js';
 import { providerHold } from '../src/provider-hold.js';
@@ -1015,10 +1018,10 @@ describe('full direct: no relay behind it', () => {
     }
   });
 
-  describe('pictures', () => {
+  describe('pictures on BlockRun (BLOCKRUN_IMAGE_ROUTE=direct)', () => {
     const IMAGE_MODEL = 'google/gemini-3-pro-image';
     const world = async () => {
-      const made = await direct(FULL);
+      const made = await direct({ ...FULL, BLOCKRUN_IMAGE_ROUTE: 'direct' });
       made.sim.offerUpto = false;
       made.sim.quote = 106_000n;
       const agent = await seedAgent(made.w, { config: { model: MODEL, imageModel: IMAGE_MODEL } });
@@ -1153,6 +1156,154 @@ describe('full direct: no relay behind it', () => {
         expect(lacks).toMatchObject({ kind: 'failed', error: expect.stringContaining('model_missing: x/unknown-image') });
         expect(sim.signatures).toEqual([]);
         expect(relayPayments).toEqual([]);
+      } finally {
+        await w.close();
+      }
+    });
+  });
+
+  /** The owner's decision of 2026-11-08: thoughts pay BlockRun, pictures keep paying the relay, so OpenRouter stays funded for pictures alone. */
+  describe('pictures on the relay (the default) while every thought pays BlockRun', () => {
+    const IMAGE_MODEL = 'google/nano-banana-pro';
+    const RELAY_NAME = 'google/gemini-3-pro-image';
+    const pictureFromOpenRouter = () => jsonResponse({ id: 'img', choices: [{ message: { role: 'assistant', content: 'here', images: [{ type: 'image_url', image_url: { url: PNG_URI } }] }, finish_reason: 'stop' }], usage: { prompt_tokens: 30, completion_tokens: 1300, completion_tokens_details: { image_tokens: 1120 } } });
+    const world = async (config: Record<string, string> = {}) => {
+      const made = await direct({ ...FULL, ...config });
+      const agent = await seedAgent(made.w, { config: { model: MODEL, imageModel: IMAGE_MODEL } });
+      made.relay.upstreamFetch.mockImplementation(async () => pictureFromOpenRouter());
+      return { ...made, agent };
+    };
+    const config = (over: Record<string, unknown> = {}) => ({ imageModel: IMAGE_MODEL, imageStyle: { reference: null, notes: '' }, ...over }) as never;
+
+    it('is the default: with direct mode on and the fallback off, a picture pays the relay under the relay’s name and BlockRun hears nothing; the thought still pays BlockRun', async () => {
+      const { w, sim, agent, relay, relayPayments } = await world();
+      try {
+        expect(w.ctx.config.BLOCKRUN_IMAGE_ROUTE).toBe('relay');
+        expect(w.ctx.config.BLOCKRUN_RELAY_FALLBACK).toBe(false);
+        const res = await generateImage(w.ctx, agent, config(), imageAction, imageInput);
+        expect(res).toMatchObject({ kind: 'completed', result: { mime: 'image/png', bytes: PNG.length } });
+        expect(relayPayments).toEqual(['image:act_1']);
+        expect(sim.probes).toEqual([]);
+        expect(sim.signatures).toEqual([]);
+        expect(relay.facilitator.settle).toHaveBeenCalledTimes(1);
+        expect(relay.upstreamCalls).toHaveLength(1);
+        expect(JSON.parse(await relay.upstreamCalls[0]!.text())).toMatchObject({ model: RELAY_NAME, modalities: ['image', 'text'] });
+        const row = await rowOf(w, 'image:act_1');
+        expect(row.status).toBe('succeeded');
+        expect((row.receipt as { route?: unknown }).route).toBeUndefined();
+        expect((row.receipt as { relay?: { chargedMicroUsdc?: string } }).relay?.chargedMicroUsdc).toMatch(/^\d+$/);
+        expect(row.request).toMatchObject({ model: IMAGE_MODEL });
+        // the same action again is the stored picture, no second payment anywhere
+        expect((await generateImage(w.ctx, agent, config(), imageAction, imageInput)).kind).toBe('completed');
+        expect(relayPayments).toHaveLength(1);
+
+        // a thought of the same agent goes to BlockRun as before
+        const thoughtRes = await relayRequest(w.ctx, agent, thought());
+        expect(thoughtRes.kind).toBe('ok');
+        expect(sim.signatures).toHaveLength(1);
+        expect(relayPayments).toEqual(['image:act_1']);
+        const report = await fuelReport(w.ctx, AGENT_ID, new Date(0));
+        expect(report.byModel.find((m) => m.model === IMAGE_MODEL)).toMatchObject({ thoughts: 1 });
+        expect(report.byModel.find((m) => m.model === IMAGE_MODEL)!.directThoughts).toBeUndefined();
+        expect(report.byModel.find((m) => m.model === MODEL)).toMatchObject({ thoughts: 1, directThoughts: 1 });
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('the picture hint and the model list show the relay’s price, not BlockRun’s', async () => {
+      const { w, agent } = await world();
+      try {
+        const catalog = await relayImageCatalog(w.ctx, agent);
+        expect(catalog).not.toBe(BLOCKRUN_IMAGE_CATALOG);
+        expect(catalog.live).toBe(true);
+        expect(catalog.models.map((m) => m.id)).toContain(RELAY_NAME);
+        // the relay's own list prices Nano Banana Pro by its tokens (about 0.15 USDC), BlockRun's fixed price would be 0.106
+        const price = picturePriceFor(catalog, IMAGE_MODEL)!;
+        expect(price.live).toBe(true);
+        expect(price.microUsdc).toBeGreaterThan(140_000);
+        expect(price.microUsdc).toBeLessThan(170_000);
+        expect(picturePriceFor(BLOCKRUN_IMAGE_CATALOG, IMAGE_MODEL)).toEqual({ microUsdc: 106_000, live: true });
+        expect(await relayImageModels(w.ctx, agent)).toContain(RELAY_NAME);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('a model the relay does not price is refused before any payment, naming the way out', async () => {
+      const { w, agent, relayPayments } = await world();
+      try {
+        const res = await generateImage(w.ctx, agent, config({ imageModel: 'openai/gpt-image-1' }), imageAction, imageInput);
+        expect(res).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^image_model_unavailable: openai\/gpt-image-1 .* another image model in the console\. Publish your post without an imageId/) });
+        expect(relayPayments).toEqual([]);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it.each([402, 403])('the relay’s provider answers %i: the first picture is a credit at the relay, the agent goes on without, no agent buys another for a day, one error line for the owner', async (status) => {
+      const { w, sim, agent, relay, relayPayments } = await world();
+      try {
+        vi.spyOn(w.ctx.log, 'child').mockReturnValue(w.ctx.log as never);
+        const owner = vi.spyOn(w.ctx.log, 'error');
+        relay.upstreamFetch.mockImplementation(async () => jsonResponse({ error: { code: status, message: status === 402 ? 'Insufficient credits' : 'Key limit exceeded' } }, status));
+        const first = await generateImage(w.ctx, agent, config(), imageAction, imageInput);
+        expect(first).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+        // paid once at the relay (exact settles first), kept there as a credit for this key; BlockRun never asked
+        expect(relayPayments).toEqual(['image:act_1']);
+        expect(relay.facilitator.settle).toHaveBeenCalledTimes(1);
+        expect(sim.signatures).toEqual([]);
+        const row = await rowOf(w, 'image:act_1');
+        expect(row.status).toBe('unknown');
+        expect(row.error).toBe(`${PICTURES_UNAVAILABLE}: the relay's provider answered ${status} (upstream_rejected)`);
+        expect(owner).toHaveBeenCalledTimes(1);
+        expect(owner).toHaveBeenCalledWith(expect.objectContaining({ key: 'image:act_1', upstreamStatus: status, paid: true }), expect.stringContaining('fund OpenRouter'));
+
+        // the hold: another picture, or the same action resumed, is refused before any payment and the credit is not replayed
+        const upstream = relay.upstreamFetch.mock.calls.length;
+        expect(await generateImage(w.ctx, agent, config(), { id: 'act_2' } as never, imageInput)).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+        expect(await generateImage(w.ctx, agent, config(), imageAction, imageInput)).toEqual({ kind: 'failed', error: `${PICTURES_UNAVAILABLE_MESSAGE}. ${WITHOUT_PICTURE}` });
+        expect(relayPayments).toHaveLength(1);
+        expect(relay.upstreamFetch.mock.calls.length).toBe(upstream);
+        expect(owner).toHaveBeenCalledTimes(1);
+        const hold = (await pictureHold(w.ctx))!;
+        expect(hold.until).toBe(row.updatedAt.getTime() + PICTURE_HOLD_MS);
+        expect(hold.error).toBe(row.error);
+        // the owner also sees it on /health
+        const health = (await (await createApp(w.ctx).request('/health')).json()) as { pictureHold: { until: string; error: string } | null };
+        expect(health.pictureHold).toEqual({ until: new Date(hold.until).toISOString(), error: row.error });
+
+        // thoughts are untouched by the hold
+        expect((await relayRequest(w.ctx, agent, thought())).kind).toBe('ok');
+        expect(sim.signatures).toHaveLength(1);
+
+        // the hint tells the model the same, in the same words
+        const hint = await pictureSection(w.ctx, agent, { ...agentConfig(w.ctx.now(), { imageModel: IMAGE_MODEL, capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: true } }), platform: false } as never, [{ name: 'generate_image' }], { schedule: null, treasury: null }, null);
+        expect(hint.picture).toMatchObject({ suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE });
+
+        // a day later one picture is bought again
+        w.setNow(w.ctx.now() + PICTURE_HOLD_MS + 1000);
+        relay.upstreamFetch.mockImplementation(async () => pictureFromOpenRouter());
+        expect((await generateImage(w.ctx, agent, config(), { id: 'act_3' } as never, imageInput)).kind).toBe('completed');
+        expect(relayPayments).toEqual(['image:act_1', 'image:act_3']);
+      } finally {
+        await w.close();
+      }
+    });
+
+    it('with BLOCKRUN_IMAGE_ROUTE=direct the same picture pays BlockRun and the hold is never consulted', async () => {
+      const { w, sim, agent, relayPayments } = await world({ BLOCKRUN_IMAGE_ROUTE: 'direct' });
+      try {
+        sim.offerUpto = false;
+        sim.quote = 106_000n;
+        sim.paid = (_p, settle) => {
+          settle();
+          return imageSettled(PNG_URI);
+        };
+        expect((await generateImage(w.ctx, agent, config(), imageAction, imageInput)).kind).toBe('completed');
+        expect(sim.probes).toEqual([IMAGE_MODEL]);
+        expect(relayPayments).toEqual([]);
+        expect(await relayImageCatalog(w.ctx, agent)).toBe(BLOCKRUN_IMAGE_CATALOG);
       } finally {
         await w.close();
       }

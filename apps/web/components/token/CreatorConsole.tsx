@@ -223,7 +223,16 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
     const spent = rows.reduce((n, r) => n + Number(r.chargedMicroUsdc), 0);
     const unanswered = rows.reduce((n, r) => n + (r.paidFailures ?? 0), 0);
     const parts = rows.slice(0, 3).map((r) => `${r.thoughts} on ${modelLabel(r.model)} (${formatMicroUsdc(r.chargedMicroUsdc)})`);
-    const paidTo = fuel.data!.paidTo === 'blockrun' ? ' Paid to BlockRun from the agent’s own wallet.' : fuel.data!.paidTo === 'bootr' ? ' Paid through Bootr.' : '';
+    // Who is paid: thoughts and pictures can take different routes (pictures go through Bootr while thoughts pay BlockRun).
+    const { paidTo: thoughtsTo, picturesPaidTo: picturesTo = null } = fuel.data!;
+    const paidTo =
+      thoughtsTo === 'blockrun' && picturesTo === 'bootr'
+        ? ' Thoughts paid to BlockRun from the agent’s own wallet; pictures paid through Bootr.'
+        : thoughtsTo === 'blockrun'
+          ? ' Paid to BlockRun from the agent’s own wallet.'
+          : thoughtsTo === 'bootr'
+            ? ' Paid through Bootr.'
+            : '';
     return `Last ${fuel.data!.days} days: ${total} thoughts, ${formatMicroUsdc(spent)}${unanswered > 0 ? ` (${unanswered} charged with no answer)` : ''}: ${parts.join(', ')}.${paidTo}`;
   }, [fuel.data]);
   // Runway and warnings; an agent that is not running has no rate to speak of. The clock is when the numbers were read.

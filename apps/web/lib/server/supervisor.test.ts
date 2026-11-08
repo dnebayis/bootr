@@ -182,8 +182,24 @@ describe('sanitizeFuel', () => {
         { model: 'anthropic/claude-haiku-4.5', thoughts: 7, chargedMicroUsdc: '65800' },
       ],
       paidTo: 'bootr',
+      picturesPaidTo: 'bootr',
     });
-    expect(sanitizeFuel(null)).toEqual({ days: 7, since: '1970-01-01T00:00:00.000Z', byModel: [], paidTo: null });
+    expect(sanitizeFuel(null)).toEqual({ days: 7, since: '1970-01-01T00:00:00.000Z', byModel: [], paidTo: null, picturesPaidTo: null });
+  });
+
+  it('says who the pictures are paid to: the picture rows when there are any, else the route pictures take', () => {
+    const thoughts = { model: 'anthropic/claude-haiku-4.5', thoughts: 5, chargedMicroUsdc: '500', directThoughts: 5 };
+    // thoughts at BlockRun, pictures through the relay (the default route): the console says both
+    expect(sanitizeFuel({ byModel: [thoughts, { model: 'google/nano-banana-2', thoughts: 2, chargedMicroUsdc: '150000' }] })).toMatchObject({ paidTo: 'blockrun', picturesPaidTo: 'bootr' });
+    // the picture rows win over the route, under either naming of the image model
+    expect(sanitizeFuel({ byModel: [thoughts, { model: 'google/gemini-3.1-flash-image', thoughts: 2, chargedMicroUsdc: '150000', directThoughts: 2 }] }, 'relay')).toMatchObject({ paidTo: 'blockrun', picturesPaidTo: 'blockrun' });
+    expect(sanitizeFuel({ byModel: [thoughts, { model: 'google/nano-banana-2', thoughts: 2, chargedMicroUsdc: '150000' }] }, 'direct')).toMatchObject({ paidTo: 'blockrun', picturesPaidTo: 'bootr' });
+    // no picture yet: the route decides for an agent whose thoughts pay BlockRun
+    expect(sanitizeFuel({ byModel: [thoughts] })).toMatchObject({ paidTo: 'blockrun', picturesPaidTo: 'bootr' });
+    expect(sanitizeFuel({ byModel: [thoughts] }, 'direct')).toMatchObject({ paidTo: 'blockrun', picturesPaidTo: 'blockrun' });
+    // an agent still on the relay pays Bootr for both; pictures alone say pictures only
+    expect(sanitizeFuel({ byModel: [{ ...thoughts, directThoughts: 0 }] })).toMatchObject({ paidTo: 'bootr', picturesPaidTo: 'bootr' });
+    expect(sanitizeFuel({ byModel: [{ model: 'google/nano-banana-2', thoughts: 1, chargedMicroUsdc: '75442' }] })).toMatchObject({ paidTo: null, picturesPaidTo: 'bootr' });
   });
 
   it('keeps when the first paid thought was and how many were charged with no answer', () => {
