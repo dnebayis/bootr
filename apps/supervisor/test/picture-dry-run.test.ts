@@ -1,3 +1,5 @@
+// Not part of the supervisor's `tsc` pass (tsconfig.json excludes it): it imports the sender app's source and test helpers,
+// which the supervisor's Docker build context does not contain. Vitest runs it from the repo checkout as usual.
 /**
  * The dry run: the whole path of a picture, from the model's decision to the X media upload, with every outside
  * service stubbed at its HTTP boundary and answering in the shape it answers live:
