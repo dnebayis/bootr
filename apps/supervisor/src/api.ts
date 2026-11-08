@@ -20,6 +20,7 @@ import { processAgent, reconcilePending } from './tick.js';
 import { reconcileOps } from './treasury.js';
 import { fuelReport, reconcileInference } from './inference.js';
 import { createTelegramLink, removeTelegramLink } from './telegram.js';
+import { providerHold } from './provider-hold.js';
 import type { AgentState } from './runtime.js';
 
 export interface PanicRevokeResult {
@@ -88,7 +89,11 @@ export async function panicRevoke(ctx: SupervisorContext, opts: { uninstall?: bo
 export function createApp(ctx: SupervisorContext, nowSec: () => number = () => Math.floor(ctx.now() / 1000)) {
   const app = new Hono<AuthEnv>();
 
-  app.get('/health', (c) => c.json({ ok: true, chainId: ctx.chain.chainId, now: new Date(ctx.now()).toISOString() }));
+  /** `providerHold`: the fleet-wide wait while the model provider is down (provider-hold.ts), null when thoughts are being bought. */
+  app.get('/health', (c) => {
+    const hold = providerHold(ctx.now());
+    return c.json({ ok: true, chainId: ctx.chain.chainId, now: new Date(ctx.now()).toISOString(), providerHold: hold ? { until: new Date(hold.until).toISOString(), error: hold.error } : null });
+  });
 
   app.use('/internal/*', hmacAuth(ctx.config.SUPERVISOR_SERVICE_KEY, nowSec));
 

@@ -386,7 +386,13 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
    -> paid inference (`inferenceIdempotencyKey(agentId, cycle)`, `maxQuoteFor(model)`) -> one tool call -> `parseAction`
    -> `beginAction`/`markSent`/`recordOutcome`/`settleCycle` -> result as a `tool` message -> repeat until `finish` or
    `MAX_TOOL_STEPS`. State is persisted with `boundedState` (12 KB); the in-flight conversation is persisted in
-   `sv_runtimes.turn` so a crash resumes it. Errors use `interruptionPlan`.
+   `sv_runtimes.turn` so a crash resumes it. Errors use `interruptionPlan`: every inference failure sets the agent's own
+   `inferenceRetryAt`, and nothing wakes it before then. An outage-shaped failure (the provider refusing the relay's
+   account, 401/403/429/5xx, the relay or BlockRun unreachable, a timeout) also counts towards the fleet-wide
+   **provider hold** (`src/provider-hold.ts`): once two distinct agents fail that way inside ten minutes, every agent's
+   next thought waits ten minutes (the runtime ends the turn right before buying it, outcome `provider_hold`, no
+   failure counted against the agent, its `inferenceRetryAt` set to the hold), and one answered thought anywhere clears
+   it. `GET /health` shows the hold as `providerHold`. In-process state: a restart starts counting again.
 8. Social stats to the indexer (`xHandle`, `lastPostAt`, `postsCount24h`, `status`).
 
 ## Fee claims (RWAGMI v3)
