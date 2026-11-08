@@ -167,7 +167,7 @@ test('coin page shows the agent status line, the activity tape and the creator c
   const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
   await expect(review).toHaveAttribute('aria-checked', 'true');
   await expect(console_.getByTestId('approvals-pending')).toHaveText('2 pending');
-  await expect(console_.getByLabel('Cadence')).toBeVisible();
+  await expect(console_.locator('#console-posts-per-day')).toBeVisible();
   await expect(console_.getByLabel('Model')).toBeVisible();
   const save = console_.getByRole('button', { name: 'Save changes' });
   await expect(save).toBeDisabled();
