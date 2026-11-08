@@ -26,7 +26,52 @@ export type PlatformCode =
   | 'platform_price_talk_forbidden'
   | 'platform_foreign_cashtag_forbidden'
   | 'platform_shouting_forbidden'
-  | 'platform_emoji_string_forbidden';
+  | 'platform_emoji_string_forbidden'
+  | 'platform_link_forbidden';
+
+/**
+ * The only sites the platform account may link: its own, X, the explorer, the two launch and chart sites, plus the
+ * source a post credits (attributions). An injected model could otherwise post any https link from the launchpad's
+ * own voice, and a phishing link there would carry its name. Subdomains count (www.bootr.fun).
+ */
+export const PLATFORM_LINK_HOSTS: readonly string[] = ['bootr.fun', 'x.com', 'twitter.com', 'basescan.org', 'clanker.world', 'dexscreener.com'];
+
+/** Common endings X turns into a link even without `https://` ("bootr-claim.com/x" is a link on X). ".eth" is not one. */
+const LINK_TLDS = 'com|net|org|io|xyz|fun|app|co|dev|world|finance|fi|me|link|site|online|info|ai|gg|lol|wtf|club|top|cloud|network|money|exchange|cash|crypto|tech|live|pro|us|uk|de|ch|so|to|ly|sh|zip|mov|eu|ca|tv|cc|id|is|in|it|be|at|nl|fr|es';
+const EXPLICIT_LINK = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
+const BARE_LINK = new RegExp(`(?<![\\w@/.-])(?:www\\.)?(?:[a-z0-9-]+\\.)+(?:${LINK_TLDS})(?=[/?#]|\\b)(?:[/?#][^\\s<>"')\\]]*)?`, 'gi');
+
+/** The hosts of every link in `text`, explicit or bare, lowercased; an unparsable one counts as '' (never allowed). */
+export function linkedHosts(text: string): string[] {
+  const hosts: string[] = [];
+  const bare = text.replace(EXPLICIT_LINK, (m) => {
+    hosts.push(hostOf(m));
+    return ' ';
+  });
+  for (const m of bare.matchAll(BARE_LINK)) hosts.push(hostOf(`https://${m[0]}`));
+  return hosts;
+}
+
+/** The host of a link as written in prose: the sentence's trailing punctuation is not part of it. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url.replace(/[.,;:!?]+$/, '')).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+const hostAllowed = (host: string, allowed: readonly string[]) => host !== '' && allowed.some((a) => host === a || host.endsWith(`.${a}`));
+
+/**
+ * `platform_link_forbidden` when the text links a site outside PLATFORM_LINK_HOSTS and the credited sources, else
+ * null. Pure; the attributions are read leniently here (the strict check comes after, in `validatePost`).
+ */
+export function platformLinkRisk(text: string, attributions: unknown = []): PlatformCode | null {
+  const credited = Array.isArray(attributions) ? attributions.map((a) => hostOf(String((a as { sourceUrl?: unknown } | null)?.sourceUrl ?? ''))).filter(Boolean) : [];
+  const allowed = [...PLATFORM_LINK_HOSTS, ...credited];
+  return linkedHosts(text).every((h) => hostAllowed(h, allowed)) ? null : 'platform_link_forbidden';
+}
 
 /** The one cashtag the platform account may use: its own coin. */
 export const PLATFORM_CASHTAG = '$BOOTR';
@@ -122,7 +167,8 @@ export function creditedAttributions<T extends { username: string }>(text: strin
  * - x_post_requires_at_most_one_cashtag
  * - invalid_source_credit (bad handle, non-https url, credentials in url, duplicate)
  * - mentions_require_source_credit (more than 3 mentions, or mention/credit sets differ)
- * - any PlatformCode when `risk.platform` is true (treasury talk, market calls, foreign cashtags, shouting, emoji strings)
+ * - any PlatformCode when `risk.platform` is true (treasury talk, market calls, foreign cashtags, shouting, emoji
+ *   strings, a link outside PLATFORM_LINK_HOSTS and the credited sources)
  */
 export function validatePost(
   text: unknown,
@@ -166,6 +212,11 @@ export function validatePost(
   if (mentions.length > MAX_MENTIONS) throw new PolicyError('mentions_require_source_credit');
   if (mentions.some((name) => !credited.has(name))) throw new PolicyError('mentions_require_source_credit');
   if ([...credited].some((name) => !mentions.includes(name))) throw new PolicyError('mentions_require_source_credit');
+  // Last, once the credits are known to be well formed: the platform account links only its own sites and its sources.
+  if (risk.platform) {
+    const linkCode = platformLinkRisk(text, attributions);
+    if (linkCode) throw new PolicyError(linkCode);
+  }
 }
 
 /** Non-throwing variant for callers that prefer a result. */

@@ -156,8 +156,11 @@ refuel / gas / fees / treasury talk), `platform_price_talk_forbidden` (buy, sell
 target, "10x" multipliers and the like, plus explicit market calls: "price will", "going to hit $1m", "don't miss", "you're
 early", "hold $BOOTR", "NFA", profit talk, "only a $190k market cap"; a neutral figure such as "market cap is $190k" or
 a chart link passes), `platform_foreign_cashtag_forbidden` (any cashtag other than
-$BOOTR), `platform_shouting_forbidden` (three or more consecutive all-caps words) or `platform_emoji_string_forbidden`
-(two emoji in a row, or three in a post). The sender's gate (`checkOutgoing` in `apps/sender/src/policy-shim.ts`) must
+$BOOTR), `platform_shouting_forbidden` (three or more consecutive all-caps words), `platform_emoji_string_forbidden`
+(two emoji in a row, or three in a post) or `platform_link_forbidden` (a link, `https://` or bare, to any site other
+than bootr.fun, x.com, basescan.org, clanker.world, dexscreener.com and the source the post credits in its
+attributions; `PLATFORM_LINK_HOSTS`, since an injected model could otherwise post a phishing link in the launchpad's
+own voice). The sender's gate (`checkOutgoing` in `apps/sender/src/policy-shim.ts`) must
 pass `platform` through for the stricter path to apply there.
 
 **Defaults** (`apps/supervisor/src/onboarding.ts`): cadence `PLATFORM_POST_INTERVAL_MS` = 6 hours (coin agents use
