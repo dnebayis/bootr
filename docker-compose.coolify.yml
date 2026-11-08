@@ -232,6 +232,8 @@ services:
       # Ceiling on one agent tool call (apps/supervisor/src/broker/index.ts): 180 s, 60 s for reads. Not secrets.
       TOOL_TIMEOUT_MS: ${TOOL_TIMEOUT_MS:-}
       TOOL_READ_TIMEOUT_MS: ${TOOL_READ_TIMEOUT_MS:-}
+      # Sleeping runtimes checked per tick in their own sweep (tick.ts); empty = MAX_AGENTS_PER_TICK.
+      MAX_SLEEPING_PER_TICK: ${MAX_SLEEPING_PER_TICK:-}
       PLATFORM_TREASURY_ADDRESS: ${PLATFORM_TREASURY_ADDRESS}
       BUILDER_CODES_ENABLED: ${BUILDER_CODES_ENABLED:-}
       BUILDER_CODES_URL: ${BUILDER_CODES_URL:-}

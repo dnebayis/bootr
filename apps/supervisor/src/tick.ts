@@ -1,10 +1,11 @@
 /**
- * The supervisor tick: onboarding, then up to MAX_AGENTS_PER_TICK runtimes ordered by nextAt.
+ * The supervisor tick: onboarding, then up to MAX_AGENTS_PER_TICK awake runtimes ordered by nextAt, then a sweep of
+ * up to MAX_SLEEPING_PER_TICK sleeping runtimes (one treasury read each), then the paused ones (reconciliation only).
  * Per runtime: lease -> reconcile pending effects -> sleep rule -> fee policy -> wake decision -> turn.
  */
 import { randomUUID } from 'node:crypto';
 import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
-import { and, asc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { guardianAbi, kernelAbi } from './abi.js';
 import { agentDirectory } from './agent-directory.js';
@@ -60,13 +61,28 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     ctx.log.error({ err }, 'post metrics sweep failed');
   }
 
+  // Awake runtimes by `nextAt`. Sleeping ones are not among them: a sleeping agent never moves its `nextAt`, so ten
+  // sleeping coins would otherwise hold every slot of every tick and no awake agent would ever run again.
   const due = await ctx.db
     .select({ runtime: runtimes, agent: agents })
     .from(runtimes)
     .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
-    .where(and(eq(agents.status, 'active'), ne(runtimes.status, 'paused')))
+    .where(and(eq(agents.status, 'active'), notInArray(runtimes.status, ['paused', 'sleeping'])))
     .orderBy(asc(runtimes.nextAt), asc(runtimes.updatedAt))
     .limit(ctx.config.MAX_AGENTS_PER_TICK);
+  // Sleeping runtimes get their own sweep, least recently checked first (each check touches the row), so refuelling
+  // is noticed in turn without a sleeping coin ever taking an awake agent's slot. One treasury read each, no turn.
+  const sleepingCap = ctx.config.MAX_SLEEPING_PER_TICK ?? ctx.config.MAX_AGENTS_PER_TICK;
+  const sleeping =
+    sleepingCap > 0
+      ? await ctx.db
+          .select({ runtime: runtimes, agent: agents })
+          .from(runtimes)
+          .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
+          .where(and(eq(agents.status, 'active'), eq(runtimes.status, 'sleeping')))
+          .orderBy(asc(runtimes.updatedAt), asc(runtimes.nextAt))
+          .limit(sleepingCap)
+      : [];
   // Operator-paused runtimes still get reconciliation (cheap), never a turn.
   const paused = await ctx.db
     .select({ runtime: runtimes, agent: agents })
@@ -75,7 +91,7 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     .where(and(eq(agents.status, 'active'), eq(runtimes.status, 'paused')))
     .limit(ctx.config.MAX_AGENTS_PER_TICK);
 
-  for (const { runtime, agent } of [...due, ...paused]) {
+  for (const { runtime, agent } of [...due, ...sleeping, ...paused]) {
     report.processed.push(agent.agentId);
     try {
       const result = await processAgent(ctx, agent, runtime);
@@ -147,6 +163,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // An unknown balance is not an empty one: it neither puts an awake agent to sleep nor wakes a sleeping one, which
     // would otherwise reach the wake decision as `waiting` and could buy a turn with no fuel. Next tick reads again.
     if (!treasury && runtime.status === 'sleeping') {
+      await saveRuntime(ctx, agent.agentId, {}); // checked: the sleeping sweep moves on to the next one
       await postSocial(ctx, agent, config, runtime, 'sleeping');
       return { ran: false, reasons: ['treasury_unknown'], skipped: 'treasury_unknown' };
     }
@@ -162,10 +179,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       const after = fuel(treasury) < SLEEP_USDC && moved ? await readTreasuryOnChain(ctx, agent).catch(() => treasury) : treasury;
       const sleeping = fuel(after) < SLEEP_USDC;
       if (sleeping && runtime.status !== 'held') {
-        if (runtime.status !== 'sleeping') {
-          log.info({ usdc: after.balances.usdc, spenderUsdc: after.balances.spenderUsdc }, 'kernel + spender below 1 USDC; sleeping');
-          await saveRuntime(ctx, agent.agentId, { status: 'sleeping' });
-        }
+        if (runtime.status !== 'sleeping') log.info({ usdc: after.balances.usdc, spenderUsdc: after.balances.spenderUsdc }, 'kernel + spender below 1 USDC; sleeping');
+        // Saved either way: the sleeping sweep (tick) checks the least recently touched row first.
+        await saveRuntime(ctx, agent.agentId, runtime.status !== 'sleeping' ? { status: 'sleeping' } : {});
         await postSocial(ctx, agent, config, runtime, 'sleeping');
         return { ran: false, reasons: ['sleeping'], skipped: 'sleeping' };
       }

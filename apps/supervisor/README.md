@@ -178,7 +178,8 @@ a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `an
 | `INDEXER_URL` | yes | | Ponder REST (`/market/:token`, `/treasury/:kernel`, `/platform/feed`, `/internal/agent/:kernel/social` signed with `INDEXER_SERVICE_KEY`) and GraphQL (`/graphql`, the `read_coin` tool) |
 | `SITE_URL` | no | `https://bootr.fun` | The public site; `read_coin` hands out `<SITE_URL>/token/<coin>` as the coin page |
 | `SUPERVISOR_TICK_MS` | no | `60000` | |
-| `MAX_AGENTS_PER_TICK` | no | `10` | |
+| `MAX_AGENTS_PER_TICK` | no | `10` | awake runtimes processed per tick, by `next_at` |
+| `MAX_SLEEPING_PER_TICK` | no | = `MAX_AGENTS_PER_TICK` | sleeping runtimes checked per tick in their own sweep (one treasury read each, least recently checked first); sleeping coins never take an awake agent's slot. `0` = sleeping agents are not checked |
 | `MAX_TOOL_STEPS` | no | `8` | tool steps per turn before a forced checkpoint |
 | `MENTION_AUTO_CLOSE_ENABLED` | no | `true` | closes mentions the sender would refuse for lack of a verified badge before a turn's first step (`src/mention-close.ts`); `false` turns it off |
 | `SUPERVISOR_PORT` | no | `3004` | |
@@ -368,7 +369,8 @@ log, backup, CI), the goal is minutes, not ticks:
 
 ## The loop
 
-Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
+Every tick, up to `MAX_AGENTS_PER_TICK` awake runtimes ordered by `next_at`, then up to `MAX_SLEEPING_PER_TICK`
+sleeping ones (least recently checked first; they stop at step 4 unless refuelled), then the paused ones:
 
 1. 60 s lease on the runtime row (`lease_token`, `lease_until`; renewed per tool step).
 2. Guardian pause check (`agentInfo(kernel).paused` -> runtime `paused` by `guardian`; operator pauses are sticky).
