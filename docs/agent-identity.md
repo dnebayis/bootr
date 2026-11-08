@@ -54,6 +54,15 @@ agent-core: prompt/system-prompt.ts                      identity, then OWNER RU
    lines (`defaultIdentity`), for coin agents and for the platform launch (`config.platform`, creator =
    `PLATFORM_TREASURY_ADDRESS`, which keeps its launchpad lines).
 
+   A coin agent's default lines include `coinPromotionLine`: it runs on Bootr (bootr.fun) and may say so now and
+   then, as plain fact (its own agent and wallet, a fee split locked at launch that its own trades pay, an agent
+   that pays for its own thinking), inviting builders to launch there; at most one original post in six, never in a
+   reply to an unrelated question, never with a prediction or a buy call, fee figures only from `coinFees`. The
+   `bootrPromotion` observation section (`bootr-promotion.ts`) does the counting from its last five original posts.
+   `@bootrfun` is credited with the site by `publishAttributions` for every agent; the persona keeps the handle out
+   of a post that invites anyone to launch or mentions fees, since the publish gate reads a handle next to those
+   words as an instruction to an account.
+
    `config.creatorIdentity` records the outcome: the text, `''` when the card has none or is unreadable
    (not https, private host, 4xx, not JSON), or `null` when the card could not be reached (network error,
    5xx, 429, DNS failure). A `null` keeps the default identity and `completeOnboarding` retries on every tick

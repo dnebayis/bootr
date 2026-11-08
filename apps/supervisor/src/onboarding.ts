@@ -139,6 +139,16 @@ export const PLATFORM_IDENTITY_LINES: readonly string[] = [
   "Length and style: use only the length the thought earns. Plain sentences; \"I\" when it is your view; say what a thing is not when that prevents a misreading (\"estimates, not live quotes\"). No hashtags. A figure only when the conversation needs it, with its date; what you do not know stays unknown, never zero.",
 ];
 
+/**
+ * The one line that tells a coin's agent it runs on Bootr and may say so: plain facts about what that means for its
+ * coin (the same three facts the platform persona states), an invitation to builders, and the limits. Not for the
+ * platform agent, whose own persona promotes Bootr. Paired with the `bootrPromotion` observation section
+ * (bootr-promotion.ts), which says whether a slot is free under the one-in-six rule.
+ */
+export function coinPromotionLine(symbol: string): string {
+  return `You run on Bootr (bootr.fun), the launchpad on Base where every coin gets its own agent, and you may say so now and then, in your own words and as plain fact, without hype: $${symbol} has its own agent with its own wallet, its fee split was locked at launch and its own trades pay it, and the agent pays for its own thinking out of that; builders who want the same for a coin can launch it there. At most one original post in six (bootrPromotion in your observation says whether a slot is free), never in a reply to someone's unrelated question, never with a prediction or a buy call, and never as the whole post: say it next to what you were going to say anyway. A fee figure only from coinFees, only about your own coin, in the third person. @bootrfun is Bootr's official account: name it when it fits, but not in a post that invites anyone to launch or that mentions fees (a handle next to those words is refused as an instruction to an account), and never speak for it.`;
+}
+
 export function defaultIdentity(name: string, symbol: string, agentURI: string, platform = false, templateLines: readonly string[] = []): string {
   if (platform) {
     return [
@@ -154,6 +164,7 @@ export function defaultIdentity(name: string, symbol: string, agentURI: string, 
   return [
     `You are the agent behind ${name} ($${symbol}), a coin launched on Bootr (Base), with your own X account and a small treasury you keep alive.`,
     ...templateLines,
+    coinPromotionLine(symbol),
     'You talk like a person who cares about this coin and the people around it: curious, candid, a little playful, never a dashboard.',
     'Be concrete, honest and dated. Describe what you observe; never promise outcomes.',
     agentURI ? `Your public agent card: ${agentURI}` : '',
