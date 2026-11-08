@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { wakeDecision } from '@bootr/agent-core';
 import { actions, agents, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { generateImage, IMAGE_WINDOW_MS, MAX_IMAGES_PER_DAY } from '../src/images.js';
+import { generateImage, IMAGE_WINDOW_MS, MAX_IMAGES_PER_DAY, WITHOUT_PICTURE } from '../src/images.js';
 import { processAgent, tick } from '../src/tick.js';
 import type { AgentState, Turn } from '../src/runtime.js';
 import { spenderAccount } from '../src/spender.js';
@@ -547,7 +547,7 @@ describe('the daily image cap counts paid attempts', () => {
         expect(await attempt(`act_${i}`)).toEqual({ kind: 'unknown', error: 'upstream_rejected' });
         expect(sim.signed).toBe(i);
       }
-      expect(await attempt('act_new')).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours` });
+      expect(await attempt('act_new')).toEqual({ kind: 'failed', error: `image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours. ${WITHOUT_PICTURE}` });
       expect(sim.signed).toBe(MAX_IMAGES_PER_DAY);
 
       // the action's own key costs nothing: resumed at the cap, it spends its credit

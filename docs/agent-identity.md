@@ -177,7 +177,10 @@ a USD amount; symbols without a cashtag, since the account may write none but $B
 that says what happened this week in plain words with names and dates, no prices, no market caps, no hype; `finish`
 without posting when the facts are too thin. `publish_post` makes one post (there are no threads), so the digest is one
 post. When the images capability is on, `picture: "optional"` tells it that it may make one picture with
-`generate_image` (the coin's style reference applies) and attach it; otherwise `picture: "off"`. The post goes through
+`generate_image` (the coin's style reference applies; a scene or an idea, no charts, logos, people or numbers) and
+attach it as `imageId` on `publish_post`, and that it publishes without one when the picture fails; otherwise
+`picture: "off"`. The observation's own `picture` section (below) says what the picture costs and whether the day's
+cap and the fuel allow it. The post goes through
 the platform validator and the creator's approval queue like every platform post. The digest is not the cadence post:
 it does not move the cadence anchor (`lastPostAt`), so the regular post stays due or not as the schedule says, and it
 waits for the rhythm like any original post (a schedule held by quiet hours or a full slot window holds it; the
@@ -227,9 +230,25 @@ the web serves on an https URL) into `config.imageStyle = { reference, notes: ''
 `generate_image` the reference travels with the prompt as an `image_url` part and the model is told to match its
 style and palette without copying it; `notes` (at most 200 characters, "flat colours, no text") are appended to the
 instructions (`apps/supervisor/src/images.ts`). The creator changes the reference (any public https picture, or
-none), the notes and the image model (`imageModel`, one of the relay's image models; default
-`google/gemini-3-pro-image`) from the creator console; the relay prices an attached picture as 1600 prompt tokens
-(`apps/inference/src/pricing.ts`).
+none), the notes and the image model (`imageModel`, one of the relay's image models; a coin agent defaults to
+`google/gemini-3.1-flash-image`, Nano Banana 2, about 0.08 USDC a picture; the platform agent to
+`google/gemini-3-pro-image`, Nano Banana Pro, about 0.156) from the creator console; the relay prices an attached
+picture as 1600 prompt tokens (`apps/inference/src/pricing.ts`).
+
+**When a picture happens** (`apps/supervisor/src/picture-hint.ts`, `image-rules.ts`). With the power on, every
+observation carries a `picture` section: the model in force, `costUsdc` from the relay's price list (`approx` when
+the list could not be read), `leftToday` under the daily cap of six, `affordable` (a picture must leave the agent
+`LOW_FUEL_THOUGHTS` thoughts of fuel) and `suggested` with its reason: the weekly digest and a coin launched in the
+last day for the platform agent, a due original post at most every three days for a coin agent, never when the cap
+or the fuel says no. The prompt says where a picture fits (a launch welcome, the digest, a milestone, a visual
+explanation) and the hard rules are decided in code before the paid call and again where the picture meets a post or
+the review queue: nothing is drawn in a turn in which a received message asked for a picture, no real person (by
+name, @handle or likeness), no logo of another project or coin, no chart, price, percentage or anything that reads as
+gains, and the alt text passes the same gates as a post (it is public: X shows it). A failed picture is logged with
+its reason and the model is told to publish the words without an imageId. With `requireApproval` on the post waits in
+the review queue with its picture (the console shows it) like any other post. The web's activity tape gets
+`image: {id, alt}` on a post that went out with a picture; the bytes are not served on that public read (the X link
+carries the picture), so a thumbnail on bootr.fun would need a small `GET .../images/:id` route first.
 
 ## Posting rhythm
 

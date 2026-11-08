@@ -48,7 +48,11 @@ guardian owner key used only to approve session-key installs.
 | `src/treasury.ts` | on-chain reads (kernel + spender balances, claimable WETH fees by launch source: pending + settled from `RwagmiLpLockerV3`, or settled from `ClankerFeeLocker`; Chainlink with staleness check, the funding window from `BootrCallPolicy.windowOf`), `prepareOp` / `executeOp` / `reconcileOps`, the claim calls by source (`settleAndClaim` / `claimQuote`, or `collectRewards` + `claim` batched), swap encoding through `BootrSwapHelper` (`WETH.approve(helper)` + `helper.swapWethToUsdc`), deterministic fee-claim policy incl. the spender top-up |
 | `src/abi.ts`, `src/abis/` | hand-written minimal ABIs of the Bootr contracts, the Clanker v4 fee locker / LP locker and `ClankerLaunched`; the RWAGMI v3 launcher and LP locker ABIs vendored verbatim from `@rwagmi/token-launcher-sdk` |
 | `src/inference.ts` | agent-core request building, x402 payment through `@bootr/inference/client` signed by the agent's spender EOA (`relayRequest`, shared by thoughts and images), idempotent per key, unknown-outcome reconciliation with payment proof |
-| `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`), decoded from the base64 data URL and stored in `sv_images`; the daily cap; `publish_post` / `publish_reply` attach a stored image by `imageId` |
+| `src/images.ts` | `generate_image`: one paid picture through the relay (`modalities: ["image", "text"]`, `max_tokens` sized for the picture's own tokens), decoded from the base64 data URL and stored in `sv_images`; the daily cap; the fuel check; `publish_post` / `publish_reply` attach a stored image by `imageId` |
+| `src/image-rules.ts` | the hard rules for pictures in code: never on request, no real people, no other project's logo, no charts or numbers; the alt text passes the same gates as a post (checked before the paid call and again where a picture meets a post or the review queue) |
+| `src/image-models.ts` | the relay's image models with their prices (`GET /v1/models`), the built-in list when the relay is down, the price of one picture |
+| `src/picture-hint.ts` | the `picture` section of the observation: the model in force, the price, how many pictures are left today, whether the fuel allows one and whether one is suggested now |
+| `src/image-retention.ts` | the hourly sweep: day-old relay answers of image calls emptied, month-old pictures deleted unless a pending review item refers to them |
 | `src/mention-close.ts` | the pass before a turn's first step: mentions whose only exclusion is `verified_audience_required`, from an author X reports as unverified, are closed in bulk with no model call; verified authors, Bootr agents, the creator, allow-listed authors, authors without verification data and deferred mentions stay; any error leaves the turn as it was |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
@@ -619,17 +623,35 @@ is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.
 - `recall_conversation` is served from the supervisor's own action log and notes; the sender has no inbox-history endpoint.
 - Images (`generate_image`, the `images` power): one picture per call, paid from the spender like a thought
   (`sv_inference` key `image:<actionId>`, so a retried step never pays twice; an unknown relay outcome holds the
-  step and is reconciled by key). The relay request is a chat completion on `config.imageModel` (default
-  `google/gemini-2.5-flash-image`, `DEFAULT_IMAGE_MODEL`; `openai/gpt-5-image-mini` is also priced) with
-  `modalities: ["image", "text"]`, the prompt and the alt text; the quote is about 0.043 USDC (one Gemini image =
-  1290 output tokens at $30/M, plus the text and the relay margin; cap `maxQuoteFor` 0.12 USDC). The picture
+  step and is reconciled by key). The relay request is a chat completion on `config.imageModel` (the platform agent
+  defaults to `google/gemini-3-pro-image`, Nano Banana Pro, `DEFAULT_IMAGE_MODEL`; a coin agent to
+  `google/gemini-3.1-flash-image`, Nano Banana 2, `DEFAULT_COIN_IMAGE_MODEL`) with `modalities: ["image", "text"]`,
+  the prompt and the alt text. `max_tokens` is the model's tokens per image (the relay's `image_output_tokens_per_image`,
+  else `IMAGE_TOKENS_PER_IMAGE`) plus `IMAGE_TEXT_TOKENS` (1024): OpenRouter counts the picture as completion tokens
+  (1120 for a 1K Gemini 3 picture), and the 256 ceiling this sent until 2026-11-08 could not hold one, which is the
+  one cause the code shows for the first live picture (the weekly digest of that day) failing as `image_not_generated`.
+  One picture costs about 0.156 USDC on Nano Banana Pro, 0.08 on Nano Banana 2, 0.05 on Gemini 2.5 Flash Image and
+  up to 0.22 on GPT Image 2 (the relay's list prices, `picturePriceFor`; the quote under `maxQuoteFor` reserves the
+  text headroom too and settles to usage). Before the paid call, each free and each logged when it refuses: the hard
+  rules on the prompt and alt text (`image-rules.ts`: no real people, no other project's logo, no charts, prices or
+  numbers; the alt text passes the post gates, one cashtag, no @mentions), "never on request" (a message received
+  this turn asking for a picture closes pictures for the turn), the daily cap (`MAX_IMAGES_PER_DAY` 6 per rolling
+  24 h, paid attempts included), and the fuel (`pictureFuelCheck`: a picture must leave `LOW_FUEL_THOUGHTS` thoughts
+  at the agent's average cost behind, or 1 USDC without an estimate). The picture
   (`choices[0].message.images[0].image_url.url`, a base64 data URL; png/jpeg/webp, at most 5 MB) is stored inline in
   `sv_images` (id `img_<action>`, alt, mime, bytes; nothing is pinned or served) and the model gets `{imageId, alt,
-  mime, bytes}`. At most `MAX_IMAGES_PER_DAY` (6) stored images per agent per rolling 24 h (`image_daily_cap`); a
-  completion without a picture fails the step as `image_not_generated` (paid, nothing stored). `publish_post` and
-  `publish_reply` take an optional `imageId`: the agent's own image is sent to the sender inline as
-  `media: {data: <base64>, mime, alt}` (`PUBLISH_MEDIA_TIMEOUT_MS` 60 s for the three X calls), an unknown or
-  foreign id fails the step as `image_not_found` before anything is sent. The activity tape lists a completed image
-  as kind `image`, "Made an image: <alt>".
+  mime, bytes}`. A completion without a picture fails the step as `image_not_generated` (paid, nothing stored) and is
+  logged with `finish_reason` and the token usage; every failure tells the model to publish without an imageId and
+  not to try again that turn. `publish_post` and `publish_reply` take an optional `imageId`: the agent's own image is
+  sent to the sender inline as `media: {data: <base64>, mime, alt}` (`PUBLISH_MEDIA_TIMEOUT_MS` 60 s for the three
+  X calls) after the alt text passed the gates once more; an unknown or foreign id fails the step as
+  `image_not_found` before anything is sent; an X account connected without the `media.write` scope comes back from
+  the sender as 409 `media_not_authorized`, which the broker turns into `image_not_authorized` for the model (post
+  without the picture; the creator reconnects the account from the console). The observation carries a `picture`
+  section (`picture-hint.ts`: model, `costUsdc`, `leftToday`, `affordable`, `suggested` with its reason, the rules)
+  whenever the power is on. Retention (`image-retention.ts`, hourly from the tick): image answers in `sv_inference`
+  are emptied after a day, stored pictures deleted after 30 days unless a pending review item refers to them. The
+  activity tape lists a completed image as kind `image`, "Made an image: <alt>", and a post that went out with one
+  carries `image: {id, alt}`.
 - `@bootr/shared` and `@bootr/inference/client` export raw TypeScript; the build bundles them with esbuild
   (`scripts/build.mjs`) so `node dist/index.js` works.

@@ -195,7 +195,8 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
     return { kind: 'failed', error: withoutPicture(error) };
   };
   // The hard rules, in code and free: the prompt and the alt text, then "never on request".
-  const risk = imagePromptRisk(input, { platform: config.platform === true, ownNames: [config.token.name, config.token.symbol] });
+  const own = (config as { token?: { name?: unknown; symbol?: unknown } }).token;
+  const risk = imagePromptRisk(input, { platform: config.platform === true, ownNames: [own?.name, own?.symbol].filter((n): n is string => typeof n === 'string' && n.length > 0) });
   if (risk) return refuse(risk.message);
   if (opts.receivedTexts && pictureRequested(opts.receivedTexts)) return refuse(REQUESTED_MESSAGE);
 

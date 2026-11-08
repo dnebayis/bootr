@@ -8,7 +8,7 @@
  *   - X: a fake api.x.com answering `POST /2/media/upload`, `POST /2/media/metadata` and `POST /2/tweets` as X does.
  * No money moves and nothing is posted: this is what a `--dry-run` of the live path looks like.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { parseAgentConfig } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
