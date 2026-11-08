@@ -77,8 +77,8 @@ export function TokenView({ address }: { address: string }) {
   const valid = isAddress(address, { strict: false });
   const { data: token, isPending, isError, refetch } = useToken(valid ? address : undefined);
   const now = useNow();
-  // The coin's own links; the agent's X handle stays out of them (AgentStatusLine shows it).
-  const links = useCoinLinks(token?.metadata, token?.xHandle);
+  // The coin's own links, the X account the creator entered among them (the agent's own when that is the only one).
+  const links = useCoinLinks(token?.metadata);
   const { address: wallet } = useConnection();
   const isCreator = env.useMock || (!!wallet && !!token?.creator && wallet.toLowerCase() === token.creator.toLowerCase());
 

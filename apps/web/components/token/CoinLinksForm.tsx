@@ -51,7 +51,7 @@ export function checkDraft(draft: Draft, agentXHandle: string | null | undefined
 export function CoinLinksForm({ token }: { token: Token }) {
   const queryClient = useQueryClient();
   const { canSign, sign } = useCreatorSignature();
-  const links = useCoinLinks(token.metadata, token.xHandle);
+  const links = useCoinLinks(token.metadata);
   const [edits, setEdits] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const stored = links.data ?? NO_COIN_LINKS;
@@ -80,7 +80,7 @@ export function CoinLinksForm({ token }: { token: Token }) {
       const saved = (await res.json()) as CoinLinks;
       // The page's own copy of the mock store (the route changed the server's).
       if (env.useMock) mock.updateCoinLinks(token.kernel, saved);
-      queryClient.setQueryData(coinLinksKey(token.metadata, token.xHandle), saved);
+      queryClient.setQueryData(coinLinksKey(token.metadata), saved);
       setEdits(null);
       toast.success('Links updated. The coin page and its contract metadata show them now.');
     } finally {

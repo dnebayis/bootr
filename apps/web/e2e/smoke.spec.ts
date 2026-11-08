@@ -46,7 +46,7 @@ test('token page renders agent, fee split and trades', async ({ page }) => {
   await expect(page.getByText(/Inactive for \d+ days/)).toBeVisible();
 });
 
-test("token page lists the coin's own links, its X account apart from the agent's handle (mock mode)", async ({ page }) => {
+test("token page lists the coin's own links, the agent's own X account included when it is the only one (mock mode)", async ({ page }) => {
   await page.goto('/');
   // Ledger Owl, the newest mock coin, is the one with project links; its agent posts as @owl_agent.
   const card = page.locator('a[href^="/token/0x"]', { hasText: 'Ledger Owl' }).first();
@@ -59,6 +59,14 @@ test("token page lists the coin's own links, its X account apart from the agent'
   await expect(links.getByRole('link', { name: 'Telegram' })).toHaveAttribute('href', 'https://t.me/ledgerowl');
   await expect(links.getByRole('link', { name: 'Discord' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: '@owl_agent' })).toBeVisible();
+  // Quiet Engine's only X account is its agent's: the X button shows it all the same (the creator entered it).
+  await page.goto('/');
+  const second = page.locator('a[href^="/token/0x"]', { hasText: 'Quiet Engine' }).first();
+  await expect(second).toBeVisible();
+  await page.goto((await second.getAttribute('href'))!);
+  await expect(page.getByRole('link', { name: '@qeng_agent' })).toBeVisible();
+  await expect(page.getByTestId('token-links').getByRole('link', { name: 'X' })).toHaveAttribute('href', 'https://x.com/qeng_agent');
+  await expect(page.getByTestId('token-links').getByRole('link', { name: 'Website' })).toHaveCount(0);
   // Other coins carry no links and show no links row.
   await page.goto('/');
   const other = page.locator('a[href^="/token/0x"]', { hasText: 'Paper Hands Club' }).first();
