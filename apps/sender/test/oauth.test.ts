@@ -132,7 +132,7 @@ describe('X OAuth 2.0 PKCE', () => {
     expect(await connect('agent-gov', { id: '3004', username: 'gov', verified: true, verified_type: 'government' })).toMatchObject({ verifiedType: 'government', premium: true });
     // one users/me per connect (metered as users_me); the account view did not ask X again the same day
     expect(env.fake.count('GET', '/2/users/me')).toBe(4);
-    const rows = await env.db.execute(sql`select agent_id, verified_type, verified_checked_at from sender_accounts order by agent_id`);
+    const rows = (await env.db.execute(sql`select agent_id, verified_type, verified_checked_at from sender_accounts order by agent_id`)) as { rows: Record<string, unknown>[] };
     expect(rows.rows.map((r) => [r.agent_id, r.verified_type, r.verified_checked_at !== null])).toEqual([
       ['agent-biz', 'business', true],
       ['agent-blue', 'blue', true],

@@ -76,7 +76,7 @@ describe('publish: the account without Premium', () => {
     const edge = await env.call('POST', '/internal/publish', { agentId: AGENT, actionId: 'act-edge-0001', text: 'd'.repeat(280) });
     expect(edge.body.status).toBe('sent');
     // the refused row never counts against the posting quota (no claim was made)
-    const rows = await env.db.execute(sql`select status, error from sender_actions where action_id = 'act-long-0001'`);
+    const rows = (await env.db.execute(sql`select status, error from sender_actions where action_id = 'act-long-0001'`)) as { rows: Record<string, unknown>[] };
     expect(rows.rows[0]).toMatchObject({ status: 'rejected' });
     expect(String(rows.rows[0]!.error)).toMatch(/^post_too_long_for_account: /);
   });
@@ -124,7 +124,7 @@ describe('GET /internal/account: the once-a-day verified_type refresh', () => {
     const first = await env.call('GET', `/internal/account/${AGENT}`);
     expect(first.body).toMatchObject({ connected: true, handle: AGENT_HANDLE, verifiedType: 'none', premium: false });
     expect(env.fake.count('GET', '/2/users/me')).toBe(1);
-    const metered = async () => Number((await env.db.execute(sql`select coalesce(sum(count), 0) as n from sender_reads where agent_id = ${AGENT} and kind = 'users_me'`)).rows[0]!.n);
+    const metered = async () => Number(((await env.db.execute(sql`select coalesce(sum(count), 0) as n from sender_reads where agent_id = ${AGENT} and kind = 'users_me'`)) as { rows: { n: unknown }[] }).rows[0]!.n);
     expect(await metered()).toBe(1);
 
     // the same day: served from the row, no X call
