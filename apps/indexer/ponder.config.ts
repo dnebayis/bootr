@@ -196,8 +196,9 @@ export default createConfig({
     : { kind: 'pglite', directory: '.ponder/pglite' },
   ordering: 'multichain',
   // Only the selected chain is configured at runtime; both names exist for the static types.
-  // `chains` is not part of Ponder's build id, so changing the RPC settings needs no new schema (rpc-budget.ts).
-  chains: { [chain]: { id: env.chainId, rpc: indexerRpc({ urls: env.rpcUrls, budget: process.env.INDEXER_RPC_BU_PER_SEC, fallbackUrl: process.env.BASE_RPC_FALLBACK_URL }) } } as unknown as {
+  // `chains` is not part of Ponder's build id (build/index.ts hashes `ordering`, `contracts`, `accounts` and `blocks`),
+  // so changing the RPC settings needs no new schema (rpc-budget.ts).
+  chains: { [chain]: { id: env.chainId, rpc: indexerRpc({ urls: env.rpcUrls, budget: process.env.INDEXER_RPC_BU_PER_SEC, fallbackUrl: process.env.BASE_RPC_FALLBACK_URL, blocksUrl: process.env.INDEXER_BLOCKS_RPC_URL }) } } as unknown as {
     base: { id: 8453; rpc: string };
     baseSepolia: { id: 84532; rpc: string };
   },

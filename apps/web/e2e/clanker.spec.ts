@@ -110,6 +110,24 @@ test('profile shows the creator fees of Clanker coins with one claim for all of 
   await expect(page.getByText('Mock: Claim Clanker fees sent')).toBeVisible();
 });
 
+test('a wallet whose coins all went through Clanker sees the Clanker fee panel alone (mock mode)', async ({ page }) => {
+  // The creator of $BWATCH, the mock Clanker coin, has launched nothing else: its public page link carries the address.
+  await page.goto('/');
+  const card = page.locator('a[href^="/token/0x"]', { hasText: 'Basewatch' }).first();
+  await expect(card).toBeVisible();
+  await page.goto((await card.getAttribute('href'))!);
+  const creator = (await page.locator('a[href^="/u/0x"]').first().getAttribute('href'))!.slice('/u/'.length);
+  await fakeInjectedWallet(page, creator);
+  await page.goto('/profile');
+  await connectBrowserWallet(page);
+  const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Creator fees, Clanker coins' }) });
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('$BWATCH');
+  // No RWAGMI-path coin, so no RWAGMI panel telling the wallet to launch a coin.
+  await expect(page.getByRole('heading', { name: 'Creator fees', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Launch a coin to earn the creator share of its trading fees.')).toHaveCount(0);
+});
+
 test('the admin fee panel lists platform fees per source with the Clanker claim instructions', async ({ page, context, baseURL }) => {
   const token = await signToken({ k: 'admin', a: ADMIN, e: Math.floor(Date.now() / 1000) + 600, s: newSessionId() });
   await context.addCookies([{ name: ADMIN_COOKIE, value: token, url: baseURL! }]);

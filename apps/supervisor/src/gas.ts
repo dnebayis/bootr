@@ -19,6 +19,9 @@ import type { KernelCall } from './kernel.js';
 import { deserializeSessionPolicy, hasGasRule, type SerializedSessionPolicy } from './session-key.js';
 
 export const wethAbi = parseAbi(['function withdraw(uint256 wad)', 'function deposit() payable']);
+/** Same address on every chain we run on. Its `getEthBalance` puts an ETH balance in a multicall batch. */
+export const MULTICALL3_ADDRESS: Address = '0xcA11bde05977b3631167028862bE2a173976CA11';
+export const multicall3BalanceAbi = parseAbi(['function getEthBalance(address addr) view returns (uint256 balance)']);
 
 /** `sponsored` = a paymaster pays (no self-funding); otherwise relative to `GAS_MIN_WEI`. */
 export type GasStatus = 'sponsored' | 'ok' | 'low' | 'empty';

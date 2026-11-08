@@ -44,4 +44,14 @@ test("the creator sets the coin's X account from the coin page and the links row
   // The form is prefilled from the saved links and has nothing to save.
   await expect(x).toHaveValue('@bootrfun');
   await expect(save).toBeDisabled();
+
+  // The agent's own account is accepted as the coin's X too: whatever the creator enters is shown.
+  await x.fill('@phc_agent');
+  await expect(x).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(save).toBeEnabled();
+  const savedOwn = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/links$/.test(r.url()) && r.request().method() === 'PUT');
+  await save.click();
+  expect((await savedOwn).status()).toBe(200);
+  await expect(page.getByTestId('token-links').getByRole('link', { name: 'X' })).toHaveAttribute('href', 'https://x.com/phc_agent');
+  await expect(page.getByRole('link', { name: '@phc_agent' })).toBeVisible();
 });

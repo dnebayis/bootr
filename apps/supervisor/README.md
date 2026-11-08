@@ -390,7 +390,13 @@ Every tick, up to `MAX_AGENTS_PER_TICK` runtimes ordered by `next_at`:
    -> paid inference (`inferenceIdempotencyKey(agentId, cycle)`, `maxQuoteFor(model)`) -> one tool call -> `parseAction`
    -> `beginAction`/`markSent`/`recordOutcome`/`settleCycle` -> result as a `tool` message -> repeat until `finish` or
    `MAX_TOOL_STEPS`. State is persisted with `boundedState` (12 KB); the in-flight conversation is persisted in
-   `sv_runtimes.turn` so a crash resumes it. Errors use `interruptionPlan`.
+   `sv_runtimes.turn` so a crash resumes it. Errors use `interruptionPlan`: every inference failure sets the agent's own
+   `inferenceRetryAt`, and nothing wakes it before then. An outage-shaped failure (the provider refusing the relay's
+   account, 401/403/429/5xx, the relay or BlockRun unreachable, a timeout) also counts towards the fleet-wide
+   **provider hold** (`src/provider-hold.ts`): once two distinct agents fail that way inside ten minutes, every agent's
+   next thought waits ten minutes (the runtime ends the turn right before buying it, outcome `provider_hold`, no
+   failure counted against the agent, its `inferenceRetryAt` set to the hold), and one answered thought anywhere clears
+   it. `GET /health` shows the hold as `providerHold`. In-process state: a restart starts counting again.
 8. Social stats to the indexer (`xHandle`, `lastPostAt`, `postsCount24h`, `status`).
 
 ## Fee claims (RWAGMI v3)
@@ -500,7 +506,7 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | POST | `/internal/agents/:id/session/install` / `rotate` / `check-spender` | session key operations / spender check |
 | POST | `/internal/agents/panic-revoke` | fleet-wide key-leak response (see the runbook); body `{uninstall?: boolean, agentIds?: string[]}` |
 | GET | `/internal/agents/:id/config` | the configuration in force (creator console); see below |
-| PUT | `/internal/agents/:id/config` | creator edit of instructions / model / powers / cadence / job lines; see below |
+| PUT | `/internal/agents/:id/config` | creator edit of instructions / model / powers / posts per day (cadence) / job lines; see below |
 | GET | `/internal/agents/:id/activity` | the coin page's activity tape (`?limit=50&before=<iso>`); see below |
 
 ### Creator notifications (`/internal/agents/:id/notifications`)
@@ -561,21 +567,33 @@ creator's wallet-signed edit (the web verifies the SIWE signature and the creato
 the creator's text (`config.creatorIdentity`, `''` when none); `jobLines` are the template's lines or, for a custom
 worker, the lines the card published (`config.workerPreset.identity`).
 
+`GET` also carries `postsPerDay`: the creator's daily budget of posts and replies (the sender's rolling 24 h quota;
+`config.postsPerDay`, else the sender's default 24).
+
 `PUT` body: `{ "by": "<creator address>", "instructions"?: string, "model"?: string, "allowedModels"?: string[],
 "worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] },
-"requireApproval"?: boolean, "routing"?: { "decideModel": string | null } }`. Every field is
+"postsPerDay"?: number, "requireApproval"?: boolean, "routing"?: { "decideModel": string | null } }`. Every field is
 optional except `by`; `worker` is a partial update merged onto the preset in force and then re-validated with
 `normalizeWorkerPreset` (always-on powers are forced back on; cadence 30 min … 7 days; at most 4 job lines of 240
 characters). `instructions` is normalised like the launch text (plain text, 20–600 characters). `model` must be a
 non-empty id and, when the body carries `allowedModels` (the web passes the admin allow-list), one of them. Job lines
 are editable for `custom` workers only (`400 job_lines_fixed` otherwise). On success the stored config changes,
 `revision` is bumped, an `sv_actions` row `{kind: 'config_updated', fields: [...], by, revision}` is written
-(`fields` ⊂ `instructions`, `model`, `powers`, `cadence`, `jobLines`, `requireApproval`, `routing`) and the new config
+(`fields` ⊂ `instructions`, `model`, `powers`, `cadence`, `postsPerDay`, `jobLines`, `requireApproval`, `routing`) and the new config
 view is returned. `routing.decideModel` is economy mode (src/routing.ts): the cheaper model a turn starts on, validated
 like `model` (non-empty, inside `allowedModels` when given); `null` switches the mode off.
+`postsPerDay` (`POSTS_PER_DAY` in `@bootr/shared/workers`: 2..48, default 24) is the one pacing control of the console:
+it is written to the sender's quota first (`POST /internal/quota/:agentId`, `setQuota`; `503 sender_unavailable` and
+nothing stored when the sender cannot be reached), then stored, and the cadence follows it:
+`postIntervalMs = 24 h / floor(postsPerDay / 2)` in whole minutes inside the worker bounds (original posts take half
+the budget, the other half answers mentions; 24 a day is every 2 h, 12 every 4 h, 2 once a day), overriding a
+`worker.postIntervalMs` in the same body. The turn's observation carries `postBudget` (src/post-budget.ts: the budget,
+what went out in the last 24 h, what is left) so the model paces itself; the sender still enforces the quota and the
+`x_quota` hold (src/rhythm.ts) still applies when it refuses. The platform agent's 6 h cadence is untouched until the
+owner edits its budget.
 Errors: `400 invalid_by | invalid_instructions | invalid_model | model_not_allowed | invalid_worker | job_lines_fixed |
-invalid_require_approval | invalid_routing`,
-`403 not_creator`, `404 not_found`, `409 unchanged` (nothing differed). The running agent is not touched: the tick
+invalid_posts_per_day | invalid_require_approval | invalid_routing`,
+`403 not_creator`, `404 not_found`, `409 unchanged` (nothing differed), `503 sender_unavailable`. The running agent is not touched: the tick
 reads `sv_agents.config` on every pass and the revision bump makes the wake decision fire `config_changed`, so the
 next tick starts a turn with the new system prompt, tools and cadence (a turn already persisted keeps its old
 system message until it ends).

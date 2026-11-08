@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
+import { customWorker, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateById } from '@bootr/shared/workers';
 import { agentActivity, shortAmount } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { actions, agents, runtimes, treasuryOps } from '../src/db/schema.js';
@@ -55,6 +55,7 @@ describe('GET /internal/agents/:id/config', () => {
         instructions: INSTRUCTIONS,
         worker: { kind: 'community', capabilities: COMMUNITY.preset.capabilities, postIntervalMs: COMMUNITY.preset.postIntervalMs, jobLines: COMMUNITY.preset.identity },
         workerHash: COMMUNITY.hash,
+        postsPerDay: 24,
         requireApproval: false,
         routing: { decideModel: null },
         // a coin agent's default image model is the cheaper one (images.ts); the platform agent keeps Nano Banana Pro
@@ -366,5 +367,77 @@ describe('GET /internal/agents/:id/activity', () => {
     expect(shortAmount('0.0000004', 6)).toBe('0.0000004');
     expect(shortAmount('0.000000123456', 6)).toBe('0.00000012');
     expect(shortAmount('nope', 2)).toBe('nope');
+  });
+});
+
+describe('posts per day (PUT postsPerDay)', () => {
+  it('writes the sender quota, derives the cadence (half the budget for original posts), records both on the tape, and the next tick reads it', async () => {
+    const world = await makeWorld();
+    try {
+      await seedAgent(world, { config: presetConfig() });
+      const { put, get } = api(world);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      // the default is the sender's default and the community cadence it implies
+      expect(postIntervalForPostsPerDay(POSTS_PER_DAY.default)).toBe(COMMUNITY.preset.postIntervalMs);
+      expect(((await (await get(path)).json()) as { postsPerDay: number }).postsPerDay).toBe(POSTS_PER_DAY.default);
+
+      const res = await put(path, { by: CREATOR, postsPerDay: 12 });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { revision: number; postsPerDay: number; worker: { kind: string; postIntervalMs: number } };
+      expect(body.postsPerDay).toBe(12);
+      expect(body.worker).toMatchObject({ kind: 'community', postIntervalMs: 4 * 3_600_000 });
+      expect(world.sender.quotaWrites).toEqual([{ agentId: AGENT_ID, patch: { postsPerDay: 12 } }]);
+      const parsed = agentConfigOf((await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!)!;
+      expect(parsed.postsPerDay).toBe(12);
+      expect(parsed.postIntervalMs).toBe(4 * 3_600_000);
+      let fields = (await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).map((r) => (r.action as { fields: string[] }).fields);
+      expect(fields).toEqual([['postsPerDay', 'cadence']]);
+      const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+      const tape = await agentActivity(world.ctx, (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!, runtime);
+      expect(tape.find((i) => i.kind === 'config')?.summary).toBe('Config updated: posts per day, cadence');
+
+      // the budget wins over a cadence sent in the same body; a budget whose cadence is already in force changes the budget alone
+      expect((await put(path, { by: CREATOR, postsPerDay: 6, worker: { postIntervalMs: 3_600_000 } })).status).toBe(200);
+      expect((await put(path, { by: CREATOR, worker: { postIntervalMs: 4 * 3_600_000 } })).status).toBe(200);
+      expect((await put(path, { by: CREATOR, postsPerDay: 13 })).status).toBe(200);
+      fields = (await world.db.select().from(actions).where(eq(actions.agentId, AGENT_ID))).map((r) => (r.action as { fields: string[] }).fields);
+      expect(fields).toEqual([['postsPerDay', 'cadence'], ['cadence', 'postsPerDay'], ['cadence'], ['postsPerDay']]);
+      expect(world.sender.quotaWrites.map((q) => q.patch.postsPerDay)).toEqual([12, 6, 13]);
+      const view = (await (await get(path)).json()) as { postsPerDay: number; worker: { postIntervalMs: number } };
+      expect(view).toMatchObject({ postsPerDay: 13, worker: { postIntervalMs: 4 * 3_600_000 } });
+
+      // bounds, a no-op, and the sender down: nothing stored, no revision
+      const expectError = async (body: unknown, status: number, error: string) => {
+        const r = await put(path, body);
+        expect([r.status, ((await r.json()) as { error: string }).error]).toEqual([status, error]);
+      };
+      await expectError({ by: CREATOR, postsPerDay: 13 }, 409, 'unchanged');
+      await expectError({ by: CREATOR, postsPerDay: POSTS_PER_DAY.min - 1 }, 400, 'invalid_posts_per_day');
+      await expectError({ by: CREATOR, postsPerDay: POSTS_PER_DAY.max + 1 }, 400, 'invalid_posts_per_day');
+      await expectError({ by: CREATOR, postsPerDay: '12' }, 400, 'invalid_posts_per_day');
+      world.sender.quotaError = new Error('sender down');
+      await expectError({ by: CREATOR, postsPerDay: 20, instructions: 'Another voice for this coin, still plain and dated.' }, 503, 'sender_unavailable');
+      const after = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect(after.config.postsPerDay).toBe(13);
+      expect(after.config.revision).toBe(5);
+      expect(after.config.creatorIdentity).toBe(INSTRUCTIONS);
+    } finally {
+      await world.close();
+    }
+  });
+
+  it('maps a budget to a cadence: 24 h over half of it, whole minutes, inside the worker bounds', () => {
+    const H = 3_600_000;
+    expect(postIntervalForPostsPerDay(48)).toBe(H);
+    expect(postIntervalForPostsPerDay(24)).toBe(2 * H);
+    expect(postIntervalForPostsPerDay(12)).toBe(4 * H);
+    expect(postIntervalForPostsPerDay(6)).toBe(8 * H);
+    expect(postIntervalForPostsPerDay(2)).toBe(24 * H);
+    expect(postIntervalForPostsPerDay(3)).toBe(24 * H);
+    expect(postIntervalForPostsPerDay(7)).toBe(8 * H);
+    expect(postIntervalForPostsPerDay(14)).toBe(Math.round((24 * H) / 7 / 60_000) * 60_000);
+    // out of range is clamped to the control's range first
+    expect(postIntervalForPostsPerDay(1)).toBe(24 * H);
+    expect(postIntervalForPostsPerDay(1000)).toBe(H);
   });
 });

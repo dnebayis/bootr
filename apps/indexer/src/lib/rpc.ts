@@ -18,6 +18,7 @@ export function rpcClient(): PublicClient {
         urls: indexerEnv().rpcUrls,
         ...(process.env.INDEXER_RPC_BU_PER_SEC !== undefined ? { budget: process.env.INDEXER_RPC_BU_PER_SEC } : {}),
         ...(process.env.BASE_RPC_FALLBACK_URL !== undefined ? { fallbackUrl: process.env.BASE_RPC_FALLBACK_URL } : {}),
+        ...(process.env.INDEXER_BLOCKS_RPC_URL !== undefined ? { blocksUrl: process.env.INDEXER_BLOCKS_RPC_URL } : {}),
         httpRetries: 3,
       }),
     ),

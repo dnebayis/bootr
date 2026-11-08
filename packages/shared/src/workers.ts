@@ -152,6 +152,28 @@ export const WORKER_BOUNDS = {
   maxJobLineChars: 240,
 } as const;
 
+/**
+ * Posts per day: the one pacing control the creator has on the coin page. It is the sender's per-agent quota
+ * (original posts and replies together, over a rolling 24 hours; `apps/sender/src/quota.ts`), and the agent's
+ * original-post cadence is derived from it (`postIntervalForPostsPerDay`). `default` is the sender's default quota.
+ */
+export const POSTS_PER_DAY = { min: 2, max: 48, default: 24 } as const;
+
+const DAY_MS = 24 * H;
+
+/**
+ * The cadence a daily budget implies: original posts take half of it and the other half answers mentions, so
+ * `postIntervalMs = 24 h / floor(postsPerDay / 2)`, whole minutes, inside WORKER_BOUNDS. 24 a day is every 2 h (the
+ * default cadence), 48 every hour, 12 every 4 h, 6 every 8 h, 2 once a day. Replies are not scheduled, so an agent
+ * with few mentions posts about half its budget; one with many still cannot exceed it (the sender refuses the rest).
+ */
+export function postIntervalForPostsPerDay(postsPerDay: number): number {
+  const n = Math.min(POSTS_PER_DAY.max, Math.max(POSTS_PER_DAY.min, Math.floor(postsPerDay)));
+  const originals = Math.max(1, Math.floor(n / 2));
+  const interval = Math.round(DAY_MS / originals / MIN) * MIN;
+  return Math.min(WORKER_BOUNDS.maxPostIntervalMs, Math.max(WORKER_BOUNDS.minPostIntervalMs, interval));
+}
+
 /** The cadence choices the launch form offers (milliseconds between original posts). */
 export const CADENCE_OPTIONS: readonly { ms: number; label: string }[] = [
   { ms: 30 * MIN, label: 'Every 30 min' },

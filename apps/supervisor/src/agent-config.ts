@@ -1,13 +1,13 @@
 /**
  * Post-launch control (docs/design/agent-launch-v2.md, decision 6): the creator can change an agent's
- * instructions, powers, cadence, model, image model and image style from the coin page. The on-chain `workerHash` stays the launch-time
+ * instructions, powers, posts per day (which sets the cadence), model, image model and image style from the coin page. The on-chain `workerHash` stays the launch-time
  * commitment; the configuration in force lives in `sv_agents.config`, `revision` counts the edits and every
  * edit is an `sv_actions` row `{kind: 'config_updated', fields}` (the activity tape shows it). The running
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
 import { imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, type ImageStyle } from '@bootr/agent-core';
-import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, type WorkerPreset } from '@bootr/shared/workers';
+import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -16,6 +16,7 @@ import { requiresApproval } from './approvals.js';
 import { relayImageModels } from './image-models.js';
 import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
+import { postsPerDayOf } from './post-budget.js';
 import { decideModelOf } from './routing.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
@@ -36,6 +37,11 @@ export interface AgentConfigView {
     jobLines: string[];
   };
   workerHash: string | null;
+  /**
+   * The daily budget of posts and replies (the sender's rolling 24 h quota): stored on the config when the creator set
+   * it, else the sender's default. Setting it derives `worker.postIntervalMs` (`postIntervalForPostsPerDay`).
+   */
+  postsPerDay: number;
   /** Posts and replies wait for the creator's approval before they go out (approvals.ts). */
   requireApproval: boolean;
   /** Economy mode (routing.ts): the cheaper model a turn starts on; null = the whole turn runs on `model`. */
@@ -49,7 +55,7 @@ export interface AgentConfigView {
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing';
 
 /** The worker preset in force for a stored config: live capabilities and cadence, stored or template job lines. */
 function currentPreset(config: Record<string, unknown>): WorkerPreset {
@@ -81,6 +87,7 @@ export function configView(agent: AgentRow): AgentConfigView {
     instructions: typeof config.creatorIdentity === 'string' ? config.creatorIdentity : '',
     worker: { kind: workerKind(config), capabilities: preset.capabilities, postIntervalMs: preset.postIntervalMs, jobLines: preset.identity },
     workerHash: typeof config.workerHash === 'string' ? config.workerHash : null,
+    postsPerDay: postsPerDayOf(config),
     requireApproval: requiresApproval(config),
     routing: { decideModel: decideModelOf({ model: typeof config.model === 'string' ? config.model : '', routing: routingOf(config) }) },
     imageModel: imageModelOf(config),
@@ -98,6 +105,8 @@ export interface ConfigUpdateBody {
   /** The admin model allow-list the web passes; when present `model` must be in it. */
   allowedModels?: unknown;
   worker?: unknown;
+  /** Posts and replies per rolling day (POSTS_PER_DAY.min..max): written to the sender's quota, and the cadence follows. */
+  postsPerDay?: unknown;
   /** Post approval mode on/off (independent of the worker). */
   requireApproval?: unknown;
   /** Economy mode: `{decideModel: string | null}`; the model must be in `allowedModels` like `model`. */
@@ -114,9 +123,9 @@ function normalizeStyleNotes(input: string): string {
   return input.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-export type ConfigUpdateResult = { ok: true; config: AgentConfigView; fields: ConfigField[] } | { ok: false; status: 400 | 403 | 409; error: string; message: string };
+export type ConfigUpdateResult = { ok: true; config: AgentConfigView; fields: ConfigField[] } | { ok: false; status: 400 | 403 | 409 | 503; error: string; message: string };
 
-const reject = (status: 400 | 403 | 409, error: string, message: string): ConfigUpdateResult => ({ ok: false, status, error, message });
+const reject = (status: 400 | 403 | 409 | 503, error: string, message: string): ConfigUpdateResult => ({ ok: false, status, error, message });
 
 /** Validates and applies a creator's config update; see the module comment for what it writes. */
 export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow, body: ConfigUpdateBody): Promise<ConfigUpdateResult> {
@@ -185,6 +194,26 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (fields.some((f) => f === 'powers' || f === 'cadence' || f === 'jobLines')) config = withWorkerPreset(config, kind, merged);
   }
 
+  // Posts per day: the sender's quota (posts and replies, rolling 24 h) and, from it, the cadence: original posts take
+  // half the budget (`postIntervalForPostsPerDay`), so it overrides a `worker.postIntervalMs` sent in the same body.
+  // Written to the sender below, once everything else validated, and before the config is stored.
+  let quotaToWrite: number | null = null;
+  if (body.postsPerDay !== undefined) {
+    const n = body.postsPerDay;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < POSTS_PER_DAY.min || n > POSTS_PER_DAY.max) return reject(400, 'invalid_posts_per_day', `postsPerDay must be an integer of ${POSTS_PER_DAY.min}..${POSTS_PER_DAY.max}`);
+    if (n !== postsPerDayOf(before)) {
+      config.postsPerDay = n;
+      fields.push('postsPerDay');
+      quotaToWrite = n;
+      const preset = currentPreset(config);
+      const interval = postIntervalForPostsPerDay(n);
+      if (interval !== preset.postIntervalMs) {
+        config = withWorkerPreset(config, workerKind(before), { ...preset, postIntervalMs: interval });
+        if (!fields.includes('cadence')) fields.push('cadence');
+      }
+    }
+  }
+
   // Post approval mode: a plain boolean, independent of the worker preset.
   if (body.requireApproval !== undefined) {
     if (typeof body.requireApproval !== 'boolean') return reject(400, 'invalid_require_approval', 'requireApproval must be a boolean');
@@ -241,6 +270,17 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
   }
 
   if (!fields.length) return reject(409, 'unchanged', 'nothing changed');
+
+  // The sender enforces the budget, so it learns the new one first; a sender that cannot be reached means no change at
+  // all (a stored budget the sender does not apply would mislead the creator and the agent's own pacing).
+  if (quotaToWrite !== null) {
+    try {
+      await ctx.sender.setQuota(agent.agentId, { postsPerDay: quotaToWrite });
+    } catch (err) {
+      ctx.log.warn({ agentId: agent.agentId, err, postsPerDay: quotaToWrite }, 'posts per day: the sender refused the quota write; config unchanged');
+      return reject(503, 'sender_unavailable', 'the posting service could not take the new posts-per-day budget; nothing was changed, try again in a moment');
+    }
+  }
 
   const revision = (typeof before.revision === 'number' ? before.revision : 0) + 1;
   config.revision = revision;

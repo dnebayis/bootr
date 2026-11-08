@@ -129,9 +129,17 @@ export interface ChatFuel {
 }
 
 async function readFuel(ctx: SupervisorContext, agent: AgentRow): Promise<ChatFuel | null> {
-  const balanceOf = (account: Address) => ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [account] });
+  // The kernel's and the spender's USDC in one multicall (it was two requests): the RPC key is shared with the indexer's block tail.
+  const balanceOf = (account: Address) => ({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf' as const, args: [account] as const });
   try {
-    const [reserve, spendable, cost] = await Promise.all([balanceOf(agent.kernel as Address), balanceOf(ctx.spenderFor(agent).address), recentThoughtCost(ctx, agent.agentId)]);
+    const [balances, cost] = await Promise.all([
+      ctx.chain.publicClient.multicall({ contracts: [balanceOf(agent.kernel as Address), balanceOf(ctx.spenderFor(agent).address)], allowFailure: true }),
+      recentThoughtCost(ctx, agent.agentId),
+    ]);
+    const [reserve, spendable] = balances.map((r) => {
+      if (r.status !== 'success') throw r.error;
+      return r.result;
+    }) as [bigint, bigint];
     const averageThought = averageThoughtCost(cost.spentMicroUsdc, cost.thoughts);
     return { spendableMicro: Number(spendable), reserveMicro: Number(reserve), averageThought, thoughtsLeft: thoughtsLeft(Number(spendable) + Number(reserve), averageThought) };
   } catch (err) {

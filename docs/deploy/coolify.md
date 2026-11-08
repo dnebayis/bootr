@@ -215,7 +215,11 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
   (2026-11-05 18:00 UTC) Base has 5 blocks a second, and following them takes about half of that, and the supervisor
   retries a rate-limited read for up to 8 s. A restart must fetch Ponder's 180 s reorg window again, now about 1,000 blocks.
   Ponder is held to `INDEXER_RPC_BU_PER_SEC` (1300 by default), which should still catch up in about 5 minutes without
-  saturating the key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`).
+  saturating the key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`). Measured 2026-11-08: the tail is
+  one `eth_getBlockByNumber` and one `eth_getLogs` per block, about 1,000 BU/s, 97% of the key's traffic; the supervisor
+  is about 8 BU/s and the web's server routes read the chain only on a sign-in, a launch or a claim call, never on a page
+  view. `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org` moves the block reads off the key (about 500 BU/s); set it in
+  the indexer's environment in Coolify and redeploy the indexer (no schema bump), then watch the lag line.
 - One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop). Compose stops the old
   supervisor before starting the new one, so there is no overlap of two tick loops, but a deploy still interrupts
   an in-flight tick: deploy when no on-chain operation is pending.

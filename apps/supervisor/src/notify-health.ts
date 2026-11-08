@@ -5,11 +5,12 @@
  */
 import { averageThoughtCost, fuelIsLow, runwayDays, thoughtsLeft } from '@bootr/shared/fuel';
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
-import { erc20Abi, type Address } from 'viem';
+import { erc20Abi, type Abi, type Address } from 'viem';
+import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
 import { APPROVAL_TTL_MS, expireApprovals } from './approvals.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { agents, approvals, notificationSettings, runtimes } from './db/schema.js';
-import { agentHasGasRule, readGas, type GasStatus } from './gas.js';
+import { agentHasGasRule, gasReading, gasSelfFunded, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasStatus } from './gas.js';
 import { fuelReport, recentThoughtCost } from './inference.js';
 import { applyOutcomes, flushNotifications, pruneNotifications, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
 import type { SenderAccount } from './sender-client.js';
@@ -138,18 +139,28 @@ export async function refreshReviewNotifications(ctx: SupervisorContext, agent: 
   await applyOutcomes(ctx, agent.agentId, reviewOutcomes(await reviewFacts(ctx, agent.agentId), ctx.now()));
 }
 
-async function readFuelFacts(ctx: SupervisorContext, agent: AgentRow): Promise<FuelFacts | null> {
-  const balanceOf = (account: Address) => ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [account] });
+/** The kernel's USDC, the spender's USDC, the EntryPoint deposit and the kernel's ETH, read in one multicall; a failed read is null. */
+async function readHealthBalances(ctx: SupervisorContext, agent: AgentRow): Promise<{ reserve: bigint | null; spendable: bigint | null; deposit: bigint | null; eth: bigint | null }> {
+  const kernel = agent.kernel as Address;
+  const usdc = ctx.chain.addresses.usdc;
+  const contracts = [
+    { address: usdc, abi: erc20Abi, functionName: 'balanceOf', args: [kernel] },
+    { address: usdc, abi: erc20Abi, functionName: 'balanceOf', args: [ctx.spenderFor(agent).address] },
+    { address: entryPoint07Address, abi: entryPoint07Abi as Abi, functionName: 'balanceOf', args: [kernel] },
+    { address: MULTICALL3_ADDRESS, abi: multicall3BalanceAbi, functionName: 'getEthBalance', args: [kernel] },
+  ];
+  const results = (await ctx.chain.publicClient.multicall({ contracts: contracts as never, allowFailure: true })) as unknown as ({ status: 'success'; result: unknown } | { status: 'failure'; error: unknown })[];
+  const at = (i: number): bigint | null => (results[i]?.status === 'success' ? (results[i]!.result as bigint) : null);
+  return { reserve: at(0), spendable: at(1), deposit: at(2), eth: at(3) };
+}
+
+async function readFuelFacts(ctx: SupervisorContext, agent: AgentRow, balances: { reserve: bigint | null; spendable: bigint | null }): Promise<FuelFacts | null> {
   try {
-    const [reserve, spendable, recent, week] = await Promise.all([
-      balanceOf(agent.kernel as Address),
-      balanceOf(ctx.spenderFor(agent).address),
-      recentThoughtCost(ctx, agent.agentId),
-      fuelReport(ctx, agent.agentId, new Date(ctx.now() - WEEK_DAYS * DAY_MS)),
-    ]);
+    if (balances.reserve === null || balances.spendable === null) throw new Error('balance read failed');
+    const [recent, week] = await Promise.all([recentThoughtCost(ctx, agent.agentId), fuelReport(ctx, agent.agentId, new Date(ctx.now() - WEEK_DAYS * DAY_MS))]);
     return {
-      spendableMicro: Number(spendable),
-      reserveMicro: Number(reserve),
+      spendableMicro: Number(balances.spendable),
+      reserveMicro: Number(balances.reserve),
       recent,
       week: {
         thoughts: week.byModel.reduce((n, r) => n + r.thoughts, 0),
@@ -167,12 +178,15 @@ async function readFuelFacts(ctx: SupervisorContext, agent: AgentRow): Promise<F
 export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow | null): Promise<void> {
   await expireApprovals(ctx, agent.agentId);
   const active = agent.status === 'active';
-  const [reviews, fuel, gas, x] = await Promise.all([
+  // One multicall for the four balances (it was four requests): the RPC key is shared with the indexer's block tail.
+  const balances = await readHealthBalances(ctx, agent).catch((err) => {
+    ctx.log.warn({ agentId: agent.agentId, err }, 'notifier: balance read failed');
+    return { reserve: null, spendable: null, deposit: null, eth: null };
+  });
+  const gas = balances.deposit !== null && balances.eth !== null ? gasReading({ deposit: balances.deposit, balance: balances.eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) }).status : null;
+  const [reviews, fuel, x] = await Promise.all([
     reviewFacts(ctx, agent.agentId),
-    active ? readFuelFacts(ctx, agent) : Promise.resolve(null),
-    readGas(ctx, agent.kernel as Address)
-      .then((g) => g.status)
-      .catch(() => null),
+    active ? readFuelFacts(ctx, agent, balances) : Promise.resolve(null),
     active ? ctx.sender.account(agent.agentId).catch(() => null) : Promise.resolve(null),
   ]);
   const outcomes = evaluateHealth({

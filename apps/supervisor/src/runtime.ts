@@ -35,6 +35,9 @@ import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorConte
 import { actions, runtimes } from './db/schema.js';
 import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
+import { bootrPromotionSection } from './bootr-promotion.js';
+import { postBudgetSection } from './post-budget.js';
+import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
@@ -87,6 +90,8 @@ export interface AgentState {
   announcedUpdates?: string[];
   /** The platform update the latest turn was shown: the only one a publish can mark announced (platform-updates.ts). */
   offeredUpdate?: string | null;
+  /** Epoch ms of the last chain read while sleeping or paused; the next one waits `REST_CHECK_MS` (tick.ts). */
+  chainCheckedAt?: number | null;
 }
 
 export function initialState(): AgentState {
@@ -236,6 +241,10 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await postPerformanceSection(ctx, agent.agentId)),
       // What it said in the last day (recent-posts.ts): no repeats, and the creator's rejection notes.
       ...(await recentPostsSection(ctx, agent.agentId)),
+      // Whether a coin agent may say it runs on Bootr in this post (one in six; empty for the platform agent): bootr-promotion.ts.
+      ...(await bootrPromotionSection(ctx, agent.agentId, config)),
+      // What is left of the creator's daily budget of posts and replies, so the model paces itself: post-budget.ts.
+      ...(await postBudgetSection(ctx, agent.agentId, config)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.
@@ -276,7 +285,7 @@ async function reviewSection(ctx: SupervisorContext, agent: AgentRow): Promise<R
 // Turn loop
 // ---------------------------------------------------------------------------
 
-export type TurnOutcome = 'finished' | 'step_cap' | 'held' | 'pending' | 'inference_unknown' | 'inference_failed' | 'error';
+export type TurnOutcome = 'finished' | 'step_cap' | 'held' | 'pending' | 'inference_unknown' | 'inference_failed' | 'provider_hold' | 'error';
 
 export interface TurnResult {
   outcome: TurnOutcome;
@@ -423,16 +432,31 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   /**
    * Every inference failure backs off, and tick.ts wakes nothing before `inferenceRetryAt`. A credit keeps the key
    * and the turn, so the next attempt replays the stored request without a new payment; anything else ends the turn
-   * and the next attempt gets a new key.
+   * and the next attempt gets a new key. An outage-shaped failure also counts towards the fleet-wide provider hold
+   * (provider-hold.ts): once enough agents fail the same way, this agent waits for the hold too.
    */
   const backOff = (inf: { kind: 'credit' | 'failed'; key: string; error: string }): Promise<TurnResult> => {
     const failures = (runtime.failures ?? 0) + 1;
     const plan = interruptionPlan(0, failures, ctx.now());
-    log.warn({ key: inf.key, error: inf.error, failures, nextAt: plan.nextAt, credit: inf.kind === 'credit' }, 'inference failed');
+    const hold = noteInferenceFailure(agent.agentId, inf.error, ctx.now());
+    const nextAt = Math.max(plan.nextAt, hold?.until ?? 0);
+    log.warn({ key: inf.key, error: inf.error, failures, nextAt, credit: inf.kind === 'credit', providerHold: hold?.until ?? null }, 'inference failed');
     state.inferenceKey = inf.kind === 'credit' ? inf.key : null;
-    state.inferenceRetryAt = plan.nextAt;
+    state.inferenceRetryAt = nextAt;
     state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
-    return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: inf.error });
+    return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(nextAt), failures, lastError: inf.error });
+  };
+
+  /**
+   * The provider is down for everyone (provider-hold.ts): this thought is not bought. The agent waits until the hold
+   * ends with its own `inferenceRetryAt`, so tick.ts does not wake it meanwhile; its failure count is not touched,
+   * since nothing of its own failed. A paid-for answer carried from an earlier attempt is still used (see the loop).
+   */
+  const waitOutProvider = (hold: { until: number; error: string; message: string }): Promise<TurnResult> => {
+    log.warn({ until: new Date(hold.until).toISOString(), error: hold.error, steps: turn.steps }, 'provider down for every agent; no thought bought');
+    state.inferenceRetryAt = hold.until;
+    state.continuation = { progress: 'The previous turn waited out a model provider outage.', recentSteps: turn.recentSteps.slice(-6) };
+    return endTurn('provider_hold', { status: 'waiting', nextAt: new Date(hold.until), lastError: hold.message.slice(0, 500) });
   };
 
   // Unknown inference or a credit from a previous attempt: never pay for a replacement.
@@ -471,6 +495,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
           return forceFinish('context too large');
         }
       }
+      const hold = providerHold(ctx.now());
+      if (hold) return waitOutProvider(hold);
       await persist();
       inf = await runInference(ctx, agent, config, broker.cycle, request);
       logThought(log, turn.routing, turn.steps + 1, request.model, inf);
@@ -488,6 +514,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       return backOff(inf);
     }
     state.inferenceRetryAt = null;
+    if (!inf.replayed) noteInferenceSuccess();
 
     // Cut off at the output limit: the call is not carried out, and its broken JSON must not go back to the provider,
     // which would refuse the next request. The model is told why, and gets room for one retry.

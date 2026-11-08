@@ -329,11 +329,15 @@ export interface MockSender {
   /** When set, `readMetrics` throws this. */
   metricsError: Error | null;
   metricsReads: string[][];
+  /** Every `setQuota` call, in order (agent id and patch), as the sender's `POST /internal/quota/:agentId` would receive it. */
+  quotaWrites: { agentId: string; patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null } }[];
+  /** When set, `setQuota` throws this (the sender is down). */
+  quotaError: Error | null;
   client: SenderClient;
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], quotaWrites: [], quotaError: null, client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -425,6 +429,17 @@ export function mockSender(): MockSender {
     },
     async metering() {
       return {};
+    },
+    /** Mirrors apps/sender/src/app.ts `POST /internal/quota/:agentId`: the patch is stored, the effective quota comes back. */
+    async setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null }) {
+      if (m.quotaError) throw m.quotaError;
+      m.quotaWrites.push({ agentId, patch });
+      const last = m.quotaWrites.filter((q) => q.agentId === agentId).reduce<{ postsPerDay?: number | null; mentionReadIntervalSec?: number | null }>((acc, q) => ({ ...acc, ...q.patch }), {});
+      return { agentId, postsPerDay: last.postsPerDay ?? 24, mentionReadIntervalSec: last.mentionReadIntervalSec ?? 900, lastMentionsReadAt: null };
+    },
+    async quota(agentId: string) {
+      const last = m.quotaWrites.filter((q) => q.agentId === agentId).reduce<{ postsPerDay?: number | null }>((acc, q) => ({ ...acc, ...q.patch }), {});
+      return { agentId, postsPerDay: last.postsPerDay ?? 24, mentionReadIntervalSec: 900, lastMentionsReadAt: null };
     },
   } as unknown as SenderClient;
   return m;

@@ -4,7 +4,7 @@
  * accepts the same spellings and stores the same URLs. Imports nothing but lib/x-link.ts: safe on the client and
  * the server.
  */
-import { normalizeXLink, xHandleOfUrl } from './x-link';
+import { normalizeXLink } from './x-link';
 
 /** `website` any https URL; the others their own hosts; `x` is `https://x.com/<handle>` (lib/x-link.ts). */
 export type CoinLinks = { website: string | null; x: string | null; telegram: string | null; discord: string | null };
@@ -64,14 +64,4 @@ export function checkLinks(input: unknown): { ok: true; links: CoinLinks } | { o
 
 export function sameLinks(a: CoinLinks, b: CoinLinks): boolean {
   return LINK_KINDS.every((k) => a[k] === b[k]);
-}
-
-/** What the coin page says when the project's X link names the agent's own account (the page shows that on its own line). */
-export const AGENT_OWN_X_ERROR = 'That is the agent’s own account; the coin page shows it already. Enter the project’s account.';
-
-/** True when a normalized X link (`https://x.com/<handle>`) is the agent's own handle. */
-export function isAgentsOwnX(x: string | null, agentXHandle: string | null | undefined): boolean {
-  if (!x || !agentXHandle) return false;
-  const handle = xHandleOfUrl(x);
-  return !!handle && handle.toLowerCase() === agentXHandle.toLowerCase();
 }

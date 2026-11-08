@@ -27,10 +27,68 @@ export function defaultUnlessRateLimited<T>(fallback: T): (err: unknown) => T {
   };
 }
 
+/**
+ * CDP's billing units per method (docs.cdp.coinbase.com/data/node/pricing): the block, log, receipt and gas-estimate reads
+ * are "enhanced" at 100, everything else the supervisor sends is 30. The same table as the indexer's rpc-budget.ts.
+ */
+const ENHANCED_BU: Record<string, number> = { eth_getLogs: 100, eth_getBlockByNumber: 100, eth_getBlockByHash: 100, eth_getTransactionReceipt: 100, eth_getBlockReceipts: 100, eth_estimateGas: 100 };
+export const billingUnitsOf = (method: string): number => ENHANCED_BU[method] ?? 30;
+
+export interface RpcUsage {
+  /** Requests sent since the last drain, by JSON-RPC method (a retry counts again: the provider bills it again). */
+  requests: Record<string, number>;
+  /** Requests in all. */
+  total: number;
+  /** Their cost in CDP billing units, by the table above. */
+  bu: number;
+  /** Answers that were a rate limit (each one is also a request above). */
+  rateLimited: number;
+}
+
+/** Counts what goes out over a transport, so the tick line can say what a tick cost the RPC key; `drain` reads and resets. */
+export interface RpcCounter {
+  sent(method: string): void;
+  limited(): void;
+  drain(): RpcUsage;
+  /** The counts without resetting them. */
+  peek(): RpcUsage;
+}
+
+export function createRpcCounter(): RpcCounter {
+  let requests: Record<string, number> = {};
+  let rateLimited = 0;
+  const usage = (): RpcUsage => {
+    let total = 0;
+    let bu = 0;
+    for (const [method, n] of Object.entries(requests)) {
+      total += n;
+      bu += n * billingUnitsOf(method);
+    }
+    return { requests: { ...requests }, total, bu, rateLimited };
+  };
+  return {
+    sent(method) {
+      requests[method] = (requests[method] ?? 0) + 1;
+    },
+    limited() {
+      rateLimited += 1;
+    },
+    peek: usage,
+    drain() {
+      const out = usage();
+      requests = {};
+      rateLimited = 0;
+      return out;
+    },
+  };
+}
+
 export interface RetryOptions {
   delaysMs?: readonly number[];
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** Told of every request sent and every rate-limited answer. */
+  counter?: RpcCounter;
 }
 
 export function withRateLimitRetry(inner: Transport, opts: RetryOptions = {}): Transport {
@@ -40,12 +98,16 @@ export function withRateLimitRetry(inner: Transport, opts: RetryOptions = {}): T
   return (params) => {
     const transport = inner(params);
     const request = async (...args: Parameters<typeof transport.request>) => {
+      const method = (args[0] as { method?: string } | undefined)?.method ?? 'unknown';
       for (let attempt = 0; ; attempt++) {
+        opts.counter?.sent(method);
         try {
           return await transport.request(...args);
         } catch (err) {
+          const limited = isRateLimited(err);
+          if (limited) opts.counter?.limited();
           const delay = delays[attempt];
-          if (delay === undefined || !isRateLimited(err)) throw err;
+          if (delay === undefined || !limited) throw err;
           await sleep(delay * (1 + random() / 4));
         }
       }

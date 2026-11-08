@@ -121,6 +121,9 @@ services:
       INDEXER_RPC_BU_PER_SEC: ${INDEXER_RPC_BU_PER_SEC:-}
       # Optional second RPC for what the budget cannot cover and for what the first one answers 429 to. Indexer only.
       BASE_RPC_FALLBACK_URL: ${BASE_RPC_FALLBACK_URL:-}
+      # Optional url for the block reads alone (eth_getBlockByNumber/ByHash, eth_blockNumber), outside the budget: the public
+      # https://mainnet.base.org serves them and refuses eth_getLogs, so only blocks go there. Halves the keyed url's tail load.
+      INDEXER_BLOCKS_RPC_URL: ${INDEXER_BLOCKS_RPC_URL:-}
 
   web:
     <<: *restart

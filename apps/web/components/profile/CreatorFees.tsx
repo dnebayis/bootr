@@ -95,7 +95,7 @@ export function CreatorFees({ owner, tokens, loading }: { owner: Address; tokens
           <Skeleton className="h-24" />
         </div>
       ) : tokens.length === 0 ? (
-        <Empty>Launch a coin to earn its creator share of the swap fee.</Empty>
+        <Empty>Launch a coin to earn the creator share of its trading fees.</Empty>
       ) : (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-5 py-3">

@@ -136,6 +136,11 @@ export const configSchema = z
     SUPERVISOR_TICK_MS: int(60_000, 1000),
     MAX_AGENTS_PER_TICK: int(10, 1),
     /**
+     * How often a sleeping or paused agent's chain state (refuel, guardian unpause) is read; every tick otherwise.
+     * A creator who refuels waits at most this long for the agent to wake. One RPC call per read (tick.ts).
+     */
+    REST_CHECK_MS: int(300_000, 0),
+    /**
      * Platform posting rhythm (rhythm.ts): at most this many original posts across every Bootr agent per 10-minute
      * window. An agent whose post is due but finds the window full waits for a later tick; its slot is not lost.
      */

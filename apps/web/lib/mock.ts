@@ -4,7 +4,7 @@
  * and emits stream hints so live UI (reordering grid, ticking numbers) can be exercised.
  */
 import type { Address, Hex } from 'viem';
-import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
+import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
 import { DEFAULT_IMAGE_MODEL } from './models';
@@ -301,6 +301,11 @@ function init(): Store {
     if (i === CLANKER_INDEX) clankerize(token);
     // The newest coin carries project links, its X account among them (distinct from its agent's handle).
     if (i === 0) links.set(token.metadata, { website: 'https://ledgerowl.example', x: 'https://x.com/ledgerowl', telegram: 'https://t.me/ledgerowl', discord: null });
+    // The second one's only X account is its agent's own, as coins launched before the project X field carry it.
+    if (i === 1) {
+      token.xHandle ??= 'qeng_agent';
+      links.set(token.metadata, { website: null, x: `https://x.com/${token.xHandle}`, telegram: null, discord: null });
+    }
     tokens.push(token);
     agents.set(agent.id.toLowerCase(), agent);
     trades.set(token.id.toLowerCase(), makeTrades(token, rand, now));
@@ -754,6 +759,16 @@ export const mock = {
       cfg.worker.jobLines = [...w.jobLines];
       fields.push('jobLines');
     }
+    // The budget sets the quota (nothing to hold in mock mode) and the cadence follows it, as the supervisor does.
+    if (changes.postsPerDay !== undefined && changes.postsPerDay !== cfg.postsPerDay) {
+      cfg.postsPerDay = changes.postsPerDay;
+      fields.push('posts per day');
+      const interval = postIntervalForPostsPerDay(changes.postsPerDay);
+      if (interval !== cfg.worker.postIntervalMs) {
+        cfg.worker.postIntervalMs = interval;
+        if (!fields.includes('postIntervalMs')) fields.push('cadence');
+      }
+    }
     if (changes.requireApproval !== undefined && changes.requireApproval !== cfg.requireApproval) {
       cfg.requireApproval = changes.requireApproval;
       fields.push('post review');
@@ -774,7 +789,7 @@ export const mock = {
       }
     }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
-    const workerFields = ['capabilities', 'postIntervalMs', 'jobLines'];
+    const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
     cfg.revision += 1;
     cfg.updatedAt = new Date().toISOString();
@@ -934,6 +949,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     instructions,
     worker: { kind, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
+    postsPerDay: POSTS_PER_DAY.default,
     requireApproval: true,
     routing: { decideModel: null },
     imageModel: DEFAULT_IMAGE_MODEL,
@@ -955,6 +971,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     instructions: DEFAULT_INSTRUCTIONS,
     worker: { kind: template.id, capabilities: { ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: template.hash,
+    postsPerDay: POSTS_PER_DAY.default,
     requireApproval: false,
     routing: { decideModel: null },
     imageModel: DEFAULT_IMAGE_MODEL,

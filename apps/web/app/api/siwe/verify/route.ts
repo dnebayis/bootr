@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { SiweMessage } from 'siwe';
-import { createPublicClient, http, isAddress, isHex, type Hex } from 'viem';
+import { createPublicClient, http, isAddress, isHex, recoverMessageAddress, type Hex } from 'viem';
 import { base, baseSepolia } from 'viem/chains';
 import {
   ADMIN_COOKIE,
@@ -69,14 +69,18 @@ export async function POST(req: NextRequest) {
   if (!isAddress(msg.address)) return fail(400, 'Invalid address');
   if (!isAdminAddress(msg.address)) return fail(403, 'Not authorized');
 
-  const chain = msg.chainId === 8453 ? base : baseSepolia;
-  const rpc = msg.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL;
-  const client = createPublicClient({ chain, transport: http(rpc || undefined) });
-  let valid = false;
-  try {
-    valid = await client.verifyMessage({ address: msg.address, message: body.message, signature: body.signature as Hex });
-  } catch {
-    valid = false;
+  // An EOA signature recovers to its signer without the chain (lib/server/siwe-verify.ts says why); smart accounts go to the chain.
+  const recovered = await recoverMessageAddress({ message: body.message, signature: body.signature as Hex }).catch(() => null);
+  let valid = !!recovered && recovered.toLowerCase() === msg.address.toLowerCase();
+  if (!valid) {
+    const chain = msg.chainId === 8453 ? base : baseSepolia;
+    const rpc = msg.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL;
+    const client = createPublicClient({ chain, transport: http(rpc || undefined) });
+    try {
+      valid = await client.verifyMessage({ address: msg.address, message: body.message, signature: body.signature as Hex });
+    } catch {
+      valid = false;
+    }
   }
   if (!valid) return fail(401, 'Invalid signature');
 

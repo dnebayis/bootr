@@ -91,6 +91,11 @@ export async function verifySiwe(
     return spent(400, 'wrong_statement', `The statement must be exactly ${opts.statementText ? `"${opts.statementText}"` : 'the one this route documents'}, got ${quoted(msg.statement ?? '', 120)}.`);
   }
 
+  // An ordinary wallet's signature recovers to its signer, which settles it without the chain. viem's `verifyMessage`
+  // asks the ERC-6492 validator by `eth_call` first and recovers only when that call fails, so every EOA sign-in was one
+  // request on the RPC key the indexer shares. Smart accounts (ERC-1271, ERC-6492) still go to the chain below.
+  const recovered = await recoverMessageAddress({ message: body.message, signature: body.signature as Hex }).catch(() => null);
+  if (recovered && recovered.toLowerCase() === msg.address.toLowerCase()) return { ok: true, msg, address: msg.address as Address };
   const chain = msg.chainId === 8453 ? base : baseSepolia;
   const rpc = msg.chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL;
   const client = createPublicClient({ chain, transport: http(rpc || undefined) });
@@ -103,7 +108,6 @@ export async function verifySiwe(
   }
   if (valid) return { ok: true, msg, address: msg.address as Address };
   // An ordinary wallet's signature names its signer, which is usually the whole explanation.
-  const recovered = await recoverMessageAddress({ message: body.message, signature: body.signature as Hex }).catch(() => null);
   if (recovered && recovered.toLowerCase() !== msg.address.toLowerCase()) {
     return spent(401, 'bad_signature', `The signature recovered to ${recovered}, but the message names ${msg.address}. Sign with ${msg.address}, or put the signing wallet’s address in the message, and send the text exactly as signed.`);
   }

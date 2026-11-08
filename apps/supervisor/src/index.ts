@@ -47,6 +47,12 @@ async function main(): Promise<void> {
     }
   };
   const notifyTimer = setInterval(() => void runNotifier(), config.NOTIFY_SWEEP_MS);
+  // What the tick, the notifier and the API together sent to the RPC in the last minute, by method, with its cost in CDP
+  // billing units (rpc-retry.ts): the line to read when the key is near its limit.
+  const rpcTimer = setInterval(() => {
+    const rpc = ctx.chain.rpc?.drain();
+    if (rpc?.total) logger.info({ rpc }, 'rpc usage');
+  }, config.SUPERVISOR_TICK_MS);
   const telegramStop = new AbortController();
   if (ctx.telegram) void runTelegramLoop(ctx, telegramStop.signal);
 
@@ -56,6 +62,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'shutting down');
     clearInterval(timer);
     clearInterval(notifyTimer);
+    clearInterval(rpcTimer);
     telegramStop.abort();
     server.close();
     const deadline = Date.now() + 30_000;
