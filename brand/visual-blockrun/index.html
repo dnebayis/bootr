@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="assets/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: 'Geist'; font-weight: 600; src: url('assets/fonts/Geist-600.woff2') format('woff2'); }
+      @font-face { font-family: 'Geist Mono'; font-weight: 500; src: url('assets/fonts/GeistMono-500.woff2') format('woff2'); }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #0000ff; }
+      #root { position: relative; width: 1920px; height: 1080px; background: #0000ff; color: #ffffff; font-family: 'Geist', sans-serif; overflow: hidden; }
+      .abs { position: absolute; white-space: nowrap; }
+      #soon { left: 96px; top: 80px; font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 32px; line-height: 40px; padding: 10px 22px; border: 3px solid rgba(255,255,255,0.6); border-radius: 999px; }
+      #marks { left: 0; top: 222px; width: 1920px; display: flex; justify-content: center; align-items: center; gap: 88px; }
+      .mk { display: flex; flex-direction: column; align-items: center; gap: 28px; }
+      .mk .art { height: 236px; display: flex; align-items: center; }
+      .mk svg { width: 236px; height: 236px; display: block; }
+      .mk img { height: 236px; display: block; }
+      .mk .nm { font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 34px; line-height: 40px; color: #d6d6ff; }
+      #x { font-size: 120px; line-height: 236px; font-weight: 600; margin-bottom: 68px; color: rgba(255,255,255,0.7); }
+      #head { left: 0; top: 644px; width: 1920px; text-align: center; font-size: 104px; line-height: 116px; font-weight: 600; letter-spacing: -0.045em; }
+      #rule { left: 96px; top: 848px; width: 1728px; height: 3px; background: rgba(255,255,255,0.35); }
+      #flow { left: 0; top: 898px; width: 1920px; display: flex; justify-content: center; align-items: center; gap: 30px; font-family: 'Geist Mono', monospace; font-weight: 500; font-size: 40px; line-height: 48px; }
+      #flow .ar { color: #d6d6ff; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="1" data-width="1920" data-height="1080">
+      <div class="abs" id="soon">soon</div>
+      <div class="abs" id="marks">
+        <div class="mk"><div class="art"><svg viewBox="0 0 24 24" fill="none" role="img" aria-label="Bootr"><mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"></rect><path d="M8.75 7.75H6.75V17.25H17.25V7.75H15.25" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path><path d="M12 4.75V12" stroke="#000" stroke-width="2.5" stroke-linecap="square"></path></mask><rect width="24" height="24" rx="5" fill="#ffffff" mask="url(#m)"></rect></svg></div><div class="nm">bootr</div></div>
+        <div id="x">×</div>
+        <div class="mk"><div class="art"><img src="assets/logos/blockrun.png" alt="BlockRun" /></div><div class="nm">blockrun</div></div>
+      </div>
+      <div class="abs" id="head">every agent pays for its own thinking.</div>
+      <div class="abs" id="rule"></div>
+      <div class="abs" id="flow"><span>coin trades</span><span class="ar">→</span><span>agent’s wallet</span><span class="ar">→</span><span>blockrun</span><span class="ar">→</span><span>the model</span></div>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>
