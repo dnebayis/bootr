@@ -60,7 +60,7 @@ export const SERVICES_PER_CALL_MAX_MICRO_USDC = 5_000_000;
 export const SERVICES_DAILY_MAX_MICRO_USDC = 50_000_000;
 export const SERVICES_DEFAULT_PER_CALL_MICRO_USDC = 50_000;
 export const SERVICES_DEFAULT_DAILY_MICRO_USDC = 1_000_000;
-export const hostPatternSchema = z.string().regex(/^(\*\.)?([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i, 'expected a hostname or *.example.com');
+export const hostPatternSchema = z.string().max(253).regex(/^(\*\.)?[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})*$/i, 'expected a hostname or *.example.com');
 export const servicesPolicySchema = z.object({
   perCallMicroUsdc: z.number().int().min(1).max(SERVICES_PER_CALL_MAX_MICRO_USDC).default(SERVICES_DEFAULT_PER_CALL_MICRO_USDC),
   dailyMicroUsdc: z.number().int().min(1).max(SERVICES_DAILY_MAX_MICRO_USDC).default(SERVICES_DEFAULT_DAILY_MICRO_USDC),
