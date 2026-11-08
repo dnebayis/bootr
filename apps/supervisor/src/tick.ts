@@ -19,7 +19,7 @@ import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionK
 import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
-import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
+import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
@@ -227,6 +227,11 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
 
     const state = runtime.state as unknown as AgentState;
     const now = ctx.now();
+    // A 403 hold (`x_forbidden`) ends the moment the creator reconnects X: the sender's account row is read for its
+    // `connectedAt` only while a hold is set (runtime.ts `liftForbiddenHoldOnReconnect`), then the kept slot is tried below.
+    if (state.postForbiddenUntil && agent.status === 'active' && (await liftForbiddenHoldOnReconnect(ctx, agent, state))) {
+      await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
+    }
     // After an inference failure no cause (continuation, mention, due post, config change, digest) wakes the agent
     // before the backoff ends, since a wake is a paid attempt. wakeDecision lets a mention, a due post or a config
     // change pass `nextAt`, so this sits in front of it; leases, the pauses, reconciliation and the sleep rule above still run.

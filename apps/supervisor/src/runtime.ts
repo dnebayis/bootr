@@ -86,6 +86,11 @@ export interface AgentState {
   postForbiddenUntil?: number | null;
   /** Forbidden refusals in a row (each one doubles the hold, `forbiddenHoldMs`); back to 0 when a publish goes through. */
   postForbiddenStrikes?: number | null;
+  /**
+   * Epoch ms when the current 403 hold was set (beside `postForbiddenUntil`): a sender account row whose `connectedAt`
+   * is later means the creator reconnected X since, and the hold ends at once (`liftForbiddenHoldOnReconnect`).
+   */
+  postForbiddenAt?: number | null;
   lastResults?: unknown[];
   /** ISO week (`YYYY-Www`) of the last weekly digest the platform agent closed (weekly-digest.ts). */
   lastDigestWeek?: string | null;
@@ -168,6 +173,29 @@ type RuntimePatch = Partial<Pick<typeof runtimes.$inferInsert, 'state' | 'cycle'
 
 export async function saveRuntime(ctx: SupervisorContext, agentId: string, patch: RuntimePatch): Promise<void> {
   await ctx.db.update(runtimes).set({ ...patch, updatedAt: new Date(ctx.now()) }).where(eq(runtimes.agentId, agentId));
+}
+
+/**
+ * A creator who reconnects X after a 403 hold (`x_forbidden`) should not wait out the 6/12/24 h: the sender refreshes
+ * the account row's `connectedAt` on every (re)connect (apps/sender/src/accounts.ts), so a `connectedAt` later than the
+ * moment the hold was set lifts it now: the hold, the strikes and the notice go, and the schedule tries the kept slot
+ * (`turn.postHeld`) as usual. The tick calls this only while a hold is set, so the sender is read once a tick then and
+ * never otherwise. Mutates `state`; true when the hold was lifted (the caller persists). A hold set before this field
+ * existed falls back to `until - forbiddenHoldMs(strikes)` as its start. A sender that does not answer leaves the hold.
+ */
+export async function liftForbiddenHoldOnReconnect(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, state: AgentState): Promise<boolean> {
+  if (!state.postForbiddenUntil) return false;
+  const account = await ctx.sender.account(agent.agentId).catch(() => null);
+  const connectedAt = account?.connectedAt ? Date.parse(account.connectedAt) : Number.NaN;
+  if (!account?.connected || !Number.isFinite(connectedAt)) return false;
+  const heldAt = state.postForbiddenAt ?? state.postForbiddenUntil - forbiddenHoldMs(state.postForbiddenStrikes ?? 1);
+  if (connectedAt <= heldAt) return false;
+  ctx.log.info({ agentId: agent.agentId, connectedAt: account.connectedAt, heldAt: new Date(heldAt).toISOString(), strikes: state.postForbiddenStrikes ?? 0 }, 'x account reconnected; the 403 hold is lifted');
+  state.postForbiddenUntil = null;
+  state.postForbiddenStrikes = 0;
+  state.postForbiddenAt = null;
+  await resolveNotification(ctx, agent.agentId, 'x_forbidden');
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +724,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         const until = ctx.now() + forbiddenHoldMs(strikes);
         state.postForbiddenUntil = until;
         state.postForbiddenStrikes = strikes;
+        state.postForbiddenAt = ctx.now();
         if (action.tool === 'publish_post') turn.postHeld = true;
         log.warn({ tool: action.tool, actionId: pending.id, strikes, until: new Date(until).toISOString() }, 'x refuses this account\'s posts (403); posts held and the creator told');
         await raiseNotification(ctx, agent.agentId, 'x_forbidden', { strikes, hours: Math.round((until - ctx.now()) / 3_600_000), until: new Date(until).toISOString() });
@@ -725,6 +754,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         if (state.postForbiddenUntil || state.postForbiddenStrikes) {
           state.postForbiddenUntil = null;
           state.postForbiddenStrikes = 0;
+          state.postForbiddenAt = null;
           await resolveNotification(ctx, agent.agentId, 'x_forbidden');
         }
         // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.

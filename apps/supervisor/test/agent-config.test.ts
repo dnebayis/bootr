@@ -66,12 +66,41 @@ describe('GET /internal/agents/:id/config', () => {
         services: DEFAULT_SERVICES_POLICY,
         revision: 1,
         updatedAt: expect.any(String),
+        xHold: null,
       });
       expect((await api(world).get('/internal/agents/404/config')).status).toBe(404);
       // a custom worker reports its stored preset
       await world.db.update(agents).set({ config: presetConfig({ workerTemplate: 'custom', workerHash: CUSTOM.hash, workerPreset: CUSTOM_PRESET, capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: CUSTOM_PRESET.postIntervalMs }) }).where(eq(agents.agentId, AGENT_ID));
       const custom = (await (await api(world).get(`/internal/agents/${AGENT_ID}/config`)).json()) as { worker: unknown };
       expect(custom.worker).toEqual({ kind: 'custom', capabilities: CUSTOM_PRESET.capabilities, postIntervalMs: CUSTOM_PRESET.postIntervalMs, jobLines: CUSTOM_PRESET.identity });
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('GET /internal/agents/:id/config xHold', () => {
+  it('shows the 403 hold on the X account while it lasts, and nothing once it has passed or was cleared', async () => {
+    const world = await makeWorld();
+    try {
+      const now = world.ctx.now();
+      await seedAgent(world, { config: presetConfig() });
+      const read = async () => ((await (await api(world).get(`/internal/agents/${AGENT_ID}/config`)).json()) as { xHold: unknown }).xHold;
+      expect(await read()).toBeNull();
+      const row = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+      const until = now + 12 * 3_600_000;
+      await world.db.update(runtimes).set({ state: { ...(row.state as Record<string, unknown>), postForbiddenUntil: until, postForbiddenStrikes: 2, postForbiddenAt: now } }).where(eq(runtimes.agentId, AGENT_ID));
+      expect(await read()).toEqual({ reason: 'forbidden', until: new Date(until).toISOString(), strikes: 2 });
+      // the PUT answer carries it too (the console replaces its config with that answer)
+      const put = await api(world).put(`/internal/agents/${AGENT_ID}/config`, { by: CREATOR, requireApproval: true });
+      expect(put.status).toBe(200);
+      expect(((await put.json()) as { xHold: unknown }).xHold).toEqual({ reason: 'forbidden', until: new Date(until).toISOString(), strikes: 2 });
+      // past its time: gone, even before the tick clears the state
+      world.setNow(until + 1);
+      expect(await read()).toBeNull();
+      world.setNow(now);
+      await world.db.update(runtimes).set({ state: { ...(row.state as Record<string, unknown>), postForbiddenUntil: null, postForbiddenStrikes: 0 } }).where(eq(runtimes.agentId, AGENT_ID));
+      expect(await read()).toBeNull();
     } finally {
       await world.close();
     }
