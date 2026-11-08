@@ -128,6 +128,8 @@ export function ProfileView() {
   const holdings = useHoldings(isConnected ? address : undefined);
   const fuel = useFuelHistory(isConnected ? address : undefined);
   const launchedKernels = useMemo(() => (launched.data ?? []).map((t) => t.kernel as Address), [launched.data]);
+  const rwagmiCoins = useMemo(() => (launched.data ?? []).filter((t) => t.source !== 'clanker'), [launched.data]);
+  const clankerCoins = useMemo(() => (launched.data ?? []).filter((t) => t.source === 'clanker'), [launched.data]);
   const gas = useKernelGas(launchedKernels);
 
   if (!mounted) return <Rows n={6} />;
@@ -183,9 +185,12 @@ export function ProfileView() {
         )}
       </Panel>
 
-      {/* One panel per launch path: RWAGMI's locker for Bootr coins, Clanker's fee locker for Clanker coins (hidden without one). */}
-      <CreatorFees owner={address} tokens={(launched.data ?? []).filter((t) => t.source !== 'clanker')} loading={launched.isPending} />
-      <ClankerCreatorFees owner={address} tokens={(launched.data ?? []).filter((t) => t.source === 'clanker')} />
+      {/* One panel per launch path: RWAGMI's locker for Bootr coins, Clanker's fee locker for Clanker coins (hidden without
+          one). A wallet with Clanker coins only sees the Clanker panel alone; one with no coin at all sees one panel that says so. */}
+      {launched.isPending || rwagmiCoins.length > 0 || clankerCoins.length === 0 ? (
+        <CreatorFees owner={address} tokens={rwagmiCoins} loading={launched.isPending} />
+      ) : null}
+      <ClankerCreatorFees owner={address} tokens={clankerCoins} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Tokens you launched" bodyClassName="p-0">
