@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Address } from 'viem';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, POSTS_PER_DAY, WORKER_BOUNDS } from '@bootr/shared/workers';
-import { qk, useAgentConfig, useNotificationCount } from '@/lib/indexer';
+import { qk, useAgent, useAgentConfig, useNotificationCount } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
 import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentConfig, type AgentConfigChanges, type Token } from '@/lib/types';
@@ -15,6 +15,7 @@ import { fuelOutlook } from '@/lib/fuel-outlook';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { useAgentActivity, useAgentFuel, useApprovalCount } from '@/lib/indexer';
 import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS, type ConsoleSection } from '@/lib/console-sections';
+import { fuelFromAgent, onboardingItems, SECTION_HINTS } from '@/lib/onboarding';
 import { Panel } from '@/components/ui/Panel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -32,6 +33,7 @@ import { useCreatorSignature } from './creator-signature';
 import { FuelForm } from './FuelForm';
 import { GasForm } from './GasForm';
 import { NotificationInbox } from './NotificationInbox';
+import { OnboardingCard } from './OnboardingCard';
 
 const INSTRUCTIONS_MIN = 20;
 const INSTRUCTIONS_MAX = 600;
@@ -200,13 +202,17 @@ function BlockTitle({ children, hint }: { children: ReactNode; hint?: ReactNode 
  * the review queue, the private chat) and Fuel (fuel and gas). The four settings tabs edit one draft, saved together
  * from the sticky bar at the bottom with one wallet signature (`POST /api/agent/:kernel/config`); the inbox, queue
  * and chat share the console session's one signature (console-session.ts). Fuel warnings sit above the tabs so they
- * are seen whichever tab is open. Shown only to the creator's wallet (everyone in mock mode, where saving skips the
- * signature).
+ * are seen whichever tab is open. A new agent gets a first-steps card above the tabs (OnboardingCard: X account,
+ * instructions, fuel, gas, from the token, the config, the indexer's agent row and the gas read) and, until its config
+ * is first edited, one line of guidance per tab. Shown only to the creator's wallet (everyone in mock mode, where
+ * saving skips the signature).
  */
 export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | null }) {
   const { canSign, sign } = useCreatorSignature();
   const queryClient = useQueryClient();
   const config = useAgentConfig(token.kernel);
+  // The indexer's agent row (shared with AgentPanel): the fuel figures of the first-steps card.
+  const agentRow = useAgent(token.kernel);
   const approvals = useApprovalCount(token.kernel);
   const notifications = useNotificationCount(token.kernel);
   const fuel = useAgentFuel(token.kernel);
@@ -328,6 +334,23 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
   );
 
   const showSaveBar = !!cfg && !!draft && (SETTINGS_SECTIONS.includes(section) || dirty.length > 0);
+  // Until the creator's first edit, each tab opens with one line saying what it is for.
+  const hint = (id: ConsoleSection) =>
+    cfg?.revision === 0 ? (
+      <p className="text-caption text-mute" data-testid={`section-hint-${id}`}>
+        {SECTION_HINTS[id]}
+      </p>
+    ) : null;
+  // The first steps, from stored state (the saved instructions, not the draft): the card ticks a step when it is really done.
+  const onboarding = cfg ? onboardingItems({ xHandle: token.xHandle, instructions: cfg.instructions, ...fuelFromAgent(agentRow.data ?? (agent && 'treasuryUsdc' in agent ? agent : null)), gasWei }) : null;
+  const goTo = (target: ConsoleSection | 'x') => {
+    if (target === 'x') {
+      document.getElementById('connect-x')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    setSection(target);
+    if (target === 'mind') requestAnimationFrame(() => document.getElementById('console-instructions')?.focus());
+  };
 
   return (
     <Panel
@@ -344,6 +367,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
       action={cfg ? <span className="font-mono text-micro text-mute" data-testid="config-revision">{editedLabel(cfg.revision)}</span> : null}
     >
       <div data-testid="creator-console" className="@container flex flex-col gap-4">
+        {onboarding ? <OnboardingCard kernel={token.kernel} items={onboarding} onGo={goTo} /> : null}
         {outlook && (outlook.runway || outlook.warnings.length > 0) ? (
           <div className="flex flex-col gap-2" data-testid="fuel-outlook">
             {outlook.runway ? (
@@ -391,6 +415,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
               {settingsForm(
                 'mind',
                 <>
+                  {hint('mind')}
                   <div>
                     <Label htmlFor="console-instructions" hint={<span className={cn('font-mono tabular', !instructionsOk && 'text-danger')}>{instructionsLen}/{INSTRUCTIONS_MAX}</span>}>
                       Instructions
@@ -467,6 +492,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
               {settingsForm(
                 'posting',
                 <>
+                  {hint('posting')}
                   <div data-testid="posts-per-day">
                     <Label
                       htmlFor="console-posts-per-day"
@@ -533,8 +559,9 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             <TabPanel value="powers" className="pt-4">
               {settingsForm(
                 'powers',
-                <fieldset className="min-w-0">
+                <fieldset className="flex min-w-0 flex-col gap-2">
                   <legend className="sr-only">Powers</legend>
+                  {hint('powers')}
                   <div className="grid grid-cols-1 gap-px overflow-hidden rounded-sm border border-hairline bg-hairline @min-[18rem]:grid-cols-2" data-testid="powers-grid">
                     {POWERS.map((k) => (
                       <div key={k} className="flex flex-col gap-1 bg-canvas p-3" data-testid={`power-row-${k}`} data-on={draft.capabilities[k] ? 'true' : 'false'}>
@@ -547,7 +574,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                     ))}
                   </div>
                   {draft.capabilities.services ? (
-                    <div className="mt-2 flex flex-col gap-3 rounded-sm border border-hairline bg-canvas-soft p-3" data-testid="services-caps">
+                    <div className="flex flex-col gap-3 rounded-sm border border-hairline bg-canvas-soft p-3" data-testid="services-caps">
                       <BlockTitle>Paid services caps</BlockTitle>
                       <div className="grid grid-cols-1 gap-3 @min-[18rem]:grid-cols-2">
                         <div>
@@ -580,7 +607,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
                       </div>
                     </div>
                   ) : null}
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {ALWAYS_ON_CAPABILITIES.map((k) => (
                       <Badge key={k}>{CAPABILITIES[k].label} · always on</Badge>
                     ))}
@@ -590,6 +617,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </TabPanel>
 
             <TabPanel value="look" className="flex flex-col gap-4 pt-4">
+              {hint('look')}
               {settingsForm(
                 'look',
                 <div className="flex flex-col gap-3" data-testid="image-style">
@@ -648,6 +676,7 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
 
             <TabPanel value="inbox" className="pt-4" keepMounted>
               <div className="flex flex-col gap-4" data-testid="console-inbox">
+                {hint('inbox')}
                 <NotificationInbox token={token} />
                 <ApprovalQueue token={token} reviewing={cfg.requireApproval} />
                 <AgentChat token={token} />
@@ -655,7 +684,8 @@ export function CreatorConsole({ token, agent }: { token: Token; agent: Agent | 
             </TabPanel>
 
             <TabPanel value="fuel" className="pt-4" keepMounted>
-              <div data-testid="console-fuel">
+              <div className="flex flex-col gap-4" data-testid="console-fuel">
+                {hint('fuel')}
                 <FuelAndGas token={token} agent={agent} inactive={inactive} gasWei={gasWei} kernelGas={kernelGas} onGas={() => void gas.refetch()} />
               </div>
             </TabPanel>
