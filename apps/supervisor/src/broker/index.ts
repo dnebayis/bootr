@@ -162,12 +162,57 @@ export async function resolveMentions(ctx: SupervisorContext, agentId: string, i
   return out;
 }
 
-/** Execute a bound action. Throws nothing: every failure becomes an outcome. */
+/** Thrown inside `executeAction` when a tool runs past its ceiling (`TOOL_TIMEOUT_MS` / `TOOL_READ_TIMEOUT_MS`). */
+export class ToolTimeoutError extends Error {
+  constructor(
+    readonly tool: ToolName,
+    readonly timeoutMs: number,
+  ) {
+    super(`tool_timeout: ${tool} gave no answer within ${Math.round(timeoutMs / 1000)} s`);
+    this.name = 'ToolTimeoutError';
+  }
+}
+
+/** The ceiling for one call of `tool` (config.ts): reads are cut sooner, since nothing of theirs needs reconciling. */
+export function toolTimeoutMs(config: Pick<SupervisorContext['config'], 'TOOL_TIMEOUT_MS' | 'TOOL_READ_TIMEOUT_MS'>, tool: ToolName): number {
+  return TOOLS[tool].effect === 'read' ? Math.min(config.TOOL_READ_TIMEOUT_MS, config.TOOL_TIMEOUT_MS) : config.TOOL_TIMEOUT_MS;
+}
+
+/**
+ * `work` or a ToolTimeoutError after `timeoutMs`, whichever comes first. The work itself is not cancelled (a publish
+ * or a userOp already on its way cannot be), so a late rejection is swallowed here and a late result is dropped; the
+ * caller settles the effect from receipts, like any other `unknown` outcome.
+ */
+export function withToolTimeout<T>(work: Promise<T>, tool: ToolName, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ToolTimeoutError(tool, timeoutMs)), timeoutMs);
+    work.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Execute a bound action. Throws nothing: every failure becomes an outcome. Agents run one at a time, so no tool may
+ * hold the tick: each call has a hard ceiling (`toolTimeoutMs`), past which a read fails and a write or money tool
+ * ends `unknown`, since its effect may still land.
+ */
 export async function executeAction(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, pending: PendingAction, env: BrokerEnv): Promise<ActionOutcome> {
   const action = pending.action;
   try {
-    return await dispatch(ctx, agent, config, pending, action, env);
+    return await withToolTimeout(dispatch(ctx, agent, config, pending, action, env), action.tool, toolTimeoutMs(ctx.config, action.tool));
   } catch (err) {
+    if (err instanceof ToolTimeoutError) {
+      ctx.log.warn({ agentId: agent.agentId, actionId: pending.id, tool: action.tool, timeoutMs: err.timeoutMs }, 'tool call timed out');
+      return TOOLS[action.tool].effect === 'read' ? failed(err.message) : { kind: 'unknown', error: err.message };
+    }
     if (err instanceof SenderError) {
       if (err.code === 'storage_unavailable_after_send') return { kind: 'unknown', error: err.code };
       // The consent check could not reach X: nothing was recorded or sent; retry the same action later.
@@ -283,7 +328,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } };
     }
     case 'read_url': {
-      const res = await readUrl(action.input.url, { fetch: ctx.fetch });
+      const res = await readUrl(action.input.url, { fetch: ctx.fetch, resolve: ctx.resolveHost });
       return { kind: 'completed', result: res };
     }
     case 'search_web': {

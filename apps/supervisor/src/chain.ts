@@ -62,7 +62,10 @@ export function createChainContext(
   config: Pick<Config, 'CHAIN_ID' | 'RPC_URL' | 'BOOTR_LAUNCHER_ADDRESS' | 'BOOTR_CLANKER_LAUNCHER_ADDRESS' | 'BOOTR_GUARDIAN_ADDRESS' | 'RWAGMI_LAUNCHER_V3_ADDRESS' | 'RWAGMI_LOCKER_V3_ADDRESS' | 'CLANKER_LOCKER_ADDRESS' | 'CLANKER_FEE_LOCKER_ADDRESS'>,
 ): ChainContext {
   const chain = chainFor(config.CHAIN_ID);
-  const publicClient = createPublicClient({ chain, transport: withRateLimitRetry(http(config.RPC_URL)) });
+  // No CCIP-Read (ERC-3668): a contract that reverts with OffchainLookup would otherwise make this process fetch the
+  // URLs the contract names, and a hostile one can point them anywhere or loop. Every read here is of a contract an
+  // agent or a creator chose, so the lookup is refused and the read fails at once.
+  const publicClient = createPublicClient({ chain, transport: withRateLimitRetry(http(config.RPC_URL)), ccipRead: false });
   return {
     chain,
     chainId: config.CHAIN_ID as 8453 | 84532,

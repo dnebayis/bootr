@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { createPublicClient, encodeFunctionData, erc20Abi, http, keccak256, parseEther, parseUnits, toHex, zeroAddress, type Address, type Hex } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { encodeFunctionData, erc20Abi, keccak256, parseEther, parseUnits, toHex, zeroAddress, type Address, type Hex } from 'viem';
 import { entryPointAbi } from '@/lib/gas';
 import { ipfsGatewayUrl, UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
@@ -14,6 +13,7 @@ import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } 
 import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
+import { serverPublicClient } from '@/lib/server/chain';
 import { pinataEnv } from '@/lib/server/env';
 import { relayModels } from '@/lib/server/relay-models';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
@@ -207,8 +207,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Launcher state: fee and minimum fuel from the chain (fallbacks in mock mode or when the RPC is down).
-  const chain = chainId === 8453 ? base : baseSepolia;
-  const client = createPublicClient({ chain, transport: http((chainId === 8453 ? process.env.BASE_RPC_URL : process.env.BASE_SEPOLIA_RPC_URL) || undefined) });
+  const client = serverPublicClient(chainId);
   const salt = keccak256(toHex(draftId));
   let feeWei = FEE_FALLBACK_WEI;
   let defaults = buyback ? FALLBACK_BUYBACK : FALLBACK_STANDARD;
