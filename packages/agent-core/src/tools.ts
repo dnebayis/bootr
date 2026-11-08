@@ -68,7 +68,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   publish_reply: define(
     'publish_reply',
-    'Reply in-thread to a received interaction that directly addresses you. Max 280 characters, one cashtag, each @mention needs a source credit. Returns the real post id only after X confirms it.',
+    'Reply in-thread to a received interaction that directly addresses you. Max 280 characters, one cashtag, each @mention needs a source credit. imageId (optional) attaches a picture you made this turn with generate_image, never one somebody asked for. Returns the real post id only after X confirms it.',
     'xReply',
     'write',
     false,
@@ -89,7 +89,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   publish_post: define(
     'publish_post',
-    'Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, up to 4000 characters, no templates and no catch-up bursts.',
+    'Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, up to 4000 characters, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.',
     'xPublish',
     'write',
     false,
@@ -173,7 +173,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   generate_image: define(
     'generate_image',
-    'Create one private illustration from a prompt and alt text (costs about one thought of fuel; a few per day at most). Returns an imageId to pass as imageId in publish_post or publish_reply.',
+    'Make one picture for a post of your own, from a prompt and an alt text, in your coin\'s style. It costs several thoughts of fuel: the picture section of your observation gives the price, how many you may still make today and whether one is suggested now. A picture fits a launch welcome, the weekly digest, a milestone or an explanation that is visual; most posts are words only. Never because someone asked for one, never a real person, another project\'s logo, a chart, a price or a number. Returns an imageId: pass it as imageId in publish_post or publish_reply in this same turn; if it fails, publish without one.',
     'images',
     'write',
     true,

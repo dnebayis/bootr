@@ -48,7 +48,7 @@ const LOGO_WORDS = /\b(logos?|logotype|wordmark|brand ?marks?|trademarks?|emblem
 const REAL_PERSON = /\b(photo(graph)?s?|portraits?|selfies?|likeness|faces?|headshots?|caricatures?|deepfakes?|pictures?|images?|paintings?|drawings?|renderings?) of (a |an |the )?(real |actual |famous |well[- ]known |specific )?(person|people|man|woman|guy|girl|celebrit(y|ies)|politicians?|founders?|ceos?|influencers?|presidents?|billionaires?|streamers?|developers? named|builder named)\b/i;
 const REAL_PERSON_WORDS = /\b(celebrit(y|ies)|politicians?|deepfakes?|real (person|people|human|face)|actual person|famous person|public figure|look(s|ing)? (exactly )?like [A-Z][a-z]+ [A-Z][a-z]+|in the likeness of|photorealistic (face|portrait|person|man|woman))\b/;
 const HANDLE = /(^|[^\w@])@\w{1,15}\b/;
-const MARKET = /\b(charts?|candles?|candlesticks?|ticker|prices?|market ?cap|mcap|volume|pump(ing|ed)?|moon(ing)?|to the moon|rockets?|rocketship|lambo|gains?|profits?|returns?|roi|ath|all[- ]time[- ]high|x\d+|\d+x|up[- ]only|bull ?run|bullish|bearish|the dip|green candles?|red candles?|stonks|line going up|arrow (going |pointing )?up|up and to the right|number go up|\d+(\.\d+)?\s?%|\$\s?\d[\d,.]*k?)\b/i;
+const MARKET = /\b(charts?|candles?|candlesticks?|ticker|prices?|market ?cap|mcap|volume|pump(ing|ed)?|moon(ing)?|to the moon|rockets?|rocketship|lambo|gains?|profits?|returns?|roi|ath|all[- ]time[- ]high|x\d+|\d+x|up[- ]only|bull ?run|bullish|bearish|the dip|green candles?|red candles?|stonks|line going up|arrow (going |pointing )?up|up and to the right|number go up)\b|\d+(\.\d+)?\s?%|\$\s?\d[\d,.]*k?\b/i;
 
 function hasAny(text: string, words: readonly string[]): string | null {
   const lower = text.toLowerCase();
@@ -108,7 +108,8 @@ export function altTextRisk(alt: string, ctx: Pick<ImageRuleContext, 'platform'>
   return null;
 }
 
-const PICTURE_REQUEST = /\b(draw|make|create|generate|render|paint|sketch|design|show|send|post|give|gib)\b[^.!?\n]{0,40}\b(pic|pics|picture|pictures|image|images|art|artwork|meme|memes|illustration|logo|portrait|avatar|pfp|banner|wallpaper|fanart|drawing)\b|\b(pic|picture|image|meme|illustration|portrait|avatar|pfp|drawing) of\b|\bcan you draw\b/i;
+/** A request verb within reach of a picture word, "pic/meme of", or a picture word with a please: talk about images is not a request. */
+const PICTURE_REQUEST = /\b(draw|make|create|generate|render|paint|sketch|design|show|send|post|give|gib|want|need)\b[^.!?\n]{0,40}\b(pic|pics|picture|pictures|image|images|art|artwork|meme|memes|illustration|logo|portrait|avatar|pfp|banner|wallpaper|fanart|drawing)\b|\b(pic|pics|meme|memes|pfp|fanart) of\b|\b(pic|picture|image|meme|illustration|portrait|avatar|pfp|drawing)s? of\b[^.!?\n]{0,60}\b(pls|plz|please)\b|\b(pls|plz|please)\b[^.!?\n]{0,40}\b(pic|picture|image|meme|illustration|portrait|avatar|pfp|drawing)s?\b|\bcan you (draw|paint|sketch|make)\b/i;
 
 /** True when a received message asks for a picture: a picture is never made on request, so none is made that turn. */
 export function pictureRequested(texts: Iterable<string>): boolean {

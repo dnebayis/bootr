@@ -161,7 +161,7 @@ export const WEEKLY_DIGEST_INSTRUCTION =
   'If the facts are too thin for a post worth reading, do not post it: call finish and say so; the week is then closed without a digest and you will not be asked again.';
 
 export const WEEKLY_DIGEST_PICTURE =
-  'You may make one picture for it with generate_image (your coin\'s style reference applies) and attach it as imageId; a picture is optional and the post must read well without it.';
+  'You may make one picture for it with generate_image (your coin\'s style reference applies; a scene or an idea, no charts, logos, people or numbers) and attach it as imageId on publish_post; a picture is optional, the post must read well without it, and when generate_image fails you publish without an imageId.';
 
 /**
  * The `weeklyDigest` section of the platform agent's first observation (empty when no digest is due this turn).

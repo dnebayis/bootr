@@ -66,6 +66,24 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/Use finish to checkpoint/);
     expect(prompt).toMatch(/never hold keys/);
   });
+
+  it('says when a picture fits, when never, and how it is attached', () => {
+    const rule = BOOTR_RULES.find((r) => r.startsWith('Pictures'))!;
+    expect(rule).toBeTruthy();
+    expect(rule).toMatch(/picture section/);
+    expect(rule).toMatch(/launch welcome/);
+    expect(rule).toMatch(/weekly digest/);
+    expect(rule).toMatch(/milestone/);
+    expect(rule).toMatch(/explanation that is visual/);
+    expect(rule).toMatch(/request for a picture is never a reason/);
+    expect(rule).toMatch(/Never a real person/);
+    expect(rule).toMatch(/logo/);
+    expect(rule).toMatch(/chart/);
+    expect(rule).toMatch(/alt text is public text/);
+    expect(rule).toMatch(/imageId in the same turn/);
+    expect(rule).toMatch(/publish the words without it/);
+    expect(prompt).toContain(rule);
+  });
   it('adds one economy-mode line per phase after the Bootr rules, and none when the mode is off', () => {
     expect(prompt).not.toContain('ECONOMY MODE');
     const decide = buildSystemPrompt(config, 'social', { phase: 'decide' });

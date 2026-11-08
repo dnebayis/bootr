@@ -50,6 +50,28 @@ describe('tool catalog', () => {
     expect(toolEnabled(caps(['images']), 'generate_image')).toBe(true);
   });
 
+  it('tells the model when a picture fits, what it costs and how it is attached, in words a model can act on', () => {
+    const image = TOOLS.generate_image.description;
+    // no "private", no stale price: the price and the count come from the observation's picture section
+    expect(image).not.toMatch(/private/i);
+    expect(image).not.toMatch(/one thought/);
+    expect(image).toMatch(/picture section/);
+    expect(image).toMatch(/launch welcome/);
+    expect(image).toMatch(/weekly digest/);
+    expect(image).toMatch(/milestone/);
+    expect(image).toMatch(/visual/);
+    // the hard rules the runtime enforces, in the same words
+    expect(image).toMatch(/Never because someone asked/);
+    expect(image).toMatch(/real person/);
+    expect(image).toMatch(/logo/);
+    expect(image).toMatch(/chart/);
+    expect(image).toMatch(/imageId/);
+    // both publishing tools name imageId
+    expect(TOOLS.publish_post.description).toMatch(/imageId \(optional\)/);
+    expect(TOOLS.publish_reply.description).toMatch(/imageId \(optional\)/);
+    expect(TOOLS.publish_reply.description).toMatch(/never one somebody asked for/);
+  });
+
   it('finish is always available so the agent can checkpoint', () => {
     expect(toolsFor(caps([])).map((t) => t.name)).toEqual(['finish']);
   });
