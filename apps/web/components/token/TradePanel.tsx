@@ -18,7 +18,6 @@ import { Panel } from '@/components/ui/Panel';
 import { Tab, TabList, Tabs } from '@/components/ui/Tabs';
 import { cn } from '@/components/ui/cn';
 import { ConnectButton } from '@/components/shell/ConnectButton';
-import { CreatorConsoleLink } from './CreatorConsoleLink';
 
 const SLIPPAGE_PRESETS = [50, 100, 200];
 const BUY_PRESETS = ['0.001', '0.01', '0.1'];
@@ -67,9 +66,6 @@ export function TradePanel({ token }: { token: Token }) {
         <ExternalLink href={elsewhere} className="mt-3 inline-flex text-caption">
           Swap on another site
         </ExternalLink>
-        <div className="mt-3">
-          <CreatorConsoleLink token={token} />
-        </div>
       </Panel>
     );
   }
@@ -344,8 +340,6 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
         ) : null}
 
         {action}
-        {/* The creator's way into the console, right under the trade action; nothing for anyone else. */}
-        <CreatorConsoleLink token={token} />
 
         <p className="text-caption text-mute">
           This is your own transaction, signed in your wallet. Bootr holds nothing and adds no fee.{' '}

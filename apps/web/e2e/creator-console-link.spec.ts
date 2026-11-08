@@ -1,23 +1,24 @@
 import { expect, test } from '@playwright/test';
 import { fakeInjectedWallet } from './fake-wallet';
 
-test('the Trade panel carries the creator’s way into the console page, with the pending count, and the page leads back (mock mode)', async ({ page }) => {
+test('the coin page header carries the creator’s way into the console page under Trade, with the pending count, and the page leads back (mock mode)', async ({ page }) => {
   await fakeInjectedWallet(page);
   await page.goto('/');
   await page.locator('a[href^="/token/0x"]').first().click();
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}$/);
   const coinUrl = new URL(page.url()).pathname;
 
-  // Under the trade action: one full-width secondary link with the pending reviews in mono. No console on this page.
-  const trade = page.getByTestId('trade-panel');
-  const open = trade.getByTestId('open-console');
+  // Under the header's Trade button, right-aligned with it: one secondary link with the pending reviews in mono.
+  // No console on this page, and nothing of it in the Trade panel.
+  const open = page.getByTestId('open-console');
   await expect(open).toHaveAttribute('href', `${coinUrl}/console`);
   await expect(open).toContainText('Creator console');
   await expect(open.getByTestId('approvals-pending')).toHaveText('· 2 pending');
-  const submit = trade.getByTestId('trade-submit').or(trade.getByRole('button', { name: /Connect wallet|Switch to/ })).first();
-  const [submitBox, openBox] = [await submit.boundingBox(), await open.boundingBox()];
-  expect(openBox!.y).toBeGreaterThan(submitBox!.y);
-  expect(Math.abs(openBox!.width - submitBox!.width)).toBeLessThan(2);
+  const trade = page.locator('main header a[href="#trade"]');
+  const [tradeBox, openBox] = [await trade.boundingBox(), await open.boundingBox()];
+  expect(openBox!.y).toBeGreaterThan(tradeBox!.y + tradeBox!.height - 1);
+  expect(Math.abs(openBox!.x + openBox!.width - (tradeBox!.x + tradeBox!.width))).toBeLessThan(2);
+  await expect(page.getByTestId('trade-panel').getByTestId('open-console')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Creator console' })).toHaveCount(0);
   await expect(page.getByLabel('Instructions')).toHaveCount(0);
   await expect(page.getByTestId('onboarding-checklist')).toHaveCount(0);
@@ -35,7 +36,21 @@ test('the Trade panel carries the creator’s way into the console page, with th
   expect(await console_.getByRole('switch').count()).toBe(6);
   await console_.getByTestId('back-to-coin').click();
   await expect(page).toHaveURL(new RegExp(`${coinUrl}$`));
-  await expect(trade.getByTestId('open-console')).toBeVisible();
+  await expect(page.getByTestId('open-console')).toBeVisible();
+});
+
+test('at 375px the console button sits under the price and Trade row, full width (mock mode)', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await fakeInjectedWallet(page);
+  await page.goto('/');
+  await page.locator('a[href^="/token/0x"]').first().click();
+  await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{40}$/);
+  const open = page.getByTestId('open-console');
+  const trade = page.locator('main header a[href="#trade"]');
+  const [tradeBox, openBox] = [await trade.boundingBox(), await open.boundingBox()];
+  expect(openBox!.y).toBeGreaterThan(tradeBox!.y + tradeBox!.height - 1);
+  expect(openBox!.width).toBeGreaterThan(300);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
 });
 
 test('the console page at 375px keeps the sections as a tab strip with no horizontal scroll (mock mode)', async ({ page }) => {
