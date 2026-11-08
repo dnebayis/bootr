@@ -5,9 +5,9 @@ import { FALLBACK_IMAGE_MODELS, FALLBACK_MODELS, IMAGE, THOUGHT, type ImageModel
 export { FALLBACK_MODELS, filterAllowedModels, type ModelOption } from './models';
 
 /**
- * Models offered to new agents, priced per thought. Always via this app's `/api/models`: the relay
- * is internal in production, and the route applies the admin allowlist. Falls back to the built-in
- * list (unfiltered) only when the route itself is unreachable.
+ * Models offered to new agents, priced per thought as the agent pays BlockRun for one. Always via this app's
+ * `/api/models`, which applies the admin allowlist. Falls back to the whole catalog (unfiltered) only when the route
+ * itself is unreachable.
  */
 /** The image models a creator can pick for an agent, priced per picture (`/api/models?kind=image`). */
 export async function fetchImageModels(): Promise<ImageModelsResponse> {
@@ -16,9 +16,9 @@ export async function fetchImageModels(): Promise<ImageModelsResponse> {
     if (!res.ok) throw new Error(String(res.status));
     const j = (await res.json()) as Partial<ImageModelsResponse>;
     if (!Array.isArray(j.models)) throw new Error('bad response');
-    return { source: j.source === 'relay' ? 'relay' : 'fallback', image: IMAGE, models: j.models };
+    return { source: 'blockrun', image: IMAGE, models: j.models };
   } catch {
-    return { source: 'fallback', image: IMAGE, models: FALLBACK_IMAGE_MODELS };
+    return { source: 'blockrun', image: IMAGE, models: FALLBACK_IMAGE_MODELS };
   }
 }
 
@@ -28,9 +28,9 @@ export async function fetchModels(): Promise<ModelsResponse> {
     if (!res.ok) throw new Error(String(res.status));
     const j = (await res.json()) as Partial<ModelsResponse>;
     if (!Array.isArray(j.models)) throw new Error('bad response');
-    return { source: j.source === 'relay' ? 'relay' : 'fallback', thought: THOUGHT, models: j.models };
+    return { source: 'blockrun', thought: THOUGHT, models: j.models };
   } catch {
-    return { source: 'fallback', thought: THOUGHT, models: FALLBACK_MODELS };
+    return { source: 'blockrun', thought: THOUGHT, models: FALLBACK_MODELS };
   }
 }
 

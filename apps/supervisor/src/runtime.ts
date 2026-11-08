@@ -38,6 +38,8 @@ import { coinFeesSection } from './coin-fees.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
 import { postBudgetSection } from './post-budget.js';
+import { MODEL_MISSING } from './blockrun.js';
+import { raiseNotification, resolveNotification } from './notifications.js';
 import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
@@ -93,6 +95,8 @@ export interface AgentState {
   offeredUpdate?: string | null;
   /** Epoch ms of the last chain read while sleeping or paused; the next one waits `REST_CHECK_MS` (tick.ts). */
   chainCheckedAt?: number | null;
+  /** The creator was told the agent's model is not served (`model_unavailable`); cleared by the next answered thought. */
+  modelUnavailable?: boolean | null;
 }
 
 export function initialState(): AgentState {
@@ -436,12 +440,19 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
    * and the next attempt gets a new key. An outage-shaped failure also counts towards the fleet-wide provider hold
    * (provider-hold.ts): once enough agents fail the same way, this agent waits for the hold too.
    */
-  const backOff = (inf: { kind: 'credit' | 'failed'; key: string; error: string }): Promise<TurnResult> => {
+  const backOff = async (inf: { kind: 'credit' | 'failed'; key: string; error: string }): Promise<TurnResult> => {
     const failures = (runtime.failures ?? 0) + 1;
     const plan = interruptionPlan(0, failures, ctx.now());
     const hold = noteInferenceFailure(agent.agentId, inf.error, ctx.now());
     const nextAt = Math.max(plan.nextAt, hold?.until ?? 0);
     log.warn({ key: inf.key, error: inf.error, failures, nextAt, credit: inf.kind === 'credit', providerHold: hold?.until ?? null }, 'inference failed');
+    // BlockRun does not know this agent's model: no backoff fixes that. The creator hears it in the inbox, the owner in the log.
+    if (inf.error.includes(MODEL_MISSING)) {
+      const model = modelFor(config, turn.routing);
+      log.error({ key: inf.key, model, error: inf.error }, 'the model this agent is configured with is not served by BlockRun; it waits unpaid until the creator or the platform changes it');
+      await raiseNotification(ctx, agent.agentId, 'model_unavailable', { model, field: turn.routing?.phase === 'decide' ? 'decideModel' : 'model', picture: 0 });
+      state.modelUnavailable = true;
+    }
     state.inferenceKey = inf.kind === 'credit' ? inf.key : null;
     state.inferenceRetryAt = nextAt;
     state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
@@ -516,6 +527,10 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     }
     state.inferenceRetryAt = null;
     if (!inf.replayed) noteInferenceSuccess();
+    if (state.modelUnavailable) {
+      await resolveNotification(ctx, agent.agentId, 'model_unavailable');
+      state.modelUnavailable = null;
+    }
 
     // Cut off at the output limit: the call is not carried out, and its broken JSON must not go back to the provider,
     // which would refuse the next request. The model is told why, and gets room for one retry.

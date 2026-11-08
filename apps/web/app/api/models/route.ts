@@ -4,14 +4,12 @@ import { currentModels, relayModels } from '@/lib/server/relay-models';
 
 /**
  * GET /api/models -> ModelsResponse
- * The relay is internal in production, so the browser never calls `/v1/models` itself. This route
- * reads it server-side (cached 60 s per instance), prices one thought per model the way the relay
- * quotes, and keeps only the admin's `allowedModels` (same matching as the launch form used to do).
- * Unreachable or unset relay: the built-in list, filtered the same way.
+ * The models a new agent may think with: the model catalog (`@bootr/agent-core`), priced per thought the way the
+ * agent pays BlockRun for one, under the admin's `allowedModels`.
  *
  * GET /api/models?kind=image -> ImageModelsResponse
- * The relay's image generation models (`output_modalities` with `image`) priced per picture, for the
- * creator console's image model select. Not subject to the admin allow-list, which names minds.
+ * The catalog's image models priced per picture, for the creator console's image model select. Not subject to the
+ * admin allow-list, which names minds.
  */
 
 export async function GET(req: NextRequest) {

@@ -9,7 +9,7 @@ describe('index', () => {
       'replyEligibility', 'eligibleBadge', 'postReadbackWindow', 'matchesPublishedPost', 'consentCommand', 'applyConsent',
       'wakeDecision', 'decisionDue', 'interruptionPlan', 'checkpoint', 'boundedState', 'beginAction', 'recordOutcome',
       'canResume', 'reconcile', 'buildSystemPrompt', 'buildObservation', 'compactView', 'buildInferenceRequest', 'contextFits',
-      'inferenceIdempotencyKey', 'MAX_QUOTE_MICRO_USDC',
+      'inferenceIdempotencyKey', 'MAX_QUOTE_MICRO_USDC', 'MODEL_CATALOG', 'catalogModel', 'directModelId', 'thoughtQuoteMicroUsdc',
     ]) expect(core, name).toHaveProperty(name);
   });
 });

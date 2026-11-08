@@ -6,7 +6,7 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
+import { catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -256,12 +256,15 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     }
   }
 
-  // Image model: one of the image models the relay lists (the built-in three when it cannot be reached).
+  // Image model: one the agent's route offers (the catalog's image models in direct mode, the relay's list otherwise),
+  // named by its catalog id or by the relay's name for the same model; stored under the catalog id.
   if (body.imageModel !== undefined) {
-    const model = typeof body.imageModel === 'string' ? body.imageModel.trim() : '';
-    if (!model || model.length > MAX_MODEL_CHARS) return reject(400, 'invalid_image_model', `imageModel must be a string of 1..${MAX_MODEL_CHARS} characters`);
-    const offered = await relayImageModels(ctx);
-    if (!offered.includes(model)) return reject(400, 'image_model_not_allowed', `image model ${model} is not offered by the relay`);
+    const raw = typeof body.imageModel === 'string' ? body.imageModel.trim() : '';
+    if (!raw || raw.length > MAX_MODEL_CHARS) return reject(400, 'invalid_image_model', `imageModel must be a string of 1..${MAX_MODEL_CHARS} characters`);
+    const offered = await relayImageModels(ctx, agent);
+    const known = catalogModel(raw);
+    const model = known?.role === 'image' ? known.id : raw;
+    if (![raw, model, relayModelId(model)].some((name) => offered.includes(name))) return reject(400, 'image_model_not_allowed', `image model ${raw} is not offered; pick one of ${offered.join(', ')}`);
     if (model !== imageModelOf(before)) {
       config.imageModel = model;
       fields.push('imageModel');

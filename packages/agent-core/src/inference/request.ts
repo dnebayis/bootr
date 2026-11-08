@@ -1,4 +1,5 @@
 import { digest, byteLength } from '../hash.js';
+import { catalogModel } from '../models/catalog.js';
 import { toFunctionDefinitions, type FunctionDefinition, type ModelTool } from '../tools.js';
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -90,7 +91,10 @@ export function inferenceIdempotencyKey(agentId: string, cycle: number): string 
   return 'inference:' + digest({ agentId, cycle }).slice(0, 32);
 }
 
-/** Maximum quote (micro-USDC) accepted for one request, per model prefix. */
+/**
+ * Maximum quote (micro-USDC) accepted for one request, per model prefix, for ids the catalog does not know
+ * (`maxQuoteFor` reads a catalog model's own cap first; see models/catalog.ts).
+ */
 export const MAX_QUOTE_MICRO_USDC: Readonly<Record<string, number>> = {
   default: 500_000,
   // OpenAI
@@ -122,9 +126,15 @@ export const MAX_QUOTE_MICRO_USDC: Readonly<Record<string, number>> = {
   'gemini-3-pro-image': 250_000,
   'gpt-5-image-mini': 150_000,
   'gpt-5.4-image': 250_000,
+  'nano-banana': 120_000,
+  'nano-banana-2': 150_000,
+  'nano-banana-pro': 250_000,
+  'gpt-image-1': 150_000,
+  'gpt-image-2': 250_000,
   // Others
   'grok-4.7': 1_000_000,
   'grok-4.20': 600_000,
+  'grok-4.3': 600_000,
   'deepseek': 200_000,
   'kimi': 600_000,
   'minimax': 300_000,
@@ -135,10 +145,15 @@ export const MAX_QUOTE_MICRO_USDC: Readonly<Record<string, number>> = {
 };
 
 /**
- * Longest matching model prefix wins; unknown models fall back to `default`. Prefixes are matched
- * against the bare model name, so OpenRouter ids such as `anthropic/claude-haiku-4.5` match `claude-haiku`.
+ * A catalog model's own cap (by its id or a retired id it stands in for); otherwise the longest matching prefix of
+ * `table` wins and unknown models fall back to `default`. Prefixes are matched against the bare model name, so
+ * provider-prefixed ids such as `anthropic/claude-haiku-4.5` match `claude-haiku`. A caller's own `table` is final.
  */
 export function maxQuoteFor(model: string, table: Readonly<Record<string, number>> = MAX_QUOTE_MICRO_USDC): number {
+  if (table === MAX_QUOTE_MICRO_USDC) {
+    const known = catalogModel(model);
+    if (known) return known.maxQuoteMicroUsdc;
+  }
   const bare = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
   const match = Object.keys(table)
     .filter((prefix) => prefix !== 'default' && (bare.startsWith(prefix) || model.startsWith(prefix)))

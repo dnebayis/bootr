@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { pictureFits } from '../src/fuel.js';
-import { FALLBACK_IMAGE_CATALOG, picturePriceFor, picturePriceMicroUsdc, relayImageCatalog, usdcText } from '../src/image-models.js';
+import { BLOCKRUN_IMAGE_CATALOG, FALLBACK_IMAGE_CATALOG, imageModelEntry, picturePriceFor, picturePriceMicroUsdc, relayImageCatalog, usdcText } from '../src/image-models.js';
 import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL } from '../src/images.js';
 import { PICTURE_FITS, PICTURE_NEVER, PICTURE_SPACING_MS, pictureHint } from '../src/picture-hint.js';
 import { tick } from '../src/tick.js';
@@ -12,12 +12,13 @@ const D = 86_400_000;
 
 describe('the price of a picture, from the relay\'s list', () => {
   it('prices one picture as the relay charges it: image tokens, the prompt with its reference, a sentence of text, the margin', () => {
-    const pro = FALLBACK_IMAGE_CATALOG.models.find((m) => m.id === DEFAULT_IMAGE_MODEL)!;
+    // the built-in relay list names the models the relay's way; the defaults are catalog ids, so look them up through the entry finder
+    const pro = imageModelEntry(FALLBACK_IMAGE_CATALOG, DEFAULT_IMAGE_MODEL)!;
     const pricePro = picturePriceMicroUsdc(pro)!;
     // Nano Banana Pro: 1120 image tokens at $120/M = $0.134, plus about $0.005 of prompt and text, plus the 10 % margin: about $0.156
     expect(pricePro).toBeGreaterThan(150_000);
     expect(pricePro).toBeLessThan(165_000);
-    const two = FALLBACK_IMAGE_CATALOG.models.find((m) => m.id === DEFAULT_COIN_IMAGE_MODEL)!;
+    const two = imageModelEntry(FALLBACK_IMAGE_CATALOG, DEFAULT_COIN_IMAGE_MODEL)!;
     const priceTwo = picturePriceMicroUsdc(two)!;
     // Nano Banana 2: about half of Pro
     expect(priceTwo).toBeGreaterThan(70_000);
@@ -69,6 +70,34 @@ describe('the price of a picture, from the relay\'s list', () => {
         expect(picturePriceFor(catalog, 'vendor/new-image')).toBeNull();
       } finally {
         await live.close();
+      }
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('in direct mode the list is the catalog at BlockRun’s fixed prices plus its fee, and no relay is asked', async () => {
+    const w = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'all' } });
+    try {
+      w.ctx.fetch = (() => {
+        throw new Error('no listing is fetched in direct mode');
+      }) as unknown as typeof fetch;
+      const catalog = await relayImageCatalog(w.ctx, { agentId: AGENT_ID });
+      expect(catalog).toBe(BLOCKRUN_IMAGE_CATALOG);
+      expect(catalog.live).toBe(true);
+      expect(catalog.models.map((m) => m.id)).toEqual(['google/nano-banana-2', 'google/nano-banana-pro', 'google/nano-banana', 'openai/gpt-image-2', 'openai/gpt-image-1']);
+      // Nano Banana 2: 94 500 plus the 1 000 fee, as BlockRun's 402 quoted on 2026-11-08; the relay's name for it finds the same entry
+      expect(picturePriceFor(catalog, DEFAULT_COIN_IMAGE_MODEL)).toEqual({ microUsdc: 95_500, live: true });
+      expect(picturePriceFor(catalog, 'google/gemini-3.1-flash-image')).toEqual({ microUsdc: 95_500, live: true });
+      expect(picturePriceFor(catalog, DEFAULT_IMAGE_MODEL)).toEqual({ microUsdc: 106_000, live: true });
+      expect(picturePriceFor(catalog, 'vendor/unknown')).toBeNull();
+      // with `agents`, only the named agent is on the catalog
+      const some = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'agents', BLOCKRUN_DIRECT_AGENTS: '7' } });
+      try {
+        expect(await relayImageCatalog(some.ctx, { agentId: '7' })).toBe(BLOCKRUN_IMAGE_CATALOG);
+        expect((await relayImageCatalog(some.ctx, { agentId: '8' })).live).toBe(false);
+      } finally {
+        await some.close();
       }
     } finally {
       await w.close();

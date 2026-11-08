@@ -56,8 +56,10 @@ export function shortAmount(raw: string, decimals: number): string {
 const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps' };
 
 function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
-  const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown };
+  const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown; by?: unknown; summary?: unknown };
   if (a.kind === 'config_updated') {
+    // A change the platform made (model-migration.ts) says so in its own sentence; the creator's edits list the fields.
+    if (a.by === 'platform' && typeof a.summary === 'string' && a.summary) return { at: row.createdAt.toISOString(), kind: 'config', summary: a.summary.slice(0, 300) };
     const fields = Array.isArray(a.fields) ? a.fields.map((f) => FIELD_LABELS[String(f)] ?? String(f)) : [];
     return { at: row.createdAt.toISOString(), kind: 'config', summary: fields.length ? `Config updated: ${fields.join(', ')}` : 'Config updated' };
   }

@@ -120,13 +120,13 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       service: 'web',
       method: 'GET',
       url: `${site}/api/models`,
-      description: 'The models a new agent may use and the estimated USDC price of one thought. kind=image lists image models priced per picture instead.',
+      description: 'The models a new agent may use and the estimated USDC price of one thought, as the agent pays BlockRun for it. kind=image lists image models priced per picture instead.',
       auth: NONE,
       cors: 'none',
       parameters: { query: { type: 'object', properties: { kind: { const: 'image' } }, additionalProperties: false } },
       response: {
         contentType: JSON_TYPE,
-        shape: '{source: relay|fallback, thought: {promptTokens, outputTokens}, models: [{id, label, provider, pricePerThoughtUsd|null}]}; kind=image: {source, image: {promptTokens, outputTokens}, models: [{id, label, provider, pricePerImageUsd|null}]}',
+        shape: '{source: blockrun, thought: {promptTokens, outputTokens}, models: [{id, label, provider, pricePerThoughtUsd|null}]}; kind=image: {source, image: {promptTokens, outputTokens}, models: [{id, label, provider, pricePerImageUsd|null}]}',
       },
     },
     {

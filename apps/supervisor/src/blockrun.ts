@@ -23,6 +23,7 @@
  *
  * Pictures use BlockRun's image API (`exact`, a fixed price), translated here into the chat shape `images.ts` reads.
  */
+import { catalogModel, retiredModelIds } from '@bootr/agent-core';
 import { createX402Payer, X402PaymentRefusedError, type BootrReceipt, type PayerScheme } from '@bootr/inference/client';
 import { decodePaymentResponseHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 import type { PaymentPayload } from '@x402/core/types';
@@ -74,31 +75,26 @@ export function directEnabled(config: Pick<DirectConfig, 'BLOCKRUN_DIRECT_MODE' 
 }
 
 /**
- * Launch-form models BlockRun does not list, with the model that takes their place in direct mode, each at or under the
- * relay's price (BlockRun's list, 2026-11-06). The first is the same model under another name; the other three are
- * different models. Without an entry here an agent on such a model could never think once the relay is gone.
+ * Retired text-model ids with the catalog model that takes their place (`@bootr/agent-core` MODEL_CATALOG: the same model
+ * under BlockRun's name, or the closest model BlockRun serves). Without an entry an agent on such a model could never
+ * think once the relay is gone; the migration (model-migration.ts) moves stored configs over the same table.
  */
-export const DIRECT_SUBSTITUTES: Readonly<Record<string, string>> = {
-  'google/gemini-3.1-pro-preview': 'google/gemini-3.1-pro',
-  'x-ai/grok-4.20': 'xai/grok-4.3',
-  'deepseek/deepseek-v3.2': 'deepseek/deepseek-chat',
-  'meta-llama/llama-4-maverick': 'deepseek/deepseek-chat',
-};
+export const DIRECT_SUBSTITUTES: Readonly<Record<string, string>> = Object.fromEntries(retiredModelIds().filter((r) => catalogModel(r.to)?.role !== 'image').map((r) => [r.from, r.to]));
 
-/** BlockRun's id for the relay's image models (pricing.ts); a picture from any other id waits or uses the relay. */
-export const DIRECT_IMAGE_MODELS: Readonly<Record<string, string>> = {
-  'google/gemini-2.5-flash-image': 'google/nano-banana',
-  'google/gemini-3.1-flash-image': 'google/nano-banana-2',
-  'google/gemini-3-pro-image': 'google/nano-banana-pro',
-  'openai/gpt-5-image-mini': 'openai/gpt-image-1',
-  'openai/gpt-5.4-image-2': 'openai/gpt-image-2',
-};
+/** BlockRun's id for the relay's image models, from the same catalog; a picture from any other id waits or uses the relay. */
+export const DIRECT_IMAGE_MODELS: Readonly<Record<string, string>> = Object.fromEntries(retiredModelIds().filter((r) => catalogModel(r.to)?.role === 'image').map((r) => [r.from, r.to]));
 
-/** BlockRun's id for a relay model id; the two catalogues differ on a few vendor prefixes. An id it lacks is refused before any signature. */
+/** The failover reason when BlockRun does not know the model at all: an agent's own trouble, never a fleet-wide outage. */
+export const MODEL_MISSING = 'model_missing';
+
+/**
+ * BlockRun's id for any model id: a catalog model's own id (by its id or a retired one), else the id with the few vendor
+ * prefixes the two catalogues spell differently renamed. An id BlockRun lacks is refused before any signature.
+ */
 export function directModel(model: string): string {
-  const substitute = DIRECT_SUBSTITUTES[model];
-  if (substitute) return substitute;
-  return model.replace(/^x-ai\//, 'xai/').replace(/^z-ai\//, 'zai/').replace(/^moonshotai\//, 'moonshot/');
+  const known = catalogModel(model);
+  if (known) return known.id;
+  return model.replace(/^x-ai\//, 'xai/').replace(/^z-ai\//, 'zai/').replace(/^moonshotai\//, 'moonshot/').replace(/^mistralai\//, 'mistral/');
 }
 
 /**
@@ -218,8 +214,21 @@ export async function directRequest(ctx: SupervisorContext, agent: AgentRow, cal
     return holdForChain(ctx, key, `direct_transport: ${error}`);
   }
   // Answered without asking for money: an error, or a free model standing in for the paid one. Neither is the thought.
-  if (!out.signed) return { kind: 'failover', reason: `unpaid_http_${res.status}` };
+  if (!out.signed) return { kind: 'failover', reason: await unpaidReason(res, directModel(String(call.request.model))) };
   return recordDirectResponse(ctx, agent, key, res, out.signed, String(call.request.model));
+}
+
+/**
+ * Why an unpaid answer is no thought. BlockRun answers a model it does not know with a 400 and `Unknown model: <id>`
+ * (fixtures/blockrun/error-unknown-model.json): that is `model_missing`, the agent's own problem, which the creator and
+ * the owner must hear about (runtime.ts); anything else is the status, which may be an outage.
+ */
+export async function unpaidReason(res: Response, model: string): Promise<string> {
+  if (res.status === 400) {
+    const text = await res.clone().text().catch(() => '');
+    if (/unknown model/i.test(text)) return `${MODEL_MISSING}: ${model}`;
+  }
+  return `unpaid_http_${res.status}`;
 }
 
 /** Reads the spender's USDC before signing. A failed read lets the payment go: BlockRun's own check refuses it at no cost. */
@@ -437,8 +446,9 @@ export async function reconcileDirect(ctx: SupervisorContext, row: typeof infere
 
 /** The body BlockRun's image API takes, from the chat-shaped request `imageRequest` builds; null for a model it lacks. */
 export function directImageBody(request: Record<string, unknown>): { body: Record<string, unknown>; reference: string | null } | null {
-  const model = DIRECT_IMAGE_MODELS[String(request.model)];
-  if (!model) return null;
+  const known = catalogModel(String(request.model));
+  if (!known || known.role !== 'image') return null;
+  const model = known.id;
   const messages = (request.messages ?? []) as { role?: string; content?: unknown }[];
   const parts: string[] = [];
   let reference: string | null = null;
@@ -538,7 +548,7 @@ async function directImageRequest(ctx: SupervisorContext, agent: AgentRow, call:
   const { key } = call;
   const now = () => new Date(ctx.now());
   const translated = directImageBody(call.request);
-  if (!translated) return { kind: 'failover', reason: `no_image_model: ${String(call.request.model)}` };
+  if (!translated) return { kind: 'failover', reason: `${MODEL_MISSING}: ${String(call.request.model)}` };
   const { body, reference } = translated;
   // BlockRun takes the reference as a data URI. A coin picture that cannot be fetched only costs the likeness.
   const image = reference ? await pictureAsDataUri(ctx, reference) : null;
@@ -568,7 +578,7 @@ async function directImageRequest(ctx: SupervisorContext, agent: AgentRow, call:
     if (!out.signed) return { kind: 'failover', reason: err instanceof X402PaymentRefusedError ? `refused: ${error}` : `unreachable: ${error}` };
     return holdForChain(ctx, key, `direct_transport: ${error}`);
   }
-  if (!out.signed) return { kind: 'failover', reason: `unpaid_http_${res.status}` };
+  if (!out.signed) return { kind: 'failover', reason: await unpaidReason(res, body.model as string) };
   const payment: PaymentPayload = out.signed;
 
   const parsed = (await res.json().catch(() => null)) as { id?: unknown; poll_url?: unknown; data?: { url?: unknown }[]; price?: unknown; code?: unknown; error?: unknown } | null;

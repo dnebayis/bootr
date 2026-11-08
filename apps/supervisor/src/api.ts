@@ -22,6 +22,8 @@ import { fuelReport, reconcileInference } from './inference.js';
 import { servicesReport } from './services.js';
 import { createTelegramLink, removeTelegramLink } from './telegram.js';
 import { providerHold } from './provider-hold.js';
+import { checkModelCatalog, lastCatalogCheck } from './model-check.js';
+import { migrateModels } from './model-migration.js';
 import type { AgentState } from './runtime.js';
 
 export interface PanicRevokeResult {
@@ -93,7 +95,15 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   /** `providerHold`: the fleet-wide wait while the model provider is down (provider-hold.ts), null when thoughts are being bought. */
   app.get('/health', (c) => {
     const hold = providerHold(ctx.now());
-    return c.json({ ok: true, chainId: ctx.chain.chainId, now: new Date(ctx.now()).toISOString(), providerHold: hold ? { until: new Date(hold.until).toISOString(), error: hold.error } : null });
+    const catalog = lastCatalogCheck();
+    return c.json({
+      ok: true,
+      chainId: ctx.chain.chainId,
+      now: new Date(ctx.now()).toISOString(),
+      providerHold: hold ? { until: new Date(hold.until).toISOString(), error: hold.error } : null,
+      /** The last model-catalog check against BlockRun (model-check.ts): when, whether its list was read, the gaps, and agents on models it lacks. */
+      modelCatalog: catalog ? { at: catalog.at, read: catalog.read, gaps: catalog.gaps.length, agentsOnMissingModels: catalog.agentsOnMissingModels.length } : null,
+    });
   });
 
   app.use('/internal/*', hmacAuth(ctx.config.SUPERVISOR_SERVICE_KEY, nowSec));
@@ -114,6 +124,19 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
       })),
     });
   });
+
+  /**
+   * The one-shot move of every agent to the models BlockRun serves (model-migration.ts). Body `{dryRun?: boolean,
+   * agentIds?: string[]}`; `dryRun` defaults to true and prints the plan. Idempotent: a second real run changes nothing.
+   */
+  app.post('/internal/admin/model-migration', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { dryRun?: unknown; agentIds?: unknown };
+    const report = await migrateModels(ctx, { dryRun: body.dryRun !== false, ...(Array.isArray(body.agentIds) ? { agentIds: body.agentIds.map(String) } : {}) });
+    return c.json(report);
+  });
+
+  /** Runs the model-catalog check against BlockRun now (model-check.ts) and answers with it. */
+  app.post('/internal/admin/model-check', async (c) => c.json(await checkModelCatalog(ctx)));
 
   /** Key-leak runbook step 1 (see README "Runbook: session signer leak"). Body: `{uninstall?: boolean, agentIds?: string[]}`. */
   app.post('/internal/agents/panic-revoke', async (c) => {

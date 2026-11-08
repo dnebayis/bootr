@@ -12,7 +12,7 @@
  * the agent's own work (`fuelGate`), and there is a limit per hour and per day.
  */
 import { randomUUID } from 'node:crypto';
-import { buildChatPrompt, maxQuoteFor, PolicyError, toolEnabled, type AgentConfig, type ChatMessage, type ModelTool } from '@bootr/agent-core';
+import { BLOCKRUN_CALL_FEE_MICRO_USDC, BLOCKRUN_MIN_QUOTE_MICRO_USDC, buildChatPrompt, catalogModel, maxQuoteFor, PolicyError, toolEnabled, type AgentConfig, type ChatMessage, type ModelTool } from '@bootr/agent-core';
 import { averageThoughtCost, LOW_FUEL_THOUGHTS, thoughtsLeft } from '@bootr/shared/fuel';
 import { and, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import { erc20Abi, getAddress, isAddressEqual, type Address } from 'viem';
@@ -21,6 +21,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { approvals, chatMessages, inference, runtimes } from './db/schema.js';
 import { SLEEP_USDC } from './fuel.js';
 import { buildRequest, parseAssistant, reconcileRelay, recentThoughtCost, relayRequest, type RelayResult } from './inference.js';
+import { directEnabled } from './blockrun.js';
 import { agentConfigOf } from './onboarding.js';
 import { recentPosts } from './recent-posts.js';
 import { decideModelOf } from './routing.js';
@@ -189,7 +190,7 @@ async function buildChatRequest(ctx: SupervisorContext, agent: AgentRow, config:
   return buildRequest(config, messages, chatTools(config), CHAT_MAX_OUTPUT_TOKENS, chatModel(config));
 }
 
-type ModelPrice = { input: number; output: number; marginBps: number; marginFixed: number };
+type ModelPrice = { input: number; output: number; marginBps: number; marginFixed: number; minQuote?: number };
 let priceCache: { at: number; models: Map<string, ModelPrice> } | null = null;
 
 /** Clears the cached price list (tests). */
@@ -197,8 +198,16 @@ export function resetChatPrices(): void {
   priceCache = null;
 }
 
-/** The relay's own list price of a model; null when the relay cannot say. Cached, and never in the way of a message. */
-async function modelPrice(ctx: SupervisorContext, model: string): Promise<ModelPrice | null> {
+/**
+ * The list price of a model on the agent's route: BlockRun's, from the catalog, with its flat fee as the margin, in direct
+ * mode; else the relay's own list, null when the relay cannot say. The relay list is cached, and never in the way of a message.
+ */
+async function modelPrice(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, model: string): Promise<ModelPrice | null> {
+  if (directEnabled(ctx.config, agent.agentId)) {
+    const known = catalogModel(model);
+    if (!known || !('inputMicroUsdcPerKTokens' in known.price)) return null;
+    return { input: known.price.inputMicroUsdcPerKTokens, output: known.price.outputMicroUsdcPerKTokens, marginBps: 0, marginFixed: BLOCKRUN_CALL_FEE_MICRO_USDC, minQuote: BLOCKRUN_MIN_QUOTE_MICRO_USDC };
+  }
   if (!priceCache || ctx.now() - priceCache.at > PRICE_TTL_MS) {
     try {
       const res = await ctx.fetch(new URL('/v1/models', ctx.config.INFERENCE_PROVIDER_URL).toString(), { signal: AbortSignal.timeout(5_000) });
@@ -229,7 +238,7 @@ export function estimateQuote(request: { messages: readonly unknown[]; tools?: r
   const bytes = parts.reduce((n, p) => n + Buffer.byteLength(p, 'utf8'), 0);
   const inputTokens = Math.ceil(bytes / 2) + 4 * request.messages.length + 16;
   const cost = Math.ceil((inputTokens * price.input + request.max_tokens * price.output) / 1000);
-  return Math.max(1000, cost + Math.ceil((cost * price.marginBps) / 10_000) + price.marginFixed);
+  return Math.max(price.minQuote ?? 1000, cost + Math.ceil((cost * price.marginBps) / 10_000) + price.marginFixed);
 }
 
 async function recentChatCharges(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<number | null> {
@@ -360,7 +369,7 @@ async function quoteFor(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
   const measured = await recentChatCharges(ctx, agent.agentId);
   if (measured !== null) return { approx: measured, basis: 'recent_messages' };
   if (!config) return { approx: null, basis: null };
-  const price = await modelPrice(ctx, chatModel(config));
+  const price = await modelPrice(ctx, agent, chatModel(config));
   if (!price) return { approx: null, basis: null };
   try {
     const request = await buildChatRequest(ctx, agent, config, runtime, fuel, 'A question of about the usual length, something like what happened today and what you plan to do next.', history);

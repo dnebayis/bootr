@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
   if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return invalid('symbol', `symbol must be 2 to 10 letters or digits, got ${quoted(l.symbol)}.`);
   const identity = normalizeIdentity(l.identity);
   if (identity === null) return invalid('identity', `identity must be plain text of ${MIN_IDENTITY_CHARS} to ${MAX_IDENTITY_CHARS} characters.`);
-  // The same list as GET /api/models: the relay's, or the built-in one when the relay is down.
+  // The same list as GET /api/models: the model catalog under the admin allow-list.
   const allowed = filterAllowedModels((await relayModels()).models, platform?.allowedModels ?? []);
   const model = typeof l.model === 'string' && l.model ? l.model : RECOMMENDED_MODEL;
   if (!allowed.some((m) => m.id === model)) {

@@ -23,7 +23,8 @@ export const PROVIDER_HOLD_MS = 10 * 60_000;
 const OUTAGE = /\b(?:upstream_rejected|upstream_failed(?:_credited)?|upstream_unavailable|http_(?:401|403|408|429|5\d\d)|relay_unreachable|direct_unavailable|direct_failed_unpaid|facilitator_unavailable)\b|TimeoutError|ECONNREFUSED|ECONNRESET|fetch failed/i;
 
 export function isProviderOutage(error: string | null | undefined): boolean {
-  return !!error && OUTAGE.test(error);
+  // A model BlockRun does not know (`direct_unavailable: model_missing: ...`) is that agent's configuration, not an outage.
+  return !!error && !/\bmodel_missing\b/.test(error) && OUTAGE.test(error);
 }
 
 export interface ProviderHold {

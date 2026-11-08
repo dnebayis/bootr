@@ -172,14 +172,15 @@ describe('PUT /internal/agents/:id/config', () => {
       const res = await put(path, { by: CREATOR, imageModel: 'openai/gpt-5.4-image-2', imageStyle: { notes: '  flat\tcolours,\n no  text  ' } });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { imageModel: string; imageStyle: { reference: string | null; notes: string }; revision: number };
-      expect(body.imageModel).toBe('openai/gpt-5.4-image-2');
+      // stored under its catalog id whatever name the relay lists it by
+      expect(body.imageModel).toBe('openai/gpt-image-2');
       // a partial style keeps the reference and normalises the notes to one line
       expect(body.imageStyle).toEqual({ reference: 'https://cdn.bootr.fun/coins/test.png', notes: 'flat colours, no text' });
       expect(body.revision).toBe(2);
-      expect(await (await get(path)).json()).toMatchObject({ imageModel: 'openai/gpt-5.4-image-2', imageStyle: body.imageStyle });
+      expect(await (await get(path)).json()).toMatchObject({ imageModel: 'openai/gpt-image-2', imageStyle: body.imageStyle });
       // the parsed config the tick runs with carries both
       const parsed = agentConfigOf((await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!)!;
-      expect(parsed.imageModel).toBe('openai/gpt-5.4-image-2');
+      expect(parsed.imageModel).toBe('openai/gpt-image-2');
       expect(parsed.imageStyle).toEqual(body.imageStyle);
 
       // reference off, then another picture

@@ -3,6 +3,7 @@ import { createApp } from './api.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
 import { logger } from './log.js';
+import { startCatalogChecks } from './model-check.js';
 import { notifierPass } from './notify-health.js';
 import { createContext } from './service.js';
 import { runTelegramLoop } from './telegram.js';
@@ -55,6 +56,8 @@ async function main(): Promise<void> {
   }, config.SUPERVISOR_TICK_MS);
   const telegramStop = new AbortController();
   if (ctx.telegram) void runTelegramLoop(ctx, telegramStop.signal);
+  // Direct mode: the model catalog is held against BlockRun's live list at start and every few hours (model-check.ts).
+  const stopCatalogChecks = config.BLOCKRUN_DIRECT_MODE === 'off' ? () => undefined : startCatalogChecks(ctx);
 
   const shutdown = async (signal: string) => {
     if (stopped) return;
@@ -63,6 +66,7 @@ async function main(): Promise<void> {
     clearInterval(timer);
     clearInterval(notifyTimer);
     clearInterval(rpcTimer);
+    stopCatalogChecks();
     telegramStop.abort();
     server.close();
     const deadline = Date.now() + 30_000;

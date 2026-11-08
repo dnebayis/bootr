@@ -83,7 +83,7 @@ const NAMES: [string, string][] = [
   ['Calm Before', 'CALM'], ['Second Brain', 'BRAIN'], ['Reply Guy', 'REPLY'], ['Tape Reader', 'READ'],
 ];
 
-const MODELS = ['claude-haiku-4-5', 'claude-sonnet-4-5', 'gpt-4.1-mini', 'llama-3.3-70b'];
+const MODELS = ['anthropic/claude-haiku-4.5', 'anthropic/claude-sonnet-4.6', 'openai/gpt-4.1-mini', 'deepseek/deepseek-chat'];
 
 function hex(rand: () => number, bytes: number): Hex {
   let s = '0x';
@@ -907,11 +907,11 @@ export const mock = {
     const turns = 6 * days;
     const byModel = decide
       ? [
-          { model: decide, thoughts: turns * 4, chargedMicroUsdc: String(turns * 4 * 1_100) },
-          { model: cfg.model, thoughts: turns, chargedMicroUsdc: String(turns * 9_400) },
+          { model: decide, thoughts: turns * 4, chargedMicroUsdc: String(turns * 4 * 1_100), directThoughts: turns * 4 },
+          { model: cfg.model, thoughts: turns, chargedMicroUsdc: String(turns * 9_400), directThoughts: turns },
         ]
-      : [{ model: cfg.model, thoughts: turns * 5, chargedMicroUsdc: String(turns * 5 * 9_400) }];
-    return { days, since, firstAt: since, byModel };
+      : [{ model: cfg.model, thoughts: turns * 5, chargedMicroUsdc: String(turns * 5 * 9_400), directThoughts: turns * 5 }];
+    return { days, since, firstAt: since, byModel, paidTo: 'blockrun' };
   },
   /** Activity tape, newest first; `before` (ISO) pages past the last item shown. */
   agentActivity(kernel: string, opts: { limit: number; before?: string | null }): { items: AgentActivityItem[] } {
@@ -1075,6 +1075,8 @@ const MOCK_EVENTS: readonly { key: string; label: string }[] = [
   { key: 'agent_stopped', label: 'Agent stopped' },
   { key: 'x_revoked', label: 'X connection lost' },
   { key: 'key_rotation', label: 'Treasury permission renewal' },
+  { key: 'model_changed', label: 'Model changed by the platform' },
+  { key: 'model_unavailable', label: 'Model not available' },
 ];
 
 type MockInbox = { items: AgentNotification[]; optOut: string[]; telegram: AgentNotifications['telegram']; available: boolean };
