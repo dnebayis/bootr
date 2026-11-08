@@ -317,6 +317,8 @@ export interface MockSender {
   publishError: string | null;
   /** When set, `readMentions` throws this. */
   readMentionsError: Error | null;
+  /** When set, `readMentions` answers throttled with this `nextReadAt` (the sender's mention-read interval), items from `items`. */
+  nextReadAt: string | null;
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
   optedOutHandles: Set<string>;
   receipts: Record<string, { status: string; providerPostId?: string | null; error?: string | null }>;
@@ -337,7 +339,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], quotaWrites: [], quotaError: null, client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, nextReadAt: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], quotaWrites: [], quotaError: null, client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -361,7 +363,7 @@ export function mockSender(): MockSender {
     },
     async readMentions() {
       if (m.readMentionsError) throw m.readMentionsError;
-      return { throttled: false, items: m.items };
+      return { throttled: !!m.nextReadAt, ...(m.nextReadAt ? { nextReadAt: m.nextReadAt } : {}), items: m.items };
     },
     async readThread() {
       return { posts: [], truncated: false };

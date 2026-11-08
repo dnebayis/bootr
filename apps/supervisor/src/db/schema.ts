@@ -317,7 +317,7 @@ export const cursors = pgTable('sv_cursors', {
   updatedAt: ts('updated_at').notNull().defaultNow(),
 });
 
-export const notificationEvents = ['review_waiting', 'review_expiring', 'fuel_low', 'gas_out', 'agent_asleep', 'agent_stopped', 'x_revoked', 'key_rotation', 'model_changed', 'model_unavailable'] as const;
+export const notificationEvents = ['review_waiting', 'review_expiring', 'fuel_low', 'gas_out', 'agent_asleep', 'agent_stopped', 'x_revoked', 'x_forbidden', 'key_rotation', 'model_changed', 'model_unavailable'] as const;
 export type NotificationEvent = (typeof notificationEvents)[number];
 
 /**

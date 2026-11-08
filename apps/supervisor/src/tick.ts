@@ -18,7 +18,7 @@ import { rpcErrorText } from './log.js';
 import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
-import { applyQuotaHold, applyRhythm, creditsHold, isXCreditsError, quotaHold } from './rhythm.js';
+import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
 import { acquireLease, continueTurn, releaseLease, saveRuntime, scheduleFor, startTurn, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
@@ -255,7 +255,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
-    const quota = quotaHold(state.postQuotaUntil, now) ?? creditsHold(readOutOfCredits ? now + ctx.config.SUPERVISOR_TICK_MS : state.postCreditsUntil, now);
+    // X forbids the account (403 on a publish): the same hold for hours, reason `x_forbidden` (rhythm.ts `forbiddenHold`).
+    const quota = quotaHold(state.postQuotaUntil, now) ?? creditsHold(readOutOfCredits ? now + ctx.config.SUPERVISOR_TICK_MS : state.postCreditsUntil, now) ?? forbiddenHold(state.postForbiddenUntil, now);
     const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
     // A turn the runtime just ended: only something it has not seen may wake the agent before its `nextAt`.
     const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;

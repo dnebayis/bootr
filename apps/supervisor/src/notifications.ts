@@ -47,6 +47,8 @@ export const EVENT_RULES: Readonly<Record<NotificationEvent, EventRule>> = {
   agent_asleep: { label: 'Agent asleep', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
   agent_stopped: { label: 'Agent stopped', repeatMs: 24 * HOUR, sendAfterMs: HOUR / 4, tone: 'danger' },
   x_revoked: { label: 'X connection lost', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
+  /** X answered 403 "not permitted" to a publish (runtime.ts, rhythm.ts `forbiddenHold`): the account needs its owner's eyes. */
+  x_forbidden: { label: 'X refused posting', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
   key_rotation: { label: 'Treasury permission renewal', repeatMs: 72 * HOUR, sendAfterMs: HOUR, tone: 'warning' },
   /** Raised once by the model migration (model-migration.ts); said once, closed by the notifier after a week. */
   model_changed: { label: 'Model changed by the platform', repeatMs: 365 * 24 * HOUR, sendAfterMs: 0, tone: 'info' },
@@ -95,6 +97,15 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
     }
     case 'x_revoked':
       return { title: 'X connection lost', body: 'X no longer accepts this agent’s connection, so it cannot read or post. Connect the same X account again from the inbox in the creator console.' };
+    case 'x_forbidden': {
+      const hours = num(data.hours);
+      const strikes = num(data.strikes);
+      const again = hours !== null && hours >= 1 ? `It tries again in about ${plural(Math.round(hours), 'hour')}` : 'It tries again later';
+      return {
+        title: 'X refused posting for this account',
+        body: `X answered “not permitted” when the agent tried to post${strikes !== null && strikes > 1 ? `, ${plural(strikes, 'time')} in a row` : ''}, so posts and replies are paused. Log in to the X account and check for a lock, a restriction or a notice from X; if the connection was changed, connect it again from the creator console. ${again}; while X keeps refusing, each pause is longer and no fuel is spent on posting.`,
+      };
+    }
     case 'key_rotation': {
       const days = num(data.days);
       const when = data.reason === 'expiring' ? (days !== null && days >= 1 ? `It runs out in about ${plural(days, 'day')}.` : 'It runs out very soon.') : 'It was set up under older limits.';

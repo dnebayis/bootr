@@ -5,6 +5,7 @@ import { actions, runtimes, treasuryOps, inference as inferenceTable } from '../
 import { verifyRequest } from '../src/hmac.js';
 import { IndexerClient } from '../src/indexer-client.js';
 import { acquireLease, releaseLease } from '../src/runtime.js';
+import { jitterMs } from '../src/rhythm.js';
 import { REVOKE_CHECK_GRACE_MS, processAgent, reconcilePending, tick } from '../src/tick.js';
 import { AGENT_ID, finishResponse, INDEXER_KEY, KERNEL, makeWorld, seedAgent, SPENDER, toolCallResponse } from './helpers.js';
 
@@ -58,7 +59,8 @@ describe('wake -> inference -> action -> finish', () => {
       expect(runtime.pending).toBeNull();
       expect(runtime.leaseToken).toBeNull();
       expect(runtime.cycle).toBe(3); // three inferences, three cycles
-      expect(runtime.nextAt.getTime()).toBe(start + 3_600_000);
+      // a coin agent's own wake is never before its next original-post slot (runtime.ts coinWakeFloor): the slot it asked for, plus its jitter
+      expect(runtime.nextAt.getTime()).toBe(start + 3_600_000 + jitterMs(KERNEL, 2 * 3_600_000));
       expect(runtime.state).toMatchObject({ phase: 'social', memory: 'm', agenda: 'a', summary: 's' });
 
       const acts = await w.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));

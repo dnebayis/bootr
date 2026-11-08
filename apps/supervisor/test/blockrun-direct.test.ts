@@ -690,7 +690,9 @@ describe('an outage through the runtime', () => {
   it('holds the thought until the chain clears it, then the relay carries the agent; two hours cost one signature per hold and no money', async () => {
     const { w, sim, relayPayments, relay } = await direct({ BLOCKRUN_HOLD_MS: String(30 * MINUTE) });
     try {
-      await seedAgent(w, { config: { model: MODEL } });
+      // The shortest cadence: a coin agent's own wake is never before its next slot (runtime.ts coinWakeFloor), and this
+      // test counts attempts across two hours of wakes.
+      await seedAgent(w, { config: { model: MODEL, postIntervalMs: 30 * MINUTE } });
       sim.paid = () => jsonResponse({ code: 'MODEL_UNAVAILABLE' }, 503);
       relay.upstreamFetch.mockImplementation(async () => jsonResponse(finishThought(w.ctx.now() + 5 * MINUTE)));
 
