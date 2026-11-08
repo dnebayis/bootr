@@ -61,10 +61,12 @@ describe('PUT /api/agent/[kernel]/links (mock mode)', () => {
     const res = await put(coin.kernel, { links: { website: 'https://quiet.engine', telegram: 'https://telegram.org/x' } });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_request', message: 'Telegram must be an https://t.me/ link.', field: 'telegram' });
-    const own = await put(coin.kernel, { links: { x: `@${coin.xHandle}` } });
-    expect(own.status).toBe(400);
-    expect(((await own.json()) as { field: string }).field).toBe('x');
     expect(mock.coinLinks(coin.metadata)).toEqual({ website: null, x: null, telegram: null, discord: null });
+    // The agent's own account is accepted as the coin's X: whatever the creator enters is shown.
+    const own = await put(coin.kernel, { links: { x: `@${coin.xHandle}` } });
+    expect(own.status).toBe(200);
+    expect(await own.json()).toEqual({ website: null, x: `https://x.com/${coin.xHandle}`, telegram: null, discord: null });
+    expect(mock.coinLinks(coin.metadata).x).toBe(`https://x.com/${coin.xHandle}`);
   });
 
   it('answers 404 for a treasury no coin has', async () => {

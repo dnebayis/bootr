@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { AGENT_OWN_X_ERROR, isAgentsOwnX, LINK_ERRORS, LINK_KINDS, normalizeLink, sameLinks, type CoinLinks, type LinkKind } from '@/lib/coin-link-rules';
+import { LINK_ERRORS, LINK_KINDS, normalizeLink, sameLinks, type CoinLinks, type LinkKind } from '@/lib/coin-link-rules';
 import { coinLinksKey, NO_COIN_LINKS, ownContractUri, useCoinLinks } from '@/lib/coin-links';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
@@ -29,8 +29,8 @@ export function draftOfLinks(links: CoinLinks): Draft {
   return { website: links.website ?? '', x: handle ? `@${handle}` : (links.x ?? ''), telegram: links.telegram ?? '', discord: links.discord ?? '' };
 }
 
-/** Per-field errors and the normalised links (null while any field is off), the launch form's rules plus the agent's own account. */
-export function checkDraft(draft: Draft, agentXHandle: string | null | undefined): { errors: Partial<Record<LinkKind, string>>; links: CoinLinks | null } {
+/** Per-field errors and the normalised links (null while any field is off), by the launch form's rules; any X profile passes, the agent's own too. */
+export function checkDraft(draft: Draft): { errors: Partial<Record<LinkKind, string>>; links: CoinLinks | null } {
   const errors: Partial<Record<LinkKind, string>> = {};
   const links: CoinLinks = { ...NO_COIN_LINKS };
   for (const kind of LINK_KINDS) {
@@ -38,7 +38,6 @@ export function checkDraft(draft: Draft, agentXHandle: string | null | undefined
     if (v === undefined) errors[kind] = LINK_ERRORS[kind];
     else links[kind] = v;
   }
-  if (!errors.x && isAgentsOwnX(links.x, agentXHandle)) errors.x = AGENT_OWN_X_ERROR;
   return { errors, links: Object.keys(errors).length ? null : links };
 }
 
@@ -57,7 +56,7 @@ export function CoinLinksForm({ token }: { token: Token }) {
   const stored = links.data ?? NO_COIN_LINKS;
   const editable = env.useMock || !!ownContractUri(token.metadata);
   const draft = edits ?? draftOfLinks(stored);
-  const { errors, links: next } = checkDraft(draft, token.xHandle);
+  const { errors, links: next } = checkDraft(draft);
   const changed = !!next && !sameLinks(next, stored);
   const update = (kind: LinkKind, value: string) => setEdits({ ...draft, [kind]: value });
 
@@ -129,7 +128,7 @@ export function CoinLinksForm({ token }: { token: Token }) {
                 {errors[kind]}
               </p>
             ) : kind === 'x' ? (
-              <p className="mt-1 text-micro text-mute">The project’s account; the agent’s own is shown on its line.</p>
+              <p className="mt-1 text-micro text-mute">The X account shown on the coin page: the project’s, or the agent’s own.</p>
             ) : null}
           </div>
         ))}

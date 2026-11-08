@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { isAddress } from 'viem';
 import { isLaunchId } from '@/lib/agent-card';
-import { AGENT_OWN_X_ERROR, checkLinks, isAgentsOwnX, type CoinLinks } from '@/lib/coin-link-rules';
+import { checkLinks, type CoinLinks } from '@/lib/coin-link-rules';
 import { ownContractUri } from '@/lib/coin-links';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
@@ -48,8 +48,8 @@ export function launchIdOfContractUri(metadata: string | null | undefined): stri
  * the indexer confirms the signer created the coin, and the links replace the ones in the coin's launch draft, the
  * file behind its hosted contract URI (`GET /tokens/<launchId>.json`, read fresh on every request), so the
  * document and the coin page change at once. Each link is null (absent, cleared) or a string checked with the
- * launch form's rules (lib/coin-link-rules.ts); `x` may be `@handle` and is stored as `https://x.com/<handle>`;
- * the agent's own account is refused as the project's X link (the page shows it on its own line). The answer
+ * launch form's rules (lib/coin-link-rules.ts); `x` may be `@handle` and is stored as `https://x.com/<handle>`,
+ * any X profile the creator names, the agent's own account included (whatever the creator enters is shown). The answer
  * is the normalised links. 409 when the coin's contract URI is not hosted here or no draft backs it: such links
  * cannot be edited. The signature and the creator check are what authorize this; `Origin` only keeps other sites' pages
  * out: a browser always sends it on a PUT, so one that is present must be this site, and none means a program (a script,
@@ -74,7 +74,6 @@ export async function PUT(req: NextRequest, ctx: RouteContext<'/api/agent/[kerne
   if (env.useMock) {
     const coin = mock.coinOfKernel(kernel);
     if (!coin) return fail(404, 'unknown_coin', unknownCoinMessage(kernel));
-    if (isAgentsOwnX(links.x, coin.xHandle)) return fail(400, 'invalid_request', AGENT_OWN_X_ERROR, { field: 'x' });
     const r = mock.updateCoinLinks(kernel, links);
     if (!r.ok) return fail(r.status, r.error, r.message);
     return NextResponse.json(r.links, { headers: NO_STORE });
@@ -95,7 +94,6 @@ export async function PUT(req: NextRequest, ctx: RouteContext<'/api/agent/[kerne
   if (token.agentId !== agentId || token.creator.toLowerCase() !== v.address.toLowerCase()) {
     return fail(403, 'not_creator', creatorRefusal('change its links', v.address, token, agentId!));
   }
-  if (isAgentsOwnX(links.x, token.xHandle)) return fail(400, 'invalid_request', `${AGENT_OWN_X_ERROR} ${NEW_NONCE}`, { field: 'x' });
   const launchId = launchIdOfContractUri(token.metadata);
   if (!launchId) return fail(409, 'links_not_editable', NOT_HOSTED);
   const r = await updateLaunchDraftLinks(launchId, links);
