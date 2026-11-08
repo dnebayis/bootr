@@ -105,9 +105,18 @@ describe('a refused signature', () => {
     expect(raw).not.toContain(auth.signature);
   });
 
-  it('says the check could not run when the chain is down, without its error', async () => {
+  it('accepts an ordinary wallet without the chain: its signature recovers to the address', async () => {
     h.chainDown = true;
-    const { status, raw, body } = await read(await launch(request('/api/agent/launch', await signed(LAUNCH))));
+    const { status, body } = await read(await launch(request('/api/agent/launch', await signed(LAUNCH))));
+    expect(status).not.toBe(401);
+    expect(body.error).not.toBe('siwe_rejected');
+  });
+
+  it('says the check could not run when the chain is down and the signature is not a wallet’s (a smart account), without its error', async () => {
+    h.chainDown = true;
+    // An ERC-1271 / ERC-6492 signature is not 65 bytes of ECDSA: only the chain can check it.
+    const { message } = await signed(LAUNCH);
+    const { status, raw, body } = await read(await launch(request('/api/agent/launch', { message, signature: `0x${'ab'.repeat(96)}` })));
     expect(status).toBe(401);
     expect(body.reason).toBe('signature_unverifiable');
     expect(raw).not.toContain('do-not-repeat');

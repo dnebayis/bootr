@@ -215,11 +215,15 @@ export async function POST(req: NextRequest) {
   let predictedKernel: Address | null = null;
   if (!env.useMock) {
     try {
-      const [fee, tuple, kernel] = await Promise.all([
-        client.readContract({ address: launcher, abi: launcherAbi, functionName: 'launchFeeWei' }),
-        client.readContract({ address: launcher, abi: launcherAbi, functionName: buyback ? 'buybackDefaults' : 'standardDefaults' }),
-        client.readContract({ address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] }),
-      ]);
+      // One multicall, not three requests: the RPC key is shared with the indexer's block tail.
+      const [fee, tuple, kernel] = await client.multicall({
+        allowFailure: false,
+        contracts: [
+          { address: launcher, abi: launcherAbi, functionName: 'launchFeeWei' },
+          { address: launcher, abi: launcherAbi, functionName: buyback ? 'buybackDefaults' : 'standardDefaults' },
+          { address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] },
+        ],
+      });
       feeWei = fee as bigint;
       defaults = defaultsFromTuple(tuple as LaunchDefaultsTuple);
       predictedKernel = kernel as Address;
