@@ -14,7 +14,7 @@
  * leave the agent its thoughts, fuel.ts). Every failure is logged with its reason, without the picture bytes, so an
  * operator sees in the log why a picture did not happen; the model gets the same reason and what to do instead.
  */
-import { imageStyleSchema, maxQuoteFor, type AgentConfig, type ImageStyle, type PendingAction, type ToolInput } from '@bootr/agent-core';
+import { DEFAULT_COIN_IMAGE_MODEL as CATALOG_COIN_IMAGE_MODEL, DEFAULT_PLATFORM_IMAGE_MODEL, imageStyleSchema, maxQuoteFor, relayModelId, type AgentConfig, type ImageStyle, type PendingAction, type ToolInput } from '@bootr/agent-core';
 import { and, count, desc, eq, gte, like, ne, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { images, inference } from './db/schema.js';
@@ -23,10 +23,10 @@ import { imageTokensPerImage, picturePriceFor, relayImageCatalog } from './image
 import { imagePromptRisk, pictureRequested, REQUESTED_MESSAGE } from './image-rules.js';
 import { relayRequest } from './inference.js';
 
-/** Relay id of the platform agent's image model when its config names none (`config.imageModel`): Nano Banana Pro. */
-export const DEFAULT_IMAGE_MODEL = 'google/gemini-3-pro-image';
-/** Relay id of a coin agent's image model when its config names none: Nano Banana 2, about half the price of Pro. */
-export const DEFAULT_COIN_IMAGE_MODEL = 'google/gemini-3.1-flash-image';
+/** The platform agent's image model when its config names none (`config.imageModel`): Nano Banana Pro, by its catalog id. */
+export const DEFAULT_IMAGE_MODEL = DEFAULT_PLATFORM_IMAGE_MODEL;
+/** A coin agent's image model when its config names none: Nano Banana 2 (the relay knows it as `google/gemini-3.1-flash-image`). */
+export const DEFAULT_COIN_IMAGE_MODEL = CATALOG_COIN_IMAGE_MODEL;
 export const NO_IMAGE_STYLE: ImageStyle = { reference: null, notes: '' };
 /** Pictures one agent may make per rolling day, so a runaway agent cannot drain its fuel on images. */
 export const MAX_IMAGES_PER_DAY = 6;
@@ -81,7 +81,7 @@ export function imageStyleOf(config: { imageStyle?: unknown }): ImageStyle {
 
 /** `max_tokens` for one picture on `model`: its tokens per image (the relay's figure when given) plus the text headroom. */
 export function imageMaxTokens(model: string, tokensPerImage: number | null = null): number {
-  const perImage = tokensPerImage ?? IMAGE_TOKENS_PER_IMAGE[model] ?? MAX_KNOWN_IMAGE_TOKENS;
+  const perImage = tokensPerImage ?? IMAGE_TOKENS_PER_IMAGE[model] ?? IMAGE_TOKENS_PER_IMAGE[relayModelId(model)] ?? MAX_KNOWN_IMAGE_TOKENS;
   return perImage + IMAGE_TEXT_TOKENS;
 }
 
@@ -206,7 +206,7 @@ export async function generateImage(ctx: SupervisorContext, agent: AgentRow, con
   if (made >= MAX_IMAGES_PER_DAY) return refuse(`image_daily_cap: at most ${MAX_IMAGES_PER_DAY} images per 24 hours`);
 
   const model = imageModelOf(config);
-  const catalog = await relayImageCatalog(ctx);
+  const catalog = await relayImageCatalog(ctx, agent);
   const price = picturePriceFor(catalog, model);
   if (price) {
     const fuel = await pictureFuelCheck(ctx, agent, price.microUsdc);

@@ -81,7 +81,7 @@ export async function pictureSection(ctx: SupervisorContext, agent: AgentRow, co
   try {
     const now = ctx.now();
     const model = imageModelOf(config);
-    const catalog = await relayImageCatalog(ctx);
+    const catalog = await relayImageCatalog(ctx, agent);
     const price = picturePriceFor(catalog, model);
     const [leftToday, lastAt] = await Promise.all([imagesLeftToday(ctx, agent.agentId), lastImageAt(ctx, agent.agentId)]);
     let affordable: boolean | null = null;

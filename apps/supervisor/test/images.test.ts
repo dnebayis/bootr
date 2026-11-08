@@ -5,7 +5,7 @@ import { agentActivity } from '../src/activity.js';
 import { availableTools, executeAction, type BrokerEnv } from '../src/broker/index.js';
 import { actions, images as imagesTable, inference as inferenceTable, runtimes } from '../src/db/schema.js';
 import { computeQuote, DEFAULT_PRICE_TABLE } from '@bootr/inference';
-import { maxQuoteFor } from '@bootr/agent-core';
+import { maxQuoteFor, relayModelId } from '@bootr/agent-core';
 import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, IMAGE_TEXT_TOKENS, IMAGE_TOKENS_PER_IMAGE, MAX_IMAGES_PER_DAY, MAX_KNOWN_IMAGE_TOKENS, imageMaxTokens, imageModelOf, imageRequest, imageStyleOf, parseImageResponse, WITHOUT_PICTURE } from '../src/images.js';
 import { tick } from '../src/tick.js';
 import { agentConfig, AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse } from './helpers.js';
@@ -77,7 +77,7 @@ describe('generate_image', () => {
 
   it('builds a one-image relay request and reads the base64 picture back', () => {
     const req = imageRequest(DEFAULT_IMAGE_MODEL, { prompt: 'a fox on a hill', altText: 'A fox sitting on a green hill at dusk' });
-    expect(req).toMatchObject({ model: 'google/gemini-3-pro-image', modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS, stream: false });
+    expect(req).toMatchObject({ model: DEFAULT_IMAGE_MODEL, modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS, stream: false });
     expect(JSON.stringify(req.messages)).toContain('a fox on a hill');
     expect(JSON.stringify(req.messages)).toContain('A fox sitting on a green hill at dusk');
     // without a style: plain text, no picture attached, no reference talk
@@ -128,7 +128,9 @@ describe('generate_image', () => {
       expect(posts[0]!.headers.get('idempotency-key')).toBe('image:act_img1');
       // a coin agent: the cheaper default model and its quote cap; max_tokens holds the picture (1120) and the words
       expect(posts[0]!.headers.get('x-max-quote-micro-usdc')).toBe(String(maxQuoteFor(DEFAULT_COIN_IMAGE_MODEL)));
-      expect(posts[0]!.body).toMatchObject({ model: DEFAULT_COIN_IMAGE_MODEL, modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS });
+      // the relay is asked under the name its price table knows; the stored row keeps the catalog id
+      expect(posts[0]!.body).toMatchObject({ model: relayModelId(DEFAULT_COIN_IMAGE_MODEL), modalities: ['image', 'text'], max_tokens: 1120 + IMAGE_TEXT_TOKENS });
+      expect(relayModelId(DEFAULT_COIN_IMAGE_MODEL)).toBe('google/gemini-3.1-flash-image');
       // the coin picture rides along as the style reference
       expect((posts[0]!.body as { messages: { content: unknown }[] }).messages[1]!.content).toEqual([{ type: 'text', text: expect.stringContaining('a fox on a hill') }, { type: 'image_url', image_url: { url: 'https://cdn.bootr.fun/coins/test.png' } }]);
 

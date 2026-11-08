@@ -12,7 +12,8 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { agents, approvals, notificationSettings, runtimes } from './db/schema.js';
 import { agentHasGasRule, gasReading, gasSelfFunded, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasStatus } from './gas.js';
 import { fuelReport, recentThoughtCost } from './inference.js';
-import { applyOutcomes, flushNotifications, pruneNotifications, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
+import { applyOutcomes, flushNotifications, MODEL_CHANGED_VISIBLE_MS, pruneNotifications, resolveNotification, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
+import { notifications } from './db/schema.js';
 import type { SenderAccount } from './sender-client.js';
 
 /** Under this many days of runway at the recent rate fuel counts as low, whatever is left in thoughts. */
@@ -174,9 +175,20 @@ async function readFuelFacts(ctx: SupervisorContext, agent: AgentRow, balances: 
   }
 }
 
+/** A `model_changed` notice is said once and closes by itself after a week (the agent has long been running on the new model). */
+export async function expireModelChanged(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<void> {
+  const open = await ctx.db
+    .select({ firstAt: notifications.firstAt })
+    .from(notifications)
+    .where(and(eq(notifications.agentId, agentId), eq(notifications.event, 'model_changed'), isNull(notifications.resolvedAt)))
+    .limit(1);
+  if (open[0] && ctx.now() - open[0].firstAt.getTime() >= MODEL_CHANGED_VISIBLE_MS) await resolveNotification(ctx, agentId, 'model_changed');
+}
+
 /** Reads everything for one agent and updates its events. */
 export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow | null): Promise<void> {
   await expireApprovals(ctx, agent.agentId);
+  await expireModelChanged(ctx, agent.agentId);
   const active = agent.status === 'active';
   // One multicall for the four balances (it was four requests): the RPC key is shared with the indexer's block tail.
   const balances = await readHealthBalances(ctx, agent).catch((err) => {

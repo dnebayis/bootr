@@ -7,7 +7,7 @@
  *      through ENABLE_MODE_BUNDLER_URL / BUNDLER_URL, or self-bundled by the admin signer via
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
-import { composeIdentityText, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { composeIdentityText, DEFAULT_MIND_MODEL, directModelId, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, POSTS_PER_DAY, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
@@ -101,7 +101,8 @@ export function decodeClankerLaunch(logs: Log[], launcher: Address, token: Addre
   return null;
 }
 
-export const DEFAULT_MODEL = 'openai/gpt-4.1-mini';
+/** The model a launch that names none runs on (the launch form always names one). */
+export const DEFAULT_MODEL = DEFAULT_MIND_MODEL;
 
 /**
  * Original-post spacing for the platform's own agent (@AgentBootr): one slot every six hours, three times
@@ -248,7 +249,8 @@ export function buildLaunchConfig(
     ...(launch.source === 'clanker' && clanker ? { clanker } : {}),
     xHandle: null,
     xUserId: null,
-    model: launch.model || DEFAULT_MODEL,
+    // The launch event carries the id the form offered at the time; a retired one starts on the catalog model that stands in for it.
+    model: directModelId(launch.model || DEFAULT_MODEL) ?? (launch.model || DEFAULT_MODEL),
     identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform, platform && worker.id !== CUSTOM_WORKER_ID ? [] : preset.identity)),
     creatorIdentity,
     platform,

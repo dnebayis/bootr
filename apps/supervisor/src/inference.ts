@@ -12,6 +12,7 @@ import {
   inferenceIdempotencyKey,
   maxQuoteFor,
   PolicyError,
+  relayModelId,
   type AgentConfig,
   type ChatMessage,
   type InferenceRequest,
@@ -184,6 +185,16 @@ export async function recentThoughtCost(ctx: Pick<SupervisorContext, 'db'>, agen
 }
 
 /**
+ * The body the relay (OpenRouter behind it) gets: the stored request with the model under the name the relay's price
+ * table knows (a catalog model that is the same model under another relay name; see `relayModelId`). The stored row
+ * keeps the catalog id, so the creator's metering groups by the name the agent chose; both send points (here and the
+ * reconcile replay) translate the same way, so the relay sees one body per key.
+ */
+export function relayBody(request: Record<string, unknown>): string {
+  return JSON.stringify(typeof request.model === 'string' ? { ...request, model: relayModelId(request.model) } : request);
+}
+
+/**
  * Pays the relay for one request from the agent's spender, idempotently per `call.key`: a key already paid for
  * is replayed from `sv_inference` (or reconciled at the relay when its outcome is unknown) and never paid again.
  * Thoughts (`runInference`), chat (`chat.ts`) and images (`images.ts`) share this path; direct mode only ever takes
@@ -243,7 +254,7 @@ export async function relayRequest(ctx: SupervisorContext, agent: AgentRow, call
     res = await payer.fetch(new URL('/v1/chat/completions', ctx.config.INFERENCE_PROVIDER_URL).toString(), {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': maxQuote.toString() },
-      body: JSON.stringify(request),
+      body: relayBody(request),
       signal: AbortSignal.timeout(ctx.config.INFERENCE_TIMEOUT_MS),
     });
   } catch (err) {
@@ -353,7 +364,7 @@ export async function reconcileRelay(ctx: SupervisorContext, key: string): Promi
       const res = await ctx.fetch(new URL('/v1/chat/completions', ctx.config.INFERENCE_PROVIDER_URL).toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'Idempotency-Key': key, 'X-Max-Quote-Micro-USDC': '0', ...proof },
-        body: JSON.stringify(row.request),
+        body: relayBody(row.request),
         signal: AbortSignal.timeout(ctx.config.INFERENCE_TIMEOUT_MS),
       });
       return recordResponse(ctx, key, res);

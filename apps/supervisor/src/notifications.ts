@@ -48,7 +48,14 @@ export const EVENT_RULES: Readonly<Record<NotificationEvent, EventRule>> = {
   agent_stopped: { label: 'Agent stopped', repeatMs: 24 * HOUR, sendAfterMs: HOUR / 4, tone: 'danger' },
   x_revoked: { label: 'X connection lost', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
   key_rotation: { label: 'Treasury permission renewal', repeatMs: 72 * HOUR, sendAfterMs: HOUR, tone: 'warning' },
+  /** Raised once by the model migration (model-migration.ts); said once, closed by the notifier after a week. */
+  model_changed: { label: 'Model changed by the platform', repeatMs: 365 * 24 * HOUR, sendAfterMs: 0, tone: 'info' },
+  /** The stored model is not served by BlockRun (model-check.ts, runtime.ts): the agent cannot think until it changes. */
+  model_unavailable: { label: 'Model not available', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
 };
+
+/** How long a `model_changed` notice stays open before the notifier closes it. */
+export const MODEL_CHANGED_VISIBLE_MS = 7 * 24 * HOUR;
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -92,6 +99,20 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
       const days = num(data.days);
       const when = data.reason === 'expiring' ? (days !== null && days >= 1 ? `It runs out in about ${plural(days, 'day')}.` : 'It runs out very soon.') : 'It was set up under older limits.';
       return { title: 'Treasury permission renewal', body: `The agent’s permission to use its treasury needs renewing. ${when} Bootr renews it for you; get in touch if this stays.` };
+    }
+    case 'model_changed': {
+      // `summary` is our own sentence (model-migration.ts `changeSummary`), built from catalog names, never from a third party's text.
+      const summary = typeof data.summary === 'string' && /^[\w .,;:()'’-]{1,400}$/.test(data.summary) ? data.summary : 'Model changed by the platform; everything else unchanged.';
+      return { title: 'Model changed by the platform', body: `${summary} The agent keeps its memory, posting rhythm, powers and X account, and goes on from where it was. You can pick another model in the creator console.` };
+    }
+    case 'model_unavailable': {
+      const picture = data.picture === 1;
+      return {
+        title: picture ? 'Image model not available' : 'Model not available',
+        body: picture
+          ? 'The image model this agent draws with is no longer offered, so it posts without pictures until you pick another image model in the creator console.'
+          : 'The model this agent thinks with is no longer offered, so it cannot think and nothing is charged. Pick another model in the creator console and it goes on from where it was.',
+      };
     }
   }
 }
