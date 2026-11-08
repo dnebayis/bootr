@@ -159,9 +159,10 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
         {kernelGas ? (
           // Where the gas sits, read live from the chain: most of it is prepaid with the network, which the
           // treasury's ETH balance alone does not show. The read time says how fresh the figure is.
-          <div className="-mt-1 pb-1.5 text-right font-mono text-micro text-mute tabular" data-testid="agent-gas-detail">
-            {formatGas(kernelGas.deposit)} ETH prepaid for gas · {formatGas(kernelGas.balance)} ETH in the wallet
-            {gas.updatedAt ? ` · read ${ago(Math.floor(gas.updatedAt / 1000), now)}` : null}
+          <div className="-mt-1 flex flex-wrap justify-end gap-x-2 pb-1.5 font-mono text-micro text-mute tabular" data-testid="agent-gas-detail">
+            <span>{formatGas(kernelGas.deposit)} ETH prepaid for gas</span>
+            <span>{formatGas(kernelGas.balance)} ETH in the wallet</span>
+            {gas.updatedAt ? <span>read {ago(Math.floor(gas.updatedAt / 1000), now)}</span> : null}
           </div>
         ) : null}
         <KV label="Fees claimed">{usd(agent?.feesClaimedUsd, { compact: false })}</KV>

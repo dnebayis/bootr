@@ -1,12 +1,16 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useReadContracts } from 'wagmi';
 import { multicall3Abi, type Address } from 'viem';
 import { appChain } from './chains';
 import { env } from './env';
 import { entryPoint, entryPointAbi, type KernelGas } from './gas';
+import { useMounted } from './hooks';
 import { mock } from './mock';
+
+/** Mock mode has no read: its figures count as read when the first page asked for them (client only, never while prerendering). */
+let mockReadAt: number | null = null;
 
 /**
  * Gas of one or more kernels: `EntryPoint.balanceOf(kernel)` plus the kernel's ETH balance (read as
@@ -20,8 +24,7 @@ import { mock } from './mock';
 export function useKernelGas(kernels: readonly Address[]) {
   const multicall = appChain.contracts.multicall3.address;
   const live = !env.useMock;
-  // Mock mode has no read; the figure counts as read when the hook first rendered.
-  const [mockReadAt] = useState(() => Date.now());
+  const mounted = useMounted();
   const read = useReadContracts({
     allowFailure: true,
     contracts: [
@@ -50,7 +53,7 @@ export function useKernelGas(kernels: readonly Address[]) {
     of: (kernel: Address): KernelGas | null => byKernel.get(kernel.toLowerCase()) ?? null,
     isPending: live && kernels.length > 0 && read.isPending,
     /** When the figures were read from the chain (ms), null before the first read. */
-    updatedAt: live ? (read.dataUpdatedAt > 0 ? read.dataUpdatedAt : null) : mockReadAt,
+    updatedAt: live ? (read.dataUpdatedAt > 0 ? read.dataUpdatedAt : null) : mounted ? (mockReadAt ??= Date.now()) : null,
     refetch: () => (live ? read.refetch() : Promise.resolve()),
   };
 }
