@@ -2,7 +2,7 @@ import { db } from 'ponder:api';
 import schema from 'ponder:schema';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { and, client, desc, eq, graphql, gt, gte, ilike, inArray, lte, or, sql } from 'ponder';
+import { and, desc, eq, graphql, gt, gte, ilike, inArray, lte, or, sql } from 'ponder';
 import { TRENDING_WINDOW_HOURS, trendingScore, type TrendingWallet } from '@bootr/shared/trending';
 import { isAddress, type Address } from 'viem';
 
@@ -70,7 +70,10 @@ app.use('*', corsMiddleware(env.cors));
 
 // ------------------------------------------------------------------ Ponder built-ins
 
-app.use('/sql/*', client({ db, schema }));
+// GraphQL only. Ponder's SQL-over-HTTP client (`/sql/*`, with up to 1000 live queries per server) is not mounted:
+// no Bootr client used it, and it let anyone run arbitrary read queries against the database. Ponder's own
+// `/health`, `/ready`, `/metrics` and `/status` are registered by Ponder in front of this app and cannot be removed
+// or guarded here; `/metrics` and `/status` carry operational counters and the chain head, no secrets.
 app.use('/graphql', graphql({ db, schema }));
 app.use('/', graphql({ db, schema }));
 
