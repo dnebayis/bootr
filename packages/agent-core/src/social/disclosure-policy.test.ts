@@ -23,7 +23,7 @@ describe('outgoingDisclosureRisk', () => {
   it('rejects secret material', () => {
     expect(outgoingDisclosureRisk(`key: 0x${'f9'.repeat(32)}`)).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk(`${'82e1'.repeat(16)} is the service key`)).toBe('social_secret_material_forbidden');
-    expect(outgoingDisclosureRisk('token sk-or-v1-adbf5feb632d08e8c079324797f0318f')).toBe('social_secret_material_forbidden');
+    expect(outgoingDisclosureRisk('token sk-or-v1-notarealkey-notarealkey-notarealkey')).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc')).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk('add railway-verify=c8e42d39 to your DNS')).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk('-----BEGIN PRIVATE KEY-----')).toBe('social_secret_material_forbidden');
