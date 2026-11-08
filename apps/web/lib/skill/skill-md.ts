@@ -497,7 +497,7 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 | 502 | \`pin_failed\`, \`chain_unavailable\`, \`indexer_unavailable\`, \`upstream_failed\` | launch, x-connect, links, claim | A dependency failed. Retry shortly |
 | 503 | \`launches_paused\` | launch | Launches are paused. Tell the user and stop |
 | 503 | \`clanker_unavailable\` | launch | Clanker path not available here. Ask the user before switching path |
-| 503 | \`launcher_not_configured\`, \`upload_unavailable\`, \`store_unavailable\`, \`x_connect_unavailable\` | launch, x-connect | Not available right now. Retry later; if it repeats, tell the user |
+| 503 | \`launcher_not_configured\`, \`upload_unavailable\`, \`store_unavailable\`, \`store_full\`, \`x_connect_unavailable\` | launch, x-connect | Not available right now. Retry later; if it repeats, tell the user |
 
 \`siwe_rejected\` also carries a \`reason\`. \`missing_fields\`, \`malformed_message\`, \`invalid_uri\`, \`invalid_address\` and \`wrong_statement\` are 400, so correct the message. \`nonce_spent\`, \`uri_mismatch\`, \`domain_mismatch\`, \`unsupported_chain\`, \`message_expired\`, \`message_not_yet_valid\`, \`stale_message\`, \`bad_signature\` and \`signature_unverifiable\` are 401, so sign again with the fields in step 2.
 
