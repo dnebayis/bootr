@@ -152,7 +152,7 @@ Elysium; the non-Base deployments share one factory address `0xcA111dcdd2cE924c3
 | Dev buy `ClankerUniv4EthDevBuy` extension, coins to the creator | `createLaunchAndBuy` with the one-hop route, coins arrive on the wrapper and are forwarded to the creator in the same transaction |
 | Sniper protection: `ClankerSniperAuctionV2` module, owner-settable | Clanker's anti-snipe fee (99% → tax over 20 s, policy-set); `antiSnipeEnabled` on, owner-settable |
 | Image and metadata: `TokenConfig.image / metadata / context` | `tokenContractURI = metadata`, extra metadata keys `image`, `metadata`, `context` |
-| `AgentLaunched(token, kernel, creator, burner, agentId, defaults, workerHash, model, agentURI, supervisorSessionKey)` | Identical signature; `burner = address(0)` on both presets (there is no burn recipient contract and no dead-address slot; `defaults.burnBps` says whether the coin burns) |
+| `AgentLaunched(token, kernel, creator, burner, agentId, defaults, workerHash, model, agentURI, supervisorSessionKey)` | Identical signature; `burner = 0x…dEaD` on the buyback preset (the burn share's sink, as on v4), `address(0)` on the standard preset; there is no burn recipient contract and no dead-address fee slot |
 | `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick, lpFeeBps)` | `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)`; the opening tick is in the PoolManager's `Initialize` log of the same receipt |
 | `LaunchContext`, `LaunchFeePaid` | Unchanged |
 | Launch gate: `gate.registerAgent(kernel, token, creator, dormancy)` | Unchanged; the v5 launcher is added to the gate's allowlist beside the v4 one |
@@ -271,6 +271,13 @@ source before `allocateClaim`, so a Clanker claim is no longer pro-rated over RW
 claim at block 54656132, tx `0xdb1d0914…`, came out 0.000393 WETH short on $BOOTR because FORK's unclaimed RWAGMI WETH
 sat in the same group). `src/lib/fees.test.ts` covers the selection. Everything here is indexing code: one schema
 bump, `DATABASE_SCHEMA=bootr_v9` (section 10).
+
+Built 2026-11-10 as above, with three readings the build settled: the launch handler reads the policy and the burn
+share from the factory's `LaunchTaxConfigured` in the receipt (the preset and the live policy are the fallback), so
+`protocolBps` follows the policy each pool was admitted under; the paid slots' rounding gap goes to the heaviest slot
+(the creator's); and because `CreatorTaxCredited` names the recipient and not the slot, a wallet holding two slots of
+one coin (the platform launching its own coin) takes them in slot order per transaction (`pickV5Slot`). The event
+topics of `CreatorTaxCredited`, `FeeSlotCreated` and the escrow's `Claimed` were checked against Base logs.
 
 ## 7. What the web task must change (after this one)
 
