@@ -149,18 +149,18 @@ describe('sessionRulesFor: powers to rules, as data', () => {
     expect(CALL_POLICY_MAX_RULES).toBe(8);
     withFakeTrade(() => [...fakeTrade({ source: 'bootr', rulesVersion: 4 }), { power: 'trade', label: 'trade.third', build: () => ({ target: TRADE_HELPER, selector: '0xabcdef01', windowSeconds: 0, args: [] }) }]);
     expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/over the BootrCallPolicy limit: 9 rules .* at most 8 \(.*trade\.third\)/);
-    // no provider is registered for payouts today (and none for trade outside this test)
-    expect(sessionRuleProvider('payouts')).toBeUndefined();
-    expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'payouts'], inputs())).toThrow(/payouts power is on but has no session rule provider/);
+    // no provider is registered for bounties today (and none for trade outside this test)
+    expect(sessionRuleProvider('bounties')).toBeUndefined();
+    expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'bounties'], inputs())).toThrow(/bounties power is on but has no session rule provider/);
     expect(() => sessionRulesFor(['claims', 'nope' as never], inputs())).toThrow(/unknown session power nope/);
     expect(() => registerSessionRuleProvider('nope' as never, fakeTrade)).toThrow(/unknown session power/);
     restores.pop()!();
     withFakeTrade(() => [{ power: 'trade', label: 'swap.approveWeth', build: () => ({ target: TRADE_HELPER, selector: '0xabcdef01', windowSeconds: 0, args: [] }) }]);
     expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/duplicate session rule label swap\.approveWeth/);
     restores.pop()!();
-    withFakeTrade(() => [{ power: 'payouts', label: 'payouts.propose', build: () => ({ target: TRADE_HELPER, selector: '0xabcdef01', windowSeconds: 0, args: [] }) }]);
-    expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/trade provider produced a rule of power payouts/);
-    expect(SESSION_POWER_ORDER).toEqual(['claims', 'swap', 'treasury', 'trade', 'payouts']);
+    withFakeTrade(() => [{ power: 'bounties', label: 'bounties.propose', build: () => ({ target: TRADE_HELPER, selector: '0xabcdef01', windowSeconds: 0, args: [] }) }]);
+    expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/trade provider produced a rule of power bounties/);
+    expect(SESSION_POWER_ORDER).toEqual(['claims', 'swap', 'treasury', 'trade', 'bounties']);
   });
 
   it('after a test restores the registry, trade has no provider again', () => {
@@ -168,11 +168,11 @@ describe('sessionRulesFor: powers to rules, as data', () => {
     expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/trade power is on but has no session rule provider/);
   });
 
-  it('sessionPowersOf: the treasury loop whatever the config says; trade and payouts from the raw capabilities block', () => {
+  it('sessionPowersOf: the treasury loop whatever the config says; trade and bounties from the raw capabilities block', () => {
     expect(sessionPowersOf({})).toEqual(['claims', 'swap', 'treasury']);
     expect(sessionPowersOf({ capabilities: { treasury: false, xRead: true } })).toEqual(['claims', 'swap', 'treasury']);
     expect(sessionPowersOf({ capabilities: { trade: true } })).toEqual(['claims', 'swap', 'treasury', 'trade']);
-    expect(sessionPowersOf({ capabilities: { trade: 'yes', payouts: true } })).toEqual(['claims', 'swap', 'treasury', 'payouts']);
+    expect(sessionPowersOf({ capabilities: { trade: 'yes', bounties: true } })).toEqual(['claims', 'swap', 'treasury', 'bounties']);
     expect(sessionPowersOf({ capabilities: [] })).toEqual(['claims', 'swap', 'treasury']);
   });
 });

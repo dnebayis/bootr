@@ -581,8 +581,8 @@ it as the part that needed the thought. Trade's helper needs fork tests against 
   tier, BOOTR-02).
 - Decided 2026-11-08: Trade and Bounties are upgradeable (proxy + feature modules), upgrades apply at once with no
   timelock, and the admin wallet is the upgrade key (section 4). Nothing open here.
-- Proposed by this revision, waiting for the owner's word: the list below. Each is a yes or no; the recommendation is
-  what the text above assumes.
+- Decided 2026-11-09 by the owner ("devam et"): all eighteen as recommended below (15 is a no). The text above is
+  therefore the plan; the next step is docs/STATUS.md section 3 item 2 (three roles).
 
 | # | Question | Recommendation |
 |---|---|---|

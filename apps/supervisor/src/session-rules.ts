@@ -19,7 +19,7 @@
  * (`BootrCallPolicy.MAX_RULES`); a rule set over it is refused here, before any admin transaction.
  *
  * Trade and Payouts have no provider yet: their powers are typed, read from the config (`capabilities.trade`,
- * `capabilities.payouts`) and refused with a clear error until the provider exists (`registerSessionRuleProvider`,
+ * `capabilities.bounties`) and refused with a clear error until the provider exists (`registerSessionRuleProvider`,
  * which tests also use to exercise the path with a fake power).
  *
  * This module knows nothing of ZeroDev, enable digests or the admin signer: session-key.ts imports it and re-exports
@@ -158,13 +158,13 @@ export function layoutOf(p: Pick<SessionRuleInputs, 'source' | 'rulesVersion'>):
 /**
  * The powers a session key's rules come from. `claims`, `swap` and `treasury` are the always-on treasury loop
  * (`ALWAYS_ON_CAPABILITIES` in `@bootr/shared/workers` keeps the `treasury` capability on for every agent);
- * `trade` and `payouts` are the designed on-chain powers (design doc sections 3.2 and 3.3), typed here and
+ * `trade` and `bounties` are the designed on-chain powers (design doc sections 3.2 and 3.3), typed here and
  * refused until their provider exists.
  */
-export type SessionPower = 'claims' | 'swap' | 'treasury' | 'trade' | 'payouts';
+export type SessionPower = 'claims' | 'swap' | 'treasury' | 'trade' | 'bounties';
 
 /** Rule order on chain: the powers' rules are concatenated in this order, whatever order the config names them. */
-export const SESSION_POWER_ORDER: readonly SessionPower[] = ['claims', 'swap', 'treasury', 'trade', 'payouts'];
+export const SESSION_POWER_ORDER: readonly SessionPower[] = ['claims', 'swap', 'treasury', 'trade', 'bounties'];
 
 /** The powers every agent has, config or not: the fee -> fuel loop. */
 export const ALWAYS_ON_SESSION_POWERS: readonly SessionPower[] = ['claims', 'swap', 'treasury'];
@@ -398,14 +398,14 @@ export function storedRuleLabels(p: Pick<SessionRuleInputs, 'source' | 'rulesVer
 
 /**
  * The session powers an agent's stored config switches on. The treasury loop is always on (it is what keeps the
- * agent fuelled; `ALWAYS_ON_CAPABILITIES`), whatever the stored flag says. `trade` and `payouts` read the raw
+ * agent fuelled; `ALWAYS_ON_CAPABILITIES`), whatever the stored flag says. `trade` and `bounties` read the raw
  * `capabilities` block so the console switch works the day the key exists in the schema; today nothing sets them.
  */
 export function sessionPowersOf(config: Record<string, unknown>): SessionPower[] {
   const caps = config.capabilities && typeof config.capabilities === 'object' && !Array.isArray(config.capabilities) ? (config.capabilities as Record<string, unknown>) : {};
   const powers: SessionPower[] = [...ALWAYS_ON_SESSION_POWERS];
   if (caps.trade === true) powers.push('trade');
-  if (caps.payouts === true) powers.push('payouts');
+  if (caps.bounties === true) powers.push('bounties');
   return powers;
 }
 

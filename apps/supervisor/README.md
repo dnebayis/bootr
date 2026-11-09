@@ -334,9 +334,9 @@ cleanly.
 ## Session rules per power
 
 The `BootrCallPolicy` rules a key gets follow the agent's powers (`src/session-rules.ts`; docs/design/agent-capabilities.md
-section 8 item 2). Each power has one rule provider in a table ordered `claims`, `swap`, `treasury`, `trade`, `payouts`;
+section 8 item 2). Each power has one rule provider in a table ordered `claims`, `swap`, `treasury`, `trade`, `bounties`;
 `sessionPolicyFor` reads the powers from the stored config (`sessionPowersOf`: the treasury loop is always on, `trade`
-and `payouts` from `capabilities.trade` / `capabilities.payouts`), builds the rules (`sessionRulesFor`) and stores on the
+and `bounties` from `capabilities.trade` / `capabilities.bounties`), builds the rules (`sessionRulesFor`) and stores on the
 policy a `rules` block, `{version, powers, items: [{label, power}]}`, one item per rule in index order, so the row says
 why the key has each rule (`claims.settleAndClaim`, `claims.claimQuote` or `claims.collectRewards`, `claims.claim`;
 `swap.approveWeth`, `swap.swapWethToUsdc`; `treasury.fundSpender`, `treasury.withdrawWethForGas`). For today's powers the

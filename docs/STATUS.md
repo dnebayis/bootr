@@ -149,10 +149,10 @@ The rest of the first-hour queries (paid failures, `direct_unavailable` runs, sp
 Sizes are the estimates of [`design/agent-capabilities.md`](./design/agent-capabilities.md) section 8, revised on
 2026-11-09 after the owner's review: Payouts became **Bounties** (the agent posts a small job, a separate judge role
 rules on the deliveries, code pays 0.1 to 1 USDC), Trade was tightened, and the owner's 18 yes/no decisions sit in
-section 9 of that file. Nothing below starts until those are answered.
+section 9 of that file; the owner accepted all eighteen as recommended on 2026-11-09, so the list below is the plan.
 
-1. **Per-agent session rules** (done 2026-11-09, `apps/supervisor/src/session-rules.ts`; the `payouts` power name
-   there becomes `bounties` with the next change).
+1. **Per-agent session rules** (done 2026-11-09, `apps/supervisor/src/session-rules.ts`, powers `claims`, `swap`,
+   `treasury`, `trade`, `bounties`).
 2. **Three roles** (supervisor and agent-core, about three days): the social turn as today; a **treasury turn** on its
    own clock with a narrow observation (balances, caps, quotes, notes; never mention text) that alone may trade or
    post a job; a **judge** role with no tools that sees only a job's numbered criteria and the deliveries' artefacts.
