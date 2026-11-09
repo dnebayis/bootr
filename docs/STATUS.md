@@ -153,9 +153,15 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 
 1. **Per-agent session rules** (done 2026-11-09, `apps/supervisor/src/session-rules.ts`, powers `claims`, `swap`,
    `treasury`, `trade`, `bounties`).
-2. **Three roles** (supervisor and agent-core, about three days): the social turn as today; a **treasury turn** on its
-   own clock with a narrow observation (balances, caps, quotes, notes; never mention text) that alone may trade or
-   post a job; a **judge** role with no tools that sees only a job's numbered criteria and the deliveries' artefacts.
+2. **Three roles** (done 2026-11-09; `packages/agent-core/src/prompt/system-prompt.ts` for the three prompts, with the
+   social prompt pinned byte for byte; `apps/supervisor/src/roles.ts` for the switch, the tools per role, the treasury
+   clock and the treasury observation; `apps/supervisor/src/judge.ts` for the judge; the role on the persisted `Turn`
+   in `apps/supervisor/src/runtime.ts`; tests `test/roles.test.ts`, `test/judge.test.ts`): the social turn as today; a
+   **treasury turn** on its own clock with a narrow observation (balances, caps, ops, notes; never mention text) that
+   alone holds the money tools; a **judge** role with no tools that sees only a job's numbered criteria and the
+   entries' artefacts. Off for every agent until the `trade` or `bounties` power exists, or the owner sets
+   `treasuryTurn: true` on an agent's config through the console route to trial it. `trade_quote`, `bounty_post` and
+   `bounty_cancel` are named seams for items 3 and 6; the judge has no caller until item 3.
 3. **Bounties stage A** (supervisor, web; about a week; no contract): the platform agent posts jobs, replies are
    collected by code, the judge rules, the verdict lands in the approval queue and the owner pays by hand for two
    weeks. Decisions 1, 2, 5, 10, 15, 16 of section 9.

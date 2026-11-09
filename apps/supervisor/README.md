@@ -56,7 +56,9 @@ guardian owner key used only to approve session-key installs.
 | `src/mention-close.ts` | the pass before a turn's first step: mentions whose only exclusion is `verified_audience_required`, from an author X reports as unverified, are closed in bulk with no model call; verified authors, Bootr agents, the creator, allow-listed authors, authors without verification data and deferred mentions stay; any error leaves the turn as it was |
 | `src/broker/index.ts` | tool executors, `resolvePending` (receipts by id/hash), tool availability |
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
-| `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn, social stats to the indexer |
+| `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn (social, or the treasury turn when the social wake said no and its own clock is due), social stats to the indexer |
+| `src/roles.ts` | the three roles of the capabilities design (section 3.4): which tools each role gets (the social turn loses the money tools while the treasury turn is on for the agent), the switch (`trade` or `bounties` power, or the config's `treasuryTurn` override), the treasury clock in `sv_runtimes.state`, and the treasury turn's observation (numbers, caps, ops, its own notes; never a mention or a page), see "Three roles" |
+| `src/judge.ts` | the judge role: one paid thought with no tools on the agent's model (or `config.judgeModel`) that rules on a bounty job's entries from the criteria and the artefacts alone, checked in code (winner in range and passing every criterion, a 200-character reason through the publish gate); one thought per job by its idempotency key; no caller until Bounties stage A |
 | `src/api.ts` | Hono admin API (HMAC), including the fleet-wide `panic-revoke` |
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
 | `src/services.ts` | the Paid services power (`discover_services`, `x402_fetch`): the spender pays any public https x402 endpoint `exact` USDC under the creator's per-call and daily caps and host lists; one signature per action id, the chain closes a lost answer (`sv_service_calls`); the day's total in `/fuel`, every call on the activity tape |
@@ -141,6 +143,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `X402_DISCOVERY_URL` | no | `https://api.cdp.coinbase.com/platform/v2/x402/discovery` | the x402 Bazaar that `discover_services` reads (cached ten minutes) |
 | `SERVICES_TIMEOUT_MS` | no | `30000` | one paid service call (`x402_fetch`), request and answer |
 | `REST_CHECK_MS` | no | `300000` | least time between treasury reads of a sleeping or paused agent |
+| `TREASURY_TURN_INTERVAL_MS` | no | `3600000` | how often an agent with the treasury turn on gets one (`src/roles.ts`); a pending treasury note or a closed bounty job may bring it forward, never closer than a quarter of this to the last one |
 | `NOTIFY_SWEEP_MS`, `NOTIFY_CHECK_MS` | no | `60000`, `300000` | the notifier's pass interval and the least time between checks of one agent (see "Creator notifications") |
 
 ## BlockRun live check
@@ -436,6 +439,53 @@ sleeping ones (least recently checked first; they stop at step 4 unless refuelle
    it. `GET /health` shows the hold as `providerHold`. In-process state: a restart starts counting again.
 8. Social stats to the indexer (`xHandle`, `lastPostAt`, `postsCount24h`, `status`).
 
+## Three roles: the social turn, the treasury turn and the judge
+
+docs/design/agent-capabilities.md section 3.4, built 2026-11-09 (`src/roles.ts`, `src/judge.ts`, the role on the
+persisted `Turn` in `src/runtime.ts`): the role that reads mentions holds no money power, so "a mention made it trade"
+or "a reply made it pay" is impossible in code rather than forbidden in a prompt.
+
+The **social turn** is the loop above, unchanged, with one exception: while the treasury turn is on for the agent its
+catalog loses `treasury_prepare` and `treasury_execute` and keeps `treasury_read`; it may leave a note for the
+treasury turn with `remember` tagged `treasury`. The treasury turn is off for every agent today, so nothing changes
+in production until it is switched on: by the `trade` or `bounties` power (neither exists in the console yet; the
+switch reads the raw config block the way `sessionPowersOf` does, so adding the keys turns it on with no change here)
+or by the `treasuryTurn: true` override on the agent's config (`PUT /internal/agents/:id/config`), the owner's way
+to trial it on the platform agent before Bounties exists.
+
+The **treasury turn** runs under the same gates as the social turn (lease, config, guardian and operator pauses,
+revoked keys, the sleep rule, the inference backoff and the fleet-wide provider hold) and is asked only once the
+social wake decision said no: when both are due in one tick the social turn runs and the treasury waits for the next
+tick. Its clock lives in `sv_runtimes.state` (`treasuryNextAt`, `lastTreasuryTurnAt`, `lastTreasuryNoteSeenAt`,
+`treasuryCheckpoint`; no migration): due every `TREASURY_TURN_INTERVAL_MS`, earlier on a pending treasury note or a
+closed bounty job (`bountyJobClosed`, false until Bounties exists) but never closer than a quarter of the interval
+to the last turn. It gets `buildSystemPrompt(config, 'treasury')` (the keeper of its own treasury, working from
+numbers; no VOICE, PLATFORM or ECONOMY block), the tools `treasury_read`, `treasury_prepare`, `treasury_execute`,
+`remember` and `finish` (`trade_quote`, `bounty_post`, `bounty_cancel` are named seams until the catalog defines
+them), and an observation of balances, caps and the day's use, the market numbers, open and recent operations, fuel,
+the fee split, its own last checkpoint and the unconsumed treasury notes under a heading that says they come from a
+turn that read mentions and are data. Never a mention, a thread, a page, a search result, a recent post or a general
+memory. It runs on `config.model` with no economy mode (a turn that may move money is not where the cheap decide
+model belongs). Its `finish` writes the treasury's own checkpoint (bounded, `TREASURY_CHECKPOINT_CHARS`) and the
+next treasury time, never the social memory, agenda, summary, post slot (`lastPostAt`, `lastSlotSkippedAt`), wake
+floor or `nextAt`; it never counts against the post quota (it has no publishing tool), and it does not stamp
+`lastDecisionAt`, so a config change still wakes the social turn once. A turn cut at the step cap or by a refused call
+moves only its own clock. A persisted treasury turn (a sent action, an unknown or credited inference) is resumed by
+`continueTurn` as a treasury turn: `Turn.role` rebuilds the prompt's role, the tool list and the end-of-turn
+bookkeeping. Every `waking`, `thought` and `turn ended` log line of a treasury turn carries `role: 'treasury'`, and
+its rows in `sv_actions` carry `role: 'treasury'` inside the stored action JSON (the tape's shape is unchanged; the
+model-prepared operations show as today through `sv_treasury_ops`).
+
+The **judge** (`judgeJob(ctx, agent, config, {jobId, task, criteria, entries})`) is one paid thought with no tools on
+the agent's own model, or on `config.judgeModel` when the console pinned a cheaper one, with the job's numbered
+criteria and the entries as artefacts (a picture as an `image_url` part, a page as a bounded excerpt) and nothing of
+the agent's persona or situation. The answer is one JSON object checked in code: the winner is an entry, every
+criterion is `pass` for it, the reason is at most 200 characters and passes the publish gate with no address, cashtag,
+link or handle; anything else is `winner: null` with an `invalid` code and the job closes unpaid. The thought's
+idempotency key is derived from the job id (`judge:<agentId>:<digest>`), so a second call for the same job replays
+the stored answer through `relayRequest` and never pays again; it is logged as a `thought` with `role: 'judge'`.
+Nothing calls it yet: Bounties stage A (docs/STATUS.md section 3 item 3) will.
+
 ## X holds and the post length
 
 `src/rhythm.ts` keeps three per-agent holds beside the platform rhythm. `x_quota`: the sender refused a publish with
@@ -645,8 +695,11 @@ ceilings 5 and 50 that the console cannot pass, host patterns `example.com` or `
 `PUT` body: `{ "by": "<creator address>", "instructions"?: string, "model"?: string, "allowedModels"?: string[],
 "worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] },
 "postsPerDay"?: number, "requireApproval"?: boolean, "routing"?: { "decideModel": string | null },
-"services"?: { "perCallMicroUsdc"?: number, "dailyMicroUsdc"?: number, "allow"?: string[], "deny"?: string[] } }`. Every field is
-optional except `by`; `worker` is a partial update merged onto the preset in force and then re-validated with
+"services"?: { "perCallMicroUsdc"?: number, "dailyMicroUsdc"?: number, "allow"?: string[], "deny"?: string[] },
+"treasuryTurn"?: boolean, "judgeModel"?: string | null }`. Every field is
+optional except `by`; `treasuryTurn` is the treasury turn's trial switch (`src/roles.ts`; `GET` shows it as
+`treasuryTurn: {override, active}`, `active` also true when the `trade` or `bounties` power is on) and `judgeModel`
+the judge's model, validated like `model` (inside `allowedModels` when given), `null` for the agent's own; `worker` is a partial update merged onto the preset in force and then re-validated with
 `normalizeWorkerPreset` (always-on powers are forced back on; cadence 30 min … 7 days; at most 4 job lines of 240
 characters). `instructions` is normalised like the launch text (plain text, 20–600 characters). `model` must be a
 non-empty id and, when the body carries `allowedModels` (the web passes the admin allow-list), one of them. `imageModel`

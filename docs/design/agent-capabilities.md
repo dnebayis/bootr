@@ -456,6 +456,25 @@ one turn with every tool. Proposal, required for Trade and Bounties:
 - The guardian and the policy do not care which role signs; this separation is supervisor code, and it is what makes
   "a mention made it trade" or "a reply made it pay" structurally impossible rather than merely forbidden.
 
+**Built 2026-11-09** (docs/STATUS.md section 3 item 2). The prompts of the three roles are
+`buildSystemPrompt(config, role)` in `packages/agent-core/src/prompt/system-prompt.ts` (the social prompt unchanged,
+pinned by digest; the treasury prompt with a TREASURY TURN block in place of VOICE and the subset of the Bootr rules
+that concern it; the judge prompt with the text above and no identity, owner rules or Bootr rules). The supervisor
+side is `apps/supervisor/src/roles.ts`: the switch (`treasuryTurnOn`: the `trade` or `bounties` power on the raw
+config block, or the per-agent `treasuryTurn: true` override settable through `PUT /internal/agents/:id/config`, the
+owner's way to trial the turn on the platform agent before Bounties exists), the tools per role (`roleTools`; the
+social turn loses `treasury_prepare` and `treasury_execute` while the turn is on, the treasury turn holds
+`treasury_read`, `treasury_prepare`, `treasury_execute`, `remember`, `finish`, and `trade_quote`, `bounty_post`,
+`bounty_cancel` as named seams), the clock (`treasuryTurnDue`: every `TREASURY_TURN_INTERVAL_MS`, earlier on a
+treasury note or a closed job but never closer than a quarter of the interval to the last turn; state in
+`sv_runtimes.state`, no migration) and the observation (`buildTreasuryObservation`). The turn itself is
+`startTreasuryTurn` in `apps/supervisor/src/runtime.ts`, with `Turn.role` so `continueTurn` resumes it as what it
+was; it runs on `config.model` with no economy mode, never touches the post slot, the quota, the social checkpoint or
+`lastDecisionAt`, and the tick runs it only when the social wake said no. The judge is `judgeJob` in
+`apps/supervisor/src/judge.ts` (one thought keyed by the job id, `config.judgeModel` or the agent's model, the answer
+checked in code as described above); it has no caller until stage A. Tests: `apps/supervisor/test/roles.test.ts`,
+`apps/supervisor/test/judge.test.ts`, and the role cases in `system-prompt.test.ts`.
+
 ## 4. Contract changes
 
 | Change | Needed for | Shape | Migration |
