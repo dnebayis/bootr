@@ -129,6 +129,17 @@ export const agentConfigSchema = z
     model: z.string().min(1).max(128),
     /** Image generation model (relay id) for `generate_image`; unset = the supervisor's default. */
     imageModel: z.string().min(1).max(128).optional(),
+    /**
+     * The model the judge role rules with (apps/supervisor/src/judge.ts); unset = `model`. Design decision 10: the
+     * judge runs on the agent's own model and the console may pin a cheaper one.
+     */
+    judgeModel: z.string().min(1).max(128).optional(),
+    /**
+     * Runs the treasury turn (apps/supervisor/src/roles.ts) for this agent although no power needs it yet: the owner's
+     * trial switch before Bounties exists. The turn is on anyway when the `trade` or `bounties` power is on; absent or
+     * false means the powers alone decide.
+     */
+    treasuryTurn: z.boolean().optional(),
     /** Economy mode (see `routingSchema`); absent = off. */
     routing: routingSchema.optional(),
     /** Reference picture and notes every `generate_image` prompt carries; unset = no reference, no notes. */
