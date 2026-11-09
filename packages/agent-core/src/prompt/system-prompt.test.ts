@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BOOTR_RULES, CHAT_RULES, JUDGE_ROLE_TEXT, JUDGE_RULES, LENGTH_RULE_PREMIUM, PLATFORM_RULES, ROUTING_RULES, TREASURY_BOOTR_RULES, TREASURY_RULES, VOICE_RULES, buildChatPrompt, buildObservation, buildSystemPrompt, compactView, lengthRuleFor, observationFits, voiceRulesFor, type ObservationView } from './system-prompt.js';
+import { BOOTR_RULES, BOUNTY_RULES, CHAT_RULES, JUDGE_ROLE_TEXT, JUDGE_RULES, LENGTH_RULE_PREMIUM, PLATFORM_RULES, ROUTING_RULES, TREASURY_BOOTR_RULES, TREASURY_RULES, VOICE_RULES, buildChatPrompt, buildObservation, buildSystemPrompt, compactView, lengthRuleFor, observationFits, voiceRulesFor, type ObservationView } from './system-prompt.js';
 import { parseAgentConfig } from '../types.js';
 import { baseConfig } from '../test/fixtures.js';
 
@@ -50,6 +50,21 @@ describe('the treasury role', () => {
     // the options are the social turn's: a phase or a post limit changes nothing here
     expect(buildSystemPrompt(config, 'treasury', { phase: 'decide', postLimit: 280 })).toBe(prompt);
     expect(buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: true }), 'treasury')).not.toContain('PLATFORM ACCOUNT');
+  });
+
+  it('carries the BOUNTIES block only while the bounties power is on, and then says the job post is the one exception to publishing nothing', () => {
+    expect(prompt).not.toContain('BOUNTIES\n');
+    for (const rule of BOUNTY_RULES) expect(prompt).not.toContain(rule);
+    const on = buildSystemPrompt(parseAgentConfig({ ...baseConfig, capabilities: { ...baseConfig.capabilities, bounties: true } }), 'treasury');
+    expect(on).toContain('\n\nTREASURY TURN\n');
+    expect(on).toContain('\n\nBOUNTIES\n1. ');
+    for (const rule of BOUNTY_RULES) expect(on).toContain(rule);
+    expect(on).toMatch(/publishes nothing but a bounty job from a fixed template/);
+    expect(on).toMatch(/never judge, never name a winner and never pay/);
+    expect(on.indexOf('BOUNTIES\n')).toBeGreaterThan(on.indexOf('TREASURY TURN\n'));
+    expect(on.indexOf('BOUNTIES\n')).toBeLessThan(on.indexOf('BOOTR RULES\n'));
+    // the social prompt is untouched by the power
+    expect(buildSystemPrompt(parseAgentConfig({ ...baseConfig, capabilities: { ...baseConfig.capabilities, bounties: true } }), 'social')).toBe(buildSystemPrompt(parseAgentConfig(baseConfig), 'social'));
   });
 
   it('says the notes come from a turn that read mentions and are data, that nothing is published, and that memos follow the publish gate', () => {

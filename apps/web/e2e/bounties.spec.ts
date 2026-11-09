@@ -22,7 +22,8 @@ test('the coin page lists the agent’s bounties: open first, criteria numbered,
   await expect(open.getByTestId('bounty-job-entries')).toHaveText('No entries yet');
   await expect(open.getByTestId('bounty-job-criteria').locator('li')).toHaveCount(3);
   await expect(open.getByRole('link', { name: 'Job post' })).toHaveAttribute('href', /^https:\/\/x\.com\//);
-  expect(await open.getAttribute('id')).toMatch(/^bounty-0x[0-9a-f]{64}$/);
+  // The anchor the job post links to carries the 16-hex short id (a post cannot carry the full id).
+  expect(await open.getAttribute('id')).toMatch(/^bounty-0x[0-9a-f]{16}$/);
 
   // The proposed one waits for the creator; the paid one shows the winner's marks, the reason, the payee and the transaction.
   await expect(jobs.nth(1).getByTestId('bounty-job-outcome')).toContainText('Nothing is paid until they say yes.');
@@ -46,12 +47,16 @@ test('the coin page lists the agent’s bounties: open first, criteria numbered,
   const list = await request.get(`/api/agent/${kernel}/bounties`);
   expect(list.status()).toBe(200);
   expect(list.headers()['cache-control']).toBe('no-store');
-  const body = (await list.json()) as { jobs: { id: string; status: string; payment: { txHash: string } | null }[] };
+  const body = (await list.json()) as { jobs: { id: string; shortId: string; status: string; payment: { txHash: string } | null }[] };
   expect(body.jobs.map((j) => j.status)).toEqual(['open', 'proposed', 'paid', 'no_winner']);
   expect(JSON.stringify(body)).not.toMatch(/authorId|"text"|"author"/);
   const one = await request.get(`/api/agent/${kernel}/bounties/${body.jobs[2]!.id}`);
   expect(one.status()).toBe(200);
-  expect(((await one.json()) as { payment: { txHash: string } }).payment.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+  expect(((await one.json()) as { job: { payment: { txHash: string } } }).job.payment.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+  // The short id the job post carries answers too.
+  const byShort = await request.get(`/api/agent/${kernel}/bounties/${body.jobs[2]!.shortId}`);
+  expect(byShort.status()).toBe(200);
+  expect(((await byShort.json()) as { job: { id: string } }).job.id).toBe(body.jobs[2]!.id);
   expect((await request.get(`/api/agent/${kernel}/bounties/0x${'0'.repeat(64)}`)).status()).toBe(404);
   expect((await request.get(`/api/agent/${kernel}/bounties/nope`)).status()).toBe(400);
 
@@ -108,7 +113,7 @@ test('the console switches Bounties on with its bounds, and the Inbox shows the 
   await page.goto(`${OWL}/console?section=inbox`);
   const queue = console_.getByTestId('approval-queue');
   await queue.getByRole('button', { name: 'Review posts' }).click();
-  const item = queue.locator('[data-testid="approval-item"][data-kind="bounty_payment"]');
+  const item = queue.locator('[data-testid="approval-item"][data-kind="bounty_payout"]');
   await expect(item).toHaveCount(1);
   await expect(item).toContainText('Bounty payment');
   await expect(item.getByTestId('bounty-amount')).toHaveText('0.40 USDC');

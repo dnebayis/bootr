@@ -40,6 +40,8 @@ export interface XTweet {
     mentions?: { start: number; end: number; username: string; id?: string }[];
   };
   note_tweet?: { text: string; entities?: XTweet['entities'] };
+  /** Media keys of the attached pictures and clips; the objects come in `includes.media` with `expansions=attachments.media_keys`. */
+  attachments?: { media_keys?: string[] };
   public_metrics?: Record<string, number>;
   /** Only with the author's own user token (`GET /2/tweets?tweet.fields=non_public_metrics`). */
   non_public_metrics?: Record<string, number>;
@@ -68,9 +70,17 @@ export interface XPartialError {
   type?: string;
 }
 
+/** One attached media object (`media.fields=media_key,type,url,preview_image_url`): photos carry `url`, clips a `preview_image_url`. */
+export interface XMedia {
+  media_key: string;
+  type?: string;
+  url?: string;
+  preview_image_url?: string;
+}
+
 export interface XListResponse {
   data?: XTweet[];
-  includes?: { users?: XUser[]; tweets?: XTweet[] };
+  includes?: { users?: XUser[]; tweets?: XTweet[]; media?: XMedia[] };
   meta?: { newest_id?: string; oldest_id?: string; result_count?: number; next_token?: string };
   errors?: unknown[];
 }
@@ -83,6 +93,10 @@ export const METRIC_FIELDS = 'created_at,public_metrics';
 export const NON_PUBLIC_METRIC_FIELDS = 'non_public_metrics';
 /** `GET /2/tweets` takes at most 100 ids; the metrics read stays far below that. */
 export const MAX_POSTS_LOOKUP = 100;
+/** The replies read (bounty entries): the author's age and badge, the url entities and the attached media. */
+export const REPLY_TWEET_FIELDS = 'author_id,conversation_id,created_at,entities,referenced_tweets,note_tweet,attachments';
+export const REPLY_USER_FIELDS = 'username,created_at,verified,verified_type';
+export const REPLY_MEDIA_FIELDS = 'media_key,type,url,preview_image_url';
 
 export interface XClientOptions {
   baseUrl?: string;
@@ -192,6 +206,31 @@ export class XClient {
         // X bills per post returned: callers that want one page of the newest few ask for just that (5 is X's minimum).
         max_results: opts.maxResults ?? 100,
         'tweet.fields': TWEET_FIELDS,
+      },
+    });
+  }
+
+  /**
+   * The replies of one conversation (`GET /2/tweets/search/recent?query=conversation_id:<id>`, the last 7 days),
+   * newest first, one page of up to `maxResults` (10 to 100) with the authors (username, created_at, badge) and the
+   * attached media expanded. Read with the agent's user token; the supervisor collects a bounty job's entries with it.
+   */
+  conversationReplies(
+    token: string,
+    conversationId: string,
+    opts: { paginationToken?: string; maxResults?: number },
+  ): Promise<XResult<XListResponse>> {
+    return this.request(token, 'GET', '/2/tweets/search/recent', {
+      rateKey: 'search',
+      query: {
+        query: `conversation_id:${conversationId}`,
+        next_token: opts.paginationToken,
+        // X's floor for this endpoint is 10, its ceiling 100; X bills per post returned.
+        max_results: Math.max(10, Math.min(100, opts.maxResults ?? 100)),
+        'tweet.fields': REPLY_TWEET_FIELDS,
+        expansions: 'author_id,attachments.media_keys',
+        'user.fields': REPLY_USER_FIELDS,
+        'media.fields': REPLY_MEDIA_FIELDS,
       },
     });
   }

@@ -411,6 +411,19 @@ existing approval queue as a proposal the owner pays by hand from the treasury w
 contract, no key change; it tests the judge and the entry rules with real people, which is step 4 of the Claus report's
 order. Stage B adds `BootrBounties`, the three rules and the template reply.
 
+**Built, stage A (2026-11-10, server side; docs/STATUS.md section 3 item 3).** `apps/supervisor/src/bounties.ts` with
+the `bounties` power and policy block in agent-core and shared, migration `0010_bounties`, the sender's
+`POST /internal/read/replies` and the reads `GET /internal/agents/:id/bounties[/:jobId]`. Where the build read this
+section more tightly than it is written: a job post names its job by the first 16 hex characters of the id
+(`#bounty-<shortId>`), because the publish gate refuses any 32-byte hex in a post as secret material, and the gate
+exempts a Basescan `/tx/` link for the same reason (the paid reply carries one); `review` is the `bounties.review`
+field of the policy block; a job whose post waits for a posting slot or the X quota stays a `draft` and code posts it
+later, with the window counted from the real post time; the day's cap is a UTC-day grid and counts every job not
+cancelled, expired or failed; the 48 h pay grace runs from the proposal and withdraws it; a picture over the judge's 2
+MB is not considered (no re-encoding library without a new dependency: the bytes are sniffed as PNG, JPEG or WEBP
+instead); the `bounties` power asks nothing of the session key until stage B registers its provider. The web side (the
+console switch and caps, the job card, the payout item with a tx-hash field) follows.
+
 **Session rules** (`session-rules.ts`, provider `bounties`, three rules). `BootrCallPolicy` v2 with 14 rules is
 required: the always-on set is 6, Trade's set is 8 (it replaces `swap`'s two), so Bounties lands at 9 alone or 11 with
 Trade, both over today's 8.

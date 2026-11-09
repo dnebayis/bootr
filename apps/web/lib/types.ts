@@ -1,5 +1,6 @@
 /** Shapes from docs/data-contract.md. Amounts are integer base-unit strings. */
 import type { Address, Hex } from 'viem';
+import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_AMOUNT_MICRO_USDC, BOUNTY_MAX_CONSIDERED, BOUNTY_MAX_COOLDOWN_SECONDS, BOUNTY_MAX_CRITERIA, BOUNTY_MAX_CRITERION_CHARS, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MAX_TASK_CHARS, BOUNTY_MIN_AMOUNT_MICRO_USDC, BOUNTY_MIN_HOURS_OPEN, DEFAULT_BOUNTIES_POLICY } from '@bootr/agent-core';
 import type { CapabilityKey } from '@bootr/shared/workers';
 
 export type { CapabilityKey };
@@ -333,19 +334,24 @@ export interface AgentBountiesPolicy {
   review: boolean;
 }
 
-/** Ceilings and floors of the bounties bounds, mirrored by the agent service; micro-USDC and whole units. */
+/** Ceilings and floors of the bounties bounds, the agent service's own constants (`BOUNTY_*` in packages/agent-core). */
 export const BOUNTIES_BOUNDS = {
-  dailyCapMaxMicroUsdc: 20_000_000,
-  maxOpenMax: 5,
+  dailyCapMaxMicroUsdc: BOUNTY_DAILY_MAX_MICRO_USDC,
+  maxOpenMax: BOUNTY_MAX_OPEN_CEILING,
   /** A year: long enough to mean "never twice" in practice. */
-  cooldownMaxSeconds: 365 * 86_400,
-  hoursOpenMin: 1,
-  hoursOpenMax: 72,
+  cooldownMaxSeconds: BOUNTY_MAX_COOLDOWN_SECONDS,
+  hoursOpenMin: BOUNTY_MIN_HOURS_OPEN,
+  hoursOpenMax: BOUNTY_MAX_HOURS_OPEN,
   /** What one job may pay, chosen by the agent inside these. */
-  amountMinMicroUsdc: 100_000,
-  amountMaxMicroUsdc: 1_000_000,
+  amountMinMicroUsdc: BOUNTY_MIN_AMOUNT_MICRO_USDC,
+  amountMaxMicroUsdc: BOUNTY_MAX_AMOUNT_MICRO_USDC,
+  /** Entries the judge sees at most, criteria per job, and the text lengths the service accepts. */
+  maxConsidered: BOUNTY_MAX_CONSIDERED,
+  maxCriteria: BOUNTY_MAX_CRITERIA,
+  maxTaskChars: BOUNTY_MAX_TASK_CHARS,
+  maxCriterionChars: BOUNTY_MAX_CRITERION_CHARS,
 } as const;
-export const BOUNTIES_DEFAULTS: AgentBountiesPolicy = { dailyCapMicroUsdc: 5_000_000, maxOpen: 2, cooldownSeconds: 7 * 86_400, defaultHoursOpen: 6, review: false };
+export const BOUNTIES_DEFAULTS: AgentBountiesPolicy = { ...DEFAULT_BOUNTIES_POLICY };
 
 /** What the creator may change from the coin page; only the fields present are applied. */
 export interface AgentConfigChanges {
@@ -372,55 +378,68 @@ export interface AgentConfigChanges {
 // ---------------------------------------------------------------- bounties (supervisor, via /api/agent/[kernel]/bounties)
 
 /**
- * Where a job stands: taking entries, being judged, a payment proposed to the creator, paid, closed with no winner,
- * cancelled, expired unpaid, or failed (the post or the payment did not go through).
+ * Where a job stands (the agent service's `bountyJobStatuses`): a draft waiting to be posted (the creator's review, or a
+ * posting slot), taking entries, being judged, a payment proposed to the creator, paid, closed with no winner,
+ * cancelled, expired unpaid, or failed (the post did not go through).
  */
-export type BountyStatus = 'open' | 'judging' | 'proposed' | 'paid' | 'no_winner' | 'cancelled' | 'expired' | 'failed';
+export type BountyStatus = 'draft' | 'open' | 'judging' | 'proposed' | 'paid' | 'no_winner' | 'cancelled' | 'expired' | 'failed';
 export type CriterionMark = 'pass' | 'fail' | 'insufficient_evidence';
 
 /**
- * One job the agent posted, as the coin page shows it (`GET /api/agent/[kernel]/bounties`). Public by design: no author
- * ids, no reply text, and no address of anyone but the payee ever appear here.
+ * One job the agent posted, as the coin page shows it (`GET /api/agent/[kernel]/bounties`; the agent service's
+ * `BountyJobView`). Public by design: no author ids, no reply text, and no address of anyone but the payee ever appear.
  */
 export interface BountyJob {
-  /** 0x hex, the job's id as the agent service names it. */
+  /** 0x hex, 32 bytes: the job's id as the agent service names it. */
   id: string;
-  /** ISO 8601. */
-  postedAt: string;
+  /** `0x` and the first 16 hex characters of the id: what the job post links and the page anchor (`#bounty-<shortId>`) carry. */
+  shortId: string;
+  status: BountyStatus;
   task: string;
   /** Numbered as written at post time; the judge marks each one. */
   criteria: string[];
   deliverable: 'image' | 'link';
-  /** Decimal string of micro-USDC. */
+  /** USDC as a decimal string ("0.5"), and the same in micro-USDC. */
+  amountUsdc: string;
   amountMicroUsdc: string;
-  /** ISO 8601: when entries stop being taken. */
+  /** ISO 8601: when the agent asked for the job, when the post went out (null for a draft), when entries stop. */
+  createdAt: string;
+  postedAt: string | null;
   closesAt: string;
-  status: BountyStatus;
-  /** The job post on X. */
-  xPostUrl: string | null;
+  /** The job post on X, the job's own anchor on the coin page, and the post's text. */
+  postUrl: string | null;
+  pageUrl: string | null;
+  pageText: string;
   /** Replies seen, those that could be judged, those actually judged (the first 12), and why the rest were not, by reason. */
   entries: { received: number; eligible: number; considered: number; ineligible: Record<string, number> };
   verdict: {
     /** 1-based number of the winning entry among those considered; null when nothing met the job. */
-    winnerEntry: number | null;
-    winnerReplyUrl: string | null;
+    winner: number | null;
+    winningEntryUrl: string | null;
     /** Entry number (as a string key) to its marks, one per criterion. */
     perCriterion: Record<string, CriterionMark[]>;
     reason: string;
-    /** Hash of what the judge saw. */
-    deliveryHash: Hex;
-    judgedAt: string;
     /** Set when the judge's answer was refused in code (out of range, a failing mark, a reason the gate refused). */
-    invalid?: string;
+    invalid: string | null;
+    /** Hashes of what the judge saw and of its reason. */
+    deliveryHash: Hex | null;
+    reasonHash: Hex | null;
+    judgedAt: string | null;
   } | null;
+  /** Present once the verdict named a payee: proposed to the creator, then paid with the creator's transaction. */
   payment: {
+    status: 'proposed' | 'paid';
     payee: Address;
-    amountMicroUsdc: string;
+    amountUsdc: string;
     txHash: Hex | null;
+    txUrl: string | null;
     /** The reply on X that announces the payment. */
     replyUrl: string | null;
     paidAt: string | null;
   } | null;
+  closedAt: string | null;
+  /** The reply under the job post that closed it ("Nothing paid."). */
+  closeReplyUrl: string | null;
 }
 
 export interface AgentBounties {
@@ -453,28 +472,38 @@ export interface AgentFuel {
 export type ApprovalStatus = 'pending_approval' | 'approved' | 'rejected' | 'failed';
 export type ApprovalDecision = 'approve' | 'reject';
 
-/** A bounty payment the agent proposes: the creator pays `payee` from their own wallet and pastes the transaction hash. */
-export interface BountyPaymentRequest {
+/**
+ * The `bounty` block of a `bounty_job` or `bounty_payout` approval (the agent service's `bountyApprovalView`): the job
+ * and its task and amount; for a payout also the payee the creator pays from their own wallet, the judge's reason and
+ * the winning entry, with `txHashRequired` saying the approval needs the paying transaction's hash.
+ */
+export interface BountyApprovalInfo {
+  kind: 'job' | 'payout';
   jobId: string;
-  /** Decimal string of micro-USDC. */
-  amountMicroUsdc: string;
-  payee: Address;
+  task: string;
+  /** USDC as a decimal string ("0.4"); null when the service did not say. */
+  amountUsdc: string | null;
+  payee: Address | null;
   /** The judge's reason, at most 200 characters. */
-  reason: string;
+  reason: string | null;
   /** The winning entry on X. */
-  entryReplyUrl: string | null;
+  entryUrl: string | null;
+  txHashRequired: boolean;
 }
 
+export type ApprovalKind = 'post' | 'reply' | 'bounty_job' | 'bounty_payout';
+
 /**
- * One post or reply the agent wants to send, or one bounty payment it proposes, waiting for (or decided by) the creator.
- * For a `bounty_payment` `text` is the job's task and `bounty` carries the payment; approving one takes the creator's
- * paying transaction hash.
+ * One post or reply the agent wants to send, or one bounty item: a job text waiting to be posted (`bounty_job`, while the
+ * creator's review switch is on; approve posts it, reject cancels the job) or a payout the judge proposed
+ * (`bounty_payout`; approve takes the creator's paying transaction hash, reject closes the job unpaid). `text` is the
+ * post or the job text; `bounty` carries the job and the payment and is null for a post or reply.
  */
 export interface AgentApproval {
   id: string;
-  kind: 'post' | 'reply' | 'bounty_payment';
+  kind: ApprovalKind;
   text: string;
-  bounty: BountyPaymentRequest | null;
+  bounty: BountyApprovalInfo | null;
   /** The X post a reply answers. */
   inReplyTo: string | null;
   /** The attached picture; `dataUrl` only while pending (what the creator previews). */

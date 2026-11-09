@@ -47,7 +47,8 @@ import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './prov
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
-import { autoCloseMentions } from './mention-close.js';
+import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
+import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
@@ -281,6 +282,8 @@ export interface TurnInputs {
   digest?: WeeklyDigestPlan | null;
   /** The platform agent's daily numbers post when one is due this turn (platform-numbers.ts). */
   numbers?: PlatformNumbersPlan | null;
+  /** The conversations of the agent's open bounty jobs (bounties.ts): replies in them are entries, not mentions; read on demand when absent. */
+  bountyConversations?: ReadonlySet<string>;
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
@@ -343,7 +346,7 @@ export function errorCodeOf(error: string | null | undefined): string {
 
 async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null) {
   const now = ctx.now();
-  const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory);
+  const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory, inputs.bountyConversations ?? null);
   const eligible = views.filter((v) => v.eligible);
   const memories = await ctx.memories.recent(agent.agentId, 5);
   const schedule = inputs.schedule;
@@ -380,6 +383,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...coinFeesSection(config, inputs.market),
       // Why the money tools are gone and how to leave the treasury turn a note (treasury turn on only): roles.ts.
       ...treasuryTurnSection(agent.config),
+      // Replies to a bounty job are entries code judges, never mentions to answer (bounties power on only): an observation section, not a prompt line.
+      ...bountyEntriesSection(config, inputs.bountyConversations ?? null),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
@@ -463,6 +468,10 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   // The social role's catalog: everything the agent has, minus the money tools while the treasury turn is on (roles.ts).
   const tools = toolsForPhase(routing, roleTools(ctx, config, agent.config, 'social', { premium }));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
+  // Replies to the agent's open bounty jobs leave the inbox first (closed as `bounty_entry`, bounties.ts), then the
+  // unverified-author pass; the remaining views carry the same decisions the turn's eligibility map will.
+  const bountyConversations = inputs.bountyConversations ?? (await bountyConversationIds(ctx, agent.agentId).catch(() => new Set<string>()));
+  inputs = { ...inputs, bountyConversations, inbox: await closeBountyEntries(ctx, agent, inputs.inbox, bountyConversations) };
   inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
   // A publish that settled while no turn was open (tick.ts `reconcilePending`) counts before this turn is shown anything.
   settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, ctx.now());
@@ -482,7 +491,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
-    eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now(), directory).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
+    eligibility: Object.fromEntries(inboxViews(config, inputs.inbox, ctx.now(), directory, bountyConversations).map((v) => [v.postId, { eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }])),
     recentSteps: [],
     routing,
     digestWeek: inputs.digest?.week ?? null,

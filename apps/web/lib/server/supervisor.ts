@@ -9,7 +9,7 @@
 import { isImageModel } from '@bootr/agent-core';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type BountyJob, type BountyPaymentRequest, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -267,35 +267,50 @@ function microUsdcString(v: unknown): string | null {
 
 /** The judge's reason as the gate lets it through: plain text of at most 200 characters, no address, no link. */
 const REASON_MAX = 200;
+/** USDC as the service writes amounts in its views: a decimal string such as "0.5". */
+const USDC_RE = /^\d{1,9}(\.\d{1,6})?$/;
+const APPROVAL_KINDS: readonly ApprovalKind[] = ['post', 'reply', 'bounty_job', 'bounty_payout'];
 
 /**
- * The payment a `bounty_payment` approval proposes (the contract of docs/design/agent-capabilities.md section 3.3,
- * stage A), read from the item's `bounty` block or from the item itself; null when the payee or the amount is missing.
+ * The `bounty` block of a `bounty_job` or `bounty_payout` approval (the agent service's `bountyApprovalView`). Null when
+ * the block is missing or does not name a job, and for a payout also when the payee is not an address: the console
+ * must never show a payment it cannot describe.
  */
-function bountyPayment(o: Record<string, unknown>): BountyPaymentRequest | null {
-  const b = (o.bounty && typeof o.bounty === 'object' ? o.bounty : o) as Record<string, unknown>;
-  const jobId = typeof b.jobId === 'string' && HASH_RE.test(b.jobId) ? b.jobId : null;
+function bountyInfo(kind: ApprovalKind, o: Record<string, unknown>): BountyApprovalInfo | null {
+  const b = (o.bounty && typeof o.bounty === 'object' ? o.bounty : null) as Record<string, unknown> | null;
+  if (!b) return null;
+  const want = kind === 'bounty_job' ? 'job' : 'payout';
+  const jobId = typeof b.jobId === 'string' && HASH_RE.test(b.jobId) ? b.jobId.toLowerCase() : null;
+  if (b.kind !== want || !jobId) return null;
   const payee = typeof b.payee === 'string' && ADDRESS_RE.test(b.payee) ? (b.payee as Address) : null;
-  const amount = microUsdcString(b.amountMicroUsdc);
-  if (!jobId || !payee || !amount) return null;
-  return { jobId, amountMicroUsdc: amount, payee, reason: str(b.reason, REASON_MAX) ?? '', entryReplyUrl: typeof b.entryReplyUrl === 'string' && /^https:\/\/[^\s]{1,300}$/.test(b.entryReplyUrl) ? b.entryReplyUrl : null };
+  if (want === 'payout' && !payee) return null;
+  const amount = typeof b.amountUsdc === 'string' && USDC_RE.test(b.amountUsdc) ? b.amountUsdc : null;
+  return {
+    kind: want,
+    jobId,
+    task: str(b.task, BOUNTIES_BOUNDS.maxTaskChars) ?? '',
+    amountUsdc: amount,
+    payee: want === 'payout' ? payee : null,
+    reason: want === 'payout' ? (str(b.reason, REASON_MAX) ?? null) : null,
+    entryUrl: want === 'payout' && typeof b.entryUrl === 'string' && X_URL_RE.test(b.entryUrl) ? b.entryUrl : null,
+    txHashRequired: want === 'payout' && b.txHashRequired !== false,
+  };
 }
 
 /**
  * One queue item as the console renders it; null when it is not an approval. Image bytes become a data URL. A
- * `bounty_payment` carries the proposed payment in `bounty` and the job's task in `text` (`task` is read as an alias),
- * and is dropped when the payment block is malformed: the console must never show a payment it cannot describe.
+ * `bounty_job` or `bounty_payout` item carries its job in `bounty` and is dropped when that block is malformed.
  */
 export function sanitizeApproval(raw: unknown): AgentApproval | null {
   const o = (raw ?? {}) as Record<string, unknown>;
   const id = str(o.id, 120);
-  const kind = o.kind === 'reply' ? 'reply' : o.kind === 'post' ? 'post' : o.kind === 'bounty_payment' ? 'bounty_payment' : null;
-  const text = kind === 'bounty_payment' ? (str(o.text, 8000) ?? str(o.task, 8000) ?? '') : str(o.text, 8000);
+  const kind = APPROVAL_KINDS.includes(o.kind as ApprovalKind) ? (o.kind as ApprovalKind) : null;
+  const text = str(o.text, 8000);
   const status = APPROVAL_STATUSES.includes(o.status as AgentApproval['status']) ? (o.status as AgentApproval['status']) : null;
   const createdAt = iso(o.createdAt);
   if (!id || !kind || text === null || !status || !createdAt) return null;
-  const bounty = kind === 'bounty_payment' ? bountyPayment(o) : null;
-  if (kind === 'bounty_payment' && !bounty) return null;
+  const bounty = kind === 'bounty_job' || kind === 'bounty_payout' ? bountyInfo(kind, o) : null;
+  if ((kind === 'bounty_job' || kind === 'bounty_payout') && !bounty) return null;
   let image: AgentApproval['image'] = null;
   if (o.image && typeof o.image === 'object') {
     const im = o.image as { alt?: unknown; mime?: unknown; data?: unknown };
@@ -336,97 +351,126 @@ export function sanitizeApprovals(raw: unknown): AgentApprovals {
 
 // ------------------------------------------------------------------ bounties
 
-const BOUNTY_STATUSES: readonly BountyStatus[] = ['open', 'judging', 'proposed', 'paid', 'no_winner', 'cancelled', 'expired', 'failed'];
+const BOUNTY_STATUSES: readonly BountyStatus[] = ['draft', 'open', 'judging', 'proposed', 'paid', 'no_winner', 'cancelled', 'expired', 'failed'];
 const CRITERION_MARKS: readonly CriterionMark[] = ['pass', 'fail', 'insufficient_evidence'];
 const X_URL_RE = /^https:\/\/(x|twitter)\.com\/[^\s]{1,280}$/;
-/** The longest job text and criterion the console and the page show. */
-const TASK_MAX = 600;
-const CRITERION_MAX = 240;
-const CRITERIA_MAX = 4;
+const SHORT_ID_RE = /^0x[0-9a-fA-F]{16}$/;
+/** The job post's text as the page shows it; the service's own post limit is 4,000. */
+const PAGE_TEXT_MAX = 4000;
 /** Reasons an entry was not judged, by name: bounded so a hostile row cannot grow the page. */
-const INELIGIBLE_REASONS_MAX = 12;
+const INELIGIBLE_REASONS_MAX = 16;
+
+function hashOrNull(v: unknown): Hex | null {
+  return typeof v === 'string' && HASH_RE.test(v) ? (v.toLowerCase() as Hex) : null;
+}
+
+function xUrlOrNull(v: unknown): string | null {
+  return typeof v === 'string' && X_URL_RE.test(v) ? v : null;
+}
 
 /**
- * One job as the public page shows it (the contract of docs/design/agent-capabilities.md section 3.3); null when the
- * row is not a job. Only the fields named here pass: an author id, a reply text, an entry address or any other field
- * the supervisor might add is dropped, the payee is kept only on the payment block and only when it is an address, and
- * the hashes must be 32-byte hex. Strings are capped; the criteria at four of 240 characters.
+ * One job as the public page shows it (the agent service's `BountyJobView`, bounties.ts); null when the row is not a
+ * job. Only the fields named here pass: an author id, a reply text, an entry address or any other field the service
+ * might add is dropped, the payee is kept only on the payment block and only when it is an address, the hashes must be
+ * 32-byte hex and the X links must point at x.com. Strings are capped at the service's own bounds (BOUNTIES_BOUNDS);
+ * `shortId` is checked against the id (and derived from it when missing), since the page anchor is built from it.
  */
 export function sanitizeBountyJob(raw: unknown): BountyJob | null {
   const o = (raw ?? {}) as Record<string, unknown>;
   const id = typeof o.id === 'string' && HASH_RE.test(o.id) ? o.id.toLowerCase() : null;
-  const postedAt = iso(o.postedAt);
+  const createdAt = iso(o.createdAt);
   const closesAt = iso(o.closesAt);
-  const task = str(o.task, TASK_MAX);
-  const amount = microUsdcString(o.amountMicroUsdc);
+  const task = str(o.task, BOUNTIES_BOUNDS.maxTaskChars);
+  const amountMicroUsdc = microUsdcString(o.amountMicroUsdc);
   const status = BOUNTY_STATUSES.includes(o.status as BountyStatus) ? (o.status as BountyStatus) : null;
   const deliverable = o.deliverable === 'image' || o.deliverable === 'link' ? o.deliverable : null;
-  if (!id || !postedAt || !closesAt || !task || !amount || !status || !deliverable) return null;
-  const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, CRITERION_MAX)).filter((c): c is string => !!c).slice(0, CRITERIA_MAX);
+  if (!id || !createdAt || !closesAt || !task || !amountMicroUsdc || !status || !deliverable) return null;
+  const shortId = typeof o.shortId === 'string' && SHORT_ID_RE.test(o.shortId) && id.startsWith(o.shortId.toLowerCase()) ? o.shortId.toLowerCase() : id.slice(0, 18);
+  const amountUsdc = typeof o.amountUsdc === 'string' && USDC_RE.test(o.amountUsdc) ? o.amountUsdc : String(Number(amountMicroUsdc) / 1_000_000);
+  const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, BOUNTIES_BOUNDS.maxCriterionChars)).filter((c): c is string => !!c).slice(0, BOUNTIES_BOUNDS.maxCriteria);
   const e = (o.entries && typeof o.entries === 'object' ? o.entries : {}) as Record<string, unknown>;
   const ineligible: Record<string, number> = {};
   for (const [reason, n] of Object.entries((e.ineligible && typeof e.ineligible === 'object' ? e.ineligible : {}) as Record<string, unknown>).slice(0, INELIGIBLE_REASONS_MAX)) {
     if (/^[\w ]{1,40}$/.test(reason) && Number.isInteger(n) && (n as number) > 0) ineligible[reason] = n as number;
   }
-  const entries = { received: whole(e.received, 0, 1_000_000, 0), eligible: whole(e.eligible, 0, 1_000_000, 0), considered: whole(e.considered, 0, 12, 0), ineligible };
+  const entries = { received: whole(e.received, 0, 1_000_000, 0), eligible: whole(e.eligible, 0, 1_000_000, 0), considered: whole(e.considered, 0, BOUNTIES_BOUNDS.maxConsidered, 0), ineligible };
 
   let verdict: BountyJob['verdict'] = null;
   if (o.verdict && typeof o.verdict === 'object') {
     const v = o.verdict as Record<string, unknown>;
-    const judgedAt = iso(v.judgedAt);
-    const deliveryHash = typeof v.deliveryHash === 'string' && HASH_RE.test(v.deliveryHash) ? (v.deliveryHash.toLowerCase() as Hex) : null;
-    if (judgedAt && deliveryHash) {
-      const winnerEntry = Number.isInteger(v.winnerEntry) && (v.winnerEntry as number) >= 1 && (v.winnerEntry as number) <= 12 ? (v.winnerEntry as number) : null;
-      const perCriterion: Record<string, CriterionMark[]> = {};
-      for (const [entry, marks] of Object.entries((v.perCriterion && typeof v.perCriterion === 'object' ? v.perCriterion : {}) as Record<string, unknown>).slice(0, 12)) {
-        if (!/^\d{1,2}$/.test(entry) || !Array.isArray(marks)) continue;
-        perCriterion[entry] = marks.slice(0, CRITERIA_MAX).map((m) => (CRITERION_MARKS.includes(m as CriterionMark) ? (m as CriterionMark) : 'insufficient_evidence'));
-      }
-      const invalid = str(v.invalid, 200);
-      verdict = {
-        winnerEntry,
-        winnerReplyUrl: typeof v.winnerReplyUrl === 'string' && X_URL_RE.test(v.winnerReplyUrl) ? v.winnerReplyUrl : null,
-        perCriterion,
-        reason: str(v.reason, REASON_MAX) ?? '',
-        deliveryHash,
-        judgedAt,
-        ...(invalid ? { invalid } : {}),
-      };
+    const winner = Number.isInteger(v.winner) && (v.winner as number) >= 1 && (v.winner as number) <= BOUNTIES_BOUNDS.maxConsidered ? (v.winner as number) : null;
+    const perCriterion: Record<string, CriterionMark[]> = {};
+    for (const [entry, marks] of Object.entries((v.perCriterion && typeof v.perCriterion === 'object' ? v.perCriterion : {}) as Record<string, unknown>).slice(0, BOUNTIES_BOUNDS.maxConsidered)) {
+      if (!/^\d{1,2}$/.test(entry) || !Array.isArray(marks)) continue;
+      perCriterion[entry] = marks.slice(0, BOUNTIES_BOUNDS.maxCriteria).map((m) => (CRITERION_MARKS.includes(m as CriterionMark) ? (m as CriterionMark) : 'insufficient_evidence'));
     }
+    verdict = {
+      winner,
+      winningEntryUrl: xUrlOrNull(v.winningEntryUrl),
+      perCriterion,
+      reason: str(v.reason, REASON_MAX) ?? '',
+      invalid: str(v.invalid, 200) || null,
+      deliveryHash: hashOrNull(v.deliveryHash),
+      reasonHash: hashOrNull(v.reasonHash),
+      judgedAt: iso(v.judgedAt),
+    };
   }
 
   let payment: BountyJob['payment'] = null;
   if (o.payment && typeof o.payment === 'object') {
     const p = o.payment as Record<string, unknown>;
     const payee = typeof p.payee === 'string' && ADDRESS_RE.test(p.payee) ? (p.payee as Address) : null;
-    const paid = microUsdcString(p.amountMicroUsdc);
-    if (payee && paid) {
+    const pStatus = p.status === 'proposed' || p.status === 'paid' ? p.status : status === 'paid' ? 'paid' : status === 'proposed' ? 'proposed' : null;
+    if (payee && pStatus) {
+      const txHash = hashOrNull(p.txHash);
       payment = {
+        status: pStatus,
         payee,
-        amountMicroUsdc: paid,
-        txHash: typeof p.txHash === 'string' && HASH_RE.test(p.txHash) ? (p.txHash.toLowerCase() as Hex) : null,
-        replyUrl: typeof p.replyUrl === 'string' && X_URL_RE.test(p.replyUrl) ? p.replyUrl : null,
+        amountUsdc: typeof p.amountUsdc === 'string' && USDC_RE.test(p.amountUsdc) ? p.amountUsdc : amountUsdc,
+        txHash,
+        txUrl: txHash && typeof p.txUrl === 'string' && /^https:\/\/(sepolia\.)?basescan\.org\/tx\/0x[0-9a-fA-F]{64}$/.test(p.txUrl) ? p.txUrl : null,
+        replyUrl: xUrlOrNull(p.replyUrl),
         paidAt: iso(p.paidAt),
       };
     }
   }
 
-  return { id, postedAt, task, criteria, deliverable, amountMicroUsdc: amount, closesAt, status, xPostUrl: typeof o.xPostUrl === 'string' && X_URL_RE.test(o.xPostUrl) ? o.xPostUrl : null, entries, verdict, payment };
+  return {
+    id,
+    shortId,
+    status,
+    task,
+    criteria,
+    deliverable,
+    amountUsdc,
+    amountMicroUsdc,
+    createdAt,
+    postedAt: iso(o.postedAt),
+    closesAt,
+    postUrl: xUrlOrNull(o.postUrl),
+    pageUrl: httpsUrl(o.pageUrl),
+    pageText: str(o.pageText, PAGE_TEXT_MAX) ?? '',
+    entries,
+    verdict,
+    payment,
+    closedAt: iso(o.closedAt),
+    closeReplyUrl: xUrlOrNull(o.closeReplyUrl),
+  };
 }
 
-/** The job list as the page shows it: open jobs first, then newest first; rows that are not jobs are dropped. */
+/** The job list as the page shows it: jobs in motion first, then newest first; rows that are not jobs are dropped. */
 export function sanitizeBounties(raw: unknown): AgentBounties {
   const o = (raw ?? {}) as { jobs?: unknown };
   const jobs = (Array.isArray(o.jobs) ? o.jobs : []).map(sanitizeBountyJob).filter((j): j is BountyJob => j !== null);
   return { jobs: sortBounties(jobs) };
 }
 
-const OPEN_STATUSES: readonly BountyStatus[] = ['open', 'judging', 'proposed'];
+const IN_MOTION: readonly BountyStatus[] = ['draft', 'open', 'judging', 'proposed'];
 
-/** Jobs still in motion (open, judging, a payment proposed) first, then the rest, each group newest first. */
+/** Jobs still in motion (waiting to be posted, open, judging, a payment proposed) first, then the rest, each group newest first. */
 export function sortBounties(jobs: BountyJob[]): BountyJob[] {
-  const rank = (j: BountyJob) => (OPEN_STATUSES.includes(j.status) ? 0 : 1);
-  return [...jobs].sort((a, b) => rank(a) - rank(b) || Date.parse(b.postedAt) - Date.parse(a.postedAt));
+  const rank = (j: BountyJob) => (IN_MOTION.includes(j.status) ? 0 : 1);
+  return [...jobs].sort((a, b) => rank(a) - rank(b) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 /** A 32-byte transaction hash as the creator pastes it, lower-cased; null for anything else. */
@@ -509,20 +553,27 @@ export async function decideAgentApproval(agentId: string, approvalId: string, b
   return item;
 }
 
-/** `GET /internal/agents/:id/bounties` → `{jobs}`: every job the agent posted, open ones first. Unknown agent = none. */
-export async function getAgentBounties(agentId: string): Promise<AgentBounties> {
-  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/bounties`);
+export const BOUNTIES_LIMIT_DEFAULT = 20;
+export const BOUNTIES_LIMIT_MAX = 100;
+
+/** `GET /internal/agents/:id/bounties?limit=` → `{jobs}`: the agent's jobs, re-shaped and jobs in motion first. Unknown agent = none. */
+export async function getAgentBounties(agentId: string, opts: { limit?: number } = {}): Promise<AgentBounties> {
+  const limit = Math.min(BOUNTIES_LIMIT_MAX, Math.max(1, Math.trunc(opts.limit ?? BOUNTIES_LIMIT_DEFAULT)));
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/bounties?limit=${limit}`);
   if (res.status === 404) return { jobs: [] };
   if (!res.ok) throw await errorOf(res);
   return sanitizeBounties(await res.json());
 }
 
-/** `GET /internal/agents/:id/bounties/:jobId` → one job; null when the agent or the job is unknown. */
+/** A job id as the routes take it: the 32-byte id, or the 16-hex prefix the job post and the page anchor carry. */
+export const BOUNTY_JOB_ID_RE = /^0x(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{16})$/;
+
+/** `GET /internal/agents/:id/bounties/:jobId` → `{job}`; null when the agent or the job is unknown. */
 export async function getAgentBounty(agentId: string, jobId: string): Promise<BountyJob | null> {
   const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/bounties/${encodeURIComponent(jobId)}`);
   if (res.status === 404) return null;
   if (!res.ok) throw await errorOf(res);
-  return sanitizeBountyJob(await res.json());
+  return sanitizeBountyJob(((await res.json()) as { job?: unknown }).job);
 }
 
 const NOTIFICATION_TONES: readonly AgentNotification['tone'][] = ['info', 'warning', 'danger'];

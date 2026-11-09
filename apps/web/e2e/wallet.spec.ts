@@ -218,7 +218,7 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await expect(page.getByText(/Rejected\. The agent will see your note/)).toBeVisible();
   // The bounty payment stays: it is the creator's to pay from their own wallet, and this walk does not.
   await expect(items).toHaveCount(1);
-  await expect(items.first()).toHaveAttribute('data-kind', 'bounty_payment');
+  await expect(items.first()).toHaveAttribute('data-kind', 'bounty_payout');
   await expect(console_.getByTestId('approvals-pending')).toHaveText('1 pending');
   // Switching review off is a config change like any other; the save bar follows the edit onto a non-settings tab.
   await tab('Posting').click();

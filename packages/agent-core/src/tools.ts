@@ -202,6 +202,27 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
     'money',
     false,
   ),
+  bounty_post: define(
+    'bounty_post',
+    'Post one small job in public (a bounty): what you want made, 1 to 4 acceptance criteria, whether an image or a link is wanted, and 0.1 to 1 USDC for the best entry. The job asks for work you will use (a picture for a post, a page you will cite), never for a post, a tweet, a follow, a like, a repost or any promotion; no address and no cashtag but your own in the text. Code publishes it from a fixed template as one of your original posts, collects the replies when the window closes, judges them and proposes the payment to your creator; you never name a winner. Refused outside your daily cap, your open-job cap or the bounds.',
+    'bounties',
+    'write',
+    false,
+  ),
+  bounty_cancel: define(
+    'bounty_cancel',
+    'Cancel one of your open or waiting bounty jobs by jobId. Its reservation is released and the job is closed in public; entries already made are not judged.',
+    'bounties',
+    'write',
+    true,
+  ),
+  bounty_list: define(
+    'bounty_list',
+    'List your bounty jobs: open and recent ones with their status, close time, entry counts and verdict. Never the entries themselves.',
+    'bounties',
+    'read',
+    true,
+  ),
 };
 
 export const TOOL_LIST: readonly ToolDefinition[] = Object.values(TOOLS) as ToolDefinition[];

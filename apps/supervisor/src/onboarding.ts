@@ -121,7 +121,7 @@ export const PLATFORM_POST_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * should opt into). Like every other agent's powers they are edited through the config API (`withWorkerPreset`), so
  * images can be switched on from the console; the 6 h cadence and the platform persona are not touched by that.
  */
-export const PLATFORM_CAPABILITIES = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false } as const;
+export const PLATFORM_CAPABILITIES = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false, bounties: false } as const;
 
 /**
  * The platform persona: the full job description of the host, the builder who runs Bootr, in plain words. Read by

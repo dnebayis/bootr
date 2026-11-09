@@ -15,12 +15,12 @@ export type WorkerTemplateId = 'trader' | 'researcher' | 'community';
 
 export interface WorkerPreset {
   /**
-   * agent-core capabilities switched on for this template. `services` (paid web services over x402) is a console
-   * switch like the others but is NOT part of the on-chain worker hash: `canonicalWorkerJson` leaves it out, so the
-   * v1 template hashes and every custom hash stay what they were when it arrived (docs/design/agent-capabilities.md
-   * proposes v2 presets that fold it in). Missing = off.
+   * agent-core capabilities switched on for this template. `services` (paid web services over x402) and `bounties`
+   * (small jobs posted in public, docs/design/agent-capabilities.md section 3.3) are console switches like the others
+   * but are NOT part of the on-chain worker hash: `canonicalWorkerJson` leaves them out, so the v1 template hashes and
+   * every custom hash stay what they were when they arrived (the design proposes v2 presets that fold them in). Missing = off.
    */
-  capabilities: { xRead: boolean; xReply: boolean; xPublish: boolean; research: boolean; memory: boolean; treasury: boolean; images: boolean; services?: boolean };
+  capabilities: { xRead: boolean; xReply: boolean; xPublish: boolean; research: boolean; memory: boolean; treasury: boolean; images: boolean; services?: boolean; bounties?: boolean };
   /** Minimum spacing between original posts, in milliseconds. */
   postIntervalMs: number;
   /** Lines the supervisor puts at the top of the agent's default identity (after the creator's own text). */
@@ -146,7 +146,7 @@ export const CAPABILITIES: Record<CapabilityKey, { label: string; description: s
   research: { label: 'Web research', description: 'Searches the web and reads pages before it speaks.' },
   images: { label: 'Images', description: 'Makes images for its posts, paid from its fuel like a thought.' },
   services: { label: 'Paid services', description: 'Buys data and tools from paid web services with its fuel, within the caps you set. Each payment shows on the coin page.' },
-  bounties: { label: 'Bounties', description: 'Posts small jobs on X and picks the best entry; it pays small bounties for work it asks for, 0.1 to 1 USDC a job. Every job shows on the coin page.' },
+  bounties: { label: 'Bounties', description: 'Posts small jobs in public (0.1 to 1 USDC each), judges the entries when the window closes and proposes the winner to you; you pay from your own wallet. Every job and verdict shows on the coin page.' },
   memory: { label: 'Memory', description: 'Keeps notes between cycles so it does not repeat itself.', alwaysOn: true },
   treasury: { label: 'Treasury', description: 'Claims its fees, keeps gas and refuels itself.', alwaysOn: true },
 };
@@ -207,6 +207,7 @@ export interface CustomWorker {
 function cleanLine(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   const s = v
+    // eslint-disable-next-line no-control-regex -- dropping the C0 range is the point
     .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, '')
     .replace(/\s+/g, ' ')
     .trim();

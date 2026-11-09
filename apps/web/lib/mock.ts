@@ -858,7 +858,7 @@ export const mock = {
       const next = { ...cfg.bounties, ...changes.bounties };
       if (JSON.stringify(next) !== JSON.stringify(cfg.bounties)) {
         cfg.bounties = next;
-        fields.push('bounties bounds');
+        fields.push('bounty caps');
       }
     }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
@@ -930,7 +930,9 @@ export const mock = {
   },
   /** The review queue of the agent's posts (lib/types AgentApprovals); `all` includes decided items. */
   agentApprovals(kernel: string, status: 'pending' | 'all' = 'pending'): AgentApprovals {
-    const list = approvalsFor(kernel);
+    // A job text waits for the creator only while "Review every job text first" is on; off, the server posts it at once.
+    const review = configFor(kernel).bounties.review;
+    const list = approvalsFor(kernel).filter((a) => a.kind !== 'bounty_job' || review || a.status !== 'pending_approval');
     const items = status === 'all' ? list : list.filter((a) => a.status === 'pending_approval');
     return clone({ items, pending: list.filter((a) => a.status === 'pending_approval').length });
   },
@@ -942,7 +944,7 @@ export const mock = {
     const item = approvalsFor(kernel).find((a) => a.id === approvalId);
     if (!item) return { ok: false, status: 404, error: 'not_found', message: 'No such item.' };
     if (item.status !== 'pending_approval') return { ok: false, status: 409, error: 'already_decided', message: `This item is ${item.status}.` };
-    if (item.kind === 'bounty_payment' && decision === 'approve' && !txHash) return { ok: false, status: 400, error: 'tx_required', message: 'A bounty payment is approved with the hash of your paying transaction.' };
+    if (item.kind === 'bounty_payout' && decision === 'approve' && !txHash) return { ok: false, status: 400, error: 'tx_hash_required', message: 'approving a bounty payout needs txHash, the hash of the transaction that paid the winner' };
     const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
     const at = new Date().toISOString();
     item.decision = decision;
@@ -950,20 +952,48 @@ export const mock = {
     item.decidedAt = at;
     item.note = note;
     delete item.image?.dataUrl;
-    if (item.kind === 'bounty_payment' && item.bounty) {
-      // The job the payment belongs to closes the way the supervisor would close it: paid with the creator's transaction, or
-      // cancelled when the creator refuses to pay. Both land on the tape.
+    if ((item.kind === 'bounty_payout' || item.kind === 'bounty_job') && item.bounty) {
+      // The job settles the way the agent service settles it (bounties.ts `decideBountyApproval`): a payout approved with the
+      // creator's transaction pays the job, a declined payout closes it `no_winner` with "Nothing paid."; an approved job text
+      // posts the job, a rejected one cancels it. The tape gets the row in plain words.
       const job = bountiesFor(kernel).find((j) => j.id === item.bounty!.jobId);
-      const amount = (Number(item.bounty.amountMicroUsdc) / 1e6).toFixed(2);
-      if (decision === 'approve') {
+      const amount = `${Number(item.bounty.amountUsdc ?? 0).toFixed(2)} USDC`;
+      const postUrl = (k: number) => (t?.xHandle ? `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(parseInt(t.agentId, 10) || 0) * 10n + BigInt(k))}` : null);
+      if (item.kind === 'bounty_payout') {
+        if (decision === 'approve') {
+          item.status = 'approved';
+          const hash = txHash!.toLowerCase() as Hex;
+          if (job && job.payment) {
+            job.status = 'paid';
+            job.payment = { ...job.payment, status: 'paid', txHash: hash, txUrl: `https://sepolia.basescan.org/tx/${hash}`, replyUrl: postUrl(26), paidAt: at };
+          }
+          activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty paid: ${amount} to ${item.bounty.payee!.slice(0, 6)}…${item.bounty.payee!.slice(-4)}, by the creator.`, txHash: hash });
+        } else {
+          item.status = 'rejected';
+          if (job) {
+            job.status = 'no_winner';
+            job.payment = null;
+            job.closedAt = at;
+            job.closeReplyUrl = postUrl(27);
+          }
+          activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty closed unpaid: the creator declined the ${amount} payment. Nothing paid.` });
+        }
+      } else if (decision === 'approve') {
         item.status = 'approved';
-        if (job) job.status = 'paid';
-        if (job) job.payment = { payee: item.bounty.payee, amountMicroUsdc: item.bounty.amountMicroUsdc, txHash: txHash!.toLowerCase() as Hex, replyUrl: null, paidAt: at };
-        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty paid: ${amount} USDC to ${item.bounty.payee.slice(0, 6)}…${item.bounty.payee.slice(-4)} for "${item.text}", by the creator.`, txHash: txHash!.toLowerCase() as Hex });
+        if (job) {
+          job.status = 'open';
+          job.postedAt = at;
+          job.postUrl = postUrl(28);
+          job.closesAt = new Date(Date.now() + 6 * 3_600_000).toISOString();
+        }
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${item.bounty.task}"`, ...(job?.postUrl ? { url: job.postUrl } : {}) });
       } else {
         item.status = 'rejected';
-        if (job) job.status = 'cancelled';
-        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty not paid: the creator declined the ${amount} USDC payment for "${item.text}".` });
+        if (job) {
+          job.status = 'cancelled';
+          job.closedAt = at;
+        }
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty cancelled before it was posted: the creator did not approve the job text.` });
       }
       const tape = activityFor(kernel);
       const idx = tape.findIndex((row) => row.kind === 'approval_pending' && row.at === item.createdAt);
@@ -1006,13 +1036,19 @@ export const mock = {
     const list = activityFor(kernel).filter((it) => !Number.isFinite(cutoff) || Date.parse(it.at) < cutoff);
     return clone({ items: list.slice(0, opts.limit) });
   },
-  /** The jobs the agent posted (lib/types AgentBounties), jobs in motion first then newest first; none for most coins. */
-  agentBounties(kernel: string): AgentBounties {
-    return clone({ jobs: bountiesFor(kernel) });
+  /**
+   * The jobs the agent posted (lib/types AgentBounties), jobs in motion first then newest first; none for most coins. The
+   * draft job (a text waiting for the creator) shows only while the creator's review switch is on, as on the server a
+   * draft without review is posted at once.
+   */
+  agentBounties(kernel: string, limit = 20): AgentBounties {
+    const review = configFor(kernel).bounties.review;
+    return clone({ jobs: bountiesFor(kernel).filter((j) => review || j.status !== 'draft').slice(0, limit) });
   },
-  /** One job by id (lower-case hex); null when the agent has no such job. */
+  /** One job by its full id or its 16-hex short id (lower-case hex); null when the agent has no such job. */
   agentBounty(kernel: string, jobId: string): BountyJob | null {
-    const job = bountiesFor(kernel).find((j) => j.id === jobId.toLowerCase());
+    const key = jobId.toLowerCase();
+    const job = bountiesFor(kernel).find((j) => j.id === key || j.shortId === key);
     return job ? clone(job) : null;
   },
   /** Posts by ERC-8004 agent id; null for an id the mock store does not know. */
@@ -1132,9 +1168,9 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
   }
   // The bounties, in plain words: the post, the verdict, the payment (the creator's, in stage A).
   for (const j of buildBounties(t)) {
-    const amount = `${(Number(j.amountMicroUsdc) / 1e6).toFixed(2)} USDC`;
-    items.push({ at: j.postedAt, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${j.task}"`, ...(j.xPostUrl ? { url: j.xPostUrl } : {}) });
-    if (j.verdict) items.push({ at: j.verdict.judgedAt, kind: 'bounty', summary: j.verdict.winnerEntry ? `Bounty judged: entry ${j.verdict.winnerEntry} of ${j.entries.considered} met the job. ${j.verdict.reason}` : 'Bounty closed: no entry met the job; nothing paid.', ...(j.verdict.winnerReplyUrl ? { url: j.verdict.winnerReplyUrl } : {}) });
+    const amount = `${Number(j.amountUsdc).toFixed(2)} USDC`;
+    if (j.postedAt) items.push({ at: j.postedAt, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${j.task}"`, ...(j.postUrl ? { url: j.postUrl } : {}) });
+    if (j.verdict?.judgedAt) items.push({ at: j.verdict.judgedAt, kind: 'bounty', summary: j.verdict.winner ? `Judged a bounty: entry ${j.verdict.winner} of ${j.entries.considered} won. ${j.verdict.reason}` : 'Bounty closed: no entry met the job. Nothing paid.', ...(j.verdict.winningEntryUrl ? { url: j.verdict.winningEntryUrl } : {}) });
     if (j.payment?.paidAt) items.push({ at: j.payment.paidAt, kind: 'bounty', summary: `Bounty paid: ${amount} to ${j.payment.payee.slice(0, 6)}…${j.payment.payee.slice(-4)}, by the creator.`, ...(j.payment.txHash ? { txHash: j.payment.txHash } : {}) });
   }
   if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
@@ -1175,28 +1211,17 @@ function buildApprovals(t: Token): AgentApproval[] {
     { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
     { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800), bounty: null },
   ];
-  // The job whose payment waits for the creator (stage A of Bounties: the creator pays from their own wallet). Listed
+  // The job whose payout waits for the creator (stage A of Bounties: the creator pays from their own wallet). Listed
   // after the posts, which came in later: the queue shows the newest first and the e2e specs walk it in that order.
-  const proposed = buildBounties(t).find((j) => j.status === 'proposed');
-  if (proposed?.verdict) {
-    const createdAt = proposed.verdict.judgedAt;
-    items.push({
-      id: `act_${n}b1`,
-      kind: 'bounty_payment',
-      text: proposed.task,
-      bounty: { jobId: proposed.id, amountMicroUsdc: proposed.amountMicroUsdc, payee: BOUNTY_PAYEE, reason: proposed.verdict.reason, entryReplyUrl: proposed.verdict.winnerReplyUrl },
-      inReplyTo: null,
-      image: null,
-      status: 'pending_approval',
-      decision: null,
-      decidedBy: null,
-      note: null,
-      url: null,
-      createdAt,
-      decidedAt: null,
-      expiresAt: new Date(Date.parse(createdAt) + 48 * 3_600_000).toISOString(),
-    });
+  const jobs = buildBounties(t);
+  const proposed = jobs.find((j) => j.status === 'proposed');
+  const pending = (id: string, kind: AgentApproval['kind'], text: string, bounty: AgentApproval['bounty'], createdAt: string): AgentApproval => ({ id, kind, text, bounty, inReplyTo: null, image: null, status: 'pending_approval', decision: null, decidedBy: null, note: null, url: null, createdAt, decidedAt: null, expiresAt: new Date(Date.parse(createdAt) + 48 * 3_600_000).toISOString() });
+  if (proposed?.verdict?.judgedAt && proposed.payment) {
+    items.push(pending(`bounty-pay-${proposed.id.slice(2)}`, 'bounty_payout', `Pay ${proposed.amountUsdc} USDC to ${proposed.payment.payee} for "${proposed.task}"`, { kind: 'payout', jobId: proposed.id, task: proposed.task, amountUsdc: proposed.amountUsdc, payee: proposed.payment.payee, reason: proposed.verdict.reason, entryUrl: proposed.verdict.winningEntryUrl, txHashRequired: true }, proposed.verdict.judgedAt));
   }
+  // The job text waiting to be posted; shown only while the creator's review switch is on (`agentApprovals`).
+  const draft = jobs.find((j) => j.status === 'draft');
+  if (draft) items.push(pending(`act_${n}bj`, 'bounty_job', draft.pageText, { kind: 'job', jobId: draft.id, task: draft.task, amountUsdc: draft.amountUsdc, payee: null, reason: null, entryUrl: null, txHashRequired: false }, draft.createdAt));
   return items;
 }
 
@@ -1213,67 +1238,90 @@ function buildBounties(t: Token): BountyJob[] {
   const at = (ageS: number) => new Date(now - ageS * 1000).toISOString();
   const r = mulberry32((parseInt(t.kernel.slice(-8), 16) ^ 0xb0b0) >>> 0);
   const id = () => hex(r, 32).toLowerCase();
+  const h32 = () => hex(r, 32).toLowerCase() as Hex;
   const n = parseInt(t.agentId, 10) || 0;
   const postUrl = (k: number) => (t.xHandle ? `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(n) * 10n + BigInt(k))}` : null);
-  const entryUrl = (k: number) => `https://x.com/entrant${k}/status/${String(1851000000000000000n + BigInt(n) * 10n + BigInt(k))}`;
+  const entryUrl = (k: number) => `https://x.com/i/status/${String(1851000000000000000n + BigInt(n) * 10n + BigInt(k))}`;
+  const pageUrl = (jobId: string) => `https://bootr.fun/token/${t.id.toLowerCase()}#bounty-${jobId.slice(0, 18)}`;
   const H = 3600;
+  const usdc = (micro: string) => String(Number(micro) / 1e6);
+  const utc = (iso: string) => `${iso.slice(0, 16).replace('T', ' ')} UTC`;
+  // The job post, from the agent service's template (bounties.ts `jobPostText`).
+  const post = (task: string, micro: string, deliverable: 'image' | 'link', closesAt: string, jobId: string) => `Bounty: ${task} ${usdc(micro)} USDC to the best entry. Reply with your ${deliverable} and your Base address by ${utc(closesAt)}; the first 12 entries are considered. By replying you let @${t.xHandle ?? 'owl_agent'} repost your entry with credit. Details: ${pageUrl(jobId)}`;
+  const job = (p: { id: string; status: BountyJob['status']; task: string; criteria: string[]; deliverable: 'image' | 'link'; micro: string; createdAt: string; postedAt: string | null; closesAt: string; postUrl: string | null; entries?: BountyJob['entries']; verdict?: BountyJob['verdict']; payment?: BountyJob['payment']; closedAt?: string | null; closeReplyUrl?: string | null }): BountyJob => ({
+    id: p.id,
+    shortId: p.id.slice(0, 18),
+    status: p.status,
+    task: p.task,
+    criteria: p.criteria,
+    deliverable: p.deliverable,
+    amountUsdc: usdc(p.micro),
+    amountMicroUsdc: p.micro,
+    createdAt: p.createdAt,
+    postedAt: p.postedAt,
+    closesAt: p.closesAt,
+    postUrl: p.postUrl,
+    pageUrl: pageUrl(p.id),
+    pageText: post(p.task, p.micro, p.deliverable, p.closesAt, p.id),
+    entries: p.entries ?? { received: 0, eligible: 0, considered: 0, ineligible: {} },
+    verdict: p.verdict ?? null,
+    payment: p.payment ?? null,
+    closedAt: p.closedAt ?? null,
+    closeReplyUrl: p.closeReplyUrl ?? null,
+  });
+  const [openId, draftId, proposedId, paidId, noneId] = [id(), id(), id(), id(), id()] as [string, string, string, string, string];
+  const paidTx = h32();
   return [
-    {
-      id: id(),
-      postedAt: at(2 * H),
-      task: `A picture of an owl reading a ledger, in the style of the $${t.symbol} coin image.`,
-      criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No words on the picture'],
-      deliverable: 'image',
-      amountMicroUsdc: '500000',
-      closesAt: at(-4 * H),
-      status: 'open',
-      xPostUrl: postUrl(21),
-      entries: { received: 0, eligible: 0, considered: 0, ineligible: {} },
-      verdict: null,
-      payment: null,
-    },
-    {
-      id: id(),
-      postedAt: at(30 * H),
+    job({ id: openId, status: 'open', task: `A picture of an owl reading a ledger, in the style of the $${t.symbol} coin image.`, criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No words on the picture'], deliverable: 'image', micro: '500000', createdAt: at(2 * H + 120), postedAt: at(2 * H), closesAt: at(-4 * H), postUrl: postUrl(21) }),
+    // Written while the creator's review switch is on; shown, and its text queued, only then (`agentBounties`, `agentApprovals`).
+    job({ id: draftId, status: 'draft', task: 'A short public page that lists this coin’s milestones from its launch to today, with dates.', criteria: ['Every milestone carries a date', 'Nothing about price', 'Links the coin page as its source'], deliverable: 'link', micro: '300000', createdAt: at(900), postedAt: null, closesAt: at(-6 * H), postUrl: null }),
+    job({
+      id: proposedId,
+      status: 'proposed',
       task: 'A public page, in your own words, that explains how this coin’s swap fee is split and who can claim each share.',
       criteria: ['Names all four shares', 'Says the split is locked at launch', 'Links the coin page or Basescan as its source'],
       deliverable: 'link',
-      amountMicroUsdc: '400000',
+      micro: '400000',
+      createdAt: at(30 * H + 60),
+      postedAt: at(30 * H),
       closesAt: at(24 * H),
-      status: 'proposed',
-      xPostUrl: postUrl(22),
-      entries: { received: 5, eligible: 3, considered: 3, ineligible: { no_address: 1, young_account: 1 } },
-      verdict: { winnerEntry: 1, winnerReplyUrl: entryUrl(1), perCriterion: { '1': ['pass', 'pass', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'pass', 'insufficient_evidence'] }, reason: 'A short page that names the four shares, says the split is fixed at launch and links the coin page.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(23 * H) },
-      payment: null,
-    },
-    {
-      id: id(),
-      postedAt: at(3 * 86400),
+      postUrl: postUrl(22),
+      entries: { received: 5, eligible: 3, considered: 3, ineligible: { no_address: 1, account_too_new: 1 } },
+      verdict: { winner: 1, winningEntryUrl: entryUrl(1), perCriterion: { '1': ['pass', 'pass', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'pass', 'insufficient_evidence'] }, reason: 'A short page that names the four shares, says the split is fixed at launch and links the coin page.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(23 * H) },
+      payment: { status: 'proposed', payee: BOUNTY_PAYEE, amountUsdc: '0.4', txHash: null, txUrl: null, replyUrl: null, paidAt: null },
+    }),
+    job({
+      id: paidId,
+      status: 'paid',
       task: 'A picture of the coin’s mascot owl at a night desk, for the agent’s next recap post.',
       criteria: ['An owl at a desk', 'It is night', 'No words on the picture'],
       deliverable: 'image',
-      amountMicroUsdc: '500000',
+      micro: '500000',
+      createdAt: at(3 * 86400 + 60),
+      postedAt: at(3 * 86400),
       closesAt: at(3 * 86400 - 6 * H),
-      status: 'paid',
-      xPostUrl: postUrl(23),
+      postUrl: postUrl(23),
       entries: { received: 7, eligible: 4, considered: 4, ineligible: { no_address: 2, duplicate_media: 1 } },
-      verdict: { winnerEntry: 2, winnerReplyUrl: entryUrl(2), perCriterion: { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'pass'], '3': ['fail', 'pass', 'pass'], '4': ['pass', 'pass', 'fail'] }, reason: 'An owl at a desk lit by one lamp, night sky in the window, no words.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(3 * 86400 - 6 * H - 300) },
-      payment: { payee: BOUNTY_PAYEE, amountMicroUsdc: '500000', txHash: hex(r, 32).toLowerCase() as Hex, replyUrl: postUrl(24), paidAt: at(3 * 86400 - 8 * H) },
-    },
-    {
-      id: id(),
-      postedAt: at(5 * 86400),
+      verdict: { winner: 2, winningEntryUrl: entryUrl(2), perCriterion: { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'pass'], '3': ['fail', 'pass', 'pass'], '4': ['pass', 'pass', 'fail'] }, reason: 'An owl at a desk lit by one lamp, night sky in the window, no words.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(3 * 86400 - 6 * H - 300) },
+      payment: { status: 'paid', payee: BOUNTY_PAYEE, amountUsdc: '0.5', txHash: paidTx, txUrl: `https://sepolia.basescan.org/tx/${paidTx}`, replyUrl: postUrl(24), paidAt: at(3 * 86400 - 8 * H) },
+      closedAt: at(3 * 86400 - 8 * H),
+    }),
+    job({
+      id: noneId,
+      status: 'no_winner',
       task: 'A picture of an owl counting coins on a scale.',
       criteria: ['An owl is in the picture', 'A scale with coins is in the picture', 'No words on the picture'],
       deliverable: 'image',
-      amountMicroUsdc: '300000',
+      micro: '300000',
+      createdAt: at(5 * 86400 + 60),
+      postedAt: at(5 * 86400),
       closesAt: at(5 * 86400 - 6 * H),
-      status: 'no_winner',
-      xPostUrl: postUrl(25),
+      postUrl: postUrl(25),
       entries: { received: 4, eligible: 2, considered: 2, ineligible: { no_address: 1, repeat_author: 1 } },
-      verdict: { winnerEntry: null, winnerReplyUrl: null, perCriterion: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'insufficient_evidence', 'fail'] }, reason: 'Neither picture shows both an owl and a scale without words.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(5 * 86400 - 6 * H - 300) },
-      payment: null,
-    },
+      verdict: { winner: null, winningEntryUrl: null, perCriterion: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'insufficient_evidence', 'fail'] }, reason: 'Neither picture shows both an owl and a scale without words.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(5 * 86400 - 6 * H - 300) },
+      closedAt: at(5 * 86400 - 6 * H - 300),
+      closeReplyUrl: postUrl(29),
+    }),
   ];
 }
 

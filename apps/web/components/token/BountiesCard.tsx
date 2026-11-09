@@ -8,13 +8,14 @@ import { ago, shortAddr, shortHash } from '@/lib/format';
 import type { BountyJob, CriterionMark, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { ExternalLink } from '@/components/ui/ExternalLink';
 import { Panel } from '@/components/ui/Panel';
 import { ArrowUpRightIcon, XLogoIcon } from '@/components/ui/Icons';
 import { cn } from '@/components/ui/cn';
 
 /** How many jobs the card shows before "Show all". */
 const SHOWN = 4;
+
+const unix = (iso: string) => Math.floor(Date.parse(iso) / 1000);
 
 function Mark({ mark }: { mark: CriterionMark }) {
   const glyph = mark === 'pass' ? '✓' : mark === 'fail' ? '✕' : '?';
@@ -25,21 +26,29 @@ function Mark({ mark }: { mark: CriterionMark }) {
   );
 }
 
+function XLink({ href, children, testId }: { href: string; children: React.ReactNode; testId?: string }) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex items-center gap-1 text-body hover:text-link" data-testid={testId}>
+      <XLogoIcon size={11} /> {children}
+    </a>
+  );
+}
+
 function Job({ job, now }: { job: BountyJob; now: number }) {
   const marks = winnerMarks(job);
-  const inMotion = job.status === 'open' || job.status === 'judging';
+  const inMotion = job.status === 'draft' || job.status === 'open' || job.status === 'judging' || job.status === 'proposed';
   const outcome = outcomeLine(job);
-  const judgedUnix = job.verdict ? Math.floor(Date.parse(job.verdict.judgedAt) / 1000) : null;
+  const when = job.postedAt ?? job.createdAt;
   return (
-    <li id={bountyAnchor(job.id)} data-testid="bounty-job" data-status={job.status} className="flex scroll-mt-24 flex-col gap-2 py-3 target:bg-canvas-soft">
+    <li id={bountyAnchor(job.shortId)} data-testid="bounty-job" data-status={job.status} className="flex scroll-mt-24 flex-col gap-2 py-3 target:bg-canvas-soft">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={inMotion || job.status === 'proposed' ? 'ink' : 'mono'}>{BOUNTY_STATUS_LABEL[job.status]}</Badge>
+        <Badge tone={inMotion ? 'ink' : 'mono'}>{BOUNTY_STATUS_LABEL[job.status]}</Badge>
         <span className="font-mono text-sm text-ink tabular" data-testid="bounty-job-amount">
-          {usdcLabel(job.amountMicroUsdc)}
+          {usdcLabel(job.amountUsdc)}
         </span>
         <span className="text-micro text-mute">for {job.deliverable === 'image' ? 'a picture' : 'a link'}</span>
-        <span className="ml-auto font-mono text-micro text-mute tabular" title={`Posted ${utcLabel(job.postedAt)}`}>
-          {ago(Math.floor(Date.parse(job.postedAt) / 1000), now)}
+        <span className="ml-auto font-mono text-micro text-mute tabular" title={`${job.postedAt ? 'Posted' : 'Written'} ${utcLabel(when)}`}>
+          {ago(unix(when), now)}
         </span>
       </div>
       <p className="break-words text-sm text-ink" data-testid="bounty-job-task">
@@ -55,6 +64,11 @@ function Job({ job, now }: { job: BountyJob; now: number }) {
             </li>
           ))}
         </ol>
+      ) : null}
+      {job.status === 'draft' && job.pageText ? (
+        <p className="whitespace-pre-line break-words rounded-xs bg-canvas-soft px-3 py-2 text-caption text-body" data-testid="bounty-job-page-text">
+          {job.pageText}
+        </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-micro text-mute tabular">
         <span title={utcLabel(job.closesAt)} data-testid="bounty-job-closes">
@@ -74,45 +88,39 @@ function Job({ job, now }: { job: BountyJob; now: number }) {
           {outcome}
         </p>
       ) : null}
-      {job.payment ? (
+      {job.payment?.status === 'paid' ? (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-micro text-body tabular" data-testid="bounty-job-payment">
-          <span>Paid {usdcLabel(job.payment.amountMicroUsdc)} to</span>
+          <span>Paid {usdcLabel(job.payment.amountUsdc)} to</span>
           <a href={explorer.address(job.payment.payee)} target="_blank" rel="noopener noreferrer" className="hover:text-link" title={job.payment.payee}>
             {shortAddr(job.payment.payee)}
           </a>
           {job.payment.txHash ? (
-            <a href={explorer.tx(job.payment.txHash)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 hover:text-link" title={job.payment.txHash}>
+            <a href={job.payment.txUrl ?? explorer.tx(job.payment.txHash)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 hover:text-link" title={job.payment.txHash}>
               tx {shortHash(job.payment.txHash)} <ArrowUpRightIcon size={11} />
             </a>
           ) : (
             <span className="text-mute">tx pending</span>
           )}
-          {job.payment.paidAt ? <span className="text-mute">{ago(Math.floor(Date.parse(job.payment.paidAt) / 1000), now)}</span> : null}
+          {job.payment.paidAt ? <span className="text-mute">{ago(unix(job.payment.paidAt), now)}</span> : null}
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-micro">
-        {job.xPostUrl ? (
-          <ExternalLink href={job.xPostUrl} icon={false} className="inline-flex items-center gap-1 text-body hover:text-link">
-            <XLogoIcon size={11} /> Job post
-          </ExternalLink>
+        {job.postUrl ? <XLink href={job.postUrl}>Job post</XLink> : null}
+        {job.verdict?.winningEntryUrl ? (
+          <XLink href={job.verdict.winningEntryUrl} testId="bounty-job-winner">
+            Winning entry
+          </XLink>
         ) : null}
-        {job.verdict?.winnerReplyUrl ? (
-          <a href={job.verdict.winnerReplyUrl} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex items-center gap-1 text-body hover:text-link" data-testid="bounty-job-winner">
-            <XLogoIcon size={11} /> Winning entry
-          </a>
-        ) : null}
-        {job.payment?.replyUrl ? (
-          <ExternalLink href={job.payment.replyUrl} icon={false} className="inline-flex items-center gap-1 text-body hover:text-link">
-            <XLogoIcon size={11} /> Payment reply
-          </ExternalLink>
-        ) : null}
-        {job.verdict && judgedUnix ? (
-          <span className="font-mono text-mute tabular" title={`What the judge saw: ${job.verdict.deliveryHash}`}>
-            judged {ago(judgedUnix, now)} · {shortHash(job.verdict.deliveryHash)}
+        {job.payment?.replyUrl ? <XLink href={job.payment.replyUrl}>Payment reply</XLink> : null}
+        {job.closeReplyUrl && !job.payment?.replyUrl ? <XLink href={job.closeReplyUrl}>Closing reply</XLink> : null}
+        {job.verdict?.judgedAt ? (
+          <span className="font-mono text-mute tabular" title={job.verdict.deliveryHash ? `What the judge saw: ${job.verdict.deliveryHash}` : undefined}>
+            judged {ago(unix(job.verdict.judgedAt), now)}
+            {job.verdict.deliveryHash ? ` · ${shortHash(job.verdict.deliveryHash)}` : ''}
           </span>
         ) : null}
-        <a href={`#${bountyAnchor(job.id)}`} className="ml-auto font-mono text-mute tabular hover:text-link" title={job.id}>
-          #{job.id.slice(2, 8)}
+        <a href={`#${bountyAnchor(job.shortId)}`} className="ml-auto font-mono text-mute tabular hover:text-link" title={job.id}>
+          #{job.shortId.slice(2, 8)}
         </a>
       </div>
     </li>
@@ -121,8 +129,8 @@ function Job({ job, now }: { job: BountyJob; now: number }) {
 
 /**
  * The coin page's Bounties card: every job the agent posted with the Bounties power, jobs in motion first. Each job is
- * `#bounty-<jobId>`, where the job post on X points. Nothing here is a price or a call to buy; the card is absent while the
- * agent has no job.
+ * `#bounty-<shortId>`, where the job post on X points. Nothing here is a price or a call to buy; the card is absent while
+ * the agent has no job.
  */
 export function BountiesCard({ token, now }: { token: Token; now: number }) {
   const q = useAgentBounties(token.kernel);

@@ -36,7 +36,7 @@ guardian owner key used only to approve session-key installs.
 | File | Role |
 | --- | --- |
 | `src/config.ts` | zod env schema (see below) |
-| `src/db/schema.ts`, `drizzle/` | `sv_agents` (with `source`: `bootr` / `clanker`, the launcher the agent came from), `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_approvals`, `sv_post_metrics`, `sv_cursors`, the notification and chat tables of migration 0008, `sv_service_calls` (paid service calls, migration 0009) (migrations table `public.sv_migrations`) |
+| `src/db/schema.ts`, `drizzle/` | `sv_agents` (with `source`: `bootr` / `clanker`, the launcher the agent came from), `sv_runtimes`, `sv_actions`, `sv_memories`, `sv_inference`, `sv_treasury_ops`, `sv_images`, `sv_approvals`, `sv_post_metrics`, `sv_cursors`, the notification and chat tables of migration 0008, `sv_service_calls` (paid service calls, migration 0009), `sv_bounty_jobs` and `sv_bounty_entries` (bounty jobs and their entries, migration 0010) (migrations table `public.sv_migrations`) |
 | `src/onboarding.ts` | `AgentLaunched` poller over every followed launcher (Bootr and, when configured, the Clanker one; one block cursor in `sv_cursors`), `registerAgent` (source from the emitting launcher; draft id from `LaunchContext` and, for Clanker launches, pool / locker details from `ClankerLaunched` in the launch receipt), `installSessionKey`, `rotateSessionKey`, `completeOnboarding` (X account connected via the sender) |
 | `src/launch-source.ts` | the treasury path by launch source: `agentSource`, the stored `config.clanker` block (`clankerDetailsOf`) and the lockers a Clanker coin claims from (`clankerLockersFor`) |
 | `src/session-key.ts` | policy set (BootrCallPolicy rules: two claim rules by launch source, the RWAGMI locker pair with `to == kernel` or the Clanker `collectRewards(token)` + `claim(kernel, *)` pair, then the swap pair, the windowed spender funding rule, ZeroDev gas / rate-limit / timestamp policies, signer with SKIP_SIGNATURE), `validatorData` encoding, permission id / validation id / nonce key, enable digest, enable-mode and session signature encodings (BootrCallPolicy time slot), deinit data for legacy and current layouts |
@@ -58,7 +58,8 @@ guardian owner key used only to approve session-key installs.
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
 | `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn (social, or the treasury turn when the social wake said no and its own clock is due), social stats to the indexer |
 | `src/roles.ts` | the three roles of the capabilities design (section 3.4): which tools each role gets (the social turn loses the money tools while the treasury turn is on for the agent), the switch (`trade` or `bounties` power, or the config's `treasuryTurn` override), the treasury clock in `sv_runtimes.state`, and the treasury turn's observation (numbers, caps, ops, its own notes; never a mention or a page), see "Three roles" |
-| `src/judge.ts` | the judge role: one paid thought with no tools on the agent's model (or `config.judgeModel`) that rules on a bounty job's entries from the criteria and the artefacts alone, checked in code (winner in range and passing every criterion, a 200-character reason through the publish gate); one thought per job by its idempotency key; no caller until Bounties stage A |
+| `src/judge.ts` | the judge role: one paid thought with no tools on the agent's model (or `config.judgeModel`) that rules on a bounty job's entries from the criteria and the artefacts alone, checked in code (winner in range and passing every criterion, a 200-character reason through the publish gate); one thought per job by its idempotency key; called by `src/bounties.ts` |
+| `src/bounties.ts` | Bounties stage A (the `bounties` power): `bounty_post` / `bounty_cancel` (treasury turn) and `bounty_list`, the job post from the fixed template after the caps and the task rules, drafts under review or waiting for a slot, the sweep that collects a closed job's replies through the sender, applies the entry rules, fetches bounded artefacts, asks the judge once and proposes the winner in the approval queue (the creator pays by hand and reports the tx), the public job views, the tape rows; see "Bounties" |
 | `src/api.ts` | Hono admin API (HMAC), including the fleet-wide `panic-revoke` |
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
 | `src/services.ts` | the Paid services power (`discover_services`, `x402_fetch`): the spender pays any public https x402 endpoint `exact` USDC under the creator's per-call and daily caps and host lists; one signature per action id, the chain closes a lost answer (`sv_service_calls`); the day's total in `/fuel`, every call on the activity tape |
@@ -458,12 +459,14 @@ revoked keys, the sleep rule, the inference backoff and the fleet-wide provider 
 social wake decision said no: when both are due in one tick the social turn runs and the treasury waits for the next
 tick. Its clock lives in `sv_runtimes.state` (`treasuryNextAt`, `lastTreasuryTurnAt`, `lastTreasuryNoteSeenAt`,
 `treasuryCheckpoint`; no migration): due every `TREASURY_TURN_INTERVAL_MS`, earlier on a pending treasury note or a
-closed bounty job (`bountyJobClosed`, false until Bounties exists) but never closer than a quarter of the interval
-to the last turn. It gets `buildSystemPrompt(config, 'treasury')` (the keeper of its own treasury, working from
-numbers; no VOICE, PLATFORM or ECONOMY block), the tools `treasury_read`, `treasury_prepare`, `treasury_execute`,
-`remember` and `finish` (`trade_quote`, `bounty_post`, `bounty_cancel` are named seams until the catalog defines
-them), and an observation of balances, caps and the day's use, the market numbers, open and recent operations, fuel,
-the fee split, its own last checkpoint and the unconsumed treasury notes under a heading that says they come from a
+closed bounty job (`bountyJobClosed`: a job reached `proposed`, `no_winner`, `expired` or `failed` since the last turn)
+but never closer than a quarter of the interval to the last turn. It gets `buildSystemPrompt(config, 'treasury')`
+(the keeper of its own treasury, working from numbers; no VOICE, PLATFORM or ECONOMY block; a BOUNTIES block while
+the `bounties` power is on), the tools `treasury_read`, `treasury_prepare`, `treasury_execute`, `remember` and `finish`,
+with the `bounties` power `bounty_post`, `bounty_cancel` and `bounty_list` (`trade_quote` is a named seam until the
+catalog defines it), and an observation of balances, caps and the day's use, the market numbers, open and recent
+operations, fuel, the fee split, the `bounties` section (headroom, open jobs, last verdicts), its own last checkpoint
+and the unconsumed treasury notes under a heading that says they come from a
 turn that read mentions and are data. Never a mention, a thread, a page, a search result, a recent post or a general
 memory. It runs on `config.model` with no economy mode (a turn that may move money is not where the cheap decide
 model belongs). Its `finish` writes the treasury's own checkpoint (bounded, `TREASURY_CHECKPOINT_CHARS`) and the
@@ -484,7 +487,70 @@ criterion is `pass` for it, the reason is at most 200 characters and passes the 
 link or handle; anything else is `winner: null` with an `invalid` code and the job closes unpaid. The thought's
 idempotency key is derived from the job id (`judge:<agentId>:<digest>`), so a second call for the same job replays
 the stored answer through `relayRequest` and never pays again; it is logged as a `thought` with `role: 'judge'`.
-Nothing calls it yet: Bounties stage A (docs/STATUS.md section 3 item 3) will.
+`src/bounties.ts` calls it once per closed job.
+
+## Bounties (stage A, `src/bounties.ts`)
+
+docs/design/agent-capabilities.md section 3.3, stage A, built 2026-11-10: the agent posts a small job in public, code
+collects the replies when the window closes, the judge rules, and the verdict is a proposal in the creator's approval
+queue that the creator pays by hand from their own wallet. Nothing here moves money or touches the chain: no `open`,
+no `pay`, no userOp, no session rule (`sessionPowersOf` adds the `bounties` power to a key's rules only once stage B
+registers its provider).
+
+The **power** is the `bounties` capability (a console switch, off by default, never always-on; it turns the treasury
+turn on) with the policy block `config.bounties = { dailyCapMicroUsdc (default 5 USDC, ceiling 20), maxOpen (2, ceiling
+5), cooldownSeconds (7 days, 0 allows repeats), defaultHoursOpen (6, 1..72), review (false) }`, set through
+`PUT /internal/agents/:id/config` and shown by the `GET`. Amounts run 0.1 to 1 USDC with two decimals.
+
+**`bounty_post({task, criteria[1..4], deliverable: 'image' | 'link', amountUsdc, hoursOpen?})`** (treasury turn only)
+checks, in code and in order: the power, the amount, the window, the day's headroom (a fixed UTC-day grid; every job
+not cancelled, expired or failed since midnight counts), the open-job cap, then the task and criteria (none of buy,
+post, tweet, promote, shill, follow, like, retweet and their inflections; no address; no cashtag but the agent's own)
+and the whole post through the publish gate and the account's post length. The row is written (`draft`; the
+reservation starts here); with `review` on the job text goes to the approval queue as a `bounty_job` item and waits;
+otherwise the job post goes out through the sender as one of the agent's original posts (the platform rhythm and the X
+quota apply: a closed slot or a used-up quota keeps the job a `draft` with `publishNotBefore`, the sweep posts it later
+and the window is counted from the real post time; a draft older than a day fails). The template, word for word:
+"Bounty: <task>. <amount> USDC to the best entry. Reply with your <image | link> and your Base address by <time UTC>;
+the first 12 entries are considered. By replying you let @<agent> repost your entry with credit. Details: <coin page
+link>", where the link is `<SITE_URL>/token/<coin>#bounty-<shortId>` and `shortId` is `0x` plus the first 16 hex
+characters of the job id (`keccak256(kernel, nonce, taskHash)`): the gate refuses any 32-byte hex in a post as secret
+material, so no post carries the full id. **`bounty_cancel({jobId})`** closes a draft or an open job ("Cancelled by the
+agent." under the job post) and releases its reservation. **`bounty_list({})`** (both turns) lists the agent's jobs
+with status, counts and verdicts, never an entry. Replies in an open job's conversation are entries, not mentions:
+`inboxViews` marks them ineligible as `bounty_entry`, `closeBountyEntries` closes them at the sender before a social
+turn starts, the tick buys no wake for them, and the social observation carries a `bountyEntries` section (the agent
+never names a winner or answers an entry; the social prompt is unchanged).
+
+The **sweep** (`sweepBounties`, every tick, at most 3 jobs) posts waiting drafts, collects and judges jobs past their
+close (`collectAndJudge`: `POST /internal/read/replies` at the sender, then `evaluateEntries`, the entry rules of
+section 3.3 as a pure function: an artefact of the job's kind, exactly one checksummed `0x` address, not the agent or
+the creator, an account at least 30 days old, one entry per author, a shared address drops both, the kernel, the
+creator and the spender are never paid, a payee inside the cooldown is not; then the first 12 eligible by time whose
+artefact reads are `considered`: a picture of at most 2 MB that sniffs as PNG, JPEG or WEBP, fetched from X's media URL
+with no redirects, or a page excerpt of at most 6000 characters under the `public-fetch` rules; a repeated picture, an
+unreadable artefact or a redirect is marked and the next eligible entry takes the place), asks `judgeJob` once (its key
+is the job id), stores the verdict with `deliveryHash` (sha256 of the numbered bundle) and `reasonHash`, and either
+closes the job `no_winner` ("No entry met the job; nothing paid." under the job post) or moves it to `proposed` with a
+`bounty_payout` item in the approval queue carrying the job, the amount, the payee (from the entry row, never from the
+judge's text), the reason and the entry's link. Approving the item needs `txHash` in the body (the creator's own paying
+transaction, checked as 32-byte hex): the job becomes `paid` and the template reply goes under the winning entry
+("Paid <amount> USDC for this entry. Why: <reason>. <Basescan tx link>"); rejecting closes it `no_winner` with "Nothing
+paid." in public. A proposal nobody acts on in 48 hours expires (`expired`, the item withdrawn, "Nothing paid."). A
+collection that fails is tried again next tick, five times, then the job fails and closes unpaid. The reply text is
+read for the address and discarded: no row and no model ever holds it. Every step logs `module: 'bounties'`, `jobId`,
+`status` and counts, never a text or an address.
+
+**Reads for the coin page**: `GET /internal/agents/:id/bounties?limit=20` → `{jobs: [...]}` and
+`GET /internal/agents/:id/bounties/:jobId` (full id or `shortId`) → `{job}`, each job `{id, shortId, status, task,
+criteria, deliverable, amountUsdc, amountMicroUsdc, createdAt, postedAt, closesAt, postUrl, pageUrl, pageText,
+entries: {received, eligible, considered, ineligible: {<reason>: n}}, verdict: {winner, winningEntryUrl, perCriterion,
+reason, invalid, deliveryHash, reasonHash, judgedAt} | null, payment: {status: 'proposed' | 'paid', payee, amountUsdc,
+txHash, txUrl, replyUrl, paidAt} | null, closedAt, closeReplyUrl}`; never an author id, a reply's text or an ineligible
+entry's address. Statuses: `draft`, `open`, `judging`, `proposed`, `paid`, `no_winner`, `cancelled`, `expired`,
+`failed`. The activity tape shows one `bounty` row per job event (posted, judged, paid, no winner, cancelled, expired)
+in plain words with no address. Approval items of the two bounty kinds carry a `bounty` block (`kind`, `jobId`, `task`,
+`amountUsdc`; for a payout `payee`, `reason`, `entryUrl`, `txHashRequired: true`).
 
 ## X holds and the post length
 
@@ -622,6 +688,8 @@ Inspect everything with `GET /internal/agents/:id` (runtime, pending, last actio
 | GET | `/internal/agents/:id/config` | the configuration in force (creator console); see below |
 | PUT | `/internal/agents/:id/config` | creator edit of instructions / model / powers / posts per day (cadence) / job lines; see below |
 | GET | `/internal/agents/:id/activity` | the coin page's activity tape (`?limit=50&before=<iso>`); see below |
+| GET | `/internal/agents/:id/approvals` | the review queue (`?status=pending|all`); `POST .../approvals/:approvalId` `{decision, by, note?, txHash?}` decides one (`txHash` is required to approve a `bounty_payout`) |
+| GET | `/internal/agents/:id/bounties` | the agent's bounty jobs (`?limit=20`), and `GET .../bounties/:jobId` for one by its id or `shortId`; see "Bounties" |
 
 ### Creator notifications (`/internal/agents/:id/notifications`)
 
@@ -696,6 +764,7 @@ ceilings 5 and 50 that the console cannot pass, host patterns `example.com` or `
 "worker"?: { "capabilities"?: {<key>: boolean}, "postIntervalMs"?: number, "jobLines"?: string[] },
 "postsPerDay"?: number, "requireApproval"?: boolean, "routing"?: { "decideModel": string | null },
 "services"?: { "perCallMicroUsdc"?: number, "dailyMicroUsdc"?: number, "allow"?: string[], "deny"?: string[] },
+"bounties"?: { "dailyCapMicroUsdc"?: number, "maxOpen"?: number, "cooldownSeconds"?: number, "defaultHoursOpen"?: number, "review"?: boolean },
 "treasuryTurn"?: boolean, "judgeModel"?: string | null }`. Every field is
 optional except `by`; `treasuryTurn` is the treasury turn's trial switch (`src/roles.ts`; `GET` shows it as
 `treasuryTurn: {override, active}`, `active` also true when the `trade` or `bounties` power is on) and `judgeModel`
@@ -744,8 +813,8 @@ under the economy mode switch on the coin page.
 "summary", "txHash"?, "url"? }] }`, newest first, merged from `sv_actions` (completed `publish_post` / `publish_reply` /
 `generate_image` and `config_updated` rows), `sv_treasury_ops` (confirmed and failed ops) and the runtime's **current** status (one
 item at `sv_runtimes.updated_at`; the supervisor keeps no history of sleeps, wakes and pauses, so a status item moves
-rather than accumulates). `kind`: `post`, `reply` (Posts filter), `claim`, `swap`, `gas`, `fuel`, `transfer`
-(Treasury filter), `image`, `config`, `status`. Summaries are one line each: "Posted on X", "Replied on X", "Made an
+rather than accumulates). `kind`: `post`, `reply` (Posts filter), `claim`, `swap`, `gas`, `fuel`, `transfer`,
+`service`, `bounty` (Treasury filter), `image`, `config`, `status`. Summaries are one line each: "Posted on X", "Replied on X", "Made an
 image: <alt>", "Claimed 0.0024 WETH", "Swapped 0.002 WETH to at least 4.5 USDC", "Added gas (0.0005 WETH)", "Added 5 USDC of fuel", "Fee claim
 failed", "Config updated: cadence, powers", "Went to sleep: fuel below 1 USDC", "Paused by creator", "Awake". `url`
 is the post on X (`https://x.com/<handle>/status/<id>`) or the tx on Basescan.

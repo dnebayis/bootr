@@ -23,6 +23,7 @@ import {
 import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
 import { metricsSchema, readMetrics } from './metrics.js';
+import { readReplies, repliesSchema } from './replies.js';
 import {
   BINDING_COOKIE_PATH,
   STATE_TTL_SEC,
@@ -344,6 +345,20 @@ export function createApp(ctx: SenderContext): Hono {
     const res = await readMetrics(ctx, body.data);
     if (!res.ok) return fail(c, res);
     return c.json({ items: res.items, missing: res.missing, nonPublic: res.nonPublic });
+  });
+
+  /**
+   * POST /internal/read/replies {agentId, conversationId, max?}
+   * The replies in one conversation (a bounty job's entries) with their authors, url entities and media, the agent's
+   * own posts left out: {items[{id, text, authorId, createdAt, conversationId, inReplyToId, author, urls, media}],
+   * fetched, truncated}. Every post returned is a read unit. See src/replies.ts.
+   */
+  internal.post('/read/replies', async (c) => {
+    const body = parseBody(c, repliesSchema);
+    if (!body.ok) return body.res;
+    const res = await readReplies(ctx, body.data);
+    if (!res.ok) return fail(c, res);
+    return c.json({ items: res.items, fetched: res.fetched, truncated: res.truncated });
   });
 
   internal.post('/read/account', async (c) => {

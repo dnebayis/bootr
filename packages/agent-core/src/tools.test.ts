@@ -3,15 +3,18 @@ import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, publishPostDescr
 import { MAX_RESOLVE_BATCH, TOOL_NAMES, type AgentConfig } from './types.js';
 
 const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> => ({
-  capabilities: { xRead: false, xReply: false, xPublish: false, research: false, memory: false, treasury: false, images: false, services: false, ...Object.fromEntries(on.map((k) => [k, true])) },
+  capabilities: { xRead: false, xReply: false, xPublish: false, research: false, memory: false, treasury: false, images: false, services: false, bounties: false, ...Object.fromEntries(on.map((k) => [k, true])) },
   ownerRules: [],
 });
 
 describe('tool catalog', () => {
   it('defines every tool with a capability, effect and schema', () => {
     expect(TOOL_LIST.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(TOOL_LIST).toHaveLength(22);
+    expect(TOOL_LIST).toHaveLength(25);
     expect(TOOLS.x402_fetch).toMatchObject({ capability: 'services', effect: 'money', idempotent: false });
+    expect(TOOLS.bounty_post).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: false });
+    expect(TOOLS.bounty_cancel).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: true });
+    expect(TOOLS.bounty_list).toMatchObject({ capability: 'bounties', effect: 'read', idempotent: true });
     expect(TOOLS.discover_services).toMatchObject({ capability: 'services', effect: 'read', idempotent: true });
     expect(TOOLS.read_coin).toMatchObject({ capability: 'research', effect: 'read', idempotent: true });
     expect(TOOLS.treasury_execute.effect).toBe('money');

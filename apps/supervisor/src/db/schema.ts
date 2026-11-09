@@ -237,7 +237,12 @@ export const serviceCalls = pgTable(
   (t) => [index('sv_service_calls_agent_created_idx').on(t.agentId, t.createdAt), index('sv_service_calls_agent_status_idx').on(t.agentId, t.status)],
 );
 
-export const approvalKinds = ['post', 'reply'] as const;
+/**
+ * `post` and `reply` are the agent's publishes under post approval mode; `bounty_job` is a bounty job text waiting for
+ * the creator before it is posted (the `review` switch of the bounties policy) and `bounty_payout` the proposal that
+ * a job's winner be paid, which the creator settles by hand from their own wallet (bounties.ts; stage A pays nothing).
+ */
+export const approvalKinds = ['post', 'reply', 'bounty_job', 'bounty_payout'] as const;
 export type ApprovalKind = (typeof approvalKinds)[number];
 export const approvalStatuses = ['pending_approval', 'approved', 'rejected', 'failed'] as const;
 export type ApprovalStatus = (typeof approvalStatuses)[number];
@@ -408,4 +413,107 @@ export const chatMessages = pgTable(
     index('sv_chat_messages_agent_idx').on(t.agentId, t.createdAt),
     uniqueIndex('sv_chat_messages_open_idx').on(t.agentId).where(sql`${t.status} = 'open'`),
   ],
+);
+
+export const bountyJobStatuses = ['draft', 'open', 'judging', 'proposed', 'paid', 'no_winner', 'cancelled', 'expired', 'failed'] as const;
+export type BountyJobStatus = (typeof bountyJobStatuses)[number];
+export const bountyDeliverables = ['image', 'link'] as const;
+export type BountyDeliverable = (typeof bountyDeliverables)[number];
+
+/**
+ * Bounty jobs (bounties.ts; docs/design/agent-capabilities.md section 3.3, stage A). One row per job the treasury
+ * turn posted: `draft` while it waits for the creator's review or for a posting slot, `open` once the job post is on
+ * X, `judging` while the replies are collected and the judge rules (a crash here resumes on the next tick), then
+ * `proposed` (a winner waits in the creator's approval queue), `paid` (the creator reported the paying transaction),
+ * `no_winner` (nothing met the job, the verdict was refused in code, or the creator declined), `cancelled` (the agent
+ * or the creator), `expired` (a proposal nobody acted on in 48 h) or `failed` (the post never went out, or collection
+ * failed too often). Reserved jobs (every status but cancelled, expired and failed) count against the day's cap.
+ * Amounts are micro-USDC strings. `verdict` is the judge's answer with its hashes; the entries are in `sv_bounty_entries`.
+ */
+export const bountyJobs = pgTable(
+  'sv_bounty_jobs',
+  {
+    /** `keccak256(kernel, nonce, taskHash)` as the design says; the id the contract of stage B will take. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    /** The `bounty_post` action that made the job (`sv_actions.action_id`): the same action never makes two jobs. */
+    actionId: text('action_id').notNull(),
+    /** The agent's own job counter, part of the id. */
+    nonce: integer('nonce').notNull(),
+    task: text('task').notNull(),
+    criteria: jsonb('criteria').$type<string[]>().notNull(),
+    deliverable: text('deliverable', { enum: bountyDeliverables }).notNull(),
+    amountMicroUsdc: text('amount_micro_usdc').notNull(),
+    status: text('status', { enum: bountyJobStatuses }).notNull().default('draft'),
+    /** When the agent decided on the job (the reservation's day). */
+    createdAt: ts('created_at').notNull(),
+    /** When the job post went out on X (null for a draft that never did). */
+    openedAt: ts('opened_at'),
+    closesAt: ts('closes_at').notNull(),
+    /** A draft waiting for a posting slot or the X quota tries again from here. */
+    publishNotBefore: ts('publish_not_before'),
+    /** Attempts of the step the status names (posting a draft, collecting the replies); bounded in bounties.ts. */
+    attempts: integer('attempts').notNull().default(0),
+    /** The job post on X and its conversation (replies in it are entries, not mentions). */
+    postId: text('post_id'),
+    conversationId: text('conversation_id'),
+    /** The job as the coin page shows it (the full template text). */
+    pageText: text('page_text').notNull(),
+    /** `{winner, perCriterion, reason, invalid?, deliveryHash, reasonHash, judgedAt, thought}`. */
+    verdict: jsonb('verdict').$type<Record<string, unknown> | null>(),
+    judgedAt: ts('judged_at'),
+    /** The approval row of the job text (review) or of the payout proposal. */
+    approvalId: text('approval_id'),
+    /** The winning entry's checksummed address, once a verdict names one. */
+    payee: text('payee'),
+    /** The creator's paying transaction and the template reply under the winning entry, once paid. */
+    txHash: text('tx_hash'),
+    paidAt: ts('paid_at'),
+    paidReplyId: text('paid_reply_id'),
+    /** The template reply that closed the job in public (no winner, cancelled). */
+    closeReplyId: text('close_reply_id'),
+    entriesReceived: integer('entries_received').notNull().default(0),
+    entriesEligible: integer('entries_eligible').notNull().default(0),
+    entriesConsidered: integer('entries_considered').notNull().default(0),
+    /** When the job reached a closing status (proposed, paid, no_winner, cancelled, expired, failed); `bountyJobClosed` reads it. */
+    closedAt: ts('closed_at'),
+    error: text('error'),
+    updatedAt: ts('updated_at').notNull(),
+  },
+  (t) => [index('sv_bounty_jobs_agent_status_idx').on(t.agentId, t.status), index('sv_bounty_jobs_agent_created_idx').on(t.agentId, t.createdAt), uniqueIndex('sv_bounty_jobs_action_idx').on(t.actionId)],
+);
+
+/**
+ * The replies to a job post as code read them once the window closed (bounties.ts `collectEntries`): one row per
+ * reply, with the artefact of the job's kind, the one `0x` address of the text (checksummed) and the eligibility
+ * decision. The reply text itself is never stored: the address and the artefact are all a judge or a page needs.
+ * `considered` marks the first 12 eligible by time; `n` is the number the judge saw (null otherwise). Public reads
+ * (api.ts) never show an author id or an ineligible entry's address.
+ */
+export const bountyEntries = pgTable(
+  'sv_bounty_entries',
+  {
+    /** `<jobId>:<replyId>`. */
+    id: text('id').primaryKey(),
+    jobId: text('job_id').notNull(),
+    agentId: text('agent_id').notNull(),
+    replyId: text('reply_id').notNull(),
+    authorId: text('author_id').notNull(),
+    authorCreatedAt: ts('author_created_at'),
+    /** The reply's `created_at` on X. */
+    receivedAt: ts('received_at').notNull(),
+    kind: text('kind', { enum: bountyDeliverables }).notNull(),
+    /** `{url, mediaKey, sha256}` for an image, `{url, host}` for a link; null when the reply carried none of the job's kind. */
+    artefact: jsonb('artefact').$type<Record<string, unknown> | null>(),
+    /** The one `0x` address of the reply text, checksummed; null when none or more than one. */
+    payee: text('payee'),
+    eligible: boolean('eligible').notNull().default(false),
+    /** Why the entry is not eligible (bounties.ts `IneligibleReason`); null when eligible. */
+    ineligibleReason: text('ineligible_reason'),
+    considered: boolean('considered').notNull().default(false),
+    /** The entry number the judge saw (1-based), null when not considered. */
+    n: integer('n'),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [index('sv_bounty_entries_job_idx').on(t.jobId), uniqueIndex('sv_bounty_entries_job_reply_idx').on(t.jobId, t.replyId)],
 );
