@@ -60,7 +60,7 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   const market = marketFields(next, ethUsd);
   const valueUsd = usd(toUnits(view.amountPaired, 18) * ethUsd);
   // What the trader paid, from `Swap.fee` and the coin's own `lpFeeBps` (lib/fees.ts `swapFeePips`): bootr
-  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top).
+  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top); clanker-v5 the tax as is.
   const source = sourceOf(t);
   const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, t.lpFeeBps));
 
@@ -106,9 +106,10 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   await bumpDaily(context, m.timestamp, { volumeUsd: valueUsd, trades: 1 });
   await bumpPlatform(context, m.timestamp, { volumeTotalUsd: valueUsd });
   await bumpSource(context, source, m.timestamp, { volumeTotalUsd: valueUsd });
-  // No hook event names the gross fee on the Clanker path (the RWAGMI hook's PoolFeeTakenV3 does on the Bootr
-  // path), so the per-trade figure is the gross fee there; the exact per-slot amounts come at collection.
-  if (source === 'clanker') await bookGrossFee(context, updated, feeUsd, m.timestamp);
+  // No hook event names the gross fee on the Clanker paths the way the RWAGMI hook's PoolFeeTakenV3 does on the
+  // Bootr path (v5's `Trade` carries the quote side only), so the per-trade figure is the gross fee there; the
+  // exact per-slot amounts come at collection (v4) or with the swap's own credits (v5).
+  if (source !== 'bootr') await bookGrossFee(context, updated, feeUsd, m.timestamp);
 }
 
 const counts = (holder: string) => holder !== ZERO_ADDRESS && holder !== DEAD_ADDRESS;

@@ -39,7 +39,7 @@ describe('GET /platform/fees', () => {
     const body = composePlatformFees([
       row({ id: 'bootr', tokens: 3, volumeTotalUsd: 10_000, feesTotalUsd: 100, feesAgentUsd: 4.5, feesCreatorUsd: 58.5, feesPlatformUsd: 27, feesClaimedUsd: 20, feesPlatformClaimedUsd: 10, updatedAt: 1_800_000_000 }),
     ]);
-    expect(Object.keys(body.bySource).sort()).toEqual(['bootr', 'clanker']);
+    expect(Object.keys(body.bySource).sort()).toEqual(['bootr', 'clanker', 'clanker-v5']);
     expect(body.bySource.bootr).toEqual({
       tokens: 3,
       volumeTotalUsd: 10_000,
@@ -51,20 +51,23 @@ describe('GET /platform/fees', () => {
       updatedAt: 1_800_000_000,
     });
     expect(body.bySource.clanker).toEqual({ tokens: 0, volumeTotalUsd: 0, feesTotalUsd: 0, byKind: { agent: 0, creator: 0, burn: 0, platform: 0 }, feesClaimedUsd: 0, feesPlatformClaimedUsd: 0, feesPlatformClaimedExact: true, updatedAt: null });
+    expect(body.bySource['clanker-v5']).toEqual(body.bySource.clanker);
     expect(body.total).toEqual(body.bySource.bootr);
   });
 
-  it('sums the two paths, rounds to 6 dp and ignores unknown ids', () => {
+  it('sums the three paths, rounds to 6 dp and ignores unknown ids', () => {
     const body = composePlatformFees([
       row({ id: 'bootr', tokens: 1, feesTotalUsd: 1.0000004, feesPlatformUsd: 0.27, updatedAt: 10 }),
       row({ id: 'clanker', tokens: 2, feesTotalUsd: 2.4, feesPlatformUsd: 0.6, feesBurnUsd: 0.3, feesPlatformClaimedUsd: 0.5, updatedAt: 20 }),
+      row({ id: 'clanker-v5', tokens: 1, feesTotalUsd: 1.5, feesPlatformUsd: 0.3, updatedAt: 30 }),
       row({ id: 'other', tokens: 99, feesTotalUsd: 99 }),
     ]);
-    expect(body.total.tokens).toBe(3);
-    expect(body.total.feesTotalUsd).toBe(3.4);
-    expect(body.total.byKind).toEqual({ agent: 0, creator: 0, burn: 0.3, platform: 0.87 });
+    expect(body.bySource['clanker-v5'].tokens).toBe(1);
+    expect(body.total.tokens).toBe(4);
+    expect(body.total.feesTotalUsd).toBe(4.9);
+    expect(body.total.byKind).toEqual({ agent: 0, creator: 0, burn: 0.3, platform: 1.17 });
     expect(body.total.feesPlatformClaimedUsd).toBe(0.5);
-    expect(body.total.updatedAt).toBe(20);
+    expect(body.total.updatedAt).toBe(30);
     expect((body.bySource as Record<string, unknown>).other).toBeUndefined();
   });
 });

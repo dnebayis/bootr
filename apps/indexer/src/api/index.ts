@@ -8,13 +8,14 @@ import { isAddress, type Address } from 'viem';
 
 import { B20TokenAbi } from '../../abis/B20Token';
 import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
+import { ClankerV5FeeEscrowAbi } from '../../abis/ClankerV5';
 import { Erc20Abi } from '../../abis/Erc20';
 import { MULTICALL3_ADDRESS, Multicall3Abi } from '../../abis/Multicall3';
 import { RwagmiLpLockerV3Abi } from '../../abis/RwagmiLpLockerV3';
 import { safeMessage } from '../../rpc-budget';
 import { corsMiddleware } from '../lib/cors';
 import { indexerEnv } from '../lib/env';
-import { DEAD_ADDRESS, RECIPIENT_KINDS, type LaunchSource, type RecipientKind } from '../lib/fees';
+import { DEAD_ADDRESS, parseLaunchSource, RECIPIENT_KINDS, type LaunchSource, type RecipientKind } from '../lib/fees';
 import { verifyRequest } from '../lib/hmac';
 import { toUnits, usd } from '../lib/price';
 import { rpcClient } from '../lib/rpc';
@@ -263,7 +264,7 @@ const TOKEN_ORDER: Record<TokenSort, () => ReturnType<typeof desc>[]> = {
 };
 
 /**
- * Coins with filters and a sort, for the tokens page and for programs: `creator`, `source` (`bootr` | `clanker`),
+ * Coins with filters and a sort, for the tokens page and for programs: `creator`, `source` (`bootr` | `clanker` | `clanker-v5`),
  * `from` / `to` (launch time, unix s), `hasAgent`, `graduated`, `agentStatus`; `sort` = `bumped` (default) | `launched`
  * | `mcap` | `volume24h` | `holders` | `graduated`. Offset cursor in `after`, like `/tokens/bumped`.
  */
@@ -588,7 +589,7 @@ app.get('/token/:id/fees', async (c) => {
 });
 
 /**
- * Platform fee totals per launch path (`sourceStats`): `{total, bySource: {bootr, clanker}}`, each with `tokens`,
+ * Platform fee totals per launch path (`sourceStats`): `{total, bySource: {bootr, clanker, 'clanker-v5'}}`, each with `tokens`,
  * `volumeTotalUsd`, `feesTotalUsd` (gross, what traders paid), `byKind` (accrued to agent / creator / burn /
  * platform), `feesClaimedUsd`, `feesPlatformClaimedUsd`, `feesPlatformClaimedExact`, `updatedAt`. The stored rollup
  * counts claims by the kind they were booked under; the platform share of a wallet holding two slots is added here.
@@ -606,7 +607,7 @@ app.get('/platform/fees', async (c) => {
     j(
       composePlatformFees(
         rows,
-        several.map((w) => ({ source: sourceOf.get(w.token) === 'clanker' ? ('clanker' as const) : ('bootr' as const), split: w.split })),
+        several.map((w) => ({ source: parseLaunchSource(sourceOf.get(w.token)), split: w.split })),
       ),
     ),
   );
@@ -678,7 +679,12 @@ app.get('/market/:token', async (c) => {
  * Clanker coins (`source: 'clanker'`): `settled = ClankerFeeLocker.availableFees(recipient, WETH)` (the burn
  * slot: `availableFees(0x…dEaD, coin)`, in the coin), `pending` is 0 (fees still inside the LP position have no
  * cheap view; they move to the fee locker on the next `collectRewards`).
+ * Clanker v5 coins (`source: 'clanker-v5'`): `settled = FeeEscrow.owed(recipient, 0x0)` (native ETH, `symbol` `ETH`;
+ * the burn slot: `owed(0x…dEaD, coin)`, in the coin), `pending` 0 (the hook credits the escrow on every swap).
  */
+/** The v5 escrow's currency for native ETH (Clanker v5 pools are paired with ETH itself). */
+const NATIVE_ETH = '0x0000000000000000000000000000000000000000' as Address;
+
 app.get('/treasury/:kernel', async (c) => {
   const id = c.req.param('kernel');
   if (!isAddr(id)) return c.json({ error: 'invalid address' }, 400);
@@ -696,7 +702,7 @@ app.get('/treasury/:kernel', async (c) => {
   const kernel = t.kernel as Address;
   const weth = env.addresses.weth;
   const coin = t.id as Address;
-  const launchSource: LaunchSource = t.source === 'clanker' ? 'clanker' : 'bootr';
+  const launchSource: LaunchSource = parseLaunchSource(t.source);
   // One row per wallet: a wallet holding two slots has one balance, shown once (`alsoKinds` names its other slots).
   const recipients = distinctRecipients<{ recipient: Address; recipientKind: RecipientKind }>([
     { recipient: kernel, recipientKind: 'agent' },
@@ -707,10 +713,15 @@ app.get('/treasury/:kernel', async (c) => {
   // The locker to ask: the RWAGMI LP locker (pending + claimable) or the Clanker fee locker (available).
   const locker = launchSource === 'bootr' ? (env.rwagmi?.locker ?? null) : null;
   const feeLocker = launchSource === 'clanker' ? (env.clanker?.feeLocker ?? null) : null;
+  const feeEscrow = launchSource === 'clanker-v5' ? (env.clankerV5?.feeEscrow ?? null) : null;
   const poolId = t.poolId as `0x${string}`;
-  /** Asset a recipient is paid in: WETH, except the Clanker burn slot, which receives the coin itself. */
+  /** Asset a recipient is paid in: WETH (v5: native ETH, `0x0`), except the Clanker burn slot, which receives the coin itself. */
   const assetOf = (r: { recipient: Address; recipientKind: RecipientKind }): Address =>
-    launchSource === 'clanker' && r.recipientKind === 'burn' && lc(r.recipient) === DEAD_ADDRESS ? coin : weth;
+    launchSource !== 'bootr' && r.recipientKind === 'burn' && lc(r.recipient) === DEAD_ADDRESS
+      ? coin
+      : launchSource === 'clanker-v5'
+        ? NATIVE_ETH
+        : weth;
 
   let balances = {
     usdc: a.treasuryUsdc,
@@ -748,6 +759,9 @@ app.get('/treasury/:kernel', async (c) => {
         : []),
       ...(feeLocker
         ? recipients.map((r) => ({ abi: ClankerFeeLockerAbi, address: feeLocker, functionName: 'availableFees', args: [r.recipient, assetOf(r)] }))
+        : []),
+      ...(feeEscrow
+        ? recipients.map((r) => ({ abi: ClankerV5FeeEscrowAbi, address: feeEscrow, functionName: 'owed', args: [r.recipient, assetOf(r)] }))
         : []),
       ...(spender ? [{ abi: Erc20Abi, address: env.addresses.usdc, functionName: 'balanceOf', args: [spender] }] : []),
     ];
@@ -791,6 +805,22 @@ app.get('/treasury/:kernel', async (c) => {
           ...r,
           asset,
           symbol: isCoin ? t.symbol : 'WETH',
+          amount: settled,
+          amountUsd: usd(toUnits(settled, 18) * (isCoin ? t.priceUsd : ethUsd)),
+          pending: 0n,
+          settled,
+        });
+      }
+    }
+    if (feeEscrow) {
+      for (const r of recipients) {
+        const settled = val(i++) ?? 0n;
+        const asset = assetOf(r);
+        const isCoin = asset === coin;
+        claimable.push({
+          ...r,
+          asset,
+          symbol: isCoin ? t.symbol : 'ETH',
           amount: settled,
           amountUsd: usd(toUnits(settled, 18) * (isCoin ? t.priceUsd : ethUsd)),
           pending: 0n,

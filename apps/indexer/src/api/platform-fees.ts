@@ -3,7 +3,7 @@
  * shape is testable without Ponder. Every figure is USD at the time it was booked; a source with no row yet
  * answers zeros, so the body always carries both sources.
  */
-import { LAUNCH_SOURCES, type LaunchSource } from '../lib/fees';
+import { isLaunchSource, LAUNCH_SOURCES, type LaunchSource } from '../lib/fees';
 import { usd } from '../lib/price';
 import type { WalletClaimSplit } from './wallet-slots';
 
@@ -24,7 +24,7 @@ export type SourceStatsRow = {
 export type SourceFees = {
   tokens: number;
   volumeTotalUsd: number;
-  /** Gross swap fees traders paid (bootr: incl. RWAGMI's 10%; clanker: incl. Clanker's 20% on top). */
+  /** Gross swap fees traders paid (bootr: incl. RWAGMI's 10%; clanker: incl. Clanker's 20% on top; clanker-v5: the whole tax, Clanker's share inside). */
   feesTotalUsd: number;
   /** What accrued to Bootr's slots, per kind. */
   byKind: Record<'agent' | 'creator' | 'burn' | 'platform', number>;
@@ -67,7 +67,7 @@ function fromRow(r: SourceStatsRow): SourceFees {
 export function composePlatformFees(rows: readonly SourceStatsRow[], shared: readonly { source: LaunchSource; split: WalletClaimSplit }[] = []) {
   const bySource = Object.fromEntries(LAUNCH_SOURCES.map((s) => [s, empty()])) as Record<LaunchSource, SourceFees>;
   for (const r of rows) {
-    if (r.id === 'bootr' || r.id === 'clanker') bySource[r.id] = fromRow(r);
+    if (isLaunchSource(r.id)) bySource[r.id] = fromRow(r);
   }
   for (const { source, split } of shared) {
     const platform = split.byKind.platform;

@@ -16,6 +16,12 @@ describe('parseTokenFilters', () => {
     });
   });
 
+  it('accepts each launch path as the source, Clanker v5 included', () => {
+    expect(parseTokenFilters({ source: 'clanker-v5' })).toEqual({ source: 'clanker-v5' });
+    expect(parseTokenFilters({ source: 'bootr' })).toEqual({ source: 'bootr' });
+    expect(parseTokenFilters({ source: 'clanker-v4' })).toBe('source must be one of bootr, clanker, clanker-v5');
+  });
+
   it('treats absent and empty as no filter', () => {
     expect(parseTokenFilters({})).toEqual({});
     expect(parseTokenFilters({ creator: '', source: '', from: '', to: '', hasAgent: '' })).toEqual({});

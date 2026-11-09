@@ -1,12 +1,12 @@
-import { and, eq } from 'ponder';
+import { and, eq, inArray } from 'ponder';
 import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
 import { isBurnClaim } from './lib/clanker';
 import { enabledSources } from './lib/env';
-import { allocateClaim } from './lib/fees';
-import { applyClankerCollection, applyFeeTaken } from './lib/ledger';
+import { claimParts, parseLaunchSource, type LaunchSource } from './lib/fees';
+import { applyClankerCollection, applyClankerV5TaxCredit, applyFeeTaken } from './lib/ledger';
 import { toUnits, usd } from './lib/price';
 import { assetUsd, bumpDaily, bumpPlatform, bumpSource, getEthUsd, getPlatformConfig, lc, recipientKindOf, sourceOf, type Ctx, type TokenRow } from './lib/store';
 
@@ -22,7 +22,14 @@ import { assetUsd, bumpDaily, bumpPlatform, bumpSource, getEthUsd, getPlatformCo
  *                                                feeBalance.accrued = settled
  *   ClankerFeeLocker.ClaimTokens(Permissioned)   a fee owner's stored balance of an asset is paid out -> feeClaim;
  *                                                the burn slot's coin claim (to 0x…dEaD) counts as a burn
- * Events of pools and recipients that are not ours are dropped.
+ * Clanker v5 path (docs/design/clanker-v5-migration.md section 6):
+ *   ClankerV5Hook.CreatorTaxCredited   a paid slot's exact share of a swap's tax, in the quote (native ETH = 0x0)
+ *                                      -> feeAccrual + feeCredit, feeBalance.accrued = settled
+ *   ClankerV5Hook.BurnTaxCredited      the burn share, in the coin, for 0x…dEaD -> the same, on the burn slot
+ *   ClankerV5FeeEscrow.Claimed         a recipient's whole escrow balance of a currency is paid out -> feeClaim;
+ *                                      the dead address claiming the coin counts as a burn
+ * Events of pools and recipients that are not ours are dropped. A claim is split over the recipient's balances of
+ * the claiming locker's own path only (`claimParts`, the 2026-11-08 cross-booking fix).
  */
 if (enabledSources().RwagmiHookV3) {
   ponder.on('RwagmiHookV3:PoolFeeTakenV3', async ({ event, context }) => {
@@ -95,7 +102,7 @@ if (enabledSources().RwagmiLpLockerV3) {
    * balances (`settled - claimed`, see `allocateClaim`) and record one feeClaim per coin.
    */
   ponder.on('RwagmiLpLockerV3:QuoteRewardsClaimedV3', async ({ event, context }) => {
-    await recordClaim(context, event.args.recipient, event.args.currency, event.args.amount, {
+    await recordClaim(context, 'bootr', event.args.recipient, event.args.currency, event.args.amount, {
       txHash: event.transaction.hash,
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
@@ -128,7 +135,7 @@ if (enabledSources().ClankerLpLocker) {
 if (enabledSources().ClankerFeeLocker) {
   /** `claim(feeOwner, asset)` (anyone; always pays `feeOwner`) pays the whole (feeOwner, asset) balance. */
   ponder.on('ClankerFeeLocker:ClaimTokens', async ({ event, context }) => {
-    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
+    await recordClaim(context, 'clanker', event.args.feeOwner, event.args.token, event.args.amountClaimed, {
       txHash: event.transaction.hash,
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
@@ -137,7 +144,58 @@ if (enabledSources().ClankerFeeLocker) {
   });
 
   ponder.on('ClankerFeeLocker:ClaimTokensPermissioned', async ({ event, context }) => {
-    await recordClaim(context, event.args.feeOwner, event.args.token, event.args.amountClaimed, {
+    await recordClaim(context, 'clanker', event.args.feeOwner, event.args.token, event.args.amountClaimed, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      ts: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+    });
+  });
+}
+
+if (enabledSources().ClankerV5Hook) {
+  /** The hook credits every v5 pool's slots per swap; only pools registered by a v5 `AgentLaunched` are ours. */
+  ponder.on('ClankerV5Hook:CreatorTaxCredited', async ({ event, context }) => {
+    const t = await v5Coin(context, event.args.poolId, event.transaction.hash);
+    if (!t) return;
+    await applyClankerV5TaxCredit(
+      context,
+      t,
+      lc(event.args.poolId),
+      { burn: false, recipient: event.args.recipient, asset: event.args.currency, amount: event.args.amount },
+      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
+    );
+  });
+
+  ponder.on('ClankerV5Hook:BurnTaxCredited', async ({ event, context }) => {
+    const t = await v5Coin(context, event.args.poolId, event.transaction.hash);
+    if (!t) return;
+    await applyClankerV5TaxCredit(
+      context,
+      t,
+      lc(event.args.poolId),
+      { burn: true, recipient: event.args.sink, asset: event.args.token, amount: event.args.amount },
+      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
+    );
+  });
+}
+
+/** The v5 coin of a hook event's pool, or null (not ours, another path, or the launch tx the launch handler replays). */
+async function v5Coin(context: Ctx, poolId: Hex, txHash: Hex): Promise<TokenRow | null> {
+  const p = await context.db.find(schema.pool, { id: lc(poolId) });
+  if (!p) return null;
+  const t = await context.db.find(schema.token, { id: p.token });
+  if (!t || sourceOf(t) !== 'clanker-v5' || t.launchTx === txHash) return null;
+  return t;
+}
+
+if (enabledSources().ClankerV5FeeEscrow) {
+  /**
+   * `claimFor(recipient, currency)` (anyone) / `claimTo(currency, destination)` (the owner) pay the recipient's whole
+   * balance of `currency` across every v5 pool. The dead address claiming a coin finalises that coin's burn.
+   */
+  ponder.on('ClankerV5FeeEscrow:Claimed', async ({ event, context }) => {
+    await recordClaim(context, 'clanker-v5', event.args.recipient, event.args.currency, event.args.amount, {
       txHash: event.transaction.hash,
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
@@ -147,12 +205,14 @@ if (enabledSources().ClankerFeeLocker) {
 }
 
 /**
- * A locker pays a recipient's whole balance of `asset` (RWAGMI: settled WETH across its pools; Clanker: the fee
- * locker's stored balance across its coins). Split it over the per-coin claimable balances (`settled - claimed`)
- * and record one feeClaim per coin. A burn slot claiming its coin (the Clanker path's dead address) is also a burn.
+ * A locker pays a recipient's whole balance of `asset` (RWAGMI: settled WETH across its pools; Clanker v4: the fee
+ * locker's stored balance across its coins; Clanker v5: the escrow's balance across every v5 pool). `source` is the
+ * claiming locker's launch path: only the recipient's balances of coins from that path are split (`claimParts`, by
+ * `settled - claimed`), one feeClaim per coin. A burn slot claiming its coin (the dead address) is also a burn.
  */
 async function recordClaim(
   context: Ctx,
+  source: LaunchSource,
   recipient: Address,
   asset: Address,
   amount: bigint,
@@ -165,15 +225,14 @@ async function recordClaim(
     .from(schema.feeBalance)
     .where(and(eq(schema.feeBalance.recipient, lc(recipient)), eq(schema.feeBalance.asset, lc(asset))));
   if (rows.length === 0) return;
-  rows.sort((a, b) => (a.id < b.id ? -1 : 1));
-  const parts = allocateClaim(
-    rows.map((r) => r.settled - r.claimed),
-    amount,
-  );
+  const coins = await context.db.sql
+    .select({ id: schema.token.id, source: schema.token.source })
+    .from(schema.token)
+    .where(inArray(schema.token.id, [...new Set(rows.map((r) => r.token))]));
+  const sourceOfCoin = new Map(coins.map((c) => [c.id as string, parseLaunchSource(c.source)]));
+  const parts = claimParts(rows, (token) => sourceOfCoin.get(token) ?? null, source, amount);
   const ethUsd = await getEthUsd(context, meta.blockNumber);
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!;
-    const part = parts[i]!;
+  for (const { row, part } of parts) {
     if (part === 0n) continue;
     const t = await context.db.find(schema.token, { id: row.token });
     if (!t) continue;

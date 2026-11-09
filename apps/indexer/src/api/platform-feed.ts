@@ -19,7 +19,7 @@ export interface FeedInput {
   /** Sum of every coin's rolling 7-day volume. */
   volume7dUsd: number;
   social: ReadonlyMap<string, FeedSocial>;
-  /** `source`: the launch path (`bootr` | `clanker`); `lpFeeBps`: the coin's own LP fee (10000 = 1%). */
+  /** `source`: the launch path (`bootr` | `clanker` | `clanker-v5`); `lpFeeBps`: the coin's own LP fee or v5 tax (10000 = 1%). */
   launches: { token: string; kernel: string; name: string; symbol: string; creator: string; launchedAt: number; xHandle: string | null; source: string; lpFeeBps: number }[];
   statusChanges: { kernel: string; token: string; status: string; at: number }[];
   claims: { token: string; recipient: string; amountUsd: number; at: number; txHash: string }[];

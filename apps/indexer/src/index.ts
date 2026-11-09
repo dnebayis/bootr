@@ -4,10 +4,14 @@
  *                  BootrLauncher.AgentLaunched (+ launchInfo slots, launch-tx replay: LiquidityPlacedV3, dev-buy
  *                  fee + swap, transfers, fuel). Clanker path: BootrClankerLauncher.ClankerLaunched (staged),
  *                  BootrClankerLauncher.AgentLaunched (+ TokenCreated / TokenRewardAdded from the receipt or
- *                  tokenRewards(token), launch-tx replay: dev-buy swap, transfers, fuel)
+ *                  tokenRewards(token), launch-tx replay: dev-buy swap, transfers, fuel). Clanker v5: the same
+ *                  BootrClankerLauncher.AgentLaunched when the receipt carries ClankerV5Launched (+ FeeSlotCreated,
+ *                  LaunchTaxConfigured, Launched, Initialize / ModifyLiquidity, launch-tx replay incl. the dev buy's
+ *                  tax credits)
  *   market.ts      PoolManager.Swap (pools of both paths), coin ERC-20 Transfer (balances / holders)
  *   fees.ts        Bootr: RwagmiHookV3.PoolFeeTakenV3, RwagmiLpLockerV3.PoolFeesSettledV3 / QuoteRewardsClaimedV3,
- *                  BuybackBurner. Clanker: ClankerLpLockerFeeConversion.ClaimedRewards, ClankerFeeLocker.ClaimTokens
+ *                  BuybackBurner. Clanker: ClankerLpLockerFeeConversion.ClaimedRewards, ClankerFeeLocker.ClaimTokens.
+ *                  Clanker v5: TaxLaunchHook CreatorTaxCredited / BurnTaxCredited, FeeEscrow.Claimed
  *   guardian.ts    AgentGuardian activity / pause / dormancy / session keys
  *   reputation.ts  ERC-8004 ReputationRegistry feedback
  *   snapshot.ts    periodic block handler (prices, balances, rolling windows, status, rollups)
