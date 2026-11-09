@@ -6,7 +6,7 @@ import { TOOL_LIST } from '@bootr/agent-core';
 import { computeQuote, DEFAULT_PRICE_TABLE } from '@bootr/inference';
 import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { createApp } from '../src/api.js';
-import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, estimateQuote, fuelGate, REFUSAL_TEXT, resetChatPrices, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
+import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, CUT_SHORT_NOTE, estimateQuote, fuelGate, NO_ANSWER_TEXT, REFUSAL_TEXT, resetChatPrices, RETRY_NUDGE, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
 import { actions, approvals, chatMessages, images, inference, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { recentThoughtCost } from '../src/inference.js';
@@ -20,8 +20,14 @@ function say(text: string, charged?: string): Response {
   return new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content: text } }] }), { status: 200, headers: { 'content-type': 'application/json', 'x-bootr-receipt': receipt(charged) } });
 }
 
+/** An answer in any shape the gateway may send: `content` as given, with the provider's finish reason. */
+function reply(content: unknown, finish_reason = 'stop', charged?: string): Response {
+  return new Response(JSON.stringify({ id: 'cmpl', choices: [{ index: 0, finish_reason, message: { role: 'assistant', content } }] }), { status: 200, headers: { 'content-type': 'application/json', 'x-bootr-receipt': receipt(charged) } });
+}
+
+type RequestBody = { model: string; max_tokens: number; tools: { function: { name: string } }[]; messages: { role: string; content: string }[] };
 const completions = (w: TestWorld) => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'));
-const lastBody = (w: TestWorld) => completions(w).at(-1)!.body as { model: string; max_tokens: number; tools: { function: { name: string } }[]; messages: { role: string; content: string }[] };
+const lastBody = (w: TestWorld) => completions(w).at(-1)!.body as RequestBody;
 
 async function runtimeRow(w: TestWorld) {
   return (await w.db.select().from(runtimes).where(eq(runtimes.agentId, AGENT_ID)))[0]!;
@@ -88,7 +94,8 @@ describe('a chat turn', () => {
     expect(system).not.toContain('publish_post');
     expect(body.messages.at(-1)).toEqual({ role: 'user', content: 'When did the pool open?' });
     expect(body.tools.map((t) => t.function.name)).toEqual(['remember']);
-    expect(body.max_tokens).toBe(400);
+    expect(body.max_tokens).toBe(CHAT_MAX_OUTPUT_TOKENS);
+    expect(CHAT_MAX_OUTPUT_TOKENS).toBe(1200);
     const call = completions(w).at(-1)!;
     expect(call.headers.get('Idempotency-Key')).toMatch(/^chat:7:/);
     expect(Number(call.headers.get('X-Max-Quote-Micro-USDC'))).toBeLessThanOrEqual(CHAT_MAX_QUOTE_MICRO_USDC);
@@ -120,6 +127,103 @@ describe('a chat turn', () => {
     const { w, agent } = await world([say('ok')], { config: { routing: { decideModel: 'anthropic/claude-haiku-4.5' } } });
     await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi' });
     expect(lastBody(w).model).toBe('anthropic/claude-haiku-4.5');
+    await w.close();
+  });
+
+  it('tells the agent to answer in the language the creator writes in', async () => {
+    const { w, agent } = await world([say('Bugün iki gönderi paylaştık.')]);
+    await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Bugün ne yaptın?' });
+    expect(lastBody(w).messages[0]!.content).toContain('Answer in the language your creator writes in');
+    await w.close();
+  });
+});
+
+describe('what the model sends back', () => {
+  it('joins the text parts and drops the reasoning parts of an answer that came as an array', async () => {
+    const { w, agent } = await world([reply([{ type: 'thinking', thinking: 'the creator writes in Turkish' }, { type: 'text', text: 'Bugün iki ' }, { type: 'reasoning', text: 'not shown' }, { type: 'text', text: 'gönderi paylaştık.' }])]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Bugün ne yaptın?' });
+    expect(res).toMatchObject({ ok: true, message: { text: 'Bugün iki gönderi paylaştık.', status: 'done' } });
+    expect(completions(w)).toHaveLength(1);
+    await w.close();
+  });
+
+  it('says so at the end of an answer the output limit cut off', async () => {
+    const { w, agent } = await world([reply('Üç şey var:\n- **', 'length')]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Planın ne?' });
+    expect(res).toMatchObject({ ok: true, message: { text: `Üç şey var:\n- **${CUT_SHORT_NOTE}`, status: 'done' } });
+    expect(completions(w)).toHaveLength(1);
+    // a finished answer carries no note
+    const again = await world([reply('Tamam.', 'stop')]);
+    expect(await sendChatMessage(again.w.ctx, again.agent, { by: CREATOR, text: 'Peki' })).toMatchObject({ ok: true, message: { text: 'Tamam.' } });
+    await again.w.close();
+    await w.close();
+  });
+
+  it('a long answer cut off still fits the stored text, note included', async () => {
+    const { w, agent } = await world([reply('y'.repeat(5000), 'length')]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Hepsini anlat' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.message.text.length).toBe(4000);
+    expect(res.message.text.endsWith(CUT_SHORT_NOTE)).toBe(true);
+    await w.close();
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['null', null],
+    ['only reasoning parts', [{ type: 'thinking', thinking: 'hmm' }, { type: 'reasoning', text: 'hmm' }]],
+    ['an empty text part', [{ type: 'text', text: '   ' }]],
+  ])('no text and no call (%s): one more request with the plain-text nudge, on its own key, and both charges count', async (_name, content) => {
+    const { w, agent } = await world([reply(content, 'stop', '5000'), say('İşte cevabım.', '7000')]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Uzun bir soru sordum sana' });
+    expect(res).toMatchObject({ ok: true, pending: false, message: { text: 'İşte cevabım.', status: 'done', chargedMicroUsdc: '12000', remembered: false } });
+    const calls = completions(w);
+    expect(calls).toHaveLength(2);
+    const [first, second] = calls.map((c) => c.body as RequestBody) as [RequestBody, RequestBody];
+    // the same conversation on the same model, with the nudge at the end of the system prompt and nothing else changed
+    expect(second.messages[0]!.content).toBe(`${first.messages[0]!.content}\n\n${RETRY_NUDGE}`);
+    expect(second.messages.slice(1)).toEqual(first.messages.slice(1));
+    expect(second.model).toBe(first.model);
+    expect(second.max_tokens).toBe(first.max_tokens);
+    const keys = calls.map((c) => c.headers.get('Idempotency-Key'));
+    expect(keys[0]).toMatch(/^chat:7:/);
+    expect(keys[1]).toMatch(/^chat:7:/);
+    expect(keys[0]).not.toBe(keys[1]);
+    // the row follows the retry's key, and both paid requests are on record
+    const [row] = await w.db.select().from(chatMessages).where(eq(chatMessages.role, 'agent'));
+    expect(row!.inferenceKey).toBe(keys[1]);
+    expect((await w.db.select().from(inference)).map((r) => r.idempotencyKey).sort()).toEqual([...keys].sort());
+    await noEffects(w);
+    await w.close();
+  });
+
+  it('twice without text: a plain line, never a made-up one, and no third request', async () => {
+    const { w, agent } = await world([reply(null), reply([{ type: 'reasoning', text: 'still thinking' }]), say('never')]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Bir daha dener misin?' });
+    expect(res).toMatchObject({ ok: true, pending: false, message: { text: NO_ANSWER_TEXT, status: 'done' } });
+    expect(completions(w)).toHaveLength(2);
+    expect(NO_ANSWER_TEXT).not.toContain('nothing to add');
+    const view = await chatView(w.ctx, agent);
+    expect(view.messages.at(-1)).toMatchObject({ role: 'agent', text: NO_ANSWER_TEXT });
+    expect(view.quote.refusal).toBeNull();
+    await w.close();
+  });
+
+  it('a note with no words is not retried: the call was the answer', async () => {
+    const { w, agent } = await world([toolCallResponse('remember', { text: 'A note.' }), say('never')]);
+    await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Remember: a note' });
+    expect(completions(w)).toHaveLength(1);
+    await w.close();
+  });
+
+  it('a retry whose outcome is unknown leaves the row open on the retry’s key, settled later without a new request', async () => {
+    const { w, agent } = await world([reply(''), new Response(JSON.stringify({ error: { code: 'upstream_timeout' } }), { status: 503 })]);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'hi' });
+    expect(res).toMatchObject({ ok: true, pending: true, message: { status: 'open' } });
+    const keys = completions(w).map((c) => c.headers.get('Idempotency-Key'));
+    const [row] = await w.db.select().from(chatMessages).where(eq(chatMessages.role, 'agent'));
+    expect(row!.inferenceKey).toBe(keys[1]);
     await w.close();
   });
 });
@@ -418,6 +522,7 @@ describe('what a message costs', () => {
     await w.ctx.memories.remember(AGENT_ID, { text: 'A note about the coin. '.repeat(10) });
     await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'How are things going today, in a sentence or two?' });
     const request = lastBody(w);
+    expect(request.max_tokens).toBe(CHAT_MAX_OUTPUT_TOKENS);
     for (const [model, p] of Object.entries(DEFAULT_PRICE_TABLE.models)) {
       if (p.imageOutputMicroUsdcPerKTokens) continue;
       const quote = computeQuote(DEFAULT_PRICE_TABLE, { ...(request as never as Parameters<typeof computeQuote>[1]), model });
@@ -453,6 +558,8 @@ describe('what a message costs', () => {
     expect(first).toMatchObject({ basis: 'list_price', model: MODEL, refusal: null });
     expect(first.approxMicroUsdc).toBeGreaterThan(1000);
     expect(first.approxMicroUsdc).toBeLessThan(CHAT_MAX_QUOTE_MICRO_USDC);
+    // the shown estimate follows the output ceiling: it is at least the whole allowance at the model's output price
+    expect(first.approxMicroUsdc).toBeGreaterThan((CHAT_MAX_OUTPUT_TOKENS * DEFAULT_PRICE_TABLE.models[MODEL]!.outputMicroUsdcPerKTokens) / 1000);
     for (const text of ['one', 'two', 'three']) {
       w.setNow(w.ctx.now() + 60_000);
       await sendChatMessage(w.ctx, agent, { by: CREATOR, text });

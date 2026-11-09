@@ -22,6 +22,28 @@ describe('parseAssistant', () => {
     expect(parseAssistant(body('{"memory":"m"}', 'tool_calls')).truncated).toBe(false);
     expect(parseAssistant({ choices: [{ finish_reason: 'length', message: { content: 'text' } }] }).truncated).toBe(false);
   });
+
+  it('reports the finish reason as the provider gave it, or null', () => {
+    expect(parseAssistant({ choices: [{ finish_reason: 'length', message: { content: 'text' } }] }).finishReason).toBe('length');
+    expect(parseAssistant(body('{}', 'tool_calls')).finishReason).toBe('tool_calls');
+    expect(parseAssistant({ choices: [{ message: { content: 'text' } }] }).finishReason).toBeNull();
+    expect(parseAssistant({ choices: [{ finish_reason: 7, message: { content: 'text' } }] }).finishReason).toBeNull();
+  });
+
+  // The social turn (runtime.ts) and the chat (chat.ts) read the assistant through this one function, so both see the same text.
+  it('joins text parts of an array answer and drops reasoning parts; a string stays as it is', () => {
+    const parts = [{ type: 'thinking', thinking: 'private' }, { type: 'text', text: 'Hello ' }, { type: 'reasoning', text: 'private too' }, { type: 'text', text: 'there.' }, 'junk', null];
+    expect(parseAssistant({ choices: [{ finish_reason: 'stop', message: { content: parts } }] }).message).toEqual({ role: 'assistant', content: 'Hello there.' });
+    expect(parseAssistant({ choices: [{ message: { content: 'plain' } }] }).message.content).toBe('plain');
+    expect(parseAssistant({ choices: [{ message: { content: '' } }] }).message.content).toBe('');
+    expect(parseAssistant({ choices: [{ message: { content: null } }] }).message.content).toBeNull();
+    expect(parseAssistant({ choices: [{ message: { content: [{ type: 'thinking', thinking: 'only' }] } }] }).message.content).toBeNull();
+    expect(parseAssistant({ choices: [{ message: { content: { text: 'an object' } } }] }).message.content).toBeNull();
+    // a tool call beside array text keeps both
+    const withCall = parseAssistant({ choices: [{ finish_reason: 'tool_calls', message: { content: [{ type: 'text', text: 'Noting that.' }], tool_calls: [{ id: 'x', type: 'function', function: { name: 'remember', arguments: '{"text":"n"}' } }] } }] });
+    expect(withCall.message.content).toBe('Noting that.');
+    expect(withCall.toolCall?.name).toBe('remember');
+  });
 });
 
 describe('a truncated finish in a turn', () => {

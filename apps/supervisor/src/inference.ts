@@ -35,7 +35,7 @@ export interface ModelToolCall {
 }
 
 export type InferenceResult =
-  | { kind: 'ok'; key: string; message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean; receipt: BootrReceipt | null; replayed: boolean }
+  | { kind: 'ok'; key: string; message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean; finishReason: string | null; receipt: BootrReceipt | null; replayed: boolean }
   | { kind: 'unknown'; key: string; error: string }
   /** The relay holds the payment for this key (`status: 'credit'`): retry this key, a new one would pay again. */
   | { kind: 'credit'; key: string; error: string }
@@ -76,18 +76,43 @@ function errorCode(status: number, body: unknown): string {
 /** Output limit reached, in the words of OpenAI's and Anthropic's APIs. */
 const OUTPUT_LIMIT_REASONS: readonly unknown[] = ['length', 'max_tokens', 'MAX_TOKENS'];
 
-/** `truncated`: the tool call's JSON is unfinished, or the provider says the output limit ended it. Such a call never runs as written. */
-export function parseAssistant(body: Record<string, unknown>): { message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean } {
+/** Whether a `finish_reason` says the output limit ended the answer. */
+export function outputLimitReached(finishReason: unknown): boolean {
+  return OUTPUT_LIMIT_REASONS.includes(finishReason);
+}
+
+/**
+ * The assistant's text, whatever shape it came in. OpenRouter and BlockRun send a string; a Claude model through an
+ * OpenAI-compatible gateway can send an array of parts (`[{type:'text', text}]`, with `thinking` / `reasoning` parts
+ * beside them). All text parts joined; reasoning parts are the model's own and never shown. Null when there is no text.
+ */
+export function assistantText(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const part of content as { type?: unknown; text?: unknown }[]) {
+    if (!part || typeof part !== 'object') continue;
+    if ((part.type === 'text' || part.type === 'output_text') && typeof part.text === 'string') parts.push(part.text);
+  }
+  return parts.length ? parts.join('') : null;
+}
+
+/**
+ * `truncated`: the tool call's JSON is unfinished, or the provider says the output limit ended it. Such a call never runs as
+ * written. `finishReason` is the provider's own word for why the answer ended (`stop`, `length`, `tool_calls`, ...), or null.
+ */
+export function parseAssistant(body: Record<string, unknown>): { message: ChatMessage; toolCall: ModelToolCall | null; truncated: boolean; finishReason: string | null } {
   const choice = (body.choices as { message?: Record<string, unknown>; finish_reason?: unknown }[] | undefined)?.[0];
   const msg = choice?.message ?? {};
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
   const toolCalls = (msg.tool_calls as { id: string; type: 'function'; function: { name: string; arguments: string } }[] | undefined) ?? [];
   const first = toolCalls[0];
   const message: ChatMessage = {
     role: 'assistant',
-    content: typeof msg.content === 'string' ? msg.content : null,
+    content: assistantText(msg.content),
     ...(first ? { tool_calls: [first] } : {}),
   };
-  if (!first) return { message, toolCall: null, truncated: false };
+  if (!first) return { message, toolCall: null, truncated: false, finishReason };
   let input: unknown = first.function.arguments;
   let parsed = true;
   try {
@@ -95,7 +120,7 @@ export function parseAssistant(body: Record<string, unknown>): { message: ChatMe
   } catch {
     parsed = false; // keep raw string; parseAction rejects it
   }
-  return { message, toolCall: { id: first.id, name: first.function.name, input, raw: first.function.arguments }, truncated: !parsed || OUTPUT_LIMIT_REASONS.includes(choice?.finish_reason) };
+  return { message, toolCall: { id: first.id, name: first.function.name, input, raw: first.function.arguments }, truncated: !parsed || outputLimitReached(finishReason), finishReason };
 }
 
 /** One request on `model` (the agent's own model unless economy mode routes the step to its decide model; routing.ts). */
