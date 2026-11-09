@@ -88,10 +88,17 @@ export interface DisclosureContext {
   publicAddresses?: readonly string[];
 }
 
+/**
+ * A transaction on the Base explorer, the one place a 32-byte hex is public by nature: a Basescan tx link names a
+ * confirmed movement (a bounty payment's receipt, a claim), never a key. Only the explorer's own `/tx/` path is exempt;
+ * a bare hash, or one behind any other host, still reads as secret material.
+ */
+const EXPLORER_TX_LINK = /https?:\/\/(?:www\.)?(?:sepolia\.)?basescan\.org\/tx\/0x[a-f0-9]{64}(?![a-z0-9])/gi;
+
 /** Returns a disclosure code when the outgoing text must not be published, otherwise null. */
 export function outgoingDisclosureRisk(value: unknown, context: DisclosureContext = {}): DisclosureCode | null {
   const text = normalizedCommunication(value);
-  if (SECRET_MATERIAL.test(text)) return 'social_secret_material_forbidden';
+  if (SECRET_MATERIAL.test(text.replace(EXPLORER_TX_LINK, ' '))) return 'social_secret_material_forbidden';
   if (INTERNAL_REFERENCE.test(text)) return 'social_internal_reference_forbidden';
   if (RUNTIME_JARGON.test(text)) return 'social_runtime_jargon_forbidden';
   if (SCIENTIFIC_NOTATION.test(text)) return 'social_unreadable_number_forbidden';

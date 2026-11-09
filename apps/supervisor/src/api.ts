@@ -254,12 +254,12 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     return c.json({ jobs: await bountyJobViews(ctx, agent, { ...(limit !== undefined ? { limit } : {}) }) });
   });
 
-  /** One job by its id (the `#bounty-<jobId>` the job post links to). */
+  /** One job by its full id, or by the 16-hex prefix the job post's link and the page anchor carry (`#bounty-<shortId>`). */
   app.get('/internal/agents/:id/bounties/:jobId', async (c) => {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
     if (!agent) return c.json({ error: 'not_found' }, 404);
     const jobId = c.req.param('jobId');
-    if (!/^0x[0-9a-fA-F]{64}$/.test(jobId)) return c.json({ error: 'invalid_job_id' }, 400);
+    if (!/^0x(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{16})$/.test(jobId)) return c.json({ error: 'invalid_job_id' }, 400);
     const [job] = await bountyJobViews(ctx, agent, { jobId });
     if (!job) return c.json({ error: 'not_found' }, 404);
     return c.json({ job });

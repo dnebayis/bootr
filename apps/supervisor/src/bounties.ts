@@ -164,8 +164,18 @@ export function utcTime(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
+/**
+ * The public handle of a job: `0x` and the first 16 hex characters of its id. The full id is a 32-byte hex, and the
+ * publish gate (agent-core `outgoingDisclosureRisk`, applied here and again in the sender) refuses any 32-byte hex in
+ * a post as secret material, so the job post, the page link and the proposal name the job by this prefix; the read
+ * routes answer to either form.
+ */
+export function shortJobId(jobId: string): string {
+  return jobId.slice(0, 18).toLowerCase();
+}
+
 export function coinPageLink(siteUrl: string, token: string, jobId: string): string {
-  return `${siteUrl.replace(/\/$/, '')}/token/${token.toLowerCase()}#bounty-${jobId}`;
+  return `${siteUrl.replace(/\/$/, '')}/token/${token.toLowerCase()}#bounty-${shortJobId(jobId)}`;
 }
 
 export function replyLink(replyId: string): string {
@@ -195,7 +205,18 @@ export const NO_WINNER_TEXT = 'No entry met the job; nothing paid.';
 export const NOTHING_PAID_TEXT = 'Nothing paid.';
 export const CANCELLED_TEXT = 'Cancelled by the agent.';
 
-const FORBIDDEN_WORD = new RegExp(`\\b(?:${BOUNTY_FORBIDDEN_WORDS.map((w) => `${w}(?:s|ed|ing|ion)?`).join('|')})\\b`, 'i');
+/** `BOUNTY_FORBIDDEN_WORDS` with their inflections ("posting", "promotion", "bought", "reposts"). */
+const INFLECTIONS: Record<string, string[]> = {
+  buy: ['buy', 'buys', 'buying', 'bought'],
+  post: ['post', 'posts', 'posted', 'posting', 'repost', 'reposts', 'reposted', 'reposting'],
+  tweet: ['tweet', 'tweets', 'tweeted', 'tweeting'],
+  promote: ['promote', 'promotes', 'promoted', 'promoting', 'promotion', 'promotions'],
+  shill: ['shill', 'shills', 'shilled', 'shilling'],
+  follow: ['follow', 'follows', 'followed', 'following'],
+  like: ['like', 'likes', 'liked', 'liking'],
+  retweet: ['retweet', 'retweets', 'retweeted', 'retweeting'],
+};
+const FORBIDDEN_WORD = new RegExp(`\\b(?:${BOUNTY_FORBIDDEN_WORDS.flatMap((w) => INFLECTIONS[w] ?? [w]).join('|')})\\b`, 'i');
 const ANY_ADDRESS = /0x[0-9a-fA-F]{40}/;
 
 /**
@@ -245,8 +266,17 @@ const log = (ctx: Pick<SupervisorContext, 'log'>, agentId: string, job: Pick<Bou
 // Rows
 // ---------------------------------------------------------------------------
 
+/** A job of the agent by its full id, or by its public prefix (`shortJobId`); null when none or ambiguous. */
 export async function jobById(ctx: Pick<SupervisorContext, 'db'>, agentId: string, jobId: string): Promise<BountyJobRow | null> {
-  return (await ctx.db.query.bountyJobs.findFirst({ where: and(eq(bountyJobs.id, jobId), eq(bountyJobs.agentId, agentId)) })) ?? null;
+  const id = jobId.toLowerCase();
+  if (/^0x[0-9a-f]{64}$/.test(id)) return (await ctx.db.query.bountyJobs.findFirst({ where: and(eq(bountyJobs.id, id), eq(bountyJobs.agentId, agentId)) })) ?? null;
+  if (!/^0x[0-9a-f]{16}$/.test(id)) return null;
+  const rows = await ctx.db
+    .select()
+    .from(bountyJobs)
+    .where(and(eq(bountyJobs.agentId, agentId), sql`${bountyJobs.id} like ${`${id}%`}`))
+    .limit(2);
+  return rows.length === 1 ? rows[0]! : null;
 }
 
 async function setJob(ctx: Pick<SupervisorContext, 'db' | 'now'>, jobId: string, patch: Partial<typeof bountyJobs.$inferInsert>): Promise<BountyJobRow> {
@@ -889,7 +919,7 @@ export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, c
   const approvalId = payoutApprovalId(job.id);
   const entryUrl = replyLink(winner.entry.replyId);
   const meta: BountyApprovalMeta = { bounty: 'payout', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, payee: winner.entry.payee, reason: verdict.reason, replyId: winner.entry.replyId, entryUrl };
-  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.entry.payee} for entry ${entryUrl} of job ${job.id}. Why: ${verdict.reason}`;
+  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.entry.payee} for entry ${entryUrl} of job ${shortJobId(job.id)}. Why: ${verdict.reason}`;
   await ctx.db
     .insert(approvals)
     .values({ id: approvalId, agentId: agent.agentId, kind: 'bounty_payout', text, textHash: sha256Hex(text), meta: meta as unknown as Record<string, unknown>, status: 'pending_approval', createdAt: new Date(ctx.now()) })
@@ -1105,6 +1135,8 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
 
 export interface BountyJobView {
   id: string;
+  /** The public prefix of the id, what the job post's link and the page anchor carry (`#bounty-<shortId>`). */
+  shortId: string;
   status: BountyJobStatus;
   task: string;
   criteria: string[];
@@ -1144,6 +1176,7 @@ export async function bountyJobViews(ctx: SupervisorContext, agent: AgentRow, op
     if (notConsidered) ineligible.not_considered = notConsidered;
     return {
       id: job.id,
+      shortId: shortJobId(job.id),
       status: job.status,
       task: job.task,
       criteria: job.criteria,
