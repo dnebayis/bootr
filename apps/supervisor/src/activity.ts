@@ -53,7 +53,7 @@ export function shortAmount(raw: string, decimals: number): string {
   return out.includes('.') ? out.replace(/0+$/, '').replace(/\.$/, '') : out;
 }
 
-const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps' };
+const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps', treasuryTurn: 'treasury turn', judgeModel: 'judge model' };
 
 function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
   const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown; by?: unknown; summary?: unknown };
