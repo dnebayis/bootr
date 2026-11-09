@@ -35,8 +35,12 @@ import {
   type SerializedSessionPolicy,
   type SessionPolicyParams,
 } from './session-key.js';
+import { diffRuleLabels, formatRuleDiff, sessionPowersOf, sessionRulesFor, sessionRulesMeta, sessionRulesStatus, storedRuleLabels, type SessionRuleInputs } from './session-rules.js';
 
 export const LAUNCH_CURSOR = 'launcher_block';
+/** `sv_cursors` row per agent: when the rotation scan last rotated a key for outdated rules (ms); one try a day. */
+export const RULES_ROTATION_CURSOR_PREFIX = 'session_rules_rotation:';
+export const RULES_ROTATION_MIN_INTERVAL_MS = 86_400_000;
 
 export interface LaunchEvent {
   token: Address;
@@ -602,6 +606,12 @@ export async function pollLaunches(ctx: SupervisorContext): Promise<number> {
 // Session keys
 // ---------------------------------------------------------------------------
 
+/**
+ * The session policy of an agent: the call rules follow its powers (`sessionPowersOf(agent.config)` ->
+ * `sessionRulesFor`, session-rules.ts), and the policy records which power produced which rule (`rules`), so a later
+ * power (Trade, Payouts) adds its rules per agent and rotation re-applies the agent's own set. For today's always-on
+ * powers the rules are byte for byte the standard policy of before (test/fixtures/session-policy-layout4.json).
+ */
 export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validUntilSec: number): SessionPolicyParams {
   const { addresses } = ctx.chain;
   const z = addresses.zerodev;
@@ -615,7 +625,7 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
   // fee locker (claim) the launch named for Clanker coins (launch-source.ts).
   const source = agentSource(agent);
   const clanker = source === 'clanker' ? clankerLockersFor(ctx, agent) : null;
-  return {
+  const inputs: SessionRuleInputs = {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
     source,
@@ -628,6 +638,13 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
     spender: ctx.spenderFor(agent).address,
     usdcTransferCap: BigInt(ctx.config.SESSION_USDC_TRANSFER_CAP),
     usdcWindowSeconds: ctx.config.SESSION_USDC_WINDOW_SECONDS,
+  };
+  // Built here so a rule set the module cannot hold (or a power without a provider) fails before any admin transaction.
+  const powers = sessionPowersOf(agent.config);
+  const rules = sessionRulesFor(powers, inputs);
+  return {
+    ...inputs,
+    rules: sessionRulesMeta(powers, rules),
     gasAllowanceWei: BigInt(ctx.config.SESSION_GAS_ALLOWANCE_WEI),
     ratePerHour: ctx.config.SESSION_USEROP_LIMIT,
     validUntil: validUntilSec,
@@ -652,6 +669,29 @@ export interface InstallResult {
   enableTxHash: Hex | null;
 }
 
+/**
+ * One line per fresh install saying which rules the new key gets and, when a policy was stored before, how they
+ * differ from it ("rotation changes rules: +trade.swap, -swap.approveWeth"): the trace an operator reads when a
+ * power switched on in the console reaches the chain.
+ */
+function logRuleChange(log: SupervisorContext['log'], agent: Pick<AgentRow, 'sessionPolicy'>, policy: SessionPolicyParams): void {
+  const labels = policy.rules?.items.map((i) => i.label) ?? [];
+  const powers = policy.rules?.powers ?? [];
+  let previous: string[] | null = null;
+  try {
+    previous = agent.sessionPolicy ? storedRuleLabels(agent.sessionPolicy as unknown as SerializedSessionPolicy) : null;
+  } catch {
+    previous = null;
+  }
+  if (previous === null) {
+    log.info({ powers, rules: labels }, agent.sessionPolicy ? 'session rules (previous policy had a legacy layout)' : 'session rules');
+    return;
+  }
+  const diff = diffRuleLabels(previous, labels);
+  if (diff.added.length || diff.removed.length) log.info({ powers, rules: labels, added: diff.added, removed: diff.removed }, `rotation changes rules: ${formatRuleDiff(diff)}`);
+  else log.info({ powers, rules: labels }, 'rotation keeps the rules');
+}
+
 /** Paymaster for the enable-mode userOp: explicit, else the default one only when the default bundler is used. */
 function enableModePaymaster(ctx: SupervisorContext): string | undefined {
   if (ctx.config.ENABLE_MODE_PAYMASTER_URL) return ctx.config.ENABLE_MODE_PAYMASTER_URL;
@@ -669,6 +709,7 @@ export async function installSessionKey(ctx: SupervisorContext, agent: AgentRow,
   const reuse = !!opts.permissionId && opts.permissionId === agent.permissionId && !!agent.validatorData && !!agent.sessionPolicy;
   const policy = reuse ? deserializeSessionPolicy(agent.sessionPolicy as unknown as SerializedSessionPolicy) : sessionPolicyFor(ctx, agent, Math.floor(ctx.now() / 1000) + ctx.config.SESSION_KEY_VALIDITY_DAYS * 86_400);
   const validUntil = Number(policy.validUntil);
+  if (!reuse) logRuleChange(log, agent, policy);
   const permissionId = opts.permissionId ?? randomPermissionId();
   const validatorData = reuse ? (agent.validatorData as Hex) : buildValidatorData(policy);
 
@@ -825,17 +866,49 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
   }
 }
 
-/** Rotates session keys that expire within SESSION_ROTATE_BEFORE_DAYS. */
+/** When the scan last rotated an agent's key for outdated rules (ms), or null. */
+export async function lastRulesRotationAt(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<number | null> {
+  const row = await ctx.db.query.cursors.findFirst({ where: eq(cursors.name, `${RULES_ROTATION_CURSOR_PREFIX}${agentId}`) });
+  const at = row ? Number(row.value) : NaN;
+  return Number.isFinite(at) ? at : null;
+}
+
+async function markRulesRotation(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<void> {
+  const name = `${RULES_ROTATION_CURSOR_PREFIX}${agentId}`;
+  const value = String(ctx.now());
+  await ctx.db
+    .insert(cursors)
+    .values({ name, value, updatedAt: new Date(ctx.now()) })
+    .onConflictDoUpdate({ target: cursors.name, set: { value, updatedAt: new Date(ctx.now()) } });
+}
+
+/**
+ * Rotates the session keys of active agents that expire within SESSION_ROTATE_BEFORE_DAYS, and those whose rules
+ * are behind the config (`sessionRulesStatus`: a power switched on in the console that needs on-chain rules, so it
+ * does not wait for the expiry rotation). The second kind is tried at most once a day per agent
+ * (`RULES_ROTATION_MIN_INTERVAL_MS`, recorded in `sv_cursors` before the attempt so a failing install is not paid
+ * for every tick). Today no power adds rules, so that path is dormant until Trade or Payouts register a provider.
+ */
 export async function rotateExpiringSessionKeys(ctx: SupervisorContext): Promise<void> {
   if (!ctx.adminSigner) return;
   const rows = await ctx.db.select().from(agents).where(eq(agents.status, 'active'));
   const threshold = ctx.now() + ctx.config.SESSION_ROTATE_BEFORE_DAYS * 86_400_000;
   for (const agent of rows) {
-    if (!agent.sessionValidUntil || agent.sessionValidUntil.getTime() > threshold) continue;
+    const expiring = !!agent.sessionValidUntil && agent.sessionValidUntil.getTime() <= threshold;
+    let outdated = false;
+    if (!expiring) {
+      const status = sessionRulesStatus(agent, agent.config);
+      if (!status.reinstallNeeded) continue;
+      const last = await lastRulesRotationAt(ctx, agent.agentId);
+      if (last !== null && ctx.now() - last < RULES_ROTATION_MIN_INTERVAL_MS) continue;
+      await markRulesRotation(ctx, agent.agentId);
+      outdated = true;
+      ctx.log.info({ agentId: agent.agentId, current: status.current, wanted: status.wanted, change: formatRuleDiff(diffRuleLabels(status.current, status.wanted)) }, 'session rules behind the config; rotating the key');
+    }
     try {
       await rotateSessionKey(ctx, agent);
     } catch (err) {
-      ctx.log.error({ agentId: agent.agentId, err }, 'session key rotation failed');
+      ctx.log.error({ agentId: agent.agentId, err, reason: outdated ? 'outdated_rules' : 'expiring' }, 'session key rotation failed');
     }
   }
 }

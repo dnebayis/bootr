@@ -224,8 +224,8 @@ a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `an
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
-       `NOT_FOR_VALIDATE_SIG`, init data `abi.encode(Rule[])` built by `callPolicyRules` / `encodeCallPolicyData` in
-       `src/session-key.ts` with exactly five rules: `RwagmiLpLockerV3.settleAndClaim(*, *, to == kernel)`,
+       `NOT_FOR_VALIDATE_SIG`, init data `abi.encode(Rule[])` built per power by `src/session-rules.ts` (`callPolicyRules`,
+       see "Session rules per power" below) and encoded by `encodeCallPolicyData` in `src/session-key.ts`; today's rules: `RwagmiLpLockerV3.settleAndClaim(*, *, to == kernel)`,
        `RwagmiLpLockerV3.claimQuote(*, to == kernel)`, `WETH.approve(bootr.swapHelper, *)`, `swapHelper.swapWethToUsdc(*, *)`,
        `USDC.transfer(<agent spender>, SUM_PER_WINDOW <= SESSION_USDC_TRANSFER_CAP per SESSION_USDC_WINDOW_SECONDS)`. The
        locker pays `msg.sender`'s (the kernel's) balance to `to`, and `to` is pinned to the kernel, so a claim can only
@@ -323,6 +323,31 @@ agent from a legacy permission layout (Universal Router rules, `USDC.transfer(pa
 without SKIP_SIGNATURE) to the current one (swap helper, windowed spender funding, closed signature path); the old
 permission's deinit data is rebuilt from its stored `session_policy` (`policyModules`), so legacy permissions revoke
 cleanly.
+
+## Session rules per power
+
+The `BootrCallPolicy` rules a key gets follow the agent's powers (`src/session-rules.ts`; docs/design/agent-capabilities.md
+section 8 item 2). Each power has one rule provider in a table ordered `claims`, `swap`, `treasury`, `trade`, `payouts`;
+`sessionPolicyFor` reads the powers from the stored config (`sessionPowersOf`: the treasury loop is always on, `trade`
+and `payouts` from `capabilities.trade` / `capabilities.payouts`), builds the rules (`sessionRulesFor`) and stores on the
+policy a `rules` block, `{version, powers, items: [{label, power}]}`, one item per rule in index order, so the row says
+why the key has each rule (`claims.settleAndClaim`, `claims.claimQuote` or `claims.collectRewards`, `claims.claim`;
+`swap.approveWeth`, `swap.swapWethToUsdc`; `treasury.fundSpender`, `treasury.withdrawWethForGas`). For today's powers the
+rules are byte for byte the one standard policy of before (`test/fixtures/session-policy-layout4.json` pins it), rows
+stored without the block read back as that standard set, and the gas rule stays last of the shared set so
+`FUNDING_RULE_INDEX` does not move; a later power's rules are appended after it. The module holds at most
+`CALL_POLICY_MAX_RULES` (8, `BootrCallPolicy.MAX_RULES`): a rule set over it, a power without a provider or a duplicate
+label is refused before any admin transaction. Trade and Payouts have no provider yet (`registerSessionRuleProvider`
+when their contracts exist); a config that switches them on today is reported, not installed.
+
+Rotation rebuilds from the **current** config, so a power switched on since the install reaches the chain and a power
+switched off loses its rules, and the install log says what changed (`rotation changes rules: +trade.approveCoin,
++trade.swap`, or `rotation keeps the rules`). `GET /internal/agents/:id/config` carries `sessionRules: {current, wanted,
+reinstallNeeded, error?}` (`sessionRulesStatus`): the installed key's labels against the ones the config implies, for the
+installed key's layout, so only a change of powers asks for a reinstall (layout bumps keep following `rulesVersion` and
+the expiry rotation). `rotateExpiringSessionKeys` rotates such a key too, for active agents only and at most once a day
+per agent (`sv_cursors` row `session_rules_rotation:<agentId>`, written before the attempt so a failing install is not
+paid for every tick). With no power adding rules today, that path is dormant.
 
 ## Money: kernel, spender, windows
 

@@ -64,6 +64,8 @@ describe('GET /internal/agents/:id/config', () => {
         imageModel: DEFAULT_COIN_IMAGE_MODEL,
         imageStyle: { reference: null, notes: '' },
         services: DEFAULT_SERVICES_POLICY,
+        // no policy stored on the seeded row: nothing is installed to compare, the wanted set is today's always-on rules
+        sessionRules: { current: [], wanted: ['claims.settleAndClaim', 'claims.claimQuote', 'swap.approveWeth', 'swap.swapWethToUsdc', 'treasury.fundSpender', 'treasury.withdrawWethForGas'], reinstallNeeded: false },
         revision: 1,
         updatedAt: expect.any(String),
         xHold: null,
