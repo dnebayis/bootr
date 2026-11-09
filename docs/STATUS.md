@@ -173,8 +173,14 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    `sv_bounty_entries`; take the backup step before deploying it), the sender's `POST /internal/read/replies`
    (`apps/sender/src/replies.ts`), the HMAC reads `GET /internal/agents/:id/bounties[/:jobId]` and the
    `bounty_payout` approval that takes the creator's `txHash`. Tests `apps/supervisor/test/bounties.test.ts`,
-   `apps/sender/test/replies.test.ts`. **Web side follows**: the console switch and the `bounties` caps, the job card
-   on the coin page at `#bounty-<shortId>`, the payout item in the review queue with a tx-hash field.
+   `apps/sender/test/replies.test.ts`. **Web side done 2026-11-10**: the Bounties switch and the caps form in the
+   console's Powers section, the `bounty_job` and `bounty_payout` items in the Inbox (the payout one takes the paying
+   transaction hash; the console sends nothing), the Bounties card on the coin page at `#bounty-<shortId>`
+   (`apps/web/components/token/BountiesCard.tsx`), the public reads `GET /api/agent/<kernel>/bounties[/<jobId>]`
+   (`apps/web/lib/server/supervisor.ts` sanitises every field), mock fixtures, the docs block and `e2e/bounties.spec.ts`.
+   **Left for the two-week trial**: switch the power on for the platform agent (console, Powers), watch the first job
+   end to end (the X read of replies with the agent's token and the `pbs.twimg.com` media fetch are not yet seen live),
+   then decide stage B (item 5).
 4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
 5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
    (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator
@@ -198,6 +204,9 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
   (the admin key off the server) must land before the Bounties and Trade contracts.
 - Tweet-to-launch agent (`research/x-launch-references-2026-11.md`): free-text bot with a confirm step, one Privy
   wallet per X id, Bootr pays gas; open: the fee share, a Privy account, X's written approval for AI replies.
+- Plain token deploys from a tweet, the way bankr.bot and clanker.world do it (noted 2026-11-10 as a later step, after
+  Clanker v5 and the Robinhood Chain launcher): possibly through Bootr's own launcher rather than the Clanker path;
+  not decided, nothing designed. Start from the research note above when it comes up.
 - npm publish of `@bootrfun/sdk`, `cli`, `mcp`: the account was suspended on 2026-11-06 and every publish answered
   404; the live docs still say `npx @bootr/mcp`. Check the suspension, regenerate the recovery codes, publish sdk,
   cli, mcp in that order.
