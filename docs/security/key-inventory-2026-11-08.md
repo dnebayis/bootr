@@ -6,9 +6,7 @@ holds, where each one lives, what signs with it and how often, what each on-chai
 take off the server what no running code needs. Nothing was changed; no secret value was read or printed (the
 real `.env` files were inspected for variable names only, with `grep -oE '^[A-Z_]+='`).
 
-**Status (2026-11-09):** nothing removed yet. Step 1 of section 3.4 (the owner deletes the deployer, treasury and
-Basescan variables in Coolify and scrubs the local env files) is the next move and needs no code; the place of the rest
-in the work queue is in `docs/STATUS.md`.
+**Status (2026-11-09):** the owner checked the Coolify environment: none of the deployer, treasury, creator or Basescan variables is set; the only on-chain private key on the server is `ADMIN_PRIVATE_KEY` (plus the two hot keys the supervisor needs, `SESSION_SIGNER_PRIVATE_KEY` and `SPENDER_MASTER_KEY`). Step 1 of section 3.4 is therefore done on the server side; the local `.env`/`.env.mainnet` scrub remains the owner's. Next is step 2 (split the web's supervisor key), then step 3 (the admin key off the server), which must precede the Bounties and Trade contracts.
 
 Sources: `docker-compose.coolify.yml` (which service declares which variable, and the `env -u` strip lists),
 each service's zod schema (`apps/supervisor/src/config.ts`, `apps/sender/src/config.ts`,

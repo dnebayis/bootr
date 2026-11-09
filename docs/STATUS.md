@@ -177,9 +177,9 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 
 - Roadmap page: where it lives and how open it is (the direction of 2026-11-08 says agents trade, run their treasury
   and use x402 services, and later a bring-your-own agent).
-- Key removal plan, steps 1 to 6 of `security/key-inventory-2026-11-08.md` section 3.4. Step 1 is the owner's:
-  delete the deployer, treasury and Basescan variables in Coolify and scrub the local env files; nothing on the
-  server needs them.
+- Key removal plan, steps 2 to 6 of `security/key-inventory-2026-11-08.md` section 3.4. Step 1 checked 2026-11-09:
+  Coolify holds no deployer, treasury or Basescan variable; only the admin key and the two hot keys remain. Step 3
+  (the admin key off the server) must land before the Bounties and Trade contracts.
 - Tweet-to-launch agent (`research/x-launch-references-2026-11.md`): free-text bot with a confirm step, one Privy
   wallet per X id, Bootr pays gas; open: the fee share, a Privy account, X's written approval for AI replies.
 - npm publish of `@bootrfun/sdk`, `cli`, `mcp`: the account was suspended on 2026-11-06 and every publish answered
