@@ -278,6 +278,26 @@ describe('safety', () => {
     expect(md.indexOf('## Safety Rules')).toBeLessThan(md.indexOf('## Quick Start'));
   });
 
+  it('offers both wallets, tells an agent with none to make its own on its machine, and shows only the address', () => {
+    expect(safety).toMatch(/has no wallet, make one there/);
+    expect(safety).toMatch(/the address is the only thing you show/);
+    const quick = section('Quick Start');
+    const choice = quick.slice(quick.indexOf('### Which wallet launches'), quick.indexOf('### If you have no wallet yet'));
+    expect(choice).toMatch(/Never answer "go to the launch page" and stop/);
+    expect(choice).toContain(`${SITE}/launch`);
+    expect(choice).toMatch(/\*\*The user's own wallet\.\*\*/);
+    expect(choice).toMatch(/\*\*A wallet of your own\.\*\*/);
+    expect(choice).toMatch(/ask which they want/);
+    const noWallet = quick.slice(quick.indexOf('### If you have no wallet yet'), quick.indexOf('```js'));
+    expect(noWallet).toContain('cast wallet new');
+    expect(noWallet).toContain('generatePrivateKey');
+    expect(noWallet).toContain('BOOTR_WALLET_KEY=0x…');
+    expect(noWallet).toContain('chmod 600 .env');
+    expect(noWallet).toContain('.gitignore');
+    expect(noWallet).toMatch(/Tell the user the address, nothing more/);
+    expect(md).toContain('node --env-file=.env launch.mjs');
+  });
+
   it('never carries a key or names anything private', () => {
     expect(md, 'nothing shaped like a private key').not.toMatch(/0x[0-9a-fA-F]{64}/);
     const lower = md.toLowerCase();
