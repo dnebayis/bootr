@@ -71,6 +71,13 @@
       "when": 1794161523991,
       "tag": "0009_service_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794258634657,
+      "tag": "0010_bounties",
+      "breakpoints": true
     }
   ]
 }
