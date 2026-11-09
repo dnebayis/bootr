@@ -32,7 +32,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
-import { buildTreasuryObservation, roleTools, type TreasuryTurnInputs } from './roles.js';
+import { buildTreasuryObservation, roleTools, treasuryTurnSection, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
@@ -378,6 +378,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await pictureSection(ctx, agent, config, tools, inputs, directory)),
       // How its own coin's trades pay their fee, in percentages, from the market snapshot above (no extra read): coin-fees.ts.
       ...coinFeesSection(config, inputs.market),
+      // Why the money tools are gone and how to leave the treasury turn a note (treasury turn on only): roles.ts.
+      ...treasuryTurnSection(agent.config),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.

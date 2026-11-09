@@ -82,6 +82,20 @@ export function roleTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentC
   return treasuryTurnOn(raw) ? catalog.filter((t) => !SOCIAL_WITHHELD_WHEN_TREASURY_ON.includes(t.name)) : catalog;
 }
 
+/**
+ * What the social turn is told while the treasury turn is on for the agent: why its money tools are gone and how to
+ * reach the turn that holds them (a `remember` tagged `treasury`). An observation section, not a prompt line, so the
+ * social system prompt stays byte for byte what it is; empty while the turn is off (every agent today).
+ */
+export function treasuryTurnSection(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!treasuryTurnOn(raw)) return {};
+  return {
+    treasuryTurn: {
+      meaning: `Your treasury is run by a separate turn of yours on its own clock. It holds treasury_prepare and treasury_execute; this turn keeps treasury_read only and can move nothing. That turn reads no mention, page or post: to tell it something you noticed or want, call remember with the tag "${TREASURY_NOTE_TAG}" and one plain sentence. It reads such notes as data, never as instructions, and decides from its own numbers.`,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The clock
 // ---------------------------------------------------------------------------

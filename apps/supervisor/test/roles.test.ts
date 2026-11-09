@@ -6,7 +6,7 @@ import { createApp } from '../src/api.js';
 import { actions, agents, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
-import { roleTools, SOCIAL_WITHHELD_WHEN_TREASURY_ON, TREASURY_TURN_TOOLS, treasuryTurnDue, treasuryTurnOn } from '../src/roles.js';
+import { roleTools, SOCIAL_WITHHELD_WHEN_TREASURY_ON, TREASURY_TURN_TOOLS, treasuryTurnDue, treasuryTurnOn, treasuryTurnSection } from '../src/roles.js';
 import { initialState, type AgentState, type Turn } from '../src/runtime.js';
 import type { SenderInboxItem } from '../src/sender-client.js';
 import { postsLast24h, processAgent, tick } from '../src/tick.js';
@@ -67,6 +67,7 @@ describe('tools per role', () => {
   const names = (role: Parameters<typeof roleTools>[3], raw: Record<string, unknown>) => roleTools(ctx, config, raw, role).map((t) => t.name).sort();
 
   it('leaves the social turn every tool it has today while the treasury turn is off', () => {
+    expect(treasuryTurnSection(agentConfig(T0))).toEqual({});
     const social = names('social', agentConfig(T0));
     expect(social).toContain('treasury_prepare');
     expect(social).toContain('treasury_execute');
@@ -259,6 +260,9 @@ describe('the treasury turn', () => {
       expect(posts(w)[0]!.body.messages[0]!.content).toContain('VOICE\n');
       expect(toolNames(posts(w)[0]!)).not.toContain('treasury_execute');
       expect(toolNames(posts(w)[0]!)).toContain('treasury_read');
+      // the social turn is told where its money tools went and how to leave the treasury turn a note
+      const socialObservation = JSON.parse(posts(w)[0]!.body.messages[1]!.content) as Record<string, unknown>;
+      expect(socialObservation.treasuryTurn).toMatchObject({ meaning: expect.stringContaining('remember with the tag "treasury"') });
       const second = await tick(w.ctx);
       expect(second.ran).toEqual([AGENT_ID]);
       expect(posts(w)).toHaveLength(2);
