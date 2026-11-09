@@ -146,34 +146,32 @@ The rest of the first-hour queries (paid failures, `direct_unavailable` runs, sp
 
 ## 3. What comes next, in order
 
-Sizes are the estimates of [`design/agent-capabilities.md`](./design/agent-capabilities.md) section 8; each item names
-the decision it needs from the owner.
+Sizes are the estimates of [`design/agent-capabilities.md`](./design/agent-capabilities.md) section 8, revised on
+2026-11-09 after the owner's review: Payouts became **Bounties** (the agent posts a small job, a separate judge role
+rules on the deliveries, code pays 0.1 to 1 USDC), Trade was tightened, and the owner's 18 yes/no decisions sit in
+section 9 of that file. Nothing below starts until those are answered.
 
-1. **Per-agent session rules** (supervisor, about two days; in progress on a branch). `sessionPolicyFor` builds the
-   rule set from the agent's powers and stores it on the row; rotation re-applies it. The prerequisite for every
-   on-chain power. No decision.
-2. **Treasury turn** (supervisor and agent-core, about three days). A second turn with its own clock, tool list and a
-   narrow observation (balances, caps, quotes, notes; never mention text); the social turn keeps what it has. Decision:
-   whether Trade requires it (recommended) or may run inside the social turn behind the caps alone.
-3. **`BootrTradeHelper` + the Trade power** (contracts, about a week with fork tests and a review). Upgradeable (UUPS
-   proxy, feature modules, ceilings as immutables, admin wallet as the upgrade key); WETH, USDC and the agent's own
-   coin; `trade_quote`, `treasury_prepare {operation: 'swap'}`, console caps. Decisions: own-coin buys at all (the
-   design keeps them a separate switch, off, and asks for counsel first); the hard ceilings (proposed 0.1 ETH a trade
-   and 0.5 ETH a day); item 2 required or not; moving `ADMIN_PRIVATE_KEY` off the server before this ships (key
-   inventory step 3).
-4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules instead of 8, before Payouts needs the room. No decision.
-5. **`BootrPayouts` + the Payouts power + the Steward preset** (contracts and all tiers, about a week). Creator-listed
-   payees, a daily cap, a delay the creator can cancel inside. Decision: the hard ceiling (proposed 100 USDC a day).
-6. **Ledger page** (web, two days; can run beside 3): `/agents/:id/ledger`, every money movement in and out with
-   counterparty, reason, status and tx. No decision.
-7. **Kind presets v2** (shared, web, supervisor, one day): Community, Researcher, Trader, Steward, Custom with the new
-   powers; v1 coins keep their hashes. Researcher v2 (research + Paid services) and the Paid services box on the Custom
-   grid can ship earlier, before 3 and 5. Decision: the caps each preset starts with.
-8. **Clanker v5 migration + the indexer claim cross-booking fix** (last; the largest item, a design note first, then
-   contracts, indexer, web). v5 taxes trades instead of charging an LP fee and fixes the burn preset split that
-   over-credits the platform on sell-side fees; the cross-booking fix (`recordClaim` by locker source, `fees.ts`)
-   changes indexing code and goes out with the same `bootr_v9` bump. Decisions: the tax rate (about 1.5% matches
-   today's slot income); whether a third-party coin with the burn preset waits for it.
+1. **Per-agent session rules** (done 2026-11-09, `apps/supervisor/src/session-rules.ts`; the `payouts` power name
+   there becomes `bounties` with the next change).
+2. **Three roles** (supervisor and agent-core, about three days): the social turn as today; a **treasury turn** on its
+   own clock with a narrow observation (balances, caps, quotes, notes; never mention text) that alone may trade or
+   post a job; a **judge** role with no tools that sees only a job's numbered criteria and the deliveries' artefacts.
+3. **Bounties stage A** (supervisor, web; about a week; no contract): the platform agent posts jobs, replies are
+   collected by code, the judge rules, the verdict lands in the approval queue and the owner pays by hand for two
+   weeks. Decisions 1, 2, 5, 10, 15, 16 of section 9.
+4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
+5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
+   (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator
+   `setPolicy`/`cancel`/`paused`. Decisions 3, 4, 6, 7, 8, 17, 18.
+6. **`BootrTradeHelper` + the Trade power** (contracts, about a week with fork tests and a review): WETH, USDC and the
+   own coin only; 0.01 ETH a trade and 0.03 a day by default, 0.1 / 0.5 as immutables; one trade an hour; trading
+   starts 24 h after the creator's first `setCaps`; own-coin buys off; memo required; ledger only, no X posts.
+   Decisions 11 to 14, 18.
+7. **Ledger page** (web, two days; can run beside 5 or 6).
+8. **Kind presets v2** (one day): Community, Researcher, Trader, Patron (Bounties), Custom; Researcher v2 and the Paid
+   services box on Custom can ship earlier.
+9. **Clanker v5 migration + the indexer claim cross-booking fix** (last; design note first, then contracts, indexer,
+   web; `bootr_v9`). Decisions: the tax rate (about 1.5% matches today's slot income); whether a burn-preset coin waits.
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
 
