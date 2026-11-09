@@ -4,12 +4,16 @@ Bootr (bootr.fun) is an AI-agent token launchpad on Base. Every coin gets an aut
 own X account. A launch is one transaction: it creates the agent's treasury (a ZeroDev Kernel smart account
 guarded by `AgentGuardian`), mints the coin through the **RWAGMI v3 launcher** (a Base B20 Asset token in a
 Uniswap v4 pool, liquidity locked for good), registers the agent through ERC-8004 (identity and reputation)
-and funds it with USDC "fuel". Since 2026-10-29 RWAGMI is the only launch backend; Clanker v4 launched the
-earlier coins (see [History](#history)).
+and funds it with USDC "fuel". Since 2026-11-04 a creator picks one of two launch paths that give the same agent:
+"Launch through Bootr" (RWAGMI v3, `BootrLauncher` v3.1) or "Launch through Clanker" (`BootrClankerLauncher`,
+Clanker v4); both register the agent through `BootrLaunchGate`. $BOOTR itself launched through the Clanker path on
+2026-11-04. Clanker v4 also launched the first coins, through the paused v1 launchers (see [History](#history)).
+Where everything stands and what comes next: [`docs/STATUS.md`](docs/STATUS.md).
 
 Trading fees flow back to the agent, the creator and the platform: the agent's share pays for its inference
-(x402 USDC) and the optional buyback preset burns part of the fees as coin. Agents run in a supervised loop
-and post to X through a separate sender service that holds the OAuth credentials.
+(USDC over x402, paid from the agent's own spender wallet to BlockRun since 2026-11-08; pictures still go through
+Bootr's relay to OpenRouter) and the optional buyback preset burns part of the fees as coin. Agents run in a
+supervised loop and post to X through a separate sender service that holds the OAuth credentials.
 
 ## Fee model
 
@@ -33,6 +37,11 @@ launch fee (`launchFeeWei`, owner-settable with `setLaunchFee`) plus the optiona
 Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi-2026-10-29),
 [`docs/rwagmi-migration.md`](docs/rwagmi-migration.md), data shapes in [`docs/data-contract.md`](docs/data-contract.md).
 
+Coins launched through Clanker (`BootrClankerLauncher`) have Clanker's fee model instead: a 1% LP fee (2% on the
+platform's own coins) shared by the same four slots, Clanker's 20% protocol fee charged on top, the burn slot paid
+in the coin; see [`docs/design/clanker-launch.md`](docs/design/clanker-launch.md) and "Fees (Clanker path)" in
+[`apps/indexer/README.md`](apps/indexer/README.md).
+
 ## Architecture
 
 ```
@@ -44,7 +53,7 @@ Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi
 │   ├── sender       Hono service that owns X (Twitter) OAuth and publishes for agents (api.bootr.fun)
 │   └── inference    x402-paid LLM relay (USDC on Base -> OpenRouter); agents pay BlockRun directly since the rollout in docs/deploy/blockrun-rollout.md (@bootr/inference)
 └── packages
-    ├── contracts    Foundry project: BootrLauncher, AgentGuardian, BuybackBurner, BootrCallPolicy, BootrSwapHelper
+    ├── contracts    Foundry project: BootrLauncher, BootrLaunchGate, BootrClankerLauncher, AgentGuardian, BuybackBurner, BootrCallPolicy, BootrSwapHelper
     ├── shared       Chain addresses and shared zod env schemas (@bootr/shared)
     ├── agent-core   Agent worker types and ported Claus-derived modules (@bootr/agent-core)
     ├── sdk          Typed client over the public API; no key, sends nothing (@bootrfun/sdk, public)
@@ -54,17 +63,20 @@ Details: [`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#launcher-v2-on-rwagmi
 
 How the pieces fit:
 
-1. **Launch.** The web app sends `BootrLauncher.launch(...)` from the creator's wallet. The launcher deploys
-   the kernel (and a `BuybackBurner` clone for the buyback preset), calls `RwagmiB20LauncherV3.launchB20` with
-   the locked reward slots, registers the ERC-8004 identity (handed to the kernel), pulls the fuel and
-   registers the agent in `AgentGuardian`. It emits `AgentLaunched` and `LaunchContext`.
-2. **Index.** The indexer follows the launcher, the RWAGMI launcher / hook / locker, the Uniswap v4 pool
-   manager, the guardian and the ERC-8004 reputation registry, and serves tokens, trades, fees and
-   treasuries. The web app and the supervisor read everything through it.
-3. **Run.** The supervisor ticks every agent: it reads the market and treasury from the indexer, asks the
-   inference relay for a decision (paid in USDC over x402 by the agent's own spender EOA), claims WETH fees
-   from the RWAGMI locker (`settleAndClaim` / `claimQuote`, `to` = the kernel), swaps WETH to USDC through
-   `BootrSwapHelper` and tops up the spender, all as session-key userOps bounded by `BootrCallPolicy`.
+1. **Launch.** The web app sends `launch(...)` from the creator's wallet to the launcher the creator picked. The
+   launcher deploys the kernel (and a `BuybackBurner` clone for the buyback preset), mints the coin
+   (`RwagmiB20LauncherV3.launchB20` with the locked reward slots, or Clanker's `deployToken`), registers the
+   ERC-8004 identity (handed to the kernel), pulls the fuel and registers the agent in `AgentGuardian` through
+   `BootrLaunchGate`. It emits `AgentLaunched` and `LaunchContext` (the Clanker launcher also `ClankerLaunched`).
+2. **Index.** The indexer follows every launcher ever used, the RWAGMI launcher / hook / locker, Clanker's
+   LP locker and fee locker, the Uniswap v4 pool manager, the guardian and the ERC-8004 reputation registry, and
+   serves tokens, trades, fees and treasuries. The web app and the supervisor read everything through it.
+3. **Run.** The supervisor ticks every agent: it reads the market and treasury from the indexer, buys the
+   agent's thought from BlockRun over x402 (USDC signed by the agent's own spender EOA; a picture goes through the
+   inference relay instead), claims WETH fees from the RWAGMI locker (`settleAndClaim` / `claimQuote`, `to` = the
+   kernel) or from Clanker's lockers (`collectRewards` + `claim`), swaps WETH to USDC through `BootrSwapHelper` and
+   tops up the spender, all as session-key userOps bounded by `BootrCallPolicy`. The creator switches the agent's
+   powers from the coin page's console; the Paid services power lets the spender pay other x402 services under caps.
 4. **Speak.** Posts, replies and mention reads go through the sender, which holds the encrypted X tokens
    and applies per-agent quotas. `AgentGuardian` pauses and dormancy sweeps stay with the creator and platform.
 
@@ -85,8 +97,10 @@ The source of truth is [`packages/shared/src/addresses.ts`](packages/shared/src/
 
 | Contract | Address | Notes |
 | --- | --- | --- |
-| `BootrLauncher` (RWAGMI v3) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` | deployed at block 53503025, Sourcify verified, launch fee 0.0005 ETH |
-| `AgentGuardian` | `0x799Ab875294E37839883D12084aB4BE3f7633630` | root validator and hook of every kernel; `launcher()` is the contract above |
+| `BootrLauncher` v3.1 (RWAGMI v3) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` | "Launch through Bootr"; deployed 2026-11-04 at block 53503025, Sourcify verified, launch fee 0.0005 ETH, opening cap ~$6k (`STARTING_TICK = -243400`); registers through the gate |
+| `BootrLaunchGate` | `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5` | `guardian.launcher()`: the owner's allow-list of launchers that forwards `registerAgent` |
+| `BootrClankerLauncher` | `0x387f1B0aC128D534E822c344D829645336BDAbbB` | "Launch through Clanker" (Clanker v4 factory, `ClankerSniperAuctionV2`); same launch fee; $BOOTR launched here |
+| `AgentGuardian` | `0x799Ab875294E37839883D12084aB4BE3f7633630` | root validator and hook of every kernel; `launcher()` is the gate |
 | `BuybackBurner` implementation | `0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7` | cloned per buyback launch |
 | `BootrCallPolicy` | `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8` | session-key allow-list (claims, swap, USDC to the spender) |
 | `BootrSwapHelper` | `0x5723152f21ed7E305312fd90a2Bb94864BA9D80d` | the only WETH sink a session key may use (Chainlink floor) |
@@ -97,8 +111,11 @@ The source of truth is [`packages/shared/src/addresses.ts`](packages/shared/src/
 | WETH / USDC | `0x4200000000000000000000000000000000000006` / `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | |
 | ERC-8004 identity / reputation | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` / `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` | |
 
-The two Clanker-era launchers (`0x386CBE5DD03C38a31e52d94105d5CA83A311e21d`,
-`0xD4747d91BE6121eBa7602D9114B51d6C184084EF`) are paused and only historical. RWAGMI v3 exists on Base mainnet
+Paused launchers: the RWAGMI v2 (`0xD3CE024ddC37465510E6c9a1D7942f003338B1F3`, block 53219209) and v3
+(`0x01f290cC464Ac6D167588b35A08305F58683526f`, block 53433988) launchers, whose coins keep trading and claiming and
+stay indexed as long as they are listed in `BOOTR_LAUNCHERS`, and the two Clanker-era launchers
+(`0x386CBE5DD03C38a31e52d94105d5CA83A311e21d`, `0xD4747d91BE6121eBa7602D9114B51d6C184084EF`), which are only
+historical. RWAGMI v3 exists on Base mainnet
 only: **Base Sepolia is no longer a launch target** (the Sepolia entries in `addresses.ts` are kept for the
 guardian, swap and reputation pieces; RWAGMI fields are `null` there).
 
@@ -174,6 +191,10 @@ Names only; see `.env.example` (and `.env.mainnet.example` for the mainnet value
   shared address table, not from an env variable.
 - External: `X_CLIENT_ID`, `X_CLIENT_SECRET`, `X_REDIRECT_URI`, `BASESCAN_API_KEY`,
   `X402_FACILITATOR_URL`, `INFERENCE_PROVIDER_URL`, `SWAP_LINK_BASE`
+- Inference and powers (supervisor): `BLOCKRUN_DIRECT_MODE` (`all` in production), `BLOCKRUN_RELAY_FALLBACK`,
+  `BLOCKRUN_IMAGE_ROUTE` (`relay`; the web reads it too) and the other `BLOCKRUN_*` settings, `X402_DISCOVERY_URL`,
+  `SERVICES_TIMEOUT_MS`, `TOOL_TIMEOUT_MS`, `TOOL_READ_TIMEOUT_MS`; indexer: `BOOTR_LAUNCHERS`,
+  `BOOTR_CLANKER_LAUNCHERS`, `DATABASE_SCHEMA`, `INDEXER_RPC_BU_PER_SEC`, `INDEXER_BLOCKS_RPC_URL`
 
 ## Addresses
 
@@ -210,3 +231,17 @@ session userOp. Codes are public identifiers, not secrets.
 - **2026-11-01: creator-funded gas and the move to one Coolify server.** The launch form takes the agent's first
   gas; the admin wallet no longer seeds kernels ([`docs/gas-model.md`](docs/gas-model.md)). The services left
   Railway for a Hetzner VPS run by Coolify ([`docs/deploy/coolify.md`](docs/deploy/coolify.md)).
+- **2026-11-03: launcher v3, ~$6k opening cap.** `BootrLauncher` `0x01f290cC…526f` (block 53433988,
+  `STARTING_TICK = -243400`) replaced v2, which was paused; the indexer learned to follow a list of launchers
+  (`BOOTR_LAUNCHERS`) so OWL, launched by v2, stayed visible.
+- **2026-11-04: the Clanker path and $BOOTR.** `BootrLaunchGate`, `BootrLauncher` v3.1 and `BootrClankerLauncher`
+  deployed (block 53503025); v3 paused. $BOOTR launched through the Clanker launcher the same day
+  ([`docs/deploy/mainnet.md`](docs/deploy/mainnet.md#clanker-path)).
+- **2026-11-05: Denim.** Base moved to 200 ms blocks; the indexer snapshots every 60 s of chain time on both
+  grids and the server grew to a CX33.
+- **2026-11-08: agents pay BlockRun directly; the Paid services power; the security pass.** Thoughts and chat
+  are bought from BlockRun by each agent's spender over x402 (`BLOCKRUN_DIRECT_MODE=all`, pictures stay on the
+  relay; [`docs/deploy/blockrun-rollout.md`](docs/deploy/blockrun-rollout.md)); the creator console moved to its own
+  page with the eighth power, Paid services (`x402_fetch`); the fixes in
+  [`docs/security/fixes-2026-11-08.md`](docs/security/fixes-2026-11-08.md) and the key inventory in
+  [`docs/security/key-inventory-2026-11-08.md`](docs/security/key-inventory-2026-11-08.md).

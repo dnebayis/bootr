@@ -24,10 +24,17 @@ docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_mainnet_v
 ```
 
 The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; without `DATABASE_SCHEMA` it falls
-back to `RAILWAY_DEPLOYMENT_ID`, a leftover of the Railway era). Production uses the fixed schema `bootr_v1`.
-Ponder refuses to reuse a schema that was built by different indexing code, so the name must be bumped
-(`bootr_v2`, ...) whenever the indexer changes, and the new schema backfills from `BOOTR_START_BLOCK` (about an
-hour). See [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 2.
+back to `RAILWAY_DEPLOYMENT_ID`, a leftover of the Railway era; `DATABASE_SCHEMA=auto`, a name derived from the
+image's commit, is implemented there but production does not use it). Production runs a fixed name, `bootr_v8` since
+2026-11-08 (the next is `bootr_v9`). Ponder refuses to reuse a schema that was built by different indexing code
+("previously used by a different Ponder app"; the container crash-loops until the name changes), and the build id
+hashes `src/**` except `src/api`, `ponder.schema.ts` and the config's contracts, accounts, blocks and ordering. Before
+every deploy run
+`git diff <live commit>..HEAD --name-only -- apps/indexer/src apps/indexer/ponder.schema.ts apps/indexer/ponder.config.ts | grep -v src/api`
+yourself: any line means a new `DATABASE_SCHEMA` in Coolify and a backfill from the earliest listed launcher block
+(about 13 minutes on 2026-11-08 with Ponder's RPC cache warm; the site shows stale or partial data meanwhile).
+`rpc-budget.ts`, the RPC urls and the `INDEXER_*` budget settings live outside the build id. See
+[`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 2.
 
 Ponder only auto-loads `apps/indexer/.env.local`; export the variables (or use your usual env
 loader) to point it at the root `.env`. When sourcing the root `.env`, override `PORT` (it holds the
@@ -63,6 +70,10 @@ would print the key on any failed request. `rpc-budget.ts` therefore gives Ponde
 url with a path, query or credentials, budget or not, and keeps plain strings for urls with nothing to hide. Keep RPC urls out
 of anything else that logs. With the transport, Ponder's own lines name `hostname: custom_transport` and no url.
 
+The indexer's own viem client (`src/lib/rpc.ts`) is the one server-side chain client without `ccipRead: false`
+(`docs/security/fixes-2026-11-08.md` item 1): it is indexing code and so part of the build id, it reads only Bootr's own
+contracts, and it gets the flag with the next schema bump.
+
 Coins come through two launch paths, both on **Base mainnet only** (`token.source`):
 
 * **bootr**: `BootrLauncher` launches through the RWAGMI v3 launcher (B20 Asset tokens in Uniswap v4 pools; see
@@ -74,10 +85,12 @@ Coins come through two launch paths, both on **Base mainnet only** (`token.sourc
 
 Without any launcher, or on a chain without the launch stacks (Base Sepolia), the
 indexer boots with a warning and only runs the snapshot block handler (ETH/USD, empty platform
-rollups). Production runs `CHAIN_ID=8453` with the RWAGMI-backed launcher `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`
-(`BOOTR_LAUNCHER_ADDRESS`, deployed at block 53503025 = `BOOTR_START_BLOCK`) and the guardian
-`0x799Ab875294E37839883D12084aB4BE3f7633630` (`BOOTR_GUARDIAN_ADDRESS`; both also default from `@bootr/shared`);
-after changing any of them delete `.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a
+rollups). Production runs `CHAIN_ID=8453` with `BOOTR_LAUNCHERS` naming every RWAGMI-backed `BootrLauncher` ever used
+(the current one is v3.1 `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, deployed at block 53503025; the list is in
+`.env.mainnet.example`), `BOOTR_CLANKER_LAUNCHERS` with the `BootrClankerLauncher`
+`0x387f1B0aC128D534E822c344D829645336BDAbbB@53503025`, and the guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`
+(`BOOTR_GUARDIAN_ADDRESS`; the single-launcher fallback and the guardian also default from `@bootr/shared`); after
+changing any of them delete `.ponder/` (or bump `DATABASE_SCHEMA`) to reindex. Local dev runs against a
 Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 8). Public host:
 `https://indexer.bootr.fun` (GraphQL at `/graphql`, REST, SSE `/stream`, `/ready`).
 
@@ -122,7 +135,7 @@ To add one, append it to `BOOTR_LAUNCHERS` (keep the old entries; the first swit
 
 ```sh
 BOOTR_LAUNCHERS=0xD3CE024ddC37465510E6c9a1D7942f003338B1F3@53219209,0x<new launcher>@<new launcher deploy block>
-DATABASE_SCHEMA=bootr_v2   # bumped: see below
+DATABASE_SCHEMA=bootr_v9   # the next fixed name: see below
 ```
 
 The Clanker path has its own list, `BOOTR_CLANKER_LAUNCHERS`, with the same rules (keep every wrapper ever used;

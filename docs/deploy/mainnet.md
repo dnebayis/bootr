@@ -18,6 +18,8 @@ configuration), `.env.mainnet.example` (every variable with its mainnet value or
 > [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap). Design:
 > [`docs/rwagmi-migration.md`](../rwagmi-migration.md). Next: [Clanker path](#clanker-path) (gate, launcher v3.1,
 > `BootrClankerLauncher`; design [`docs/design/clanker-launch.md`](../design/clanker-launch.md)), deployed 2026-11-04.
+> Since 2026-11-08 every agent pays BlockRun directly for its thoughts ([`blockrun-rollout.md`](./blockrun-rollout.md));
+> where the whole stack stands and what comes next: [`docs/STATUS.md`](../STATUS.md).
 
 ## 0. Dry-run first (no keys, no gas)
 
@@ -241,7 +243,8 @@ models, `bootToken` after step 6).
 
 ## 6. $BOOTR launch (from PLATFORM_TREASURY)
 
-> **Before this launch (decided 2026-11-02):** redeploy `BootrLauncher` with a ~$6k opening market cap
+> **Before this launch (decided 2026-11-02; done 2026-11-03 as launcher v3 `0x01f290cC…526f`, itself replaced by v3.1
+> behind the gate on 2026-11-04):** redeploy `BootrLauncher` with a ~$6k opening market cap
 > (`STARTING_TICK = -243_400`, ~2.7 ETH FDV; the live launcher's `-230_400` opens at ~22k) using
 > `script/DeployLauncher.s.sol`, and first teach the indexer a list of launchers (old + new, each with its start
 > block) so coins of the old launcher, OWL included, stay indexed. Then update the launcher address everywhere
@@ -250,7 +253,8 @@ models, `bootToken` after step 6).
 > [Launcher switch (6k opening cap)](#launcher-switch-6k-opening-cap) at the end of this file; the repo side of the
 > address change is `scripts/switch-launcher.sh <new launcher> <new start block>`.
 >
-> **Also before this launch (decided 2026-11-02):** agents pay for inference directly to BlockRun over x402 from
+> **Also before this launch (decided 2026-11-02; live for every agent since 2026-11-08, with no relay fallback and
+> pictures kept on the relay, [`blockrun-rollout.md`](./blockrun-rollout.md)):** agents pay for inference directly to BlockRun over x402 from
 > their own spender wallets (`docs/research/blockrun-vs-openrouter.md`), behind a supervisor flag with the
 > OpenRouter relay kept as fallback: add BlockRun's payTo to the payer allowlist, move per-thought accounting, the
 > model allowlist and spend caps into the supervisor, trial on the $BOOTR agent first. Outreach to BlockRun goes by

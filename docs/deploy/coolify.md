@@ -3,7 +3,8 @@
 Bootr runs on a single Hetzner Cloud VPS managed by [Coolify](https://coolify.io) (self-hosted PaaS: Docker,
 Traefik proxy, Let's Encrypt). This is the production runbook since 2026-11-01; the Railway layout it replaced is
 summarised in [`railway.md`](./railway.md) (history only). The contract-side cutover, keys and the $BOOTR launch
-are in [`mainnet.md`](./mainnet.md).
+are in [`mainnet.md`](./mainnet.md). Where the stack stands today and the owner's cheat-sheet of commands:
+[`docs/STATUS.md`](../STATUS.md).
 
 ## 1. Layout
 
@@ -35,26 +36,42 @@ Public endpoints: `bootr.fun` (web: the app, `/api/*`, agent cards at `/agents/<
    Webhooks); until then deploy from the panel (**Deploy** / **Redeploy**) or from the server:
    ```sh
    curl -s -X POST -H "Authorization: Bearer $(cat /root/.coolify-token)" -H "Content-Type: application/json" \
-     http://127.0.0.1:8000/api/v1/deploy -d '{"uuid":"<application uuid>","force":false}'
+     http://127.0.0.1:8000/api/v1/deploy -d '{"uuid":"ko7sx54pwakworrqogccvbfc","force":false}'
    ```
-   The application uuid is in the panel URL. `GET /api/v1/deployments/<deployment uuid>` returns the status and the
-   build log.
-2. Coolify clones the repo, runs `docker compose build` for the five services (the Dockerfiles under `apps/*`; the
-   web image takes its `NEXT_PUBLIC_*` build args from the application's environment) and `docker compose up -d`.
-   The first build on the CX23 took ~11 minutes with swap in use; later builds reuse the layer cache. Build one
-   application at a time on this box. Since 2026-11-03 the images are built by GitHub Actions and
-   pushed to GHCR (section 9); once the compose file points at them, this step is a pull.
+   From the owner's Mac the same call runs over SSH (the key is `~/.ssh/bootr_hetzner`):
+   ```sh
+   ssh -i ~/.ssh/bootr_hetzner root@77.42.90.52 'curl -s -X POST -H "Authorization: Bearer $(cat /root/.coolify-token)" \
+     -H "Content-Type: application/json" http://127.0.0.1:8000/api/v1/deploy -d "{\"uuid\":\"ko7sx54pwakworrqogccvbfc\",\"force\":false}"'
+   ```
+   `ko7sx54pwakworrqogccvbfc` is the `bootr-stack` application uuid (also in the panel URL).
+   `GET /api/v1/deployments/<deployment uuid>` returns the status and the build log.
+2. Since 2026-11-03 the images are built by GitHub Actions and pushed to GHCR (section 9) and the compose file pulls
+   them (`image: ghcr.io/dnebayis/bootr-<svc>:${IMAGE_TAG:-main}`), so a deploy is `docker compose pull` and `up -d`,
+   not a build: a push to `main` that touches `apps/**` or `packages/**` must finish its images run (Actions → images)
+   before the deploy, or the deploy pulls the previous `:main`. Until then the server built the five images itself
+   (about 11 minutes a deploy on the CX23, one build at a time).
 3. Migrations run inside the containers at start (`command:` in the compose file): sender and supervisor
    `node dist/db/migrate.js`, inference `node scripts/migrate.mjs`. Each keeps its own journal, so restarts are
    no-ops. Migrations are forward-only (drizzle has no down migrations): keep them backward-compatible (add first,
    remove in a later release) and take a backup (section 6) before a release that contains one.
-4. The indexer manages its own schema. `DATABASE_SCHEMA=bootr_v1` is fixed: bump it (`bootr_v2`, ...) whenever
-   the indexing code changes, because Ponder refuses to reuse a schema built by another app version, and drop the
-   old one afterwards (`docker exec <indexer container> ./node_modules/.bin/ponder db prune`). A fresh schema
-   backfills from `BOOTR_START_BLOCK` (53219209): about 70 minutes on the CDP RPC at Ponder's own rate, longer under the `INDEXER_RPC_BU_PER_SEC` budget when little is in the RPC cache;
-   `/ready` returns 503 until then while `/health` is already 200. Unlike Railway's per-deployment schemas, the
-   previous index is **not** kept serving during a backfill: a schema bump means roughly an hour without token
-   data on the site, so do it at a quiet time.
+4. The indexer manages its own schema. `DATABASE_SCHEMA` is a fixed name, `bootr_v8` since 2026-11-08 (the next is
+   `bootr_v9`). Ponder refuses to reuse a schema built by different indexing code ("Schema bootr_v7 was previously
+   used by a different Ponder app"; the container crash-loops until the name changes, as on 2026-11-08 when a deploy
+   kept `bootr_v7` after `src/lib/rpc.ts` had changed), so **any change under `apps/indexer/src` except `src/api`, to
+   `ponder.schema.ts`, or to the contracts, accounts, blocks or ordering of `ponder.config.ts` needs a new name** set
+   in Coolify before the deploy. Check it yourself before every deploy, never from a claim that a change is "config
+   only":
+   ```sh
+   git diff <live commit>..HEAD --name-only -- apps/indexer/src apps/indexer/ponder.schema.ts apps/indexer/ponder.config.ts | grep -v src/api
+   ```
+   Any line printed means a bump. The RPC urls, `INDEXER_RPC_BU_PER_SEC`, `BASE_RPC_FALLBACK_URL` and
+   `INDEXER_BLOCKS_RPC_URL` live outside the build id. A fresh schema backfills from the earliest listed launcher
+   block: about 13 minutes measured on 2026-11-08 with Ponder's `ponder_sync` RPC cache warm (the first backfill from
+   53219209 took about 70 minutes); `/ready` returns 503 until then while `/health` is already 200, and the previous
+   index is **not** kept serving during a backfill, so the site shows stale or partial token data meanwhile: do it at
+   a quiet time. Drop old schemas afterwards (`docker exec <indexer container> ./node_modules/.bin/ponder db prune`).
+   `scripts/start.sh` also implements `DATABASE_SCHEMA=auto` (a name from the image's commit, older automatic schemas
+   dropped by `schema-janitor.mjs`), which production does not use.
 5. Check: application → Logs per service, or on the server `docker ps` and `docker logs <container>`.
    ```sh
    curl -sk --resolve bootr.fun:443:127.0.0.1 https://bootr.fun/api/health
@@ -66,6 +83,21 @@ Rollback: application → Deployments → a previous successful one → **Redepl
 Docker layer cache makes it fast) with the current environment; `NEXT_PUBLIC_*` values are baked into the web
 image at build time, so a rollback with changed public values needs those variables reverted first.
 
+Before every push or deploy, from the checkout that is going out (the live commit is the one the running images were
+built from: `IMAGE_TAG`, or the `sha-` tag of the last deployment in Coolify):
+
+```sh
+# 1. No secret in what is about to be pushed. Read every hit: a 64-hex tx hash in a doc is expected, a key is not.
+git diff origin/main..HEAD -U0 | grep -nE '(PRIVATE_KEY|MASTER_KEY|SECRET|TOKEN|API_KEY|JWT)[A-Za-z_]*.{0,3}[=:].{0,3}[A-Za-z0-9+/_-]{16,}|sk-or-v1-[A-Za-z0-9]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY' || echo "no secret pattern in the diff"
+# 2. Does the indexer need a new DATABASE_SCHEMA? Any line printed means yes (step 4 above).
+git diff <live commit>..HEAD --name-only -- apps/indexer/src apps/indexer/ponder.schema.ts apps/indexer/ponder.config.ts | grep -v src/api
+# 3. A migration in this release? Take a backup first (section 6).
+git diff <live commit>..HEAD --name-only -- 'apps/*/drizzle'
+```
+
+A test fixture once carried a real OpenRouter key into the public repository
+(`docs/security/key-inventory-2026-11-08.md`, 1.4), which is what the first check is for.
+
 ## 3. Environment
 
 The compose file declares every variable as `${NAME}` (secrets) or `${NAME:-default}` (config), and Coolify lists
@@ -75,15 +107,16 @@ holds the mainnet values and placeholders.
 
 | Service | Secrets | Config |
 | --- | --- | --- |
-| web | `SESSION_SECRET`, `ADMIN_CONSOLE_SLUG` (hides the console), `PINATA_JWT`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY` (the coin page's agent config and activity, `/api/agent/[kernel]/*`), `BASE_RPC_URL` | `ADMIN_ADDRESSES`, `SENDER_URL=http://sender:3002`, `INFERENCE_URL=http://inference:3003`, `SUPERVISOR_URL=http://supervisor:3004`, `HOSTNAME=0.0.0.0`; build args `NEXT_PUBLIC_CHAIN_ID=8453`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_INDEXER_URL`, `NEXT_PUBLIC_SENDER_PUBLIC_URL`, `NEXT_PUBLIC_RPC_URL` (a public endpoint, never the keyed one), `NEXT_PUBLIC_BUILDER_CODE`, `NEXT_PUBLIC_IPFS_GATEWAY`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_USE_MOCK` (empty) |
-| sender | `SENDER_SERVICE_KEY`, `SENDER_ENCRYPTION_KEY` (rotating it orphans every stored X token), `X_CLIENT_SECRET` | `X_CLIENT_ID`, `X_REDIRECT_URI=https://api.bootr.fun/oauth/callback`, `SENDER_OAUTH_RETURN_URL=https://bootr.fun/launch`, `SENDER_TRUST_PROXY=1` (behind Traefik) |
+| web | `SESSION_SECRET`, `ADMIN_CONSOLE_SLUG` (hides the console), `PINATA_JWT`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY` (the coin page's agent config and activity, `/api/agent/[kernel]/*`), `BASE_RPC_URL` | `ADMIN_ADDRESSES`, `SENDER_URL=http://sender:3002`, `INFERENCE_URL=http://inference:3003`, `SUPERVISOR_URL=http://supervisor:3004`, `BLOCKRUN_IMAGE_ROUTE` (unset = `relay`, the same value as the supervisor's), `HOSTNAME=0.0.0.0`; build args `NEXT_PUBLIC_CHAIN_ID=8453`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_INDEXER_URL`, `NEXT_PUBLIC_SENDER_PUBLIC_URL`, `NEXT_PUBLIC_RPC_URL` (a public endpoint, never the keyed one), `NEXT_PUBLIC_BUILDER_CODE`, `NEXT_PUBLIC_IPFS_GATEWAY`, `NEXT_PUBLIC_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS`, `NEXT_PUBLIC_SUPERVISOR_SESSION_KEY`, `NEXT_PUBLIC_BOOT_X_URL`, `NEXT_PUBLIC_SWAP_LINK_BASE`, `NEXT_PUBLIC_USE_MOCK` (empty) |
+| sender | `SENDER_SERVICE_KEY`, `SENDER_ENCRYPTION_KEY` (rotating it orphans every stored X token), `X_CLIENT_SECRET` | `X_CLIENT_ID`, `X_REDIRECT_URI=https://api.bootr.fun/oauth/callback`, `SENDER_OAUTH_RETURN_URL=https://bootr.fun/launch`, `SENDER_TRUST_PROXY=1` (behind Traefik), `SENDER_DEFAULT_POSTS_PER_DAY` (empty = 24 per rolling day per agent; the console's posts-per-day slider sets a per-agent quota through the supervisor), `SENDER_DEFAULT_MENTION_INTERVAL_SEC`, `SENDER_DEFAULT_READS_PER_DAY` (empty = 400 X reads per agent per UTC day, `0` = no budget) |
 | inference | `OPENROUTER_API_KEY`, `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET`, `INFERENCE_RPC_URL` | `X402_NETWORK=eip155:8453`, `X402_FACILITATOR_URL`, `INFERENCE_PAYTO_ADDRESS` |
-| indexer | `BASE_RPC_URL`, `INDEXER_SERVICE_KEY` | `DATABASE_SCHEMA=bootr_v1`, `CHAIN_ID`, `BOOTR_LAUNCHERS` (every BootrLauncher ever used, `address@deployBlock,...`; while it is empty the single `BOOTR_LAUNCHER_ADDRESS` + `BOOTR_START_BLOCK` pair is used instead), `BOOTR_GUARDIAN_ADDRESS`, `RWAGMI_*_V3_ADDRESS` (four), `INDEXER_CORS_ORIGIN=https://bootr.fun,https://www.bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `BOOT_TOKEN_ADDRESS` after the $BOOTR launch. Adding a launcher (a redeploy of BootrLauncher) = append `0x<new launcher>@<its deploy block>` to `BOOTR_LAUNCHERS` (keep the old entries so their coins stay indexed) **and** bump `DATABASE_SCHEMA`: the address list is part of Ponder's build id, so the old schema is refused and a backfill runs (shorter than the first one, Ponder's `ponder_sync` RPC cache is reused; see `apps/indexer/README.md` "Adding a launcher") |
-| indexer (schema) | | `DATABASE_SCHEMA=auto` (since 2026-11-04): each image indexes into `bootr_<first 7 of its commit>` and drops the automatic schemas of older images except the newest previous one at start (`apps/indexer/scripts/schema-janitor.mjs`). Ponder refuses to reuse a schema built by a different app version, so a fixed name (`bootr_v3`) had to be bumped or dropped by hand after every indexer change; `auto` removes that step. Every indexer change still backfills from scratch (about 7 minutes since 77cca45; it took 20 before the snapshot handler was thinned during backfill), during which the site shows stale or partial data. |
-| supervisor | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL`, `TELEGRAM_BOT_TOKEN` (optional, creator notifications) | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `BOOTR_CLANKER_LAUNCHER_ADDRESS` (the `BootrClankerLauncher` once deployed, [`docs/design/clanker-launch.md`](../design/clanker-launch.md); empty until then; the poller follows it next to `BOOTR_LAUNCHER_ADDRESS` from the same cursor, so set it before the first Clanker launch or lower the cursor), `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` (defaults are the verified Base mainnet lockers; override only if Clanker rotates them), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty, `GAS_MIN_WEI`, `GAS_TARGET_WEI` ([`docs/gas-model.md`](../gas-model.md)), `BUILDER_CODES_*`, `SESSION_*`, `SPENDER_*`, `CHAINLINK_MAX_AGE_SECONDS`, `PLATFORM_POST_SLOTS_PER_10M`, `PLATFORM_QUIET_HOURS_UTC`, `PLATFORM_DIGEST_AT`, `PLATFORM_NUMBERS_AT`, `PLATFORM_WATCHLIST`, `LOG_LEVEL` |
+| indexer | `BASE_RPC_URL`, `INDEXER_SERVICE_KEY` | `DATABASE_SCHEMA=bootr_v8` (section 2, step 4), `CHAIN_ID`, `BOOTR_LAUNCHERS` (every BootrLauncher ever used, `address@deployBlock,...`; while it is empty the single `BOOTR_LAUNCHER_ADDRESS` + `BOOTR_START_BLOCK` pair is used instead), `BOOTR_GUARDIAN_ADDRESS`, `RWAGMI_*_V3_ADDRESS` (four), `INDEXER_CORS_ORIGIN=https://bootr.fun,https://www.bootr.fun`, `ADMIN_CONFIG_URL=https://bootr.fun/api/admin/config`, `BOOT_TOKEN_ADDRESS` after the $BOOTR launch, `BOOTR_CLANKER_LAUNCHERS` (`0x387f1B0aC128D534E822c344D829645336BDAbbB@53503025`, the Clanker path), `INDEXER_RPC_BU_PER_SEC` (empty = 1300 on a CDP url), `BASE_RPC_FALLBACK_URL` (optional second RPC), `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org` (the block reads alone, off the CDP key since 2026-11-08; section 7). Adding a launcher (a redeploy of BootrLauncher) = append `0x<new launcher>@<its deploy block>` to `BOOTR_LAUNCHERS` (keep the old entries so their coins stay indexed) **and** bump `DATABASE_SCHEMA`: the address list is part of Ponder's build id, so the old schema is refused and a backfill runs (shorter than the first one, Ponder's `ponder_sync` RPC cache is reused; see `apps/indexer/README.md` "Adding a launcher") |
+| indexer (schema) | | `DATABASE_SCHEMA` is a fixed name bumped by hand (`bootr_v8` since 2026-11-08; the rule and the check are in section 2, step 4). `apps/indexer/scripts/start.sh` also implements `DATABASE_SCHEMA=auto` (each image indexes into `bootr_<first 7 of its commit>` and `schema-janitor.mjs` drops the automatic schemas of older images but the newest previous one); production does not use it. Every indexer change backfills from scratch, about 13 minutes with the RPC cache warm, during which the site shows stale or partial data. |
+| supervisor | `SESSION_SIGNER_PRIVATE_KEY`, `SPENDER_MASTER_KEY`, `ADMIN_PRIVATE_KEY`, `SENDER_SERVICE_KEY`, `INDEXER_SERVICE_KEY`, `SUPERVISOR_SERVICE_KEY`, `BASE_RPC_URL`, `BUNDLER_URL`, `TELEGRAM_BOT_TOKEN` (optional, creator notifications) | `CHAIN_ID`, `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS`, `LAUNCHER_START_BLOCK`, `RWAGMI_LAUNCHER_V3_ADDRESS`, `RWAGMI_LOCKER_V3_ADDRESS`, `BOOTR_CLANKER_LAUNCHER_ADDRESS` (`0x387f1B0aC128D534E822c344D829645336BDAbbB`, the `BootrClankerLauncher` deployed 2026-11-04, [`docs/design/clanker-launch.md`](../design/clanker-launch.md); the poller follows it next to `BOOTR_LAUNCHER_ADDRESS` from the same cursor), `CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` (defaults are the verified Base mainnet lockers; override only if Clanker rotates them), `INFERENCE_PAYTO_ADDRESS`, `PLATFORM_TREASURY_ADDRESS`, `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty, `GAS_MIN_WEI`, `GAS_TARGET_WEI` ([`docs/gas-model.md`](../gas-model.md)), `BUILDER_CODES_*`, `SESSION_*`, `SPENDER_*`, `CHAINLINK_MAX_AGE_SECONDS`, `PLATFORM_POST_SLOTS_PER_10M`, `PLATFORM_QUIET_HOURS_UTC`, `PLATFORM_DIGEST_AT`, `PLATFORM_NUMBERS_AT`, `PLATFORM_WATCHLIST`, `BLOCKRUN_DIRECT_MODE=all` and the other `BLOCKRUN_*` settings (below), `TOOL_TIMEOUT_MS` / `TOOL_READ_TIMEOUT_MS` (180 s / 60 s on one agent tool call), `MAX_SLEEPING_PER_TICK`, `X402_DISCOVERY_URL` and `SERVICES_TIMEOUT_MS` (the Paid services power; defaults in code), `NOTIFY_SWEEP_MS` / `NOTIFY_CHECK_MS`, `LOG_LEVEL` |
 
-Direct mode (supervisor, `apps/supervisor/src/blockrun.ts`): an agent's spender pays BlockRun over x402 for its thoughts
-and chat, so no OpenRouter credit is needed for those. Off unless `BLOCKRUN_DIRECT_MODE` says otherwise: `agents` with the ids
+Direct mode (supervisor, `apps/supervisor/src/blockrun.ts`; **live for every agent since 2026-11-08 19:34 UTC**,
+`BLOCKRUN_DIRECT_MODE=all`): an agent's spender pays BlockRun over x402 for its thoughts and chat, so no OpenRouter credit
+is needed for those. Off unless `BLOCKRUN_DIRECT_MODE` says otherwise: `agents` with the ids
 in `BLOCKRUN_DIRECT_AGENTS`, or `all`. It adds no secret, so no `env -u` list changes. `BLOCKRUN_RELAY_FALLBACK` (default
 `false`) decides what happens when BlockRun cannot serve a call: off, the agent waits with backoff and nothing is paid; on, the
 relay takes it, so set it only while OpenRouter is funded, because a relay with no credit takes the payment and cannot answer.
@@ -165,7 +198,7 @@ moving it to Postgres (the TODO in `apps/web/lib/server/admin-config.ts`) would 
 `/root/backup-bootr-db.sh` runs from root's crontab every day at 03:00 UTC (log: `/root/backups/backup.log`):
 `pg_dump -U bootr --exclude-schema="ponder_rpc_cache_*" bootr | gzip` into `/root/backups/bootr-<date>.sql.gz`,
 14 days kept. The excluded schema is the indexer's RPC cache (gigabytes of raw chain data that a backfill
-rebuilds); the dump keeps `public` (sender, supervisor), `drizzle` (inference) and the indexer's `bootr_v1` tables,
+rebuilds); the dump keeps `public` (sender, supervisor), `drizzle` (inference) and the indexer's current `bootr_v<N>` tables,
 a few KB while the platform is empty. Restore into the compose Postgres with
 `zcat <file> | docker exec -i <postgres container> psql -U bootr bootr`. The dumps are not shipped off the server
 yet; copy them to the owner's machine (`scp`) or a Hetzner Storage Box. Coolify's own `/data/coolify/source/.env`
@@ -215,7 +248,7 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
   builds at once, and do not add a second project of this size. Rescale in the Hetzner panel (Servers → Rescale,
   "resize disk too") to CX43 (16 GB / 160 GB) when stock allows; the IP, disk and Coolify survive a rescale, the site
   is down for a few minutes while the server reboots.
-- Memory ceilings: every container in `docker-compose.coolify.yml` has a `mem_limit`: postgres 1 GB, indexer 1.5 GB
+- Memory ceilings (since 2026-11-08, `docs/security/fixes-2026-11-08.md` item 3): every container in `docker-compose.coolify.yml` has a `mem_limit`: postgres 1 GB, indexer 1.5 GB
   (Ponder's sync cache and reorg window; a full resync is its hungriest hour), web 1 GB, supervisor 1 GB, sender
   512 MB, inference 512 MB: 5.5 GB together, leaving about 2 GB for the OS, Docker, Coolify's proxy and Hermes
   (~330 MB). A container that passes its limit is killed by the kernel and comes back through `restart:
@@ -231,8 +264,12 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
   saturating the key; `BASE_RPC_FALLBACK_URL` shortens that (`apps/indexer/README.md`). Measured 2026-11-08: the tail is
   one `eth_getBlockByNumber` and one `eth_getLogs` per block, about 1,000 BU/s, 97% of the key's traffic; the supervisor
   is about 8 BU/s and the web's server routes read the chain only on a sign-in, a launch or a claim call, never on a page
-  view. `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org` moves the block reads off the key (about 500 BU/s); set it in
-  the indexer's environment in Coolify and redeploy the indexer (no schema bump), then watch the lag line.
+  view. `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org` moves the block reads off the key (about 500 BU/s) and is set since
+  2026-11-08: steady state about 5 `eth_getBlockByNumber` a second to the public endpoint and 5 `eth_getLogs` a second
+  on the key, lag a few blocks. The public endpoint answers 429 in bursts (a handful per 5 minutes at steady state,
+  hundreds while catching up); each one falls back to the key for 10 s and shows as a Ponder "Received JSON-RPC error"
+  line, so the watchdog's 429 count is noisier than before. Retrying inside the transport is a backlog item; Chainstack
+  ($49 a month for the `eth_getLogs` side) stays optional.
 - One `web` replica (the `/data` file store), one `supervisor` replica (the tick loop). Compose stops the old
   supervisor before starting the new one, so there is no overlap of two tick loops, but a deploy still interrupts
   an in-flight tick: deploy when no on-chain operation is pending.

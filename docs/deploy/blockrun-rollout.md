@@ -9,6 +9,14 @@ BlockRun does not serve are moved to the closest one it does and go on from wher
 X account and treasury untouched). Agents belong to third parties, so every change is on the agent's activity tape in
 plain words and in the creator's inbox.
 
+**Done.** Live since 2026-11-08 19:34 UTC (commit 0dacf79 deployed; 12feefe since 22:33 UTC): `BLOCKRUN_DIRECT_MODE=all`,
+`BLOCKRUN_RELAY_FALLBACK` off, `BLOCKRUN_IMAGE_ROUTE` unset (`relay`). The live check of step 1 ran at 18:41 UTC from the
+deployer wallet (Haiku `upto` settled $0.009986 under a $0.014866 ceiling, GPT-4.1 mini `exact` $0.013693, both tool
+calls valid). The migration of step 4 ran at 19:36 UTC: 11 agents, 2 moved (a `decideModel`
+`meta-llama/llama-4-maverick` and a `model` `deepseek/deepseek-v3.2`, both to `deepseek/deepseek-chat`); the second
+run answered `changed: 0`. Steps 5 and 6 are the standing watch, step 7 the rollback. The creator console lists the
+catalog's 26 minds and 5 image models.
+
 What is already merged and what this rollout switches on: `apps/supervisor/src/blockrun.ts` (direct mode),
 `apps/supervisor/src/model-migration.ts` (the one-shot move), `apps/supervisor/src/model-check.ts` (the catalog held
 against BlockRun's live list at start and every 6 hours), the web's model lists and prices from the same catalog.
@@ -67,6 +75,9 @@ supervisor log for these two lines within a minute of start:
 read, gaps, agentsOnMissingModels}` from the last check.
 
 ## 4. The migration: dry run, then for real
+
+**Done 2026-11-08 19:36 UTC** (11 agents, 2 moved, second run `changed: 0`). Kept for a rerun after a catalog change;
+the call is idempotent.
 
 Both calls go to the supervisor's HMAC admin API from inside its container, where `SUPERVISOR_SERVICE_KEY` is in the
 environment and the port is local. The container image has Node and no curl.

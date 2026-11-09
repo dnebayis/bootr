@@ -24,6 +24,12 @@
 > - *Not verified:* `SessionKeySignaturePath.t.sol` points at an `AuthorizationPolicyFork.t.sol` and comments in
 >   `AgentGuardian.sol` mention `BootrAuthorizationPolicy`; neither exists in the tree (C-01 was closed with
 >   `SKIP_SIGNATURE` instead, see `packages/contracts/src/README.md`). TODO(verify): clean those comments up.
+> - *2026-11-04 and after:* the live launcher is v3.1 `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, which registers
+>   through `BootrLaunchGate` `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5`; `BootrClankerLauncher`
+>   `0x387f1B0aC128D534E822c344D829645336BDAbbB` launches through Clanker v4 again (design and on-chain verification in
+>   `docs/design/clanker-launch.md`, deploy in `docs/deploy/mainnet.md` "Clanker path"). None of the three is covered by
+>   this review. The custody concern of BOOTR-02 now has an inventory and a removal plan in
+>   [`key-inventory-2026-11-08.md`](./key-inventory-2026-11-08.md).
 
 Scope: `packages/contracts/src/{BootrLauncher,AgentGuardian,BootrCallPolicy,BuybackBurner}.sol`,
 `src/lib/MinimalClones.sol`, `src/interfaces/*`, `script/*.s.sol`, and the trust model in `src/README.md`.

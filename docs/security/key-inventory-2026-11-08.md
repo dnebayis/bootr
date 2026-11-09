@@ -6,6 +6,10 @@ holds, where each one lives, what signs with it and how often, what each on-chai
 take off the server what no running code needs. Nothing was changed; no secret value was read or printed (the
 real `.env` files were inspected for variable names only, with `grep -oE '^[A-Z_]+='`).
 
+**Status (2026-11-09):** nothing removed yet. Step 1 of section 3.4 (the owner deletes the deployer, treasury and
+Basescan variables in Coolify and scrubs the local env files) is the next move and needs no code; the place of the rest
+in the work queue is in `docs/STATUS.md`.
+
 Sources: `docker-compose.coolify.yml` (which service declares which variable, and the `env -u` strip lists),
 each service's zod schema (`apps/supervisor/src/config.ts`, `apps/sender/src/config.ts`,
 `apps/inference/src/config.ts`, `apps/indexer/src/lib/env.ts`, `apps/web/lib/server/env.ts`), the code that signs

@@ -67,8 +67,12 @@ here and in the indexer, then the fallback is gone), `SENDER_URL` (optional serv
 server-to-server relay origin for `/api/models`; defaults to `NEXT_PUBLIC_INFERENCE_URL`), `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL` (SIWE signature
 checks), `PINATA_JWT` (Pinata API JWT with scope `org:files:write`, used by `POST /api/upload`; unset = uploads answer 503),
 `PINATA_MOCK` (`1` = never call Pinata, return a deterministic local CID; also implied in mock mode while `PINATA_JWT` is unset). Keys shorter than 32 characters are treated as unset. `instrumentation.ts` logs a `[web] config error` /
-`config warning` line at startup for a missing or short key (values are never logged). The web app does not call the
-supervisor, so it does not hold `SUPERVISOR_SERVICE_KEY`.
+`config warning` line at startup for a missing or short key (values are never logged). `SUPERVISOR_URL`
+(`http://supervisor:3004` on the compose network) and `SUPERVISOR_SERVICE_KEY` (≥ 32 chars) back the coin page's agent
+config, activity, inbox, chat and fuel routes (`/api/agent/[kernel]/*`), which proxy the supervisor's HMAC admin API;
+without them those routes are disabled. `BLOCKRUN_IMAGE_ROUTE` (unset = `relay`, the supervisor's setting) decides where
+the console's image list and picture prices come from: the relay's `/v1/models` while pictures go through the relay,
+the model catalog with `direct`.
 
 RWAGMI v3 / USDC / WETH addresses come from `@bootr/shared/addresses` (RWAGMI v3 is mainnet only; on Base Sepolia the
 fee panels show the indexer's split and no claimables). The locked split is read from
@@ -82,9 +86,10 @@ Wallets: Base Account ("Sign in with Base", passkey smart wallet; `lib/connector
 injected browser wallet, WalletConnect. The Builder Code suffix is passed to both SDKs as `preference.attribution` so a
 smart wallet also suffixes its outer `executeBatch` calldata.
 
-Server API used by the app itself: `GET /api/models` (relay `/v1/models` read server-side, cached 60 s, priced per
-thought = 4,000 prompt + 1,024 output tokens at the relay's margin, filtered by the console `allowedModels`; built-in
-list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (proxy to the sender's public
+Server API used by the app itself: `GET /api/models` (the minds and their per-thought prices from the model catalog in
+`@bootr/agent-core` (`lib/models.ts`, priced the way the agent pays BlockRun), filtered by the console `allowedModels`;
+the image models and picture prices from the relay's `/v1/models`, read server-side and cached 60 s, while
+`BLOCKRUN_IMAGE_ROUTE` is `relay`) and `GET /api/agents/:id/posts?limit=3` (proxy to the sender's public
 `/public/posts/:agentId`, cached 60 s; 404 = the sender never saw the agent).
 
 ## Routes
@@ -92,7 +97,8 @@ list when the relay is unset or down) and `GET /api/agents/:id/posts?limit=3` (p
 | Route | |
 |---|---|
 | `/` | $BOOTR box, tabs `?tab=newest|graduated|mcap|active`, live grid (virtualized past 60 cards), ⌘K search. |
-| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade panel (buy and sell on the coin's Uniswap v4 pool from the user's own wallet, `lib/swap`), last 20 trades. The creator additionally sees Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
+| `/token/[address]` | Header, DexScreener embed (mainnet), agent panel (agent wallet, balances, gas status chip and out-of-gas notice, latest posts), locked fee split, Trade panel (buy and sell on the coin's Uniswap v4 pool from the user's own wallet, `lib/swap`), last 20 trades. The creator additionally sees a "Creator console · n pending" button under the Trade button (`CreatorConsoleLink`), a "First steps" card for a new agent (X account, instructions, fuel, gas; each step opens the console at its section, `FirstSteps` / `OnboardingCard`), a red panel when the X connection is lost (`xConnection === 'revoked'`) or X refused posting (`xHold`, the supervisor's 403 hold) with Connect X, Fuel, Add gas (`EntryPoint.depositTo(kernel)`, acknowledged as non-refundable) and, while the agent has no X account, Connect X (SIWE claim `POST /api/siwe/x-claim`, then the usual OAuth popup against the live agent id). |
+| `/token/[address]/console` | The creator console on its own page (creator only; `?section=` deep links, `lib/console-sections.ts`): a left rail with Mind, Posting, Powers, Look, Inbox and Fuel, two-column forms and a sticky save bar. Powers include Paid services with its per-call and daily caps and host lists; Posting has the posts-per-day slider (2 to 48). Reads and writes go through `/api/agent/[kernel]/*` to the supervisor. |
 | `/launch` | 01 Coin, 02 Mind (model, searchable), 03 Kind (Trader / Researcher / Community / Custom with the Powers grid and Cadence), 04 Character (Instructions and job lines), 05 X account, 06 Fuel & options, with a sticky summary card (cost line, fee split, risk line, Launch). A custom kind's preset is hashed like a template (`customWorker`), saved with the draft (`POST /api/launch/draft`, field `worker`) and published in the agent card as `bootr.worker` ([`docs/design/agent-launch-v2.md`](../../docs/design/agent-launch-v2.md)); USDC approve, `BootrLauncher.launch`, then `EntryPoint.depositTo(kernel)` for the gas ([`docs/gas-model.md`](../../docs/gas-model.md)). |
 | `/analytics` | Stat tiles + six visx charts from `dailyStats` / `platformStats` / agents. |
 | `/docs`, `/docs/<slug>` | Overview, How a launch works, Fee math and claims, Agents, Contracts, Public APIs, For agents and LLMs, Risks, Terms, Privacy. `/docs/agent-rules` and `/docs/dormancy` redirect (308) to `/docs/agents`. |
@@ -211,9 +217,10 @@ What the console switches do:
 
 - `launchesPaused`: the launch form shows a notice and disables Launch (via the public `GET /api/platform`). Launching is
   a wallet transaction, so there is no server-side guard; the binding switch is the launcher's on-chain `pause()`.
-- `allowedModels`: the launch form only offers models on the list (an entry matches a relay id by full id or by its
-  vendor-less, dot-insensitive form: `claude-haiku-4-5` = `anthropic/claude-haiku-4.5`). The relay and the supervisor do
-  not read it yet.
+- `allowedModels`: the launch form and the console only offer models on the list (an entry matches a catalog id by
+  full id or by its vendor-less, dot-insensitive form: `claude-haiku-4-5` = `anthropic/claude-haiku-4.5`); the web passes
+  the list to the supervisor's `PUT /internal/agents/:id/config`, which refuses a model outside it. A model added to the
+  catalog later must be ticked here to appear in the launch form.
 - `xQuotas`, `postIntervalMinutes`: not enforced by any service yet (the sender takes its budget from its own defaults
   and `POST /internal/quota/:agentId`).
 
