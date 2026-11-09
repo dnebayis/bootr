@@ -578,15 +578,16 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   };
 
   /**
-   * How a treasury turn ends (roles.ts). The runtime's `nextAt` is the social schedule and stays where it is, unless
-   * the turn itself is kept for a resume (a sent or held action, an unknown or credited inference), when the resume
-   * time must reach the tick. An unknown inference keeps the turn as well, so its paid answer comes back into this
-   * conversation and not into the next social one. Its own clock: the next turn an interval from now at the earliest,
-   * later when the model asked for later (`finish`) or the inference backoff reaches further.
+   * How a treasury turn ends (roles.ts). A turn that waits on something (a sent or held action, an unknown or credited
+   * inference) is kept whole, so what comes back (the action's result, the paid answer) lands in this conversation and
+   * `continueTurn` resumes it as a treasury turn, never a social one; the resume time in the patch reaches the tick.
+   * Otherwise the runtime's `nextAt` is the social schedule and stays where it is. Its own clock: the next turn an
+   * interval from now at the earliest, later when the model asked for later (`finish`) or the inference backoff
+   * reaches further.
    */
   const treasuryEnd = (outcome: TurnOutcome, patch: RuntimePatch): RuntimePatch => {
     const kept = patch.turn != null || outcome === 'pending' || outcome === 'held' || outcome === 'inference_unknown';
-    if (kept) return outcome === 'inference_unknown' ? { ...patch, turn: turn as unknown as Record<string, unknown> } : patch;
+    if (kept) return { ...patch, turn: turn as unknown as Record<string, unknown> };
     const rest: RuntimePatch = { ...patch };
     delete rest.nextAt;
     state.treasuryNextAt = Math.max(state.treasuryNextAt ?? 0, ctx.now() + ctx.config.TREASURY_TURN_INTERVAL_MS, state.inferenceRetryAt ?? 0);
@@ -647,7 +648,14 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       if (completeAfter && result.status === 'completed') return endTurn('finished', { status: 'waiting' });
     }
   } else if (broker.pending && (broker.pending.status === 'completed' || broker.pending.status === 'failed')) {
-    await settle();
+    const result = await settle();
+    // A kept turn (a treasury turn whose action the tick reconciled, `treasuryEnd`) still owes the model the result of
+    // the call it made: without it the conversation ends in a tool call with no answer, which the provider refuses.
+    const last = turn.messages.at(-1);
+    if (result && last?.role === 'assistant' && last.tool_calls?.[0]) {
+      turn.messages.push(toolMessage(last.tool_calls[0].id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
+      turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });
+    }
   }
 
   /**

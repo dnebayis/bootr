@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { parseAgentConfig, TOOL_LIST } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
-import { actions, agents, memories, runtimes } from '../src/db/schema.js';
+import { actions, agents, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { roleTools, SOCIAL_WITHHELD_WHEN_TREASURY_ON, TREASURY_TURN_TOOLS, treasuryTurnDue, treasuryTurnOn } from '../src/roles.js';
@@ -331,6 +331,72 @@ describe('the treasury turn', () => {
       expect(runtime.nextAt.getTime()).toBe(T0 - 1000);
       const rows = await w.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));
       expect(rows.map((r) => (r.action as { role?: string }).role)).toEqual(['treasury']);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a held treasury_execute keeps the turn, and when the hash reconciles the same treasury turn resumes with the result', async () => {
+    const script = [toolCallResponse('treasury_prepare', { operation: 'swap', asset: 'ETH', amount: '0.01' })];
+    const w = await makeWorld({ script, chain: { weth: 10n ** 17n } });
+    try {
+      const agent = await restingAgent(w, { treasuryTurn: true });
+      // once the op is prepared, the next scripted answer is the execute call with its hash; the receipt then times out
+      let prepared: { opId: string; callHash: string } | null = null;
+      const origFetch = w.ctx.fetch;
+      w.ctx.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes('/v1/chat/completions') && script.length === 0 && !prepared) {
+          const op = (await w.db.select().from(treasuryOps))[0];
+          if (op) {
+            prepared = { opId: op.opId, callHash: op.callHash };
+            w.kernel.waitSucceeds = false;
+            return toolCallResponse('treasury_execute', { preparedId: op.opId, expectedHash: op.callHash });
+          }
+        }
+        return origFetch(input, init);
+      };
+      const before = await runtimeRow(w);
+      const first = await processAgent(w.ctx, agent, before);
+      expect(first).toMatchObject({ ran: true, role: 'treasury' });
+      expect(first?.turn?.outcome).toBe('held');
+      const held = await runtimeRow(w);
+      expect(held.status).toBe('held');
+      expect((held.turn as { role?: string } | null)?.role).toBe('treasury');
+      expect((held.pending as { action: { tool: string } }).action.tool).toBe('treasury_execute');
+      expect(held.nextAt.getTime()).toBe(before.nextAt.getTime());
+      // nothing else runs while held, in either role
+      w.kernel.receipt = null;
+      w.setNow(T0 + MIN);
+      expect((await processAgent(w.ctx, agent, await runtimeRow(w)))?.ran).toBe(false);
+      expect(await treasuryTurnDue(w.ctx, agent, await runtimeRow(w), await stateOf(w), T0 + MIN)).toBeNull();
+
+      // the receipt appears: the tick reconciles the op, and the kept treasury turn resumes with the result in front of it
+      w.kernel.receipt = { success: true, receipt: { transactionHash: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } };
+      script.push(finishResponse(T0 + 3 * H));
+      w.setNow(T0 + 2 * MIN);
+      const resumed = await processAgent(w.ctx, agent, await runtimeRow(w));
+      expect(resumed?.ran).toBe(true);
+      expect(resumed?.turn?.outcome).toBe('finished');
+      const requests = posts(w);
+      // the execute call was answered by the wrapper above and is not among the recorded posts: prepare, then the finish after the resume
+      expect(requests).toHaveLength(2);
+      const last = requests[1]!;
+      expect(last.body.messages[0]!.content).toContain('TREASURY TURN');
+      expect(toolNames(last)).toEqual(TREASURY_TOOLS);
+      const resultMessage = last.body.messages.at(-1)!;
+      expect(resultMessage.role).toBe('tool');
+      expect(resultMessage.content).toContain('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+      const after = await runtimeRow(w);
+      expect(after.status).toBe('waiting');
+      expect(after.turn).toBeNull();
+      expect(after.pending).toBeNull();
+      const state = after.state as unknown as AgentState;
+      expect(state.memory).toBe('');
+      expect(state.treasuryNextAt).toBe(T0 + 3 * H);
+      const rows = await w.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));
+      expect(rows.map((r) => (r.action as { role?: string }).role)).toEqual(['treasury', 'treasury', 'treasury']);
+      expect(w.kernel.submitted).toHaveLength(1);
     } finally {
       await w.close();
     }

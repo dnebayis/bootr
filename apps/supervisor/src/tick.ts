@@ -309,12 +309,14 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
         try {
           turn = await startTreasuryTurn(ctx, agent, runtime, config, { reasons: treasuryWake.reasons, treasury, market, notes: treasuryWake.notes }, lease);
         } catch (err) {
-          // A crashed treasury turn backs the agent off like a crashed social one; the social schedule's `nextAt` stays.
+          // A crashed treasury turn backs the agent off like a crashed social one: a turn it persisted resumes at
+          // `plan.nextAt` (as a treasury turn), and its own clock moves to at least then, so a crash before the turn
+          // was persisted does not buy a fresh attempt every tick.
           const failures = (runtime.failures ?? 0) + 1;
           const plan = interruptionPlan(0, failures, ctx.now());
-          log.error({ err, failures, retryAt: plan.nextAt, role: 'treasury' }, 'treasury turn crashed; backing off');
-          const after = (await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) }))?.state as AgentState | undefined;
-          await saveRuntime(ctx, agent.agentId, { status: 'waiting', failures, lastError: rpcErrorText(err), state: { ...(after ?? state), inferenceRetryAt: plan.nextAt, treasuryNextAt: Math.max((after ?? state).treasuryNextAt ?? 0, plan.nextAt) } as unknown as Record<string, unknown> });
+          log.error({ err, failures, nextAt: plan.nextAt, role: 'treasury' }, 'treasury turn crashed; backing off');
+          const after = ((await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) }))?.state as AgentState | undefined) ?? state;
+          await saveRuntime(ctx, agent.agentId, { status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: rpcErrorText(err), state: { ...after, treasuryNextAt: Math.max(after.treasuryNextAt ?? 0, plan.nextAt) } as unknown as Record<string, unknown> });
         }
         const fresh = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) });
         if (fresh) await postSocial(ctx, agent, config, fresh, 'awake');
