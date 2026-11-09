@@ -4,7 +4,7 @@
  * Per runtime: lease -> reconcile pending effects -> sleep rule -> fee policy -> wake decision -> turn.
  */
 import { randomUUID } from 'node:crypto';
-import { pendingReplyDue, reconcile, wakeDecision, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
+import { interruptionPlan, pendingReplyDue, reconcile, wakeDecision, type AgentRole, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
 import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { kernelAbi } from './abi.js';
@@ -19,7 +19,8 @@ import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionK
 import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
-import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
+import { treasuryTurnDue } from './roles.js';
+import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTreasuryTurn, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
@@ -119,6 +120,8 @@ export interface ProcessResult {
   reasons: string[];
   turn?: TurnResult | null;
   skipped?: string;
+  /** The role of the turn that ran (`social` when absent): the treasury turn says so (roles.ts). */
+  role?: AgentRole;
 }
 
 /** `_runtimeRow` is the row the caller selected; the leased copy is re-read so a concurrent writer cannot be stomped. */
@@ -292,12 +295,41 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const numbers = await platformNumbersWake(ctx, agent, config, state, schedule, status, now, decision);
     if (runtime.configRevision !== config.revision) await saveRuntime(ctx, agent.agentId, { configRevision: config.revision });
     if (!decision.run) {
+      // The treasury turn (roles.ts) is asked only once the social wake said no: when both are due in one tick the
+      // social turn runs and the treasury waits for the next tick. Same gates as above, its own clock, no post slot,
+      // no quota, and `lastDecisionAt` untouched so a config change still wakes the social turn once.
+      const treasuryWake = await treasuryTurnDue(ctx, agent, runtime, state, now).catch((err) => {
+        log.warn({ err }, 'treasury clock read failed');
+        return null;
+      });
+      if (treasuryWake) {
+        log.info({ reasons: treasuryWake.reasons, role: 'treasury', notes: treasuryWake.notes.length }, 'waking');
+        const market = await ctx.indexer.market(agent.token);
+        let turn: TurnResult | null = null;
+        try {
+          turn = await startTreasuryTurn(ctx, agent, runtime, config, { reasons: treasuryWake.reasons, treasury, market, notes: treasuryWake.notes }, lease);
+        } catch (err) {
+          // A crashed treasury turn backs the agent off like a crashed social one: a turn it persisted resumes at
+          // `plan.nextAt` (as a treasury turn), and its own clock moves to at least then, so a crash before the turn
+          // was persisted does not buy a fresh attempt every tick.
+          const failures = (runtime.failures ?? 0) + 1;
+          const plan = interruptionPlan(0, failures, ctx.now());
+          log.error({ err, failures, nextAt: plan.nextAt, role: 'treasury' }, 'treasury turn crashed; backing off');
+          const after = ((await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) }))?.state as AgentState | undefined) ?? state;
+          await saveRuntime(ctx, agent.agentId, { status: 'waiting', nextAt: new Date(plan.nextAt), failures, lastError: rpcErrorText(err), state: { ...after, treasuryNextAt: Math.max(after.treasuryNextAt ?? 0, plan.nextAt) } as unknown as Record<string, unknown> });
+        }
+        const fresh = await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) });
+        if (fresh) await postSocial(ctx, agent, config, fresh, 'awake');
+        return { ran: true, reasons: treasuryWake.reasons, turn, role: 'treasury' };
+      }
       await postSocial(ctx, agent, config, runtime, runtime.status === 'held' ? 'awake' : 'awake');
       return { ran: false, reasons: decision.reasons };
     }
 
     // 4. Run (or resume) a turn.
-    log.info({ reasons: decision.reasons, pendingReply: pendingReplyDue(views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })), now) }, 'waking');
+    // A persisted turn resumes in its own role (runtime.ts `continueTurn`); the line says which when it is not the social one.
+    const resumedRole = (runtime.turn as { role?: unknown } | null)?.role;
+    log.info({ reasons: decision.reasons, pendingReply: pendingReplyDue(views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })), now), ...(resumedRole === 'treasury' ? { role: 'treasury', resumed: true } : {}) }, 'waking');
     const market = await ctx.indexer.market(agent.token);
     let turn: TurnResult | null = null;
     try {

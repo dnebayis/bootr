@@ -149,6 +149,11 @@ export const configSchema = z
      */
     REST_CHECK_MS: int(300_000, 0),
     /**
+     * How often an agent with the treasury turn on (roles.ts `treasuryTurnOn`) gets one: every interval, or earlier
+     * on a pending treasury note or a closed bounty job, never closer than a quarter of it to the last one.
+     */
+    TREASURY_TURN_INTERVAL_MS: int(3_600_000, 60_000),
+    /**
      * Sleeping runtimes checked per tick, in their own sweep (tick.ts): one treasury read each, least recently checked
      * first, so refuelling is noticed without sleeping coins ever taking an awake agent's slot. Empty = MAX_AGENTS_PER_TICK.
      */

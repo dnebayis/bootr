@@ -18,6 +18,7 @@ import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
 import { postsPerDayOf } from './post-budget.js';
 import { decideModelOf } from './routing.js';
+import { treasuryTurnOn } from './roles.js';
 import { sessionRulesStatus, type SessionRulesStatus } from './session-rules.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
@@ -57,6 +58,14 @@ export interface AgentConfigView {
    * cost in a day, whatever the model does.
    */
   services: ServicesPolicy;
+  /**
+   * The treasury turn (roles.ts, design section 3.4): `override` is the owner's trial switch stored on the config
+   * (`treasuryTurn: true`), `active` whether the turn runs for this agent at all (the override, or the `trade` or
+   * `bounties` power on). While it is active the social turn holds no money tool.
+   */
+  treasuryTurn: { override: boolean; active: boolean };
+  /** The model the judge rules with (judge.ts); null = the agent's own `model` (design decision 10). */
+  judgeModel: string | null;
   /**
    * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
    * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
@@ -108,7 +117,7 @@ export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentI
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'treasuryTurn' | 'judgeModel';
 
 /** The stored `services` block, or the defaults when it is missing or malformed. */
 export function servicesOf(config: Record<string, unknown>): ServicesPolicy {
@@ -152,6 +161,8 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     imageModel: imageModelOf(config),
     imageStyle: imageStyleOf(config),
     services: servicesOf(config),
+    treasuryTurn: { override: config.treasuryTurn === true, active: treasuryTurnOn(config) },
+    judgeModel: typeof config.judgeModel === 'string' && config.judgeModel ? config.judgeModel : null,
     sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
@@ -180,6 +191,10 @@ export interface ConfigUpdateBody {
   imageStyle?: unknown;
   /** Partial `{perCallMicroUsdc?, dailyMicroUsdc?, allow?, deny?}`, merged onto the stored services policy. */
   services?: unknown;
+  /** The treasury turn's trial switch (boolean): on runs the turn for this agent although no power needs it. */
+  treasuryTurn?: unknown;
+  /** The judge's model: a string validated like `model` (inside `allowedModels` when given), or null for the agent's own. */
+  judgeModel?: unknown;
 }
 
 /** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
@@ -353,6 +368,33 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
       config.services = parsed.data;
       fields.push('services');
+    }
+  }
+
+  // The treasury turn's trial switch: a plain boolean; false removes the key (the powers alone decide again).
+  if (body.treasuryTurn !== undefined) {
+    if (typeof body.treasuryTurn !== 'boolean') return reject(400, 'invalid_treasury_turn', 'treasuryTurn must be true or false');
+    if (body.treasuryTurn !== (before.treasuryTurn === true)) {
+      if (body.treasuryTurn) config.treasuryTurn = true;
+      else delete config.treasuryTurn;
+      fields.push('treasuryTurn');
+    }
+  }
+
+  // The judge's model: validated like `model`; null clears it so the judge runs on the agent's own model.
+  if (body.judgeModel !== undefined) {
+    const current = typeof before.judgeModel === 'string' && before.judgeModel ? before.judgeModel : null;
+    let judgeModel: string | null;
+    if (body.judgeModel === null) judgeModel = null;
+    else {
+      judgeModel = typeof body.judgeModel === 'string' ? body.judgeModel.trim() : '';
+      if (!judgeModel || judgeModel.length > MAX_MODEL_CHARS) return reject(400, 'invalid_judge_model', `judgeModel must be null or a string of 1..${MAX_MODEL_CHARS} characters`);
+      if (Array.isArray(body.allowedModels) && !body.allowedModels.some((m) => m === judgeModel)) return reject(400, 'model_not_allowed', `model ${judgeModel} is not in the allow-list`);
+    }
+    if (judgeModel !== current) {
+      if (judgeModel) config.judgeModel = judgeModel;
+      else delete config.judgeModel;
+      fields.push('judgeModel');
     }
   }
 

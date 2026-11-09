@@ -64,6 +64,9 @@ describe('GET /internal/agents/:id/config', () => {
         imageModel: DEFAULT_COIN_IMAGE_MODEL,
         imageStyle: { reference: null, notes: '' },
         services: DEFAULT_SERVICES_POLICY,
+        // the treasury turn is off for every agent today (roles.ts), and the judge runs on the agent's own model
+        treasuryTurn: { override: false, active: false },
+        judgeModel: null,
         // no policy stored on the seeded row: nothing is installed to compare, the wanted set is today's always-on rules
         sessionRules: { current: [], wanted: ['claims.settleAndClaim', 'claims.claimQuote', 'swap.approveWeth', 'swap.swapWethToUsdc', 'treasury.fundSpender', 'treasury.withdrawWethForGas'], reinstallNeeded: false },
         revision: 1,

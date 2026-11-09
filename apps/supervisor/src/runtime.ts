@@ -22,6 +22,7 @@ import {
   type Action,
   type ActionResult,
   type AgentConfig,
+  type AgentRole,
   type BrokerRuntime,
   type ChatMessage,
   type ModelTool,
@@ -30,7 +31,8 @@ import {
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
-import { availableTools, executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
+import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
+import { buildTreasuryObservation, roleTools, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
@@ -113,13 +115,30 @@ export interface AgentState {
   chainCheckedAt?: number | null;
   /** The creator was told the agent's model is not served (`model_unavailable`); cleared by the next answered thought. */
   modelUnavailable?: boolean | null;
+  /**
+   * The treasury turn's clock (roles.ts): when the next one is due (absent = due as soon as the turn is on), when the
+   * last one started, and the time up to which the social turn's treasury notes have been shown to one.
+   */
+  treasuryNextAt?: number | null;
+  lastTreasuryTurnAt?: number | null;
+  lastTreasuryNoteSeenAt?: number | null;
+  /** The treasury turn's own `finish` checkpoint, bounded by `TREASURY_CHECKPOINT_CHARS`; the social checkpoint above is never touched by it. */
+  treasuryCheckpoint?: { memory: string; agenda: string; summary: string; at: number } | null;
 }
+
+/** What a treasury checkpoint may keep of a `finish` (the state has 12 KB for everything): the rest is cut, not refused. */
+export const TREASURY_CHECKPOINT_CHARS = { memory: 2000, agenda: 1000, summary: 500 } as const;
 
 export function initialState(): AgentState {
   return { phase: 'boot', memory: '', agenda: '', summary: '', continuation: null, inferenceKey: null, lastPostAt: null };
 }
 
 export interface Turn {
+  /**
+   * The role this turn runs as (roles.ts): `social` for every turn persisted before the field existed. `continueTurn`
+   * rebuilds the system prompt's role, the tool list and the end-of-turn bookkeeping from it.
+   */
+  role?: AgentRole;
   startedAt: number;
   steps: number;
   nudged: boolean;
@@ -439,7 +458,8 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   const routing = startRouting(config);
   // The account's post limit for this turn: the sender's `premium` (one internal read; it also keeps the sender's flag fresh).
   const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
-  const tools = toolsForPhase(routing, availableTools(ctx, config, { premium }));
+  // The social role's catalog: everything the agent has, minus the money tools while the treasury turn is on (roles.ts).
+  const tools = toolsForPhase(routing, roleTools(ctx, config, agent.config, 'social', { premium }));
   const directory = inputs.directory ?? (await agentDirectory(ctx));
   inputs = { ...inputs, inbox: await autoCloseMentions(ctx, agent, runtime, config, inputs.inbox, directory, lease) };
   // A publish that settled while no turn was open (tick.ts `reconcilePending`) counts before this turn is shown anything.
@@ -449,6 +469,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   // The ended-hold note is delivered in this observation and in no later one: it goes with the same write as the turn.
   if (state.postHoldEndedNote?.at != null) state.postHoldEndedNote = null;
   const turn: Turn = {
+    role: 'social',
     startedAt: ctx.now(),
     steps: 0,
     nudged: false,
@@ -470,20 +491,66 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
 }
 
-/** Continues a persisted turn (after a crash, a held action that reconciled, or a resumable read). */
+/** Continues a persisted turn (after a crash, a held action that reconciled, or a resumable read), in the role it was started as. */
 export async function continueTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, lease: string): Promise<TurnResult | null> {
   const turn = runtime.turn as unknown as Turn | null;
   if (!turn) return null;
   return runLoop(ctx, agent, runtime, config, turn, lease);
 }
 
+/**
+ * The treasury turn (roles.ts; design section 3.4): the same loop as the social turn with the treasury role's prompt,
+ * tools and observation, no economy mode (the whole turn runs on `config.model`: the decide model is the social turn's
+ * cheap reader, and a turn that may move money is not the place to save on the model), no inbox and no post slot. The
+ * clock is stamped before the first thought so a crash does not buy another attempt every tick; the notes shown here
+ * count as consumed from this moment. `lastDecisionAt` and the revision are left alone: a config change must still
+ * wake the social turn once.
+ */
+export async function startTreasuryTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TreasuryTurnInputs, lease: string): Promise<TurnResult> {
+  const state = runtime.state as unknown as AgentState;
+  const now = ctx.now();
+  const tools = roleTools(ctx, config, agent.config, 'treasury');
+  const observation = await buildTreasuryObservation(ctx, agent, config, state, inputs, tools);
+  state.lastTreasuryTurnAt = now;
+  state.treasuryNextAt = now + ctx.config.TREASURY_TURN_INTERVAL_MS;
+  state.lastTreasuryNoteSeenAt = now;
+  const turn: Turn = {
+    role: 'treasury',
+    startedAt: now,
+    steps: 0,
+    nudged: false,
+    reasons: inputs.reasons,
+    premium: null,
+    messages: [
+      { role: 'system', content: buildSystemPrompt(config, 'treasury') },
+      { role: 'user', content: JSON.stringify(observation) },
+    ],
+    inbox: {},
+    eligibility: {},
+    recentSteps: [],
+    routing: null,
+  };
+  await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: turn as unknown as Record<string, unknown>, status: 'running' });
+  return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
+}
+
+/** The role a persisted action was recorded under (`sv_actions.action.role`; `social` for every row without one). */
+async function actionRoleOf(ctx: Pick<SupervisorContext, 'db'>, actionId: string): Promise<AgentRole> {
+  const row = await ctx.db.query.actions.findFirst({ where: eq(actions.actionId, actionId), columns: { action: true } });
+  const role = (row?.action as { role?: unknown } | undefined)?.role;
+  return role === 'treasury' || role === 'judge' ? role : 'social';
+}
+
 async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, turn: Turn, lease: string): Promise<TurnResult> {
-  const log = ctx.log.child({ agentId: agent.agentId });
+  /** The role the turn was started as (roles.ts); a turn persisted before the field existed is a social one. */
+  const role: AgentRole = turn.role ?? 'social';
+  // Every log line of a treasury turn (thought, turn ended, refusals) carries its role; the social turn's lines are as before.
+  const log = ctx.log.child({ agentId: agent.agentId, ...(role !== 'social' ? { role } : {}) });
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
-  const catalog = availableTools(ctx, config, { premium: turn.premium ?? null });
-  /** The functions of the current economy-mode phase (routing.ts); the catalog itself when the mode is off. */
-  const tools = () => toolsForPhase(turn.routing, catalog);
+  const catalog = roleTools(ctx, config, agent.config, role, { premium: turn.premium ?? null });
+  /** The functions of the current economy-mode phase (routing.ts, the social role only); the role's catalog otherwise. */
+  const tools = () => (role === 'social' ? toolsForPhase(turn.routing, catalog) : [...catalog]);
   const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };
 
   const persist = async (patch: RuntimePatch = {}) => {
@@ -510,13 +577,35 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     return settled.observation;
   };
 
+  /**
+   * How a treasury turn ends (roles.ts). A turn that waits on something (a sent or held action, an unknown or credited
+   * inference) is kept whole, so what comes back (the action's result, the paid answer) lands in this conversation and
+   * `continueTurn` resumes it as a treasury turn, never a social one; the resume time in the patch reaches the tick.
+   * Otherwise the runtime's `nextAt` is the social schedule and stays where it is. Its own clock: the next turn an
+   * interval from now at the earliest, later when the model asked for later (`finish`) or the inference backoff
+   * reaches further.
+   */
+  const treasuryEnd = (outcome: TurnOutcome, patch: RuntimePatch): RuntimePatch => {
+    const kept = patch.turn != null || outcome === 'pending' || outcome === 'held' || outcome === 'inference_unknown';
+    if (kept) return { ...patch, turn: turn as unknown as Record<string, unknown> };
+    const rest: RuntimePatch = { ...patch };
+    delete rest.nextAt;
+    state.treasuryNextAt = Math.max(state.treasuryNextAt ?? 0, ctx.now() + ctx.config.TREASURY_TURN_INTERVAL_MS, state.inferenceRetryAt ?? 0);
+    return rest;
+  };
+
   const endTurn = async (outcome: TurnOutcome, patch: RuntimePatch): Promise<TurnResult> => {
-    await persist({ turn: null, ...patch });
+    await persist({ turn: null, ...(role === 'treasury' ? treasuryEnd(outcome, patch) : patch) });
     log.info({ outcome, steps: turn.steps, cycle: broker.cycle }, 'turn ended');
     return { outcome, steps: turn.steps, cycle: broker.cycle };
   };
 
   const forceFinish = async (why: string): Promise<TurnResult> => {
+    // A treasury turn cut short leaves the social state alone: no continuation, no runtimeEnded note, no early wake.
+    if (role === 'treasury') {
+      log.info({ why }, 'treasury turn ended by the runtime');
+      return endTurn('step_cap', { status: 'waiting' });
+    }
     settleWeeklyDigest(state, turn);
     settlePlatformNumbers(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
@@ -547,15 +636,26 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     if (broker.pending.status === 'held') return endTurn('held', { status: 'held' });
     if (broker.pending.status === 'sent') return endTurn('pending', { status: 'waiting', nextAt: new Date(broker.pending.nextAt ?? ctx.now() + 15_000) });
     const completeAfter = broker.pending.completeAfter === true;
+    // A leftover action of the other role (a treasury turn's that a social turn now settles, or the reverse) is settled
+    // and recorded, but its result is not put in front of this role: the social turn never sees a money result it did
+    // not ask for, and the treasury turn never sees a reply's.
+    const leftoverRole = await actionRoleOf(ctx, broker.pending.id);
     const result = await settle();
-    if (result) {
+    if (result && leftoverRole === role) {
       const toolCallId = lastToolCallId(turn.messages) ?? result.actionId;
       turn.messages.push(toolMessage(toolCallId, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
       turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });
       if (completeAfter && result.status === 'completed') return endTurn('finished', { status: 'waiting' });
     }
   } else if (broker.pending && (broker.pending.status === 'completed' || broker.pending.status === 'failed')) {
-    await settle();
+    const result = await settle();
+    // A kept turn (a treasury turn whose action the tick reconciled, `treasuryEnd`) still owes the model the result of
+    // the call it made: without it the conversation ends in a tool call with no answer, which the provider refuses.
+    const last = turn.messages.at(-1);
+    if (result && last?.role === 'assistant' && last.tool_calls?.[0]) {
+      turn.messages.push(toolMessage(last.tool_calls[0].id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
+      turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });
+    }
   }
 
   /**
@@ -578,8 +678,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       state.modelUnavailable = true;
     }
     state.inferenceKey = inf.kind === 'credit' ? inf.key : null;
+    // The backoff gate (tick.ts) holds both roles; the continuation note is the social turn's own.
     state.inferenceRetryAt = nextAt;
-    state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
+    if (role === 'social') state.continuation = { progress: 'The previous turn was interrupted by an inference failure.', recentSteps: turn.recentSteps.slice(-6) };
     return endTurn('inference_failed', { ...(inf.kind === 'credit' ? { turn: turn as unknown as Record<string, unknown> } : {}), status: 'waiting', nextAt: new Date(nextAt), failures, lastError: rpcErrorText(inf.error) });
   };
 
@@ -591,7 +692,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const waitOutProvider = (hold: { until: number; error: string; message: string }): Promise<TurnResult> => {
     log.warn({ until: new Date(hold.until).toISOString(), error: hold.error, steps: turn.steps }, 'provider down for every agent; no thought bought');
     state.inferenceRetryAt = hold.until;
-    state.continuation = { progress: 'The previous turn waited out a model provider outage.', recentSteps: turn.recentSteps.slice(-6) };
+    if (role === 'social') state.continuation = { progress: 'The previous turn waited out a model provider outage.', recentSteps: turn.recentSteps.slice(-6) };
     return endTurn('provider_hold', { status: 'waiting', nextAt: new Date(hold.until), lastError: hold.message.slice(0, 500) });
   };
 
@@ -707,9 +808,33 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     broker.pending = pending;
     await ctx.db
       .insert(actions)
-      .values({ actionId: pending.id, agentId: agent.agentId, cycleKey: pending.cycleKey, action: action as unknown as Record<string, unknown>, status: 'sending', createdAt: new Date(now), updatedAt: new Date(now) })
+      // A treasury turn's actions carry their role in the stored JSON (activity.ts and `actionRoleOf` read it); social rows are as before.
+      .values({ actionId: pending.id, agentId: agent.agentId, cycleKey: pending.cycleKey, action: { ...(action as unknown as Record<string, unknown>), ...(role !== 'social' ? { role } : {}) }, status: 'sending', createdAt: new Date(now), updatedAt: new Date(now) })
       .onConflictDoNothing();
     await persist();
+
+    if (action.tool === 'finish' && role === 'treasury') {
+      // The treasury's own checkpoint: its slot in the state, cut to size; the social memory, agenda, summary, post slot
+      // and wake are not touched. The model's wake request is honoured only beyond the interval (and within a day).
+      let cp;
+      try {
+        cp = checkpoint(action.input as unknown as Record<string, unknown>, now, { floorMs: ctx.config.TREASURY_TURN_INTERVAL_MS });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        broker.pending = recordOutcome(pending, { kind: 'failed', error }, now);
+        await settle();
+        turn.messages.push(toolMessage(inf.toolCall.id, { error }));
+        turn.recentSteps.push({ tool: 'finish', status: 'failed', summary: error });
+        await persist();
+        continue;
+      }
+      state.treasuryCheckpoint = { memory: cp.memory.slice(0, TREASURY_CHECKPOINT_CHARS.memory), agenda: cp.agenda.slice(0, TREASURY_CHECKPOINT_CHARS.agenda), summary: cp.summary.slice(0, TREASURY_CHECKPOINT_CHARS.summary), at: now };
+      state.treasuryNextAt = cp.nextAtMs;
+      broker.pending = markSent(pending);
+      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextTreasuryTurnAt: cp.nextAt } }, now);
+      await settle();
+      return endTurn('finished', { status: 'waiting', failures: 0, lastError: null });
+    }
 
     if (action.tool === 'finish') {
       let cp;
@@ -843,6 +968,9 @@ export function trimState(state: AgentState): AgentState {
   const copy: AgentState = { ...state, lastResults: [] };
   if (stateFits(copy)) return copy;
   copy.continuation = copy.continuation ? { progress: copy.continuation.progress.slice(0, 500), recentSteps: copy.continuation.recentSteps.slice(-3) } : null;
+  if (stateFits(copy)) return copy;
+  // The treasury's own checkpoint goes before the social memory is cut: the hourly turn rereads its numbers anyway.
+  if (copy.treasuryCheckpoint) copy.treasuryCheckpoint = { ...copy.treasuryCheckpoint, memory: copy.treasuryCheckpoint.memory.slice(0, 500), agenda: copy.treasuryCheckpoint.agenda.slice(0, 300), summary: copy.treasuryCheckpoint.summary.slice(0, 200) };
   if (stateFits(copy)) return copy;
   copy.memory = copy.memory.slice(0, 6000);
   copy.agenda = copy.agenda.slice(0, 3000);
