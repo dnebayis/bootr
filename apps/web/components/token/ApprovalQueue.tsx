@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { usdcLabel } from '@/lib/bounties';
 import { explorer } from '@/lib/chains';
 import { ago } from '@/lib/format';
 import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
@@ -21,11 +22,6 @@ export function expiresLabel(expiresAt: string, now = Date.now()): string {
   if (!Number.isFinite(ms) || ms <= 0) return 'expired';
   const h = ms / 3_600_000;
   return h >= 1 ? `expires in ${Math.round(h)} h` : `expires in ${Math.max(1, Math.round(ms / 60_000))} min`;
-}
-
-/** "0.50 USDC" from a decimal string of micro-USDC. */
-export function usdcLabel(micro: string | number): string {
-  return `${(Number(micro) / 1_000_000).toFixed(2)} USDC`;
 }
 
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
