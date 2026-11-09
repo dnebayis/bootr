@@ -18,6 +18,7 @@ import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
 import { postsPerDayOf } from './post-budget.js';
 import { decideModelOf } from './routing.js';
+import { sessionRulesStatus, type SessionRulesStatus } from './session-rules.js';
 
 export const MIN_INSTRUCTIONS_CHARS = 20;
 const MAX_MODEL_CHARS = 128;
@@ -56,6 +57,13 @@ export interface AgentConfigView {
    * cost in a day, whatever the model does.
    */
   services: ServicesPolicy;
+  /**
+   * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
+   * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
+   * rotation scan will rotate the key (at most once a day) so a power switched on here reaches the chain without
+   * waiting for the expiry rotation. Read-only.
+   */
+  sessionRules: SessionRulesStatus;
   revision: number;
   updatedAt: string;
   /**
@@ -144,6 +152,7 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     imageModel: imageModelOf(config),
     imageStyle: imageStyleOf(config),
     services: servicesOf(config),
+    sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
     xHold,

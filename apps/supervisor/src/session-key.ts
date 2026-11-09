@@ -10,7 +10,8 @@
  *   - the enable-mode userOp signature `guardian ‖ abi.encode(validatorData, 0x00, 0xe9ae5c53, enableSig, userOpSig)`
  *
  * The call allow-list is Bootr's own module, `BootrCallPolicy` (`packages/contracts/src/BootrCallPolicy.sol`),
- * installed first with `abi.encode(Rule[])` init data (see `callPolicyRules` / `encodeCallPolicyData`).
+ * installed first with `abi.encode(Rule[])` init data (`encodeCallPolicyData` here; the rules themselves come from
+ * session-rules.ts, per power: `callPolicyRules`, re-exported below).
  * ZeroDev's CallPolicy is not used: hooked permissions require `executeUserOp`-wrapped callData, which
  * that module cannot parse. The permission has NO ERC-1271 path: the signer entry carries `SKIP_SIGNATURE`
  * (`NOT_FOR_VALIDATE_SIG`, 0x0002), which Kernel stores as the permission's `permissionFlag` and makes
@@ -42,18 +43,41 @@ import {
   encodeAbiParameters,
   getAddress,
   hashTypedData,
-  isAddress,
   keccak256,
   pad,
   parseAbiParameters,
-  toFunctionSelector,
   toHex,
   type Address,
   type Hex,
   type LocalAccount,
 } from 'viem';
-import { CLANKER_FEE_LOCKER_CLAIM_SELECTOR, CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, ERC20_APPROVE_SELECTOR, KERNEL_EXECUTE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
-import type { LaunchSource } from './chain.js';
+import { KERNEL_EXECUTE_SELECTOR } from './abi.js';
+import { callPolicyRules, type CallPolicyArgRule, type CallPolicyRule, type SessionRuleInputs } from './session-rules.js';
+
+// The rules themselves (per power) live in session-rules.ts; re-exported so callers keep one import for the key.
+export {
+  ALWAYS_ON_SESSION_POWERS,
+  CALL_POLICY_MAX_RULES,
+  CALL_POLICY_RULES_VERSION,
+  CallPolicyOp,
+  callPolicyRules,
+  ERC20_TRANSFER_SELECTOR,
+  FUNDING_AMOUNT_ARG_INDEX,
+  FUNDING_RULE_INDEX,
+  fundingRuleIndex,
+  GAS_RULE_VERSION,
+  hasGasRule,
+  LEGACY_FUNDING_RULE_INDEX,
+  MIN_CALL_POLICY_RULES_VERSION,
+  policySource,
+  SOURCE_RULES_VERSION,
+  type CallPolicyArgRule,
+  type CallPolicyRule,
+  type SessionPower,
+  type SessionRule,
+  type SessionRuleInputs,
+  type SessionRulesMeta,
+} from './session-rules.js';
 
 export const KERNEL_VERSION = '0.3.1';
 export const SESSION_HOOK_DATA: Hex = '0x00';
@@ -66,42 +90,16 @@ export const SIGNER_PREFIX: Hex = '0xff';
 export const DUMMY_ECDSA_SIG: Hex =
   '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
 
-export interface SessionPolicyParams {
-  kernel: Address;
-  token: Address;
-  /**
-   * Launch source the claim rules are built for (chain.ts `LaunchSource`): `bootr` (default, also for every policy
-   * stored before the field existed) = the two RWAGMI locker rules; `clanker` = `ClankerLpLockerFeeConversion.
-   * collectRewards(token)` + `ClankerFeeLocker.claim(kernel, *)` (docs/design/clanker-launch.md section 3).
-   */
-  source?: LaunchSource;
-  /**
-   * Bootr: `RwagmiLpLockerV3`, the only claim target (`settleAndClaim` / `claimQuote`, both with `to == kernel`).
-   * Clanker: `ClankerFeeLocker` (`claim(feeOwner == kernel, *)`). Policies stored before the RWAGMI migration
-   * (`rulesVersion` unset) hold the Clanker fee locker here with the old single-rule layout.
-   */
-  feeLocker: Address;
-  /** Clanker only: `ClankerLpLockerFeeConversion`, the `collectRewards(token)` target. */
-  lpLocker?: Address;
-  /**
-   * Layout of the BootrCallPolicy rules this policy was installed with (`CALL_POLICY_RULES_VERSION`). Unset = the
-   * Clanker-era four-rule layout (`FeeLocker.claim` first, USDC funding at index 3), kept until the key is rotated.
-   */
-  rulesVersion?: number;
-  /** BootrSwapHelper (`addresses.bootr.swapHelper`): the only WETH sink a session may use. */
-  swapHelper: Address;
+/**
+ * Session policy parameters: the call-rule inputs (`SessionRuleInputs`, session-rules.ts) plus the ZeroDev
+ * policies' parameters and the module addresses. `rules` (metadata of which power produced which rule) is set by
+ * `sessionPolicyFor` on every policy built since session-rules.ts exists and absent on rows stored before.
+ */
+export interface SessionPolicyParams extends SessionRuleInputs {
   /** @deprecated Legacy field of policies installed before the swap helper; never used for new rules. */
   universalRouter?: Address;
-  usdc: Address;
-  weth: Address;
   /** @deprecated Legacy recipient of the USDC rule (policies installed before the per-agent spender). */
   inferencePayTo?: Address;
-  /** The agent's x402 spender EOA: the only USDC recipient the session key may fund. */
-  spender: Address;
-  /** Max USDC (6 dp units) moved to the spender per window (`SUM_PER_WINDOW`, summed per userOp and per window). */
-  usdcTransferCap: bigint;
-  /** Window of the USDC cap in seconds (fixed grid anchored at install). */
-  usdcWindowSeconds: number;
   /** GasPolicy cumulative allowance in wei. */
   gasAllowanceWei: bigint;
   /** Stored name; the policy's `count`, a total over the key's life (config `SESSION_USEROP_LIMIT`). */
@@ -140,6 +138,7 @@ export function serializeSessionPolicy(p: SessionPolicyParams): SerializedSessio
   return { ...p, usdcTransferCap: p.usdcTransferCap.toString(), gasAllowanceWei: p.gasAllowanceWei.toString() };
 }
 
+/** Rows stored before `rules` existed come back without it; `callPolicyRules` then builds the always-on set. */
 export function deserializeSessionPolicy(p: SerializedSessionPolicy): SessionPolicyParams {
   return { ...p, usdcTransferCap: BigInt(p.usdcTransferCap), gasAllowanceWei: BigInt(p.gasAllowanceWei) };
 }
@@ -151,133 +150,14 @@ export interface PolicyEntry {
 }
 
 // ---------------------------------------------------------------------------
-// BootrCallPolicy rules (packages/contracts/src/BootrCallPolicy.sol)
+// BootrCallPolicy rules: the rules themselves live in session-rules.ts (per power); this file encodes them.
 // ---------------------------------------------------------------------------
 
-/**
- * `ArgRule.op`: EQUAL compares the 32-byte word, LESS_THAN_OR_EQUAL compares it as uint256 (summed per batch),
- * SUM_PER_WINDOW additionally accumulates it on-chain per `Rule.windowSeconds` window.
- */
-export const CallPolicyOp = { EQUAL: 1, LESS_THAN_OR_EQUAL: 2, SUM_PER_WINDOW: 3 } as const;
 /** Index of BootrCallPolicy in the permission (the `idx` byte of its policy-signature slot). */
 export const CALL_POLICY_INDEX = 0;
 
-export interface CallPolicyArgRule {
-  /** Static argument index: the word at `4 + 32 * index` of the call data. */
-  index: number;
-  op: (typeof CallPolicyOp)[keyof typeof CallPolicyOp];
-  value: Hex; // bytes32
-}
-
-export interface CallPolicyRule {
-  target: Address;
-  selector: Hex;
-  /** Window of the rule's SUM_PER_WINDOW arguments in seconds (0 when it has none). */
-  windowSeconds: number;
-  args: CallPolicyArgRule[];
-}
-
 /** `abi.encode(Rule[])` as `BootrCallPolicy.onInstall` decodes it (after the 32-byte permission id). */
 export const CALL_POLICY_RULES_ABI = parseAbiParameters('(address target, bytes4 selector, uint32 windowSeconds, (uint8 index, uint8 op, bytes32 value)[] args)[]');
-/**
- * Current rule layout: two claim rules keyed by the launch source (Bootr: the RWAGMI v3 locker pair; Clanker:
- * `collectRewards` + `claim`), then WETH approve, swap, USDC funding, WETH withdraw (gas). For a Bootr agent
- * version 4 encodes byte for byte what version 3 did (the layout only gained the Clanker variant), so no Bootr key
- * is rotated for it. Version 3 = the RWAGMI layout with the gas rule; version 2 = the same five rules without it.
- */
-export const CALL_POLICY_RULES_VERSION = 4;
-/** Oldest layout `callPolicyRules` can still build (the RWAGMI layout without the gas rule). */
-export const MIN_CALL_POLICY_RULES_VERSION = 2;
-/** First layout with the `WETH.withdraw` rule the gas policy needs (gas.ts). */
-export const GAS_RULE_VERSION = 3;
-/** First layout whose claim rules follow the launch source (a `clanker` policy needs at least this version). */
-export const SOURCE_RULES_VERSION = 4;
-/** Position of the USDC funding rule in `callPolicyRules` (for `BootrCallPolicy.windowOf`). */
-export const FUNDING_RULE_INDEX = 4;
-/** Position of the funding rule in the Clanker-era layout (one `FeeLocker.claim` rule in front). */
-export const LEGACY_FUNDING_RULE_INDEX = 3;
-/** Position of the SUM_PER_WINDOW amount argument inside that rule. */
-export const FUNDING_AMOUNT_ARG_INDEX = 1;
-
-/** Funding rule index of an installed policy (no stored policy = the current layout). */
-export function fundingRuleIndex(p?: Pick<SessionPolicyParams, 'rulesVersion'> | null): number {
-  if (!p) return FUNDING_RULE_INDEX;
-  return (p.rulesVersion ?? 0) >= MIN_CALL_POLICY_RULES_VERSION ? FUNDING_RULE_INDEX : LEGACY_FUNDING_RULE_INDEX;
-}
-
-/** Whether a stored policy's session key may unwrap WETH into gas (`WETH.withdraw` rule present). */
-export function hasGasRule(p?: Pick<SessionPolicyParams, 'rulesVersion'> | null): boolean {
-  return (p?.rulesVersion ?? 0) >= GAS_RULE_VERSION;
-}
-
-export const ERC20_TRANSFER_SELECTOR: Hex = toFunctionSelector('transfer(address,uint256)');
-
-// Lower-case bytes32 values so rule data compares byte-for-byte with the lower-cased `validatorData`.
-const eqAddress = (index: number, value: Address): CallPolicyArgRule => ({ index, op: CallPolicyOp.EQUAL, value: pad(value, { size: 32 }).toLowerCase() as Hex });
-const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(value, { size: 32 }) });
-
-/** The source a policy's claim rules follow (`bootr` for every policy stored before the field existed). */
-export function policySource(p: Pick<SessionPolicyParams, 'source'>): LaunchSource {
-  return p.source === 'clanker' ? 'clanker' : 'bootr';
-}
-
-/**
- * The two claim rules, by launch source. Bootr: the RWAGMI locker pays `msg.sender`'s (the kernel's) fee balance to
- * `to`, and `to` is pinned to the kernel, so a claim can only move fees into the kernel. Clanker: `collectRewards`
- * only moves the coin's LP fees from the positions into the fee locker (pinned to the agent's own token, anyone may
- * call it anyway), and `ClankerFeeLocker.claim(feeOwner, token)` always pays `feeOwner`, pinned to the kernel; the
- * token is free (WETH today, and nothing else can be stolen since the payee is fixed).
- */
-function claimRules(p: SessionPolicyParams): CallPolicyRule[] {
-  if (policySource(p) === 'clanker') {
-    if ((p.rulesVersion ?? 0) < SOURCE_RULES_VERSION) throw new Error(`a clanker session policy needs rule layout ${SOURCE_RULES_VERSION} or later (rulesVersion ${p.rulesVersion ?? 'unset'})`);
-    if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (ClankerFeeLocker)');
-    if (!p.lpLocker || !isAddress(p.lpLocker)) throw new Error('session policy has no lpLocker (ClankerLpLockerFeeConversion)');
-    return [
-      // ClankerLpLockerFeeConversion.collectRewards(address token): word 0 is the token, pinned to the agent's coin.
-      { target: p.lpLocker, selector: CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.token)] },
-      // ClankerFeeLocker.claim(address feeOwner, address token): word 0 is `feeOwner`, pinned to the kernel.
-      { target: p.feeLocker, selector: CLANKER_FEE_LOCKER_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.kernel)] },
-    ];
-  }
-  if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (RwagmiLpLockerV3)');
-  return [
-    // RwagmiLpLockerV3.settleAndClaim(bytes32[] ids, address currency, address to): static word 2 is `to` (word 0 is
-    // the offset of `ids`); pools and currency are free, the payout always lands in the kernel.
-    { target: p.feeLocker, selector: LOCKER_SETTLE_AND_CLAIM_SELECTOR, windowSeconds: 0, args: [eqAddress(2, p.kernel)] },
-    // RwagmiLpLockerV3.claimQuote(address currency, address to): already settled balance, `to == kernel`.
-    { target: p.feeLocker, selector: LOCKER_CLAIM_QUOTE_SELECTOR, windowSeconds: 0, args: [eqAddress(1, p.kernel)] },
-  ];
-}
-
-/**
- * The six calls a session key may make, in this order: the two claim rules of the launch source (`claimRules`),
- * then the shared four. Every call must carry zero ETH value. A claim can only move the kernel's own fees into the
- * kernel (both sources). The swap helper pulls WETH from the kernel and pays ALL output USDC back to the kernel at no
- * worse than the Chainlink price minus 3%, so these rules can only ever turn the kernel's WETH into the kernel's USDC
- * (finding C-02). The only USDC outflow is to the agent's own spender EOA, capped cumulatively per window
- * on-chain (M-02 and the x402 exposure after C-01). `WETH.withdraw` (version 3) turns the kernel's WETH into ETH
- * held by the kernel itself: WETH9 pays `msg.sender`, and ETH on the kernel can only ever leave as userOp prefund
- * (no rule carries value, the root validator is the guardian), so it is the agent's gas and nothing else (gas.ts).
- */
-export function callPolicyRules(p: SessionPolicyParams): CallPolicyRule[] {
-  if ((p.rulesVersion ?? 0) < MIN_CALL_POLICY_RULES_VERSION) throw new Error(`session policy has the legacy rule layout (rulesVersion ${p.rulesVersion ?? 'unset'}); rotate the session key`);
-  if (!isAddress(p.swapHelper)) throw new Error('session policy has no swapHelper (bootr.swapHelper)');
-  if (!isAddress(p.spender)) throw new Error('session policy has no spender');
-  if (!Number.isInteger(p.usdcWindowSeconds) || p.usdcWindowSeconds <= 0) throw new Error('usdcWindowSeconds must be a positive integer');
-  if (p.usdcTransferCap <= 0n || p.usdcTransferCap > 2n ** 128n - 1n) throw new Error('usdcTransferCap must fit uint128');
-  return [
-    ...claimRules(p),
-    // WETH.approve(swapHelper, *): the helper only ever spends the allowance from msg.sender == kernel.
-    { target: p.weth, selector: ERC20_APPROVE_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.swapHelper)] },
-    // swapHelper.swapWethToUsdc(amountIn, maxSlippageBps): output to msg.sender, floor from Chainlink on-chain.
-    { target: p.swapHelper, selector: SWAP_HELPER_SWAP_SELECTOR, windowSeconds: 0, args: [] },
-    // USDC.transfer(spender, SUM_PER_WINDOW <= cap): the spender's float, at most `cap` per window.
-    { target: p.usdc, selector: ERC20_TRANSFER_SELECTOR, windowSeconds: p.usdcWindowSeconds, args: [eqAddress(0, p.spender), sumPerWindow(1, p.usdcTransferCap)] },
-    // WETH.withdraw(wad): the kernel's own gas (ETH stays on the kernel; see above). Appended last so every earlier index is stable.
-    ...(hasGasRule(p) ? [{ target: p.weth, selector: WETH_WITHDRAW_SELECTOR, windowSeconds: 0, args: [] as CallPolicyArgRule[] }] : []),
-  ];
-}
 
 export function encodeCallPolicyData(rules: readonly CallPolicyRule[]): Hex {
   return encodeAbiParameters(CALL_POLICY_RULES_ABI, [rules.map((r) => ({ target: r.target, selector: r.selector, windowSeconds: r.windowSeconds, args: r.args.map((a) => ({ index: a.index, op: a.op, value: a.value })) }))]).toLowerCase() as Hex;

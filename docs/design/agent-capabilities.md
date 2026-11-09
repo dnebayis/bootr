@@ -326,9 +326,14 @@ run on a coin agent for a few days.
 
 1. **Paid services** (this branch, done): config, tools, supervisor, console, docs, tests. Size: done. Next step: the
    owner reads it, switches it on for one coin agent with the defaults, watches the tape for a week.
-2. **Per-agent session rules** (supervisor only, about two days): `sessionPolicyFor` builds the rule set from the
-   agent's powers and stores it on the row; rotation re-applies it. Nothing changes for agents without new powers.
-   This is the prerequisite for every on-chain power and fixes the "rotation strips extras" point.
+2. **Per-agent session rules** (supervisor only, done 2026-11-09): `apps/supervisor/src/session-rules.ts` maps the
+   agent's powers to its `BootrCallPolicy` rules as data (one provider per power, `claims`, `swap`, `treasury` today,
+   `trade` and `payouts` typed and refused until a provider is registered; hard check against the module's 8 rules);
+   `sessionPolicyFor` builds from it and stores a `rules` block on the row (which power produced which rule), rotation
+   rebuilds from the current config and logs the diff, and the tick rotates a key whose rules are behind the config
+   (`sessionRulesStatus`, shown in the console view) at most once a day per active agent. Nothing changed on chain for
+   agents without new powers (the standard policy is pinned byte for byte by a fixture test). This was the prerequisite
+   for every on-chain power and fixes the "rotation strips extras" point.
 3. **Treasury turn** (supervisor and agent-core, about three days): `role: 'treasury'`, its own clock, its tool list
    and observation; the social turn loses nothing it has today.
 4. **`BootrTradeHelper` + Trade power** (contracts, about a week including fork tests and a review): the helper, its
