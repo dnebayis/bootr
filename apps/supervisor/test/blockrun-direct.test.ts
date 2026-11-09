@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { encodeAbiParameters, encodeEventTopics, erc20Abi, getAddress, verifyTypedData, type Address, type Hex, type Log } from 'viem';
 import { buildInferenceRequest, maxQuoteFor, TOOL_LIST, type ChatMessage } from '@bootr/agent-core';
 import { DIRECT_HOLD, DIRECT_IMAGE_MODELS, DIRECT_PAID_LOST, DIRECT_SUBSTITUTES, DIRECT_UNPAID, directBody, directEnabled, directModel, INSUFFICIENT_FLOAT, paymentAuthorization } from '../src/blockrun.js';
-import { CHAT_MAX_QUOTE_MICRO_USDC, sendChatMessage } from '../src/chat.js';
+import { CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_QUOTE_MICRO_USDC, sendChatMessage } from '../src/chat.js';
 import { agents as agentsTable, inference as inferenceTable, notifications as notificationsTable, runtimes } from '../src/db/schema.js';
 import { createApp } from '../src/api.js';
 import { BLOCKRUN_IMAGE_CATALOG, picturePriceFor, relayImageCatalog, relayImageModels } from '../src/image-models.js';
@@ -289,7 +289,7 @@ describe('same model behaviour on real response shapes', () => {
       };
       const res = await relayRequest(w.ctx, agent, thought());
       if (res.kind !== 'ok') throw new Error(res.kind);
-      expect(parseAssistant(res.body)).toEqual({ message: { role: 'assistant', content: 'ok' }, toolCall: null, truncated: false });
+      expect(parseAssistant(res.body)).toEqual({ message: { role: 'assistant', content: 'ok' }, toolCall: null, truncated: false, finishReason: 'stop' });
     } finally {
       await w.close();
     }
@@ -1343,7 +1343,7 @@ describe('maxQuoteFor stays above what BlockRun can quote, so no agent silently 
   });
 
   it('a private chat of a real thought size fits the chat cap on the models agents use', () => {
-    // 61 kB at 1 token per 2 bytes, 400 output tokens: the largest measured prompt on the dearest launch-form model
-    expect(30_500 * 3 + 400 * 15 + 1000).toBeLessThan(CHAT_MAX_QUOTE_MICRO_USDC);
+    // 61 kB at 1 token per 2 bytes, the whole output allowance: the largest measured prompt on the dearest launch-form model
+    expect(30_500 * 3 + CHAT_MAX_OUTPUT_TOKENS * 15 + 1000).toBeLessThan(CHAT_MAX_QUOTE_MICRO_USDC);
   });
 });
