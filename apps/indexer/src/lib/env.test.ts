@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { enabledSources, isLauncher, launchSourceOf, parseLaunchers, resolveClankerLaunchers, resolveLaunchers, type ClankerStack, type IndexerEnv, type RwagmiStack } from './env';
+import { enabledSources, isLauncher, launchSourceOf, parseLaunchers, resolveClankerLaunchers, resolveLaunchers, type ClankerStack, type ClankerV5Stack, type IndexerEnv, type RwagmiStack } from './env';
 
 const OLD = '0xD3CE024ddC37465510E6c9a1D7942f003338B1F3';
 const NEW = '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5';
@@ -91,15 +91,20 @@ describe('resolveClankerLaunchers (BOOTR_CLANKER_LAUNCHERS) and enabledSources',
     const base = { guardian: NEW, addresses: { erc8004: { reputationRegistry: NEW } } } as unknown as IndexerEnv;
     const rwagmi: RwagmiStack = { launcher: NEW, hook: NEW, locker: NEW, startBlock: 1 };
     const clanker: ClankerStack = { factory: NEW, hook: NEW, locker: NEW, feeLocker: NEW, startBlock: 1 };
-    const none = enabledSources({ ...base, launchers: [], clankerLaunchers: [], rwagmi, clanker });
+    const clankerV5: ClankerV5Stack = { factory: NEW, hook: NEW, feeEscrow: NEW, startBlock: 1 };
+    const none = enabledSources({ ...base, launchers: [], clankerLaunchers: [], rwagmi, clanker, clankerV5 });
     expect(Object.values(none).every((v) => v === false)).toBe(true);
-    const onlyClanker = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker });
-    expect(onlyClanker).toMatchObject({ BootrLauncher: false, RwagmiHookV3: false, BuybackBurner: false, BootrClankerLauncher: true, ClankerLpLocker: true, ClankerFeeLocker: true, BootrToken: true, PoolManager: true, AgentGuardian: true, ReputationRegistry: true });
-    const both = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker });
+    const onlyClanker = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker, clankerV5: null });
+    expect(onlyClanker).toMatchObject({ BootrLauncher: false, RwagmiHookV3: false, BuybackBurner: false, BootrClankerLauncher: true, ClankerLpLocker: true, ClankerFeeLocker: true, ClankerV5Hook: false, ClankerV5FeeEscrow: false, BootrToken: true, PoolManager: true, AgentGuardian: true, ReputationRegistry: true });
+    // One launcher list serves both Clanker versions: the v5 hook and escrow join when the chain has the v5 stack,
+    // and a chain with only the v5 stack still follows the launchers (the v4 lockers stay off).
+    const onlyV5 = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null, clankerV5 });
+    expect(onlyV5).toMatchObject({ BootrClankerLauncher: true, ClankerLpLocker: false, ClankerFeeLocker: false, ClankerV5Hook: true, ClankerV5FeeEscrow: true, BootrToken: true, PoolManager: true });
+    const both = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker, clankerV5 });
     expect(Object.values(both).every((v) => v === true)).toBe(true);
     // No Clanker stack on the chain: the Clanker path stays off even with a launcher listed.
-    const noStack = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null });
-    expect(noStack).toMatchObject({ BootrLauncher: true, BootrClankerLauncher: false, ClankerLpLocker: false, PoolManager: true });
+    const noStack = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null, clankerV5: null });
+    expect(noStack).toMatchObject({ BootrLauncher: true, BootrClankerLauncher: false, ClankerLpLocker: false, ClankerV5Hook: false, PoolManager: true });
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }] }, CLANKER_LAUNCHER.toLowerCase())).toBe('clanker');
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, OLD)).toBe('bootr');
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, CLANKER_LAUNCHER)).toBeNull();

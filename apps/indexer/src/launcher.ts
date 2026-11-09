@@ -14,10 +14,25 @@ import { PoolManagerAbi } from '../abis/PoolManager';
 import { RwagmiHookV3Abi } from '../abis/RwagmiHookV3';
 import { RwagmiLauncherV3Abi } from '../abis/RwagmiLauncherV3';
 import { RwagmiLpLockerV3Abi } from '../abis/RwagmiLpLockerV3';
-import { CLANKER_TOKEN_SUPPLY, clankerPoolKey, clankerPositionTicks, clankerSlots, type ClankerLaunchedArgs, type ClankerRewardInfo } from './lib/clanker';
+import { ClankerV5HookAbi } from '../abis/ClankerV5';
+import {
+  CLANKER_TOKEN_SUPPLY,
+  CLANKER_V5_SUPPLY,
+  clankerPoolKey,
+  clankerPositionTicks,
+  clankerSlots,
+  clankerV5LaunchFacts,
+  clankerV5PoolKey,
+  clankerV5PositionTicks,
+  clankerV5Slots,
+  type ClankerLaunchedArgs,
+  type ClankerRewardInfo,
+  type ClankerV5HookSlot,
+  type ClankerV5LaunchedArgs,
+} from './lib/clanker';
 import { enabledSources, indexerEnv } from './lib/env';
 import { bpsByKind, classifySlots, CLANKER_PROTOCOL_BPS, DEAD_ADDRESS, type LaunchSource, type RewardSlot, type SlotKind } from './lib/fees';
-import { applyFeeTaken } from './lib/ledger';
+import { applyClankerV5TaxCredit, applyFeeTaken } from './lib/ledger';
 import { applySwap, applyTransfer } from './lib/market';
 import { imageFromUri } from './lib/metadata';
 import { positionTicks } from './lib/pool';
@@ -169,10 +184,12 @@ async function stageClankerLaunch(context: Ctx, a: ClankerLaunchedArgs, m: TxMet
   const token = lc(a.token);
   const values = {
     id: token,
+    version: 4,
     poolId: lc(a.poolId),
     hook: lc(a.hook),
     locker: lc(a.locker),
     mevModule: lc(a.mevModule),
+    antiSnipe: false,
     startingTick: Number(a.startingTick),
     lpFeeBps: Number(a.lpFeeBps),
     context: created?.context ?? '',
@@ -377,7 +394,14 @@ async function insertLaunch(context: Ctx, event: LaunchEvent, r: LaunchRows) {
  * (Bootr path) the hook fee it paid. They precede `AgentLaunched` and therefore the token / pool rows, so the
  * live handlers skip the launch tx and this does their work.
  */
-async function replayLaunchTx(context: Ctx, event: LaunchEvent, logs: Log<bigint, number, false>[], pool: { id: Hex }, feeHook: Address | null) {
+async function replayLaunchTx(
+  context: Ctx,
+  event: LaunchEvent,
+  logs: Log<bigint, number, false>[],
+  pool: { id: Hex },
+  feeHook: Address | null,
+  v5Hook: Address | null = null,
+) {
   const env = indexerEnv();
   const a = event.args;
   const token = lc(a.token);
@@ -423,6 +447,25 @@ async function replayLaunchTx(context: Ctx, event: LaunchEvent, logs: Log<bigint
           blockNumber: event.block.number,
           timestamp: ts,
         });
+      }
+    } else if (v5Hook && addr === lc(v5Hook)) {
+      // Clanker v5: the dev buy's tax credits (one per fee slot in the quote, the burn in the coin).
+      const ev = tryDecode(ClankerV5HookAbi, l);
+      if ((ev?.eventName === 'CreatorTaxCredited' || ev?.eventName === 'BurnTaxCredited') && lc(ev.args.poolId as Hex) === pool.id) {
+        const row = (await context.db.find(schema.token, { id: token }))!;
+        const burn = ev.eventName === 'BurnTaxCredited';
+        await applyClankerV5TaxCredit(
+          context,
+          row,
+          pool.id,
+          {
+            burn,
+            recipient: (burn ? ev.args.sink : ev.args.recipient) as Address,
+            asset: (burn ? ev.args.token : ev.args.currency) as Address,
+            amount: ev.args.amount as bigint,
+          },
+          { txHash: event.transaction.hash, logIndex: l.logIndex, blockNumber: event.block.number, timestamp: ts },
+        );
       }
     } else if (addr === poolManager && l.topics[1] && lc(l.topics[1]) === pool.id) {
       const ev = tryDecode(PoolManagerAbi, l);
@@ -565,7 +608,6 @@ if (enabledSources().BootrLauncher) {
 if (enabledSources().BootrClankerLauncher) {
   ponder.on('BootrClankerLauncher:AgentLaunched', async ({ event, context }) => {
     const env = indexerEnv();
-    const clanker = env.clanker!;
     const a = event.args;
     const token = lc(a.token);
     const kernel = lc(a.kernel);
@@ -581,6 +623,22 @@ if (enabledSources().BootrClankerLauncher) {
     // and the initial transfers.
     const receipt = await context.client.getTransactionReceipt({ hash: event.transaction.hash });
     const launcher = lc(event.log.address);
+    // One source follows every Clanker launcher: a v5 wrapper's receipt carries `ClankerV5Launched`.
+    const v5 = clankerV5LaunchFacts(receipt.logs, {
+      token: a.token,
+      launcher,
+      poolManager: env.addresses.uniswap.poolManager,
+      factory: env.clankerV5?.factory ?? null,
+    });
+    if (v5.launched) {
+      await launchClankerV5(context, event, receipt.logs, { ...v5, launched: v5.launched });
+      return;
+    }
+    const clanker = env.clanker;
+    if (!clanker) {
+      console.warn(`[indexer] AgentLaunched ${token} (${event.transaction.hash}) on the Clanker path: no ClankerV5Launched and no Clanker v4 stack; skipping`);
+      return;
+    }
     let created: { name: string; symbol: string; image: string; metadata: string; context: string; extensionsSupply: bigint } | null = null;
     let launched: ClankerLaunchedArgs | null = null;
     let info: ClankerRewardInfo | null = null;
@@ -686,4 +744,134 @@ if (enabledSources().BootrClankerLauncher) {
     });
     await replayLaunchTx(context, event, receipt.logs.filter((l) => l.logIndex < event.log.logIndex), { id: staged.poolId }, null);
   });
+}
+
+// ------------------------------------------------------------------ Clanker v5: AgentLaunched
+
+/**
+ * A `BootrClankerLauncherV5` launch (docs/design/clanker-v5-migration.md section 6). The receipt carries the
+ * wrapper's `ClankerV5Launched` (pool id, hook, escrow, quote, tick spacing, tax), the hook's `FeeSlotCreated` per
+ * paid slot, the factory's `LaunchTaxConfigured` (the admitted policy and the burn share) and `Launched` (supply),
+ * the PoolManager's `Initialize` (opening tick) and `ModifyLiquidity` (the seeded band), the dev buy's swap and tax
+ * credits, the transfers and the fuel. Token rows: `source 'clanker-v5'`, `lpFeeBps` = the tax, `protocolBps` =
+ * Clanker's share of it, the slot kinds share the rest; `pairedToken` the quote (native ETH = `0x0`).
+ */
+async function launchClankerV5(
+  context: Ctx,
+  event: LaunchEvent,
+  logs: Log<bigint, number, false>[],
+  facts: ReturnType<typeof clankerV5LaunchFacts> & { launched: ClankerV5LaunchedArgs },
+) {
+  const a = event.args;
+  const token = lc(a.token);
+  const kernel = lc(a.kernel);
+  const creator = lc(a.creator);
+  const platformRecipient = lc(a.defaults.platformRecipient);
+  const launched = facts.launched;
+  const meta = { txHash: event.transaction.hash, blockNumber: event.block.number };
+
+  // Slots: FeeSlotCreated (same receipt), else the hook's `poolFeeSlots(poolId)`, else the preset's weights.
+  let slots: ClankerV5HookSlot[] = facts.slots;
+  if (slots.length === 0) {
+    try {
+      const r = await context.client.readContract({ abi: ClankerV5HookAbi, address: launched.hook, functionName: 'poolFeeSlots', args: [launched.poolId] });
+      slots = r.map((x, slot) => ({ slot, recipient: lc(x.recipient), admin: lc(x.admin), weightBps: Number(x.weightBps) }));
+    } catch (err) {
+      console.warn(`[indexer] poolFeeSlots(${launched.poolId}) failed, using the preset's weights: ${safeMessage(err)}`);
+    }
+  }
+  const taxBps = launched.taxBps || a.defaults.lpFeeBps || DEFAULT_LP_FEE_BPS;
+  const { rewards, protocolBps } = clankerV5Slots(
+    { ...facts, slots },
+    { launcher: event.log.address, kernel, creator, taxBps, defaults: a.defaults },
+  );
+  // The paid slots are [kernel, creator, platform] by construction; the burn slot (if any) is the dead address.
+  const kinds: (SlotKind | null)[] = [
+    ...classifySlots(rewards.slice(0, slots.length || 3), { kernel, creator, burner: null, platformRecipient }, 'clanker-v5'),
+    ...rewards.slice(slots.length || 3).map((r) => (r.recipient === DEAD_ADDRESS ? ('burn' as const) : null)),
+  ];
+
+  const key = clankerV5PoolKey(a.token, launched.quoteToken, launched.hook, launched.tickSpacing);
+  const coinIsToken0 = lc(key.currency0) === token;
+  const pairedToken = coinIsToken0 ? lc(key.currency1) : lc(key.currency0);
+  if (pairedToken !== ZERO_ADDRESS) console.warn(`[indexer] Clanker v5 coin ${token} is paired with ${pairedToken}, not native ETH; USD figures assume an 18-decimal ETH quote`);
+  // Clanker's native start tick (-201000 in the coin-as-token0 frame) when the receipt has no Initialize.
+  const startingTick = facts.startingTick ?? (coinIsToken0 ? -201_000 : 201_000);
+  const { tickLower, tickUpper } = facts.position ?? clankerV5PositionTicks(startingTick, coinIsToken0, launched.tickSpacing);
+
+  const read = <T>(fn: 'name' | 'symbol' | 'contractURI' | 'totalSupply', fallback: T) =>
+    context.client.readContract({ abi: B20TokenAbi, address: a.token, functionName: fn as never }).catch(() => fallback) as Promise<T>;
+  const totalSupply = facts.launchSupply ?? (await read('totalSupply', CLANKER_V5_SUPPLY));
+  const name = await read('name', '');
+  const symbol = await read('symbol', '');
+  const { image, metadata } = await launchMetadata(event.log.address, event.transaction, async () => {
+    const uri = await read('contractURI', '');
+    return { image: imageFromUri(uri), metadata: uri };
+  });
+  const positionLiquidity = facts.position?.liquidity || oneSidedLiquidity(totalSupply, tickLower, tickUpper, coinIsToken0);
+
+  await context.db
+    .insert(schema.clankerPool)
+    .values({
+      id: token,
+      version: 5,
+      poolId: launched.poolId,
+      hook: launched.hook,
+      locker: launched.feeEscrow,
+      mevModule: ZERO_ADDRESS,
+      antiSnipe: launched.antiSnipe,
+      startingTick,
+      lpFeeBps: taxBps,
+      context: '',
+      extensionsSupply: 0n,
+      launchTx: meta.txHash,
+      blockNumber: meta.blockNumber,
+    })
+    .onConflictDoNothing();
+  await context.db
+    .insert(schema.pool)
+    .values({
+      id: launched.poolId,
+      token,
+      coinIsToken0,
+      tickLower,
+      tickUpper,
+      currency0: key.currency0,
+      currency1: key.currency1,
+      fee: 0,
+      tickSpacing: launched.tickSpacing,
+      hooks: key.hooks,
+      pairedToken,
+      poolIndex: 0,
+      feeMode: 0,
+      staticFee: taxBps,
+      startingTick,
+      depositedSupply: totalSupply,
+      launchTx: meta.txHash,
+    })
+    .onConflictDoNothing();
+
+  await insertLaunch(context, event, {
+    source: 'clanker-v5',
+    name,
+    symbol,
+    image,
+    metadata,
+    pool: { id: launched.poolId, pairedToken, coinIsToken0, startingTick, tickLower, tickUpper },
+    lpFeeBps: taxBps,
+    totalSupply,
+    positionLiquidity,
+    rewards,
+    kinds,
+    protocolBps,
+    protocolRecipient: null,
+  });
+  await replayLaunchTx(
+    context,
+    event,
+    logs.filter((l) => l.logIndex < event.log.logIndex),
+    { id: launched.poolId },
+    null,
+    launched.hook,
+  );
 }

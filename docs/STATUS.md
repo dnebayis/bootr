@@ -192,8 +192,23 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 7. **Ledger page** (web, two days; can run beside 5 or 6).
 8. **Kind presets v2** (one day): Community, Researcher, Trader, Patron (Bounties), Custom; Researcher v2 and the Paid
    services box on Custom can ship earlier.
-9. **Clanker v5 migration + the indexer claim cross-booking fix** (last; design note first, then contracts, indexer,
-   web; `bootr_v9`). Decisions: the tax rate (about 1.5% matches today's slot income); whether a burn-preset coin waits.
+9. **Clanker v5 migration + the indexer claim cross-booking fix** (built 2026-11-10 on a branch, not deployed;
+   [`design/clanker-v5-migration.md`](./design/clanker-v5-migration.md)). Built: the design note (v5 from the verified
+   sources, the slot arithmetic, the runbook in section 8); the contracts (`BootrClankerLauncherV5`, its interfaces,
+   `script/DeployClankerLauncherV5.s.sol`, unit tests and the Base fork suite `test/fork/ClankerV5Fork.t.sol`, 17
+   passing on 2026-11-10 including the sell-side split) and the `clankerV5` block of `packages/shared/src/addresses.ts`;
+   the indexer (`source: 'clanker-v5'`: the v5 wrapper on the same `BOOTR_CLANKER_LAUNCHERS` list, the hook's per-swap
+   tax credits and the escrow's claims in the existing fee tables, `/treasury/:kernel` reading `FeeEscrow.owed`) and
+   the claim cross-booking fix (a claim is split only over the claiming locker's own path; `claimParts`, tested).
+   Remains: the owner's two decisions (the tax rate, 1.5% recommended; the burn preset meanwhile, option (a)
+   recommended: leave v4 open and pause it at go-live), then the deploy and `gate.addLauncher(v5)` from the admin
+   wallet, Coolify `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended and
+   `DATABASE_SCHEMA=bootr_v9` (backup first; the indexer code changed either way), the supervisor's v5 claim rule
+   (design section 3), and the web of design section 7 (copy, launch form with salt mining, claims, swap panel).
+10. **Clanker on Robinhood Chain** (research only, nothing built; design note section 11): Clanker v5 is live there
+   (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
+   supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
+   launchpad can close there but the agent economy needs a bridge step. The staged plan and sizes are in section 11.
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
 

@@ -3,11 +3,11 @@
  * replays the dev buy's fee from the launch receipt, because that log precedes `AgentLaunched` and
  * therefore the token and slot rows).
  */
-import { eq } from 'ponder';
+import { and, eq } from 'ponder';
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { collectionRows } from './clanker';
+import { collectionRows, pickV5Slot } from './clanker';
 import { splitFee, type RecipientKind } from './fees';
 import { usd } from './price';
 import { assetUsd, bumpDaily, bumpPlatform, bumpSource, feeKindDelta, getEthUsd, getPlatformConfig, lc, sourceOf, type Ctx, type TokenRow } from './store';
@@ -146,4 +146,62 @@ export async function applyClankerCollection(
       txHash: m.txHash,
     });
   }
+}
+
+/**
+ * Clanker v5 path. Book one credit of the `TaxLaunchHook` for a coin of ours: `CreatorTaxCredited` (a paid slot's
+ * exact share of a swap's tax, in the quote; native ETH is `0x0`) or `BurnTaxCredited` (the burn share, in the coin,
+ * for the dead address). The amount is a `feeAccrual`, a `feeCredit` and its `feeBalance`, accrued and settled at
+ * once (the escrow holds it, claimable now). The slot is the coin's burn slot, or the paid slot of that recipient
+ * (`pickV5Slot`: the n-th credit to one wallet in a transaction is its n-th slot when it holds several). Credits to
+ * a recipient that holds no slot of the coin are dropped. The gross fee is booked per trade from the swap
+ * (`applySwap`), not here.
+ */
+export async function applyClankerV5TaxCredit(
+  context: Ctx,
+  t: TokenRow,
+  poolId: Hex,
+  c: { burn: boolean; recipient: Address; asset: Address; amount: bigint },
+  m: FeeMeta,
+) {
+  if (c.amount === 0n) return;
+  const recipient = lc(c.recipient);
+  const slots = await context.db.sql.select().from(schema.feeSlot).where(eq(schema.feeSlot.token, t.id));
+  let slot: (typeof slots)[number] | null;
+  if (c.burn) {
+    slot = slots.find((s) => s.recipientKind === 'burn' && s.recipient === recipient) ?? null;
+  } else {
+    const several = slots.filter((s) => s.recipient === recipient && s.recipientKind !== 'burn').length > 1;
+    const prior = several
+      ? (
+          await context.db.sql
+            .select({ id: schema.feeCredit.id })
+            .from(schema.feeCredit)
+            .where(and(eq(schema.feeCredit.token, t.id), eq(schema.feeCredit.txHash, m.txHash), eq(schema.feeCredit.recipient, recipient)))
+        ).length
+      : 0;
+    slot = pickV5Slot(slots, recipient, prior);
+  }
+  if (!slot) return;
+  const ethUsd = await getEthUsd(context, m.blockNumber);
+  const cfg = await getPlatformConfig(context);
+  const id = `${m.txHash}-${m.logIndex}`;
+  const kind = slot.recipientKind as RecipientKind;
+  const asset = lc(c.asset);
+  const amountUsd = await bookAccrual(context, t, { id, recipient, recipientKind: kind, asset, amount: c.amount, settled: true }, m, ethUsd, cfg.bootToken);
+  await context.db.insert(schema.feeCredit).values({
+    id,
+    token: t.id,
+    poolId,
+    slot: slot.slot,
+    recipient,
+    recipientKind: kind,
+    asset,
+    amount: c.amount,
+    amountUsd,
+    timestamp: m.timestamp,
+    blockNumber: m.blockNumber,
+    logIndex: m.logIndex,
+    txHash: m.txHash,
+  });
 }

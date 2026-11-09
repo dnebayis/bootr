@@ -3,6 +3,7 @@ import { getAddress, isAddress, type Address } from 'viem';
 
 import { DEFAULT_SNAPSHOT_INTERVAL, snapshotSources } from './blocks';
 import { corsPolicy, type CorsPolicy } from './cors';
+import type { LaunchSource } from './fees';
 
 /**
  * Indexer environment, shared by ponder.config.ts, the indexing functions and the API.
@@ -75,14 +76,33 @@ export const CLANKER_V4: Record<number, ClankerStack | null> = {
   84532: null,
 };
 
+/**
+ * Clanker v5 stack per chain (docs/design/clanker-v5-migration.md section 1, verified sources on Sourcify and the live
+ * factory read on 2026-11-10): the factory, the one shared `TaxLaunchHook` (every v5 pool's tax credits) and the
+ * `FeeEscrow` (every v5 claim). `startBlock` is the factory's creation block (53331374, 2026-11-03); the v5 sources
+ * start at the Clanker launchers' deploy block, never before this. Base mainnet only.
+ */
+export type ClankerV5Stack = { factory: Address; hook: Address; feeEscrow: Address; startBlock: number };
+export const CLANKER_V5: Record<number, ClankerV5Stack | null> = {
+  8453: {
+    // TaxRWAERC20LaunchpadFactory (Sourcify exact match): `launchCreationEnabled() == true`, `hook() == hook` below.
+    factory: '0x572e88D3cD7f23E4241EB6ceDD96667271bF09A0',
+    // TaxLaunchHook: `feeEscrow() == feeEscrow` below; emits CreatorTaxCredited / BurnTaxCredited per swap.
+    hook: '0x5E320eA6278107968C119942E57d876c5F922AcC',
+    // FeeEscrow: `hook() == hook`; `Claimed(recipient, currency, destination, amount)` on every payout.
+    feeEscrow: '0x5dd237d1f716C65426CCd2FAe82B95109825FA61',
+    startBlock: 53_331_374,
+  },
+  84532: null,
+};
+
 /** Deploy blocks of the Bootr launcher per chain (used when BOOTR_START_BLOCK is empty). */
 const BOOTR_DEPLOY_BLOCK: Record<number, number | null> = { 8453: null, 84532: 49_367_726 };
 
 /** One BootrLauncher deployment: checksummed address and the block it was created in. */
 export type LauncherEntry = { address: Address; startBlock: number };
 
-/** Which launch path a coin came through (`token.source`). */
-export type LaunchSource = 'bootr' | 'clanker';
+export type { LaunchSource };
 
 /**
  * Parses `BOOTR_LAUNCHERS` (or `BOOTR_CLANKER_LAUNCHERS`, `name`): comma-separated `address@startBlock` entries,
@@ -165,7 +185,11 @@ export function isClankerLauncher(env: Pick<IndexerEnv, 'clankerLaunchers'>, add
   return env.clankerLaunchers.some((l) => l.address.toLowerCase() === a);
 }
 
-/** The launch path of the launcher that emitted an event, by its address. */
+/**
+ * The launch path of the launcher that emitted an event, by its address. A Clanker launcher is `clanker` here
+ * whichever Clanker version it launches through: the `AgentLaunched` handler tells v4 from v5 by the launch event
+ * the receipt carries (`ClankerLaunched` or `ClankerV5Launched`).
+ */
 export function launchSourceOf(env: Pick<IndexerEnv, 'launchers' | 'clankerLaunchers'>, launcher: string): LaunchSource | null {
   if (isLauncher(env, launcher)) return 'bootr';
   if (isClankerLauncher(env, launcher)) return 'clanker';
@@ -200,12 +224,16 @@ export type IndexerEnv = {
   rwagmi: RwagmiStack | null;
   /** Clanker v4 factory / static hook / LP locker / fee locker (env overrides the defaults); null when none. */
   clanker: ClankerStack | null;
+  /** Clanker v5 factory / hook / fee escrow (env overrides the defaults); null when the chain has none. */
+  clankerV5: ClankerV5Stack | null;
   /** Start block of every Bootr source: the earliest launcher deploy block (`'latest'` when none is known). */
   startBlock: number | 'latest';
   /** Start block of the RWAGMI sources: the Bootr start block, never before the RWAGMI launcher's creation. */
   rwagmiStartBlock: number | 'latest';
-  /** Start block of the Clanker sources: the earliest Clanker launcher deploy block (`'latest'` = path off). */
+  /** Start block of the Clanker v4 sources: the earliest Clanker launcher deploy block (`'latest'` = path off). */
   clankerStartBlock: number | 'latest';
+  /** Start block of the Clanker v5 sources: the same, never before the v5 factory's creation. */
+  clankerV5StartBlock: number | 'latest';
   /** Start block of the sources shared by both paths (coins, PoolManager, guardian, reputation, snapshot). */
   anyStartBlock: number | 'latest';
   ethUsdFeed: Address;
@@ -255,6 +283,7 @@ export function indexerEnv(): IndexerEnv {
   const { launchers, startBlock } = resolveLaunchers(process.env, chainId, addresses.bootr.launcher);
   const { clankerLaunchers, clankerStartBlock } = resolveClankerLaunchers(process.env, launchers);
   const clanker = clankerStack(chainId);
+  const clankerV5 = clankerV5Stack(chainId);
   const interval = Number(str(process.env.INDEXER_SNAPSHOT_INTERVAL) || DEFAULT_SNAPSHOT_INTERVAL);
   cached = {
     chainId,
@@ -266,10 +295,12 @@ export function indexerEnv(): IndexerEnv {
     guardian: optAddress('BOOTR_GUARDIAN_ADDRESS') ?? addresses.bootr.guardian,
     rwagmi,
     clanker,
+    clankerV5,
     startBlock,
     rwagmiStartBlock: typeof startBlock === 'number' && rwagmi ? Math.max(startBlock, rwagmi.startBlock) : startBlock,
     clankerStartBlock: typeof clankerStartBlock === 'number' && clanker ? Math.max(clankerStartBlock, clanker.startBlock) : clankerStartBlock,
-    anyStartBlock: minBlock(launchers.length && rwagmi ? startBlock : 'latest', clankerLaunchers.length && clanker ? clankerStartBlock : 'latest'),
+    clankerV5StartBlock: typeof clankerStartBlock === 'number' && clankerV5 ? Math.max(clankerStartBlock, clankerV5.startBlock) : clankerStartBlock,
+    anyStartBlock: minBlock(launchers.length && rwagmi ? startBlock : 'latest', clankerLaunchers.length && (clanker || clankerV5) ? clankerStartBlock : 'latest'),
     ethUsdFeed: optAddress('CHAINLINK_ETH_USD_FEED') ?? CHAINLINK_ETH_USD[chainId]!,
     snapshotInterval: Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : DEFAULT_SNAPSHOT_INTERVAL,
     bootToken: optAddress('BOOT_TOKEN_ADDRESS'),
@@ -290,6 +321,16 @@ function rwagmiStack(chainId: number): RwagmiStack | null {
   const locker = optAddress('RWAGMI_LOCKER_V3_ADDRESS') ?? d?.locker ?? null;
   if (!launcher || !hook || !locker) return null;
   return { launcher, hook, locker, startBlock: d?.startBlock ?? 0 };
+}
+
+/** CLANKER_V5_{FACTORY,HOOK,FEE_ESCROW}_ADDRESS override the chain defaults; all three are needed. */
+function clankerV5Stack(chainId: number): ClankerV5Stack | null {
+  const d = CLANKER_V5[chainId] ?? null;
+  const factory = optAddress('CLANKER_V5_FACTORY_ADDRESS') ?? d?.factory ?? null;
+  const hook = optAddress('CLANKER_V5_HOOK_ADDRESS') ?? d?.hook ?? null;
+  const feeEscrow = optAddress('CLANKER_V5_FEE_ESCROW_ADDRESS') ?? d?.feeEscrow ?? null;
+  if (!factory || !hook || !feeEscrow) return null;
+  return { factory, hook, feeEscrow, startBlock: d?.startBlock ?? 0 };
 }
 
 /** CLANKER_{FACTORY,HOOK,LOCKER,FEE_LOCKER}_ADDRESS override the chain defaults; all four are needed. */
@@ -314,22 +355,26 @@ export function snapshotBlockSources(env: IndexerEnv = indexerEnv()) {
 
 /**
  * Which Ponder sources are registered (handlers check the same flags). The Bootr path needs a Bootr launcher and
- * the RWAGMI v3 stack it launches through; the Clanker path a Clanker launcher and the Clanker v4 stack. The
+ * the RWAGMI v3 stack it launches through; the Clanker path a Clanker launcher and the Clanker v4 stack (the v5
+ * hook and escrow sources join it when the chain has the v5 stack: one launcher list serves both versions). The
  * sources both paths share (coins, PoolManager, guardian, reputation) run when either path is on.
  */
 export function enabledSources(env: IndexerEnv = indexerEnv()) {
   const launcher = env.launchers.length > 0 && !!env.rwagmi;
   const clanker = env.clankerLaunchers.length > 0 && !!env.clanker;
-  const any = launcher || clanker;
+  const clankerV5 = env.clankerLaunchers.length > 0 && !!env.clankerV5;
+  const any = launcher || clanker || clankerV5;
   return {
     BootrLauncher: launcher,
     BuybackBurner: launcher,
     RwagmiLauncherV3: launcher,
     RwagmiLpLockerV3: launcher,
     RwagmiHookV3: launcher,
-    BootrClankerLauncher: clanker,
+    BootrClankerLauncher: clanker || clankerV5,
     ClankerLpLocker: clanker,
     ClankerFeeLocker: clanker,
+    ClankerV5Hook: clankerV5,
+    ClankerV5FeeEscrow: clankerV5,
     BootrToken: any,
     PoolManager: any,
     AgentGuardian: any && !!env.guardian,
