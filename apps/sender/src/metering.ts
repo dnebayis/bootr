@@ -4,7 +4,7 @@ import { actions, reads } from './db/schema.js';
 
 export const PRICE_USD = { post: 0.01, read: 0.005 } as const;
 
-export type ReadKind = 'mentions' | 'thread' | 'account' | 'timeline' | 'users_me' | 'metrics';
+export type ReadKind = 'mentions' | 'thread' | 'account' | 'timeline' | 'users_me' | 'metrics' | 'replies';
 
 const utcDay = (d: Date) => d.toISOString().slice(0, 10);
 

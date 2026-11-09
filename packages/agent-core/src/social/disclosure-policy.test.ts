@@ -27,6 +27,12 @@ describe('outgoingDisclosureRisk', () => {
     expect(outgoingDisclosureRisk('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc')).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk('add railway-verify=c8e42d39 to your DNS')).toBe('social_secret_material_forbidden');
     expect(outgoingDisclosureRisk('-----BEGIN PRIVATE KEY-----')).toBe('social_secret_material_forbidden');
+    // a transaction on the Base explorer is public by nature (a bounty payment's receipt); the hash anywhere else is not
+    expect(outgoingDisclosureRisk(`Paid 0.5 USDC for this entry. https://basescan.org/tx/0x${'ab'.repeat(32)}`)).toBeNull();
+    expect(outgoingDisclosureRisk(`Receipt: https://sepolia.basescan.org/tx/0x${'ab'.repeat(32)}`)).toBeNull();
+    expect(outgoingDisclosureRisk(`https://basescan.org/tx/0x${'ab'.repeat(32)} and 0x${'cd'.repeat(32)}`)).toBe('social_secret_material_forbidden');
+    expect(outgoingDisclosureRisk(`https://evil.example/tx/0x${'ab'.repeat(32)}`)).toBe('social_secret_material_forbidden');
+    expect(outgoingDisclosureRisk(`https://basescan.org/address/0x${'ab'.repeat(32)}`)).toBe('social_secret_material_forbidden');
   });
 
   it('rejects internal infrastructure references', () => {

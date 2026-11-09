@@ -97,6 +97,26 @@ export interface SenderTimeline {
   posts: SenderTimelinePost[];
 }
 
+/** `POST /internal/read/replies` item (apps/sender/src/replies.ts): one reply in a job post's conversation, a bounty entry as X carries it. */
+export interface SenderConversationReply {
+  id: string;
+  /** The reply text. Only code reads it, for the one `0x` address; it is never stored and never shown to a model. */
+  text: string;
+  authorId: string;
+  createdAt: string | null;
+  conversationId: string | null;
+  inReplyToId: string | null;
+  author: { id: string; username: string | null; createdAt: string | null; verified: boolean | null; verifiedType: string | null } | null;
+  urls: { url: string; expandedUrl: string }[];
+  media: { mediaKey: string; type: string | null; url: string | null; previewImageUrl: string | null }[];
+}
+
+export interface SenderConversationReplies {
+  items: SenderConversationReply[];
+  fetched: number;
+  truncated: boolean;
+}
+
 /** agent-core `replyEligibility` outcome for a mention, as the sender expects it. */
 export interface ReplyEligibility {
   eligible: boolean;
@@ -209,6 +229,14 @@ export class SenderClient {
    */
   readTimeline(agentId: string, username: string, max?: number) {
     return this.call<SenderTimeline>('POST', '/internal/read/timeline', { agentId, username, ...(max ? { max } : {}) });
+  }
+
+  /**
+   * `POST /internal/read/replies`: the replies in one conversation (a bounty job's entries, bounties.ts), with their
+   * authors, url entities and media, the agent's own posts left out; every post returned is a read unit of the agent's day.
+   */
+  readReplies(agentId: string, conversationId: string, max?: number) {
+    return this.call<SenderConversationReplies>('POST', '/internal/read/replies', { agentId, conversationId, ...(max ? { max } : {}) });
   }
 
   readAccount(agentId: string, username: string) {

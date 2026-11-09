@@ -183,7 +183,7 @@ describe('facts and section', () => {
 
   it('is empty for a coin agent or without a plan, and says whether a picture may be made', () => {
     const plan: WeeklyDigestPlan = { week: '2026-W45', slotAt: SUNDAY - 5 * 60_000, from: SUNDAY - 7 * D, to: SUNDAY, facts: digestFacts(busyWeek(), SUNDAY, KERNEL) };
-    const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false };
+    const caps = { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, services: false, bounties: false };
     const tools = [{ name: 'publish_post' }, { name: 'finish' }];
     expect(weeklyDigestSection({ platform: false, capabilities: caps }, plan, tools)).toEqual({});
     expect(weeklyDigestSection({ platform: true, capabilities: caps }, null, tools)).toEqual({});

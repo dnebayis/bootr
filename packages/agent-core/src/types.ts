@@ -33,7 +33,7 @@ export const ownerRuleSchema = z.object({
 });
 export type OwnerRule = z.infer<typeof ownerRuleSchema>;
 
-export const CAPABILITIES = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images', 'services'] as const;
+export const CAPABILITIES = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images', 'services', 'bounties'] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 export const capabilitiesSchema = z.object({
@@ -46,6 +46,12 @@ export const capabilitiesSchema = z.object({
   images: z.boolean().default(false),
   /** Paid services: `discover_services` and `x402_fetch` (pays any x402 endpoint from the agent's own float, under `services`). */
   services: z.boolean().default(false),
+  /**
+   * Bounties: `bounty_post`, `bounty_cancel` (the treasury turn) and `bounty_list` (both turns); the agent posts a
+   * small job in public, code collects the entries and the judge rules (apps/supervisor/src/bounties.ts; bounds under
+   * `bounties`). Stage A: the verdict is a proposal the creator pays by hand; nothing on chain.
+   */
+  bounties: z.boolean().default(false),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 
@@ -87,6 +93,45 @@ export function servicesHostAllowed(policy: Pick<ServicesPolicy, 'allow' | 'deny
   if (policy.allow.length === 0) return true;
   return policy.allow.some((p) => hostMatches(host, p));
 }
+
+/**
+ * The bounds of the `bounties` power (docs/design/agent-capabilities.md section 3.3; apps/supervisor/src/bounties.ts
+ * enforces them, the creator sets the policy in the console). Amounts are micro-USDC (6 dp). The ceilings are hard:
+ * the console cannot set more, and a job's amount, the day's reservations and the open jobs are checked in code before
+ * anything is posted. Stage A pays nothing itself; the creator pays a proposed verdict by hand.
+ */
+export const BOUNTY_MIN_AMOUNT_MICRO_USDC = 100_000;
+export const BOUNTY_MAX_AMOUNT_MICRO_USDC = 1_000_000;
+export const BOUNTY_DAILY_MAX_MICRO_USDC = 20_000_000;
+export const BOUNTY_DEFAULT_DAILY_MICRO_USDC = 5_000_000;
+export const BOUNTY_MAX_OPEN_CEILING = 5;
+export const BOUNTY_DEFAULT_MAX_OPEN = 2;
+export const BOUNTY_DEFAULT_COOLDOWN_SECONDS = 7 * 24 * 3600;
+export const BOUNTY_MAX_COOLDOWN_SECONDS = 365 * 24 * 3600;
+export const BOUNTY_MIN_HOURS_OPEN = 1;
+export const BOUNTY_MAX_HOURS_OPEN = 72;
+export const BOUNTY_DEFAULT_HOURS_OPEN = 6;
+/** Entries the judge sees at most (the first eligible ones by time). */
+export const BOUNTY_MAX_CONSIDERED = 12;
+/** A proposed verdict the creator does not act on within this long expires unpaid. */
+export const BOUNTY_PAY_GRACE_MS = 48 * 3_600_000;
+export const BOUNTY_MAX_CRITERIA = 4;
+export const BOUNTY_MAX_TASK_CHARS = 300;
+export const BOUNTY_MAX_CRITERION_CHARS = 300;
+/** Words a job text may not carry: a job asks for work, never for promotion (decision 15 of section 9). */
+export const BOUNTY_FORBIDDEN_WORDS: readonly string[] = ['buy', 'post', 'tweet', 'promote', 'shill', 'follow', 'like', 'retweet'];
+
+export const bountiesPolicySchema = z.object({
+  dailyCapMicroUsdc: z.number().int().min(0).max(BOUNTY_DAILY_MAX_MICRO_USDC).default(BOUNTY_DEFAULT_DAILY_MICRO_USDC),
+  maxOpen: z.number().int().min(0).max(BOUNTY_MAX_OPEN_CEILING).default(BOUNTY_DEFAULT_MAX_OPEN),
+  /** How long a paid address waits before it may win again; 0 allows repeats. */
+  cooldownSeconds: z.number().int().min(0).max(BOUNTY_MAX_COOLDOWN_SECONDS).default(BOUNTY_DEFAULT_COOLDOWN_SECONDS),
+  defaultHoursOpen: z.number().int().min(BOUNTY_MIN_HOURS_OPEN).max(BOUNTY_MAX_HOURS_OPEN).default(BOUNTY_DEFAULT_HOURS_OPEN),
+  /** Decision 16: every job text goes through the creator's approval queue before it is posted. */
+  review: z.boolean().default(false),
+});
+export type BountiesPolicy = z.infer<typeof bountiesPolicySchema>;
+export const DEFAULT_BOUNTIES_POLICY: BountiesPolicy = bountiesPolicySchema.parse({});
 
 /**
  * Economy mode: a turn starts on a cheaper `decideModel` (reading, deciding, memory and treasury work) and switches
@@ -151,6 +196,8 @@ export const agentConfigSchema = z
     capabilities: capabilitiesSchema.default({}),
     /** Bounds of the `services` power; absent = `DEFAULT_SERVICES_POLICY` (the power itself is `capabilities.services`). */
     services: servicesPolicySchema.optional(),
+    /** Bounds of the `bounties` power; absent = `DEFAULT_BOUNTIES_POLICY` (the power itself is `capabilities.bounties`). */
+    bounties: bountiesPolicySchema.optional(),
     /** Minimum spacing between original posts. */
     postIntervalMs: z.number().int().min(60_000).max(7 * 24 * 60 * 60 * 1000).default(DEFAULT_POST_INTERVAL_MS),
     /**
@@ -360,6 +407,21 @@ export const toolInputSchemas = {
       reason: text(200),
     })
     .strict(),
+  bounty_post: z
+    .object({
+      /** What you want made, in plain words; it is published as is inside a fixed template. */
+      task: text(BOUNTY_MAX_TASK_CHARS),
+      /** 1 to 4 acceptance criteria the judge marks pass or fail, as written here. */
+      criteria: z.array(text(BOUNTY_MAX_CRITERION_CHARS)).min(1).max(BOUNTY_MAX_CRITERIA),
+      deliverable: z.enum(['image', 'link']),
+      /** 0.1 to 1 USDC, at most two decimals. */
+      amountUsdc: z.number().min(0.1).max(1),
+      /** 1 to 72 hours; your policy's default when absent. */
+      hoursOpen: z.number().int().min(BOUNTY_MIN_HOURS_OPEN).max(BOUNTY_MAX_HOURS_OPEN).optional(),
+    })
+    .strict(),
+  bounty_cancel: z.object({ jobId: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'expected a job id') }).strict(),
+  bounty_list: z.object({}).strict(),
 } as const;
 
 export type ToolName = keyof typeof toolInputSchemas;

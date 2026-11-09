@@ -162,9 +162,19 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    entries' artefacts. Off for every agent until the `trade` or `bounties` power exists, or the owner sets
    `treasuryTurn: true` on an agent's config through the console route to trial it. `trade_quote`, `bounty_post` and
    `bounty_cancel` are named seams for items 3 and 6; the judge has no caller until item 3.
-3. **Bounties stage A** (supervisor, web; about a week; no contract): the platform agent posts jobs, replies are
-   collected by code, the judge rules, the verdict lands in the approval queue and the owner pays by hand for two
-   weeks. Decisions 1, 2, 5, 10, 15, 16 of section 9.
+3. **Bounties stage A** (no contract): the platform agent posts jobs, replies are collected by code, the judge rules,
+   the verdict lands in the approval queue and the owner pays by hand for two weeks. Decisions 1, 2, 5, 10, 15, 16 of
+   section 9. **Server side done 2026-11-10** (branch `bounties-stage-a-2026-11-10`): the `bounties` power and its
+   policy block (`packages/agent-core/src/types.ts`, `packages/shared/src/workers.ts`), the tools `bounty_post`,
+   `bounty_cancel`, `bounty_list` (`packages/agent-core/src/tools.ts`), a BOUNTIES block in the treasury prompt
+   (`prompt/system-prompt.ts`; the social prompt is unchanged), `apps/supervisor/src/bounties.ts` (the template, the
+   caps, the task rules, the review and slot waits, the entry rules, the artefact fetches, the judge call, the
+   proposal, the expiry, the public views, the tape rows), migration `0010_bounties` (`sv_bounty_jobs`,
+   `sv_bounty_entries`; take the backup step before deploying it), the sender's `POST /internal/read/replies`
+   (`apps/sender/src/replies.ts`), the HMAC reads `GET /internal/agents/:id/bounties[/:jobId]` and the
+   `bounty_payout` approval that takes the creator's `txHash`. Tests `apps/supervisor/test/bounties.test.ts`,
+   `apps/sender/test/replies.test.ts`. **Web side follows**: the console switch and the `bounties` caps, the job card
+   on the coin page at `#bounty-<shortId>`, the payout item in the review queue with a tx-hash field.
 4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
 5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
    (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator

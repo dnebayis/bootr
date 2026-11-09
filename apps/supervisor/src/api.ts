@@ -4,6 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
+import { bountyJobViews } from './bounties.js';
 import { configView, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
 import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -240,7 +241,35 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     return c.json(await listApprovals(ctx, agent, status));
   });
 
-  /** Body `{decision: 'approve'|'reject', by, note?}`; approve sends the post now, reject tells the agent next turn. */
+  // ---- Bounties (bounties.ts): what the coin page shows of the agent's jobs. Never an author id, a reply's text or an
+  // ineligible entry's address; the payee appears once a verdict named it (the proposal) and with the paying tx once paid.
+
+  /** `?limit=20` (max 100): the agent's jobs, newest first, with entry counts, the verdict and the payment. */
+  app.get('/internal/agents/:id/bounties', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const limitRaw = c.req.query('limit');
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    if (limit !== undefined && !Number.isFinite(limit)) return c.json({ error: 'invalid_limit' }, 400);
+    return c.json({ jobs: await bountyJobViews(ctx, agent, { ...(limit !== undefined ? { limit } : {}) }) });
+  });
+
+  /** One job by its full id, or by the 16-hex prefix the job post's link and the page anchor carry (`#bounty-<shortId>`). */
+  app.get('/internal/agents/:id/bounties/:jobId', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const jobId = c.req.param('jobId');
+    if (!/^0x(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{16})$/.test(jobId)) return c.json({ error: 'invalid_job_id' }, 400);
+    const [job] = await bountyJobViews(ctx, agent, { jobId });
+    if (!job) return c.json({ error: 'not_found' }, 404);
+    return c.json({ job });
+  });
+
+  /**
+   * Body `{decision: 'approve'|'reject', by, note?, txHash?}`; approve sends the post now, reject tells the agent next
+   * turn. A `bounty_payout` item needs `txHash` (the creator's paying transaction) to be approved; a `bounty_job` item
+   * is posted on approval (bounties.ts).
+   */
   app.post('/internal/agents/:id/approvals/:approvalId', async (c) => {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
     if (!agent) return c.json({ error: 'not_found' }, 404);

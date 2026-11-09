@@ -27,6 +27,7 @@ import { weeklyDigestWake } from './weekly-digest.js';
 import { SenderError, type SenderInboxItem } from './sender-client.js';
 import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, type AgentChainState } from './treasury.js';
 import { openServiceCalls, reconcileServiceCall } from './services.js';
+import { bountyConversationIds, sweepBounties } from './bounties.js';
 
 export { SLEEP_USDC };
 
@@ -69,6 +70,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await sweepImages(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'image retention sweep failed');
+  }
+  // Bounties: drafts whose wait is over, jobs whose window closed (collect, judge, propose), proposals past their grace (bounties.ts).
+  try {
+    await sweepBounties(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'bounty sweep failed');
   }
 
   // Awake runtimes by `nextAt`. Sleeping ones are not among them: a sleeping agent never moves its `nextAt`, so ten
@@ -259,7 +266,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     }
     // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).
     const directory = await agentDirectory(ctx);
-    const views = inboxViews(config, inbox, now, directory);
+    // Replies to the agent's open bounty jobs are entries, not mentions (bounties.ts): no wake is bought for them.
+    const bountyConversations = inbox.length ? await bountyConversationIds(ctx, agent.agentId).catch(() => new Set<string>()) : new Set<string>();
+    const views = inboxViews(config, inbox, now, directory, bountyConversations);
     // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
@@ -334,7 +343,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;
-      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest, numbers }, lease);
+      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest, numbers, bountyConversations }, lease);
     } catch (err) {
       const failures = (runtime.failures ?? 0) + 1;
       const { interruptionPlan } = await import('@bootr/agent-core');

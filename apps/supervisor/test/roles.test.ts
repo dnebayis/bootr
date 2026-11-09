@@ -75,7 +75,18 @@ describe('tools per role', () => {
     expect(social).toContain('publish_post');
     // the deployment's own gaps still apply (no search key in tests)
     expect(social).not.toContain('search_web');
-    expect(social).toEqual(TOOL_LIST.map((t) => t.name).filter((n) => n !== 'search_web' && n !== 'generate_image' && n !== 'discover_services' && n !== 'x402_fetch').sort());
+    // the bounty tools exist only with the bounties power (off here)
+    expect(social).toEqual(TOOL_LIST.map((t) => t.name).filter((n) => n !== 'search_web' && n !== 'generate_image' && n !== 'discover_services' && n !== 'x402_fetch' && !n.startsWith('bounty_')).sort());
+  });
+
+  it('with the bounties power on, the social turn gets bounty_list alone and the treasury turn posts and cancels', () => {
+    const on = agentConfig(T0, { capabilities: { ...(agentConfig(T0).capabilities as object), bounties: true } });
+    const social = roleTools(ctx, parseAgentConfig(on), on, 'social').map((t) => t.name);
+    expect(social).toContain('bounty_list');
+    expect(social).not.toContain('bounty_post');
+    expect(social).not.toContain('bounty_cancel');
+    const treasury = roleTools(ctx, parseAgentConfig(on), on, 'treasury').map((t) => t.name).sort();
+    expect(treasury).toEqual([...TREASURY_TOOLS, 'bounty_cancel', 'bounty_list', 'bounty_post'].sort());
   });
 
   it('takes the money tools from the social turn while the treasury turn is on and keeps treasury_read', () => {
@@ -91,9 +102,12 @@ describe('tools per role', () => {
     expect(names('treasury', agentConfig(T0))).toEqual(TREASURY_TOOLS);
     expect(names('treasury', agentConfig(T0, { treasuryTurn: true }))).toEqual(TREASURY_TOOLS);
     expect(names('judge', agentConfig(T0, { treasuryTurn: true }))).toEqual([]);
-    for (const seam of ['trade_quote', 'bounty_post', 'bounty_cancel']) {
-      expect(TREASURY_TURN_TOOLS).toContain(seam);
-      expect(TOOL_LIST.map((t) => t.name)).not.toContain(seam);
+    // trade_quote is the one seam left; the bounty tools are real catalog tools now (stage A) and this role's own
+    expect(TREASURY_TURN_TOOLS).toContain('trade_quote');
+    expect(TOOL_LIST.map((t) => t.name)).not.toContain('trade_quote');
+    for (const real of ['bounty_post', 'bounty_cancel', 'bounty_list']) {
+      expect(TREASURY_TURN_TOOLS).toContain(real);
+      expect(TOOL_LIST.map((t) => t.name)).toContain(real);
     }
     // an owner rule that pauses the public channel does not touch the treasury list
     const paused = parseAgentConfig(agentConfig(T0, { ownerRules: [{ id: 'public-channel-paused', text: 'quiet', enabled: true }] }));

@@ -35,6 +35,8 @@ import { serviceCalls } from '../db/schema.js';
 import { generateImage, loadImage, mediaFor, WITHOUT_PICTURE } from '../images.js';
 import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
+import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
+import { bountyJobs } from '../db/schema.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -94,12 +96,17 @@ export function publicAddressesOf(config: AgentConfig): string[] {
 /**
  * Inbox items as the model sees them, with agent-core's reply eligibility. With a `directory`, messages from other
  * Bootr agents are marked and their authors may be answered without a verified badge (the conversation caps in
- * agent-directory.ts bound the exchange).
+ * agent-directory.ts bound the exchange). With `bountyConversations` (the conversations of the agent's open bounty
+ * jobs, bounties.ts), a reply in one of them is an entry, not a mention: ineligible with reason `bounty_entry`, whatever
+ * else is true of it, so no turn answers it and no wake is bought for it.
  */
-export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number, directory?: AgentDirectory | null): InboxView[] {
+export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number, directory?: AgentDirectory | null, bountyConversations?: ReadonlySet<string> | null): InboxView[] {
   const peers = directory ? directory.entries.filter((e) => e.agentId !== config.agentId && e.xUserId !== config.xUserId) : [];
   const replyAuthorIds = peers.length ? [...new Set([...config.replyAuthorIds, ...peers.map((e) => e.xUserId)])] : config.replyAuthorIds;
   return items.map((item) => {
+    if (bountyConversations?.has(item.conversationId)) {
+      return { postId: item.postId, authorId: item.authorId, conversationId: item.conversationId, eligible: false, reason: BOUNTY_ENTRY_REASON, post: item.post, observedAt: item.observedAt };
+    }
     const e = replyEligibility(item.post, {
       ownUserId: config.xUserId,
       ownHandle: config.xHandle,
@@ -398,6 +405,13 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (res.kind === 'unknown') return { kind: 'unknown', error: res.error };
       return failed(res.error);
     }
+    case 'bounty_post':
+      // Keyed by the action id: a resumed step finds its job (bounties.ts). The treasury turn alone holds this tool (roles.ts).
+      return bountyPost(ctx, agent, config, pending.id, action.input);
+    case 'bounty_cancel':
+      return bountyCancel(ctx, agent, config, action.input);
+    case 'bounty_list':
+      return bountyList(ctx, agent, config);
     case 'generate_image': {
       // The messages received this turn: a picture is never made because somebody asked for one (image-rules.ts).
       const receivedTexts = [...env.inbox.values()].map((item) => (typeof item.post?.text === 'string' ? item.post.text : ''));
@@ -546,6 +560,13 @@ export async function resolvePending(ctx: SupervisorContext, agent: AgentRow, pe
     if (res.kind === 'completed') return { resolved: true, outcome: { kind: 'completed', result: res.result, ...(row.txHash ? { receipt: { txHash: row.txHash } } : {}) }, ...(row.txHash ? { receipt: { txHash: row.txHash } } : {}) };
     if (res.kind === 'failed') return { resolved: true, outcome: { kind: 'failed', error: res.error } };
     return { resolved: false, reason: res.error };
+  }
+  if (tool === 'bounty_post') {
+    // The job row keyed by the action id says what became of the post; a draft or an open job is a completed action.
+    const job = await ctx.db.query.bountyJobs.findFirst({ where: and(eq(bountyJobs.actionId, pending.id), eq(bountyJobs.agentId, agent.agentId)) });
+    if (!job) return { resolved: true, outcome: { kind: 'failed', error: 'bounty_job_not_found: nothing was posted' } };
+    const outcome = outcomeOfJob(job);
+    return outcome.kind === 'unknown' ? { resolved: false, reason: outcome.error } : { resolved: true, outcome, ...(outcome.kind === 'completed' && outcome.receipt ? { receipt: outcome.receipt } : {}) };
   }
   if (tool === 'treasury_execute') {
     const opId = (pending.action as Action & { tool: 'treasury_execute' }).input.preparedId;

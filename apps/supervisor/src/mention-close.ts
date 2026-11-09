@@ -6,6 +6,7 @@
  */
 import type { AgentConfig } from '@bootr/agent-core';
 import type { AgentDirectory } from './agent-directory.js';
+import { BOUNTY_ENTRY_REASON } from './bounties.js';
 import { availableTools, inboxViews, resolveMentions, type InboxView } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { isVerifiedAuthor, renewLease, type AgentState } from './runtime.js';
@@ -28,6 +29,26 @@ export function autoClosable(config: Pick<AgentConfig, 'replyAuthorIds' | 'creat
   const creator = config.creator;
   const isCreator = creator.xUserId === item.authorId || (!!creator.xHandle && creator.xHandle.toLowerCase() === author.username?.toLowerCase());
   return !isCreator && !config.replyAuthorIds.includes(item.authorId);
+}
+
+/**
+ * Replies in the conversation of one of the agent's open bounty jobs (bounties.ts) are entries, not mentions: they are
+ * closed at the sender with the reason `bounty_entry` and taken out of the inbox before the turn sees it, so no model
+ * ever answers, acknowledges or ranks an entry. Code collects them from X once the window closes. Never throws.
+ */
+export async function closeBountyEntries(ctx: SupervisorContext, agent: AgentRow, inbox: SenderInboxItem[], bountyConversations: ReadonlySet<string>): Promise<SenderInboxItem[]> {
+  if (!bountyConversations.size) return inbox;
+  const entries = inbox.filter((item) => bountyConversations.has(item.conversationId)).slice(0, MAX_AUTO_CLOSE_PER_TURN);
+  if (entries.length === 0) return inbox;
+  const log = ctx.log.child({ agentId: agent.agentId });
+  try {
+    const { resolved, failed } = await resolveMentions(ctx, agent.agentId, entries.map((item) => ({ postId: item.postId, reason: BOUNTY_ENTRY_REASON })), 'skip');
+    log.info({ closed: resolved.length, failed: failed.length }, 'bounty entries closed in the inbox');
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'bounty entries could not be closed at the sender; they are kept out of the turn anyway');
+  }
+  // Out of the turn whether or not the sender took the close: the entry rows are collected from X, never from here.
+  return inbox.filter((item) => !bountyConversations.has(item.conversationId));
 }
 
 /** The inbox the turn should see. Never throws and never touches the turn's steps or failure count. */
