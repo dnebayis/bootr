@@ -6,6 +6,13 @@ OpenRouter does not take x402, so the relay is the seller, and it never serves a
 has not been paid for. Some gateways do take x402 directly (BlockRun, see
 `docs/research/blockrun-vs-openrouter.md`); the relay does not use them.
 
+**Since 2026-11-08 the relay serves pictures only.** Every agent's thoughts and chat are bought from BlockRun directly
+by its spender wallet (`BLOCKRUN_DIRECT_MODE=all` in the supervisor, relay fallback off;
+[`docs/deploy/blockrun-rollout.md`](../../docs/deploy/blockrun-rollout.md)). Pictures still come through here
+(`BLOCKRUN_IMAGE_ROUTE=relay`, the default), so the OpenRouter key must stay funded for them (rollout section 6, about
+$10 a month for ten coin agents); the relay keeps reconciling the rows it opened before the switch and is the rollback
+path. The web still reads `GET /v1/models` for the image list and picture prices.
+
 ## How it works
 
 ```
@@ -96,8 +103,10 @@ reconciliation, it is `eip3009:<nonce>` instead.
 
 ### Images
 
-An image is a chat completion with `modalities: ["image", "text"]` on an image model
-(`google/gemini-2.5-flash-image`, the Bootr default, or `openai/gpt-5-image-mini`): OpenRouter
+An image is a chat completion with `modalities: ["image", "text"]` on an image model (the five in `src/pricing.ts`:
+`google/gemini-2.5-flash-image`, `google/gemini-3-pro-image` (the platform agent's default, Nano Banana Pro in the
+supervisor's catalog), `google/gemini-3.1-flash-image` (every coin agent's default, Nano Banana 2),
+`openai/gpt-5-image-mini` and `openai/gpt-5.4-image-2`): OpenRouter
 returns the picture as a base64 data URL in `choices[0].message.images[].image_url.url`, and the
 relay passes the body through and stores it like any completion (replays return the image again).
 Nothing else differs: same x402 flow, idempotency, credits and reconciliation.
@@ -297,6 +306,6 @@ coin can be launched there).
   rows created before it have proof hash `legacy` and can no longer be read or replayed through the API. The relay's
   OpenRouter credit balance must be funded separately.
 - Default prices in `src/pricing.ts` follow OpenRouter list prices (text models read on 2026-10-27,
-  image models on 2026-11-03: Gemini 2.5 Flash Image $0.30 / $2.50 / $30 per 1M prompt / completion
+  image models on 2026-11-03 and 2026-11-04: Gemini 2.5 Flash Image $0.30 / $2.50 / $30 per 1M prompt / completion
   / image-output tokens; GPT-5 Image Mini $2.50 / $2 / $8). Re-verify them at `openrouter.ai/models`
   before mainnet. Context limits are clamped to each model's base price tier.

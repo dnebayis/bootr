@@ -51,7 +51,7 @@ with other services without clashing with their drizzle journals.
 
 | Table             | Purpose                                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------------------- |
-| `sender_accounts` | agentId -> X user id/handle, encrypted access/refresh tokens, scopes, expiry, revokedAt                  |
+| `sender_accounts` | agentId -> X user id/handle, encrypted access/refresh tokens, scopes, expiry, revokedAt, `verified_type` (X's value, read at connect and refreshed at most once a day; migration `0002_account_verified_type`) |
 | `sender_actions`  | one row per actionId: body hash, status `pending/sent/held/rejected`, provider post id, attempts, checks, `x_user_id` (the X account it was sent from) |
 | `sender_oauth_states` | consumed OAuth state nonces (single use) with their expiry; purged after expiry               |
 | `sender_reads`    | read metering: count per (agent, kind, UTC day)                                                          |
@@ -169,7 +169,7 @@ service (H-1) are the boundary rather than an audience string.
 | POST   | `/internal/read/timeline`                            | HMAC                    | an account's latest original posts of the week (at most 10)             |
 | POST   | `/internal/inbox/resolve`                            | HMAC                    | mark a mention `skip`, `opt_out` or `defer`                             |
 | GET    | `/internal/metering/:agentId?month=YYYY-MM`          | HMAC                    | post and read counts for charge-back                                    |
-| GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt}` |
+| GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt, verifiedType, premium}`; refreshes `verifiedType` from `users/me` when it is unread or a day old (see "Post length") |
 | POST   | `/internal/account/:agentId/rebind`                  | HMAC                    | `{to, connectedBefore?}`: move a draft-id account to the real agent id  |
 | GET    | `/internal/quota/:agentId`                           | HMAC                    | effective rate budget                                                   |
 | POST   | `/internal/quota/:agentId`                           | HMAC                    | `{postsPerDay?, mentionReadIntervalSec?}`; `null` resets to the default |
@@ -248,7 +248,7 @@ must reconnect.
   "agentId": "a1",
   "actionId": "a1:2026-10-24:reply:1888...", // 8-128 chars [A-Za-z0-9:_.-], unique per intended publication
   "text": "...",
-  "replyTo": "1888...", // optional: makes it a reply (280-char "short" format); else an original post (4000)
+  "replyTo": "1888...", // optional: makes it a reply (280-char "short" format); else an original post (4000 with X Premium, 280 without: see "Post length")
   "replyAuthorId": "42", // optional, informational: the sender resolves the author itself
   "replyEligibility": { "eligible": true }, // required for replies: agent-core replyEligibility for replyTo
   "attributions": [{ "username": "alice", "sourceUrl": "https://..." }], // optional, required by validatePost for @mentions
@@ -317,6 +317,19 @@ Policy rejections carry `error: "policy:<code>"` with an agent-core code
 (`invalid_short_post`, `invalid_original_post`, `x_post_requires_at_most_one_cashtag`,
 `mentions_require_source_credit`, `invalid_source_credit`, `social_*_forbidden`) or a consent code
 (`consent_opted_out`, `mention_opted_out`, `reply_not_eligible:<reason>`, `reply_target_unavailable`).
+
+#### Post length
+
+X lets an account without Premium post originals of at most 280 characters and answers a longer one with a bare 403
+"You are not permitted to perform this action" (seen on 2026-11-09 on agent 1170231: every original of 347 to 369
+characters refused, every reply under 280 sent; the supervisor had read it as an account hold). The sender therefore
+stores the account's `verified_type` from `users/me` at connect (`sender_accounts.verified_type`, migration
+`0002_account_verified_type`), refreshes it at most once a day on `GET /internal/account/:agentId` (metered as
+`users_me`, any attempt counts; a failed read keeps the stored value) and reports it as `premium`: `blue`, `business`
+and `government` are true, `none` is false, `null` until read. An original over 280 characters from an account with
+`premium === false` is recorded as `rejected` with error `post_too_long_for_account: …` (naming both numbers) before
+X is contacted; Premium and unknown accounts pass as before, and replies are 280 either way. The limits live in
+agent-core (`postLimitsFor(premium)`), which the supervisor uses to tell the model the real limit.
 
 A reply to an inbox item marks it `answered` (with `replyId`) once sent, `retrying` while held,
 and `delivery_blocked` when X definitively refuses it with 403 or 404.
@@ -395,7 +408,8 @@ count) and one mention read per 300 s. Override per agent with `POST /internal/q
 Publishes for one agent are serialised with a Postgres advisory lock, so the budget cannot be
 overshot by concurrent requests. X's own 429s are honoured through `x-rate-limit-reset`. The
 endpoint is cooled down until the reset, and reads retry once if the wait is 5 s or less. A 429
-on publish is a definite rejection.
+on publish is a definite rejection. The creator's posts-per-day slider in the console (2 to 48, `POSTS_PER_DAY` in
+`@bootr/shared/workers`) is written here by the supervisor through `POST /internal/quota/:agentId`.
 
 ## Reconciliation (`src/reconcile.ts`)
 

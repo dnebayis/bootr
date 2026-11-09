@@ -10,6 +10,15 @@
 > (C-01), and `addresses.ts` has the mainnet ZeroDev modules, ERC-8004 registries and Bootr contracts (the `null`
 > mainnet entries mentioned under "Open questions" are filled). Session keys installed before this release keep the
 > Clanker-era rule layout until they are rotated.
+>
+> **Status update (2026-11-08).** M-04: `read_url` and the agent card read bodies under a byte cap through
+> `@bootr/shared/public-fetch` (host check on every hop); the DNS-rebinding pin and the provenance flag on recalled
+> notes are still open. M-07: every stored or logged error text goes through `rpcErrorText` and the logger scrubs every
+> field (`fixes-2026-11-08.md` item 8). L-07: every server-side chain client refuses CCIP-Read (`ccipRead: false`, item
+> 1); the per-turn cap on `read_chain` is still open. C-03 and H-02: unchanged in code; the removal plan is
+> [`key-inventory-2026-11-08.md`](./key-inventory-2026-11-08.md) section 3 (step 3 takes the admin key off the server).
+> The owner's decision of 2026-11-08 to make the coming Trade and Payouts contracts upgradeable by the admin wallet
+> (`docs/design/agent-capabilities.md` section 4) makes that step matter more.
 
 - Scope: `apps/supervisor` (session-key construction, onboarding, kernel client, treasury, inference, broker, runtime, tick, web reader, admin API, HMAC, admin signer, entrypoint helpers), `packages/agent-core` (tools, types, prompt, broker, checkpoint, eligibility), `apps/inference/src/client/x402-payer.ts` plus the relay side it talks to (`apps/inference/src/{app,x402,reconcile,request}.ts`), `packages/shared/src/addresses.ts`, and the on-chain modules the supervisor depends on (`packages/contracts/src/{AgentGuardian,BootrCallPolicy}.sol`, `packages/contracts/src/README.md`).
 - Reviewed at commit `f0b2f4c` (branch `main`), 2026-10-27. Static review only; no code was changed, no keys were read. While this review was being written the working tree gained uncommitted changes (X-account draft-id onboarding in `onboarding.ts`, `sender-client.ts`, `abi.ts`, `db/schema.ts`, and sender/web files); they touch the X-connect flow, not the session-key, treasury or inference paths, and were not reviewed.
@@ -153,6 +162,7 @@ Severity reflects impact under the stated threat model (host or key compromise i
 
 #### M-04 — `read_url` is subject to DNS rebinding and has minor private-range gaps; recalled notes are not marked untrusted
 
+- **Status (2026-11-08): Partly fixed.** Bodies are read under a byte cap by a streaming reader (`@bootr/shared/public-fetch`: 1 MB for `read_url`, 256 KB for the agent card) with the public-host check on every redirect hop (`fixes-2026-11-08.md` item 3). The resolved-address pin and the `untrusted` flag on recalled notes are still open.
 - Location: `apps/supervisor/src/web-reader.ts` (`assertPublicHost` resolves, then `doFetch(current.toString())` resolves again; `isPrivateIp` v6 list), `apps/supervisor/src/memories.ts`, `apps/supervisor/src/broker/index.ts` (`recall` result has no `untrusted` flag; `read_url`/`search_web` do).
 - Description: (1) The host is resolved once for the check and again by undici for the fetch (TOCTOU). An attacker-controlled domain with a 0-TTL record answering public first and `169.254.169.254` / `10.x` second reaches internal metadata or services (the supervisor runs where the RPC/bundler/paymaster/DB credentials live). (2) `isPrivateIp` misses NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16` embedding a private v4), `::ffff:` in uppercase/compressed forms are handled but Teredo (`2001::/32`) and unique local in uppercase (`FC`/`FD` are lower-cased, fine). (3) Content read from the web can be stored verbatim with `remember` and comes back in every observation (`recentNotes`) and `recall` without any provenance flag, which turns a one-time injection into a persistent one.
 - Attack path: injected `read_url` to `https://rebind.attacker.tld/` -> second resolution hits `169.254.169.254` (cloud metadata) or an internal admin UI; 4,000 chars of the response return to the model and, via `remember`, persist.
@@ -225,6 +235,7 @@ Severity reflects impact under the stated threat model (host or key compromise i
 
 #### L-07 — `read_chain contract_call` and `read_market` accept arbitrary targets
 
+- **Status (2026-11-08): Partly fixed.** The supervisor's chain client passes `ccipRead: false`, so a contract reverting with `OffchainLookup` can no longer make it fetch URLs (`fixes-2026-11-08.md` item 1), and every tool call has a ceiling (`TOOL_READ_TIMEOUT_MS` 60 s, item 2). The per-turn cap and stripping revert data from the error text are still open.
 - Location: `apps/supervisor/src/broker/index.ts` (`readChain`: any `view`/`pure` call on any address through the supervisor's RPC key; `read_market` any token).
 - Impact: RPC quota consumption (8 steps per turn, 1 turn/min minimum), and view calls into attacker contracts that revert with crafted data that reaches the model as `error` text (another injection channel). No funds at risk.
 - Fix: cap `read_chain` per turn, strip revert data from errors returned to the model, and keep the RPC key for the supervisor separate from the indexer's (already recommended in `.env.example`).

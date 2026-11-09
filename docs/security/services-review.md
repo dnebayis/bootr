@@ -4,6 +4,13 @@ Scope: `apps/sender`, `apps/web` (admin console, SIWE, `app/api/**`, `app/agents
 
 Reviewed at commit `f0b2f4c` (2026-10-27), before the move to the RWAGMI v3 launcher on 2026-10-29. This was a code review only. No source files were changed. The root `.env` was not read. The findings concern the services, not the launch backend, and are kept as written; one fact moved: the sender now has the read-only `GET /public/posts/:agentId` route that finding I-1 listed as missing (the web reads it through its own `/api/agents/:id/posts` proxy). TODO(verify): the status of each other finding was not re-checked in this pass.
 
+**Status (2026-11-08):** the fixes of that day are in [`fixes-2026-11-08.md`](./fixes-2026-11-08.md): M-6 gained rate
+limits on `POST /api/launch/draft` (20 a minute per IP) and `POST /api/agent/nonce` (30), a bound on the draft store and
+a daily X read budget per agent in the sender (items 5 and 7); L-5's `/sql/*` route is gone (item 6); every server-side
+viem client refuses CCIP-Read (item 1); bodies are read under a cap (item 3). H-1 moved on: the web now also holds
+`SUPERVISOR_SERVICE_KEY` for the coin page's agent routes, and the key inventory
+([`key-inventory-2026-11-08.md`](./key-inventory-2026-11-08.md), step 2) proposes a read-mostly key for it.
+
 Evidence gathered:
 
 - Existing suites pass: sender 41/41, inference 47/47.
@@ -244,6 +251,8 @@ Make the start signature single-use (store the `ts`/`state` pair) with a ~60 s l
 ### M-6. No body-size limits or rate limits on public endpoints
 
 **Status (2026-10-27):** Partly fixed: body limits (relay 1 MB, sender `/internal` 256 KB and `/oauth` 8 KB, admin POST 64 KB) and HMAC header/timestamp pre-check before the body is read. No rate limits, zod collection caps or verify-failure cache; indexer not in scope.
+
+**Status (2026-11-08):** rate limits on the web's draft and nonce routes and a daily X read budget per agent in the sender ([`fixes-2026-11-08.md`](./fixes-2026-11-08.md) items 5 and 7). The relay and the indexer still have no per-client rate limit.
 
 **Description.** Neither Hono service sets a body limit:
 
