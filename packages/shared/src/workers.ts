@@ -132,7 +132,7 @@ export function workerTemplateByHash(hash: string | undefined | null): WorkerTem
 // ------------------------------------------------------------------------------------------ custom workers
 
 /** Every agent-core capability a worker preset can name, in canonical order. */
-export const CAPABILITY_KEYS = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images', 'services'] as const;
+export const CAPABILITY_KEYS = ['xRead', 'xReply', 'xPublish', 'research', 'memory', 'treasury', 'images', 'services', 'bounties'] as const;
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
 
 /** Switched on for every agent: the fee -> fuel loop needs the treasury, and an agent without memory repeats itself. */
@@ -146,6 +146,7 @@ export const CAPABILITIES: Record<CapabilityKey, { label: string; description: s
   research: { label: 'Web research', description: 'Searches the web and reads pages before it speaks.' },
   images: { label: 'Images', description: 'Makes images for its posts, paid from its fuel like a thought.' },
   services: { label: 'Paid services', description: 'Buys data and tools from paid web services with its fuel, within the caps you set. Each payment shows on the coin page.' },
+  bounties: { label: 'Bounties', description: 'Posts small jobs on X and picks the best entry; it pays small bounties for work it asks for, 0.1 to 1 USDC a job. Every job shows on the coin page.' },
   memory: { label: 'Memory', description: 'Keeps notes between cycles so it does not repeat itself.', alwaysOn: true },
   treasury: { label: 'Treasury', description: 'Claims its fees, keeps gas and refuels itself.', alwaysOn: true },
 };

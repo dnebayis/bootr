@@ -8,12 +8,14 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
 import { DEFAULT_IMAGE_MODEL } from './models';
-import { SERVICES_DEFAULTS } from './types';
+import { BOUNTIES_DEFAULTS, SERVICES_DEFAULTS } from './types';
 import type {
   Agent,
   AgentActivityItem,
   AgentApproval,
   AgentApprovals,
+  AgentBounties,
+  BountyJob,
   AgentChat,
   AgentChatMessage,
   AgentNotification,
@@ -120,6 +122,8 @@ interface Store {
   activity: Map<string, AgentActivityItem[]>;
   /** The review queue per kernel (post approval mode), built lazily like the config. */
   approvals: Map<string, AgentApproval[]>;
+  /** The jobs the agent posted with the Bounties power, per kernel, built lazily like the config. */
+  bounties: Map<string, BountyJob[]>;
   /** The creator's inbox per kernel, built lazily like the config. */
   inboxes: Map<string, MockInbox>;
   /** The creator's chat per kernel. */
@@ -408,7 +412,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), links, images: new Map(), fresh };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), bounties: new Map(), links, images: new Map(), fresh };
 }
 
 export function mockStore(): Store {
@@ -850,6 +854,13 @@ export const mock = {
         fields.push('paid services caps');
       }
     }
+    if (changes.bounties) {
+      const next = { ...cfg.bounties, ...changes.bounties };
+      if (JSON.stringify(next) !== JSON.stringify(cfg.bounties)) {
+        cfg.bounties = next;
+        fields.push('bounties bounds');
+      }
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -927,10 +938,11 @@ export const mock = {
    * Decides one queued item the way the supervisor would: approve "sends" it (a post row with a link lands on the
    * tape), reject marks it with the note. 404 unknown, 409 already decided.
    */
-  decideApproval(kernel: string, approvalId: string, decision: ApprovalDecision, by: string, note: string | null): { ok: true; approval: AgentApproval } | { ok: false; status: number; error: string; message: string } {
+  decideApproval(kernel: string, approvalId: string, decision: ApprovalDecision, by: string, note: string | null, txHash: string | null = null): { ok: true; approval: AgentApproval } | { ok: false; status: number; error: string; message: string } {
     const item = approvalsFor(kernel).find((a) => a.id === approvalId);
     if (!item) return { ok: false, status: 404, error: 'not_found', message: 'No such item.' };
     if (item.status !== 'pending_approval') return { ok: false, status: 409, error: 'already_decided', message: `This item is ${item.status}.` };
+    if (item.kind === 'bounty_payment' && decision === 'approve' && !txHash) return { ok: false, status: 400, error: 'tx_required', message: 'A bounty payment is approved with the hash of your paying transaction.' };
     const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
     const at = new Date().toISOString();
     item.decision = decision;
@@ -938,6 +950,26 @@ export const mock = {
     item.decidedAt = at;
     item.note = note;
     delete item.image?.dataUrl;
+    if (item.kind === 'bounty_payment' && item.bounty) {
+      // The job the payment belongs to closes the way the supervisor would close it: paid with the creator's transaction, or
+      // cancelled when the creator refuses to pay. Both land on the tape.
+      const job = bountiesFor(kernel).find((j) => j.id === item.bounty!.jobId);
+      const amount = (Number(item.bounty.amountMicroUsdc) / 1e6).toFixed(2);
+      if (decision === 'approve') {
+        item.status = 'approved';
+        if (job) job.status = 'paid';
+        if (job) job.payment = { payee: item.bounty.payee, amountMicroUsdc: item.bounty.amountMicroUsdc, txHash: txHash!.toLowerCase() as Hex, replyUrl: null, paidAt: at };
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty paid: ${amount} USDC to ${item.bounty.payee.slice(0, 6)}…${item.bounty.payee.slice(-4)} for "${item.text}", by the creator.`, txHash: txHash!.toLowerCase() as Hex });
+      } else {
+        item.status = 'rejected';
+        if (job) job.status = 'cancelled';
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty not paid: the creator declined the ${amount} USDC payment for "${item.text}".` });
+      }
+      const tape = activityFor(kernel);
+      const idx = tape.findIndex((row) => row.kind === 'approval_pending' && row.at === item.createdAt);
+      if (idx >= 0) tape.splice(idx, 1);
+      return { ok: true, approval: clone(item) };
+    }
     const noun = item.kind === 'reply' ? 'Reply' : 'Post';
     if (decision === 'approve') {
       item.status = 'approved';
@@ -973,6 +1005,15 @@ export const mock = {
     const cutoff = opts.before ? Date.parse(opts.before) : NaN;
     const list = activityFor(kernel).filter((it) => !Number.isFinite(cutoff) || Date.parse(it.at) < cutoff);
     return clone({ items: list.slice(0, opts.limit) });
+  },
+  /** The jobs the agent posted (lib/types AgentBounties), jobs in motion first then newest first; none for most coins. */
+  agentBounties(kernel: string): AgentBounties {
+    return clone({ jobs: bountiesFor(kernel) });
+  },
+  /** One job by id (lower-case hex); null when the agent has no such job. */
+  agentBounty(kernel: string, jobId: string): BountyJob | null {
+    const job = bountiesFor(kernel).find((j) => j.id === jobId.toLowerCase());
+    return job ? clone(job) : null;
   },
   /** Posts by ERC-8004 agent id; null for an id the mock store does not know. */
   postsByAgentId(agentId: string): { handle: string | null; items: AgentPost[] } | null {
@@ -1010,7 +1051,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     creator: t.creator,
     model: t.model,
     instructions,
-    worker: { kind, capabilities: { services: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    worker: { kind, capabilities: { services: false, bounties: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
     postsPerDay: POSTS_PER_DAY.default,
     requireApproval: true,
@@ -1019,6 +1060,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     // the supervisor reads the coin picture from the agent card at onboarding
     imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
+    bounties: { ...BOUNTIES_DEFAULTS },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
@@ -1035,7 +1077,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     creator: '0x0000000000000000000000000000000000000000',
     model: MODELS[0]!,
     instructions: DEFAULT_INSTRUCTIONS,
-    worker: { kind: template.id, capabilities: { services: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
+    worker: { kind: template.id, capabilities: { services: false, bounties: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: template.hash,
     postsPerDay: POSTS_PER_DAY.default,
     requireApproval: false,
@@ -1043,6 +1085,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     imageModel: DEFAULT_IMAGE_MODEL,
     imageStyle: { reference: null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
+    bounties: { ...BOUNTIES_DEFAULTS },
     revision: 0,
     updatedAt: new Date().toISOString(),
     xHold: null,
@@ -1087,6 +1130,13 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
     if (a.status === 'pending_approval') items.push({ at: a.createdAt, kind: 'approval_pending', summary: `A ${a.kind} is waiting for the creator's review` });
     else if (a.status === 'approved' && a.decidedAt) items.push({ at: a.decidedAt, kind: 'approval_approved', summary: `${a.kind === 'reply' ? 'Reply' : 'Post'} approved by the creator`, ...(a.url ? { url: a.url } : {}) });
   }
+  // The bounties, in plain words: the post, the verdict, the payment (the creator's, in stage A).
+  for (const j of buildBounties(t)) {
+    const amount = `${(Number(j.amountMicroUsdc) / 1e6).toFixed(2)} USDC`;
+    items.push({ at: j.postedAt, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${j.task}"`, ...(j.xPostUrl ? { url: j.xPostUrl } : {}) });
+    if (j.verdict) items.push({ at: j.verdict.judgedAt, kind: 'bounty', summary: j.verdict.winnerEntry ? `Bounty judged: entry ${j.verdict.winnerEntry} of ${j.entries.considered} met the job. ${j.verdict.reason}` : 'Bounty closed: no entry met the job; nothing paid.', ...(j.verdict.winnerReplyUrl ? { url: j.verdict.winnerReplyUrl } : {}) });
+    if (j.payment?.paidAt) items.push({ at: j.payment.paidAt, kind: 'bounty', summary: `Bounty paid: ${amount} to ${j.payment.payee.slice(0, 6)}…${j.payment.payee.slice(-4)}, by the creator.`, ...(j.payment.txHash ? { txHash: j.payment.txHash } : {}) });
+  }
   if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
   items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` });
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -1119,12 +1169,123 @@ function buildApprovals(t: Token): AgentApproval[] {
   const expiry = (ageS: number) => new Date(now - ageS * 1000 + 48 * 3_600_000).toISOString();
   const n = parseInt(t.agentId, 10) || 0;
   const postId = (k: number) => String(1850000000000000000n + BigInt(n) * 10n + BigInt(k));
-  const base = { decision: null, decidedBy: null, note: null, url: null, decidedAt: null } as const;
-  return [
+  const base = { bounty: null, decision: null, decidedBy: null, note: null, url: null, decidedAt: null } as const;
+  const items: AgentApproval[] = [
     { id: `act_${n}q2`, kind: 'post', text: `Week in numbers for $${t.symbol}: ${t.holders} holders, ${usdShort(t.volume24hUsd)} traded in the last day, fees claimed on schedule. No predictions, just the ledger.`, inReplyTo: null, image: { alt: `A dot-matrix chart of $${t.symbol} holders over the week`, dataUrl: MOCK_IMAGE_SVG }, status: 'pending_approval', ...base, createdAt: at(900), expiresAt: expiry(900) },
     { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
-    { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800) },
+    { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800), bounty: null },
   ];
+  // The job whose payment waits for the creator (stage A of Bounties: the creator pays from their own wallet).
+  const proposed = buildBounties(t).find((j) => j.status === 'proposed');
+  if (proposed?.verdict) {
+    const createdAt = proposed.verdict.judgedAt;
+    items.unshift({
+      id: `act_${n}b1`,
+      kind: 'bounty_payment',
+      text: proposed.task,
+      bounty: { jobId: proposed.id, amountMicroUsdc: proposed.amountMicroUsdc, payee: BOUNTY_PAYEE, reason: proposed.verdict.reason, entryReplyUrl: proposed.verdict.winnerReplyUrl },
+      inReplyTo: null,
+      image: null,
+      status: 'pending_approval',
+      decision: null,
+      decidedBy: null,
+      note: null,
+      url: null,
+      createdAt,
+      decidedAt: null,
+      expiresAt: new Date(Date.parse(createdAt) + 48 * 3_600_000).toISOString(),
+    });
+  }
+  return items;
+}
+
+/** The address the mock's winning entries carry: a fixed stranger, so the console's copy button and Basescan link have something real-looking. */
+const BOUNTY_PAYEE = '0x7a1e4c3b9d2f8e6a5c4b3a2918f7e6d5c4b3a291' as Address;
+
+/**
+ * The jobs of the one mock coin whose agent runs Bounties (the newest, $OWL): one open, one with a payment proposed to the
+ * creator (its approval is in the review queue), one paid and one closed with no winner. Every other coin has none.
+ */
+function buildBounties(t: Token): BountyJob[] {
+  if (t.symbol !== 'OWL' || isFresh(t.kernel)) return [];
+  const now = Date.now();
+  const at = (ageS: number) => new Date(now - ageS * 1000).toISOString();
+  const r = mulberry32((parseInt(t.kernel.slice(-8), 16) ^ 0xb0b0) >>> 0);
+  const id = () => hex(r, 32).toLowerCase();
+  const n = parseInt(t.agentId, 10) || 0;
+  const postUrl = (k: number) => (t.xHandle ? `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(n) * 10n + BigInt(k))}` : null);
+  const entryUrl = (k: number) => `https://x.com/entrant${k}/status/${String(1851000000000000000n + BigInt(n) * 10n + BigInt(k))}`;
+  const H = 3600;
+  return [
+    {
+      id: id(),
+      postedAt: at(2 * H),
+      task: `A picture of an owl reading a ledger, in the style of the $${t.symbol} coin image.`,
+      criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No words on the picture'],
+      deliverable: 'image',
+      amountMicroUsdc: '500000',
+      closesAt: at(-4 * H),
+      status: 'open',
+      xPostUrl: postUrl(21),
+      entries: { received: 0, eligible: 0, considered: 0, ineligible: {} },
+      verdict: null,
+      payment: null,
+    },
+    {
+      id: id(),
+      postedAt: at(30 * H),
+      task: 'A public page, in your own words, that explains how this coin’s swap fee is split and who can claim each share.',
+      criteria: ['Names all four shares', 'Says the split is locked at launch', 'Links the coin page or Basescan as its source'],
+      deliverable: 'link',
+      amountMicroUsdc: '400000',
+      closesAt: at(24 * H),
+      status: 'proposed',
+      xPostUrl: postUrl(22),
+      entries: { received: 5, eligible: 3, considered: 3, ineligible: { no_address: 1, young_account: 1 } },
+      verdict: { winnerEntry: 1, winnerReplyUrl: entryUrl(1), perCriterion: { '1': ['pass', 'pass', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'pass', 'insufficient_evidence'] }, reason: 'A short page that names the four shares, says the split is fixed at launch and links the coin page.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(23 * H) },
+      payment: null,
+    },
+    {
+      id: id(),
+      postedAt: at(3 * 86400),
+      task: 'A picture of the coin’s mascot owl at a night desk, for the agent’s next recap post.',
+      criteria: ['An owl at a desk', 'It is night', 'No words on the picture'],
+      deliverable: 'image',
+      amountMicroUsdc: '500000',
+      closesAt: at(3 * 86400 - 6 * H),
+      status: 'paid',
+      xPostUrl: postUrl(23),
+      entries: { received: 7, eligible: 4, considered: 4, ineligible: { no_address: 2, duplicate_media: 1 } },
+      verdict: { winnerEntry: 2, winnerReplyUrl: entryUrl(2), perCriterion: { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'pass'], '3': ['fail', 'pass', 'pass'], '4': ['pass', 'pass', 'fail'] }, reason: 'An owl at a desk lit by one lamp, night sky in the window, no words.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(3 * 86400 - 6 * H - 300) },
+      payment: { payee: BOUNTY_PAYEE, amountMicroUsdc: '500000', txHash: hex(r, 32).toLowerCase() as Hex, replyUrl: postUrl(24), paidAt: at(3 * 86400 - 8 * H) },
+    },
+    {
+      id: id(),
+      postedAt: at(5 * 86400),
+      task: 'A picture of an owl counting coins on a scale.',
+      criteria: ['An owl is in the picture', 'A scale with coins is in the picture', 'No words on the picture'],
+      deliverable: 'image',
+      amountMicroUsdc: '300000',
+      closesAt: at(5 * 86400 - 6 * H),
+      status: 'no_winner',
+      xPostUrl: postUrl(25),
+      entries: { received: 4, eligible: 2, considered: 2, ineligible: { no_address: 1, repeat_author: 1 } },
+      verdict: { winnerEntry: null, winnerReplyUrl: null, perCriterion: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'insufficient_evidence', 'fail'] }, reason: 'Neither picture shows both an owl and a scale without words.', deliveryHash: hex(r, 32).toLowerCase() as Hex, judgedAt: at(5 * 86400 - 6 * H - 300) },
+      payment: null,
+    },
+  ];
+}
+
+function bountiesFor(kernel: string): BountyJob[] {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let list = s.bounties.get(key);
+  if (!list) {
+    const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
+    list = t ? buildBounties(t) : [];
+    s.bounties.set(key, list);
+  }
+  return list;
 }
 
 const MOCK_EVENTS: readonly { key: string; label: string }[] = [

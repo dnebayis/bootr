@@ -9,7 +9,7 @@
 import { isImageModel } from '@bootr/agent-core';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type BountyJob, type BountyPaymentRequest, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -164,6 +164,24 @@ function servicesPolicy(raw: unknown): AgentServicesPolicy {
   return { perCallMicroUsdc: microUsdc(s.perCallMicroUsdc, SERVICES_PER_CALL_MAX_MICRO_USDC, SERVICES_DEFAULTS.perCallMicroUsdc), dailyMicroUsdc: microUsdc(s.dailyMicroUsdc, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS.dailyMicroUsdc), allow: hostList(s.allow), deny: hostList(s.deny) };
 }
 
+/** A whole number from `min` to `max`, else the fallback. */
+function whole(raw: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
+/** The bounties bounds as the console shows them: defaults for anything missing or out of bounds. */
+function bountiesPolicy(raw: unknown): AgentBountiesPolicy {
+  const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    dailyCapMicroUsdc: whole(b.dailyCapMicroUsdc, 0, BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc, BOUNTIES_DEFAULTS.dailyCapMicroUsdc),
+    maxOpen: whole(b.maxOpen, 0, BOUNTIES_BOUNDS.maxOpenMax, BOUNTIES_DEFAULTS.maxOpen),
+    cooldownSeconds: whole(b.cooldownSeconds, 0, BOUNTIES_BOUNDS.cooldownMaxSeconds, BOUNTIES_DEFAULTS.cooldownSeconds),
+    defaultHoursOpen: whole(b.defaultHoursOpen, BOUNTIES_BOUNDS.hoursOpenMin, BOUNTIES_BOUNDS.hoursOpenMax, BOUNTIES_DEFAULTS.defaultHoursOpen),
+    review: b.review === true,
+  };
+}
+
 function imageStyle(raw: unknown): AgentImageStyle {
   const s = (raw && typeof raw === 'object' ? raw : {}) as { reference?: unknown; notes?: unknown };
   return { reference: httpsUrl(s.reference), notes: str(s.notes, IMAGE_NOTES_MAX) ?? '' };
@@ -209,6 +227,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     imageModel: str(o.imageModel, 120) ?? '',
     imageStyle: imageStyle(o.imageStyle),
     services: servicesPolicy(o.services),
+    bounties: bountiesPolicy(o.bounties),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
     xHold: sanitizeXHold(o.xHold),
@@ -239,15 +258,44 @@ const IMAGE_MIME_RE = /^image\/(png|jpeg|webp|gif)$/;
 /** The largest picture the queue embeds (base64; X takes 5 MB, the relay caps lower). */
 const IMAGE_DATA_MAX = 8_000_000;
 
-/** One queue item as the console renders it; null when it is not an approval. Image bytes become a data URL. */
+/** A decimal string of micro-USDC (as the supervisor sends amounts), from a string or a whole number; null otherwise. */
+function microUsdcString(v: unknown): string | null {
+  if (typeof v === 'string' && /^\d{1,18}$/.test(v)) return v;
+  if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return String(v);
+  return null;
+}
+
+/** The judge's reason as the gate lets it through: plain text of at most 200 characters, no address, no link. */
+const REASON_MAX = 200;
+
+/**
+ * The payment a `bounty_payment` approval proposes (the contract of docs/design/agent-capabilities.md section 3.3,
+ * stage A), read from the item's `bounty` block or from the item itself; null when the payee or the amount is missing.
+ */
+function bountyPayment(o: Record<string, unknown>): BountyPaymentRequest | null {
+  const b = (o.bounty && typeof o.bounty === 'object' ? o.bounty : o) as Record<string, unknown>;
+  const jobId = typeof b.jobId === 'string' && HASH_RE.test(b.jobId) ? b.jobId : null;
+  const payee = typeof b.payee === 'string' && ADDRESS_RE.test(b.payee) ? (b.payee as Address) : null;
+  const amount = microUsdcString(b.amountMicroUsdc);
+  if (!jobId || !payee || !amount) return null;
+  return { jobId, amountMicroUsdc: amount, payee, reason: str(b.reason, REASON_MAX) ?? '', entryReplyUrl: typeof b.entryReplyUrl === 'string' && /^https:\/\/[^\s]{1,300}$/.test(b.entryReplyUrl) ? b.entryReplyUrl : null };
+}
+
+/**
+ * One queue item as the console renders it; null when it is not an approval. Image bytes become a data URL. A
+ * `bounty_payment` carries the proposed payment in `bounty` and the job's task in `text` (`task` is read as an alias),
+ * and is dropped when the payment block is malformed: the console must never show a payment it cannot describe.
+ */
 export function sanitizeApproval(raw: unknown): AgentApproval | null {
   const o = (raw ?? {}) as Record<string, unknown>;
   const id = str(o.id, 120);
-  const kind = o.kind === 'reply' ? 'reply' : o.kind === 'post' ? 'post' : null;
-  const text = str(o.text, 8000);
+  const kind = o.kind === 'reply' ? 'reply' : o.kind === 'post' ? 'post' : o.kind === 'bounty_payment' ? 'bounty_payment' : null;
+  const text = kind === 'bounty_payment' ? (str(o.text, 8000) ?? str(o.task, 8000) ?? '') : str(o.text, 8000);
   const status = APPROVAL_STATUSES.includes(o.status as AgentApproval['status']) ? (o.status as AgentApproval['status']) : null;
   const createdAt = iso(o.createdAt);
   if (!id || !kind || text === null || !status || !createdAt) return null;
+  const bounty = kind === 'bounty_payment' ? bountyPayment(o) : null;
+  if (kind === 'bounty_payment' && !bounty) return null;
   let image: AgentApproval['image'] = null;
   if (o.image && typeof o.image === 'object') {
     const im = o.image as { alt?: unknown; mime?: unknown; data?: unknown };
@@ -261,6 +309,7 @@ export function sanitizeApproval(raw: unknown): AgentApproval | null {
     id,
     kind,
     text,
+    bounty,
     inReplyTo: str(o.inReplyTo, 40),
     image,
     status,
@@ -283,6 +332,121 @@ export function sanitizeApprovals(raw: unknown): AgentApprovals {
   }
   const n = Number(o.pending);
   return { items, pending: Number.isFinite(n) && n >= 0 ? Math.round(n) : items.filter((i) => i.status === 'pending_approval').length };
+}
+
+// ------------------------------------------------------------------ bounties
+
+const BOUNTY_STATUSES: readonly BountyStatus[] = ['open', 'judging', 'proposed', 'paid', 'no_winner', 'cancelled', 'expired', 'failed'];
+const CRITERION_MARKS: readonly CriterionMark[] = ['pass', 'fail', 'insufficient_evidence'];
+const X_URL_RE = /^https:\/\/(x|twitter)\.com\/[^\s]{1,280}$/;
+/** The longest job text and criterion the console and the page show. */
+const TASK_MAX = 600;
+const CRITERION_MAX = 240;
+const CRITERIA_MAX = 4;
+/** Reasons an entry was not judged, by name: bounded so a hostile row cannot grow the page. */
+const INELIGIBLE_REASONS_MAX = 12;
+
+/**
+ * One job as the public page shows it (the contract of docs/design/agent-capabilities.md section 3.3); null when the
+ * row is not a job. Only the fields named here pass: an author id, a reply text, an entry address or any other field
+ * the supervisor might add is dropped, the payee is kept only on the payment block and only when it is an address, and
+ * the hashes must be 32-byte hex. Strings are capped; the criteria at four of 240 characters.
+ */
+export function sanitizeBountyJob(raw: unknown): BountyJob | null {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const id = typeof o.id === 'string' && HASH_RE.test(o.id) ? o.id.toLowerCase() : null;
+  const postedAt = iso(o.postedAt);
+  const closesAt = iso(o.closesAt);
+  const task = str(o.task, TASK_MAX);
+  const amount = microUsdcString(o.amountMicroUsdc);
+  const status = BOUNTY_STATUSES.includes(o.status as BountyStatus) ? (o.status as BountyStatus) : null;
+  const deliverable = o.deliverable === 'image' || o.deliverable === 'link' ? o.deliverable : null;
+  if (!id || !postedAt || !closesAt || !task || !amount || !status || !deliverable) return null;
+  const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, CRITERION_MAX)).filter((c): c is string => !!c).slice(0, CRITERIA_MAX);
+  const e = (o.entries && typeof o.entries === 'object' ? o.entries : {}) as Record<string, unknown>;
+  const ineligible: Record<string, number> = {};
+  for (const [reason, n] of Object.entries((e.ineligible && typeof e.ineligible === 'object' ? e.ineligible : {}) as Record<string, unknown>).slice(0, INELIGIBLE_REASONS_MAX)) {
+    if (/^[\w ]{1,40}$/.test(reason) && Number.isInteger(n) && (n as number) > 0) ineligible[reason] = n as number;
+  }
+  const entries = { received: whole(e.received, 0, 1_000_000, 0), eligible: whole(e.eligible, 0, 1_000_000, 0), considered: whole(e.considered, 0, 12, 0), ineligible };
+
+  let verdict: BountyJob['verdict'] = null;
+  if (o.verdict && typeof o.verdict === 'object') {
+    const v = o.verdict as Record<string, unknown>;
+    const judgedAt = iso(v.judgedAt);
+    const deliveryHash = typeof v.deliveryHash === 'string' && HASH_RE.test(v.deliveryHash) ? (v.deliveryHash.toLowerCase() as Hex) : null;
+    if (judgedAt && deliveryHash) {
+      const winnerEntry = Number.isInteger(v.winnerEntry) && (v.winnerEntry as number) >= 1 && (v.winnerEntry as number) <= 12 ? (v.winnerEntry as number) : null;
+      const perCriterion: Record<string, CriterionMark[]> = {};
+      for (const [entry, marks] of Object.entries((v.perCriterion && typeof v.perCriterion === 'object' ? v.perCriterion : {}) as Record<string, unknown>).slice(0, 12)) {
+        if (!/^\d{1,2}$/.test(entry) || !Array.isArray(marks)) continue;
+        perCriterion[entry] = marks.slice(0, CRITERIA_MAX).map((m) => (CRITERION_MARKS.includes(m as CriterionMark) ? (m as CriterionMark) : 'insufficient_evidence'));
+      }
+      const invalid = str(v.invalid, 200);
+      verdict = {
+        winnerEntry,
+        winnerReplyUrl: typeof v.winnerReplyUrl === 'string' && X_URL_RE.test(v.winnerReplyUrl) ? v.winnerReplyUrl : null,
+        perCriterion,
+        reason: str(v.reason, REASON_MAX) ?? '',
+        deliveryHash,
+        judgedAt,
+        ...(invalid ? { invalid } : {}),
+      };
+    }
+  }
+
+  let payment: BountyJob['payment'] = null;
+  if (o.payment && typeof o.payment === 'object') {
+    const p = o.payment as Record<string, unknown>;
+    const payee = typeof p.payee === 'string' && ADDRESS_RE.test(p.payee) ? (p.payee as Address) : null;
+    const paid = microUsdcString(p.amountMicroUsdc);
+    if (payee && paid) {
+      payment = {
+        payee,
+        amountMicroUsdc: paid,
+        txHash: typeof p.txHash === 'string' && HASH_RE.test(p.txHash) ? (p.txHash.toLowerCase() as Hex) : null,
+        replyUrl: typeof p.replyUrl === 'string' && X_URL_RE.test(p.replyUrl) ? p.replyUrl : null,
+        paidAt: iso(p.paidAt),
+      };
+    }
+  }
+
+  return { id, postedAt, task, criteria, deliverable, amountMicroUsdc: amount, closesAt, status, xPostUrl: typeof o.xPostUrl === 'string' && X_URL_RE.test(o.xPostUrl) ? o.xPostUrl : null, entries, verdict, payment };
+}
+
+/** The job list as the page shows it: open jobs first, then newest first; rows that are not jobs are dropped. */
+export function sanitizeBounties(raw: unknown): AgentBounties {
+  const o = (raw ?? {}) as { jobs?: unknown };
+  const jobs = (Array.isArray(o.jobs) ? o.jobs : []).map(sanitizeBountyJob).filter((j): j is BountyJob => j !== null);
+  return { jobs: sortBounties(jobs) };
+}
+
+const OPEN_STATUSES: readonly BountyStatus[] = ['open', 'judging', 'proposed'];
+
+/** Jobs still in motion (open, judging, a payment proposed) first, then the rest, each group newest first. */
+export function sortBounties(jobs: BountyJob[]): BountyJob[] {
+  const rank = (j: BountyJob) => (OPEN_STATUSES.includes(j.status) ? 0 : 1);
+  return [...jobs].sort((a, b) => rank(a) - rank(b) || Date.parse(b.postedAt) - Date.parse(a.postedAt));
+}
+
+/** A 32-byte transaction hash as the creator pastes it, lower-cased; null for anything else. */
+export function txHashOf(v: unknown): Hex | null {
+  return typeof v === 'string' && HASH_RE.test(v.trim()) ? (v.trim().toLowerCase() as Hex) : null;
+}
+
+/**
+ * The body of `POST /internal/agents/:id/approvals/:approvalId`: `{decision: 'approve', by, txHash?}` or
+ * `{decision: 'reject', by, note?}`. A bounty payment is approved with the creator's paying transaction hash, which the
+ * console never sends itself; a post approval has no hash. A note goes with a rejection only; a malformed hash is refused.
+ */
+export function approvalDecisionBody(input: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string }): { decision: ApprovalDecision; by: Address; note?: string; txHash?: Hex } {
+  if (input.decision === 'approve') {
+    if (input.txHash === undefined) return { decision: 'approve', by: input.by };
+    const txHash = txHashOf(input.txHash);
+    if (!txHash) throw new SupervisorError(400, 'invalid_request', 'The transaction hash is 0x followed by 64 hex characters.');
+    return { decision: 'approve', by: input.by, txHash };
+  }
+  return { decision: 'reject', by: input.by, ...(input.note ? { note: input.note } : {}) };
 }
 
 // ------------------------------------------------------------------ calls
@@ -333,13 +497,32 @@ export async function getAgentApprovals(agentId: string, status: 'pending' | 'al
   return sanitizeApprovals(await res.json());
 }
 
-/** `POST /internal/agents/:id/approvals/:approvalId {decision, by, note?}`; the decided item, or a SupervisorError (400/403/404/409/503). */
-export async function decideAgentApproval(agentId: string, approvalId: string, body: { decision: ApprovalDecision; by: Address; note?: string }): Promise<AgentApproval> {
-  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/approvals/${encodeURIComponent(approvalId)}`, body);
+/**
+ * `POST /internal/agents/:id/approvals/:approvalId {decision, by, note?} | {decision: 'approve', by, txHash}`; the decided
+ * item, or a SupervisorError (400/403/404/409/503). `txHash` is the creator's paying transaction for a bounty payment.
+ */
+export async function decideAgentApproval(agentId: string, approvalId: string, body: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string }): Promise<AgentApproval> {
+  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/approvals/${encodeURIComponent(approvalId)}`, approvalDecisionBody(body));
   if (!res.ok) throw await errorOf(res);
   const item = sanitizeApproval(await res.json());
   if (!item) throw new SupervisorUnavailable('supervisor returned a malformed approval');
   return item;
+}
+
+/** `GET /internal/agents/:id/bounties` → `{jobs}`: every job the agent posted, open ones first. Unknown agent = none. */
+export async function getAgentBounties(agentId: string): Promise<AgentBounties> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/bounties`);
+  if (res.status === 404) return { jobs: [] };
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeBounties(await res.json());
+}
+
+/** `GET /internal/agents/:id/bounties/:jobId` → one job; null when the agent or the job is unknown. */
+export async function getAgentBounty(agentId: string, jobId: string): Promise<BountyJob | null> {
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/bounties/${encodeURIComponent(jobId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw await errorOf(res);
+  return sanitizeBountyJob(await res.json());
 }
 
 const NOTIFICATION_TONES: readonly AgentNotification['tone'][] = ['info', 'warning', 'danger'];
@@ -487,13 +670,46 @@ function cleanText(v: unknown): string | null {
 /**
  * The `changes` a creator may send: instructions (20–600 plain chars), a model id, worker fields inside
  * WORKER_BOUNDS, the post review switch, an image model id and the image style (an https reference or null, notes
- * of at most IMAGE_NOTES_MAX plain characters). Unknown keys are dropped, always-on powers cannot be switched off.
- * Returns the error to show.
+ * of at most IMAGE_NOTES_MAX plain characters), the paid services caps and the bounties bounds (each inside
+ * BOUNTIES_BOUNDS). Unknown keys are dropped, always-on powers cannot be switched off. Returns the error to show.
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.bounties !== undefined) {
+    if (!o.bounties || typeof o.bounties !== 'object' || Array.isArray(o.bounties)) return { ok: false, field: 'bounties', message: 'bounties must be an object' };
+    const b = o.bounties as Partial<Record<keyof AgentBountiesPolicy, unknown>>;
+    const out: Partial<AgentBountiesPolicy> = {};
+    const bound = (key: keyof AgentBountiesPolicy, min: number, max: number, message: string): { ok: false; message: string; field: string } | null => {
+      const n = Number(b[key]);
+      if (!Number.isInteger(n) || n < min || n > max) return { ok: false, field: `bounties.${key}`, message };
+      (out as Record<string, number>)[key] = n;
+      return null;
+    };
+    if (b.dailyCapMicroUsdc !== undefined) {
+      const err = bound('dailyCapMicroUsdc', 0, BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc, `The daily cap is a whole number of micro-USDC from 0 to ${BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc} (${BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc / 1e6} USDC).`);
+      if (err) return err;
+    }
+    if (b.maxOpen !== undefined) {
+      const err = bound('maxOpen', 0, BOUNTIES_BOUNDS.maxOpenMax, `Open jobs at a time is a whole number from 0 to ${BOUNTIES_BOUNDS.maxOpenMax}.`);
+      if (err) return err;
+    }
+    if (b.cooldownSeconds !== undefined) {
+      const err = bound('cooldownSeconds', 0, BOUNTIES_BOUNDS.cooldownMaxSeconds, `The cooldown is a whole number of seconds from 0 (repeats allowed) to ${BOUNTIES_BOUNDS.cooldownMaxSeconds} (a year).`);
+      if (err) return err;
+    }
+    if (b.defaultHoursOpen !== undefined) {
+      const err = bound('defaultHoursOpen', BOUNTIES_BOUNDS.hoursOpenMin, BOUNTIES_BOUNDS.hoursOpenMax, `The default window is a whole number of hours from ${BOUNTIES_BOUNDS.hoursOpenMin} to ${BOUNTIES_BOUNDS.hoursOpenMax}.`);
+      if (err) return err;
+    }
+    if (b.review !== undefined) {
+      if (typeof b.review !== 'boolean') return { ok: false, field: 'bounties.review', message: 'bounties.review must be true or false' };
+      out.review = b.review;
+    }
+    if (!Object.keys(out).length) return { ok: false, field: 'bounties', message: 'Nothing to change.' };
+    changes.bounties = out;
+  }
   if (o.services !== undefined) {
     if (!o.services || typeof o.services !== 'object' || Array.isArray(o.services)) return { ok: false, field: 'services', message: 'services must be an object' };
     const s = o.services as Partial<Record<keyof AgentServicesPolicy, unknown>>;

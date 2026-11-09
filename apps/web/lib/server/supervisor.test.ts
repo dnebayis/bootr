@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, validateChanges } from './supervisor';
+import { approvalDecisionBody, sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeBounties, sanitizeBountyJob, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, sortBounties, txHashOf, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -113,7 +113,7 @@ describe('sanitizeConfig', () => {
       updatedAt: 1_700_000_000,
     });
     expect(cfg).toMatchObject({ agentId: '42', model: 'openai/gpt-4.1-mini', revision: 3, worker: { kind: 'custom', postIntervalMs: 3_600_000, jobLines: ['a'] } });
-    expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false, services: false });
+    expect(cfg!.worker.capabilities).toEqual({ xRead: true, xReply: false, xPublish: false, research: false, memory: true, treasury: true, images: false, services: false, bounties: false });
     // services caps: defaults for anything missing or out of bounds, host patterns lower-cased, junk dropped
     expect(cfg!.services).toEqual({ perCallMicroUsdc: 50_000, dailyMicroUsdc: 1_000_000, allow: [], deny: [] });
     expect(sanitizeConfig({ ...{ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } }, services: { perCallMicroUsdc: 20_000, dailyMicroUsdc: 9e9, allow: ['API.Example.com', '*.data.example', 'bad host', 7], deny: [] } })!.services).toEqual({ perCallMicroUsdc: 20_000, dailyMicroUsdc: 1_000_000, allow: ['api.example.com', '*.data.example'], deny: [] });
@@ -258,5 +258,109 @@ describe('sanitizeApprovals', () => {
     expect(a.items[1]!.expiresAt).toBe('2026-11-05T09:00:00.000Z');
     expect(sanitizeApproval(null)).toBeNull();
     expect(sanitizeApprovals(null)).toEqual({ items: [], pending: 0 });
+  });
+});
+
+describe('sanitizeBounties', () => {
+  const JOB = '0x' + 'ab'.repeat(32);
+  const HASH = '0x' + 'cd'.repeat(32);
+  const PAYEE = '0x3333333333333333333333333333333333333333';
+  const job = {
+    id: JOB,
+    postedAt: '2026-11-09T10:00:00.000Z',
+    task: 'A picture of an owl reading a ledger.',
+    criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No text on the picture'],
+    deliverable: 'image',
+    amountMicroUsdc: '500000',
+    closesAt: '2026-11-09T16:00:00.000Z',
+    status: 'paid',
+    xPostUrl: 'https://x.com/ledgerowl_agent/status/1850000000000000001',
+    entries: { received: 7, eligible: 5, considered: 5, ineligible: { no_address: 1, young_account: 1 } },
+    verdict: { winnerEntry: 2, winnerReplyUrl: 'https://x.com/someone/status/1850000000000000002', perCriterion: { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'pass'] }, reason: 'A clear owl with a ledger and no text.', deliveryHash: HASH, judgedAt: '2026-11-09T16:05:00.000Z' },
+    payment: { payee: PAYEE, amountMicroUsdc: '500000', txHash: HASH, replyUrl: 'https://x.com/ledgerowl_agent/status/1850000000000000003', paidAt: '2026-11-09T18:00:00.000Z' },
+  };
+
+  it('passes the fixture through unchanged', () => {
+    expect(sanitizeBountyJob(job)).toEqual(job);
+    expect(sanitizeBounties({ jobs: [job] })).toEqual({ jobs: [job] });
+  });
+
+  it('drops what the public must never see: author ids, reply texts, the addresses of other entries, unknown fields', () => {
+    const leaky = {
+      ...job,
+      authorId: '12345',
+      text: 'the reply text',
+      entries: { ...job.entries, addresses: [PAYEE, CREATOR], authors: ['a', 'b'] },
+      verdict: { ...job.verdict, entries: [{ authorId: '1', address: CREATOR, text: 'hi' }] },
+      payment: { ...job.payment, authorId: '99' },
+    };
+    const out = sanitizeBountyJob(leaky)!;
+    expect(out).toEqual(job);
+    const flat = JSON.stringify(out);
+    expect(flat).not.toContain('authorId');
+    expect(flat).not.toContain('the reply text');
+    expect(flat).not.toContain(CREATOR);
+    expect(flat.split(PAYEE).length - 1).toBe(1);
+  });
+
+  it('refuses bad hashes and addresses, and drops a row that is not a job', () => {
+    expect(sanitizeBountyJob({ ...job, id: '0x1234' })).toBeNull();
+    expect(sanitizeBountyJob({ ...job, verdict: { ...job.verdict, deliveryHash: '0xnothex' } })!.verdict).toBeNull();
+    expect(sanitizeBountyJob({ ...job, payment: { ...job.payment, txHash: '0x12' } })!.payment!.txHash).toBeNull();
+    expect(sanitizeBountyJob({ ...job, payment: { ...job.payment, payee: 'not an address' } })!.payment).toBeNull();
+    expect(sanitizeBountyJob({ ...job, status: 'won' })).toBeNull();
+    expect(sanitizeBountyJob({ ...job, amountMicroUsdc: 'free' })).toBeNull();
+    expect(sanitizeBountyJob({ ...job, xPostUrl: 'https://evil.example/x' })!.xPostUrl).toBeNull();
+    expect(sanitizeBounties({ jobs: [job, { junk: true }, null] }).jobs).toHaveLength(1);
+  });
+
+  it('caps strings and lists, and reads unknown marks as insufficient evidence', () => {
+    expect(sanitizeBountyJob({ ...job, task: 'x'.repeat(601) })).toBeNull();
+    const ok = sanitizeBountyJob({ ...job, criteria: ['a', 'b', 'c', 'd', 'e'], verdict: { ...job.verdict, perCriterion: { '2': ['pass', 'maybe'], nope: ['pass'] }, reason: 'r'.repeat(201) } })!;
+    expect(ok.criteria).toEqual(['a', 'b', 'c', 'd']);
+    expect(ok.verdict!.perCriterion).toEqual({ '2': ['pass', 'insufficient_evidence'] });
+    expect(ok.verdict!.reason).toBe('');
+  });
+
+  it('puts jobs in motion first, then newest first', () => {
+    const older = { ...job, id: '0x' + '11'.repeat(32), postedAt: '2026-11-08T10:00:00.000Z', status: 'open' };
+    const newest = { ...job, id: '0x' + '22'.repeat(32), postedAt: '2026-11-10T10:00:00.000Z', status: 'no_winner' };
+    expect(sortBounties(sanitizeBounties({ jobs: [job, newest, older] }).jobs).map((j) => j.status)).toEqual(['open', 'no_winner', 'paid']);
+  });
+
+  it('reads a bounty payment approval, with the payment block or flat, and drops one it cannot describe', () => {
+    const base = { id: 'apr_b1', kind: 'bounty_payment', status: 'pending_approval', createdAt: '2026-11-09T16:05:00.000Z', expiresAt: '2026-11-11T16:05:00.000Z', task: job.task };
+    const payment = { jobId: JOB, amountMicroUsdc: '500000', payee: PAYEE, reason: 'A clear owl.', entryReplyUrl: 'https://x.com/someone/status/1850000000000000002', expiresAt: '2026-11-11T16:05:00.000Z' };
+    const nested = sanitizeApproval({ ...base, bounty: payment })!;
+    expect(nested.kind).toBe('bounty_payment');
+    expect(nested.text).toBe(job.task);
+    expect(nested.bounty).toEqual({ jobId: JOB, amountMicroUsdc: '500000', payee: PAYEE, reason: 'A clear owl.', entryReplyUrl: payment.entryReplyUrl });
+    expect(sanitizeApproval({ ...base, ...payment })!.bounty).toEqual(nested.bounty);
+    expect(sanitizeApproval({ ...base, bounty: { ...payment, payee: 'nope' } })).toBeNull();
+    expect(sanitizeApproval({ id: 'apr_p', kind: 'post', text: 'hello', status: 'pending_approval', createdAt: base.createdAt })!.bounty).toBeNull();
+  });
+
+  it('builds the decision body with the paying transaction hash only on an approval, and refuses a bad hash', () => {
+    const by = CREATOR as `0x${string}`;
+    expect(approvalDecisionBody({ decision: 'approve', by })).toEqual({ decision: 'approve', by });
+    expect(approvalDecisionBody({ decision: 'approve', by, txHash: ` ${HASH.toUpperCase().replace('0X', '0x')} ` })).toEqual({ decision: 'approve', by, txHash: HASH });
+    expect(approvalDecisionBody({ decision: 'reject', by, note: 'not this one', txHash: HASH })).toEqual({ decision: 'reject', by, note: 'not this one' });
+    expect(() => approvalDecisionBody({ decision: 'approve', by, txHash: '0x1234' })).toThrow(/64 hex/);
+    expect(txHashOf(HASH)).toBe(HASH);
+    expect(txHashOf('0x' + 'cd'.repeat(31))).toBeNull();
+    expect(txHashOf(7)).toBeNull();
+  });
+
+  it('reads the bounties bounds with defaults and validates the creator’s changes against them', () => {
+    const cfg = sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 } })!;
+    expect(cfg.bounties).toEqual({ dailyCapMicroUsdc: 5_000_000, maxOpen: 2, cooldownSeconds: 604_800, defaultHoursOpen: 6, review: false });
+    expect(sanitizeConfig({ agentId: 1, kernel: KERNEL, creator: CREATOR, worker: { postIntervalMs: 1 }, bounties: { dailyCapMicroUsdc: 90_000_000, maxOpen: 5, cooldownSeconds: 0, defaultHoursOpen: 100, review: true } })!.bounties).toEqual({ dailyCapMicroUsdc: 5_000_000, maxOpen: 5, cooldownSeconds: 0, defaultHoursOpen: 6, review: true });
+    expect(validateChanges({ bounties: { dailyCapMicroUsdc: 2_000_000, maxOpen: 3, cooldownSeconds: 0, defaultHoursOpen: 12, review: true } })).toEqual({ ok: true, changes: { bounties: { dailyCapMicroUsdc: 2_000_000, maxOpen: 3, cooldownSeconds: 0, defaultHoursOpen: 12, review: true } } });
+    expect(validateChanges({ bounties: { dailyCapMicroUsdc: 20_000_001 } })).toMatchObject({ ok: false, field: 'bounties.dailyCapMicroUsdc' });
+    expect(validateChanges({ bounties: { maxOpen: 6 } })).toMatchObject({ ok: false, field: 'bounties.maxOpen' });
+    expect(validateChanges({ bounties: { defaultHoursOpen: 0 } })).toMatchObject({ ok: false, field: 'bounties.defaultHoursOpen' });
+    expect(validateChanges({ bounties: { review: 'yes' } })).toMatchObject({ ok: false, field: 'bounties.review' });
+    expect(validateChanges({ bounties: {} })).toMatchObject({ ok: false, field: 'bounties' });
+    expect(validateChanges({ worker: { capabilities: { bounties: true } } })).toEqual({ ok: true, changes: { worker: { capabilities: { bounties: true } } } });
   });
 });

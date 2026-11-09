@@ -270,6 +270,8 @@ export interface AgentConfig {
   imageStyle: AgentImageStyle;
   /** The money bounds of the Paid services power, whether or not it is on: the daily cap is the most it can cost in a day. */
   services: AgentServicesPolicy;
+  /** The bounds of the Bounties power, whether or not it is on. */
+  bounties: AgentBountiesPolicy;
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -314,6 +316,37 @@ export const SERVICES_PER_CALL_MAX_MICRO_USDC = 5_000_000;
 export const SERVICES_DAILY_MAX_MICRO_USDC = 50_000_000;
 export const SERVICES_DEFAULTS: AgentServicesPolicy = { perCallMicroUsdc: 50_000, dailyMicroUsdc: 1_000_000, allow: [], deny: [] };
 
+/**
+ * The creator's bounds of the Bounties power (docs/design/agent-capabilities.md section 3.3). The amount of one job is
+ * the agent's choice, 0.1 to 1 USDC; the console sets only these. `review` routes every job text through the review
+ * queue before it is posted.
+ */
+export interface AgentBountiesPolicy {
+  /** The most the agent may promise in a day, in micro-USDC; charged when a job opens. */
+  dailyCapMicroUsdc: number;
+  /** Open jobs at a time. */
+  maxOpen: number;
+  /** How long after a win the same address may win again; 0 allows repeats. */
+  cooldownSeconds: number;
+  /** How long a job takes entries when the agent names no window, in hours. */
+  defaultHoursOpen: number;
+  review: boolean;
+}
+
+/** Ceilings and floors of the bounties bounds, mirrored by the agent service; micro-USDC and whole units. */
+export const BOUNTIES_BOUNDS = {
+  dailyCapMaxMicroUsdc: 20_000_000,
+  maxOpenMax: 5,
+  /** A year: long enough to mean "never twice" in practice. */
+  cooldownMaxSeconds: 365 * 86_400,
+  hoursOpenMin: 1,
+  hoursOpenMax: 72,
+  /** What one job may pay, chosen by the agent inside these. */
+  amountMinMicroUsdc: 100_000,
+  amountMaxMicroUsdc: 1_000_000,
+} as const;
+export const BOUNTIES_DEFAULTS: AgentBountiesPolicy = { dailyCapMicroUsdc: 5_000_000, maxOpen: 2, cooldownSeconds: 7 * 86_400, defaultHoursOpen: 6, review: false };
+
 /** What the creator may change from the coin page; only the fields present are applied. */
 export interface AgentConfigChanges {
   instructions?: string;
@@ -332,6 +365,66 @@ export interface AgentConfigChanges {
   routing?: { decideModel: string | null };
   /** Partial: a missing field keeps its stored value. */
   services?: Partial<AgentServicesPolicy>;
+  /** Partial: a missing field keeps its stored value. */
+  bounties?: Partial<AgentBountiesPolicy>;
+}
+
+// ---------------------------------------------------------------- bounties (supervisor, via /api/agent/[kernel]/bounties)
+
+/**
+ * Where a job stands: taking entries, being judged, a payment proposed to the creator, paid, closed with no winner,
+ * cancelled, expired unpaid, or failed (the post or the payment did not go through).
+ */
+export type BountyStatus = 'open' | 'judging' | 'proposed' | 'paid' | 'no_winner' | 'cancelled' | 'expired' | 'failed';
+export type CriterionMark = 'pass' | 'fail' | 'insufficient_evidence';
+
+/**
+ * One job the agent posted, as the coin page shows it (`GET /api/agent/[kernel]/bounties`). Public by design: no author
+ * ids, no reply text, and no address of anyone but the payee ever appear here.
+ */
+export interface BountyJob {
+  /** 0x hex, the job's id as the agent service names it. */
+  id: string;
+  /** ISO 8601. */
+  postedAt: string;
+  task: string;
+  /** Numbered as written at post time; the judge marks each one. */
+  criteria: string[];
+  deliverable: 'image' | 'link';
+  /** Decimal string of micro-USDC. */
+  amountMicroUsdc: string;
+  /** ISO 8601: when entries stop being taken. */
+  closesAt: string;
+  status: BountyStatus;
+  /** The job post on X. */
+  xPostUrl: string | null;
+  /** Replies seen, those that could be judged, those actually judged (the first 12), and why the rest were not, by reason. */
+  entries: { received: number; eligible: number; considered: number; ineligible: Record<string, number> };
+  verdict: {
+    /** 1-based number of the winning entry among those considered; null when nothing met the job. */
+    winnerEntry: number | null;
+    winnerReplyUrl: string | null;
+    /** Entry number (as a string key) to its marks, one per criterion. */
+    perCriterion: Record<string, CriterionMark[]>;
+    reason: string;
+    /** Hash of what the judge saw. */
+    deliveryHash: Hex;
+    judgedAt: string;
+    /** Set when the judge's answer was refused in code (out of range, a failing mark, a reason the gate refused). */
+    invalid?: string;
+  } | null;
+  payment: {
+    payee: Address;
+    amountMicroUsdc: string;
+    txHash: Hex | null;
+    /** The reply on X that announces the payment. */
+    replyUrl: string | null;
+    paidAt: string | null;
+  } | null;
+}
+
+export interface AgentBounties {
+  jobs: BountyJob[];
 }
 
 /** `GET /api/agent/[kernel]/fuel` (the supervisor's `GET /internal/agents/:id/fuel`): paid thoughts per model over the last `days`. */
@@ -360,11 +453,28 @@ export interface AgentFuel {
 export type ApprovalStatus = 'pending_approval' | 'approved' | 'rejected' | 'failed';
 export type ApprovalDecision = 'approve' | 'reject';
 
-/** One post or reply the agent wants to send, waiting for (or decided by) the creator. */
+/** A bounty payment the agent proposes: the creator pays `payee` from their own wallet and pastes the transaction hash. */
+export interface BountyPaymentRequest {
+  jobId: string;
+  /** Decimal string of micro-USDC. */
+  amountMicroUsdc: string;
+  payee: Address;
+  /** The judge's reason, at most 200 characters. */
+  reason: string;
+  /** The winning entry on X. */
+  entryReplyUrl: string | null;
+}
+
+/**
+ * One post or reply the agent wants to send, or one bounty payment it proposes, waiting for (or decided by) the creator.
+ * For a `bounty_payment` `text` is the job's task and `bounty` carries the payment; approving one takes the creator's
+ * paying transaction hash.
+ */
 export interface AgentApproval {
   id: string;
-  kind: 'post' | 'reply';
+  kind: 'post' | 'reply' | 'bounty_payment';
   text: string;
+  bounty: BountyPaymentRequest | null;
   /** The X post a reply answers. */
   inReplyTo: string | null;
   /** The attached picture; `dataUrl` only while pending (what the creator previews). */
