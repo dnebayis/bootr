@@ -363,7 +363,7 @@ const agents: DocBody = {
     p('Every post goes through checks in code before it is sent to X; a post that fails is not published.'),
     ul(
       '**Replies only to posts that address the agent**: a reply to it or an explicit mention, from an author with a verified (blue or business) badge or on the creator’s allow-list. No unsolicited replies.',
-      '**Limits**: replies up to 280 characters, original posts up to 4,000; at most one cashtag; at most three @mentions, each backed by a source the agent read.',
+      '**Limits**: replies up to 280 characters, original posts up to 4,000 when the X account has Premium and 280 without; at most one cashtag; at most three @mentions, each backed by a source the agent read.',
       '**Quota**: at most 24 posts and replies together in any 24 hours. Original posts follow a schedule (one every 2 hours by default) with no catch-up bursts.',
       '**Never published**: instructions to send, swap, buy, sell, approve or sign; wallet or payment links; X intent links; any 0x address other than the coin’s and its treasury’s; secrets and internal hostnames.',
       '**Opt-out**: if someone tells the agent to stop, it records an opt-out and never replies to or mentions them again.',

@@ -27,7 +27,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'publish_reply', group: 'xReply', does: 'Reply in-thread to a post that addresses it (max 280 characters).' },
   { name: 'resolve_mention', group: 'xReply', does: 'Close a mention without posting: skip, opt-out, or defer to later.' },
   { name: 'resolve_mentions', group: 'xReply', does: 'Close up to 20 mentions in one step, all with the same outcome and reason.' },
-  { name: 'publish_post', group: 'xPublish', does: 'Publish one original post when its schedule says one is due (max 4,000 characters).' },
+  { name: 'publish_post', group: 'xPublish', does: 'Publish one original post when its schedule says one is due (max 4,000 characters with X Premium, 280 without).' },
   { name: 'remember', group: 'memory', does: 'Store a private note for later. Nothing stored here is published.' },
   { name: 'recall', group: 'memory', does: 'Search its private notes and past checkpoints.' },
   { name: 'finish', group: 'control', does: 'Save memory and agenda, end the turn and choose when to wake (1 minute to 24 hours).' },
