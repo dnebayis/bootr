@@ -168,11 +168,18 @@ describe('sessionRulesFor: powers to rules, as data', () => {
     expect(() => sessionRulesFor([...ALWAYS_ON_SESSION_POWERS, 'trade'], inputs())).toThrow(/trade power is on but has no session rule provider/);
   });
 
-  it('sessionPowersOf: the treasury loop whatever the config says; trade and bounties from the raw capabilities block', () => {
+  it('sessionPowersOf: the treasury loop whatever the config says; trade from the raw capabilities block; bounties only once its provider exists (stage A asks nothing of the key)', () => {
     expect(sessionPowersOf({})).toEqual(['claims', 'swap', 'treasury']);
     expect(sessionPowersOf({ capabilities: { treasury: false, xRead: true } })).toEqual(['claims', 'swap', 'treasury']);
     expect(sessionPowersOf({ capabilities: { trade: true } })).toEqual(['claims', 'swap', 'treasury', 'trade']);
-    expect(sessionPowersOf({ capabilities: { trade: 'yes', bounties: true } })).toEqual(['claims', 'swap', 'treasury', 'bounties']);
+    // the bounties power is a console switch since stage A, but nothing on chain: the key's rules do not change
+    expect(sessionPowersOf({ capabilities: { trade: 'yes', bounties: true } })).toEqual(['claims', 'swap', 'treasury']);
+    const restore = registerSessionRuleProvider('bounties', () => [{ power: 'bounties', label: 'bounties.open', build: () => ({ target: TRADE_HELPER, selector: '0xabcdef02', windowSeconds: 0, args: [] }) }]);
+    try {
+      expect(sessionPowersOf({ capabilities: { trade: 'yes', bounties: true } })).toEqual(['claims', 'swap', 'treasury', 'bounties']);
+    } finally {
+      restore();
+    }
     expect(sessionPowersOf({ capabilities: [] })).toEqual(['claims', 'swap', 'treasury']);
   });
 });

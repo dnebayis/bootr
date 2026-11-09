@@ -6,13 +6,14 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
+import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { requiresApproval } from './approvals.js';
+import { bountiesOf } from './bounties.js';
 import { relayImageModels } from './image-models.js';
 import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
@@ -58,6 +59,12 @@ export interface AgentConfigView {
    * cost in a day, whatever the model does.
    */
   services: ServicesPolicy;
+  /**
+   * The bounds of the Bounties power (bounties.ts), whether or not the power is on: the daily cap in micro-USDC (hard
+   * ceiling 20 USDC), the open-job cap (ceiling 5), the per-payee cooldown in seconds (0 allows repeats), the default
+   * window in hours (1 to 72) and `review` (every job text through the approval queue before it is posted).
+   */
+  bounties: BountiesPolicy;
   /**
    * The treasury turn (roles.ts, design section 3.4): `override` is the owner's trial switch stored on the config
    * (`treasuryTurn: true`), `active` whether the turn runs for this agent at all (the override, or the `trade` or
@@ -117,7 +124,7 @@ export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentI
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'treasuryTurn' | 'judgeModel';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel';
 
 /** The stored `services` block, or the defaults when it is missing or malformed. */
 export function servicesOf(config: Record<string, unknown>): ServicesPolicy {
@@ -161,6 +168,7 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     imageModel: imageModelOf(config),
     imageStyle: imageStyleOf(config),
     services: servicesOf(config),
+    bounties: bountiesOf(config),
     treasuryTurn: { override: config.treasuryTurn === true, active: treasuryTurnOn(config) },
     judgeModel: typeof config.judgeModel === 'string' && config.judgeModel ? config.judgeModel : null,
     sessionRules: sessionRulesStatus(agent, config),
@@ -191,6 +199,8 @@ export interface ConfigUpdateBody {
   imageStyle?: unknown;
   /** Partial `{perCallMicroUsdc?, dailyMicroUsdc?, allow?, deny?}`, merged onto the stored services policy. */
   services?: unknown;
+  /** Partial `{dailyCapMicroUsdc?, maxOpen?, cooldownSeconds?, defaultHoursOpen?, review?}`, merged onto the stored bounties policy. */
+  bounties?: unknown;
   /** The treasury turn's trial switch (boolean): on runs the turn for this agent although no power needs it. */
   treasuryTurn?: unknown;
   /** The judge's model: a string validated like `model` (inside `allowedModels` when given), or null for the agent's own. */
@@ -368,6 +378,25 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
       config.services = parsed.data;
       fields.push('services');
+    }
+  }
+
+  // Bounty caps: a partial block merged onto the policy in force, then the whole thing re-validated (hard ceilings).
+  if (body.bounties !== undefined) {
+    if (!body.bounties || typeof body.bounties !== 'object' || Array.isArray(body.bounties)) return reject(400, 'invalid_bounties', 'bounties must be an object');
+    const current = bountiesOf(before);
+    const patch = body.bounties as Partial<Record<keyof BountiesPolicy, unknown>>;
+    const parsed = bountiesPolicySchema.safeParse({
+      dailyCapMicroUsdc: patch.dailyCapMicroUsdc !== undefined ? patch.dailyCapMicroUsdc : current.dailyCapMicroUsdc,
+      maxOpen: patch.maxOpen !== undefined ? patch.maxOpen : current.maxOpen,
+      cooldownSeconds: patch.cooldownSeconds !== undefined ? patch.cooldownSeconds : current.cooldownSeconds,
+      defaultHoursOpen: patch.defaultHoursOpen !== undefined ? patch.defaultHoursOpen : current.defaultHoursOpen,
+      review: patch.review !== undefined ? patch.review : current.review,
+    });
+    if (!parsed.success) return reject(400, 'invalid_bounties', `bounties must have a whole micro-USDC daily cap of at most ${BOUNTY_DAILY_MAX_MICRO_USDC}, maxOpen 0..${BOUNTY_MAX_OPEN_CEILING}, a cooldown in whole seconds (0 allows repeats), a default window of ${BOUNTY_MIN_HOURS_OPEN}..${BOUNTY_MAX_HOURS_OPEN} hours and a boolean review`);
+    if (JSON.stringify(parsed.data) !== JSON.stringify(current)) {
+      config.bounties = parsed.data;
+      fields.push('bounties');
     }
   }
 

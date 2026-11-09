@@ -7,20 +7,21 @@
  *   holds no money power. While it is off (every agent today) nothing changes.
  * - **Treasury** (runtime.ts `startTreasuryTurn`, on its own clock): `treasury_read`, `treasury_prepare`,
  *   `treasury_execute`, `remember` (its own note) and `finish` (the runtime's only way to end a turn; its checkpoint
- *   goes to the treasury's own slot in the state and never to the social checkpoint, slot or wake). `trade_quote`,
- *   `bounty_post` and `bounty_cancel` are named here as seams: the day agent-core's catalog defines them they reach
- *   this role and no other with no further change here.
+ *   goes to the treasury's own slot in the state and never to the social checkpoint, slot or wake), and with the
+ *   `bounties` power `bounty_post`, `bounty_cancel` and `bounty_list` (bounties.ts). `trade_quote` is named here as
+ *   a seam: the day agent-core's catalog defines it, it reaches this role and no other with no further change here.
  * - **Judge** (judge.ts): no tools at all.
  *
- * The switch: the treasury turn is on when the `trade` or `bounties` power is on (neither is in `CAPABILITY_KEYS` yet;
- * read from the raw config block like session-rules.ts `sessionPowersOf`, so adding the keys turns it on with no change
- * here) or when the agent's config carries `treasuryTurn: true`, the owner's trial switch (`PUT /internal/agents/:id/config`).
+ * The switch: the treasury turn is on when the `trade` or `bounties` power is on (`bounties` is a console switch since
+ * stage A; `trade` is not in `CAPABILITY_KEYS` yet; both are read from the raw config block like session-rules.ts
+ * `sessionPowersOf`) or when the agent's config carries `treasuryTurn: true`, the owner's trial switch
+ * (`PUT /internal/agents/:id/config`).
  *
  * The clock lives in `sv_runtimes.state` (`treasuryNextAt`, `lastTreasuryTurnAt`, `lastTreasuryNoteSeenAt`,
  * `treasuryCheckpoint`; runtime.ts `AgentState`): no migration. A turn is due every `TREASURY_TURN_INTERVAL_MS`
  * (default an hour), or earlier when a treasury note is pending (a `remember` from the social turn tagged `treasury`
- * that no treasury turn has seen) or a bounty job has closed (`bountyJobClosed`, false until step 3 of
- * docs/STATUS.md section 3 exists), but never closer than a quarter of the interval to the last treasury turn, so a
+ * that no treasury turn has seen) or a bounty job has closed (`bountyJobClosed`: a job of the agent reached a closing
+ * status since the last turn), but never closer than a quarter of the interval to the last treasury turn, so a
  * social turn that leaves a note every wake cannot buy a treasury thought every wake. The tick (tick.ts
  * `processAgent`) asks only after the social wake decision said no: when both are due in one tick the social turn
  * runs and the treasury turn waits for the next tick, since mentions are the time-sensitive side and the treasury
@@ -30,6 +31,7 @@ import { buildObservation, type AgentConfig, type AgentRole, type ObservationVie
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { formatUnits } from 'viem';
 import { SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
+import { bountiesSection, jobClosedSince } from './bounties.js';
 import { availableTools } from './broker/index.js';
 import { coinFeesSection } from './coin-fees.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
@@ -64,11 +66,18 @@ export function treasuryTurnOn(raw: Record<string, unknown>): boolean {
 /** The tools the social turn loses while the treasury turn is on for the agent. */
 export const SOCIAL_WITHHELD_WHEN_TREASURY_ON: readonly ToolName[] = ['treasury_prepare', 'treasury_execute'];
 
-/** The money tools of steps 3 and 6, typed before they exist: no definition, no provider, only a name this role will own. */
-export type TreasurySeamTool = 'trade_quote' | 'bounty_post' | 'bounty_cancel';
+/** The money tool of step 6 (Trade), typed before it exists: no definition, no provider, only a name this role will own. */
+export type TreasurySeamTool = 'trade_quote';
 
-/** Everything the treasury turn may hold, catalog tools and seams alike; `roleTools` keeps what the catalog defines. */
-export const TREASURY_TURN_TOOLS: readonly (ToolName | TreasurySeamTool)[] = ['treasury_read', 'treasury_prepare', 'treasury_execute', 'remember', 'finish', 'trade_quote', 'bounty_post', 'bounty_cancel'];
+/**
+ * Everything the treasury turn may hold, catalog tools and seams alike; `roleTools` keeps what the catalog defines.
+ * `bounty_post`, `bounty_cancel` and `bounty_list` are real since Bounties stage A (bounties.ts) and exist for the
+ * agent only while its `bounties` power is on; `bounty_list` is a read the social turn has as well.
+ */
+export const TREASURY_TURN_TOOLS: readonly (ToolName | TreasurySeamTool)[] = ['treasury_read', 'treasury_prepare', 'treasury_execute', 'remember', 'finish', 'trade_quote', 'bounty_post', 'bounty_cancel', 'bounty_list'];
+
+/** The bounty tools only the treasury turn holds: the social turn never posts or cancels a job (design section 3.4). */
+export const SOCIAL_WITHHELD_BOUNTY_TOOLS: readonly ToolName[] = ['bounty_post', 'bounty_cancel'];
 
 /**
  * The tool catalog of a role for this agent: `availableTools` (capabilities, owner rules, the deployment's own gaps,
@@ -79,7 +88,8 @@ export function roleTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentC
   if (role === 'judge') return [];
   const catalog = availableTools(ctx, config, account);
   if (role === 'treasury') return catalog.filter((t) => (TREASURY_TURN_TOOLS as readonly string[]).includes(t.name));
-  return treasuryTurnOn(raw) ? catalog.filter((t) => !SOCIAL_WITHHELD_WHEN_TREASURY_ON.includes(t.name)) : catalog;
+  const social = catalog.filter((t) => !SOCIAL_WITHHELD_BOUNTY_TOOLS.includes(t.name));
+  return treasuryTurnOn(raw) ? social.filter((t) => !SOCIAL_WITHHELD_WHEN_TREASURY_ON.includes(t.name)) : social;
 }
 
 /**
@@ -127,11 +137,11 @@ export async function pendingTreasuryNotes(ctx: Pick<SupervisorContext, 'db'>, a
 }
 
 /**
- * Whether a bounty job of this agent closed since its last treasury turn (design section 3.3, step 2). Jobs do not
- * exist yet (docs/STATUS.md section 3 item 3): false for everyone, and the seam the Bounties step fills.
+ * Whether a bounty job of this agent closed since its last treasury turn (design section 3.3, step 2): one of its jobs
+ * reached `proposed`, `no_winner`, `expired` or `failed` after `lastTreasuryTurnAt` (bounties.ts `jobClosedSince`).
  */
-export async function bountyJobClosed(_ctx: SupervisorContext, _agent: Pick<AgentRow, 'agentId'>, _state: AgentState, _now: number): Promise<boolean> {
-  return false;
+export async function bountyJobClosed(ctx: Pick<SupervisorContext, 'db'>, agent: Pick<AgentRow, 'agentId'>, state: AgentState, _now: number): Promise<boolean> {
+  return jobClosedSince(ctx, agent.agentId, state.lastTreasuryTurnAt ?? 0);
 }
 
 /**
@@ -223,6 +233,8 @@ export async function buildTreasuryObservation(ctx: SupervisorContext, agent: Ag
       ...caps,
       ...(await fuelSection(ctx, agent.agentId, t)),
       ...coinFeesSection(config, inputs.market),
+      // The bounties power (bounties.ts): the day's headroom, the open jobs, the last verdicts and the policy; empty while off.
+      ...(await bountiesSection(ctx, agent, config)),
       ...(inputs.notes.length ? { treasuryNotes: { meaning: NOTES_MEANING, items: inputs.notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt })) } } : {}),
     },
   });

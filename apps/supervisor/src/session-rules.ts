@@ -405,7 +405,9 @@ export function sessionPowersOf(config: Record<string, unknown>): SessionPower[]
   const caps = config.capabilities && typeof config.capabilities === 'object' && !Array.isArray(config.capabilities) ? (config.capabilities as Record<string, unknown>) : {};
   const powers: SessionPower[] = [...ALWAYS_ON_SESSION_POWERS];
   if (caps.trade === true) powers.push('trade');
-  if (caps.bounties === true) powers.push('bounties');
+  // Bounties stage A (bounties.ts) has no chain footprint: the creator pays by hand, so the power asks nothing of the
+  // session key. It joins the key's rules the day stage B registers the `bounties` provider (BootrBounties, three rules).
+  if (caps.bounties === true && providers.has('bounties')) powers.push('bounties');
   return powers;
 }
 

@@ -207,6 +207,7 @@ export interface CustomWorker {
 function cleanLine(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   const s = v
+    // eslint-disable-next-line no-control-regex -- dropping the C0 range is the point
     .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
