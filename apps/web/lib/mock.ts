@@ -1175,11 +1175,12 @@ function buildApprovals(t: Token): AgentApproval[] {
     { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
     { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800), bounty: null },
   ];
-  // The job whose payment waits for the creator (stage A of Bounties: the creator pays from their own wallet).
+  // The job whose payment waits for the creator (stage A of Bounties: the creator pays from their own wallet). Listed
+  // after the posts, which came in later: the queue shows the newest first and the e2e specs walk it in that order.
   const proposed = buildBounties(t).find((j) => j.status === 'proposed');
   if (proposed?.verdict) {
     const createdAt = proposed.verdict.judgedAt;
-    items.unshift({
+    items.push({
       id: `act_${n}b1`,
       kind: 'bounty_payment',
       text: proposed.task,

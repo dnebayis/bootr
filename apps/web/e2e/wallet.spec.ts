@@ -167,17 +167,18 @@ test('coin page shows the agent status line, the activity tape and the creator c
   const instructions = console_.getByLabel('Instructions');
   await expect(instructions).not.toHaveValue('');
   await expect(console_.getByLabel('Model')).toBeVisible();
-  // Economy mode on Mind, post review on Posting, the six powers on Powers: eight switches in all.
+  // Economy mode on Mind, post review on Posting, the seven powers on Powers: nine switches in all.
   expect(await console_.getByRole('switch').count()).toBe(1);
   await tab('Posting').click();
   expect(await console_.getByRole('switch').count()).toBe(1);
   // Post approval mode: on by default in mock mode, with the pending count on the console title.
   const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
   await expect(review).toHaveAttribute('aria-checked', 'true');
-  await expect(console_.getByTestId('approvals-pending')).toHaveText('2 pending');
+  // The first coin's agent runs Bounties too: a proposed payment waits beside the two posts (bounties.spec.ts reads it; nothing here decides it).
+  await expect(console_.getByTestId('approvals-pending')).toHaveText('3 pending');
   await expect(console_.locator('#console-posts-per-day')).toBeVisible();
   await tab('Powers').click();
-  expect(await console_.getByRole('switch').count()).toBe(6);
+  expect(await console_.getByRole('switch').count()).toBe(7);
   await expect(console_.getByText('Memory · always on')).toBeVisible();
   const save = console_.getByRole('button', { name: 'Save changes' });
   await expect(save).toBeDisabled();
@@ -197,12 +198,12 @@ test('coin page shows the agent status line, the activity tape and the creator c
   // The review queue lives on the Inbox section: one signature (skipped in mock mode) opens the agent's queued posts; Approve sends, Reject notes.
   await tab('Inbox').click();
   const queue = console_.getByTestId('approval-queue');
-  await expect(queue.getByTestId('approval-queue-count')).toHaveText('2 pending');
+  await expect(queue.getByTestId('approval-queue-count')).toHaveText('3 pending');
   const listed = page.waitForResponse((r) => /\/api\/agent\/0x[0-9a-f]{40}\/approvals\/list$/.test(r.url()) && r.request().method() === 'POST');
   await queue.getByRole('button', { name: 'Review posts' }).click();
   expect((await listed).status()).toBe(200);
   const items = queue.getByTestId('approval-item');
-  await expect(items).toHaveCount(2);
+  await expect(items).toHaveCount(3);
   await expect(items.first()).toHaveAttribute('data-kind', 'post');
   await expect(items.first().getByTestId('approval-image')).toBeVisible();
   await expect(items.nth(1)).toHaveAttribute('data-kind', 'reply');
@@ -210,13 +211,15 @@ test('coin page shows the agent status line, the activity tape and the creator c
   await items.first().getByRole('button', { name: 'Approve' }).click();
   expect((await approved).status()).toBe(200);
   await expect(page.getByText(/Approved and posted on X/)).toBeVisible();
-  await expect(items).toHaveCount(1);
-  await expect(queue.getByTestId('approval-queue-count')).toHaveText('1 pending');
+  await expect(items).toHaveCount(2);
+  await expect(queue.getByTestId('approval-queue-count')).toHaveText('2 pending');
   await items.first().getByLabel('Note for the agent').fill('Too long; keep replies to one sentence.');
   await items.first().getByRole('button', { name: 'Reject' }).click();
   await expect(page.getByText(/Rejected\. The agent will see your note/)).toBeVisible();
-  await expect(queue.getByTestId('approval-queue-empty')).toBeVisible();
-  await expect(console_.getByTestId('approvals-pending')).toHaveCount(0);
+  // The bounty payment stays: it is the creator's to pay from their own wallet, and this walk does not.
+  await expect(items).toHaveCount(1);
+  await expect(items.first()).toHaveAttribute('data-kind', 'bounty_payment');
+  await expect(console_.getByTestId('approvals-pending')).toHaveText('1 pending');
   // Switching review off is a config change like any other; the save bar follows the edit onto a non-settings tab.
   await tab('Posting').click();
   await review.click();
