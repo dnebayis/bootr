@@ -436,6 +436,8 @@ export const bountyJobs = pgTable(
     /** `keccak256(kernel, nonce, taskHash)` as the design says; the id the contract of stage B will take. */
     id: text('id').primaryKey(),
     agentId: text('agent_id').notNull(),
+    /** The `bounty_post` action that made the job (`sv_actions.action_id`): the same action never makes two jobs. */
+    actionId: text('action_id').notNull(),
     /** The agent's own job counter, part of the id. */
     nonce: integer('nonce').notNull(),
     task: text('task').notNull(),
@@ -478,7 +480,7 @@ export const bountyJobs = pgTable(
     error: text('error'),
     updatedAt: ts('updated_at').notNull(),
   },
-  (t) => [index('sv_bounty_jobs_agent_status_idx').on(t.agentId, t.status), index('sv_bounty_jobs_agent_created_idx').on(t.agentId, t.createdAt)],
+  (t) => [index('sv_bounty_jobs_agent_status_idx').on(t.agentId, t.status), index('sv_bounty_jobs_agent_created_idx').on(t.agentId, t.createdAt), uniqueIndex('sv_bounty_jobs_action_idx').on(t.actionId)],
 );
 
 /**

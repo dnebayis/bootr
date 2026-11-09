@@ -19,6 +19,7 @@ CREATE TABLE "sv_bounty_entries" (
 CREATE TABLE "sv_bounty_jobs" (
 	"id" text PRIMARY KEY NOT NULL,
 	"agent_id" text NOT NULL,
+	"action_id" text NOT NULL,
 	"nonce" integer NOT NULL,
 	"task" text NOT NULL,
 	"criteria" jsonb NOT NULL,
@@ -52,4 +53,5 @@ CREATE TABLE "sv_bounty_jobs" (
 CREATE INDEX "sv_bounty_entries_job_idx" ON "sv_bounty_entries" USING btree ("job_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "sv_bounty_entries_job_reply_idx" ON "sv_bounty_entries" USING btree ("job_id","reply_id");--> statement-breakpoint
 CREATE INDEX "sv_bounty_jobs_agent_status_idx" ON "sv_bounty_jobs" USING btree ("agent_id","status");--> statement-breakpoint
-CREATE INDEX "sv_bounty_jobs_agent_created_idx" ON "sv_bounty_jobs" USING btree ("agent_id","created_at");
+CREATE INDEX "sv_bounty_jobs_agent_created_idx" ON "sv_bounty_jobs" USING btree ("agent_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "sv_bounty_jobs_action_idx" ON "sv_bounty_jobs" USING btree ("action_id");

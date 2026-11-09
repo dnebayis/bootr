@@ -1,5 +1,5 @@
 {
-  "id": "c80281be-bc4d-47f7-b87b-4598d8c41ae7",
+  "id": "ab65cb0d-7d17-4cf2-855c-db9078b1ebc0",
   "prevId": "6ac956db-3f0f-4192-a7e2-3cb3394e1656",
   "version": "7",
   "dialect": "postgresql",
@@ -547,6 +547,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "action_id": {
+          "name": "action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "nonce": {
           "name": "nonce",
           "type": "integer",
@@ -760,6 +766,21 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sv_bounty_jobs_action_idx": {
+          "name": "sv_bounty_jobs_action_idx",
+          "columns": [
+            {
+              "expression": "action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
