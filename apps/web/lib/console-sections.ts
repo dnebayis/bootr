@@ -38,7 +38,7 @@ export function changedSections(changes: AgentConfigChanges | null): ConsoleSect
   const out = new Set<ConsoleSection>();
   if (changes.instructions !== undefined || changes.model !== undefined || changes.routing !== undefined) out.add('mind');
   if (changes.postsPerDay !== undefined || changes.requireApproval !== undefined || changes.worker?.jobLines !== undefined) out.add('posting');
-  if (changes.worker?.capabilities !== undefined || changes.services !== undefined) out.add('powers');
+  if (changes.worker?.capabilities !== undefined || changes.services !== undefined || changes.bounties !== undefined) out.add('powers');
   if (changes.imageModel !== undefined || changes.imageStyle !== undefined) out.add('look');
   return CONSOLE_SECTIONS.map((s) => s.id).filter((id) => out.has(id));
 }

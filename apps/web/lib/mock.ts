@@ -8,12 +8,14 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
 import { DEFAULT_IMAGE_MODEL } from './models';
-import { SERVICES_DEFAULTS } from './types';
+import { BOUNTIES_DEFAULTS, SERVICES_DEFAULTS } from './types';
 import type {
   Agent,
   AgentActivityItem,
   AgentApproval,
   AgentApprovals,
+  AgentBounties,
+  BountyJob,
   AgentChat,
   AgentChatMessage,
   AgentNotification,
@@ -120,6 +122,8 @@ interface Store {
   activity: Map<string, AgentActivityItem[]>;
   /** The review queue per kernel (post approval mode), built lazily like the config. */
   approvals: Map<string, AgentApproval[]>;
+  /** The jobs the agent posted with the Bounties power, per kernel, built lazily like the config. */
+  bounties: Map<string, BountyJob[]>;
   /** The creator's inbox per kernel, built lazily like the config. */
   inboxes: Map<string, MockInbox>;
   /** The creator's chat per kernel. */
@@ -408,7 +412,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), links, images: new Map(), fresh };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), bounties: new Map(), links, images: new Map(), fresh };
 }
 
 export function mockStore(): Store {
@@ -850,6 +854,13 @@ export const mock = {
         fields.push('paid services caps');
       }
     }
+    if (changes.bounties) {
+      const next = { ...cfg.bounties, ...changes.bounties };
+      if (JSON.stringify(next) !== JSON.stringify(cfg.bounties)) {
+        cfg.bounties = next;
+        fields.push('bounty caps');
+      }
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -919,7 +930,9 @@ export const mock = {
   },
   /** The review queue of the agent's posts (lib/types AgentApprovals); `all` includes decided items. */
   agentApprovals(kernel: string, status: 'pending' | 'all' = 'pending'): AgentApprovals {
-    const list = approvalsFor(kernel);
+    // A job text waits for the creator only while "Review every job text first" is on; off, the server posts it at once.
+    const review = configFor(kernel).bounties.review;
+    const list = approvalsFor(kernel).filter((a) => a.kind !== 'bounty_job' || review || a.status !== 'pending_approval');
     const items = status === 'all' ? list : list.filter((a) => a.status === 'pending_approval');
     return clone({ items, pending: list.filter((a) => a.status === 'pending_approval').length });
   },
@@ -927,10 +940,11 @@ export const mock = {
    * Decides one queued item the way the supervisor would: approve "sends" it (a post row with a link lands on the
    * tape), reject marks it with the note. 404 unknown, 409 already decided.
    */
-  decideApproval(kernel: string, approvalId: string, decision: ApprovalDecision, by: string, note: string | null): { ok: true; approval: AgentApproval } | { ok: false; status: number; error: string; message: string } {
+  decideApproval(kernel: string, approvalId: string, decision: ApprovalDecision, by: string, note: string | null, txHash: string | null = null): { ok: true; approval: AgentApproval } | { ok: false; status: number; error: string; message: string } {
     const item = approvalsFor(kernel).find((a) => a.id === approvalId);
     if (!item) return { ok: false, status: 404, error: 'not_found', message: 'No such item.' };
     if (item.status !== 'pending_approval') return { ok: false, status: 409, error: 'already_decided', message: `This item is ${item.status}.` };
+    if (item.kind === 'bounty_payout' && decision === 'approve' && !txHash) return { ok: false, status: 400, error: 'tx_hash_required', message: 'approving a bounty payout needs txHash, the hash of the transaction that paid the winner' };
     const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
     const at = new Date().toISOString();
     item.decision = decision;
@@ -938,6 +952,54 @@ export const mock = {
     item.decidedAt = at;
     item.note = note;
     delete item.image?.dataUrl;
+    if ((item.kind === 'bounty_payout' || item.kind === 'bounty_job') && item.bounty) {
+      // The job settles the way the agent service settles it (bounties.ts `decideBountyApproval`): a payout approved with the
+      // creator's transaction pays the job, a declined payout closes it `no_winner` with "Nothing paid."; an approved job text
+      // posts the job, a rejected one cancels it. The tape gets the row in plain words.
+      const job = bountiesFor(kernel).find((j) => j.id === item.bounty!.jobId);
+      const amount = `${Number(item.bounty.amountUsdc ?? 0).toFixed(2)} USDC`;
+      const postUrl = (k: number) => (t?.xHandle ? `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(parseInt(t.agentId, 10) || 0) * 10n + BigInt(k))}` : null);
+      if (item.kind === 'bounty_payout') {
+        if (decision === 'approve') {
+          item.status = 'approved';
+          const hash = txHash!.toLowerCase() as Hex;
+          if (job && job.payment) {
+            job.status = 'paid';
+            job.payment = { ...job.payment, status: 'paid', txHash: hash, txUrl: `https://sepolia.basescan.org/tx/${hash}`, replyUrl: postUrl(26), paidAt: at };
+          }
+          activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty paid: ${amount} to ${item.bounty.payee!.slice(0, 6)}…${item.bounty.payee!.slice(-4)}, by the creator.`, txHash: hash });
+        } else {
+          item.status = 'rejected';
+          if (job) {
+            job.status = 'no_winner';
+            job.payment = null;
+            job.closedAt = at;
+            job.closeReplyUrl = postUrl(27);
+          }
+          activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty closed unpaid: the creator declined the ${amount} payment. Nothing paid.` });
+        }
+      } else if (decision === 'approve') {
+        item.status = 'approved';
+        if (job) {
+          job.status = 'open';
+          job.postedAt = at;
+          job.postUrl = postUrl(28);
+          job.closesAt = new Date(Date.now() + 6 * 3_600_000).toISOString();
+        }
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${item.bounty.task}"`, ...(job?.postUrl ? { url: job.postUrl } : {}) });
+      } else {
+        item.status = 'rejected';
+        if (job) {
+          job.status = 'cancelled';
+          job.closedAt = at;
+        }
+        activityFor(kernel).unshift({ at, kind: 'bounty', summary: `Bounty cancelled before it was posted: the creator did not approve the job text.` });
+      }
+      const tape = activityFor(kernel);
+      const idx = tape.findIndex((row) => row.kind === 'approval_pending' && row.at === item.createdAt);
+      if (idx >= 0) tape.splice(idx, 1);
+      return { ok: true, approval: clone(item) };
+    }
     const noun = item.kind === 'reply' ? 'Reply' : 'Post';
     if (decision === 'approve') {
       item.status = 'approved';
@@ -973,6 +1035,21 @@ export const mock = {
     const cutoff = opts.before ? Date.parse(opts.before) : NaN;
     const list = activityFor(kernel).filter((it) => !Number.isFinite(cutoff) || Date.parse(it.at) < cutoff);
     return clone({ items: list.slice(0, opts.limit) });
+  },
+  /**
+   * The jobs the agent posted (lib/types AgentBounties), jobs in motion first then newest first; none for most coins. The
+   * draft job (a text waiting for the creator) shows only while the creator's review switch is on, as on the server a
+   * draft without review is posted at once.
+   */
+  agentBounties(kernel: string, limit = 20): AgentBounties {
+    const review = configFor(kernel).bounties.review;
+    return clone({ jobs: bountiesFor(kernel).filter((j) => review || j.status !== 'draft').slice(0, limit) });
+  },
+  /** One job by its full id or its 16-hex short id (lower-case hex); null when the agent has no such job. */
+  agentBounty(kernel: string, jobId: string): BountyJob | null {
+    const key = jobId.toLowerCase();
+    const job = bountiesFor(kernel).find((j) => j.id === key || j.shortId === key);
+    return job ? clone(job) : null;
   },
   /** Posts by ERC-8004 agent id; null for an id the mock store does not know. */
   postsByAgentId(agentId: string): { handle: string | null; items: AgentPost[] } | null {
@@ -1019,6 +1096,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     // the supervisor reads the coin picture from the agent card at onboarding
     imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
+    bounties: { ...BOUNTIES_DEFAULTS },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
@@ -1043,6 +1121,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     imageModel: DEFAULT_IMAGE_MODEL,
     imageStyle: { reference: null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
+    bounties: { ...BOUNTIES_DEFAULTS },
     revision: 0,
     updatedAt: new Date().toISOString(),
     xHold: null,
@@ -1087,6 +1166,13 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
     if (a.status === 'pending_approval') items.push({ at: a.createdAt, kind: 'approval_pending', summary: `A ${a.kind} is waiting for the creator's review` });
     else if (a.status === 'approved' && a.decidedAt) items.push({ at: a.decidedAt, kind: 'approval_approved', summary: `${a.kind === 'reply' ? 'Reply' : 'Post'} approved by the creator`, ...(a.url ? { url: a.url } : {}) });
   }
+  // The bounties, in plain words: the post, the verdict, the payment (the creator's, in stage A).
+  for (const j of buildBounties(t)) {
+    const amount = `${Number(j.amountUsdc).toFixed(2)} USDC`;
+    if (j.postedAt) items.push({ at: j.postedAt, kind: 'bounty', summary: `Posted a bounty: ${amount} for "${j.task}"`, ...(j.postUrl ? { url: j.postUrl } : {}) });
+    if (j.verdict?.judgedAt) items.push({ at: j.verdict.judgedAt, kind: 'bounty', summary: j.verdict.winner ? `Judged a bounty: entry ${j.verdict.winner} of ${j.entries.considered} won. ${j.verdict.reason}` : 'Bounty closed: no entry met the job. Nothing paid.', ...(j.verdict.winningEntryUrl ? { url: j.verdict.winningEntryUrl } : {}) });
+    if (j.payment?.paidAt) items.push({ at: j.payment.paidAt, kind: 'bounty', summary: `Bounty paid: ${amount} to ${j.payment.payee.slice(0, 6)}…${j.payment.payee.slice(-4)}, by the creator.`, ...(j.payment.txHash ? { txHash: j.payment.txHash } : {}) });
+  }
   if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
   items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` });
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -1119,12 +1205,136 @@ function buildApprovals(t: Token): AgentApproval[] {
   const expiry = (ageS: number) => new Date(now - ageS * 1000 + 48 * 3_600_000).toISOString();
   const n = parseInt(t.agentId, 10) || 0;
   const postId = (k: number) => String(1850000000000000000n + BigInt(n) * 10n + BigInt(k));
-  const base = { decision: null, decidedBy: null, note: null, url: null, decidedAt: null } as const;
-  return [
+  const base = { bounty: null, decision: null, decidedBy: null, note: null, url: null, decidedAt: null } as const;
+  const items: AgentApproval[] = [
     { id: `act_${n}q2`, kind: 'post', text: `Week in numbers for $${t.symbol}: ${t.holders} holders, ${usdShort(t.volume24hUsd)} traded in the last day, fees claimed on schedule. No predictions, just the ledger.`, inReplyTo: null, image: { alt: `A dot-matrix chart of $${t.symbol} holders over the week`, dataUrl: MOCK_IMAGE_SVG }, status: 'pending_approval', ...base, createdAt: at(900), expiresAt: expiry(900) },
     { id: `act_${n}q1`, kind: 'reply', text: 'Fees are claimed every four hours and the split is locked on-chain. The treasury address is on the coin page if you want to check it yourself.', inReplyTo: postId(2), image: null, status: 'pending_approval', ...base, createdAt: at(5400), expiresAt: expiry(5400) },
-    { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800) },
+    { id: `act_${n}q0`, kind: 'post', text: 'Holder count passed 300 today. Thanks for reading the boring updates.', inReplyTo: null, image: null, status: 'approved', decision: 'approve', decidedBy: t.creator, note: null, url: t.xHandle ? `https://x.com/${t.xHandle}/status/${postId(1)}` : null, createdAt: at(9 * 3600 + 1800), decidedAt: at(9 * 3600), expiresAt: expiry(9 * 3600 + 1800), bounty: null },
   ];
+  // The job whose payout waits for the creator (stage A of Bounties: the creator pays from their own wallet). Listed
+  // after the posts, which came in later: the queue shows the newest first and the e2e specs walk it in that order.
+  const jobs = buildBounties(t);
+  const proposed = jobs.find((j) => j.status === 'proposed');
+  const pending = (id: string, kind: AgentApproval['kind'], text: string, bounty: AgentApproval['bounty'], createdAt: string): AgentApproval => ({ id, kind, text, bounty, inReplyTo: null, image: null, status: 'pending_approval', decision: null, decidedBy: null, note: null, url: null, createdAt, decidedAt: null, expiresAt: new Date(Date.parse(createdAt) + 48 * 3_600_000).toISOString() });
+  if (proposed?.verdict?.judgedAt && proposed.payment) {
+    items.push(pending(`bounty-pay-${proposed.id.slice(2)}`, 'bounty_payout', `Pay ${proposed.amountUsdc} USDC to ${proposed.payment.payee} for "${proposed.task}"`, { kind: 'payout', jobId: proposed.id, task: proposed.task, amountUsdc: proposed.amountUsdc, payee: proposed.payment.payee, reason: proposed.verdict.reason, entryUrl: proposed.verdict.winningEntryUrl, txHashRequired: true }, proposed.verdict.judgedAt));
+  }
+  // The job text waiting to be posted; shown only while the creator's review switch is on (`agentApprovals`).
+  const draft = jobs.find((j) => j.status === 'draft');
+  if (draft) items.push(pending(`act_${n}bj`, 'bounty_job', draft.pageText, { kind: 'job', jobId: draft.id, task: draft.task, amountUsdc: draft.amountUsdc, payee: null, reason: null, entryUrl: null, txHashRequired: false }, draft.createdAt));
+  return items;
+}
+
+/** The address the mock's winning entries carry: a fixed stranger, so the console's copy button and Basescan link have something real-looking. */
+const BOUNTY_PAYEE = '0x7a1e4c3b9d2f8e6a5c4b3a2918f7e6d5c4b3a291' as Address;
+
+/**
+ * The jobs of the one mock coin whose agent runs Bounties (the newest, $OWL): one open, one with a payment proposed to the
+ * creator (its approval is in the review queue), one paid and one closed with no winner. Every other coin has none.
+ */
+function buildBounties(t: Token): BountyJob[] {
+  if (t.symbol !== 'OWL' || isFresh(t.kernel)) return [];
+  const now = Date.now();
+  const at = (ageS: number) => new Date(now - ageS * 1000).toISOString();
+  const r = mulberry32((parseInt(t.kernel.slice(-8), 16) ^ 0xb0b0) >>> 0);
+  const id = () => hex(r, 32).toLowerCase();
+  const h32 = () => hex(r, 32).toLowerCase() as Hex;
+  const n = parseInt(t.agentId, 10) || 0;
+  const postUrl = (k: number) => (t.xHandle ? `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(n) * 10n + BigInt(k))}` : null);
+  const entryUrl = (k: number) => `https://x.com/i/status/${String(1851000000000000000n + BigInt(n) * 10n + BigInt(k))}`;
+  const pageUrl = (jobId: string) => `https://bootr.fun/token/${t.id.toLowerCase()}#bounty-${jobId.slice(0, 18)}`;
+  const H = 3600;
+  const usdc = (micro: string) => String(Number(micro) / 1e6);
+  const utc = (iso: string) => `${iso.slice(0, 16).replace('T', ' ')} UTC`;
+  // The job post, from the agent service's template (bounties.ts `jobPostText`).
+  const post = (task: string, micro: string, deliverable: 'image' | 'link', closesAt: string, jobId: string) => `Bounty: ${task} ${usdc(micro)} USDC to the best entry. Reply with your ${deliverable} and your Base address by ${utc(closesAt)}; the first 12 entries are considered. By replying you let @${t.xHandle ?? 'owl_agent'} repost your entry with credit. Details: ${pageUrl(jobId)}`;
+  const job = (p: { id: string; status: BountyJob['status']; task: string; criteria: string[]; deliverable: 'image' | 'link'; micro: string; createdAt: string; postedAt: string | null; closesAt: string; postUrl: string | null; entries?: BountyJob['entries']; verdict?: BountyJob['verdict']; payment?: BountyJob['payment']; closedAt?: string | null; closeReplyUrl?: string | null }): BountyJob => ({
+    id: p.id,
+    shortId: p.id.slice(0, 18),
+    status: p.status,
+    task: p.task,
+    criteria: p.criteria,
+    deliverable: p.deliverable,
+    amountUsdc: usdc(p.micro),
+    amountMicroUsdc: p.micro,
+    createdAt: p.createdAt,
+    postedAt: p.postedAt,
+    closesAt: p.closesAt,
+    postUrl: p.postUrl,
+    pageUrl: pageUrl(p.id),
+    pageText: post(p.task, p.micro, p.deliverable, p.closesAt, p.id),
+    entries: p.entries ?? { received: 0, eligible: 0, considered: 0, ineligible: {} },
+    verdict: p.verdict ?? null,
+    payment: p.payment ?? null,
+    closedAt: p.closedAt ?? null,
+    closeReplyUrl: p.closeReplyUrl ?? null,
+  });
+  const [openId, draftId, proposedId, paidId, noneId] = [id(), id(), id(), id(), id()] as [string, string, string, string, string];
+  const paidTx = h32();
+  return [
+    job({ id: openId, status: 'open', task: `A picture of an owl reading a ledger, in the style of the $${t.symbol} coin image.`, criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No words on the picture'], deliverable: 'image', micro: '500000', createdAt: at(2 * H + 120), postedAt: at(2 * H), closesAt: at(-4 * H), postUrl: postUrl(21) }),
+    // Written while the creator's review switch is on; shown, and its text queued, only then (`agentBounties`, `agentApprovals`).
+    job({ id: draftId, status: 'draft', task: 'A short public page that lists this coin’s milestones from its launch to today, with dates.', criteria: ['Every milestone carries a date', 'Nothing about price', 'Links the coin page as its source'], deliverable: 'link', micro: '300000', createdAt: at(900), postedAt: null, closesAt: at(-6 * H), postUrl: null }),
+    job({
+      id: proposedId,
+      status: 'proposed',
+      task: 'A public page, in your own words, that explains how this coin’s swap fee is split and who can claim each share.',
+      criteria: ['Names all four shares', 'Says the split is locked at launch', 'Links the coin page or Basescan as its source'],
+      deliverable: 'link',
+      micro: '400000',
+      createdAt: at(30 * H + 60),
+      postedAt: at(30 * H),
+      closesAt: at(24 * H),
+      postUrl: postUrl(22),
+      entries: { received: 5, eligible: 3, considered: 3, ineligible: { no_address: 1, account_too_new: 1 } },
+      verdict: { winner: 1, winningEntryUrl: entryUrl(1), perCriterion: { '1': ['pass', 'pass', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'pass', 'insufficient_evidence'] }, reason: 'A short page that names the four shares, says the split is fixed at launch and links the coin page.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(23 * H) },
+      payment: { status: 'proposed', payee: BOUNTY_PAYEE, amountUsdc: '0.4', txHash: null, txUrl: null, replyUrl: null, paidAt: null },
+    }),
+    job({
+      id: paidId,
+      status: 'paid',
+      task: 'A picture of the coin’s mascot owl at a night desk, for the agent’s next recap post.',
+      criteria: ['An owl at a desk', 'It is night', 'No words on the picture'],
+      deliverable: 'image',
+      micro: '500000',
+      createdAt: at(3 * 86400 + 60),
+      postedAt: at(3 * 86400),
+      closesAt: at(3 * 86400 - 6 * H),
+      postUrl: postUrl(23),
+      entries: { received: 7, eligible: 4, considered: 4, ineligible: { no_address: 2, duplicate_media: 1 } },
+      verdict: { winner: 2, winningEntryUrl: entryUrl(2), perCriterion: { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'pass'], '3': ['fail', 'pass', 'pass'], '4': ['pass', 'pass', 'fail'] }, reason: 'An owl at a desk lit by one lamp, night sky in the window, no words.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(3 * 86400 - 6 * H - 300) },
+      payment: { status: 'paid', payee: BOUNTY_PAYEE, amountUsdc: '0.5', txHash: paidTx, txUrl: `https://sepolia.basescan.org/tx/${paidTx}`, replyUrl: postUrl(24), paidAt: at(3 * 86400 - 8 * H) },
+      closedAt: at(3 * 86400 - 8 * H),
+    }),
+    job({
+      id: noneId,
+      status: 'no_winner',
+      task: 'A picture of an owl counting coins on a scale.',
+      criteria: ['An owl is in the picture', 'A scale with coins is in the picture', 'No words on the picture'],
+      deliverable: 'image',
+      micro: '300000',
+      createdAt: at(5 * 86400 + 60),
+      postedAt: at(5 * 86400),
+      closesAt: at(5 * 86400 - 6 * H),
+      postUrl: postUrl(25),
+      entries: { received: 4, eligible: 2, considered: 2, ineligible: { no_address: 1, repeat_author: 1 } },
+      verdict: { winner: null, winningEntryUrl: null, perCriterion: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'insufficient_evidence', 'fail'] }, reason: 'Neither picture shows both an owl and a scale without words.', invalid: null, deliveryHash: h32(), reasonHash: h32(), judgedAt: at(5 * 86400 - 6 * H - 300) },
+      closedAt: at(5 * 86400 - 6 * H - 300),
+      closeReplyUrl: postUrl(29),
+    }),
+  ];
+}
+
+function bountiesFor(kernel: string): BountyJob[] {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let list = s.bounties.get(key);
+  if (!list) {
+    const t = s.tokens.find((x) => x.kernel.toLowerCase() === key);
+    list = t ? buildBounties(t) : [];
+    s.bounties.set(key, list);
+  }
+  return list;
 }
 
 const MOCK_EVENTS: readonly { key: string; label: string }[] = [

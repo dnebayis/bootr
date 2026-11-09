@@ -13,7 +13,7 @@ test('the coin page header carries the creator’s way into the console page und
   const open = page.getByTestId('open-console');
   await expect(open).toHaveAttribute('href', `${coinUrl}/console`);
   await expect(open).toContainText('Creator console');
-  await expect(open.getByTestId('approvals-pending')).toHaveText('· 2 pending');
+  await expect(open.getByTestId('approvals-pending')).toHaveText('· 3 pending');
   const trade = page.locator('main header a[href="#trade"]');
   const [tradeBox, openBox] = [await trade.boundingBox(), await open.boundingBox()];
   expect(openBox!.y).toBeGreaterThan(tradeBox!.y + tradeBox!.height - 1);
@@ -26,14 +26,14 @@ test('the coin page header carries the creator’s way into the console page und
   await open.click();
   await expect(page).toHaveURL(new RegExp(`${coinUrl}/console$`));
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
-  await expect(console_.getByTestId('approvals-pending')).toHaveText('2 pending');
+  await expect(console_.getByTestId('approvals-pending')).toHaveText('3 pending');
   await expect(console_.getByRole('tab', { name: 'Mind' })).toHaveAttribute('aria-selected', 'true');
   await expect(console_.getByLabel('Instructions')).not.toHaveValue('');
   await expect(console_.getByTestId('config-revision')).toHaveText('not edited yet');
   // Moving between sections keeps the URL in step, so a section can be linked to.
   await console_.getByRole('tab', { name: 'Powers' }).click();
   await expect(page).toHaveURL(new RegExp(`${coinUrl}/console\\?section=powers$`));
-  expect(await console_.getByRole('switch').count()).toBe(6);
+  expect(await console_.getByRole('switch').count()).toBe(7);
   await console_.getByTestId('back-to-coin').click();
   await expect(page).toHaveURL(new RegExp(`${coinUrl}$`));
   await expect(page.getByTestId('open-console')).toBeVisible();
@@ -61,6 +61,6 @@ test('the console page at 375px keeps the sections as a tab strip with no horizo
   await page.goto(`${href}/console?section=powers`);
   const console_ = page.locator('section', { has: page.getByRole('heading', { name: 'Creator console' }) });
   await expect(console_.getByRole('tab', { name: 'Powers' })).toHaveAttribute('aria-selected', 'true');
-  expect(await console_.getByRole('switch').count()).toBe(6);
+  expect(await console_.getByRole('switch').count()).toBe(7);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
 });

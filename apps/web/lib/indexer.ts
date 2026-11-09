@@ -24,6 +24,7 @@ import type {
   AgentApproval,
   AgentApprovalCount,
   AgentApprovals,
+  AgentBounties,
   AgentChat,
   AgentChatMessage,
   AgentNotifications,
@@ -418,6 +419,15 @@ export async function fetchAgentActivity(kernel: string, before: string | null =
   return { items: Array.isArray(json.items) ? json.items : [] };
 }
 
+/** The jobs the agent posted with the Bounties power (`/api/agent/:kernel/bounties`, public), jobs in motion first. */
+export async function fetchAgentBounties(kernel: string): Promise<AgentBounties> {
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/bounties`, { cache: 'no-store' });
+  if (res.status === 404) return { jobs: [] };
+  if (!res.ok) throw new IndexerError(`Agent bounties responded ${res.status}`);
+  const json = (await res.json()) as Partial<AgentBounties>;
+  return { jobs: Array.isArray(json.jobs) ? json.jobs : [] };
+}
+
 /** How many posts wait for the creator's review (`/api/agent/:kernel/approvals`, public). */
 export async function fetchApprovalCount(kernel: string): Promise<AgentApprovalCount> {
   const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/approvals`, { cache: 'no-store' });
@@ -454,9 +464,12 @@ export function fetchApprovals(kernel: string, auth: ReviewAuth, status: 'pendin
   return reviewCall<AgentApprovals>(kernel, 'list', auth, status === 'all' ? '?status=all' : '');
 }
 
-/** Approve (sends the post now) or reject (with an optional note the agent reads) one queued item. */
-export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: string, decision: ApprovalDecision, note?: string): Promise<AgentApproval> {
-  return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(note ? { note } : {}) });
+/**
+ * Approve (sends the post now) or reject (with an optional note the agent reads) one queued item. A bounty payment is
+ * approved with `txHash`, the creator's own paying transaction.
+ */
+export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: string, decision: ApprovalDecision, extra: { note?: string; txHash?: string } = {}): Promise<AgentApproval> {
+  return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(extra.note ? { note: extra.note } : {}), ...(extra.txHash ? { txHash: extra.txHash } : {}) });
 }
 
 /** The creator's inbox badge: how many notifications are open. */
@@ -516,6 +529,7 @@ export const qk = {
   posts: (k: string) => ['posts', k.toLowerCase()] as const,
   agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
   agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
+  agentBounties: (kernel: string) => ['agent', kernel.toLowerCase(), 'bounties'] as const,
   approvalCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'approvals', 'count'] as const,
   notificationCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'notifications', 'count'] as const,
   consoleSession: (kernel: string) => ['agent', kernel.toLowerCase(), 'console-session'] as const,
@@ -622,6 +636,11 @@ export function useApprovalCount(kernel: string | undefined, enabled = true) {
 /** The console's inbox badge; polled while the page is open. */
 export function useNotificationCount(kernel: string | undefined, enabled = true) {
   return useQuery({ queryKey: qk.notificationCount(kernel ?? ''), queryFn: () => fetchNotificationCount(kernel!), enabled: !!kernel && enabled, staleTime: 30_000, refetchInterval: 60_000, retry: 1 });
+}
+
+/** The agent's bounties for the coin page's card; polled while the page is open, since jobs close and pay on their own. */
+export function useAgentBounties(kernel: string | undefined) {
+  return useQuery({ queryKey: qk.agentBounties(kernel ?? ''), queryFn: () => fetchAgentBounties(kernel!), enabled: !!kernel, staleTime: 30_000, refetchInterval: 60_000, retry: 1 });
 }
 
 /** Infinite activity tape; the next page starts before the last item's `at`. A short page means the end. */

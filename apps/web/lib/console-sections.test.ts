@@ -29,6 +29,7 @@ describe('changedSections', () => {
     expect(changedSections({ worker: { jobLines: ['a'] } })).toEqual(['posting']);
     expect(changedSections({ worker: { capabilities: { research: true } } })).toEqual(['powers']);
     expect(changedSections({ services: { dailyMicroUsdc: 1 } })).toEqual(['powers']);
+    expect(changedSections({ bounties: { maxOpen: 3 } })).toEqual(['powers']);
     expect(changedSections({ imageModel: 'x' })).toEqual(['look']);
     expect(changedSections({ imageStyle: { notes: 'flat' } })).toEqual(['look']);
     expect(changedSections({ imageStyle: { notes: 'flat' }, instructions: 'x', worker: { capabilities: { images: true }, jobLines: [] } })).toEqual(['mind', 'posting', 'powers', 'look']);

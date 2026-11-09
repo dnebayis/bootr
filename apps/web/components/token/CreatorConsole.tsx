@@ -8,7 +8,7 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityK
 import { qk } from '@/lib/indexer';
 import { fetchImageModels, fetchModels } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
-import { SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentConfig, type AgentConfigChanges, type Token } from '@/lib/types';
+import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS, type ConsoleSection } from '@/lib/console-sections';
@@ -59,7 +59,44 @@ type Draft = {
   servicesDailyUsdc: string;
   servicesAllow: string;
   servicesDeny: string;
+  /** Bounties bounds as typed: the daily cap in USDC (two decimals), whole open jobs, the cooldown in days, the window in hours. */
+  bountiesDailyUsdc: string;
+  bountiesMaxOpen: string;
+  bountiesCooldownDays: string;
+  bountiesHoursOpen: string;
+  bountiesReview: boolean;
 };
+
+const DAY_S = 86_400;
+
+/** "5" or "2.50" -> micro-USDC; null when the text is not a USDC amount with at most two decimals. */
+export function parseUsdcCents(text: string): number | null {
+  const t = text.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+  const [whole, frac = ''] = t.split('.');
+  return Number(whole) * 1_000_000 + Number((frac + '00').slice(0, 2)) * 10_000;
+}
+
+/** A whole number typed in a field, inside [min, max]; null otherwise. */
+function wholeIn(text: string, min: number, max: number): number | null {
+  const t = text.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= min && n <= max ? n : null;
+}
+
+/** The bounties bounds the draft asks for; null fields are invalid as typed. */
+export function bountiesDraft(d: Pick<Draft, 'bountiesDailyUsdc' | 'bountiesMaxOpen' | 'bountiesCooldownDays' | 'bountiesHoursOpen' | 'bountiesReview'>): { [K in Exclude<keyof AgentBountiesPolicy, 'review'>]: number | null } & { review: boolean } {
+  const daily = parseUsdcCents(d.bountiesDailyUsdc);
+  const cooldownDays = wholeIn(d.bountiesCooldownDays, 0, BOUNTIES_BOUNDS.cooldownMaxSeconds / DAY_S);
+  return {
+    dailyCapMicroUsdc: daily !== null && daily <= BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc ? daily : null,
+    maxOpen: wholeIn(d.bountiesMaxOpen, 0, BOUNTIES_BOUNDS.maxOpenMax),
+    cooldownSeconds: cooldownDays !== null ? cooldownDays * DAY_S : null,
+    defaultHoursOpen: wholeIn(d.bountiesHoursOpen, BOUNTIES_BOUNDS.hoursOpenMin, BOUNTIES_BOUNDS.hoursOpenMax),
+    review: d.bountiesReview,
+  };
+}
 
 /** "0.05" -> 50000; null when the text is not a USDC amount with at most 6 decimals. */
 export function parseUsdcMicro(text: string): number | null {
@@ -101,6 +138,11 @@ function draftOf(c: AgentConfig): Draft {
     servicesDailyUsdc: formatUsdcMicro(c.services.dailyMicroUsdc),
     servicesAllow: c.services.allow.join('\n'),
     servicesDeny: c.services.deny.join('\n'),
+    bountiesDailyUsdc: (c.bounties.dailyCapMicroUsdc / 1_000_000).toFixed(2),
+    bountiesMaxOpen: String(c.bounties.maxOpen),
+    bountiesCooldownDays: String(Math.round(c.bounties.cooldownSeconds / DAY_S)),
+    bountiesHoursOpen: String(c.bounties.defaultHoursOpen),
+    bountiesReview: c.bounties.review,
   };
 }
 
@@ -155,6 +197,14 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (sd.allow && JSON.stringify(sd.allow) !== JSON.stringify(config.services.allow)) services.allow = sd.allow;
   if (sd.deny && JSON.stringify(sd.deny) !== JSON.stringify(config.services.deny)) services.deny = sd.deny;
   if (Object.keys(services).length) changes.services = services;
+  const bd = bountiesDraft(d);
+  const bounties: NonNullable<AgentConfigChanges['bounties']> = {};
+  for (const key of ['dailyCapMicroUsdc', 'maxOpen', 'cooldownSeconds', 'defaultHoursOpen'] as const) {
+    const v = bd[key];
+    if (v !== null && v !== config.bounties[key]) bounties[key] = v;
+  }
+  if (bd.review !== config.bounties.review) bounties.review = bd.review;
+  if (Object.keys(bounties).length) changes.bounties = bounties;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -223,8 +273,8 @@ export function FuelOutlookStrip({ outlook }: { outlook: ReturnType<typeof useCo
  * The creator console, on its own page (`/token/:address/console`, ConsolePage.tsx) so it has the whole content
  * width: a sticky rail of sections on the left from `lg` (the dense tab strip on a phone) and the open section on the
  * right. Mind (instructions; model and economy mode side by side), Posting (posts per day and post review side by
- * side; job lines), Powers (the six switches in a three-column grid, the paid-services caps as a full-width row under
- * them while that power is on), Look (the agent's pictures; the coin's image and links side by side), Inbox
+ * side; job lines), Powers (the switches in a three-column grid, the paid-services caps and the bounties bounds as
+ * full-width rows under them while those powers are on), Look (the agent's pictures; the coin's image and links side by side), Inbox
  * (notifications and the review queue on the left, the chat on the right) and Fuel (fuel and gas side by side). The
  * four settings sections edit one draft, saved together from the sticky bar at the bottom with one wallet signature
  * (`POST /api/agent/:kernel/config`); the inbox, queue and chat share the console session's one signature
@@ -257,7 +307,9 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const styleOk = referenceOk && notesOk;
   const sd = draft ? servicesDraft(draft) : null;
   const servicesOk = !sd || (sd.perCallMicroUsdc !== null && sd.dailyMicroUsdc !== null && sd.perCallMicroUsdc <= sd.dailyMicroUsdc && sd.allow !== null && sd.deny !== null);
-  const valid = instructionsOk && styleOk && servicesOk;
+  const bd = draft ? bountiesDraft(draft) : null;
+  const bountiesOk = !bd || (bd.dailyCapMicroUsdc !== null && bd.maxOpen !== null && bd.cooldownSeconds !== null && bd.defaultHoursOpen !== null);
+  const valid = instructionsOk && styleOk && servicesOk && bountiesOk;
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
   const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
@@ -585,6 +637,49 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                     {servicesOk && sd?.dailyMicroUsdc != null
                       ? `Worst case: ${formatUsdcMicro(sd.dailyMicroUsdc)} USDC a day leaves the agent's fuel for services, whatever it is told. Each payment is public on the coin page with the agent's reason. Per call at most ${SERVICES_PER_CALL_MAX_MICRO_USDC / 1e6} USDC, per day at most ${SERVICES_DAILY_MAX_MICRO_USDC / 1e6}.`
                       : `Amounts are USDC with up to 6 decimals; per call at most ${SERVICES_PER_CALL_MAX_MICRO_USDC / 1e6} and never above the daily cap, per day at most ${SERVICES_DAILY_MAX_MICRO_USDC / 1e6}. Hosts are names like api.example.com or *.example.com.`}
+                  </p>
+                </Box>
+              ) : null}
+              {draft.capabilities.bounties ? (
+                <Box className="flex flex-col gap-3 bg-canvas-soft" data-testid="bounties-caps">
+                  <BlockTitle>Bounties</BlockTitle>
+                  <p className="text-caption text-body" data-testid="bounties-copy">
+                    The agent posts small jobs on X, work it can use itself, such as a picture for its next post or a page it will cite, and picks the best entry against the criteria it wrote. Each job pays 0.1 to 1 USDC; the agent chooses the amount inside the caps below. In this stage you pay each winner yourself: a proposed payment lands in your Inbox with the address and the amount, you send the USDC from your wallet and paste the transaction hash. Nothing is paid without your yes. Every job, verdict and payment is public on the coin page.
+                  </p>
+                  <p className="text-micro text-mute">The agent gets a separate hourly turn for its treasury while this is on.</p>
+                  <div className={"grid grid-cols-1 gap-3 @min-[18rem]:grid-cols-2 @min-[40rem]:grid-cols-4"}>
+                    <div>
+                      <Label htmlFor="console-bounties-daily" hint={<span className="font-mono tabular">USDC</span>}>
+                        Most per day
+                      </Label>
+                      <Input id="console-bounties-daily" value={draft.bountiesDailyUsdc} onChange={(e) => update({ bountiesDailyUsdc: e.target.value })} inputMode="decimal" aria-invalid={!bd || bd.dailyCapMicroUsdc === null} placeholder="5.00" />
+                    </div>
+                    <div>
+                      <Label htmlFor="console-bounties-max-open" hint={<span className="font-mono tabular">jobs</span>}>
+                        Open at a time
+                      </Label>
+                      <Input id="console-bounties-max-open" value={draft.bountiesMaxOpen} onChange={(e) => update({ bountiesMaxOpen: e.target.value })} inputMode="numeric" aria-invalid={!bd || bd.maxOpen === null} placeholder="2" />
+                    </div>
+                    <div>
+                      <Label htmlFor="console-bounties-cooldown" hint={<span className="font-mono tabular">days</span>}>
+                        Same winner again after
+                      </Label>
+                      <Input id="console-bounties-cooldown" value={draft.bountiesCooldownDays} onChange={(e) => update({ bountiesCooldownDays: e.target.value })} inputMode="numeric" aria-invalid={!bd || bd.cooldownSeconds === null} placeholder="7" />
+                    </div>
+                    <div>
+                      <Label htmlFor="console-bounties-hours" hint={<span className="font-mono tabular">hours</span>}>
+                        Entries taken for
+                      </Label>
+                      <Input id="console-bounties-hours" value={draft.bountiesHoursOpen} onChange={(e) => update({ bountiesHoursOpen: e.target.value })} inputMode="numeric" aria-invalid={!bd || bd.defaultHoursOpen === null} placeholder="6" />
+                    </div>
+                  </div>
+                  <SwitchRow title="Review every job text first" control={<Switch id="console-bounties-review" label="Review every job text first" checked={draft.bountiesReview} onChange={(v) => update({ bountiesReview: v })} />}>
+                    Each job waits in the Inbox’s review queue before it is posted, like a post.
+                  </SwitchRow>
+                  <p className={cn('text-micro', bountiesOk ? 'text-mute' : 'text-danger')} data-testid="bounties-bounds">
+                    {bountiesOk
+                      ? `Per day at most ${BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc / 1e6} USDC, counted when a job opens; at most ${BOUNTIES_BOUNDS.maxOpenMax} jobs open at a time; the same winner again after 0 (any time) to ${BOUNTIES_BOUNDS.cooldownMaxSeconds / DAY_S} days; entries taken for ${BOUNTIES_BOUNDS.hoursOpenMin} to ${BOUNTIES_BOUNDS.hoursOpenMax} hours unless the agent names a window.`
+                      : `Whole numbers: per day up to ${BOUNTIES_BOUNDS.dailyCapMaxMicroUsdc / 1e6} USDC with at most two decimals, open jobs 0 to ${BOUNTIES_BOUNDS.maxOpenMax}, cooldown 0 to ${BOUNTIES_BOUNDS.cooldownMaxSeconds / DAY_S} days, window ${BOUNTIES_BOUNDS.hoursOpenMin} to ${BOUNTIES_BOUNDS.hoursOpenMax} hours.`}
                   </p>
                 </Box>
               ) : null}

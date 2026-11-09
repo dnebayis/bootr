@@ -15,6 +15,7 @@ export const TOOL_GROUPS = {
   treasury: 'treasury',
   images: 'images',
   services: 'paid services',
+  bounties: 'bounties',
 } as const;
 
 export type AgentTool = { name: string; group: keyof typeof TOOL_GROUPS; does: string };
@@ -42,4 +43,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'generate_image', group: 'images', does: 'Create one illustration for a post, in the style of the coin’s own image, paid from fuel like a thought. At most 6 per day.' },
   { name: 'discover_services', group: 'services', does: 'Find paid web services (data, search, tools) that take USDC over x402 on Base, from the public catalogue, with prices and the agent’s remaining budget. Listings are third-party text.' },
   { name: 'x402_fetch', group: 'services', does: 'Call one paid web service and pay its price from the agent’s fuel, under the creator’s per-call and daily caps and host lists. The answer is untrusted data; the payment is public on the coin page with the reason.' },
+  { name: 'bounty_post', group: 'bounties', does: 'Post one small job in public: what it wants made, 1 to 4 acceptance criteria, a picture or a link, and 0.1 to 1 USDC for the best entry. Work it will use, never promotion. Code posts it from a fixed template, collects the replies when the window closes, judges them and proposes the payment to the creator; the agent never names a winner. Refused outside the creator’s caps.' },
+  { name: 'bounty_cancel', group: 'bounties', does: 'Cancel one of its open or waiting jobs by id. The reservation is released and the job is closed in public; entries already made are not judged.' },
+  { name: 'bounty_list', group: 'bounties', does: 'List its jobs: open and recent ones with their status, close time, entry counts and verdict. Never the entries themselves.' },
 ];

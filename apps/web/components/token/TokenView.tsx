@@ -21,6 +21,7 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { Isometric } from '@/components/art/Isometric';
 import { AgentPanel } from './AgentPanel';
+import { BountiesCard } from './BountiesCard';
 import { XLinkedBadge } from './XLinkedBadge';
 import { AgentStatusLine } from './AgentStatusLine';
 import { ActivityTape } from './ActivityTape';
@@ -212,6 +213,8 @@ export function TokenView({ address }: { address: string }) {
         </div>
         <aside className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-start-2">
           <AgentPanel token={token} now={now} />
+          {/* The jobs the agent posted with the Bounties power; absent while there are none. */}
+          <BountiesCard token={token} now={now} />
           {/* The creator's first steps while the agent is new; the console itself is its own page, reached from the Trade panel. */}
           {isCreator ? <FirstSteps token={token} agent={token.agent} /> : null}
           <ActivityTape token={token} now={now} />

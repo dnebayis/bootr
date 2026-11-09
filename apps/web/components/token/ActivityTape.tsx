@@ -20,7 +20,7 @@ const FILTERS: { id: Filter; label: string }[] = [
 ];
 
 const POST_KIND = /^(post|reply|x_post|x_reply|tweet)/i;
-const TREASURY_KIND = /claim|swap|gas|fuel|treasury|spender|transfer|deposit/i;
+const TREASURY_KIND = /claim|swap|gas|fuel|treasury|spender|transfer|deposit|service|bounty/i;
 
 /** Posts are what the agent said on X; treasury is anything that moved value (every row with a tx hash counts). */
 export function activityCategory(it: Pick<AgentActivityItem, 'kind' | 'txHash'>): 'posts' | 'treasury' | 'other' {
