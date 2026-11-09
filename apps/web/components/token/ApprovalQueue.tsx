@@ -3,11 +3,14 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { explorer } from '@/lib/chains';
 import { ago } from '@/lib/format';
 import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
-import type { AgentApproval, AgentApprovals, ApprovalDecision, Token } from '@/lib/types';
+import type { AgentApproval, AgentApprovals, ApprovalDecision, BountyPaymentRequest, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { CopyButton } from '@/components/ui/CopyButton';
+import { ExternalLink } from '@/components/ui/ExternalLink';
 import { Input } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
 import { useConsoleSession } from './console-session';
@@ -20,7 +23,17 @@ export function expiresLabel(expiresAt: string, now = Date.now()): string {
   return h >= 1 ? `expires in ${Math.round(h)} h` : `expires in ${Math.max(1, Math.round(ms / 60_000))} min`;
 }
 
-function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; onDecide: (decision: ApprovalDecision, note: string) => void }) {
+/** "0.50 USDC" from a decimal string of micro-USDC. */
+export function usdcLabel(micro: string | number): string {
+  return `${(Number(micro) / 1_000_000).toFixed(2)} USDC`;
+}
+
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/** What the creator decides with: a note on a rejection, the paying transaction's hash on a bounty payment. */
+export type Decision = { note?: string; txHash?: string };
+
+function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; onDecide: (decision: ApprovalDecision, extra: Decision) => void }) {
   const [note, setNote] = useState('');
   const unix = Math.floor(Date.parse(item.createdAt) / 1000);
   return (
@@ -42,10 +55,10 @@ function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; on
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Note for the agent (optional, sent with a rejection)" aria-label="Note for the agent" className="min-w-0 flex-1" disabled={busy} />
         <div className="flex shrink-0 gap-2">
-          <Button type="button" variant="ink" size="sm" disabled={busy} onClick={() => onDecide('approve', note)}>
+          <Button type="button" variant="ink" size="sm" disabled={busy} onClick={() => onDecide('approve', { note })}>
             Approve
           </Button>
-          <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => onDecide('reject', note)}>
+          <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => onDecide('reject', { note })}>
             Reject
           </Button>
         </div>
@@ -55,9 +68,94 @@ function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; on
 }
 
 /**
+ * A bounty payment the agent proposes: the job, the amount, the payee, the judge's reason and the winning entry. The
+ * creator pays from their own wallet (a plain USDC transfer of the amount to the payee) and pastes the transaction hash
+ * here; the page never sends that transaction. Reject closes the job unpaid, with an optional note.
+ */
+function BountyItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bounty: BountyPaymentRequest; busy: boolean; onDecide: (decision: ApprovalDecision, extra: Decision) => void }) {
+  const [txHash, setTxHash] = useState('');
+  const [note, setNote] = useState('');
+  const hashOk = TX_HASH_RE.test(txHash.trim());
+  const unix = Math.floor(Date.parse(item.createdAt) / 1000);
+  const amount = usdcLabel(bounty.amountMicroUsdc);
+  return (
+    <li data-testid="approval-item" data-approval-id={item.id} data-kind="bounty_payment" className="flex flex-col gap-2 py-3">
+      <div className="flex items-center gap-2">
+        <Badge tone="ink">Bounty payment</Badge>
+        <span className="font-mono text-sm text-ink tabular" data-testid="bounty-amount">
+          {amount}
+        </span>
+        <span className="ml-auto font-mono text-micro text-mute tabular" title={new Date(item.createdAt).toLocaleString()}>
+          {ago(unix)} · {expiresLabel(item.expiresAt)}
+        </span>
+      </div>
+      {item.text ? <p className="break-words text-sm text-ink">{item.text}</p> : null}
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
+        <dt className="text-mute">Pay to</dt>
+        <dd className="flex min-w-0 flex-wrap items-center gap-1 font-mono text-ink" data-testid="bounty-payee">
+          <a href={explorer.address(bounty.payee)} target="_blank" rel="noopener noreferrer" className="break-all hover:text-link" title="View on Basescan">
+            {bounty.payee}
+          </a>
+          <CopyButton value={bounty.payee} label="Copy the payee address" />
+        </dd>
+        {bounty.reason ? (
+          <>
+            <dt className="text-mute">Why</dt>
+            <dd className="break-words text-body" data-testid="bounty-reason">
+              {bounty.reason}
+            </dd>
+          </>
+        ) : null}
+        <dt className="text-mute">Entry</dt>
+        <dd className="min-w-0">
+          {bounty.entryReplyUrl ? (
+            <ExternalLink href={bounty.entryReplyUrl} className="text-link hover:underline">
+              The winning entry on X
+            </ExternalLink>
+          ) : (
+            <span className="text-mute">no link</span>
+          )}
+        </dd>
+      </dl>
+      <p className="text-caption text-body" data-testid="bounty-instructions">
+        Send {amount} from your wallet to this address, then paste the transaction hash.
+      </p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input
+          value={txHash}
+          onChange={(e) => setTxHash(e.target.value)}
+          maxLength={66}
+          placeholder="0x… the transaction hash"
+          aria-label="Transaction hash"
+          aria-invalid={txHash.trim() !== '' && !hashOk}
+          mono
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1"
+          disabled={busy}
+          data-testid="bounty-tx-hash"
+        />
+        <Button type="button" variant="ink" size="sm" className="shrink-0" disabled={busy || !hashOk} onClick={() => onDecide('approve', { txHash: txHash.trim() })} data-testid="bounty-paid">
+          I paid, here is the transaction
+        </Button>
+      </div>
+      {txHash.trim() !== '' && !hashOk ? <p className="text-micro text-danger">A transaction hash is 0x followed by 64 hex characters.</p> : null}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Why not (optional, kept with the decision)" aria-label="Note for the agent" className="min-w-0 flex-1" disabled={busy} />
+        <Button type="button" variant="secondary" size="sm" className="shrink-0" disabled={busy} onClick={() => onDecide('reject', { note })} data-testid="bounty-reject">
+          Do not pay
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/**
  * The creator's review queue inside the console: posts and replies the agent wants to send while "Review posts
- * before they go out" is on. The console's one wallet signature opens the queue (console-session.ts); Approve sends the post through the agent's X account now, Reject tells the agent why on
- * its next turn. In mock mode the signature is skipped.
+ * before they go out" is on, and the bounty payments it proposes while Bounties is on. The console's one wallet
+ * signature opens the queue (console-session.ts); Approve sends the post through the agent's X account now, Reject tells
+ * the agent why on its next turn; a bounty payment is approved with the creator's paying transaction hash. In mock mode
+ * the signature is skipped.
  */
 export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: boolean }) {
   const session = useConsoleSession(token);
@@ -90,17 +188,22 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
     }
   };
 
-  const decide = async (item: AgentApproval, decision: ApprovalDecision, note: string) => {
+  const decide = async (item: AgentApproval, decision: ApprovalDecision, extra: Decision) => {
     setBusy(item.id);
     try {
       const auth = await session.auth();
       if (!auth) return;
-      const decided = await decideApproval(token.kernel, auth, item.id, decision, note.trim() || undefined);
+      const decided = await decideApproval(token.kernel, auth, item.id, decision, { note: extra.note?.trim() || undefined, txHash: extra.txHash });
       setList((prev) => (prev ? { ...prev, items: prev.items.filter((i) => i.id !== item.id), pending: Math.max(0, prev.pending - 1) } : prev));
       queryClient.setQueryData(qk.approvalCount(token.kernel), (c: { pending: number } | undefined) => ({ pending: Math.max(0, (c?.pending ?? 1) - 1) }));
       void queryClient.invalidateQueries({ queryKey: qk.agentActivity(token.kernel) });
       void queryClient.invalidateQueries({ queryKey: qk.posts(token.agentId) });
-      toast.success(decided.status === 'approved' ? (decided.url ? 'Approved and posted on X.' : 'Approved: the agent is sending it.') : 'Rejected. The agent will see your note on its next turn.');
+      if (item.kind === 'bounty_payment') {
+        void queryClient.invalidateQueries({ queryKey: qk.agentBounties(token.kernel) });
+        toast.success(decided.status === 'approved' ? 'Recorded. The payment is on the coin page.' : 'Declined. The job closes unpaid.');
+      } else {
+        toast.success(decided.status === 'approved' ? (decided.url ? 'Approved and posted on X.' : 'Approved: the agent is sending it.') : 'Rejected. The agent will see your note on its next turn.');
+      }
     } catch (err) {
       if (err instanceof ReviewError && err.status === 401) {
         session.forget();
@@ -144,9 +247,13 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
         </p>
       ) : (
         <ul className="mt-1 divide-y divide-hairline">
-          {list.items.map((item) => (
-            <Item key={item.id} item={item} busy={busy === item.id} onDecide={(d, note) => void decide(item, d, note)} />
-          ))}
+          {list.items.map((item) =>
+            item.kind === 'bounty_payment' && item.bounty ? (
+              <BountyItem key={item.id} item={item} bounty={item.bounty} busy={busy === item.id} onDecide={(d, extra) => void decide(item, d, extra)} />
+            ) : (
+              <Item key={item.id} item={item} busy={busy === item.id} onDecide={(d, extra) => void decide(item, d, extra)} />
+            ),
+          )}
         </ul>
       )}
     </div>
