@@ -3,7 +3,7 @@ import { getAbiItem } from 'viem';
 
 import { AgentGuardianAbi } from './abis/AgentGuardian';
 import { BootrClankerLauncherAbi } from './abis/BootrClankerLauncher';
-import { ClankerV5LaunchedEvent } from './abis/BootrClankerLauncherV5';
+import { ClankerV5LaunchedEvent, ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent } from './abis/BootrClankerLauncherV5';
 import { BootrLauncherAbi } from './abis/BootrLauncher';
 import { BuybackBurnerAbi } from './abis/BuybackBurner';
 import { B20TokenAbi } from './abis/B20Token';
@@ -104,8 +104,11 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const;
 const launchers: readonly `0x${string}`[] = hasLauncher ? launcherAddresses : [ZERO];
 /** Every followed Clanker launcher (v4 and v5 wrappers alike). */
 const clankerLaunchers: readonly `0x${string}`[] = hasClankerLauncher ? clankerLauncherAddresses : [ZERO];
-/** The v4 wrapper's ABI plus the v5 wrapper's own launch event: one source follows every Clanker launcher. */
-const clankerLauncherAbi = [...BootrClankerLauncherAbi, ClankerV5LaunchedEvent] as const;
+/**
+ * The v4 wrapper's ABI plus the v5 wrapper's own events (its launch event, the creator's metadata edits and the
+ * paired-asset allow-list): one source follows every Clanker launcher.
+ */
+const clankerLauncherAbi = [...BootrClankerLauncherAbi, ClankerV5LaunchedEvent, ...ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent] as const;
 /** Every launcher of either path: they emit the same `AgentLaunched`, which announces the coins. */
 const allLaunchers: readonly `0x${string}`[] = [
   ...(enabled.BootrLauncher ? launcherAddresses : []),
@@ -122,7 +125,9 @@ const allContracts = {
   },
   /**
    * `AgentLaunched` (same ABI as BootrLauncher), `ClankerLaunched` (v4: pool id, hook, locker, MEV module, fee) and
-   * `ClankerV5Launched` (v5: pool id, hook, escrow, quote, tick spacing, tax, anti-snipe).
+   * `ClankerV5Launched` (v5: pool id, hook, escrow, quote, tick spacing, buy and sell tax, burn, dividends, sniper tax,
+   * editable metadata), the v5 creator's `CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked` and the
+   * owner's `QuoteAllowedUpdated`.
    */
   BootrClankerLauncher: {
     abi: clankerLauncherAbi,
@@ -180,7 +185,11 @@ const allContracts = {
     address: env.clanker?.feeLocker ?? ZERO,
     startBlock: clankerStartBlock,
   },
-  /** v5: `CreatorTaxCredited` (a fee slot's exact share of a swap's tax) and `BurnTaxCredited` (the burn, in the coin). */
+  /**
+   * v5: `CreatorTaxCredited` (a fee slot's exact share of a swap's tax), `BurnTaxCredited` (the burn, in the coin),
+   * `DividendTaxCredited` / `DividendTaxRedirected` (the holder dividends' share) and a slot admin's
+   * `FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated`.
+   */
   ClankerV5Hook: {
     abi: ClankerV5HookAbi,
     chain,

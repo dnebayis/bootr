@@ -7,12 +7,27 @@
  */
 import { decodeEventLog, toEventSelector, type Address, type Hex } from 'viem';
 
-import { ClankerV5LaunchedEvent } from '../../abis/BootrClankerLauncherV5';
+import { ClankerV5LaunchedEvent, ClankerV5LaunchedFixedEvent, ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent } from '../../abis/BootrClankerLauncherV5';
 import { ClankerAbi } from '../../abis/Clanker';
 import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
 import { ClankerLpLockerFeeConversionAbi } from '../../abis/ClankerLpLockerFeeConversion';
-import { ClankerV5FactoryAbi, ClankerV5FeeEscrowAbi, ClankerV5HookAbi, PoolManagerLaunchAbi } from '../../abis/ClankerV5';
-import { CLANKER_V5_SCALE, clankerV5ProtocolBps, clankerV5SlotBps, clankerV5SlotWeights, DEAD_ADDRESS, REWARD_BPS_TOTAL, type ClankerV5ProtocolPolicy, type RecipientKind, type RewardSlot } from './fees';
+import { ClankerV5FactoryAbi, ClankerV5FeeEscrowAbi, ClankerV5HookAbi, ClankerV5TokenAbi, PoolManagerLaunchAbi } from '../../abis/ClankerV5';
+import {
+  CLANKER_V5_SCALE,
+  CLANKER_V5_TAX_RATE_MULTIPLIER,
+  classifyV5Slots,
+  clankerV5ProtocolBps,
+  clankerV5SlotBps,
+  clankerV5SlotWeights,
+  DEAD_ADDRESS,
+  REWARD_BPS_TOTAL,
+  settingsSlotWeights,
+  type ClankerV5ProtocolPolicy,
+  type ClankerV5SlotLayout,
+  type RecipientKind,
+  type RewardSlot,
+  type SlotKind,
+} from './fees';
 import { positionTicks, TICK_SPACING, type PoolKey } from './pool';
 
 /** Uniswap v4 `LPFeeLibrary.DYNAMIC_FEE_FLAG`: Clanker pools are dynamic-fee pools, the hook sets the LP fee. */
@@ -149,7 +164,11 @@ export const CLANKER_V5_SUPPLY = 10n ** 27n;
 /** Uniswap v4's usable tick bounds at Clanker v5's tick spacing of 200 (`TickMath.MIN_TICK` rounded inwards). */
 const MAX_TICK = 887_272;
 
-/** `ClankerV5Launched` as decoded from the v5 wrapper. */
+/**
+ * `ClankerV5Launched` as decoded from the v5 wrapper (`decodeClankerV5Launched`). `layout` says which launcher emitted
+ * it: `settings` (the token-settings launcher: its own buy and sell tax, burn, dividends, editable metadata) or `fixed`
+ * (the fixed launcher, one tax for both sides, never deployed). `taxBps` is the buy tax (the coin's `lpFeeBps`).
+ */
 export type ClankerV5LaunchedArgs = {
   token: Address;
   poolId: Hex;
@@ -158,7 +177,15 @@ export type ClankerV5LaunchedArgs = {
   quoteToken: Address;
   tickSpacing: number;
   taxBps: number;
+  buyTaxBps: number;
+  sellTaxBps: number;
+  /** bps of the post-Clanker pool; null on the fixed launcher (the preset's `defaults.burnBps` then). */
+  burnBps: number | null;
+  dividendBps: number | null;
   antiSnipe: boolean;
+  /** null on the fixed launcher (its coins were not editable). */
+  metadataEditable: boolean | null;
+  layout: ClankerV5SlotLayout;
 };
 
 /** One fee slot of a v5 pool as the hook registered it (`FeeSlotCreated` / `poolFeeSlots`). */
@@ -171,15 +198,30 @@ export type ClankerV5LaunchFacts = {
   slots: ClankerV5HookSlot[];
   /** `LaunchTaxConfigured`: the policy admitted for this pool and the coin's tax configuration (1e8 scale). */
   policy: ClankerV5ProtocolPolicy | null;
+  /** `buyTaxRate` (1e8 scale). */
   taxRate: number | null;
+  /** `sellTaxRate` (1e8 scale). */
+  sellTaxRate: number | null;
   /** `burnAllocationShare` in bps of the slot pool (1e8 scale / 1e4). */
   burnBps: number | null;
+  /** `dividendAllocationShare` in bps of the slot pool. */
+  dividendBps: number | null;
+  /** `minimumDividendHolding` (raw token units). */
+  minDividendHolding: bigint | null;
+  /** `LaunchTaxConfigured.antiSnipeEnabled`. */
+  antiSnipe: boolean | null;
   /** `Launched.launchSupply`. */
   launchSupply: bigint | null;
+  /** `Launched.quoteToken` (native ETH = the zero address). */
+  quoteToken: Address | null;
   /** `Initialize.tick`: the pool's opening tick, in the pool's own frame. */
   startingTick: number | null;
   /** The seeded position: the first `ModifyLiquidity` range of the pool and the liquidity added in the receipt. */
   position: { tickLower: number; tickUpper: number; liquidity: bigint } | null;
+  /** The coin's genesis `ExtraMetadataUpdated(factory, key, value)`: `image`, `metadata`, `context`. */
+  extraMetadata: Record<string, string>;
+  /** The coin's `DividendInitialized(dividendContract)`: its holder-dividend tracker, null without dividends. */
+  dividendContract: Address | null;
 };
 
 type AnyLog = { address: string; topics: readonly Hex[]; data: Hex; logIndex?: number | null };
@@ -196,32 +238,88 @@ function decode<const A extends readonly unknown[]>(abi: A, l: AnyLog) {
 }
 
 /**
+ * The one decoder of the launcher's `ClankerV5Launched` (both shapes, abis/BootrClankerLauncherV5.ts): the
+ * token-settings shape first, the fixed launcher's as the fallback. Null for any other log.
+ */
+export function decodeClankerV5Launched(l: AnyLog): ClankerV5LaunchedArgs | null {
+  const v2 = decode([ClankerV5LaunchedEvent], l);
+  if (v2?.eventName === 'ClankerV5Launched') {
+    const x = v2.args;
+    return {
+      token: lc(x.token as Address),
+      poolId: lc(x.poolId as Hex),
+      hook: lc(x.hook as Address),
+      feeEscrow: lc(x.feeEscrow as Address),
+      quoteToken: lc(x.quoteToken as Address),
+      tickSpacing: Number(x.tickSpacing),
+      taxBps: Number(x.buyTaxBps),
+      buyTaxBps: Number(x.buyTaxBps),
+      sellTaxBps: Number(x.sellTaxBps),
+      burnBps: Number(x.burnBps),
+      dividendBps: Number(x.dividendBps),
+      antiSnipe: Boolean(x.antiSnipe),
+      metadataEditable: Boolean(x.metadataEditable),
+      layout: 'settings',
+    };
+  }
+  const v1 = decode([ClankerV5LaunchedFixedEvent], l);
+  if (v1?.eventName === 'ClankerV5Launched') {
+    const x = v1.args;
+    return {
+      token: lc(x.token as Address),
+      poolId: lc(x.poolId as Hex),
+      hook: lc(x.hook as Address),
+      feeEscrow: lc(x.feeEscrow as Address),
+      quoteToken: lc(x.quoteToken as Address),
+      tickSpacing: Number(x.tickSpacing),
+      taxBps: Number(x.taxBps),
+      buyTaxBps: Number(x.taxBps),
+      sellTaxBps: Number(x.taxBps),
+      burnBps: null,
+      dividendBps: null,
+      antiSnipe: Boolean(x.antiSnipe),
+      metadataEditable: null,
+      layout: 'fixed',
+    };
+  }
+  return null;
+}
+
+/** 1e8-scale share to bps of 10_000 (Clanker's `*AllocationShare` / 1e4). */
+const shareBps = (share: unknown) => Math.round((Number(share) * REWARD_BPS_TOTAL) / CLANKER_V5_SCALE);
+
+/**
  * Read a v5 launch receipt: the wrapper's `ClankerV5Launched` (from `launcher`), the hook's `FeeSlotCreated`, the
- * factory's `LaunchTaxConfigured` and `Launched`, the PoolManager's `Initialize` and `ModifyLiquidity`, all for
- * `token` and its pool. Logs of other emitters and other pools are ignored.
+ * factory's `LaunchTaxConfigured` and `Launched`, the PoolManager's `Initialize` and `ModifyLiquidity`, the coin's
+ * genesis `ExtraMetadataUpdated` and `DividendInitialized`, all for `token` and its pool. Logs of other emitters and
+ * other pools are ignored.
  */
 export function clankerV5LaunchFacts(
   logs: readonly AnyLog[],
   a: { token: Address; launcher: Address; poolManager: Address; factory: Address | null },
 ): ClankerV5LaunchFacts {
   const token = lc(a.token);
-  const out: ClankerV5LaunchFacts = { launched: null, slots: [], policy: null, taxRate: null, burnBps: null, launchSupply: null, startingTick: null, position: null };
+  const out: ClankerV5LaunchFacts = {
+    launched: null,
+    slots: [],
+    policy: null,
+    taxRate: null,
+    sellTaxRate: null,
+    burnBps: null,
+    dividendBps: null,
+    minDividendHolding: null,
+    antiSnipe: null,
+    launchSupply: null,
+    quoteToken: null,
+    startingTick: null,
+    position: null,
+    extraMetadata: {},
+    dividendContract: null,
+  };
   for (const l of logs) {
     if (lc(l.address) !== lc(a.launcher)) continue;
-    const ev = decode([ClankerV5LaunchedEvent], l);
-    if (ev?.eventName === 'ClankerV5Launched' && lc(ev.args.token as Address) === token) {
-      const x = ev.args;
-      out.launched = {
-        token: lc(x.token as Address),
-        poolId: lc(x.poolId as Hex),
-        hook: lc(x.hook as Address),
-        feeEscrow: lc(x.feeEscrow as Address),
-        quoteToken: lc(x.quoteToken as Address),
-        tickSpacing: Number(x.tickSpacing),
-        taxBps: Number(x.taxBps),
-        antiSnipe: Boolean(x.antiSnipe),
-      };
-    }
+    const ev = decodeClankerV5Launched(l);
+    if (ev && ev.token === token) out.launched = ev;
   }
   const launched = out.launched;
   if (!launched) return out;
@@ -239,6 +337,10 @@ export function clankerV5LaunchFacts(
           weightBps: Number(ev.args.weightBps),
         });
       }
+    } else if (addr === token) {
+      const ev = decode(ClankerV5TokenAbi, l);
+      if (ev?.eventName === 'ExtraMetadataUpdated') out.extraMetadata[ev.args.metadataKey as string] = ev.args.metadataValue as string;
+      else if (ev?.eventName === 'DividendInitialized') out.dividendContract = lc(ev.args.dividendContract as Address);
     } else if (addr === lc(a.poolManager) && l.topics[1] && lc(l.topics[1]) === poolId) {
       const ev = decode(PoolManagerLaunchAbi, l);
       if (ev?.eventName === 'Initialize') out.startingTick = Number(ev.args.tick);
@@ -260,15 +362,66 @@ export function clankerV5LaunchFacts(
         };
         const cfg = ev.args.taxConfiguration as Record<string, unknown>;
         out.taxRate = Number(cfg.buyTaxRate);
-        out.burnBps = Math.round((Number(cfg.burnAllocationShare) * REWARD_BPS_TOTAL) / CLANKER_V5_SCALE);
+        out.sellTaxRate = Number(cfg.sellTaxRate);
+        out.burnBps = shareBps(cfg.burnAllocationShare);
+        out.dividendBps = shareBps(cfg.dividendAllocationShare);
+        out.minDividendHolding = cfg.minimumDividendHolding as bigint;
+        out.antiSnipe = Boolean(ev.args.antiSnipeEnabled);
       } else if (ev?.eventName === 'Launched' && lc(ev.args.token as Address) === token) {
         out.launchSupply = ev.args.launchSupply as bigint;
+        out.quoteToken = lc(ev.args.quoteToken as Address);
       }
     }
   }
   if (out.position) out.position.liquidity = liquidity;
   out.slots.sort((x, y) => x.slot - y.slot);
   return out;
+}
+
+/** A v5 coin's token settings as stored on the token row (docs/design/clanker-v5-token-settings.md). */
+export type ClankerV5Settings = {
+  /** Hundredths of a bip (15_000 = 1.5%), like `lpFeeBps`. */
+  buyTaxBps: number;
+  sellTaxBps: number;
+  /** Shares of the post-Clanker pool in bps (Clanker's allocation shares / 1e4). */
+  burnBps: number;
+  dividendBps: number;
+  /** Raw token units; null when the coin pays no dividends. */
+  minDividendHolding: bigint | null;
+  antiSnipe: boolean;
+  metadataEditable: boolean;
+  /** The pool's paired asset (native ETH = the zero address). */
+  quoteToken: Address;
+  layout: ClankerV5SlotLayout;
+};
+
+/**
+ * The one place a v5 coin's settings are decided, from the launch facts: the launcher's `ClankerV5Launched` first,
+ * then Clanker's own `LaunchTaxConfigured` / `Launched` (verified events of the same receipt), then the launch
+ * defaults (`AgentLaunched.defaults`: `lpFeeBps` = buy tax, `burnBps`).
+ */
+export function clankerV5Settings(
+  facts: Pick<ClankerV5LaunchFacts, 'taxRate' | 'sellTaxRate' | 'burnBps' | 'dividendBps' | 'minDividendHolding' | 'antiSnipe' | 'quoteToken'> & {
+    launched: ClankerV5LaunchedArgs;
+  },
+  defaults: { lpFeeBps: number; burnBps: number },
+): ClankerV5Settings {
+  const l = facts.launched;
+  const pips = (rate: number | null) => (rate !== null && rate > 0 ? Math.round(rate / CLANKER_V5_TAX_RATE_MULTIPLIER) : null);
+  const buyTaxBps = l.buyTaxBps || pips(facts.taxRate) || defaults.lpFeeBps;
+  const sellTaxBps = l.sellTaxBps || pips(facts.sellTaxRate) || buyTaxBps;
+  const dividendBps = l.dividendBps ?? facts.dividendBps ?? 0;
+  return {
+    buyTaxBps,
+    sellTaxBps,
+    burnBps: l.burnBps ?? facts.burnBps ?? defaults.burnBps,
+    dividendBps,
+    minDividendHolding: dividendBps > 0 ? (facts.minDividendHolding ?? null) : null,
+    antiSnipe: l.antiSnipe,
+    metadataEditable: l.metadataEditable ?? false,
+    quoteToken: lc(l.quoteToken || facts.quoteToken || '0x0000000000000000000000000000000000000000') as Address,
+    layout: l.layout,
+  };
 }
 
 /** The v4 pool key Clanker v5 builds: currencies sorted (native ETH, `address(0)`, is always currency0), fee 0. */
@@ -294,40 +447,71 @@ export function clankerV5PositionTicks(startingTick: number, coinIsToken0: boole
 }
 
 /**
- * A v5 coin's reward slots as stored on the token and `feeSlot` rows: the hook's paid slots in their order (kernel,
- * creator, platform; bps of the tax after Clanker's share) and, when the coin burns, a synthetic burn slot
- * (`0x…dEaD`, the hook's `BURN_SINK`) after them. `protocolBps` is Clanker's share of the tax. Without hook slots the
- * weights come from the preset (`clankerV5SlotWeights`) and the recipients from `AgentLaunched`.
+ * A v5 coin's reward slots as stored on the token and `feeSlot` rows: the hook's paid slots in their order with their
+ * kinds (`classifyV5Slots`: by recipient and admin) and their bps of the tax after Clanker's share, and, when the coin
+ * burns, a synthetic burn slot (`0x…dEaD`, the hook's `BURN_SINK`) after them. `protocolBps` is Clanker's share of the
+ * buy tax; `dividendBps` the holder dividends' part of the tax (no slot: the hook pays the coin's tracker). Without
+ * hook slots the weights come from the launch defaults (`clankerV5SlotWeights` / `settingsSlotWeights`) and the
+ * recipients from `AgentLaunched`.
  */
 export function clankerV5Slots(
-  facts: Pick<ClankerV5LaunchFacts, 'slots' | 'policy' | 'taxRate' | 'burnBps'>,
+  facts: Pick<ClankerV5LaunchFacts, 'slots' | 'policy'>,
   a: {
     launcher: Address;
     kernel: Address;
     creator: Address;
     taxBps: number;
+    /** Shares of the post-Clanker pool, as decided by `clankerV5Settings`. */
+    burnBps: number;
+    dividendBps?: number;
+    layout?: ClankerV5SlotLayout;
     defaults: { agentBps: number; burnBps: number; platformBps: number; platformRecipient: Address };
   },
-): { rewards: RewardSlot[]; burnSlot: number | null; protocolBps: number } {
+): { rewards: RewardSlot[]; kinds: (SlotKind | null)[]; burnSlot: number | null; protocolBps: number; dividendBps: number } {
+  const layout = a.layout ?? 'fixed';
+  const dividendShare = a.dividendBps ?? 0;
   const protocolBps = clankerV5ProtocolBps(a.taxBps, facts.policy ?? undefined);
-  const burnShare = facts.burnBps ?? a.defaults.burnBps;
-  const hook: ClankerV5HookSlot[] = facts.slots.length
-    ? facts.slots
-    : clankerV5SlotWeights(a.defaults).map((weightBps, slot) => ({
+  const launcher = lc(a.launcher);
+  const fallback = (): ClankerV5HookSlot[] => {
+    if (layout === 'fixed') {
+      return clankerV5SlotWeights({ ...a.defaults, burnBps: a.burnBps }).map((weightBps, slot) => ({
         slot,
         weightBps,
-        admin: lc(a.launcher),
+        admin: launcher,
         recipient: lc([a.kernel, a.creator, a.defaults.platformRecipient][slot]!),
       }));
-  const { paid, burn } = clankerV5SlotBps(
+    }
+    const weights = settingsSlotWeights({ agentBps: a.defaults.agentBps, platformBps: a.defaults.platformBps, burnBps: a.burnBps, dividendBps: dividendShare });
+    const who: [Address, Address][] = [
+      [a.kernel, launcher],
+      [a.defaults.platformRecipient, launcher],
+      [a.creator, a.creator],
+    ];
+    return weights.map((weightBps, slot) => ({ slot, weightBps, recipient: lc(who[slot]![0]), admin: lc(who[slot]![1]) }));
+  };
+  const hook: ClankerV5HookSlot[] = facts.slots.length ? facts.slots : fallback();
+  const kinds = classifyV5Slots(
+    hook,
+    { launcher, kernel: a.kernel, creator: a.creator, platformRecipient: a.defaults.platformRecipient },
+    layout,
+  );
+  // Settings layout: the rounding gap goes where Clanker puts its wei remainder, the last slot, which is a creator row
+  // whenever there is one (never the platform); with only agent and platform, to the agent. Fixed layout: the
+  // heaviest slot (the creator's), as before.
+  const lastRow = kinds.reduce((last, k, i) => (k === 'creator' || k === 'recipient' ? i : last), -1);
+  const gapTo = layout === 'settings' ? (lastRow >= 0 ? lastRow : Math.max(0, kinds.indexOf('agent'))) : undefined;
+  const { paid, burn, dividend } = clankerV5SlotBps(
     hook.map((s) => s.weightBps),
-    burnShare,
+    a.burnBps,
     protocolBps,
+    dividendShare,
+    gapTo,
   );
   const rewards: RewardSlot[] = hook.map((s, i) => ({ admin: lc(s.admin), recipient: lc(s.recipient), bps: paid[i]! }));
-  if (burnShare === 0) return { rewards, burnSlot: null, protocolBps };
-  rewards.push({ admin: lc(a.launcher), recipient: DEAD_ADDRESS, bps: burn });
-  return { rewards, burnSlot: rewards.length - 1, protocolBps };
+  if (a.burnBps === 0) return { rewards, kinds, burnSlot: null, protocolBps, dividendBps: dividend };
+  rewards.push({ admin: launcher, recipient: DEAD_ADDRESS, bps: burn });
+  kinds.push('burn');
+  return { rewards, kinds, burnSlot: rewards.length - 1, protocolBps, dividendBps: dividend };
 }
 
 /**
@@ -342,9 +526,140 @@ export function pickV5Slot<S extends { slot: number; recipient: string; recipien
   return matches[prior % matches.length]!;
 }
 
+/**
+ * One `TaxLaunchHook` credit of a swap, decoded in one place for the live handlers (src/fees.ts) and the launch-tx
+ * replay (src/launcher.ts): `slot` (`CreatorTaxCredited`: a fee slot's share, in the quote), `burn` (`BurnTaxCredited`:
+ * the burn share, in the coin, for the dead address; taken on buys and sells alike), `dividend`
+ * (`DividendTaxCredited`: the holder dividends' share, in the quote, credited to the coin's tracker) and
+ * `dividendRedirected` (`DividendTaxRedirected`: the same share sent to Clanker's protocol recipient while no holder
+ * qualifies).
+ */
+export type ClankerV5HookCredit = {
+  kind: 'slot' | 'burn' | 'dividend' | 'dividendRedirected';
+  poolId: Hex;
+  /** The slot's recipient, the burn sink, the dividend tracker or Clanker's protocol recipient. */
+  recipient: Address;
+  asset: Address;
+  amount: bigint;
+};
+
+export function decodeV5HookCredit(eventName: string, args: Record<string, unknown>): ClankerV5HookCredit | null {
+  if (!['CreatorTaxCredited', 'BurnTaxCredited', 'DividendTaxCredited', 'DividendTaxRedirected'].includes(eventName)) return null;
+  const base = { poolId: lc(args.poolId as Hex), amount: args.amount as bigint };
+  switch (eventName) {
+    case 'CreatorTaxCredited':
+      return { ...base, kind: 'slot', recipient: lc(args.recipient as Address), asset: lc(args.currency as Address) };
+    case 'BurnTaxCredited':
+      return { ...base, kind: 'burn', recipient: lc(args.sink as Address), asset: lc(args.token as Address) };
+    case 'DividendTaxCredited':
+      return { ...base, kind: 'dividend', recipient: lc(args.dividend as Address), asset: lc(args.currency as Address) };
+    case 'DividendTaxRedirected':
+      return { ...base, kind: 'dividendRedirected', recipient: lc(args.recipient as Address), asset: lc(args.currency as Address) };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The token row patch for a dividend credit: the tracker's share adds to `dividendsTotalUsd` (and names the tracker if
+ * the launch receipt did not), the redirected share to `dividendsRedirectedUsd`.
+ */
+export function dividendPatch(
+  t: { dividendContract: string | null; dividendsTotalUsd: number; dividendsRedirectedUsd: number },
+  c: Pick<ClankerV5HookCredit, 'kind' | 'recipient'>,
+  amountUsd: number,
+): { dividendsTotalUsd?: number; dividendsRedirectedUsd?: number; dividendContract?: Address } {
+  const round = (v: number) => Math.round(v * 1e6) / 1e6;
+  if (c.kind === 'dividendRedirected') return { dividendsRedirectedUsd: round(t.dividendsRedirectedUsd + amountUsd) };
+  return { dividendsTotalUsd: round(t.dividendsTotalUsd + amountUsd), ...(t.dividendContract ? {} : { dividendContract: c.recipient }) };
+}
+
+/**
+ * A slot admin's change on Clanker's hook (`FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated(poolId, slotIndex, old,
+ * new)`): the creator's row and the extra rows may be redirected or handed over by their admins; the agent and
+ * platform slots cannot (their admin is the launcher, which never forwards these calls).
+ */
+export type ClankerV5SlotUpdate = { poolId: Hex; slot: number; field: 'recipient' | 'admin'; from: Address; to: Address };
+
+export function decodeV5SlotUpdate(eventName: string, args: Record<string, unknown>): ClankerV5SlotUpdate | null {
+  if (eventName !== 'FeeSlotRecipientUpdated' && eventName !== 'FeeSlotAdminUpdated') return null;
+  const base = { poolId: lc(args.poolId as Hex), slot: Number(args.slotIndex) };
+  if (eventName === 'FeeSlotRecipientUpdated') {
+    return { ...base, field: 'recipient', from: lc(args.oldRecipient as Address), to: lc(args.newRecipient as Address) };
+  }
+  if (eventName === 'FeeSlotAdminUpdated') return { ...base, field: 'admin', from: lc(args.oldAdmin as Address), to: lc(args.newAdmin as Address) };
+  return null;
+}
+
+/**
+ * The `feeSlot` row patch for a slot update; `stale` when the row did not hold `from` (an update the indexer missed,
+ * or a synthetic slot), in which case the hook's new value still wins.
+ */
+export function slotUpdatePatch(row: { recipient: string; admin: string }, u: ClankerV5SlotUpdate): { patch: { recipient: Address } | { admin: Address }; stale: boolean } {
+  if (u.field === 'recipient') return { patch: { recipient: u.to }, stale: lc(row.recipient) !== u.from };
+  return { patch: { admin: u.to }, stale: lc(row.admin) !== u.from };
+}
+
+/**
+ * A creator's metadata edit through the v5 launcher (`CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked`).
+ * The events carry no caller: the launcher lets only the coin's creator call them.
+ */
+export type LauncherMetadataEdit = { token: Address; field: 'image' | 'metadata' | 'lock'; value: string | null };
+
+/** The one decoder of the launcher's metadata events (abis/BootrClankerLauncherV5.ts `ClankerV5MetadataEvents`). */
+export function decodeLauncherMetadataEdit(eventName: string, args: Record<string, unknown>): LauncherMetadataEdit | null {
+  if (eventName !== 'CoinImageUpdated' && eventName !== 'CoinMetadataUpdated' && eventName !== 'CoinMetadataLocked') return null;
+  const base = { token: lc(args.token as Address) };
+  if (eventName === 'CoinImageUpdated') return { ...base, field: 'image', value: args.image as string };
+  if (eventName === 'CoinMetadataUpdated') return { ...base, field: 'metadata', value: args.metadata as string };
+  if (eventName === 'CoinMetadataLocked') return { ...base, field: 'lock', value: null };
+  return null;
+}
+
+/**
+ * The token row patch for a metadata edit: the image or the metadata JSON as the chain now has it (Clanker's
+ * `extraMetadata` keys `image` / `metadata`), or the one-way lock. The launcher only emits these for the coin's creator
+ * while the coin is editable, so the indexer mirrors them as they come.
+ */
+export function metadataEditPatch(
+  e: LauncherMetadataEdit,
+  ts: number,
+): { image?: string; metadata?: string; metadataLocked?: boolean; metadataEditable?: boolean; metadataUpdatedAt: number } {
+  if (e.field === 'image') return { image: e.value ?? '', metadataUpdatedAt: ts };
+  if (e.field === 'metadata') return { metadata: e.value ?? '', metadataUpdatedAt: ts };
+  return { metadataLocked: true, metadataEditable: false, metadataUpdatedAt: ts };
+}
+
+/** `LaunchKind` of the v5 launcher's paired-asset allow-list. */
+export const LAUNCH_KINDS = ['agent', 'plain'] as const;
+
+/**
+ * The owner's allow-list change on the v5 launcher (`QuoteAllowedUpdated(uint8 kind, address quote, bool allowed)`):
+ * the row id is `<launcher>-<kind>-<quote>`, kind by name (`agent` / `plain`, the raw number when unknown).
+ */
+export function decodeQuoteAllowed(launcher: string, args: Record<string, unknown>) {
+  const k = Number(args.kind);
+  const kind: string = LAUNCH_KINDS[k] ?? String(k);
+  const quote = lc(args.quote as Address);
+  return { id: `${lc(launcher)}-${kind}-${quote}`, launcher: lc(launcher) as Address, kind, quote, allowed: Boolean(args.allowed) };
+}
+
+const v5Topic = (name: string) => toEventSelector(ClankerV5HookAbi.find((i) => i.type === 'event' && i.name === name)! as never);
+
 /** topic0 of the Clanker v5 events the indexer consumes, from the vendored verified ABIs (pinned by clanker.test.ts). */
 export const CLANKER_V5_TOPICS = {
   ClankerV5Launched: toEventSelector(ClankerV5LaunchedEvent),
+  ClankerV5LaunchedFixed: toEventSelector(ClankerV5LaunchedFixedEvent),
+  CoinImageUpdated: toEventSelector(ClankerV5MetadataEvents[0]),
+  CoinMetadataUpdated: toEventSelector(ClankerV5MetadataEvents[1]),
+  CoinMetadataLocked: toEventSelector(ClankerV5MetadataEvents[2]),
+  QuoteAllowedUpdated: toEventSelector(QuoteAllowedUpdatedEvent),
+  DividendTaxCredited: v5Topic('DividendTaxCredited'),
+  DividendTaxRedirected: v5Topic('DividendTaxRedirected'),
+  FeeSlotRecipientUpdated: v5Topic('FeeSlotRecipientUpdated'),
+  FeeSlotAdminUpdated: v5Topic('FeeSlotAdminUpdated'),
+  ExtraMetadataUpdated: toEventSelector(ClankerV5TokenAbi[0]),
+  DividendInitialized: toEventSelector(ClankerV5TokenAbi[1]),
   CreatorTaxCredited: toEventSelector(ClankerV5HookAbi.find((i) => i.type === 'event' && i.name === 'CreatorTaxCredited')!),
   BurnTaxCredited: toEventSelector(ClankerV5HookAbi.find((i) => i.type === 'event' && i.name === 'BurnTaxCredited')!),
   FeeSlotCreated: toEventSelector(ClankerV5HookAbi.find((i) => i.type === 'event' && i.name === 'FeeSlotCreated')!),

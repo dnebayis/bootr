@@ -88,7 +88,13 @@ Coins come through three launch paths, all on **Base mainnet only** (`token.sour
   carries. Fees are a buy and sell tax credited per swap by Clanker's `TaxLaunchHook` and paid by its `FeeEscrow`
   (addresses in `CLANKER_V5`, `src/lib/env.ts`, from the verified sources, read on chain 2026-11-10). The first
   deploy of this version needs `DATABASE_SCHEMA=bootr_v9` and a backfill (new tables' columns, new sources, new
-  indexing code), whether or not a v5 launcher is listed yet.
+  indexing code), whether or not a v5 launcher is listed yet. **The token settings** (the launcher's
+  `launch(LaunchParams, TokenSettings)`,
+  [`docs/design/clanker-v5-token-settings.md`](../../docs/design/clanker-v5-token-settings.md): buy and sell tax,
+  burn, holder dividends, the creator's row and up to four extra reward rows, ETH or USDC as the paired asset, the
+  sniper tax switch, editable metadata) are in the same `bootr_v9` bump: new token columns, the `fee_slot_update` and
+  `dividend_credit` tables, four more hook events and three launcher events. No other schema name is needed as long
+  as `bootr_v9` has not gone live before this lands; if it has, the next is `bootr_v10`.
 
 Without any launcher, or on a chain without the launch stacks (Base Sepolia), the
 indexer boots with a warning and only runs the snapshot block handler (ETH/USD, empty platform
@@ -171,13 +177,13 @@ first one).
 | --- | --- | --- |
 | `RwagmiLauncherV3` | `B20LaunchCreatedV3` (filtered: `creator == BootrLauncher`), `LaunchPoolCreatedV3` | Stage the launch (`rwagmiLaunch`: name, symbol, supply, primary pool) and its pool (`pool`: id, v4 key, hook fee mode / static fee, starting tick). Pools of launches not staged (non-Bootr) are dropped. Both precede `AgentLaunched` in the launch tx. |
 | `BootrLauncher` | `AgentLaunched` | Creates token/agent rows from the staged launch + pool. Reads the locked reward split from `RwagmiLpLockerV3.launchInfo(token).rewards` (`feeSlot`, `token.*Bps`). Replays the launch tx receipt for `LiquidityPlacedV3` (exact position range + liquidity), the dev buy (`PoolFeeTakenV3` + `Swap`), initial coin `Transfer`s and the USDC fuel transfer, since they precede `AgentLaunched`. Image / metadata from the `launch()` calldata, else the B20 `contractURI()`. |
-| `BootrClankerLauncher` (every Clanker wrapper, v4 and v5; v4 ABI plus `ClankerV5Launched`) | `ClankerLaunched`, `AgentLaunched` | Clanker path. `ClankerLaunched` stages `clankerPool` (pool id, hook, locker, MEV module, starting tick, the LP fee actually used). `AgentLaunched` reads the receipt for Clanker's `TokenCreated` (name, symbol, image, metadata, context, extensions supply) and the locker's `TokenRewardAdded` (pool key, reward slots, position range), falling back to the token's views and `tokenRewards(token)`; writes the `pool` row (dynamic-fee key), token / agent / `feeSlot` rows (`source: 'clanker'`, four slots summing to 10000, the burn slot's recipient `0x…dEaD`, `protocolBps` 2000 = Clanker's 20% on top), and replays the dev-buy swap, coin transfers and the USDC fuel. **Clanker v5**: when the receipt carries the wrapper's `ClankerV5Launched` (pool id, hook, escrow, quote, tick spacing, tax, anti-snipe), the handler reads the hook's `FeeSlotCreated` (else `poolFeeSlots(poolId)`, else the preset's weights), the factory's `LaunchTaxConfigured` (the admitted protocol policy and the burn share) and `Launched` (supply, 1 B), the PoolManager's `Initialize` (opening tick) and `ModifyLiquidity` (the seeded band); writes `clankerPool` (`version 5`, `locker` = the escrow, `antiSnipe`), the `pool` row (native ETH `0x0` is currency0, fee 0) and token / agent / `feeSlot` rows (`source: 'clanker-v5'`, `lpFeeBps` = the tax, `protocolBps` = Clanker's share of it, 3333 at 1.5%, the three paid slots plus a synthetic burn slot `0x…dEaD` on the buyback preset summing to `10000 - protocolBps`), and replays the dev buy's swap and tax credits, transfers and fuel. |
+| `BootrClankerLauncher` (every Clanker wrapper, v4 and v5; v4 ABI plus `ClankerV5Launched` and the v5 metadata events) | `ClankerLaunched`, `AgentLaunched`, `ImageUpdated`, `MetadataUpdated`, `MetadataLocked` | Clanker path. `ClankerLaunched` stages `clankerPool` (pool id, hook, locker, MEV module, starting tick, the LP fee actually used). `AgentLaunched` reads the receipt for Clanker's `TokenCreated` (name, symbol, image, metadata, context, extensions supply) and the locker's `TokenRewardAdded` (pool key, reward slots, position range), falling back to the token's views and `tokenRewards(token)`; writes the `pool` row (dynamic-fee key), token / agent / `feeSlot` rows (`source: 'clanker'`, four slots summing to 10000, the burn slot's recipient `0x…dEaD`, `protocolBps` 2000 = Clanker's 20% on top), and replays the dev-buy swap, coin transfers and the USDC fuel. **Clanker v5**: when the receipt carries the wrapper's `ClankerV5Launched` (pool id, hook, escrow, quote, tick spacing, tax, anti-snipe), the handler reads the hook's `FeeSlotCreated` (else `poolFeeSlots(poolId)`, else the preset's weights), the factory's `LaunchTaxConfigured` (the admitted protocol policy and the burn share) and `Launched` (supply, 1 B), the PoolManager's `Initialize` (opening tick) and `ModifyLiquidity` (the seeded band); writes `clankerPool` (`version 5`, `locker` = the escrow, `antiSnipe`), the `pool` row (native ETH `0x0` is currency0, fee 0) and token / agent / `feeSlot` rows (`source: 'clanker-v5'`, `lpFeeBps` = the tax, `protocolBps` = Clanker's share of it, 3333 at 1.5%, the three paid slots plus a synthetic burn slot `0x…dEaD` on the buyback preset summing to `10000 - protocolBps`), and replays the dev buy's swap and tax credits, transfers and fuel. **Token settings** (section "Clanker v5 token settings" below): the settings shape of `ClankerV5Launched` adds each side's tax, burn, dividends and the editable switch; the slots are classified by recipient and admin, the token row carries the settings, the paired asset may be USDC, and the image and metadata come from the coin's genesis `ExtraMetadataUpdated`. `ImageUpdated` / `MetadataUpdated` / `MetadataLocked` (the coin's creator, through the launcher) update `token.image` / `token.metadata` / `metadataLocked` and `metadataUpdatedAt`. |
 | `BootrToken` (factory: `AgentLaunched.token` of both launcher lists) | `Transfer` | `balance` table, `token.holders` (non-zero balances, excluding 0x0 and 0x…dEaD). |
 | `BuybackBurner` (factory: `AgentLaunched.burner`, Bootr launchers only) | `Swapped`, `Burned` | `burn` rows, `token.burnedTotal`, BOOT burn stats. |
-| `PoolManager` | `Swap` | All swaps are delivered; only pool ids in the `pool` table are kept (RWAGMI and Clanker pools alike; a Clanker pool's id comes from `ClankerLaunched`). On Base mainnet this means fetching every v4 swap log (Ponder cannot filter on a dynamic pool-id set). `trade.feeUsd` uses the coin's own `lpFeeBps`: bootr `Swap.fee + lpFeeBps`, clanker `lpFee × 1.2`, clanker-v5 the tax as is. |
+| `PoolManager` | `Swap` | All swaps are delivered; only pool ids in the `pool` table are kept (RWAGMI and Clanker pools alike; a Clanker pool's id comes from `ClankerLaunched`). On Base mainnet this means fetching every v4 swap log (Ponder cannot filter on a dynamic pool-id set). `trade.feeUsd` uses the coin's own `lpFeeBps`: bootr `Swap.fee + lpFeeBps`, clanker `lpFee × 1.2`, clanker-v5 the tax of the trade's side (`buyTaxBps` / `sellTaxBps`). The paired side is valued in its own decimals (USDC at $1, `lib/quote.ts`). |
 | `ClankerLpLocker` (`ClankerLpLockerFeeConversion`) | `ClaimedRewards` | A coin's collected LP fees per reward slot, after fee-preference conversion (WETH for agent / creator / platform, the coin for the burn slot): `feeAccrual` + `feeCredit`, `feeBalance.accrued = settled`, per-kind daily / per-source rollups. The locker is public: events of coins that are not ours are dropped (a dynamic token filter is not possible, as with the RWAGMI locker). |
 | `ClankerFeeLocker` | `ClaimTokens`, `ClaimTokensPermissioned` | A fee owner's whole stored balance of an asset is paid out: `feeClaim` split across its coins by `settled - claimed` (same `recordClaim` as the RWAGMI claims). The burn slot's claim of the coin (owner `0x…dEaD`) is also a `burn` row and `token.burnedTotal`. |
-| `ClankerV5Hook` (`TaxLaunchHook`) | `CreatorTaxCredited`, `BurnTaxCredited` | Clanker v5, per swap: a paid slot's exact share of the tax in the quote (native ETH, asset `0x0`), and the burn share in the coin for `0x…dEaD`: `feeAccrual` + `feeCredit` (with `feeCredit.slot`), `feeBalance.accrued = settled`, per-kind rollups. The event names the recipient, not the slot: a wallet holding two slots of one coin takes them in turn (`pickV5Slot`). The hook is shared by every v5 pool: events of pools that are not ours are dropped. The gross fee is booked per trade from `Swap`. |
+| `ClankerV5Hook` (`TaxLaunchHook`) | `CreatorTaxCredited`, `BurnTaxCredited`, `DividendTaxCredited`, `DividendTaxRedirected`, `FeeSlotRecipientUpdated`, `FeeSlotAdminUpdated` | Clanker v5, per swap: a paid slot's exact share of the tax in the quote (native ETH, asset `0x0`), and the burn share in the coin for `0x…dEaD`: `feeAccrual` + `feeCredit` (with `feeCredit.slot`), `feeBalance.accrued = settled`, per-kind rollups. The event names the recipient, not the slot: a wallet holding two slots of one coin takes them in turn (`pickV5Slot`). The hook is shared by every v5 pool: events of pools that are not ours are dropped. The gross fee is booked per trade from `Swap`. The dividend share of a trade is a `dividendCredit` row (to the coin's tracker, or `redirected` to Clanker while no holder qualifies) and `token.dividendsTotalUsd` / `dividendsRedirectedUsd`. A slot admin's recipient or admin change moves the `feeSlot` row (logged in `feeSlotUpdate`), so later credits follow the new recipient. The four credits share one decoder (`decodeV5HookCredit`) with the launch replay. |
 | `ClankerV5FeeEscrow` (`FeeEscrow`) | `Claimed` | A recipient's whole escrow balance of a currency is paid out (`claimFor`, anyone, or `claimTo`): `feeClaim` split over its v5 coins by `settled - claimed`. The dead address claiming a coin is that coin's burn (`burn` row, `token.burnedTotal`). |
 | `RwagmiHookV3` | `PoolFeeTakenV3` | Gross swap fee (WETH) per swap: `token.feesTotalUsd`, `dailyStat.feesUsd`, `platformStats.feesTotalUsd`; plus one `feeAccrual` per Bootr reward slot (`gross × bps / 10000`) and its `feeBalance.accrued`. |
 | `RwagmiLpLockerV3` | `PoolFeesSettledV3`, `QuoteRewardsClaimedV3` | Settlement credits a slot's recipient (`feeCredit`, `feeBalance.settled`; RWAGMI's slot skipped). A claim pays a recipient's settled balance across all its coins: `feeClaim`, split across coins by `settled - claimed`. |
@@ -253,9 +259,52 @@ from the policy in the launch receipt), and the four slot kinds share the rest, 
 like the Bootr path. The hook credits each slot per swap (`CreatorTaxCredited`, native ETH for agent, creator and
 platform on buys and sells alike) and the burn share in the coin (`BurnTaxCredited` to `0x…dEaD`), so `feeAccrual`
 amounts are exact and need no collection step; `FeeEscrow.claimFor(recipient, currency)` pays a recipient's whole
-balance across every v5 pool (`Claimed`). `/treasury/:kernel` reads `FeeEscrow.owed(recipient, 0x0)` (the burn slot:
-`owed(0x…dEaD, coin)`) as `settled`, `symbol` `ETH`, `pending` 0. `assetUsd` values native ETH (`0x0`) at ETH/USD and
-USDC at $1; a USDC-quoted v5 pool's price math is not built (the launcher is deployed with the native quote).
+balance across every v5 pool (`Claimed`). `/treasury/:kernel` reads `FeeEscrow.owed(recipient, quote)` (the burn slot:
+`owed(0x…dEaD, coin)`) as `settled`, in the pool's paired asset, `pending` 0. `assetUsd` values native ETH (`0x0`) at
+ETH/USD and USDC at $1.
+
+### Clanker v5 token settings
+
+The token-settings launcher (`launch(LaunchParams, TokenSettings)`, design note
+[`clanker-v5-token-settings.md`](../../docs/design/clanker-v5-token-settings.md)) lets the creator set the coin the way
+Clanker's deploy form does. What the indexer does with it (pure helpers in `src/lib/clanker.ts`, `src/lib/fees.ts` and
+`src/lib/quote.ts`, tested in `src/lib/clanker-v5-settings.test.ts`):
+
+* **Settings on the token row**, decided once by `clankerV5Settings`: the launcher's `ClankerV5Launched` first
+  (`decodeClankerV5Launched`, the compiled contract's shape `(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, buyTaxBps,
+  sellTaxBps, burnBps, dividendBps, antiSnipe, metadataEditable)`; the fixed launcher's 8-field shape still decodes),
+  then Clanker's verified `LaunchTaxConfigured` / `Launched` of the same receipt, then `AgentLaunched.defaults`.
+  Columns: `buyTaxBps`, `sellTaxBps` (`lpFeeBps` = the buy tax), `dividendBps`, `rewardsBps`, `minDividendHolding`,
+  `dividendContract` (the coin's `DividendInitialized`), `antiSnipe`, `metadataEditable`, `metadataLocked`,
+  `metadataUpdatedAt`, `pairedSymbol`, `pairedDecimals`, `priceQuote`, `dividendsTotalUsd`, `dividendsRedirectedUsd`.
+  The kinds' bps are of the buy tax: `agent + creator + rewards + burn + dividend + platform + protocol = 10000`; the
+  rounding gap goes to the last creator row, where Clanker puts its wei remainder (never the platform).
+* **USDC-quoted pools**: `lib/quote.ts` prices the coin in its paired asset (`coinPriceInQuote`: the raw pool price
+  times 10^(18 − 6) for USDC), USDC at $1, ETH and WETH at ETH/USD; `priceUsd`, market cap, liquidity, trade value and
+  fees follow. `priceWeth` stays the price in ETH for every coin (`priceUsd / ethUsd` on a USDC pool). A trade's fee
+  is its side's tax (`v5SideTaxPips`).
+* **Fee slots by recipient and admin** (`classifyV5Slots`): the launcher-admin slot paying the kernel is `agent`, the
+  one paying the platform recipient `platform`, the first slot with another admin is the creator's row (`creator`,
+  whoever it pays), later ones are extra rows (`recipient`, a new kind: `byKind.recipient` on `/token/:id/fees`; no
+  daily or per-source rollup column). Slot credits are in the paired asset; the escrow's claims are per (recipient,
+  currency) as before. `FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated` move the row.
+* **Burn and dividends**: the burn is credited per trade on both sides (`BurnTaxCredited`, in the coin); the
+  dividend share per trade is a `dividendCredit`; the tracker is on the token row. No per-holder accounting.
+* **Metadata edits**: the launcher's `CoinImageUpdated(token, image)`, `CoinMetadataUpdated(token, metadata)`,
+  `CoinMetadataLocked(token)` (no caller field: only the coin's creator may call them; `decodeLauncherMetadataEdit`)
+  update the token row, so the API serves the current image and metadata.
+* **Paired-asset allow-list**: the owner's `QuoteAllowedUpdated(kind, quote, allowed)` is kept per (launcher, kind,
+  quote) in `quote_allowed` (`kind` `agent` / `plain`).
+* **`AgentLaunched.defaults` on this launcher**: `lpFeeBps` = the buy tax, `agentBps` / `platformBps` the locked shares
+  of the post-Clanker pool, `burnBps` the burn, `creatorBps` = 10000 − agent − platform − burn (creator funds plus
+  dividends); `burner` is `0x…dEaD` exactly when the burn is above 0. The dev buy pays the buy tax, so the launch
+  receipt already carries slot, burn and dividend credits, which the launch handler replays.
+
+The launcher's events are taken from its compiled ABI (abis/BootrClankerLauncherV5.ts, regenerated from
+`packages/contracts/out`: `ClankerV5LaunchedEvent`, `ClankerV5MetadataEvents`, `QuoteAllowedUpdatedEvent`); when the
+contract changes, regenerate it and adjust the one decoder per event in `src/lib/clanker.ts`. The Clanker events (`DividendTaxCredited`, `DividendTaxRedirected`,
+`FeeSlotRecipientUpdated`, `FeeSlotAdminUpdated`, the token's `ExtraMetadataUpdated` and `DividendInitialized`) are
+copied from the verified sources.
 
 History (2026-10-29): the Clanker-era launchers v1 / v1.1 (`0xD4747d91…84EF`, `0x386CBE5D…e21d`) paid fees in
 WETH or in the coin itself; their coins are not indexed by this version. The Clanker path above (2026-11-04) is
@@ -287,10 +336,13 @@ Derived:
 
 * **Web** (`apps/web/lib/indexer.ts`): GraphQL at `/graphql` (`tokens`, `token { agent clankerPool }`,
   `trades`, `agents { tokenRef }`, `dailyStats`, `platformStats(id: "global")`, `sourceStats(id)`), REST `/search`,
-  `/token/:id/fees` (with `source`, `lpFeeBps`, `protocolBps`), `/platform/fees` (totals per launch path),
+  `/token/:id/fees` (with `source`, `lpFeeBps`, `protocolBps`; v5 settings add `pairedToken`, `pairedSymbol`,
+  `buyTaxBps`, `sellTaxBps`, `rewardsBps`, `dividendBps`, `byKind.recipient` and `dividends`), `/platform/fees` (totals per launch path),
   `/holdings/:owner`, `/fuel/:from`, `/tokens/list`, `/tokens/trending`, `/leaderboards/:board`, `/creator/:address`, and SSE `/stream` hints
   (`{type: 'launch'|'trade'|'agent', tokenId}`; clients re-fetch).
-* **Supervisor**: `GET /market/:token` (coin or kernel address; carries `source`, `lpFeeBps`, `protocolBps`),
+* **Supervisor**: `GET /market/:token` (coin or kernel address; carries `source`, `lpFeeBps`, `protocolBps`, and
+  `pairedToken`, `pairedSymbol`, `pairedDecimals`, `priceQuote`, `buyTaxBps`, `sellTaxBps`, `rewardsBps`,
+  `dividendBps`, `antiSnipe`),
   `GET /platform/feed?since=<unix>`
   (the platform agent's "Bootr today" digest: launches (each with `source` and `lpFeeBps`), agent status changes,
   posts and agent fee claims since `since`, clamped to 7 days, newest first, 50 rows per list, plus `totals` from
@@ -299,7 +351,9 @@ Derived:
   creator, burn, platform) with `amount = pending + settled`: bootr WETH from the RWAGMI v3 LP locker
   (`pendingQuote(poolId, recipient)` + `claimableQuote(recipient, WETH)`; `settled` aggregates all
   the recipient's coins); clanker `ClankerFeeLocker.availableFees(recipient, WETH)` (the burn slot in the coin),
-  `pending` 0; clanker-v5 `FeeEscrow.owed(recipient, 0x0)` in ETH (the burn slot in the coin), `pending` 0), and
+  `pending` 0; clanker-v5 one row per fee slot as it stands now, extra rows included, `FeeEscrow.owed(recipient,
+  quote)` in the paired asset, ETH or USDC (the burn slot in the coin), `pending` 0; top-level `pairedToken` /
+  `pairedSymbol`), and
   `POST /internal/agent/:kernel/social` signed like the sender
   (`Authorization: HMAC <ts>:<hex(HMAC-SHA256(SENDER_SERVICE_KEY, ts\nPOST\npath\nsha256(body)))>`)
   with `{xHandle?, lastPostAt?, postsCount24h?, status?: 'awake'|'sleeping', spender?: hex|null}`
@@ -314,7 +368,7 @@ abis/            ABIs as `const` (Bootr from packages/contracts/out, RWAGMI v3 l
                  against Base mainnet logs 2026-11-04; BootrClankerLauncher = BootrLauncher's launch / AgentLaunched
                  + the wrapper's events until the contract is compiled; Clanker v5 hook / escrow / factory from the
                  Sourcify-verified Base deployment, topics checked against Base logs 2026-11-10;
-                 BootrClankerLauncherV5 from packages/contracts/out)
+                 BootrClankerLauncherV5 from packages/contracts/out, the token-settings launcher)
 ponder.config.ts single-chain config, skips undeployed sources
 ponder.schema.ts tables + relations
 src/*.ts         indexing functions (launcher, market, fees, guardian, reputation, snapshot)

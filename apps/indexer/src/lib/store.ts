@@ -10,7 +10,8 @@ import { safeMessage } from '../../rpc-budget';
 import { secondsBetweenBlocks } from './blocks';
 import { indexerEnv } from './env';
 import { classifyRecipient, DEAD_ADDRESS as DEAD, parseLaunchSource, type LaunchSource, type RecipientKind } from './fees';
-import { chainlinkToUsd, coinPriceInWeth, liquidityUsd, toUnits, unitPrice, usd } from './price';
+import { chainlinkToUsd, toUnits, usd } from './price';
+import { marketFields } from './quote';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
 import { addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
@@ -266,26 +267,8 @@ export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind 
 
 // ------------------------------------------------------------------ token market state
 
-/** Recompute price-derived fields of a token from its pool state. */
-export function marketFields(t: TokenRow, ethUsd: number) {
-  const priceWeth = coinPriceInWeth(t.sqrtPriceX96, t.coinIsToken0);
-  const priceUsd = unitPrice(priceWeth * ethUsd);
-  return {
-    priceWeth,
-    priceUsd,
-    marketCapUsd: usd(priceUsd * toUnits(t.totalSupply, 18)),
-    liquidityUsd: liquidityUsd({
-      // The locked position; active liquidity is 0 while the price sits on the range edge.
-      liquidity: t.positionLiquidity > t.poolLiquidity ? t.positionLiquidity : t.poolLiquidity,
-      sqrtPriceX96: t.sqrtPriceX96,
-      // The token's own position range (Clanker pools are not the RWAGMI launch range).
-      tickLower: t.tickLower,
-      tickUpper: t.tickUpper,
-      coinIsToken0: t.coinIsToken0,
-      ethUsd,
-    }),
-  };
-}
+/** Recompute price-derived fields of a token from its pool state (lib/quote.ts `marketFields`). */
+export { marketFields };
 
 /** Rolling-window fields from the token's hourly buckets. */
 export function windowFields(buckets: Bucket[], now: number, priceUsd: number) {

@@ -1,6 +1,11 @@
-// Generated from packages/contracts/out/BootrClankerLauncherV5.sol/BootrClankerLauncherV5.json (forge build, 2026-11-10):
-// the same `launch(LaunchParams)` / `AgentLaunched` / `LaunchContext` / `LaunchFeePaid` as BootrLauncher and
-// BootrClankerLauncher, plus `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)`.
+// Generated from packages/contracts/out/BootrClankerLauncherV5.sol/BootrClankerLauncherV5.json (forge build of the
+// token-settings launcher, 2026-11-10): `launch(LaunchParams, TokenSettings)`, the same `AgentLaunched` /
+// `LaunchContext` / `LaunchFeePaid` as BootrLauncher and BootrClankerLauncher, `ClankerV5Launched` with the coin's
+// settings, the creator's `CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked` and the owner's
+// `QuoteAllowedUpdated`. Regenerate from forge whenever the contract changes; the indexer takes the events it follows
+// from this ABI below (one decoder each in src/lib/clanker.ts).
+import { getAbiItem } from 'viem';
+
 export const BootrClankerLauncherV5Abi = [
   {
     "type": "constructor",
@@ -31,7 +36,7 @@ export const BootrClankerLauncherV5Abi = [
             "internalType": "address"
           },
           {
-            "name": "quoteToken",
+            "name": "weth",
             "type": "address",
             "internalType": "address"
           },
@@ -63,32 +68,17 @@ export const BootrClankerLauncherV5Abi = [
         ]
       },
       {
-        "name": "standard",
+        "name": "defaults",
         "type": "tuple",
-        "internalType": "struct BootrClankerLauncherV5.LaunchDefaults",
+        "internalType": "struct BootrClankerLauncherV5.AgentDefaults",
         "components": [
           {
-            "name": "lpFeeBps",
-            "type": "uint24",
-            "internalType": "uint24"
-          },
-          {
-            "name": "agentBps",
+            "name": "agentShareBps",
             "type": "uint16",
             "internalType": "uint16"
           },
           {
-            "name": "creatorBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "burnBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformBps",
+            "name": "platformShareBps",
             "type": "uint16",
             "internalType": "uint16"
           },
@@ -106,53 +96,21 @@ export const BootrClankerLauncherV5Abi = [
             "name": "dormancyPeriod",
             "type": "uint32",
             "internalType": "uint32"
-          }
-        ]
-      },
-      {
-        "name": "buyback",
-        "type": "tuple",
-        "internalType": "struct BootrClankerLauncherV5.LaunchDefaults",
-        "components": [
+          },
           {
-            "name": "lpFeeBps",
+            "name": "minTaxBps",
             "type": "uint24",
             "internalType": "uint24"
           },
           {
-            "name": "agentBps",
-            "type": "uint16",
-            "internalType": "uint16"
+            "name": "maxTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
           },
           {
-            "name": "creatorBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "burnBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformRecipient",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "minFuelUsdc",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "dormancyPeriod",
-            "type": "uint32",
-            "internalType": "uint32"
+            "name": "maxRewardRows",
+            "type": "uint8",
+            "internalType": "uint8"
           }
         ]
       },
@@ -192,13 +150,52 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "MAX_TAX_BPS",
+    "name": "MAX_LOCKED_SHARE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_REWARD_ROWS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_TAX_CEILING_BPS",
     "inputs": [],
     "outputs": [
       {
         "name": "",
         "type": "uint24",
         "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_AGENT_SHARE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
       }
     ],
     "stateMutability": "view"
@@ -212,19 +209,6 @@ export const BootrClankerLauncherV5Abi = [
         "name": "",
         "type": "uint32",
         "internalType": "uint32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MIN_TAX_BPS",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint24",
-        "internalType": "uint24"
       }
     ],
     "stateMutability": "view"
@@ -251,44 +235,16 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "antiSnipe",
+    "name": "agentDefaults",
     "inputs": [],
     "outputs": [
       {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "buybackDefaults",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "lpFeeBps",
-        "type": "uint24",
-        "internalType": "uint24"
-      },
-      {
-        "name": "agentBps",
+        "name": "agentShareBps",
         "type": "uint16",
         "internalType": "uint16"
       },
       {
-        "name": "creatorBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "burnBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "platformBps",
+        "name": "platformShareBps",
         "type": "uint16",
         "internalType": "uint16"
       },
@@ -306,6 +262,88 @@ export const BootrClankerLauncherV5Abi = [
         "name": "dormancyPeriod",
         "type": "uint32",
         "internalType": "uint32"
+      },
+      {
+        "name": "minTaxBps",
+        "type": "uint24",
+        "internalType": "uint24"
+      },
+      {
+        "name": "maxTaxBps",
+        "type": "uint24",
+        "internalType": "uint24"
+      },
+      {
+        "name": "maxRewardRows",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "allowedQuote",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum BootrClankerLauncherV5.LaunchKind"
+      },
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "coinCreator",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "devBuyRoute",
+    "inputs": [
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "pool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "fee",
+        "type": "uint24",
+        "internalType": "uint24"
       }
     ],
     "stateMutability": "view"
@@ -476,6 +514,80 @@ export const BootrClankerLauncherV5Abi = [
             "internalType": "address"
           }
         ]
+      },
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct BootrClankerLauncherV5.TokenSettings",
+        "components": [
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "burnBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dividendBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "minDividendHolding",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewards",
+            "type": "tuple[]",
+            "internalType": "struct BootrClankerLauncherV5.RewardInput[]",
+            "components": [
+              {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "admin",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "antiSnipe",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "metadataEditable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "contractURI",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -511,6 +623,38 @@ export const BootrClankerLauncherV5Abi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "lockMetadata",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "metadataEditable",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -610,19 +754,6 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "platformTaxBps",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint24",
-        "internalType": "uint24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "poolKeyFor",
     "inputs": [
       {
@@ -633,7 +764,7 @@ export const BootrClankerLauncherV5Abi = [
     ],
     "outputs": [
       {
-        "name": "key",
+        "name": "",
         "type": "tuple",
         "internalType": "struct PoolKey",
         "components": [
@@ -673,6 +804,11 @@ export const BootrClankerLauncherV5Abi = [
     "inputs": [
       {
         "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "quote",
         "type": "address",
         "internalType": "address"
       },
@@ -822,6 +958,80 @@ export const BootrClankerLauncherV5Abi = [
             "internalType": "address"
           }
         ]
+      },
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct BootrClankerLauncherV5.TokenSettings",
+        "components": [
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "burnBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dividendBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "minDividendHolding",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewards",
+            "type": "tuple[]",
+            "internalType": "struct BootrClankerLauncherV5.RewardInput[]",
+            "components": [
+              {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "admin",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "antiSnipe",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "metadataEditable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "contractURI",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -835,8 +1045,102 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "quoteToken",
-    "inputs": [],
+    "name": "previewSlotWeights",
+    "inputs": [
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct BootrClankerLauncherV5.TokenSettings",
+        "components": [
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "burnBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dividendBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "minDividendHolding",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewards",
+            "type": "tuple[]",
+            "internalType": "struct BootrClankerLauncherV5.RewardInput[]",
+            "components": [
+              {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "admin",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "antiSnipe",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "metadataEditable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "contractURI",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16[]",
+        "internalType": "uint16[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "quoteOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
         "name": "",
@@ -879,53 +1183,20 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "setAntiSnipe",
+    "name": "setAgentDefaults",
     "inputs": [
-      {
-        "name": "antiSnipe_",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setDefaults",
-    "inputs": [
-      {
-        "name": "buyback",
-        "type": "bool",
-        "internalType": "bool"
-      },
       {
         "name": "d",
         "type": "tuple",
-        "internalType": "struct BootrClankerLauncherV5.LaunchDefaults",
+        "internalType": "struct BootrClankerLauncherV5.AgentDefaults",
         "components": [
           {
-            "name": "lpFeeBps",
-            "type": "uint24",
-            "internalType": "uint24"
-          },
-          {
-            "name": "agentBps",
+            "name": "agentShareBps",
             "type": "uint16",
             "internalType": "uint16"
           },
           {
-            "name": "creatorBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "burnBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformBps",
+            "name": "platformShareBps",
             "type": "uint16",
             "internalType": "uint16"
           },
@@ -943,8 +1214,46 @@ export const BootrClankerLauncherV5Abi = [
             "name": "dormancyPeriod",
             "type": "uint32",
             "internalType": "uint32"
+          },
+          {
+            "name": "minTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "maxTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "maxRewardRows",
+            "type": "uint8",
+            "internalType": "uint8"
           }
         ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setDevBuyRoute",
+    "inputs": [
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "pool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "fee",
+        "type": "uint24",
+        "internalType": "uint24"
       }
     ],
     "outputs": [],
@@ -978,12 +1287,22 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "setPlatformTaxBps",
+    "name": "setQuoteAllowed",
     "inputs": [
       {
-        "name": "platformTaxBps_",
-        "type": "uint24",
-        "internalType": "uint24"
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum BootrClankerLauncherV5.LaunchKind"
+      },
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "allowed",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [],
@@ -991,79 +1310,81 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
-    "name": "slotWeightsFor",
-    "inputs": [
-      {
-        "name": "buyback",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint16[3]",
-        "internalType": "uint16[3]"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "standardDefaults",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "lpFeeBps",
-        "type": "uint24",
-        "internalType": "uint24"
-      },
-      {
-        "name": "agentBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "creatorBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "burnBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "platformBps",
-        "type": "uint16",
-        "internalType": "uint16"
-      },
-      {
-        "name": "platformRecipient",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "minFuelUsdc",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "dormancyPeriod",
-        "type": "uint32",
-        "internalType": "uint32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "taxConfigurationFor",
     "inputs": [
       {
-        "name": "buyback",
-        "type": "bool",
-        "internalType": "bool"
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct BootrClankerLauncherV5.TokenSettings",
+        "components": [
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "burnBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dividendBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "minDividendHolding",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewards",
+            "type": "tuple[]",
+            "internalType": "struct BootrClankerLauncherV5.RewardInput[]",
+            "components": [
+              {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "admin",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "antiSnipe",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "metadataEditable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "contractURI",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -1110,7 +1431,7 @@ export const BootrClankerLauncherV5Abi = [
         ]
       }
     ],
-    "stateMutability": "view"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -1187,6 +1508,80 @@ export const BootrClankerLauncherV5Abi = [
             "internalType": "address"
           }
         ]
+      },
+      {
+        "name": "s",
+        "type": "tuple",
+        "internalType": "struct BootrClankerLauncherV5.TokenSettings",
+        "components": [
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "buyTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "sellTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "burnBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dividendBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "minDividendHolding",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewards",
+            "type": "tuple[]",
+            "internalType": "struct BootrClankerLauncherV5.RewardInput[]",
+            "components": [
+              {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "admin",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "antiSnipe",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "metadataEditable",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "contractURI",
+            "type": "string",
+            "internalType": "string"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -1220,6 +1615,42 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
+    "name": "updateImage",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "image",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "updateMetadata",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "metadata",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "usdc",
     "inputs": [],
     "outputs": [
@@ -1230,6 +1661,74 @@ export const BootrClankerLauncherV5Abi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "weth",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "AgentDefaultsUpdated",
+    "inputs": [
+      {
+        "name": "defaults",
+        "type": "tuple",
+        "indexed": false,
+        "internalType": "struct BootrClankerLauncherV5.AgentDefaults",
+        "components": [
+          {
+            "name": "agentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "platformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "platformRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "minFuelUsdc",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "dormancyPeriod",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "minTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "maxTaxBps",
+            "type": "uint24",
+            "internalType": "uint24"
+          },
+          {
+            "name": "maxRewardRows",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -1342,19 +1841,6 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "event",
-    "name": "AntiSnipeUpdated",
-    "inputs": [
-      {
-        "name": "antiSnipe",
-        "type": "bool",
-        "indexed": false,
-        "internalType": "bool"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "ClankerV5Launched",
     "inputs": [
       {
@@ -1394,13 +1880,37 @@ export const BootrClankerLauncherV5Abi = [
         "internalType": "int24"
       },
       {
-        "name": "taxBps",
+        "name": "buyTaxBps",
         "type": "uint24",
         "indexed": false,
         "internalType": "uint24"
       },
       {
+        "name": "sellTaxBps",
+        "type": "uint24",
+        "indexed": false,
+        "internalType": "uint24"
+      },
+      {
+        "name": "burnBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
+        "name": "dividendBps",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      },
+      {
         "name": "antiSnipe",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "metadataEditable",
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
@@ -1410,61 +1920,76 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "event",
-    "name": "DefaultsUpdated",
+    "name": "CoinImageUpdated",
     "inputs": [
       {
-        "name": "buyback",
-        "type": "bool",
+        "name": "token",
+        "type": "address",
         "indexed": true,
-        "internalType": "bool"
+        "internalType": "address"
       },
       {
-        "name": "defaults",
-        "type": "tuple",
+        "name": "image",
+        "type": "string",
         "indexed": false,
-        "internalType": "struct BootrClankerLauncherV5.LaunchDefaults",
-        "components": [
-          {
-            "name": "lpFeeBps",
-            "type": "uint24",
-            "internalType": "uint24"
-          },
-          {
-            "name": "agentBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "creatorBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "burnBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformBps",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "platformRecipient",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "minFuelUsdc",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "dormancyPeriod",
-            "type": "uint32",
-            "internalType": "uint32"
-          }
-        ]
+        "internalType": "string"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CoinMetadataLocked",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CoinMetadataUpdated",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "metadata",
+        "type": "string",
+        "indexed": false,
+        "internalType": "string"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DevBuyRouteUpdated",
+    "inputs": [
+      {
+        "name": "quote",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "pool",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "fee",
+        "type": "uint24",
+        "indexed": false,
+        "internalType": "uint24"
       }
     ],
     "anonymous": false
@@ -1592,13 +2117,25 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "event",
-    "name": "PlatformTaxUpdated",
+    "name": "QuoteAllowedUpdated",
     "inputs": [
       {
-        "name": "platformTaxBps",
-        "type": "uint24",
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum BootrClankerLauncherV5.LaunchKind"
+      },
+      {
+        "name": "quote",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "allowed",
+        "type": "bool",
         "indexed": false,
-        "internalType": "uint24"
+        "internalType": "bool"
       }
     ],
     "anonymous": false
@@ -1618,7 +2155,18 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
-    "name": "BurnBpsMismatch",
+    "name": "DevBuyRouteMissing",
+    "inputs": [
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DividendHoldingMismatch",
     "inputs": []
   },
   {
@@ -1669,7 +2217,7 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
-    "name": "InvalidBpsSum",
+    "name": "InvalidAgentShare",
     "inputs": []
   },
   {
@@ -1684,7 +2232,47 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
-    "name": "InvalidTax",
+    "name": "InvalidPlatformShare",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRewardAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRewardBps",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRewardCount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRewardRecipient",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRewardRowLimit",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTaxBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MetadataNotEditable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotCoinCreator",
     "inputs": []
   },
   {
@@ -1711,8 +2299,14 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
-    "name": "PlatformBpsBelowMinimum",
-    "inputs": []
+    "name": "QuoteNotAllowed",
+    "inputs": [
+      {
+        "name": "quote",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -1732,69 +2326,68 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "SharesExceedPool",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TaxOutOfBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ZeroAddress",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "ZeroBps",
+    "name": "ZeroSlotWeight",
     "inputs": []
   }
 ] as const;
 
-/** `ClankerV5Launched` alone, appended to the v4 wrapper's ABI in ponder.config.ts (one `BootrClankerLauncher` source follows every Clanker launcher, v4 and v5). */
-export const ClankerV5LaunchedEvent = {
+/**
+ * `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, buyTaxBps, sellTaxBps, burnBps,
+ * dividendBps, antiSnipe, metadataEditable)`, appended to the v4 wrapper's ABI in ponder.config.ts (one
+ * `BootrClankerLauncher` source follows every Clanker launcher, v4 and v5). Taxes in hundredths of a bip (15_000 =
+ * 1.5%, like `lpFeeBps`), burn and dividends in bps of the post-Clanker pool. The fee slots are the hook's
+ * `FeeSlotCreated` logs and the dividend minimum is in the factory's `LaunchTaxConfigured`.
+ */
+export const ClankerV5LaunchedEvent = getAbiItem({ abi: BootrClankerLauncherV5Abi, name: 'ClankerV5Launched' });
+
+/**
+ * The fixed v5 launcher's `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps,
+ * antiSnipe)` (one tax for both sides, no settings). Never deployed (owner decision of 2026-11-10: one launcher with the
+ * settings); the receipt decoder still reads it so a launch through that build would be indexed as before.
+ */
+export const ClankerV5LaunchedFixedEvent = {
   "type": "event",
   "name": "ClankerV5Launched",
   "inputs": [
-    {
-      "name": "token",
-      "type": "address",
-      "indexed": true,
-      "internalType": "address"
-    },
-    {
-      "name": "poolId",
-      "type": "bytes32",
-      "indexed": false,
-      "internalType": "bytes32"
-    },
-    {
-      "name": "hook",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "feeEscrow",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "quoteToken",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "tickSpacing",
-      "type": "int24",
-      "indexed": false,
-      "internalType": "int24"
-    },
-    {
-      "name": "taxBps",
-      "type": "uint24",
-      "indexed": false,
-      "internalType": "uint24"
-    },
-    {
-      "name": "antiSnipe",
-      "type": "bool",
-      "indexed": false,
-      "internalType": "bool"
-    }
+    { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+    { "name": "poolId", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+    { "name": "hook", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "feeEscrow", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "quoteToken", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "tickSpacing", "type": "int24", "indexed": false, "internalType": "int24" },
+    { "name": "taxBps", "type": "uint24", "indexed": false, "internalType": "uint24" },
+    { "name": "antiSnipe", "type": "bool", "indexed": false, "internalType": "bool" }
   ],
   "anonymous": false
 } as const;
+
+/**
+ * The coin creator's edits through the launcher (design note section 2.5: `updateImage(token, url)`,
+ * `updateMetadata(token, json)`, `lockMetadata(token)`; only `coinCreator[token]` may call them, while the coin is
+ * editable): `CoinImageUpdated(token, image)`, `CoinMetadataUpdated(token, metadata)`, `CoinMetadataLocked(token)`.
+ * The launcher forwards the first two to Clanker's `updateTokenExtraMetadata(token, "image" | "metadata", value)`; the
+ * lock is the launcher's own one-way flag.
+ */
+export const ClankerV5MetadataEvents = [
+  getAbiItem({ abi: BootrClankerLauncherV5Abi, name: 'CoinImageUpdated' }),
+  getAbiItem({ abi: BootrClankerLauncherV5Abi, name: 'CoinMetadataUpdated' }),
+  getAbiItem({ abi: BootrClankerLauncherV5Abi, name: 'CoinMetadataLocked' }),
+] as const;
+
+/** The owner's paired-asset allow-list per launch kind (`LaunchKind`: 0 = Agent, 1 = Plain). */
+export const QuoteAllowedUpdatedEvent = getAbiItem({ abi: BootrClankerLauncherV5Abi, name: 'QuoteAllowedUpdated' });
