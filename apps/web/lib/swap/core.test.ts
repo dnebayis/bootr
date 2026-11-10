@@ -6,6 +6,7 @@ import {
   buildSellTx,
   idealOut,
   impactPct,
+  isNativePool,
   launchBlocksSwaps,
   launchWindowActive,
   minReceived,
@@ -15,6 +16,7 @@ import {
   shortfallPct,
   SWAP_CONTRACTS,
   universalRouterAbi,
+  v5TradingOpensIn,
   verifiedPoolKey,
   zeroForOne,
 } from './core';
@@ -150,6 +152,67 @@ describe('buildSellTx', () => {
     expect(to).toBe('0x0000000000000000000000000000000000000001');
     expect(min).toBe(77n);
     expect(slice(tx.data, -SUFFIX.length / 2 + 1)).toBe(SUFFIX);
+  });
+});
+
+describe('Clanker v5 (native ETH pool)', () => {
+  const COIN: Address = '0xabcdef0123456789abcdef0123456789abcdcccc';
+  const v5 = poolKeyOf(COIN, 'clanker-v5')!;
+  const NATIVE = '0x0000000000000000000000000000000000000000';
+
+  it('builds BootrClankerLauncherV5.poolKeyFor: ETH first, fee 0, tick spacing 200, the v5 hook', () => {
+    expect(v5).toEqual({ currency0: NATIVE, currency1: COIN, fee: 0, tickSpacing: 200, hooks: '0x5E320eA6278107968C119942E57d876c5F922AcC' });
+    expect(isNativePool(v5)).toBe(true);
+    expect(isNativePool(key)).toBe(false);
+    expect(zeroForOne(v5, 'buy')).toBe(true);
+    expect(zeroForOne(v5, 'sell')).toBe(false);
+    expect(verifiedPoolKey(COIN, 'clanker-v5', poolIdOf(v5))).toEqual(v5);
+    expect(verifiedPoolKey(COIN, 'clanker', poolIdOf(v5))).toBeNull();
+  });
+
+  it('buys with the ETH sent: no wrap, the router settles native ETH and sweeps what is left back', () => {
+    const amountIn = parseEther('0.01');
+    const tx = buildBuyTx({ key: v5, coin: COIN, amountIn, minOut: 5n, deadline: 999n });
+    expect(tx.value).toBe(amountIn);
+    const { commands, inputs } = decodeExecute(tx.data);
+    expect(commands).toBe('0x1004');
+    const { actions, params } = decodeV4(inputs[0]!);
+    expect(actions).toBe('0x060b0e');
+    const [swap] = decodeAbiParameters(swapParamsAbi, params[0]!);
+    expect(swap.zeroForOne).toBe(true);
+    expect(swap.amountOutMinimum).toBe(5n);
+    const [settleCurrency, , payerIsUser] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], params[1]!);
+    expect(settleCurrency).toBe(NATIVE);
+    expect(payerIsUser).toBe(false);
+    const [takeCurrency, takeTo] = decodeAbiParameters([{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], params[2]!);
+    expect(takeCurrency.toLowerCase()).toBe(COIN);
+    expect(takeTo).toBe('0x0000000000000000000000000000000000000001');
+    const [sweepToken, sweepTo] = decodeAbiParameters([{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], inputs[1]!);
+    expect(sweepToken).toBe(NATIVE);
+    expect(sweepTo).toBe('0x0000000000000000000000000000000000000001');
+  });
+
+  it('sells for native ETH paid straight to the caller, at least the minimum', () => {
+    const amountIn = parseEther('1000');
+    const tx = buildSellTx({ key: v5, coin: COIN, amountIn, minOut: 77n, deadline: 999n });
+    expect(tx.value).toBe(0n);
+    const { commands, inputs } = decodeExecute(tx.data);
+    expect(commands).toBe('0x10');
+    const { actions, params } = decodeV4(inputs[0]!);
+    expect(actions).toBe('0x060c0f');
+    const [swap] = decodeAbiParameters(swapParamsAbi, params[0]!);
+    expect(swap.zeroForOne).toBe(false);
+    expect(swap.amountOutMinimum).toBe(77n);
+    const [takeCurrency, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[2]!);
+    expect(takeCurrency).toBe(NATIVE);
+    expect(min).toBe(77n);
+  });
+
+  it('keeps buys closed for the first 20 seconds after launch', () => {
+    expect(v5TradingOpensIn(1000, 1000)).toBe(20);
+    expect(v5TradingOpensIn(1000, 1012.4)).toBe(8);
+    expect(v5TradingOpensIn(1000, 1020)).toBe(0);
+    expect(v5TradingOpensIn(1000, 2000)).toBe(0);
   });
 });
 

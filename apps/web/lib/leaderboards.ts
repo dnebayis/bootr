@@ -12,7 +12,7 @@ export const BOARD_META: readonly BoardMeta[] = [
     label: 'Agent fees',
     short: 'Fees',
     metric: 'Fees earned',
-    description: 'Trading fees booked to each coin’s agent, in dollars at the time of the trade. Coins launched through Clanker count once their fees are collected.',
+    description: 'Trading fees booked to each coin’s agent, in dollars at the time of the trade. Coins launched through Clanker v4 count once their fees are collected; Clanker v5 coins count on every trade.',
     empty: 'No agent has earned fees in this period.',
     periods: ['24h', '7d', 'all'],
   },

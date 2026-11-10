@@ -118,6 +118,7 @@ describe('draft store', () => {
   it('stores which launcher the launch goes through; older drafts read as bootr', async () => {
     expect(normalizeSource(undefined)).toBe('bootr');
     expect(normalizeSource('clanker')).toBe('clanker');
+    expect(normalizeSource('clanker-v5')).toBe('clanker-v5');
     expect(normalizeSource('other')).toBeNull();
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, source: 'clanker' });
     expect((await readLaunchDraft(DRAFT, { dir }))?.source).toBe('clanker');

@@ -1,7 +1,8 @@
 import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
 import { WORKER_BOUNDS, WORKER_TEMPLATES } from '@bootr/shared/workers';
-import { FALLBACK_BUYBACK, FALLBACK_STANDARD } from '@/lib/abi/launcher';
-import { launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
+import { FALLBACK_BUYBACK, FALLBACK_STANDARD, FALLBACK_V5_STANDARD } from '@/lib/abi/launcher';
+import { CLANKER_V5_ANTI_SNIPE_SECONDS } from '@/lib/swap/core';
+import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { RECOMMENDED_MODEL } from '@/lib/models';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
@@ -21,6 +22,9 @@ const A = addresses[BASE_MAINNET_CHAIN_ID];
 
 const BOOTR_PATH: FeeModel = { source: 'bootr', lpFeeBps: FALLBACK_STANDARD.lpFeeBps };
 const CLANKER_PATH: FeeModel = { source: 'clanker', lpFeeBps: FALLBACK_STANDARD.lpFeeBps };
+/** Clanker v5 at the preset's tax (1.5%): Clanker's share is inside it. */
+const CLANKER_V5_PATH: FeeModel = feeModelOf({ source: 'clanker-v5', lpFeeBps: FALLBACK_V5_STANDARD.lpFeeBps });
+const V5_LAUNCHER = A.bootr.clankerLauncherV5;
 
 function split(d: typeof FALLBACK_STANDARD): Split {
   return { agent: d.agentBps, creator: d.creatorBps, burn: d.burnBps, platform: d.platformBps };
@@ -32,6 +36,11 @@ function feeRow(label: string, kind: keyof Split): string {
   const buy = split(FALLBACK_BUYBACK);
   return `| ${label} | ${cell(std, BOOTR_PATH)} | ${cell(buy, BOOTR_PATH)} | ${cell(std, CLANKER_PATH)} | ${cell(buy, CLANKER_PATH)} |`;
 }
+
+/** At the preset tax the four shares come out the same on Clanker v4 and v5; the table says so only while it is true. */
+const V5_SAME_SHARES = (['agent', 'creator', 'burn', 'platform'] as const).every((k) =>
+  [split(FALLBACK_STANDARD), split(FALLBACK_BUYBACK)].every((s) => pctLabel(ofVolume(s, k, CLANKER_PATH)) === pctLabel(ofVolume(s, k, CLANKER_V5_PATH))),
+);
 
 const pct = (bps: number) => `${bps / 100}%`;
 
@@ -159,7 +168,7 @@ const launch = {
   symbol: 'QENG',
   identity: 'A patient analyst who reports what happens on small Base coins.',
   image: { dataUrl: \`data:image/png;base64,\${image.toString('base64')}\` },
-  launchThrough: 'bootr', // or 'clanker'
+  launchThrough: 'bootr', // or 'clanker' (this site's Clanker: v5 once it is live, v4 until then), or 'clanker-v5'
   buyback: false, // true for the buyback and burn preset
   fuelUsdc: '20',
   devBuyEth: '0',
@@ -175,7 +184,8 @@ const prepared = await res.json();
 if (!res.ok) throw new Error(\`\${prepared.error}: \${prepared.message}\`);
 // Step 4 of the Launch Flow: the answer must name this wallet, Base mainnet and these contracts.
 const same = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
-const launcher = { bootr: '${A.bootr.launcher}', clanker: '${A.bootr.clankerLauncher}' }[launch.launchThrough ?? 'bootr'];
+// The path the answer resolved to: 'clanker' comes back as 'clanker' (v4) or 'clanker-v5'.
+const launcher = { bootr: '${A.bootr.launcher}', clanker: '${A.bootr.clankerLauncher}', 'clanker-v5': ${V5_LAUNCHER ? `'${V5_LAUNCHER}'` : 'null'} }[prepared.launchThrough];
 const contractOf = { approve: '${A.usdc}', launch: launcher, gas: '${A.entryPointV07}' };
 if (
   prepared.mock ||
@@ -280,7 +290,7 @@ Sign an [EIP-4361](https://eips.ethereum.org/EIPS/eip-4361) message with these f
 }
 \`\`\`
 
-\`value\` is a decimal string of wei. The \`gas\` step is absent when \`gasEth\` is 0, and a custom worker adds \`workerPreset\`. On the Clanker path \`metadata\` is a JSON string, with the document's URL inside it as \`contractUri\`. The launch fee is an owner setting of the launcher (0.0005 ETH at the time of writing), so use the value in the answer.
+\`value\` is a decimal string of wei. The \`gas\` step is absent when \`gasEth\` is 0, and a custom worker adds \`workerPreset\`. On the Clanker paths \`metadata\` is a JSON string, with the document's URL inside it as \`contractUri\`. \`launchThrough\` is the path the launch goes through: \`clanker\` comes back as \`clanker\` (Clanker v4) or \`clanker-v5\`. On Clanker v5 the answer also has \`salt\`, the salt already in the launch calldata, chosen so that the coin's address ends in \`cccc\` as Clanker v5 requires, and \`predictedToken\`, that address; \`predictedKernel\` follows the same salt. The launch fee is an owner setting of the launcher (0.0005 ETH at the time of writing), so use the value in the answer.
 
 ### 4. Check, then confirm with the user
 
@@ -290,7 +300,8 @@ Check the answer before showing it to the user, and stop if anything differs:
 | --- | --- |
 | \`chainId\` | \`${BASE_MAINNET_CHAIN_ID}\` |
 | \`creator\` | the user's wallet |
-| \`launcher\` | \`${A.bootr.launcher}\` for \`bootr\`, \`${A.bootr.clankerLauncher}\` for \`clanker\` |
+| \`launcher\` | \`${A.bootr.launcher}\` for \`bootr\`, \`${A.bootr.clankerLauncher}\` for \`clanker\`${V5_LAUNCHER ? `, \`${V5_LAUNCHER}\` for \`clanker-v5\`` : ''} |
+| \`predictedToken\` | on \`clanker-v5\` only: ends in \`cccc\` |
 | \`transactions[0].to\` | USDC, \`${A.usdc}\` |
 | the \`gas\` step's \`to\` | EntryPoint v0.7, \`${A.entryPointV07}\` |
 | \`mock\` | absent. Its presence means a test deployment: do not send anything |
@@ -328,7 +339,7 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 
 | Field | Default | Rules |
 | --- | --- | --- |
-| \`launchThrough\` | \`bootr\` | \`bootr\` or \`clanker\`. Permanent for the coin |
+| \`launchThrough\` | \`bootr\` | \`bootr\`, \`clanker\` (this site's Clanker path: Clanker v5 once it is live, Clanker v4 until then) or \`clanker-v5\` (refused with \`clanker_v5_unavailable\` while it is not live). Permanent for the coin |
 | \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin |
 | \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls, which go to BlockRun, the service that runs the models, at the prices \`GET /api/models\` shows |
 | \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins |
@@ -338,7 +349,7 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | \`xHandle\` | none | The handle of the X account the agent will use, with or without \`@\`. A handle that is not valid is ignored. This does not connect the account |
 | \`links\` | none | \`{ website, x, telegram, discord }\`, each optional. \`website\` any https URL, \`x\` an x.com link or a handle (the project's account), \`telegram\` on \`https://t.me/\`, \`discord\` on \`https://discord.gg/\` or \`https://discord.com/invite/\` |
 
-On the Clanker path, \`xHandle\` and \`links\` are also written into the token's on-chain metadata, which Clanker's page reads. That copy can never change after launch.
+On the Clanker paths, \`xHandle\` and \`links\` are also written into the token's on-chain metadata, which Clanker's page reads. That copy can never change after launch.
 
 ### Worker templates
 
@@ -354,29 +365,32 @@ A custom worker is an object: \`{ "capabilities": { "xRead": true, "xReply": tru
 
 The launch path and the preset are chosen once and locked for the coin's life. Nobody can change a recipient or a share afterwards.
 
-| | Through Bootr (\`bootr\`, RWAGMI v3) | Through Clanker (\`clanker\`, Clanker v4) |
-| --- | --- | --- |
-| A trader pays per swap | ${pctLabel(traderPaysPct(BOOTR_PATH))} | ${pctLabel(traderPaysPct(CLANKER_PATH))} |
-| The launcher's part | RWAGMI takes ${pctLabel(launcherPct(BOOTR_PATH))} of volume, inside the fee | Clanker takes ${pctLabel(launcherPct(CLANKER_PATH))} of volume, on top of the 1% fee |
-| What the recipients share | 90% of the fee | all of the 1% fee |
-| Opening market cap | about 2.7 ETH fully diluted | about 10 ETH fully diluted |
-| Fees are paid in | WETH | WETH; a burn share is converted into the coin |
-| Listed on | ${host} | ${host} and clanker.world |
+| | Through Bootr (\`bootr\`, RWAGMI v3) | Through Clanker v4 (\`clanker\`) | Through Clanker v5 (\`clanker-v5\`) |
+| --- | --- | --- | --- |
+| A trader pays per swap | ${pctLabel(traderPaysPct(BOOTR_PATH))} | ${pctLabel(traderPaysPct(CLANKER_PATH))} | ${pctLabel(traderPaysPct(CLANKER_V5_PATH))}, a tax on buys and sells |
+| The launcher's part | RWAGMI takes ${pctLabel(launcherPct(BOOTR_PATH))} of volume, inside the fee | Clanker takes ${pctLabel(launcherPct(CLANKER_PATH))} of volume, on top of the 1% fee | Clanker keeps ${pctLabel(launcherPct(CLANKER_V5_PATH))} of volume, inside the tax |
+| What the recipients share | 90% of the fee | all of the 1% fee | the tax less Clanker's part |
+| Opening market cap | about 2.7 ETH fully diluted | about 10 ETH fully diluted | Clanker's opening price for every new coin, about 1.9 ETH fully diluted on 10 November 2026 |
+| Supply | 100,000,000,000 | 100,000,000,000 | 1,000,000,000; the coin's address ends in \`cccc\` |
+| Fees are paid in | WETH | WETH; a burn share is converted into the coin | ETH; a burn share is taken in the coin |
+| Listed on | ${host} | ${host} and clanker.world | ${host} and clanker.world |
+
+\`clanker\` is this site's Clanker path: Clanker v4 until Bootr's Clanker v5 launcher is live, Clanker v5 from then on. The launch answer's \`launchThrough\` says which one a launch uses.
 
 Each recipient's share, as a percent of trading volume:
 
-| Recipient | Bootr, standard | Bootr, buyback | Clanker, standard | Clanker, buyback |
+| Recipient | Bootr, standard | Bootr, buyback | Clanker${V5_SAME_SHARES ? ' (v4 or v5)' : ' v4'}, standard | Clanker${V5_SAME_SHARES ? ' (v4 or v5)' : ' v4'}, buyback |
 | --- | ---: | ---: | ---: | ---: |
 ${feeRow('Agent treasury', 'agent')}
 ${feeRow('Creator', 'creator')}
 ${feeRow('Buyback and burn', 'burn')}
 ${feeRow('Platform', 'platform')}
 
-A new pool on the Clanker path also opens with Clanker's anti-sniper fee, and nothing like it exists on the Bootr path. Measured on a Base fork at today's 200 ms blocks with the launcher's current settings: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal 1.20%. That point comes from the clock, not from a number of blocks. Those fees go to the same recipients. \`devBuyEth\` runs inside the launch transaction and is not affected, so a creator who wants coins at the start should use it instead of buying right after. Tell the user this before they choose the Clanker path.
+A new pool on the Clanker path also opens with Clanker's anti-sniper fee, and nothing like it exists on the Bootr path. Measured on a Base fork at today's 200 ms blocks with the launcher's current settings: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal 1.20%. That point comes from the clock, not from a number of blocks. Those fees go to the same recipients. \`devBuyEth\` runs inside the launch transaction and is not affected, so a creator who wants coins at the start should use it instead of buying right after. Tell the user this before they choose the Clanker path. On Clanker v5 it works differently: for the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds a buy pays a fee that starts at 99% and falls to the tax, and swaps that name the amount out are refused; the coin page waits those seconds out. \`devBuyEth\` is not affected there either.
 
 The presets split what reaches the recipients. Standard is agent ${pct(FALLBACK_STANDARD.agentBps)}, creator ${pct(FALLBACK_STANDARD.creatorBps)}, platform ${pct(FALLBACK_STANDARD.platformBps)}. Buyback and burn (\`buyback: true\`) is agent ${pct(FALLBACK_BUYBACK.agentBps)}, creator ${pct(FALLBACK_BUYBACK.creatorBps)}, burn ${pct(FALLBACK_BUYBACK.burnBps)}, platform ${pct(FALLBACK_BUYBACK.platformBps)}.
 
-The burn share works differently per path. Through Bootr it goes to a contract made for the coin, whose WETH is swapped for the coin and burned by a call only the launcher's owner can make. Through Clanker it is converted into the coin and sent to the dead address.
+The burn share works differently per path. Through Bootr it goes to a contract made for the coin, whose WETH is swapped for the coin and burned by a call only the launcher's owner can make. Through Clanker v4 it is converted into the coin and sent to the dead address. Through Clanker v5 Clanker takes it in the coin on every trade and it goes to the dead address.
 
 These are the presets for new launches, and the launcher's owner can change them for future launches only. Read them with \`standardDefaults()\` and \`buybackDefaults()\` on the launcher. A coin's own numbers are in its \`feeSlots\` and \`lpFeeBps\` in the indexer; the platform's own coin uses a 2% fee. More in [Fee math and claims](${site}/docs/fees) and [the two launch paths](${site}/docs/launch#launch-through).
 
@@ -427,12 +441,13 @@ These are transactions or wallet actions. The same rule applies: show the amount
 | Add fuel | A plain USDC \`transfer\` to the treasury address, or the coin page. Anyone can do it, and it cannot be taken back |
 | Add gas | \`EntryPoint.depositTo(kernel)\` with ETH, or the coin page. Anyone can do it, and it cannot be taken back |
 | Claim creator fees, Bootr path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`settleAndClaim([poolId], WETH, you)\` on RWAGMI's locker \`${A.rwagmiLockerV3}\`, with the coin's \`poolId\` from the indexer |
-| Claim creator fees, Clanker path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
+| Claim creator fees, Clanker v5 path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claimFor(you, 0x0000000000000000000000000000000000000000)\` on Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\`. The zero address means ETH: fees arrive on every trade, in ETH |
+| Claim creator fees, Clanker v4 path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
 | Pause or resume the agent | \`pauseAgent(kernel)\` or \`unpauseAgent(kernel)\` on AgentGuardian \`${A.bootr.guardian}\`, or \`${site}/profile\`. Only the creator can. It moves no funds |
 
 ### Prepare a fee claim
 
-\`GET ${site}/api/agent/claim/<address>\` needs no key and no signature, and sends nothing. It answers every claim waiting for that wallet on both launch paths:
+\`GET ${site}/api/agent/claim/<address>\` needs no key and no signature, and sends nothing. It answers every claim waiting for that wallet on every launch path:
 
 \`\`\`json
 {
@@ -440,13 +455,13 @@ These are transactions or wallet actions. The same rule applies: show the amount
   "chainId": ${BASE_MAINNET_CHAIN_ID},
   "asset": "${A.weth}",
   "totalWei": "…",
-  "coins": { "bootr": [{ "token": "0x…", "symbol": "…", "poolId": "0x…", "unsettledWei": "…" }], "clanker": [{ "token": "0x…", "symbol": "…" }] },
-  "claims": [{ "path": "bootr", "target": "${A.rwagmiLockerV3}", "data": "0x…", "value": "0", "amountWei": "…", "sendFrom": "0x…", "description": "…" }],
+  "coins": { "bootr": [{ "token": "0x…", "symbol": "…", "poolId": "0x…", "unsettledWei": "…" }], "clanker": [{ "token": "0x…", "symbol": "…" }], "clankerV5": [{ "token": "0x…", "symbol": "…" }] },
+  "claims": [{ "path": "bootr", "target": "${A.rwagmiLockerV3}", "data": "0x…", "value": "0", "asset": "${A.weth}", "amountWei": "…", "sendFrom": "0x…", "description": "…" }],
   "note": "Nothing was signed or sent. …"
 }
 \`\`\`
 
-\`claims\` is empty when nothing is waiting. Check that \`target\` is RWAGMI's locker for \`bootr\` and Clanker's fee locker \`${A.clanker.feeLocker}\` for \`clanker\`, and stop if \`mock\` is present. Show the user \`description\` and get a yes, then their own wallet sends \`target\`, \`data\` and \`value\`. A \`bootr\` claim must come from \`sendFrom\`, because the locker pays the balance of whichever wallet calls it; a \`clanker\` claim (\`sendFrom\` null) can come from any wallet and still pays the address. 20 calls a minute per IP.
+\`claims\` is empty when nothing is waiting. Check that \`target\` is RWAGMI's locker for \`bootr\`, Clanker's fee locker \`${A.clanker.feeLocker}\` for \`clanker\` and Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\` for \`clanker-v5\` (whose \`asset\` is the zero address: it pays ETH), and stop if \`mock\` is present. Show the user \`description\` and get a yes, then their own wallet sends \`target\`, \`data\` and \`value\`. A \`bootr\` claim must come from \`sendFrom\`, because the locker pays the balance of whichever wallet calls it; a \`clanker\` or \`clanker-v5\` claim (\`sendFrom\` null) can come from any wallet and still pays the address. 20 calls a minute per IP.
 
 ## What an Agent Can and Can't Do With Its Treasury
 
@@ -518,7 +533,8 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 | 500 | \`store_failed\` | launch | Retry; if it repeats, tell the user |
 | 502 | \`pin_failed\`, \`chain_unavailable\`, \`indexer_unavailable\`, \`upstream_failed\` | launch, x-connect, links, claim | A dependency failed. Retry shortly |
 | 503 | \`launches_paused\` | launch | Launches are paused. Tell the user and stop |
-| 503 | \`clanker_unavailable\` | launch | Clanker path not available here. Ask the user before switching path |
+| 503 | \`clanker_unavailable\`, \`clanker_v5_unavailable\` | launch | That Clanker path is not available here. Ask the user before switching path |
+| 503 | \`salt_not_found\` | launch | No Clanker v5 coin address ending in \`cccc\` turned up, which almost never happens. Sign again and retry |
 | 503 | \`launcher_not_configured\`, \`upload_unavailable\`, \`store_unavailable\`, \`store_full\`, \`x_connect_unavailable\` | launch, x-connect | Not available right now. Retry later; if it repeats, tell the user |
 
 \`siwe_rejected\` also carries a \`reason\`. \`missing_fields\`, \`malformed_message\`, \`invalid_uri\`, \`invalid_address\` and \`wrong_statement\` are 400, so correct the message. \`nonce_spent\`, \`uri_mismatch\`, \`domain_mismatch\`, \`unsupported_chain\`, \`message_expired\`, \`message_not_yet_valid\`, \`stale_message\`, \`bad_signature\` and \`signature_unverifiable\` are 401, so sign again with the fields in step 2.

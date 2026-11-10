@@ -228,7 +228,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       parameters: { path: pathParam('address', ADDRESS) },
       response: {
         contentType: JSON_TYPE,
-        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}]}, claims: [{path: bootr|clanker, target, data, value, amountWei, sendFrom: address|null, description}], note}; errors {error, message} with 400, 429, 502',
+        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}], clankerV5: [{token, symbol}]}, claims: [{path: bootr|clanker|clanker-v5, target, data, value, asset, amountWei, sendFrom: address|null, description}], note}; a claim’s asset is WETH (bootr, clanker) or the zero address, native ETH (clanker-v5); totalWei sums them all, one to one; errors {error, message} with 400, 429, 502',
       },
     },
     {
@@ -299,7 +299,12 @@ function launchBody(): JsonSchema {
             ],
           },
           buyback: { type: 'boolean', default: false },
-          launchThrough: { type: 'string', enum: ['bootr', 'clanker'], default: 'bootr' },
+          launchThrough: {
+            type: 'string',
+            enum: ['bootr', 'clanker', 'clanker-v5'],
+            default: 'bootr',
+            description: 'clanker: the deployment’s current Clanker launcher (v5 once it is live, else v4); clanker-v5: v5 only, refused while it is not live.',
+          },
           fuelUsdc: decimal('Decimal USDC, default 20, at least the preset’s minimum.'),
           devBuyEth: decimal('Decimal ETH, default 0.'),
           gasEth: decimal('Decimal ETH, default 0.001; 0 or at least 0.0001.'),
@@ -323,7 +328,7 @@ function launchBody(): JsonSchema {
 
 const TOKEN_FILTERS: Record<string, JsonSchema> = {
   creator: ADDRESS,
-  source: { enum: ['bootr', 'clanker'] },
+  source: { enum: ['bootr', 'clanker', 'clanker-v5'] },
   from: { type: 'integer', description: 'Launched at or after, unix seconds.' },
   to: { type: 'integer', description: 'Launched at or before, unix seconds.' },
   hasAgent: { type: 'boolean' },
@@ -415,7 +420,7 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     ),
     get(
       '/creator/{address}',
-      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker count once their fees are collected. Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. When the wallet also holds another share of a coin, one claim pays both: claimedUsd counts the creator share alone, or is null when the shares cannot be told apart exactly. At most 200 coins.',
+      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker v4 count once their fees are collected; Clanker v5 coins count on every trade. Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. When the wallet also holds another share of a coin, one claim pays both: claimedUsd counts the creator share alone, or is null when the shares cannot be told apart exactly. At most 200 coins.',
       '{address, readAt, indexedAt, totals: {coins, agents, earnedUsd, claimedUsd, earnedWeth, claimedWeth}, coins: [token row plus agent and creatorFees: {earnedUsd, claimedUsd, earnedWeth, claimedWeth, otherShares: [{kind, earnedUsd, claimedUsd}]}]}; claimedUsd and claimedWeth can be null; WETH in wei strings; 400 malformed address; no coins answers empty lists',
       { path: pathParam('address', ADDRESS) },
     ),

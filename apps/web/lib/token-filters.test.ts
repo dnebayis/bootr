@@ -16,6 +16,11 @@ describe('parseTokenFilters', () => {
     });
   });
 
+  it('reads the Clanker v5 path', () => {
+    expect(parse('path=clanker-v5')).toEqual({ path: 'clanker-v5' });
+    expect(Object.fromEntries(tokenListRequest('newest', { path: 'clanker-v5' }).params)).toMatchObject({ source: 'clanker-v5' });
+  });
+
   it('drops what it cannot read instead of failing', () => {
     expect(parse('creator=nope&path=pump&from=yesterday&to=2026-13-40&agent=maybe&sort=price')).toEqual({});
   });

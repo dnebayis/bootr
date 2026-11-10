@@ -26,6 +26,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { TokenImage } from '@/components/ui/TokenImage';
 import { CreatorFees } from './CreatorFees';
 import { ClankerCreatorFees } from './ClankerCreatorFees';
+import { isClankerSource } from '@/lib/launch-source';
 
 export function Rows({ n = 3 }: { n?: number }) {
   return (
@@ -128,8 +129,9 @@ export function ProfileView() {
   const holdings = useHoldings(isConnected ? address : undefined);
   const fuel = useFuelHistory(isConnected ? address : undefined);
   const launchedKernels = useMemo(() => (launched.data ?? []).map((t) => t.kernel as Address), [launched.data]);
-  const rwagmiCoins = useMemo(() => (launched.data ?? []).filter((t) => t.source !== 'clanker'), [launched.data]);
+  const rwagmiCoins = useMemo(() => (launched.data ?? []).filter((t) => !isClankerSource(t.source)), [launched.data]);
   const clankerCoins = useMemo(() => (launched.data ?? []).filter((t) => t.source === 'clanker'), [launched.data]);
+  const clankerV5Coins = useMemo(() => (launched.data ?? []).filter((t) => t.source === 'clanker-v5'), [launched.data]);
   const gas = useKernelGas(launchedKernels);
 
   if (!mounted) return <Rows n={6} />;
@@ -185,12 +187,14 @@ export function ProfileView() {
         )}
       </Panel>
 
-      {/* One panel per launch path: RWAGMI's locker for Bootr coins, Clanker's fee locker for Clanker coins (hidden without
-          one). A wallet with Clanker coins only sees the Clanker panel alone; one with no coin at all sees one panel that says so. */}
-      {launched.isPending || rwagmiCoins.length > 0 || clankerCoins.length === 0 ? (
+      {/* One panel per launch path: RWAGMI's locker for Bootr coins, Clanker's fee locker for Clanker v4 coins and Clanker's
+          fee escrow for v5 coins (each hidden without one). A wallet with Clanker coins only sees the Clanker panels alone;
+          one with no coin at all sees one panel that says so. */}
+      {launched.isPending || rwagmiCoins.length > 0 || clankerCoins.length + clankerV5Coins.length === 0 ? (
         <CreatorFees owner={address} tokens={rwagmiCoins} loading={launched.isPending} />
       ) : null}
-      <ClankerCreatorFees owner={address} tokens={clankerCoins} />
+      <ClankerCreatorFees owner={address} tokens={clankerCoins} version={4} />
+      <ClankerCreatorFees owner={address} tokens={clankerV5Coins} version={5} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Panel title="Tokens you launched" bodyClassName="p-0">

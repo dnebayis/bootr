@@ -7,8 +7,12 @@ export type { CapabilityKey };
 
 export type AgentStatus = 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
 export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
-/** Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker) or the Clanker wrapper (docs/design/clanker-launch.md). */
-export type LaunchSource = 'bootr' | 'clanker';
+/**
+ * Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker), the Clanker v4 wrapper
+ * (docs/design/clanker-launch.md) or the Clanker v5 wrapper (docs/design/clanker-v5-migration.md). Helpers in
+ * `lib/launch-source.ts`.
+ */
+export type LaunchSource = 'bootr' | 'clanker' | 'clanker-v5';
 export type TokenTab = 'newest' | 'trending' | 'graduated' | 'mcap' | 'active';
 
 export interface Agent {
@@ -54,9 +58,12 @@ export interface Token {
   agentId: string;
   poolId: Hex;
   pairedToken: Address;
-  /** The pool's swap fee, 1e6-based (10000 = 1%). Fixed at 1% on the Bootr path; per coin on the Clanker path. */
+  /**
+   * The pool's swap fee, 1e6-based (10000 = 1%). Fixed at 1% on the Bootr path; per coin on the Clanker v4 path (the
+   * trader pays it plus Clanker's 20%); on Clanker v5 the buy and sell tax itself (15000 = 1.5%, paid as is).
+   */
   lpFeeBps: number;
-  /** `bootr` (default; older indexers omit the field) or `clanker`. */
+  /** `bootr` (default; older indexers omit the field), `clanker` (v4) or `clanker-v5` (whose `pairedToken` is the zero address: native ETH). */
   source?: LaunchSource;
   agentBps: number;
   creatorBps: number;

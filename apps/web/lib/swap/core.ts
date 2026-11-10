@@ -2,12 +2,19 @@
  * Buying and selling a coin on its Uniswap v4 pool, in the user's own wallet: no React, no wagmi, no env, so the panel
  * and the Base fork test (`swap.fork.test.ts`) run the same bytes.
  *
- * Every Bootr coin has one pool paired with WETH, on either launch path, and people hold ETH, so:
+ * Every Bootr coin has one pool: paired with WETH on the RWAGMI and Clanker v4 paths, with native ETH on Clanker v5
+ * (`currency0 = 0x0`). People hold ETH, so:
  *
- * - Buy: `WRAP_ETH` into the router, `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin goes to the
- *   caller), `UNWRAP_WETH` of whatever the swap did not use back to the caller.
- * - Sell: `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin is pulled through Permit2, WETH stays
- *   in the router), `UNWRAP_WETH` to the caller with the same minimum.
+ * - Buy, WETH pool: `WRAP_ETH` into the router, `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin
+ *   goes to the caller), `UNWRAP_WETH` of whatever the swap did not use back to the caller.
+ * - Sell, WETH pool: `V4_SWAP` (exact in, `amountOutMinimum` = the minimum received, the coin is pulled through Permit2,
+ *   WETH stays in the router), `UNWRAP_WETH` to the caller with the same minimum.
+ * - Buy, ETH pool (Clanker v5): `V4_SWAP` settling the ETH sent with the call, the coin to the caller, then `SWEEP` of
+ *   any ETH the swap did not use back to the caller.
+ * - Sell, ETH pool: `V4_SWAP` with `TAKE_ALL` of the ETH to the caller, at least the minimum received.
+ *
+ * Every swap is exact in: Clanker v5 refuses exact-output swaps during its anti-snipe window, and the panel never builds
+ * one anyway.
  *
  * The router keeps nothing between transactions and Bootr adds no fee: the only recipient in the calldata is the caller.
  */
@@ -24,7 +31,7 @@ import {
 import { addresses } from '@bootr/shared/addresses';
 
 export type SwapSide = 'buy' | 'sell';
-export type PoolSource = 'bootr' | 'clanker';
+export type PoolSource = 'bootr' | 'clanker' | 'clanker-v5';
 
 export type PoolKey = {
   currency0: Address;
@@ -53,16 +60,33 @@ export const SWAP_CONTRACTS = {
   weth: A.weth as Address,
   rwagmiHook: A.rwagmiHookV3 as Address,
   clankerHook: A.clanker.hookStaticFeeV2 as Address,
+  /** Clanker v5's TaxLaunchHook: one hook for every v5 pool. */
+  clankerV5Hook: (A.clankerV5?.hook ?? null) as Address | null,
 } as const;
+
+/** Native ETH as a v4 currency (and as the Universal Router's `SWEEP` token). Clanker v5 pools are paired with it. */
+export const NATIVE_ETH: Address = '0x0000000000000000000000000000000000000000';
+
+/**
+ * Clanker v5's anti-snipe window: for this many seconds after launch a buy pays a fee that falls from 99% to the tax
+ * (`taxPolicy().antiSnipeConfiguration`, read on Base on 2026-11-10), and exact-output swaps revert.
+ */
+export const CLANKER_V5_ANTI_SNIPE_SECONDS = 20;
+
+/** Whole seconds until a v5 coin launched at `launchedAt` leaves the anti-snipe window; 0 once trading is open. */
+export function v5TradingOpensIn(launchedAt: number, now: number): number {
+  const left = launchedAt + CLANKER_V5_ANTI_SNIPE_SECONDS - now;
+  return left > 0 ? Math.ceil(left) : 0;
+}
 
 /** `LPFeeLibrary.DYNAMIC_FEE_FLAG`: Clanker pools are dynamic-fee pools, the hook sets the fee. */
 const DYNAMIC_FEE_FLAG = 0x800000;
 const TICK_SPACING = 200;
 
 /** Universal Router commands (`Commands.sol`). */
-const CMD = { WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 } as const;
+const CMD = { SWEEP: 0x04, WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 } as const;
 /** v4-periphery `Actions.sol`. */
-const ACTION = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE: 0x0b, SETTLE_ALL: 0x0c, TAKE: 0x0e } as const;
+const ACTION = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE: 0x0b, SETTLE_ALL: 0x0c, TAKE: 0x0e, TAKE_ALL: 0x0f } as const;
 /** v4-periphery `ActionConstants.sol`: placeholders the router maps to the caller, to itself and to "what is owed". */
 const MSG_SENDER: Address = '0x0000000000000000000000000000000000000001';
 const ADDRESS_THIS: Address = '0x0000000000000000000000000000000000000002';
@@ -119,8 +143,18 @@ export const permit2Abi = [
   },
 ] as const;
 
-/** The pool key each launch path builds for a coin (`BootrLauncher.poolKeyFor`, `BootrClankerLauncher.poolKeyFor`). */
-export function poolKeyOf(token: Address, source: PoolSource): PoolKey {
+/**
+ * The pool key each launch path builds for a coin (`BootrLauncher.poolKeyFor`, `BootrClankerLauncher.poolKeyFor`,
+ * `BootrClankerLauncherV5.poolKeyFor`: native ETH, fee 0, the factory's tick spacing of 200, the v5 hook). Null for
+ * Clanker v5 where this chain has no v5 hook.
+ */
+export function poolKeyOf(token: Address, source: 'bootr' | 'clanker'): PoolKey;
+export function poolKeyOf(token: Address, source: PoolSource): PoolKey | null;
+export function poolKeyOf(token: Address, source: PoolSource): PoolKey | null {
+  if (source === 'clanker-v5') {
+    if (!SWAP_CONTRACTS.clankerV5Hook) return null;
+    return { currency0: NATIVE_ETH, currency1: token, fee: 0, tickSpacing: TICK_SPACING, hooks: SWAP_CONTRACTS.clankerV5Hook };
+  }
   const coinFirst = BigInt(token) < BigInt(SWAP_CONTRACTS.weth);
   return {
     currency0: coinFirst ? token : SWAP_CONTRACTS.weth,
@@ -147,13 +181,23 @@ export function poolIdOf(key: PoolKey): Hex {
  */
 export function verifiedPoolKey(token: Address, source: PoolSource, poolId: string): PoolKey | null {
   const key = poolKeyOf(token, source);
-  return poolIdOf(key).toLowerCase() === poolId.toLowerCase() ? key : null;
+  return key && poolIdOf(key).toLowerCase() === poolId.toLowerCase() ? key : null;
 }
 
-/** True when the swap's input is currency0 (`zeroForOne`). Buying spends WETH, selling spends the coin. */
+/** True for a pool paired with native ETH (Clanker v5), whose currency0 is the zero address. */
+export function isNativePool(key: PoolKey): boolean {
+  return BigInt(key.currency0) === 0n;
+}
+
+/** The pool's ETH side: WETH, or native ETH (the zero address) on a Clanker v5 pool. */
+export function pairedCurrency(key: PoolKey): Address {
+  return isNativePool(key) || BigInt(key.currency0) === BigInt(SWAP_CONTRACTS.weth) ? key.currency0 : key.currency1;
+}
+
+/** True when the swap's input is currency0 (`zeroForOne`). Buying spends (W)ETH, selling spends the coin. */
 export function zeroForOne(key: PoolKey, side: SwapSide): boolean {
-  const currency0IsWeth = BigInt(key.currency0) === BigInt(SWAP_CONTRACTS.weth);
-  return side === 'buy' ? currency0IsWeth : !currency0IsWeth;
+  const currency0IsPaired = BigInt(key.currency0) === BigInt(pairedCurrency(key));
+  return side === 'buy' ? currency0IsPaired : !currency0IsPaired;
 }
 
 /** `quoted` less the slippage allowance, rounded down. */
@@ -203,6 +247,10 @@ const takeParams = (currency: Address, recipient: Address, amount: bigint) =>
   encodeAbiParameters([{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], [currency, recipient, amount]);
 const wethParams = (recipient: Address, amount: bigint) =>
   encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [recipient, amount]);
+const takeAllParams = (currency: Address, minAmount: bigint) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [currency, minAmount]);
+const sweepParams = (token: Address, recipient: Address, amountMin: bigint) =>
+  encodeAbiParameters([{ type: 'address' }, { type: 'address' }, { type: 'uint256' }], [token, recipient, amountMin]);
 
 function execute(commands: readonly number[], inputs: readonly Hex[], deadline: bigint): Hex {
   return encodeFunctionData({
@@ -228,6 +276,26 @@ const suffixed = (data: Hex, suffix?: Hex): Hex => (suffix ? concat([data, suffi
 
 /** ETH to coin. `value` is the amount in; nothing else leaves the wallet. */
 export function buildBuyTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+  if (isNativePool(key)) {
+    const data = execute(
+      [CMD.V4_SWAP, CMD.SWEEP],
+      [
+        v4Swap(
+          [ACTION.SWAP_EXACT_IN_SINGLE, ACTION.SETTLE, ACTION.TAKE],
+          [
+            exactInSingle(key, 'buy', amountIn, minOut),
+            // The router pays the pool from the ETH sent with the call.
+            settleParams(NATIVE_ETH, OPEN_DELTA, false),
+            takeParams(coin, MSG_SENDER, OPEN_DELTA),
+          ],
+        ),
+        // ETH the swap did not use comes back to the caller.
+        sweepParams(NATIVE_ETH, MSG_SENDER, 0n),
+      ],
+      deadline,
+    );
+    return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: amountIn };
+  }
   const data = execute(
     [CMD.WRAP_ETH, CMD.V4_SWAP, CMD.UNWRAP_WETH],
     [
@@ -250,6 +318,19 @@ export function buildBuyTx({ key, coin, amountIn, minOut, deadline, dataSuffix }
 
 /** Coin to ETH. Needs the allowances of `approvalCalls`. */
 export function buildSellTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+  if (isNativePool(key)) {
+    const data = execute(
+      [CMD.V4_SWAP],
+      [
+        v4Swap(
+          [ACTION.SWAP_EXACT_IN_SINGLE, ACTION.SETTLE_ALL, ACTION.TAKE_ALL],
+          [exactInSingle(key, 'sell', amountIn, minOut), settleAllParams(coin, amountIn), takeAllParams(NATIVE_ETH, minOut)],
+        ),
+      ],
+      deadline,
+    );
+    return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: 0n };
+  }
   const data = execute(
     [CMD.V4_SWAP, CMD.UNWRAP_WETH],
     [

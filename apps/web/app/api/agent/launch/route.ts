@@ -5,12 +5,15 @@ import { ipfsGatewayUrl, UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
 import { checkLinks } from '@/lib/coin-link-rules';
 import { clankerTokenMetadata } from '@/lib/contract-metadata';
-import { contracts, USDC_DECIMALS } from '@/lib/contracts';
+import { CLANKER_PATHS, clankerPath, contracts, USDC_DECIMALS } from '@/lib/contracts';
+import { clankerV5FactoryAbi, mineLaunchSalt, SaltMiningError, type MinedSalt } from '@/lib/clanker-v5';
+import type { LaunchSource } from '@/lib/types';
+import { addresses } from '@bootr/shared/addresses';
 import { chainAddresses } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
 import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
-import { defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
+import { defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient } from '@/lib/server/chain';
@@ -101,7 +104,9 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
  * form does before the wallet signs: pins the image, stores the Identity text and the coin metadata under a
  * new launch id (the hosted agent card and contract URI), reads the launcher's fee and minimum fuel, and
  * returns the transactions the wallet must send, in order: the USDC approval, `launch` on the chosen launcher
- * (`launchThrough`: `bootr`, the default, or `clanker`; same `LaunchParams` either way), and the agent's first gas
+ * (`launchThrough`: `bootr`, the default; `clanker`, the deployment's Clanker path, which is Clanker v5 once its
+ * launcher is configured and Clanker v4 until then; or `clanker-v5` by name; same `LaunchParams` on all of them, and on
+ * v5 the salt is mined here so the coin's address ends in cccc), and the agent's first gas
  * (`EntryPoint.depositTo(predictedKernel)`). Nothing is sent on the caller's behalf
  * and no key ever reaches this server. 5 calls per minute per IP.
  */
@@ -148,8 +153,11 @@ export async function POST(req: NextRequest) {
   // Both are permanent or move money, so a value this route cannot read is refused, never taken for the default.
   if (l.buyback !== undefined && typeof l.buyback !== 'boolean') return invalid('buyback', `buyback must be true or false, got ${quoted(l.buyback)}.`);
   const buyback = l.buyback === true;
-  const launchThrough = normalizeSource(l.launchThrough);
-  if (launchThrough === null) return invalid('launchThrough', `launchThrough must be bootr (default) or clanker, got ${quoted(l.launchThrough)}.`);
+  const requested = normalizeSource(l.launchThrough);
+  if (requested === null) return invalid('launchThrough', `launchThrough must be bootr (default), clanker or clanker-v5, got ${quoted(l.launchThrough)}.`);
+  // `clanker` is this deployment's Clanker path (v5 once its launcher is configured, v4 until then); `clanker-v5` asks for v5 by name.
+  const launchThrough: LaunchSource = requested === 'clanker' ? clankerPath.source : requested;
+  const isV5 = launchThrough === 'clanker-v5';
   const fuel = l.fuelUsdc === undefined ? '20' : typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '';
   if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
@@ -170,12 +178,16 @@ export async function POST(req: NextRequest) {
   const img = await loadImage(l.image);
   if ('error' in img) return refuse(400, 'invalid_image', img.error, { field: 'image' });
 
-  // Both launchers share the ABI; the Clanker one is optional per deployment (mock mode answers for both).
-  const launcher = (launchThrough === 'clanker' ? contracts.clankerLauncher : contracts.launcher) ?? (env.useMock ? zeroAddress : null);
-  if (!launcher) {
-    return launchThrough === 'clanker'
-      ? refuse(503, 'clanker_unavailable', 'Launching through Clanker is not available on this deployment: leave launchThrough out, or set it to bootr.', { field: 'launchThrough' })
-      : refuse(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment, so it cannot take a launch right now.');
+  // The launchers share the `launch(LaunchParams)` ABI; the Clanker ones are optional per deployment (mock mode answers for all).
+  const configured = launchThrough === 'bootr' ? contracts.launcher : CLANKER_PATHS[isV5 ? 5 : 4].launcher;
+  const launcher = configured ?? (env.useMock ? zeroAddress : null);
+  const v5 = contracts.clankerV5 ?? (env.useMock ? addresses[8453].clankerV5 : null);
+  if (!launcher || (isV5 && !v5)) {
+    return isV5
+      ? refuse(503, 'clanker_v5_unavailable', 'Launching through Clanker v5 is not available on this deployment yet: set launchThrough to clanker (the deployment’s Clanker path) or bootr, or leave it out.', { field: 'launchThrough' })
+      : launchThrough === 'clanker'
+        ? refuse(503, 'clanker_unavailable', 'Launching through Clanker is not available on this deployment: leave launchThrough out, or set it to bootr.', { field: 'launchThrough' })
+        : refuse(503, 'launcher_not_configured', 'The launcher contract is not configured on this deployment, so it cannot take a launch right now.');
   }
 
   const draftId = crypto.randomUUID();
@@ -199,22 +211,27 @@ export async function POST(req: NextRequest) {
   const client = serverPublicClient(chainId);
   const salt = keccak256(toHex(draftId));
   let feeWei = FEE_FALLBACK_WEI;
-  let defaults = buyback ? FALLBACK_BUYBACK : FALLBACK_STANDARD;
+  let clankerFeeWei = 0n;
+  let defaults = fallbackDefaults(launchThrough, buyback);
   let predictedKernel: Address | null = null;
   if (!env.useMock) {
     try {
-      // One multicall, not three requests: the RPC key is shared with the indexer's block tail.
-      const [fee, tuple, kernel] = await client.multicall({
+      // One multicall, not three requests: the RPC key is shared with the indexer's block tail. On v5 the kernel is
+      // predicted after the salt is mined (the salt picks the kernel address too), and Clanker's own launch fee is read.
+      const [fee, tuple, third] = await client.multicall({
         allowFailure: false,
         contracts: [
           { address: launcher, abi: launcherAbi, functionName: 'launchFeeWei' },
           { address: launcher, abi: launcherAbi, functionName: buyback ? 'buybackDefaults' : 'standardDefaults' },
-          { address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] },
+          isV5
+            ? { address: v5!.factory as Address, abi: clankerV5FactoryAbi, functionName: 'nativeLaunchFee' }
+            : { address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] },
         ],
       });
       feeWei = fee as bigint;
       defaults = defaultsFromTuple(tuple as LaunchDefaultsTuple);
-      predictedKernel = kernel as Address;
+      if (isV5) clankerFeeWei = third as bigint;
+      else predictedKernel = third as Address;
     } catch {
       return refuse(502, 'chain_unavailable', 'Could not read the launcher. Nothing was launched: try again in a moment.');
     }
@@ -228,7 +245,7 @@ export async function POST(req: NextRequest) {
     symbol,
     image: imageUrl,
     // Clanker's page reads JSON from this field; the hosted document's URL stays inside it (lib/contract-metadata.ts).
-    metadata: launchThrough === 'clanker' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId)) : contractUriUrl(draftId),
+    metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId)) : contractUriUrl(draftId),
     context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId, via: 'agent-api' }),
     salt,
     buybackBurn: buyback,
@@ -238,7 +255,23 @@ export async function POST(req: NextRequest) {
     model,
     agentURI: agentCardUrl(draftId),
     supervisorSessionKey: env.supervisorSessionKey ?? zeroAddress,
-  } as const;
+  };
+  // Clanker v5 refuses a token address that does not end in cccc: mine the salt (lib/clanker-v5.ts), check it with the
+  // launcher's own predictToken, and predict the kernel from the mined salt.
+  let mined: MinedSalt | null = null;
+  if (isV5) {
+    try {
+      mined = await mineLaunchSalt({ client: env.useMock ? null : client, launcher, tokenDeployer: v5!.tokenDeployer as Address, creator, params });
+      params.salt = mined.salt;
+      if (!env.useMock) {
+        predictedKernel = await client.readContract({ address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, mined.salt] });
+      }
+    } catch (err) {
+      return err instanceof SaltMiningError
+        ? refuse(503, 'salt_not_found', err.message)
+        : refuse(502, 'chain_unavailable', 'Could not read the launcher. Nothing was launched: try again in a moment.');
+    }
+  }
   const usdc = contracts.usdc;
   const entryPoint = chainAddresses().entryPointV07;
   const transactions: { step: string; to: Address; data: Hex; value: string; note: string }[] = [
@@ -253,8 +286,10 @@ export async function POST(req: NextRequest) {
       step: 'launch',
       to: launcher,
       data: encodeFunctionData({ abi: launcherAbi, functionName: 'launch', args: [params] }),
-      value: (devBuyWei + feeWei).toString(),
-      note: `${launchThrough === 'clanker' ? 'BootrClankerLauncher' : 'BootrLauncher'}.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
+      value: (devBuyWei + feeWei + clankerFeeWei).toString(),
+      note: isV5
+        ? `BootrClankerLauncherV5.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei${clankerFeeWei > 0n ? ` + Clanker's launch fee ${clankerFeeWei.toString()} wei` : ''}. The salt is mined so the coin's address ends in cccc (${mined?.token}). Emits AgentLaunched(token, kernel, ...).`
+        : `${launchThrough === 'clanker' ? 'BootrClankerLauncher' : 'BootrLauncher'}.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
     },
   ];
   if (gasWei > 0n) {
@@ -277,6 +312,8 @@ export async function POST(req: NextRequest) {
       launcher,
       launchThrough,
       predictedKernel,
+      salt: params.salt,
+      ...(mined ? { predictedToken: mined.token, saltTries: mined.attempts } : {}),
       agentURI: params.agentURI,
       metadata: params.metadata,
       image: { url: imageUrl, ipfsUri: `ipfs://${cid}` },

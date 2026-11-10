@@ -147,8 +147,104 @@ test('the admin fee panel lists platform fees per source with the Clanker claim 
 test('docs explain the two launch paths without naming anything private', async ({ page, request }) => {
   await page.goto('/docs/launch');
   await expect(page.getByRole('heading', { name: 'Launch through RWAGMI or Clanker' })).toBeVisible();
-  await expect(page.getByText('bootr.fun and clanker.world')).toBeVisible();
+  // Both Clanker columns (v4 and v5) are listed on clanker.world too.
+  await expect(page.getByText('bootr.fun and clanker.world')).toHaveCount(2);
+  await expect(page.getByRole('columnheader', { name: 'Through Clanker v5' })).toBeVisible();
   const full = await (await request.get('/llms-full.txt')).text();
   expect(full).toContain('Launch through RWAGMI or Clanker');
+  expect(full).toContain('Through Clanker v5');
+  expect(full).toContain('ends in `cccc`');
   expect(full.toLowerCase()).not.toContain('console');
+});
+
+/**
+ * Clanker v5 (docs/design/clanker-v5-migration.md). The e2e build has no v5 launcher configured, so the form shows the v4
+ * card (tests above); mock mode's `/launch?clanker=v5` shows it as a deployment with NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS
+ * set does. The mock v5 coin is $GAS.
+ */
+test('with the v5 launcher set, the Clanker card shows the tax and Clanker’s opening cap, and the launch mines a cccc address', async ({ page }) => {
+  await page.goto('/launch?clanker=v5');
+  const choice = page.getByTestId('launch-through');
+  const clanker = page.getByRole('radio', { name: /^Clanker / });
+  await expect(choice).toContainText('A 1.50% tax on every trade; Clanker keeps its share (0.50% of the trade)');
+  await expect(choice).toContainText('Opens at about 1.9 ETH of market cap');
+  await expect(choice).toContainText('1 billion coins. Listed on bootr.fun and clanker.world.');
+  // v4's terms are not offered once v5 is the Clanker path.
+  await expect(choice).not.toContainText('Clanker adds 20% on top');
+
+  await page.locator('label', { has: clanker }).click();
+  const summary = page.getByTestId('launch-summary');
+  await expect(summary).toContainText('Launch throughClanker');
+  await expect(summary).toContainText('Trading tax1.50%');
+  await expect(summary).toContainText('0.65% of volume');
+  await expect(summary.getByTestId('fee-sentence')).toContainText('A 1.50% tax on every trade: Clanker keeps its share (0.50%)');
+
+  await page.getByLabel('Name').fill('Gas Meter');
+  await page.getByLabel('Symbol').fill('GMTR');
+  await page.getByLabel('Instructions').fill('A patient onchain analyst for small Base coins.');
+  await page.getByLabel('Launch without an X account; I will connect one later from the coin page.').check();
+  const drafted = page.waitForRequest((r) => r.url().endsWith('/api/launch/draft') && r.method() === 'POST');
+  await page.locator('#image-file').setInputFiles({ name: 'coin.png', mimeType: 'image/png', buffer: PNG });
+  await expect(page.getByTestId('image-status')).toContainText('ipfs://');
+  const started = Date.now();
+  await page.getByTestId('launch-submit').click();
+  expect((await drafted).postDataJSON()).toMatchObject({ launchThrough: 'clanker-v5' });
+  // The salt is mined in the page before the (mock) launch: the coin's address ends in cccc, as Clanker v5 requires.
+  await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{36}cccc$/i, { timeout: 30_000 });
+  console.info(`[clanker-v5 e2e] launch with salt mining took ${Date.now() - started} ms`);
+  // A coin seconds old: buys wait out Clanker's 20-second anti-snipe window instead of paying up to 99%.
+  // (No wallet is connected here, so the panel's button is Connect; the notice is what holds the buy.)
+  await expect(page.getByTestId('trade-opens-in')).toContainText(/Trading opens in \d+ s/);
+  // The window passes on the clock: the notice goes once the coin is 20 seconds old.
+  await expect(page.getByTestId('trade-opens-in')).toHaveCount(0, { timeout: 25_000 });
+});
+
+test('the mock Clanker v5 coin shows the tax as its fee, trades, and claims ETH from Clanker’s fee escrow', async ({ page }) => {
+  await page.goto('/?path=clanker-v5');
+  const card = page.locator('a[href^="/token/0x"]', { hasText: 'Gas Station' }).first();
+  await expect(card).toBeVisible();
+  await page.goto((await card.getAttribute('href'))!);
+  await expect(page.getByRole('heading', { name: 'Gas Station' })).toBeVisible();
+  await expect(page.getByTestId('token-source')).toHaveText(/launched through clanker/);
+  const panel = page.locator('section', { has: page.getByRole('heading', { name: 'Locked fee split' }) });
+  await expect(panel.getByTestId('fee-sentence')).toContainText('A 1.50% tax on every trade: Clanker keeps its share (0.50%), the rest goes to the recipients above. Fees arrive as ETH');
+  await expect(panel).toContainText('locked in the coin’s Clanker pool');
+  // The trade panel: the tax is the fee, and the coin trades (it launched long ago).
+  await expect(page.getByTestId('trade-panel')).toContainText('Trading tax');
+  await expect(page.getByTestId('trade-fee')).toContainText('1.50%');
+  await expect(page.getByTestId('trade-opens-in')).toHaveCount(0);
+  // The creator's line: ETH from Clanker's fee escrow, claimed with claimFor(creator, 0x0).
+  const line = page.getByTestId('clanker-fee-line');
+  await expect(line).toHaveAttribute('data-claim-via', 'fee-escrow');
+  await expect(line.getByTestId('clanker-fee-amount')).toContainText(/^0\.\d+ ETH$/);
+  await expect(line).toContainText('from Clanker’s fee escrow');
+  await line.getByRole('button', { name: 'Claim' }).click();
+  await expect(page.getByText('Mock: Claim $GAS fees sent')).toBeVisible();
+});
+
+test('profile and console keep a separate Clanker v5 panel that pays ETH from the fee escrow (mock mode)', async ({ page, context, baseURL }) => {
+  await fakeInjectedWallet(page);
+  await page.goto('/profile');
+  await connectBrowserWallet(page);
+  const v5 = page.locator('section', { has: page.getByRole('heading', { name: 'Creator fees, Clanker v5 coins' }) });
+  await expect(v5).toBeVisible();
+  await expect(v5.getByTestId('clanker-v5-creator-fees')).toHaveAttribute('data-claim-via', 'fee-escrow');
+  await expect(v5.getByTestId('clanker-v5-creator-eth')).toContainText(/^0\.\d+ ETH$/);
+  await expect(v5).toContainText('$GAS');
+  await expect(v5).toContainText('1.50% tax, Clanker’s share inside it');
+  // The v4 panel keeps v4 coins only.
+  const v4 = page.locator('section', { has: page.getByRole('heading', { name: 'Creator fees, Clanker coins' }) });
+  await expect(v4).not.toContainText('$GAS');
+
+  const token = await signToken({ k: 'admin', a: ADMIN, e: Math.floor(Date.now() / 1000) + 600, s: newSessionId() });
+  await context.addCookies([{ name: ADMIN_COOKIE, value: token, url: baseURL! }]);
+  await page.goto(`/console-${SLUG}`);
+  const fees = page.locator('section', { has: page.getByRole('heading', { name: 'Platform fees' }) });
+  const console5 = fees.getByTestId('platform-fees-clanker-v5');
+  await expect(console5).toContainText('Through Clanker v5: Clanker’s fee escrow');
+  await expect(console5).toContainText('claimFor(treasury, 0x0)');
+  await expect(console5).toContainText('$GAS');
+  await expect(console5).toContainText('1.50% tax per trade, Clanker’s 0.50% inside it');
+  await expect(console5.getByTestId('platform-eth-clanker-v5')).toContainText(/ETH/);
+  await expect(console5.getByRole('button', { name: 'Claim on Clanker v5' })).toBeVisible();
 });

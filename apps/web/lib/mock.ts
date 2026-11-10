@@ -3,7 +3,8 @@
  * Deterministic (seeded) so reloads look the same; a small simulator mutates the store
  * and emits stream hints so live UI (reordering grid, ticking numbers) can be exercised.
  */
-import type { Address, Hex } from 'viem';
+import { zeroAddress, type Address, type Hex } from 'viem';
+import { CLANKER_V5_DEFAULT_TAX_BPS, clankerV5ProtocolBps } from './fee-split';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
@@ -180,8 +181,9 @@ const TWO_SLOT_WALLETS: Record<string, CreatorCoin['creatorFees']> = {
   },
 };
 
-function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number): { token: Token; agent: Agent } {
-  const id = hex(rand, 20) as Address;
+function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number, idOverride?: Address): { token: Token; agent: Agent } {
+  const drawn = hex(rand, 20) as Address;
+  const id = idOverride ?? drawn;
   const kernel = hex(rand, 20) as Address;
   const buyback = rand() < 0.35;
   // Skewed: most coins are small; older coins drift larger. ~1 in 4 graduates.
@@ -262,6 +264,8 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
 
 /** The one mock coin launched through Clanker (`Basewatch`): the fourth newest, so the newest coin stays a Bootr coin. */
 const CLANKER_INDEX = 3;
+/** The one mock coin launched through Clanker v5 (`Gas Station`, $GAS): the eighth newest, out of the tests' first cards. */
+const CLANKER_V5_INDEX = 7;
 /** The one mock coin whose agent is brand new (`Night Shift`): the fifth newest, so the tests' "first card" keeps a working agent. */
 const FRESH_INDEX = 4;
 
@@ -313,6 +317,27 @@ function clankerize(token: Token, lpFeeBps = 10000) {
   token.burner = token.burnBps > 0 ? DEAD : null;
 }
 
+/**
+ * Turns a mock token into a Clanker v5 coin: a 1.5% tax, paired with native ETH, and the slots stored the way the
+ * indexer stores them (the preset scaled to the tax less Clanker's share, the rounding gap to the creator).
+ */
+function clankerizeV5(token: Token, taxBps = CLANKER_V5_DEFAULT_TAX_BPS) {
+  const protocolBps = clankerV5ProtocolBps(taxBps);
+  const pool = 10_000 - protocolBps;
+  const scale = (bps: number) => Math.floor((bps * pool) / 10_000);
+  token.source = 'clanker-v5';
+  token.lpFeeBps = taxBps;
+  token.pairedToken = zeroAddress;
+  token.burner = token.burnBps > 0 ? DEAD : null;
+  const agent = scale(token.agentBps);
+  const burn = scale(token.burnBps);
+  const platform = scale(token.platformBps);
+  token.agentBps = agent;
+  token.burnBps = burn;
+  token.platformBps = platform;
+  token.creatorBps = pool - agent - burn - platform;
+}
+
 function makeTrades(t: Token, rand: () => number, now: number): Trade[] {
   const out: Trade[] = [];
   let ts = now - Math.floor(rand() * 120);
@@ -349,6 +374,7 @@ function init(): Store {
   NAMES.forEach(([name, symbol], i) => {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
     if (i === CLANKER_INDEX) clankerize(token);
+    if (i === CLANKER_V5_INDEX) clankerizeV5(token);
     if (i === FRESH_INDEX) {
       freshen(token, agent);
       fresh.add(token.kernel.toLowerCase());
@@ -531,12 +557,13 @@ export const mock = {
   },
   /**
    * Deterministic WETH balance (wei) waiting in Clanker's fee locker for `owner`, in place of
-   * `ClankerFeeLocker.availableFees(owner, WETH)`: between 0.001 and 0.05 WETH, never zero, so the creator panels
-   * always have something to claim in mock mode.
+   * `ClankerFeeLocker.availableFees(owner, WETH)` (or, `version` 5, the ETH in Clanker v5's escrow,
+   * `FeeEscrow.owed(owner, 0x0)`): between 0.001 and 0.05, never zero, so the creator panels always have something to
+   * claim in mock mode.
    */
-  clankerFees(owner: string): bigint {
+  clankerFees(owner: string, version: 4 | 5 = 4): bigint {
     let h = 2166136261;
-    for (const ch of `${owner.toLowerCase()}:clanker-fees`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    for (const ch of `${owner.toLowerCase()}:${version === 5 ? 'clanker-v5-fees' : 'clanker-fees'}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
     const r = mulberry32(h >>> 0);
     return BigInt(1000 + Math.floor(r() * 49_000)) * 10n ** 12n;
   },
@@ -756,7 +783,7 @@ export const mock = {
     const s = mockStore();
     const mine = s.tokens.filter((t) => t.creator.toLowerCase() === creator.toLowerCase());
     // Demo fallback so a freshly connected wallet sees a populated profile in mock mode.
-    return clone(mine.length ? mine : s.tokens.slice(2, 5));
+    return clone(mine.length ? mine : [...s.tokens.slice(2, 5), s.tokens[CLANKER_V5_INDEX]!]);
   },
   holdings(): Holding[] {
     const s = mockStore();
@@ -1436,10 +1463,12 @@ export function mockLaunch(input: {
   workerHash?: Hex;
   /** The coin's own links from the form, shown on the mock coin page like the hosted contract URI would. */
   links?: CoinPageLinks;
+  /** The coin's address when the form predicted it (a Clanker v5 launch mines one ending in `cccc`). */
+  id?: Address;
 }): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
-  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand);
+  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand, input.id);
   token.image = input.image || avatarFor(input.symbol, s.tokens.length);
   token.model = input.model;
   token.xHandle = input.xHandle;
@@ -1453,6 +1482,7 @@ export function mockLaunch(input: {
   token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
   if (input.source === 'clanker') clankerize(token);
+  if (input.source === 'clanker-v5') clankerizeV5(token);
   if (input.workerHash) token.workerHash = input.workerHash;
   if (input.links) s.links.set(token.metadata, { ...input.links });
   if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));
