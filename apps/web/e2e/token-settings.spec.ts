@@ -253,7 +253,17 @@ test('a USDC-paired v5 coin: its real split, USDC claims, and trading in USDC (m
   // Paying USDC needs the same exact approvals a sell does.
   await expect(panel.getByTestId('trade-approvals')).toContainText('for exactly this amount, then the buy');
   await panel.getByTestId('trade-submit').click();
-  await expect(page.getByText(/^Bought \$SIGMA/)).toBeVisible();
+  await expect(page.getByText(/^Bought \$SIGMA/).first()).toBeVisible();
+
+  // Or with ETH: two hops in one transaction, no approval.
+  await panel.getByTestId('trade-pay-with').getByRole('button', { name: 'ETH' }).click();
+  await expect(panel.getByTestId('trade-balance')).toContainText('1 ETH');
+  await expect(panel.getByTestId('trade-paired')).toContainText('your ETH becomes USDC on Uniswap (0.05%) and then the coin, in one transaction');
+  await panel.getByRole('button', { name: '0.01', exact: true }).click();
+  await expect(panel.getByTestId('trade-out')).toContainText('$SIGMA');
+  await expect(panel.getByTestId('trade-approvals')).toHaveCount(0);
+  await panel.getByTestId('trade-submit').click();
+  await expect(page.getByText(/^Bought \$SIGMA/).first()).toBeVisible();
 
   await panel.getByRole('tab', { name: 'Sell' }).click();
   await expect(panel.getByTestId('trade-fee')).toContainText('3.00%');

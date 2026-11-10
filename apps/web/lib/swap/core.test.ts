@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   approvalCalls,
   buildBuyTx,
+  buildEthViaPairedBuyTx,
   buildSellTx,
   idealOut,
   impactPct,
@@ -20,7 +21,9 @@ import {
   SWAP_CONTRACTS,
   universalRouterAbi,
   v5TradingOpensIn,
+  V3_WETH_USDC,
   verifiedPoolKey,
+  wethToPairedEstimate,
   zeroForOne,
 } from './core';
 
@@ -277,6 +280,63 @@ describe('Clanker v5 (USDC pool)', () => {
     const [take, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[2]!);
     expect(take).toBe(USDC);
     expect(min).toBe(3_000_000n);
+  });
+});
+
+describe('Clanker v5 (USDC pool) bought with ETH: two hops in one transaction', () => {
+  // Calldata only: this route is not fork-tested yet.
+  const USDC = SWAP_CONTRACTS.usdc;
+  const COIN: Address = '0xfbcdef0123456789abcdef0123456789abcdcccc';
+  const key = poolKeyOf(COIN, 'clanker-v5', USDC)!;
+  const amountIn = parseEther('0.02');
+  const tx = buildEthViaPairedBuyTx({ key, coin: COIN, amountIn, minOut: 123n, deadline: 999n, dataSuffix: SUFFIX });
+
+  it('wraps the ETH sent, swaps it for USDC on the v3 0.05% pool into the router, then the router’s USDC for the coin', () => {
+    expect(tx.to).toBe(SWAP_CONTRACTS.universalRouter);
+    expect(tx.value).toBe(amountIn);
+    const { commands, inputs, deadline } = decodeExecute(tx.data);
+    expect(commands).toBe('0x0b0010');
+    expect(deadline).toBe(999n);
+    const [wrapTo, wrapAmount] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], inputs[0]!);
+    expect(wrapTo).toBe('0x0000000000000000000000000000000000000002');
+    expect(wrapAmount).toBe(amountIn);
+    const [recipient, v3In, v3Min, path, payerIsUser] = decodeAbiParameters(
+      [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'bool' }],
+      inputs[1]!,
+    );
+    expect(recipient).toBe('0x0000000000000000000000000000000000000002');
+    expect(v3In).toBe(amountIn);
+    // The USDC hop has no floor of its own; the coin's floor below covers the whole route.
+    expect(v3Min).toBe(0n);
+    expect(payerIsUser).toBe(false);
+    expect(path.toLowerCase()).toBe(`${SWAP_CONTRACTS.weth}0001f4${USDC.slice(2)}`.toLowerCase());
+    expect(V3_WETH_USDC.pool).toBe('0xd0b53D9277642d899DF5C87A3966A349A798F224');
+  });
+
+  it('settles the router’s whole USDC balance, swaps all of that credit, and takes at least the minimum of the coin', () => {
+    const { inputs } = decodeExecute(tx.data);
+    const { actions, params } = decodeV4(inputs[2]!);
+    expect(actions).toBe('0x0b060f');
+    const [settleCurrency, settleAmount, payerIsUser] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }], params[0]!);
+    expect(settleCurrency).toBe(USDC);
+    expect(settleAmount).toBe(1n << 255n); // ActionConstants.CONTRACT_BALANCE
+    expect(payerIsUser).toBe(false);
+    const [swap] = decodeAbiParameters(swapParamsAbi, params[1]!);
+    expect(swap.zeroForOne).toBe(true); // USDC sorts before this coin
+    expect(swap.amountIn).toBe(0n); // ActionConstants.OPEN_DELTA: the full credit
+    expect(swap.amountOutMinimum).toBe(123n);
+    const [take, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[2]!);
+    expect(take.toLowerCase()).toBe(COIN);
+    expect(min).toBe(123n);
+    expect(slice(tx.data, -SUFFIX.length / 2 + 1)).toBe(SUFFIX);
+  });
+
+  it('estimates the first hop at the pool price less 0.05%', () => {
+    // sqrtPriceX96 for 2,000 USDC (6 decimals) per WETH (18): price = 2000e6 / 1e18.
+    const sqrt = BigInt(Math.floor(Math.sqrt(2000e6 / 1e18) * 2 ** 96));
+    const out = wethToPairedEstimate(parseEther('1'), sqrt);
+    expect(Number(out)).toBeGreaterThan(1998.9e6);
+    expect(Number(out)).toBeLessThan(1999.1e6);
   });
 });
 

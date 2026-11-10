@@ -15,6 +15,10 @@
  * - Buy and sell, USDC pool (Clanker v5 coins paired with USDC, docs/design/clanker-v5-token-settings.md): an ERC-20 on
  *   both sides, so `V4_SWAP` with `SETTLE_ALL` of what goes in (pulled through Permit2, the same exact approvals a sell
  *   needs, for USDC on a buy) and `TAKE_ALL` of what comes out to the caller, at least the minimum received. No ETH moves.
+ * - Buy with ETH, USDC pool (`buildEthViaPairedBuyTx`): one transaction of two hops, `WRAP_ETH` into the router,
+ *   `V3_SWAP_EXACT_IN` WETH → USDC on Uniswap v3's WETH/USDC 0.05% pool (the route the launcher's own USDC dev buy takes)
+ *   to the router, then `V4_SWAP` settling the router's whole USDC balance into the coin's pool, swapping all of that
+ *   credit and taking the coin to the caller, at least the minimum received. Not fork-tested yet: calldata unit tests only.
  *
  * Every swap is exact in: Clanker v5 refuses exact-output swaps during its anti-snipe window, and the panel never builds
  * one anyway.
@@ -88,7 +92,14 @@ const DYNAMIC_FEE_FLAG = 0x800000;
 const TICK_SPACING = 200;
 
 /** Universal Router commands (`Commands.sol`). */
-const CMD = { SWEEP: 0x04, WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 } as const;
+const CMD = { V3_SWAP_EXACT_IN: 0x00, SWEEP: 0x04, WRAP_ETH: 0x0b, UNWRAP_WETH: 0x0c, V4_SWAP: 0x10 } as const;
+/** v4-periphery `ActionConstants.CONTRACT_BALANCE`: settle whatever the router holds of the currency. */
+const CONTRACT_BALANCE = 1n << 255n;
+/**
+ * Uniswap v3's WETH/USDC 0.05% pool on Base (packages/shared addresses, the launcher's USDC dev-buy route): the first hop of
+ * an ETH buy of a USDC-paired coin. token0 is WETH, token1 USDC.
+ */
+export const V3_WETH_USDC = { pool: '0xd0b53D9277642d899DF5C87A3966A349A798F224' as Address, fee: 500 } as const;
 /** v4-periphery `Actions.sol`. */
 const ACTION = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE: 0x0b, SETTLE_ALL: 0x0c, TAKE: 0x0e, TAKE_ALL: 0x0f } as const;
 /** v4-periphery `ActionConstants.sol`: placeholders the router maps to the caller, to itself and to "what is owed". */
@@ -365,6 +376,44 @@ export function buildBuyTx(args: SwapArgs): SwapTx {
     deadline,
   );
   return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: amountIn };
+}
+
+/**
+ * ETH to coin on a USDC-paired pool, in one transaction of two hops (see the header). `amountIn` is wei and `value`;
+ * `minOut` is the floor on the coins received; the USDC leg has no floor of its own, the final one covers it.
+ */
+export function buildEthViaPairedBuyTx(args: SwapArgs): SwapTx {
+  const { key, amountIn, minOut, deadline, dataSuffix } = args;
+  const paired = pairedCurrency(key);
+  const path = encodePacked(['address', 'uint24', 'address'], [SWAP_CONTRACTS.weth, V3_WETH_USDC.fee, paired]);
+  const v3Params = encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'bool' }],
+    [ADDRESS_THIS, amountIn, 0n, path, false],
+  );
+  const data = execute(
+    [CMD.WRAP_ETH, CMD.V3_SWAP_EXACT_IN, CMD.V4_SWAP],
+    [
+      wethParams(ADDRESS_THIS, amountIn),
+      v3Params,
+      v4Swap(
+        [ACTION.SETTLE, ACTION.SWAP_EXACT_IN_SINGLE, ACTION.TAKE_ALL],
+        [
+          // Pays the pool manager the router's whole USDC balance (the first hop's output) and swaps all of that credit.
+          settleParams(paired, CONTRACT_BALANCE, false),
+          exactInSingle(key, 'buy', OPEN_DELTA, minOut),
+          takeAllParams(coinCurrency(key), minOut),
+        ],
+      ),
+    ],
+    deadline,
+  );
+  return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: amountIn };
+}
+
+/** The first hop's USDC for `wei` at the v3 pool's price less its 0.05% fee (a spot estimate; the final floor guards it). */
+export function wethToPairedEstimate(wei: bigint, sqrtPriceX96: bigint): bigint {
+  const out = (wei * sqrtPriceX96 * sqrtPriceX96) >> 192n;
+  return (out * (1_000_000n - BigInt(V3_WETH_USDC.fee))) / 1_000_000n;
 }
 
 /** Coin to ETH (or USDC on a USDC pool). Needs the allowances of `approvalCalls`. */
