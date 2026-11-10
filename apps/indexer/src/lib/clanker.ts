@@ -7,7 +7,7 @@
  */
 import { decodeEventLog, toEventSelector, type Address, type Hex } from 'viem';
 
-import { ClankerV5LaunchedEvent, ClankerV5LaunchedFixedEvent, ClankerV5MetadataEvents } from '../../abis/BootrClankerLauncherV5';
+import { ClankerV5LaunchedEvent, ClankerV5LaunchedFixedEvent, ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent } from '../../abis/BootrClankerLauncherV5';
 import { ClankerAbi } from '../../abis/Clanker';
 import { ClankerFeeLockerAbi } from '../../abis/ClankerFeeLocker';
 import { ClankerLpLockerFeeConversionAbi } from '../../abis/ClankerLpLockerFeeConversion';
@@ -600,16 +600,19 @@ export function slotUpdatePatch(row: { recipient: string; admin: string }, u: Cl
   return { patch: { admin: u.to }, stale: lc(row.admin) !== u.from };
 }
 
-/** A creator's metadata edit through the v5 launcher (`ImageUpdated` / `MetadataUpdated` / `MetadataLocked`). */
-export type LauncherMetadataEdit = { token: Address; creator: Address; field: 'image' | 'metadata' | 'lock'; value: string | null };
+/**
+ * A creator's metadata edit through the v5 launcher (`CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked`).
+ * The events carry no caller: the launcher lets only the coin's creator call them.
+ */
+export type LauncherMetadataEdit = { token: Address; field: 'image' | 'metadata' | 'lock'; value: string | null };
 
 /** The one decoder of the launcher's metadata events (abis/BootrClankerLauncherV5.ts `ClankerV5MetadataEvents`). */
 export function decodeLauncherMetadataEdit(eventName: string, args: Record<string, unknown>): LauncherMetadataEdit | null {
-  if (eventName !== 'ImageUpdated' && eventName !== 'MetadataUpdated' && eventName !== 'MetadataLocked') return null;
-  const base = { token: lc(args.token as Address), creator: lc(args.creator as Address) };
-  if (eventName === 'ImageUpdated') return { ...base, field: 'image', value: args.image as string };
-  if (eventName === 'MetadataUpdated') return { ...base, field: 'metadata', value: args.metadata as string };
-  if (eventName === 'MetadataLocked') return { ...base, field: 'lock', value: null };
+  if (eventName !== 'CoinImageUpdated' && eventName !== 'CoinMetadataUpdated' && eventName !== 'CoinMetadataLocked') return null;
+  const base = { token: lc(args.token as Address) };
+  if (eventName === 'CoinImageUpdated') return { ...base, field: 'image', value: args.image as string };
+  if (eventName === 'CoinMetadataUpdated') return { ...base, field: 'metadata', value: args.metadata as string };
+  if (eventName === 'CoinMetadataLocked') return { ...base, field: 'lock', value: null };
   return null;
 }
 
@@ -627,15 +630,30 @@ export function metadataEditPatch(
   return { metadataLocked: true, metadataEditable: false, metadataUpdatedAt: ts };
 }
 
+/** `LaunchKind` of the v5 launcher's paired-asset allow-list. */
+export const LAUNCH_KINDS = ['agent', 'plain'] as const;
+
+/**
+ * The owner's allow-list change on the v5 launcher (`QuoteAllowedUpdated(uint8 kind, address quote, bool allowed)`):
+ * the row id is `<launcher>-<kind>-<quote>`, kind by name (`agent` / `plain`, the raw number when unknown).
+ */
+export function decodeQuoteAllowed(launcher: string, args: Record<string, unknown>) {
+  const k = Number(args.kind);
+  const kind: string = LAUNCH_KINDS[k] ?? String(k);
+  const quote = lc(args.quote as Address);
+  return { id: `${lc(launcher)}-${kind}-${quote}`, launcher: lc(launcher) as Address, kind, quote, allowed: Boolean(args.allowed) };
+}
+
 const v5Topic = (name: string) => toEventSelector(ClankerV5HookAbi.find((i) => i.type === 'event' && i.name === name)! as never);
 
 /** topic0 of the Clanker v5 events the indexer consumes, from the vendored verified ABIs (pinned by clanker.test.ts). */
 export const CLANKER_V5_TOPICS = {
   ClankerV5Launched: toEventSelector(ClankerV5LaunchedEvent),
   ClankerV5LaunchedFixed: toEventSelector(ClankerV5LaunchedFixedEvent),
-  ImageUpdated: toEventSelector(ClankerV5MetadataEvents[0]),
-  MetadataUpdated: toEventSelector(ClankerV5MetadataEvents[1]),
-  MetadataLocked: toEventSelector(ClankerV5MetadataEvents[2]),
+  CoinImageUpdated: toEventSelector(ClankerV5MetadataEvents[0]),
+  CoinMetadataUpdated: toEventSelector(ClankerV5MetadataEvents[1]),
+  CoinMetadataLocked: toEventSelector(ClankerV5MetadataEvents[2]),
+  QuoteAllowedUpdated: toEventSelector(QuoteAllowedUpdatedEvent),
   DividendTaxCredited: v5Topic('DividendTaxCredited'),
   DividendTaxRedirected: v5Topic('DividendTaxRedirected'),
   FeeSlotRecipientUpdated: v5Topic('FeeSlotRecipientUpdated'),

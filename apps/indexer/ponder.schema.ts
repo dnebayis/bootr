@@ -359,6 +359,21 @@ export const dividendCredit = onchainTable(
   (table) => ({ tokenIdx: index().on(table.token) }),
 );
 
+/**
+ * extra, clanker-v5: the launcher's paired-asset allow-list per launch kind (`QuoteAllowedUpdated`), one row per
+ * (launcher, kind, quote) with its latest state. Agent coins start with native ETH (`0x0`) and USDC.
+ */
+export const quoteAllowed = onchainTable('quote_allowed', (t) => ({
+  id: t.text().primaryKey(),
+  launcher: t.hex().notNull(),
+  /** `agent` | `plain` (the raw `LaunchKind` number if unknown). */
+  kind: t.text().notNull(),
+  quote: t.hex().notNull(),
+  allowed: t.boolean().notNull(),
+  updatedAt: t.integer().notNull(),
+  txHash: t.hex().notNull(),
+}));
+
 /** extra: ERC-8004 agentId -> kernel. */
 export const agentIdentity = onchainTable('agent_identity', (t) => ({
   id: t.bigint().primaryKey(),

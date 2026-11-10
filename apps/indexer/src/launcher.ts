@@ -27,6 +27,7 @@ import {
   clankerV5Settings,
   clankerV5Slots,
   decodeLauncherMetadataEdit,
+  decodeQuoteAllowed,
   decodeV5HookCredit,
   metadataEditPatch,
   type ClankerLaunchedArgs,
@@ -217,7 +218,7 @@ if (enabledSources().BootrClankerLauncher) {
 
   /**
    * v5 creator edits through the launcher (design note section 2.5): the image and the metadata JSON the API serves
-   * follow the chain (Clanker's `extraMetadata` keys `image` / `metadata`), and `MetadataLocked` ends editing for good.
+   * follow the chain (Clanker's `extraMetadata` keys `image` / `metadata`), and `CoinMetadataLocked` ends editing for good.
    * Only coins of ours (in the `token` table) are touched.
    */
   const onMetadataEdit = async (
@@ -229,9 +230,19 @@ if (enabledSources().BootrClankerLauncher) {
     if (!(await context.db.find(schema.token, { id: edit.token }))) return;
     await context.db.update(schema.token, { id: edit.token }).set(metadataEditPatch(edit, Number(event.block.timestamp)));
   };
-  ponder.on('BootrClankerLauncher:ImageUpdated', (x) => onMetadataEdit('ImageUpdated', x));
-  ponder.on('BootrClankerLauncher:MetadataUpdated', (x) => onMetadataEdit('MetadataUpdated', x));
-  ponder.on('BootrClankerLauncher:MetadataLocked', (x) => onMetadataEdit('MetadataLocked', x));
+  ponder.on('BootrClankerLauncher:CoinImageUpdated', (x) => onMetadataEdit('CoinImageUpdated', x));
+  ponder.on('BootrClankerLauncher:CoinMetadataUpdated', (x) => onMetadataEdit('CoinMetadataUpdated', x));
+  ponder.on('BootrClankerLauncher:CoinMetadataLocked', (x) => onMetadataEdit('CoinMetadataLocked', x));
+
+  /** The owner's paired-asset allow-list per launch kind (agent coins: ETH and USDC at first). */
+  ponder.on('BootrClankerLauncher:QuoteAllowedUpdated', async ({ event, context }) => {
+    const q = decodeQuoteAllowed(event.log.address, event.args as unknown as Record<string, unknown>);
+    const at = { updatedAt: Number(event.block.timestamp), txHash: event.transaction.hash };
+    await context.db
+      .insert(schema.quoteAllowed)
+      .values({ ...q, ...at })
+      .onConflictDoUpdate({ allowed: q.allowed, ...at });
+  });
 }
 
 // ------------------------------------------------------------------ shared

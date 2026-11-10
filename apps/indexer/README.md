@@ -271,7 +271,7 @@ Clanker's deploy form does. What the indexer does with it (pure helpers in `src/
 `src/lib/quote.ts`, tested in `src/lib/clanker-v5-settings.test.ts`):
 
 * **Settings on the token row**, decided once by `clankerV5Settings`: the launcher's `ClankerV5Launched` first
-  (`decodeClankerV5Launched`, expected shape `(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, buyTaxBps,
+  (`decodeClankerV5Launched`, the compiled contract's shape `(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, buyTaxBps,
   sellTaxBps, burnBps, dividendBps, antiSnipe, metadataEditable)`; the fixed launcher's 8-field shape still decodes),
   then Clanker's verified `LaunchTaxConfigured` / `Launched` of the same receipt, then `AgentLaunched.defaults`.
   Columns: `buyTaxBps`, `sellTaxBps` (`lpFeeBps` = the buy tax), `dividendBps`, `rewardsBps`, `minDividendHolding`,
@@ -290,13 +290,19 @@ Clanker's deploy form does. What the indexer does with it (pure helpers in `src/
   currency) as before. `FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated` move the row.
 * **Burn and dividends**: the burn is credited per trade on both sides (`BurnTaxCredited`, in the coin); the
   dividend share per trade is a `dividendCredit`; the tracker is on the token row. No per-holder accounting.
-* **Metadata edits**: the launcher's `ImageUpdated(token, creator, image)`, `MetadataUpdated(token, creator,
-  metadata)`, `MetadataLocked(token, creator)` (expected shapes, `decodeLauncherMetadataEdit`) update the token row,
-  so the API serves the current image and metadata.
+* **Metadata edits**: the launcher's `CoinImageUpdated(token, image)`, `CoinMetadataUpdated(token, metadata)`,
+  `CoinMetadataLocked(token)` (no caller field: only the coin's creator may call them; `decodeLauncherMetadataEdit`)
+  update the token row, so the API serves the current image and metadata.
+* **Paired-asset allow-list**: the owner's `QuoteAllowedUpdated(kind, quote, allowed)` is kept per (launcher, kind,
+  quote) in `quote_allowed` (`kind` `agent` / `plain`).
+* **`AgentLaunched.defaults` on this launcher**: `lpFeeBps` = the buy tax, `agentBps` / `platformBps` the locked shares
+  of the post-Clanker pool, `burnBps` the burn, `creatorBps` = 10000 − agent − platform − burn (creator funds plus
+  dividends); `burner` is `0x…dEaD` exactly when the burn is above 0. The dev buy pays the buy tax, so the launch
+  receipt already carries slot, burn and dividend credits, which the launch handler replays.
 
-The launcher's events are written from the design note before the contract exists (abis/BootrClankerLauncherV5.ts
-`ClankerV5LaunchedEvent`, `ClankerV5MetadataEvents`); if the contract's final events differ, those fragments and their
-one decoder each are the only places to change. The Clanker events (`DividendTaxCredited`, `DividendTaxRedirected`,
+The launcher's events are taken from its compiled ABI (abis/BootrClankerLauncherV5.ts, regenerated from
+`packages/contracts/out`: `ClankerV5LaunchedEvent`, `ClankerV5MetadataEvents`, `QuoteAllowedUpdatedEvent`); when the
+contract changes, regenerate it and adjust the one decoder per event in `src/lib/clanker.ts`. The Clanker events (`DividendTaxCredited`, `DividendTaxRedirected`,
 `FeeSlotRecipientUpdated`, `FeeSlotAdminUpdated`, the token's `ExtraMetadataUpdated` and `DividendInitialized`) are
 copied from the verified sources.
 
@@ -362,8 +368,7 @@ abis/            ABIs as `const` (Bootr from packages/contracts/out, RWAGMI v3 l
                  against Base mainnet logs 2026-11-04; BootrClankerLauncher = BootrLauncher's launch / AgentLaunched
                  + the wrapper's events until the contract is compiled; Clanker v5 hook / escrow / factory from the
                  Sourcify-verified Base deployment, topics checked against Base logs 2026-11-10;
-                 BootrClankerLauncherV5 from packages/contracts/out, its settings and metadata events written
-                 from the design note until the contract lands)
+                 BootrClankerLauncherV5 from packages/contracts/out, the token-settings launcher)
 ponder.config.ts single-chain config, skips undeployed sources
 ponder.schema.ts tables + relations
 src/*.ts         indexing functions (launcher, market, fees, guardian, reputation, snapshot)

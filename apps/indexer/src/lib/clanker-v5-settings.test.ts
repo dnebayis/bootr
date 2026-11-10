@@ -7,7 +7,7 @@
 import { decodeEventLog, encodeAbiParameters, encodeEventTopics, toEventSelector, type Abi, type Address, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
 
-import { ClankerV5LaunchedEvent, ClankerV5MetadataEvents } from '../../abis/BootrClankerLauncherV5';
+import { BootrClankerLauncherV5Abi, ClankerV5LaunchedEvent, ClankerV5MetadataEvents } from '../../abis/BootrClankerLauncherV5';
 import { ClankerV5FactoryAbi, ClankerV5HookAbi, ClankerV5TokenAbi, PoolManagerLaunchAbi } from '../../abis/ClankerV5';
 import {
   CLANKER_V5_SUPPLY,
@@ -18,6 +18,7 @@ import {
   clankerV5Slots,
   decodeClankerV5Launched,
   decodeLauncherMetadataEdit,
+  decodeQuoteAllowed,
   decodeV5HookCredit,
   decodeV5SlotUpdate,
   dividendPatch,
@@ -130,9 +131,10 @@ describe('the token-settings launch event and the settings on the token row', ()
   it('pins the topics: the expected launcher events and the verified Clanker events the indexer now reads', () => {
     expect(CLANKER_V5_TOPICS).toMatchObject({
       ClankerV5Launched: toEventSelector('ClankerV5Launched(address,bytes32,address,address,address,int24,uint24,uint24,uint16,uint16,bool,bool)'),
-      ImageUpdated: toEventSelector('ImageUpdated(address,address,string)'),
-      MetadataUpdated: toEventSelector('MetadataUpdated(address,address,string)'),
-      MetadataLocked: toEventSelector('MetadataLocked(address,address)'),
+      CoinImageUpdated: toEventSelector('CoinImageUpdated(address,string)'),
+      CoinMetadataUpdated: toEventSelector('CoinMetadataUpdated(address,string)'),
+      CoinMetadataLocked: toEventSelector('CoinMetadataLocked(address)'),
+      QuoteAllowedUpdated: toEventSelector('QuoteAllowedUpdated(uint8,address,bool)'),
       DividendTaxCredited: toEventSelector('DividendTaxCredited(bytes32,address,address,uint256)'),
       DividendTaxRedirected: toEventSelector('DividendTaxRedirected(bytes32,address,address,uint256)'),
       FeeSlotRecipientUpdated: toEventSelector('FeeSlotRecipientUpdated(bytes32,uint256,address,address)'),
@@ -170,7 +172,7 @@ describe('the token-settings launch event and the settings on the token row', ()
     expect(facts.dividendContract).toBe(TRACKER);
     expect(facts.slots.map((s) => [s.recipient, s.admin])).toEqual(slotsIn.map((s) => [s.recipient, s.admin]));
     // Another log shape from the launcher is not a launch.
-    expect(decodeClankerV5Launched(log(LAUNCHER, ClankerV5MetadataEvents, 'MetadataLocked', { token: COIN, creator }))).toBeNull();
+    expect(decodeClankerV5Launched(log(LAUNCHER, ClankerV5MetadataEvents, 'CoinMetadataLocked', { token: COIN }))).toBeNull();
   });
 
   it('decides the settings: the launcher’s event first, Clanker’s LaunchTaxConfigured next, the defaults last', () => {
@@ -378,13 +380,22 @@ describe('metadata edits through the launcher', () => {
   const edit = (eventName: string, args: Record<string, unknown>) => decodeLauncherMetadataEdit(eventName, argsOf(ClankerV5MetadataEvents, eventName, args));
 
   it('serves the edited image and metadata, and a lock ends editing for good', () => {
-    const img = edit('ImageUpdated', { token: COIN, creator, image: 'ipfs://new' })!;
-    expect(img).toEqual({ token: COIN, creator, field: 'image', value: 'ipfs://new' });
+    const img = edit('CoinImageUpdated', { token: COIN, image: 'ipfs://new' })!;
+    expect(img).toEqual({ token: COIN, field: 'image', value: 'ipfs://new' });
     expect(metadataEditPatch(img, 1_000)).toEqual({ image: 'ipfs://new', metadataUpdatedAt: 1_000 });
-    const meta = edit('MetadataUpdated', { token: COIN, creator, metadata: '{"description":"new"}' })!;
+    const meta = edit('CoinMetadataUpdated', { token: COIN, metadata: '{"description":"new"}' })!;
     expect(metadataEditPatch(meta, 1_001)).toEqual({ metadata: '{"description":"new"}', metadataUpdatedAt: 1_001 });
-    const lock = edit('MetadataLocked', { token: COIN, creator })!;
+    const lock = edit('CoinMetadataLocked', { token: COIN })!;
     expect(metadataEditPatch(lock, 1_002)).toEqual({ metadataLocked: true, metadataEditable: false, metadataUpdatedAt: 1_002 });
     expect(decodeLauncherMetadataEdit('LaunchContext', {})).toBeNull();
+    // The fragments are the compiled contract's (regenerated from forge).
+    expect(ClankerV5MetadataEvents.map((e) => e.name)).toEqual(['CoinImageUpdated', 'CoinMetadataUpdated', 'CoinMetadataLocked']);
+  });
+
+  it('records the owner’s paired-asset allow-list per launch kind', () => {
+    const a = argsOf(BootrClankerLauncherV5Abi, 'QuoteAllowedUpdated', { kind: 0, quote: USDC, allowed: true });
+    expect(decodeQuoteAllowed(LAUNCHER, a)).toEqual({ id: `${LAUNCHER}-agent-${USDC}`, launcher: LAUNCHER, kind: 'agent', quote: USDC, allowed: true });
+    expect(decodeQuoteAllowed(LAUNCHER, { kind: 1, quote: NATIVE, allowed: false }).kind).toBe('plain');
+    expect(decodeQuoteAllowed(LAUNCHER, { kind: 7, quote: NATIVE, allowed: false }).kind).toBe('7');
   });
 });
