@@ -1,3 +1,4 @@
+import { questionBudget, questionQuotaRefusal } from '../recent-posts.js';
 import { publishAttributions } from '../attributions.js';
 /**
  * Action broker: maps every agent-core tool to an executor and turns what happened into an
@@ -316,6 +317,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // Agent-to-agent cap: one new thread with another Bootr agent per day (agent-directory.ts).
       const capped = await conversationGuard(ctx, agent, config, pending, env);
       if (capped) return capped;
+      // The question quota (recent-posts.ts): at most one original post in five may ask something.
+      const asked = questionQuotaRefusal(action.input.text, await questionBudget(ctx, agentId, { excludeActionId: pending.id }));
+      if (asked) return failed(asked);
       const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions)), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
       return publishOutcome(res);
     }
