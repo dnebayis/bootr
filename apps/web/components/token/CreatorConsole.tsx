@@ -26,6 +26,7 @@ import { ApprovalQueue } from './ApprovalQueue';
 import { CoinImageForm } from './CoinImageForm';
 import { CoinLinksForm } from './CoinLinksForm';
 import { V5MetadataForm } from './V5MetadataForm';
+import { v5SettingsOf } from '@/lib/token-settings';
 import { useConsoleStatus } from './console-status';
 import { useCreatorSignature } from './creator-signature';
 import { FuelForm } from './FuelForm';
@@ -751,7 +752,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
               <CoinLinksForm token={token} />
             </Box>
             {/* A Clanker v5 coin launched with editable metadata: the token's own image and description, creator only. */}
-            {token.v5Settings?.metadataEditable ? (
+            {v5SettingsOf(token)?.metadataEditable ? (
               <Box>
                 <V5MetadataForm token={token} />
               </Box>

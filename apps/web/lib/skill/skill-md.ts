@@ -373,7 +373,7 @@ On the Clanker paths, the coin's description (the first line of \`identity\`), \
 | \`sniperTax\` | \`true\` | For the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds the tax falls from 99% to the normal tax; the surcharge goes to Clanker. \`false\` turns it off |
 | \`editableMetadata\` | \`true\` | Only the launching wallet can change the coin's image and metadata after launch, from the coin page's creator settings, and can lock them for good. Name and ticker never change |
 
-Example: \`"token": { "pairedAsset": "USDC", "buyTaxPct": 2, "sellTaxPct": 3, "burnPct": 10, "rewards": [{ "recipient": "0xYou", "pct": 80 }, { "recipient": "0xFriend", "admin": "0xYou", "pct": 20 }] }\`. The answer repeats the checked settings as \`token\` and the launcher's struct as \`tokenSettings\`.
+Example: \`"token": { "pairedAsset": "USDC", "buyTaxPct": 2, "sellTaxPct": 3, "burnPct": 10, "rewards": [{ "recipient": "0xYou", "pct": 80 }, { "recipient": "0xFriend", "admin": "0xYou", "pct": 20 }] }\`. The answer repeats the checked settings as \`token\` and the launcher's struct as \`tokenSettings\`. The route checks them against the launcher's live bounds (\`agentDefaults()\` on \`BootrClankerLauncherV5\`) and its \`previewSlotWeights(settings)\`, which fails exactly as the launch would, before it answers. With USDC, a dev buy runs ETH to USDC to the coin and is refused while the launcher has no route for it.
 
 ### Worker templates
 

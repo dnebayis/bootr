@@ -14,7 +14,7 @@ import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
 import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
-import { FALLBACK_V5_BOUNDS, parseTokenSettings, toContractSettings, v5BoundsFromTuple, type ContractTokenSettings, type V5Bounds } from '@/lib/token-settings';
+import { FALLBACK_V5_BOUNDS, LAUNCH_KIND_ID, parseTokenSettings, toContractSettings, v5BoundsFromTuple, type ContractTokenSettings, type V5Bounds } from '@/lib/token-settings';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient } from '@/lib/server/chain';
@@ -274,6 +274,27 @@ export async function POST(req: NextRequest) {
     if (!checked.ok) return invalid(checked.field === 'token' ? 'token' : `token.${checked.field}`, checked.message);
     tokenInput = checked.settings;
     tokenSettings = toContractSettings(checked.settings, contractUriUrl(draftId), bounds);
+    // The launcher's own checks, before anything is signed: the paired asset is allowed for agent coins,
+    // `previewSlotWeights` reverts exactly as `launch` would, and a non-ETH dev buy has its route.
+    if (!env.useMock) {
+      const s = tokenSettings;
+      const [allowed, preview, route] = await client.multicall({
+        allowFailure: true,
+        contracts: [
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'allowedQuote', args: [LAUNCH_KIND_ID.agent, s.quoteToken] },
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'previewSlotWeights', args: [s] },
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'devBuyRoute', args: [s.quoteToken] },
+        ],
+      });
+      if (allowed.status === 'success' && !allowed.result) return invalid('token.pairedAsset', `The launcher does not take ${checked.settings.pairedAsset} as a paired asset right now: use ETH.`);
+      if (preview.status === 'failure') {
+        const reason = (preview.error as { shortMessage?: string }).shortMessage ?? 'the settings';
+        return invalid('token', `The launcher refuses these settings (${reason}). Nothing was launched.`);
+      }
+      if (BigInt(s.quoteToken) !== 0n && parseEther(devBuy) > 0n && route.status === 'success' && BigInt(route.result[0]) === 0n) {
+        return invalid('devBuyEth', `A dev buy through ${checked.settings.pairedAsset} is not available yet: set devBuyEth to 0.`);
+      }
+    }
   }
   const fuelUnits = parseUnits(fuel, USDC_DECIMALS);
   if (fuelUnits < defaults.minFuelUsdc) return invalid('fuelUsdc', `fuelUsdc must be at least ${Number(defaults.minFuelUsdc) / 1e6} USDC, got ${quoted(fuel)}.`);

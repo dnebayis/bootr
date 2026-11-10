@@ -63,11 +63,15 @@ class IndexerError extends Error {}
 let indexerHasSource = true;
 const SOURCE_FIELD = /\bsource\b/g;
 /**
- * `token.v5Settings` (`V5TokenSettings` in lib/types.ts, one JSON column) arrives with the Clanker v5 settings launcher;
- * an indexer without it drops it the same way, and the coin pages show the v5 coin from its slot fields.
+ * The token row's Clanker v5 settings fields (lib/types.ts) arrive with the v5 settings launcher; an indexer without
+ * them rejects the first one, and every later query drops the whole group (the coin pages then show a v5 coin from its
+ * slot fields, as before).
  */
 let indexerHasV5Settings = true;
-const V5_SETTINGS_FIELD = /\bv5Settings\b/g;
+const V5_FIELDS =
+  'pairedSymbol pairedDecimals priceQuote buyTaxBps sellTaxBps rewardsBps dividendBps minDividendHolding dividendContract dividendsTotalUsd antiSnipe metadataEditable metadataLocked metadataUpdatedAt';
+const V5_SETTINGS_FIELD = new RegExp(V5_FIELDS.replace(/ /g, '\\s+'), 'g');
+const V5_FIELD_ERROR = new RegExp(`Cannot query field "(${V5_FIELDS.split(' ').join('|')})"`);
 
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   let q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
@@ -85,7 +89,7 @@ async function gql<T>(query: string, variables: Record<string, unknown> = {}): P
       indexerHasSource = false;
       return gql(query, variables);
     }
-    if (indexerHasV5Settings && /Cannot query field "v5Settings"/.test(message)) {
+    if (indexerHasV5Settings && V5_FIELD_ERROR.test(message)) {
       indexerHasV5Settings = false;
       return gql(query, variables);
     }
@@ -110,7 +114,7 @@ const TOKEN_FIELDS = /* GraphQL */ `
   id chainId name symbol image creator kernel burner platformRecipient agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
   priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt lastTradeAt
-  v5Settings
+  ${V5_FIELDS}
   agent { id status }
 `;
 

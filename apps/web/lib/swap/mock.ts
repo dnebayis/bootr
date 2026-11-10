@@ -5,7 +5,7 @@
  */
 import { parseEther, parseUnits } from 'viem';
 import { traderPaysPct, feeModelOf } from '../fee-split';
-import { pairedAssetByAddress } from '../token-settings';
+import { pairedAssetByAddress, v5SettingsOf } from '../token-settings';
 import type { Token } from '../types';
 import type { SwapSide } from './core';
 import { SwapFailure } from './errors';
@@ -17,7 +17,7 @@ export const MOCK_COIN_BALANCE = parseEther('1000000');
 export const MOCK_PAIRED_BALANCE = parseUnits('1000', 6);
 const ETH_USD = 3000;
 
-export function mockQuote(token: Pick<Token, 'priceUsd' | 'liquidityUsd' | 'launchedAt' | 'source' | 'lpFeeBps' | 'pairedToken' | 'v5Settings'>, side: SwapSide, amountIn: bigint): SwapQuote {
+export function mockQuote(token: Token, side: SwapSide, amountIn: bigint): SwapQuote {
   const now = Date.now() / 1000;
   const clanker = token.source === 'clanker';
   const age = now - token.launchedAt;
@@ -25,7 +25,7 @@ export function mockQuote(token: Pick<Token, 'priceUsd' | 'liquidityUsd' | 'laun
   if (clanker && age < 0.6) throw new SwapFailure('launch_window');
 
   // A v5 coin with settings may tax buys and sells differently.
-  const v5 = token.v5Settings;
+  const v5 = v5SettingsOf(token);
   const normalFee = v5 ? (side === 'buy' ? v5.buyTaxBps : v5.sellTaxBps) / 10_000 : traderPaysPct(feeModelOf(token));
   // The paired side: ETH (18 decimals, $3,000 here) or a USDC pool's dollar (6 decimals).
   const paired = pairedAssetByAddress(token.pairedToken);

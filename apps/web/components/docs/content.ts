@@ -170,7 +170,7 @@ const launch: DocBody = {
         ['Editable metadata', 'on', 'Only your wallet can change the coin’s image and description after launch, from the coin page’s creator settings, and you can lock them for good there. The name, the ticker and the agent’s and platform’s shares never change'],
       ],
     ),
-    p('The same settings, with the same limits, are the `token` field of the [agent API](/docs/for-agents#launching).'),
+    p('The same settings, with the same limits, are the `token` field of the [agent API](/docs/for-agents#launching). The launcher’s current limits are `agentDefaults()`, and before the wallet is asked the form and the API run `previewSlotWeights(settings)`, which fails exactly as the launch would.'),
     h2('what-you-pay', 'What you pay'),
     table(
       ['Item', 'Amount'],

@@ -92,16 +92,41 @@ export interface Token {
   change24hPct?: number | null;
   agent?: Pick<Agent, 'id' | 'status'> | null;
   /**
-   * A Clanker v5 coin launched with creator-set settings (BootrClankerLauncherV5 `launch(p, s)`); absent on every other
-   * coin, including v5 coins of the fixed launcher. The one place the web names these indexer fields.
+   * The indexer's token-row fields for a Clanker v5 coin launched with creator-set settings (BootrClankerLauncherV5
+   * `launch(p, s)`, docs/design/clanker-v5-token-settings.md section 5); null or absent on every other coin. The one
+   * place the web names them; `v5SettingsOf` in lib/token-settings.ts reads them into `V5TokenSettings`.
+   */
+  /** The paired asset's symbol and decimals (`pairedToken` is its address: `0x0` for ETH). */
+  pairedSymbol?: string | null;
+  pairedDecimals?: number | null;
+  /** The coin's price in the paired asset. */
+  priceQuote?: number | null;
+  /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` carries the buy tax. */
+  buyTaxBps?: number | null;
+  sellTaxBps?: number | null;
+  /** Creator funds (the reward rows), holder dividends and (in `burnBps`) the burn: bps of the tax pool after Clanker's cut. */
+  rewardsBps?: number | null;
+  dividendBps?: number | null;
+  /** Raw coin units (18 decimals) a holder needs for dividends. */
+  minDividendHolding?: string | null;
+  /** The coin's dividend tracker, and the dividends paid so far in USD. */
+  dividendContract?: Address | null;
+  dividendsTotalUsd?: number | null;
+  antiSnipe?: boolean | null;
+  /** Clanker's flag frozen at launch, the launcher's one-way lock, and the last `CoinImageUpdated` / `CoinMetadataUpdated`. */
+  metadataEditable?: boolean | null;
+  metadataLocked?: boolean | null;
+  metadataUpdatedAt?: number | null;
+  /**
+   * Not from the indexer: the web's own reading of the fields above (`v5SettingsOf`), which mock mode fills in directly
+   * with the reward rows and the metadata JSON the token row does not carry.
    */
   v5Settings?: V5TokenSettings | null;
 }
 
 /**
- * What the indexer reports for a v5 coin launched with settings (docs/design/clanker-v5-token-settings.md section 5):
- * read from `ClankerV5Launched`, the hook's `FeeSlotCreated` logs and the token's `ExtraMetadataUpdated` events.
- * `pairedToken` on the token row is the quote (`0x0` for native ETH, USDC's address for USDC).
+ * A v5 coin launched with settings, as the web reads it (`v5SettingsOf` in lib/token-settings.ts, from the token row's
+ * fields above). `pairedToken` on the token row is the quote (`0x0` for native ETH, USDC's address for USDC).
  */
 export interface V5TokenSettings {
   /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` on the token row carries the buy tax. */
@@ -114,7 +139,10 @@ export interface V5TokenSettings {
   dividendBps: number;
   /** Raw coin units (18 decimals) a holder needs for dividends; "0" without dividends. */
   minDividendHolding: string;
-  /** The creator funds' rows in slot order (the creator's own first), `bps` of creator funds (sum 10000). */
+  /**
+   * The creator funds' rows in slot order (the creator's own first), `bps` of creator funds (sum 10000). The token row
+   * does not carry them: empty unless read from the hook's `poolFeeSlots` (the coin page does) or set by mock mode.
+   */
   rewards: { recipient: Address; admin: Address; bps: number }[];
   antiSnipe: boolean;
   /** Clanker's flag, frozen at launch. */

@@ -5,7 +5,7 @@
  */
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { CLANKER_V5_DEFAULT_TAX_BPS, clankerV5ProtocolBps } from './fee-split';
-import { FALLBACK_V5_BOUNDS, pairedAssetBySymbol, type ContractTokenSettings, type V5Bounds } from './token-settings';
+import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, type ContractTokenSettings, type V5Bounds } from './token-settings';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
@@ -360,6 +360,19 @@ function applyV5Settings(token: Token, s: ContractTokenSettings, b: V5Bounds = F
   token.platformBps = scale(b.platformShareBps);
   token.burnBps = scale(s.burnBps);
   token.creatorBps = pool - token.agentBps - token.platformBps - token.burnBps;
+  // The indexer's token-row fields (lib/types.ts), as it reports them for a settings coin.
+  const asset = pairedAssetByAddress(s.quoteToken);
+  token.pairedSymbol = asset?.symbol ?? null;
+  token.pairedDecimals = asset?.decimals ?? null;
+  token.buyTaxBps = s.buyTaxBps;
+  token.sellTaxBps = s.sellTaxBps;
+  token.rewardsBps = 10_000 - b.agentShareBps - b.platformShareBps - s.burnBps - s.dividendBps;
+  token.dividendBps = s.dividendBps;
+  token.minDividendHolding = s.minDividendHolding.toString();
+  token.antiSnipe = s.antiSnipe;
+  token.metadataEditable = s.metadataEditable;
+  token.metadataLocked = false;
+  // Mock mode also keeps what the row does not carry: the reward rows and the metadata JSON.
   token.v5Settings = {
     buyTaxBps: s.buyTaxBps,
     sellTaxBps: s.sellTaxBps,
@@ -638,7 +651,11 @@ export const mock = {
       delete t.imageOnChain;
     }
     if (edit.metadataJson !== undefined) t.v5Settings.metadataJson = edit.metadataJson;
-    if (edit.lock) t.v5Settings.metadataLocked = true;
+    if (edit.lock) {
+      t.v5Settings.metadataLocked = true;
+      t.metadataLocked = true;
+    }
+    t.metadataUpdatedAt = Math.floor(Date.now() / 1000);
     return true;
   },
   /**

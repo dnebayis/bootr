@@ -9,7 +9,9 @@ import { env } from '@/lib/env';
 import { BOOTR_FEE, feeModelOf, launcherName, launcherPct, ofVolume, pctLabel, slotsShare, splitFromSlots, swapFeePct, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
 import type { RecipientKind, Token } from '@/lib/types';
 import { Panel } from '@/components/ui/Panel';
-import { coinTradeSplits, pairedAssetByAddress } from '@/lib/token-settings';
+import { clankerV5HookSlotsAbi, coinTradeSplits, pairedAssetByAddress, rowsFromSlots, v5SettingsOf } from '@/lib/token-settings';
+import type { V5TokenSettings } from '@/lib/types';
+import type { Hex } from 'viem';
 import { shortAddr } from '@/lib/format';
 import { V5SplitBar } from './V5SplitBar';
 
@@ -80,12 +82,24 @@ export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeMo
 
 /**
  * A Clanker v5 coin launched with creator-set settings: its own buy and sell tax, the split of each, the reward rows,
- * holder dividends, the paired asset and the two switches, all as the indexer reports them (`Token.v5Settings`).
+ * holder dividends, the paired asset and the two switches, all as the indexer reports them (`v5SettingsOf`); the reward rows are read from the hook's `poolFeeSlots`.
  */
-function V5SettingsSplit({ token, settings }: { token: Token; settings: NonNullable<Token['v5Settings']> }) {
+function V5SettingsSplit({ token, settings }: { token: Token; settings: V5TokenSettings }) {
   const { buy, sell } = coinTradeSplits(settings);
+  // The creator-funds rows: slot 0 is the agent's and slot 1 the platform's, the rest are the creator's rows, whose
+  // weights share creator funds. Mock mode has them in the settings already.
+  const hook = contracts.clankerV5?.hook;
+  const slotsRead = useReadContract({
+    address: hook ?? undefined,
+    abi: clankerV5HookSlotsAbi,
+    functionName: 'poolFeeSlots',
+    args: [token.poolId as Hex],
+    chainId: appChain.id,
+    query: { enabled: !env.useMock && !!hook && settings.rewards.length === 0, staleTime: Infinity, retry: 0 },
+  });
+  const chainRows = slotsRead.data ? rowsFromSlots(slotsRead.data) : null;
   const asset = pairedAssetByAddress(token.pairedToken)?.symbol ?? 'the paired asset';
-  const rows = settings.rewards;
+  const rows = settings.rewards.length > 0 ? settings.rewards : (chainRows ?? []);
   const holding = BigInt(settings.minDividendHolding || '0') / 10n ** 18n;
   return (
     <Panel title="Locked fee split" action={<span className="font-mono text-micro text-mute">FROM INDEXER</span>}>
@@ -133,7 +147,8 @@ function V5SettingsSplit({ token, settings }: { token: Token; settings: NonNulla
 }
 
 export function FeeSplit({ token }: { token: Token }) {
-  if (token.source === 'clanker-v5' && token.v5Settings) return <V5SettingsSplit token={token} settings={token.v5Settings} />;
+  const settings = v5SettingsOf(token);
+  if (settings) return <V5SettingsSplit token={token} settings={settings} />;
   return <PresetFeeSplit token={token} />;
 }
 

@@ -8,7 +8,7 @@ import { feeModelOf, traderPaysPct } from '@/lib/fee-split';
 import { useNow } from '@/lib/hooks';
 import type { Token } from '@/lib/types';
 import { CLANKER_V5_ANTI_SNIPE_SECONDS, DEFAULT_SLIPPAGE_BPS, isErc20Paired, launchWindowActive, minReceived, pairedCurrency, v5TradingOpensIn, type SwapSide } from '@/lib/swap/core';
-import { pairedAssetByAddress } from '@/lib/token-settings';
+import { pairedAssetByAddress, v5SettingsOf } from '@/lib/token-settings';
 import { SwapFailure } from '@/lib/swap/errors';
 import { tradeChainId, tradePoolKey, useSellApprovals, useSwapBalances, useSwapQuote, useSwapRunner } from '@/lib/swap/use-swap';
 import { amountInput, feeFigure, formatAmount, GAS_RESERVE_WEI, parseAmount, parseSlippage, percent } from '@/lib/swap/view';
@@ -137,7 +137,8 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const q = quote.data && settledAmount === quote.data.amountIn ? quote.data : null;
   const minOut = q ? minReceived(q.amountOut, effectiveSlippage) : null;
   // A v5 coin launched with settings may tax buys and sells differently.
-  const normalFeePct = token.v5Settings ? (side === 'buy' ? token.v5Settings.buyTaxBps : token.v5Settings.sellTaxBps) / 10_000 : traderPaysPct(feeModelOf(token));
+  const v5Settings = v5SettingsOf(token);
+  const normalFeePct = v5Settings ? (side === 'buy' ? v5Settings.buyTaxBps : v5Settings.sellTaxBps) / 10_000 : traderPaysPct(feeModelOf(token));
   const fee = q ? feeFigure(q.feePct, normalFeePct) : { pct: normalFeePct, raised: false };
   const quoteFailure = quote.error instanceof SwapFailure ? quote.error : null;
   const running = runner.stage !== null;

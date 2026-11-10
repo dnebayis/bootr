@@ -18,7 +18,7 @@
 import { getAddress, isAddress, zeroAddress, type Address } from 'viem';
 import { addresses } from '@bootr/shared/addresses';
 import { CLANKER_V5_POLICY } from './fee-split';
-import type { V5TokenSettings } from './types';
+import type { Token, V5TokenSettings } from './types';
 
 // ------------------------------------------------------------------ paired assets
 
@@ -402,7 +402,44 @@ export function perTradeLines(s: Pick<TokenSettingsInput, 'buyTaxPct' | 'sellTax
 
 // ------------------------------------------------------------------ a launched coin
 
-/** A launched coin's pool shares, from what the indexer reports (`Token.v5Settings`). */
+/** The token-row fields `v5SettingsOf` reads (lib/types.ts). */
+type V5Row = Pick<
+  Token,
+  'source' | 'v5Settings' | 'agentBps' | 'platformBps' | 'burnBps' | 'buyTaxBps' | 'sellTaxBps' | 'rewardsBps' | 'dividendBps' | 'minDividendHolding' | 'antiSnipe' | 'metadataEditable' | 'metadataLocked'
+>;
+
+/**
+ * A v5 coin's settings from the indexer's token row, or null for any coin not launched with settings (the fixed v5
+ * launcher, v4, RWAGMI). The pool shares are the row's when agent, platform, burn, dividends and rewards add up to
+ * 10,000 bps of the tax pool; otherwise the agent gets its 5% floor and the platform what is left. The reward rows are
+ * not on the row (empty here).
+ */
+export function v5SettingsOf(t: V5Row | null | undefined): V5TokenSettings | null {
+  if (!t) return null;
+  if (t.v5Settings) return t.v5Settings;
+  if (t.source !== 'clanker-v5' || t.buyTaxBps == null || t.sellTaxBps == null || t.rewardsBps == null) return null;
+  const burn = Number(t.burnBps ?? 0);
+  const dividend = Number(t.dividendBps ?? 0);
+  const rewards = Number(t.rewardsBps);
+  const exact = Number(t.agentBps) + Number(t.platformBps) + burn + dividend + rewards === 10_000;
+  const agent = exact ? Number(t.agentBps) : FALLBACK_V5_BOUNDS.agentShareBps;
+  return {
+    buyTaxBps: Number(t.buyTaxBps),
+    sellTaxBps: Number(t.sellTaxBps),
+    agentShareBps: agent,
+    platformShareBps: exact ? Number(t.platformBps) : Math.max(0, 10_000 - agent - burn - dividend - rewards),
+    burnBps: burn,
+    dividendBps: dividend,
+    minDividendHolding: t.minDividendHolding ?? '0',
+    rewards: [],
+    antiSnipe: !!t.antiSnipe,
+    metadataEditable: !!t.metadataEditable,
+    metadataLocked: !!t.metadataLocked,
+    metadataJson: null,
+  };
+}
+
+/** A launched coin's pool shares, from what the indexer reports (`v5SettingsOf`). */
 export function poolSharesOfCoin(v: Pick<V5TokenSettings, 'agentShareBps' | 'platformShareBps' | 'burnBps' | 'dividendBps'>): PoolShares {
   return { agentBps: v.agentShareBps, platformBps: v.platformShareBps, burnBps: v.burnBps, dividendBps: v.dividendBps };
 }
@@ -416,4 +453,36 @@ export function coinTradeSplits(v: V5TokenSettings): { buy: TradeSplit; sell: Tr
 /** Whether the coin's creator may still change its image and metadata (Clanker's flag on, the launcher's lock off). */
 export function metadataStillEditable(v: Pick<V5TokenSettings, 'metadataEditable' | 'metadataLocked'> | null | undefined): boolean {
   return !!v && v.metadataEditable && !v.metadataLocked;
+}
+
+/** The v5 hook's `poolFeeSlots(poolId)` (IClankerV5.sol `TaxLaunchHook`): the coin's fee slots as stored. */
+export const clankerV5HookSlotsAbi = [
+  {
+    type: 'function',
+    name: 'poolFeeSlots',
+    stateMutability: 'view',
+    inputs: [{ name: 'poolId', type: 'bytes32' }],
+    outputs: [
+      {
+        type: 'tuple[]',
+        components: [
+          { name: 'recipient', type: 'address' },
+          { name: 'admin', type: 'address' },
+          { name: 'weightBps', type: 'uint16' },
+          { name: 'isCreator', type: 'bool' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+/**
+ * The creator-funds rows from a settings coin's fee slots: the launcher writes the agent's slot first and the
+ * platform's second, then the creator's rows, whose weights share creator funds (as bps of creator funds here).
+ */
+export function rowsFromSlots(slots: readonly { recipient: Address; admin: Address; weightBps: number }[]): V5TokenSettings['rewards'] {
+  const rows = slots.slice(2);
+  const total = rows.reduce((sum, r) => sum + Number(r.weightBps), 0);
+  if (total === 0) return [];
+  return rows.map((r) => ({ recipient: r.recipient, admin: r.admin, bps: Math.round((Number(r.weightBps) * 10_000) / total) }));
 }

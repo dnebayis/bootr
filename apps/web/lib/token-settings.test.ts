@@ -17,6 +17,8 @@ import {
   tokenSettingsProblems,
   tradeSplit,
   poolSharesOf,
+  rowsFromSlots,
+  v5SettingsOf,
 } from './token-settings';
 
 const CREATOR = '0x1111111111111111111111111111111111111111' as Address;
@@ -146,5 +148,34 @@ describe('toContractSettings', () => {
       contractURI: 'https://bootr.fun/tokens/x.json',
     });
     expect(toContractSettings(defaultTokenSettings(CREATOR), '').minDividendHolding).toBe(0n);
+  });
+});
+
+describe('the indexer’s token row (v5SettingsOf)', () => {
+  const row = { source: 'clanker-v5' as const, agentBps: 500, platformBps: 3000, burnBps: 1000, buyTaxBps: 20_000, sellTaxBps: 30_000, rewardsBps: 5000, dividendBps: 500, minDividendHolding: '10000000000000000000000', antiSnipe: true, metadataEditable: true, metadataLocked: false };
+
+  it('reads the flat fields into the settings, the shares as given when they add up', () => {
+    expect(v5SettingsOf(row)).toMatchObject({ buyTaxBps: 20_000, sellTaxBps: 30_000, agentShareBps: 500, platformShareBps: 3000, burnBps: 1000, dividendBps: 500, rewards: [], metadataEditable: true, metadataLocked: false });
+    // Slot-scaled agent and platform fields: the floors stand in, the platform gets the rest.
+    expect(v5SettingsOf({ ...row, agentBps: 166, platformBps: 1000 })).toMatchObject({ agentShareBps: 500, platformShareBps: 3000 });
+  });
+
+  it('is null for every coin not launched with settings', () => {
+    expect(v5SettingsOf({ ...row, source: 'clanker' })).toBeNull();
+    expect(v5SettingsOf({ ...row, buyTaxBps: null })).toBeNull();
+    expect(v5SettingsOf(null)).toBeNull();
+  });
+
+  it('reads the creator rows from the hook’s slots, after the agent’s and the platform’s', () => {
+    const a = '0x1111111111111111111111111111111111111111' as Address;
+    expect(rowsFromSlots([
+      { recipient: a, admin: a, weightBps: 500 },
+      { recipient: a, admin: a, weightBps: 3000 },
+      { recipient: CREATOR, admin: CREATOR, weightBps: 4875 },
+      { recipient: OTHER, admin: CREATOR, weightBps: 1625 },
+    ])).toEqual([
+      { recipient: CREATOR, admin: CREATOR, bps: 7500 },
+      { recipient: OTHER, admin: CREATOR, bps: 2500 },
+    ]);
   });
 });

@@ -12,7 +12,7 @@ import { appChain } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
-import { metadataStillEditable } from '@/lib/token-settings';
+import { metadataStillEditable, v5SettingsOf } from '@/lib/token-settings';
 import { useTxRunner } from '@/lib/tx';
 import type { Token } from '@/lib/types';
 import { useV5Metadata, withDescription } from '@/lib/v5-metadata';
@@ -32,7 +32,7 @@ const IMAGE_URL = /^https:\/\/[^\s"<>]{1,500}$/;
  * clanker.world read these, unlike the Bootr-only image above.
  */
 export function V5MetadataForm({ token }: { token: Token }) {
-  const settings = token.v5Settings;
+  const settings = v5SettingsOf(token);
   const meta = useV5Metadata(token);
   const { address } = useConnection();
   const write = useWriteContract();

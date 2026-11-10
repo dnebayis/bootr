@@ -11,6 +11,7 @@ import type { Address } from 'viem';
 import { clankerV5TokenAbi } from './abi/clankerV5Token';
 import { appChain } from './chains';
 import { env } from './env';
+import { v5SettingsOf } from './token-settings';
 import type { Token } from './types';
 
 /** The `description` of Clanker's metadata JSON, or null when the string is not that JSON. */
@@ -41,8 +42,9 @@ export function withDescription(json: string | null | undefined, description: st
 
 export type V5Metadata = { image: string; metadataJson: string | null; description: string | null; source: 'chain' | 'indexer' };
 
-export function useV5Metadata(token: Pick<Token, 'id' | 'image' | 'imageOnChain' | 'v5Settings'> | null | undefined): V5Metadata | null {
-  const editable = !!token?.v5Settings?.metadataEditable;
+export function useV5Metadata(token: Token | null | undefined): V5Metadata | null {
+  const settings = v5SettingsOf(token);
+  const editable = !!settings?.metadataEditable;
   const live = editable && !env.useMock;
   const read = useReadContracts({
     allowFailure: true,
@@ -54,12 +56,12 @@ export function useV5Metadata(token: Pick<Token, 'id' | 'image' | 'imageOnChain'
       : [],
     query: { enabled: live && !!token, staleTime: 30_000 },
   });
-  if (!token?.v5Settings) return null;
+  if (!token || !settings) return null;
   const [image, metadata] = read.data ?? [];
   const chainImage = image?.status === 'success' && image.result ? (image.result as string) : null;
   const chainJson = metadata?.status === 'success' && metadata.result ? (metadata.result as string) : null;
   // A creator's off-chain image on Bootr (`imageOnChain` set) still wins on Bootr's pages, as for every other coin.
   const shownImage = token.imageOnChain ? token.image : (chainImage ?? token.image);
-  const json = chainJson ?? token.v5Settings.metadataJson ?? null;
+  const json = chainJson ?? settings.metadataJson ?? null;
   return { image: shownImage, metadataJson: json, description: descriptionOf(json), source: chainImage || chainJson ? 'chain' : 'indexer' };
 }

@@ -189,12 +189,15 @@ export function TokenSettingsPanel({
   creator,
   bounds,
   problems,
+  allowedAssets,
 }: {
   draft: TokenSettingsDraft;
   onChange: (next: TokenSettingsDraft) => void;
   creator: Address | undefined;
   bounds: V5Bounds;
   problems: SettingsProblem[];
+  /** The symbols the launcher allows for agent coins (`allowedQuote(0, asset)`); null while unknown (all listed are offered). */
+  allowedAssets?: ReadonlySet<string> | null;
 }) {
   const set = (patch: Partial<TokenSettingsDraft>) => onChange({ ...draft, ...patch });
   const s = settingsFromDraft(draft, creator, bounds);
@@ -211,7 +214,7 @@ export function TokenSettingsPanel({
   const lines = taxesOk ? perTradeLines(s, bounds) : [];
   const allocated = allocatedPct(s.rewards);
   const maxRows = bounds.maxRewardRows;
-  const assets = pairedAssetsFor('agent');
+  const assets = pairedAssetsFor('agent').filter((a) => !allowedAssets || allowedAssets.has(a.symbol));
   const asset = pairedAssetBySymbol(draft.pairedAsset);
   const walletLabel = creator ? `Your wallet (${shortAddr(creator)})` : 'Your wallet';
   const setRow = (i: number, patch: Partial<RewardRowDraft>) => set({ rewards: draft.rewards.map((r, j) => (j === i ? { ...r, ...patch } : r)) });

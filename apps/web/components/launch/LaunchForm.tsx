@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { useConnection, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
+import { useConnection, usePublicClient, useReadContract, useReadContracts, useWriteContract } from 'wagmi';
 import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, type Address, zeroAddress } from 'viem';
 import { entryPoint, entryPointAbi, GAS_TOPUP_DEFAULT_ETH, GAS_TOPUP_MIN_ETH, validTopUp } from '@/lib/gas';
 import { toast } from 'sonner';
@@ -26,7 +26,9 @@ import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeMod
 import {
   DEFAULT_TAX_PCT,
   FALLBACK_V5_BOUNDS,
+  LAUNCH_KIND_ID,
   pairedAssetBySymbol,
+  pairedAssetsFor,
   poolSharesOf,
   toContractSettings,
   tokenSettingsProblems,
@@ -247,6 +249,39 @@ export function LaunchForm() {
   const settings = settingsFromDraft(settingsDraft, address, v5Bounds);
   const settingsProblems = isV5 ? tokenSettingsProblems(settings, v5Bounds) : [];
   const pairedAsset = pairedAssetBySymbol(settings.pairedAsset);
+  // The launcher's own word on the settings, before the wallet is asked: the paired assets it allows for agent coins
+  // (`allowedQuote(0, asset)`), `previewSlotWeights(s)`, which reverts exactly as `launch` would, and the dev-buy route
+  // a non-ETH pair needs (`devBuyRoute(asset)`, the zero pool while the owner has set none).
+  const agentAssets = pairedAssetsFor('agent');
+  const allowedRead = useReadContracts({
+    allowFailure: true,
+    contracts: agentAssets.map((a) => ({ address: path.launcher, abi: clankerLauncherV5Abi, functionName: 'allowedQuote', args: [LAUNCH_KIND_ID.agent, a.address], chainId: appChain.id }) as const),
+    query: { enabled: v5Live },
+  });
+  const allowedAssets = allowedRead.data ? new Set(agentAssets.filter((_, i) => allowedRead.data![i]?.status !== 'success' || allowedRead.data![i]?.result === true).map((a) => a.symbol)) : null;
+  const previewArg = isV5 && settingsProblems.length === 0 ? toContractSettings(settings, contractUriUrl(draftId ?? 'draft'), v5Bounds) : null;
+  const previewRead = useReadContract({
+    address: path.launcher,
+    abi: clankerLauncherV5Abi,
+    functionName: 'previewSlotWeights',
+    args: previewArg ? [previewArg] : undefined,
+    chainId: appChain.id,
+    query: { enabled: v5Live && !!previewArg, retry: 0 },
+  });
+  const routeRead = useReadContract({
+    address: path.launcher,
+    abi: clankerLauncherV5Abi,
+    functionName: 'devBuyRoute',
+    args: pairedAsset ? [pairedAsset.address] : undefined,
+    chainId: appChain.id,
+    query: { enabled: v5Live && !!pairedAsset && pairedAsset.symbol !== 'ETH' },
+  });
+  const launcherRefusal = previewRead.isError
+    ? `The launcher refuses these settings: ${(previewRead.error as { shortMessage?: string } | null)?.shortMessage ?? 'check the fields'}.`
+    : allowedAssets && pairedAsset && !allowedAssets.has(pairedAsset.symbol)
+      ? `The launcher does not take ${pairedAsset.symbol} as a paired asset right now.`
+      : null;
+  const noDevBuyRoute = !!routeRead.data && BigInt(routeRead.data[0]) === 0n;
 
   // Priced, admin-filtered list from /api/models (the relay itself is internal).
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
@@ -362,6 +397,8 @@ export function LaunchForm() {
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
   if (!xHandle && !silentOk) errors.push('Connect an X account, or confirm launching without one.');
   if (settingsProblems.length > 0) errors.push('Fix the token settings.');
+  if (isV5 && launcherRefusal) errors.push(launcherRefusal);
+  if (isV5 && noDevBuyRoute && devBuyWei != null && devBuyWei > 0n) errors.push(`A dev buy through ${pairedAsset?.symbol} is not available yet: launch without one, and buy from the coin page afterwards.`);
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
     : !env.useMock && !launcher
@@ -871,7 +908,7 @@ export function LaunchForm() {
 
         {isV5 ? (
           <Section n={7} title="Token settings" description="Tax, rewards and the paired asset, the way Clanker’s own form sets them. Permanent, except the image and metadata while you keep them editable.">
-            <TokenSettingsPanel draft={settingsDraft} onChange={setSettingsDraft} creator={address} bounds={v5Bounds} problems={settingsProblems} />
+            <TokenSettingsPanel draft={settingsDraft} onChange={setSettingsDraft} creator={address} bounds={v5Bounds} problems={settingsProblems} allowedAssets={allowedAssets} />
           </Section>
         ) : null}
       </div>

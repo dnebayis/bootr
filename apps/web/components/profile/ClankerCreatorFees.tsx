@@ -10,7 +10,7 @@ import { CLANKER_FEE_SOURCES, useClankerFees } from '@/lib/use-clanker-fees';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { pairedAssetByAddress, PAIRED_ASSETS } from '@/lib/token-settings';
+import { pairedAssetByAddress, PAIRED_ASSETS, v5SettingsOf } from '@/lib/token-settings';
 import { TokenImage } from '@/components/ui/TokenImage';
 
 const th = 'px-5 py-2 text-left text-caption font-normal text-mute';
@@ -19,10 +19,11 @@ const td = 'px-5 py-2.5';
 /** The fee column: what a trader pays and who adds what, in plain words. */
 function feeCell(t: Token, version: 4 | 5): string {
   const fee = pctLabel(swapFeePct(feeModelOf(t)));
-  if (version === 5 && t.v5Settings && t.v5Settings.buyTaxBps !== t.v5Settings.sellTaxBps) {
-    return `${pctLabel(t.v5Settings.buyTaxBps / 10_000)} buy, ${pctLabel(t.v5Settings.sellTaxBps / 10_000)} sell tax, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}`;
+  const s = version === 5 ? v5SettingsOf(t) : null;
+  if (s && s.buyTaxBps !== s.sellTaxBps) {
+    return `${pctLabel(s.buyTaxBps / 10_000)} buy, ${pctLabel(s.sellTaxBps / 10_000)} sell tax, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}`;
   }
-  if (version === 5) return `${fee} tax, Clanker’s share inside it${t.v5Settings ? `, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}` : ''}`;
+  if (version === 5) return `${fee} tax, Clanker’s share inside it${s ? `, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}` : ''}`;
   return `${fee} fee, plus 20% on top for Clanker`;
 }
 
