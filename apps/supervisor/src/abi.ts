@@ -73,10 +73,36 @@ export const clankerV5FeeEscrowAbi = parseAbi([
 ]);
 
 /**
- * `BootrClankerLauncherV5.ClankerV5Launched` (packages/contracts/src/BootrClankerLauncherV5.sol), emitted next to
- * `AgentLaunched`: the v5 pool, hook, escrow, quote and tax of the coin.
+ * `BootrClankerLauncherV5.ClankerV5Launched` of the settings launcher (docs/design/clanker-v5-token-settings.md section
+ * 2.2), emitted next to `AgentLaunched`: the v5 pool, hook, escrow and quote, and the creator's token settings (each
+ * side's tax in hundredths of a bip, burn and dividends in bps of the tax after Clanker's cut, the two switches).
  */
-export const clankerV5LaunchedEvent = parseAbi(['event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 taxBps, bool antiSnipe)'])[0];
+export const clankerV5LaunchedEvent = parseAbi([
+  'event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 buyTaxBps, uint24 sellTaxBps, uint16 burnBps, uint16 dividendBps, bool antiSnipe, bool metadataEditable)',
+])[0];
+
+/** The fixed launcher's event (one tax for both sides, no settings): never deployed (owner, 2026-11-10), still decoded. */
+export const clankerV5LaunchedEventV1 = parseAbi(['event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 taxBps, bool antiSnipe)'])[0];
+
+/**
+ * Clanker v5 `TaxLaunchHook.FeeSlotCreated`, one per fee slot at launch, in slot order (topic pinned by
+ * apps/indexer/src/lib/clanker.test.ts): the slot's recipient, admin and weight in bps of the slot pool.
+ */
+export const clankerV5FeeSlotCreatedEvent = parseAbi(['event FeeSlotCreated(bytes32 indexed poolId, uint256 indexed slotIndex, address recipient, address admin, uint16 weightBps, bool isCreator)'])[0];
+
+/**
+ * Clanker v5 factory `LaunchTaxConfigured` (verified source `TaxLaunchpadFactoryCore.sol`, the indexer's vendored ABI
+ * apps/indexer/abis/ClankerV5.ts): the policy admitted for the pool (Clanker's cut) and the coin's tax configuration
+ * (1e8 scale), with the dividend minimum in raw coin units.
+ */
+export const clankerV5LaunchTaxConfiguredEvent = parseAbi([
+  'struct TaxFeeBounds { uint32 minimumBuyTaxRate; uint32 maximumBuyTaxRate; uint32 minimumSellTaxRate; uint32 maximumSellTaxRate; }',
+  'struct ProtocolFeeConfiguration { uint32 protocolTaxShare; uint32 minimumProtocolFeeRate; uint32 maximumProtocolFeeRate; address protocolFeeRecipient; }',
+  'struct AntiSnipeConfiguration { uint32 startTotalFeeRate; uint32 windowSeconds; }',
+  'struct TaxPolicy { TaxFeeBounds taxFeeBounds; ProtocolFeeConfiguration protocolFeeConfiguration; AntiSnipeConfiguration antiSnipeConfiguration; uint256 minimumDividendHoldingRequirement; }',
+  'struct TaxConfiguration { uint32 buyTaxRate; uint32 sellTaxRate; uint32 creatorAllocationShare; uint32 burnAllocationShare; uint32 dividendAllocationShare; uint32 integratorAllocationShare; uint256 minimumDividendHolding; }',
+  'event LaunchTaxConfigured(bytes32 indexed poolId, address indexed token, uint64 indexed configVersion, TaxPolicy admittedPolicy, TaxConfiguration taxConfiguration, address integratorFeeRecipient, bool antiSnipeEnabled)',
+])[0];
 
 /**
  * Clanker v4 `ClankerLpLockerFeeConversion` (`0xffA37784…` on Base). `collectRewards(token)` (permissionless)

@@ -11,7 +11,7 @@ import { composeIdentityText, DEFAULT_MIND_MODEL, directModelId, parseAgentConfi
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, POSTS_PER_DAY, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerLaunchedEvent, clankerV5LaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
+import { agentLaunchedEvent, clankerLaunchedEvent, clankerV5FeeSlotCreatedEvent, clankerV5LaunchedEvent, clankerV5LaunchedEventV1, clankerV5LaunchTaxConfiguredEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { readGas } from './gas.js';
 import { coinImageFromCard, creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
@@ -19,7 +19,7 @@ import { launchSourceOf, type LaunchSource, type LauncherEntry } from './chain.j
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
-import { agentSource, clankerDetailsOf, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, type ClankerLaunchDetails, type ClankerV5LaunchDetails } from './launch-source.js';
+import { agentSource, clankerDetailsOf, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, CLANKER_V5_DEFAULT_POLICY, type ClankerLaunchDetails, type ClankerV5LaunchDetails, type ClankerV5TokenSettings } from './launch-source.js';
 import { initialState } from './runtime.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 import type { SenderAccount } from './sender-client.js';
@@ -105,24 +105,79 @@ export function decodeClankerLaunch(logs: Log[], launcher: Address, token: Addre
 }
 
 /**
- * `BootrClankerLauncherV5.ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)`
- * for `token` among the launch tx logs, emitted by `launcher` (only our launcher's log counts). Null when absent.
+ * Everything a Clanker v5 launch receipt says about `token`, in one place (docs/design/clanker-v5-token-settings.md
+ * section 2.2): `ClankerV5Launched` emitted by `launcher` (only our launcher's log counts) gives the pool, hook, escrow,
+ * quote and, on the settings launcher's v2 event, the taxes, burn, dividends and switches; the hook's `FeeSlotCreated`
+ * for that pool gives the slots (classified by `classifyClankerV5Slots`); the factory's `LaunchTaxConfigured` for the
+ * token gives Clanker's policy and the dividend minimum (`factory` null = any emitter, as on a chain without the address).
+ * The v1 event of the fixed launcher (never deployed) still decodes, without settings. Null when no `ClankerV5Launched`.
  */
-export function decodeClankerV5Launch(logs: Log[], launcher: Address, token: Address): ClankerV5LaunchDetails | null {
-  const events = parseEventLogs({ abi: [clankerV5LaunchedEvent], logs, strict: true });
-  for (const ev of events) {
-    if (!isAddressEqual(ev.address, launcher) || !isAddressEqual(ev.args.token, token)) continue;
-    return {
-      poolId: ev.args.poolId,
-      hook: getAddress(ev.args.hook),
-      feeEscrow: getAddress(ev.args.feeEscrow),
-      quoteToken: getAddress(ev.args.quoteToken),
-      tickSpacing: ev.args.tickSpacing,
-      taxBps: ev.args.taxBps,
-      antiSnipe: ev.args.antiSnipe,
-    };
+export function decodeClankerV5Launch(logs: Log[], launcher: Address, token: Address, opts: { kernel?: Address | null; factory?: Address | null } = {}): ClankerV5LaunchDetails | null {
+  const ours = (ev: { address: Address; args: { token: Address } }) => isAddressEqual(ev.address, launcher) && isAddressEqual(ev.args.token, token);
+  const v2 = parseEventLogs({ abi: [clankerV5LaunchedEvent], logs, strict: true }).find(ours);
+  if (!v2) {
+    const v1 = parseEventLogs({ abi: [clankerV5LaunchedEventV1], logs, strict: true }).find(ours);
+    if (!v1) return null;
+    const a = v1.args;
+    return { poolId: a.poolId, hook: getAddress(a.hook), feeEscrow: getAddress(a.feeEscrow), quoteToken: getAddress(a.quoteToken), tickSpacing: a.tickSpacing, taxBps: a.taxBps, antiSnipe: a.antiSnipe };
   }
-  return null;
+  const a = v2.args;
+  const details: ClankerV5LaunchDetails = { poolId: a.poolId, hook: getAddress(a.hook), feeEscrow: getAddress(a.feeEscrow), quoteToken: getAddress(a.quoteToken), tickSpacing: a.tickSpacing, taxBps: a.buyTaxBps, antiSnipe: a.antiSnipe };
+  const slotLogs = parseEventLogs({ abi: [clankerV5FeeSlotCreatedEvent], logs, strict: true })
+    .filter((ev) => isAddressEqual(ev.address, details.hook) && ev.args.poolId.toLowerCase() === a.poolId.toLowerCase())
+    .sort((x, y) => Number(x.args.slotIndex - y.args.slotIndex));
+  const slots = classifyClankerV5Slots(
+    slotLogs.map((ev) => ({ recipient: ev.args.recipient, admin: ev.args.admin, weightBps: ev.args.weightBps })),
+    launcher,
+    opts.kernel ?? null,
+  );
+  // Without the slots there is no split to state: the coin keeps its pool, escrow and quote, and no settings.
+  if (!slots) return details;
+  const tax = parseEventLogs({ abi: [clankerV5LaunchTaxConfiguredEvent], logs, strict: true }).find(
+    (ev) => isAddressEqual(ev.args.token, token) && (!opts.factory || isAddressEqual(ev.address, opts.factory)),
+  );
+  const policy = tax?.args.admittedPolicy.protocolFeeConfiguration;
+  const minHolding = tax?.args.taxConfiguration.minimumDividendHolding ?? null;
+  return {
+    ...details,
+    settings: {
+      buyTaxBps: a.buyTaxBps,
+      sellTaxBps: a.sellTaxBps,
+      burnBps: a.burnBps,
+      dividendBps: a.dividendBps,
+      slots,
+      protocolPolicy: policy
+        ? { protocolTaxShare: policy.protocolTaxShare, minimumProtocolFeeRate: policy.minimumProtocolFeeRate, maximumProtocolFeeRate: policy.maximumProtocolFeeRate }
+        : CLANKER_V5_DEFAULT_POLICY,
+      minDividendHolding: a.dividendBps > 0 && minHolding !== null && minHolding > 0n ? minHolding.toString() : null,
+      metadataEditable: a.metadataEditable,
+    },
+  };
+}
+
+/**
+ * The roles of a v5 coin's fee slots, in slot order: a slot whose admin is the launcher is the agent's when it pays the
+ * kernel (the first such slot when the kernel is not known) and the platform's otherwise; of the creator's rows the first
+ * is the creator's own and the rest are other recipients. Null when the slots do not have exactly one agent slot, or
+ * none at all: then the agent states no split rather than a wrong one.
+ */
+export function classifyClankerV5Slots(slots: readonly { recipient: Address; admin: Address; weightBps: number }[], launcher: Address, kernel: Address | null): ClankerV5TokenSettings['slots'] | null {
+  let agentSeen = false;
+  let creatorSeen = false;
+  const out: ClankerV5TokenSettings['slots'] = slots.map((s) => {
+    if (isAddressEqual(s.admin, launcher)) {
+      const isAgent = kernel ? isAddressEqual(s.recipient, kernel) : !agentSeen;
+      if (isAgent && !agentSeen) {
+        agentSeen = true;
+        return { role: 'agent', weightBps: s.weightBps };
+      }
+      return { role: isAgent ? 'other' : 'platform', weightBps: s.weightBps };
+    }
+    const role = creatorSeen ? 'other' : 'creator';
+    creatorSeen = true;
+    return { role, weightBps: s.weightBps };
+  });
+  return out.length && out.filter((s) => s.role === 'agent').length === 1 ? out : null;
 }
 
 /** The model a launch that names none runs on (the launch form always names one). */
@@ -496,7 +551,7 @@ async function backfillClankerDetails(ctx: SupervisorContext, pending: AgentRow[
       if (clankerV5DetailsOf(agent.config) || !agent.launchTxHash || !ctx.chain.clankerV5Launcher) continue;
       const logs = await readLaunchLogs(ctx, agent.launchTxHash);
       if (!logs) continue;
-      const details = decodeClankerV5Launch(logs, ctx.chain.clankerV5Launcher, getAddress(agent.token));
+      const details = decodeClankerV5Launch(logs, ctx.chain.clankerV5Launcher, getAddress(agent.token), { kernel: getAddress(agent.kernel), factory: ctx.chain.addresses.clankerV5?.factory ?? null });
       if (!details) {
         ctx.log.warn({ agentId: agent.agentId, txHash: agent.launchTxHash }, 'clanker v5 launch receipt has no ClankerV5Launched log for the token; using the configured escrow');
         continue;
@@ -586,7 +641,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   const draftId = launchLogs && decodeDraftId(launchLogs, launch.launcher, launch.token);
   const clanker = launch.source === 'clanker' && launchLogs ? decodeClankerLaunch(launchLogs, launch.launcher, launch.token, ctx.chain.clanker.feeLocker) : null;
   if (launch.source === 'clanker' && launchLogs && !clanker) log.warn({ txHash: launch.txHash }, 'clanker launch receipt has no ClankerLaunched log for the token; using the configured lockers');
-  const clankerV5 = launch.source === 'clanker-v5' && launchLogs ? decodeClankerV5Launch(launchLogs, launch.launcher, launch.token) : null;
+  const clankerV5 = launch.source === 'clanker-v5' && launchLogs ? decodeClankerV5Launch(launchLogs, launch.launcher, launch.token, { kernel: launch.kernel, factory: ctx.chain.addresses.clankerV5?.factory ?? null }) : null;
   if (launch.source === 'clanker-v5' && launchLogs && !clankerV5) log.warn({ txHash: launch.txHash }, 'clanker v5 launch receipt has no ClankerV5Launched log for the token; using the configured escrow');
   const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker, coinImageFromCard(card), clanker, clankerV5);
   const [row] = await ctx.db

@@ -412,12 +412,14 @@ export function encodeClankerClaimCalls(args: { lpLocker: Address; feeLocker: Ad
 }
 
 /**
- * The fee claim of a Clanker v5 coin, one call (docs/design/clanker-v5-migration.md section 3): `FeeEscrow.
- * claimFor(kernel, 0x0)` pays the kernel's whole native-ETH balance to the kernel. There is no collection step, and
- * `claimFor` pays `recipient` whoever calls, so BootrCallPolicy pins `recipient == kernel` and the currency stays free.
+ * The fee claim of a Clanker v5 coin, one call (docs/design/clanker-v5-migration.md section 3,
+ * docs/design/clanker-v5-token-settings.md section 3): `FeeEscrow.claimFor(kernel, currency)` pays the kernel's whole
+ * balance of the coin's paired asset to the kernel (`0x0` = native ETH, the default; USDC for a USDC-paired coin). There
+ * is no collection step, and `claimFor` pays `recipient` whoever calls, so BootrCallPolicy pins `recipient == kernel` and
+ * the currency stays free: one rule serves both assets.
  */
-export function encodeClankerV5ClaimCall(args: { feeEscrow: Address; kernel: Address }): KernelCall {
-  return { to: args.feeEscrow, value: 0n, data: encodeFunctionData({ abi: clankerV5FeeEscrowAbi, functionName: 'claimFor', args: [args.kernel, zeroAddress] }) };
+export function encodeClankerV5ClaimCall(args: { feeEscrow: Address; kernel: Address; currency?: Address }): KernelCall {
+  return { to: args.feeEscrow, value: 0n, data: encodeFunctionData({ abi: clankerV5FeeEscrowAbi, functionName: 'claimFor', args: [args.kernel, args.currency ?? zeroAddress] }) };
 }
 
 /** The `claim_fees` op of an agent by launch source: calls and a description, or null when nothing can be claimed. */

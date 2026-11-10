@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, pad, parseAbiParameters, slice, toHex, zeroAddress, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerV5FeeEscrowAbi, clankerV5LaunchedEvent, CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR } from '../src/abi.js';
+import { agentLaunchedEvent, clankerV5FeeEscrowAbi, clankerV5LaunchedEventV1, CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR } from '../src/abi.js';
 import { launcherEntries, launchSourceOf } from '../src/chain.js';
 import { agents } from '../src/db/schema.js';
 import { agentSource, clankerV5DetailsOf, clankerV5EscrowFor } from '../src/launch-source.js';
@@ -200,9 +200,9 @@ function fakeLaunchLog(agentId: bigint, opts: { launcher?: Address; token?: Addr
   return { address: opts.launcher ?? LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: LAUNCH_TX, logIndex: 0, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
 
-/** `BootrClankerLauncherV5.ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)`. */
+/** The fixed launcher's v1 `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)` (never deployed; still decoded). */
 function v5LaunchedLog(opts: { token?: Address; address?: Address; feeEscrow?: Address } = {}): Log {
-  const topics = encodeEventTopics({ abi: [clankerV5LaunchedEvent], eventName: 'ClankerV5Launched', args: { token: opts.token ?? TOKEN } });
+  const topics = encodeEventTopics({ abi: [clankerV5LaunchedEventV1], eventName: 'ClankerV5Launched', args: { token: opts.token ?? TOKEN } });
   const data = encodeAbiParameters(parseAbiParameters('bytes32, address, address, address, int24, uint24, bool'), [CLANKER_V5_POOL_ID, CLANKER_V5_HOOK, opts.feeEscrow ?? CLANKER_V5_FEE_ESCROW, zeroAddress, 200, 15_000, true]);
   return { address: opts.address ?? CLANKER_V5_LAUNCHER, topics: topics as [Hex, ...Hex[]], data, blockNumber: 42n, transactionHash: LAUNCH_TX, logIndex: 3, blockHash: toHex(1, { size: 32 }), transactionIndex: 0, removed: false };
 }
