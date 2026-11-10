@@ -11,14 +11,14 @@ import { PolicyError, canonicalJson } from '@bootr/agent-core';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, formatUnits, getAbiItem, getAddress, isHex, pad, parseUnits, size, zeroAddress, type Abi, type Address, type Hex } from 'viem';
 import { agentHasGasRule, encodeUnwrapCall, gasReading, gasSelfFunded, gasTopUp, gasView, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasView } from './gas.js';
-import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, guardianAbi, kernelAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
+import { callPolicyAbi, chainlinkAggregatorAbi, clankerFeeLockerAbi, clankerLpLockerAbi, clankerV5FeeEscrowAbi, guardianAbi, kernelAbi, rwagmiLauncherV3Abi, rwagmiLpLockerV3Abi, swapHelperAbi, SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
 import type { ChainContext, LaunchSource } from './chain.js';
 import { deserializeSessionPolicy, FUNDING_AMOUNT_ARG_INDEX, fundingRuleIndex, validationId, type SerializedSessionPolicy } from './session-key.js';
 import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
 import { encodeKernelExecute, type KernelCall } from './kernel.js';
-import { agentSource, clankerLockersFor } from './launch-source.js';
+import { agentSource, clankerLockersFor, clankerV5EscrowFor } from './launch-source.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 
 export interface SerializedCall {
@@ -47,6 +47,9 @@ export function callsHash(calls: readonly SerializedCall[]): Hex {
 /** Shown to the model for Clanker coins: the fee locker only knows what the LP locker has collected so far. */
 export const CLANKER_PENDING_NOTE = 'Launched through Clanker: `settled` is what the Clanker fee locker holds for the kernel; LP fees not collected yet are not visible here and may be under-reported until a claim collects them.';
 
+/** Shown to the model for Clanker v5 coins: the fee share is native ETH, and ETH on the kernel is its gas. */
+export const CLANKER_V5_NOTE = "Launched through Clanker v5: `settled` is the native ETH Clanker's fee escrow holds for your wallet (the `weth` figures here are ETH, not WETH). A claim lands it on your wallet as ETH, which pays your gas; it is not swapped to USDC, so your fuel stays the USDC your creator adds.";
+
 export interface TreasurySnapshot {
   kernel: Address;
   /** The agent's x402 spender EOA (pays the relay; funded from the kernel under the windowed cap). */
@@ -62,8 +65,11 @@ export interface TreasurySnapshot {
    *   RWAGMI pool, or null when the coin was not launched through the RWAGMI launcher (nothing pending to settle).
    * - Clanker (`ClankerFeeLocker`): `settled` = `availableFees(kernel, WETH)`; `pending` is always 0 because fees
    *   still inside the LP position have no view (`note` says so); `poolId` is the Clanker pool from `ClankerLaunched`.
+   * - Clanker v5 (`FeeEscrow`): `settled` = `owed(kernel, 0x0)`, native ETH (`asset: 'ETH'`; the field keeps its
+   *   `weth` name); `pending` is 0 (the hook credits the escrow on every swap, nothing waits in the pool); `poolId`
+   *   is the v5 pool from `ClankerV5Launched`.
    */
-  claimable: { weth: string; pending: string; settled: string; poolId: Hex | null; note?: string };
+  claimable: { weth: string; pending: string; settled: string; poolId: Hex | null; note?: string; asset?: 'ETH' };
   /** What pays the kernel's userOps: EntryPoint deposit + kernel ETH (gas.ts); `sponsored` when a paymaster is set. */
   gas: GasView;
   ethUsd: number | null;
@@ -150,6 +156,13 @@ type ReadResult = { status: 'success'; result: unknown } | { status: 'failure'; 
 async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: LaunchSource): Promise<{ poolId: Hex | null; pending: ContractRead | null; settled: ContractRead }> {
   const { addresses, rwagmi } = ctx.chain;
   const kernel = agent.kernel as Address;
+  if (source === 'clanker-v5') {
+    // Clanker v5: the hook credits every slot's tax to the escrow on each swap, in the quote (native ETH, `0x0`), so
+    // the escrow's balance is the whole claimable amount (docs/design/clanker-v5-migration.md section 3).
+    const { feeEscrow, details } = clankerV5EscrowFor(ctx, agent);
+    const settled = { address: feeEscrow, abi: clankerV5FeeEscrowAbi, functionName: 'owed', args: [kernel, zeroAddress] };
+    return { poolId: details?.poolId ?? null, pending: null, settled };
+  }
   if (source === 'clanker') {
     // Clanker: the fee locker's balance is all that can be read; fees still in the LP position have no view
     // (docs/design/clanker-launch.md section 7.8), so `pending` is 0 until `collectRewards` moves them.
@@ -259,7 +272,14 @@ export async function readAgentChainState(ctx: SupervisorContext, agent: AgentRo
       source,
       observedAt: new Date(ctx.now()).toISOString(),
       balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
-      claimable: { weth: formatUnits(claimWeth, 18), pending: formatUnits(pendingWeth, 18), settled: formatUnits(settledWeth, 18), poolId, ...(source === 'clanker' ? { note: CLANKER_PENDING_NOTE } : {}) },
+      claimable: {
+        weth: formatUnits(claimWeth, 18),
+        pending: formatUnits(pendingWeth, 18),
+        settled: formatUnits(settledWeth, 18),
+        poolId,
+        ...(source === 'clanker' ? { note: CLANKER_PENDING_NOTE } : {}),
+        ...(source === 'clanker-v5' ? { note: CLANKER_V5_NOTE, asset: 'ETH' as const } : {}),
+      },
       gas: gasView(gas),
       ethUsd: price,
       usd: {
@@ -391,11 +411,29 @@ export function encodeClankerClaimCalls(args: { lpLocker: Address; feeLocker: Ad
   ];
 }
 
+/**
+ * The fee claim of a Clanker v5 coin, one call (docs/design/clanker-v5-migration.md section 3): `FeeEscrow.
+ * claimFor(kernel, 0x0)` pays the kernel's whole native-ETH balance to the kernel. There is no collection step, and
+ * `claimFor` pays `recipient` whoever calls, so BootrCallPolicy pins `recipient == kernel` and the currency stays free.
+ */
+export function encodeClankerV5ClaimCall(args: { feeEscrow: Address; kernel: Address }): KernelCall {
+  return { to: args.feeEscrow, value: 0n, data: encodeFunctionData({ abi: clankerV5FeeEscrowAbi, functionName: 'claimFor', args: [args.kernel, zeroAddress] }) };
+}
+
 /** The `claim_fees` op of an agent by launch source: calls and a description, or null when nothing can be claimed. */
 export function claimOpFor(ctx: SupervisorContext, agent: AgentRow, snap: TreasurySnapshot): { calls: KernelCall[]; description: string } | null {
   const { chain } = ctx;
   const kernel = agent.kernel as Address;
   const usd = snap.usd.claimableWeth.toFixed(2);
+  if (snap.source === 'clanker-v5') {
+    // `claimFor` reverts `NothingToClaim` on zero.
+    if (Number(snap.claimable.settled) <= 0) return null;
+    const { feeEscrow } = clankerV5EscrowFor(ctx, agent);
+    return {
+      calls: [encodeClankerV5ClaimCall({ feeEscrow, kernel })],
+      description: `claim ${snap.claimable.settled} ETH of trading tax (~$${usd}) from the Clanker v5 fee escrow via claimFor; it lands on the kernel as gas`,
+    };
+  }
   if (snap.source === 'clanker') {
     // Only the fee locker's balance is known to be payable (`claim` reverts `NoFeesToClaim` on zero); collecting
     // first may add what the position accrued since the hook last collected.
@@ -722,11 +760,13 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
     ctx.log.warn({ agentId: agent.agentId, kernel: agent.kernel, gasEth: snap.gas.eth }, 'kernel out of gas; no treasury op until someone adds gas');
     return { skipped: 'out_of_gas' };
   }
-  // 1. Claim: fees are WETH only (both hooks), valued at Chainlink ETH/USD; the calls follow the launch source
-  //    (`claimOpFor`: RWAGMI settleAndClaim / claimQuote, or Clanker collectRewards + claim). Low gas claims below the
-  //    USD threshold too, when the kernel holds no WETH to unwrap: fees are its only gas source.
+  // 1. Claim: fees are WETH (RWAGMI, Clanker v4) or native ETH (Clanker v5), valued at Chainlink ETH/USD; the calls
+  //    follow the launch source (`claimOpFor`: RWAGMI settleAndClaim / claimQuote, Clanker collectRewards + claim,
+  //    Clanker v5 claimFor). Low gas claims below the USD threshold too, when the kernel holds no WETH to unwrap: fees
+  //    are its only gas source. A v5 claim IS gas (ETH on the kernel), so low gas claims whatever WETH the kernel holds.
+  const v5 = snap.source === 'clanker-v5';
   const claimableUsd = snap.usd.claimableWeth;
-  const claimForGas = gasLow && parseUnits(snap.balances.weth, 18) === 0n && parseUnits(snap.claimable.weth, 18) > 0n;
+  const claimForGas = gasLow && (v5 || parseUnits(snap.balances.weth, 18) === 0n) && parseUnits(snap.claimable.weth, 18) > 0n;
   const claim = claimableUsd >= config.CLAIM_THRESHOLD_USD || claimForGas ? claimOpFor(ctx, agent, snap) : null;
   if (claim) {
     const op = await prepareOp(ctx, agent, { kind: 'claim_fees', calls: claim.calls, description: claim.description, origin: 'policy' });
@@ -735,8 +775,10 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
   }
 
   // 2. Gas: unwrap WETH into ETH on the kernel up to GAS_TARGET_WEI when gas is under GAS_MIN_WEI (rule layout >= 3).
+  //    Not for a Clanker v5 agent: its fee share arrives as ETH, which is gas already (the claim above was the top-up),
+  //    so `fund_gas` is a no-op there (docs/design/clanker-v5-migration.md section 3).
   const claimed = out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
-  if (gasLow) {
+  if (gasLow && !v5) {
     const amount = gasTopUp({ total: parseUnits(claimed.gas.eth, 18), minWei: minGas, targetWei: BigInt(config.GAS_TARGET_WEI), wethBalance: parseUnits(claimed.balances.weth, 18) });
     if (amount > 0n && !agentHasGasRule(agent)) {
       out.skipped = 'session_key_without_gas_rule';
@@ -755,6 +797,8 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
     }
   }
 
+  // Fuel: WETH -> USDC. A v5 agent's fee ETH is not swapped: turning ETH into USDC needs a value-carrying call that
+  // BootrCallPolicy refuses until its v2, so its fuel stays the creator's USDC (only stray WETH would be swapped).
   const after = out.gas || out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
   const wethBalance = parseUnits(after.balances.weth, 18);
   if (after.usd.usdc < config.FUEL_TARGET_USDC && wethBalance > 0n && after.ethUsd) {
