@@ -184,6 +184,13 @@ export function pairedAssetOf(ctx: Pick<SupervisorContext, 'chain'>, quoteToken:
   return isAddressEqual(quoteToken, ctx.chain.addresses.usdc) ? 'USDC' : 'other';
 }
 
+/** A v5 agent's stored launch details with its paired asset (coin-fees.ts `coinFeesSection`); null for any other source. */
+export function clankerV5CoinOf(ctx: Pick<SupervisorContext, 'chain'>, agent: Pick<AgentRow, 'config' | 'source'>): { details: ClankerV5LaunchDetails | null; pairedAsset: PairedAsset } | null {
+  if (agentSource(agent) !== 'clanker-v5') return null;
+  const details = clankerV5DetailsOf(agent.config);
+  return { details, pairedAsset: pairedAssetOf(ctx, details?.quoteToken) };
+}
+
 /**
  * The quote of a v5 agent's coin: what `ClankerV5Launched` named, native ETH (`0x0`, the launcher's default) while the
  * receipt is unread. A USDC coin then reads an empty ETH balance and claims nothing until the onboarding backfill
