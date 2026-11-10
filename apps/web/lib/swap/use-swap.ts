@@ -19,6 +19,8 @@ import {
   approvalCalls,
   buildBuyTx,
   buildSellTx,
+  isErc20Paired,
+  pairedCurrency,
   permit2Abi,
   poolKeyOf,
   SWAP_CONTRACTS,
@@ -32,7 +34,7 @@ import {
   type SwapTx,
 } from './core';
 import { SwapFailure } from './errors';
-import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, mockQuote } from './mock';
+import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, MOCK_PAIRED_BALANCE, mockQuote } from './mock';
 import { quoteSwap, type SwapQuote } from './quote';
 
 /** The chain the panel trades on: Base, or the app's chain in mock mode. */
@@ -49,11 +51,15 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
  * The pool to trade on, or null when this deployment cannot trade the coin: not on Base, or a coin whose indexed pool id
  * matches neither launch path.
  */
-export function tradePoolKey(token: Pick<Token, 'id' | 'poolId' | 'source'>): PoolKey | null {
-  if (env.useMock) return poolKeyOf(token.id, parseLaunchSource(token.source));
+export function tradePoolKey(token: Pick<Token, 'id' | 'poolId' | 'source' | 'pairedToken'>): PoolKey | null {
+  // A v5 coin's pool is paired with its quote (native ETH, or USDC for a coin launched with that setting).
+  const paired = token.source === 'clanker-v5' ? token.pairedToken : null;
+  if (env.useMock) return poolKeyOf(token.id, parseLaunchSource(token.source), paired);
   if (env.chainId !== SWAP_CONTRACTS.chainId) return null;
   return (
-    verifiedPoolKey(token.id, 'clanker-v5', token.poolId) ?? verifiedPoolKey(token.id, 'clanker', token.poolId) ?? verifiedPoolKey(token.id, 'bootr', token.poolId)
+    verifiedPoolKey(token.id, 'clanker-v5', token.poolId, paired) ??
+    verifiedPoolKey(token.id, 'clanker', token.poolId) ??
+    verifiedPoolKey(token.id, 'bootr', token.poolId)
   );
 }
 
@@ -83,21 +89,23 @@ export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, 
   });
 }
 
-export type SwapBalances = { eth: bigint; coin: bigint };
+/** `paired`: the wallet's balance of an ERC-20 paired asset (USDC), null on the ETH pools. */
+export type SwapBalances = { eth: bigint; coin: bigint; paired: bigint | null };
 
-export function useSwapBalances(coin: Address, owner: Address | undefined) {
+export function useSwapBalances(coin: Address, owner: Address | undefined, pairedErc20: Address | null = null) {
   const client = useTradeClient();
   return useQuery<SwapBalances>({
-    queryKey: ['swap', 'balances', coin.toLowerCase(), owner?.toLowerCase() ?? ''],
+    queryKey: ['swap', 'balances', coin.toLowerCase(), owner?.toLowerCase() ?? '', pairedErc20?.toLowerCase() ?? ''],
     enabled: !!owner && (env.useMock || !!client),
     refetchInterval: BALANCE_POLL_MS,
     queryFn: async () => {
-      if (env.useMock) return { eth: MOCK_ETH_BALANCE, coin: MOCK_COIN_BALANCE };
-      const [eth, balance] = await Promise.all([
+      if (env.useMock) return { eth: MOCK_ETH_BALANCE, coin: MOCK_COIN_BALANCE, paired: pairedErc20 ? MOCK_PAIRED_BALANCE : null };
+      const [eth, balance, paired] = await Promise.all([
         client!.getBalance({ address: owner! }),
         client!.readContract({ address: coin, abi: erc20Abi, functionName: 'balanceOf', args: [owner!] }),
+        pairedErc20 ? client!.readContract({ address: pairedErc20, abi: erc20Abi, functionName: 'balanceOf', args: [owner!] }) : Promise.resolve(null),
       ]);
-      return { eth, coin: balance };
+      return { eth, coin: balance, paired };
     },
   });
 }
@@ -115,7 +123,10 @@ async function readAllowances(client: PublicClient, owner: Address, coin: Addres
   return { token, permit2Amount: permit2[0], permit2Expiration: permit2[1] };
 }
 
-/** The approvals a sell of `amount` still needs, to tell the user how many confirmations are coming. */
+/**
+ * The approvals a swap paying `amount` of the ERC-20 `coin` still needs (the coin on a sell, USDC on a buy on a USDC
+ * pool), to tell the user how many confirmations are coming.
+ */
 export function useSellApprovals(coin: Address, owner: Address | undefined, amount: bigint | null) {
   const client = useTradeClient();
   return useQuery<ApprovalCall[]>({
@@ -219,16 +230,18 @@ export function useSwapRunner() {
           return hash;
         };
 
-        if (side === 'buy') {
+        // ETH in needs no approval; a sell spends the coin and a buy on a USDC pool spends USDC, both through Permit2.
+        if (side === 'buy' && !isErc20Paired(key)) {
           const tx = buildBuyTx(swapArgs);
           await dryRun(tx);
           setStage('Confirm in your wallet');
           return { status: 'done', hash: await sendOne(tx) };
         }
 
-        const tx = buildSellTx(swapArgs);
-        const allowances = await readAllowances(client, address, coin);
-        const approvals = approvalCalls({ coin, amount: amountIn, allowances, now: nowSeconds(), dataSuffix: builderDataSuffix });
+        const tx = side === 'buy' ? buildBuyTx(swapArgs) : buildSellTx(swapArgs);
+        const spent = side === 'buy' ? pairedCurrency(key) : coin;
+        const allowances = await readAllowances(client, address, spent);
+        const approvals = approvalCalls({ coin: spent, amount: amountIn, allowances, now: nowSeconds(), dataSuffix: builderDataSuffix });
 
         if (approvals.length === 0) {
           await dryRun(tx);
@@ -256,7 +269,7 @@ export function useSwapRunner() {
           await sendOne(call);
         }
         await dryRun(tx, 3);
-        setStage(`Step ${total} of ${total}: confirm the sell of $${symbol}`);
+        setStage(`Step ${total} of ${total}: confirm the ${side === 'buy' ? 'buy' : 'sell'} of $${symbol}`);
         return { status: 'done', hash: await sendOne(tx) };
       } catch (e) {
         throw fail(e);

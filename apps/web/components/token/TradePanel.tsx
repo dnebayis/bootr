@@ -7,7 +7,8 @@ import { chainLabel, explorer, swapLink } from '@/lib/chains';
 import { feeModelOf, traderPaysPct } from '@/lib/fee-split';
 import { useNow } from '@/lib/hooks';
 import type { Token } from '@/lib/types';
-import { CLANKER_V5_ANTI_SNIPE_SECONDS, DEFAULT_SLIPPAGE_BPS, launchWindowActive, minReceived, v5TradingOpensIn, type SwapSide } from '@/lib/swap/core';
+import { CLANKER_V5_ANTI_SNIPE_SECONDS, DEFAULT_SLIPPAGE_BPS, isErc20Paired, launchWindowActive, minReceived, pairedCurrency, v5TradingOpensIn, type SwapSide } from '@/lib/swap/core';
+import { pairedAssetByAddress } from '@/lib/token-settings';
 import { SwapFailure } from '@/lib/swap/errors';
 import { tradeChainId, tradePoolKey, useSellApprovals, useSwapBalances, useSwapQuote, useSwapRunner } from '@/lib/swap/use-swap';
 import { amountInput, feeFigure, formatAmount, GAS_RESERVE_WEI, parseAmount, parseSlippage, percent } from '@/lib/swap/view';
@@ -21,6 +22,8 @@ import { ConnectButton } from '@/components/shell/ConnectButton';
 
 const SLIPPAGE_PRESETS = [50, 100, 200];
 const BUY_PRESETS = ['0.001', '0.01', '0.1'];
+/** Buy presets on a USDC pool, in dollars. */
+const BUY_PRESETS_USD = ['10', '50', '100'];
 const SELL_PRESETS = [25, 50, 75];
 /** Above this the panel says how far the amount moves the price; above the second, it says so in red. */
 const IMPACT_NOTICE_PCT = 5;
@@ -87,7 +90,16 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const { address, chainId, isConnected } = useConnection();
   const switchChain = useSwitchChain();
 
-  const amountIn = parseAmount(text);
+  // The pool's paired side: ETH on the WETH and native-ETH pools, an ERC-20 the user pays and receives as is (USDC) on a
+  // Clanker v5 coin launched paired with it.
+  const erc20 = isErc20Paired(poolKey);
+  const pairedAddr = erc20 ? pairedCurrency(poolKey) : null;
+  const pairedAsset = pairedAssetByAddress(pairedAddr);
+  const pairedSymbol = erc20 ? (pairedAsset?.symbol ?? 'USDC') : 'ETH';
+  const pairedDecimals = erc20 ? (pairedAsset?.decimals ?? 6) : 18;
+  const inDecimals = side === 'buy' ? pairedDecimals : 18;
+  const outDecimals = side === 'buy' ? 18 : pairedDecimals;
+  const amountIn = parseAmount(text, inDecimals);
   const settledText = useDebounced(text, QUOTE_DEBOUNCE_MS);
   const settledAmount = settledText === text ? amountIn : null;
   // Clanker v5: a buy in the first 20 s pays up to 99%; the panel waits instead of quoting it (`now` is 0 on the server).
@@ -107,14 +119,15 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const opensIn = v5 && now > 0 ? v5TradingOpensIn(token.launchedAt, Math.max(now, second) / 1000) : 0;
   const buyClosed = side === 'buy' && opensIn > 0;
   const quote = useSwapQuote(token, poolKey, side, buyClosed ? null : settledAmount);
-  const balances = useSwapBalances(coin, address);
-  const approvals = useSellApprovals(coin, address, side === 'sell' ? settledAmount : null);
+  const balances = useSwapBalances(coin, address, pairedAddr);
+  // A sell spends the coin; a buy on a USDC pool spends USDC: both need the exact Permit2 approvals.
+  const approvals = useSellApprovals(side === 'buy' && pairedAddr ? pairedAddr : coin, address, side === 'sell' || erc20 ? settledAmount : null);
   const runner = useSwapRunner();
 
   const wrongChain = isConnected && chainId !== tradeChainId;
-  const payLabel = side === 'buy' ? 'ETH' : coinLabel;
-  const receiveLabel = side === 'buy' ? coinLabel : 'ETH';
-  const balance = balances.data ? (side === 'buy' ? balances.data.eth : balances.data.coin) : null;
+  const payLabel = side === 'buy' ? pairedSymbol : coinLabel;
+  const receiveLabel = side === 'buy' ? coinLabel : pairedSymbol;
+  const balance = balances.data ? (side === 'buy' ? (erc20 ? balances.data.paired : balances.data.eth) : balances.data.coin) : null;
   const tooMuch = amountIn !== null && balance !== null && amountIn > balance;
 
   const customBps = parseSlippage(customSlippage);
@@ -123,7 +136,8 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
 
   const q = quote.data && settledAmount === quote.data.amountIn ? quote.data : null;
   const minOut = q ? minReceived(q.amountOut, effectiveSlippage) : null;
-  const normalFeePct = traderPaysPct(feeModelOf(token));
+  // A v5 coin launched with settings may tax buys and sells differently.
+  const normalFeePct = token.v5Settings ? (side === 'buy' ? token.v5Settings.buyTaxBps : token.v5Settings.sellTaxBps) / 10_000 : traderPaysPct(feeModelOf(token));
   const fee = q ? feeFigure(q.feePct, normalFeePct) : { pct: normalFeePct, raised: false };
   const quoteFailure = quote.error instanceof SwapFailure ? quote.error : null;
   const running = runner.stage !== null;
@@ -193,7 +207,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
       noBalance && side === 'sell'
         ? `No ${coinLabel} in this wallet`
         : noBalance
-          ? 'No ETH in this wallet'
+          ? `No ${pairedSymbol} in this wallet`
           : tooMuch
             ? `Not enough ${payLabel}`
             : amountIn === null
@@ -219,12 +233,13 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
 
   const presets =
     side === 'buy'
-      ? BUY_PRESETS.map((p) => ({ label: p, value: p, on: text === p }))
+      ? (erc20 ? BUY_PRESETS_USD : BUY_PRESETS).map((p) => ({ label: p, value: p, on: text === p }))
       : SELL_PRESETS.map((p) => {
           const value = balance !== null && balance > 0n ? amountInput((balance * BigInt(p)) / 100n) : '';
           return { label: `${p}%`, value, on: value !== '' && text === value };
         });
-  const maxValue = balance === null ? '' : amountInput(side === 'buy' ? (balance > GAS_RESERVE_WEI ? balance - GAS_RESERVE_WEI : 0n) : balance);
+  // "Max" on an ETH buy keeps some ETH for the network fee; USDC and the coin can go in full.
+  const maxValue = balance === null ? '' : amountInput(side === 'buy' && !erc20 ? (balance > GAS_RESERVE_WEI ? balance - GAS_RESERVE_WEI : 0n) : balance, inDecimals);
   const canMax = maxValue !== '' && maxValue !== '0';
 
   return (
@@ -249,7 +264,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
             </label>
             {isConnected && balance !== null ? (
               <span data-testid="trade-balance" className="font-mono text-micro text-mute tabular">
-                Balance {formatAmount(balance)} {payLabel}
+                Balance {formatAmount(balance, inDecimals)} {payLabel}
               </span>
             ) : null}
           </div>
@@ -280,20 +295,25 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
         <div className="rounded-sm border border-hairline bg-canvas-soft px-3 py-2">
           <div className="text-caption text-mute">You receive, about</div>
           <div data-testid="trade-out" className="truncate font-mono text-display-sm font-medium text-ink tabular">
-            {q ? formatAmount(q.amountOut) : '0'} <span className="text-caption font-normal text-mute">{receiveLabel}</span>
+            {q ? formatAmount(q.amountOut, outDecimals) : '0'} <span className="text-caption font-normal text-mute">{receiveLabel}</span>
           </div>
         </div>
 
         <dl>
           <Row label={v5 ? 'Trading tax' : 'Pool fee'} testId="trade-fee">
             {percent(fee.pct)}
-            {q?.feeEth != null ? <span className="text-mute"> ({formatAmount(q.feeEth)} ETH)</span> : null}
+            {q?.feeEth != null ? (
+              <span className="text-mute">
+                {' '}
+                ({formatAmount(q.feeEth, pairedDecimals)} {pairedSymbol})
+              </span>
+            ) : null}
           </Row>
           <Row label="Price impact" testId="trade-impact">
             {impact === null ? '—' : percent(impact)}
           </Row>
           <Row label="Minimum received" testId="trade-min">
-            {minOut === null ? '—' : `${formatAmount(minOut)} ${receiveLabel}`}
+            {minOut === null ? '—' : `${formatAmount(minOut, outDecimals)} ${receiveLabel}`}
           </Row>
           <div className="flex items-center justify-between gap-3 py-1">
             <dt className="text-caption text-mute">Slippage</dt>
@@ -355,11 +375,17 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
           </p>
         ) : null}
 
-        {side === 'sell' && isConnected && !wrongChain && approvals.data && approvals.data.length > 0 && q ? (
+        {(side === 'sell' || erc20) && isConnected && !wrongChain && approvals.data && approvals.data.length > 0 && q ? (
           <p data-testid="trade-approvals" className="text-caption text-body">
             {runner.atomic
-              ? 'One confirmation in your wallet: approval for exactly this amount and the sell, together.'
-              : `${approvals.data.length + 1} confirmations in your wallet: ${approvals.data.length === 1 ? 'one approval' : 'two approvals'} for exactly this amount, then the sell.`}
+              ? `One confirmation in your wallet: approval for exactly this amount and the ${side}, together.`
+              : `${approvals.data.length + 1} confirmations in your wallet: ${approvals.data.length === 1 ? 'one approval' : 'two approvals'} for exactly this amount, then the ${side}.`}
+          </p>
+        ) : null}
+
+        {erc20 ? (
+          <p data-testid="trade-paired" className="text-caption text-mute">
+            This coin trades against {pairedSymbol}: you pay and receive {pairedSymbol}, not ETH.
           </p>
         ) : null}
 
