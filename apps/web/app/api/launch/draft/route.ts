@@ -11,6 +11,7 @@ import {
   OWNER_TTL_S,
   isDraftId,
   normalizeCoin,
+  normalizeDraftTokenSettings,
   normalizeIdentity,
   normalizeSource,
   normalizeWorker,
@@ -27,7 +28,7 @@ const limiter = new RateLimiter(PER_MINUTE, 60_000);
 /**
  * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, x, telegram, discord}},
  *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}},
- *   launchThrough?: 'bootr' | 'clanker' | 'clanker-v5'}
+ *   launchThrough?: 'bootr' | 'clanker' | 'clanker-v5', tokenSettings?: <lib/token-settings.ts TokenSettingsInput, clanker-v5 only>}
  * Stores the creator's Instructions text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
  * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
  * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`); a custom `worker` is published in the
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
   if (Number(req.headers.get('content-length') ?? 0) > 8192) {
     return NextResponse.json({ error: 'payload_too_large' }, { status: 413, headers: NO_STORE });
   }
-  let body: { draftId?: unknown; identity?: unknown; coin?: unknown; worker?: unknown; launchThrough?: unknown } = {};
+  let body: { draftId?: unknown; identity?: unknown; coin?: unknown; worker?: unknown; launchThrough?: unknown; tokenSettings?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -79,10 +80,15 @@ export async function POST(req: NextRequest) {
   if (source === null) {
     return NextResponse.json({ error: 'invalid_request', message: 'launchThrough must be bootr, clanker or clanker-v5' }, { status: 400, headers: NO_STORE });
   }
+  // Clanker v5's token settings: checked like the agent API checks them, and kept with the draft.
+  const tokenSettings = source === 'clanker-v5' && body.tokenSettings !== undefined ? normalizeDraftTokenSettings(body.tokenSettings) : null;
+  if (source === 'clanker-v5' && body.tokenSettings !== undefined && tokenSettings === null) {
+    return NextResponse.json({ error: 'invalid_request', message: 'tokenSettings must be within the launcher’s bounds (lib/token-settings.ts)' }, { status: 400, headers: NO_STORE });
+  }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;
   try {
-    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin, worker, source });
+    saved = await saveDraftIdentity(body.draftId, identity, ownerTagFromCookie(cookie, body.draftId), { coin, worker, source, tokenSettings });
   } catch {
     return NextResponse.json({ error: 'store_unavailable', message: 'The launch draft store is not writable.' }, { status: 503, headers: NO_STORE });
   }

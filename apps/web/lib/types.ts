@@ -91,6 +91,38 @@ export interface Token {
   /** Not in the table; optional 24h price change if the indexer provides it. */
   change24hPct?: number | null;
   agent?: Pick<Agent, 'id' | 'status'> | null;
+  /**
+   * A Clanker v5 coin launched with creator-set settings (BootrClankerLauncherV5 `launch(p, s)`); absent on every other
+   * coin, including v5 coins of the fixed launcher. The one place the web names these indexer fields.
+   */
+  v5Settings?: V5TokenSettings | null;
+}
+
+/**
+ * What the indexer reports for a v5 coin launched with settings (docs/design/clanker-v5-token-settings.md section 5):
+ * read from `ClankerV5Launched`, the hook's `FeeSlotCreated` logs and the token's `ExtraMetadataUpdated` events.
+ * `pairedToken` on the token row is the quote (`0x0` for native ETH, USDC's address for USDC).
+ */
+export interface V5TokenSettings {
+  /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` on the token row carries the buy tax. */
+  buyTaxBps: number;
+  sellTaxBps: number;
+  /** Shares of the tax pool after Clanker's cut, bps of 10000: the locked floors and the creator's choices. */
+  agentShareBps: number;
+  platformShareBps: number;
+  burnBps: number;
+  dividendBps: number;
+  /** Raw coin units (18 decimals) a holder needs for dividends; "0" without dividends. */
+  minDividendHolding: string;
+  /** The creator funds' rows in slot order (the creator's own first), `bps` of creator funds (sum 10000). */
+  rewards: { recipient: Address; admin: Address; bps: number }[];
+  antiSnipe: boolean;
+  /** Clanker's flag, frozen at launch. */
+  metadataEditable: boolean;
+  /** The launcher's one-way lock (`lockMetadata`): an editable coin whose creator locked it can no longer change. */
+  metadataLocked: boolean;
+  /** The token's `metadata` extra-metadata key as last set (Clanker's JSON: description, socialMediaUrls, auditUrls). */
+  metadataJson?: string | null;
 }
 
 export interface Trade {

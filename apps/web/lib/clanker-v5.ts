@@ -176,19 +176,26 @@ export async function mineV5Salt(
 
 /** `LaunchParams` as the v5 launcher takes them (the same struct as the other two launchers). */
 export type V5LaunchParams = ContractFunctionArgs<typeof clankerLauncherV5Abi, 'view', 'tokenInitCodeHash'>[0];
+/** The launcher's `TokenSettings` (`lib/token-settings.ts` builds it from the form or the agent API). */
+export type V5TokenSettingsArg = ContractFunctionArgs<typeof clankerLauncherV5Abi, 'view', 'tokenInitCodeHash'>[1];
 
 /**
- * Mock mode's stand-in for `launcher.tokenInitCodeHash(params)`: no chain to ask, so a hash of what the real one
- * depends on (name, symbol, metadata, image, context). The mining is real, so a mock v5 coin's address ends in `cccc`.
+ * Mock mode's stand-in for `launcher.tokenInitCodeHash(params, settings)`: no chain to ask, so a hash of what the real
+ * one depends on (name, symbol, metadata, image, context, the contract URI and whether metadata stays editable, which
+ * changes the token's init code). The mining is real, so a mock v5 coin's address ends in `cccc`.
  */
-export function mockInitCodeHash(p: Pick<V5LaunchParams, 'name' | 'symbol' | 'metadata' | 'image' | 'context'>): Hex {
-  return keccak256(toHex(JSON.stringify([p.name, p.symbol, p.metadata, p.image, p.context])));
+export function mockInitCodeHash(
+  p: Pick<V5LaunchParams, 'name' | 'symbol' | 'metadata' | 'image' | 'context'>,
+  s: Pick<V5TokenSettingsArg, 'contractURI' | 'metadataEditable'>,
+): Hex {
+  return keccak256(toHex(JSON.stringify([p.name, p.symbol, p.metadata, p.image, p.context, s.contractURI, s.metadataEditable])));
 }
 
 /**
- * The whole salt step of a v5 launch: reads `launcher.tokenInitCodeHash(params)` once (or the mock stand-in when
- * `client` is null), mines from `params.salt`, and checks the result with `launcher.predictToken(creator, params)`.
- * The returned salt goes into `params.salt`; a mismatch with the chain throws rather than sending a launch that reverts.
+ * The whole salt step of a v5 launch: reads `launcher.tokenInitCodeHash(params, settings)` once (or the mock stand-in
+ * when `client` is null), mines from `params.salt`, and checks the result with `launcher.predictToken(creator, params,
+ * settings)`. The returned salt goes into `params.salt`; a mismatch with the chain throws rather than sending a launch
+ * that reverts.
  */
 export async function mineLaunchSalt({
   client,
@@ -196,6 +203,7 @@ export async function mineLaunchSalt({
   tokenDeployer,
   creator,
   params,
+  settings,
   signal,
   onProgress,
 }: {
@@ -204,15 +212,16 @@ export async function mineLaunchSalt({
   tokenDeployer: Address;
   creator: Address;
   params: V5LaunchParams;
+  settings: V5TokenSettingsArg;
   signal?: AbortSignal;
   onProgress?: (attempts: number) => void;
 }): Promise<MinedSalt> {
   const initCodeHash = client
-    ? await client.readContract({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'tokenInitCodeHash', args: [params] })
-    : mockInitCodeHash(params);
+    ? await client.readContract({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'tokenInitCodeHash', args: [params, settings] })
+    : mockInitCodeHash(params, settings);
   const mined = await mineV5Salt({ launcher, tokenDeployer, creator, initCodeHash, startSalt: params.salt }, { signal, onProgress });
   if (client) {
-    const onChain = await client.readContract({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'predictToken', args: [creator, { ...params, salt: mined.salt }] });
+    const onChain = await client.readContract({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'predictToken', args: [creator, { ...params, salt: mined.salt }, settings] });
     if (onChain.toLowerCase() !== mined.token.toLowerCase()) {
       throw new SaltMiningError(`The launcher predicts ${onChain} for this salt, not ${mined.token}. Nothing was sent: try again in a moment.`, mined.attempts);
     }
