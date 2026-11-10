@@ -6,7 +6,10 @@ import {
   buildSellTx,
   idealOut,
   impactPct,
+  inputToken,
+  isErc20Paired,
   isNativePool,
+  pairedCurrency,
   launchBlocksSwaps,
   launchWindowActive,
   minReceived,
@@ -213,6 +216,67 @@ describe('Clanker v5 (native ETH pool)', () => {
     expect(v5TradingOpensIn(1000, 1012.4)).toBe(8);
     expect(v5TradingOpensIn(1000, 1020)).toBe(0);
     expect(v5TradingOpensIn(1000, 2000)).toBe(0);
+  });
+});
+
+describe('Clanker v5 (USDC pool)', () => {
+  const USDC = SWAP_CONTRACTS.usdc;
+  // One coin sorting above USDC and one below: either can come out of the salt mining.
+  const HIGH: Address = '0xfbcdef0123456789abcdef0123456789abcdcccc';
+  const LOW: Address = '0x0bcdef0123456789abcdef0123456789abcdcccc';
+  const hi = poolKeyOf(HIGH, 'clanker-v5', USDC)!;
+  const lo = poolKeyOf(LOW, 'clanker-v5', USDC)!;
+
+  it('sorts the coin and USDC like the launcher, with fee 0 and the v5 hook', () => {
+    expect(hi).toMatchObject({ currency0: USDC, currency1: HIGH, fee: 0, tickSpacing: 200 });
+    expect(lo).toMatchObject({ currency0: LOW, currency1: USDC });
+    for (const k of [hi, lo]) {
+      expect(isNativePool(k)).toBe(false);
+      expect(isErc20Paired(k)).toBe(true);
+      expect(pairedCurrency(k)).toBe(USDC);
+    }
+    expect(zeroForOne(hi, 'buy')).toBe(true);
+    expect(zeroForOne(lo, 'buy')).toBe(false);
+    expect(inputToken(hi, 'buy')).toBe(USDC);
+    expect(inputToken(hi, 'sell')).toBe(HIGH);
+    expect(inputToken(poolKeyOf(HIGH, 'clanker-v5')!, 'buy')).toBe('0x0000000000000000000000000000000000000000');
+    // The pool id commits to the quote: a USDC coin's id does not verify as an ETH pool, nor the other way round.
+    expect(verifiedPoolKey(HIGH, 'clanker-v5', poolIdOf(hi), USDC)).toEqual(hi);
+    expect(verifiedPoolKey(HIGH, 'clanker-v5', poolIdOf(hi))).toBeNull();
+    expect(verifiedPoolKey(HIGH, 'clanker-v5', poolIdOf(poolKeyOf(HIGH, 'clanker-v5')!), USDC)).toBeNull();
+  });
+
+  it('buys with USDC pulled through Permit2 and the coin taken to the caller; no ETH moves', () => {
+    const tx = buildBuyTx({ key: lo, coin: LOW, amountIn: 25_000_000n, minOut: 9n, deadline: 999n });
+    expect(tx.value).toBe(0n);
+    const { commands, inputs } = decodeExecute(tx.data);
+    expect(commands).toBe('0x10');
+    const { actions, params } = decodeV4(inputs[0]!);
+    expect(actions).toBe('0x060c0f');
+    const [swap] = decodeAbiParameters(swapParamsAbi, params[0]!);
+    expect(swap.zeroForOne).toBe(false);
+    expect(swap.amountIn).toBe(25_000_000n);
+    const [settle, max] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[1]!);
+    expect(settle).toBe(USDC);
+    expect(max).toBe(25_000_000n);
+    const [take, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[2]!);
+    expect(take.toLowerCase()).toBe(LOW);
+    expect(min).toBe(9n);
+  });
+
+  it('sells for USDC paid to the caller, at least the minimum', () => {
+    const tx = buildSellTx({ key: hi, coin: HIGH, amountIn: parseEther('10'), minOut: 3_000_000n, deadline: 999n });
+    expect(tx.value).toBe(0n);
+    const { inputs } = decodeExecute(tx.data);
+    const { actions, params } = decodeV4(inputs[0]!);
+    expect(actions).toBe('0x060c0f');
+    const [swap] = decodeAbiParameters(swapParamsAbi, params[0]!);
+    expect(swap.zeroForOne).toBe(false);
+    const [settle] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[1]!);
+    expect(settle.toLowerCase()).toBe(HIGH);
+    const [take, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], params[2]!);
+    expect(take).toBe(USDC);
+    expect(min).toBe(3_000_000n);
   });
 });
 

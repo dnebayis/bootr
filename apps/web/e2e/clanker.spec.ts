@@ -166,9 +166,9 @@ test('with the v5 launcher set, the Clanker card shows the tax and Clanker’s o
   await page.goto('/launch?clanker=v5');
   const choice = page.getByTestId('launch-through');
   const clanker = page.getByRole('radio', { name: /^Clanker / });
-  await expect(choice).toContainText('A 1.50% tax on every trade; Clanker keeps its share (0.50% of the trade)');
+  await expect(choice).toContainText('A tax on every buy and sell that you set, 1% to 5% (1.5% by default)');
   await expect(choice).toContainText('Opens at about 1.9 ETH of market cap');
-  await expect(choice).toContainText('1 billion coins. Listed on bootr.fun and clanker.world.');
+  await expect(choice).toContainText('1 billion coins, paired with ETH or USDC. Listed on bootr.fun and clanker.world.');
   // v4's terms are not offered once v5 is the Clanker path.
   await expect(choice).not.toContainText('Clanker adds 20% on top');
 
@@ -177,7 +177,7 @@ test('with the v5 launcher set, the Clanker card shows the tax and Clanker’s o
   await expect(summary).toContainText('Launch throughClanker');
   await expect(summary).toContainText('Trading tax1.50%');
   await expect(summary).toContainText('0.65% of volume');
-  await expect(summary.getByTestId('fee-sentence')).toContainText('A 1.50% tax on every trade: Clanker keeps its share (0.50%)');
+  await expect(summary.getByTestId('fee-sentence')).toContainText('A 1.50% tax on every buy and sell: Clanker keeps its share');
 
   await page.getByLabel('Name').fill('Gas Meter');
   await page.getByLabel('Symbol').fill('GMTR');
@@ -188,7 +188,7 @@ test('with the v5 launcher set, the Clanker card shows the tax and Clanker’s o
   await expect(page.getByTestId('image-status')).toContainText('ipfs://');
   const started = Date.now();
   await page.getByTestId('launch-submit').click();
-  expect((await drafted).postDataJSON()).toMatchObject({ launchThrough: 'clanker-v5' });
+  expect((await drafted).postDataJSON()).toMatchObject({ launchThrough: 'clanker-v5', tokenSettings: { pairedAsset: 'ETH', buyTaxPct: 1.5, sellTaxPct: 1.5, sniperTax: true, editableMetadata: true } });
   // The salt is mined in the page before the (mock) launch: the coin's address ends in cccc, as Clanker v5 requires.
   await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{36}cccc$/i, { timeout: 30_000 });
   console.info(`[clanker-v5 e2e] launch with salt mining took ${Date.now() - started} ms`);

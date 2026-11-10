@@ -60,6 +60,18 @@ describe('buildClaims', () => {
     expect(buildClaims({ ...input, clankerFeeEscrow: null, clankerV5Owed: 4n })).toEqual([]);
   });
 
+  it('claims a USDC-paired v5 coin’s balance in USDC, its own claim next to the ETH one', () => {
+    const ESCROW = getAddress('0x5dd237d1f716C65426CCd2FAe82B95109825FA61');
+    const USDC = getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+    const claims = buildClaims({ ...input, clankerFeeEscrow: ESCROW, clankerV5Owed: 4n, clankerV5OwedOther: [{ asset: USDC, symbol: 'USDC', decimals: 6, amount: 2_500_000n }] });
+    expect(claims.map((c) => c.asset)).toEqual(['0x0000000000000000000000000000000000000000', USDC]);
+    const usdc = claims[1]!;
+    expect(usdc).toMatchObject({ path: 'clanker-v5', target: ESCROW, amountWei: '2500000', sendFrom: null });
+    expect(decodeFunctionData({ abi: feeEscrowAbi, data: usdc.data }).args).toEqual([OWNER, USDC]);
+    expect(usdc.description).toContain('Pays 2.5 USDC to');
+    expect(buildClaims({ ...input, clankerFeeEscrow: ESCROW, clankerV5OwedOther: [{ asset: USDC, symbol: 'USDC', decimals: 6, amount: 0n }] })).toEqual([]);
+  });
+
   it('carries the attribution suffix the site’s own claims carry, after decodable calldata', () => {
     const [claim] = buildClaims({ ...input, clankerAvailable: 9n, dataSuffix: '0xabcdef' });
     expect(claim!.data.endsWith('abcdef')).toBe(true);

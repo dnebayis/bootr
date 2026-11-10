@@ -1,5 +1,6 @@
 import { concat, encodeFunctionData, formatEther, type Address, type Hex } from 'viem';
 import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
+import { formatUnits } from 'viem';
 import { feeEscrowAbi, NATIVE_ETH } from '@/lib/abi/feeEscrow';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 
@@ -12,7 +13,8 @@ import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
  *   balance; with nothing unsettled, `claimQuote(WETH, owner)` takes the settled balance alone. Both pay `msg.sender`'s
  *   balance, so only the owner's own wallet can send them.
  * - Clanker v4 path: `claim(owner, WETH)` on Clanker's fee locker pays the owner, whoever sends it.
- * - Clanker v5 path: `claimFor(owner, 0x0)` on Clanker's fee escrow pays the owner in native ETH, whoever sends it.
+ * - Clanker v5 path: `claimFor(owner, 0x0)` on Clanker's fee escrow pays the owner in native ETH, whoever sends it;
+ *   coins paired with USDC are paid from the escrow's USDC balance, `claimFor(owner, USDC)`, one claim per asset.
  */
 
 export type ClaimPath = 'bootr' | 'clanker' | 'clanker-v5';
@@ -49,6 +51,8 @@ export type ClaimInput = {
   clankerAvailable: bigint;
   /** `owed(owner, 0x0)` on Clanker v5's fee escrow. */
   clankerV5Owed?: bigint;
+  /** `owed(owner, asset)` for the other assets the owner's v5 coins are paired with (USDC). */
+  clankerV5OwedOther?: { asset: Address; symbol: string; decimals: number; amount: bigint }[];
   /** The ERC-8021 attribution suffix the site's own claims carry, if any. */
   dataSuffix?: Hex;
 };
@@ -101,7 +105,20 @@ export function buildClaims(input: ClaimInput): UnsignedClaim[] {
       asset: NATIVE_ETH,
       amountWei: clankerV5Owed.toString(),
       sendFrom: null,
-      description: `Pays ${formatEther(clankerV5Owed)} ETH to ${owner} from Clanker's fee escrow: one balance across all their Clanker v5 coins. Any wallet may send it and the ETH still goes to ${owner}. It costs only network gas.`,
+      description: `Pays ${formatEther(clankerV5Owed)} ETH to ${owner} from Clanker's fee escrow: one balance across all their Clanker v5 coins paired with ETH. Any wallet may send it and the ETH still goes to ${owner}. It costs only network gas.`,
+    });
+  }
+  for (const other of input.clankerV5OwedOther ?? []) {
+    if (!clankerFeeEscrow || other.amount <= 0n) continue;
+    claims.push({
+      path: 'clanker-v5',
+      target: clankerFeeEscrow,
+      data: withSuffix(encodeFunctionData({ abi: feeEscrowAbi, functionName: 'claimFor', args: [owner, other.asset] })),
+      value: '0',
+      asset: other.asset,
+      amountWei: other.amount.toString(),
+      sendFrom: null,
+      description: `Pays ${formatUnits(other.amount, other.decimals)} ${other.symbol} to ${owner} from Clanker's fee escrow: one balance across all their Clanker v5 coins paired with ${other.symbol}. Any wallet may send it and the ${other.symbol} still goes to ${owner}. It costs only network gas.`,
     });
   }
   return claims;

@@ -5,6 +5,7 @@
  */
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { CLANKER_V5_DEFAULT_TAX_BPS, clankerV5ProtocolBps } from './fee-split';
+import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, type ContractTokenSettings, type V5Bounds } from './token-settings';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
@@ -266,6 +267,11 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
 const CLANKER_INDEX = 3;
 /** The one mock coin launched through Clanker v5 (`Gas Station`, $GAS): the eighth newest, out of the tests' first cards. */
 const CLANKER_V5_INDEX = 7;
+/**
+ * The mock coin launched through the settings launcher (`Sigma Desk`, $SIGMA): paired with USDC, 2% buy and 3% sell tax,
+ * 10% burn, 5% holder dividends, two reward rows, editable metadata.
+ */
+const CLANKER_V5_USDC_INDEX = 8;
 /** The one mock coin whose agent is brand new (`Night Shift`): the fifth newest, so the tests' "first card" keeps a working agent. */
 const FRESH_INDEX = 4;
 
@@ -338,6 +344,51 @@ function clankerizeV5(token: Token, taxBps = CLANKER_V5_DEFAULT_TAX_BPS) {
   token.creatorBps = pool - agent - burn - platform;
 }
 
+/**
+ * Turns a mock token into a v5 coin launched with creator-set settings, stored the way the indexer reports it
+ * (`Token.v5Settings`, `pairedToken` the quote, `lpFeeBps` the buy tax) with the slot fields scaled to the buy tax less
+ * Clanker's share like `clankerizeV5` (creator funds and dividends together in `creatorBps`).
+ */
+function applyV5Settings(token: Token, s: ContractTokenSettings, b: V5Bounds = FALLBACK_V5_BOUNDS) {
+  token.source = 'clanker-v5';
+  token.lpFeeBps = s.buyTaxBps;
+  token.pairedToken = s.quoteToken;
+  token.burner = s.burnBps > 0 ? DEAD : null;
+  const pool = 10_000 - clankerV5ProtocolBps(s.buyTaxBps);
+  const scale = (bps: number) => Math.floor((bps * pool) / 10_000);
+  token.agentBps = scale(b.agentShareBps);
+  token.platformBps = scale(b.platformShareBps);
+  token.burnBps = scale(s.burnBps);
+  token.creatorBps = pool - token.agentBps - token.platformBps - token.burnBps;
+  // The indexer's token-row fields (lib/types.ts), as it reports them for a settings coin.
+  const asset = pairedAssetByAddress(s.quoteToken);
+  token.pairedSymbol = asset?.symbol ?? null;
+  token.pairedDecimals = asset?.decimals ?? null;
+  token.buyTaxBps = s.buyTaxBps;
+  token.sellTaxBps = s.sellTaxBps;
+  token.rewardsBps = 10_000 - b.agentShareBps - b.platformShareBps - s.burnBps - s.dividendBps;
+  token.dividendBps = s.dividendBps;
+  token.minDividendHolding = s.minDividendHolding.toString();
+  token.antiSnipe = s.antiSnipe;
+  token.metadataEditable = s.metadataEditable;
+  token.metadataLocked = false;
+  // Mock mode also keeps what the row does not carry: the reward rows and the metadata JSON.
+  token.v5Settings = {
+    buyTaxBps: s.buyTaxBps,
+    sellTaxBps: s.sellTaxBps,
+    agentShareBps: b.agentShareBps,
+    platformShareBps: b.platformShareBps,
+    burnBps: s.burnBps,
+    dividendBps: s.dividendBps,
+    minDividendHolding: s.minDividendHolding.toString(),
+    rewards: s.rewards.map((r) => ({ ...r })),
+    antiSnipe: s.antiSnipe,
+    metadataEditable: s.metadataEditable,
+    metadataLocked: false,
+    metadataJson: null,
+  };
+}
+
 function makeTrades(t: Token, rand: () => number, now: number): Trade[] {
   const out: Trade[] = [];
   let ts = now - Math.floor(rand() * 120);
@@ -375,6 +426,24 @@ function init(): Store {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
     if (i === CLANKER_INDEX) clankerize(token);
     if (i === CLANKER_V5_INDEX) clankerizeV5(token);
+    if (i === CLANKER_V5_USDC_INDEX) {
+      applyV5Settings(token, {
+        quoteToken: pairedAssetBySymbol('USDC')!.address,
+        buyTaxBps: 20_000,
+        sellTaxBps: 30_000,
+        burnBps: 1_000,
+        dividendBps: 500,
+        minDividendHolding: 10_000n * 10n ** 18n,
+        rewards: [
+          { recipient: token.creator, admin: token.creator, bps: 8_000 },
+          { recipient: '0x00000000000000000000000000000000000c0de5', admin: token.creator, bps: 2_000 },
+        ],
+        antiSnipe: true,
+        metadataEditable: true,
+        contractURI: token.metadata,
+      });
+      token.v5Settings!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
+    }
     if (i === FRESH_INDEX) {
       freshen(token, agent);
       fresh.add(token.kernel.toLowerCase());
@@ -561,11 +630,33 @@ export const mock = {
    * `FeeEscrow.owed(owner, 0x0)`): between 0.001 and 0.05, never zero, so the creator panels always have something to
    * claim in mock mode.
    */
-  clankerFees(owner: string, version: 4 | 5 = 4): bigint {
+  clankerFees(owner: string, version: 4 | 5 = 4, asset: Address = zeroAddress): bigint {
     let h = 2166136261;
-    for (const ch of `${owner.toLowerCase()}:${version === 5 ? 'clanker-v5-fees' : 'clanker-fees'}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const usdc = BigInt(asset) !== 0n;
+    for (const ch of `${owner.toLowerCase()}:${version === 5 ? 'clanker-v5-fees' : 'clanker-fees'}${usdc ? `:${asset.toLowerCase()}` : ''}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
     const r = mulberry32(h >>> 0);
+    // USDC (6 decimals): between 1 and 50 USDC.
+    if (usdc) return BigInt(1_000_000 + Math.floor(r() * 49_000_000));
     return BigInt(1000 + Math.floor(r() * 49_000)) * 10n ** 12n;
+  },
+  /**
+   * The creator's on-chain image and metadata edits of an editable v5 coin (`updateImage`, `updateMetadata`,
+   * `lockMetadata` on the launcher), applied to the mock store like the indexer applies `ExtraMetadataUpdated`.
+   */
+  updateV5Metadata(tokenId: string, edit: { image?: string; metadataJson?: string; lock?: boolean }): boolean {
+    const t = mockStore().tokens.find((x) => x.id.toLowerCase() === tokenId.toLowerCase());
+    if (!t?.v5Settings || !t.v5Settings.metadataEditable || t.v5Settings.metadataLocked) return false;
+    if (edit.image !== undefined) {
+      t.image = edit.image;
+      delete t.imageOnChain;
+    }
+    if (edit.metadataJson !== undefined) t.v5Settings.metadataJson = edit.metadataJson;
+    if (edit.lock) {
+      t.v5Settings.metadataLocked = true;
+      t.metadataLocked = true;
+    }
+    t.metadataUpdatedAt = Math.floor(Date.now() / 1000);
+    return true;
   },
   /**
    * Deterministic agent gas (wei) for mock mode, in place of `EntryPoint.balanceOf(kernel)` and the kernel's
@@ -1465,6 +1556,8 @@ export function mockLaunch(input: {
   links?: CoinPageLinks;
   /** The coin's address when the form predicted it (a Clanker v5 launch mines one ending in `cccc`). */
   id?: Address;
+  /** A v5 launch's token settings as sent to the launcher, and the bounds they were checked against. */
+  v5Settings?: { settings: ContractTokenSettings; bounds: V5Bounds };
 }): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
@@ -1482,7 +1575,10 @@ export function mockLaunch(input: {
   token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
   if (input.source === 'clanker') clankerize(token);
-  if (input.source === 'clanker-v5') clankerizeV5(token);
+  if (input.source === 'clanker-v5') {
+    if (input.v5Settings) applyV5Settings(token, input.v5Settings.settings, input.v5Settings.bounds);
+    else clankerizeV5(token);
+  }
   if (input.workerHash) token.workerHash = input.workerHash;
   if (input.links) s.links.set(token.metadata, { ...input.links });
   if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));

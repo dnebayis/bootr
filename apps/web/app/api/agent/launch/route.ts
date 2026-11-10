@@ -13,7 +13,8 @@ import { chainAddresses } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
 import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
-import { defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
+import { clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
+import { FALLBACK_V5_BOUNDS, LAUNCH_KIND_ID, parseTokenSettings, toContractSettings, v5BoundsFromTuple, type ContractTokenSettings, type V5Bounds } from '@/lib/token-settings';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient } from '@/lib/server/chain';
@@ -46,6 +47,8 @@ type LaunchInput = {
   xHandle?: unknown;
   links?: unknown;
   launchThrough?: unknown;
+  /** Clanker v5 only: the token settings (lib/token-settings.ts `parseTokenSettings`). */
+  token?: unknown;
 };
 
 function fail(status: number, error: string, message: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
@@ -106,7 +109,8 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
  * returns the transactions the wallet must send, in order: the USDC approval, `launch` on the chosen launcher
  * (`launchThrough`: `bootr`, the default; `clanker`, the deployment's Clanker path, which is Clanker v5 once its
  * launcher is configured and Clanker v4 until then; or `clanker-v5` by name; same `LaunchParams` on all of them, and on
- * v5 the salt is mined here so the coin's address ends in cccc), and the agent's first gas
+ * v5 the salt is mined here so the coin's address ends in cccc, and `token` carries the creator-set token settings with
+ * the same bounds as the launch form: lib/token-settings.ts), and the agent's first gas
  * (`EntryPoint.depositTo(predictedKernel)`). Nothing is sent on the caller's behalf
  * and no key ever reaches this server. 5 calls per minute per IP.
  */
@@ -158,6 +162,13 @@ export async function POST(req: NextRequest) {
   // `clanker` is this deployment's Clanker path (v5 once its launcher is configured, v4 until then); `clanker-v5` asks for v5 by name.
   const launchThrough: LaunchSource = requested === 'clanker' ? clankerPath.source : requested;
   const isV5 = launchThrough === 'clanker-v5';
+  // Token settings exist on Clanker v5 only; checked here against the launcher's deploy bounds, again below against the
+  // live ones, so a bad value is refused before the image is pinned.
+  if (!isV5 && l.token !== undefined) return invalid('token', `token settings apply to Clanker v5 launches only (launchThrough clanker on a deployment with the v5 launcher, or clanker-v5); this launch goes through ${launchThrough}.`);
+  if (isV5) {
+    const first = parseTokenSettings(l.token, creator, FALLBACK_V5_BOUNDS);
+    if (!first.ok) return invalid(first.field === 'token' ? 'token' : `token.${first.field}`, first.message);
+  }
   const fuel = l.fuelUsdc === undefined ? '20' : typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '';
   if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
@@ -200,7 +211,12 @@ export async function POST(req: NextRequest) {
   const imageUrl = ipfsGatewayUrl(cid);
   const draftCoin = { name, symbol, image: imageUrl, imageIpfs: `ipfs://${cid}`, xHandle, links };
   try {
-    const saved = await saveDraftIdentity(draftId, identity, null, { coin: draftCoin, worker: worker.draft, source: launchThrough });
+    const saved = await saveDraftIdentity(draftId, identity, null, {
+      coin: draftCoin,
+      worker: worker.draft,
+      source: launchThrough,
+      tokenSettings: isV5 ? parseTokenSettingsOrNull(l.token, creator) : null,
+    });
     if (!saved.ok && saved.reason === 'full') return refuse(503, 'store_full', 'The launch draft store is full right now. Nothing was launched: try again in a few minutes.');
     if (!saved.ok) return refuse(500, 'store_failed', 'Could not store the launch draft. Nothing was launched: try again in a moment.');
   } catch {
@@ -213,27 +229,71 @@ export async function POST(req: NextRequest) {
   let feeWei = FEE_FALLBACK_WEI;
   let clankerFeeWei = 0n;
   let defaults = fallbackDefaults(launchThrough, buyback);
+  let bounds: V5Bounds = FALLBACK_V5_BOUNDS;
   let predictedKernel: Address | null = null;
   if (!env.useMock) {
     try {
       // One multicall, not three requests: the RPC key is shared with the indexer's block tail. On v5 the kernel is
-      // predicted after the salt is mined (the salt picks the kernel address too), and Clanker's own launch fee is read.
-      const [fee, tuple, third] = await client.multicall({
-        allowFailure: false,
-        contracts: [
-          { address: launcher, abi: launcherAbi, functionName: 'launchFeeWei' },
-          { address: launcher, abi: launcherAbi, functionName: buyback ? 'buybackDefaults' : 'standardDefaults' },
-          isV5
-            ? { address: v5!.factory as Address, abi: clankerV5FactoryAbi, functionName: 'nativeLaunchFee' }
-            : { address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] },
-        ],
-      });
-      feeWei = fee as bigint;
-      defaults = defaultsFromTuple(tuple as LaunchDefaultsTuple);
-      if (isV5) clankerFeeWei = third as bigint;
-      else predictedKernel = third as Address;
+      // predicted after the salt is mined (the salt picks the kernel address too), the launcher's bounds come from
+      // `agentDefaults()` (it has no presets), and Clanker's own launch fee is read.
+      if (isV5) {
+        const [fee, tuple, clankerFee] = await client.multicall({
+          allowFailure: false,
+          contracts: [
+            { address: launcher, abi: clankerLauncherV5Abi, functionName: 'launchFeeWei' },
+            { address: launcher, abi: clankerLauncherV5Abi, functionName: 'agentDefaults' },
+            { address: v5!.factory as Address, abi: clankerV5FactoryAbi, functionName: 'nativeLaunchFee' },
+          ],
+        });
+        feeWei = fee;
+        bounds = v5BoundsFromTuple(tuple);
+        defaults = { ...defaults, minFuelUsdc: tuple[3] };
+        clankerFeeWei = clankerFee;
+      } else {
+        const [fee, tuple, kernel] = await client.multicall({
+          allowFailure: false,
+          contracts: [
+            { address: launcher, abi: launcherAbi, functionName: 'launchFeeWei' },
+            { address: launcher, abi: launcherAbi, functionName: buyback ? 'buybackDefaults' : 'standardDefaults' },
+            { address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, salt] },
+          ],
+        });
+        feeWei = fee;
+        defaults = defaultsFromTuple(tuple as LaunchDefaultsTuple);
+        predictedKernel = kernel;
+      }
     } catch {
       return refuse(502, 'chain_unavailable', 'Could not read the launcher. Nothing was launched: try again in a moment.');
+    }
+  }
+  // The settings against the launcher's live bounds (the owner can move the floors and the tax range for future launches).
+  let tokenSettings: ContractTokenSettings | null = null;
+  let tokenInput = null;
+  if (isV5) {
+    const checked = parseTokenSettings(l.token, creator, bounds);
+    if (!checked.ok) return invalid(checked.field === 'token' ? 'token' : `token.${checked.field}`, checked.message);
+    tokenInput = checked.settings;
+    tokenSettings = toContractSettings(checked.settings, contractUriUrl(draftId), bounds);
+    // The launcher's own checks, before anything is signed: the paired asset is allowed for agent coins,
+    // `previewSlotWeights` reverts exactly as `launch` would, and a non-ETH dev buy has its route.
+    if (!env.useMock) {
+      const s = tokenSettings;
+      const [allowed, preview, route] = await client.multicall({
+        allowFailure: true,
+        contracts: [
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'allowedQuote', args: [LAUNCH_KIND_ID.agent, s.quoteToken] },
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'previewSlotWeights', args: [s] },
+          { address: launcher, abi: clankerLauncherV5Abi, functionName: 'devBuyRoute', args: [s.quoteToken] },
+        ],
+      });
+      if (allowed.status === 'success' && !allowed.result) return invalid('token.pairedAsset', `The launcher does not take ${checked.settings.pairedAsset} as a paired asset right now: use ETH.`);
+      if (preview.status === 'failure') {
+        const reason = (preview.error as { shortMessage?: string }).shortMessage ?? 'the settings';
+        return invalid('token', `The launcher refuses these settings (${reason}). Nothing was launched.`);
+      }
+      if (BigInt(s.quoteToken) !== 0n && parseEther(devBuy) > 0n && route.status === 'success' && BigInt(route.result[0]) === 0n) {
+        return invalid('devBuyEth', `A dev buy through ${checked.settings.pairedAsset} is not available yet: set devBuyEth to 0.`);
+      }
     }
   }
   const fuelUnits = parseUnits(fuel, USDC_DECIMALS);
@@ -248,7 +308,8 @@ export async function POST(req: NextRequest) {
     metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId), identity) : contractUriUrl(draftId),
     context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId, via: 'agent-api' }),
     salt,
-    buybackBurn: buyback,
+    // The v5 launcher ignores it: the burn is `token.burnPct` there.
+    buybackBurn: isV5 ? false : buyback,
     fuelUsdc: fuelUnits,
     devBuyWei,
     workerHash: worker.hash,
@@ -259,9 +320,9 @@ export async function POST(req: NextRequest) {
   // Clanker v5 refuses a token address that does not end in cccc: mine the salt (lib/clanker-v5.ts), check it with the
   // launcher's own predictToken, and predict the kernel from the mined salt.
   let mined: MinedSalt | null = null;
-  if (isV5) {
+  if (isV5 && tokenSettings) {
     try {
-      mined = await mineLaunchSalt({ client: env.useMock ? null : client, launcher, tokenDeployer: v5!.tokenDeployer as Address, creator, params });
+      mined = await mineLaunchSalt({ client: env.useMock ? null : client, launcher, tokenDeployer: v5!.tokenDeployer as Address, creator, params, settings: tokenSettings });
       params.salt = mined.salt;
       if (!env.useMock) {
         predictedKernel = await client.readContract({ address: launcher, abi: launcherAbi, functionName: 'predictKernel', args: [creator, mined.salt] });
@@ -285,10 +346,12 @@ export async function POST(req: NextRequest) {
     {
       step: 'launch',
       to: launcher,
-      data: encodeFunctionData({ abi: launcherAbi, functionName: 'launch', args: [params] }),
+      data: tokenSettings
+        ? encodeFunctionData({ abi: clankerLauncherV5Abi, functionName: 'launch', args: [params, tokenSettings] })
+        : encodeFunctionData({ abi: launcherAbi, functionName: 'launch', args: [params] }),
       value: (devBuyWei + feeWei + clankerFeeWei).toString(),
       note: isV5
-        ? `BootrClankerLauncherV5.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei${clankerFeeWei > 0n ? ` + Clanker's launch fee ${clankerFeeWei.toString()} wei` : ''}. The salt is mined so the coin's address ends in cccc (${mined?.token}). Emits AgentLaunched(token, kernel, ...).`
+        ? `BootrClankerLauncherV5.launch(params, settings): value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei${clankerFeeWei > 0n ? ` + Clanker's launch fee ${clankerFeeWei.toString()} wei` : ''}. The salt is mined so the coin's address ends in cccc (${mined?.token}). Emits AgentLaunched(token, kernel, ...).`
         : `${launchThrough === 'clanker' ? 'BootrClankerLauncher' : 'BootrLauncher'}.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
     },
   ];
@@ -321,7 +384,13 @@ export async function POST(req: NextRequest) {
       worker: worker.id,
       workerHash: worker.hash,
       ...(worker.draft.kind === CUSTOM_WORKER_ID ? { workerPreset: worker.draft.preset } : {}),
-      buyback,
+      buyback: isV5 ? false : buyback,
+      ...(tokenInput && tokenSettings
+        ? {
+            token: tokenInput,
+            tokenSettings: { ...tokenSettings, minDividendHolding: tokenSettings.minDividendHolding.toString() },
+          }
+        : {}),
       launchFeeWei: feeWei.toString(),
       transactions,
       next: {
@@ -333,4 +402,10 @@ export async function POST(req: NextRequest) {
     },
     { headers: NO_STORE },
   );
+}
+
+/** The settings to keep with the draft (checked against the deploy bounds; the live check comes after the chain read). */
+function parseTokenSettingsOrNull(raw: unknown, creator: Address) {
+  const r = parseTokenSettings(raw, creator, FALLBACK_V5_BOUNDS);
+  return r.ok ? r.settings : null;
 }

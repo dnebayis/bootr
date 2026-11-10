@@ -12,6 +12,9 @@
  * - Buy, ETH pool (Clanker v5): `V4_SWAP` settling the ETH sent with the call, the coin to the caller, then `SWEEP` of
  *   any ETH the swap did not use back to the caller.
  * - Sell, ETH pool: `V4_SWAP` with `TAKE_ALL` of the ETH to the caller, at least the minimum received.
+ * - Buy and sell, USDC pool (Clanker v5 coins paired with USDC, docs/design/clanker-v5-token-settings.md): an ERC-20 on
+ *   both sides, so `V4_SWAP` with `SETTLE_ALL` of what goes in (pulled through Permit2, the same exact approvals a sell
+ *   needs, for USDC on a buy) and `TAKE_ALL` of what comes out to the caller, at least the minimum received. No ETH moves.
  *
  * Every swap is exact in: Clanker v5 refuses exact-output swaps during its anti-snipe window, and the panel never builds
  * one anyway.
@@ -62,6 +65,7 @@ export const SWAP_CONTRACTS = {
   clankerHook: A.clanker.hookStaticFeeV2 as Address,
   /** Clanker v5's TaxLaunchHook: one hook for every v5 pool. */
   clankerV5Hook: (A.clankerV5?.hook ?? null) as Address | null,
+  usdc: A.usdc as Address,
 } as const;
 
 /** Native ETH as a v4 currency (and as the Universal Router's `SWEEP` token). Clanker v5 pools are paired with it. */
@@ -145,15 +149,23 @@ export const permit2Abi = [
 
 /**
  * The pool key each launch path builds for a coin (`BootrLauncher.poolKeyFor`, `BootrClankerLauncher.poolKeyFor`,
- * `BootrClankerLauncherV5.poolKeyFor`: native ETH, fee 0, the factory's tick spacing of 200, the v5 hook). Null for
- * Clanker v5 where this chain has no v5 hook.
+ * `BootrClankerLauncherV5.poolKeyFor`: the coin's paired asset (native ETH unless `paired` says otherwise), fee 0, the
+ * factory's tick spacing of 200, the v5 hook). Null for Clanker v5 where this chain has no v5 hook.
  */
 export function poolKeyOf(token: Address, source: 'bootr' | 'clanker'): PoolKey;
-export function poolKeyOf(token: Address, source: PoolSource): PoolKey | null;
-export function poolKeyOf(token: Address, source: PoolSource): PoolKey | null {
+export function poolKeyOf(token: Address, source: PoolSource, paired?: Address | null): PoolKey | null;
+export function poolKeyOf(token: Address, source: PoolSource, paired?: Address | null): PoolKey | null {
   if (source === 'clanker-v5') {
     if (!SWAP_CONTRACTS.clankerV5Hook) return null;
-    return { currency0: NATIVE_ETH, currency1: token, fee: 0, tickSpacing: TICK_SPACING, hooks: SWAP_CONTRACTS.clankerV5Hook };
+    const quote = paired && BigInt(paired) !== 0n ? paired : NATIVE_ETH;
+    const quoteFirst = BigInt(quote) < BigInt(token);
+    return {
+      currency0: quoteFirst ? quote : token,
+      currency1: quoteFirst ? token : quote,
+      fee: 0,
+      tickSpacing: TICK_SPACING,
+      hooks: SWAP_CONTRACTS.clankerV5Hook,
+    };
   }
   const coinFirst = BigInt(token) < BigInt(SWAP_CONTRACTS.weth);
   return {
@@ -179,8 +191,8 @@ export function poolIdOf(key: PoolKey): Hex {
  * The key to trade on, or null when it does not hash to the coin's indexed pool id. The id commits to all five fields,
  * so a coin on an unexpected hook gets no trade rather than a trade on the wrong pool.
  */
-export function verifiedPoolKey(token: Address, source: PoolSource, poolId: string): PoolKey | null {
-  const key = poolKeyOf(token, source);
+export function verifiedPoolKey(token: Address, source: PoolSource, poolId: string, paired?: Address | null): PoolKey | null {
+  const key = poolKeyOf(token, source, paired);
   return key && poolIdOf(key).toLowerCase() === poolId.toLowerCase() ? key : null;
 }
 
@@ -189,9 +201,29 @@ export function isNativePool(key: PoolKey): boolean {
   return BigInt(key.currency0) === 0n;
 }
 
-/** The pool's ETH side: WETH, or native ETH (the zero address) on a Clanker v5 pool. */
+/** The assets a Bootr coin can be paired with: native ETH and WETH, and USDC on Clanker v5. */
+const PAIRED_CURRENCIES = new Set([BigInt(NATIVE_ETH), BigInt(SWAP_CONTRACTS.weth), BigInt(SWAP_CONTRACTS.usdc)]);
+
+/** The pool's paired side: WETH, native ETH (the zero address) or USDC on a Clanker v5 pool. */
 export function pairedCurrency(key: PoolKey): Address {
-  return isNativePool(key) || BigInt(key.currency0) === BigInt(SWAP_CONTRACTS.weth) ? key.currency0 : key.currency1;
+  return PAIRED_CURRENCIES.has(BigInt(key.currency0)) ? key.currency0 : key.currency1;
+}
+
+/** The coin's side of the pool. */
+export function coinCurrency(key: PoolKey): Address {
+  return BigInt(pairedCurrency(key)) === BigInt(key.currency0) ? key.currency1 : key.currency0;
+}
+
+/** True for a pool paired with an ERC-20 the user pays and receives as is (USDC): no ETH is wrapped or sent. */
+export function isErc20Paired(key: PoolKey): boolean {
+  const p = BigInt(pairedCurrency(key));
+  return p !== 0n && p !== BigInt(SWAP_CONTRACTS.weth);
+}
+
+/** What a swap spends: the paired asset on a buy (ETH on the ETH and WETH pools), the coin on a sell. */
+export function inputToken(key: PoolKey, side: SwapSide): Address {
+  if (side === 'sell') return coinCurrency(key);
+  return isErc20Paired(key) ? pairedCurrency(key) : NATIVE_ETH;
 }
 
 /** True when the swap's input is currency0 (`zeroForOne`). Buying spends (W)ETH, selling spends the coin. */
@@ -274,8 +306,27 @@ type SwapArgs = {
 
 const suffixed = (data: Hex, suffix?: Hex): Hex => (suffix ? concat([data, suffix]) : data);
 
-/** ETH to coin. `value` is the amount in; nothing else leaves the wallet. */
-export function buildBuyTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+/** Paired ERC-20 in, the other side out, both through the router: `SETTLE_ALL` pulls through Permit2, `TAKE_ALL` pays the caller. */
+function erc20Swap({ key, amountIn, minOut, deadline, dataSuffix }: SwapArgs, side: SwapSide): SwapTx {
+  const paying = side === 'buy' ? pairedCurrency(key) : coinCurrency(key);
+  const getting = side === 'buy' ? coinCurrency(key) : pairedCurrency(key);
+  const data = execute(
+    [CMD.V4_SWAP],
+    [
+      v4Swap(
+        [ACTION.SWAP_EXACT_IN_SINGLE, ACTION.SETTLE_ALL, ACTION.TAKE_ALL],
+        [exactInSingle(key, side, amountIn, minOut), settleAllParams(paying, amountIn), takeAllParams(getting, minOut)],
+      ),
+    ],
+    deadline,
+  );
+  return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: 0n };
+}
+
+/** ETH (or USDC on a USDC pool) to coin. On the ETH pools `value` is the amount in; nothing else leaves the wallet. */
+export function buildBuyTx(args: SwapArgs): SwapTx {
+  const { key, coin, amountIn, minOut, deadline, dataSuffix } = args;
+  if (isErc20Paired(key)) return erc20Swap(args, 'buy');
   if (isNativePool(key)) {
     const data = execute(
       [CMD.V4_SWAP, CMD.SWEEP],
@@ -316,8 +367,10 @@ export function buildBuyTx({ key, coin, amountIn, minOut, deadline, dataSuffix }
   return { to: SWAP_CONTRACTS.universalRouter, data: suffixed(data, dataSuffix), value: amountIn };
 }
 
-/** Coin to ETH. Needs the allowances of `approvalCalls`. */
-export function buildSellTx({ key, coin, amountIn, minOut, deadline, dataSuffix }: SwapArgs): SwapTx {
+/** Coin to ETH (or USDC on a USDC pool). Needs the allowances of `approvalCalls`. */
+export function buildSellTx(args: SwapArgs): SwapTx {
+  const { key, coin, amountIn, minOut, deadline, dataSuffix } = args;
+  if (isErc20Paired(key)) return erc20Swap(args, 'sell');
   if (isNativePool(key)) {
     const data = execute(
       [CMD.V4_SWAP],
@@ -361,8 +414,9 @@ export type Allowances = {
 export type ApprovalCall = SwapTx & { kind: 'token' | 'permit2' };
 
 /**
- * What a sell of `amount` still needs, with exact amounts and nothing more. The sell spends both allowances, so neither
- * stays open afterwards. An allowance that already covers the sell is left alone.
+ * What a swap paying `amount` of the ERC-20 `coin` still needs (the coin on a sell, USDC on a buy on a USDC pool), with
+ * exact amounts and nothing more. The swap spends both allowances, so neither stays open afterwards. An allowance that
+ * already covers it is left alone.
  */
 export function approvalCalls({
   coin,
