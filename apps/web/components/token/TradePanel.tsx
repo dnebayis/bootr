@@ -92,7 +92,19 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const settledAmount = settledText === text ? amountIn : null;
   // Clanker v5: a buy in the first 20 s pays up to 99%; the panel waits instead of quoting it (`now` is 0 on the server).
   const v5 = token.source === 'clanker-v5';
-  const opensIn = v5 && now > 0 ? v5TradingOpensIn(token.launchedAt, now / 1000) : 0;
+  // The shared clock ticks every 30 s; the countdown needs seconds, so it keeps its own while the window runs.
+  const [second, setSecond] = useState(0);
+  useEffect(() => {
+    if (!v5) return;
+    const closesAt = (token.launchedAt + CLANKER_V5_ANTI_SNIPE_SECONDS + 1) * 1000;
+    if (Date.now() > closesAt) return;
+    const id = setInterval(() => {
+      setSecond(Date.now());
+      if (Date.now() > closesAt) clearInterval(id);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [v5, token.launchedAt]);
+  const opensIn = v5 && now > 0 ? v5TradingOpensIn(token.launchedAt, Math.max(now, second) / 1000) : 0;
   const buyClosed = side === 'buy' && opensIn > 0;
   const quote = useSwapQuote(token, poolKey, side, buyClosed ? null : settledAmount);
   const balances = useSwapBalances(coin, address);
