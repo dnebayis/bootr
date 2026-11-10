@@ -232,9 +232,15 @@ a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `an
    in `sv_agents.draft_id` (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
    For a Clanker launch the same receipt yields `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick,
    lpFeeBps)`, stored as `config.clanker` (plus the configured fee locker); an unreadable receipt leaves it to
-   `backfillClankerDetails` on a later tick, and the configured lockers serve meanwhile. A Clanker v5 launch yields
-   `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)` instead, stored as
-   `config.clankerV5` (same backfill; the address book's escrow serves meanwhile).
+   `backfillClankerDetails` on a later tick, and the configured lockers serve meanwhile. A Clanker v5 launch is read by
+   one function, `decodeClankerV5Launch`, into `config.clankerV5` (same backfill; the address book's escrow and native
+   ETH serve meanwhile): the settings launcher's `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken,
+   tickSpacing, buyTaxBps, sellTaxBps, burnBps, dividendBps, antiSnipe, metadataEditable)` (only from our launcher, only
+   for the token), the hook's `FeeSlotCreated` for that pool (slots by role: the kernel's launcher-admin slot `agent`,
+   the other launcher-admin slot `platform`, the creator's first row `creator`, extra rows `other`; no addresses kept)
+   and the factory's `LaunchTaxConfigured` for the token (Clanker's policy, the dividend minimum) become
+   `config.clankerV5.settings`. Without exactly one agent slot there are no settings and the agent states no split.
+   The fixed launcher's v1 event (`..., uint24 taxBps, bool antiSnipe`, never deployed) still decodes, without settings.
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
@@ -660,8 +666,25 @@ Clanker's `TaxLaunchHook` credits every slot's share on each swap, in the pool's
    a v5 agent; low gas claims the escrow below `CLAIM_THRESHOLD_USD` whatever WETH the kernel holds. The fee ETH is not
    swapped to USDC: that needs a value-carrying call and `BootrCallPolicy` refuses every call with value until its v2,
    so a v5 agent's fuel stays the creator's USDC (stray WETH on the kernel would still be swapped as before).
-5. **What the agent says**: `coin-fees.ts` describes a v5 coin as a tax every buy and every sell pays (`taxPct`),
-   Clanker's share (`protocolBps`, 0.5% of the trade at a 1.5% tax) inside it, the slots sharing the rest.
+5. **USDC-paired coins** ([`docs/design/clanker-v5-token-settings.md`](../../docs/design/clanker-v5-token-settings.md)
+   section 3; the paired asset is `config.clankerV5.quoteToken`, `launch-source.ts` `pairedAssetOf`): the read is
+   `owed(kernel, USDC)` (6 decimals, valued at $1; `claimable.asset: 'USDC'`, `CLANKER_V5_USDC_NOTE`), the claim is
+   `claimFor(kernel, USDC)` under the same rule (recipient pinned, currency free: the policy bytes are the ETH agent's),
+   and the claimed USDC is fuel: it is the kernel's USDC that funds the spender in the same pass. Below the threshold it
+   claims for fuel when kernel + spender USDC is under `FUEL_TARGET_USDC` and at least `USDC_FUEL_CLAIM_MIN` (1 USDC)
+   is owed. Gas comes only from the creator (owner's answer 6, no USDC -> ETH rule): low gas never claims or unwraps
+   (`skipped: gas_from_creator`), and the `gas_out` notice says so (`data.creatorOnly = 1`). A quote that is neither
+   ETH nor USDC (`asset: 'other'`) is read raw and never valued or claimed.
+6. **Dividends** (owner's answer 7): the kernel never claims holder dividends; when the coin pays them the snapshot's
+   `claimable.dividends` says so.
+7. **What the agent says**: `coin-fees.ts` describes the coin's real settings: the buy and the sell tax (`taxPct`,
+   `sellTaxPct`), Clanker's cut of each (`clamp(tax × 10%, 0.5%, 1%)` of the trade, or the policy from the receipt),
+   the agent, creator and platform slots, extra reward rows as `otherRecipients` (never their addresses), the
+   `holderDividends` with `holderMinimumCoins`, the burn and `pairedAsset`; a recipient the coin does not have is not
+   listed. The agent's own coin comes from `config.clankerV5.settings`, any other coin (`read_coin`) from the indexer
+   row, which for a v5 coin must carry `buyTaxBps`, `sellTaxBps` (hundredths of a bip), `rewardsBps` and
+   `dividendBps` (bps of the tax, like `agentBps`), and may carry `pairedToken` and `minDividendHolding` (raw units);
+   a v5 row without them gets no split.
 
 ## Gas
 

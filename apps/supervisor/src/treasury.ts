@@ -18,7 +18,7 @@ import type { AgentRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
 import { encodeKernelExecute, type KernelCall } from './kernel.js';
-import { agentSource, clankerLockersFor, clankerV5EscrowFor } from './launch-source.js';
+import { agentSource, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, clankerV5QuoteOf, pairedAssetOf, type ClankerV5LaunchDetails, type PairedAsset } from './launch-source.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 
 export interface SerializedCall {
@@ -47,8 +47,34 @@ export function callsHash(calls: readonly SerializedCall[]): Hex {
 /** Shown to the model for Clanker coins: the fee locker only knows what the LP locker has collected so far. */
 export const CLANKER_PENDING_NOTE = 'Launched through Clanker: `settled` is what the Clanker fee locker holds for the kernel; LP fees not collected yet are not visible here and may be under-reported until a claim collects them.';
 
-/** Shown to the model for Clanker v5 coins: the fee share is native ETH, and ETH on the kernel is its gas. */
+/** Shown to the model for Clanker v5 coins paired with ETH: the fee share is native ETH, and ETH on the kernel is its gas. */
 export const CLANKER_V5_NOTE = "Launched through Clanker v5: `settled` is the native ETH Clanker's fee escrow holds for your wallet (the `weth` figures here are ETH, not WETH). A claim lands it on your wallet as ETH, which pays your gas; it is not swapped to USDC, so your fuel stays the USDC your creator adds.";
+
+/**
+ * Shown to the model for Clanker v5 coins paired with USDC (docs/design/clanker-v5-token-settings.md section 3 and the
+ * owner's answer 6): the fee share is USDC, which is fuel as it lands; gas comes only from the creator.
+ */
+export const CLANKER_V5_USDC_NOTE =
+  "Launched through Clanker v5 and paired with USDC: `settled` is the USDC Clanker's fee escrow holds for your wallet (the `weth` figures here are USDC, not WETH, and `usd.claimableWeth` is the same amount in dollars). A claim lands it on your wallet as USDC, which is fuel: it pays your thinking like the USDC your creator adds. It never pays gas: your gas comes only from your creator, who adds it on the coin page.";
+
+/** Shown for a v5 coin paired with an asset no agent coin may have: nothing is valued or claimed. */
+export const CLANKER_V5_OTHER_NOTE = "Launched through Clanker v5 and paired with an asset Bootr neither values nor claims for you: `settled` is that asset's balance in Clanker's fee escrow, in its raw 18-decimal reading, and no claim is made.";
+
+/** Shown when the coin pays holder dividends (owner's answer 7: no session rule claims them). */
+export const CLANKER_V5_DIVIDENDS_NOTE =
+  "Your coin pays part of its tax to its holders as dividends. If your wallet holds enough of your coin to earn them, they are not claimed and not counted here: no rule lets your wallet claim dividends.";
+
+/**
+ * The smallest USDC fee balance a USDC-paired v5 agent claims for fuel below the USD threshold (`runFeePolicy`): one
+ * claim empties the escrow, so the next one waits for another dollar of tax and a thin coin never claims every tick.
+ */
+export const USDC_FUEL_CLAIM_MIN = 1;
+
+/** The `claimable` notes of a v5 agent: what its fee asset is good for, and the unclaimed dividends when the coin pays them. */
+export function clankerV5ClaimableNotes(asset: PairedAsset, details: ClankerV5LaunchDetails | null): { note: string; asset: PairedAsset; dividends?: string } {
+  const note = asset === 'USDC' ? CLANKER_V5_USDC_NOTE : asset === 'other' ? CLANKER_V5_OTHER_NOTE : CLANKER_V5_NOTE;
+  return { note, asset, ...((details?.settings?.dividendBps ?? 0) > 0 ? { dividends: CLANKER_V5_DIVIDENDS_NOTE } : {}) };
+}
 
 export interface TreasurySnapshot {
   kernel: Address;
@@ -65,11 +91,12 @@ export interface TreasurySnapshot {
    *   RWAGMI pool, or null when the coin was not launched through the RWAGMI launcher (nothing pending to settle).
    * - Clanker (`ClankerFeeLocker`): `settled` = `availableFees(kernel, WETH)`; `pending` is always 0 because fees
    *   still inside the LP position have no view (`note` says so); `poolId` is the Clanker pool from `ClankerLaunched`.
-   * - Clanker v5 (`FeeEscrow`): `settled` = `owed(kernel, 0x0)`, native ETH (`asset: 'ETH'`; the field keeps its
-   *   `weth` name); `pending` is 0 (the hook credits the escrow on every swap, nothing waits in the pool); `poolId`
-   *   is the v5 pool from `ClankerV5Launched`.
+   * - Clanker v5 (`FeeEscrow`): `settled` = `owed(kernel, quote)` in the coin's paired asset (`asset`; the fields keep
+   *   their `weth` name): native ETH (`0x0`, 18 decimals) or USDC (6 decimals, valued at $1); `pending` is 0 (the hook
+   *   credits the escrow on every swap, nothing waits in the pool); `poolId` is the v5 pool from `ClankerV5Launched`;
+   *   `dividends` is there when the coin pays holder dividends, which the kernel never claims.
    */
-  claimable: { weth: string; pending: string; settled: string; poolId: Hex | null; note?: string; asset?: 'ETH' };
+  claimable: { weth: string; pending: string; settled: string; poolId: Hex | null; note?: string; asset?: PairedAsset; dividends?: string };
   /** What pays the kernel's userOps: EntryPoint deposit + kernel ETH (gas.ts); `sponsored` when a paymaster is set. */
   gas: GasView;
   ethUsd: number | null;
@@ -152,15 +179,23 @@ interface ContractRead {
 type ReadResult = { status: 'success'; result: unknown } | { status: 'failure'; error: unknown };
 
 
+/** The asset and decimals a v5 agent's fees are claimed in (launch-source.ts `pairedAssetOf`); USDC 6, ETH and anything else 18. */
+export function clankerV5FeeAsset(ctx: Pick<SupervisorContext, 'chain'>, agent: Pick<AgentRow, 'config'>): { currency: Address; asset: PairedAsset; decimals: number } {
+  const currency = clankerV5QuoteOf(agent);
+  const asset = pairedAssetOf(ctx, currency);
+  return { currency, asset, decimals: asset === 'USDC' ? 6 : 18 };
+}
+
 /** The claimable-fee reads of one launch source: pending (pool side, null when there is nothing to read) and settled (payable) WETH, plus the pool id shown. */
 async function claimableReads(ctx: SupervisorContext, agent: AgentRow, source: LaunchSource): Promise<{ poolId: Hex | null; pending: ContractRead | null; settled: ContractRead }> {
   const { addresses, rwagmi } = ctx.chain;
   const kernel = agent.kernel as Address;
   if (source === 'clanker-v5') {
-    // Clanker v5: the hook credits every slot's tax to the escrow on each swap, in the quote (native ETH, `0x0`), so
-    // the escrow's balance is the whole claimable amount (docs/design/clanker-v5-migration.md section 3).
+    // Clanker v5: the hook credits every slot's tax to the escrow on each swap, in the coin's paired asset (native ETH
+    // `0x0`, or USDC), so the escrow's balance in that asset is the whole claimable amount
+    // (docs/design/clanker-v5-migration.md section 3, docs/design/clanker-v5-token-settings.md section 3).
     const { feeEscrow, details } = clankerV5EscrowFor(ctx, agent);
-    const settled = { address: feeEscrow, abi: clankerV5FeeEscrowAbi, functionName: 'owed', args: [kernel, zeroAddress] };
+    const settled = { address: feeEscrow, abi: clankerV5FeeEscrowAbi, functionName: 'owed', args: [kernel, clankerV5FeeAsset(ctx, agent).currency] };
     return { poolId: details?.poolId ?? null, pending: null, settled };
   }
   if (source === 'clanker') {
@@ -266,6 +301,10 @@ export async function readAgentChainState(ctx: SupervisorContext, agent: AgentRo
     const gas = gasReading({ deposit, balance: eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) });
     const claimWeth = pendingWeth + settledWeth;
     const wethHuman = Number(formatUnits(weth, 18));
+    // The claimable figures' unit: WETH on RWAGMI and Clanker v4; the paired asset on Clanker v5 (ETH, or USDC at $1).
+    const fee = source === 'clanker-v5' ? clankerV5FeeAsset(ctx, agent) : { asset: 'ETH' as const, decimals: 18 };
+    const claimableHuman = Number(formatUnits(claimWeth, fee.decimals));
+    const claimableUsd = fee.asset === 'USDC' ? claimableHuman : fee.asset === 'other' || !price ? 0 : claimableHuman * price;
     treasury = {
       kernel,
       spender,
@@ -273,12 +312,12 @@ export async function readAgentChainState(ctx: SupervisorContext, agent: AgentRo
       observedAt: new Date(ctx.now()).toISOString(),
       balances: { eth: formatUnits(eth, 18), weth: formatUnits(weth, 18), usdc: formatUnits(usdc, 6), token: formatUnits(own, 18), spenderUsdc: formatUnits(spenderUsdc, 6) },
       claimable: {
-        weth: formatUnits(claimWeth, 18),
-        pending: formatUnits(pendingWeth, 18),
-        settled: formatUnits(settledWeth, 18),
+        weth: formatUnits(claimWeth, fee.decimals),
+        pending: formatUnits(pendingWeth, fee.decimals),
+        settled: formatUnits(settledWeth, fee.decimals),
         poolId,
         ...(source === 'clanker' ? { note: CLANKER_PENDING_NOTE } : {}),
-        ...(source === 'clanker-v5' ? { note: CLANKER_V5_NOTE, asset: 'ETH' as const } : {}),
+        ...(source === 'clanker-v5' ? clankerV5ClaimableNotes(fee.asset, clankerV5DetailsOf(agent.config)) : {}),
       },
       gas: gasView(gas),
       ethUsd: price,
@@ -286,7 +325,7 @@ export async function readAgentChainState(ctx: SupervisorContext, agent: AgentRo
         usdc: Number(formatUnits(usdc, 6)),
         spenderUsdc: Number(formatUnits(spenderUsdc, 6)),
         weth: price ? wethHuman * price : 0,
-        claimableWeth: price ? Number(formatUnits(claimWeth, 18)) * price : 0,
+        claimableWeth: claimableUsd,
       },
     };
   } catch (err) {
@@ -412,12 +451,14 @@ export function encodeClankerClaimCalls(args: { lpLocker: Address; feeLocker: Ad
 }
 
 /**
- * The fee claim of a Clanker v5 coin, one call (docs/design/clanker-v5-migration.md section 3): `FeeEscrow.
- * claimFor(kernel, 0x0)` pays the kernel's whole native-ETH balance to the kernel. There is no collection step, and
- * `claimFor` pays `recipient` whoever calls, so BootrCallPolicy pins `recipient == kernel` and the currency stays free.
+ * The fee claim of a Clanker v5 coin, one call (docs/design/clanker-v5-migration.md section 3,
+ * docs/design/clanker-v5-token-settings.md section 3): `FeeEscrow.claimFor(kernel, currency)` pays the kernel's whole
+ * balance of the coin's paired asset to the kernel (`0x0` = native ETH, the default; USDC for a USDC-paired coin). There
+ * is no collection step, and `claimFor` pays `recipient` whoever calls, so BootrCallPolicy pins `recipient == kernel` and
+ * the currency stays free: one rule serves both assets.
  */
-export function encodeClankerV5ClaimCall(args: { feeEscrow: Address; kernel: Address }): KernelCall {
-  return { to: args.feeEscrow, value: 0n, data: encodeFunctionData({ abi: clankerV5FeeEscrowAbi, functionName: 'claimFor', args: [args.kernel, zeroAddress] }) };
+export function encodeClankerV5ClaimCall(args: { feeEscrow: Address; kernel: Address; currency?: Address }): KernelCall {
+  return { to: args.feeEscrow, value: 0n, data: encodeFunctionData({ abi: clankerV5FeeEscrowAbi, functionName: 'claimFor', args: [args.kernel, args.currency ?? zeroAddress] }) };
 }
 
 /** The `claim_fees` op of an agent by launch source: calls and a description, or null when nothing can be claimed. */
@@ -426,12 +467,17 @@ export function claimOpFor(ctx: SupervisorContext, agent: AgentRow, snap: Treasu
   const kernel = agent.kernel as Address;
   const usd = snap.usd.claimableWeth.toFixed(2);
   if (snap.source === 'clanker-v5') {
-    // `claimFor` reverts `NothingToClaim` on zero.
-    if (Number(snap.claimable.settled) <= 0) return null;
+    // `claimFor` reverts `NothingToClaim` on zero. The currency is the coin's paired asset; an asset no agent coin may
+    // have is never claimed (it would be neither fuel nor gas).
+    const { currency, asset } = clankerV5FeeAsset(ctx, agent);
+    if (asset === 'other' || Number(snap.claimable.settled) <= 0) return null;
     const { feeEscrow } = clankerV5EscrowFor(ctx, agent);
     return {
-      calls: [encodeClankerV5ClaimCall({ feeEscrow, kernel })],
-      description: `claim ${snap.claimable.settled} ETH of trading tax (~$${usd}) from the Clanker v5 fee escrow via claimFor; it lands on the kernel as gas`,
+      calls: [encodeClankerV5ClaimCall({ feeEscrow, kernel, currency })],
+      description:
+        asset === 'USDC'
+          ? `claim ${snap.claimable.settled} USDC of trading tax (~$${usd}) from the Clanker v5 fee escrow via claimFor; it lands on the kernel as fuel`
+          : `claim ${snap.claimable.settled} ETH of trading tax (~$${usd}) from the Clanker v5 fee escrow via claimFor; it lands on the kernel as gas`,
     };
   }
   if (snap.source === 'clanker') {
@@ -764,10 +810,15 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
   //    follow the launch source (`claimOpFor`: RWAGMI settleAndClaim / claimQuote, Clanker collectRewards + claim,
   //    Clanker v5 claimFor). Low gas claims below the USD threshold too, when the kernel holds no WETH to unwrap: fees
   //    are its only gas source. A v5 claim IS gas (ETH on the kernel), so low gas claims whatever WETH the kernel holds.
+  //    A USDC-paired v5 coin is the other way round (docs/design/clanker-v5-token-settings.md section 3): its claim is
+  //    USDC, fuel and never gas, so low gas does not claim it, and fuel under FUEL_TARGET_USDC claims it from
+  //    USDC_FUEL_CLAIM_MIN up (the claimed USDC is the kernel's USDC that funds the spender below).
   const v5 = snap.source === 'clanker-v5';
+  const usdcFees = v5 && snap.claimable.asset === 'USDC';
   const claimableUsd = snap.usd.claimableWeth;
-  const claimForGas = gasLow && (v5 || parseUnits(snap.balances.weth, 18) === 0n) && parseUnits(snap.claimable.weth, 18) > 0n;
-  const claim = claimableUsd >= config.CLAIM_THRESHOLD_USD || claimForGas ? claimOpFor(ctx, agent, snap) : null;
+  const claimForGas = gasLow && !usdcFees && (v5 || parseUnits(snap.balances.weth, 18) === 0n) && parseUnits(snap.claimable.weth, 18) > 0n;
+  const claimForFuel = usdcFees && snap.usd.usdc + snap.usd.spenderUsdc < config.FUEL_TARGET_USDC && claimableUsd >= USDC_FUEL_CLAIM_MIN;
+  const claim = claimableUsd >= config.CLAIM_THRESHOLD_USD || claimForGas || claimForFuel ? claimOpFor(ctx, agent, snap) : null;
   if (claim) {
     const op = await prepareOp(ctx, agent, { kind: 'claim_fees', calls: claim.calls, description: claim.description, origin: 'policy' });
     out.claim = await executeOp(ctx, agent, op.opId);
@@ -776,8 +827,11 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
 
   // 2. Gas: unwrap WETH into ETH on the kernel up to GAS_TARGET_WEI when gas is under GAS_MIN_WEI (rule layout >= 3).
   //    Not for a Clanker v5 agent: its fee share arrives as ETH, which is gas already (the claim above was the top-up),
-  //    so `fund_gas` is a no-op there (docs/design/clanker-v5-migration.md section 3).
+  //    so `fund_gas` is a no-op there (docs/design/clanker-v5-migration.md section 3). A USDC-paired v5 agent has no
+  //    gas source of its own at all (owner's answer 6, 2026-11-10: no USDC -> ETH rule): its gas comes only from the
+  //    creator, so low gas is said (`gas_from_creator`) and nothing is tried.
   const claimed = out.claim ? await readTreasuryOnChain(ctx, agent) : snap;
+  if (gasLow && usdcFees) out.skipped = 'gas_from_creator';
   if (gasLow && !v5) {
     const amount = gasTopUp({ total: parseUnits(claimed.gas.eth, 18), minWei: minGas, targetWei: BigInt(config.GAS_TARGET_WEI), wethBalance: parseUnits(claimed.balances.weth, 18) });
     if (amount > 0n && !agentHasGasRule(agent)) {
