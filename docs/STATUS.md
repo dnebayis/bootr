@@ -200,11 +200,18 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    the indexer (`source: 'clanker-v5'`: the v5 wrapper on the same `BOOTR_CLANKER_LAUNCHERS` list, the hook's per-swap
    tax credits and the escrow's claims in the existing fee tables, `/treasury/:kernel` reading `FeeEscrow.owed`) and
    the claim cross-booking fix (a claim is split only over the claiming locker's own path; `claimParts`, tested).
-   Remains: the owner's two decisions (the tax rate, 1.5% recommended; the burn preset meanwhile, option (a)
-   recommended: leave v4 open and pause it at go-live), then the deploy and `gate.addLauncher(v5)` from the admin
-   wallet, Coolify `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended and
-   `DATABASE_SCHEMA=bootr_v9` (backup first; the indexer code changed either way), the supervisor's v5 claim rule
-   (design section 3), and the web of design section 7 (copy, launch form with salt mining, claims, swap panel).
+   Also built the same day: the supervisor (`clanker-v5` source, `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`, rule layout 5
+   with one `FeeEscrow.claimFor(kernel, *)` claim rule for v5 agents only, today's agents byte-identical at layout 4,
+   the v5 treasury read and claim, no `fund_gas` for v5, the tax in `coin-fees.ts`) and the web of design section 7
+   (one switch, `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS` read by `lib/contracts.ts` `clankerPath`: empty keeps the
+   Clanker card on v4 exactly as today; set, new Clanker launches go through v5 with a mined `cccc` salt in the form
+   and in `/api/agent/launch`; claims through the FeeEscrow in ETH; the native-ETH swap with a 20 s anti-snipe wait;
+   copy for both versions). Not yet tested on a fork: the web's native-ETH swap calldata (no v5 Bootr coin exists).
+   Remains: the owner's two decisions (the tax rate, 1.5% recommended and built in; the burn preset meanwhile,
+   option (a) recommended: leave v4 open and pause it at go-live), then the deploy and `gate.addLauncher(v5)` from the
+   admin wallet (runbook in design section 8), then one release with `DATABASE_SCHEMA=bootr_v9` (backup first),
+   `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended, and the two new launcher address
+   variables (the web one rebuilds the web image), then a Bootr-owned test coin and a fork run of a buy and a sell.
 10. **Clanker on Robinhood Chain** (research only, nothing built; design note section 11): Clanker v5 is live there
    (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
    supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
