@@ -18,6 +18,7 @@ import { indexerEnv } from '../lib/env';
 import { DEAD_ADDRESS, parseLaunchSource, RECIPIENT_KINDS, type LaunchSource, type RecipientKind } from '../lib/fees';
 import { verifyRequest } from '../lib/hmac';
 import { toUnits, usd } from '../lib/price';
+import { quoteUsd } from '../lib/quote';
 import { rpcClient } from '../lib/rpc';
 import { parseSocialPatch, socialStore, type AgentSocial } from '../lib/social-store';
 import {
@@ -550,7 +551,9 @@ app.get('/creator/:address', async (c) => {
 });
 
 /**
- * `{source, lpFeeBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd}}, sharedWallets}` for one coin.
+ * `{source, lpFeeBps, byKind: {agent|creator|burn|platform|recipient: {accruedUsd, claimedUsd}}, sharedWallets}` for one
+ * coin (`recipient`: the extra reward rows of a Clanker v5 coin with token settings), plus the paired asset, each side's
+ * tax and `dividends: {contract, minHolding, accruedUsd, redirectedUsd}` (Clanker v5 holder dividends; zeros elsewhere).
  * A wallet holding two slots of the coin has its claims told apart per kind (`claimedUsd` null when that cannot be done
  * exactly); `sharedWallets: [{recipient, kinds, claimedUsd, toldApart}]` names such wallets and what they claimed together.
  */
@@ -585,7 +588,30 @@ app.get('/token/:id/fees', async (c) => {
     { accruedUsd: number; claimedUsd: number | null }
   >;
   for (const r of acc) if (r.kind in byKind) byKind[r.kind as RecipientKind].accruedUsd = usd(Number(r.usd));
-  return c.json({ token, source: t?.source ?? null, lpFeeBps: t?.lpFeeBps ?? null, protocolBps: t?.protocolBps ?? null, byKind, sharedWallets });
+  return c.json(
+    j({
+      token,
+      source: t?.source ?? null,
+      lpFeeBps: t?.lpFeeBps ?? null,
+      protocolBps: t?.protocolBps ?? null,
+      // extra (Clanker v5 token settings): the paired asset fees are paid in, each side's tax, the extra rows' share
+      pairedToken: t?.pairedToken ?? null,
+      pairedSymbol: t?.pairedSymbol ?? null,
+      buyTaxBps: t?.buyTaxBps ?? null,
+      sellTaxBps: t?.sellTaxBps ?? null,
+      rewardsBps: t?.rewardsBps ?? 0,
+      dividendBps: t?.dividendBps ?? 0,
+      byKind,
+      /** Holder dividends (no slot, no claims here: each holder withdraws from the tracker). */
+      dividends: {
+        contract: t?.dividendContract ?? null,
+        minHolding: t?.minDividendHolding ?? null,
+        accruedUsd: t?.dividendsTotalUsd ?? 0,
+        redirectedUsd: t?.dividendsRedirectedUsd ?? 0,
+      },
+      sharedWallets,
+    }),
+  );
 });
 
 /**
@@ -651,6 +677,16 @@ app.get('/market/:token', async (c) => {
       burnBps: t.burnBps,
       platformBps: t.platformBps,
       protocolBps: t.protocolBps,
+      // extra (Clanker v5 token settings; null / 0 / false on the other paths)
+      pairedToken: t.pairedToken,
+      pairedSymbol: t.pairedSymbol,
+      pairedDecimals: t.pairedDecimals,
+      priceQuote: t.priceQuote,
+      buyTaxBps: t.buyTaxBps,
+      sellTaxBps: t.sellTaxBps,
+      rewardsBps: t.rewardsBps,
+      dividendBps: t.dividendBps,
+      antiSnipe: t.antiSnipe,
       ethPriceUsd: stats[0]?.ethPriceUsd ?? null,
       updatedAt: stats[0]?.updatedAt ?? null,
       trades: trades.map((r) => ({
@@ -679,11 +715,11 @@ app.get('/market/:token', async (c) => {
  * Clanker coins (`source: 'clanker'`): `settled = ClankerFeeLocker.availableFees(recipient, WETH)` (the burn
  * slot: `availableFees(0x…dEaD, coin)`, in the coin), `pending` is 0 (fees still inside the LP position have no
  * cheap view; they move to the fee locker on the next `collectRewards`).
- * Clanker v5 coins (`source: 'clanker-v5'`): `settled = FeeEscrow.owed(recipient, 0x0)` (native ETH, `symbol` `ETH`;
- * the burn slot: `owed(0x…dEaD, coin)`, in the coin), `pending` 0 (the hook credits the escrow on every swap).
+ * Clanker v5 coins (`source: 'clanker-v5'`): one row per fee slot recipient as the slots stand now (agent, platform, the
+ * creator's row, the extra reward rows as `recipient`, the burn), `settled = FeeEscrow.owed(recipient, quote)` in the
+ * pool's paired asset (native ETH `0x0`, `symbol` `ETH`, or USDC with 6 decimals; the burn slot: `owed(0x…dEaD,
+ * coin)`, in the coin), `pending` 0 (the hook credits the escrow on every swap).
  */
-/** The v5 escrow's currency for native ETH (Clanker v5 pools are paired with ETH itself). */
-const NATIVE_ETH = '0x0000000000000000000000000000000000000000' as Address;
 
 app.get('/treasury/:kernel', async (c) => {
   const id = c.req.param('kernel');
@@ -703,24 +739,40 @@ app.get('/treasury/:kernel', async (c) => {
   const weth = env.addresses.weth;
   const coin = t.id as Address;
   const launchSource: LaunchSource = parseLaunchSource(t.source);
+  // Clanker v5: the coin's fee slots as they stand now (a row's admin may have moved its recipient; the extra reward
+  // rows are `recipient`), in slot order. Other paths: the token row's parties.
+  const v5Slots =
+    launchSource === 'clanker-v5'
+      ? (await db.select().from(schema.feeSlot).where(eq(schema.feeSlot.token, t.id)))
+          .sort((x, y) => x.slot - y.slot)
+          .filter((r) => r.recipientKind !== 'protocol')
+          .map((r) => ({ recipient: r.recipient as Address, recipientKind: r.recipientKind as RecipientKind }))
+      : [];
   // One row per wallet: a wallet holding two slots has one balance, shown once (`alsoKinds` names its other slots).
-  const recipients = distinctRecipients<{ recipient: Address; recipientKind: RecipientKind }>([
-    { recipient: kernel, recipientKind: 'agent' },
-    { recipient: t.creator as Address, recipientKind: 'creator' },
-    ...(t.burner ? [{ recipient: t.burner as Address, recipientKind: 'burn' as const }] : []),
-    { recipient: t.platformRecipient as Address, recipientKind: 'platform' },
-  ]);
+  const recipients = distinctRecipients<{ recipient: Address; recipientKind: RecipientKind }>(
+    v5Slots.length
+      ? v5Slots
+      : [
+          { recipient: kernel, recipientKind: 'agent' },
+          { recipient: t.creator as Address, recipientKind: 'creator' },
+          ...(t.burner ? [{ recipient: t.burner as Address, recipientKind: 'burn' as const }] : []),
+          { recipient: t.platformRecipient as Address, recipientKind: 'platform' },
+        ],
+  );
   // The locker to ask: the RWAGMI LP locker (pending + claimable) or the Clanker fee locker (available).
   const locker = launchSource === 'bootr' ? (env.rwagmi?.locker ?? null) : null;
   const feeLocker = launchSource === 'clanker' ? (env.clanker?.feeLocker ?? null) : null;
   const feeEscrow = launchSource === 'clanker-v5' ? (env.clankerV5?.feeEscrow ?? null) : null;
   const poolId = t.poolId as `0x${string}`;
-  /** Asset a recipient is paid in: WETH (v5: native ETH, `0x0`), except the Clanker burn slot, which receives the coin itself. */
+  /**
+   * Asset a recipient is paid in: WETH; on v5 the pool's quote (native ETH `0x0`, or USDC); the Clanker burn slot
+   * receives the coin itself.
+   */
   const assetOf = (r: { recipient: Address; recipientKind: RecipientKind }): Address =>
     launchSource !== 'bootr' && r.recipientKind === 'burn' && lc(r.recipient) === DEAD_ADDRESS
       ? coin
       : launchSource === 'clanker-v5'
-        ? NATIVE_ETH
+        ? (t.pairedToken as Address)
         : weth;
 
   let balances = {
@@ -820,9 +872,9 @@ app.get('/treasury/:kernel', async (c) => {
         claimable.push({
           ...r,
           asset,
-          symbol: isCoin ? t.symbol : 'ETH',
+          symbol: isCoin ? t.symbol : t.pairedSymbol,
           amount: settled,
-          amountUsd: usd(toUnits(settled, 18) * (isCoin ? t.priceUsd : ethUsd)),
+          amountUsd: usd(toUnits(settled, isCoin ? 18 : t.pairedDecimals) * (isCoin ? t.priceUsd : quoteUsd(t.pairedSymbol, ethUsd))),
           pending: 0n,
           settled,
         });
@@ -845,6 +897,9 @@ app.get('/treasury/:kernel', async (c) => {
       symbol: t.symbol,
       source: launchSource,
       lpFeeBps: t.lpFeeBps,
+      /** extra: the asset the coin's fee slots are paid in (Clanker v5: `0x0` native ETH or USDC). */
+      pairedToken: t.pairedToken,
+      pairedSymbol: t.pairedSymbol,
       agentId: a.agentId,
       status: a.status,
       paused: a.paused,
