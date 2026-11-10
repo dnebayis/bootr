@@ -254,6 +254,7 @@ test('a USDC-paired v5 coin: its real split, USDC claims, and trading in USDC (m
   await expect(panel.getByTestId('trade-approvals')).toContainText('for exactly this amount, then the buy');
   await panel.getByTestId('trade-submit').click();
   await expect(page.getByText(/^Bought \$SIGMA/).first()).toBeVisible();
+  await expect(page.getByLabel('You pay')).toHaveValue('');
 
   // Or with ETH: two hops in one transaction, no approval.
   await panel.getByTestId('trade-pay-with').getByRole('button', { name: 'ETH' }).click();
@@ -263,6 +264,8 @@ test('a USDC-paired v5 coin: its real split, USDC claims, and trading in USDC (m
   await expect(panel.getByTestId('trade-out')).toContainText('$SIGMA');
   await expect(panel.getByTestId('trade-approvals')).toHaveCount(0);
   await panel.getByTestId('trade-submit').click();
+  // The first buy's toast may still be up: the field clearing is this buy's own confirmation.
+  await expect(page.getByLabel('You pay')).toHaveValue('');
   await expect(page.getByText(/^Bought \$SIGMA/).first()).toBeVisible();
 
   await panel.getByRole('tab', { name: 'Sell' }).click();
