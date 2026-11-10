@@ -84,6 +84,10 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
       return { title: 'Low on fuel', body: `${how} Add fuel to keep the agent thinking.` };
     }
     case 'gas_out':
+      // A USDC-paired Clanker v5 coin (notify-health.ts `gasFromCreatorOnly`): its fees are fuel, never gas.
+      if (data.creatorOnly === 1) {
+        return { title: 'Out of gas', body: 'This coin’s fees arrive in USDC, which pays the agent’s thinking but never its gas: gas comes only from you. The agent cannot claim fees, trade or refuel until you add gas on the coin page.' };
+      }
       return { title: 'Out of gas', body: 'The agent cannot claim fees, trade or refuel until someone adds gas on the coin page.' };
     case 'agent_asleep':
       return { title: 'Agent asleep', body: 'It ran out of fuel and stopped thinking. Add fuel and it wakes on its own.' };

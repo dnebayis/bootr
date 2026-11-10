@@ -117,6 +117,8 @@ export interface ChainState {
   clankerAvailableWeth: bigint;
   /** Clanker v5 `FeeEscrow.owed(kernel, 0x0)`: native ETH the hook has credited to the kernel's slot. */
   clankerV5OwedEth: bigint;
+  /** Clanker v5 `FeeEscrow.owed(kernel, USDC)`: USDC (6 dp) the hook has credited to the kernel's slot of a USDC-paired coin. */
+  clankerV5OwedUsdc?: bigint;
   ethUsd: bigint; // 8 dp
   paused: boolean;
   logs: unknown[];
@@ -232,7 +234,9 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
         case 'owed': {
           if (addr !== CLANKER_V5_FEE_ESCROW) throw new Error('owed on an unexpected address');
           const [recipient, currency] = args.args as [Address, Address];
-          return getAddress(recipient) === KERNEL && currency === '0x0000000000000000000000000000000000000000' ? state.clankerV5OwedEth : 0n;
+          if (getAddress(recipient) !== KERNEL) return 0n;
+          if (currency === '0x0000000000000000000000000000000000000000') return state.clankerV5OwedEth;
+          return getAddress(currency) === ADDR.usdc ? (state.clankerV5OwedUsdc ?? 0n) : 0n;
         }
         case 'latestRoundData':
           // a fresh answer: `updatedAt` = the mocked block time (= the world's `now`), same round
