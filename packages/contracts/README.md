@@ -7,8 +7,12 @@ and the session-key design are in [`src/README.md`](src/README.md); the design d
 [`docs/rwagmi-migration.md`](../../docs/rwagmi-migration.md) (RWAGMI backend) and
 [`docs/design/clanker-launch.md`](../../docs/design/clanker-launch.md) (Clanker path, gate, v3.1) and
 [`docs/design/clanker-v5-migration.md`](../../docs/design/clanker-v5-migration.md) (Clanker v5: a buy and sell tax
-instead of the LP fee, three fee slots paid in native ETH through Clanker's `FeeEscrow`, Clanker's own burn share,
-token addresses ending in `cccc` from a salt the web mines; the runbook is its section 8).
+instead of the LP fee, fee slots paid in the quote through Clanker's `FeeEscrow`, Clanker's own burn share, token
+addresses ending in `cccc` from a salt the web mines; the runbook is its section 8) and
+[`docs/design/clanker-v5-token-settings.md`](../../docs/design/clanker-v5-token-settings.md) (the v5 launcher as built:
+`launch(LaunchParams, TokenSettings)` with the creator's paired asset from an allow-list, buy and sell tax, burn,
+holder dividends, up to five reward rows behind the locked agent and platform slots, sniper switch, and creator-only
+image and metadata edits with a lock; the final ABI and events are its section 8).
 
 Current Base mainnet deployment (source of truth: [`packages/shared/src/addresses.ts`](../shared/src/addresses.ts)):
 
@@ -51,11 +55,16 @@ labels and `vm.addr(0xC0FFEE)` resolve to ETH-forwarding contracts on mainnet. L
 burn slot at `0xdEaD`, the gate, the day-of allowlist reads and the v3.1 launcher through the gate; stock `forge`
 runs everything in it except the one v3.1 RWAGMI launch), `test/security` (`RevocationFork`, `WindowedCapFork`,
 `SessionKeySignaturePath`, `GuardianArbitrarySessionPolicy`), `test/mocks`. Clanker v5: `test/unit/ClankerLauncherV5.t.sol`
-(presets, slot weights, tax configuration, admin surface) and `test/fork/ClankerV5Fork.t.sol` (launches through the
-live v5 factory with and without a dev buy, the live policy against the launcher's assumptions, the anti-snipe window,
-the tax accruing in the escrow and `claimFor(kernel, 0x0)` landing native ETH on the kernel, the sell-side split of the
-buyback preset to the wei, locked slots and metadata, an unmined salt reverting, the gate allowlist). Stock `forge` runs
-it: `forge test --match-path 'test/fork/ClankerV5Fork.t.sol' -vv` (17 tests, about 40 s on the public RPC, 2026-11-10).
+(31 tests: agent defaults and their bounds, the allow-list per launch kind, tax bounds per side, share sums and the
+dividend minimum, reward rows (count, sums, admins), slot weights with the agent rounded up and the platform down (one
+fuzz test), the Clanker parameters built from the settings, the creator-only image and metadata edits and the lock,
+through a harness and a mock factory) and `test/fork/ClankerV5Fork.t.sol` (24 tests through the live v5 factory:
+ETH and USDC launches with dev buys of one and two hops, every slot's exact share of buys and sells with four extra
+rows, burn and dividends as Clanker credits them (redirected to Clanker until a holder qualifies, then claimed by the
+holder), `claimFor(kernel, USDC)` landing fuel on the kernel, the sniper tax on and off, image and metadata edits by
+the creator only, the lock, locked agent and platform slots and row admins, a quote off the agent list refused, the
+live policy, events, prediction, the gate). Stock `forge` runs it: `forge test --match-path
+'test/fork/ClankerV5Fork.t.sol' -vv` (24 tests, about 60 s on the public RPC, 2026-11-10).
 
 ## Scripts
 
@@ -67,7 +76,7 @@ All scripts live in `script/` and read their configuration from the environment 
 | `Deploy.s.sol` | guardian + gate + burner implementation + launcher v3.1, wires `guardian.setLauncher(gate)` / `gate.addLauncher` / `setPlatformTreasury`, hands ownership to `PLATFORM_ADMIN` |
 | `DeployLauncher.s.sol` | redeploys only the launcher (v3.1+) against the live guardian and gate (presets copied from `OLD_LAUNCHER`, `GATE`, optional `LAUNCH_FEE_WEI`), swaps it in the gate's allowlist, pauses the old launcher |
 | `DeployClankerLauncher.s.sol` | the Clanker path: gate + launcher v3.1 + `BootrClankerLauncher` against the live guardian (presets, fee and burner implementation from `OLD_LAUNCHER`; `MEV_MODULE`, `PLATFORM_LP_FEE_BPS`), prints the admin's `guardian.setLauncher(gate)` / `pause()` steps unless the broadcaster is the guardian owner |
-| `DeployClankerLauncherV5.s.sol` | the Clanker v5 path: `BootrClankerLauncherV5` against the live guardian, gate, identity registry and kernel factory read from `OLD_CLANKER_LAUNCHER` (presets, `minPlatformBps` and the launch fee copied; each preset's fee replaced by `TAX_BPS`, default 15000 = 1.5%; `PLATFORM_TAX_BPS`, `QUOTE_TOKEN` default native ETH, `ANTI_SNIPE`), checks the live v5 policy admits the tax and quote, hands ownership to `PLATFORM_ADMIN`; never touches the gate (`gate.addLauncher(v5)` is the admin's own transaction) |
+| `DeployClankerLauncherV5.s.sol` | the Clanker v5 path with creator settings: `BootrClankerLauncherV5` against the live guardian, gate, identity registry and kernel factory read from `OLD_CLANKER_LAUNCHER` (platform recipient, fuel minimum, dormancy, `minPlatformBps` and the launch fee copied), agent defaults 5% / 30% (`AGENT_SHARE_BPS`, `PLATFORM_SHARE_BPS`), tax bounds 1% to 5% (`MIN_TAX_BPS`, `MAX_TAX_BPS`), five reward rows (`MAX_REWARD_ROWS`), the agent allow-list native ETH + Base USDC, the USDC dev-buy hop through Uniswap v3 WETH/USDC 0.05%; checks the live v5 policy admits the bounds and both quotes, hands ownership to `PLATFORM_ADMIN`; never touches the gate (`gate.addLauncher(v5)` is the admin's own transaction) |
 | `DeployCallPolicy.s.sol` | deploys `BootrCallPolicy` (stateless) |
 | `DeploySwapHelper.s.sol` | deploys `BootrSwapHelper` (WETH/USDC pool fee `SWAP_POOL_FEE`, default 500) |
 | `Launch.s.sol` | example launch from `CREATOR_PRIVATE_KEY` (the planned $BOOTR launch) |

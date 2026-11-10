@@ -342,3 +342,104 @@ indexer and supervisor in parallel with the form.
   chain says. The existing image moderation (if any) must read on-chain updates too (I).
 - `contractURI` moving out of `metadata` changes how the indexer finds the hosted document for v2 coins (it reads the
   calldata or `contractURI()`); `ownContractUri` keeps reading `contractUri` inside the JSON for v4 and fixed-v5 coins.
+
+## 8. Built (contracts, 2026-11-10)
+
+`packages/contracts/src/BootrClankerLauncherV5.sol` on branch `worktree-agent-a13d6a48bc2c37396` (commits `ce173bb`,
+`0d34f73`), not deployed. One entry point, not upgradeable, the gate registration and `AgentLaunched` unchanged.
+31 unit tests (`test/unit/ClankerLauncherV5.t.sol`, one fuzz) and 24 Base fork tests
+(`test/fork/ClankerV5Fork.t.sol`, live factory at block ~55.77 M) pass; the deploy script was dry-run against Base
+(no broadcast). Runtime size 18,137 bytes; launch gas 3.82 M (ETH, one row, dev buy) to 5.50 M (USDC, five rows,
+dividends, dev buy).
+
+```solidity
+struct LaunchParams {            // unchanged; metadata = Clanker's JSON, buybackBurn ignored
+    string name; string symbol; string image; string metadata; string context; bytes32 salt; bool buybackBurn;
+    uint256 fuelUsdc; uint256 devBuyWei; bytes32 workerHash; string model; string agentURI;
+    address supervisorSessionKey;
+}
+struct RewardInput { address recipient; address admin; uint16 bps; }
+struct TokenSettings {
+    address quoteToken; uint24 buyTaxBps; uint24 sellTaxBps; uint16 burnBps; uint16 dividendBps;
+    uint256 minDividendHolding; RewardInput[] rewards; bool antiSnipe; bool metadataEditable; string contractURI;
+}
+struct AgentDefaults {
+    uint16 agentShareBps; uint16 platformShareBps; address platformRecipient; uint256 minFuelUsdc;
+    uint32 dormancyPeriod; uint24 minTaxBps; uint24 maxTaxBps; uint8 maxRewardRows;
+}
+enum LaunchKind { Agent, Plain }
+
+function launch(LaunchParams calldata p, TokenSettings calldata s) external payable
+    returns (address token, address kernel, address burner, uint256 agentId);
+function updateImage(address token, string calldata image) external;        // coinCreator[token] only, while editable
+function updateMetadata(address token, string calldata metadata) external;  // the `metadata` key
+function lockMetadata(address token) external;                               // one way
+// views: tokenInitCodeHash(p, s), predictToken(creator, p, s), predictKernel(creator, salt), scopedSalt(creator, salt),
+// previewSlotWeights(s) -> uint16[] (reverts as launch would), taxConfigurationFor(s), poolKeyFor(token),
+// poolKeyFor(token, quote, tickSpacing), quoteOf(token), coinCreator(token), metadataEditable(token),
+// allowedQuote(kind, quote), devBuyRoute(quote), agentDefaults(), minPlatformBps(), launchFeeWei()
+// owner: setAgentDefaults, setMinPlatformBps, setLaunchFee, setQuoteAllowed(kind, quote, allowed),
+// setDevBuyRoute(quote, v3Pool, fee), pause, unpause
+```
+
+Events (topic order as written):
+
+```solidity
+event AgentLaunched(address indexed token, address indexed kernel, address indexed creator, address burner,
+    uint256 agentId, LaunchDefaults defaults, bytes32 workerHash, string model, string agentURI,
+    address supervisorSessionKey);   // unchanged; defaults = (buy tax, agent, creator funds + dividends, burn,
+                                     // platform, platformRecipient, minFuelUsdc, dormancyPeriod); burner = 0xdEaD iff burnBps > 0
+event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken,
+    int24 tickSpacing, uint24 buyTaxBps, uint24 sellTaxBps, uint16 burnBps, uint16 dividendBps, bool antiSnipe,
+    bool metadataEditable);
+event LaunchContext(address indexed token, string context);                      // unchanged
+event LaunchFeePaid(address indexed token, address indexed recipient, uint256 amount);  // unchanged
+event CoinImageUpdated(address indexed token, string image);
+event CoinMetadataUpdated(address indexed token, string metadata);
+event CoinMetadataLocked(address indexed token);
+event QuoteAllowedUpdated(LaunchKind indexed kind, address indexed quote, bool allowed);  // kind: uint8, 0 = Agent
+event DevBuyRouteUpdated(address indexed quote, address pool, uint24 fee);
+event AgentDefaultsUpdated(AgentDefaults defaults);
+event MinPlatformBpsUpdated(uint16 minPlatformBps);
+event LaunchFeeUpdated(uint256 launchFeeWei);
+```
+
+In the same launch receipt Clanker emits what the launcher does not repeat: the hook's `FeeSlotCreated(poolId,
+slotIndex, recipient, admin, weightBps, isCreator)` per slot (index 0 agent, 1 platform, 2.. the creator rows in the
+order given) and the factory's `LaunchTaxConfigured(poolId, token, configVersion, policy, taxConfiguration,
+integratorFeeRecipient, antiSnipeEnabled)` with `minimumDividendHolding`. An edit also emits the token's
+`ExtraMetadataUpdated(updater = factory, key, value)`. Row admins change their rows on the hook directly
+(`FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated`). Paid credits per swap: `CreatorTaxCredited` per slot,
+`BurnTaxCredited`, `DividendTaxCredited` or (nobody qualifies yet) `DividendTaxRedirected`.
+
+Errors: `QuoteNotAllowed(address)`, `TaxOutOfBounds`, `SharesExceedPool`, `DividendHoldingMismatch`,
+`InvalidRewardCount`, `InvalidRewardBps`, `InvalidRewardRecipient`, `InvalidRewardAdmin`, `ZeroSlotWeight`,
+`DevBuyRouteMissing(address)`, `NotCoinCreator`, `MetadataNotEditable`, `InsufficientValue`, `InsufficientFuel`,
+`EmptyNameOrSymbol`; owner side `InvalidAgentShare`, `InvalidPlatformShare`, `InvalidTaxBounds`,
+`InvalidRewardRowLimit`, `InvalidDormancyPeriod`, `InvalidMinPlatformBps`, `ZeroAddress`.
+
+Where the build differs from section 2, and why:
+
+- **Presets and the old knobs are gone.** `standardDefaults` / `buybackDefaults`, `setDefaults(bool, …)`,
+  `DefaultsUpdated`, `platformTaxBps` / `setPlatformTaxBps` / `PlatformTaxUpdated` (the treasury now picks its tax
+  like any creator, inside the bounds), the launcher-wide `antiSnipe` / `setAntiSnipe` / `AntiSnipeUpdated` (per launch
+  now), the immutable `quoteToken` (per coin: `quoteOf`), `slotWeightsFor(bool)` and `taxConfigurationFor(bool)`.
+  Constructor: `(owner, Deps, AgentDefaults, minPlatformBps)`; `Deps` gains `weth` and loses `quoteToken`.
+- **The tax bounds and the row limit live in `AgentDefaults`** (one setter, one event) next to the shares;
+  `launchFeeWei` and `minPlatformBps` keep their own setters. Fixed bounds: agent ≥ 500, platform ≥ max(1,
+  `minPlatformBps`), agent + platform ≤ 5,000, 0 < minTax ≤ maxTax ≤ 100,000 (10%), rows 1..5, dormancy ≥ 30 days.
+  The contract stores no default for the creator's choices (1.5%, sniper on, editable on, ETH): the form prefills them.
+- **The USDC dev-buy hop is owner-set** (`setDevBuyRoute(USDC, 0xd0b5…F224, 500)`, done by the deploy script), not
+  hard-coded; a dev buy into an ERC-20 pool without a route reverts `DevBuyRouteMissing` before any call.
+- **A row's recipient may not be the launcher either** (as its admin may not): fees credited to the launcher would
+  have no way out.
+- **The agent floor is "to the wei" after Clanker's flooring:** when the agent's weight is exact (P divides
+  500 × 10,000, e.g. no burn and no dividends) Clanker's floored share is the exact 5% rounded down; with a burn or
+  dividends the ceil weight puts it above. The fork tests assert credit ≥ ⌊5% of the post-Clanker quote pool⌋ on buys
+  and sells.
+- **With no creator rows** (burn + dividends take all of creator funds) the platform is the last slot and takes
+  Clanker's wei remainder (a few wei at most), as section 2.2 implies.
+- **The dev buy pays the buy tax** (only the sniper surcharge is waived): the launch receipt already carries slot,
+  burn and dividend credits from it.
+- `poolKeyFor(token, tickSpacing)` became `poolKeyFor(token, quote, tickSpacing)`; `poolKeyFor(token)` reads
+  `quoteOf[token]`.
