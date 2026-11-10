@@ -315,31 +315,22 @@ Sizes are working days for one builder, with tests.
 **Total: about 19 working days (four weeks).** Contracts first (the struct is the contract between the others), then
 indexer and supervisor in parallel with the form.
 
-## 6. Open questions for the owner
+## 6. Answered by the owner (2026-11-10)
 
-1. **Ship order.** Deploy today's fixed v5 launcher now and the settings as a second launcher later (two v5 addresses,
-   two go-lives), or hold v5 until the settings are in it (one launcher, one schema bump, about four weeks).
-   *Recommendation: hold and ship one launcher*, unless the v4 burn-preset exposure must end sooner; then hide the v4
-   buyback option on the web meanwhile (migration note, option b).
-2. **Tax bounds per side.** Clanker allows 1%–10%. *Recommendation: Bootr allows 1%–5%, default 1.5%*: above 5% the
-   coin is hard to trade, and at 1% the agent earns half of today's per dollar (Clanker's 0.5% floor), which the form
-   states next to the slider.
-3. **Floor numbers.** *Recommendation: agent 5%, platform 30% of the post-Clanker pool* (today's), owner-settable for
-   future launches within the bounds of 2.2.
-4. **Handing over the editor role.** Creators sell projects and lose wallets. *Recommendation: a two-step
-   `proposeCoinCreator` / `acceptCoinCreator` on the launcher*, which moves only the image/metadata role (fee rows have
-   their own admins).
-5. **Extra reward rows.** *Recommendation: up to 4 beside the creator's own row* (Clanker's 7 slots minus agent,
-   platform and the creator).
-6. **USDC agents and gas.** *Recommendation: no new rule now*; the creator's gas tank and "Add gas" cover it, and the
-   form says so. Revisit with `BootrCallPolicy` v2 (a USDC → ETH swap rule).
-7. **Dividends to the agent's kernel.** *Recommendation: no session rule now*; add the `withdrawDividends()` rule when
-   the Trade power is live and an agent actually holds its coin above the minimum.
-8. **Sniper tax switch for creators.** *Recommendation: allow it off*, default on; the form says the 20 s surcharge goes
-   to Clanker, not to the coin.
-9. **The quote-market API for the form's "Market details".** It is clanker.world's, unauthenticated, terms unknown (U).
-   *Recommendation: for ETH and USDC compute the opening cap from `quoteConfig` and the price Bootr already has*; use
-   the API only for the later plain-token picker, after asking Clanker.
+1. **Ship order: one launcher with the settings.** No interim deploy of the fixed v5 launcher; v4 stays open for both
+   presets until this launcher is live, then v4 is paused.
+2. **Tax bounds: 1%–5% per side, default 1.5%** on both sides.
+3. **Floors: agent 5%, platform 30%** of the post-Clanker pool, owner-settable for future launches within 2.2.
+4. **No handover of the editor role.** Only the coin's creator wallet may change the image and the metadata, for good;
+   there is no `proposeCoinCreator` / `acceptCoinCreator`. (The creator may still lock the metadata permanently.)
+5. **Up to 4 extra reward rows** beside the creator's own row.
+6. **USDC agents and gas: no new rule now**; the creator's gas tank and "Add gas" cover it, and the form says so.
+7. **No dividend claim by the agent's kernel** (no session rule) for now.
+8. **Sniper tax: the creator may switch it off; default on.** The form says the 20 s surcharge goes to Clanker.
+9. **"Market details" uses clanker.world's quote-market API** (the one Clanker's own form uses) for the price,
+   liquidity and the opening market cap, with Bootr's own `quoteConfig` arithmetic as the fallback when the API does
+   not answer; the web calls it from the server with a short cache, never from the browser, and shows where the
+   figures come from.
 
 ## 7. Risks
 
