@@ -2,6 +2,7 @@ import { decodeFunctionData, getAddress, type Address, type Hex } from 'viem';
 import { NextRequest } from 'next/server';
 import { describe, expect, it } from 'vitest';
 import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
+import { feeEscrowAbi } from '@/lib/abi/feeEscrow';
 import { rwagmiLpLockerV3Abi } from '@/lib/abi/rwagmiLpLockerV3';
 import { buildClaims } from '@/lib/server/claim';
 import { GET } from './route';
@@ -42,6 +43,21 @@ describe('buildClaims', () => {
     expect(call.functionName).toBe('claim');
     expect(call.args).toEqual([OWNER, WETH]);
     expect(claim!.description).toContain('Any wallet may send it');
+  });
+
+  it('claims Clanker v5’s escrow balance for the owner in native ETH, from any wallet', () => {
+    const ESCROW = getAddress('0x5dd237d1f716C65426CCd2FAe82B95109825FA61');
+    const claims = buildClaims({ ...input, clankerAvailable: 9n, clankerFeeEscrow: ESCROW, clankerV5Owed: 4n });
+    expect(claims.map((c) => c.path)).toEqual(['clanker', 'clanker-v5']);
+    const v5 = claims[1]!;
+    expect(v5).toMatchObject({ target: ESCROW, value: '0', asset: '0x0000000000000000000000000000000000000000', amountWei: '4', sendFrom: null });
+    const call = decodeFunctionData({ abi: feeEscrowAbi, data: v5.data });
+    expect(call.functionName).toBe('claimFor');
+    expect(call.args).toEqual([OWNER, '0x0000000000000000000000000000000000000000']);
+    expect(v5.description).toContain('ETH to');
+    // Nothing owed, or no escrow on this chain: no v5 claim.
+    expect(buildClaims({ ...input, clankerFeeEscrow: ESCROW, clankerV5Owed: 0n })).toEqual([]);
+    expect(buildClaims({ ...input, clankerFeeEscrow: null, clankerV5Owed: 4n })).toEqual([]);
   });
 
   it('carries the attribution suffix the site’s own claims carry, after decodable calldata', () => {
