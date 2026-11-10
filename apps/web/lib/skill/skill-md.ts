@@ -6,6 +6,7 @@ import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeMod
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { RECOMMENDED_MODEL } from '@/lib/models';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
+import { creatorPoolBps, DEFAULT_PAIRED_ASSET, DEFAULT_TAX_PCT, FALLBACK_V5_BOUNDS, MIN_DIVIDEND_HOLDING, pairedAssetsFor, V5_SUPPLY } from '@/lib/token-settings';
 
 /**
  * The agent skill served at `/skill/skill.md`: one Markdown document a coding or chat assistant can read and follow
@@ -43,6 +44,12 @@ const V5_SAME_SHARES = (['agent', 'creator', 'burn', 'platform'] as const).every
 );
 
 const pct = (bps: number) => `${bps / 100}%`;
+
+/** Clanker v5 token settings, from the bounds the launch form and the agent API check (lib/token-settings.ts). */
+const V5B = FALLBACK_V5_BOUNDS;
+const V5_ASSETS = pairedAssetsFor('agent');
+const v5AssetList = V5_ASSETS.map((a) => `\`${a.symbol}\``).join(' or ');
+const v5AssetNotes = V5_ASSETS.map((a) => `${a.symbol}: ${a.note}`).join(' ');
 
 const workerRows = WORKER_TEMPLATES.map((t) => `| \`${t.id}\` | ${t.description} |`).join('\n');
 
@@ -347,9 +354,26 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | \`model\` | \`${RECOMMENDED_MODEL}\` | A model id from \`GET ${site}/api/models\` |
 | \`worker\` | \`community\` | A template id below, or a custom preset |
 | \`xHandle\` | none | The handle of the X account the agent will use, with or without \`@\`. A handle that is not valid is ignored. This does not connect the account |
+| \`token\` | ${DEFAULT_PAIRED_ASSET}, ${DEFAULT_TAX_PCT}% each side, everything to you | Clanker v5 only (refused on the other paths with \`invalid_request\`, \`field: "token"\`). The coin's token settings, below. Permanent for the coin, except the image and metadata while they stay editable |
 | \`links\` | none | \`{ website, x, telegram, discord }\`, each optional. \`website\` any https URL, \`x\` an x.com link or a handle (the project's account), \`telegram\` on \`https://t.me/\`, \`discord\` on \`https://discord.gg/\` or \`https://discord.com/invite/\` |
 
 On the Clanker paths, the coin's description (the first line of \`identity\`), \`xHandle\` and \`links\` are also written into the token's on-chain metadata as the JSON itself (\`description\`, \`socialMediaUrls\`, \`auditUrls\`), which Clanker's page reads. That copy can never change after launch.
+
+### Clanker v5 token settings
+
+\`token\` sets the coin the way Clanker's own deploy form does. Every field is optional; a field that is present but cannot be read is refused, never replaced by the default. Percents take at most two decimals.
+
+| Field | Default | Rules |
+| --- | --- | --- |
+| \`pairedAsset\` | \`${DEFAULT_PAIRED_ASSET}\` | ${v5AssetList}: what the coin trades against, and the asset every fee, reward and dividend is paid in. ${v5AssetNotes} |
+| \`buyTaxPct\`, \`sellTaxPct\` | \`${DEFAULT_TAX_PCT}\` | ${V5B.minTaxBps / 10_000} to ${V5B.maxTaxBps / 10_000}, each side on its own. Clanker keeps 10% of the tax, at least 0.5% and at most 1% of the trade; the rest is the tax pool |
+| \`burnPct\`, \`dividendsPct\` | \`0\` | Percent of the tax pool. The agent keeps ${pct(V5B.agentShareBps)} and the platform ${pct(V5B.platformShareBps)}, locked; burn and holder dividends together take at most ${pct(creatorPoolBps(V5B))}, and creator funds get what they leave |
+| \`minDividendHolding\` | \`${MIN_DIVIDEND_HOLDING}\` | Whole coins a wallet must hold to earn dividends, ${MIN_DIVIDEND_HOLDING.toLocaleString('en-US')} to ${V5_SUPPLY.toLocaleString('en-US')}. Used only with dividends. Holders claim their dividends themselves; Clanker holds that money, and while nobody qualifies the dividend share goes to Clanker |
+| \`rewards\` | one row: you, 100% | Who receives the creator funds: 1 to ${V5B.maxRewardRows} rows \`{ recipient, admin, pct }\`, yours first, up to ${V5B.maxRewardRows - 1} more. \`pct\` is of creator funds and the rows add up to exactly 100. \`admin\` defaults to \`recipient\` and can later change that row's recipient on Clanker. Dropped when burn and dividends take all of creator funds |
+| \`sniperTax\` | \`true\` | For the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds the tax falls from 99% to the normal tax; the surcharge goes to Clanker. \`false\` turns it off |
+| \`editableMetadata\` | \`true\` | Only the launching wallet can change the coin's image and metadata after launch, from the coin's console, and can lock them for good. Name and ticker never change |
+
+Example: \`"token": { "pairedAsset": "USDC", "buyTaxPct": 2, "sellTaxPct": 3, "burnPct": 10, "rewards": [{ "recipient": "0xYou", "pct": 80 }, { "recipient": "0xFriend", "admin": "0xYou", "pct": 20 }] }\`. The answer repeats the checked settings as \`token\` and the launcher's struct as \`tokenSettings\`.
 
 ### Worker templates
 
@@ -367,12 +391,12 @@ The launch path and the preset are chosen once and locked for the coin's life. N
 
 | | Through Bootr (\`bootr\`, RWAGMI v3) | Through Clanker v4 (\`clanker\`) | Through Clanker v5 (\`clanker-v5\`) |
 | --- | --- | --- | --- |
-| A trader pays per swap | ${pctLabel(traderPaysPct(BOOTR_PATH))} | ${pctLabel(traderPaysPct(CLANKER_PATH))} | ${pctLabel(traderPaysPct(CLANKER_V5_PATH))}, a tax on buys and sells |
+| A trader pays per swap | ${pctLabel(traderPaysPct(BOOTR_PATH))} | ${pctLabel(traderPaysPct(CLANKER_PATH))} | a tax on buys and sells that the creator sets, ${V5B.minTaxBps / 10_000}% to ${V5B.maxTaxBps / 10_000}% (${pctLabel(traderPaysPct(CLANKER_V5_PATH))} by default) |
 | The launcher's part | RWAGMI takes ${pctLabel(launcherPct(BOOTR_PATH))} of volume, inside the fee | Clanker takes ${pctLabel(launcherPct(CLANKER_PATH))} of volume, on top of the 1% fee | Clanker keeps ${pctLabel(launcherPct(CLANKER_V5_PATH))} of volume, inside the tax |
 | What the recipients share | 90% of the fee | all of the 1% fee | the tax less Clanker's part |
 | Opening market cap | about 2.7 ETH fully diluted | about 10 ETH fully diluted | Clanker's opening price for every new coin, about 1.9 ETH fully diluted on 10 November 2026 |
 | Supply | 100,000,000,000 | 100,000,000,000 | 1,000,000,000; the coin's address ends in \`cccc\` |
-| Fees are paid in | WETH | WETH; a burn share is converted into the coin | ETH; a burn share is taken in the coin |
+| Fees are paid in | WETH | WETH; a burn share is converted into the coin | the paired asset, ${v5AssetList}; a burn share is taken in the coin |
 | Listed on | ${host} | ${host} and clanker.world | ${host} and clanker.world |
 
 \`clanker\` is this site's Clanker path: Clanker v4 until Bootr's Clanker v5 launcher is live, Clanker v5 from then on. The launch answer's \`launchThrough\` says which one a launch uses.
