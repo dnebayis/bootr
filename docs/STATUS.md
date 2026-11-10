@@ -207,11 +207,22 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    Clanker card on v4 exactly as today; set, new Clanker launches go through v5 with a mined `cccc` salt in the form
    and in `/api/agent/launch`; claims through the FeeEscrow in ETH; the native-ETH swap with a 20 s anti-snipe wait;
    copy for both versions). Not yet tested on a fork: the web's native-ETH swap calldata (no v5 Bootr coin exists).
-   Remains: the owner's two decisions (the tax rate, 1.5% recommended and built in; the burn preset meanwhile,
-   option (a) recommended: leave v4 open and pause it at go-live), then the deploy and `gate.addLauncher(v5)` from the
-   admin wallet (runbook in design section 8), then one release with `DATABASE_SCHEMA=bootr_v9` (backup first),
-   `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended, and the two new launcher address
-   variables (the web one rebuilds the web image), then a Bootr-owned test coin and a fork run of a buy and a sell.
+   **Token settings, built 2026-11-11** ([`design/clanker-v5-token-settings.md`](./design/clanker-v5-token-settings.md),
+   the owner's answers in its section 6): the launcher takes `launch(LaunchParams, TokenSettings)` with the creator's
+   buy and sell tax (1 to 5%, default 1.5%), burn, holder dividends, up to four extra reward rows with their own admins,
+   the sniper switch and editable metadata (creator wallet only, image and metadata, lockable; name and symbol fixed);
+   the agent (5%) and platform (30%) slots are locked with the launcher as admin; agent coins pair with ETH or USDC from
+   an owner allow-list kept per launch kind (a future plain-token kind is reserved). Base fork suite 24/24 against the
+   live factory, including both splits to the wei and a USDC claim by the kernel. The indexer prices USDC pools and
+   indexes the settings, slots, dividends and metadata edits; the supervisor claims a USDC agent's fees as fuel (gas
+   from the creator only); the web has the Clanker-style form, `/api/quote-market` from clanker.world (server side,
+   cached, with a fallback), USDC trading including ETH buys through USDC, claims per paired asset and the creator's
+   image/metadata editor. Not fork-tested: the web's swap calldata (no v5 Bootr coin exists yet).
+   Remains, in order: the deploy, `acceptOwnership` and `gate.addLauncher(v5)` from the admin wallet (design section 8
+   of the token settings note), then one release with `DATABASE_SCHEMA=bootr_v9` (backup first),
+   `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended, `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` and
+   `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS` (the web one rebuilds the web image), then `pause()` on the v4 launcher, a
+   Bootr-owned test coin and a fork run of a buy and a sell through the web's calldata.
 10. **Clanker on Robinhood Chain** (research only, nothing built; design note section 11): Clanker v5 is live there
    (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
    supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
