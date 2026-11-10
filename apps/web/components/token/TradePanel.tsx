@@ -7,7 +7,7 @@ import { chainLabel, explorer, swapLink } from '@/lib/chains';
 import { feeModelOf, traderPaysPct } from '@/lib/fee-split';
 import { useNow } from '@/lib/hooks';
 import type { Token } from '@/lib/types';
-import { DEFAULT_SLIPPAGE_BPS, launchWindowActive, minReceived, type SwapSide } from '@/lib/swap/core';
+import { CLANKER_V5_ANTI_SNIPE_SECONDS, DEFAULT_SLIPPAGE_BPS, launchWindowActive, minReceived, v5TradingOpensIn, type SwapSide } from '@/lib/swap/core';
 import { SwapFailure } from '@/lib/swap/errors';
 import { tradeChainId, tradePoolKey, useSellApprovals, useSwapBalances, useSwapQuote, useSwapRunner } from '@/lib/swap/use-swap';
 import { amountInput, feeFigure, formatAmount, GAS_RESERVE_WEI, parseAmount, parseSlippage, percent } from '@/lib/swap/view';
@@ -53,7 +53,8 @@ function Row({ label, children, testId }: { label: string; children: React.React
 
 /**
  * Buy and sell on the coin's own Uniswap v4 pool, signed by the user's wallet. Figures come from the v4 quoter; the
- * minimum received goes on chain as the swap's floor. `lib/swap/core.ts` has the calldata.
+ * minimum received goes on chain as the swap's floor. `lib/swap/core.ts` has the calldata. A Clanker v5 coin's buys
+ * wait out its first 20 seconds ("trading opens in n s") instead of paying Clanker's anti-snipe fee.
  */
 export function TradePanel({ token }: { token: Token }) {
   const key = useMemo(() => tradePoolKey(token), [token]);
@@ -89,7 +90,11 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const amountIn = parseAmount(text);
   const settledText = useDebounced(text, QUOTE_DEBOUNCE_MS);
   const settledAmount = settledText === text ? amountIn : null;
-  const quote = useSwapQuote(token, poolKey, side, settledAmount);
+  // Clanker v5: a buy in the first 20 s pays up to 99%; the panel waits instead of quoting it (`now` is 0 on the server).
+  const v5 = token.source === 'clanker-v5';
+  const opensIn = v5 && now > 0 ? v5TradingOpensIn(token.launchedAt, now / 1000) : 0;
+  const buyClosed = side === 'buy' && opensIn > 0;
+  const quote = useSwapQuote(token, poolKey, side, buyClosed ? null : settledAmount);
   const balances = useSwapBalances(coin, address);
   const approvals = useSellApprovals(coin, address, side === 'sell' ? settledAmount : null);
   const runner = useSwapRunner();
@@ -162,6 +167,12 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
     action = (
       <Button variant="primary" size="lg" className="w-full" onClick={() => void switchToBase()} loading={switchChain.isPending} loadingLabel="Switching…">
         Switch to {chainLabel(tradeChainId)}
+      </Button>
+    );
+  } else if (buyClosed) {
+    action = (
+      <Button variant="primary" size="lg" className="w-full" data-testid="trade-submit" disabled>
+        Trading opens in {opensIn} s
       </Button>
     );
   } else {
@@ -262,7 +273,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
         </div>
 
         <dl>
-          <Row label="Pool fee" testId="trade-fee">
+          <Row label={v5 ? 'Trading tax' : 'Pool fee'} testId="trade-fee">
             {percent(fee.pct)}
             {q?.feeEth != null ? <span className="text-mute"> ({formatAmount(q.feeEth)} ETH)</span> : null}
           </Row>
@@ -308,6 +319,13 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
           </p>
         ) : effectiveSlippage > SLIPPAGE_NOTICE_BPS ? (
           <p className="text-caption text-body">With this slippage the swap can fill up to {effectiveSlippage / 100}% below the quote.</p>
+        ) : null}
+
+        {buyClosed ? (
+          <p data-testid="trade-opens-in" className="rounded-xs border border-warning-surface bg-warning-surface px-3 py-2 text-caption text-warning">
+            Trading opens in {opensIn} s. For its first {CLANKER_V5_ANTI_SNIPE_SECONDS} seconds Clanker charges buyers of a new coin up to 99%, falling to the
+            normal {percent(normalFeePct)} tax, so this page waits instead.
+          </p>
         ) : null}
 
         {launchRaised ? (

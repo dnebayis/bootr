@@ -10,6 +10,7 @@ import { erc20Abi, type Address, type Hash, type PublicClient } from 'viem';
 import { useCapabilities, useConfig, useConnection, usePublicClient, useSendCalls, useSendTransaction } from 'wagmi';
 import { waitForCallsStatus } from 'wagmi/actions';
 import { builderDataSuffix } from '../attribution';
+import { parseLaunchSource } from '../launch-source';
 import { appChain } from '../chains';
 import { env } from '../env';
 import { qk } from '../indexer';
@@ -49,9 +50,11 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
  * matches neither launch path.
  */
 export function tradePoolKey(token: Pick<Token, 'id' | 'poolId' | 'source'>): PoolKey | null {
-  if (env.useMock) return poolKeyOf(token.id, token.source === 'clanker' ? 'clanker' : 'bootr');
+  if (env.useMock) return poolKeyOf(token.id, parseLaunchSource(token.source));
   if (env.chainId !== SWAP_CONTRACTS.chainId) return null;
-  return verifiedPoolKey(token.id, 'clanker', token.poolId) ?? verifiedPoolKey(token.id, 'bootr', token.poolId);
+  return (
+    verifiedPoolKey(token.id, 'clanker-v5', token.poolId) ?? verifiedPoolKey(token.id, 'clanker', token.poolId) ?? verifiedPoolKey(token.id, 'bootr', token.poolId)
+  );
 }
 
 export function useTradeClient() {
