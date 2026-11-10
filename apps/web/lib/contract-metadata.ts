@@ -15,14 +15,13 @@ import { xHandleOfUrl } from './x-link';
 export function buildContractMetadata(launch: { identity: string | null; coin: DraftCoin | null }, token: CardToken | null) {
   const name = token?.name ?? launch.coin?.name ?? '';
   const xHandle = token?.xHandle ?? launch.coin?.xHandle ?? null;
-  const persona = launch.identity?.split('\n')[0]?.trim();
   const links = launch.coin?.links;
   const projectX = links?.x && xHandleOfUrl(links.x) ? links.x : null;
   const sameAccount = !!projectX && !!xHandle && xHandleOfUrl(projectX)!.toLowerCase() === xHandle.toLowerCase();
   return {
     name,
     symbol: token?.symbol ?? launch.coin?.symbol ?? '',
-    description: persona ? `${persona} — an autonomous agent coin launched on Bootr.` : `${name}: an autonomous agent coin launched on Bootr.`,
+    description: coinDescription(name, launch.identity),
     image: token?.image || launch.coin?.image || '',
     external_link: links?.website || (token ? `${env.siteUrl}/token/${token.id}` : env.siteUrl),
     // The creator's own answer, apart from `external_link`'s fallback: the two can be the same address (Bootr's own coin).
@@ -39,17 +38,40 @@ export function buildContractMetadata(launch: { identity: string | null; coin: D
 }
 
 /**
- * What goes into a Clanker token's `metadata` on chain: Clanker reads this field as a JSON string (`description`,
- * `socialMediaUrls: [{platform, url}]`) to fill its own page. `contractUri` is ours: the hosted document the coin page
- * reads and the creator edits (`ownContractUri` in lib/coin-links.ts). The token's admin is the launcher, which has no
+ * The coin's one-line description, the same on Bootr's hosted document and on Clanker's page: the first line of the
+ * creator's instructions (the agent's persona, public in its agent card) when there is one, else the coin's name.
+ * The instructions are normalized the way the draft store does (`normalizeIdentity`): control and zero-width
+ * characters dropped, spaces collapsed, so the browser's and the server's copies give the same string.
+ */
+export function coinDescription(name: string, identity: string | null | undefined): string {
+  const persona = (identity ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g, '')
+    .replace(/[ \u00a0]+/g, ' ')
+    .trim()
+    .split('\n')[0]
+    ?.trim();
+  return persona ? `${persona} — an autonomous agent coin launched on Bootr.` : `${name}: an autonomous agent coin launched on Bootr.`;
+}
+
+/**
+ * What goes into a Clanker token's `metadata` on chain (v4 `TokenConfig.metadata`, v5 the `metadata` extra-metadata
+ * key and today also `tokenContractURI`): the JSON itself, never a link to it, in the shape Clanker's deploy form
+ * writes and clanker.world reads (`{description, socialMediaUrls: [{platform, url}], auditUrls}`; platforms `x`,
+ * `website`, `telegram`, plus `discord`, which the form does not offer). Built from the coin's description and the
+ * links the creator entered: the project's X account, the agent's own X account after it (once when they are the
+ * same), Telegram, Discord, and the website (the site when none was given). `contractUri` is ours: the hosted
+ * document the coin page reads and the creator edits (`ownContractUri` in lib/coin-links.ts); clanker.world keeps it
+ * as an extra key and still reads the rest (Brian Brain, 2026-11-07). The token's admin is the launcher, which has no
  * update path, so this string never changes after launch; later edits reach only the hosted document.
  */
-export function clankerTokenMetadata(coin: DraftCoin, contractUri: string): string {
+export function clankerTokenMetadata(coin: DraftCoin, contractUri: string, identity?: string | null): string {
   const { name, xHandle, links } = coin;
   const projectX = links.x && xHandleOfUrl(links.x) ? links.x : null;
   const sameAccount = !!projectX && !!xHandle && xHandleOfUrl(projectX)!.toLowerCase() === xHandle.toLowerCase();
   return JSON.stringify({
-    description: `${name}: an autonomous agent coin launched on Bootr.`,
+    description: coinDescription(name, identity),
     socialMediaUrls: [
       ...(projectX ? [{ platform: 'x', url: projectX }] : []),
       ...(xHandle && !sameAccount ? [{ platform: 'x', url: `https://x.com/${xHandle}` }] : []),
@@ -57,6 +79,7 @@ export function clankerTokenMetadata(coin: DraftCoin, contractUri: string): stri
       ...(links.discord ? [{ platform: 'discord', url: links.discord }] : []),
       { platform: 'website', url: links.website || env.siteUrl },
     ],
+    auditUrls: [],
     contractUri,
   });
 }

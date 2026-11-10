@@ -58,8 +58,41 @@ test('agent API: launchThrough clanker-v5 mines the salt so the coin address end
   expect(step.note).toContain('cccc');
   // The mined salt is the one in the calldata.
   expect(step.data.toLowerCase()).toContain(body.salt.slice(2).toLowerCase());
-  // Clanker's page reads the coin's metadata as JSON, on v5 as on v4.
-  expect(() => JSON.parse(body.metadata)).not.toThrow();
+  // Clanker's page reads the coin's metadata as JSON, on v5 as on v4: the JSON itself in the deploy form's shape, with
+  // the coin's description and links, and the hosted document's URL kept inside for Bootr's pages.
+  const meta = JSON.parse(body.metadata) as { description: string; socialMediaUrls: { platform: string; url: string }[]; auditUrls: string[]; contractUri: string };
+  expect(meta.description).toBe('A patient onchain analyst for small Base coins. — an autonomous agent coin launched on Bootr.');
+  expect(meta.socialMediaUrls).toEqual([{ platform: 'website', url: 'https://bootr.fun' }]);
+  expect(meta.auditUrls).toEqual([]);
+  expect(meta.contractUri).toMatch(/^https:\/\/bootr\.fun\/tokens\/[0-9a-f-]{36}\.json$/);
+});
+
+test('agent API: a Clanker launch writes the links the creator entered into the on-chain metadata (mock mode)', async ({ request }) => {
+  const auth = await sign(request, 'Prepare a Bootr launch.');
+  const launch = {
+    name: 'Link Keeper',
+    symbol: 'lkeep',
+    identity: 'Keeps the links of small Base coins tidy.',
+    image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` },
+    links: { website: 'https://link.keeper', x: '@linkkeeper', telegram: 'https://t.me/linkkeeper' },
+  };
+  const res = await request.post('/api/agent/launch', { headers: { 'x-real-ip': '10.7.0.6' }, data: { ...auth, launch: { ...launch, launchThrough: 'clanker' } } });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as { launchId: string; metadata: string };
+  expect(JSON.parse(body.metadata)).toEqual({
+    description: 'Keeps the links of small Base coins tidy. — an autonomous agent coin launched on Bootr.',
+    socialMediaUrls: [
+      { platform: 'x', url: 'https://x.com/linkkeeper' },
+      { platform: 'telegram', url: 'https://t.me/linkkeeper' },
+      { platform: 'website', url: 'https://link.keeper' },
+    ],
+    auditUrls: [],
+    contractUri: `https://bootr.fun/tokens/${body.launchId}.json`,
+  });
+  // Bootr's own document at that URL keeps working as before.
+  const doc = await request.get(`/tokens/${body.launchId}.json`);
+  expect(doc.status()).toBe(200);
+  expect(((await doc.json()) as { description: string }).description).toBe(JSON.parse(body.metadata).description);
 });
 
 test('agent API: a signed request prepares a launch (mock mode) and returns the transactions to send', async ({ request }) => {

@@ -244,8 +244,8 @@ export async function POST(req: NextRequest) {
     name,
     symbol,
     image: imageUrl,
-    // Clanker's page reads JSON from this field; the hosted document's URL stays inside it (lib/contract-metadata.ts).
-    metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId)) : contractUriUrl(draftId),
+    // Clanker's page reads the JSON itself from this field (description, links); the hosted document's URL stays inside it (lib/contract-metadata.ts).
+    metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(draftCoin, contractUriUrl(draftId), identity) : contractUriUrl(draftId),
     context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId, via: 'agent-api' }),
     salt,
     buybackBurn: buyback,
