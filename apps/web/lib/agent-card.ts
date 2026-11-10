@@ -107,7 +107,7 @@ export function buildRegistration(t: CardToken, identity?: string | null, worker
   return withIdentity({
     type: REGISTRATION_TYPE,
     name: `${t.name} agent`,
-    description: `The agent of ${t.name} ($${t.symbol}), a coin launched on Bootr on ${chainName(t.chainId)}. It runs from its own smart account ${t.kernel}, is paid by its share of the coin's LP fees and by fuel, and ${t.xHandle ? `posts on X as @${t.xHandle}` : 'has no X account connected yet'}.`,
+    description: `The agent of ${t.name} ($${t.symbol}), a coin launched on Bootr on ${chainName(t.chainId)}. It runs from its own smart account ${t.kernel}, is paid by its share of the coin's trading fees and by fuel, and ${t.xHandle ? `posts on X as @${t.xHandle}` : 'has no X account connected yet'}.`,
     ...(isHttp(t.image) ? { image: t.image } : {}),
     services,
     registrations:

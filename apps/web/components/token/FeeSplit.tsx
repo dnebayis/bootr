@@ -21,6 +21,9 @@ function fromToken(t: Token): Split {
 /** One sentence on what a trader pays and where it goes, for the coin's fee model. */
 export function feeSentence(fee: FeeModel): string {
   const total = pctLabel(traderPaysPct(fee));
+  if (fee.source === 'clanker-v5') {
+    return `Of trading volume. A ${total} tax on every trade: Clanker keeps its share (${pctLabel(launcherPct(fee))}), the rest goes to the recipients above. Fees arrive as ETH; a burn share is taken in the coin itself and sent to the dead address.`;
+  }
   if (fee.source === 'clanker') {
     return `Of trading volume. The swap fee is ${pctLabel(swapFeePct(fee))}, all of it to the recipients above, plus 20% on top for Clanker (${pctLabel(launcherPct(fee))}): a trader pays ${total} in total. Fees arrive as WETH; a burn share arrives as the coin itself, sent to the dead address.`;
   }
@@ -29,7 +32,8 @@ export function feeSentence(fee: FeeModel): string {
 
 /**
  * Fee split as a share of trading volume, over everything a trader pays: the reward slots, then the launcher's part
- * (RWAGMI's 10% within the 1% fee, or Clanker's 20% on top of the coin's fee). Shared with the /launch preview.
+ * (RWAGMI's 10% within the 1% fee, Clanker's 20% on top of a v4 coin's fee, or Clanker's share inside a v5 coin's tax).
+ * Shared with the /launch preview.
  */
 export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeModel }) {
   const parts = ORDER.filter((k) => split[k] > 0);
@@ -74,6 +78,7 @@ export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeMo
 export function FeeSplit({ token }: { token: Token }) {
   const fee = feeModelOf(token);
   const bootr = fee.source === 'bootr';
+  const v5 = fee.source === 'clanker-v5';
   const locker = contracts.lpLocker;
   // The on-chain slots are read from RWAGMI's locker on the Bootr path; Clanker coins show the indexer's copy.
   const read = useReadContract({
@@ -98,11 +103,15 @@ export function FeeSplit({ token }: { token: Token }) {
       <p className="mt-3 text-caption text-mute">
         {bootr
           ? 'Set at launch and locked in RWAGMI’s LP locker (RwagmiLpLockerV3). Nobody, including Bootr, can change it for this coin.'
-          : 'Set at launch and locked in Clanker’s LP locker. Nobody, including Bootr, can change it for this coin.'}
+          : v5
+            ? 'Set at launch and locked in the coin’s Clanker pool. Nobody, including Bootr, can change it for this coin.'
+            : 'Set at launch and locked in Clanker’s LP locker. Nobody, including Bootr, can change it for this coin.'}
         {split.burn > 0
           ? bootr
             ? ' The burn share is claimed in WETH by the coin’s burner, which buys this coin back and burns it.'
-            : ' The locker turns the burn share into this coin and sends it to the dead address, so it is out of circulation as soon as it is collected.'
+            : v5
+              ? ' Clanker takes the burn share in this coin on every trade and sends it to the dead address.'
+              : ' The locker turns the burn share into this coin and sends it to the dead address, so it is out of circulation as soon as it is collected.'
           : ''}
       </p>
     </Panel>
