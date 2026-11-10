@@ -245,6 +245,11 @@ test('profile and console keep a separate Clanker v5 panel that pays ETH from th
   await expect(console5).toContainText('claimFor(treasury, 0x0)');
   await expect(console5).toContainText('$GAS');
   await expect(console5).toContainText('1.50% tax per trade, Clanker’s 0.50% inside it');
-  await expect(console5.getByTestId('platform-eth-clanker-v5')).toContainText(/ETH/);
-  await expect(console5.getByRole('button', { name: 'Claim on Clanker v5' })).toBeVisible();
+  // One escrow balance per paired asset, each with its own claim.
+  await expect(console5).toContainText('claimFor(treasury, USDC)');
+  await expect(console5.getByTestId('platform-eth-clanker-v5')).toContainText(/^0\.\d+ ETH$/);
+  await expect(console5.getByTestId('platform-usdc-clanker-v5')).toContainText(/^\d+(\.\d+)? USDC$/);
+  await expect(console5.getByRole('button', { name: 'Claim ETH on Clanker v5' })).toBeVisible();
+  await console5.getByRole('button', { name: 'Claim USDC on Clanker v5' }).click();
+  await expect(page.getByText('Mock: Claim USDC on Clanker v5 sent')).toBeVisible();
 });

@@ -48,7 +48,7 @@ export function clankerV5ProtocolBps(taxBps: number): number {
   return Math.floor((protocolPct / taxPct) * 10_000 + 1e-9);
 }
 
-type FeeFields = Pick<Token, 'source' | 'lpFeeBps' | 'agentBps' | 'creatorBps' | 'burnBps' | 'platformBps'>;
+type FeeFields = Pick<Token, 'source' | 'lpFeeBps' | 'agentBps' | 'creatorBps' | 'burnBps' | 'platformBps'> & Partial<Pick<Token, 'rewardsBps' | 'dividendBps' | 'protocolBps'>>;
 
 /**
  * The fee model of a token (or a partial one); a missing `source` means the Bootr path, a missing fee 1% (1.5% on v5).
@@ -59,7 +59,9 @@ export function feeModelOf(t: Partial<FeeFields> | null | undefined): FeeModel {
   const given = t?.lpFeeBps != null && Number.isFinite(Number(t.lpFeeBps)) && Number(t.lpFeeBps) > 0 ? Number(t.lpFeeBps) : null;
   const lpFeeBps = given ?? (source === 'clanker-v5' ? CLANKER_V5_DEFAULT_TAX_BPS : DEFAULT_LP_FEE_BPS);
   if (source !== 'clanker-v5') return { source, lpFeeBps };
-  const slots = [t?.agentBps, t?.creatorBps, t?.burnBps, t?.platformBps].reduce<number>((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+  if (t?.protocolBps != null && Number.isFinite(Number(t.protocolBps)) && Number(t.protocolBps) > 0) return { source, lpFeeBps, protocolBps: Number(t.protocolBps) };
+  // A settings coin's extra reward rows and dividends are shares of the tax too.
+  const slots = [t?.agentBps, t?.creatorBps, t?.burnBps, t?.platformBps, t?.rewardsBps, t?.dividendBps].reduce<number>((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
   const protocolBps = slots > 0 && slots < 10_000 ? 10_000 - slots : clankerV5ProtocolBps(lpFeeBps);
   return { source, lpFeeBps, protocolBps };
 }

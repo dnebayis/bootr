@@ -14,7 +14,8 @@ import { shortAddr, units } from '@/lib/format';
 import { mock } from '@/lib/mock';
 import { useTxRunner } from '@/lib/tx';
 import { parseLaunchSource } from '@/lib/launch-source';
-import { CLANKER_FEE_SOURCES, useClankerFees } from '@/lib/use-clanker-fees';
+import { useClankerFees } from '@/lib/use-clanker-fees';
+import { pairedAssetByAddress, pairedAssetsFor } from '@/lib/token-settings';
 import type { AgentWithToken, LaunchSource } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Empty, Panel } from '@/components/ui/Panel';
@@ -282,28 +283,68 @@ export function PlatformFeesPanel({ agents, loading }: { agents: AgentWithToken[
 }
 
 /**
- * The platform's Clanker fees of one version: one balance per wallet (Clanker's fee locker for v4, in WETH; Clanker's
- * fee escrow for v5, in ETH), claimed for the connected wallet (mock mode: the mock recipient). Nothing without a coin.
+ * One balance of the platform wallet at Clanker, with its claim: the v4 fee locker's WETH, or the v5 fee escrow's balance
+ * in one paired asset (ETH, or USDC for coins paired with USDC: the escrow keeps one balance per asset).
+ */
+function ClankerPlatformBalance({ version, asset, me, busy, enabled, testId }: { version: 4 | 5; asset?: Address; me: Address | undefined; busy: boolean; enabled: boolean; testId: string }) {
+  const symbol = version === 5 ? (pairedAssetByAddress(asset)?.symbol ?? 'ETH') : 'WETH';
+  const label = version === 5 ? `Claim ${symbol} on Clanker v5` : 'Claim on Clanker';
+  const clanker = useClankerFees({ owner: me ?? (env.useMock ? MOCK_RECIPIENT : undefined), enabled, label, version, asset });
+  const amount = clanker.amount;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-3" data-claim-asset={clanker.asset} data-claim-target={clanker.target ?? undefined}>
+      <div>
+        <div className="text-caption text-mute">
+          {version === 5 ? `${symbol} credited, waiting for a claim` : 'Collected, waiting for a claim'}
+          {me ? (
+            <>
+              {' '}
+              for{' '}
+              <a href={explorer.address(me)} target="_blank" rel="noopener noreferrer" className="font-mono hover:text-link">
+                {shortAddr(me, 6, 4)}
+              </a>
+            </>
+          ) : null}
+        </div>
+        <div className="font-mono text-base text-ink tabular" data-testid={testId}>
+          {clanker.reading ? '…' : amount == null ? '—' : `${units(amount, clanker.decimals, 6)} ${clanker.asset}`}
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => void clanker.claim()}
+        disabled={!amount || (!env.useMock && !me) || busy || clanker.pending}
+        loading={clanker.pending}
+        title={!env.useMock && !me ? 'Connect the platform wallet to claim' : undefined}
+      >
+        {label}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The platform's Clanker fees of one version: Clanker's fee locker for v4, in WETH; Clanker's fee escrow for v5, one row
+ * per paired asset (ETH and USDC), claimed for the connected wallet (mock mode: the mock recipient). Nothing without a coin.
  */
 function ClankerPlatformFees({ coins, version, me, busy }: { coins: Coin[]; version: 4 | 5; me: Address | undefined; busy: boolean }) {
-  const label = version === 5 ? 'Claim on Clanker v5' : 'Claim on Clanker';
-  const clanker = useClankerFees({ owner: me ?? (env.useMock ? MOCK_RECIPIENT : undefined), enabled: coins.length > 0, label, version });
   if (coins.length === 0) return null;
-  const amount = clanker.amount;
-  const { asset } = CLANKER_FEE_SOURCES[version];
   const suffix = version === 5 ? '-clanker-v5' : '-clanker';
+  const v5Assets = pairedAssetsFor('agent');
   return (
-    <div className="border-t border-hairline" data-testid={`platform-fees${suffix}`} data-claim-target={clanker.target ?? undefined}>
+    <div className="border-t border-hairline" data-testid={`platform-fees${suffix}`}>
       <div className="bg-canvas-soft px-4 py-1.5 text-caption font-medium text-ink">
         {version === 5 ? 'Through Clanker v5: Clanker’s fee escrow' : 'Through Clanker: Clanker’s fee locker'}
       </div>
       <p className="border-t border-hairline px-4 py-2 text-caption text-mute">
         {version === 5 ? (
           <>
-            These coins pay a tax on every trade. Clanker keeps its share and credits the platform&rsquo;s share to Clanker&rsquo;s fee escrow as ETH, trade by
-            trade. It is paid out with one call on the escrow, <span className="font-mono text-ink">claimFor(treasury, 0x0)</span>, where the treasury is the
-            platform wallet and 0x0 means ETH. The claim always pays that wallet, whoever sends it: connect the platform wallet here, or send the call from
-            anywhere.
+            These coins pay a tax on every trade. Clanker keeps its share and credits the platform&rsquo;s share to Clanker&rsquo;s fee escrow in the coin&rsquo;s
+            paired asset, trade by trade: one balance in ETH and one in USDC. Each is paid out with one call on the escrow,{' '}
+            <span className="font-mono text-ink">claimFor(treasury, 0x0)</span> for ETH and <span className="font-mono text-ink">claimFor(treasury, USDC)</span> for
+            USDC, where the treasury is the platform wallet. The claim always pays that wallet, whoever sends it: connect the platform wallet here, or send the call
+            from anywhere.
           </>
         ) : (
           <>
@@ -314,35 +355,21 @@ function ClankerPlatformFees({ coins, version, me, busy }: { coins: Coin[]; vers
           </>
         )}
       </p>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline px-4 py-3">
-        <div>
-          <div className="text-caption text-mute">
-            {version === 5 ? 'Credited, waiting for a claim' : 'Collected, waiting for a claim'}
-            {me ? (
-              <>
-                {' '}
-                for{' '}
-                <a href={explorer.address(me)} target="_blank" rel="noopener noreferrer" className="font-mono hover:text-link">
-                  {shortAddr(me, 6, 4)}
-                </a>
-              </>
-            ) : null}
-          </div>
-          <div className="font-mono text-base text-ink tabular" data-testid={version === 5 ? 'platform-eth-clanker-v5' : 'platform-weth-clanker'}>
-            {clanker.reading ? '…' : amount == null ? '—' : `${units(amount, 18, 6)} ${asset}`}
-          </div>
-        </div>
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => void clanker.claim()}
-          disabled={!amount || (!env.useMock && !me) || busy || clanker.pending}
-          loading={clanker.pending}
-          title={!env.useMock && !me ? 'Connect the platform wallet to claim' : undefined}
-        >
-          {label}
-        </Button>
-      </div>
+      {version === 5 ? (
+        v5Assets.map((a) => (
+          <ClankerPlatformBalance
+            key={a.symbol}
+            version={5}
+            asset={a.address}
+            me={me}
+            busy={busy}
+            enabled={coins.length > 0}
+            testId={`platform-${a.symbol.toLowerCase()}-clanker-v5`}
+          />
+        ))
+      ) : (
+        <ClankerPlatformBalance version={4} me={me} busy={busy} enabled={coins.length > 0} testId="platform-weth-clanker" />
+      )}
       <ul className="divide-y divide-hairline border-t border-hairline">
         {coins.map((coin) => {
           const fee = feeModelOf(coin);

@@ -10,7 +10,7 @@ import type { Token } from '@/lib/types';
 import { CLANKER_V5_ANTI_SNIPE_SECONDS, DEFAULT_SLIPPAGE_BPS, isErc20Paired, launchWindowActive, minReceived, pairedCurrency, v5TradingOpensIn, type SwapSide } from '@/lib/swap/core';
 import { pairedAssetByAddress, v5SettingsOf } from '@/lib/token-settings';
 import { SwapFailure } from '@/lib/swap/errors';
-import { tradeChainId, tradePoolKey, useSellApprovals, useSwapBalances, useSwapQuote, useSwapRunner } from '@/lib/swap/use-swap';
+import { tradeChainId, tradePoolKey, useSellApprovals, useSwapBalances, useSwapQuote, useSwapRunner, type PayWith } from '@/lib/swap/use-swap';
 import { amountInput, feeFigure, formatAmount, GAS_RESERVE_WEI, parseAmount, parseSlippage, percent } from '@/lib/swap/view';
 import { Button } from '@/components/ui/Button';
 import { ExternalLink } from '@/components/ui/ExternalLink';
@@ -97,7 +97,11 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   const pairedAsset = pairedAssetByAddress(pairedAddr);
   const pairedSymbol = erc20 ? (pairedAsset?.symbol ?? 'USDC') : 'ETH';
   const pairedDecimals = erc20 ? (pairedAsset?.decimals ?? 6) : 18;
-  const inDecimals = side === 'buy' ? pairedDecimals : 18;
+  // A buy on a USDC pool can also be paid with ETH: two hops in one transaction (ETH → USDC on Uniswap v3, USDC → coin).
+  const [payWith, setPayWith] = useState<PayWith>('direct');
+  const viaEth = erc20 && side === 'buy' && payWith === 'eth-via-paired';
+  const paySymbol = viaEth ? 'ETH' : pairedSymbol;
+  const inDecimals = side === 'buy' ? (viaEth ? 18 : pairedDecimals) : 18;
   const outDecimals = side === 'buy' ? 18 : pairedDecimals;
   const amountIn = parseAmount(text, inDecimals);
   const settledText = useDebounced(text, QUOTE_DEBOUNCE_MS);
@@ -118,16 +122,16 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
   }, [v5, token.launchedAt]);
   const opensIn = v5 && now > 0 ? v5TradingOpensIn(token.launchedAt, Math.max(now, second) / 1000) : 0;
   const buyClosed = side === 'buy' && opensIn > 0;
-  const quote = useSwapQuote(token, poolKey, side, buyClosed ? null : settledAmount);
+  const quote = useSwapQuote(token, poolKey, side, buyClosed ? null : settledAmount, viaEth ? 'eth-via-paired' : 'direct');
   const balances = useSwapBalances(coin, address, pairedAddr);
   // A sell spends the coin; a buy on a USDC pool spends USDC: both need the exact Permit2 approvals.
-  const approvals = useSellApprovals(side === 'buy' && pairedAddr ? pairedAddr : coin, address, side === 'sell' || erc20 ? settledAmount : null);
+  const approvals = useSellApprovals(side === 'buy' && pairedAddr ? pairedAddr : coin, address, side === 'sell' || (erc20 && !viaEth) ? settledAmount : null);
   const runner = useSwapRunner();
 
   const wrongChain = isConnected && chainId !== tradeChainId;
-  const payLabel = side === 'buy' ? pairedSymbol : coinLabel;
+  const payLabel = side === 'buy' ? paySymbol : coinLabel;
   const receiveLabel = side === 'buy' ? coinLabel : pairedSymbol;
-  const balance = balances.data ? (side === 'buy' ? (erc20 ? balances.data.paired : balances.data.eth) : balances.data.coin) : null;
+  const balance = balances.data ? (side === 'buy' ? (erc20 && !viaEth ? balances.data.paired : balances.data.eth) : balances.data.coin) : null;
   const tooMuch = amountIn !== null && balance !== null && amountIn > balance;
 
   const customBps = parseSlippage(customSlippage);
@@ -159,7 +163,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
     if (!q || minOut === null || amountIn === null) return;
     setProblem(null);
     try {
-      const result = await runner.run({ side, coin, symbol, key: poolKey, amountIn, minOut, launchWindow: q.launchWindow });
+      const result = await runner.run({ side, coin, symbol, key: poolKey, amountIn, minOut, launchWindow: q.launchWindow, payWith: viaEth ? 'eth-via-paired' : 'direct' });
       if (result.status === 'repriced') {
         setProblem('The price moved past your slippage setting while you were reviewing. Check the new figures and confirm again.');
         return;
@@ -208,7 +212,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
       noBalance && side === 'sell'
         ? `No ${coinLabel} in this wallet`
         : noBalance
-          ? `No ${pairedSymbol} in this wallet`
+          ? `No ${paySymbol} in this wallet`
           : tooMuch
             ? `Not enough ${payLabel}`
             : amountIn === null
@@ -234,13 +238,13 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
 
   const presets =
     side === 'buy'
-      ? (erc20 ? BUY_PRESETS_USD : BUY_PRESETS).map((p) => ({ label: p, value: p, on: text === p }))
+      ? (erc20 && !viaEth ? BUY_PRESETS_USD : BUY_PRESETS).map((p) => ({ label: p, value: p, on: text === p }))
       : SELL_PRESETS.map((p) => {
           const value = balance !== null && balance > 0n ? amountInput((balance * BigInt(p)) / 100n) : '';
           return { label: `${p}%`, value, on: value !== '' && text === value };
         });
   // "Max" on an ETH buy keeps some ETH for the network fee; USDC and the coin can go in full.
-  const maxValue = balance === null ? '' : amountInput(side === 'buy' && !erc20 ? (balance > GAS_RESERVE_WEI ? balance - GAS_RESERVE_WEI : 0n) : balance, inDecimals);
+  const maxValue = balance === null ? '' : amountInput(side === 'buy' && (!erc20 || viaEth) ? (balance > GAS_RESERVE_WEI ? balance - GAS_RESERVE_WEI : 0n) : balance, inDecimals);
   const canMax = maxValue !== '' && maxValue !== '0';
 
   return (
@@ -258,6 +262,32 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
       }
     >
       <div data-testid="trade-panel" className="flex flex-col gap-3">
+        {erc20 && side === 'buy' ? (
+          <div className="flex items-center justify-between gap-3" data-testid="trade-pay-with">
+            <span className="text-caption text-mute">Pay with</span>
+            <div className="flex gap-1.5">
+              {(
+                [
+                  ['direct', pairedSymbol],
+                  ['eth-via-paired', 'ETH'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={payWith === value}
+                  className={cn(chip, payWith === value && chipOn)}
+                  onClick={() => {
+                    setPayWith(value);
+                    setAmount('');
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-baseline justify-between gap-3">
             <label htmlFor="trade-amount" className="text-caption text-mute">
@@ -376,7 +406,7 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
           </p>
         ) : null}
 
-        {(side === 'sell' || erc20) && isConnected && !wrongChain && approvals.data && approvals.data.length > 0 && q ? (
+        {(side === 'sell' || (erc20 && !viaEth)) && isConnected && !wrongChain && approvals.data && approvals.data.length > 0 && q ? (
           <p data-testid="trade-approvals" className="text-caption text-body">
             {runner.atomic
               ? `One confirmation in your wallet: approval for exactly this amount and the ${side}, together.`
@@ -386,7 +416,9 @@ function TradeForm({ token, poolKey, elsewhere }: { token: Token; poolKey: NonNu
 
         {erc20 ? (
           <p data-testid="trade-paired" className="text-caption text-mute">
-            This coin trades against {pairedSymbol}: you pay and receive {pairedSymbol}, not ETH.
+            {viaEth
+              ? `This coin trades against ${pairedSymbol}: your ETH becomes ${pairedSymbol} on Uniswap (0.05%) and then the coin, in one transaction. The minimum received covers both steps.`
+              : `This coin trades against ${pairedSymbol}: you ${side === 'buy' ? 'pay' : 'receive'} ${pairedSymbol}.`}
           </p>
         ) : null}
 

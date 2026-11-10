@@ -104,24 +104,30 @@ export interface Token {
   /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` carries the buy tax. */
   buyTaxBps?: number | null;
   sellTaxBps?: number | null;
-  /** Creator funds (the reward rows), holder dividends and (in `burnBps`) the burn: bps of the tax pool after Clanker's cut. */
+  /**
+   * The creator's extra reward rows together, and the holder dividends. Like `agentBps`, `creatorBps` (the creator's own
+   * row), `burnBps` and `platformBps` on a v5 coin, these are bps of the buy tax with Clanker's share inside it:
+   * `agent + creator + rewards + burn + dividend + platform = 10000 - protocolBps`.
+   */
   rewardsBps?: number | null;
   dividendBps?: number | null;
+  /** Clanker's share of a v5 coin's tax, in bps of it (3333 at 1.5%). */
+  protocolBps?: number | null;
   /** Raw coin units (18 decimals) a holder needs for dividends. */
   minDividendHolding?: string | null;
   /** The coin's dividend tracker, and the dividends paid so far in USD. */
   dividendContract?: Address | null;
   dividendsTotalUsd?: number | null;
   antiSnipe?: boolean | null;
-  /** Clanker's flag frozen at launch, the launcher's one-way lock, and the last `CoinImageUpdated` / `CoinMetadataUpdated`. */
+  /** The image and metadata can still change (false once locked), the creator's one-way lock, and the last edit. */
   metadataEditable?: boolean | null;
   metadataLocked?: boolean | null;
   metadataUpdatedAt?: number | null;
   /**
-   * Not from the indexer: the web's own reading of the fields above (`v5SettingsOf`), which mock mode fills in directly
-   * with the reward rows and the metadata JSON the token row does not carry.
+   * Not from the indexer: what the token row does not carry, which mock mode fills in (the reward rows, in bps of creator
+   * funds, and the metadata JSON). Live, the coin page reads both from the chain.
    */
-  v5Settings?: V5TokenSettings | null;
+  v5Extras?: { rewards?: V5TokenSettings['rewards']; metadataJson?: string | null } | null;
 }
 
 /**
@@ -132,8 +138,14 @@ export interface V5TokenSettings {
   /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` on the token row carries the buy tax. */
   buyTaxBps: number;
   sellTaxBps: number;
-  /** Shares of the tax pool after Clanker's cut, bps of 10000: the locked floors and the creator's choices. */
+  /**
+   * Shares of the tax pool after Clanker's cut, bps of 10000: the locked floors and the creator's choices, creator funds
+   * being the creator's own row and the extra rows together. All 0 when `splitKnown` is false: the indexer's row did not
+   * add up, and the web shows the split as unknown rather than guess one.
+   */
+  splitKnown: boolean;
   agentShareBps: number;
+  creatorFundsBps: number;
   platformShareBps: number;
   burnBps: number;
   dividendBps: number;
@@ -145,7 +157,7 @@ export interface V5TokenSettings {
    */
   rewards: { recipient: Address; admin: Address; bps: number }[];
   antiSnipe: boolean;
-  /** Clanker's flag, frozen at launch. */
+  /** The image and metadata can still change (the indexer turns it off once locked). */
   metadataEditable: boolean;
   /** The launcher's one-way lock (`lockMetadata`): an editable coin whose creator locked it can no longer change. */
   metadataLocked: boolean;

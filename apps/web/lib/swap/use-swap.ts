@@ -18,6 +18,7 @@ import type { Token } from '../types';
 import {
   approvalCalls,
   buildBuyTx,
+  buildEthViaPairedBuyTx,
   buildSellTx,
   isErc20Paired,
   pairedCurrency,
@@ -34,8 +35,14 @@ import {
   type SwapTx,
 } from './core';
 import { SwapFailure } from './errors';
-import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, MOCK_PAIRED_BALANCE, mockQuote } from './mock';
-import { quoteSwap, type SwapQuote } from './quote';
+import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, MOCK_PAIRED_BALANCE, mockEthViaPairedQuote, mockQuote } from './mock';
+import { quoteEthViaPaired, quoteSwap, type SwapQuote } from './quote';
+
+/**
+ * How a buy on a USDC-paired pool is paid: with USDC itself, or with ETH through the two-hop route
+ * (`buildEthViaPairedBuyTx`). Other pools are always `direct`.
+ */
+export type PayWith = 'direct' | 'eth-via-paired';
 
 /** The chain the panel trades on: Base, or the app's chain in mock mode. */
 export const tradeChainId = env.useMock ? appChain.id : SWAP_CONTRACTS.chainId;
@@ -67,10 +74,11 @@ export function useTradeClient() {
   return usePublicClient({ chainId: tradeChainId }) as PublicClient | undefined;
 }
 
-export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, amountIn: bigint | null) {
+export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, amountIn: bigint | null, payWith: PayWith = 'direct') {
   const client = useTradeClient();
+  const viaEth = side === 'buy' && payWith === 'eth-via-paired';
   return useQuery<SwapQuote, SwapFailure>({
-    queryKey: ['swap', 'quote', token.id.toLowerCase(), side, amountIn?.toString() ?? ''],
+    queryKey: ['swap', 'quote', token.id.toLowerCase(), side, amountIn?.toString() ?? '', viaEth ? 'eth' : ''],
     enabled: !!key && !!amountIn && (env.useMock || !!client),
     retry: false,
     gcTime: 0,
@@ -80,7 +88,8 @@ export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, 
     },
     queryFn: async () => {
       try {
-        if (env.useMock) return mockQuote(token, side, amountIn!);
+        if (env.useMock) return viaEth ? mockEthViaPairedQuote(token, amountIn!) : mockQuote(token, side, amountIn!);
+        if (viaEth) return await quoteEthViaPaired(client!, { key: key!, amountIn: amountIn! });
         return await quoteSwap(client!, { key: key!, side, amountIn: amountIn! });
       } catch (e) {
         throw SwapFailure.from(e);
@@ -156,6 +165,8 @@ export type SwapIntent = {
   /** The minimum received the user saw: the floor on chain. */
   minOut: bigint;
   launchWindow: LaunchWindow | null;
+  /** A buy on a USDC pool paid with ETH through the two-hop route; `amountIn` is then wei. */
+  payWith?: PayWith;
 };
 
 export type SwapResult = { status: 'done'; hash: Hash | null } | { status: 'repriced' };
@@ -194,7 +205,8 @@ export function useSwapRunner() {
         if (!client) throw new SwapFailure('network');
 
         setStage('Checking the price');
-        const fresh = await quoteSwap(client, { key, side, amountIn });
+        const viaEth = side === 'buy' && intent.payWith === 'eth-via-paired';
+        const fresh = viaEth ? await quoteEthViaPaired(client, { key, amountIn }) : await quoteSwap(client, { key, side, amountIn });
         if (fresh.amountOut < minOut) {
           await refresh();
           return { status: 'repriced' };
@@ -231,8 +243,8 @@ export function useSwapRunner() {
         };
 
         // ETH in needs no approval; a sell spends the coin and a buy on a USDC pool spends USDC, both through Permit2.
-        if (side === 'buy' && !isErc20Paired(key)) {
-          const tx = buildBuyTx(swapArgs);
+        if (side === 'buy' && (!isErc20Paired(key) || viaEth)) {
+          const tx = viaEth ? buildEthViaPairedBuyTx(swapArgs) : buildBuyTx(swapArgs);
           await dryRun(tx);
           setStage('Confirm in your wallet');
           return { status: 'done', hash: await sendOne(tx) };

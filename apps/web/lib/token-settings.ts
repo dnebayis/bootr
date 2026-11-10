@@ -17,7 +17,7 @@
  */
 import { getAddress, isAddress, zeroAddress, type Address } from 'viem';
 import { addresses } from '@bootr/shared/addresses';
-import { CLANKER_V5_POLICY } from './fee-split';
+import { CLANKER_V5_POLICY, clankerV5ProtocolBps } from './fee-split';
 import type { Token, V5TokenSettings } from './types';
 
 // ------------------------------------------------------------------ paired assets
@@ -405,37 +405,60 @@ export function perTradeLines(s: Pick<TokenSettingsInput, 'buyTaxPct' | 'sellTax
 /** The token-row fields `v5SettingsOf` reads (lib/types.ts). */
 type V5Row = Pick<
   Token,
-  'source' | 'v5Settings' | 'agentBps' | 'platformBps' | 'burnBps' | 'buyTaxBps' | 'sellTaxBps' | 'rewardsBps' | 'dividendBps' | 'minDividendHolding' | 'antiSnipe' | 'metadataEditable' | 'metadataLocked'
+  | 'source'
+  | 'v5Extras'
+  | 'agentBps'
+  | 'creatorBps'
+  | 'platformBps'
+  | 'burnBps'
+  | 'buyTaxBps'
+  | 'sellTaxBps'
+  | 'rewardsBps'
+  | 'dividendBps'
+  | 'protocolBps'
+  | 'minDividendHolding'
+  | 'antiSnipe'
+  | 'metadataEditable'
+  | 'metadataLocked'
 >;
+
+/** How far the row's shares may miss `10000 − protocolBps` and still be read: the indexer's rounding of slot weights. */
+export const V5_ROW_TOLERANCE_BPS = 4;
 
 /**
  * A v5 coin's settings from the indexer's token row, or null for any coin not launched with settings (the fixed v5
- * launcher, v4, RWAGMI). The pool shares are the row's when agent, platform, burn, dividends and rewards add up to
- * 10,000 bps of the tax pool; otherwise the agent gets its 5% floor and the platform what is left. The reward rows are
- * not on the row (empty here).
+ * launcher, v4, RWAGMI). The row gives every share in bps of the buy tax with Clanker's share inside it
+ * (`agent + creator + rewards + burn + dividend + platform = 10000 − protocolBps`; apps/indexer README, "Clanker v5
+ * token settings"); here they become shares of the tax pool after Clanker's cut, `x × 10000 / (10000 − protocolBps)`,
+ * creator funds being the creator's own row and the extra rows together. A row that does not add up (within a few bps)
+ * gives `splitKnown: false` and no shares at all, never a guessed platform figure. The reward rows and the metadata JSON
+ * are not on the row: `v5Extras` (mock mode) or empty.
  */
 export function v5SettingsOf(t: V5Row | null | undefined): V5TokenSettings | null {
-  if (!t) return null;
-  if (t.v5Settings) return t.v5Settings;
-  if (t.source !== 'clanker-v5' || t.buyTaxBps == null || t.sellTaxBps == null || t.rewardsBps == null) return null;
-  const burn = Number(t.burnBps ?? 0);
-  const dividend = Number(t.dividendBps ?? 0);
-  const rewards = Number(t.rewardsBps);
-  const exact = Number(t.agentBps) + Number(t.platformBps) + burn + dividend + rewards === 10_000;
-  const agent = exact ? Number(t.agentBps) : FALLBACK_V5_BOUNDS.agentShareBps;
+  if (!t || t.source !== 'clanker-v5' || t.buyTaxBps == null || t.sellTaxBps == null || t.rewardsBps == null) return null;
+  const buyTaxBps = Number(t.buyTaxBps);
+  const protocol = t.protocolBps != null && Number.isFinite(Number(t.protocolBps)) ? Number(t.protocolBps) : clankerV5ProtocolBps(buyTaxBps);
+  const slots = 10_000 - protocol;
+  const n = (v: number | null | undefined) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
+  const parts = { agent: n(t.agentBps), creator: n(t.creatorBps), rewards: n(t.rewardsBps), burn: n(t.burnBps ?? 0), dividend: n(t.dividendBps ?? 0), platform: n(t.platformBps) };
+  const sum = Object.values(parts).reduce((a, b) => a + b, 0);
+  const splitKnown = slots > 0 && Number.isFinite(sum) && Math.abs(sum - slots) <= V5_ROW_TOLERANCE_BPS;
+  const pool = (x: number) => (splitKnown ? Math.round((x * 10_000) / slots) : 0);
   return {
-    buyTaxBps: Number(t.buyTaxBps),
+    buyTaxBps,
     sellTaxBps: Number(t.sellTaxBps),
-    agentShareBps: agent,
-    platformShareBps: exact ? Number(t.platformBps) : Math.max(0, 10_000 - agent - burn - dividend - rewards),
-    burnBps: burn,
-    dividendBps: dividend,
+    splitKnown,
+    agentShareBps: pool(parts.agent),
+    creatorFundsBps: pool(parts.creator + parts.rewards),
+    platformShareBps: pool(parts.platform),
+    burnBps: pool(parts.burn),
+    dividendBps: pool(parts.dividend),
     minDividendHolding: t.minDividendHolding ?? '0',
-    rewards: [],
+    rewards: t.v5Extras?.rewards ?? [],
     antiSnipe: !!t.antiSnipe,
     metadataEditable: !!t.metadataEditable,
     metadataLocked: !!t.metadataLocked,
-    metadataJson: null,
+    metadataJson: t.v5Extras?.metadataJson ?? null,
   };
 }
 
@@ -450,9 +473,14 @@ export function coinTradeSplits(v: V5TokenSettings): { buy: TradeSplit; sell: Tr
   return { buy: tradeSplit(v.buyTaxBps / 10_000, shares), sell: tradeSplit(v.sellTaxBps / 10_000, shares) };
 }
 
-/** Whether the coin's creator may still change its image and metadata (Clanker's flag on, the launcher's lock off). */
+/** Whether the coin's creator may still change its image and metadata (editable, not locked). */
 export function metadataStillEditable(v: Pick<V5TokenSettings, 'metadataEditable' | 'metadataLocked'> | null | undefined): boolean {
   return !!v && v.metadataEditable && !v.metadataLocked;
+}
+
+/** Whether the coin was launched with editable metadata (still editable, or locked by its creator since). */
+export function metadataWasEditable(v: Pick<V5TokenSettings, 'metadataEditable' | 'metadataLocked'> | null | undefined): boolean {
+  return !!v && (v.metadataEditable || v.metadataLocked);
 }
 
 /** The v5 hook's `poolFeeSlots(poolId)` (IClankerV5.sol `TaxLaunchHook`): the coin's fee slots as stored. */

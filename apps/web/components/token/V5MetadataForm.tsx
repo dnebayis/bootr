@@ -12,7 +12,7 @@ import { appChain } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
-import { metadataStillEditable, v5SettingsOf } from '@/lib/token-settings';
+import { metadataStillEditable, metadataWasEditable, v5SettingsOf } from '@/lib/token-settings';
 import { useTxRunner } from '@/lib/tx';
 import type { Token } from '@/lib/types';
 import { useV5Metadata, withDescription } from '@/lib/v5-metadata';
@@ -41,7 +41,7 @@ export function V5MetadataForm({ token }: { token: Token }) {
   const [image, setImage] = useState('');
   const [description, setDescription] = useState<string | null>(null);
   const [confirmLock, setConfirmLock] = useState(false);
-  if (!settings?.metadataEditable) return null;
+  if (!metadataWasEditable(settings)) return null;
 
   const editable = metadataStillEditable(settings);
   const isCreator = env.useMock || (!!address && address.toLowerCase() === token.creator.toLowerCase());
@@ -103,7 +103,7 @@ export function V5MetadataForm({ token }: { token: Token }) {
   return (
     <form
       data-testid="v5-metadata-form"
-      data-locked={settings.metadataLocked ? 'true' : 'false'}
+      data-locked={settings!.metadataLocked ? 'true' : 'false'}
       className="flex flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();

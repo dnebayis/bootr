@@ -11,7 +11,7 @@ import type { Address } from 'viem';
 import { clankerV5TokenAbi } from './abi/clankerV5Token';
 import { appChain } from './chains';
 import { env } from './env';
-import { v5SettingsOf } from './token-settings';
+import { metadataWasEditable, v5SettingsOf } from './token-settings';
 import type { Token } from './types';
 
 /** The `description` of Clanker's metadata JSON, or null when the string is not that JSON. */
@@ -44,7 +44,8 @@ export type V5Metadata = { image: string; metadataJson: string | null; descripti
 
 export function useV5Metadata(token: Token | null | undefined): V5Metadata | null {
   const settings = v5SettingsOf(token);
-  const editable = !!settings?.metadataEditable;
+  // Read from the token while it can change, and once locked (the last edit is what it shows for good).
+  const editable = metadataWasEditable(settings);
   const live = editable && !env.useMock;
   const read = useReadContracts({
     allowFailure: true,
