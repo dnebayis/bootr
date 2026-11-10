@@ -159,7 +159,7 @@ function MarketDetailsPanel({ asset }: { asset: string }) {
         <div className="flex justify-between gap-2 sm:flex-col">
           <dt className="text-mute">{a?.symbol ?? asset} price</dt>
           <dd className="font-mono text-ink tabular" data-testid="market-price">
-            {d?.priceUsd != null ? usd(d.priceUsd) : '—'}
+            {d?.priceUsd != null ? `$${d.priceUsd.toLocaleString('en-US', { maximumFractionDigits: d.priceUsd < 10 ? 4 : 2 })}` : '—'}
           </dd>
         </div>
         <div className="flex justify-between gap-2 sm:flex-col">

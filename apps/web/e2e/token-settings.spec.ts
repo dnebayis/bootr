@@ -3,7 +3,7 @@ import { SiweMessage } from 'siwe';
 import { decodeFunctionData } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { clankerLauncherV5Abi } from '../lib/abi/clankerLauncherV5.abi';
-import { connectBrowserWallet, fakeInjectedWallet } from './fake-wallet';
+import { fakeInjectedWallet } from './fake-wallet';
 
 /**
  * Clanker v5 token settings (docs/design/clanker-v5-token-settings.md). The e2e build has no v5 launcher, so the form
@@ -46,8 +46,8 @@ test('token settings: tax bounds, the allocation with locked agent and platform 
   await stubMarket(page, 'ok');
   await openV5Form(page);
   const tax = page.getByTestId('settings-tax');
-  await expect(page.getByLabel('Buy tax')).toHaveValue('1.5');
-  await expect(page.getByLabel('Sell tax')).toHaveValue('1.5');
+  await expect(page.locator('#buy-tax')).toHaveValue('1.5');
+  await expect(page.locator('#sell-tax')).toHaveValue('1.5');
   await expect(tax.getByTestId('allocation-agent')).toContainText('5%');
   await expect(tax.getByTestId('allocation-platform')).toContainText('30%');
   await expect(tax.getByTestId('allocation-creator')).toContainText('65%');
@@ -61,24 +61,24 @@ test('token settings: tax bounds, the allocation with locked agent and platform 
   await expect(tax).toContainText('Only you can change the image and metadata after launch');
 
   // Out of bounds, on either side.
-  await page.getByLabel('Buy tax').fill('6');
+  await page.locator('#buy-tax').fill('6');
   await expect(page.getByTestId('settings-problems')).toContainText('Buy tax must be 1% to 5%');
-  await expect(page.getByLabel('Buy tax')).toHaveAttribute('aria-invalid', 'true');
-  await page.getByLabel('Buy tax').fill('0.5');
+  await expect(page.locator('#buy-tax')).toHaveAttribute('aria-invalid', 'true');
+  await page.locator('#buy-tax').fill('0.5');
   await expect(page.getByTestId('settings-problems')).toContainText('Buy tax must be 1% to 5%');
-  await page.getByLabel('Buy tax').fill('2');
-  await page.getByLabel('Sell tax').fill('3');
+  await page.locator('#buy-tax').fill('2');
+  await page.locator('#sell-tax').fill('3');
   await expect(page.getByTestId('settings-problems')).toHaveCount(0);
   await expect(tax.getByTestId('per-trade')).toContainText('Per buy: 0.5% Clanker · 0.075% agent · 0.45% Bootr · 0.975% creator funds');
   await expect(tax.getByTestId('per-trade')).toContainText('Per sell: 0.5% Clanker · 0.125% agent · 0.75% Bootr · 1.625% creator funds');
   await expect(page.getByTestId('launch-summary')).toContainText('Trading tax2.00% buy · 3.00% sell');
 
   // Burn and dividends come out of the creator's 65%, never more.
-  await page.getByLabel('Holder dividends').fill('30');
-  await page.getByLabel('Burn allocation').fill('40');
+  await page.locator('#dividends-pct').fill('30');
+  await page.locator('#burn-pct').fill('40');
   await expect(tax.getByTestId('tax-allocation-total')).toHaveText('Over by 5%');
   await expect(page.getByTestId('settings-problems')).toContainText('together they can take at most 65%');
-  await page.getByLabel('Burn allocation').fill('15');
+  await page.locator('#burn-pct').fill('15');
   await expect(tax.getByTestId('allocation-creator')).toContainText('20%');
   await expect(page.getByLabel('Minimum holding')).toHaveValue('10000');
   await page.getByLabel('Minimum holding').fill('500');
@@ -95,6 +95,8 @@ test('token settings: the creator’s row plus up to four more, adding up to 100
   const rewards = page.getByTestId('settings-rewards');
   await expect(rewards.getByTestId('reward-row-0')).toContainText('Admin (you)');
   await expect(page.getByLabel('Admin (you)')).toHaveAttribute('placeholder', 'Your wallet');
+  // No wallet yet: the empty creator row is the Connect button's job, not a problem.
+  await expect(page.getByTestId('settings-problems')).toHaveCount(0);
   await expect(rewards.getByTestId('rewards-allocated')).toHaveText('Allocated: 100/100%');
   // A custom address on the creator's own row is allowed.
   await page.locator('#reward-recipient-0').fill(OTHER);
@@ -120,8 +122,8 @@ test('token settings: the creator’s row plus up to four more, adding up to 100
   await expect(rewards.getByTestId('rewards-allocated')).toHaveText('Allocated: 100/100%');
 
   // All of the creator's share to burn and dividends: nothing left for rows.
-  await page.getByLabel('Burn allocation').fill('35');
-  await page.getByLabel('Holder dividends').fill('30');
+  await page.locator('#burn-pct').fill('35');
+  await page.locator('#dividends-pct').fill('30');
   await expect(rewards).toContainText('nothing for reward rows');
 });
 
@@ -138,7 +140,7 @@ test('token settings: the paired asset, Market details from clanker.world, and t
   await expect(details.getByTestId('market-opening-cap')).toContainText('1.87 ETH');
 
   const asked = page.waitForRequest((r) => r.url().includes('/api/quote-market?asset=USDC'));
-  await pool.locator('label', { hasText: 'USDC' }).first().click();
+  await pool.getByTestId('paired-asset').locator('label', { has: page.locator('input[value="USDC"]') }).click();
   await asked;
   await expect(pool).toContainText('Fees arrive in USDC: the agent’s thinking is paid from them; gas still comes from you.');
   await expect(details.getByTestId('market-liquidity')).toContainText('74.9M');
@@ -146,8 +148,8 @@ test('token settings: the paired asset, Market details from clanker.world, and t
   await expect(page.getByTestId('launch-summary')).toContainText('Paired assetUSDC');
   await expect(page.getByLabel('Dev buy').locator('..').locator('..')).toContainText('through USDC (two swaps)');
 
-  await page.getByLabel('Sell tax').fill('2.5');
-  await page.getByLabel('Burn allocation').fill('10');
+  await page.locator('#sell-tax').fill('2.5');
+  await page.locator('#burn-pct').fill('10');
   await page.getByRole('switch', { name: 'Sniper tax' }).click();
   await page.getByTestId('settings-rewards').getByRole('button', { name: '+ Add recipient' }).click();
   await page.locator('#reward-recipient-1').fill(OTHER);
@@ -182,7 +184,7 @@ test('token settings: Market details falls back to Bootr’s own figures, and sa
   await expect(details.getByTestId('market-source')).toHaveText('Bootr’s own figures: clanker.world did not answer');
   await expect(details.getByTestId('market-price')).toHaveText('—');
   await expect(details.getByTestId('market-opening-cap')).toHaveText('1.87 ETH');
-  await page.getByTestId('settings-pool').locator('label', { hasText: 'USDC' }).first().click();
+  await page.getByTestId('paired-asset').locator('label', { has: page.locator('input[value="USDC"]') }).click();
   await expect(details.getByTestId('market-price')).toContainText('$1');
 });
 
@@ -263,8 +265,8 @@ test('a USDC-paired v5 coin: its real split, USDC claims, and trading in USDC (m
 test('the creator edits a v5 coin’s on-chain image and description, then locks them after a confirmation (mock mode)', async ({ page }) => {
   await fakeInjectedWallet(page);
   const href = await sigma(page);
+  // Mock mode treats the visitor as the creator, as the console does.
   await page.goto(`${href}/console?section=look`);
-  await connectBrowserWallet(page);
   const form = page.getByTestId('v5-metadata-form');
   await expect(form).toBeVisible();
   await expect(form).toHaveAttribute('data-locked', 'false');

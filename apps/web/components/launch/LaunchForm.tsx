@@ -161,6 +161,9 @@ function launchThroughCards(clanker: ClankerPath, v5: { startTick: number; bound
   ];
 }
 
+/** Mock mode's creator while no wallet is connected: fills the creator's own reward row. */
+const MOCK_CREATOR = '0x000000000000000000000000000000000000c0de' as Address;
+
 /** Mock mode only: `/launch?clanker=v5` shows the form as a deployment with the v5 launcher configured does. */
 const noopSubscribe = () => () => {};
 const readSearch = () => window.location.search;
@@ -246,8 +249,12 @@ export function LaunchForm() {
   const launchCards = launchThroughCards(path, { startTick: v5StartTick, bounds: v5Bounds });
   // 07 Token settings (Clanker v5): typed as text, checked as `TokenSettingsInput` against the launcher's bounds.
   const [settingsDraft, setSettingsDraft] = useState<TokenSettingsDraft>(DEFAULT_SETTINGS_DRAFT);
-  const settings = settingsFromDraft(settingsDraft, address, v5Bounds);
-  const settingsProblems = isV5 ? tokenSettingsProblems(settings, v5Bounds) : [];
+  // The creator's own row defaults to the connected wallet (mock mode: a stand-in while none is connected).
+  const settings = settingsFromDraft(settingsDraft, address ?? (env.useMock ? MOCK_CREATOR : undefined), v5Bounds);
+  // Before a wallet is connected the creator's row has no address yet; that is the Connect button's job, not a problem.
+  const waitingForWallet = (field: string) =>
+    !address && (field === 'rewards.0.recipient' || field === 'rewards.0.admin') && settingsDraft.rewards[0]?.[field === 'rewards.0.admin' ? 'admin' : 'recipient'] === '';
+  const settingsProblems = isV5 ? tokenSettingsProblems(settings, v5Bounds).filter((p) => !waitingForWallet(p.field)) : [];
   const pairedAsset = pairedAssetBySymbol(settings.pairedAsset);
   // The launcher's own word on the settings, before the wallet is asked: the paired assets it allows for agent coins
   // (`allowedQuote(0, asset)`), `previewSlotWeights(s)`, which reverts exactly as `launch` would, and the dev-buy route
