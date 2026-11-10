@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import type { Address } from 'viem';
+import { zeroAddress, type Address } from 'viem';
 import { otherSharesInBalance } from '@/lib/creator-fees';
 import { feeModelOf, pctLabel, swapFeePct } from '@/lib/fee-split';
 import { dayLabel, units } from '@/lib/format';
@@ -10,6 +10,7 @@ import { CLANKER_FEE_SOURCES, useClankerFees } from '@/lib/use-clanker-fees';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { pairedAssetByAddress, PAIRED_ASSETS } from '@/lib/token-settings';
 import { TokenImage } from '@/components/ui/TokenImage';
 
 const th = 'px-5 py-2 text-left text-caption font-normal text-mute';
@@ -18,7 +19,29 @@ const td = 'px-5 py-2.5';
 /** The fee column: what a trader pays and who adds what, in plain words. */
 function feeCell(t: Token, version: 4 | 5): string {
   const fee = pctLabel(swapFeePct(feeModelOf(t)));
-  return version === 5 ? `${fee} tax, Clanker’s share inside it` : `${fee} fee, plus 20% on top for Clanker`;
+  if (version === 5 && t.v5Settings && t.v5Settings.buyTaxBps !== t.v5Settings.sellTaxBps) {
+    return `${pctLabel(t.v5Settings.buyTaxBps / 10_000)} buy, ${pctLabel(t.v5Settings.sellTaxBps / 10_000)} sell tax, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}`;
+  }
+  if (version === 5) return `${fee} tax, Clanker’s share inside it${t.v5Settings ? `, in ${pairedAssetByAddress(t.pairedToken)?.symbol ?? 'ETH'}` : ''}`;
+  return `${fee} fee, plus 20% on top for Clanker`;
+}
+
+/** One escrow balance (one asset) of a v5 creator, with its own claim: v5 coins paired with USDC pay USDC. */
+function V5AssetBalance({ owner, asset, coins }: { owner: Address; asset: Address; coins: string }) {
+  const fees = useClankerFees({ owner, label: `Claim Clanker v5 fees in ${pairedAssetByAddress(asset)?.symbol ?? 'ETH'}`, version: 5, asset });
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-5 py-3" data-claim-asset={fees.asset}>
+      <div>
+        <div className="text-caption text-mute">Claimable {fees.asset}, all your {coins} paired with it</div>
+        <div className="font-mono text-base text-ink tabular" data-testid={`clanker-v5-creator-${fees.asset.toLowerCase()}`}>
+          {fees.reading ? <Skeleton className="h-5 w-24" /> : fees.amount == null ? '—' : `${units(fees.amount, fees.decimals, 6)} ${fees.asset}`}
+        </div>
+      </div>
+      <Button size="sm" variant="secondary" onClick={() => void fees.claim()} disabled={!fees.amount} loading={fees.pending}>
+        Claim
+      </Button>
+    </div>
+  );
 }
 
 /**
@@ -34,11 +57,17 @@ export function ClankerCreatorFees({ owner, tokens, version = 4 }: { owner: Addr
   const { asset, from } = CLANKER_FEE_SOURCES[version];
   const coins = version === 5 ? 'Clanker v5 coins' : 'Clanker coins';
   const testId = version === 5 ? 'clanker-v5-creator-fees' : 'clanker-creator-fees';
+  // v5 coins paired with another asset than ETH (USDC) are paid from their own escrow balance, with their own claim.
+  const otherAssets = version === 5 ? PAIRED_ASSETS.filter((a) => a.address !== zeroAddress && tokens.some((t) => t.pairedToken?.toLowerCase() === a.address.toLowerCase())) : [];
+  const ethCoins = version === 5 ? tokens.some((t) => !otherAssets.some((a) => a.address.toLowerCase() === t.pairedToken?.toLowerCase())) : true;
 
   return (
     <Panel title={`Creator fees, ${coins}`} bodyClassName="p-0" action={<span className="text-caption text-mute">Paid in {asset} from {from}.</span>}>
       <div data-testid={testId} data-claim-via={version === 5 ? 'fee-escrow' : 'fee-locker'} data-claim-target={fees.target ?? undefined}>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-5 py-3">
+        {otherAssets.map((a) => (
+          <V5AssetBalance key={a.address} owner={owner} asset={a.address} coins={coins} />
+        ))}
+        <div className={`flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-5 py-3 ${ethCoins ? '' : 'hidden'}`}>
           <div>
             <div className="text-caption text-mute">Claimable {asset}, all your {coins}</div>
             <div className="font-mono text-base text-ink tabular" data-testid={version === 5 ? 'clanker-v5-creator-eth' : 'clanker-creator-weth'}>
@@ -77,7 +106,7 @@ export function ClankerCreatorFees({ owner, tokens, version = 4 }: { owner: Addr
         </div>
         <p className="border-t border-hairline px-5 py-2.5 text-caption text-mute">
           {version === 5
-            ? 'Your share of the trading tax of your Clanker v5 coins arrives as ETH in Clanker’s fee escrow on every trade. Claim sends it to your wallet.'
+            ? `Your share of the trading tax of your Clanker v5 coins arrives in Clanker’s fee escrow on every trade, in each coin’s paired asset (${['ETH', ...otherAssets.map((a) => a.symbol)].join(' or ')}). Claim sends it to your wallet.`
             : 'Your share of the trading fees of your Clanker coins arrives as WETH in Clanker’s fee locker. Claim sends it to your wallet.'}
           {alsoHolds ? ` ${alsoHolds}` : null}
         </p>

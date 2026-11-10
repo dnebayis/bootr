@@ -3,6 +3,7 @@
 import { useReadContract, useWriteContract } from 'wagmi';
 import { toast } from 'sonner';
 import type { Address } from 'viem';
+import { pairedAssetByAddress } from '@/lib/token-settings';
 import { clankerFeeLockerAbi } from '@/lib/abi/clankerFeeLocker';
 import { feeEscrowAbi, NATIVE_ETH } from '@/lib/abi/feeEscrow';
 import { builderDataSuffix } from '@/lib/attribution';
@@ -28,10 +29,27 @@ export const CLANKER_FEE_SOURCES = {
  * - v5 (`version` 5): the v5 hook credits Clanker's FeeEscrow on every trade, in native ETH; `owed(owner, 0x0)` is the
  *   balance, `claimFor(owner, 0x0)` pays it (docs/design/clanker-v5-migration.md, section 3).
  *
+ * On v5 the escrow keeps one balance per currency: `asset` picks it (native ETH by default, USDC for coins paired with
+ * USDC: `owed(owner, USDC)` and `claimFor(owner, USDC)` pay USDC).
+ *
  * Mock mode shows a deterministic non-zero amount and the claim is a toast. `enabled` false skips the read (nothing
  * to claim without a coin of that version); `label` names the transaction in the toasts.
  */
-export function useClankerFees({ owner, enabled = true, label = 'Claim Clanker fees', version = 4 }: { owner: Address | undefined; enabled?: boolean; label?: string; version?: 4 | 5 }) {
+export function useClankerFees({
+  owner,
+  enabled = true,
+  label = 'Claim Clanker fees',
+  version = 4,
+  asset = NATIVE_ETH,
+}: {
+  owner: Address | undefined;
+  enabled?: boolean;
+  label?: string;
+  version?: 4 | 5;
+  asset?: Address;
+}) {
+  const v5Asset = pairedAssetByAddress(asset);
+  const currency = version === 5 && v5Asset ? v5Asset.address : NATIVE_ETH;
   const target = version === 5 ? contracts.clankerFeeEscrow : contracts.clankerFeeLocker;
   const live = !env.useMock && !!target;
   const write = useWriteContract();
@@ -48,13 +66,13 @@ export function useClankerFees({ owner, enabled = true, label = 'Claim Clanker f
     address: target ?? undefined,
     abi: feeEscrowAbi,
     functionName: 'owed',
-    args: owner ? [owner, NATIVE_ETH] : undefined,
+    args: owner ? [owner, currency] : undefined,
     chainId: appChain.id,
     query: { enabled: version === 5 && live && enabled && !!owner },
   });
   const read = version === 5 ? v5Read : v4Read;
 
-  const amount: bigint | null = !enabled ? null : env.useMock ? (owner ? mock.clankerFees(owner, version) : null) : live ? (read.data ?? null) : null;
+  const amount: bigint | null = !enabled ? null : env.useMock ? (owner ? mock.clankerFees(owner, version, currency) : null) : live ? (read.data ?? null) : null;
   const reading = live && enabled && !!owner && read.isPending;
 
   /** Sends the claim from the connected wallet; the fees go to `owner`. Refetches the balance on the receipt. */
@@ -66,7 +84,7 @@ export function useClankerFees({ owner, enabled = true, label = 'Claim Clanker f
     if (!target || !owner) return false;
     const r = await run(label, () =>
       version === 5
-        ? write.mutateAsync({ address: target, abi: feeEscrowAbi, functionName: 'claimFor', args: [owner, NATIVE_ETH], chainId: appChain.id, dataSuffix: builderDataSuffix })
+        ? write.mutateAsync({ address: target, abi: feeEscrowAbi, functionName: 'claimFor', args: [owner, currency], chainId: appChain.id, dataSuffix: builderDataSuffix })
         : write.mutateAsync({ address: target, abi: clankerFeeLockerAbi, functionName: 'claim', args: [owner, contracts.weth], chainId: appChain.id, dataSuffix: builderDataSuffix }),
     );
     if (r) void read.refetch();
@@ -81,7 +99,9 @@ export function useClankerFees({ owner, enabled = true, label = 'Claim Clanker f
     live,
     /** The escrow or locker the claim is sent to (null where this deployment has none). */
     target,
-    asset: CLANKER_FEE_SOURCES[version].asset,
+    asset: version === 5 && v5Asset ? v5Asset.symbol : CLANKER_FEE_SOURCES[version].asset,
+    /** The asset's decimals, for showing `amount`: 18 for ETH and WETH, 6 for USDC. */
+    decimals: version === 5 && v5Asset ? v5Asset.decimals : 18,
     error: live && read.isError ? read.error : null,
   };
 }

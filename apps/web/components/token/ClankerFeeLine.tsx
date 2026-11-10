@@ -15,9 +15,11 @@ import { Button } from '@/components/ui/Button';
  */
 export function ClankerFeeLine({ token }: { token: Token }) {
   const version = clankerVersionOf(token.source);
-  const fees = useClankerFees({ owner: token.creator, enabled: version !== null, label: `Claim $${token.symbol} fees`, version: version ?? 4 });
+  // A v5 coin pays its creator in its paired asset (ETH or USDC); the escrow keeps one balance per asset.
+  const fees = useClankerFees({ owner: token.creator, enabled: version !== null, label: `Claim $${token.symbol} fees`, version: version ?? 4, asset: version === 5 ? token.pairedToken : undefined });
   if (version === null) return null;
-  const { asset, from } = CLANKER_FEE_SOURCES[version];
+  const { from } = CLANKER_FEE_SOURCES[version];
+  const asset = fees.asset;
   return (
     <div
       className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-md border border-hairline px-4 py-2.5"
@@ -28,11 +30,11 @@ export function ClankerFeeLine({ token }: { token: Token }) {
       <p className="text-caption text-mute">
         Your claimable fees:{' '}
         <span className="font-mono text-sm text-ink tabular" data-testid="clanker-fee-amount">
-          {fees.reading ? '…' : fees.amount == null ? '—' : `${units(fees.amount, 18, 6)} ${asset}`}
+          {fees.reading ? '…' : fees.amount == null ? '—' : `${units(fees.amount, fees.decimals, 6)} ${asset}`}
         </span>
         <span className="hidden sm:inline">
           {' '}
-          · all your Clanker {version === 5 ? 'v5 ' : ''}coins, from {from}.{' '}
+          · all your Clanker {version === 5 ? `v5 coins paid in ${asset}` : 'coins'}, from {from}.{' '}
           <Link href="/profile" className="text-link hover:underline">
             Profile
           </Link>
