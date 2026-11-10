@@ -10,6 +10,7 @@ import {BootrClankerLauncher} from "../../src/BootrClankerLauncher.sol";
 import {BootrLaunchGate} from "../../src/BootrLaunchGate.sol";
 import {BootrLauncher} from "../../src/BootrLauncher.sol";
 import {BuybackBurner} from "../../src/BuybackBurner.sol";
+import {ClankerMetadataJson} from "./ClankerMetadataJson.sol";
 import {
     IClanker,
     IClankerFeeLocker,
@@ -561,6 +562,28 @@ contract ClankerForkTest is Test {
         IClankerFeeLocker(FEE_LOCKER).claim(DEAD, token);
         assertEq(IERC20(token).balanceOf(DEAD) - deadBefore, fDeadCoin);
         assertEq(_available(DEAD, token), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // The metadata JSON Clanker's page reads
+    // ------------------------------------------------------------------
+
+    /// @dev The web writes the JSON itself into `metadata` (lib/contract-metadata.ts): Clanker v4 takes it as is,
+    ///      at the longest size the web produces, and the token returns it byte for byte from `metadata()`.
+    function test_launchCarriesClankerMetadataJson() public {
+        string[2] memory docs = [ClankerMetadataJson.typical(), ClankerMetadataJson.longest()];
+        for (uint256 i; i < docs.length; ++i) {
+            BootrClankerLauncher.LaunchParams memory p = _params(false, 0, bytes32(uint256(70 + i)));
+            p.metadata = docs[i];
+            vm.prank(creator);
+            (address token,,,) = clankerLauncher.launch(p);
+            assertEq(IClankerToken(token).metadata(), docs[i], "metadata, byte for byte");
+            assertEq(IClankerToken(token).imageUrl(), p.image);
+            // valid JSON in Clanker's shape (a parse error would revert here)
+            assertEq(vm.parseJsonString(docs[i], ".socialMediaUrls[0].platform"), "x");
+            assertEq(vm.parseJsonStringArray(docs[i], ".auditUrls").length, 0);
+        }
+        assertGt(bytes(docs[1]).length, 1_000, "the long case is long");
     }
 
     // ------------------------------------------------------------------

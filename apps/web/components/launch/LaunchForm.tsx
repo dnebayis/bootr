@@ -386,7 +386,7 @@ export function LaunchForm() {
       image: pinned.url,
       // Hosted ERC-7572 contract URI (app/tokens/[id]/route.ts, from the draft saved above); BootrLauncher sets it
       // as the B20 token's `contractURI`. Clanker's page reads JSON from this field instead, with the URI inside.
-      metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(coin, contractUriUrl(draftId)) : contractUriUrl(draftId),
+      metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(coin, contractUriUrl(draftId), identity) : contractUriUrl(draftId),
       context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
       salt: keccak256(toHex(draftId)),
       buybackBurn: buyback,

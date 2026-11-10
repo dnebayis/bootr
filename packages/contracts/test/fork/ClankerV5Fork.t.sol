@@ -8,6 +8,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {AgentGuardian} from "../../src/AgentGuardian.sol";
 import {BootrClankerLauncherV5} from "../../src/BootrClankerLauncherV5.sol";
 import {BootrLaunchGate} from "../../src/BootrLaunchGate.sol";
+import {ClankerMetadataJson} from "./ClankerMetadataJson.sol";
 import {
     ClankerV5, IClankerV5Factory, IClankerV5FeeEscrow, IClankerV5Hook, IClankerV5Token
 } from "../../src/interfaces/IClankerV5.sol";
@@ -674,6 +675,29 @@ contract ClankerV5ForkTest is Test {
         (rate, restricted) = hook.effectiveFeeRates(poolId, true);
         assertFalse(restricted);
         assertEq(rate.surchargeRate, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // The metadata JSON Clanker's page reads
+    // ------------------------------------------------------------------
+
+    /// @dev The web writes the JSON itself into `metadata` (lib/contract-metadata.ts): Clanker's factory takes it
+    ///      as is, at the longest size the web produces, and the token returns it byte for byte under the
+    ///      `metadata` key clanker.world reads (and, today, as `contractURI()`).
+    function test_launchCarriesClankerMetadataJson() public {
+        string[2] memory docs = [ClankerMetadataJson.typical(), ClankerMetadataJson.longest()];
+        for (uint256 i; i < docs.length; ++i) {
+            BootrClankerLauncherV5.LaunchParams memory p = _params(false, 0);
+            p.metadata = docs[i];
+            p.salt = _mineSalt(creator, p, bytes32(uint256(70 + i)));
+            vm.prank(creator);
+            (address token,,,) = launcher.launch(p);
+            assertEq(IClankerV5Token(token).extraMetadata("metadata"), docs[i], "metadata key, byte for byte");
+            assertEq(IClankerV5Token(token).contractURI(), docs[i], "contract URI");
+            assertEq(IClankerV5Token(token).extraMetadata("image"), p.image);
+            assertEq(uint160(token) & 0xffff, 0xcccc, "the salt was mined over the JSON");
+        }
+        assertGt(bytes(docs[1]).length, 1_000, "the long case is long");
     }
 
     // ------------------------------------------------------------------

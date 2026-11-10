@@ -349,7 +349,7 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | \`xHandle\` | none | The handle of the X account the agent will use, with or without \`@\`. A handle that is not valid is ignored. This does not connect the account |
 | \`links\` | none | \`{ website, x, telegram, discord }\`, each optional. \`website\` any https URL, \`x\` an x.com link or a handle (the project's account), \`telegram\` on \`https://t.me/\`, \`discord\` on \`https://discord.gg/\` or \`https://discord.com/invite/\` |
 
-On the Clanker paths, \`xHandle\` and \`links\` are also written into the token's on-chain metadata, which Clanker's page reads. That copy can never change after launch.
+On the Clanker paths, the coin's description (the first line of \`identity\`), \`xHandle\` and \`links\` are also written into the token's on-chain metadata as the JSON itself (\`description\`, \`socialMediaUrls\`, \`auditUrls\`), which Clanker's page reads. That copy can never change after launch.
 
 ### Worker templates
 
