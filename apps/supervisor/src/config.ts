@@ -71,6 +71,14 @@ export const configSchema = z
      */
     BOOTR_CLANKER_LAUNCHER_ADDRESS: optionalAddress,
     /**
+     * `BootrClankerLauncherV5` (docs/design/clanker-v5-migration.md): the third launcher the poller follows, from the
+     * same cursor. Its `AgentLaunched` events register agents with `sv_agents.source = 'clanker-v5'`, whose fees are
+     * native ETH in Clanker v5's `FeeEscrow` (`owed(kernel, 0x0)`, claimed with one `claimFor(kernel, 0x0)`), and
+     * whose session keys get the v5 rule layout (version 5, one claim rule). Unset = v5 off: nothing changes for the
+     * Bootr and Clanker v4 launchers or their agents.
+     */
+    BOOTR_CLANKER_V5_LAUNCHER_ADDRESS: optionalAddress,
+    /**
      * Clanker v4 lockers on Base mainnet (verified 2026-11-04, docs/design/clanker-launch.md section 1).
      * `ClankerLpLockerFeeConversion`: holds the LP positions; `collectRewards(token)` (permissionless) moves the
      * accrued fees into the fee locker. The address the Clanker README lists (`0x63D2DfEA…`) is NOT enabled.
@@ -283,7 +291,14 @@ export const configSchema = z
   .refine((c) => c.SPENDER_TARGET_USDC >= c.SPENDER_MIN_USDC, { message: 'SPENDER_TARGET_USDC must be >= SPENDER_MIN_USDC' })
   .refine((c) => !c.ENABLE_MODE_SELF_BUNDLE || !!c.ADMIN_PRIVATE_KEY, { message: 'ENABLE_MODE_SELF_BUNDLE=true requires ADMIN_PRIVATE_KEY (the admin signer sends handleOps)' })
   .refine((c) => BigInt(c.GAS_TARGET_WEI) >= BigInt(c.GAS_MIN_WEI), { message: 'GAS_TARGET_WEI must be >= GAS_MIN_WEI' })
-  .refine((c) => !c.BOOTR_CLANKER_LAUNCHER_ADDRESS || c.BOOTR_CLANKER_LAUNCHER_ADDRESS.toLowerCase() !== c.BOOTR_LAUNCHER_ADDRESS.toLowerCase(), { message: 'BOOTR_CLANKER_LAUNCHER_ADDRESS must differ from BOOTR_LAUNCHER_ADDRESS (the launch source is decided by the emitting launcher)' });
+  .refine((c) => !c.BOOTR_CLANKER_LAUNCHER_ADDRESS || c.BOOTR_CLANKER_LAUNCHER_ADDRESS.toLowerCase() !== c.BOOTR_LAUNCHER_ADDRESS.toLowerCase(), { message: 'BOOTR_CLANKER_LAUNCHER_ADDRESS must differ from BOOTR_LAUNCHER_ADDRESS (the launch source is decided by the emitting launcher)' })
+  .refine(
+    (c) => {
+      const v5 = c.BOOTR_CLANKER_V5_LAUNCHER_ADDRESS?.toLowerCase();
+      return !v5 || (v5 !== c.BOOTR_LAUNCHER_ADDRESS.toLowerCase() && v5 !== c.BOOTR_CLANKER_LAUNCHER_ADDRESS?.toLowerCase());
+    },
+    { message: 'BOOTR_CLANKER_V5_LAUNCHER_ADDRESS must differ from BOOTR_LAUNCHER_ADDRESS and BOOTR_CLANKER_LAUNCHER_ADDRESS (the launch source is decided by the emitting launcher)' },
+  );
 
 export type Config = z.infer<typeof configSchema>;
 

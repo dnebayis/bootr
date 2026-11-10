@@ -61,6 +61,24 @@ export const clankerFeeLockerAbi = parseAbi([
 ]);
 
 /**
+ * Clanker v5 `FeeEscrow` (`0x5dd237d1…FA61` on Base, docs/design/clanker-v5-migration.md section 1): one balance per
+ * recipient and currency across every v5 pool. `owed(recipient, currency)` is that balance; `claimFor(recipient,
+ * currency)` is callable by anyone and always pays `recipient` (native ETH when `currency == 0x0`), reverting
+ * `NothingToClaim` on zero.
+ */
+export const clankerV5FeeEscrowAbi = parseAbi([
+  'function owed(address recipient, address currency) view returns (uint256)',
+  'function claimFor(address recipient, address currency)',
+  'event Claimed(address indexed recipient, address indexed currency, address indexed destination, uint256 amount)',
+]);
+
+/**
+ * `BootrClankerLauncherV5.ClankerV5Launched` (packages/contracts/src/BootrClankerLauncherV5.sol), emitted next to
+ * `AgentLaunched`: the v5 pool, hook, escrow, quote and tax of the coin.
+ */
+export const clankerV5LaunchedEvent = parseAbi(['event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 taxBps, bool antiSnipe)'])[0];
+
+/**
  * Clanker v4 `ClankerLpLockerFeeConversion` (`0xffA37784…` on Base). `collectRewards(token)` (permissionless)
  * collects the LP positions' fees, converts each recipient's share per its fee preference and deposits it into the
  * fee locker; `tokenRewards(token)` lists the positions and recipients (the view part is vendored from the Clanker
@@ -122,5 +140,7 @@ export const LOCKER_CLAIM_QUOTE_SELECTOR = toFunctionSelector('claimQuote(addres
 export const CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR = toFunctionSelector('collectRewards(address)');
 /** ClankerFeeLocker.claim(address feeOwner, address token): pays `feeOwner`'s balance of `token` to `feeOwner`, whoever calls. */
 export const CLANKER_FEE_LOCKER_CLAIM_SELECTOR = toFunctionSelector('claim(address,address)');
+/** Clanker v5 FeeEscrow.claimFor(address recipient, address currency) = `0xb4ba9e11`: pays `recipient`'s whole balance to `recipient`, whoever calls. */
+export const CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR = toFunctionSelector('claimFor(address,address)');
 /** BootrSwapHelper.MAX_SLIPPAGE_BPS: the contract refuses a higher requested slippage. */
 export const SWAP_MAX_SLIPPAGE_BPS = 300;

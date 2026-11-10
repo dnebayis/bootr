@@ -11,7 +11,7 @@ export const agentStatuses = ['onboarding', 'active', 'paused', 'revoked'] as co
 export type AgentStatus = (typeof agentStatuses)[number];
 
 /** Launch source (chain.ts `LaunchSource`): which launcher emitted the agent's `AgentLaunched`, hence where its fees live. */
-export const agentSources = ['bootr', 'clanker'] as const;
+export const agentSources = ['bootr', 'clanker', 'clanker-v5'] as const;
 export type AgentSource = (typeof agentSources)[number];
 
 /** One row per launched agent: identity, config and the installed session key. */
@@ -21,8 +21,10 @@ export const agents = pgTable('sv_agents', {
   kernel: text('kernel').notNull().unique(),
   creator: text('creator').notNull(),
   /**
-   * `bootr` (RWAGMI v3 locker, `settleAndClaim`) or `clanker` (Clanker v4 lockers, `collectRewards` + `claim`);
-   * decided by the launcher that emitted the event (docs/design/clanker-launch.md). Rows older than the column are Bootr.
+   * `bootr` (RWAGMI v3 locker, `settleAndClaim`), `clanker` (Clanker v4 lockers, `collectRewards` + `claim`) or
+   * `clanker-v5` (Clanker v5 `FeeEscrow`, `claimFor`); decided by the launcher that emitted the event
+   * (docs/design/clanker-launch.md, docs/design/clanker-v5-migration.md). Rows older than the column are Bootr. A plain
+   * text column (no database enum or check), so the new value needs no migration.
    */
   source: text('source', { enum: agentSources }).notNull().default('bootr'),
   /** agent-core `AgentConfig` (possibly incomplete until the X account is connected). */

@@ -1,16 +1,22 @@
 /**
- * The treasury path of an agent by launch source (docs/design/clanker-launch.md section 3): `sv_agents.source`
- * says which launcher emitted the agent's `AgentLaunched`, the config's `clanker` block (decoded from
- * `ClankerLaunched` in the launch receipt) names the lockers its fees sit in. Shared by onboarding.ts (session-key
+ * The treasury path of an agent by launch source (docs/design/clanker-launch.md section 3,
+ * docs/design/clanker-v5-migration.md section 3): `sv_agents.source` says which launcher emitted the agent's
+ * `AgentLaunched`, the config's `clanker` block (decoded from `ClankerLaunched` in the launch receipt) names the
+ * Clanker v4 lockers its fees sit in, and the `clankerV5` block (from `ClankerV5Launched`) the v5 escrow. Shared by onboarding.ts (session-key
  * rules) and treasury.ts (reads and claim calls); kept apart from both so neither imports the other.
  */
 import { getAddress, isAddress, isHex, size, type Address, type Hex } from 'viem';
 import type { LaunchSource } from './chain.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 
-/** `bootr` for rows written before the column existed and for anything that is not `clanker`. */
+/** A stored source string as a `LaunchSource`: `bootr` for rows written before the column existed and for anything unknown. */
+export function launchSourceFrom(source: unknown): LaunchSource {
+  return source === 'clanker' || source === 'clanker-v5' ? source : 'bootr';
+}
+
+/** `bootr` for rows written before the column existed and for anything that is not `clanker` or `clanker-v5`. */
 export function agentSource(agent: Pick<AgentRow, 'source'>): LaunchSource {
-  return agent.source === 'clanker' ? 'clanker' : 'bootr';
+  return launchSourceFrom(agent.source);
 }
 
 /** What `BootrClankerLauncher.ClankerLaunched` says about a coin, stored in `sv_agents.config.clanker`. */
@@ -56,4 +62,52 @@ export function clankerDetailsOf(config: Record<string, unknown>): ClankerLaunch
 export function clankerLockersFor(ctx: Pick<SupervisorContext, 'chain'>, agent: Pick<AgentRow, 'config'>): { lpLocker: Address; feeLocker: Address; details: ClankerLaunchDetails | null } {
   const details = clankerDetailsOf(agent.config);
   return { lpLocker: details?.locker ?? ctx.chain.clanker.lpLocker, feeLocker: details?.feeLocker ?? ctx.chain.clanker.feeLocker, details };
+}
+
+/**
+ * What `BootrClankerLauncherV5.ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps,
+ * antiSnipe)` says about a v5 coin, stored in `sv_agents.config.clankerV5` (docs/design/clanker-v5-migration.md).
+ */
+export interface ClankerV5LaunchDetails {
+  /** Uniswap v4 pool id of the coin / quote pool (fee 0, the v5 hook). */
+  poolId: Hex;
+  /** `TaxLaunchHook`: takes the tax on every swap and credits the escrow. */
+  hook: Address;
+  /** `FeeEscrow`: the kernel's `owed(kernel, quote)` balance and the `claimFor(kernel, quote)` target. */
+  feeEscrow: Address;
+  /** The pool's quote: `0x0` = native ETH (the recommended, and today the only built, quote). */
+  quoteToken: Address;
+  tickSpacing: number;
+  /** The tax in hundredths of a bip (15_000 = 1.5%), buy and sell alike. */
+  taxBps: number;
+  antiSnipe: boolean;
+}
+
+/** The stored `config.clankerV5` block, or null when absent or malformed (the receipt could not be read at registration). */
+export function clankerV5DetailsOf(config: Record<string, unknown>): ClankerV5LaunchDetails | null {
+  const raw = config.clankerV5;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const c = raw as Record<string, unknown>;
+  if (!isPoolId(c.poolId) || !isAddr(c.hook) || !isAddr(c.feeEscrow) || !isAddr(c.quoteToken)) return null;
+  return {
+    poolId: c.poolId,
+    hook: getAddress(c.hook),
+    feeEscrow: getAddress(c.feeEscrow),
+    quoteToken: getAddress(c.quoteToken),
+    tickSpacing: typeof c.tickSpacing === 'number' ? c.tickSpacing : 0,
+    taxBps: typeof c.taxBps === 'number' ? c.taxBps : 0,
+    antiSnipe: c.antiSnipe === true,
+  };
+}
+
+/**
+ * The v5 `FeeEscrow` an agent's fees sit in: the one `ClankerV5Launched` named (the launch is the truth), else the
+ * address book's (`addresses.clankerV5.feeEscrow`) while the receipt is unread. Throws when neither is known (a chain
+ * without Clanker v5): a v5 agent must never get a claim rule or a claim call to a guessed address.
+ */
+export function clankerV5EscrowFor(ctx: Pick<SupervisorContext, 'chain'>, agent: Pick<AgentRow, 'config'>): { feeEscrow: Address; details: ClankerV5LaunchDetails | null } {
+  const details = clankerV5DetailsOf(agent.config);
+  const feeEscrow = details?.feeEscrow ?? ctx.chain.clankerV5.feeEscrow;
+  if (!feeEscrow) throw new Error(`clankerV5.feeEscrow address is not configured for chain ${ctx.chain.chainId}`);
+  return { feeEscrow, details };
 }

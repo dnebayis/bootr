@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { rulesVersionFor } from '../src/session-rules.js';
 import { concatHex, decodeAbiParameters, encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, keccak256, pad, parseAbiParameters, slice, toHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PolicyFlags } from '@zerodev/permissions';
@@ -234,8 +235,12 @@ describe('claim rules by launch source (docs/design/clanker-launch.md section 3)
     delete (v3 as { source?: unknown }).source; // a policy stored before `source` existed
     const v4 = params({ rulesVersion: 4, source: 'bootr' });
     const v4Unset = params({ rulesVersion: 4 });
-    expect(CALL_POLICY_RULES_VERSION).toBe(4);
+    // the newest layout is 5 (Clanker v5 only, docs/design/clanker-v5-migration.md); a Bootr key is still built at 4,
+    // and even a Bootr policy marked 5 encodes the same rules
+    expect(CALL_POLICY_RULES_VERSION).toBe(5);
+    expect(rulesVersionFor('bootr')).toBe(4);
     expect(SOURCE_RULES_VERSION).toBe(4);
+    expect(buildValidatorData(params({ rulesVersion: 5, source: 'bootr' }))).toBe(buildValidatorData(v3));
     expect(policySource(v3)).toBe('bootr');
     expect(policySource(v4Unset)).toBe('bootr');
     expect(callPolicyRules(v4)).toEqual(callPolicyRules(v3));
