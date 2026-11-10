@@ -9,6 +9,9 @@ import { env } from '@/lib/env';
 import { BOOTR_FEE, feeModelOf, launcherName, launcherPct, ofVolume, pctLabel, slotsShare, splitFromSlots, swapFeePct, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
 import type { RecipientKind, Token } from '@/lib/types';
 import { Panel } from '@/components/ui/Panel';
+import { coinTradeSplits, pairedAssetByAddress } from '@/lib/token-settings';
+import { shortAddr } from '@/lib/format';
+import { V5SplitBar } from './V5SplitBar';
 
 const ORDER: RecipientKind[] = ['agent', 'creator', 'burn', 'platform'];
 const LABEL: Record<RecipientKind, string> = { agent: 'Agent', creator: 'Creator', burn: 'Burn', platform: 'Platform' };
@@ -75,7 +78,66 @@ export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeMo
   );
 }
 
+/**
+ * A Clanker v5 coin launched with creator-set settings: its own buy and sell tax, the split of each, the reward rows,
+ * holder dividends, the paired asset and the two switches, all as the indexer reports them (`Token.v5Settings`).
+ */
+function V5SettingsSplit({ token, settings }: { token: Token; settings: NonNullable<Token['v5Settings']> }) {
+  const { buy, sell } = coinTradeSplits(settings);
+  const asset = pairedAssetByAddress(token.pairedToken)?.symbol ?? 'the paired asset';
+  const rows = settings.rewards;
+  const holding = BigInt(settings.minDividendHolding || '0') / 10n ** 18n;
+  return (
+    <Panel title="Locked fee split" action={<span className="font-mono text-micro text-mute">FROM INDEXER</span>}>
+      <V5SplitBar buy={buy} sell={sell} asset={asset} />
+      <dl className="mt-4 grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-caption" data-testid="v5-settings">
+        {[
+          ['Paired asset', asset],
+          ['Buy tax · sell tax', `${pctLabel(buy.tax)} · ${pctLabel(sell.tax)}`],
+          ['Agent · platform', `${settings.agentShareBps / 100}% · ${settings.platformShareBps / 100}% of the tax pool, locked`],
+          ...(settings.dividendBps > 0 ? [['Holder dividends', `${settings.dividendBps / 100}% of the tax pool, to wallets holding ${holding.toLocaleString('en-US')}+ coins`]] : []),
+          ...(settings.burnBps > 0 ? [['Burn', `${settings.burnBps / 100}% of the tax pool`]] : []),
+          ['Sniper tax', settings.antiSnipe ? 'On at launch' : 'Off'],
+          ['Image and metadata', !settings.metadataEditable ? 'Fixed at launch' : settings.metadataLocked ? 'Locked by the creator' : 'Editable by the creator'],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">
+            <dt className="text-mute">{k}</dt>
+            <dd className="text-right font-mono text-ink">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {rows.length > 0 ? (
+        <div className="mt-3" data-testid="v5-reward-rows">
+          <span className="text-caption font-medium text-ink">Creator funds</span>
+          <ul className="mt-1 flex flex-col gap-0.5 text-caption">
+            {rows.map((r, i) => (
+              <li key={`${r.recipient}-${i}`} className="flex justify-between gap-3">
+                <span className="font-mono text-body" title={`Recipient ${r.recipient}, admin ${r.admin}`}>
+                  {shortAddr(r.recipient)}
+                  {r.recipient.toLowerCase() === token.creator.toLowerCase() ? <span className="text-mute"> (creator)</span> : null}
+                </span>
+                <span className="font-mono text-ink tabular">
+                  {pctLabel((buy.creatorFunds * r.bps) / 10_000)} of volume
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="mt-3 text-caption text-mute">
+        Set at launch and locked in the coin&rsquo;s Clanker pool: nobody, including Bootr, can change a tax or a share. Each creator-funds row&rsquo;s admin can change
+        that row&rsquo;s recipient on Clanker; the agent&rsquo;s and the platform&rsquo;s rows cannot change.
+      </p>
+    </Panel>
+  );
+}
+
 export function FeeSplit({ token }: { token: Token }) {
+  if (token.source === 'clanker-v5' && token.v5Settings) return <V5SettingsSplit token={token} settings={token.v5Settings} />;
+  return <PresetFeeSplit token={token} />;
+}
+
+function PresetFeeSplit({ token }: { token: Token }) {
   const fee = feeModelOf(token);
   const bootr = fee.source === 'bootr';
   const v5 = fee.source === 'clanker-v5';
