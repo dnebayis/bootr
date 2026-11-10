@@ -346,47 +346,40 @@ function clankerizeV5(token: Token, taxBps = CLANKER_V5_DEFAULT_TAX_BPS) {
 
 /**
  * Turns a mock token into a v5 coin launched with creator-set settings, stored the way the indexer reports it
- * (`Token.v5Settings`, `pairedToken` the quote, `lpFeeBps` the buy tax) with the slot fields scaled to the buy tax less
- * Clanker's share like `clankerizeV5` (creator funds and dividends together in `creatorBps`).
+ * (apps/indexer README, "Clanker v5 token settings"): `pairedToken` the quote, `lpFeeBps` the buy tax, and every share
+ * in bps of the buy tax with Clanker's share inside it, `agent + creator + rewards + burn + dividend + platform =
+ * 10000 − protocolBps`, the creator's own row in `creatorBps`, the extra rows in `rewardsBps`, the rounding gap to the
+ * last creator row.
  */
 function applyV5Settings(token: Token, s: ContractTokenSettings, b: V5Bounds = FALLBACK_V5_BOUNDS) {
   token.source = 'clanker-v5';
   token.lpFeeBps = s.buyTaxBps;
   token.pairedToken = s.quoteToken;
   token.burner = s.burnBps > 0 ? DEAD : null;
-  const pool = 10_000 - clankerV5ProtocolBps(s.buyTaxBps);
+  const protocolBps = clankerV5ProtocolBps(s.buyTaxBps);
+  const pool = 10_000 - protocolBps;
   const scale = (bps: number) => Math.floor((bps * pool) / 10_000);
+  token.protocolBps = protocolBps;
   token.agentBps = scale(b.agentShareBps);
   token.platformBps = scale(b.platformShareBps);
   token.burnBps = scale(s.burnBps);
-  token.creatorBps = pool - token.agentBps - token.platformBps - token.burnBps;
-  // The indexer's token-row fields (lib/types.ts), as it reports them for a settings coin.
+  token.dividendBps = scale(s.dividendBps);
+  const funds = pool - token.agentBps - token.platformBps - token.burnBps - token.dividendBps;
+  const own = s.rewards[0]?.bps ?? 0;
+  token.creatorBps = s.rewards.length > 1 ? Math.floor((funds * own) / 10_000) : funds;
+  token.rewardsBps = funds - token.creatorBps;
+  // The other token-row fields (lib/types.ts), as the indexer reports them for a settings coin.
   const asset = pairedAssetByAddress(s.quoteToken);
   token.pairedSymbol = asset?.symbol ?? null;
   token.pairedDecimals = asset?.decimals ?? null;
   token.buyTaxBps = s.buyTaxBps;
   token.sellTaxBps = s.sellTaxBps;
-  token.rewardsBps = 10_000 - b.agentShareBps - b.platformShareBps - s.burnBps - s.dividendBps;
-  token.dividendBps = s.dividendBps;
   token.minDividendHolding = s.minDividendHolding.toString();
   token.antiSnipe = s.antiSnipe;
   token.metadataEditable = s.metadataEditable;
   token.metadataLocked = false;
-  // Mock mode also keeps what the row does not carry: the reward rows and the metadata JSON.
-  token.v5Settings = {
-    buyTaxBps: s.buyTaxBps,
-    sellTaxBps: s.sellTaxBps,
-    agentShareBps: b.agentShareBps,
-    platformShareBps: b.platformShareBps,
-    burnBps: s.burnBps,
-    dividendBps: s.dividendBps,
-    minDividendHolding: s.minDividendHolding.toString(),
-    rewards: s.rewards.map((r) => ({ ...r })),
-    antiSnipe: s.antiSnipe,
-    metadataEditable: s.metadataEditable,
-    metadataLocked: false,
-    metadataJson: null,
-  };
+  // Mock mode also keeps what the row does not carry (live, the coin page reads them from the chain).
+  token.v5Extras = { rewards: s.rewards.map((r) => ({ ...r })), metadataJson: null };
 }
 
 function makeTrades(t: Token, rand: () => number, now: number): Trade[] {
@@ -442,7 +435,7 @@ function init(): Store {
         metadataEditable: true,
         contractURI: token.metadata,
       });
-      token.v5Settings!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
+      token.v5Extras!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
     }
     if (i === FRESH_INDEX) {
       freshen(token, agent);
@@ -645,15 +638,16 @@ export const mock = {
    */
   updateV5Metadata(tokenId: string, edit: { image?: string; metadataJson?: string; lock?: boolean }): boolean {
     const t = mockStore().tokens.find((x) => x.id.toLowerCase() === tokenId.toLowerCase());
-    if (!t?.v5Settings || !t.v5Settings.metadataEditable || t.v5Settings.metadataLocked) return false;
+    if (!t || t.source !== 'clanker-v5' || !t.metadataEditable || t.metadataLocked) return false;
     if (edit.image !== undefined) {
       t.image = edit.image;
       delete t.imageOnChain;
     }
-    if (edit.metadataJson !== undefined) t.v5Settings.metadataJson = edit.metadataJson;
+    if (edit.metadataJson !== undefined) t.v5Extras = { ...t.v5Extras, metadataJson: edit.metadataJson };
+    // Like the indexer: locked, and no longer editable.
     if (edit.lock) {
-      t.v5Settings.metadataLocked = true;
       t.metadataLocked = true;
+      t.metadataEditable = false;
     }
     t.metadataUpdatedAt = Math.floor(Date.now() / 1000);
     return true;

@@ -103,16 +103,22 @@ function V5SettingsSplit({ token, settings }: { token: Token; settings: V5TokenS
   const holding = BigInt(settings.minDividendHolding || '0') / 10n ** 18n;
   return (
     <Panel title="Locked fee split" action={<span className="font-mono text-micro text-mute">FROM INDEXER</span>}>
-      <V5SplitBar buy={buy} sell={sell} asset={asset} />
+      {settings.splitKnown ? (
+        <V5SplitBar buy={buy} sell={sell} asset={asset} />
+      ) : (
+        <p className="text-caption text-mute" data-testid="v5-split-unknown">
+          The split of this coin&rsquo;s tax is not known yet: the indexer&rsquo;s figures do not add up. Its {pctLabel(buy.tax)} buy and {pctLabel(sell.tax)} sell tax are below.
+        </p>
+      )}
       <dl className="mt-4 grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-caption" data-testid="v5-settings">
         {[
           ['Paired asset', asset],
           ['Buy tax · sell tax', `${pctLabel(buy.tax)} · ${pctLabel(sell.tax)}`],
-          ['Agent · platform', `${settings.agentShareBps / 100}% · ${settings.platformShareBps / 100}% of the tax pool, locked`],
+          ...(settings.splitKnown ? [['Agent · platform', `${settings.agentShareBps / 100}% · ${settings.platformShareBps / 100}% of the tax pool, locked`]] : []),
           ...(settings.dividendBps > 0 ? [['Holder dividends', `${settings.dividendBps / 100}% of the tax pool, to wallets holding ${holding.toLocaleString('en-US')}+ coins`]] : []),
           ...(settings.burnBps > 0 ? [['Burn', `${settings.burnBps / 100}% of the tax pool`]] : []),
           ['Sniper tax', settings.antiSnipe ? 'On at launch' : 'Off'],
-          ['Image and metadata', !settings.metadataEditable ? 'Fixed at launch' : settings.metadataLocked ? 'Locked by the creator' : 'Editable by the creator'],
+          ['Image and metadata', settings.metadataLocked ? 'Locked by the creator' : settings.metadataEditable ? 'Editable by the creator' : 'Fixed at launch'],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">
             <dt className="text-mute">{k}</dt>

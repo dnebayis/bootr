@@ -18,8 +18,10 @@ import {
   tradeSplit,
   poolSharesOf,
   rowsFromSlots,
+  V5_ROW_TOLERANCE_BPS,
   v5SettingsOf,
 } from './token-settings';
+import { mockStore } from './mock';
 
 const CREATOR = '0x1111111111111111111111111111111111111111' as Address;
 const OTHER = '0x2222222222222222222222222222222222222222' as Address;
@@ -152,17 +154,41 @@ describe('toContractSettings', () => {
 });
 
 describe('the indexer’s token row (v5SettingsOf)', () => {
-  const row = { source: 'clanker-v5' as const, agentBps: 500, platformBps: 3000, burnBps: 1000, buyTaxBps: 20_000, sellTaxBps: 30_000, rewardsBps: 5000, dividendBps: 500, minDividendHolding: '10000000000000000000000', antiSnipe: true, metadataEditable: true, metadataLocked: false };
+  // Rows in the indexer's shape (apps/indexer README, "Clanker v5 token settings"): every share in bps of the buy tax
+  // with Clanker's inside it, agent + creator + rewards + burn + dividend + platform = 10000 - protocolBps.
+  const base = { source: 'clanker-v5' as const, minDividendHolding: null, antiSnipe: true, metadataEditable: true, metadataLocked: false };
+  /** The defaults: 1.5% each side, no burn or dividends, one row. Clanker keeps 3333 bps of the tax. */
+  const defaults = { ...base, buyTaxBps: 15_000, sellTaxBps: 15_000, protocolBps: 3333, agentBps: 333, creatorBps: 4334, rewardsBps: 0, burnBps: 0, dividendBps: 0, platformBps: 2000 };
+  /** The mock $SIGMA: 2% / 3%, 10% burn, 5% dividends, the creator's row 80% and one extra row 20%. Clanker keeps 2500. */
+  const sigma = { ...base, buyTaxBps: 20_000, sellTaxBps: 30_000, protocolBps: 2500, agentBps: 375, creatorBps: 3000, rewardsBps: 750, burnBps: 750, dividendBps: 375, platformBps: 2250, minDividendHolding: '10000000000000000000000' };
 
-  it('reads the flat fields into the settings, the shares as given when they add up', () => {
-    expect(v5SettingsOf(row)).toMatchObject({ buyTaxBps: 20_000, sellTaxBps: 30_000, agentShareBps: 500, platformShareBps: 3000, burnBps: 1000, dividendBps: 500, rewards: [], metadataEditable: true, metadataLocked: false });
-    // Slot-scaled agent and platform fields: the floors stand in, the platform gets the rest.
-    expect(v5SettingsOf({ ...row, agentBps: 166, platformBps: 1000 })).toMatchObject({ agentShareBps: 500, platformShareBps: 3000 });
+  it('turns the default row into the pool shares: agent 5%, platform 30%, creator funds 65%', () => {
+    const v = v5SettingsOf(defaults)!;
+    expect(v.splitKnown).toBe(true);
+    expect(Math.abs(v.agentShareBps - 500)).toBeLessThanOrEqual(2);
+    expect(Math.abs(v.platformShareBps - 3000)).toBeLessThanOrEqual(2);
+    expect(Math.abs(v.creatorFundsBps - 6500)).toBeLessThanOrEqual(2);
+    expect(v).toMatchObject({ buyTaxBps: 15_000, sellTaxBps: 15_000, burnBps: 0, dividendBps: 0, rewards: [] });
+  });
+
+  it('turns $SIGMA’s row into its settings, creator funds being the creator’s row and the extra rows together', () => {
+    expect(v5SettingsOf(sigma)).toMatchObject({ splitKnown: true, agentShareBps: 500, platformShareBps: 3000, burnBps: 1000, dividendBps: 500, creatorFundsBps: 5000, minDividendHolding: '10000000000000000000000' });
+    // The mock store reports $SIGMA in exactly this shape, so mock and live read the same.
+    const t = mockStore().tokens.find((x) => x.symbol === 'SIGMA')!;
+    for (const k of ['buyTaxBps', 'sellTaxBps', 'protocolBps', 'agentBps', 'creatorBps', 'rewardsBps', 'burnBps', 'dividendBps', 'platformBps'] as const) expect(t[k], k).toBe(sigma[k]);
+  });
+
+  it('never invents a split: a row that does not add up is unknown, a few bps of rounding are not', () => {
+    expect(v5SettingsOf({ ...sigma, platformBps: 2250 + V5_ROW_TOLERANCE_BPS })!.splitKnown).toBe(true);
+    const off = v5SettingsOf({ ...sigma, platformBps: 2300 })!;
+    expect(off).toMatchObject({ splitKnown: false, agentShareBps: 0, platformShareBps: 0, creatorFundsBps: 0, buyTaxBps: 20_000 });
+    // Without protocolBps, Clanker's share comes from the policy.
+    expect(v5SettingsOf({ ...defaults, protocolBps: null })!.splitKnown).toBe(true);
   });
 
   it('is null for every coin not launched with settings', () => {
-    expect(v5SettingsOf({ ...row, source: 'clanker' })).toBeNull();
-    expect(v5SettingsOf({ ...row, buyTaxBps: null })).toBeNull();
+    expect(v5SettingsOf({ ...sigma, source: 'clanker' })).toBeNull();
+    expect(v5SettingsOf({ ...sigma, buyTaxBps: null })).toBeNull();
     expect(v5SettingsOf(null)).toBeNull();
   });
 

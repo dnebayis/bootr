@@ -69,7 +69,7 @@ const SOURCE_FIELD = /\bsource\b/g;
  */
 let indexerHasV5Settings = true;
 const V5_FIELDS =
-  'pairedSymbol pairedDecimals priceQuote buyTaxBps sellTaxBps rewardsBps dividendBps minDividendHolding dividendContract dividendsTotalUsd antiSnipe metadataEditable metadataLocked metadataUpdatedAt';
+  'pairedSymbol pairedDecimals priceQuote buyTaxBps sellTaxBps rewardsBps dividendBps protocolBps minDividendHolding dividendContract dividendsTotalUsd antiSnipe metadataEditable metadataLocked metadataUpdatedAt';
 const V5_SETTINGS_FIELD = new RegExp(V5_FIELDS.replace(/ /g, '\\s+'), 'g');
 const V5_FIELD_ERROR = new RegExp(`Cannot query field "(${V5_FIELDS.split(' ').join('|')})"`);
 
