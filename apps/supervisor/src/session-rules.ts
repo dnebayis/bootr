@@ -14,7 +14,9 @@
  * Each power has one provider in `providers`, registered in `SESSION_POWER_ORDER`; the rules of the always-on
  * powers are byte for byte what the one standard policy produced before this module existed (the fixture
  * test/fixtures/session-policy-layout4.json pins it), and the gas rule keeps its place at the end of the shared
- * set so every earlier index (`FUNDING_RULE_INDEX`) stays where `BootrCallPolicy.windowOf` reads it. Rules of
+ * set so every earlier index (`fundingRuleIndex`) stays where `BootrCallPolicy.windowOf` reads it. A Clanker v5
+ * agent gets layout 5: one claim rule instead of two, so its funding rule sits at index 3
+ * (test/fixtures/session-policy-layout5-clanker-v5.json pins those bytes). Rules of
  * later powers are appended after it. The module's hard limit is `CALL_POLICY_MAX_RULES`
  * (`BootrCallPolicy.MAX_RULES`); a rule set over it is refused here, before any admin transaction.
  *
@@ -26,7 +28,7 @@
  * the rule primitives (`CallPolicyOp`, `callPolicyRules`, ...) so its callers keep their imports.
  */
 import { isAddress, pad, toFunctionSelector, toHex, type Address, type Hex } from 'viem';
-import { CLANKER_FEE_LOCKER_CLAIM_SELECTOR, CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, ERC20_APPROVE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
+import { CLANKER_FEE_LOCKER_CLAIM_SELECTOR, CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR, CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR, ERC20_APPROVE_SELECTOR, LOCKER_CLAIM_QUOTE_SELECTOR, LOCKER_SETTLE_AND_CLAIM_SELECTOR, SWAP_HELPER_SWAP_SELECTOR, WETH_WITHDRAW_SELECTOR } from './abi.js';
 import type { LaunchSource } from './chain.js';
 
 // ---------------------------------------------------------------------------
@@ -58,29 +60,56 @@ export interface CallPolicyRule {
 }
 
 /**
- * Current rule layout: two claim rules keyed by the launch source (Bootr: the RWAGMI v3 locker pair; Clanker:
- * `collectRewards` + `claim`), then WETH approve, swap, USDC funding, WETH withdraw (gas). For a Bootr agent
- * version 4 encodes byte for byte what version 3 did (the layout only gained the Clanker variant), so no Bootr key
- * is rotated for it. Version 3 = the RWAGMI layout with the gas rule; version 2 = the same five rules without it.
+ * Newest rule layout this code builds. Version 5 = the Clanker v5 layout (docs/design/clanker-v5-migration.md
+ * section 3): ONE claim rule (`FeeEscrow.claimFor(kernel, *)`), then WETH approve, swap, USDC funding (index 3), WETH
+ * withdraw. It exists for `clanker-v5` agents only: a Bootr or Clanker v4 agent keeps layout 4
+ * (`rulesVersionFor`), so their stored policies and keys stay byte for byte what they were.
+ * Version 4 = two claim rules keyed by the launch source (Bootr: the RWAGMI v3 locker pair; Clanker v4:
+ * `collectRewards` + `claim`), then WETH approve, swap, USDC funding (index 4), WETH withdraw (gas); for a Bootr
+ * agent it encodes byte for byte what version 3 did. Version 3 = the RWAGMI layout with the gas rule; version 2 =
+ * the same five rules without it.
  */
-export const CALL_POLICY_RULES_VERSION = 4;
+export const CALL_POLICY_RULES_VERSION = 5;
+/** The Clanker v5 layout: one `claimFor` rule in front, so the funding rule sits at index 3. */
+export const CLANKER_V5_RULES_VERSION = 5;
 /** Oldest layout `callPolicyRules` can still build (the RWAGMI layout without the gas rule). */
 export const MIN_CALL_POLICY_RULES_VERSION = 2;
 /** First layout with the `WETH.withdraw` rule the gas policy needs (gas.ts). */
 export const GAS_RULE_VERSION = 3;
 /** First layout whose claim rules follow the launch source (a `clanker` policy needs at least this version). */
 export const SOURCE_RULES_VERSION = 4;
-/** Position of the USDC funding rule in `callPolicyRules` (for `BootrCallPolicy.windowOf`). */
+/** Position of the USDC funding rule in `callPolicyRules` of the Bootr and Clanker v4 layouts (for `BootrCallPolicy.windowOf`). */
 export const FUNDING_RULE_INDEX = 4;
 /** Position of the funding rule in the Clanker-era layout (one `FeeLocker.claim` rule in front). */
 export const LEGACY_FUNDING_RULE_INDEX = 3;
+/** Position of the funding rule in the Clanker v5 layout (one `FeeEscrow.claimFor` rule in front). */
+export const CLANKER_V5_FUNDING_RULE_INDEX = 3;
+/** Label of the funding rule: its index is where this label sits in the layout's rule set. */
+export const FUNDING_RULE_LABEL = 'treasury.fundSpender';
+
+/** The rule layout a fresh policy of a launch source is built with: 5 for Clanker v5, 4 (unchanged) otherwise. */
+export function rulesVersionFor(source: LaunchSource): number {
+  return source === 'clanker-v5' ? CLANKER_V5_RULES_VERSION : SOURCE_RULES_VERSION;
+}
 /** Position of the SUM_PER_WINDOW amount argument inside that rule. */
 export const FUNDING_AMOUNT_ARG_INDEX = 1;
 
-/** Funding rule index of an installed policy (no stored policy = the current layout). */
-export function fundingRuleIndex(p?: Pick<SessionRuleInputs, 'rulesVersion'> | null): number {
+/**
+ * Funding rule index of an installed policy, taken from its layout: where `treasury.fundSpender` sits among the
+ * always-on rules of its source and rule version (4 for Bootr and Clanker v4, 3 for Clanker v5); 3 for the legacy
+ * Clanker-era layout; no stored policy = the Bootr layout (`FUNDING_RULE_INDEX`). Later powers append after the
+ * always-on set, so they never move it.
+ */
+export function fundingRuleIndex(p?: Pick<SessionRuleInputs, 'rulesVersion' | 'source'> | null): number {
   if (!p) return FUNDING_RULE_INDEX;
-  return (p.rulesVersion ?? 0) >= MIN_CALL_POLICY_RULES_VERSION ? FUNDING_RULE_INDEX : LEGACY_FUNDING_RULE_INDEX;
+  if ((p.rulesVersion ?? 0) < MIN_CALL_POLICY_RULES_VERSION) return LEGACY_FUNDING_RULE_INDEX;
+  try {
+    const index = sessionRuleLabelsFor(ALWAYS_ON_SESSION_POWERS, layoutOf(p)).indexOf(FUNDING_RULE_LABEL);
+    if (index >= 0) return index;
+  } catch {
+    // a layout this code cannot build (a v5 source with a pre-v5 version): fall through to the default
+  }
+  return FUNDING_RULE_INDEX;
 }
 
 /** Whether a stored policy's session key may unwrap WETH into gas (`WETH.withdraw` rule present). */
@@ -94,9 +123,9 @@ export const ERC20_TRANSFER_SELECTOR: Hex = toFunctionSelector('transfer(address
 const eqAddress = (index: number, value: Address): CallPolicyArgRule => ({ index, op: CallPolicyOp.EQUAL, value: pad(value, { size: 32 }).toLowerCase() as Hex });
 const sumPerWindow = (index: number, value: bigint): CallPolicyArgRule => ({ index, op: CallPolicyOp.SUM_PER_WINDOW, value: toHex(value, { size: 32 }) });
 
-/** The source a policy's claim rules follow (`bootr` for every policy stored before the field existed). */
-export function policySource(p: Pick<SessionRuleInputs, 'source'>): LaunchSource {
-  return p.source === 'clanker' ? 'clanker' : 'bootr';
+/** The source a policy's claim rules follow (`bootr` for every policy stored before the field existed, and for anything unknown). */
+export function policySource(p: { source?: unknown }): LaunchSource {
+  return p.source === 'clanker' || p.source === 'clanker-v5' ? p.source : 'bootr';
 }
 
 // ---------------------------------------------------------------------------
@@ -110,16 +139,18 @@ export interface SessionRuleInputs {
   /**
    * Launch source the claim rules are built for (chain.ts `LaunchSource`): `bootr` (default, also for every policy
    * stored before the field existed) = the two RWAGMI locker rules; `clanker` = `ClankerLpLockerFeeConversion.
-   * collectRewards(token)` + `ClankerFeeLocker.claim(kernel, *)` (docs/design/clanker-launch.md section 3).
+   * collectRewards(token)` + `ClankerFeeLocker.claim(kernel, *)` (docs/design/clanker-launch.md section 3);
+   * `clanker-v5` = one `FeeEscrow.claimFor(kernel, *)` (docs/design/clanker-v5-migration.md section 3).
    */
   source?: LaunchSource;
   /**
    * Bootr: `RwagmiLpLockerV3`, the only claim target (`settleAndClaim` / `claimQuote`, both with `to == kernel`).
-   * Clanker: `ClankerFeeLocker` (`claim(feeOwner == kernel, *)`). Policies stored before the RWAGMI migration
-   * (`rulesVersion` unset) hold the Clanker fee locker here with the old single-rule layout.
+   * Clanker: `ClankerFeeLocker` (`claim(feeOwner == kernel, *)`). Clanker v5: the v5 `FeeEscrow`
+   * (`claimFor(recipient == kernel, *)`). Policies stored before the RWAGMI migration (`rulesVersion` unset) hold the
+   * Clanker fee locker here with the old single-rule layout.
    */
   feeLocker: Address;
-  /** Clanker only: `ClankerLpLockerFeeConversion`, the `collectRewards(token)` target. */
+  /** Clanker v4 only: `ClankerLpLockerFeeConversion`, the `collectRewards(token)` target (unused on Clanker v5). */
   lpLocker?: Address;
   /**
    * Layout of the BootrCallPolicy rules this policy was installed with (`CALL_POLICY_RULES_VERSION`). Unset = the
@@ -189,13 +220,25 @@ export type SessionRuleProvider = (layout: SessionRuleLayout) => SessionRuleSpec
 const spec = (power: SessionPower, label: string, build: (inputs: SessionRuleInputs) => CallPolicyRule): SessionRuleSpec => ({ power, label: `${power}.${label}`, build });
 
 /**
- * The two claim rules, by launch source. Bootr: the RWAGMI locker pays `msg.sender`'s (the kernel's) fee balance to
+ * The claim rules, by launch source (two on Bootr and Clanker v4, one on Clanker v5). Bootr: the RWAGMI locker pays `msg.sender`'s (the kernel's) fee balance to
  * `to`, and `to` is pinned to the kernel, so a claim can only move fees into the kernel. Clanker: `collectRewards`
  * only moves the coin's LP fees from the positions into the fee locker (pinned to the agent's own token, anyone may
  * call it anyway), and `ClankerFeeLocker.claim(feeOwner, token)` always pays `feeOwner`, pinned to the kernel; the
  * token is free (WETH today, and nothing else can be stolen since the payee is fixed).
  */
 const claimsProvider: SessionRuleProvider = (layout) => {
+  if (layout.source === 'clanker-v5') {
+    if (layout.rulesVersion < CLANKER_V5_RULES_VERSION) throw new Error(`a clanker-v5 session policy needs rule layout ${CLANKER_V5_RULES_VERSION} or later (rulesVersion ${layout.rulesVersion || 'unset'})`);
+    return [
+      // FeeEscrow.claimFor(address recipient, address currency): word 0 is `recipient`, pinned to the kernel. There is
+      // no collection step on v5 (the hook credits the escrow on every swap), and the currency is free: whatever it
+      // is, the escrow pays the kernel (docs/design/clanker-v5-migration.md section 3).
+      spec('claims', 'claimFor', (p) => {
+        if (!isAddress(p.feeLocker)) throw new Error('session policy has no feeLocker (Clanker v5 FeeEscrow)');
+        return { target: p.feeLocker, selector: CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR, windowSeconds: 0, args: [eqAddress(0, p.kernel)] };
+      }),
+    ];
+  }
   if (layout.source === 'clanker') {
     if (layout.rulesVersion < SOURCE_RULES_VERSION) throw new Error(`a clanker session policy needs rule layout ${SOURCE_RULES_VERSION} or later (rulesVersion ${layout.rulesVersion || 'unset'})`);
     return [
@@ -458,7 +501,8 @@ export interface SessionRulesAgent {
  */
 export function sessionRulesStatus(agent: SessionRulesAgent, config: Record<string, unknown>): SessionRulesStatus {
   const stored = agent.sessionPolicy as Pick<SessionRuleInputs, 'source' | 'rulesVersion' | 'rules'> | null;
-  const layout: SessionRuleLayout = stored ? layoutOf({ source: stored.source, rulesVersion: typeof stored.rulesVersion === 'number' ? stored.rulesVersion : undefined }) : { source: agent.source === 'clanker' ? 'clanker' : 'bootr', rulesVersion: CALL_POLICY_RULES_VERSION };
+  const fresh = policySource({ source: agent.source });
+  const layout: SessionRuleLayout = stored ? layoutOf({ source: stored.source, rulesVersion: typeof stored.rulesVersion === 'number' ? stored.rulesVersion : undefined }) : { source: fresh, rulesVersion: rulesVersionFor(fresh) };
   let current: string[] | null = null;
   try {
     current = stored ? storedRuleLabels(stored) : [];

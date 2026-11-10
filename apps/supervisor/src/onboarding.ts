@@ -11,7 +11,7 @@ import { composeIdentityText, DEFAULT_MIND_MODEL, directModelId, parseAgentConfi
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, POSTS_PER_DAY, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
-import { agentLaunchedEvent, clankerLaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
+import { agentLaunchedEvent, clankerLaunchedEvent, clankerV5LaunchedEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { readGas } from './gas.js';
 import { coinImageFromCard, creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
 import { ensureBuilderCode } from './builder-codes.js';
@@ -19,7 +19,7 @@ import { launchSourceOf, type LaunchSource, type LauncherEntry } from './chain.j
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
-import { agentSource, clankerDetailsOf, clankerLockersFor, type ClankerLaunchDetails } from './launch-source.js';
+import { agentSource, clankerDetailsOf, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, type ClankerLaunchDetails, type ClankerV5LaunchDetails } from './launch-source.js';
 import { initialState } from './runtime.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 import type { SenderAccount } from './sender-client.js';
@@ -27,7 +27,6 @@ import { SenderError } from './sender-client.js';
 import {
   buildDeinitData,
   buildValidatorData,
-  CALL_POLICY_RULES_VERSION,
   deserializeSessionPolicy,
   enableDigest,
   randomPermissionId,
@@ -35,7 +34,7 @@ import {
   type SerializedSessionPolicy,
   type SessionPolicyParams,
 } from './session-key.js';
-import { diffRuleLabels, formatRuleDiff, sessionPowersOf, sessionRulesFor, sessionRulesMeta, sessionRulesStatus, storedRuleLabels, type SessionRuleInputs } from './session-rules.js';
+import { diffRuleLabels, formatRuleDiff, rulesVersionFor, sessionPowersOf, sessionRulesFor, sessionRulesMeta, sessionRulesStatus, storedRuleLabels, type SessionRuleInputs } from './session-rules.js';
 
 export const LAUNCH_CURSOR = 'launcher_block';
 /** `sv_cursors` row per agent: when the rotation scan last rotated a key for outdated rules (ms); one try a day. */
@@ -57,7 +56,7 @@ export interface LaunchEvent {
   txHash: Hex;
   /** The launcher that emitted the event. */
   launcher: Address;
-  /** Its source (`launchSourceOf`): `clanker` for `BootrClankerLauncher`, `bootr` otherwise. */
+  /** Its source (`launchSourceOf`): `clanker` for `BootrClankerLauncher`, `clanker-v5` for `BootrClankerLauncherV5`, `bootr` otherwise. */
   source: LaunchSource;
 }
 
@@ -100,6 +99,27 @@ export function decodeClankerLaunch(logs: Log[], launcher: Address, token: Addre
       mevModule: getAddress(ev.args.mevModule),
       startingTick: ev.args.startingTick,
       lpFeeBps: ev.args.lpFeeBps,
+    };
+  }
+  return null;
+}
+
+/**
+ * `BootrClankerLauncherV5.ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps, antiSnipe)`
+ * for `token` among the launch tx logs, emitted by `launcher` (only our launcher's log counts). Null when absent.
+ */
+export function decodeClankerV5Launch(logs: Log[], launcher: Address, token: Address): ClankerV5LaunchDetails | null {
+  const events = parseEventLogs({ abi: [clankerV5LaunchedEvent], logs, strict: true });
+  for (const ev of events) {
+    if (!isAddressEqual(ev.address, launcher) || !isAddressEqual(ev.args.token, token)) continue;
+    return {
+      poolId: ev.args.poolId,
+      hook: getAddress(ev.args.hook),
+      feeEscrow: getAddress(ev.args.feeEscrow),
+      quoteToken: getAddress(ev.args.quoteToken),
+      tickSpacing: ev.args.tickSpacing,
+      taxBps: ev.args.taxBps,
+      antiSnipe: ev.args.antiSnipe,
     };
   }
   return null;
@@ -230,7 +250,8 @@ export function storedWorkerPreset(config: Record<string, unknown>): WorkerPrese
  * every generated picture matches (images.ts); null when the card had none or could not be read yet
  * (`backfillFromAgentCard` fills it in with the identity).
  * `source` mirrors `sv_agents.source`; a Clanker launch also stores `clanker` (pool id, hook, lockers from
- * `ClankerLaunched`, see launch-source.ts) when the receipt could be read, else nothing until `backfillClankerDetails`.
+ * `ClankerLaunched`, see launch-source.ts) and a Clanker v5 launch `clankerV5` (pool id, hook, escrow, quote, tax from
+ * `ClankerV5Launched`) when the receipt could be read, else nothing until `backfillClankerDetails`.
  */
 export function buildLaunchConfig(
   ctx: SupervisorContext,
@@ -240,6 +261,7 @@ export function buildLaunchConfig(
   worker: ResolvedWorker = resolveWorker(launch.workerHash),
   coinImage: string | null = null,
   clanker: ClankerLaunchDetails | null = null,
+  clankerV5: ClankerV5LaunchDetails | null = null,
 ): Record<string, unknown> {
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
@@ -251,6 +273,7 @@ export function buildLaunchConfig(
     creator: { address: getAddress(launch.creator) },
     source: launch.source,
     ...(launch.source === 'clanker' && clanker ? { clanker } : {}),
+    ...(launch.source === 'clanker-v5' && clankerV5 ? { clankerV5 } : {}),
     xHandle: null,
     xUserId: null,
     // The launch event carries the id the form offered at the time; a retired one starts on the catalog model that stands in for it.
@@ -444,9 +467,12 @@ export async function readDraftId(ctx: SupervisorContext, txHash: string, token:
   return logs && decodeDraftId(logs, launcher, getAddress(token));
 }
 
-/** The launcher an agent was registered from: the Clanker launcher for `clanker` rows, else the Bootr one. */
+/** The launcher an agent was registered from: the Clanker launcher for `clanker` rows, the v5 one for `clanker-v5`, else the Bootr one. */
 function launcherOf(ctx: SupervisorContext, agent: Pick<AgentRow, 'source'>): Address {
-  return agentSource(agent) === 'clanker' && ctx.chain.clankerLauncher ? ctx.chain.clankerLauncher : ctx.chain.launcher;
+  const source = agentSource(agent);
+  if (source === 'clanker' && ctx.chain.clankerLauncher) return ctx.chain.clankerLauncher;
+  if (source === 'clanker-v5' && ctx.chain.clankerV5Launcher) return ctx.chain.clankerV5Launcher;
+  return ctx.chain.launcher;
 }
 
 /** Fills `sv_agents.draft_id` for agents registered before it existed (lazy, onboarding agents only). */
@@ -460,9 +486,26 @@ async function backfillDraftIds(ctx: SupervisorContext, pending: AgentRow[]): Pr
   }
 }
 
-/** Fills `config.clanker` for Clanker agents whose launch receipt could not be read at registration (onboarding agents only). */
+/**
+ * Fills `config.clanker` (Clanker v4) or `config.clankerV5` (Clanker v5) for agents whose launch receipt could not be
+ * read at registration (onboarding agents only).
+ */
 async function backfillClankerDetails(ctx: SupervisorContext, pending: AgentRow[]): Promise<void> {
   for (const agent of pending) {
+    if (agentSource(agent) === 'clanker-v5') {
+      if (clankerV5DetailsOf(agent.config) || !agent.launchTxHash || !ctx.chain.clankerV5Launcher) continue;
+      const logs = await readLaunchLogs(ctx, agent.launchTxHash);
+      if (!logs) continue;
+      const details = decodeClankerV5Launch(logs, ctx.chain.clankerV5Launcher, getAddress(agent.token));
+      if (!details) {
+        ctx.log.warn({ agentId: agent.agentId, txHash: agent.launchTxHash }, 'clanker v5 launch receipt has no ClankerV5Launched log for the token; using the configured escrow');
+        continue;
+      }
+      const config = { ...agent.config, clankerV5: details };
+      await ctx.db.update(agents).set({ config, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
+      agent.config = config;
+      continue;
+    }
     if (agentSource(agent) !== 'clanker' || clankerDetailsOf(agent.config) || !agent.launchTxHash || !ctx.chain.clankerLauncher) continue;
     const logs = await readLaunchLogs(ctx, agent.launchTxHash);
     if (!logs) continue;
@@ -543,7 +586,9 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   const draftId = launchLogs && decodeDraftId(launchLogs, launch.launcher, launch.token);
   const clanker = launch.source === 'clanker' && launchLogs ? decodeClankerLaunch(launchLogs, launch.launcher, launch.token, ctx.chain.clanker.feeLocker) : null;
   if (launch.source === 'clanker' && launchLogs && !clanker) log.warn({ txHash: launch.txHash }, 'clanker launch receipt has no ClankerLaunched log for the token; using the configured lockers');
-  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker, coinImageFromCard(card), clanker);
+  const clankerV5 = launch.source === 'clanker-v5' && launchLogs ? decodeClankerV5Launch(launchLogs, launch.launcher, launch.token) : null;
+  if (launch.source === 'clanker-v5' && launchLogs && !clankerV5) log.warn({ txHash: launch.txHash }, 'clanker v5 launch receipt has no ClankerV5Launched log for the token; using the configured escrow');
+  const config = buildLaunchConfig(ctx, launch, { name: String(name).slice(0, 128) || 'Unknown', symbol: String(symbol).slice(0, 32) || 'TOKEN' }, creatorIdentity, worker, coinImageFromCard(card), clanker, clankerV5);
   const [row] = await ctx.db
     .insert(agents)
     .values({
@@ -576,7 +621,7 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
 
 /**
  * Reads new `AgentLaunched` logs after the stored cursor from every followed launcher (`chain.launchers`: the Bootr
- * launcher and, when configured, the Clanker one; one cursor for all) and registers every agent found.
+ * launcher and, when configured, the Clanker v4 and v5 ones; one cursor for all) and registers every agent found.
  */
 export async function pollLaunches(ctx: SupervisorContext): Promise<number> {
   const { publicClient, launchers } = ctx.chain;
@@ -622,16 +667,18 @@ export function sessionPolicyFor(ctx: SupervisorContext, agent: AgentRow, validU
   const zerodevRequired = { gasPolicy: z.gasPolicy, rateLimitPolicy: z.rateLimitPolicy, timestampPolicy: z.timestampPolicy, ecdsaSigner: z.ecdsaSigner };
   for (const [k, v] of Object.entries(zerodevRequired)) if (!v) throw new Error(`zerodev.${k} address is not configured for chain ${ctx.chain.chainId}`);
   // Claim targets by launch source: the RWAGMI locker for Bootr coins; the Clanker LP locker (collectRewards) and
-  // fee locker (claim) the launch named for Clanker coins (launch-source.ts).
+  // fee locker (claim) the launch named for Clanker v4 coins; the v5 FeeEscrow (claimFor) for Clanker v5 coins
+  // (launch-source.ts). The rule layout follows the source too: 5 for v5 (one claim rule), 4 otherwise (unchanged).
   const source = agentSource(agent);
   const clanker = source === 'clanker' ? clankerLockersFor(ctx, agent) : null;
+  const v5 = source === 'clanker-v5' ? clankerV5EscrowFor(ctx, agent) : null;
   const inputs: SessionRuleInputs = {
     kernel: agent.kernel as Address,
     token: agent.token as Address,
     source,
-    feeLocker: clanker ? clanker.feeLocker : ctx.chain.rwagmi.lpLocker,
+    feeLocker: v5 ? v5.feeEscrow : clanker ? clanker.feeLocker : ctx.chain.rwagmi.lpLocker,
     ...(clanker ? { lpLocker: clanker.lpLocker } : {}),
-    rulesVersion: CALL_POLICY_RULES_VERSION,
+    rulesVersion: rulesVersionFor(source),
     swapHelper: bootrRequired.swapHelper as Address,
     usdc: addresses.usdc,
     weth: addresses.weth,
