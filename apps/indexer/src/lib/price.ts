@@ -1,8 +1,11 @@
 /**
- * Price math. Every Bootr coin (B20, 18 decimals) and WETH use 18 decimals, so no decimal adjustment is needed
- * between the two pool currencies. Results are floats (USD values are display-grade, 6 dp).
+ * Price math. Every Bootr coin has 18 decimals; the paired asset is WETH or native ETH (18 decimals, no adjustment) or,
+ * for Clanker v5 coins launched with token settings, USDC (6 decimals: the raw pool price is scaled by 10^(18-6)).
+ * Results are floats (USD values are display-grade, 6 dp).
  */
 const Q96 = 2 ** 96;
+/** Decimals of every Bootr coin (B20, Clanker v4 and v5 tokens alike). */
+export const COIN_DECIMALS = 18;
 
 /** Integer base units -> float. */
 export function toUnits(amount: bigint, decimals: number): number {
@@ -39,9 +42,18 @@ export function price0In1(sqrtPriceX96: bigint): number {
 
 /** WETH per coin, from the pool's sqrtPriceX96. */
 export function coinPriceInWeth(sqrtPriceX96: bigint, coinIsToken0: boolean): number {
+  return coinPriceInQuote(sqrtPriceX96, coinIsToken0, 18);
+}
+
+/**
+ * Whole units of the paired asset per whole coin, from the pool's sqrtPriceX96: the raw price (quote base units per
+ * coin base unit) times 10^(coin decimals − quote decimals). 1e12 for USDC, 1 for WETH / ETH.
+ */
+export function coinPriceInQuote(sqrtPriceX96: bigint, coinIsToken0: boolean, quoteDecimals: number): number {
   if (sqrtPriceX96 === 0n) return 0;
   const p = price0In1(sqrtPriceX96);
-  return coinIsToken0 ? p : p === 0 ? 0 : 1 / p;
+  const raw = coinIsToken0 ? p : p === 0 ? 0 : 1 / p;
+  return quoteDecimals === COIN_DECIMALS ? raw : raw * 10 ** (COIN_DECIMALS - quoteDecimals);
 }
 
 export function sqrtRatioAtTick(tick: number): number {
@@ -82,7 +94,10 @@ export function oneSidedLiquidity(poolSupply: bigint, tickLower: number, tickUpp
   return BigInt(Math.floor(L));
 }
 
-/** USD value of the pool's liquidity (coin side valued at the pool price). */
+/**
+ * USD value of the pool's liquidity (coin side valued at the pool price). `ethUsd` is the USD price of one whole unit
+ * of the paired asset (ETH/USD for WETH / ETH, 1 for USDC) and `quoteDecimals` its decimals (18 unless given).
+ */
 export function liquidityUsd(args: {
   liquidity: bigint;
   sqrtPriceX96: bigint;
@@ -90,12 +105,14 @@ export function liquidityUsd(args: {
   tickUpper: number;
   coinIsToken0: boolean;
   ethUsd: number;
+  quoteDecimals?: number;
 }): number {
+  const quoteDecimals = args.quoteDecimals ?? 18;
   const { amount0, amount1 } = positionAmounts(args.liquidity, args.sqrtPriceX96, args.tickLower, args.tickUpper);
-  const coinAmount = (args.coinIsToken0 ? amount0 : amount1) / 1e18;
-  const wethAmount = (args.coinIsToken0 ? amount1 : amount0) / 1e18;
-  const coinPriceUsd = coinPriceInWeth(args.sqrtPriceX96, args.coinIsToken0) * args.ethUsd;
-  return usd(wethAmount * args.ethUsd + coinAmount * coinPriceUsd);
+  const coinAmount = (args.coinIsToken0 ? amount0 : amount1) / 10 ** COIN_DECIMALS;
+  const quoteAmount = (args.coinIsToken0 ? amount1 : amount0) / 10 ** quoteDecimals;
+  const coinPriceUsd = coinPriceInQuote(args.sqrtPriceX96, args.coinIsToken0, quoteDecimals) * args.ethUsd;
+  return usd(quoteAmount * args.ethUsd + coinAmount * coinPriceUsd);
 }
 
 /** Chainlink answer -> float USD. */

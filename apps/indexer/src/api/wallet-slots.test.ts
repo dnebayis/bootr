@@ -230,21 +230,21 @@ describe('composeClaimedByKind', () => {
 
   it('is what the ledger booked on a normal coin', () => {
     const r = composeClaimedByKind([{ kind: 'creator', recipient: WALLET, usd: 20 }, { kind: 'platform', recipient: OTHER, usd: 7 }], []);
-    expect(r.claimed).toEqual({ agent: 0, creator: 20, burn: 0, platform: 7 });
+    expect(r.claimed).toEqual({ agent: 0, creator: 20, burn: 0, platform: 7, recipient: 0 });
     expect(r.sharedWallets).toEqual([]);
   });
 
   it('moves the platform share out of the creator figure for a wallet holding both', () => {
     const split = splitWalletClaims(slotKinds, [claim(100, 1, 10n * E15, 20)], [win(0, 1, 6n * E15), win(0, 3, 4n * E15)]);
     const r = composeClaimedByKind(rows, [{ recipient: WALLET, split }]);
-    expect(r.claimed).toEqual({ agent: 5, creator: 12, burn: 3, platform: 8 });
+    expect(r.claimed).toEqual({ agent: 5, creator: 12, burn: 3, platform: 8, recipient: 0 });
     expect(r.sharedWallets).toEqual([{ recipient: WALLET, kinds: ['creator', 'platform'], claimedUsd: 20, toldApart: true }]);
   });
 
   it('answers null for both kinds when they cannot be told apart, and keeps the sum it can state', () => {
     const split = splitWalletClaims(slotKinds, [claim(100, 1, 10n, 20)], [win(0, 1, 1n)]);
     const r = composeClaimedByKind(rows, [{ recipient: WALLET, split }]);
-    expect(r.claimed).toEqual({ agent: 5, creator: null, burn: 3, platform: null });
+    expect(r.claimed).toEqual({ agent: 5, creator: null, burn: 3, platform: null, recipient: 0 });
     expect(r.sharedWallets[0]).toMatchObject({ claimedUsd: 20, toldApart: false });
   });
 });

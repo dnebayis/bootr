@@ -3,10 +3,10 @@ import { ponder } from 'ponder:registry';
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { isBurnClaim } from './lib/clanker';
+import { decodeV5HookCredit, decodeV5SlotUpdate, isBurnClaim, slotUpdatePatch } from './lib/clanker';
 import { enabledSources } from './lib/env';
 import { claimParts, parseLaunchSource, type LaunchSource } from './lib/fees';
-import { applyClankerCollection, applyClankerV5TaxCredit, applyFeeTaken } from './lib/ledger';
+import { applyClankerCollection, applyClankerV5HookCredit, applyFeeTaken } from './lib/ledger';
 import { toUnits, usd } from './lib/price';
 import { assetUsd, bumpDaily, bumpPlatform, bumpSource, getEthUsd, getPlatformConfig, lc, recipientKindOf, sourceOf, type Ctx, type TokenRow } from './lib/store';
 
@@ -154,30 +154,69 @@ if (enabledSources().ClankerFeeLocker) {
 }
 
 if (enabledSources().ClankerV5Hook) {
-  /** The hook credits every v5 pool's slots per swap; only pools registered by a v5 `AgentLaunched` are ours. */
-  ponder.on('ClankerV5Hook:CreatorTaxCredited', async ({ event, context }) => {
-    const t = await v5Coin(context, event.args.poolId, event.transaction.hash);
+  /**
+   * The hook credits every v5 pool per swap (each slot's share in the quote, the burn in the coin on buys and sells
+   * alike, the holder dividends' share); only pools registered by a v5 `AgentLaunched` are ours. One decoder for all
+   * four (`decodeV5HookCredit`), shared with the launch-tx replay.
+   */
+  const onCredit = async (
+    eventName: string,
+    { event, context }: { event: { args: Record<string, unknown>; transaction: { hash: Hex }; log: { logIndex: number }; block: { number: bigint; timestamp: bigint } }; context: Ctx },
+  ) => {
+    const credit = decodeV5HookCredit(eventName, event.args);
+    if (!credit) return;
+    const t = await v5Coin(context, credit.poolId, event.transaction.hash);
     if (!t) return;
-    await applyClankerV5TaxCredit(
-      context,
-      t,
-      lc(event.args.poolId),
-      { burn: false, recipient: event.args.recipient, asset: event.args.currency, amount: event.args.amount },
-      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
-    );
-  });
+    await applyClankerV5HookCredit(context, t, credit, {
+      txHash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: Number(event.block.timestamp),
+    });
+  };
+  ponder.on('ClankerV5Hook:CreatorTaxCredited', (x) => onCredit('CreatorTaxCredited', x));
+  ponder.on('ClankerV5Hook:BurnTaxCredited', (x) => onCredit('BurnTaxCredited', x));
+  ponder.on('ClankerV5Hook:DividendTaxCredited', (x) => onCredit('DividendTaxCredited', x));
+  ponder.on('ClankerV5Hook:DividendTaxRedirected', (x) => onCredit('DividendTaxRedirected', x));
 
-  ponder.on('ClankerV5Hook:BurnTaxCredited', async ({ event, context }) => {
-    const t = await v5Coin(context, event.args.poolId, event.transaction.hash);
-    if (!t) return;
-    await applyClankerV5TaxCredit(
-      context,
-      t,
-      lc(event.args.poolId),
-      { burn: true, recipient: event.args.sink, asset: event.args.token, amount: event.args.amount },
-      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
-    );
-  });
+  /**
+   * A slot admin moved a slot's recipient or admin (the creator's row and the extra rows only; the agent and platform
+   * slots have the launcher as admin, which never calls this). The `feeSlot` row follows, so the hook's later credits
+   * to the new recipient land on the same slot (and its own `feeBalance`); the old recipient keeps what it was credited.
+   */
+  const onSlotUpdate = async (
+    eventName: string,
+    { event, context }: { event: { args: Record<string, unknown>; transaction: { hash: Hex }; block: { number: bigint; timestamp: bigint }; log: { logIndex: number } }; context: Ctx },
+  ) => {
+    const u = decodeV5SlotUpdate(eventName, event.args);
+    if (!u) return;
+    const p = await context.db.find(schema.pool, { id: u.poolId });
+    if (!p) return;
+    const t = await context.db.find(schema.token, { id: p.token });
+    if (!t || sourceOf(t) !== 'clanker-v5') return;
+    const row = await context.db.find(schema.feeSlot, { id: `${t.id}-${u.slot}` });
+    if (!row) {
+      console.warn(`[indexer] ${eventName} for ${t.id} slot ${u.slot}: no such fee slot; ignored`);
+      return;
+    }
+    const { patch, stale } = slotUpdatePatch(row, u);
+    if (stale) console.warn(`[indexer] ${eventName} for ${t.id} slot ${u.slot}: the row held another ${u.field} than ${u.from}; taking ${u.to}`);
+    await context.db.update(schema.feeSlot, { id: row.id }).set(patch);
+    if (u.field === 'recipient') await context.db.insert(schema.feeRecipient).values({ id: u.to, firstToken: t.id }).onConflictDoNothing();
+    await context.db.insert(schema.feeSlotUpdate).values({
+      id: `${event.transaction.hash}-${event.log.logIndex}`,
+      token: t.id,
+      slot: u.slot,
+      field: u.field,
+      from: u.from,
+      to: u.to,
+      timestamp: Number(event.block.timestamp),
+      blockNumber: event.block.number,
+      txHash: event.transaction.hash,
+    });
+  };
+  ponder.on('ClankerV5Hook:FeeSlotRecipientUpdated', (x) => onSlotUpdate('FeeSlotRecipientUpdated', x));
+  ponder.on('ClankerV5Hook:FeeSlotAdminUpdated', (x) => onSlotUpdate('FeeSlotAdminUpdated', x));
 }
 
 /** The v5 coin of a hook event's pool, or null (not ours, another path, or the launch tx the launch handler replays). */

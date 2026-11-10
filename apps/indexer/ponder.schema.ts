@@ -45,8 +45,12 @@ export const token = onchainTable(
     burner: t.hex(),
     agentId: t.bigint().notNull(),
     poolId: t.hex().notNull(),
-    /** WETH on the bootr and clanker paths; the zero address (native ETH) on clanker-v5. */
+    /** WETH on the bootr and clanker paths; on clanker-v5 the quote: the zero address (native ETH) or USDC. */
     pairedToken: t.hex().notNull(),
+    /** extra: the paired asset's symbol (`WETH`, `ETH` for native ETH, `USDC`; `?` for an asset the indexer cannot price). */
+    pairedSymbol: t.text().notNull(),
+    /** extra: the paired asset's decimals (18 for WETH and ETH, 6 for USDC); every price and USD figure uses it. */
+    pairedDecimals: t.integer().notNull(),
     /** extra: true when the coin is currency0 of the v4 pool. */
     coinIsToken0: t.boolean().notNull(),
     /** extra: the locked LP position's range (the `pool` row's, copied at launch), used for `liquidityUsd`. */
@@ -59,16 +63,42 @@ export const token = onchainTable(
      */
     lpFeeBps: t.integer().notNull(),
     /**
+     * extra, clanker-v5 only (null elsewhere): the buy and the sell tax in `lpFeeBps` units (the token-settings
+     * launcher takes each side from the creator, 1%–5%; `lpFeeBps` is the buy tax). A trade pays its side's rate.
+     */
+    buyTaxBps: t.integer(),
+    sellTaxBps: t.integer(),
+    /**
      * Locked reward split in bps of the fee: bootr `agent + creator + burn + platform = 9000` with
      * `protocolBps` (RWAGMI) = 1000 (`RwagmiLpLockerV3.launchInfo(token).rewards`); clanker the four sum to
      * 10000 and `protocolBps` is 2000 *on top* (`ClankerLpLockerFeeConversion.tokenRewards(token)`); clanker-v5
-     * the four sum to `10000 - protocolBps`, Clanker's share of the tax (the hook's slot weights and the burn
-     * share, scaled to the tax).
+     * `agent + creator + rewards + burn + dividend + platform = 10000 - protocolBps`, Clanker's share of the tax
+     * (the hook's slot weights and the burn and dividend shares, scaled to the buy tax).
      */
     agentBps: t.integer().notNull(),
     creatorBps: t.integer().notNull(),
     burnBps: t.integer().notNull(),
     platformBps: t.integer().notNull(),
+    /** extra, clanker-v5: the creator's extra reward rows (`recipient` slots) together; 0 elsewhere. */
+    rewardsBps: t.integer().notNull(),
+    /** extra, clanker-v5: the holder dividends' part of the tax (paid to `dividendContract`, no slot); 0 elsewhere. */
+    dividendBps: t.integer().notNull(),
+    /** extra, clanker-v5 with dividends: Clanker's `minimumDividendHolding` (raw coin units); null otherwise. */
+    minDividendHolding: t.bigint(),
+    /** extra, clanker-v5 with dividends: the coin's `TaxDividend` tracker (`DividendInitialized`); null otherwise. */
+    dividendContract: t.hex(),
+    /** extra, clanker-v5: the dividend share credited to the tracker, in USD at each trade's prices. */
+    dividendsTotalUsd: t.doublePrecision().notNull(),
+    /** extra, clanker-v5: the dividend share Clanker kept because no holder qualified yet (`DividendTaxRedirected`). */
+    dividendsRedirectedUsd: t.doublePrecision().notNull(),
+    /** extra, clanker-v5 only (null elsewhere): Clanker's sniper tax (99% falling to the tax over 20 s) was on at launch. */
+    antiSnipe: t.boolean(),
+    /** extra: the coin's image and metadata JSON can still change (clanker-v5 with editable metadata, until locked). */
+    metadataEditable: t.boolean().notNull(),
+    /** extra: the creator locked the metadata for good (`MetadataLocked`); `metadataEditable` is false from then on. */
+    metadataLocked: t.boolean().notNull(),
+    /** extra: last creator edit of the image or metadata (`ImageUpdated` / `MetadataUpdated` / `MetadataLocked`). */
+    metadataUpdatedAt: t.integer(),
     /** extra: the launch protocol's share: RWAGMI's reward slot (bootr), Clanker's fee on top (clanker) or Clanker's share of the tax (clanker-v5). */
     protocolBps: t.integer().notNull(),
     /** extra: RWAGMI's slot recipient (bootr); null on the Clanker paths (the hook keeps the protocol fee). */
@@ -93,8 +123,10 @@ export const token = onchainTable(
     poolLiquidity: t.bigint().notNull(),
     /** extra: liquidity of the locked launch position (`LiquidityPlacedV3`, constant), used for `liquidityUsd`. */
     positionLiquidity: t.bigint().notNull(),
-    /** extra: coin price in WETH. */
+    /** extra: coin price in WETH (for a USDC-paired coin: its USD price at ETH/USD). */
     priceWeth: t.doublePrecision().notNull(),
+    /** extra: coin price in the paired asset, in whole units (`pairedSymbol`; WETH / ETH coins: equal to `priceWeth`). */
+    priceQuote: t.doublePrecision().notNull(),
     priceUsd: t.doublePrecision().notNull(),
     marketCapUsd: t.doublePrecision().notNull(),
     liquidityUsd: t.doublePrecision().notNull(),
@@ -274,6 +306,53 @@ export const feeSlot = onchainTable(
     admin: t.hex().notNull(),
     bps: t.integer().notNull(),
     recipientKind: t.text().notNull(),
+  }),
+  (table) => ({ tokenIdx: index().on(table.token) }),
+);
+
+/**
+ * extra, clanker-v5: a slot admin's change on Clanker's hook (`FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated`). The
+ * `feeSlot` row then holds the new recipient or admin, so later credits (and their balances) follow it; what the old
+ * recipient was credited stays its own in the escrow. Only the creator's row and the extra rows can change.
+ */
+export const feeSlotUpdate = onchainTable(
+  'fee_slot_update',
+  (t) => ({
+    id: t.text().primaryKey(),
+    token: t.hex().notNull(),
+    slot: t.integer().notNull(),
+    /** `recipient` | `admin` */
+    field: t.text().notNull(),
+    from: t.hex().notNull(),
+    to: t.hex().notNull(),
+    timestamp: t.integer().notNull(),
+    blockNumber: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+  }),
+  (table) => ({ tokenIdx: index().on(table.token) }),
+);
+
+/**
+ * extra, clanker-v5: the holder dividends' share of one swap's tax (`DividendTaxCredited`, credited in the escrow to
+ * the coin's `TaxDividend` tracker, `redirected` false) or that share sent to Clanker's protocol recipient while no
+ * holder qualifies (`DividendTaxRedirected`, `redirected` true). Paid in the quote. No per-holder accounting.
+ */
+export const dividendCredit = onchainTable(
+  'dividend_credit',
+  (t) => ({
+    id: t.text().primaryKey(),
+    token: t.hex().notNull(),
+    poolId: t.hex().notNull(),
+    /** The tracker (`redirected` false) or Clanker's protocol recipient (`redirected` true). */
+    recipient: t.hex().notNull(),
+    redirected: t.boolean().notNull(),
+    asset: t.hex().notNull(),
+    amount: t.bigint().notNull(),
+    amountUsd: t.doublePrecision().notNull(),
+    timestamp: t.integer().notNull(),
+    blockNumber: t.bigint().notNull(),
+    logIndex: t.integer().notNull(),
+    txHash: t.hex().notNull(),
   }),
   (table) => ({ tokenIdx: index().on(table.token) }),
 );
@@ -665,6 +744,8 @@ export const tokenRelations = relations(token, ({ one, many }) => ({
   feeClaims: many(feeClaim),
   feeCredits: many(feeCredit),
   feeSlots: many(feeSlot),
+  feeSlotUpdates: many(feeSlotUpdate),
+  dividendCredits: many(dividendCredit),
   burns: many(burn),
   balances: many(balance),
   milestones: many(milestone),
@@ -695,6 +776,14 @@ export const feeCreditRelations = relations(feeCredit, ({ one }) => ({
 
 export const feeSlotRelations = relations(feeSlot, ({ one }) => ({
   tokenRef: one(token, { fields: [feeSlot.token], references: [token.id] }),
+}));
+
+export const feeSlotUpdateRelations = relations(feeSlotUpdate, ({ one }) => ({
+  tokenRef: one(token, { fields: [feeSlotUpdate.token], references: [token.id] }),
+}));
+
+export const dividendCreditRelations = relations(dividendCredit, ({ one }) => ({
+  tokenRef: one(token, { fields: [dividendCredit.token], references: [token.id] }),
 }));
 
 export const burnRelations = relations(burn, ({ one }) => ({

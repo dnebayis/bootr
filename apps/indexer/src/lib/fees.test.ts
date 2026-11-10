@@ -35,7 +35,7 @@ describe('RWAGMI reward slots', () => {
     const rewards = [slot(parties.kernel, 450), slot(parties.creator, 5850), slot(parties.platformRecipient, 2700), slot(RWAGMI, 1000, RWAGMI)];
     const kinds = classifySlots(rewards, { ...parties, burner: null });
     expect(kinds).toEqual(['agent', 'creator', 'platform', 'protocol']);
-    expect(bpsByKind(rewards, kinds)).toEqual({ agent: 450, creator: 5850, burn: 0, platform: 2700, protocol: 1000 });
+    expect(bpsByKind(rewards, kinds)).toEqual({ agent: 450, creator: 5850, burn: 0, platform: 2700, recipient: 0, protocol: 1000 });
   });
 
   it('classifies the buyback preset [kernel, creator, burner, platform] + RWAGMI', () => {
@@ -125,7 +125,7 @@ describe('Clanker v5 tax arithmetic (docs/design/clanker-v5-migration.md section
   it('per-kind bps of the tax: the four kinds and Clanker’s share sum to 10000, the platform never above its share', () => {
     // Standard preset at 1.5%: Clanker 3333, slots 6667 split 5 / 65 / 30.
     const std = clankerV5SlotBps([500, 6500, 3000], 0, 3333);
-    expect(std).toEqual({ paid: [333, 4334, 2000], burn: 0 });
+    expect(std).toEqual({ paid: [333, 4334, 2000], burn: 0, dividend: 0 });
     expect(std.paid.reduce((a, b) => a + b, 0) + std.burn + 3333).toBe(REWARD_BPS_TOTAL);
     // Buyback preset: the burn is 15% of the slot pool, in the coin; the paid slots share the other 85%.
     const bb = clankerV5SlotBps([588, 5883, 3529], 1500, 3333);

@@ -1,7 +1,7 @@
 import { encodeAbiParameters, encodeEventTopics, toEventSelector, type Abi, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
 
-import { ClankerV5LaunchedEvent } from '../../abis/BootrClankerLauncherV5';
+import { ClankerV5LaunchedFixedEvent } from '../../abis/BootrClankerLauncherV5';
 import { ClankerV5FactoryAbi, ClankerV5HookAbi, PoolManagerLaunchAbi } from '../../abis/ClankerV5';
 
 import {
@@ -223,12 +223,12 @@ describe('a Clanker v5 launch (docs/design/clanker-v5-migration.md section 6)', 
       antiSnipeEnabled: true,
     }),
     log(FACTORY, ClankerV5FactoryAbi, 'Launched', { token: V5_COIN, poolId, originalCreator: V5_LAUNCHER, quoteToken: NATIVE, launchSupply: CLANKER_V5_SUPPLY, tickSpacing: 200 }),
-    log(V5_LAUNCHER, [ClankerV5LaunchedEvent], 'ClankerV5Launched', { token: V5_COIN, poolId, hook: V5_HOOK, feeEscrow: ESCROW, quoteToken: NATIVE, tickSpacing: 200, taxBps: 15_000, antiSnipe: true }),
+    log(V5_LAUNCHER, [ClankerV5LaunchedFixedEvent], 'ClankerV5Launched', { token: V5_COIN, poolId, hook: V5_HOOK, feeEscrow: ESCROW, quoteToken: NATIVE, tickSpacing: 200, taxBps: 15_000, antiSnipe: true }),
   ];
 
   it('pins the v5 event topics of the vendored verified ABIs (CreatorTaxCredited, FeeSlotCreated and Claimed seen on Base 2026-11-10)', () => {
     expect(CLANKER_V5_TOPICS).toMatchObject({
-      ClankerV5Launched: toEventSelector('ClankerV5Launched(address,bytes32,address,address,address,int24,uint24,bool)'),
+      ClankerV5LaunchedFixed: toEventSelector('ClankerV5Launched(address,bytes32,address,address,address,int24,uint24,bool)'),
       CreatorTaxCredited: toEventSelector('CreatorTaxCredited(bytes32,address,address,uint256)'),
       BurnTaxCredited: toEventSelector('BurnTaxCredited(bytes32,address,address,uint256)'),
       FeeSlotCreated: toEventSelector('FeeSlotCreated(bytes32,uint256,address,address,uint16,bool)'),
@@ -243,7 +243,23 @@ describe('a Clanker v5 launch (docs/design/clanker-v5-migration.md section 6)', 
 
   it('reads the launch facts from the receipt: the wrapper’s event, the slots of this pool, the policy, the supply, the tick and the band', () => {
     const f = clankerV5LaunchFacts(receipt, { token: V5_COIN, launcher: V5_LAUNCHER, poolManager: PM, factory: FACTORY });
-    expect(f.launched).toEqual({ token: V5_COIN, poolId, hook: V5_HOOK, feeEscrow: ESCROW, quoteToken: NATIVE, tickSpacing: 200, taxBps: 15_000, antiSnipe: true });
+    // The fixed launcher's event (never deployed) still decodes: one tax for both sides, no settings.
+    expect(f.launched).toEqual({
+      token: V5_COIN,
+      poolId,
+      hook: V5_HOOK,
+      feeEscrow: ESCROW,
+      quoteToken: NATIVE,
+      tickSpacing: 200,
+      taxBps: 15_000,
+      buyTaxBps: 15_000,
+      sellTaxBps: 15_000,
+      burnBps: null,
+      dividendBps: null,
+      antiSnipe: true,
+      metadataEditable: null,
+      layout: 'fixed',
+    });
     expect(f.slots.map((s) => [s.slot, s.recipient, s.weightBps])).toEqual(slotsIn.map((s, i) => [i, s.recipient, s.weightBps]));
     expect(f.policy).toEqual({ protocolTaxShare: 10_000_000, minimumProtocolFeeRate: 500_000, maximumProtocolFeeRate: 1_000_000 });
     expect(f.taxRate).toBe(1_500_000);
@@ -260,20 +276,20 @@ describe('a Clanker v5 launch (docs/design/clanker-v5-migration.md section 6)', 
   it('stores the paid slots in bps of the tax plus a synthetic burn slot; with Clanker’s share they sum to 10000', () => {
     const f = clankerV5LaunchFacts(receipt, { token: V5_COIN, launcher: V5_LAUNCHER, poolManager: PM, factory: FACTORY });
     const defaults = { agentBps: 500, burnBps: 1500, platformBps: 3000, platformRecipient: parties.platformRecipient };
-    const { rewards, burnSlot, protocolBps } = clankerV5Slots(f, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, defaults });
+    const { rewards, kinds, burnSlot, protocolBps } = clankerV5Slots(f, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: f.burnBps!, defaults });
     expect(protocolBps).toBe(3333);
     expect(burnSlot).toBe(3);
     expect(rewards.map((r) => r.recipient)).toEqual([parties.kernel, parties.creator, parties.platformRecipient, DEAD_ADDRESS]);
-    const kinds = [...classifySlots(rewards.slice(0, 3), { ...parties, burner: null }, 'clanker-v5'), 'burn' as const];
     expect(kinds).toEqual(['agent', 'creator', 'platform', 'burn']);
+    expect(kinds.slice(0, 3)).toEqual(classifySlots(rewards.slice(0, 3), { ...parties, burner: null }, 'clanker-v5'));
     const bps = bpsByKind(rewards, kinds);
     expect(bps.agent + bps.creator + bps.burn + bps.platform + protocolBps).toBe(10_000);
     expect(bps.burn).toBe(1000);
     // Same answer from the preset alone (no FeeSlotCreated, no LaunchTaxConfigured).
-    const fallback = clankerV5Slots({ slots: [], policy: null, taxRate: null, burnBps: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, defaults });
+    const fallback = clankerV5Slots({ slots: [], policy: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: 1500, defaults });
     expect(fallback.rewards.map((r) => [r.recipient, r.bps])).toEqual(rewards.map((r) => [r.recipient, r.bps]));
     // The standard preset has no burn slot.
-    const std = clankerV5Slots({ slots: [], policy: null, taxRate: null, burnBps: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, defaults: { ...defaults, agentBps: 500, burnBps: 0 } });
+    const std = clankerV5Slots({ slots: [], policy: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: 0, defaults: { ...defaults, agentBps: 500, burnBps: 0 } });
     expect(std.burnSlot).toBeNull();
     expect(std.rewards).toHaveLength(3);
   });

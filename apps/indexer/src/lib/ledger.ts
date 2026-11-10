@@ -7,7 +7,7 @@ import { and, eq } from 'ponder';
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { collectionRows, pickV5Slot } from './clanker';
+import { collectionRows, dividendPatch, pickV5Slot, type ClankerV5HookCredit } from './clanker';
 import { splitFee, type RecipientKind } from './fees';
 import { usd } from './price';
 import { assetUsd, bumpDaily, bumpPlatform, bumpSource, feeKindDelta, getEthUsd, getPlatformConfig, lc, sourceOf, type Ctx, type TokenRow } from './store';
@@ -189,15 +189,66 @@ export async function applyClankerV5TaxCredit(
   const kind = slot.recipientKind as RecipientKind;
   const asset = lc(c.asset);
   const amountUsd = await bookAccrual(context, t, { id, recipient, recipientKind: kind, asset, amount: c.amount, settled: true }, m, ethUsd, cfg.bootToken);
+  await insertV5Credit(context, t, poolId, slot.slot, recipient, kind, asset, c.amount, amountUsd, m);
+}
+
+/**
+ * Clanker v5 path: one decoded hook credit of a coin of ours (`decodeV5HookCredit`). A slot or burn credit is booked by
+ * `applyClankerV5TaxCredit`; a dividend credit (`DividendTaxCredited`, to the coin's tracker, or
+ * `DividendTaxRedirected`, to Clanker while no holder qualifies) is a `dividendCredit` row and the coin's dividend
+ * totals. Dividends are not a fee slot: no `feeBalance`, no per-holder accounting.
+ */
+export async function applyClankerV5HookCredit(context: Ctx, t: TokenRow, c: ClankerV5HookCredit, m: FeeMeta) {
+  if (c.amount === 0n) return;
+  if (c.kind === 'slot' || c.kind === 'burn') {
+    await applyClankerV5TaxCredit(context, t, c.poolId, { burn: c.kind === 'burn', recipient: c.recipient, asset: c.asset, amount: c.amount }, m);
+    return;
+  }
+  const ethUsd = await getEthUsd(context, m.blockNumber);
+  const amountUsd = assetUsd(c.asset, c.amount, t, ethUsd);
+  const row = await context.db
+    .insert(schema.dividendCredit)
+    .values({
+      id: `${m.txHash}-${m.logIndex}`,
+      token: t.id,
+      poolId: c.poolId,
+      recipient: c.recipient,
+      redirected: c.kind === 'dividendRedirected',
+      asset: c.asset,
+      amount: c.amount,
+      amountUsd,
+      timestamp: m.timestamp,
+      blockNumber: m.blockNumber,
+      logIndex: m.logIndex,
+      txHash: m.txHash,
+    })
+    .onConflictDoNothing();
+  if (!row) return;
+  await context.db.update(schema.token, { id: t.id }).set((r) => dividendPatch(r, c, amountUsd));
+}
+
+async function insertV5Credit(
+  context: Ctx,
+  t: TokenRow,
+  poolId: Hex,
+  slot: number,
+  recipient: Address,
+  kind: RecipientKind,
+  asset: Address,
+  amount: bigint,
+  amountUsd: number,
+  m: FeeMeta,
+) {
+  const id = `${m.txHash}-${m.logIndex}`;
   await context.db.insert(schema.feeCredit).values({
     id,
     token: t.id,
     poolId,
-    slot: slot.slot,
+    slot,
     recipient,
     recipientKind: kind,
     asset,
-    amount: c.amount,
+    amount,
     amountUsd,
     timestamp: m.timestamp,
     blockNumber: m.blockNumber,

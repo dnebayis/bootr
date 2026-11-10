@@ -542,6 +542,130 @@ export const ClankerV5HookAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "name": "DividendTaxCredited",
+    "type": "event",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "dividend",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "currency",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "name": "DividendTaxRedirected",
+    "type": "event",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "currency",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "name": "FeeSlotAdminUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "slotIndex",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "oldAdmin",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "newAdmin",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "name": "FeeSlotRecipientUpdated",
+    "type": "event",
+    "inputs": [
+      {
+        "name": "poolId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "PoolId"
+      },
+      {
+        "name": "slotIndex",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "oldRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "newRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
   }
 ] as const;
 
@@ -1607,6 +1731,31 @@ export const PoolManagerLaunchAbi = [
       { "name": "liquidityDelta", "type": "int256", "indexed": false, "internalType": "int256" },
       { "name": "salt", "type": "bytes32", "indexed": false, "internalType": "bytes32" }
     ],
+    "anonymous": false
+  }
+] as const;
+
+/**
+ * `TaxLaunchToken` (the coin itself; verified source `src/tax/TaxLaunchToken.sol` in the factory's Sourcify match): the
+ * genesis `ExtraMetadataUpdated(factory, key, value)` per metadata key (`image`, `metadata`, `context`) and
+ * `DividendInitialized(dividendContract)` when the coin was launched with holder dividends. Both are read from the
+ * launch receipt only.
+ */
+export const ClankerV5TokenAbi = [
+  {
+    "name": "ExtraMetadataUpdated",
+    "type": "event",
+    "inputs": [
+      { "name": "updater", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "metadataKey", "type": "string", "indexed": false, "internalType": "string" },
+      { "name": "metadataValue", "type": "string", "indexed": false, "internalType": "string" }
+    ],
+    "anonymous": false
+  },
+  {
+    "name": "DividendInitialized",
+    "type": "event",
+    "inputs": [{ "name": "dividendContract", "type": "address", "indexed": true, "internalType": "address" }],
     "anonymous": false
   }
 ] as const;

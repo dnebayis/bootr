@@ -1,7 +1,12 @@
 import type { Address } from 'viem';
 
-export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
-export const RECIPIENT_KINDS: readonly RecipientKind[] = ['agent', 'creator', 'burn', 'platform'];
+/**
+ * Who a fee slot pays. `recipient` is one of the up to four extra reward rows a creator adds on a Clanker v5 coin
+ * launched with token settings (docs/design/clanker-v5-token-settings.md section 2.2), each with its own admin; the
+ * creator's own row is `creator`.
+ */
+export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform' | 'recipient';
+export const RECIPIENT_KINDS: readonly RecipientKind[] = ['agent', 'creator', 'burn', 'platform', 'recipient'];
 /** A reward slot's owner: one of Bootr's parties, or RWAGMI's protocol slot. */
 export type SlotKind = RecipientKind | 'protocol';
 
@@ -93,14 +98,23 @@ export function clankerV5SlotWeights(d: { agentBps: number; burnBps: number; pla
 }
 
 /**
- * What each v5 fee slot receives in bps of the tax, so that the four kinds plus `protocolBps` sum to 10_000 like the
- * Bootr path: the slot pool is `10_000 - protocolBps`, the burn takes `burnBps` of it (in the coin), the paid slots
- * split the rest by their hook weights (each rounded down, the rounding gap to the heaviest slot, the creator's).
+ * What each v5 fee slot receives in bps of the tax, so that the kinds plus `protocolBps` sum to 10_000 like the
+ * Bootr path: the slot pool is `10_000 - protocolBps`, the burn takes `burnBps` of it (in the coin), the holder
+ * dividends `dividendBps` of it (in the quote, to the coin's dividend tracker), the paid slots split the rest by their
+ * hook weights (each rounded down, the rounding gap to `gapTo`, else the heaviest slot).
  */
-export function clankerV5SlotBps(weights: readonly number[], burnBps: number, protocolBps: number): { paid: number[]; burn: number } {
+export function clankerV5SlotBps(
+  weights: readonly number[],
+  burnBps: number,
+  protocolBps: number,
+  dividendBps = 0,
+  /** The slot that takes the rounding gap; the heaviest when omitted. */
+  gapTo?: number,
+): { paid: number[]; burn: number; dividend: number } {
   const pool = REWARD_BPS_TOTAL - protocolBps;
   const burn = Math.floor((pool * burnBps) / REWARD_BPS_TOTAL);
-  const rest = pool - burn;
+  const dividend = Math.floor((pool * dividendBps) / REWARD_BPS_TOTAL);
+  const rest = pool - burn - dividend;
   const paid = weights.map((w) => Math.floor((rest * w) / REWARD_BPS_TOTAL));
   if (paid.length > 0) {
     const gap = rest - paid.reduce((a, b) => a + b, 0);
@@ -108,9 +122,72 @@ export function clankerV5SlotBps(weights: readonly number[], burnBps: number, pr
     weights.forEach((w, i) => {
       if (w > weights[heaviest]!) heaviest = i;
     });
-    paid[heaviest] = paid[heaviest]! + gap;
+    const to = gapTo !== undefined && gapTo >= 0 && gapTo < paid.length ? gapTo : heaviest;
+    paid[to] = paid[to]! + gap;
   }
-  return { paid, burn };
+  return { paid, burn, dividend };
+}
+
+/**
+ * The fee-slot weights the token-settings launcher sends to Clanker (design note section 2.2), used only when the hook's
+ * `FeeSlotCreated` logs and `poolFeeSlots` are both out of reach: over the slot pool `P = agent + platform + creator
+ * funds` (creator funds = `10_000 - agent - platform - burn - dividends`), the agent's weight rounded up, the
+ * platform's down, the creator's row the rest; `[agent, platform]` alone when there are no creator funds.
+ */
+export function settingsSlotWeights(d: { agentBps: number; platformBps: number; burnBps: number; dividendBps: number }): number[] {
+  const funds = Math.max(0, REWARD_BPS_TOTAL - d.agentBps - d.platformBps - d.burnBps - d.dividendBps);
+  const pool = d.agentBps + d.platformBps + funds;
+  if (pool <= 0) return [];
+  const agent = Math.ceil((d.agentBps * REWARD_BPS_TOTAL) / pool);
+  if (funds === 0) return [agent, REWARD_BPS_TOTAL - agent];
+  const platform = Math.floor((d.platformBps * REWARD_BPS_TOTAL) / pool);
+  return [agent, platform, REWARD_BPS_TOTAL - agent - platform];
+}
+
+/**
+ * How a v5 coin's hook slots were laid out: `fixed` (the fixed launcher, never deployed: `[kernel, creator, platform]`,
+ * every admin the launcher) or `settings` (the token-settings launcher: `[agent, platform, creator's row, extra rows…]`,
+ * agent and platform with the launcher as admin, the rows with the admins the creator chose).
+ */
+export type ClankerV5SlotLayout = 'fixed' | 'settings';
+
+/**
+ * Classify a v5 coin's fee slots by recipient **and** admin. `fixed` layout: positional, as `classifySlots`.
+ * `settings` layout: a launcher-admin slot paying the kernel is the agent's and one paying the platform recipient is the
+ * platform's (the creator cannot make either: a row's admin may not be the launcher); the first slot with another admin
+ * is the creator's own row (`creator`, whoever it pays), every later one an extra reward row (`recipient`). A
+ * launcher-admin slot paying anyone else stays unclassified.
+ */
+export function classifyV5Slots(
+  slots: readonly { recipient: Address; admin: Address }[],
+  t: { launcher: Address; kernel: Address; creator: Address; platformRecipient: Address },
+  layout: ClankerV5SlotLayout,
+): (SlotKind | null)[] {
+  if (layout === 'fixed') {
+    return classifySlots(
+      slots.map((s) => ({ ...s, bps: 0 })),
+      { kernel: t.kernel, creator: t.creator, burner: null, platformRecipient: t.platformRecipient },
+      'clanker-v5',
+    );
+  }
+  const seen = new Set<SlotKind>();
+  const take = (k: SlotKind): SlotKind => {
+    seen.add(k);
+    return k;
+  };
+  return slots.map((s): SlotKind | null => {
+    if (eq(s.admin, t.launcher)) {
+      if (!seen.has('agent') && eq(s.recipient, t.kernel)) return take('agent');
+      if (!seen.has('platform') && eq(s.recipient, t.platformRecipient)) return take('platform');
+      return null;
+    }
+    return seen.has('creator') ? 'recipient' : take('creator');
+  });
+}
+
+/** The tax a trader paid on one side of a v5 trade, in pips (`lpFeeBps` units): the side's own rate, else `lpFeeBps`. */
+export function v5SideTaxPips(t: { lpFeeBps: number; buyTaxBps: number | null; sellTaxBps: number | null }, side: 'buy' | 'sell'): number {
+  return (side === 'buy' ? t.buyTaxBps : t.sellTaxBps) ?? t.lpFeeBps;
 }
 
 /**
@@ -184,7 +261,7 @@ export function classifySlots(rewards: readonly RewardSlot[], t: TokenParties, s
 
 /** Sum of slot bps per kind (the token row's `agentBps` ... `protocolBps`). */
 export function bpsByKind(rewards: readonly RewardSlot[], kinds: readonly (SlotKind | null)[]): Record<SlotKind, number> {
-  const out: Record<SlotKind, number> = { agent: 0, creator: 0, burn: 0, platform: 0, protocol: 0 };
+  const out: Record<SlotKind, number> = { agent: 0, creator: 0, burn: 0, platform: 0, recipient: 0, protocol: 0 };
   rewards.forEach((r, i) => {
     const k = kinds[i];
     if (k) out[k] += r.bps;

@@ -1742,59 +1742,95 @@ export const BootrClankerLauncherV5Abi = [
   }
 ] as const;
 
-/** `ClankerV5Launched` alone, appended to the v4 wrapper's ABI in ponder.config.ts (one `BootrClankerLauncher` source follows every Clanker launcher, v4 and v5). */
+/**
+ * The v5 launcher's own events that the indexer follows, appended to the v4 wrapper's ABI in ponder.config.ts (one
+ * `BootrClankerLauncher` source follows every Clanker launcher, v4 and v5). **Expected shapes** of the token-settings
+ * launcher (docs/design/clanker-v5-token-settings.md section 2.2, `launch(LaunchParams, TokenSettings)`), written before
+ * the contract: the generated `BootrClankerLauncherV5Abi` above is still the fixed launcher's and is replaced from forge
+ * at merge; if the contract's final events differ, these fragments and their one decoder each in src/lib/clanker.ts
+ * (`decodeClankerV5Launched`, `decodeLauncherMetadataEdit`) are the only places to change.
+ *
+ * `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, buyTaxBps, sellTaxBps, burnBps,
+ * dividendBps, antiSnipe, metadataEditable)`: taxes in hundredths of a bip (15_000 = 1.5%, like `lpFeeBps`), burn and
+ * dividends in bps of the post-Clanker pool (Clanker's `burnAllocationShare` / `dividendAllocationShare` / 1e4). The
+ * fee slots are the hook's `FeeSlotCreated` logs and the dividend minimum is in the factory's `LaunchTaxConfigured`.
+ */
 export const ClankerV5LaunchedEvent = {
   "type": "event",
   "name": "ClankerV5Launched",
   "inputs": [
-    {
-      "name": "token",
-      "type": "address",
-      "indexed": true,
-      "internalType": "address"
-    },
-    {
-      "name": "poolId",
-      "type": "bytes32",
-      "indexed": false,
-      "internalType": "bytes32"
-    },
-    {
-      "name": "hook",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "feeEscrow",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "quoteToken",
-      "type": "address",
-      "indexed": false,
-      "internalType": "address"
-    },
-    {
-      "name": "tickSpacing",
-      "type": "int24",
-      "indexed": false,
-      "internalType": "int24"
-    },
-    {
-      "name": "taxBps",
-      "type": "uint24",
-      "indexed": false,
-      "internalType": "uint24"
-    },
-    {
-      "name": "antiSnipe",
-      "type": "bool",
-      "indexed": false,
-      "internalType": "bool"
-    }
+    { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+    { "name": "poolId", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+    { "name": "hook", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "feeEscrow", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "quoteToken", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "tickSpacing", "type": "int24", "indexed": false, "internalType": "int24" },
+    { "name": "buyTaxBps", "type": "uint24", "indexed": false, "internalType": "uint24" },
+    { "name": "sellTaxBps", "type": "uint24", "indexed": false, "internalType": "uint24" },
+    { "name": "burnBps", "type": "uint16", "indexed": false, "internalType": "uint16" },
+    { "name": "dividendBps", "type": "uint16", "indexed": false, "internalType": "uint16" },
+    { "name": "antiSnipe", "type": "bool", "indexed": false, "internalType": "bool" },
+    { "name": "metadataEditable", "type": "bool", "indexed": false, "internalType": "bool" }
   ],
   "anonymous": false
 } as const;
+
+/**
+ * The fixed v5 launcher's `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken, tickSpacing, taxBps,
+ * antiSnipe)` (one tax for both sides, no settings). Never deployed (owner decision of 2026-11-10: one launcher with the
+ * settings); the receipt decoder still reads it so a launch through that build would be indexed as before.
+ */
+export const ClankerV5LaunchedFixedEvent = {
+  "type": "event",
+  "name": "ClankerV5Launched",
+  "inputs": [
+    { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+    { "name": "poolId", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+    { "name": "hook", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "feeEscrow", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "quoteToken", "type": "address", "indexed": false, "internalType": "address" },
+    { "name": "tickSpacing", "type": "int24", "indexed": false, "internalType": "int24" },
+    { "name": "taxBps", "type": "uint24", "indexed": false, "internalType": "uint24" },
+    { "name": "antiSnipe", "type": "bool", "indexed": false, "internalType": "bool" }
+  ],
+  "anonymous": false
+} as const;
+
+/**
+ * Creator-only metadata edits through the launcher (design note section 2.5: `updateImage(token, url)`,
+ * `updateMetadata(token, json)`, `lockMetadata(token)`; only `coinCreator[token]` may call them, and only while the
+ * coin is editable). Expected shapes: `ImageUpdated(token, creator, image)`, `MetadataUpdated(token, creator,
+ * metadata)`, `MetadataLocked(token, creator)`. The launcher forwards the first two to Clanker's
+ * `updateTokenExtraMetadata(token, "image" | "metadata", value)`; the lock is the launcher's own one-way flag.
+ */
+export const ClankerV5MetadataEvents = [
+  {
+    "type": "event",
+    "name": "ImageUpdated",
+    "inputs": [
+      { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "creator", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "image", "type": "string", "indexed": false, "internalType": "string" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MetadataUpdated",
+    "inputs": [
+      { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "creator", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "metadata", "type": "string", "indexed": false, "internalType": "string" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MetadataLocked",
+    "inputs": [
+      { "name": "token", "type": "address", "indexed": true, "internalType": "address" },
+      { "name": "creator", "type": "address", "indexed": true, "internalType": "address" }
+    ],
+    "anonymous": false
+  }
+] as const;
