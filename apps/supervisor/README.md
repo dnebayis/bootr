@@ -682,8 +682,8 @@ Clanker's `TaxLaunchHook` credits every slot's share on each swap, in the pool's
    the agent, creator and platform slots, extra reward rows as `otherRecipients` (never their addresses), the
    `holderDividends` with `holderMinimumCoins`, the burn and `pairedAsset`; a recipient the coin does not have is not
    listed. The agent's own coin comes from `config.clankerV5.settings`, any other coin (`read_coin`) from the indexer
-   row, which for a v5 coin must carry `buyTaxBps`, `sellTaxBps` (hundredths of a bip), `recipientBps` and
-   `dividendsBps` (bps of the tax, like `agentBps`), and may carry `pairedToken` and `minDividendHolding` (raw units);
+   row, which for a v5 coin must carry `buyTaxBps`, `sellTaxBps` (hundredths of a bip), `rewardsBps` and
+   `dividendBps` (bps of the tax, like `agentBps`), and may carry `pairedToken` and `minDividendHolding` (raw units);
    a v5 row without them gets no split.
 
 ## Gas

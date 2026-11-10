@@ -19,7 +19,7 @@
  *   and the rest is split by the creator's settings: the agent and platform slots, the creator's own row, any extra
  *   reward rows ("other recipients", never named), the holder dividends and the burn (taken in the coin). Fees are paid
  *   in the coin's paired asset (ETH or USDC). From the indexer a v5 row must carry `buyTaxBps`, `sellTaxBps`,
- *   `dividendsBps` and `recipientBps` (the settings launcher's fields); a row without them gets no split.
+ *   `dividendBps` and `rewardsBps` (the settings launcher's fields); a row without them gets no split.
  */
 import type { AgentConfig } from '@bootr/agent-core';
 import { getAddresses } from '@bootr/shared/addresses';
@@ -144,8 +144,8 @@ function v5FromRow(row: Record<string, unknown>): CoinFeeSplit | null {
   const shares = {
     agent: count(row.agentBps),
     creator: count(row.creatorBps),
-    otherRecipients: count(row.recipientBps),
-    holderDividends: count(row.dividendsBps),
+    otherRecipients: count(row.rewardsBps),
+    holderDividends: count(row.dividendBps),
     burn: count(row.burnBps),
     platform: count(row.platformBps),
   };

@@ -49,7 +49,7 @@ const FULL: ClankerV5TokenSettings = {
 };
 
 /** The indexer row of the default coin: kinds in bps of the tax after Clanker's 3333 (apps/indexer/src/lib/fees.ts). */
-const ROW_DEFAULT = { source: 'clanker-v5', lpFeeBps: 15_000, buyTaxBps: 15_000, sellTaxBps: 15_000, agentBps: 333, creatorBps: 4_334, recipientBps: 0, dividendsBps: 0, burnBps: 0, platformBps: 2_000, protocolBps: 3_333, pairedToken: zeroAddress };
+const ROW_DEFAULT = { source: 'clanker-v5', lpFeeBps: 15_000, buyTaxBps: 15_000, sellTaxBps: 15_000, agentBps: 333, creatorBps: 4_334, rewardsBps: 0, dividendBps: 0, burnBps: 0, platformBps: 2_000, protocolBps: 3_333, pairedToken: zeroAddress };
 
 /** A row without some of its fields (an indexer that does not send them). */
 const without = (row: Record<string, unknown>, ...keys: string[]) => Object.fromEntries(Object.entries(row).filter(([k]) => !keys.includes(k)));
@@ -131,15 +131,15 @@ describe('coin fees of a Clanker v5 coin (the split an agent states in posts)', 
   it('from the indexer: a v5 row needs the settings fields; without them there is no split, and USDC is told apart by address', () => {
     const withoutTaxes = without(ROW_DEFAULT, 'buyTaxBps', 'sellTaxBps');
     expect(coinFeeSplit(withoutTaxes)).toBeNull();
-    const withoutDividends = without(ROW_DEFAULT, 'dividendsBps');
+    const withoutDividends = without(ROW_DEFAULT, 'dividendBps');
     expect(coinFeeSplit(withoutDividends)).toBeNull();
-    const withoutRows = without(ROW_DEFAULT, 'recipientBps');
+    const withoutRows = without(ROW_DEFAULT, 'rewardsBps');
     expect(coinFeeSplit(withoutRows)).toBeNull();
     expect(coinFeeSplit({ ...ROW_DEFAULT, pairedToken: USDC_BASE })?.pairedAsset).toBe('USDC');
     expect(coinFeeSplit({ ...ROW_DEFAULT, pairedToken: USDC_BASE.toLowerCase() })?.pairedAsset).toBe('USDC');
     expect(coinFeeSplit({ ...ROW_DEFAULT, pairedToken: '0x1111111111111111111111111111111111111111' })?.pairedAsset).toBe('other');
     // a full row: dividends and other recipients appear, the minimum in coins
-    const full = coinFeeSplit({ ...ROW_DEFAULT, sellTaxBps: 20_000, agentBps: 333, creatorBps: 1_600, recipientBps: 1_067, dividendsBps: 1_000, burnBps: 667, platformBps: 2_000, minDividendHolding: (10_000n * 10n ** 18n).toString() })!;
+    const full = coinFeeSplit({ ...ROW_DEFAULT, sellTaxBps: 20_000, agentBps: 333, creatorBps: 1_600, rewardsBps: 1_067, dividendBps: 1_000, burnBps: 667, platformBps: 2_000, minDividendHolding: (10_000n * 10n ** 18n).toString() })!;
     expect(full).toMatchObject({ sellTaxPct: 2, launcherTakesOnSellPct: 0.5, holderMinimumCoins: 10_000, otherRecipientRows: null, hasBurn: true });
     expect(Object.keys(full.recipientsPct)).toEqual(['agent', 'creator', 'otherRecipients', 'holderDividends', 'burn', 'platform']);
     // RWAGMI and Clanker v4 lines are unchanged
