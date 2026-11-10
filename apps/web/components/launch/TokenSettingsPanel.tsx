@@ -201,7 +201,14 @@ export function TokenSettingsPanel({
 }) {
   const set = (patch: Partial<TokenSettingsDraft>) => onChange({ ...draft, ...patch });
   const s = settingsFromDraft(draft, creator, bounds);
-  const bad = (field: string) => problems.some((p) => p.field === field || p.field.startsWith(`${field}.`));
+  // A reward row just added and not typed in yet shows no errors (the form still refuses to launch with it): the red
+  // appears once the creator starts filling it in.
+  const untouchedRow = (i: number) => i > 0 && !!draft.rewards[i] && draft.rewards[i]!.admin === '' && draft.rewards[i]!.recipient === '' && draft.rewards[i]!.pct === '';
+  const shown = problems.filter((p) => {
+    const row = /^rewards\.(\d+)\./.exec(p.field);
+    return !(row && untouchedRow(Number(row[1])));
+  });
+  const bad = (field: string) => shown.some((p) => p.field === field || p.field.startsWith(`${field}.`));
   const minTax = bounds.minTaxBps / 10_000;
   const maxTax = bounds.maxTaxBps / 10_000;
   const agentPct = bounds.agentShareBps / 100;
@@ -339,7 +346,7 @@ export function TokenSettingsPanel({
             {draft.rewards.map((r, i) => {
               const own = i === 0;
               return (
-                <div key={i} className="grid gap-2 rounded-sm border border-hairline p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px_auto] sm:items-end" data-testid={`reward-row-${i}`}>
+                <div key={i} className="grid gap-2 rounded-sm border border-hairline p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_120px_auto] sm:items-end" data-testid={`reward-row-${i}`}>
                   <div className="min-w-0">
                     <Label htmlFor={`reward-admin-${i}`}>{own ? 'Admin (you)' : 'Admin'}</Label>
                     <Input
@@ -411,9 +418,9 @@ export function TokenSettingsPanel({
         <MarketDetailsPanel asset={draft.pairedAsset} />
       </Block>
 
-      {problems.length > 0 ? (
+      {shown.length > 0 ? (
         <ul className="flex flex-col gap-0.5 text-caption text-danger" data-testid="settings-problems">
-          {problems.map((p) => (
+          {shown.map((p) => (
             <li key={`${p.field}:${p.message}`}>{p.message}</li>
           ))}
         </ul>

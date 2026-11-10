@@ -105,6 +105,9 @@ test('token settings: the creator’s row plus up to four more, adding up to 100
   for (let i = 1; i <= 4; i++) await rewards.getByRole('button', { name: '+ Add recipient' }).click();
   await expect(rewards.getByRole('button', { name: '+ Add recipient' })).toHaveCount(0);
   await expect(rewards).toContainText('Up to 4 recipients beside yours.');
+  // A row just added shows no errors until it is typed in; a bad address then shows at once.
+  await expect(page.getByTestId('settings-problems')).toHaveCount(0);
+  await page.locator('#reward-recipient-1').fill('0x12');
   await expect(page.getByTestId('settings-problems')).toContainText('Row 2: the recipient must be a wallet address.');
 
   await page.locator('#reward-pct-0').fill('60');
