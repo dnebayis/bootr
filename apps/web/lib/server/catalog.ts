@@ -420,7 +420,7 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     ),
     get(
       '/creator/{address}',
-      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker count once their fees are collected. Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. When the wallet also holds another share of a coin, one claim pays both: claimedUsd counts the creator share alone, or is null when the shares cannot be told apart exactly. At most 200 coins.',
+      'One creator’s public record: the coins launched from an address, their agents and the fees booked to the creator. Coins launched through Clanker v4 count once their fees are collected; Clanker v5 coins count on every trade. Dollars are at the ETH price of each event, so claimed can read above earned; the WETH figures cannot. When the wallet also holds another share of a coin, one claim pays both: claimedUsd counts the creator share alone, or is null when the shares cannot be told apart exactly. At most 200 coins.',
       '{address, readAt, indexedAt, totals: {coins, agents, earnedUsd, claimedUsd, earnedWeth, claimedWeth}, coins: [token row plus agent and creatorFees: {earnedUsd, claimedUsd, earnedWeth, claimedWeth, otherShares: [{kind, earnedUsd, claimedUsd}]}]}; claimedUsd and claimedWeth can be null; WETH in wei strings; 400 malformed address; no coins answers empty lists',
       { path: pathParam('address', ADDRESS) },
     ),
