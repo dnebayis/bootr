@@ -181,8 +181,9 @@ const TWO_SLOT_WALLETS: Record<string, CreatorCoin['creatorFees']> = {
   },
 };
 
-function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number): { token: Token; agent: Agent } {
-  const id = hex(rand, 20) as Address;
+function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number, idOverride?: Address): { token: Token; agent: Agent } {
+  const drawn = hex(rand, 20) as Address;
+  const id = idOverride ?? drawn;
   const kernel = hex(rand, 20) as Address;
   const buyback = rand() < 0.35;
   // Skewed: most coins are small; older coins drift larger. ~1 in 4 graduates.
@@ -1462,10 +1463,12 @@ export function mockLaunch(input: {
   workerHash?: Hex;
   /** The coin's own links from the form, shown on the mock coin page like the hosted contract URI would. */
   links?: CoinPageLinks;
+  /** The coin's address when the form predicted it (a Clanker v5 launch mines one ending in `cccc`). */
+  id?: Address;
 }): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
-  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand);
+  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand, input.id);
   token.image = input.image || avatarFor(input.symbol, s.tokens.length);
   token.model = input.model;
   token.xHandle = input.xHandle;

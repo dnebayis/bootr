@@ -42,6 +42,26 @@ test('agent API: launchThrough picks the Clanker launcher, anything else is refu
   expect(((await bad.json()) as { message: string }).message).toContain('launchThrough');
 });
 
+test('agent API: launchThrough clanker-v5 mines the salt so the coin address ends in cccc (mock mode)', async ({ request }) => {
+  const auth = await sign(request, 'Prepare a Bootr launch.');
+  const launch = { name: 'Gas Station', symbol: 'gas', identity: 'A patient onchain analyst for small Base coins.', image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` } };
+  const headers = { 'x-real-ip': '10.7.0.5' };
+  const res = await request.post('/api/agent/launch', { headers, data: { ...auth, launch: { ...launch, launchThrough: 'clanker-v5' } } });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as { launchThrough: string; salt: string; predictedToken: string; saltTries: number; metadata: string; transactions: { step: string; data: string; note: string }[] };
+  expect(body.launchThrough).toBe('clanker-v5');
+  expect(body.predictedToken.toLowerCase()).toMatch(/^0x[0-9a-f]{36}cccc$/);
+  expect(body.saltTries).toBeGreaterThan(0);
+  expect(body.salt).toMatch(/^0x[0-9a-f]{64}$/);
+  const step = body.transactions.find((t) => t.step === 'launch')!;
+  expect(step.note).toContain('BootrClankerLauncherV5.launch');
+  expect(step.note).toContain('cccc');
+  // The mined salt is the one in the calldata.
+  expect(step.data.toLowerCase()).toContain(body.salt.slice(2).toLowerCase());
+  // Clanker's page reads the coin's metadata as JSON, on v5 as on v4.
+  expect(() => JSON.parse(body.metadata)).not.toThrow();
+});
+
 test('agent API: a signed request prepares a launch (mock mode) and returns the transactions to send', async ({ request }) => {
   const auth = await sign(request, 'Prepare a Bootr launch.');
   const res = await request.post('/api/agent/launch', {

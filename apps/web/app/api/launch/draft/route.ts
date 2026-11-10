@@ -27,7 +27,7 @@ const limiter = new RateLimiter(PER_MINUTE, 60_000);
 /**
  * POST /api/launch/draft {draftId: <launch draft uuid>, identity: <20..600 chars>, coin?: {name, symbol, image, imageIpfs, xHandle, links?: {website, x, telegram, discord}},
  *   worker?: {kind: 'trader' | 'researcher' | 'community'} | {kind: 'custom', preset: {capabilities, postIntervalMs, identity: jobLines}},
- *   launchThrough?: 'bootr' | 'clanker'}
+ *   launchThrough?: 'bootr' | 'clanker' | 'clanker-v5'}
  * Stores the creator's Instructions text under the draft id so the hosted agent card (`/agents/<draftId>.json`)
  * can publish it and the supervisor can give the agent that persona (lib/server/launch-drafts.ts). `coin`
  * backs the token's ERC-7572 contract URI (`/tokens/<draftId>.json`); a custom `worker` is published in the
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
   }
   const source = normalizeSource(body.launchThrough);
   if (source === null) {
-    return NextResponse.json({ error: 'invalid_request', message: 'launchThrough must be bootr or clanker' }, { status: 400, headers: NO_STORE });
+    return NextResponse.json({ error: 'invalid_request', message: 'launchThrough must be bootr, clanker or clanker-v5' }, { status: 400, headers: NO_STORE });
   }
   const cookie = req.cookies.get(OWNER_COOKIE)?.value;
   let saved;

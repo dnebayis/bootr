@@ -125,10 +125,10 @@ export function normalizeWorker(input: unknown): DraftWorker | null {
   return template ? { kind: template.id } : null;
 }
 
-/** The form's `launchThrough` (`bootr` | `clanker`); absent means Bootr, anything else is refused. */
+/** The form's `launchThrough` (`bootr` | `clanker` | `clanker-v5`); absent means Bootr, anything else is refused. */
 export function normalizeSource(input: unknown): LaunchSource | null {
   if (input === undefined || input === null || input === 'bootr') return 'bootr';
-  return input === 'clanker' ? 'clanker' : null;
+  return input === 'clanker' || input === 'clanker-v5' ? input : null;
 }
 
 type DraftFile = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource; ownerTag: string; createdAt: number; updatedAt: number };

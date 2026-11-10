@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { useConnection, useReadContract, useWriteContract } from 'wagmi';
+import { useConnection, usePublicClient, useReadContract, useWriteContract } from 'wagmi';
 import { formatEther, formatUnits, keccak256, parseEther, parseEventLogs, parseUnits, toHex, type Address, zeroAddress } from 'viem';
 import { entryPoint, entryPointAbi, GAS_TOPUP_DEFAULT_ETH, GAS_TOPUP_MIN_ETH, validTopUp } from '@/lib/gas';
 import { toast } from 'sonner';
@@ -18,11 +18,13 @@ import {
   type WorkerPreset,
   type WorkerTemplateId,
 } from '@bootr/shared/workers';
-import { clankerLauncherAbi, defaultsFromTuple, FALLBACK_BUYBACK, FALLBACK_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
+import { addresses } from '@bootr/shared/addresses';
+import { clankerLauncherAbi, clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, FALLBACK_V5_STANDARD, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
+import { clankerV5FactoryAbi, FALLBACK_V5_START_TICK, mineLaunchSalt, openingCapEth, SaltMiningError } from '@/lib/clanker-v5';
 import { erc20Abi } from '@/lib/abi/erc20';
-import { ofVolume, pctLabel, traderPaysPct, type FeeModel } from '@/lib/fee-split';
+import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeModel } from '@/lib/fee-split';
 import type { LaunchSource } from '@/lib/types';
-import { contracts, USDC_DECIMALS } from '@/lib/contracts';
+import { CLANKER_PATHS, clankerPath, contracts, USDC_DECIMALS, type ClankerPath } from '@/lib/contracts';
 import { appChain } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { fetchModels, fetchPlatformFlags, WORKER_TEMPLATES } from '@/lib/launch';
@@ -108,30 +110,47 @@ function cadenceLabel(ms: number): string {
   return `Every ${Math.round(ms / 60_000)} min`;
 }
 
+/** The card ids of "Launch through": RWAGMI, or Clanker (v4 or v5, whichever this deployment's Clanker path is). */
+type LaunchCard = 'bootr' | 'clanker';
+
 /**
- * The two launch paths (docs/design/clanker-launch.md). Plain words: what the coin opens at, who takes what from the
- * fee, where it is listed. The form keeps the 1% fee for everyone; only the platform's own coin uses another fee.
+ * The two launch cards (docs/design/clanker-launch.md, docs/design/clanker-v5-migration.md). Plain words: what the coin
+ * opens at, who takes what from the fee, where it is listed. The Clanker card describes the path this deployment launches
+ * through: Clanker v4 until the v5 launcher is configured, Clanker v5 after (`clankerPath`). Only the platform's own
+ * coin uses another fee.
  */
-const LAUNCH_THROUGH: { id: LaunchSource; label: string; lines: string[] }[] = [
-  {
-    id: 'bootr',
-    label: 'RWAGMI',
-    lines: [
-      'Opens at about 2.7 ETH of market cap (around $6k).',
-      '1% fee on every trade: 90% of it goes to the agent, you and the platform, 10% to RWAGMI, the launcher.',
-      'Listed on bootr.fun.',
-    ],
-  },
-  {
-    id: 'clanker',
-    label: 'Clanker',
-    lines: [
-      'Opens at about 10 ETH of market cap (around $27k).',
-      '1% fee on every trade, all of it to the agent, you and the platform; Clanker adds 20% on top, so a trader pays 1.2%.',
-      'Listed on bootr.fun and clanker.world.',
-    ],
-  },
-];
+function launchThroughCards(clanker: ClankerPath, v5: { taxBps: number; startTick: number }): { id: LaunchCard; label: string; lines: string[] }[] {
+  const v5Fee = feeModelOf({ source: 'clanker-v5', lpFeeBps: v5.taxBps });
+  const clankerLines =
+    clanker.version === 5
+      ? [
+          `Opens at about ${openingCapEth(v5.startTick).toFixed(1)} ETH of market cap, the opening price Clanker sets for every new coin.`,
+          `A ${pctLabel(traderPaysPct(v5Fee))} tax on every trade; Clanker keeps its share (${pctLabel(launcherPct(v5Fee))} of the trade), the rest goes to the agent, you and the platform, and the burn when chosen.`,
+          '1 billion coins. Listed on bootr.fun and clanker.world.',
+        ]
+      : [
+          'Opens at about 10 ETH of market cap (around $27k).',
+          '1% fee on every trade, all of it to the agent, you and the platform; Clanker adds 20% on top, so a trader pays 1.2%.',
+          'Listed on bootr.fun and clanker.world.',
+        ];
+  return [
+    {
+      id: 'bootr',
+      label: 'RWAGMI',
+      lines: [
+        'Opens at about 2.7 ETH of market cap (around $6k).',
+        '1% fee on every trade: 90% of it goes to the agent, you and the platform, 10% to RWAGMI, the launcher.',
+        'Listed on bootr.fun.',
+      ],
+    },
+    { id: 'clanker', label: 'Clanker', lines: clankerLines },
+  ];
+}
+
+/** Mock mode only: `/launch?clanker=v5` shows the form as a deployment with the v5 launcher configured does. */
+const noopSubscribe = () => () => {};
+const readSearch = () => window.location.search;
+const noSearch = () => '';
 
 const KIND_CARDS: { id: Kind; label: string; description: string; does: string[] }[] = [
   ...WORKER_TEMPLATES.map((w) => ({ id: w.id as Kind, label: w.label, description: w.description, does: w.does })),
@@ -148,7 +167,10 @@ export function LaunchForm() {
   const [draftId, resetDraftId] = useDraftId();
   const { address, isConnected } = useConnection();
   const write = useWriteContract();
+  const publicClient = usePublicClient({ chainId: appChain.id });
   const { run, pending } = useTxRunner();
+  // Clanker v5: the salt is mined before the wallet is asked (the token address must end in cccc).
+  const [mining, setMining] = useState(false);
 
   // 01 Coin
   const [name, setName] = useState('');
@@ -187,13 +209,26 @@ export function LaunchForm() {
   const [devBuy, setDevBuy] = useState('');
   const [buyback, setBuyback] = useState(false);
   // Launch through RWAGMI (the default; source id 'bootr') or Clanker. The Clanker launcher is optional per deployment; while it
-  // is not configured the choice is hidden and every launch goes through RWAGMI. Mock mode always offers both.
-  const clankerAvailable = env.useMock || !!contracts.clankerLauncher;
-  const [launchThroughPick, setLaunchThrough] = useState<LaunchSource>('bootr');
-  const launchThrough: LaunchSource = clankerAvailable ? launchThroughPick : 'bootr';
-  const launcher = launchThrough === 'clanker' ? contracts.clankerLauncher : contracts.launcher;
-  const abi = launchThrough === 'clanker' ? clankerLauncherAbi : launcherAbi;
-  const fee: FeeModel = { source: launchThrough, lpFeeBps: 10_000 };
+  // is not configured the choice is hidden and every launch goes through RWAGMI. Mock mode always offers both. Which
+  // Clanker: v5 once NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS is set (v4 is then not offered), else v4 (`clankerPath`).
+  const mockSearch = useSyncExternalStore(noopSubscribe, readSearch, noSearch);
+  const path: ClankerPath = env.useMock && new URLSearchParams(mockSearch).get('clanker') === 'v5' ? CLANKER_PATHS[5] : clankerPath;
+  const clankerAvailable = env.useMock || !!path.launcher;
+  const [launchThroughPick, setLaunchThrough] = useState<LaunchCard>('bootr');
+  const launchThrough: LaunchSource = clankerAvailable && launchThroughPick === 'clanker' ? path.source : 'bootr';
+  const isV5 = launchThrough === 'clanker-v5';
+  const launcher = launchThrough === 'bootr' ? contracts.launcher : path.launcher;
+  const abi = isV5 ? clankerLauncherV5Abi : launchThrough === 'clanker' ? clankerLauncherAbi : launcherAbi;
+  // Clanker v5's own reads: the tax of the v5 preset for the card, the opening tick and Clanker's native launch fee (0 today).
+  const v5Live = path.version === 5 && !env.useMock && !!path.launcher;
+  const v5StandardRead = useReadContract({ address: path.launcher, abi: launcherAbi, functionName: 'standardDefaults', chainId: appChain.id, query: { enabled: v5Live } });
+  const v5Factory = contracts.clankerV5?.factory;
+  const quoteRead = useReadContract({ address: v5Factory, abi: clankerV5FactoryAbi, functionName: 'quoteConfig', args: [zeroAddress], chainId: appChain.id, query: { enabled: v5Live && !!v5Factory } });
+  const clankerFeeRead = useReadContract({ address: v5Factory, abi: clankerV5FactoryAbi, functionName: 'nativeLaunchFee', chainId: appChain.id, query: { enabled: v5Live && !!v5Factory } });
+  const v5TaxBps = v5StandardRead.data ? defaultsFromTuple(v5StandardRead.data).lpFeeBps : FALLBACK_V5_STANDARD.lpFeeBps;
+  const v5StartTick = quoteRead.data?.[0] ? quoteRead.data[2] : FALLBACK_V5_START_TICK;
+  const clankerFeeWei = isV5 ? (clankerFeeRead.data ?? 0n) : 0n;
+  const launchCards = launchThroughCards(path, { taxBps: v5TaxBps, startTick: v5StartTick });
 
   // Priced, admin-filtered list from /api/models (the relay itself is internal).
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
@@ -219,10 +254,12 @@ export function LaunchForm() {
   const defaults: LaunchDefaults = buyback
     ? buybackRead.data
       ? defaultsFromTuple(buybackRead.data)
-      : FALLBACK_BUYBACK
+      : fallbackDefaults(launchThrough, true)
     : standardRead.data
       ? defaultsFromTuple(standardRead.data)
-      : FALLBACK_STANDARD;
+      : fallbackDefaults(launchThrough, false);
+  // The fee of the chosen path: 1% on RWAGMI and Clanker v4, the preset's tax on Clanker v5.
+  const fee: FeeModel = isV5 ? feeModelOf({ source: 'clanker-v5', lpFeeBps: defaults.lpFeeBps }) : { source: launchThrough, lpFeeBps: 10_000 };
   const minFuel = Number(formatUnits(defaults.minFuelUsdc, USDC_DECIMALS));
 
   const fuelUnits = /^\d+(\.\d{0,6})?$/.test(fuel) ? parseUnits(fuel, USDC_DECIMALS) : null;
@@ -247,7 +284,7 @@ export function LaunchForm() {
   // (RWAGMI takes the other 10%), so agent 500 -> slot 450 -> 0.045% of volume; through Clanker the slots share the
   // whole fee (agent 500 -> 0.05%) and Clanker charges 20% on top.
   const split = { agent: defaults.agentBps, creator: defaults.creatorBps, burn: defaults.burnBps, platform: defaults.platformBps };
-  const buybackDefaults = buybackRead.data ? defaultsFromTuple(buybackRead.data) : FALLBACK_BUYBACK;
+  const buybackDefaults = buybackRead.data ? defaultsFromTuple(buybackRead.data) : fallbackDefaults(launchThrough, true);
   const burnPct = ofVolume({ agent: buybackDefaults.agentBps, creator: buybackDefaults.creatorBps, burn: buybackDefaults.burnBps, platform: buybackDefaults.platformBps }, 'burn', fee);
 
   // The worker the launch commits to. Presets: the template and its hash. Custom: the preset built from the form,
@@ -291,8 +328,10 @@ export function LaunchForm() {
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
     : !env.useMock && !launcher
-      ? launchThrough === 'clanker'
-        ? 'The Clanker launcher is not configured (NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS).'
+      ? launchThrough !== 'bootr'
+        ? isV5
+          ? 'The Clanker v5 launcher is not configured (NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS).'
+          : 'The Clanker launcher is not configured (NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS).'
         : 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).'
       : pausedRead.data
         ? 'Launches are paused by the platform.'
@@ -341,21 +380,13 @@ export function LaunchForm() {
     const modelId = selectedModel?.id ?? '';
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
     if (!(await saveDraft(draftId, coin))) return;
-    if (env.useMock) {
-      // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
-      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle, source: launchThrough, links: coin.links });
-      toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
-      sessionStorage.removeItem(DRAFT_KEY);
-      router.push(`/token/${id}`);
-      return;
-    }
     const params = {
       name: name.trim(),
       symbol: symbol.toUpperCase(),
       image: pinned.url,
       // Hosted ERC-7572 contract URI (app/tokens/[id]/route.ts, from the draft saved above); BootrLauncher sets it
       // as the B20 token's `contractURI`. Clanker's page reads JSON from this field instead, with the URI inside.
-      metadata: launchThrough === 'clanker' ? clankerTokenMetadata(coin, contractUriUrl(draftId)) : contractUriUrl(draftId),
+      metadata: launchThrough !== 'bootr' ? clankerTokenMetadata(coin, contractUriUrl(draftId)) : contractUriUrl(draftId),
       context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
       salt: keccak256(toHex(draftId)),
       buybackBurn: buyback,
@@ -366,9 +397,40 @@ export function LaunchForm() {
       // Hosted ERC-8004 registration file, keyed by the launch id; see app/agents/[id]/route.ts.
       agentURI: agentCardUrl(draftId),
       supervisorSessionKey: env.supervisorSessionKey ?? zeroAddress, // TODO(supervisor): fetch per-launch key
-    } as const;
-    // The chosen launcher; both take the same `LaunchParams`. On the Clanker path the token address is not predictable
-    // up front, so (as on the Bootr path) it is read from the receipt's `AgentLaunched` log below.
+    };
+    // Clanker v5 only takes a salt whose token address ends in cccc: mined here, in slices, before the wallet is asked.
+    let v5Token: Address | null = null;
+    if (isV5) {
+      const v5 = contracts.clankerV5 ?? addresses[8453].clankerV5;
+      if (!v5 || (!env.useMock && (!launcher || !address || !publicClient))) return;
+      setMining(true);
+      try {
+        const mined = await mineLaunchSalt({
+          client: env.useMock ? null : publicClient!,
+          launcher: launcher ?? zeroAddress,
+          tokenDeployer: v5.tokenDeployer as Address,
+          creator: address ?? zeroAddress,
+          params,
+        });
+        params.salt = mined.salt;
+        v5Token = mined.token;
+      } catch (e) {
+        toast.error(e instanceof SaltMiningError ? e.message : 'Could not prepare the coin’s address. Nothing was sent: check your connection and try again.');
+        return;
+      } finally {
+        setMining(false);
+      }
+    }
+    if (env.useMock) {
+      // The mock CID resolves nowhere, so the mock token keeps the local preview (same document after client navigation).
+      const id = mockLaunch({ name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.mock ? upload.preview : pinned.url, model: modelId, buyback, xHandle, source: launchThrough, links: coin.links, ...(v5Token ? { id: v5Token } : {}) });
+      toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
+      sessionStorage.removeItem(DRAFT_KEY);
+      router.push(`/token/${id}`);
+      return;
+    }
+    // The chosen launcher; all three take the same `LaunchParams`. The token address is read from the receipt's
+    // `AgentLaunched` log below (on v5 it is also known up front: `v5Token`).
     if (!launcher) return;
     const receipt = await run('Launch', () =>
       write.mutateAsync({
@@ -376,7 +438,7 @@ export function LaunchForm() {
         abi,
         functionName: 'launch',
         args: [params],
-        value: devBuyWei + launchFeeWei,
+        value: devBuyWei + launchFeeWei + clankerFeeWei,
         chainId: appChain.id,
         dataSuffix: builderDataSuffix,
       }),
@@ -393,11 +455,11 @@ export function LaunchForm() {
       );
       if (!deposited) toast('Launched without gas. Add gas from the token page so the agent can start.');
     }
-    if (token) router.push(`/token/${token}`);
+    if (token ?? v5Token) router.push(`/token/${token ?? v5Token}`);
     else toast('Launched. The token page appears once the indexer catches up.');
   }
 
-  const costLine = [`${launchFeeWei > 0n ? formatEther(launchFeeWei) : '0'} ETH`, `${gasWei && gasWei > 0n ? gas : '0'} ETH`, `${fuel || 0} USDC`].join(' + ');
+  const costLine = [`${launchFeeWei + clankerFeeWei > 0n ? formatEther(launchFeeWei + clankerFeeWei) : '0'} ETH`, `${gasWei && gasWei > 0n ? gas : '0'} ETH`, `${fuel || 0} USDC`].join(' + ');
 
   return (
     <div className="grid gap-8 pb-16 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-12">
@@ -692,15 +754,15 @@ export function LaunchForm() {
                 <span className="text-caption text-mute">Permanent. The agent is the same either way.</span>
               </div>
               <div className="grid gap-2 sm:grid-cols-2" data-testid="launch-through">
-                {LAUNCH_THROUGH.map((o) => (
+                {launchCards.map((o) => (
                   <label
                     key={o.id}
                     className={cn(
                       'flex cursor-pointer flex-col gap-1.5 rounded-sm border p-3 transition-colors duration-150',
-                      launchThrough === o.id ? 'border-ink' : 'border-hairline hover:border-hairline-strong',
+                      (launchThrough === 'bootr' ? 'bootr' : 'clanker') === o.id ? 'border-ink' : 'border-hairline hover:border-hairline-strong',
                     )}
                   >
-                    <input type="radio" name="launch-through" value={o.id} checked={launchThrough === o.id} onChange={() => setLaunchThrough(o.id)} className="sr-only" />
+                    <input type="radio" name="launch-through" value={o.id} checked={(launchThrough === 'bootr' ? 'bootr' : 'clanker') === o.id} onChange={() => setLaunchThrough(o.id)} className="sr-only" />
                     <span className="text-sm font-medium text-ink">{o.label}</span>
                     <ul className="flex flex-col gap-0.5 text-caption text-body">
                       {o.lines.map((line) => (
@@ -744,7 +806,9 @@ export function LaunchForm() {
               </label>
               <p className="mt-0.5 text-caption text-mute">
                 Sends {pctLabel(burnPct)} of trading volume to buy this coin back and burn it, taken from the creator share.{' '}
-                {launchThrough === 'clanker'
+                {isV5
+                  ? 'Clanker takes that share in the coin itself on every trade and sends it to the dead address.'
+                  : launchThrough === 'clanker'
                   ? 'Clanker\u2019s locker turns that share into the coin and sends it to the dead address.'
                   : 'The coin\u2019s burner claims it in WETH, swaps it for the coin and burns it.'}
               </p>
@@ -779,7 +843,8 @@ export function LaunchForm() {
             {[
               ['Kind', kindLabel],
               ['Model', selectedModel?.label ?? '—'],
-              ['Launch through', launchThrough === 'clanker' ? 'Clanker' : 'RWAGMI'],
+              ['Launch through', launchThrough === 'bootr' ? 'RWAGMI' : 'Clanker'],
+              ...(isV5 ? [['Trading tax', pctLabel(traderPaysPct(fee))]] : []),
               ['X account', xHandle ? `@${xHandle}` : 'Not connected'],
               ...(links.x ? [['Project X', `@${xHandleOfUrl(links.x) ?? ''}`]] : []),
               ['Fuel', `${fuel || 0} USDC`],
@@ -798,7 +863,11 @@ export function LaunchForm() {
               <span className="text-caption font-medium text-ink">Fee split</span>
               <span className="font-mono text-caption text-mute">
                 {[split.agent, split.creator, split.burn, split.platform].filter((v) => v > 0).map((v) => v / 100).join('/')}
-                {launchThrough === 'clanker' ? ` of the fee, 20% on top for Clanker (${pctLabel(traderPaysPct(fee))} in total)` : ' of the 90% share'}
+                {isV5
+                  ? ` of the tax after Clanker\u2019s ${pctLabel(launcherPct(fee))} (${pctLabel(traderPaysPct(fee))} in total)`
+                  : launchThrough === 'clanker'
+                    ? ` of the fee, 20% on top for Clanker (${pctLabel(traderPaysPct(fee))} in total)`
+                    : ' of the 90% share'}
               </span>
             </div>
             <SplitBar split={split} fee={fee} />
@@ -833,7 +902,15 @@ export function LaunchForm() {
                     1. Approve {fuel} USDC
                   </Button>
                 ) : null}
-                <Button variant="primary" size="lg" onClick={launch} disabled={errors.length > 0 || !!blocked || needsApproval || !draftId} loading={pending === 'Launch'}>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  onClick={launch}
+                  disabled={errors.length > 0 || !!blocked || needsApproval || !draftId}
+                  loading={pending === 'Launch' || mining}
+                  loadingLabel={mining ? 'Finding the coin’s address…' : undefined}
+                  data-testid="launch-submit"
+                >
                   {needsApproval ? '2. Launch' : 'Launch'}
                 </Button>
                 {env.useMock ? (

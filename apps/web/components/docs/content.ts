@@ -676,6 +676,8 @@ for (const claim of claims) {
         ['`pin_failed`, `chain_unavailable`, `indexer_unavailable`, `upstream_failed`', '502', 'Retry in a moment.'],
         ['`launches_paused`', '503', 'Retry when `GET /api/platform` shows `launchesPaused: false`.'],
         ['`clanker_unavailable`', '503', 'Leave `launchThrough` out, or set it to `bootr`.'],
+        ['`clanker_v5_unavailable`', '503', 'Clanker v5 is not live here yet: set `launchThrough` to `clanker` (whichever Clanker this deployment uses) or `bootr`.'],
+        ['`salt_not_found`', '503', 'No coin address ending in `cccc` turned up for this Clanker v5 launch, which almost never happens: sign again and retry.'],
         ['`upload_unavailable`, `launcher_not_configured`, `store_unavailable`, `store_full`, `x_connect_unavailable`, `supervisor_unavailable`', '503', 'This deployment cannot do that right now; retry later.'],
       ],
     ),
