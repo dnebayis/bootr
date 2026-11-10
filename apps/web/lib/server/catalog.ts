@@ -228,7 +228,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       parameters: { path: pathParam('address', ADDRESS) },
       response: {
         contentType: JSON_TYPE,
-        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}]}, claims: [{path: bootr|clanker, target, data, value, amountWei, sendFrom: address|null, description}], note}; errors {error, message} with 400, 429, 502',
+        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}], clankerV5: [{token, symbol}]}, claims: [{path: bootr|clanker|clanker-v5, target, data, value, asset, amountWei, sendFrom: address|null, description}], note}; a claim’s asset is WETH (bootr, clanker) or the zero address, native ETH (clanker-v5); totalWei sums them all, one to one; errors {error, message} with 400, 429, 502',
       },
     },
     {
@@ -299,7 +299,12 @@ function launchBody(): JsonSchema {
             ],
           },
           buyback: { type: 'boolean', default: false },
-          launchThrough: { type: 'string', enum: ['bootr', 'clanker'], default: 'bootr' },
+          launchThrough: {
+            type: 'string',
+            enum: ['bootr', 'clanker', 'clanker-v5'],
+            default: 'bootr',
+            description: 'clanker: the deployment’s current Clanker launcher (v5 once it is live, else v4); clanker-v5: v5 only, refused while it is not live.',
+          },
           fuelUsdc: decimal('Decimal USDC, default 20, at least the preset’s minimum.'),
           devBuyEth: decimal('Decimal ETH, default 0.'),
           gasEth: decimal('Decimal ETH, default 0.001; 0 or at least 0.0001.'),
@@ -323,7 +328,7 @@ function launchBody(): JsonSchema {
 
 const TOKEN_FILTERS: Record<string, JsonSchema> = {
   creator: ADDRESS,
-  source: { enum: ['bootr', 'clanker'] },
+  source: { enum: ['bootr', 'clanker', 'clanker-v5'] },
   from: { type: 'integer', description: 'Launched at or after, unix seconds.' },
   to: { type: 'integer', description: 'Launched at or before, unix seconds.' },
   hasAgent: { type: 'boolean' },

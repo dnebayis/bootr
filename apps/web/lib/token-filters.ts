@@ -3,6 +3,7 @@
  * be shared. Anything malformed in a URL is dropped rather than refused: a bad link still shows a page. No imports with
  * side effects: used by the page, the indexer client and the tests.
  */
+import { isLaunchSource } from './launch-source';
 import type { LaunchSource, TokenTab } from './types';
 
 export const TOKEN_SORTS = [
@@ -42,7 +43,7 @@ export function parseTokenFilters(params: { get(name: string): string | null }):
   const creator = params.get('creator');
   if (creator && ADDRESS.test(creator)) f.creator = creator.toLowerCase();
   const path = params.get('path');
-  if (path === 'bootr' || path === 'clanker') f.path = path;
+  if (isLaunchSource(path)) f.path = path;
   const from = params.get('from');
   if (isDay(from)) f.from = from;
   const to = params.get('to');

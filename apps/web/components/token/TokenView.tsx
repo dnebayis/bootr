@@ -32,6 +32,7 @@ import { ClankerFeeLine } from './ClankerFeeLine';
 import { FeeSplit } from './FeeSplit';
 import { TradePanel } from './TradePanel';
 import { TradesTable } from './TradesTable';
+import { isClankerSource } from '@/lib/launch-source';
 
 export function TokenSkeleton() {
   return (
@@ -122,7 +123,7 @@ export function TokenView({ address }: { address: string }) {
                 </Link>
                 <CopyButton value={token.creator} label="Copy creator address" />
               </span>
-              {token.source === 'clanker' ? (
+              {isClankerSource(token.source) ? (
                 <a
                   href={clankerWorldUrl(token.id)}
                   target="_blank"
