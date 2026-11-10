@@ -22,7 +22,9 @@ import { index, onchainTable, relations } from 'ponder';
  *   the rest, so the five bps columns sum to 10000 like the Bootr path. Fee rows come from the hook's per-swap
  *   credits (`CreatorTaxCredited` per paid slot in the quote, native ETH = `0x0`; `BurnTaxCredited` for the
  *   burn in the coin, recipient the dead address) and claims from `FeeEscrow.Claimed`. The pool is paired with
- *   native ETH: `pairedToken` and the fee rows' `asset` are the zero address.
+ *   native ETH (`pairedToken` and the fee rows' `asset` the zero address) or, with token settings, USDC (6 decimals;
+ *   `pairedSymbol` / `pairedDecimals`). Token settings (each side's tax, extra reward rows as the `recipient` kind,
+ *   dividends, sniper tax, editable metadata): docs/design/clanker-v5-token-settings.md.
  */
 
 // ------------------------------------------------------------------ token / agent

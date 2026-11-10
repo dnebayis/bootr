@@ -720,7 +720,6 @@ app.get('/market/:token', async (c) => {
  * pool's paired asset (native ETH `0x0`, `symbol` `ETH`, or USDC with 6 decimals; the burn slot: `owed(0x…dEaD,
  * coin)`, in the coin), `pending` 0 (the hook credits the escrow on every swap).
  */
-
 app.get('/treasury/:kernel', async (c) => {
   const id = c.req.param('kernel');
   if (!isAddr(id)) return c.json({ error: 'invalid address' }, 400);
