@@ -8,8 +8,9 @@ pragma solidity ^0.8.26;
 ///      `TaxLaunchHook` `0x5E320eA6278107968C119942E57d876c5F922AcC`, `FeeEscrow`
 ///      `0x5dd237d1f716C65426CCd2FAe82B95109825FA61`, `SwapXLaunchBuyAdapter`
 ///      `0x5C65823dC5eaf0C37205F73213fC2f73D359DA4d` (`ISwapX.SwapDesc`), `TaxLaunchToken` (created by
-///      `TaxLaunchTokenDeployer` `0xc25FfE6374EdcCb5bFCcA3b9684046a426AbCE6A`). Design:
-///      docs/design/clanker-v5-migration.md section 1.
+///      `TaxLaunchTokenDeployer` `0xc25FfE6374EdcCb5bFCcA3b9684046a426AbCE6A`), `TaxDividend` (the per-coin
+///      dividend tracker, `src/tax/TaxDividend.sol`, `interfaces/ITaxDividend.sol`). Design:
+///      docs/design/clanker-v5-migration.md section 1 and docs/design/clanker-v5-token-settings.md section 1.
 library ClankerV5 {
     /// @dev `TaxFeeMath.TaxFeeBounds`: tax rates on the 1e8 scale (`PERCENTAGE_SCALE`, 1% = 1_000_000).
     struct TaxFeeBounds {
@@ -136,6 +137,11 @@ library ClankerV5 {
 
     /// @dev `SwapDesc.swapType` of the launch pool hop (`UNISWAP_V4_SWAP_TYPE`).
     uint8 internal constant SWAP_TYPE_LAUNCH_POOL = 2;
+    /// @dev `SwapDesc.swapType` of an external Uniswap v3 hop (`UNISWAP_V3_SWAP_TYPE`): the first leg of a dev
+    ///      buy into an ERC-20-quoted pool (`{1, WETH, quote, v3 pool, fee, 0, address(0), ""}`), funded in ETH.
+    uint8 internal constant SWAP_TYPE_UNISWAP_V3 = 1;
+    /// @dev `TaxLaunchValidation`: at most seven fee slots per pool.
+    uint8 internal constant MAX_FEE_SLOTS = 7;
     /// @dev `TaxSuiteConstants.PERCENTAGE_SCALE`: 100% of a tax rate or an allocation share.
     uint32 internal constant PERCENTAGE_SCALE = 100_000_000;
     /// @dev `TaxSuiteConstants.BURN_SINK`: the burn share's escrow recipient.
@@ -153,6 +159,16 @@ interface IClankerV5Factory {
         address quoteToken,
         uint256 launchSupply,
         int24 tickSpacing
+    );
+    /// @notice The tax configuration a launch was created with (and the policy it was admitted under).
+    event LaunchTaxConfigured(
+        bytes32 indexed poolId,
+        address indexed token,
+        uint64 indexed configVersion,
+        ClankerV5.TaxPolicy admittedPolicy,
+        ClankerV5.TaxConfiguration taxConfiguration,
+        address integratorFeeRecipient,
+        bool antiSnipeEnabled
     );
     event LaunchBuyExecuted(
         address indexed token,
@@ -174,6 +190,9 @@ interface IClankerV5Factory {
     error InvalidTaxConfiguration();
     error NotCurrentCreator();
     error MetadataNotEditable();
+    error UnknownLaunchToken();
+    error InvalidMinimumDividendHoldingRequirement();
+    error AntiSnipeUnavailable();
 
     function createLaunch(ClankerV5.LaunchParams calldata launchParams)
         external
@@ -221,8 +240,17 @@ interface IClankerV5Factory {
     // creator-rights functions (the launcher holds the rights and exposes none of them)
     function setCreatorFeeRecipient(address token, address newCreatorFeeRecipient) external;
     function proposeCreatorRightsTransfer(address token, address newCreator) external;
+    /// @dev Metadata functions: only the current creator-rights holder, and only when the launch was
+    ///      `metadataEditable` (`_requireMetadataEditor`). One switch covers all four. The launcher forwards only
+    ///      `updateTokenExtraMetadata` for the keys `image` and `metadata`.
     function updateTokenName(address token, string calldata newName) external;
+    function updateTokenSymbol(address token, string calldata newSymbol) external;
     function updateTokenContractURI(address token, string calldata newContractURI) external;
+    function updateTokenExtraMetadata(address token, string calldata metadataKey, string calldata metadataValue)
+        external;
+
+    /// @dev The coin's `TaxDividend` tracker (`address(0)` when the launch had no dividend share).
+    function dividendOf(address token) external view returns (address);
 }
 
 /// @dev `TaxLaunchHook` (the parts the launcher, the indexer and the tests use).
@@ -269,6 +297,16 @@ interface IClankerV5Hook {
     event CreatorTaxCredited(bytes32 indexed poolId, address indexed recipient, address currency, uint256 amount);
     /// @notice The burn share of a swap, in the launched token, credited to `BURN_SINK` in the escrow.
     event BurnTaxCredited(bytes32 indexed poolId, address indexed token, address indexed sink, uint256 amount);
+    /// @notice The dividend share of a swap, in the quote, credited in the escrow to the coin's tracker.
+    event DividendTaxCredited(bytes32 indexed poolId, address indexed dividend, address currency, uint256 amount);
+    /// @notice The dividend share of a swap while no holder qualifies (`totalShares() == 0`): paid to Clanker.
+    event DividendTaxRedirected(
+        bytes32 indexed poolId, address indexed recipient, address indexed currency, uint256 amount
+    );
+    event FeeSlotRecipientUpdated(
+        bytes32 indexed poolId, uint256 indexed slotIndex, address oldRecipient, address newRecipient
+    );
+    event FeeSlotAdminUpdated(bytes32 indexed poolId, uint256 indexed slotIndex, address oldAdmin, address newAdmin);
 
     error NotSlotAdmin();
     error CreatorSlotManagedByFactory();
@@ -320,11 +358,30 @@ interface IClankerV5FeeEscrow {
     function claimTo(address currency, address destination) external;
 }
 
-/// @dev `TaxLaunchToken`: fixed supply, no admin; metadata frozen unless the launch was `metadataEditable`.
+/// @dev `TaxLaunchToken`: fixed supply, no admin; metadata frozen unless the launch was `metadataEditable` (then
+///      the factory is the `metadataAuthority` and forwards its creator-rights holder's edits).
 interface IClankerV5Token {
+    event ContractURIUpdated(address indexed updater, string newContractURI);
+    event NameUpdated(address indexed updater, string newName);
+    event SymbolUpdated(address indexed updater, string newSymbol);
+    event ExtraMetadataUpdated(address indexed updater, string metadataKey, string metadataValue);
+
     function factory() external view returns (address);
+    function dividend() external view returns (address);
     function contractURI() external view returns (string memory);
     function extraMetadata(string calldata key) external view returns (string memory);
     function metadataAuthority() external view returns (address);
     function supplyCap() external view returns (uint256);
+}
+
+/// @dev `TaxDividend`: the per-coin holder-dividend tracker (cloned at launch when `dividendAllocationShare > 0`,
+///      owner = the factory). Shares follow balances at or above `minimumDividendHolding`; paid in the quote.
+interface IClankerV5Dividend {
+    function taxToken() external view returns (address);
+    function rewardToken() external view returns (address);
+    function minimumDividendHolding() external view returns (uint256);
+    function totalShares() external view returns (uint256);
+    function withdrawDividends() external returns (bool paid);
+    function withdrawableDividendOf(address holder) external view returns (uint256);
+    function excludedFromDividends(address holder) external view returns (bool);
 }
