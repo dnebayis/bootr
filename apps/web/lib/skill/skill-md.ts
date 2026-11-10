@@ -371,7 +371,7 @@ On the Clanker paths, the coin's description (the first line of \`identity\`), \
 | \`minDividendHolding\` | \`${MIN_DIVIDEND_HOLDING}\` | Whole coins a wallet must hold to earn dividends, ${MIN_DIVIDEND_HOLDING.toLocaleString('en-US')} to ${V5_SUPPLY.toLocaleString('en-US')}. Used only with dividends. Holders claim their dividends themselves; Clanker holds that money, and while nobody qualifies the dividend share goes to Clanker |
 | \`rewards\` | one row: you, 100% | Who receives the creator funds: 1 to ${V5B.maxRewardRows} rows \`{ recipient, admin, pct }\`, yours first, up to ${V5B.maxRewardRows - 1} more. \`pct\` is of creator funds and the rows add up to exactly 100. \`admin\` defaults to \`recipient\` and can later change that row's recipient on Clanker. Dropped when burn and dividends take all of creator funds |
 | \`sniperTax\` | \`true\` | For the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds the tax falls from 99% to the normal tax; the surcharge goes to Clanker. \`false\` turns it off |
-| \`editableMetadata\` | \`true\` | Only the launching wallet can change the coin's image and metadata after launch, from the coin's console, and can lock them for good. Name and ticker never change |
+| \`editableMetadata\` | \`true\` | Only the launching wallet can change the coin's image and metadata after launch, from the coin page's creator settings, and can lock them for good. Name and ticker never change |
 
 Example: \`"token": { "pairedAsset": "USDC", "buyTaxPct": 2, "sellTaxPct": 3, "burnPct": 10, "rewards": [{ "recipient": "0xYou", "pct": 80 }, { "recipient": "0xFriend", "admin": "0xYou", "pct": 20 }] }\`. The answer repeats the checked settings as \`token\` and the launcher's struct as \`tokenSettings\`.
 

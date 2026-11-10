@@ -14,8 +14,9 @@ import { FALLBACK_V5_STANDARD } from '@/lib/abi/launcher';
 import { CLANKER_V5_SUPPLY, FALLBACK_V5_START_TICK, openingCapEth } from '@/lib/clanker-v5';
 import { clankerPath } from '@/lib/contracts';
 import { env } from '@/lib/env';
-import { feeModelOf, launcherPct, ofVolume, pctLabel, slotsBps, traderPaysPct, type Split } from '@/lib/fee-split';
+import { feeModelOf, launcherPct, pctLabel, slotsBps, traderPaysPct } from '@/lib/fee-split';
 import { CLANKER_V5_ANTI_SNIPE_SECONDS, SWAP_CONTRACTS } from '@/lib/swap/core';
+import { creatorPoolBps, DEFAULT_TAX_PCT, FALLBACK_V5_BOUNDS, MIN_DIVIDEND_HOLDING, pairedAssetsFor, poolSharesOf, shortPct, tradeSplit } from '@/lib/token-settings';
 import { AGENT_TOOLS, TOOL_GROUPS } from './agent-tools';
 import { GRAPHQL_EXAMPLES } from './graphql-examples';
 import type { DocSlug } from './pages';
@@ -28,10 +29,17 @@ const V5_LIVE = clankerPath.version === 5;
 const V5 = feeModelOf({ source: 'clanker-v5', lpFeeBps: FALLBACK_V5_STANDARD.lpFeeBps });
 const V5_TAX = pctLabel(traderPaysPct(V5));
 const V5_CLANKER = pctLabel(launcherPct(V5));
-const V5_STANDARD: Split = { agent: 500, creator: 6500, burn: 0, platform: 3000 };
-const V5_BUYBACK: Split = { agent: 500, creator: 5000, burn: 1500, platform: 3000 };
-const v5Of = (split: Split, k: keyof Split) => (split[k] === 0 ? '—' : pctLabel(ofVolume(split, k, V5)));
 const V5_CAP_ETH = openingCapEth(FALLBACK_V5_START_TICK).toFixed(1);
+/** Clanker v5 token settings: the launcher's bounds (lib/token-settings.ts), what the form and the agent API check. */
+const V5B = FALLBACK_V5_BOUNDS;
+const V5_TAX_RANGE = `${V5B.minTaxBps / 10_000}% to ${V5B.maxTaxBps / 10_000}%`;
+const V5_ASSETS = pairedAssetsFor('agent').map((a) => a.symbol).join(' or ');
+/** One trade's split at a tax and a burn / dividends choice, as `$` of `$100,000` volume. */
+const v5Usd = (taxPct: number, burnPct: number, dividendsPct: number) => {
+  const t = tradeSplit(taxPct, poolSharesOf({ burnPct, dividendsPct }, V5B));
+  const usd = (pct: number) => `$${Math.round(pct * 1000).toLocaleString('en-US')}`;
+  return { t, usd };
+};
 /** Which Clanker new launches on this site use, in one sentence. */
 const CLANKER_NOW = V5_LIVE
   ? 'New coins launched through Clanker here go through Clanker v5; coins launched through Clanker v4 before keep v4’s terms.'
@@ -146,7 +154,23 @@ const launch: DocBody = {
     p('A new pool through Clanker opens with Clanker’s anti-sniper fee; through RWAGMI there is none. With the launcher’s current settings, as measured on a Base fork at today’s 200 ms blocks: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal fee. That point comes from the clock, not from a number of blocks. Those fees go to the same recipients. A dev buy runs inside the launch transaction and is not affected.'),
     p(`Through Clanker v5 the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds after the launch are Clanker’s anti-snipe window: a buy pays a fee that starts at 99% and falls to the normal tax, the extra goes to Clanker, and swaps that name the amount out are refused. The Trade panel waits out those seconds and says when trading opens. A dev buy runs inside the launch transaction and is not affected.`),
     p('Through Clanker the contract is `BootrClankerLauncher`, with the same `launch(params)`. The token address is not predictable before the transaction, so the form reads it from the `AgentLaunched` event. The steps above describe the RWAGMI path; on the Clanker path step 3 calls Clanker’s factory and step 4 writes the slots into Clanker’s locker, with the launcher as the admin of every slot, so the split is locked the same way.'),
-    p('Through Clanker v5 the contract is `BootrClankerLauncherV5`, again with the same `launch(params)`. Clanker v5 only creates a coin whose address ends in `cccc`, so before the wallet signs, the form (and the agent API) reads `tokenInitCodeHash(params)` from the launcher once, counts the salt up until the predicted address ends in `cccc` (about 65,000 tries, a second or two), and checks the result with `predictToken(creator, params)`. The coin’s address is known before the transaction. Step 3 calls Clanker v5’s factory, which seeds the whole supply into the pool, and the slots are written into Clanker’s tax hook with the launcher as their admin, so the split is locked the same way.'),
+    p('Through Clanker v5 the contract is `BootrClankerLauncherV5`, with `launch(params, settings)`: the same params and the token settings below. Clanker v5 only creates a coin whose address ends in `cccc`, so before the wallet signs, the form (and the agent API) reads `tokenInitCodeHash(params, settings)` from the launcher once, counts the salt up until the predicted address ends in `cccc` (about 65,000 tries, a second or two), and checks the result with `predictToken(creator, params, settings)`. The coin’s address is known before the transaction. Step 3 calls Clanker v5’s factory, which seeds the whole supply into the pool, and the agent’s and the platform’s slots are written into Clanker’s tax hook with the launcher as their admin, so nobody can change them.'),
+    h3('token-settings', 'Token settings on Clanker v5'),
+    p('A coin launched through Clanker v5 is set up the way Clanker’s own launch form sets a coin, in three parts: the tax, the rewards and the pool. Everything here is permanent once the coin exists, except the image and the description while you keep them editable.'),
+    table(
+      ['Setting', 'Default', 'What it does'],
+      [
+        ['Buy tax, sell tax', `${DEFAULT_TAX_PCT}% each`, `What every buy and every sell pays, ${V5_TAX_RANGE}, each side on its own. Clanker keeps 10% of it, at least 0.5% and at most 1% of the trade; the rest is the tax pool`],
+        ['Tax allocation', `agent ${V5B.agentShareBps / 100}%, platform ${V5B.platformShareBps / 100}%, creator funds ${creatorPoolBps(V5B) / 100}%`, `How the tax pool is shared. The agent’s ${V5B.agentShareBps / 100}% (its thinking budget) and the platform’s ${V5B.platformShareBps / 100}% are fixed. You split the other ${creatorPoolBps(V5B) / 100}% between creator funds, holder dividends and the burn`],
+        ['Holder dividends', 'off', `A share of the tax pool paid in the paired asset to every wallet holding at least ${MIN_DIVIDEND_HOLDING.toLocaleString('en-US')} coins (you can ask for more), which claims it itself. Clanker holds that money, and while nobody qualifies the share goes to Clanker`],
+        ['Burn', 'off', 'A share of the tax pool taken in the coin itself on every trade and sent to the dead address'],
+        ['Rewards', 'you, 100%', `Who receives the creator funds: your own row, plus up to ${V5B.maxRewardRows - 1} more, each with a recipient, an admin who can later change that recipient on Clanker, and a percent; the rows add up to 100%`],
+        ['Paired asset', 'ETH', `What the coin trades against and what every fee is paid in: ${V5_ASSETS}. With ETH the agent’s share pays its gas; with USDC it pays its thinking, and gas still comes from you. The form shows the asset’s price, liquidity and the opening market cap from clanker.world, or Bootr’s own figures when that does not answer`],
+        ['Sniper tax', 'on', `For the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds the tax falls from 99% to the normal tax; the extra goes to Clanker. You can turn it off`],
+        ['Editable metadata', 'on', 'Only your wallet can change the coin’s image and description after launch, from the coin page’s creator settings, and you can lock them for good there. The name, the ticker and the agent’s and platform’s shares never change'],
+      ],
+    ),
+    p('The same settings, with the same limits, are the `token` field of the [agent API](/docs/for-agents#launching).'),
     h2('what-you-pay', 'What you pay'),
     table(
       ['Item', 'Amount'],
@@ -194,7 +218,7 @@ const fees: DocBody = {
     h2('trading', 'Trading on the coin page'),
     p('The Trade panel on a coin’s page buys and sells on the coin’s own Uniswap v4 pool, through Uniswap’s Universal Router. Each swap is your own transaction: your wallet signs it, nothing passes through Bootr, and Bootr adds no fee. You pay the pool’s fee below and the network fee.'),
     ul(
-      'You pay and receive ETH. A pool paired with WETH (RWAGMI, Clanker v4) is wrapped into and unwrapped from in the same transaction; a Clanker v5 pool is paired with ETH itself.',
+      'You pay and receive ETH. A pool paired with WETH (RWAGMI, Clanker v4) is wrapped into and unwrapped from in the same transaction; a Clanker v5 pool is paired with ETH itself. A Clanker v5 coin launched paired with USDC trades in USDC: you pay and receive USDC, with an exact approval for the amount, like a sell.',
       'What you receive, the fee and the price impact come from Uniswap’s v4 quoter and the pool’s own price, read again every few seconds, not from indexed prices.',
       '**Minimum received** is the quote less your slippage setting, 1% by default and at most 20%. It is part of the transaction: below it the swap reverts on chain. So does a transaction not included within 20 minutes.',
       'A sell needs two approvals, the coin to Permit2 and Permit2 to the router, each for exactly the amount you sell. The sell uses them up, and the Permit2 approval lasts 30 minutes. A smart wallet such as Base Account confirms both and the sell at once; other wallets ask three times. An approval you already gave that covers the sell is used as it is.',
@@ -265,27 +289,28 @@ swap fee (1%)            $1,000
 Clanker on top (20%)       $200
 a trader pays (1.2%)     $1,200`, 'standard preset, through Clanker'),
     h2('clanker-v5', 'Through Clanker v5'),
-    p(`A coin launched through Clanker v5 has a tax instead of a swap fee: ${V5_TAX} of every buy and every sell, and nothing on top. Clanker keeps its share of each trade (10% of the tax, at least 0.5% and at most 1% of the trade: ${V5_CLANKER} at ${V5_TAX}); the agent, the creator and the platform share the rest by the preset’s weights, in ETH, and a burn share, when chosen, is taken in the coin itself and sent to the dead address. Every share is credited to Clanker’s fee escrow on the trade itself, and \`BootrClankerLauncherV5\` is the admin of every slot, with no function that changes one.`),
+    p(`A coin launched through Clanker v5 has a tax instead of a swap fee, and nothing on top. The creator sets it at launch, ${V5_TAX_RANGE} on buys and on sells (${DEFAULT_TAX_PCT}% each by default). Clanker keeps its share of each trade (10% of the tax, at least 0.5% and at most 1% of the trade: ${V5_CLANKER} at ${V5_TAX}). The rest, the tax pool, goes ${V5B.agentShareBps / 100}% to the agent and ${V5B.platformShareBps / 100}% to the platform, both fixed, and the creator splits the other ${creatorPoolBps(V5B) / 100}% between creator funds (paid to up to ${V5B.maxRewardRows} reward rows), holder dividends and a burn; see [Token settings](/docs/launch#token-settings). Everything is paid in the coin’s paired asset, ETH or USDC, except the burn, taken in the coin itself and sent to the dead address. Every share is credited to Clanker’s fee escrow on the trade itself, and \`BootrClankerLauncherV5\` is the admin of the agent’s and the platform’s slots, with no function that changes one.`),
     table(
-      ['Of volume', 'Standard', 'Buyback & burn'],
+      ['Of volume', `Defaults (${DEFAULT_TAX_PCT}%, all to creator funds)`, '3% tax, 15% burn, 10% dividends'],
       [
-        ['Agent treasury', v5Of(V5_STANDARD, 'agent'), v5Of(V5_BUYBACK, 'agent')],
-        ['Creator', v5Of(V5_STANDARD, 'creator'), v5Of(V5_BUYBACK, 'creator')],
-        ['Burn (the coin, to the dead address)', v5Of(V5_STANDARD, 'burn'), v5Of(V5_BUYBACK, 'burn')],
-        ['Platform', v5Of(V5_STANDARD, 'platform'), v5Of(V5_BUYBACK, 'platform')],
-        ['Clanker (inside the tax)', V5_CLANKER, V5_CLANKER],
-        ['**A trader pays**', `**${V5_TAX}**`, `**${V5_TAX}**`],
+        ['Agent treasury', shortPct(v5Usd(DEFAULT_TAX_PCT, 0, 0).t.agent), shortPct(v5Usd(3, 15, 10).t.agent)],
+        ['Creator funds (the reward rows)', shortPct(v5Usd(DEFAULT_TAX_PCT, 0, 0).t.creatorFunds), shortPct(v5Usd(3, 15, 10).t.creatorFunds)],
+        ['Holder dividends', '—', shortPct(v5Usd(3, 15, 10).t.dividends)],
+        ['Burn (the coin, to the dead address)', '—', shortPct(v5Usd(3, 15, 10).t.burn)],
+        ['Platform', shortPct(v5Usd(DEFAULT_TAX_PCT, 0, 0).t.platform), shortPct(v5Usd(3, 15, 10).t.platform)],
+        ['Clanker (inside the tax)', shortPct(v5Usd(DEFAULT_TAX_PCT, 0, 0).t.clanker), shortPct(v5Usd(3, 15, 10).t.clanker)],
+        ['**A trader pays**', `**${DEFAULT_TAX_PCT}%**`, '**3%**'],
       ],
       [1, 2],
     ),
-    p(`The tax is the preset’s \`lpFeeBps\` on \`BootrClankerLauncherV5\` (15,000 = 1.5%), set for future launches and never for a coin that exists. The indexer stores a v5 coin’s slots so that they add up to ${slotsBps(V5).toLocaleString('en-US')} bps at ${V5_TAX}, with Clanker’s share in \`protocolBps\`.`),
+    p(`A coin’s own taxes and shares are in the indexer next to its \`lpFeeBps\` (the buy tax), and the coin page’s fee panel shows them. The indexer stores a v5 coin’s slots so that they add up to the tax less Clanker’s share (${slotsBps(V5).toLocaleString('en-US')} bps at ${V5_TAX}), with Clanker’s share in \`protocolBps\`.`),
     code(`volume                 $100,000
 a trader pays (1.5%)     $1,500
-  Clanker                  $500
-  recipients             $1,000
-    Agent     5%            $50
-    Creator  65%           $650
-    Platform 30%           $300`, 'standard preset, through Clanker v5'),
+  Clanker                  ${v5Usd(1.5, 0, 0).usd(v5Usd(1.5, 0, 0).t.clanker)}
+  tax pool               ${v5Usd(1.5, 0, 0).usd(1.5 - v5Usd(1.5, 0, 0).t.clanker)}
+    Agent     ${V5B.agentShareBps / 100}%            ${v5Usd(1.5, 0, 0).usd(v5Usd(1.5, 0, 0).t.agent)}
+    Creator  ${creatorPoolBps(V5B) / 100}%           ${v5Usd(1.5, 0, 0).usd(v5Usd(1.5, 0, 0).t.creatorFunds)}
+    Platform ${V5B.platformShareBps / 100}%           ${v5Usd(1.5, 0, 0).usd(v5Usd(1.5, 0, 0).t.platform)}`, 'default settings, through Clanker v5'),
     h2('pending-vs-claimable', 'Pending and claimable'),
     p('A fee moves through two states before anyone can take it out:'),
     ol(
@@ -294,9 +319,9 @@ a trader pays (1.5%)     $1,500
     ),
     p('What a recipient can take out right now is the sum of the two. The indexer’s `/treasury/:kernel` returns both per recipient (`pending`, `settled`, `amount`).'),
     p('Through Clanker the two states differ. Fees wait inside the LP position until someone calls `collectRewards(coin)` on `ClankerLpLockerFeeConversion` (anyone may), which moves them to `ClankerFeeLocker`. A recipient’s balance there is `availableFees(recipient, WETH)`, one balance across all its Clanker coins. Fees not yet collected have no cheap view, so `/treasury/:kernel` reports `pending: 0` for these coins and only what the fee locker holds.'),
-    p('Through Clanker v5 there is one state: every trade credits each recipient’s share to Clanker’s `FeeEscrow` at once. A recipient’s balance is `owed(recipient, 0x0)` in ETH (the zero address stands for ETH), one balance across all its Clanker v5 coins; `/treasury/:kernel` reports it with `pending: 0`. A burn share is `owed(0x…dEaD, coin)`.'),
+    p('Through Clanker v5 there is one state: every trade credits each recipient’s share to Clanker’s `FeeEscrow` at once. A recipient’s balance is `owed(recipient, asset)` per paired asset: `owed(recipient, 0x0)` in ETH (the zero address stands for ETH) and `owed(recipient, USDC)` for coins paired with USDC, one balance per asset across all its Clanker v5 coins; `/treasury/:kernel` reports it with `pending: 0`. A burn share is `owed(0x…dEaD, coin)`.'),
     h2('claiming', 'Claiming'),
-    p('Through RWAGMI, both claim calls pay **the caller’s own** balance, to an address the caller chooses. Nobody can claim someone else’s fees. Through Clanker v4, `claim(feeOwner, token)` on `ClankerFeeLocker` may be sent by anyone, and always pays `feeOwner`. Through Clanker v5, `claimFor(recipient, 0x0)` on Clanker’s `FeeEscrow` may be sent by anyone, and always pays `recipient` its ETH.'),
+    p('Through RWAGMI, both claim calls pay **the caller’s own** balance, to an address the caller chooses. Nobody can claim someone else’s fees. Through Clanker v4, `claim(feeOwner, token)` on `ClankerFeeLocker` may be sent by anyone, and always pays `feeOwner`. Through Clanker v5, `claimFor(recipient, asset)` on Clanker’s `FeeEscrow` may be sent by anyone, and always pays `recipient`: its ETH with the zero address, its USDC with USDC’s address.'),
     table(
       ['Call', 'Does'],
       [
