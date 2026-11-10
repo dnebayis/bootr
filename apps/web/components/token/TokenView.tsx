@@ -33,6 +33,7 @@ import { FeeSplit } from './FeeSplit';
 import { TradePanel } from './TradePanel';
 import { TradesTable } from './TradesTable';
 import { isClankerSource } from '@/lib/launch-source';
+import { useV5Metadata } from '@/lib/v5-metadata';
 
 export function TokenSkeleton() {
   return (
@@ -84,6 +85,8 @@ export function TokenView({ address }: { address: string }) {
   const links = useCoinLinks(token?.metadata);
   const { address: wallet } = useConnection();
   const isCreator = env.useMock || (!!wallet && !!token?.creator && wallet.toLowerCase() === token.creator.toLowerCase());
+  // A v5 coin with editable metadata: its current image and description, read from the token itself.
+  const v5Meta = useV5Metadata(token);
 
   if (!valid) return <NotFound address={address} reason="That is not a valid token address." />;
 
@@ -101,7 +104,7 @@ export function TokenView({ address }: { address: string }) {
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
           <div className="flex shrink-0 items-center gap-1.5" title="The coin and its agent">
-            <TokenImage src={token.image} symbol={token.symbol} size={56} className="rounded-sm" />
+            <TokenImage src={v5Meta?.image ?? token.image} symbol={token.symbol} size={56} className="rounded-sm" />
             <AgentPortrait address={token.kernel} status={token.agent?.status} size={56} />
           </div>
           <div className="min-w-0">
@@ -145,6 +148,11 @@ export function TokenView({ address }: { address: string }) {
                 </Link>
               ) : null}
             </div>
+            {v5Meta?.description ? (
+              <p className="mt-2 max-w-2xl text-sm text-body" data-testid="coin-description" data-source={v5Meta.source}>
+                {v5Meta.description}
+              </p>
+            ) : null}
             {links.data && (links.data.website || links.data.x || links.data.telegram || links.data.discord) ? (
               <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="token-links">
                 {[

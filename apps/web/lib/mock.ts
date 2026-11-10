@@ -429,6 +429,7 @@ function init(): Store {
         metadataEditable: true,
         contractURI: token.metadata,
       });
+      token.v5Settings!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
     }
     if (i === FRESH_INDEX) {
       freshen(token, agent);

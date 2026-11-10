@@ -62,9 +62,16 @@ class IndexerError extends Error {}
  */
 let indexerHasSource = true;
 const SOURCE_FIELD = /\bsource\b/g;
+/**
+ * `token.v5Settings` (`V5TokenSettings` in lib/types.ts, one JSON column) arrives with the Clanker v5 settings launcher;
+ * an indexer without it drops it the same way, and the coin pages show the v5 coin from its slot fields.
+ */
+let indexerHasV5Settings = true;
+const V5_SETTINGS_FIELD = /\bv5Settings\b/g;
 
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
+  let q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
+  if (!indexerHasV5Settings) q = q.replace(V5_SETTINGS_FIELD, '');
   const res = await fetch(`${env.indexerUrl}/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -76,6 +83,10 @@ async function gql<T>(query: string, variables: Record<string, unknown> = {}): P
     const message = json.errors.map((e) => e.message).join('; ');
     if (indexerHasSource && /Cannot query field "source"/.test(message)) {
       indexerHasSource = false;
+      return gql(query, variables);
+    }
+    if (indexerHasV5Settings && /Cannot query field "v5Settings"/.test(message)) {
+      indexerHasV5Settings = false;
       return gql(query, variables);
     }
     throw new IndexerError(message);
@@ -99,6 +110,7 @@ const TOKEN_FIELDS = /* GraphQL */ `
   id chainId name symbol image creator kernel burner platformRecipient agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
   priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt lastTradeAt
+  v5Settings
   agent { id status }
 `;
 
