@@ -38,6 +38,7 @@ import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
 import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
 import { bountyJobs } from '../db/schema.js';
+import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -340,7 +341,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       return { kind: 'completed', result: { outcome, resolved, failed: errors.map(({ postId, error }) => ({ postId, error })) } };
     }
     case 'remember': {
-      const rec = await ctx.memories.remember(agentId, { text: action.input.text, ...(action.input.sources ? { sources: action.input.sources } : {}), ...(action.input.tags ? { tags: action.input.tags } : {}) });
+      // A creator request is filed by the chat alone (creator-requests.ts): its tags are dropped from a model's own note.
+      const tags = action.input.tags?.filter((tag) => !RESERVED_REQUEST_TAGS.includes(tag));
+      const rec = await ctx.memories.remember(agentId, { text: action.input.text, ...(action.input.sources ? { sources: action.input.sources } : {}), ...(tags?.length ? { tags } : {}) });
       return { kind: 'completed', result: { id: rec.id, createdAt: rec.createdAt } };
     }
     case 'recall': {

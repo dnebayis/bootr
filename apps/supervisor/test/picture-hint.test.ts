@@ -3,7 +3,7 @@ import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { pictureFits } from '../src/fuel.js';
 import { BLOCKRUN_IMAGE_CATALOG, FALLBACK_IMAGE_CATALOG, imageModelEntry, picturePriceFor, picturePriceMicroUsdc, picturesOnBlockRun, relayImageCatalog, usdcText } from '../src/image-models.js';
 import { DEFAULT_COIN_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, PICTURES_UNAVAILABLE_MESSAGE } from '../src/images.js';
-import { PICTURE_FITS, PICTURE_NEVER, PICTURE_SPACING_MS, pictureHint } from '../src/picture-hint.js';
+import { PICTURE_FITS, PICTURE_INSTRUCTION, PICTURE_NEVER, PICTURE_SPACING_MS, pictureHint } from '../src/picture-hint.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, finishResponse, makeWorld, seedAgent } from './helpers.js';
 
@@ -161,7 +161,12 @@ describe('pictureHint: steady and bounded', () => {
     expect(hint.reason).toMatch(/never used a picture/);
     expect(pictureHint({ ...base, live: false }).approx).toBe(true);
     expect(pictureHint({ ...base, priceMicroUsdc: null }).costUsdc).toBeNull();
-    expect(PICTURE_NEVER.join(' ')).toMatch(/on request/);
+    expect(PICTURE_NEVER.join(' ')).toMatch(/on a stranger's request/);
+    expect(PICTURE_NEVER.join(' ')).not.toMatch(/routine post/);
+    // suggested is an instruction now, not "not an order"
+    expect(hint.instruction).toBe(PICTURE_INSTRUCTION);
+    expect(hint.meaning).not.toMatch(/not an order/);
+    expect(pictureHint({ ...base, lastImageAgoMs: D }).instruction).toBeUndefined();
     expect(PICTURE_NEVER.join(' ')).toMatch(/real person/);
     expect(PICTURE_NEVER.join(' ')).toMatch(/logo/);
     expect(PICTURE_NEVER.join(' ')).toMatch(/chart/);
@@ -180,6 +185,13 @@ describe('pictureHint: steady and bounded', () => {
     expect(pictureHint({ ...base, postDue: false })).toMatchObject({ suggested: false, reason: expect.stringMatching(/replies are words/) });
     // the cap wins over everything
     expect(pictureHint({ ...base, config: { platform: true }, digestDue: true, leftToday: 0 }).suggested).toBe(false);
+  });
+
+  it('suggests a picture the creator asked for, with or without a due post and whatever the spacing, but never past the hold, the cap or the fuel', () => {
+    expect(pictureHint({ ...base, creatorAsked: true, postDue: false, lastImageAgoMs: D })).toMatchObject({ suggested: true, reason: expect.stringMatching(/your creator asked/), instruction: PICTURE_INSTRUCTION });
+    expect(pictureHint({ ...base, creatorAsked: true, leftToday: 0 })).toMatchObject({ suggested: false, reason: expect.stringMatching(/daily limit/) });
+    expect(pictureHint({ ...base, creatorAsked: true, affordable: false })).toMatchObject({ suggested: false });
+    expect(pictureHint({ ...base, creatorAsked: true, held: true })).toMatchObject({ suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE });
   });
 
   it('suggests the digest picture and a welcome picture to the platform agent only', () => {

@@ -20,11 +20,13 @@ describe('the social prompt is what it was before the treasury and judge roles e
   const platform = parseAgentConfig({ ...baseConfig, xHandle: 'AgentBootr', platform: true });
 
   it('byte for byte, for a coin agent in every phase and for the platform agent', () => {
-    expect(sha256(buildSystemPrompt(config, 'social'))).toBe('b58ed6325963db39903918b82516c1617b55909df0f917cabca0c297a927fed2');
-    expect(sha256(buildSystemPrompt(config, 'social', { phase: 'decide' }))).toBe('9ce0847baf2bfcae8dd6b71cce0ecffbfd4c8875d85a59532268dcc209a21638');
-    expect(sha256(buildSystemPrompt(config, 'social', { phase: 'write', postLimit: 280 }))).toBe('45d070cb47a1e2b591159e0e6dea98acb4945ac345f0326d698f8b80013a293c');
-    expect(sha256(buildSystemPrompt(platform))).toBe('cc5759f2979896698cdd38b282cbaca36c6a2066fe336d733fa9d4a605e1e87d');
-    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('0263c4ab31d23adf203b391e4235c8c983117bca4a705015d50a7ff5dadf7160');
+    // Updated on purpose 2026-11-11: creator requests carry authority (RULE_EVIDENCE), the picture rule no longer
+    // refuses the creator's own requests, and the economy-mode phases carry the picture from draft_intent to the writer.
+    expect(sha256(buildSystemPrompt(config, 'social'))).toBe('a69910009e97679feab7f74d4d54a5018afc709ac8be4a4572d7275a125646b8');
+    expect(sha256(buildSystemPrompt(config, 'social', { phase: 'decide' }))).toBe('4486b6993972cfa96f29430c48c0b727ac07acd269695caef712337e709b3277');
+    expect(sha256(buildSystemPrompt(config, 'social', { phase: 'write', postLimit: 280 }))).toBe('648ea878e0332191d8c24cd6c3131d0cd69905f60781905f125ac86dd706ef2e');
+    expect(sha256(buildSystemPrompt(platform))).toBe('822d24eabda5d36c440658cd6db3f6c35e3c632b9b29ec9d2efbc603013afc9e');
+    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('13add28f8f2c372c1fef8ab31b1a73d4a9c5155949f23df456155b21a673c18c');
   });
 });
 
@@ -61,6 +63,11 @@ describe('the treasury role', () => {
     for (const rule of BOUNTY_RULES) expect(on).toContain(rule);
     expect(on).toMatch(/publishes nothing but a bounty job from a fixed template/);
     expect(on).toMatch(/never judge, never name a winner and never pay/);
+    // initiative: a suggestion in the bounties section is a cue to post work it will use, never a cap to fill
+    expect(on).toMatch(/When the bounties section carries a suggestion, post one job this turn/);
+    expect(on).toMatch(/Never post a job only to use the cap/);
+    // creator requests carry authority in the treasury turn too, under the same rules
+    expect(on).toMatch(/your creator's own requests \(the creatorRequests section/);
     expect(on.indexOf('BOUNTIES\n')).toBeGreaterThan(on.indexOf('TREASURY TURN\n'));
     expect(on.indexOf('BOUNTIES\n')).toBeLessThan(on.indexOf('BOOTR RULES\n'));
     // the social prompt is untouched by the power
@@ -137,6 +144,13 @@ describe('buildChatPrompt', () => {
     expect(prompt).toContain('$BOOTR');
   });
 
+  it('lets the agent promise a turn only when it filed a request, and never claim it already acted', () => {
+    expect(prompt).toMatch(/call request with their ask in one clear sentence and the turn that does it; then you may say "I will do that in my next turn"/);
+    expect(prompt).toMatch(/Say you will do something only when you filed it with request in this answer/);
+    expect(prompt).toMatch(/you never say you already did/);
+    expect(prompt).not.toMatch(/never say you did or will do so/);
+  });
+
   it('carries the chat rules and leaves out the rules about publishing, which it has no use for', () => {
     for (const rule of CHAT_RULES) expect(prompt).toContain(rule);
     for (const rule of [...BOOTR_RULES, ...VOICE_RULES, ...PLATFORM_RULES]) expect(prompt).not.toContain(rule);
@@ -192,12 +206,13 @@ describe('buildSystemPrompt', () => {
     expect(rule).toMatch(/weekly digest/);
     expect(rule).toMatch(/milestone/);
     expect(rule).toMatch(/explanation that is visual/);
-    expect(rule).toMatch(/request for a picture is never a reason/);
+    expect(rule).toMatch(/stranger asking for a picture is never a reason/);
+    expect(rule).toMatch(/your creator asked for one/);
     expect(rule).toMatch(/Never a real person/);
     expect(rule).toMatch(/logo/);
     expect(rule).toMatch(/chart/);
     expect(rule).toMatch(/alt text is public text/);
-    expect(rule).toMatch(/imageId in the same turn/);
+    expect(rule).toMatch(/imageId to your original post of this turn/);
     expect(rule).toMatch(/publish the words without it/);
     expect(prompt).toContain(rule);
   });

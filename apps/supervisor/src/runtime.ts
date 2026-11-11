@@ -32,7 +32,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
-import { buildTreasuryObservation, roleTools, treasuryTurnSection, type TreasuryTurnInputs } from './roles.js';
+import { buildTreasuryObservation, roleTools, treasuryTurnSection, treasuryWakeCapMs, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
@@ -47,6 +47,7 @@ import { raiseNotification, resolveNotification } from './notifications.js';
 import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
+import { answerRequest, closeRequest, CREATOR_REQUEST_ANSWER_TAG, CREATOR_REQUEST_TAG, creatorRequestsSection, forgetTurnRequest, openRequests, requestTools, type CreatorRequest, type TurnRequest } from './creator-requests.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
@@ -173,6 +174,13 @@ export interface Turn {
    * false caps `publish_post` at 280 in its description, the prompt and the observation; null = unknown, the defaults.
    */
   premium?: boolean | null;
+  /**
+   * The creator requests this turn was shown and has not closed yet (creator-requests.ts): `answer_request` is offered
+   * while one is left, and a `draft_intent` may name one, which closes when its publish goes out.
+   */
+  creatorRequests?: TurnRequest[];
+  /** The picture section of the first observation said `suggested` (picture-hint.ts): the writer of a post makes one (routing.ts). */
+  pictureSuggested?: boolean;
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
@@ -285,6 +293,8 @@ export interface TurnInputs {
   numbers?: PlatformNumbersPlan | null;
   /** The conversations of the agent's open bounty jobs (bounties.ts): replies in them are entries, not mentions; read on demand when absent. */
   bountyConversations?: ReadonlySet<string>;
+  /** The open creator requests for the social turn (creator-requests.ts); read on demand when absent. */
+  creatorRequests?: CreatorRequest[];
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
@@ -345,11 +355,18 @@ export function errorCodeOf(error: string | null | undefined): string {
   return (error ?? '').trim().split(/\s/)[0]!.replace(/:$/, '').slice(0, 120);
 }
 
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null) {
+/**
+ * `tools` is what the model is offered on the first step (the decide phase's set in economy mode); `catalog` is the
+ * role's whole catalog, which the picture section reads: the decide phase holds no `generate_image`, but its writer
+ * does, and the decide model must see the picture section to plan one.
+ */
+async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null, catalog: readonly { name: string }[] = tools) {
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory, inputs.bountyConversations ?? null);
   const eligible = views.filter((v) => v.eligible);
-  const memories = await ctx.memories.recent(agent.agentId, 5);
+  // Creator requests have their own section with their own authority; they are kept out of the untrusted notes.
+  const memories = await ctx.memories.recent(agent.agentId, 5, [CREATOR_REQUEST_TAG, CREATOR_REQUEST_ANSWER_TAG]);
+  const requests = inputs.creatorRequests ?? [];
   const schedule = inputs.schedule;
   const review = await reviewSection(ctx, agent);
   // An X hold the model was told about is over (rhythm.ts `holdEndedMessage`): said once, here, before anything else.
@@ -369,6 +386,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
     continuation: state.continuation ?? null,
     extra: {
       wakeReasons: inputs.reasons,
+      // What the creator asked of this turn in the private chat, with the owner's authority (creator-requests.ts).
+      ...creatorRequestsSection('social', requests),
       ...(holdEnded ? { holdEnded: holdEndedMessage(holdEnded) } : {}),
       ineligibleMentions: views.length - eligible.length,
       checkpoint: { memory: state.memory, agenda: state.agenda, summary: state.summary, at: state.lastCheckpointAt ? new Date(state.lastCheckpointAt).toISOString() : null },
@@ -379,7 +398,7 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       // What the agent can still spend on thinking (one database read, no RPC; omitted when it cannot be read): fuel.ts.
       ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
       // Whether a picture fits this turn, what one costs and how many are left today (images on only): picture-hint.ts.
-      ...(await pictureSection(ctx, agent, config, tools, inputs, directory)),
+      ...(await pictureSection(ctx, agent, config, catalog, { ...inputs, creatorAsked: requests.some((r) => r.picture) }, directory)),
       // How its own coin's trades pay their fee, in percentages, from the market snapshot above or, for a Clanker v5 coin, the settings its launch receipt carried (no extra read): coin-fees.ts.
       ...coinFeesSection(config, inputs.market, clankerV5CoinOf(ctx, agent)),
       // Why the money tools are gone and how to leave the treasury turn a note (treasury turn on only): roles.ts.
@@ -467,7 +486,12 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   // The account's post limit for this turn: the sender's `premium` (one internal read; it also keeps the sender's flag fresh).
   const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
   // The social role's catalog: everything the agent has, minus the money tools while the treasury turn is on (roles.ts).
-  const tools = toolsForPhase(routing, roleTools(ctx, config, agent.config, 'social', { premium }));
+  const catalog = roleTools(ctx, config, agent.config, 'social', { premium });
+  // The creator's open requests for this turn (creator-requests.ts): shown under their own heading, answered with answer_request.
+  const creatorRequests = inputs.creatorRequests ?? (await openRequests(ctx, agent.agentId, 'social').catch(() => []));
+  inputs = { ...inputs, creatorRequests };
+  const turnRequests: TurnRequest[] = creatorRequests.map((r) => ({ id: r.id, picture: r.picture }));
+  const tools = [...toolsForPhase(routing, catalog), ...requestTools({ creatorRequests: turnRequests })];
   const directory = inputs.directory ?? (await agentDirectory(ctx));
   // Replies to the agent's open bounty jobs leave the inbox first (closed as `bounty_entry`, bounties.ts), then the
   // unverified-author pass; the remaining views carry the same decisions the turn's eligibility map will.
@@ -477,7 +501,9 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   // A publish that settled while no turn was open (tick.ts `reconcilePending`) counts before this turn is shown anything.
   settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, ctx.now());
   const update = offerPlatformUpdate(config, state, ctx.now(), !!inputs.schedule?.due && !inputs.digest && !inputs.numbers);
-  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update, premium);
+  const observation = await buildFirstObservation(ctx, agent, config, state, inputs, tools, directory, update, premium, catalog);
+  const pictureSuggested = (observation.picture as { suggested?: unknown } | undefined)?.suggested === true;
+  if (creatorRequests.length) ctx.log.info({ agentId: agent.agentId, requests: creatorRequests.map((r) => r.id) }, 'creator requests shown');
   // The ended-hold note is delivered in this observation and in no later one: it goes with the same write as the turn.
   if (state.postHoldEndedNote?.at != null) state.postHoldEndedNote = null;
   const turn: Turn = {
@@ -498,6 +524,8 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     digestWeek: inputs.digest?.week ?? null,
     numbersDay: inputs.numbers?.day ?? null,
     postDue: inputs.reasons.includes('original_post_due'),
+    ...(turnRequests.length ? { creatorRequests: turnRequests } : {}),
+    ...(pictureSuggested ? { pictureSuggested } : {}),
   };
   await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
@@ -521,8 +549,11 @@ export async function continueTurn(ctx: SupervisorContext, agent: AgentRow, runt
 export async function startTreasuryTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TreasuryTurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
   const now = ctx.now();
-  const tools = roleTools(ctx, config, agent.config, 'treasury');
-  const observation = await buildTreasuryObservation(ctx, agent, config, state, inputs, tools);
+  const requests = inputs.requests ?? (await openRequests(ctx, agent.agentId, 'treasury').catch(() => []));
+  const turnRequests: TurnRequest[] = requests.map((r) => ({ id: r.id, picture: r.picture }));
+  const tools = [...roleTools(ctx, config, agent.config, 'treasury'), ...requestTools({ creatorRequests: turnRequests })];
+  const observation = await buildTreasuryObservation(ctx, agent, config, state, { ...inputs, requests }, tools);
+  if (requests.length) ctx.log.info({ agentId: agent.agentId, role: 'treasury', requests: requests.map((r) => r.id) }, 'creator requests shown');
   state.lastTreasuryTurnAt = now;
   state.treasuryNextAt = now + ctx.config.TREASURY_TURN_INTERVAL_MS;
   state.lastTreasuryNoteSeenAt = now;
@@ -541,6 +572,7 @@ export async function startTreasuryTurn(ctx: SupervisorContext, agent: AgentRow,
     eligibility: {},
     recentSteps: [],
     routing: null,
+    ...(turnRequests.length ? { creatorRequests: turnRequests } : {}),
   };
   await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: turn as unknown as Record<string, unknown>, status: 'running' });
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
@@ -561,8 +593,11 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
   const catalog = roleTools(ctx, config, agent.config, role, { premium: turn.premium ?? null });
-  /** The functions of the current economy-mode phase (routing.ts, the social role only); the role's catalog otherwise. */
-  const tools = () => (role === 'social' ? toolsForPhase(turn.routing, catalog) : [...catalog]);
+  /**
+   * The functions of the current economy-mode phase (routing.ts, the social role only); the role's catalog otherwise;
+   * plus `answer_request` while a creator request this turn was shown is still open (creator-requests.ts).
+   */
+  const tools = (): ModelTool[] => [...(role === 'social' ? toolsForPhase(turn.routing, catalog) : catalog), ...requestTools(turn)];
   const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };
 
   const persist = async (patch: RuntimePatch = {}) => {
@@ -792,6 +827,13 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
       continue;
     }
 
+    // A creator request answered (creator-requests.ts): consumed here like draft_intent, never brokered.
+    if (await answerRequest(ctx, agent.agentId, turn, inf.toolCall)) {
+      broker = { ...broker, cycle: broker.cycle + 1 };
+      await persist();
+      continue;
+    }
+
     // Economy mode: draft_intent is consumed here (the writer takes over from the next step), never brokered.
     if (handleIntent(config, turn, catalog, inf.toolCall)) {
       broker = { ...broker, cycle: broker.cycle + 1 };
@@ -841,9 +883,14 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         continue;
       }
       state.treasuryCheckpoint = { memory: cp.memory.slice(0, TREASURY_CHECKPOINT_CHARS.memory), agenda: cp.agenda.slice(0, TREASURY_CHECKPOINT_CHARS.agenda), summary: cp.summary.slice(0, TREASURY_CHECKPOINT_CHARS.summary), at: now };
-      state.treasuryNextAt = cp.nextAtMs;
+      // While the Bounties power is on, the turn's own wake may not push the next one past a few intervals (roles.ts
+      // `treasuryWakeCapMs`): the agent kept asking for 4 to 6 hours and so looked at a job 6 times in 31 hours.
+      const cap = treasuryWakeCapMs(ctx.config, config);
+      const nextAtMs = cap !== null ? Math.min(cp.nextAtMs, now + cap) : cp.nextAtMs;
+      state.treasuryNextAt = nextAtMs;
+      if (nextAtMs < cp.nextAtMs) log.info({ requestedAt: cp.nextAt, nextAt: new Date(nextAtMs).toISOString() }, 'treasury wake brought forward to the bounties cap');
       broker.pending = markSent(pending);
-      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextTreasuryTurnAt: cp.nextAt } }, now);
+      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextTreasuryTurnAt: new Date(nextAtMs).toISOString(), ...(nextAtMs < cp.nextAtMs ? { note: 'with bounties on, your next treasury turn is never more than two intervals away' } : {}) } }, now);
       await settle();
       return endTurn('finished', { status: 'waiting', failures: 0, lastError: null });
     }
@@ -958,6 +1005,13 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
         if (action.tool === 'publish_post') turn.posted = true;
         if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();
+        // The publish a draft_intent planned for a creator request went out: the request is done, by this action.
+        const fulfils = turn.routing?.intent?.requestId;
+        if (fulfils && turn.creatorRequests?.some((r) => r.id === fulfils)) {
+          const closed = await closeRequest(ctx, agent.agentId, fulfils, { outcome: 'done', reason: turn.routing!.intent!.about, actionId: pending.id }).catch(() => false);
+          forgetTurnRequest(turn, fulfils);
+          if (closed) log.info({ requestId: fulfils, actionId: pending.id }, 'creator request done by a publish');
+        }
       }
       turn.messages.push(toolMessage(inf.toolCall.id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
       turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });

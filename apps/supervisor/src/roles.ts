@@ -34,6 +34,7 @@ import { SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
 import { bountiesSection, jobClosedSince } from './bounties.js';
 import { availableTools } from './broker/index.js';
 import { coinFeesSection } from './coin-fees.js';
+import { creatorRequestsSection, openRequests, type CreatorRequest } from './creator-requests.js';
 import { clankerV5CoinOf } from './launch-source.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { memories } from './db/schema.js';
@@ -41,24 +42,15 @@ import { fuelSection } from './fuel.js';
 import type { MemoryRecord } from './memories.js';
 import type { AgentState } from './runtime.js';
 import { budgetView, servicesBudget, servicesPolicyOf } from './services.js';
+import { treasuryTurnOn } from './treasury-switch.js';
 import { fundingBudget, openOps, opView, recentOps, type TreasurySnapshot } from './treasury.js';
 
 // ---------------------------------------------------------------------------
 // The switch
 // ---------------------------------------------------------------------------
 
-/** The powers whose presence turns the treasury turn on (design sections 3.2 and 3.3); not in `CAPABILITY_KEYS` yet. */
-export const TREASURY_TURN_POWERS: readonly string[] = ['trade', 'bounties'];
-
-/**
- * Whether the treasury turn runs for an agent, from its stored config (`sv_agents.config`, the raw block, not the parsed
- * `AgentConfig`: the zod schema drops capability keys it does not know, and `trade` and `bounties` are not in it yet).
- */
-export function treasuryTurnOn(raw: Record<string, unknown>): boolean {
-  const caps = raw.capabilities && typeof raw.capabilities === 'object' && !Array.isArray(raw.capabilities) ? (raw.capabilities as Record<string, unknown>) : {};
-  if (TREASURY_TURN_POWERS.some((power) => caps[power] === true)) return true;
-  return raw.treasuryTurn === true;
-}
+// The switch lives in treasury-switch.ts (no imports) so the chat can read it without the broker; re-exported here.
+export { TREASURY_TURN_POWERS, treasuryTurnOn } from './treasury-switch.js';
 
 // ---------------------------------------------------------------------------
 // Tools per role
@@ -118,12 +110,22 @@ export const TREASURY_NOTES_MAX = 20;
 /** A note or a closed job may pull the next treasury turn forward, but never closer than the interval over this to the last one. */
 export const TREASURY_EARLY_GAP_DIVISOR = 4;
 
-export type TreasuryWakeReason = 'treasury_interval' | 'treasury_note' | 'treasury_job_closed';
+/** While the Bounties power is on, the treasury turn's own `finish` may put the next one at most this many intervals away. */
+export const TREASURY_WAKE_CAP_INTERVALS = 2;
+
+/** The farthest a treasury turn's own wake may reach, in ms from its `finish`; null when the model's choice stands (bounties off). */
+export function treasuryWakeCapMs(cfg: Pick<SupervisorContext['config'], 'TREASURY_TURN_INTERVAL_MS'>, config: Pick<AgentConfig, 'capabilities'>): number | null {
+  return config.capabilities.bounties === true ? TREASURY_WAKE_CAP_INTERVALS * cfg.TREASURY_TURN_INTERVAL_MS : null;
+}
+
+export type TreasuryWakeReason = 'treasury_interval' | 'treasury_note' | 'treasury_job_closed' | 'treasury_request';
 
 export interface TreasuryWake {
   reasons: TreasuryWakeReason[];
   /** The treasury notes no treasury turn has seen yet, oldest first; shown in the observation and then marked seen. */
   notes: MemoryRecord[];
+  /** The creator's open requests for the treasury turn (creator-requests.ts), oldest first; shown until each closes or expires. */
+  requests: CreatorRequest[];
 }
 
 /** Treasury notes (`remember` tagged `treasury`) written after `sinceMs`, oldest first, at most `TREASURY_NOTES_MAX`. */
@@ -163,7 +165,10 @@ export async function treasuryTurnDue(ctx: SupervisorContext, agent: AgentRow, r
   const notes = await pendingTreasuryNotes(ctx, agent.agentId, state.lastTreasuryNoteSeenAt ?? 0);
   if (notes.length && earlyAllowed) reasons.push('treasury_note');
   if (earlyAllowed && (await bountyJobClosed(ctx, agent, state, now))) reasons.push('treasury_job_closed');
-  return reasons.length ? { reasons, notes } : null;
+  // A creator request no treasury turn has been shown yet pulls the turn forward like a note; an open one already shown waits for the clock.
+  const requests = await openRequests(ctx, agent.agentId, 'treasury');
+  if (earlyAllowed && requests.some((r) => Date.parse(r.createdAt) > (state.lastTreasuryNoteSeenAt ?? 0))) reasons.push('treasury_request');
+  return reasons.length ? { reasons, notes, requests } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +184,8 @@ export interface TreasuryTurnInputs {
   treasury: TreasurySnapshot | null;
   market: Record<string, unknown> | null;
   notes: MemoryRecord[];
+  /** The creator's open requests for this turn (creator-requests.ts); read by `startTreasuryTurn` when absent. */
+  requests?: CreatorRequest[];
 }
 
 /** The caps the treasury turn works inside, from the policy and the day's use (one chain read for the funding window). */
@@ -228,6 +235,8 @@ export async function buildTreasuryObservation(ctx: SupervisorContext, agent: Ag
       role: 'treasury',
       meaning: TREASURY_MEANING,
       wakeReasons: inputs.reasons,
+      // What the creator asked of this turn in the private chat, with the owner's authority (creator-requests.ts).
+      ...creatorRequestsSection('treasury', inputs.requests ?? []),
       tools: tools.map((tool) => tool.name),
       stepBudget: ctx.config.MAX_TOOL_STEPS,
       checkpoint: cp ? { memory: cp.memory, agenda: cp.agenda, summary: cp.summary, at: new Date(cp.at).toISOString() } : null,

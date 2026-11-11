@@ -1028,13 +1028,16 @@ export const mock = {
     const n = messages.length;
     messages.push({ id: `msg_${n}`, role: 'creator', text, status: 'done', chargedMicroUsdc: null, remembered: false, at });
     const remembered = /\bremember\b/i.test(text);
+    // A request one of its turns can do (a post, a picture, a bounty) is filed for that turn; money moves never are.
+    const requested = !remembered && /\b(post|tweet|picture|image|bounty)\b/i.test(text) && !/\b(swap|claim|send|transfer)\b/i.test(text);
     const reply: AgentChatMessage = {
       id: `msg_${n + 1}`,
       role: 'agent',
-      text: remembered ? 'Noted. I will keep that in mind.' : /\b(post|tweet|swap|claim|send|transfer)\b/i.test(text) ? 'I can only talk here: posts and replies happen in my own turns, and treasury actions are not something I do from this chat.' : 'Quiet day so far: one post went out and the pool moved a little. Next I will look at the mentions when I wake.',
+      text: remembered ? 'Noted. I will keep that in mind.' : requested ? 'I will do that in my next turn.' : /\b(swap|claim|send|transfer)\b/i.test(text) ? 'I can only talk here: treasury actions are not something I do from this chat.' : 'Quiet day so far: one post went out and the pool moved a little. Next I will look at the mentions when I wake.',
       status: 'done',
       chargedMicroUsdc: MOCK_CHAT_COST,
       remembered,
+      requested,
       at,
     };
     messages.push(reply);

@@ -614,6 +614,8 @@ export interface AgentChatMessage {
   status: 'open' | 'done' | 'failed';
   chargedMicroUsdc: string | null;
   remembered: boolean;
+  /** The answer filed a creator request that one of the agent's own turns does or answers (supervisor creator-requests.ts). */
+  requested?: boolean;
   at: string;
 }
 

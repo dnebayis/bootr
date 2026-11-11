@@ -180,7 +180,16 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    (`apps/web/lib/server/supervisor.ts` sanitises every field), mock fixtures, the docs block and `e2e/bounties.spec.ts`.
    **Left for the two-week trial**: switch the power on for the platform agent (console, Powers), watch the first job
    end to end (the X read of replies with the agent's token and the `pbs.twimg.com` media fetch are not yet seen live),
-   then decide stage B (item 5).
+   then decide stage B (item 5). **Creator requests, pictures and bounty initiative, built 2026-11-11** (not deployed;
+   no migration; `apps/supervisor/src/creator-requests.ts`, README "Creator requests"): in 31 hours the platform agent
+   made no picture and its treasury turn ran 6 times, each straight to `finish`, and the owner's chat asks went
+   nowhere. Now an ask in the chat (post about X, a picture, a bounty, stop doing Y) is filed with `request` as a
+   creator request, shown in the next turn of that kind under `creatorRequests` with the owner's authority and every
+   gate still on, and closed by the action that did it or an answer with the reason (48 h expiry); a treasury request
+   pulls the treasury turn forward. The picture section reaches the decide model, `suggested` is an instruction,
+   `draft_intent` can plan a picture, and only strangers' picture asks are refused. With Bounties on, the bounties
+   section suggests a job after 2 days without one, and the treasury turn's own wake is capped at two intervals. Watch
+   after deploy: pictures per day against the cap, jobs posted, and requests closed versus expired.
 4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
 5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
    (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator

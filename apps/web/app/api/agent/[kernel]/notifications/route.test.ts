@@ -79,7 +79,9 @@ describe('the console routes (mock mode)', () => {
     expect((await call(chatSend, kernel, 'chat/send', { text: 'x'.repeat(1001) })).status).toBe(400);
     const sent = (await (await call(chatSend, kernel, 'chat/send', { text: 'Please remember that we launch on Friday' })).json()) as { reply: { text: string; remembered: boolean } };
     expect(sent.reply.remembered).toBe(true);
+    const asked = (await (await call(chatSend, kernel, 'chat/send', { text: 'Make a picture for your next post' })).json()) as { reply: { text: string; requested?: boolean } };
+    expect(asked.reply).toMatchObject({ requested: true, text: 'I will do that in my next turn.' });
     const after = (await (await call(chatList, kernel, 'chat/list', {})).json()) as { messages: unknown[] };
-    expect(after.messages).toHaveLength(before.messages.length + 2);
+    expect(after.messages).toHaveLength(before.messages.length + 4);
   });
 });
