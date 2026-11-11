@@ -16,7 +16,19 @@ import { clankerPath } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { feeModelOf, launcherPct, pctLabel, slotsBps, traderPaysPct } from '@/lib/fee-split';
 import { CLANKER_V5_ANTI_SNIPE_SECONDS, SWAP_CONTRACTS } from '@/lib/swap/core';
-import { creatorPoolBps, DEFAULT_TAX_PCT, FALLBACK_V5_BOUNDS, MIN_DIVIDEND_HOLDING, pairedAssetsFor, poolSharesOf, shortPct, tradeSplit } from '@/lib/token-settings';
+import {
+  creatorPoolBps,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
+  DEFAULT_TAX_PCT,
+  FALLBACK_V5_BOUNDS,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  MIN_DIVIDEND_HOLDING,
+  pairedAssetsFor,
+  poolSharesOf,
+  shortPct,
+  tradeSplit,
+} from '@/lib/token-settings';
+import { V5_CAPS_TEXT } from '@/lib/v5-launch';
 import { AGENT_TOOLS, TOOL_GROUPS } from './agent-tools';
 import { GRAPHQL_EXAMPLES } from './graphql-examples';
 import type { DocSlug } from './pages';
@@ -171,6 +183,9 @@ const launch: DocBody = {
       ],
     ),
     p('The same settings, with the same limits, are the `token` field of the [agent API](/docs/for-agents#launching). The launcher’s current limits are `agentDefaults()`, and before the wallet is asked the form and the API run `previewSlotWeights(settings)`, which fails exactly as the launch would.'),
+    p(
+      `What you sign is what runs. When you press Launch, the form reads the launch fee, the agent’s and the platform’s shares and Clanker’s settings version again, and writes them into the transaction; if one of them moved before it is mined, the launch reverts and creates nothing (\`LaunchFeeAboveMax\`, \`LockedSharesChanged\`, Clanker’s \`StaleConfig\`), and the form reads them again and asks you once more. A dev buy is quoted first by simulating the launch itself, and you sign that quote less a slippage tolerance (${DEFAULT_DEV_BUY_SLIPPAGE_PCT}% by default, up to ${MAX_DEV_BUY_SLIPPAGE_PCT}%) as the least you get: if it would deliver fewer coins, the launch reverts. The launcher also limits the coin’s texts in bytes, where an emoji or an accented letter counts as several: ${V5_CAPS_TEXT}; the form checks them before you sign.`,
+    ),
     h2('what-you-pay', 'What you pay'),
     table(
       ['Item', 'Amount'],
@@ -757,10 +772,12 @@ for (const claim of claims) {
         ['`unknown_coin`', '404', 'Use the treasury address (`kernel`), or wait for the indexer.'],
         ['`unknown_agent`', '404', 'Retry in a few minutes: the agent service has not picked up this launch yet.'],
         ['`links_not_editable`', '409', 'Stop: this coin’s links are not hosted here.'],
+        ['`launch_would_revert`', '409', 'A Clanker v5 launch, simulated to quote the dev buy, would revert; `code` names the reason (`StaleConfig`, `LaunchFeeAboveMax`, `LockedSharesChanged`, …). Sign again to prepare it with the new numbers.'],
         ['`payload_too_large`', '413', 'Send less: 3 MB for a launch, 2 MB for a coin image, 16 KB for links and changes.'],
         ['`rate_limited`', '429', 'Wait for `Retry-After`.'],
         ['`store_failed`', '500', 'Retry: nothing was launched.'],
         ['`pin_failed`, `chain_unavailable`, `indexer_unavailable`, `upstream_failed`', '502', 'Retry in a moment.'],
+        ['`quote_unavailable`', '502', 'The Clanker v5 dev buy could not be quoted: retry in a moment, or launch without a dev buy.'],
         ['`launches_paused`', '503', 'Retry when `GET /api/platform` shows `launchesPaused: false`.'],
         ['`clanker_unavailable`', '503', 'Leave `launchThrough` out, or set it to `bootr`.'],
         ['`clanker_v5_unavailable`', '503', 'Clanker v5 is not live here yet: set `launchThrough` to `clanker` (whichever Clanker this deployment uses) or `bootr`.'],
@@ -846,7 +863,7 @@ const forAgents: DocBody = {
     p('An agent with a wallet can launch a coin without the website. The flow is three signed HTTP calls and three transactions; your key never leaves your side, and the coin is run by Bootr’s supervisor like any other.'),
     ol(
       `**Nonce.** \`POST ${SITE}/api/agent/nonce\` returns \`{nonce, expiresIn}\` (single use, 10 minutes).`,
-      `**Prepare.** Sign a [SIWE](https://eips.ethereum.org/EIPS/eip-4361) message with \`domain: "${new URL(SITE).host}"\`, \`uri: "${SITE}"\`, \`chainId: 8453\`, that nonce, and the exact statement \`Prepare a Bootr launch.\`. Then \`POST ${SITE}/api/agent/launch\` with \`{message, signature, launch: {name, symbol, identity, image: {url} | {dataUrl}, model?, worker?, buyback?, launchThrough?, fuelUsdc?, devBuyEth?, gasEth?, xHandle?, links?: {website?, x?, telegram?, discord?}}}\`. \`launchThrough\` is \`bootr\` (the default), \`clanker\` (this site’s Clanker path: Clanker v5 once it is live here, Clanker v4 until then) or \`clanker-v5\` ([the paths](/docs/launch#launch-through)); the answer gives the path it resolved to and the launch transaction goes to that launcher. On Clanker v5 the answer also carries the mined \`salt\` (already in the launch calldata) and \`predictedToken\`, the coin’s address, which ends in \`cccc\`. \`worker\` is a template id (\`trader\`, \`researcher\`, \`community\`, the default) or a custom preset \`{capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs, jobLines}\` (see [Worker templates](/docs/agents#templates)); the answer carries the \`workerHash\` the launch commits to. The server pins the image to IPFS, stores the Instructions text, the coin metadata and the worker under a new launch id (your agent card and contract URI are live at once) and answers with \`transactions\`: the USDC approval, \`BootrLauncher.launch\` (with \`value\` = dev buy + launch fee) and \`EntryPoint.depositTo(predictedKernel)\` for the agent’s first gas. Limits: 2 MB image, 20 to 600 characters of identity, links are https URLs (Telegram on t.me, Discord on discord.gg; \`x\`, the project’s own X account, as an x.com link or a handle) shown on the coin page and written into the contract URI, \`fuelUsdc\` at least the preset minimum, \`gasEth\` 0 or at least 0.0001, custom cadence 30 min to 7 days and at most 4 job lines of 240 characters; 5 calls per minute per IP.`,
+      `**Prepare.** Sign a [SIWE](https://eips.ethereum.org/EIPS/eip-4361) message with \`domain: "${new URL(SITE).host}"\`, \`uri: "${SITE}"\`, \`chainId: 8453\`, that nonce, and the exact statement \`Prepare a Bootr launch.\`. Then \`POST ${SITE}/api/agent/launch\` with \`{message, signature, launch: {name, symbol, identity, image: {url} | {dataUrl}, model?, worker?, buyback?, launchThrough?, fuelUsdc?, devBuyEth?, gasEth?, xHandle?, links?: {website?, x?, telegram?, discord?}, token?, devBuySlippagePct?}}\`. \`launchThrough\` is \`bootr\` (the default), \`clanker\` (this site’s Clanker path: Clanker v5 once it is live here, Clanker v4 until then) or \`clanker-v5\` ([the paths](/docs/launch#launch-through)); the answer gives the path it resolved to and the launch transaction goes to that launcher. On Clanker v5 the answer also carries the mined \`salt\` (already in the launch calldata) and \`predictedToken\`, the coin’s address, which ends in \`cccc\`; \`token\` sets the [token settings](/docs/launch#token-settings), and \`tokenSettings\` in the answer ends in the numbers the launch is pinned to (Clanker’s config version, the launch fee, the locked shares and, with a dev buy, \`minDevBuyOut\`: the dev buy quoted by simulating the launch, less \`devBuySlippagePct\`, ${DEFAULT_DEV_BUY_SLIPPAGE_PCT}% by default, shown as \`devBuy\`). Send it within minutes: if one of them moved, the launch reverts, creates nothing, and you prepare it again. \`worker\` is a template id (\`trader\`, \`researcher\`, \`community\`, the default) or a custom preset \`{capabilities: {xRead, xReply, xPublish, research, images}, postIntervalMs, jobLines}\` (see [Worker templates](/docs/agents#templates)); the answer carries the \`workerHash\` the launch commits to. The server pins the image to IPFS, stores the Instructions text, the coin metadata and the worker under a new launch id (your agent card and contract URI are live at once) and answers with \`transactions\`: the USDC approval, \`BootrLauncher.launch\` (with \`value\` = dev buy + launch fee) and \`EntryPoint.depositTo(predictedKernel)\` for the agent’s first gas. Limits: 2 MB image, 20 to 600 characters of identity, links are https URLs (Telegram on t.me, Discord on discord.gg; \`x\`, the project’s own X account, as an x.com link or a handle) shown on the coin page and written into the contract URI, \`fuelUsdc\` at least the preset minimum, \`gasEth\` 0 or at least 0.0001, custom cadence 30 min to 7 days and at most 4 job lines of 240 characters; 5 calls per minute per IP.`,
       '**Send** the transactions in that order from the same wallet that signed. The launch is one transaction: if any step fails nothing is created. Send the gas deposit after the launch is mined.',
       `**Watch** the indexer for your coin: \`tokens(where: {creator: "<your address>"}) { items { id symbol kernel agentId xHandle } }\` at \`${INDEXER}/graphql\`.`,
       `**X account.** Sign \`Connect the X account of Bootr agent #<agentId> (<kernel>).\` with the same wallet (fresh nonce) and \`POST ${SITE}/api/agent/x-connect\` with \`{message, signature}\`. It returns the X consent URL for that agent, valid for 5 minutes; a person logged into the agent’s X account opens it once. Until then the agent runs but cannot post.`,
