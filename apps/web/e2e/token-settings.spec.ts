@@ -179,6 +179,37 @@ test('token settings: the paired asset, Market details from clanker.world, and t
   await expect(page.getByTestId('v5-reward-rows')).toContainText('0x2222');
 });
 
+test('token settings: the dev buy’s slippage, its signed minimum and the launch fee, before the wallet is asked (mock mode)', async ({ page }) => {
+  await stubMarket(page, 'ok');
+  await openV5Form(page);
+  const summary = page.getByTestId('launch-summary');
+  await expect(summary).toContainText('Launch fee');
+  await expect(page.locator('#slippage')).toHaveCount(0);
+  await page.locator('#devbuy').fill('0.01');
+  await expect(page.locator('#slippage')).toHaveValue('3');
+  await expect(summary).toContainText('Dev buy minimumquote − 3%');
+  await page.locator('#slippage').fill('60');
+  await expect(page.locator('#slippage')).toHaveAttribute('aria-invalid', 'true');
+  await page.locator('#slippage').fill('2');
+  await expect(summary).toContainText('Dev buy minimumquote − 2%');
+
+  await page.getByLabel('Name').fill('Dev Buyer');
+  await page.getByLabel('Symbol').fill('DEVB');
+  await page.getByLabel('Instructions').fill('A patient onchain analyst for small Base coins.');
+  await page.getByLabel('Launch without an X account; I will connect one later from the coin page.').check();
+  await page.locator('#image-file').setInputFiles({ name: 'coin.png', mimeType: 'image/png', buffer: PNG });
+  await expect(page.getByTestId('image-status')).toContainText('ipfs://');
+  // A slippage out of range blocks the launch with its own words.
+  await page.locator('#slippage').fill('60');
+  await expect(summary).toContainText('Dev buy slippage must be 0.1% to 50%.');
+  await expect(page.getByTestId('launch-submit')).toBeDisabled();
+  await page.locator('#slippage').fill('2');
+  await page.getByTestId('launch-submit').click();
+  // Mock mode's quote: 0.01 ETH at 500 M coins per ETH; the creator is shown what is signed before any wallet prompt.
+  await expect(page.getByText('Dev buy: About 5,000,000 $DEVB, at least 4,900,000 (2% slippage).')).toBeVisible();
+  await expect(page).toHaveURL(/\/token\/0x[0-9a-fA-F]{36}cccc$/i, { timeout: 30_000 });
+});
+
 test('token settings: Market details falls back to Bootr’s own figures, and says so (mock mode)', async ({ page }) => {
   await stubMarket(page, 'fallback');
   await openV5Form(page);
@@ -291,7 +322,12 @@ test('the creator edits a v5 coin’s on-chain image and description, then locks
   await expect(save).toBeDisabled();
   await form.getByLabel('New image URL').fill('http://not-https.example/a.png');
   await expect(form.getByLabel('New image URL')).toHaveAttribute('aria-invalid', 'true');
+  // The launcher's 512-byte cap on the image, in bytes: 300 accented letters are 600 bytes.
+  await form.getByLabel('New image URL').fill(`https://example.com/${'é'.repeat(300)}.png`);
+  await expect(form.getByTestId('v5-image-cap')).toContainText('the launcher takes at most 512');
+  await expect(save).toBeDisabled();
   await form.getByLabel('New image URL').fill('');
+  await expect(form.getByTestId('v5-image-cap')).toHaveCount(0);
   await form.getByLabel('Description').fill('A desk that trades small Base coins in public.');
   await expect(save).toBeEnabled();
   await save.click();
