@@ -4,26 +4,33 @@ pragma solidity ^0.8.26;
 import {Test, Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {BootrClankerLauncherV5} from "../../src/BootrClankerLauncherV5.sol";
 import {ClankerV5, IClankerV5Factory} from "../../src/interfaces/IClankerV5.sol";
 import {KernelLib} from "../../src/interfaces/IKernel.sol";
 import {PoolKey} from "../../src/interfaces/IUniswapV4.sol";
+import {MockERC20} from "../mocks/MockERC20.sol";
 
-/// @dev The factory surface the unit tests reach: the config version the params carry, the tick spacing, and
-///      the metadata forwarder (recorded).
+/// @dev The factory surface the unit tests reach: the live config version, the tick spacing, the metadata
+///      forwarder (recorded), and an init-code-hash view that answers with the config version it was handed.
 contract MockClankerV5Factory {
     address public lastToken;
     string public lastKey;
     string public lastValue;
     uint256 public edits;
+    int24 public tickSpacing = 200;
 
     function configVersion() external pure returns (uint64) {
         return 7;
     }
 
-    function tickSpacing() external pure returns (int24) {
-        return 200;
+    function setTickSpacing(int24 spacing) external {
+        tickSpacing = spacing;
+    }
+
+    function launchTokenInitCodeHash(ClankerV5.LaunchParams calldata lp) external pure returns (bytes32) {
+        return bytes32(uint256(lp.expectedConfigVersion));
     }
 
     function updateTokenExtraMetadata(address token, string calldata key, string calldata value) external {
@@ -34,6 +41,49 @@ contract MockClankerV5Factory {
     }
 }
 
+/// @dev Uniswap v3's `getPool`: the pools the test registers, order-insensitive, zero for none.
+contract MockUniswapV3Factory {
+    mapping(bytes32 => address) internal _pools;
+
+    function setPool(address a, address b, uint24 fee, address pool) external {
+        _pools[_key(a, b, fee)] = pool;
+    }
+
+    function getPool(address a, address b, uint24 fee) external view returns (address) {
+        return _pools[_key(a, b, fee)];
+    }
+
+    function _key(address a, address b, uint24 fee) internal pure returns (bytes32) {
+        (address lo, address hi) = a < b ? (a, b) : (b, a);
+        return keccak256(abi.encode(lo, hi, fee));
+    }
+}
+
+/// @dev An owner that calls `rescue` again while a rescue is paying it ETH.
+contract ReenteringOwner {
+    BootrClankerLauncherV5 public launcher;
+    bytes public reentryError;
+
+    function setLauncher(BootrClankerLauncherV5 launcher_) external {
+        launcher = launcher_;
+    }
+
+    function accept() external {
+        launcher.acceptOwnership();
+    }
+
+    function rescue(address token, address to, uint256 amount) external {
+        launcher.rescue(token, to, amount);
+    }
+
+    receive() external payable {
+        try launcher.rescue(address(0), address(this), 1) {}
+        catch (bytes memory err) {
+            reentryError = err;
+        }
+    }
+}
+
 /// @dev Exposes the launcher's internals that the unit tests check without a Clanker deployment: a coin's
 ///      records (normally written by `launch`) and the Clanker `LaunchParams` the launcher builds.
 contract LauncherV5Harness is BootrClankerLauncherV5 {
@@ -41,10 +91,12 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
         BootrClankerLauncherV5(owner_, deps, d, minPlatformBps_)
     {}
 
+    /// @dev A coin as `launch` records it, with the tick spacing Clanker had at that moment.
     function seedCoin(address token, address creator, address quote, bool editable) external {
         coinCreator[token] = creator;
         quoteOf[token] = quote;
         metadataEditable[token] = editable;
+        tickSpacingOf[token] = factory.tickSpacing();
     }
 
     function exposedV5Params(LaunchParams calldata p, TokenSettings calldata s, address kernel, address creator)
@@ -54,7 +106,7 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
     {
         AgentDefaults memory d = agentDefaults;
         uint16[] memory w = _slotWeights(s, d);
-        return _v5Params(p, s, _feeSlots(s, w, kernel, d.platformRecipient), creator);
+        return _v5Params(p, s, _feeSlots(s, w, kernel, d.platformRecipient), creator, s.expectedConfigVersion);
     }
 }
 
@@ -66,6 +118,8 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
 contract ClankerLauncherV5Test is Test {
     LauncherV5Harness launcher;
     MockClankerV5Factory factory;
+    MockUniswapV3Factory v3Factory;
+    address weth = makeAddr("weth");
     address owner = makeAddr("owner");
     address platform = makeAddr("platform");
     address guardian = makeAddr("guardian");
@@ -82,7 +136,8 @@ contract ClankerLauncherV5Test is Test {
             factory: address(factory),
             hook: hook,
             feeEscrow: makeAddr("feeEscrow"),
-            weth: makeAddr("weth"),
+            weth: weth,
+            uniswapV3Factory: address(v3Factory),
             usdc: USDC,
             identityRegistry: makeAddr("identity"),
             kernelFactory: makeAddr("kernelFactory"),
@@ -106,6 +161,7 @@ contract ClankerLauncherV5Test is Test {
 
     function setUp() public {
         factory = new MockClankerV5Factory();
+        v3Factory = new MockUniswapV3Factory();
         launcher = new LauncherV5Harness(owner, _deps(), _defaults(), 1000);
         vm.startPrank(owner);
         launcher.setQuoteAllowed(AGENT, NATIVE, true);
@@ -114,9 +170,13 @@ contract ClankerLauncherV5Test is Test {
     }
 
     /// @dev The recommended settings (design note section 2.3): ETH, 1.5% both ways, all to creator funds, one
-    ///      row (the creator, admin the creator), sniper tax on, editable metadata.
+    ///      row (the creator, admin the creator), sniper tax on, editable metadata; pinned to the mock factory's
+    ///      config version.
     function _settings() internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = NATIVE;
+        s.expectedConfigVersion = 7;
+        s.expectedAgentShareBps = 500;
+        s.expectedPlatformShareBps = 3000;
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -174,6 +234,7 @@ contract ClankerLauncherV5Test is Test {
         assertEq(launcher.MAX_LOCKED_SHARE_BPS(), 5000);
         assertEq(launcher.MAX_REWARD_ROWS(), 5, "7 Clanker slots - agent - platform");
         assertEq(launcher.MAX_TAX_CEILING_BPS(), 100_000);
+        assertEq(launcher.MAX_LAUNCH_FEE_WEI(), 0.05 ether);
         assertEq(launcher.launchFeeWei(), 0);
         assertEq(launcher.owner(), owner);
         assertEq(launcher.ROOT_VALIDATION_ID(), KernelLib.validatorId(guardian));
@@ -187,6 +248,10 @@ contract ClankerLauncherV5Test is Test {
         new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
         d = _deps();
         d.weth = address(0);
+        vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
+        new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
+        d = _deps();
+        d.uniswapV3Factory = address(0);
         vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
         new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
         vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
@@ -260,14 +325,30 @@ contract ClankerLauncherV5Test is Test {
     }
 
     function test_minPlatformBpsGuardsThePlatformShare() public {
+        // the minimum may not pass the current default (3000): the stored share would sit under its own floor
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
+        launcher.setMinPlatformBps(3001);
+        assertEq(launcher.minPlatformBps(), 1000);
+        // raising the floor above today's share takes the share first
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 3500;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.MinPlatformBpsUpdated(3500);
         vm.prank(owner);
         launcher.setMinPlatformBps(3500);
-        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        (, uint16 share,,,,,,) = launcher.agentDefaults();
+        assertGe(share, launcher.minPlatformBps(), "the default satisfies the minimum");
         d.platformShareBps = 3499;
         _setDefaultsExpect(d, BootrClankerLauncherV5.InvalidPlatformShare.selector);
         vm.prank(owner);
         vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
         launcher.setMinPlatformBps(5001);
+        // lowering it is always possible
+        vm.prank(owner);
+        launcher.setMinPlatformBps(0);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         launcher.setMinPlatformBps(0);
@@ -320,6 +401,9 @@ contract ClankerLauncherV5Test is Test {
 
     function test_devBuyRouteAdmin() public {
         address pool = makeAddr("pool");
+        v3Factory.setPool(weth, USDC, 500, pool);
+        assertEq(address(launcher.uniswapV3Factory()), address(v3Factory));
+        assertEq(launcher.MAX_DEV_BUY_ROUTE_FEE(), 3000, "0.3% at most");
         vm.expectEmit(address(launcher));
         emit BootrClankerLauncherV5.DevBuyRouteUpdated(USDC, pool, 500);
         vm.prank(owner);
@@ -333,6 +417,53 @@ contract ClankerLauncherV5Test is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         launcher.setDevBuyRoute(USDC, address(0), 0);
+    }
+
+    /// @dev A route must be the Uniswap v3 factory's own WETH / quote pool at that fee, at a fee of 0.3% or less:
+    ///      a mistyped pool, a pool of another pair or tier, and the 1% tier are refused by the setter.
+    function test_devBuyRouteMustBeTheFactoryPoolWithinTheFeeBound() public {
+        address pool = makeAddr("pool");
+        address other = makeAddr("otherPool");
+        address cbBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
+        v3Factory.setPool(weth, USDC, 500, pool);
+        v3Factory.setPool(weth, USDC, 3000, other);
+        v3Factory.setPool(weth, USDC, 10_000, makeAddr("onePercentPool"));
+        v3Factory.setPool(weth, cbBTC, 500, makeAddr("cbBtcPool"));
+        vm.startPrank(owner);
+
+        // not a pool of the factory at all (a typo), or the factory's pool of another tier or another pair
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("typo"), 500);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, other, 500);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("cbBtcPool"), 500);
+        // a tier with no pool: the factory answers address(0), which is not the pool given
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, pool, 100);
+
+        // the fee bound: 0 and anything above 0.3%, even when the pool is the factory's
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, pool, 0);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("onePercentPool"), 10_000);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, other, 3001);
+
+        // the edge of the bound is accepted
+        launcher.setDevBuyRoute(USDC, other, 3000);
+        (address p, uint24 fee) = launcher.devBuyRoute(USDC);
+        assertEq(p, other);
+        assertEq(fee, 3000);
+
+        // clearing needs no pool and stores no fee, whatever fee is passed
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.DevBuyRouteUpdated(USDC, address(0), 0);
+        launcher.setDevBuyRoute(USDC, address(0), 500);
+        (p, fee) = launcher.devBuyRoute(USDC);
+        assertEq(p, address(0));
+        assertEq(fee, 0);
+        vm.stopPrank();
     }
 
     // ------------------------------------------------------------------
@@ -614,6 +745,19 @@ contract ClankerLauncherV5Test is Test {
         assertEq(v.expectedConfigVersion, 7);
     }
 
+    /// @dev The launch hands Clanker the config version the creator signed (so Clanker's `StaleConfig` guard
+    ///      works), never the live one; the salt-mining view reads the live one and ignores the pin.
+    function test_v5ParamsCarryTheCreatorsConfigVersionAndTheViewsTheLiveOne() public view {
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+        s.expectedConfigVersion = 3;
+        ClankerV5.LaunchParams memory v = launcher.exposedV5Params(_params(), s, address(1), creator);
+        assertEq(v.expectedConfigVersion, 3, "the creator's pin, though the factory is at 7");
+        s.expectedConfigVersion = 0;
+        v = launcher.exposedV5Params(_params(), s, address(1), creator);
+        assertEq(v.expectedConfigVersion, 0, "an unset pin is passed as it is (Clanker refuses it)");
+        assertEq(launcher.tokenInitCodeHash(_params(), s), bytes32(uint256(7)), "the view reads the live version");
+    }
+
     function test_v5ParamsCarrySniperSwitchMetadataAndContractUri() public view {
         BootrClankerLauncherV5.LaunchParams memory p = _params();
         BootrClankerLauncherV5.TokenSettings memory s = _settings();
@@ -661,14 +805,293 @@ contract ClankerLauncherV5Test is Test {
         p.fuelUsdc = 25e6 - 1;
         vm.expectRevert(BootrClankerLauncherV5.InsufficientFuel.selector);
         launcher.launch(p, s);
-        // a dev buy into USDC needs the owner's v3 route
+        // a dev buy needs the creator's minimum output, into ETH and into USDC alike
         p = _params();
         p.devBuyWei = 0.01 ether;
-        s.quoteToken = USDC;
         vm.deal(creator, 1 ether);
+        vm.prank(creator);
+        vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+        launcher.launch{value: 0.01 ether}(p, s);
+        s.quoteToken = USDC;
+        vm.prank(creator);
+        vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+        launcher.launch{value: 0.01 ether}(p, s);
+        // and a dev buy into USDC needs the owner's v3 route
+        s.minDevBuyOut = 1;
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.DevBuyRouteMissing.selector, USDC));
         launcher.launch{value: 0.01 ether}(p, s);
+    }
+
+    /// @dev The creator's pins on the launcher's own terms: the locked shares must be the ones signed for, and the
+    ///      launch fee at most the creator's bound. Checked after the settings' own rules, before any external call.
+    function test_launchRefusesChangedSharesAndAFeeAboveTheCreatorsMax() public {
+        BootrClankerLauncherV5.LaunchParams memory p = _params();
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+
+        // the creator signed for other shares than the live ones (either one)
+        s.expectedPlatformShareBps = 2999;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+        s = _settings();
+        s.expectedAgentShareBps = 501;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+        // unset pins are refused like any other mismatch
+        s.expectedAgentShareBps = 0;
+        s.expectedPlatformShareBps = 0;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+
+        // the owner moves the shares under a pending launch: the error carries the live values
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 4500;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        s = _settings();
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 4500));
+        launcher.launch(p, s);
+        // ... even in the creator's favour: what was signed is what runs
+        d.platformShareBps = 1000;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 1000));
+        launcher.launch(p, s);
+        vm.prank(owner);
+        launcher.setAgentDefaults(_defaults());
+
+        // the launch fee above the creator's bound
+        vm.prank(owner);
+        launcher.setLaunchFee(0.0005 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.0005 ether, uint256(0))
+        );
+        launcher.launch(p, s);
+        s.maxLaunchFeeWei = 0.0005 ether - 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.0005 ether, 0.0005 ether - 1)
+        );
+        launcher.launch(p, s);
+        // at the bound (and above it) the pins pass: the launch goes on to its first external call, which the
+        // mock factory does not answer
+        s.maxLaunchFeeWei = 0.0005 ether;
+        vm.expectRevert(bytes(""));
+        launcher.launch(p, s);
+    }
+
+    function test_launchFeeCap() public {
+        vm.startPrank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(0.05 ether + 1);
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(type(uint256).max);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.LaunchFeeUpdated(0.05 ether);
+        launcher.setLaunchFee(0.05 ether);
+        assertEq(launcher.launchFeeWei(), 0.05 ether, "the cap itself is admitted");
+        launcher.setLaunchFee(0);
+        assertEq(launcher.launchFeeWei(), 0);
+        vm.stopPrank();
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.setLaunchFee(0);
+    }
+
+    // ------------------------------------------------------------------
+    // Rescue: stray assets out, owner only
+    // ------------------------------------------------------------------
+
+    function test_rescueSendsOutAStrayErc20OwnerOnly() public {
+        MockERC20 stray = new MockERC20("Stray", "STRAY", 18);
+        stray.mint(address(launcher), 100e18);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.rescue(address(stray), stranger, 1);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, creator));
+        launcher.rescue(address(stray), creator, 1);
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
+        launcher.rescue(address(stray), address(0), 1);
+
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(address(stray), stranger, 40e18);
+        vm.prank(owner);
+        launcher.rescue(address(stray), stranger, 40e18);
+        assertEq(stray.balanceOf(stranger), 40e18);
+        assertEq(stray.balanceOf(address(launcher)), 60e18);
+
+        // no more than is there
+        vm.prank(owner);
+        vm.expectRevert();
+        launcher.rescue(address(stray), stranger, 60e18 + 1);
+        vm.prank(owner);
+        launcher.rescue(address(stray), stranger, 60e18);
+        assertEq(stray.balanceOf(address(launcher)), 0);
+    }
+
+    /// @dev The launcher has no `receive`: ETH can only be forced onto it, and `rescue(address(0), ...)` sends
+    ///      that out.
+    function test_rescueSendsOutForcedEth() public {
+        vm.deal(stranger, 1 ether);
+        vm.prank(stranger);
+        (bool ok,) = address(launcher).call{value: 1 ether}("");
+        assertFalse(ok, "a plain transfer is refused");
+
+        vm.deal(address(launcher), 0.3 ether); // as a self-destruct would
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.rescue(NATIVE, stranger, 0.3 ether);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(NATIVE, platform, 0.3 ether);
+        vm.prank(owner);
+        launcher.rescue(NATIVE, platform, 0.3 ether);
+        assertEq(platform.balance, 0.3 ether);
+        assertEq(address(launcher).balance, 0);
+    }
+
+    /// @dev `rescue` shares the launch's reentrancy lock: a call made while the launcher is paying out cannot
+    ///      enter it (the same lock keeps it out of a running launch).
+    function test_rescueCannotBeReentered() public {
+        ReenteringOwner reenterer = new ReenteringOwner();
+        reenterer.setLauncher(launcher);
+        vm.prank(owner);
+        launcher.transferOwnership(address(reenterer));
+        reenterer.accept();
+        vm.deal(address(launcher), 1 ether);
+
+        reenterer.rescue(NATIVE, address(reenterer), 0.5 ether);
+        assertEq(
+            bytes4(reenterer.reentryError()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector, "inner call refused"
+        );
+        assertEq(address(reenterer).balance, 0.5 ether, "only the outer rescue paid");
+        assertEq(address(launcher).balance, 0.5 ether);
+    }
+
+    // ------------------------------------------------------------------
+    // The launcher always has an owner
+    // ------------------------------------------------------------------
+
+    function test_renounceOwnershipIsDisabled() public {
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        assertEq(launcher.owner(), owner);
+
+        // the two-step handover is untouched
+        vm.prank(owner);
+        launcher.transferOwnership(stranger);
+        assertEq(launcher.owner(), owner, "until the new owner accepts");
+        assertEq(launcher.pendingOwner(), stranger);
+        vm.prank(stranger);
+        launcher.acceptOwnership();
+        assertEq(launcher.owner(), stranger);
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+    }
+
+    // ------------------------------------------------------------------
+    // String caps
+    // ------------------------------------------------------------------
+
+    function _fill(uint256 n) internal pure returns (string memory) {
+        bytes memory b = new bytes(n);
+        for (uint256 i; i < n; ++i) {
+            b[i] = "a";
+        }
+        return string(b);
+    }
+
+    /// @dev `launch` and the salt-mining view refuse the same string, with the field, its length and the cap.
+    function _expectTooLong(
+        BootrClankerLauncherV5.LaunchParams memory p,
+        BootrClankerLauncherV5.TokenSettings memory s,
+        string memory field,
+        uint256 max
+    ) internal {
+        bytes memory err = abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, field, max + 1, max);
+        vm.expectRevert(err);
+        launcher.launch(p, s);
+        vm.expectRevert(err);
+        launcher.tokenInitCodeHash(p, s);
+    }
+
+    function test_stringCaps() public {
+        assertEq(launcher.MAX_NAME_BYTES(), 160);
+        assertEq(launcher.MAX_SYMBOL_BYTES(), 32);
+        assertEq(launcher.MAX_URI_BYTES(), 512);
+        assertEq(launcher.MAX_METADATA_BYTES(), 4096);
+        assertEq(launcher.MAX_CONTEXT_BYTES(), 512);
+        assertEq(launcher.MAX_MODEL_BYTES(), 128);
+
+        // every string at its cap is admitted
+        BootrClankerLauncherV5.LaunchParams memory p = _params();
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+        p.name = _fill(160);
+        p.symbol = _fill(32);
+        p.image = _fill(512);
+        p.metadata = _fill(4096);
+        p.context = _fill(512);
+        p.agentURI = _fill(512);
+        p.model = _fill(128);
+        s.contractURI = _fill(512);
+        launcher.tokenInitCodeHash(p, s);
+
+        // one byte over, field by field
+        p.name = _fill(161);
+        _expectTooLong(p, s, "name", 160);
+        p.name = _fill(160);
+        p.symbol = _fill(33);
+        _expectTooLong(p, s, "symbol", 32);
+        p.symbol = _fill(32);
+        p.image = _fill(513);
+        _expectTooLong(p, s, "image", 512);
+        p.image = _fill(512);
+        p.metadata = _fill(4097);
+        _expectTooLong(p, s, "metadata", 4096);
+        p.metadata = _fill(4096);
+        p.context = _fill(513);
+        _expectTooLong(p, s, "context", 512);
+        p.context = _fill(512);
+        s.contractURI = _fill(513);
+        _expectTooLong(p, s, "contractURI", 512);
+        s.contractURI = _fill(512);
+        p.agentURI = _fill(513);
+        _expectTooLong(p, s, "agentURI", 512);
+        p.agentURI = _fill(512);
+        p.model = _fill(129);
+        _expectTooLong(p, s, "model", 128);
+        p.model = _fill(128);
+        launcher.tokenInitCodeHash(p, s);
+
+        // an empty name or symbol is refused by the view as by the launch
+        p.symbol = "";
+        vm.expectRevert(BootrClankerLauncherV5.EmptyNameOrSymbol.selector);
+        launcher.tokenInitCodeHash(p, s);
+    }
+
+    function test_editsAreCappedLikeTheLaunch() public {
+        address token = makeAddr("token");
+        launcher.seedCoin(token, creator, NATIVE, true);
+        vm.startPrank(creator);
+        launcher.updateImage(token, _fill(512));
+        launcher.updateMetadata(token, _fill(4096));
+        assertEq(factory.edits(), 2, "at the cap both edits reach Clanker");
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "image", 513, 512));
+        launcher.updateImage(token, _fill(513));
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.updateMetadata(token, _fill(4097));
+        vm.stopPrank();
+        assertEq(factory.edits(), 2);
+        // the cap is checked after the editor: a stranger learns nothing new
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.NotCoinCreator.selector);
+        launcher.updateImage(token, _fill(513));
     }
 
     function test_pauseRefusesLaunches() public {
@@ -792,6 +1215,7 @@ contract ClankerLauncherV5Test is Test {
         assertEq(key.currency1, token);
         assertEq(key.fee, 0, "v5 pools carry fee 0; the hook takes the tax");
         assertEq(key.tickSpacing, 200);
+        assertEq(launcher.tickSpacingOf(token), 200);
         assertEq(key.hooks, hook);
         // a USDC coin sorts by address
         address high = 0xfFFffFfffffFffffFfffFfFFFFffFfFfFfFFcccc;
@@ -802,6 +1226,22 @@ contract ClankerLauncherV5Test is Test {
         key = launcher.poolKeyFor(token, USDC, 200);
         assertEq(key.currency0, token);
         assertEq(key.currency1, USDC);
+    }
+
+    /// @dev A coin's pool key keeps the tick spacing its pool was created with: Clanker changing its own spacing
+    ///      moves the key of later coins only.
+    function test_poolKeyKeepsTheTickSpacingOfTheLaunch() public {
+        address first = 0x000000000000000000000000000000000001cCCC;
+        address second = 0x000000000000000000000000000000000002ccCc;
+        launcher.seedCoin(first, creator, NATIVE, false);
+        factory.setTickSpacing(100);
+        launcher.seedCoin(second, creator, NATIVE, false);
+        assertEq(launcher.poolKeyFor(first).tickSpacing, 200, "the first coin's key did not move");
+        assertEq(launcher.poolKeyFor(second).tickSpacing, 100);
+        assertEq(launcher.tickSpacingOf(first), 200);
+        assertEq(launcher.tickSpacingOf(second), 100);
+        // a token never launched here has no stored spacing (and no quote): the key is not a pool's
+        assertEq(launcher.poolKeyFor(makeAddr("unknown")).tickSpacing, 0);
     }
 
     function test_scopedSalt() public view {

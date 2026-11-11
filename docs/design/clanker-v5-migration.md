@@ -229,6 +229,9 @@ is twice Clanker's own default and would be the highest fee in Bootr's table; wo
 wants the platform slot to carry more. Built as a parameter: the tax is `LaunchDefaults.lpFeeBps` of each preset,
 set at deploy (`TAX_BPS`, default 15,000) and changeable for future launches with `setDefaults`, bounded on-chain to
 [10,000, 30,000] (Clanker's 1% floor; Bootr's own 3% ceiling, `MAX_TAX_BPS`) and by Clanker's bounds at launch.
+(Superseded the same day by [`clanker-v5-token-settings.md`](./clanker-v5-token-settings.md): the launcher as built
+has no presets and no `TAX_BPS`; each creator sets the buy and the sell tax inside the owner's bounds, 1% to 5% at
+deploy.)
 
 ## 5. The burn slot on v5
 
@@ -314,31 +317,67 @@ topics of `CreatorTaxCredited`, `FeeSlotCreated` and the escrow's `Claimed` were
 `script/DeployClankerLauncherV5.s.sol`, `test/fork/ClankerV5Fork.t.sol`, `test/unit/ClankerLauncherV5.t.sol`,
 `packages/shared/src/addresses.ts` (`clankerV5` block, `bootr.clankerLauncherV5`).
 
-**Deploy order (the owner signs every transaction; nothing here is automated).**
+**Built.** The launcher as built, with its final structs, functions, events and errors, is section 8 of
+[`clanker-v5-token-settings.md`](./clanker-v5-token-settings.md). On 2026-11-11 an independent security review found
+two medium and five low issues (no minimum on the dev buy, Clanker's stale-config guard switched off, the launcher's
+own terms not pinned by the creator, an ownership window at deploy, the platform recipient copied without a choice,
+`poolKeyFor` following Clanker's live tick spacing, no way out for a stray ERC-20) and three informational ones; all
+are fixed on branch `worktree-agent-a838364dfd2845d29` (table in section 8.1 of that note), and the reviewer's
+proofs are regression tests in `test/security/ClankerV5LauncherReview.t.sol`. 42 unit tests, 32 fork tests and
+8 review regressions pass against the live factory; runtime size 19,395 bytes. Not deployed.
+
+**Deploy order (the owner signs every transaction; nothing here is automated).** The order of steps 2 to 5 is
+the security review's fix of 2026-11-11 (finding L2): the launcher is owned by the deployer key from the deploy until
+the admin accepts, so the gate stays closed until the admin owns it and has read it back. Until `gate.addLauncher`
+every v5 launch reverts `NotLauncher`, so nothing the deployer key could set in between reaches a coin, and after
+`acceptOwnership` that key can set nothing.
 
 1. Rehearse on a fork the day of the deploy: `cd packages/contracts && BASE_RPC_URL=<rpc> forge test --match-path
-   'test/fork/ClankerV5Fork.t.sol' -vv` (stock `forge` is enough: nothing here touches the B20 precompiles). The suite
-   reads the live policy (`taxPolicy`, `quoteConfig(address(0))`, `launchCreationEnabled`, `launchBuyAdapter`) and
-   fails if Clanker changed something the launcher assumes.
+   'test/fork/ClankerV5Fork.t.sol' -vv` and `forge test --match-path 'test/security/ClankerV5LauncherReview.t.sol' -vv`
+   (stock `forge` is enough: nothing here touches the B20 precompiles). The first reads the live policy
+   (`taxPolicy`, `quoteConfig`, `launchCreationEnabled`, `launchBuyAdapter`, the Uniswap v3 WETH/USDC pool) and fails
+   if Clanker changed something the launcher assumes; the second runs the deploy script itself against the live v4
+   launcher, gate and guardian and walks steps 2 to 5.
 2. Deploy: from `packages/contracts`,
-   `PRIVATE_KEY=<deployer> PLATFORM_ADMIN=0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3 OLD_CLANKER_LAUNCHER=0x387f1B0aC128D534E822c344D829645336BDAbbB TAX_BPS=15000 forge script script/DeployClankerLauncherV5.s.sol --rpc-url base -vvv`
-   (dry run), then the same with `--broadcast --verify --verifier sourcify`. The script copies both presets,
-   `minPlatformBps` and the launch fee from the live v4 launcher, replaces each preset's fee with `TAX_BPS`, sets
-   `PLATFORM_TAX_BPS` if given (the $BOOTR-style 2% rule, default off), and hands ownership to `PLATFORM_ADMIN`
-   (`acceptOwnership` is the admin's first transaction). It never calls the gate.
-3. Read back: `cast call <v5> 'standardDefaults()'`, `buybackDefaults()`, `quoteToken()` (`0x000…0`),
-   `antiSnipe()`, `owner()`/`pendingOwner()`.
-4. Register on the gate, from the admin wallet: `cast send 0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5
-   'addLauncher(address)' <v5> --rpc-url base --private-key <admin>` (until then every v5 launch reverts
-   `NotLauncher`, the intended order). Then `acceptOwnership()` on the v5 launcher.
-5. The burn-preset decision (section 9): `cast send 0x387f1B0a…AbbB 'pause()'` from the admin if v4 is to stop.
-6. Indexer: set `BOOTR_CLANKER_LAUNCHERS=0x387f1B0aC128D534E822c344D829645336BDAbbB@53503025,<v5>@<its deploy block>`
+   `PRIVATE_KEY=<deployer> PLATFORM_ADMIN=0x2C97C20FAD740cCf60d4Eeb54260F3BFE899D9b3 PLATFORM_RECIPIENT=0x55e66C7F30Ac6d5C0C757fDdaF56D66506439d82 OLD_CLANKER_LAUNCHER=0x387f1B0aC128D534E822c344D829645336BDAbbB forge script script/DeployClankerLauncherV5.s.sol --rpc-url base -vvv`
+   (dry run), then the same with `--broadcast --verify --verifier sourcify`. `PLATFORM_ADMIN` and
+   `PLATFORM_RECIPIENT` are both required: the script stops without either (no default to the deployer, no recipient
+   copied from v4). It sets the agent defaults (agent 5%, platform 30%, tax 1% to 5% per side, five reward rows; the
+   minimum fuel and the dormancy period of the v4 standard preset), copies `minPlatformBps` and the launch fee from
+   the live v4 launcher, admits native ETH and USDC for agent coins, sets the USDC dev-buy route (Uniswap v3
+   WETH/USDC 0.05%), and starts the two-step handover (`transferOwnership(PLATFORM_ADMIN)`). It never calls the gate.
+   **The platform recipient** is written into every coin's platform slot at launch and cannot be changed afterwards
+   (the slot's admin is the launcher, which has no function for it), so a lost or stolen recipient key takes the
+   platform's share of every coin launched under it for good; the variable exists so that a wallet whose signers can
+   rotate (a multisig or a smart account) can be passed instead of a single key (finding L3). The owner chose on
+   2026-11-11 to keep `0x55e66C7F30Ac6d5C0C757fDdaF56D66506439d82`, the v4 recipient, knowing it is a plain key frozen
+   into each coin. `setAgentDefaults` can name another recipient for later coins at any time.
+3. Accept ownership, from the admin wallet: `cast send <v5> 'acceptOwnership()' --rpc-url base --private-key <admin>`.
+4. Read back, after the accept (what is read here can no longer be changed by the deployer key):
+   - `cast call <v5> 'owner()(address)'` is the admin (`0x2C97…D9b3`) and `'pendingOwner()(address)'` is `0x000…0`;
+   - `'agentDefaults()(uint16,uint16,address,uint256,uint32,uint24,uint24,uint8)'` is
+     `500, 3000, 0x55e6…9d82, 0, 7776000, 10000, 50000, 5` (the minimum fuel and the 90-day dormancy period are
+     v4's on 2026-11-11);
+   - `'minPlatformBps()(uint16)'` is `1000` and `'launchFeeWei()(uint256)'` is `500000000000000` (v4's values on
+     2026-11-11), `'MAX_LAUNCH_FEE_WEI()(uint256)'` is `50000000000000000`;
+   - `'allowedQuote(uint8,address)(bool)' 0 0x0000000000000000000000000000000000000000` and
+     `… 0 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` are `true`; the same two with kind `1` are `false`;
+   - `'devBuyRoute(address)(address,uint24)' 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` is
+     `0xd0b53D9277642d899DF5C87A3966A349A798F224, 500`;
+   - `'paused()(bool)'` is `false`;
+   - the immutables: `factory()` `0x572e…09A0`, `hook()` `0x5E32…2AcC`, `feeEscrow()` `0x5dd2…FA61`, `weth()`,
+     `uniswapV3Factory()` `0x3312…FDfD`, `usdc()`, `identityRegistry()`, `kernelFactory()`, `guardian()`
+     `0x799A…3630`, `gate()` `0x7dda…c3a5`.
+5. Only then register on the gate, from the admin wallet: `cast send 0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5
+   'addLauncher(address)' <v5> --rpc-url base --private-key <admin>`. From this transaction on v5 launches work.
+6. The burn-preset decision (section 9): `cast send 0x387f1B0a…AbbB 'pause()'` from the admin if v4 is to stop.
+7. Indexer: set `BOOTR_CLANKER_LAUNCHERS=0x387f1B0aC128D534E822c344D829645336BDAbbB@53503025,<v5>@<its deploy block>`
    and `DATABASE_SCHEMA=bootr_v9` in Coolify (backup first, `docs/deploy/coolify.md` section 6; about 13 minutes of
    backfill during which the site shows stale data; `/ready` answers 503 meanwhile), supervisor
    `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS=<v5>` (once the supervisor task lands), web
    `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS=<v5>` (a `NEXT_PUBLIC_*` change rebuilds the web image). Record the address
    and the deploy block in `packages/shared/src/addresses.ts`, `.env.mainnet.example`, `docs/deploy/mainnet.md`.
-7. First launch: a Bootr-owned test coin through the console; check `FeeSlotCreated` on the hook, `owed` growing
+8. First launch: a Bootr-owned test coin through the console; check `FeeSlotCreated` on the hook, `owed` growing
    after a trade, `claimFor(kernel, 0x0)` landing ETH on the kernel, the coin on clanker.world
    (`POST https://www.clanker.world/api/tokens/index-by-address` as for v4).
 
@@ -364,8 +403,12 @@ slots are locked. The runbook carries both (a) and (b); (c) needs nothing.
    `address(0)` and USDC fee rows correctly, but the USDC pool price math is not built.
 2. **Clanker controls the tax policy and the quote ticks** and can change them for future launches
    (`setTaxPolicy`, `setQuoteStartTick`, `setLaunchCreationEnabled`). A policy change outside the launcher's bounds
-   makes launches revert (`InvalidTaxConfiguration`, `StaleConfig` cannot happen: the version is read in the same
-   transaction); the deploy-day fork run and `test_livePolicyMatchesAssumptions` read the live policy.
+   makes launches revert (`InvalidTaxConfiguration`), and any change of Clanker's configuration between the moment
+   the creator reads it and the launch makes that launch revert `StaleConfig`: the creator signs
+   `TokenSettings.expectedConfigVersion` and the launcher passes it through (security review 2026-11-11, M2; the
+   first build read the version inside the launch, which switched Clanker's guard off). The web reads
+   `factory.configVersion()` next to the policy it shows and retries with fresh numbers on `StaleConfig`. The
+   deploy-day fork run and `test_livePolicyMatchesAssumptions` read the live policy.
 3. **Salt mining moves to the web** (section 7): a launch with an unmined salt reverts `InvalidTokenAddressSuffix`.
    `predictToken` is a view the form calls before signing; the agent API (`/api/agent/launch`) must mine too.
 4. **Dev buy routing** depends on the factory's `launchBuyAdapter()` and its `SwapX` router; if Clanker unsets the

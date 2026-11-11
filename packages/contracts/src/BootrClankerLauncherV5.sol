@@ -14,6 +14,7 @@ import {BootrLaunchGate} from "./BootrLaunchGate.sol";
 import {ClankerV5, IClankerV5Factory} from "./interfaces/IClankerV5.sol";
 import {IERC8004IdentityRegistry} from "./interfaces/IERC8004IdentityRegistry.sol";
 import {IKernel, IKernelFactory, KernelLib} from "./interfaces/IKernel.sol";
+import {IUniswapV3Factory} from "./interfaces/IUniswapV3.sol";
 import {PoolKey} from "./interfaces/IUniswapV4.sol";
 
 /// @title BootrClankerLauncherV5
@@ -42,9 +43,16 @@ import {PoolKey} from "./interfaces/IUniswapV4.sol";
 ///         symbol and the contract URI stay as launched: nothing here forwards `updateTokenName`,
 ///         `updateTokenSymbol` or `updateTokenContractURI`.
 ///
+///         What the creator signs is what runs (the pins in `TokenSettings`): the launch reverts when Clanker's
+///         config version is not the one the creator read (`expectedConfigVersion`, Clanker's own `StaleConfig`
+///         guard), when the locked shares are not the ones previewed (`expectedAgentShareBps` /
+///         `expectedPlatformShareBps`), when the launch fee is above `maxLaunchFeeWei`, and when a dev buy would
+///         deliver fewer coins than `minDevBuyOut`.
+///
 ///         Token addresses on v5 end in `0xcccc`: the web mines `LaunchParams.salt` with `tokenInitCodeHash(p, s)` /
 ///         `predictToken` before signing (the factory reverts `InvalidTokenAddressSuffix` otherwise). The opening
-///         price is Clanker's per-quote start tick, not this contract's choice. Not upgradeable.
+///         price is Clanker's per-quote start tick, not this contract's choice. Not upgradeable, and never without
+///         an owner (`renounceOwnership` reverts): the owner pauses launches and manages the allow-list.
 contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
 
@@ -106,6 +114,12 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         bool antiSnipe; // Clanker's 20 s sniper tax (to Clanker), frozen per pool
         bool metadataEditable; // the creator may later change image and metadata (and lock them)
         string contractURI; // the token's contractURI(): Bootr's hosted document
+        // --- pins: what the creator read before signing; the launch reverts when the live value differs ---
+        uint256 minDevBuyOut; // least coins (raw units) the dev buy must deliver; required (> 0) when devBuyWei > 0
+        uint64 expectedConfigVersion; // Clanker's `factory.configVersion()` (tax policy, tick spacing, native fee)
+        uint256 maxLaunchFeeWei; // the most this launcher may charge as its flat launch fee
+        uint16 expectedAgentShareBps; // `agentDefaults.agentShareBps`
+        uint16 expectedPlatformShareBps; // `agentDefaults.platformShareBps`
     }
 
     /// @notice The launcher's own numbers for future agent launches (owner-settable within fixed bounds).
@@ -128,7 +142,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     }
 
     /// @notice The first hop of a dev buy into an ERC-20-quoted pool: Uniswap v3 WETH -> quote (the second hop is
-    ///         the launch pool), funded in native ETH (Clanker's adapter wraps it).
+    ///         the launch pool), funded in native ETH (Clanker's adapter wraps it). Always the Uniswap v3 factory's
+    ///         own pool for WETH / quote at `fee` (`setDevBuyRoute`).
     struct DevBuyRoute {
         address pool;
         uint24 fee;
@@ -139,6 +154,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         address hook; // TaxLaunchHook (the factory's `hook()`)
         address feeEscrow; // FeeEscrow (the hook's `feeEscrow()`; informational: where every slot's fees land)
         address weth; // the launch-buy adapter's wrapped native (first token of a two-hop dev buy)
+        address uniswapV3Factory; // the Uniswap v3 factory every dev-buy first hop must be a pool of
         address usdc;
         address identityRegistry; // ERC-8004
         address kernelFactory; // ZeroDev KernelFactory (Kernel v3.1)
@@ -164,6 +180,24 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @dev bps (1e4 = 100%) -> Clanker's 1e8 share scale.
     uint32 internal constant SHARE_MULTIPLIER = 10_000;
     uint32 public constant MIN_DORMANCY_PERIOD = 30 days;
+    /// @notice Length caps in bytes. Clanker sets none of its own (only "name and symbol not empty"); these keep a
+    ///         launch's storage, logs and gas bounded (a launch with every string at its cap stays under the
+    ///         2^24 per-transaction gas cap of EIP-7825) and sit above what the web sends: a name of 48 characters
+    ///         (up to 144 bytes of UTF-8), a symbol of 2 to 10 letters or digits, hosted or IPFS URLs of 200
+    ///         characters at most, a context JSON of about 100 bytes, a model id, and Clanker's metadata JSON
+    ///         (a description of up to 600 characters, five social links, the contract URI: 1 to 3 KB).
+    uint256 public constant MAX_NAME_BYTES = 160;
+    uint256 public constant MAX_SYMBOL_BYTES = 32;
+    /// @notice `image`, `contractURI` and `agentURI`.
+    uint256 public constant MAX_URI_BYTES = 512;
+    uint256 public constant MAX_METADATA_BYTES = 4096;
+    uint256 public constant MAX_CONTEXT_BYTES = 512;
+    uint256 public constant MAX_MODEL_BYTES = 128;
+    /// @notice The flat launch fee can never be set above this (the creator's own bound is
+    ///         `TokenSettings.maxLaunchFeeWei`).
+    uint256 public constant MAX_LAUNCH_FEE_WEI = 0.05 ether;
+    /// @notice The highest Uniswap v3 fee tier a dev-buy first hop may use (0.3%, hundredths of a bip).
+    uint24 public constant MAX_DEV_BUY_ROUTE_FEE = 3000;
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     // ------------------------------------------------------------------
@@ -174,6 +208,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     address public immutable hook;
     address public immutable feeEscrow;
     address public immutable weth;
+    IUniswapV3Factory public immutable uniswapV3Factory;
     IERC20 public immutable usdc;
     IERC8004IdentityRegistry public immutable identityRegistry;
     IKernelFactory public immutable kernelFactory;
@@ -197,6 +232,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
     /// @notice The pool's paired asset of each coin launched here.
     mapping(address token => address) public quoteOf;
+    /// @notice The tick spacing of each coin's pool, fixed at launch (Clanker may change its own for later coins).
+    mapping(address token => int24) public tickSpacingOf;
     /// @notice The wallet that launched each coin: the only one that may edit its image and metadata.
     mapping(address token => address) public coinCreator;
     /// @notice Whether the creator may still edit the coin's image and metadata (launched editable, not locked).
@@ -250,6 +287,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     event CoinMetadataUpdated(address indexed token, string metadata);
     /// @notice The creator locked the coin's image and metadata for good.
     event CoinMetadataLocked(address indexed token);
+    /// @notice The owner sent out an asset that had landed on this contract (`token == address(0)`: native ETH).
+    event Rescued(address indexed token, address indexed to, uint256 amount);
 
     error ZeroAddress();
     error InvalidAgentShare();
@@ -273,6 +312,22 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     error EmptyNameOrSymbol();
     error NotCoinCreator();
     error MetadataNotEditable();
+    /// @notice A dev buy needs the creator's minimum output (`TokenSettings.minDevBuyOut > 0`).
+    error MinDevBuyOutRequired();
+    /// @notice A string is longer than its cap (`field` is the parameter's name).
+    error StringTooLong(string field, uint256 length, uint256 max);
+    /// @notice The launcher always has an owner.
+    error RenounceDisabled();
+    /// @notice The locked shares are not the ones the creator signed for (the live values are returned).
+    error LockedSharesChanged(uint16 agentShareBps, uint16 platformShareBps);
+    /// @notice The launch fee is above the creator's `maxLaunchFeeWei`.
+    error LaunchFeeAboveMax(uint256 launchFeeWei, uint256 maxLaunchFeeWei);
+    /// @notice `setLaunchFee` above `MAX_LAUNCH_FEE_WEI`.
+    error LaunchFeeTooHigh();
+    /// @notice A dev-buy route's fee is 0 or above `MAX_DEV_BUY_ROUTE_FEE`.
+    error DevBuyRouteFeeOutOfBounds();
+    /// @notice A dev-buy route's pool is not the Uniswap v3 factory's pool for WETH / quote at that fee.
+    error DevBuyRouteNotFactoryPool();
 
     // ------------------------------------------------------------------
     // Constructor
@@ -283,7 +338,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     {
         if (
             deps.factory == address(0) || deps.hook == address(0) || deps.feeEscrow == address(0)
-                || deps.weth == address(0) || deps.usdc == address(0) || deps.identityRegistry == address(0)
+                || deps.weth == address(0) || deps.uniswapV3Factory == address(0) || deps.usdc == address(0)
+                || deps.identityRegistry == address(0)
                 || deps.kernelFactory == address(0) || deps.guardian == address(0) || deps.gate == address(0)
         ) revert ZeroAddress();
 
@@ -291,6 +347,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         hook = deps.hook;
         feeEscrow = deps.feeEscrow;
         weth = deps.weth;
+        uniswapV3Factory = IUniswapV3Factory(deps.uniswapV3Factory);
         usdc = IERC20(deps.usdc);
         identityRegistry = IERC8004IdentityRegistry(deps.identityRegistry);
         kernelFactory = IKernelFactory(deps.kernelFactory);
@@ -312,14 +369,20 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         _setAgentDefaults(d);
     }
 
+    /// @notice The floor under the platform's share. Never above the cap on the locked shares, and never above
+    ///         the current default (so the stored default always satisfies the stored minimum).
     function setMinPlatformBps(uint16 minPlatformBps_) external onlyOwner {
-        if (minPlatformBps_ > MAX_LOCKED_SHARE_BPS) revert InvalidMinPlatformBps();
+        if (minPlatformBps_ > MAX_LOCKED_SHARE_BPS || minPlatformBps_ > agentDefaults.platformShareBps) {
+            revert InvalidMinPlatformBps();
+        }
         minPlatformBps = minPlatformBps_;
         emit MinPlatformBpsUpdated(minPlatformBps_);
     }
 
-    /// @notice Flat ETH launch fee for FUTURE launches (0 disables it).
+    /// @notice Flat ETH launch fee for FUTURE launches (0 disables it), at most `MAX_LAUNCH_FEE_WEI`. A launch
+    ///         signed under a lower fee reverts instead of paying more (`TokenSettings.maxLaunchFeeWei`).
     function setLaunchFee(uint256 launchFeeWei_) external onlyOwner {
+        if (launchFeeWei_ > MAX_LAUNCH_FEE_WEI) revert LaunchFeeTooHigh();
         launchFeeWei = launchFeeWei_;
         emit LaunchFeeUpdated(launchFeeWei_);
     }
@@ -331,11 +394,41 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     }
 
     /// @notice The Uniswap v3 WETH -> `quote` pool a dev buy into a `quote` pool goes through first
-    ///         (`pool = address(0)` clears it: dev buys into that quote then revert).
+    ///         (`pool = address(0)` clears it: dev buys into that quote then revert). The pool must be the
+    ///         Uniswap v3 factory's own pool for WETH / `quote` at `fee`, and `fee` at most
+    ///         `MAX_DEV_BUY_ROUTE_FEE`, so a mistyped address or tier is refused here. The contract cannot judge a
+    ///         pool's depth: the creator's `minDevBuyOut` is what protects a dev buy from a thin route.
     function setDevBuyRoute(address quote, address pool, uint24 fee) external onlyOwner {
         if (quote == address(0)) revert ZeroAddress();
+        if (pool == address(0)) {
+            fee = 0;
+        } else {
+            if (fee == 0 || fee > MAX_DEV_BUY_ROUTE_FEE) revert DevBuyRouteFeeOutOfBounds();
+            if (uniswapV3Factory.getPool(weth, quote, fee) != pool) revert DevBuyRouteNotFactoryPool();
+        }
         devBuyRoute[quote] = DevBuyRoute({pool: pool, fee: fee});
         emit DevBuyRouteUpdated(quote, pool, fee);
+    }
+
+    /// @notice Send out an asset that landed on this contract by mistake (`token == address(0)`: native ETH,
+    ///         which can only arrive by force: there is no `receive`). The launcher holds nothing between
+    ///         transactions: a launch pulls the fuel straight from the creator to the kernel, forwards the dev
+    ///         buy's coins whole and refunds the unspent ETH before it returns, and fees accrue in Clanker's
+    ///         escrow to the slot recipients, never here. So anything `rescue` can reach is a stray transfer, not
+    ///         a coin's or a creator's money; it cannot run inside a launch (`nonReentrant`).
+    function rescue(address token, address to, uint256 amount) external onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        if (token == address(0)) {
+            Address.sendValue(payable(to), amount);
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
+        emit Rescued(token, to, amount);
+    }
+
+    /// @notice Disabled: the launcher must always have an owner to pause launches and manage the allow-list.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
     }
 
     function pause() external onlyOwner {
@@ -360,14 +453,23 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         AgentDefaults memory d = agentDefaults;
         // every per-launch rule, before any external call
         uint16[] memory weights = _slotWeights(s, d);
-        if (bytes(p.name).length == 0 || bytes(p.symbol).length == 0) revert EmptyNameOrSymbol();
+        _checkStrings(p, s);
         if (p.fuelUsdc < d.minFuelUsdc) revert InsufficientFuel();
-        if (p.devBuyWei > 0 && s.quoteToken != address(0) && devBuyRoute[s.quoteToken].pool == address(0)) {
-            revert DevBuyRouteMissing(s.quoteToken);
+        if (p.devBuyWei > 0) {
+            if (s.minDevBuyOut == 0) revert MinDevBuyOutRequired();
+            if (s.quoteToken != address(0) && devBuyRoute[s.quoteToken].pool == address(0)) {
+                revert DevBuyRouteMissing(s.quoteToken);
+            }
         }
-
+        // the creator's pins on this launcher's own terms (Clanker's are pinned by `expectedConfigVersion`)
+        if (s.expectedAgentShareBps != d.agentShareBps || s.expectedPlatformShareBps != d.platformShareBps) {
+            revert LockedSharesChanged(d.agentShareBps, d.platformShareBps);
+        }
         uint256 fee = launchFeeWei;
-        // Clanker's own native launch fee (0 today) is paid through to the factory.
+        if (fee > s.maxLaunchFeeWei) revert LaunchFeeAboveMax(fee, s.maxLaunchFeeWei);
+
+        // Clanker's own native launch fee (0 today) is paid through to the factory; changing it bumps Clanker's
+        // config version, so a launch signed under another fee reverts `StaleConfig`.
         uint256 clankerFee = factory.nativeLaunchFee();
         if (msg.value < p.devBuyWei + fee + clankerFee) revert InsufficientValue();
 
@@ -382,9 +484,11 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
         // (c) Clanker v5 token + pool + seeded liquidity (+ dev buy, forwarded to the creator)
         bytes32 poolId;
+        int24 spacing = factory.tickSpacing();
         (token, poolId) =
-            _createToken(p, s, _feeSlots(s, weights, kernel, d.platformRecipient), creator, salt, clankerFee);
+            _createToken(p, s, _feeSlots(s, weights, kernel, d.platformRecipient), creator, salt, clankerFee, spacing);
         quoteOf[token] = s.quoteToken;
+        tickSpacingOf[token] = spacing;
         coinCreator[token] = creator;
         if (s.metadataEditable) metadataEditable[token] = true;
 
@@ -414,7 +518,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             p.supervisorSessionKey
         );
         emit LaunchContext(token, p.context);
-        _emitClankerV5Launched(token, poolId, s);
+        _emitClankerV5Launched(token, poolId, spacing, s);
 
         // (h) launch fee to the platform, excess back to the creator
         if (fee > 0) {
@@ -434,6 +538,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @notice Change the coin's image (Clanker's `image` key). Only the coin's creator wallet, while editable.
     function updateImage(address token, string calldata image) external nonReentrant {
         _requireEditor(token);
+        _cap(image, MAX_URI_BYTES, "image");
         factory.updateTokenExtraMetadata(token, "image", image);
         emit CoinImageUpdated(token, image);
     }
@@ -442,6 +547,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     ///         Only the coin's creator wallet, while editable.
     function updateMetadata(address token, string calldata metadata) external nonReentrant {
         _requireEditor(token);
+        _cap(metadata, MAX_METADATA_BYTES, "metadata");
         factory.updateTokenExtraMetadata(token, "metadata", metadata);
         emit CoinMetadataUpdated(token, metadata);
     }
@@ -463,10 +569,14 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
     /// @notice The init code hash of the token `launch(p, s)` would create (`factory.launchTokenInitCodeHash`): it
     ///         depends on the name, symbol, contract URI, metadata keys, `metadataEditable` and whether dividends
-    ///         are on, not on the salt, the tax or the slots. The web mines `p.salt` locally against it:
-    ///         `predictToken` must end in `0xcccc`.
+    ///         are on, not on the salt, the tax, the slots or the pins. The web mines `p.salt` locally against
+    ///         it: `predictToken` must end in `0xcccc`. Reads Clanker's live config version, not the pin,
+    ///         and reverts on the strings exactly as `launch` would.
     function tokenInitCodeHash(LaunchParams calldata p, TokenSettings calldata s) public view returns (bytes32) {
-        return factory.launchTokenInitCodeHash(_v5Params(p, s, new ClankerV5.FeeSlotInput[](0), address(0)));
+        _checkStrings(p, s);
+        return factory.launchTokenInitCodeHash(
+            _v5Params(p, s, new ClankerV5.FeeSlotInput[](0), address(0), factory.configVersion())
+        );
     }
 
     /// @notice The scoped CREATE2 salt Clanker uses for a launch by `creator` with `salt`:
@@ -485,7 +595,9 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     }
 
     /// @notice The fee-slot weights `launch` would create for `s` under the current defaults (agent, platform,
-    ///         then one per reward row; sum 10_000). Reverts exactly as `launch` would on the settings.
+    ///         then one per reward row; sum 10_000). Reverts exactly as `launch` would on the settings' own rules;
+    ///         the pins (`minDevBuyOut`, `expectedConfigVersion`, `maxLaunchFeeWei`, the expected shares) are
+    ///         not read here: `launch` alone checks them.
     function previewSlotWeights(TokenSettings calldata s) external view returns (uint16[] memory) {
         return _slotWeights(s, agentDefaults);
     }
@@ -495,9 +607,10 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         return _taxConfiguration(s);
     }
 
-    /// @notice The v4 pool key of a coin launched here: its quote, fee 0, the factory's tick spacing, the hook.
+    /// @notice The v4 pool key of a coin launched here: its quote, fee 0, the tick spacing its pool was created
+    ///         with (stored at launch), the hook.
     function poolKeyFor(address token) external view returns (PoolKey memory) {
-        return poolKeyFor(token, quoteOf[token], factory.tickSpacing());
+        return poolKeyFor(token, quoteOf[token], tickSpacingOf[token]);
     }
 
     /// @notice The v4 pool key Clanker creates for `token` paired with `quote`: currencies sorted (native ETH is
@@ -534,14 +647,33 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         if (!metadataEditable[token]) revert MetadataNotEditable();
     }
 
-    function _emitClankerV5Launched(address token, bytes32 poolId, TokenSettings calldata s) internal {
+    /// @dev The launch's string rules: name and symbol not empty, every string within its cap.
+    function _checkStrings(LaunchParams calldata p, TokenSettings calldata s) internal pure {
+        if (bytes(p.name).length == 0 || bytes(p.symbol).length == 0) revert EmptyNameOrSymbol();
+        _cap(p.name, MAX_NAME_BYTES, "name");
+        _cap(p.symbol, MAX_SYMBOL_BYTES, "symbol");
+        _cap(p.image, MAX_URI_BYTES, "image");
+        _cap(p.metadata, MAX_METADATA_BYTES, "metadata");
+        _cap(p.context, MAX_CONTEXT_BYTES, "context");
+        _cap(s.contractURI, MAX_URI_BYTES, "contractURI");
+        _cap(p.agentURI, MAX_URI_BYTES, "agentURI");
+        _cap(p.model, MAX_MODEL_BYTES, "model");
+    }
+
+    function _cap(string calldata value, uint256 max, string memory field) internal pure {
+        if (bytes(value).length > max) revert StringTooLong(field, bytes(value).length, max);
+    }
+
+    function _emitClankerV5Launched(address token, bytes32 poolId, int24 spacing, TokenSettings calldata s)
+        internal
+    {
         emit ClankerV5Launched(
             token,
             poolId,
             hook,
             feeEscrow,
             s.quoteToken,
-            factory.tickSpacing(),
+            spacing,
             s.buyTaxBps,
             s.sellTaxBps,
             s.burnBps,
@@ -647,16 +779,18 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
     /// @dev `createLaunch`, or `createLaunchAndBuy` when there is a dev buy: one hop into a native-ETH pool, two
     ///      (v3 WETH -> quote, then the launch pool) into an ERC-20 pool, always funded in ETH. The bought coins
-    ///      land on this contract (`originalCreator` of the factory call) and are forwarded whole.
+    ///      land on this contract (`originalCreator` of the factory call) and are forwarded whole; the buy reverts
+    ///      under the creator's `minDevBuyOut`. Clanker's `expectedConfigVersion` is the creator's pin.
     function _createToken(
         LaunchParams calldata p,
         TokenSettings calldata s,
         ClankerV5.FeeSlotInput[] memory slots,
         address creator,
         bytes32 salt,
-        uint256 clankerFee
+        uint256 clankerFee,
+        int24 spacing
     ) internal returns (address token, bytes32 poolId) {
-        ClankerV5.LaunchParams memory params = _v5Params(p, s, slots, creator);
+        ClankerV5.LaunchParams memory params = _v5Params(p, s, slots, creator, s.expectedConfigVersion);
         params.creatorSalt = salt;
         if (p.devBuyWei == 0) {
             (token, poolId) = factory.createLaunch{value: clankerFee}(params);
@@ -685,7 +819,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             tokenOut: predicted,
             poolAddress: address(0),
             fee: 0,
-            tickSpacing: factory.tickSpacing(),
+            tickSpacing: spacing,
             hooks: hook,
             hookData: ""
         });
@@ -693,20 +827,25 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         (token, poolId, amountOut) = factory.createLaunchAndBuy{value: clankerFee + p.devBuyWei}(
             params,
             ClankerV5.LaunchBuyParams({
-                fundingToken: address(0), minAmountOut: 1, amountIn: p.devBuyWei, routeData: abi.encode(route)
+                fundingToken: address(0),
+                amountIn: p.devBuyWei,
+                minAmountOut: s.minDevBuyOut,
+                routeData: abi.encode(route)
             })
         );
         IERC20(token).safeTransfer(creator, amountOut);
     }
 
     /// @dev Clanker's `LaunchParams` for `p` and `s`. The views pass no slots and no creator (the init code hash
-    ///      depends on neither). `creatorSalt` is set by the caller; `creator = address(0)` makes this contract the
-    ///      creator-rights holder.
+    ///      depends on neither) and Clanker's live config version; `launch` passes the creator's pin, so Clanker
+    ///      reverts `StaleConfig` when its policy moved after the creator read it. `creatorSalt` is set by the
+    ///      caller; `creator = address(0)` makes this contract the creator-rights holder.
     function _v5Params(
         LaunchParams calldata p,
         TokenSettings calldata s,
         ClankerV5.FeeSlotInput[] memory slots,
-        address creator
+        address creator,
+        uint64 configVersion
     ) internal view returns (ClankerV5.LaunchParams memory params) {
         // the keys clanker-sdk writes, so clanker.world shows the image and the metadata JSON
         string[] memory keys = new string[](3);
@@ -726,7 +865,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             tokenContractURI: s.contractURI,
             creatorSalt: bytes32(0),
             quoteToken: s.quoteToken,
-            expectedConfigVersion: factory.configVersion(),
+            expectedConfigVersion: configVersion,
             deadline: uint64(block.timestamp),
             metadataEditable: s.metadataEditable,
             metadataKeys: keys,

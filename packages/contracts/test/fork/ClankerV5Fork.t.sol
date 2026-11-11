@@ -25,6 +25,11 @@ interface IUniswapV3FactoryLike {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
+/// @dev The owner-only tick-spacing setter of Clanker's `TaxLaunchpadFactoryCore` (verified source).
+interface IClankerV5FactoryAdminLike {
+    function setTickSpacing(int24 newTickSpacing) external;
+}
+
 /// @notice Fork tests of the Clanker v5 path against Base MAINNET: `BootrClankerLauncherV5` with creator-set token
 ///         settings through the live v5 factory (`TaxRWAERC20LaunchpadFactory`, the `TaxLaunchHook`, the
 ///         `FeeEscrow`, the launch-buy adapter, the per-coin `TaxDividend`), registering through the
@@ -105,6 +110,7 @@ contract ClankerV5ForkTest is Test {
                 hook: HOOK,
                 feeEscrow: ESCROW,
                 weth: WETH,
+                uniswapV3Factory: UNISWAP_V3_FACTORY,
                 usdc: USDC,
                 identityRegistry: IDENTITY,
                 kernelFactory: KERNEL_FACTORY,
@@ -165,9 +171,15 @@ contract ClankerV5ForkTest is Test {
     }
 
     /// @dev The recommended settings (design note section 2.3) on `quote`: 1.5% both ways, all to creator funds,
-    ///      one row (the creator, admin the creator), sniper tax on, editable metadata.
+    ///      one row (the creator, admin the creator), sniper tax on, editable metadata. The dev-buy minimum is the
+    ///      smallest the launcher admits (1 unit); the tests of the minimum set a real one.
     function _settings(address quote) internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = quote;
+        s.minDevBuyOut = 1;
+        s.expectedConfigVersion = factory.configVersion();
+        // what the web reads before signing: the live shares and the live launch fee
+        (s.expectedAgentShareBps, s.expectedPlatformShareBps,,,,,,) = launcher.agentDefaults();
+        s.maxLaunchFeeWei = launcher.launchFeeWei();
         s.buyTaxBps = TAX;
         s.sellTaxBps = TAX;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -470,6 +482,88 @@ contract ClankerV5ForkTest is Test {
         assertEq(before - creator.balance, 0.01 ether, "funded in ETH");
         assertEq(IERC20(USDC).balanceOf(address(launcher)), 0, "no USDC left behind");
         _assertDevBuyForwarded(vm.getRecordedLogs(), token, 0.01 ether);
+    }
+
+    /// @dev The dev buy's minimum output is the creator's: none at all is refused before anything is created, one
+    ///      unit above what the route delivers reverts the whole launch (nothing spent), and the exact output
+    ///      goes through. Both the one-hop (ETH) and the two-hop (USDC) route.
+    function test_devBuyMinimumOutputIsEnforced() public {
+        address[2] memory quotes = [NATIVE, USDC];
+        for (uint256 i; i < quotes.length; ++i) {
+            BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+            BootrClankerLauncherV5.TokenSettings memory s = _settings(quotes[i]);
+            p.salt = _mineSalt(creator, p, s, bytes32(uint256(40 + i)));
+
+            s.minDevBuyOut = 0;
+            vm.prank(creator);
+            vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+            launcher.launch{value: 0.01 ether}(p, s);
+
+            // what the route delivers right now
+            s.minDevBuyOut = 1;
+            uint256 snap = vm.snapshotState();
+            vm.prank(creator);
+            (address token,,,) = launcher.launch{value: 0.01 ether}(p, s);
+            uint256 delivered = IERC20(token).balanceOf(creator);
+            assertGt(delivered, 0);
+            vm.revertToState(snap);
+
+            uint256 before = creator.balance;
+            s.minDevBuyOut = delivered + 1;
+            vm.prank(creator);
+            vm.expectRevert();
+            launcher.launch{value: 0.01 ether}(p, s);
+            assertEq(creator.balance, before, "a launch under the minimum spends nothing");
+            assertEq(token.code.length, 0, "and creates no coin");
+
+            s.minDevBuyOut = delivered;
+            vm.prank(creator);
+            (address again,,,) = launcher.launch{value: 0.01 ether}(p, s);
+            assertEq(again, token);
+            assertEq(IERC20(token).balanceOf(creator), delivered, "exactly the minimum is enough");
+        }
+    }
+
+    /// @dev The owner's route can only be Uniswap v3's own WETH / quote pool at a fee of 0.3% or less.
+    function test_devBuyRouteIsBoundToTheUniswapV3Factory() public {
+        assertEq(address(launcher.uniswapV3Factory()), UNISWAP_V3_FACTORY);
+        // the launch pool manager is a contract, and not a v3 pool of the pair
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, POOL_MANAGER, 500);
+        // the real 0.05% pool under the wrong tier
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, WETH_USDC_500, 3000);
+        // the 1% tier is out of the bound even with its real pool
+        address onePercent = IUniswapV3FactoryLike(UNISWAP_V3_FACTORY).getPool(WETH, USDC, 10_000);
+        assertTrue(onePercent != address(0), "Uniswap v3 has a WETH/USDC 1% pool on Base");
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, onePercent, 10_000);
+        // the 0.3% pool is admitted, and a dev buy runs through it
+        address thirty = IUniswapV3FactoryLike(UNISWAP_V3_FACTORY).getPool(WETH, USDC, 3000);
+        launcher.setDevBuyRoute(USDC, thirty, 3000);
+        (address token,) = _launch(_settings(USDC), 0.01 ether);
+        assertGt(IERC20(token).balanceOf(creator), 0);
+    }
+
+    /// @dev Clanker's stale-config guard is the creator's: a launch pinned to any version but the live one reverts
+    ///      `StaleConfig(expected, actual)`, with and without a dev buy, and the views still answer.
+    function test_staleConfigVersionReverts() public {
+        uint64 live = factory.configVersion();
+        for (uint256 devBuy = 0; devBuy <= 0.01 ether; devBuy += 0.01 ether) {
+            BootrClankerLauncherV5.LaunchParams memory p = _params(devBuy);
+            BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+            p.salt = _mineSalt(creator, p, s, bytes32(uint256(50)));
+            uint64[3] memory stale = [uint64(0), live - 1, live + 1];
+            for (uint256 i; i < stale.length; ++i) {
+                s.expectedConfigVersion = stale[i];
+                vm.prank(creator);
+                vm.expectRevert(abi.encodeWithSelector(IClankerV5Factory.StaleConfig.selector, stale[i], live));
+                launcher.launch{value: devBuy}(p, s);
+                // the pin is not part of the token's init code: the mined salt stays valid
+                assertEq(uint160(launcher.predictToken(creator, p, s)) & 0xffff, 0xcccc);
+            }
+            assertEq(launcher.predictKernel(creator, p.salt).code.length, 0, "nothing was created");
+        }
     }
 
     function test_launchUsdcWithoutDevBuy() public {
@@ -1004,6 +1098,184 @@ contract ClankerV5ForkTest is Test {
         launcher.launch{value: 0.01 ether}(p, s);
     }
 
+    /// @dev The creator's pins on the launcher's own terms hold against the owner: a signed launch reverts when
+    ///      the locked shares or the launch fee moved, and runs unchanged once they are back.
+    function test_signedSharesAndFeeHoldAgainstTheOwner() public {
+        launcher.setLaunchFee(0.0005 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(60)));
+        assertEq(s.maxLaunchFeeWei, 0.0005 ether);
+
+        // the platform share up, then down: both are a change of what was signed
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 4500;
+        launcher.setAgentDefaults(d);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 4500));
+        launcher.launch{value: 1 ether}(p, s);
+        d = _defaults();
+        d.agentShareBps = 2000;
+        launcher.setAgentDefaults(d);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 2000, 3000));
+        launcher.launch{value: 1 ether}(p, s);
+        launcher.setAgentDefaults(_defaults());
+
+        // the fee up, to the contract's cap
+        launcher.setLaunchFee(0.05 ether);
+        uint256 before = creator.balance;
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.05 ether, 0.0005 ether)
+        );
+        launcher.launch{value: 1 ether}(p, s);
+        assertEq(creator.balance, before, "nothing was charged");
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(0.05 ether + 1);
+
+        // a lower fee than the bound is fine: the creator pays the live fee, not the bound
+        launcher.setLaunchFee(0.0002 ether);
+        vm.prank(creator);
+        (address token,,,) = launcher.launch{value: 1 ether}(p, s);
+        assertEq(before - creator.balance, 0.0002 ether, "the live fee, the rest refunded");
+        assertEq(platformRecipient.balance, 0.0002 ether);
+        ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(_poolId(token));
+        assertEq(slots[0].weightBps, 500, "the shares that were signed");
+        assertEq(slots[1].weightBps, 3000);
+        assertEq(slots[2].weightBps, 6500);
+    }
+
+    /// @dev Each coin keeps the tick spacing of its own launch: after Clanker changes its spacing the first coin's
+    ///      `poolKeyFor` still hashes to its pool and still trades, and a coin launched afterwards (under the new
+    ///      config version) carries the new spacing.
+    function test_poolKeySurvivesAClankerTickSpacingChange() public {
+        (address first,) = _launch(_settings(NATIVE), 0);
+        bytes32 firstPool = factory.creatorRights(first).poolId;
+        assertEq(launcher.tickSpacingOf(first), 200);
+        assertEq(_poolId(first), firstPool);
+
+        vm.prank(factory.owner());
+        IClankerV5FactoryAdminLike(FACTORY).setTickSpacing(100);
+        assertEq(factory.tickSpacing(), 100);
+        assertEq(launcher.tickSpacingOf(first), 200, "stored at launch");
+        assertEq(launcher.poolKeyFor(first).tickSpacing, 200);
+        assertEq(_poolId(first), firstPool, "the first coin's key is still its pool's");
+        _passAntiSnipe();
+        _buy(first, 0.01 ether);
+        assertGt(IERC20(first).balanceOf(trader), 0, "and the pool trades through that key");
+
+        // a launch signed before the change is stale; one signed after it gets the new spacing
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(8)));
+        vm.recordLogs();
+        vm.prank(creator);
+        (address second,,,) = launcher.launch{value: 0.01 ether}(p, s);
+        assertEq(launcher.tickSpacingOf(second), 100);
+        assertEq(_poolId(second), factory.creatorRights(second).poolId, "the second coin's key, under the new spacing");
+        assertGt(IERC20(second).balanceOf(creator), 0, "its dev buy went through the 100-spaced pool");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(launcher)) continue;
+            if (logs[i].topics[0] != BootrClankerLauncherV5.ClankerV5Launched.selector) continue;
+            (,,,, int24 spacing,,,,,,) = abi.decode(
+                logs[i].data, (bytes32, address, address, address, int24, uint24, uint24, uint16, uint16, bool, bool)
+            );
+            assertEq(spacing, 100, "ClankerV5Launched carries the launch's own spacing");
+            seen = true;
+        }
+        assertTrue(seen);
+        assertEq(_poolId(first), firstPool);
+    }
+
+    /// @dev The launcher holds nothing after a launch (fuel, dev-buy coins, WETH, ETH), so `rescue` has nothing of
+    ///      a creator's to reach; a stray transfer to it comes back out, by the owner only.
+    function test_rescueReachesOnlyStrayTransfers() public {
+        launcher.setLaunchFee(0.0005 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(61)));
+        vm.prank(creator);
+        (address token,,,) = launcher.launch{value: 1 ether}(p, s);
+        assertEq(address(launcher).balance, 0);
+        assertEq(IERC20(USDC).balanceOf(address(launcher)), 0);
+        assertEq(IERC20(WETH).balanceOf(address(launcher)), 0);
+        assertEq(IERC20(token).balanceOf(address(launcher)), 0);
+        assertEq(escrow.owed(address(launcher), USDC) + escrow.owed(address(launcher), NATIVE), 0, "no fees accrue here");
+
+        // someone sends USDC to the launcher by mistake
+        deal(USDC, stranger, 50e6);
+        vm.prank(stranger);
+        IERC20(USDC).transfer(address(launcher), 50e6);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        launcher.rescue(USDC, stranger, 50e6);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(USDC, stranger, 50e6);
+        launcher.rescue(USDC, stranger, 50e6);
+        assertEq(IERC20(USDC).balanceOf(stranger), 50e6);
+        assertEq(IERC20(USDC).balanceOf(address(launcher)), 0);
+    }
+
+    function _fill(uint256 n) internal pure returns (string memory) {
+        bytes memory b = new bytes(n);
+        for (uint256 i; i < n; ++i) {
+            b[i] = "a";
+        }
+        return string(b);
+    }
+
+    /// @dev The caps fit Clanker and the chain: a launch with every string at its cap, the heaviest settings
+    ///      (USDC, five rows, burn, dividends, a dev buy) goes through the live factory under the 2^24 gas a
+    ///      single transaction may use (EIP-7825), and an edit at the cap reaches the token.
+    function test_launchWithEveryStringAtItsCap() public {
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        p.name = _fill(launcher.MAX_NAME_BYTES());
+        p.symbol = _fill(launcher.MAX_SYMBOL_BYTES());
+        p.image = _fill(launcher.MAX_URI_BYTES());
+        p.metadata = _fill(launcher.MAX_METADATA_BYTES());
+        p.context = _fill(launcher.MAX_CONTEXT_BYTES());
+        p.agentURI = _fill(launcher.MAX_URI_BYTES());
+        p.model = _fill(launcher.MAX_MODEL_BYTES());
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
+        s.contractURI = _fill(launcher.MAX_URI_BYTES());
+        s.burnBps = 1000;
+        s.dividendBps = 1000;
+        s.minDividendHolding = MIN_HOLDING;
+        s.rewards = _fiveRows();
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(62)));
+
+        vm.prank(creator);
+        uint256 gasBefore = gasleft();
+        (address token,,,) = launcher.launch{value: 0.01 ether}(p, s);
+        uint256 gasUsed = gasBefore - gasleft();
+        console2.log("launch gas with every string at its cap:", gasUsed);
+        assertLt(gasUsed, 15_000_000, "a launch at the caps must fit one transaction (2^24 gas)");
+        assertEq(bytes(IClankerV5Token(token).extraMetadata("metadata")).length, 4096);
+        assertEq(bytes(IClankerV5Token(token).contractURI()).length, 512);
+
+        vm.startPrank(creator);
+        launcher.updateMetadata(token, _fill(4096));
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.updateMetadata(token, _fill(4097));
+        vm.stopPrank();
+
+        // one byte over on the launch itself
+        p.metadata = _fill(4097);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.launch{value: 0.01 ether}(p, s);
+    }
+
+    /// @dev The launcher cannot be left without an owner.
+    function test_renounceOwnershipIsDisabled() public {
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        assertEq(launcher.owner(), address(this));
+    }
+
     function test_launchPredictsKernelAndTokenAndRejectsReplay() public {
         BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);
@@ -1044,9 +1316,11 @@ contract ClankerV5ForkTest is Test {
 
     function test_pausedLauncherRejects() public {
         launcher.pause();
+        // the settings are built first: they read the live config version, a call `expectRevert` would catch
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         vm.prank(creator);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        launcher.launch(_params(0), _settings(NATIVE));
+        launcher.launch(_params(0), s);
         launcher.unpause();
         _launch(_settings(NATIVE), 0);
     }
