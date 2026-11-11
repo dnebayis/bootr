@@ -36,10 +36,10 @@ function Bubble({ message }: { message: AgentChatMessage }) {
   return (
     <li data-testid={`chat-message-${message.role}`} className={cn('flex flex-col gap-1', mine ? 'items-end' : 'items-start')}>
       <p className={cn('max-w-[85%] whitespace-pre-line break-words rounded-sm px-3 py-2 text-sm', mine ? 'bg-canvas-soft text-ink' : 'border border-hairline text-ink')}>{message.text}</p>
-      {!mine && (message.remembered || message.chargedMicroUsdc) ? (
-        <span className="font-mono text-micro text-mute tabular">
-          {message.remembered ? 'Saved to its memory' : ''}
-          {message.remembered && message.chargedMicroUsdc ? ' · ' : ''}
+      {!mine && (message.remembered || message.requested || message.chargedMicroUsdc) ? (
+        <span className="font-mono text-micro text-mute tabular" data-testid={message.requested ? 'chat-requested' : undefined}>
+          {message.remembered ? 'Saved to its memory' : message.requested ? 'Filed for its next turn' : ''}
+          {(message.remembered || message.requested) && message.chargedMicroUsdc ? ' · ' : ''}
           {message.chargedMicroUsdc ? formatMicroUsdc(message.chargedMicroUsdc) : ''}
         </span>
       ) : null}
