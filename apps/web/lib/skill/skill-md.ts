@@ -2,6 +2,7 @@ import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
 import { WORKER_BOUNDS, WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { FALLBACK_BUYBACK, FALLBACK_STANDARD, FALLBACK_V5_STANDARD } from '@/lib/abi/launcher';
 import { CLANKER_V5_ANTI_SNIPE_SECONDS } from '@/lib/swap/core';
+import { clankerPath } from '@/lib/contracts';
 import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { RECOMMENDED_MODEL } from '@/lib/models';
@@ -14,6 +15,8 @@ import {
   FALLBACK_V5_BOUNDS,
   MAX_DEV_BUY_SLIPPAGE_PCT,
   MIN_DIVIDEND_HOLDING,
+  openingCapInAsset,
+  pairedAssetBySymbol,
   pairedAssetsFor,
   V5_STRING_CAPS,
   V5_SUPPLY,
@@ -37,6 +40,11 @@ const CLANKER_PATH: FeeModel = { source: 'clanker', lpFeeBps: FALLBACK_STANDARD.
 /** Clanker v5 at the preset's tax (1.5%): Clanker's share is inside it. */
 const CLANKER_V5_PATH: FeeModel = feeModelOf({ source: 'clanker-v5', lpFeeBps: FALLBACK_V5_STANDARD.lpFeeBps });
 const V5_LAUNCHER = A.bootr.clankerLauncherV5;
+/** This deployment launches new Clanker coins through v5 (`launchThrough: clanker` resolves to `clanker-v5`). */
+const V5_LIVE = clankerPath.version === 5;
+const CLANKER_ALIAS = V5_LIVE ? "this site's Clanker path, which is Clanker v5" : "this site's Clanker path: Clanker v5 once it is live, Clanker v4 until then";
+const V5_USDC = pairedAssetBySymbol('USDC')!;
+const V5_CAP_USDC = (Math.round(openingCapInAsset(V5_USDC.fallbackStartTick, V5_USDC.decimals) / 100) * 100).toLocaleString('en-US');
 
 function split(d: typeof FALLBACK_STANDARD): Split {
   return { agent: d.agentBps, creator: d.creatorBps, burn: d.burnBps, platform: d.platformBps };
@@ -190,7 +198,7 @@ const launch = {
   symbol: 'QENG',
   identity: 'A patient analyst who reports what happens on small Base coins.',
   image: { dataUrl: \`data:image/png;base64,\${image.toString('base64')}\` },
-  launchThrough: 'bootr', // or 'clanker' (this site's Clanker: v5 once it is live, v4 until then), or 'clanker-v5'
+  launchThrough: 'bootr', // or 'clanker' (${CLANKER_ALIAS}), or 'clanker-v5'
   buyback: false, // true for the buyback and burn preset
   fuelUsdc: '20',
   devBuyEth: '0',
@@ -363,8 +371,8 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 
 | Field | Default | Rules |
 | --- | --- | --- |
-| \`launchThrough\` | \`bootr\` | \`bootr\`, \`clanker\` (this site's Clanker path: Clanker v5 once it is live, Clanker v4 until then) or \`clanker-v5\` (refused with \`clanker_v5_unavailable\` while it is not live). Permanent for the coin |
-| \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin |
+| \`launchThrough\` | \`bootr\` | \`bootr\`, \`clanker\` (${CLANKER_ALIAS}) or \`clanker-v5\` (refused with \`clanker_v5_unavailable\` while it is not live). Permanent for the coin |
+| \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin. Ignored on Clanker v5, where the burn is \`token.burnPct\` |
 | \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls, which go to BlockRun, the service that runs the models, at the prices \`GET /api/models\` shows |
 | \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins. On Clanker v5 it is quoted before the answer and the launch carries a minimum (\`devBuySlippagePct\`) |
 | \`devBuySlippagePct\` | \`${DEFAULT_DEV_BUY_SLIPPAGE_PCT}\` | Clanker v5 only. 0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT}: the dev buy's minimum is the quote less this percent. If the launch would deliver fewer coins, it reverts and spends nothing but gas |
@@ -416,19 +424,19 @@ A custom worker is an object: \`{ "capabilities": { "xRead": true, "xReply": tru
 
 ## Fees by Launch Path
 
-The launch path and the preset are chosen once and locked for the coin's life. Nobody can change a recipient or a share afterwards.
+The launch path, the preset and, on Clanker v5, the token settings are chosen once and locked for the coin's life. Nobody can change a share afterwards, nor the agent's or the platform's recipient; on Clanker v5 only the admin of an extra reward row can change that row's recipient, on Clanker.
 
-| | Through Bootr (\`bootr\`, RWAGMI v3) | Through Clanker v4 (\`clanker\`) | Through Clanker v5 (\`clanker-v5\`) |
+| | Through Bootr (\`bootr\`, RWAGMI v3) | Through Clanker v4 (${V5_LIVE ? 'coins launched before v5' : '`clanker`'}) | Through Clanker v5 (${V5_LIVE ? '`clanker` or `clanker-v5`' : '`clanker-v5`'}) |
 | --- | --- | --- | --- |
 | A trader pays per swap | ${pctLabel(traderPaysPct(BOOTR_PATH))} | ${pctLabel(traderPaysPct(CLANKER_PATH))} | a tax on buys and sells that the creator sets, ${V5B.minTaxBps / 10_000}% to ${V5B.maxTaxBps / 10_000}% (${pctLabel(traderPaysPct(CLANKER_V5_PATH))} by default) |
 | The launcher's part | RWAGMI takes ${pctLabel(launcherPct(BOOTR_PATH))} of volume, inside the fee | Clanker takes ${pctLabel(launcherPct(CLANKER_PATH))} of volume, on top of the 1% fee | Clanker keeps ${pctLabel(launcherPct(CLANKER_V5_PATH))} of volume, inside the tax |
 | What the recipients share | 90% of the fee | all of the 1% fee | the tax less Clanker's part |
-| Opening market cap | about 2.7 ETH fully diluted | about 10 ETH fully diluted | Clanker's opening price for every new coin, about 1.9 ETH fully diluted on 10 November 2026 |
+| Opening market cap | about 2.7 ETH fully diluted | about 10 ETH fully diluted | Clanker's opening price for every new coin, about 1.9 ETH (paired with USDC, about ${V5_CAP_USDC} USDC) fully diluted on 10 November 2026 |
 | Supply | 100,000,000,000 | 100,000,000,000 | 1,000,000,000; the coin's address ends in \`cccc\` |
 | Fees are paid in | WETH | WETH; a burn share is converted into the coin | the paired asset, ${v5AssetList}; a burn share is taken in the coin |
 | Listed on | ${host} | ${host} and clanker.world | ${host} and clanker.world |
 
-\`clanker\` is this site's Clanker path: Clanker v4 until Bootr's Clanker v5 launcher is live, Clanker v5 from then on. The launch answer's \`launchThrough\` says which one a launch uses.
+\`clanker\` is ${CLANKER_ALIAS}. The launch answer's \`launchThrough\` says which one a launch uses.${V5_LIVE ? ' Coins launched through Clanker v4 before keep v4\'s terms and keep working.' : ''}
 
 Each recipient's share, as a percent of trading volume:
 
@@ -439,9 +447,9 @@ ${feeRow('Creator', 'creator')}
 ${feeRow('Buyback and burn', 'burn')}
 ${feeRow('Platform', 'platform')}
 
-A new pool on the Clanker path also opens with Clanker's anti-sniper fee, and nothing like it exists on the Bootr path. Measured on a Base fork at today's 200 ms blocks with the launcher's current settings: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal 1.20%. That point comes from the clock, not from a number of blocks. Those fees go to the same recipients. \`devBuyEth\` runs inside the launch transaction and is not affected, so a creator who wants coins at the start should use it instead of buying right after. Tell the user this before they choose the Clanker path. On Clanker v5 it works differently: for the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds a buy pays a fee that starts at 99% and falls to the tax, and swaps that name the amount out are refused; the coin page waits those seconds out. \`devBuyEth\` is not affected there either.
+A new pool on the Clanker path opens with an anti-sniper fee, and nothing like it exists on the Bootr path. On Clanker v5, with \`sniperTax\` on (the default), for the first ${CLANKER_V5_ANTI_SNIPE_SECONDS} seconds a buy pays a fee that starts at 99% and falls to the tax, the extra goes to Clanker, and swaps that name the amount out are refused; the coin page waits those seconds out. On Clanker v4, measured on a Base fork at today's 200 ms blocks with that launcher's settings: a swap in about the first half second after the launch reverts, the first one that goes through pays about 63 to 71%, the fee then falls every second, to about 30% at 6 seconds and 5% at 15, and from about 16 seconds a swap pays the normal 1.20%; that point comes from the clock, not from a number of blocks, and those fees go to the same recipients. On either, \`devBuyEth\` runs inside the launch transaction and is not affected, so a creator who wants coins at the start should use it instead of buying right after. Tell the user this before they choose the Clanker path.
 
-The presets split what reaches the recipients. Standard is agent ${pct(FALLBACK_STANDARD.agentBps)}, creator ${pct(FALLBACK_STANDARD.creatorBps)}, platform ${pct(FALLBACK_STANDARD.platformBps)}. Buyback and burn (\`buyback: true\`) is agent ${pct(FALLBACK_BUYBACK.agentBps)}, creator ${pct(FALLBACK_BUYBACK.creatorBps)}, burn ${pct(FALLBACK_BUYBACK.burnBps)}, platform ${pct(FALLBACK_BUYBACK.platformBps)}.
+The presets split what reaches the recipients on the Bootr path and Clanker v4; on Clanker v5 the token settings above take their place. Standard is agent ${pct(FALLBACK_STANDARD.agentBps)}, creator ${pct(FALLBACK_STANDARD.creatorBps)}, platform ${pct(FALLBACK_STANDARD.platformBps)}. Buyback and burn (\`buyback: true\`) is agent ${pct(FALLBACK_BUYBACK.agentBps)}, creator ${pct(FALLBACK_BUYBACK.creatorBps)}, burn ${pct(FALLBACK_BUYBACK.burnBps)}, platform ${pct(FALLBACK_BUYBACK.platformBps)}.
 
 The burn share works differently per path. Through Bootr it goes to a contract made for the coin, whose WETH is swapped for the coin and burned by a call only the launcher's owner can make. Through Clanker v4 it is converted into the coin and sent to the dead address. Through Clanker v5 Clanker takes it in the coin on every trade and it goes to the dead address.
 
@@ -494,7 +502,7 @@ These are transactions or wallet actions. The same rule applies: show the amount
 | Add fuel | A plain USDC \`transfer\` to the treasury address, or the coin page. Anyone can do it, and it cannot be taken back |
 | Add gas | \`EntryPoint.depositTo(kernel)\` with ETH, or the coin page. Anyone can do it, and it cannot be taken back |
 | Claim creator fees, Bootr path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`settleAndClaim([poolId], WETH, you)\` on RWAGMI's locker \`${A.rwagmiLockerV3}\`, with the coin's \`poolId\` from the indexer |
-| Claim creator fees, Clanker v5 path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claimFor(you, 0x0000000000000000000000000000000000000000)\` on Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\`. The zero address means ETH: fees arrive on every trade, in ETH |
+| Claim creator fees, Clanker v5 path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claimFor(you, asset)\` on Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\`, with the coin's paired asset: \`0x0000000000000000000000000000000000000000\` for ETH, \`${A.usdc}\` for USDC. Fees arrive on every trade, in that asset. Extra reward recipients claim theirs the same way, and holders claim dividends themselves on the coin's dividend tracker (\`withdrawDividends()\`) |
 | Claim creator fees, Clanker v4 path | \`GET ${site}/api/agent/claim/<address>\` (below), on the coin page or \`${site}/profile\`, or \`claim(you, WETH)\` on Clanker's fee locker \`${A.clanker.feeLocker}\`. New fees reach it after \`collectRewards(coin)\` on Clanker's LP locker \`${A.clanker.lpLockerFeeConversion}\`, which anyone may call. In a coin's first 2 minutes that call credits nothing yet |
 | Pause or resume the agent | \`pauseAgent(kernel)\` or \`unpauseAgent(kernel)\` on AgentGuardian \`${A.bootr.guardian}\`, or \`${site}/profile\`. Only the creator can. It moves no funds |
 
@@ -514,7 +522,7 @@ These are transactions or wallet actions. The same rule applies: show the amount
 }
 \`\`\`
 
-\`claims\` is empty when nothing is waiting. Check that \`target\` is RWAGMI's locker for \`bootr\`, Clanker's fee locker \`${A.clanker.feeLocker}\` for \`clanker\` and Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\` for \`clanker-v5\` (whose \`asset\` is the zero address: it pays ETH), and stop if \`mock\` is present. Show the user \`description\` and get a yes, then their own wallet sends \`target\`, \`data\` and \`value\`. A \`bootr\` claim must come from \`sendFrom\`, because the locker pays the balance of whichever wallet calls it; a \`clanker\` or \`clanker-v5\` claim (\`sendFrom\` null) can come from any wallet and still pays the address. 20 calls a minute per IP.
+\`claims\` is empty when nothing is waiting. Check that \`target\` is RWAGMI's locker for \`bootr\`, Clanker's fee locker \`${A.clanker.feeLocker}\` for \`clanker\` and Clanker's fee escrow \`${A.clankerV5!.feeEscrow}\` for \`clanker-v5\` (whose \`asset\` is the coin's paired asset: the zero address pays ETH, USDC's address pays USDC in 6-decimal units that \`totalWei\` does not count), and stop if \`mock\` is present. Show the user \`description\` and get a yes, then their own wallet sends \`target\`, \`data\` and \`value\`. A \`bootr\` claim must come from \`sendFrom\`, because the locker pays the balance of whichever wallet calls it; a \`clanker\` or \`clanker-v5\` claim (\`sendFrom\` null) can come from any wallet and still pays the address. 20 calls a minute per IP.
 
 ## What an Agent Can and Can't Do With Its Treasury
 
@@ -522,7 +530,7 @@ The limits below are enforced on-chain, not by the model's good behaviour. Bootr
 
 **It can:**
 
-- Collect its own share of the swap fees into its treasury.
+- Collect its own share of the fees into its treasury: WETH on the Bootr path and Clanker v4; on Clanker v5 the coin's paired asset, ETH (its gas) or USDC (its fuel; its gas then comes only from the creator).
 - Swap WETH to USDC, with a price floor from an on-chain price feed.
 - Move USDC to its own wallet for paying for model calls, capped (50 USDC per 24 hours by default).
 - Unwrap its WETH into ETH to pay its own gas.
@@ -533,6 +541,7 @@ The limits below are enforced on-chain, not by the model's good behaviour. Bootr
 - Trade any other token, including its own coin.
 - Burn coins, change its fee split or touch the coin's liquidity.
 - Sign messages or permits for its treasury.
+- Claim holder dividends.
 - Do anything while its creator has paused it.
 
 Fuel and gas cannot be withdrawn by the user. An agent with under 1 USDC sleeps until it is fuelled or its fees are claimed. After 90 days with no on-chain activity (the current presets; fixed per coin at launch) an agent is dormant and its treasury can be swept: USDC and WETH to the platform, the agent's own coins to the dead address. Posts on X do not count as activity. An agent that runs does this on its own by claiming fees and paying for its model calls. More in [Agents](${site}/docs/agents).
