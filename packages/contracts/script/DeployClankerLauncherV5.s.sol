@@ -11,27 +11,44 @@ interface IUniswapV3FactoryLike {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
+/// @dev Clanker's `SwapXLaunchBuyAdapter`: the Uniswap v3 factory whose pools it admits as a first hop.
+interface ILaunchBuyAdapterLike {
+    function uniswapV3Factory() external view returns (address);
+}
+
 /// @notice The Clanker v5 path with creator-set token settings (docs/design/clanker-v5-token-settings.md section 2,
 ///         docs/design/clanker-v5-migration.md section 8): deploys `BootrClankerLauncherV5` against the live
 ///         guardian, gate, identity registry and kernel factory read from the live v4 Clanker launcher, with
 ///         - the agent defaults: agent 5% and platform 30% of the post-Clanker pool (`AGENT_SHARE_BPS`,
 ///           `PLATFORM_SHARE_BPS`), each side's tax between 1% and 5% (`MIN_TAX_BPS`, `MAX_TAX_BPS`), up to five
-///           creator rows (the creator's own and four extras), the platform recipient, minimum fuel and dormancy
-///           period of the v4 launcher's standard preset;
+///           creator rows (the creator's own and four extras), the platform recipient given in
+///           `PLATFORM_RECIPIENT`, the minimum fuel and dormancy period of the v4 launcher's standard preset;
 ///         - `minPlatformBps` and the launch fee copied from it;
 ///         - the paired-asset allow-list for agent coins: native ETH and Base USDC (the plain-token kind stays empty);
 ///         - the USDC dev-buy route through Uniswap v3 WETH/USDC 0.05%;
-///         then hands ownership to PLATFORM_ADMIN.
+///         then starts the two-step handover to PLATFORM_ADMIN (`transferOwnership`).
 ///
-///         The script never touches the gate: `gate.addLauncher(v5)` is the admin's own transaction, after the
-///         read-back (until then every v5 launch reverts `NotLauncher`, the intended order). It reads the live v5
-///         factory first and stops if Clanker's policy does not admit the tax bounds or a quote.
+///         Ownership. The deployer key is the launcher's owner until the admin calls `acceptOwnership()`. The
+///         script never touches the gate, and every v5 launch reverts `NotLauncher` until the gate owner adds the
+///         launcher, so the order that leaves the deployer key no coin to touch is: (1) this script, (2) the admin
+///         calls `acceptOwnership()`, (3) read back `owner() == admin` and the configuration (anything the
+///         deployer key could have changed in between shows here, and it can change nothing after step 2),
+///         (4) only then `gate.addLauncher(v5)`. `PLATFORM_ADMIN` has no default for that reason: a launcher left
+///         owned by the deployer key by omission would be one `addLauncher` away from being live under it.
+///
+///         The platform recipient is frozen into every coin's platform slot (the slot's admin is the launcher,
+///         which exposes no way to change it), so it should be a wallet whose signers can rotate (a multisig or a
+///         smart account) rather than one key: `PLATFORM_RECIPIENT` is required and is not copied from v4.
+///
+///         The script reads the live v5 factory first and stops if Clanker's policy does not admit the tax bounds
+///         or a quote, or if the launch-buy adapter's Uniswap v3 factory is not the one the launcher is given.
 ///
 /// Env:
 ///   PRIVATE_KEY             deployer (broadcaster)
-///   PLATFORM_ADMIN          final owner of the launcher (default: deployer); the guardian owner on mainnet
+///   PLATFORM_ADMIN          required: the final owner of the launcher (the guardian and gate owner on mainnet)
+///   PLATFORM_RECIPIENT      required: the platform slot's recipient of every coin and the launch fee's recipient
 ///   OLD_CLANKER_LAUNCHER    live BootrClankerLauncher v4 (guardian, gate, identity, kernel factory, USDC, the
-///                           standard preset's recipient / fuel / dormancy, minPlatformBps and the launch fee)
+///                           standard preset's fuel / dormancy, minPlatformBps and the launch fee)
 ///   AGENT_SHARE_BPS         default 500 (5%, the floor)
 ///   PLATFORM_SHARE_BPS      default 3000 (30%)
 ///   MIN_TAX_BPS / MAX_TAX_BPS  default 10_000 / 50_000 (1% / 5%, hundredths of a bip)
@@ -55,10 +72,14 @@ contract DeployClankerLauncherV5 is Script {
         require(block.chainid == 8453, "Clanker v5 path: Base mainnet only");
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
-        address admin = vm.envOr("PLATFORM_ADMIN", deployer);
+        // both required: no default to the deployer key, no recipient copied from v4
+        address admin = vm.envAddress("PLATFORM_ADMIN");
+        address recipient = vm.envAddress("PLATFORM_RECIPIENT");
+        require(admin != address(0), "PLATFORM_ADMIN is the zero address");
+        require(recipient != address(0), "PLATFORM_RECIPIENT is the zero address");
         BootrClankerLauncher old = BootrClankerLauncher(vm.envAddress("OLD_CLANKER_LAUNCHER"));
         uint256 launchFee = vm.envOr("LAUNCH_FEE_WEI", old.launchFeeWei());
-        BootrClankerLauncherV5.AgentDefaults memory d = _defaults(old);
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults(old, recipient);
 
         // the live v5 factory must admit what the launcher will send
         IClankerV5Factory factory = IClankerV5Factory(FACTORY);
@@ -79,6 +100,10 @@ contract DeployClankerLauncherV5 is Script {
         require(
             IUniswapV3FactoryLike(UNISWAP_V3_FACTORY).getPool(WETH, USDC, WETH_USDC_FEE) == WETH_USDC_500,
             "WETH/USDC 0.05% pool moved"
+        );
+        require(
+            ILaunchBuyAdapterLike(factory.launchBuyAdapter()).uniswapV3Factory() == UNISWAP_V3_FACTORY,
+            "the launch-buy adapter's Uniswap v3 factory moved"
         );
 
         require(address(old.usdc()) == USDC, "v4 launcher's USDC is not Base USDC");
@@ -120,23 +145,37 @@ contract DeployClankerLauncherV5 is Script {
         console2.log("maxRewardRows           ", d.maxRewardRows);
         console2.log("agent quotes            ", "native ETH, USDC");
         console2.log("launchFeeWei            ", launchFee);
-        console2.log("pending owner           ", admin);
+        console2.log("owner now               ", launcher.owner());
+        console2.log("pending owner           ", launcher.pendingOwner());
         console2.log("simulation block        ", block.number);
         console2.log("factory configVersion   ", factory.configVersion());
-        if (admin != deployer) console2.log("NOTE: admin must call acceptOwnership() on the launcher");
-        console2.log("NOTE: as the gate owner (the admin), after the read-back (launches revert NotLauncher until then):");
-        console2.log("  cast send <gate> 'addLauncher(address)' <v5 launcher> --rpc-url base --private-key <admin>");
+        if (recipient.code.length == 0) {
+            console2.log("NOTE: PLATFORM_RECIPIENT has no code: a plain key, frozen into every coin's platform slot");
+        }
+        console2.log("NEXT, in this order (launches revert NotLauncher until the last step):");
+        if (admin != deployer) {
+            console2.log("  1. admin: cast send <v5 launcher> 'acceptOwnership()' --rpc-url base --private-key <admin>");
+        } else {
+            console2.log("  1. (the deployer is the admin: nothing to accept)");
+        }
+        console2.log("  2. read back: owner() == admin, pendingOwner() == 0, agentDefaults(), minPlatformBps(),");
+        console2.log("     launchFeeWei(), allowedQuote(0, 0x0), allowedQuote(0, USDC), devBuyRoute(USDC), paused()");
+        console2.log("  3. admin: cast send <gate> 'addLauncher(address)' <v5 launcher> --rpc-url base --private-key <admin>");
         console2.log("  then, if v4 is to stop: cast send <v4 launcher> 'pause()' --rpc-url base --private-key <admin>");
     }
 
     /// @dev The agent defaults: shares and tax bounds from the env (design note section 2.3 defaults), the
-    ///      recipient, fuel minimum and dormancy period of the live v4 launcher's standard preset.
-    function _defaults(BootrClankerLauncher old) internal view returns (BootrClankerLauncherV5.AgentDefaults memory) {
-        (,,,,, address r, uint256 f, uint32 dormancy) = old.standardDefaults();
+    ///      platform recipient given, the fuel minimum and dormancy period of the live v4 launcher's standard preset.
+    function _defaults(BootrClankerLauncher old, address recipient)
+        internal
+        view
+        returns (BootrClankerLauncherV5.AgentDefaults memory)
+    {
+        (,,,,,, uint256 f, uint32 dormancy) = old.standardDefaults();
         return BootrClankerLauncherV5.AgentDefaults({
             agentShareBps: uint16(vm.envOr("AGENT_SHARE_BPS", uint256(500))),
             platformShareBps: uint16(vm.envOr("PLATFORM_SHARE_BPS", uint256(3000))),
-            platformRecipient: r,
+            platformRecipient: recipient,
             minFuelUsdc: f,
             dormancyPeriod: dormancy,
             minTaxBps: uint24(vm.envOr("MIN_TAX_BPS", uint256(10_000))),

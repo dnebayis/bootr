@@ -375,14 +375,18 @@ contract ClankerV5LauncherReviewTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // Finding: the deploy script leaves the deployer key as owner until the admin accepts
+    // Fixed (L2, L3): the deploy script requires the admin and the platform recipient, and the runbook's order is
+    // deploy, accept ownership, read back, and only then open the gate
     // ------------------------------------------------------------------
 
-    /// @notice Runs `DeployClankerLauncherV5` against the live v4 launcher, gate and guardian. After the script the
-    ///         owner is still the deployer (the admin is only pending). If the admin adds the launcher to the gate
-    ///         before accepting, the deployer key alone can redirect the platform slot and the launch fee of every
-    ///         coin launched from then on. The same run shows the script's values work against the live system.
-    function test_review_deployScriptLeavesDeployerAsOwnerUntilAccept() public {
+    /// @notice Runs `DeployClankerLauncherV5` against the live v4 launcher, gate and guardian. The script used to
+    ///         default the owner to the deployer and copy the platform recipient from v4, and the runbook had
+    ///         the admin add the launcher to the gate before accepting ownership: the deployer key alone could
+    ///         then redirect the platform slot and the launch fee of every coin. Now the script stops without
+    ///         `PLATFORM_ADMIN` or `PLATFORM_RECIPIENT`; no launch is possible while the deployer key is still
+    ///         the owner (the gate is closed); once the admin has accepted, the deployer key can change nothing,
+    ///         the read-back shows the terms, and the first coin's platform slot pays the recipient given.
+    function test_review_deployScriptOwnershipIsSettledBeforeTheGateOpens() public {
         BootrClankerLauncher v4 = BootrClankerLauncher(LIVE_V4_LAUNCHER);
         address admin = v4.owner();
         BootrLaunchGate liveGate = v4.gate();
@@ -393,50 +397,97 @@ contract ClankerV5LauncherReviewTest is Test {
         address deployer = vm.addr(deployerKey);
         vm.deal(deployer, 1 ether);
         vm.setEnv("PRIVATE_KEY", vm.toString(bytes32(deployerKey)));
-        vm.setEnv("PLATFORM_ADMIN", vm.toString(admin));
         vm.setEnv("OLD_CLANKER_LAUNCHER", vm.toString(LIVE_V4_LAUNCHER));
+        DeployClankerLauncherV5 script = new DeployClankerLauncherV5();
+
+        // neither variable has a default: the script stops before deploying anything
+        vm.setEnv("PLATFORM_ADMIN", "");
+        vm.setEnv("PLATFORM_RECIPIENT", vm.toString(platformRecipient));
+        vm.expectRevert();
+        script.run();
+        vm.setEnv("PLATFORM_ADMIN", vm.toString(admin));
+        vm.setEnv("PLATFORM_RECIPIENT", "");
+        vm.expectRevert();
+        script.run();
+        vm.setEnv("PLATFORM_RECIPIENT", vm.toString(address(0)));
+        vm.expectRevert(bytes("PLATFORM_RECIPIENT is the zero address"));
+        script.run();
+        assertEq(vm.getNonce(deployer), 0, "nothing was deployed");
+
+        vm.setEnv("PLATFORM_RECIPIENT", vm.toString(platformRecipient));
         BootrClankerLauncherV5 v5 = BootrClankerLauncherV5(vm.computeCreateAddress(deployer, vm.getNonce(deployer)));
-        new DeployClankerLauncherV5().run();
+        script.run();
 
+        // step 1 done: deployed, the handover started, the gate untouched
         assertGt(address(v5).code.length, 0, "deployed where predicted");
-        assertEq(v5.owner(), deployer, "the deployer key still owns the launcher");
-        assertEq(v5.pendingOwner(), admin, "the admin has not accepted yet");
-        (uint16 agentBps, uint16 platformBps, address recipient,,, uint24 lo, uint24 hi, uint8 rows) = v5.agentDefaults();
-        assertEq(agentBps, 500);
-        assertEq(platformBps, 3000);
-        assertEq(lo, 10_000);
-        assertEq(hi, 50_000);
-        assertEq(rows, 5);
-        assertEq(recipient.code.length, 0, "the platform recipient frozen into every coin is a plain key today");
-        assertTrue(v5.allowedQuote(AGENT, NATIVE) && v5.allowedQuote(AGENT, USDC));
-        assertEq(address(v5.gate()), address(liveGate));
+        assertEq(v5.owner(), deployer, "two-step handover: the deployer key until the admin accepts");
+        assertEq(v5.pendingOwner(), admin);
+        assertFalse(liveGate.launchers(address(v5)), "the script never touches the gate");
 
-        // launches are closed until the admin opens the gate
+        // while the deployer key is the owner no coin can be launched, whatever that key sets
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);
         BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+        s.maxLaunchFeeWei = v5.launchFeeWei();
         p.salt = _mineSalt(v5, creator, p, s);
         uint256 fee = v5.launchFeeWei();
-        s.maxLaunchFeeWei = fee;
         vm.prank(creator);
         IERC20(USDC).approve(address(v5), type(uint256).max);
         vm.prank(creator);
         vm.expectRevert(BootrLaunchGate.NotLauncher.selector);
         v5.launch{value: fee}(p, s);
 
-        // the admin opens the gate without accepting ownership first
+        // step 2: the admin accepts; the deployer key is out for good
+        vm.prank(admin);
+        v5.acceptOwnership();
+        vm.startPrank(deployer);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", deployer));
+        v5.setAgentDefaults(_defaults(500, 3000, thief));
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", deployer));
+        v5.setLaunchFee(0);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", deployer));
+        v5.setDevBuyRoute(USDC, WETH_USDC_400, 400);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", deployer));
+        v5.rescue(USDC, thief, 0);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", deployer));
+        v5.transferOwnership(thief);
+        vm.stopPrank();
+
+        // step 3: the read-back the runbook lists
+        assertEq(v5.owner(), admin);
+        assertEq(v5.pendingOwner(), address(0));
+        (uint16 agentBps, uint16 platformBps, address recipient, uint256 minFuel, uint32 dormancy, uint24 lo, uint24 hi, uint8 rows)
+        = v5.agentDefaults();
+        assertEq(agentBps, 500);
+        assertEq(platformBps, 3000);
+        assertEq(recipient, platformRecipient, "the recipient the owner passed, not one copied from v4");
+        (,,,,,, uint256 v4Fuel, uint32 v4Dormancy) = v4.standardDefaults();
+        assertEq(minFuel, v4Fuel);
+        assertEq(dormancy, v4Dormancy);
+        assertEq(lo, 10_000);
+        assertEq(hi, 50_000);
+        assertEq(rows, 5);
+        assertEq(v5.minPlatformBps(), v4.minPlatformBps());
+        assertEq(v5.launchFeeWei(), v4.launchFeeWei());
+        assertTrue(v5.allowedQuote(AGENT, NATIVE) && v5.allowedQuote(AGENT, USDC));
+        assertFalse(v5.allowedQuote(BootrClankerLauncherV5.LaunchKind.Plain, NATIVE));
+        (address routePool, uint24 routeFee) = v5.devBuyRoute(USDC);
+        assertEq(routePool, WETH_USDC_500);
+        assertEq(routeFee, 500);
+        assertFalse(v5.paused());
+        assertEq(address(v5.gate()), address(liveGate));
+        assertEq(address(v5.guardian()), address(liveGuardian));
+        assertEq(address(v5.uniswapV3Factory()), UNISWAP_V3_FACTORY);
+
+        // step 4: only now the admin opens the gate, and the first coin pays the recipient that was read back
         vm.prank(admin);
         liveGate.addLauncher(address(v5));
-
-        // whoever holds the deployer key now sets the platform recipient of every future coin (the shares are
-        // the creator's pin, the recipient is not)
-        vm.prank(deployer);
-        v5.setAgentDefaults(_defaults(500, 3000, thief));
         vm.prank(creator);
         (address token, address kernel,,) = v5.launch{value: fee}(p, s);
         ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(_poolIdOf(token));
-        assertEq(slots[1].recipient, thief, "the platform slot of this coin pays the key holder, for good");
+        assertEq(slots[1].recipient, platformRecipient, "the platform slot pays the owner's recipient");
         assertEq(slots[1].admin, address(v5));
-        assertEq(thief.balance, fee, "and so does the launch fee");
+        assertEq(platformRecipient.balance, fee, "and so does the launch fee");
+        assertEq(thief.balance, 0);
         assertTrue(liveGuardian.isRegistered(kernel), "registered on the live guardian through the live gate");
     }
 
