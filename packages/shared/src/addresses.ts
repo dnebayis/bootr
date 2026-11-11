@@ -232,8 +232,9 @@ export const addresses = {
       // docs/deploy/mainnet.md "Clanker path". `launcher` above is v3.1 (registers through the gate).
       launchGate: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
       clankerLauncher: '0x387f1B0aC128D534E822c344D829645336BDAbbB',
-      // Clanker v5 launcher: not deployed yet (script/DeployClankerLauncherV5.s.sol).
-      clankerLauncherV5: null,
+      // Clanker v5 launcher with token settings, deployed 2026-11-11 at block 56,190,112 by script/DeployClankerLauncherV5.s.sol
+      // (Sourcify exact match); owner the platform admin, on the gate since block 56,190,529. docs/deploy/mainnet.md, Launcher history.
+      clankerLauncherV5: '0xA70D4fCbcD7979609E0e66E7b581bE2711A8FE69',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
       swapHelper: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',

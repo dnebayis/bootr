@@ -480,7 +480,8 @@ destroyed), then revert the variables. Coins already launched on v2 keep working
 | v2 | RWAGMI v3 (B20) | `0xD3CE024ddC37465510E6c9a1D7942f003338B1F3` | 53219209 | paused 2026-11-03 |
 | v3 (6k opening cap, `STARTING_TICK = -243400`) | RWAGMI v3 (B20) | `0x01f290cC464Ac6D167588b35A08305F58683526f` | 53433988 | paused 2026-11-04 (Clanker path switch) |
 | v3.1 (registers through `BootrLaunchGate`) | RWAGMI v3 (B20) | `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` | 53503025 | current (Bootr path), verified |
-| Clanker launcher (`BootrClankerLauncher`, Standard layout, `platformLpFeeBps` 2%) | Clanker v4 | `0x387f1B0aC128D534E822c344D829645336BDAbbB` | 53503025 | current (Clanker path), verified |
+| Clanker launcher (`BootrClankerLauncher`, Standard layout, `platformLpFeeBps` 2%) | Clanker v4 | `0x387f1B0aC128D534E822c344D829645336BDAbbB` | 53503025 | verified; to be paused at the v5 go-live |
+| Clanker v5 launcher (`BootrClankerLauncherV5`, creator token settings, agent 5% / platform 30% locked) | Clanker v5 | `0xA70D4fCbcD7979609E0e66E7b581bE2711A8FE69` | 56190112 | deployed 2026-11-11, owner accepted (block 56190195), on the gate (block 56190529), Sourcify exact match; security-reviewed (`docs/design/clanker-v5-token-settings.md` 8.1) |
 | gate (`BootrLaunchGate`, `guardian.launcher`) | — | `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5` | 53503025 | current |
 
 The Clanker-era sections above (0-9) record how v1 and v1.1 were deployed; they are kept as written for reference.
