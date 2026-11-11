@@ -144,6 +144,27 @@ describe('the token-settings launch event and the settings on the token row', ()
     });
   });
 
+  it('the security-reviewed launcher ABI keeps every event the indexer follows; only Rescued is new', () => {
+    const events = BootrClankerLauncherV5Abi.filter((e) => e.type === 'event').map((e) => toEventSelector(e as never));
+    for (const sig of [
+      'AgentLaunched(address,address,address,address,uint256,(uint24,uint16,uint16,uint16,uint16,address,uint256,uint32),bytes32,string,string,address)',
+      'ClankerV5Launched(address,bytes32,address,address,address,int24,uint24,uint24,uint16,uint16,bool,bool)',
+      'LaunchContext(address,string)',
+      'LaunchFeePaid(address,address,uint256)',
+      'CoinImageUpdated(address,string)',
+      'CoinMetadataUpdated(address,string)',
+      'CoinMetadataLocked(address)',
+      'QuoteAllowedUpdated(uint8,address,bool)',
+      'Rescued(address,address,uint256)',
+    ]) {
+      expect(events, sig).toContain(toEventSelector(sig));
+    }
+    // The five pins at the end of TokenSettings (what the web signs), and the stored tick spacing.
+    const launch = BootrClankerLauncherV5Abi.find((e) => e.type === 'function' && e.name === 'launch') as { inputs: readonly { components?: readonly { name: string }[] }[] };
+    expect(launch.inputs[1]!.components!.slice(-5).map((c) => c.name)).toEqual(['minDevBuyOut', 'expectedConfigVersion', 'maxLaunchFeeWei', 'expectedAgentShareBps', 'expectedPlatformShareBps']);
+    expect(BootrClankerLauncherV5Abi.some((e) => e.type === 'function' && e.name === 'tickSpacingOf')).toBe(true);
+  });
+
   it('decodes the settings event and reads the rest of the receipt: Clanker’s shares, the genesis metadata, the tracker', () => {
     expect(facts.launched).toEqual({
       token: COIN,
