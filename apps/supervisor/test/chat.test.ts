@@ -6,7 +6,8 @@ import { TOOL_LIST } from '@bootr/agent-core';
 import { computeQuote, DEFAULT_PRICE_TABLE } from '@bootr/inference';
 import { LOW_FUEL_THOUGHTS } from '@bootr/shared/fuel';
 import { createApp } from '../src/api.js';
-import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, CUT_SHORT_NOTE, estimateQuote, fuelGate, NO_ANSWER_TEXT, REFUSAL_TEXT, resetChatPrices, RETRY_NUDGE, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
+import { CHAT_LIMITS, CHAT_MAX_CHARS, CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_QUOTE_MICRO_USDC, CHAT_MEMORY_SOURCE, chatToolDecision, chatTools, chatView, CUT_SHORT_NOTE, estimateQuote, fuelGate, NO_ANSWER_TEXT, REFUSAL_TEXT, REQUEST_FILED_TEXT, REQUESTS_FULL_TEXT, resetChatPrices, RETRY_NUDGE, sendChatMessage, THIN_DATA_THOUGHT_MICRO_USDC } from '../src/chat.js';
+import { closeRequest, CREATOR_REQUESTS_OPEN_MAX, fileRequest, openRequests } from '../src/creator-requests.js';
 import { actions, approvals, chatMessages, images, inference, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { recentThoughtCost } from '../src/inference.js';
@@ -80,7 +81,7 @@ function api(world: TestWorld) {
 beforeEach(() => resetChatPrices());
 
 describe('a chat turn', () => {
-  it('answers with the agent’s persona and memory on its own key, offering only remember, under a hard cost ceiling', async () => {
+  it('answers with the agent’s persona and memory on its own key, offering only remember and request, under a hard cost ceiling', async () => {
     const { w, agent } = await world([say('We posted twice today.')], { config: { identityText: 'You are Marlin, a patient fish.' } });
     await w.ctx.memories.remember(AGENT_ID, { text: 'The pool opened on Tuesday.', tags: ['pool'] });
     const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'When did the pool open?' });
@@ -93,7 +94,7 @@ describe('a chat turn', () => {
     expect(system).toContain('private conversation');
     expect(system).not.toContain('publish_post');
     expect(body.messages.at(-1)).toEqual({ role: 'user', content: 'When did the pool open?' });
-    expect(body.tools.map((t) => t.function.name)).toEqual(['remember']);
+    expect(body.tools.map((t) => t.function.name)).toEqual(['remember', 'request']);
     expect(body.max_tokens).toBe(CHAT_MAX_OUTPUT_TOKENS);
     expect(CHAT_MAX_OUTPUT_TOKENS).toBe(1200);
     const call = completions(w).at(-1)!;
@@ -267,11 +268,19 @@ describe('no money or publish authority from chat', () => {
     await w.close();
   });
 
-  it('the gate itself: only remember, only with a valid note', async () => {
+  it('the gate itself: only remember and request, only with valid input', async () => {
     const { w, agent } = await world([]);
-    const tools = chatTools(agent.config as never);
-    expect(tools.map((t) => t.name)).toEqual(['remember']);
-    expect(chatToolDecision(tools, { name: 'remember', input: { text: 'note' } })).toEqual({ allowed: true, text: 'note' });
+    const tools = chatTools(agent.config as never, agent.config);
+    expect(tools.map((t) => t.name)).toEqual(['remember', 'request']);
+    expect(chatToolDecision(tools, { name: 'remember', input: { text: 'note' } })).toEqual({ allowed: true, kind: 'remember', text: 'note' });
+    expect(chatToolDecision(tools, { name: 'request', input: { text: 'Post about the burn.', turn: 'social' } })).toEqual({ allowed: true, kind: 'request', text: 'Post about the burn.', turn: 'social', picture: false });
+    expect(chatToolDecision(tools, { name: 'request', input: { text: 'A picture of a lighthouse.', turn: 'social', picture: true } })).toMatchObject({ allowed: true, picture: true });
+    // the treasury turn is a target only while it runs for the agent
+    expect(chatToolDecision(tools, { name: 'request', input: { text: 'Open a bounty.', turn: 'treasury' } })).toEqual({ allowed: false });
+    const withTreasury = chatTools(agent.config as never, { ...agent.config, capabilities: { bounties: true } });
+    expect(chatToolDecision(withTreasury, { name: 'request', input: { text: 'Open a bounty.', turn: 'treasury' } })).toMatchObject({ allowed: true, kind: 'request', turn: 'treasury' });
+    expect(chatToolDecision(tools, { name: 'request', input: { text: '', turn: 'social' } })).toEqual({ allowed: false });
+    expect(chatToolDecision(tools, { name: 'request', input: { text: 'x', turn: 'social', now: true } })).toEqual({ allowed: false });
     expect(chatToolDecision(tools, { name: 'remember', input: { text: '' } })).toEqual({ allowed: false });
     expect(chatToolDecision(tools, { name: 'remember', input: { text: 'n', sources: ['https://x.example'] } })).toEqual({ allowed: false });
     expect(chatToolDecision(tools, { name: 'remember', input: 'not an object' })).toEqual({ allowed: false });
@@ -284,9 +293,69 @@ describe('no money or publish authority from chat', () => {
     const source = readFileSync(fileURLToPath(new URL('../src/chat.ts', import.meta.url)), 'utf8');
     const imports = [...source.matchAll(/from '(\.[^']+)'/g)].map((m) => m[1]!);
     // blockrun.js is read for `directEnabled` alone (which route prices the chat); nothing there is called with money
-    expect(imports.sort()).toEqual(['./blockrun.js', './context.js', './db/schema.js', './fuel.js', './inference.js', './onboarding.js', './recent-posts.js', './routing.js']);
+    expect(imports.sort()).toEqual(['./blockrun.js', './context.js', './creator-requests.js', './db/schema.js', './fuel.js', './inference.js', './onboarding.js', './recent-posts.js', './routing.js', './treasury-switch.js']);
+    // creator-requests.ts files and reads records; it reaches nothing that posts, signs or spends either
+    const requests = readFileSync(fileURLToPath(new URL('../src/creator-requests.ts', import.meta.url)), 'utf8');
+    expect([...requests.matchAll(/from '(\.[^']+)'/g)].map((m) => m[1]!).sort()).toEqual(['./context.js', './db/schema.js']);
+    expect([...readFileSync(fileURLToPath(new URL('../src/treasury-switch.ts', import.meta.url)), 'utf8').matchAll(/from '/g)]).toEqual([]);
     expect([...source.matchAll(/import \{([^}]+)\} from '\.\/blockrun\.js'/g)].map((m) => m[1]!.trim())).toEqual(['directEnabled']);
     for (const forbidden of ['ctx.sender', 'ctx.kernelFor', 'ctx.adminSigner', 'ctx.sessionSigner', 'executeAction', 'saveRuntime', 'acquireLease', 'queueForApproval']) expect(source).not.toContain(forbidden);
+  });
+});
+
+describe('creator requests from the chat', () => {
+  it('files a request for the turn that can do it, says it will do it next turn, and acts on nothing', async () => {
+    const { w, agent } = await world([toolCallResponse('request', { text: 'Make a picture of a lighthouse for your next post.', turn: 'social', picture: true })]);
+    disarm(w);
+    const before = await runtimeRow(w);
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Bir sonraki postun için deniz feneri resmi yap' });
+    expect(res).toMatchObject({ ok: true, message: { text: REQUEST_FILED_TEXT, requested: true, remembered: false } });
+    const [row] = await w.db.select().from(memories);
+    expect(row).toMatchObject({ agentId: AGENT_ID, text: 'Make a picture of a lighthouse for your next post.', sources: ['creator-chat'], tags: ['creator-request', 'for-social', 'wants-picture'] });
+    expect(row!.id.startsWith('req_')).toBe(true);
+    expect(await openRequests(w.ctx, AGENT_ID, 'social')).toEqual([expect.objectContaining({ id: row!.id, turn: 'social', picture: true })]);
+    expect(await openRequests(w.ctx, AGENT_ID, 'treasury')).toEqual([]);
+    await noEffects(w);
+    expect(await runtimeRow(w)).toEqual(before);
+    // the panel shows the answer as a filed request
+    const view = await chatView(w.ctx, agent);
+    expect(view.messages.at(-1)).toMatchObject({ role: 'agent', requested: true, remembered: false });
+    await w.close();
+  });
+
+  it('refuses a treasury request while the treasury turn is off, and files one while it runs', async () => {
+    const off = await world([toolCallResponse('request', { text: 'Open a bounty for a diagram.', turn: 'treasury' })]);
+    const refused = await sendChatMessage(off.w.ctx, off.agent, { by: CREATOR, text: 'Open a bounty' });
+    expect(refused).toMatchObject({ ok: true, message: { text: expect.stringContaining('nothing was done'), requested: false } });
+    expect(await off.w.db.select().from(memories)).toEqual([]);
+    await off.w.close();
+
+    const on = await world([toolCallResponse('request', { text: 'Open a bounty for a diagram.', turn: 'treasury' })], { config: { capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: true, treasury: true, images: false, bounties: true } } });
+    const filed = await sendChatMessage(on.w.ctx, on.agent, { by: CREATOR, text: 'Open a bounty' });
+    expect(filed).toMatchObject({ ok: true, message: { requested: true } });
+    expect(await openRequests(on.w.ctx, AGENT_ID, 'treasury')).toHaveLength(1);
+    await on.w.close();
+  });
+
+  it('files no more than the open cap per turn', async () => {
+    const { w, agent } = await world([toolCallResponse('request', { text: 'One more post.', turn: 'social' })]);
+    for (let i = 0; i < CREATOR_REQUESTS_OPEN_MAX; i++) await fileRequest(w.ctx, AGENT_ID, { text: `post ${i}`, turn: 'social' });
+    const res = await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'And one more' });
+    expect(res).toMatchObject({ ok: true, message: { text: REQUESTS_FULL_TEXT, requested: false } });
+    expect(await w.db.select().from(memories)).toHaveLength(CREATOR_REQUESTS_OPEN_MAX);
+    await w.close();
+  });
+
+  it('shows the agent its earlier requests and what came of them, and keeps them out of its notes', async () => {
+    const { w, agent } = await world([say('The lighthouse picture went out with this morning’s post.')]);
+    const req = await fileRequest(w.ctx, AGENT_ID, { text: 'Make a lighthouse picture.', turn: 'social', picture: true });
+    expect(await closeRequest(w.ctx, AGENT_ID, req.id, { outcome: 'done', reason: 'posted it with the morning recap', actionId: 'act_1' })).toBe(true);
+    await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Did you make it?' });
+    const system = lastBody(w).messages[0]!.content;
+    const state = JSON.parse(system.slice(system.indexOf('{'))) as { notes: { text: string }[]; requests: { text: string; status: string; answer: string }[] };
+    expect(state.requests).toEqual([expect.objectContaining({ text: 'Make a lighthouse picture.', status: 'done', answer: 'Done: posted it with the morning recap' })]);
+    expect(state.notes).toEqual([]);
+    await w.close();
   });
 });
 
@@ -304,7 +373,7 @@ describe('remembering', () => {
   it('is not offered, and does nothing, when the agent’s memory is off', async () => {
     const { w, agent } = await world([toolCallResponse('remember', { text: 'x' })], { config: { capabilities: { xRead: true, xReply: true, xPublish: true, research: true, memory: false, treasury: true, images: false } } });
     await sendChatMessage(w.ctx, agent, { by: CREATOR, text: 'Remember x' });
-    expect(lastBody(w).tools).toEqual([]);
+    expect(lastBody(w).tools.map((t) => t.function.name)).toEqual(['request']);
     expect(await w.db.select().from(memories)).toEqual([]);
     await w.close();
   });

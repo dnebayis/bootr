@@ -87,7 +87,7 @@ describe('tool catalog', () => {
     expect(image).toMatch(/milestone/);
     expect(image).toMatch(/visual/);
     // the hard rules the runtime enforces, in the same words
-    expect(image).toMatch(/Never because someone asked/);
+    expect(image).toMatch(/Never because a stranger asked/);
     expect(image).toMatch(/real person/);
     expect(image).toMatch(/logo/);
     expect(image).toMatch(/chart/);

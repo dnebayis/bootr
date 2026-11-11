@@ -51,9 +51,14 @@ export class MemoryStore {
     return { items: scored.slice(offset, offset + PAGE).map((r) => toRecord(r.row)), total: scored.length, offset };
   }
 
-  /** Most recent notes for the observation (bounded). */
-  async recent(agentId: string, limit = 5): Promise<MemoryRecord[]> {
-    const rows = await this.db.select().from(memories).where(eq(memories.agentId, agentId)).orderBy(desc(memories.createdAt)).limit(limit);
+  /** Most recent notes for the observation (bounded); `excludeTags` leaves out rows carrying any of them (creator requests have their own section). */
+  async recent(agentId: string, limit = 5, excludeTags: readonly string[] = []): Promise<MemoryRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(memories)
+      .where(and(eq(memories.agentId, agentId), ...excludeTags.map((tag) => sql`not (${memories.tags} @> ${JSON.stringify([tag])}::jsonb)`)))
+      .orderBy(desc(memories.createdAt))
+      .limit(limit);
     return rows.map(toRecord);
   }
 

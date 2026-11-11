@@ -50,6 +50,14 @@ describe('draftIntentInputSchema', () => {
     expect(draftIntentInputSchema.safeParse({ kind: 'thread', about: 'nope' }).success).toBe(false);
     expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'ok', text: 'extra' }).success).toBe(false);
   });
+  it('may plan a picture with a brief and name the creator request it fulfils', () => {
+    const intent = draftIntentInputSchema.parse({ kind: 'post', about: 'The weekly recap.', picture: { brief: 'a lighthouse made of coins at dusk' }, requestId: 'req_1' });
+    expect(intent.picture).toEqual({ brief: 'a lighthouse made of coins at dusk' });
+    expect(intent.requestId).toBe('req_1');
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'x', picture: { brief: '' } }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'x', picture: { brief: 'ok', style: 'extra' } }).success).toBe(false);
+    expect(draftIntentInputSchema.safeParse({ kind: 'post', about: 'x', picture: 'a drawing' }).success).toBe(false);
+  });
   it('is not a catalog action', () => {
     expect(() => parseAction({ tool: 'draft_intent', input: { kind: 'post', about: 'x' } })).toThrow();
   });

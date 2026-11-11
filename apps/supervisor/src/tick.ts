@@ -312,11 +312,11 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
         return null;
       });
       if (treasuryWake) {
-        log.info({ reasons: treasuryWake.reasons, role: 'treasury', notes: treasuryWake.notes.length }, 'waking');
+        log.info({ reasons: treasuryWake.reasons, role: 'treasury', notes: treasuryWake.notes.length, requests: treasuryWake.requests.length }, 'waking');
         const market = await ctx.indexer.market(agent.token);
         let turn: TurnResult | null = null;
         try {
-          turn = await startTreasuryTurn(ctx, agent, runtime, config, { reasons: treasuryWake.reasons, treasury, market, notes: treasuryWake.notes }, lease);
+          turn = await startTreasuryTurn(ctx, agent, runtime, config, { reasons: treasuryWake.reasons, treasury, market, notes: treasuryWake.notes, requests: treasuryWake.requests }, lease);
         } catch (err) {
           // A crashed treasury turn backs the agent off like a crashed social one: a turn it persisted resumes at
           // `plan.nextAt` (as a treasury turn), and its own clock moves to at least then, so a crash before the turn

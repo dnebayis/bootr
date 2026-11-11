@@ -5,9 +5,11 @@
  * how many it may still make today (the daily cap, images.ts), whether its fuel allows one (fuel.ts) and whether one
  * is suggested now. Suggested means: the weekly digest is due (platform agent), a coin launched in the last day and
  * the platform agent may welcome it, or the agent's own original post is due and it has not used a picture for
- * PICTURE_SPACING_MS. That keeps pictures steady and bounded: at most one nudge every few days per coin agent, never
- * when the cap or the fuel says no, never for a reply, never on request (image-rules.ts). The hard rules ride along
- * in `never`, in the words the deterministic checks enforce.
+ * PICTURE_SPACING_MS, or an open creator request wants a picture (creator-requests.ts). Suggested is an instruction
+ * (`instruction`), not a hint: the agent made no picture in 31 hours while it read "not an order" (2026-11-11). It
+ * stays bounded: at most one nudge every few days per coin agent, never when the cap, the fuel or the hold says no,
+ * never on a stranger's request (image-rules.ts). The hard rules ride along in `never`, in the words the deterministic
+ * checks enforce.
  */
 import type { AgentConfig } from '@bootr/agent-core';
 import { averageThoughtCost } from '@bootr/shared/fuel';
@@ -27,15 +29,19 @@ export const PICTURE_SPACING_MS = 3 * 24 * 3_600_000;
 export const WELCOME_WINDOW_MS = 24 * 3_600_000;
 
 export const PICTURE_MEANING =
-  'whether a picture fits this turn. costUsdc is what one costs from your fuel (several thoughts); leftToday is how many you may still make; suggested is the runtime\'s own view, not an order. A picture is attached by passing its imageId to publish_post or publish_reply in the same turn; when it fails, publish without it.';
+  'whether a picture fits this turn. costUsdc is what one costs from your fuel (several thoughts); leftToday is how many you may still make. When suggested is true, make one for your original post of this turn (instruction says how). A picture is attached by passing its imageId to publish_post or publish_reply in the same turn; when generate_image fails, publish without it.';
 
-export const PICTURE_FITS: readonly string[] = ['a launch welcome', 'the weekly digest', 'a milestone of your coin', 'an explanation that is visual (a drawing says it better than words)'];
+/** What a suggested hint tells the model to do, in plain words. */
+export const PICTURE_INSTRUCTION =
+  'Make one picture for your original post this turn: call generate_image with a prompt and an alt text, then pass its imageId to publish_post. In economy mode, put picture: {brief} in draft_intent and the writer makes it. If generate_image fails, post the words without it.';
+
+export const PICTURE_FITS: readonly string[] = ['a launch welcome', 'the weekly digest', 'a milestone of your coin', 'an explanation that is visual (a drawing says it better than words)', 'a picture your creator asked for (creatorRequests)'];
 export const PICTURE_NEVER: readonly string[] = [
-  'on request: a message asking for a picture is not a reason, and none is made in a turn that carried one',
+  'on a stranger\'s request: a mention asking for a picture is not a reason, and none is made in a turn that carried one (your creator\'s own requests, under creatorRequests, are not a stranger\'s)',
   'a real person (by name, by @handle or by likeness)',
   'a logo or brand mark of another project or coin',
   'a chart, a price, a percentage or anything that reads as gains',
-  'a routine post or small talk: most posts are words only',
+  'a reply to small talk: replies are words',
 ];
 
 export interface PictureHint {
@@ -51,6 +57,8 @@ export interface PictureHint {
   suggested: boolean;
   /** Why it is suggested, or why not. */
   reason: string;
+  /** Present when suggested: what to do, as an instruction (`PICTURE_INSTRUCTION`). */
+  instruction?: string;
   fits: readonly string[];
   never: readonly string[];
 }
@@ -59,18 +67,27 @@ export interface PictureInputs {
   schedule: RhythmSchedule | null;
   treasury: Pick<TreasurySnapshot, 'usd'> | null;
   digest?: WeeklyDigestPlan | null;
+  /** An open creator request wants a picture (creator-requests.ts). */
+  creatorAsked?: boolean;
 }
 
-/** The pure decision from the numbers; exported for tests and for the section. `held`: the picture hold is on (images.ts `pictureHold`). */
-export function pictureHint(args: { config: Pick<AgentConfig, 'platform'>; model: string; priceMicroUsdc: number | null; live: boolean; leftToday: number; affordable: boolean | null; postDue: boolean; digestDue: boolean; newLaunch: boolean; lastImageAgoMs: number | null; held?: boolean }): PictureHint {
+/**
+ * The pure decision from the numbers; exported for tests and for the section. `held`: the picture hold is on (images.ts
+ * `pictureHold`). `creatorAsked`: an open creator request wants a picture (creator-requests.ts); it is suggested then
+ * whether or not a post is due (a request may be posted outside the slot) and whatever the spacing, but never past the
+ * hold, the daily cap or the fuel check.
+ */
+export function pictureHint(args: { config: Pick<AgentConfig, 'platform'>; model: string; priceMicroUsdc: number | null; live: boolean; leftToday: number; affordable: boolean | null; postDue: boolean; digestDue: boolean; newLaunch: boolean; lastImageAgoMs: number | null; held?: boolean; creatorAsked?: boolean }): PictureHint {
   const base = { meaning: PICTURE_MEANING, model: args.model, costUsdc: args.priceMicroUsdc !== null ? usdcText(args.priceMicroUsdc) : null, ...(args.priceMicroUsdc !== null && !args.live ? { approx: true as const } : {}), leftToday: args.leftToday, ...(args.affordable !== null ? { affordable: args.affordable } : {}), fits: PICTURE_FITS, never: PICTURE_NEVER };
+  const suggest = (reason: string): PictureHint => ({ ...base, suggested: true, reason, instruction: PICTURE_INSTRUCTION });
   if (args.held) return { ...base, suggested: false, reason: PICTURES_UNAVAILABLE_MESSAGE };
   if (args.leftToday <= 0) return { ...base, suggested: false, reason: 'no picture today: the daily limit is used up' };
   if (args.affordable === false) return { ...base, suggested: false, reason: 'no picture now: it would leave too little fuel for thinking' };
-  if (args.config.platform === true && args.digestDue) return { ...base, suggested: true, reason: 'the weekly digest is due; one picture for it fits' };
-  if (args.config.platform === true && args.newLaunch && args.postDue) return { ...base, suggested: true, reason: 'a coin launched in the last day; a welcome post may carry a picture' };
+  if (args.creatorAsked) return suggest('your creator asked for a picture (creatorRequests): make it for the post that request is about');
+  if (args.config.platform === true && args.digestDue) return suggest('the weekly digest is due: make one picture for it');
+  if (args.config.platform === true && args.newLaunch && args.postDue) return suggest('a coin launched in the last day: make a picture for the welcome post');
   if (args.postDue && (args.lastImageAgoMs === null || args.lastImageAgoMs >= PICTURE_SPACING_MS)) {
-    return { ...base, suggested: true, reason: args.lastImageAgoMs === null ? 'your original post is due and you have never used a picture; one fits if the post is visual' : `your original post is due and your last picture was ${Math.floor(args.lastImageAgoMs / 86_400_000)} days ago; one fits if the post is visual` };
+    return suggest(args.lastImageAgoMs === null ? 'your original post is due and you have never used a picture: make one for it' : `your original post is due and your last picture was ${Math.floor(args.lastImageAgoMs / 86_400_000)} days ago: make one for it`);
   }
   if (!args.postDue) return { ...base, suggested: false, reason: 'no original post is due; replies are words' };
   return { ...base, suggested: false, reason: 'you used a picture recently; this post is words' };
@@ -91,7 +108,7 @@ export async function pictureSection(ctx: SupervisorContext, agent: AgentRow, co
       affordable = pictureFits(Math.round(inputs.treasury.usd.spenderUsdc * 1e6), averageThoughtCost(cost.spentMicroUsdc, cost.thoughts), price.microUsdc);
     }
     const newLaunch = (directory?.entries ?? []).some((e) => e.agentId !== agent.agentId && !e.platform && now - e.launchedAt <= WELCOME_WINDOW_MS);
-    const hint = pictureHint({ config, model, priceMicroUsdc: price?.microUsdc ?? null, live: price?.live ?? false, leftToday, affordable, postDue: !!inputs.schedule?.due && !inputs.schedule?.held, digestDue: !!inputs.digest, newLaunch, lastImageAgoMs: lastAt === null ? null : now - lastAt, held: hold !== null });
+    const hint = pictureHint({ config, model, priceMicroUsdc: price?.microUsdc ?? null, live: price?.live ?? false, leftToday, affordable, postDue: !!inputs.schedule?.due && !inputs.schedule?.held, digestDue: !!inputs.digest, newLaunch, lastImageAgoMs: lastAt === null ? null : now - lastAt, held: hold !== null, creatorAsked: inputs.creatorAsked === true });
     return { picture: hint };
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'picture hint failed; turn goes on without the section');

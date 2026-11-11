@@ -439,6 +439,10 @@ export const draftIntentInputSchema = z
     target: xIdSchema.optional(),
     /** What to say and the facts to use, for the writer (max 300 characters). */
     about: text(300),
+    /** A picture the post should carry: the writer makes it with `generate_image` from this brief and attaches it. */
+    picture: z.object({ brief: text(300) }).strict().optional(),
+    /** The creator request (creatorRequests) this post or reply fulfils; it closes once the publish goes out. */
+    requestId: z.string().min(1).max(64).optional(),
   })
   .strict()
   .refine((v) => v.kind !== 'reply' || !!v.target, { message: 'a reply intent needs the target post id', path: ['target'] });
