@@ -318,6 +318,33 @@ export function parseTokenSettings(
 
 // ------------------------------------------------------------------ the contract struct
 
+/**
+ * The creator's pins, the last five fields of the launcher's `TokenSettings` (design note section 8.1): what the creator
+ * signs is what runs. `launch` reverts `MinDevBuyOutRequired` without a minimum on a dev buy, `StaleConfig` when
+ * Clanker's `configVersion()` moved after it was read, `LaunchFeeAboveMax` when the launch fee is now higher, and
+ * `LockedSharesChanged` when `agentDefaults()` moved the locked shares. The views (`previewSlotWeights`,
+ * `tokenInitCodeHash`, `predictToken`) do not read them.
+ */
+export type V5Pins = {
+  /** Clanker's `minAmountOut` for the dev buy, in raw coins (18 decimals); > 0 with a dev buy, 0 without. */
+  minDevBuyOut: bigint;
+  /** `factory.configVersion()` as read when the transaction is prepared. */
+  expectedConfigVersion: bigint;
+  /** `launcher.launchFeeWei()` as read when the transaction is prepared, and shown to the creator. */
+  maxLaunchFeeWei: bigint;
+  /** `agentDefaults().agentShareBps` / `.platformShareBps` as read when the transaction is prepared. */
+  expectedAgentShareBps: number;
+  expectedPlatformShareBps: number;
+};
+
+/**
+ * Pins for the views only (`previewSlotWeights`, `tokenInitCodeHash`, `predictToken`, mock mode), which ignore them: a
+ * launch never goes out with these.
+ */
+export function viewPins(b: V5Bounds = FALLBACK_V5_BOUNDS): V5Pins {
+  return { minDevBuyOut: 0n, expectedConfigVersion: 0n, maxLaunchFeeWei: 0n, expectedAgentShareBps: b.agentShareBps, expectedPlatformShareBps: b.platformShareBps };
+}
+
 export type ContractTokenSettings = {
   quoteToken: Address;
   buyTaxBps: number;
@@ -329,10 +356,13 @@ export type ContractTokenSettings = {
   antiSnipe: boolean;
   metadataEditable: boolean;
   contractURI: string;
-};
+} & V5Pins;
 
-/** A checked input into the launcher's `TokenSettings` (call `tokenSettingsProblems` first). */
-export function toContractSettings(s: TokenSettingsInput, contractURI: string, b: V5Bounds = FALLBACK_V5_BOUNDS): ContractTokenSettings {
+/**
+ * A checked input into the launcher's `TokenSettings` (call `tokenSettingsProblems` first), with the creator's pins.
+ * The expected shares are the pins' own (what was read with the fee and the config version), never the bounds'.
+ */
+export function toContractSettings(s: TokenSettingsInput, contractURI: string, b: V5Bounds = FALLBACK_V5_BOUNDS, pins: V5Pins = viewPins(b)): ContractTokenSettings {
   const asset = pairedAssetBySymbol(s.pairedAsset);
   if (!asset) throw new Error(`unknown paired asset ${s.pairedAsset}`);
   const funds = s.rewards.length > 0 && creatorFundsPct(s, b) > 0;
@@ -347,7 +377,114 @@ export function toContractSettings(s: TokenSettingsInput, contractURI: string, b
     antiSnipe: s.sniperTax,
     metadataEditable: s.editableMetadata,
     contractURI,
+    minDevBuyOut: pins.minDevBuyOut,
+    expectedConfigVersion: pins.expectedConfigVersion,
+    maxLaunchFeeWei: pins.maxLaunchFeeWei,
+    expectedAgentShareBps: pins.expectedAgentShareBps,
+    expectedPlatformShareBps: pins.expectedPlatformShareBps,
   };
+}
+
+/** `ContractTokenSettings` for JSON (the agent API's answer): the bigints as decimal strings. */
+export function contractSettingsJson(s: ContractTokenSettings) {
+  return {
+    ...s,
+    minDividendHolding: s.minDividendHolding.toString(),
+    minDevBuyOut: s.minDevBuyOut.toString(),
+    expectedConfigVersion: s.expectedConfigVersion.toString(),
+    maxLaunchFeeWei: s.maxLaunchFeeWei.toString(),
+  };
+}
+
+// ------------------------------------------------------------------ the dev buy's minimum
+
+/** The slippage the creator accepts on the dev buy by default, in percent below the quote. */
+export const DEFAULT_DEV_BUY_SLIPPAGE_PCT = 3;
+/** The widest slippage the form and the API accept (a minimum of half the quote). */
+export const MAX_DEV_BUY_SLIPPAGE_PCT = 50;
+
+/** A slippage tolerance in percent: a number from 0.1 to 50 with at most two decimals, or null. */
+export function parseSlippagePct(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && DECIMAL.test(v.trim()) ? Number(v) : NaN;
+  if (!Number.isFinite(n) || n < 0.1 || n > MAX_DEV_BUY_SLIPPAGE_PCT || Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) return null;
+  return n;
+}
+
+/**
+ * `minDevBuyOut` from a quote: the coins the dev buy delivers now (a simulation of `launch`), less the slippage
+ * tolerance, rounded down, and never 0 (the launcher refuses a dev buy without a minimum). Throws on an empty quote: a
+ * dev buy that delivers nothing must not be signed.
+ */
+export function minDevBuyOutFrom(quotedOut: bigint, slippagePct: number = DEFAULT_DEV_BUY_SLIPPAGE_PCT): bigint {
+  if (quotedOut <= 0n) throw new Error('the dev buy quote is empty');
+  const bps = BigInt(Math.round(slippagePct * 100));
+  if (bps < 0n || bps >= 10_000n) throw new Error(`slippage ${slippagePct}% is out of range`);
+  const min = (quotedOut * (10_000n - bps)) / 10_000n;
+  return min > 0n ? min : 1n;
+}
+
+/** Raw coins (18 decimals) as whole coins for people: "12,345,678". */
+export function coinsLabel(raw: bigint): string {
+  return Number(raw / 10n ** 18n).toLocaleString('en-US');
+}
+
+// ------------------------------------------------------------------ the launcher's string caps
+
+/**
+ * The launcher's byte caps on the launch strings and the two edits (`MAX_*_BYTES` in BootrClankerLauncherV5.sol; a
+ * longer string reverts `StringTooLong(field, length, max)`). Bytes, not characters: UTF-8, so one emoji counts four.
+ */
+export const V5_STRING_CAPS = {
+  name: 160,
+  symbol: 32,
+  /** image, contractURI and agentURI. */
+  uri: 512,
+  metadata: 4096,
+  context: 512,
+  model: 128,
+} as const;
+
+/** The UTF-8 length of a string, as the contract's `bytes(s).length`. */
+export function utf8Bytes(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/** The launch strings the launcher caps (its `LaunchParams` fields and the settings' `contractURI`). */
+export type V5LaunchStrings = { name: string; symbol: string; image: string; metadata: string; context: string; model: string; agentURI: string; contractURI: string };
+
+/** Each field's cap and the words a person reads for it. */
+const STRING_FIELDS: { field: keyof V5LaunchStrings; cap: number; label: string }[] = [
+  { field: 'name', cap: V5_STRING_CAPS.name, label: 'The name' },
+  { field: 'symbol', cap: V5_STRING_CAPS.symbol, label: 'The ticker' },
+  { field: 'image', cap: V5_STRING_CAPS.uri, label: 'The image URL' },
+  { field: 'metadata', cap: V5_STRING_CAPS.metadata, label: 'The coin’s metadata (the instructions, as its description, and the links)' },
+  { field: 'context', cap: V5_STRING_CAPS.context, label: 'The launch context' },
+  { field: 'model', cap: V5_STRING_CAPS.model, label: 'The model id' },
+  { field: 'agentURI', cap: V5_STRING_CAPS.uri, label: 'The agent card URL' },
+  { field: 'contractURI', cap: V5_STRING_CAPS.uri, label: 'The contract URI' },
+];
+
+/**
+ * Every launch string over the launcher's cap, field by field, with the same words `StringTooLong` gets mapped to; empty
+ * means `launch` passes `_checkStrings`. Checked before the salt is mined and before anything is signed.
+ */
+export function launchStringProblems(p: V5LaunchStrings): SettingsProblem[] {
+  const out: SettingsProblem[] = [];
+  for (const { field, cap, label } of STRING_FIELDS) {
+    const n = utf8Bytes(p[field]);
+    if (n > cap) out.push({ field, message: `${label} is ${n.toLocaleString('en-US')} bytes; the launcher takes at most ${cap.toLocaleString('en-US')}. Shorten it${field === 'name' || field === 'metadata' ? ' (an emoji or accented letter counts as several bytes)' : ''}.` });
+  }
+  return out;
+}
+
+/** The metadata editor's check of one value before signing `updateImage` (512 bytes) or `updateMetadata` (4096). */
+export function editProblem(kind: 'image' | 'metadata', value: string): string | null {
+  const cap = kind === 'image' ? V5_STRING_CAPS.uri : V5_STRING_CAPS.metadata;
+  const n = utf8Bytes(value);
+  if (n <= cap) return null;
+  return kind === 'image'
+    ? `The image URL is ${n.toLocaleString('en-US')} bytes; the launcher takes at most ${cap}. Use a shorter link.`
+    : `The metadata would be ${n.toLocaleString('en-US')} bytes; the launcher takes at most ${cap.toLocaleString('en-US')}. Shorten the description.`;
 }
 
 // ------------------------------------------------------------------ per-trade arithmetic

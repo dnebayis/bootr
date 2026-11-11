@@ -12,7 +12,8 @@ import { appChain } from '@/lib/chains';
 import { contracts } from '@/lib/contracts';
 import { env } from '@/lib/env';
 import { mock } from '@/lib/mock';
-import { metadataStillEditable, metadataWasEditable, v5SettingsOf } from '@/lib/token-settings';
+import { editProblem, metadataStillEditable, metadataWasEditable, v5SettingsOf } from '@/lib/token-settings';
+import { v5LaunchProblem } from '@/lib/v5-launch';
 import { useTxRunner } from '@/lib/tx';
 import type { Token } from '@/lib/types';
 import { useV5Metadata, withDescription } from '@/lib/v5-metadata';
@@ -51,7 +52,13 @@ export function V5MetadataForm({ token }: { token: Token }) {
   const imageChanged = image.trim() !== '' && image.trim() !== meta?.image;
   const descriptionChanged = description !== null && description.trim() !== (meta?.description ?? '');
   const descriptionOk = shownDescription.trim().length > 0 && shownDescription.length <= MAX_DESCRIPTION;
-  const canSave = editable && isCreator && imageOk && (imageChanged || (descriptionChanged && descriptionOk));
+  // The launcher's byte caps, checked before signing: `updateImage` takes 512 bytes, `updateMetadata` 4096 (the whole
+  // JSON, links included), and reverts `StringTooLong` past them.
+  const imageCap = imageChanged ? editProblem('image', image.trim()) : null;
+  const metadataCap = descriptionChanged && descriptionOk ? editProblem('metadata', withDescription(meta?.metadataJson, shownDescription.trim())) : null;
+  const canSave = editable && isCreator && imageOk && !imageCap && !metadataCap && (imageChanged || (descriptionChanged && descriptionOk));
+  // The launcher's reverts (not the creator, locked, too long) in plain words.
+  const runOpts = { describeError: (e: unknown) => v5LaunchProblem(e)?.message ?? null };
 
   const refresh = () => {
     for (const key of ['token', 'tokens', 'profile', 'creator']) void queryClient.invalidateQueries({ queryKey: [key] });
@@ -70,12 +77,14 @@ export function V5MetadataForm({ token }: { token: Token }) {
       if (imageChanged) {
         const r = await run('Update the coin image', () =>
           write.mutateAsync({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'updateImage', args: [token.id as Address, image.trim()], chainId: appChain.id, dataSuffix: builderDataSuffix }),
+          runOpts,
         );
         if (!r) return;
       }
       if (nextJson) {
         const r = await run('Update the coin metadata', () =>
           write.mutateAsync({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'updateMetadata', args: [token.id as Address, nextJson], chainId: appChain.id, dataSuffix: builderDataSuffix }),
+          runOpts,
         );
         if (!r) return;
       }
@@ -93,6 +102,7 @@ export function V5MetadataForm({ token }: { token: Token }) {
       if (!launcher) return;
       const r = await run('Lock the coin metadata', () =>
         write.mutateAsync({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'lockMetadata', args: [token.id as Address], chainId: appChain.id, dataSuffix: builderDataSuffix }),
+        runOpts,
       );
       if (!r) return;
     }
@@ -134,13 +144,23 @@ export function V5MetadataForm({ token }: { token: Token }) {
             <Label htmlFor="v5-image" hint="https">
               New image URL
             </Label>
-            <Input id="v5-image" inputMode="url" placeholder="https://…" value={image} onChange={(e) => setImage(e.target.value)} aria-invalid={!imageOk} disabled={!isCreator} />
+            <Input id="v5-image" inputMode="url" placeholder="https://…" value={image} onChange={(e) => setImage(e.target.value)} aria-invalid={!imageOk || !!imageCap} disabled={!isCreator} />
+            {imageCap ? (
+              <p className="mt-1 text-caption text-danger" data-testid="v5-image-cap">
+                {imageCap}
+              </p>
+            ) : null}
           </div>
           <div>
             <Label htmlFor="v5-description" hint={`${shownDescription.length}/${MAX_DESCRIPTION}`}>
               Description
             </Label>
-            <Textarea id="v5-description" rows={3} maxLength={MAX_DESCRIPTION} value={shownDescription} onChange={(e) => setDescription(e.target.value)} disabled={!isCreator} />
+            <Textarea id="v5-description" rows={3} maxLength={MAX_DESCRIPTION} value={shownDescription} onChange={(e) => setDescription(e.target.value)} disabled={!isCreator} aria-invalid={!!metadataCap} />
+            {metadataCap ? (
+              <p className="mt-1 text-caption text-danger" data-testid="v5-metadata-cap">
+                {metadataCap}
+              </p>
+            ) : null}
           </div>
           {!isCreator ? (
             address ? (

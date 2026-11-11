@@ -53,6 +53,20 @@ export const clankerV5FactoryAbi = [
   },
   { type: 'function', name: 'nativeLaunchFee', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'tokenDeployer', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  /** Bumped by every Clanker policy, tick-spacing or native-fee change; the creator pins it (`expectedConfigVersion`). */
+  { type: 'function', name: 'configVersion', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint64' }] },
+  /** Clanker's guard, reached through the launcher when the pinned version is not the live one. */
+  {
+    type: 'error',
+    name: 'StaleConfig',
+    inputs: [
+      { name: 'expectedConfigVersion', type: 'uint64' },
+      { name: 'actualConfigVersion', type: 'uint64' },
+    ],
+  },
+  { type: 'error', name: 'InvalidTokenAddressSuffix', inputs: [{ name: 'predictedToken', type: 'address' }] },
+  { type: 'error', name: 'LaunchSaltUsed', inputs: [{ name: 'scopedSalt', type: 'bytes32' }] },
+  { type: 'error', name: 'LaunchCreationDisabled', inputs: [] },
 ] as const;
 
 export type MiningInput = {

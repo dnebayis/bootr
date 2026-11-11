@@ -134,7 +134,8 @@ describe('parseTokenSettings (the agent API and the draft store)', () => {
 describe('toContractSettings', () => {
   it('turns percents into the launcher’s units', () => {
     const s = { ...defaultTokenSettings(CREATOR), pairedAsset: 'USDC', buyTaxPct: 1.25, sellTaxPct: 4, burnPct: 10, dividendsPct: 5.5, minDividendHolding: 20_000, rewards: [{ recipient: CREATOR, admin: CREATOR, pct: 70 }, { recipient: OTHER, admin: CREATOR, pct: 30 }] };
-    expect(toContractSettings(s, 'https://bootr.fun/tokens/x.json')).toEqual({
+    const pins = { minDevBuyOut: 970n, expectedConfigVersion: 3n, maxLaunchFeeWei: 500_000_000_000_000n, expectedAgentShareBps: 500, expectedPlatformShareBps: 3_000 };
+    expect(toContractSettings(s, 'https://bootr.fun/tokens/x.json', FALLBACK_V5_BOUNDS, pins)).toEqual({
       quoteToken: PAIRED_ASSETS[1]!.address,
       buyTaxBps: 12_500,
       sellTaxBps: 40_000,
@@ -148,6 +149,12 @@ describe('toContractSettings', () => {
       antiSnipe: true,
       metadataEditable: true,
       contractURI: 'https://bootr.fun/tokens/x.json',
+      // the creator's pins, in the struct's order after contractURI
+      minDevBuyOut: 970n,
+      expectedConfigVersion: 3n,
+      maxLaunchFeeWei: 500_000_000_000_000n,
+      expectedAgentShareBps: 500,
+      expectedPlatformShareBps: 3_000,
     });
     expect(toContractSettings(defaultTokenSettings(CREATOR), '').minDividendHolding).toBe(0n);
   });

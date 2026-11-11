@@ -5,7 +5,7 @@
  */
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { CLANKER_V5_DEFAULT_TAX_BPS, clankerV5ProtocolBps } from './fee-split';
-import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, type ContractTokenSettings, type V5Bounds } from './token-settings';
+import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, viewPins, type ContractTokenSettings, type V5Bounds } from './token-settings';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
@@ -434,6 +434,7 @@ function init(): Store {
         antiSnipe: true,
         metadataEditable: true,
         contractURI: token.metadata,
+        ...viewPins(),
       });
       token.v5Extras!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
     }
