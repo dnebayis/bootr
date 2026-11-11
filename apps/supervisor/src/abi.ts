@@ -61,6 +61,50 @@ export const clankerFeeLockerAbi = parseAbi([
 ]);
 
 /**
+ * Clanker v5 `FeeEscrow` (`0x5dd237d1…FA61` on Base, docs/design/clanker-v5-migration.md section 1): one balance per
+ * recipient and currency across every v5 pool. `owed(recipient, currency)` is that balance; `claimFor(recipient,
+ * currency)` is callable by anyone and always pays `recipient` (native ETH when `currency == 0x0`), reverting
+ * `NothingToClaim` on zero.
+ */
+export const clankerV5FeeEscrowAbi = parseAbi([
+  'function owed(address recipient, address currency) view returns (uint256)',
+  'function claimFor(address recipient, address currency)',
+  'event Claimed(address indexed recipient, address indexed currency, address indexed destination, uint256 amount)',
+]);
+
+/**
+ * `BootrClankerLauncherV5.ClankerV5Launched` of the settings launcher (docs/design/clanker-v5-token-settings.md section
+ * 2.2), emitted next to `AgentLaunched`: the v5 pool, hook, escrow and quote, and the creator's token settings (each
+ * side's tax in hundredths of a bip, burn and dividends in bps of the tax after Clanker's cut, the two switches).
+ */
+export const clankerV5LaunchedEvent = parseAbi([
+  'event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 buyTaxBps, uint24 sellTaxBps, uint16 burnBps, uint16 dividendBps, bool antiSnipe, bool metadataEditable)',
+])[0];
+
+/** The fixed launcher's event (one tax for both sides, no settings): never deployed (owner, 2026-11-10), still decoded. */
+export const clankerV5LaunchedEventV1 = parseAbi(['event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken, int24 tickSpacing, uint24 taxBps, bool antiSnipe)'])[0];
+
+/**
+ * Clanker v5 `TaxLaunchHook.FeeSlotCreated`, one per fee slot at launch, in slot order (topic pinned by
+ * apps/indexer/src/lib/clanker.test.ts): the slot's recipient, admin and weight in bps of the slot pool.
+ */
+export const clankerV5FeeSlotCreatedEvent = parseAbi(['event FeeSlotCreated(bytes32 indexed poolId, uint256 indexed slotIndex, address recipient, address admin, uint16 weightBps, bool isCreator)'])[0];
+
+/**
+ * Clanker v5 factory `LaunchTaxConfigured` (verified source `TaxLaunchpadFactoryCore.sol`, the indexer's vendored ABI
+ * apps/indexer/abis/ClankerV5.ts): the policy admitted for the pool (Clanker's cut) and the coin's tax configuration
+ * (1e8 scale), with the dividend minimum in raw coin units.
+ */
+export const clankerV5LaunchTaxConfiguredEvent = parseAbi([
+  'struct TaxFeeBounds { uint32 minimumBuyTaxRate; uint32 maximumBuyTaxRate; uint32 minimumSellTaxRate; uint32 maximumSellTaxRate; }',
+  'struct ProtocolFeeConfiguration { uint32 protocolTaxShare; uint32 minimumProtocolFeeRate; uint32 maximumProtocolFeeRate; address protocolFeeRecipient; }',
+  'struct AntiSnipeConfiguration { uint32 startTotalFeeRate; uint32 windowSeconds; }',
+  'struct TaxPolicy { TaxFeeBounds taxFeeBounds; ProtocolFeeConfiguration protocolFeeConfiguration; AntiSnipeConfiguration antiSnipeConfiguration; uint256 minimumDividendHoldingRequirement; }',
+  'struct TaxConfiguration { uint32 buyTaxRate; uint32 sellTaxRate; uint32 creatorAllocationShare; uint32 burnAllocationShare; uint32 dividendAllocationShare; uint32 integratorAllocationShare; uint256 minimumDividendHolding; }',
+  'event LaunchTaxConfigured(bytes32 indexed poolId, address indexed token, uint64 indexed configVersion, TaxPolicy admittedPolicy, TaxConfiguration taxConfiguration, address integratorFeeRecipient, bool antiSnipeEnabled)',
+])[0];
+
+/**
  * Clanker v4 `ClankerLpLockerFeeConversion` (`0xffA37784…` on Base). `collectRewards(token)` (permissionless)
  * collects the LP positions' fees, converts each recipient's share per its fee preference and deposits it into the
  * fee locker; `tokenRewards(token)` lists the positions and recipients (the view part is vendored from the Clanker
@@ -122,5 +166,7 @@ export const LOCKER_CLAIM_QUOTE_SELECTOR = toFunctionSelector('claimQuote(addres
 export const CLANKER_LOCKER_COLLECT_REWARDS_SELECTOR = toFunctionSelector('collectRewards(address)');
 /** ClankerFeeLocker.claim(address feeOwner, address token): pays `feeOwner`'s balance of `token` to `feeOwner`, whoever calls. */
 export const CLANKER_FEE_LOCKER_CLAIM_SELECTOR = toFunctionSelector('claim(address,address)');
+/** Clanker v5 FeeEscrow.claimFor(address recipient, address currency) = `0xb4ba9e11`: pays `recipient`'s whole balance to `recipient`, whoever calls. */
+export const CLANKER_V5_ESCROW_CLAIM_FOR_SELECTOR = toFunctionSelector('claimFor(address,address)');
 /** BootrSwapHelper.MAX_SLIPPAGE_BPS: the contract refuses a higher requested slippage. */
 export const SWAP_MAX_SLIPPAGE_BPS = 300;

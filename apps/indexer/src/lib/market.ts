@@ -6,11 +6,12 @@
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { swapFeeUsd } from './fees';
+import { swapFeeUsd, v5SideTaxPips } from './fees';
 import { bookGrossFee } from './ledger';
 import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
 import { holderMilestones, milestoneId, swapMilestones, type MilestoneEvent } from './milestones';
-import { interpretSwap, toUnits, usd } from './price';
+import { interpretSwap, usd } from './price';
+import { quoteValueUsd } from './quote';
 
 export type SwapArgs = {
   amount0: bigint;
@@ -58,11 +59,14 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   const view = interpretSwap(s.amount0, s.amount1, t.coinIsToken0);
   const next: TokenRow = { ...t, sqrtPriceX96: s.sqrtPriceX96, poolLiquidity: s.liquidity, tick: s.tick };
   const market = marketFields(next, ethUsd);
-  const valueUsd = usd(toUnits(view.amountPaired, 18) * ethUsd);
+  // The paired side in its own decimals and USD (WETH / ETH at ETH/USD, USDC at $1: lib/quote.ts).
+  const valueUsd = quoteValueUsd(t, view.amountPaired, ethUsd);
   // What the trader paid, from `Swap.fee` and the coin's own `lpFeeBps` (lib/fees.ts `swapFeePips`): bootr
-  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top).
+  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top); clanker-v5 the tax of the trade's
+  // side as is (the token settings' buy and sell tax may differ).
   const source = sourceOf(t);
-  const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, t.lpFeeBps));
+  const feePips = source === 'clanker-v5' ? v5SideTaxPips(t, view.side) : t.lpFeeBps;
+  const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, feePips));
 
   await context.db.insert(schema.trade).values({
     id,
@@ -106,9 +110,10 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   await bumpDaily(context, m.timestamp, { volumeUsd: valueUsd, trades: 1 });
   await bumpPlatform(context, m.timestamp, { volumeTotalUsd: valueUsd });
   await bumpSource(context, source, m.timestamp, { volumeTotalUsd: valueUsd });
-  // No hook event names the gross fee on the Clanker path (the RWAGMI hook's PoolFeeTakenV3 does on the Bootr
-  // path), so the per-trade figure is the gross fee there; the exact per-slot amounts come at collection.
-  if (source === 'clanker') await bookGrossFee(context, updated, feeUsd, m.timestamp);
+  // No hook event names the gross fee on the Clanker paths the way the RWAGMI hook's PoolFeeTakenV3 does on the
+  // Bootr path (v5's `Trade` carries the quote side only), so the per-trade figure is the gross fee there; the
+  // exact per-slot amounts come at collection (v4) or with the swap's own credits (v5).
+  if (source !== 'bootr') await bookGrossFee(context, updated, feeUsd, m.timestamp);
 }
 
 const counts = (holder: string) => holder !== ZERO_ADDRESS && holder !== DEAD_ADDRESS;

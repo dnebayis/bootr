@@ -43,6 +43,20 @@ export interface ChainAddresses {
     /** ClankerMevBlockDelay: the MEV module Bootr launcher v1 shipped with; the fallback. */
     mevBlockDelay: Address;
   };
+  /**
+   * Clanker v5 (the tax suite; docs/design/clanker-v5-migration.md section 1): BootrClankerLauncherV5 calls
+   * `factory.createLaunch` / `createLaunchAndBuy`; every v5 pool sits on the one `hook`, every slot's fees land in
+   * `feeEscrow` (`owed(recipient, currency)`, `claimFor(recipient, currency)` pays the recipient, callable by anyone;
+   * `currency == 0x0` is native ETH); `tokenDeployer` is the CREATE2 deployer the web mines the `cccc` salt against;
+   * `launchBuyAdapter` runs the dev buy. `null` where not verified for the chain.
+   */
+  clankerV5: {
+    factory: Address;
+    hook: Address;
+    feeEscrow: Address;
+    tokenDeployer: Address;
+    launchBuyAdapter: Address;
+  } | null;
   /** ERC-8004 registries. `null` when not yet verified for the chain. */
   erc8004: {
     identityRegistry: Address | null;
@@ -90,8 +104,13 @@ export interface ChainAddresses {
      * forwards `registerAgent`. `null` until the Clanker-path deploy (script/DeployClankerLauncher.s.sol).
      */
     launchGate: Address | null;
-    /** BootrClankerLauncher: the "Launch through Clanker" launcher, same `LaunchParams` ABI as `launcher`. */
+    /** BootrClankerLauncher: the "Launch through Clanker" launcher on Clanker v4, same `LaunchParams` ABI as `launcher`. */
     clankerLauncher: Address | null;
+    /**
+     * BootrClankerLauncherV5: the Clanker v5 launcher (same `LaunchParams` ABI; the preset's `lpFeeBps` is the tax).
+     * `null` until `script/DeployClankerLauncherV5.s.sol` has run (docs/design/clanker-v5-migration.md section 8).
+     */
+    clankerLauncherV5: Address | null;
     burnerImplementation: Address | null;
     /**
      * BootrCallPolicy: the session-key call allow-list module. Replaces ZeroDev's CallPolicy, which
@@ -151,6 +170,19 @@ export const addresses = {
       // launcher v1 shipped with; the fallback if Clanker disables the auction (empty init data).
       mevBlockDelay: '0xE143f9872A33c955F23cF442BB4B1EFB3A7402A2',
     },
+    // Clanker v5, read 2026-11-10 (docs/design/clanker-v5-migration.md section 1): Sourcify exact matches of the
+    // factory (`TaxRWAERC20LaunchpadFactory`), the hook (`TaxLaunchHook`), the escrow (`FeeEscrow`) and the adapter
+    // (`SwapXLaunchBuyAdapter`), and `cast call` at block 55346749: `factory.hook() == hook`, `hook.feeEscrow() ==
+    // feeEscrow`, `factory.tokenDeployer() == tokenDeployer`, `factory.launchBuyAdapter() == launchBuyAdapter`,
+    // `launchCreationEnabled() == true`, `quoteConfig(0x0)` registered (native ETH), `quoteConfig(WETH)` not.
+    // `packages/contracts/test/fork/ClankerV5Fork.t.sol::test_livePolicyMatchesAssumptions` re-reads all of it.
+    clankerV5: {
+      factory: '0x572e88D3cD7f23E4241EB6ceDD96667271bF09A0',
+      hook: '0x5E320eA6278107968C119942E57d876c5F922AcC',
+      feeEscrow: '0x5dd237d1f716C65426CCd2FAe82B95109825FA61',
+      tokenDeployer: '0xc25FfE6374EdcCb5bFCcA3b9684046a426AbCE6A',
+      launchBuyAdapter: '0x5C65823dC5eaf0C37205F73213fC2f73D359DA4d',
+    },
     erc8004: {
       // github.com/erc-8004/erc-8004-contracts README (same pair on every ERC-8004 mainnet, Base listed);
       // `name() == "AgentIdentity"`, `symbol() == "AGENT"`, `reputation.getIdentityRegistry() == identity`.
@@ -200,6 +232,9 @@ export const addresses = {
       // docs/deploy/mainnet.md "Clanker path". `launcher` above is v3.1 (registers through the gate).
       launchGate: '0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5',
       clankerLauncher: '0x387f1B0aC128D534E822c344D829645336BDAbbB',
+      // Clanker v5 launcher with token settings, deployed 2026-11-11 at block 56,190,112 by script/DeployClankerLauncherV5.s.sol
+      // (Sourcify exact match); owner the platform admin, on the gate since block 56,190,529. docs/deploy/mainnet.md, Launcher history.
+      clankerLauncherV5: '0xA70D4fCbcD7979609E0e66E7b581bE2711A8FE69',
       burnerImplementation: '0x7539bF645960Fc47556ECd449370BCc3A7D96Ed7',
       callPolicy: '0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8',
       swapHelper: '0x5723152f21ed7E305312fd90a2Bb94864BA9D80d',
@@ -225,6 +260,8 @@ export const addresses = {
       sniperAuctionV2: null,
       mevBlockDelay: '0x71DB365E93e170ba3B053339A917c11024e7a9d4',
     },
+    // Clanker v5 on Base Sepolia: not recorded (the v5 path is tested on a Base mainnet fork).
+    clankerV5: null,
     erc8004: {
       identityRegistry: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
       reputationRegistry: '0x8004B663056A597Dffe9eCcC1965A193B7388713',
@@ -260,6 +297,7 @@ export const addresses = {
       // No gate / Clanker launcher on Base Sepolia (the Clanker path is mainnet-only).
       launchGate: null,
       clankerLauncher: null,
+      clankerLauncherV5: null,
       burnerImplementation: '0x52f8Ad63ad88a40199a81B39C333C158651caE90',
       // TODO: redeploy with `forge script script/DeployCallPolicy.s.sol` (SUM_PER_WINDOW rules), then rotate every session key.
       callPolicy: '0x7DcD91d4a1c520217F7258558Cf3560f93337802',

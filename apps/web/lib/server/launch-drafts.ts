@@ -26,6 +26,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:
 import path from 'node:path';
 import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { normalizeLinks, type CoinLinks } from '@/lib/coin-link-rules';
+import { parseTokenSettings, type TokenSettingsInput } from '@/lib/token-settings';
 import type { LaunchSource } from '@/lib/types';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/launch-drafts must not be imported in the browser');
@@ -125,16 +126,35 @@ export function normalizeWorker(input: unknown): DraftWorker | null {
   return template ? { kind: template.id } : null;
 }
 
-/** The form's `launchThrough` (`bootr` | `clanker`); absent means Bootr, anything else is refused. */
+/** The form's `launchThrough` (`bootr` | `clanker` | `clanker-v5`); absent means Bootr, anything else is refused. */
 export function normalizeSource(input: unknown): LaunchSource | null {
   if (input === undefined || input === null || input === 'bootr') return 'bootr';
-  return input === 'clanker' ? 'clanker' : null;
+  return input === 'clanker' || input === 'clanker-v5' ? input : null;
 }
 
-type DraftFile = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource; ownerTag: string; createdAt: number; updatedAt: number };
+/**
+ * A Clanker v5 launch's token settings as the form or the agent API sent them (`lib/token-settings.ts`), checked against
+ * the fallback bounds; null for anything else. Kept with the draft so the launch's choices can be read back.
+ */
+export function normalizeDraftTokenSettings(input: unknown): TokenSettingsInput | null {
+  if (!input || typeof input !== 'object') return null;
+  const r = parseTokenSettings(input, null);
+  return r.ok ? r.settings : null;
+}
 
-/** `source`: which launcher the launch went (or goes) through; older drafts read back as `bootr`. */
-export type LaunchDraft = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource };
+type DraftFile = {
+  identity: string;
+  coin: DraftCoin | null;
+  worker: DraftWorker | null;
+  source: LaunchSource;
+  tokenSettings: TokenSettingsInput | null;
+  ownerTag: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** `source`: which launcher the launch went (or goes) through; older drafts read back as `bootr`. `tokenSettings`: Clanker v5 only. */
+export type LaunchDraft = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource; tokenSettings: TokenSettingsInput | null };
 
 function fileFor(dir: string, draftId: string): string {
   if (!isDraftId(draftId)) throw new Error('not a draft id');
@@ -150,6 +170,7 @@ async function readDraft(dir: string, draftId: string): Promise<DraftFile | null
       coin: normalizeCoin(raw.coin),
       worker: normalizeWorker(raw.worker),
       source: normalizeSource(raw.source) ?? 'bootr',
+      tokenSettings: normalizeDraftTokenSettings(raw.tokenSettings),
       ownerTag: raw.ownerTag,
       createdAt: Number(raw.createdAt) || 0,
       updatedAt: Number(raw.updatedAt) || 0,
@@ -170,7 +191,7 @@ export async function readDraftIdentity(draftId: string, opts: { dir?: string } 
 export async function readLaunchDraft(draftId: string, opts: { dir?: string } = {}): Promise<LaunchDraft | null> {
   if (!isDraftId(draftId)) return null;
   const draft = await readDraft(opts.dir ?? draftsDir(), draftId);
-  return draft ? { identity: draft.identity, coin: draft.coin, worker: draft.worker, source: draft.source } : null;
+  return draft ? { identity: draft.identity, coin: draft.coin, worker: draft.worker, source: draft.source, tokenSettings: draft.tokenSettings } : null;
 }
 
 function randomTag(): string {
@@ -274,7 +295,7 @@ export async function saveDraftIdentity(
   draftId: string,
   identity: string,
   ownerTag: string | null,
-  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource; cap?: number } = {},
+  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource; tokenSettings?: TokenSettingsInput | null; cap?: number } = {},
 ): Promise<SaveResult> {
   const dir = opts.dir ?? draftsDir();
   const now = opts.now ?? Math.floor(Date.now() / 1000);
@@ -283,7 +304,13 @@ export async function saveDraftIdentity(
   if (existing && !(ownerTag && OWNER_TAG.test(ownerTag) && timingSafeEqual(ownerTag, existing.ownerTag))) return { ok: false, reason: 'owned' };
   if (!existing && (await countDrafts({ dir })) >= (opts.cap ?? MAX_DRAFTS)) return { ok: false, reason: 'full' };
   const tag = existing ? existing.ownerTag : randomTag();
-  const next: DraftFile = { identity, coin: opts.coin ?? null, worker: opts.worker ?? null, source: opts.source ?? 'bootr', ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
+  const next: DraftFile = {
+    identity,
+    coin: opts.coin ?? null,
+    worker: opts.worker ?? null,
+    source: opts.source ?? 'bootr',
+    tokenSettings: opts.source === 'clanker-v5' ? (opts.tokenSettings ?? null) : null,
+    ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
   await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomTag().slice(0, 8)}.tmp`;
   await writeFile(tmp, JSON.stringify(next) + '\n', 'utf8');

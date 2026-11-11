@@ -30,6 +30,11 @@ export const env = {
   launcherAddress: addr(process.env.NEXT_PUBLIC_LAUNCHER_ADDRESS),
   /** `BootrClankerLauncher`: the "Launch through Clanker" path. Optional; the choice is hidden while unset. */
   clankerLauncherAddress: addr(process.env.NEXT_PUBLIC_CLANKER_LAUNCHER_ADDRESS),
+  /**
+   * `BootrClankerLauncherV5`: the Clanker v5 launcher. The switch of the Clanker card: set, new Clanker launches go
+   * through v5 and v4 is no longer offered; unset, they go through v4 as before (`clankerPath` in `lib/contracts.ts`).
+   */
+  clankerV5LauncherAddress: addr(process.env.NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS),
   guardianAddress: addr(process.env.NEXT_PUBLIC_AGENT_GUARDIAN_ADDRESS),
   supervisorSessionKey: addr(process.env.NEXT_PUBLIC_SUPERVISOR_SESSION_KEY),
   bootXUrl: str(process.env.NEXT_PUBLIC_BOOT_X_URL),

@@ -112,6 +112,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `ADMIN_PRIVATE_KEY` | no | | guardian owner; `approveSessionKey` / `revokeSessionKey` and, with `ENABLE_MODE_SELF_BUNDLE`, `EntryPoint.handleOps`. Without it agents stay in `onboarding` |
 | `BOOTR_LAUNCHER_ADDRESS`, `BOOTR_GUARDIAN_ADDRESS` | yes | | deployed Bootr contracts (mainnet: launcher `0x62c038dA8A409ad1CD811df980A6F9867cd453fd`, guardian `0x799Ab875294E37839883D12084aB4BE3f7633630`) |
 | `BOOTR_CLANKER_LAUNCHER_ADDRESS` | no | | `BootrClankerLauncher` ([`docs/design/clanker-launch.md`](../../docs/design/clanker-launch.md)): a second launcher the poller follows with the same cursor; its launches are registered with `sv_agents.source = 'clanker'` and claim fees from the Clanker lockers. Must differ from `BOOTR_LAUNCHER_ADDRESS`. Unset = Bootr launches only |
+| `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` | no | | `BootrClankerLauncherV5` ([`docs/design/clanker-v5-migration.md`](../../docs/design/clanker-v5-migration.md)): a third launcher the poller follows with the same cursor; its launches are registered with `sv_agents.source = 'clanker-v5'`, get session-key rule layout 5 and claim native ETH from Clanker v5's `FeeEscrow` (`addresses.clankerV5.feeEscrow`, or the escrow the coin's `ClankerV5Launched` names). Must differ from the other two launchers. Unset = v5 off: the launcher list, the Bootr and Clanker v4 agents and their keys are exactly as before |
 | `CLANKER_LOCKER_ADDRESS` | no | `0xffA37784…0762` | `ClankerLpLockerFeeConversion` on Base mainnet (the one Clanker enables for the V2 hooks; the README-listed `0x63D2DfEA…` is not): `collectRewards(token)` target for Clanker coins. The locker named in the coin's `ClankerLaunched` event wins when known |
 | `CLANKER_FEE_LOCKER_ADDRESS` | no | `0xF3622742…5D68` | `ClankerFeeLocker` on Base mainnet: `availableFees(kernel, WETH)` is the Clanker coin's claimable balance, `claim(kernel, WETH)` pays it to the kernel |
 | `RWAGMI_LAUNCHER_V3_ADDRESS` | no | `0xB205c9e7…4B20` | `RwagmiB20LauncherV3` on Base mainnet: `deploymentInfo(token).primaryPoolId` is the coin's fee pool |
@@ -222,16 +223,24 @@ a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `an
 ## How an agent is onboarded
 
 1. `pollLaunches` reads `AgentLaunched` logs after the stored cursor (2000-block chunks) from every followed launcher
-   (`BOOTR_LAUNCHER_ADDRESS` and, when set, `BOOTR_CLANKER_LAUNCHER_ADDRESS`; both emit the same event) and calls
-   `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents` (status `onboarding`, `source` =
-   `bootr` or `clanker` by the emitting launcher, config with `xHandle`/`xUserId` still `null`) and `sv_runtimes`
+   (`BOOTR_LAUNCHER_ADDRESS` and, when set, `BOOTR_CLANKER_LAUNCHER_ADDRESS` and `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`;
+   all emit the same event) and calls `registerAgent`: reads the token's `name()`/`symbol()`, stores `sv_agents`
+   (status `onboarding`, `source` = `bootr`, `clanker` or `clanker-v5` by the emitting launcher, config with `xHandle`/`xUserId` still `null`) and `sv_runtimes`
    (state `{phase: 'boot'}`, cycle 0). It also reads the launch tx receipt, decodes `LaunchContext(token, context)`
    (emitted by our launcher for this token right after `AgentLaunched`; the RWAGMI `B20LaunchCreatedV3` event carries
    no context) and stores the `id` of its JSON `context` (`{"interface":"Bootr","platform":"bootr.fun","id":"<uuid>"}`)
    in `sv_agents.draft_id` (`''` when absent or not a lowercase uuid; `null` while the receipt could not be read).
    For a Clanker launch the same receipt yields `ClankerLaunched(token, poolId, hook, locker, mevModule, startingTick,
    lpFeeBps)`, stored as `config.clanker` (plus the configured fee locker); an unreadable receipt leaves it to
-   `backfillClankerDetails` on a later tick, and the configured lockers serve meanwhile.
+   `backfillClankerDetails` on a later tick, and the configured lockers serve meanwhile. A Clanker v5 launch is read by
+   one function, `decodeClankerV5Launch`, into `config.clankerV5` (same backfill; the address book's escrow and native
+   ETH serve meanwhile): the settings launcher's `ClankerV5Launched(token, poolId, hook, feeEscrow, quoteToken,
+   tickSpacing, buyTaxBps, sellTaxBps, burnBps, dividendBps, antiSnipe, metadataEditable)` (only from our launcher, only
+   for the token), the hook's `FeeSlotCreated` for that pool (slots by role: the kernel's launcher-admin slot `agent`,
+   the other launcher-admin slot `platform`, the creator's first row `creator`, extra rows `other`; no addresses kept)
+   and the factory's `LaunchTaxConfigured` for the token (Clanker's policy, the dividend minimum) become
+   `config.clankerV5.settings`. Without exactly one agent slot there are no settings and the agent states no split.
+   The fixed launcher's v1 event (`..., uint24 taxBps, bool antiSnipe`, never deployed) still decodes, without settings.
 2. `installSessionKey` (needs `ADMIN_PRIVATE_KEY`):
    - permissionId = random `bytes4`; policies in install order (addresses from `@bootr/shared/addresses`):
      - **BootrCallPolicy** (`bootr.callPolicy`, our own module in `packages/contracts/src/BootrCallPolicy.sol`), flagged
@@ -342,9 +351,11 @@ section 8 item 2). Each power has one rule provider in a table ordered `claims`,
 `sessionPolicyFor` reads the powers from the stored config (`sessionPowersOf`: the treasury loop is always on, `trade`
 and `bounties` from `capabilities.trade` / `capabilities.bounties`), builds the rules (`sessionRulesFor`) and stores on the
 policy a `rules` block, `{version, powers, items: [{label, power}]}`, one item per rule in index order, so the row says
-why the key has each rule (`claims.settleAndClaim`, `claims.claimQuote` or `claims.collectRewards`, `claims.claim`;
+why the key has each rule (`claims.settleAndClaim`, `claims.claimQuote` or `claims.collectRewards`, `claims.claim` or,
+on Clanker v5, the single `claims.claimFor`;
 `swap.approveWeth`, `swap.swapWethToUsdc`; `treasury.fundSpender`, `treasury.withdrawWethForGas`). For today's powers the
-rules are byte for byte the one standard policy of before (`test/fixtures/session-policy-layout4.json` pins it), rows
+rules are byte for byte the one standard policy of before (`test/fixtures/session-policy-layout4.json` pins it; a
+Clanker v5 agent's layout-5 set is pinned by `test/fixtures/session-policy-layout5-clanker-v5.json`), rows
 stored without the block read back as that standard set, and the gas rule stays last of the shared set so
 `FUNDING_RULE_INDEX` does not move; a later power's rules are appended after it. The module holds at most
 `CALL_POLICY_MAX_RULES` (8, `BootrCallPolicy.MAX_RULES`): a rule set over it, a power without a provider or a duplicate
@@ -631,6 +642,49 @@ Coins launched through `BootrClankerLauncher` (`BOOTR_CLANKER_LAUNCHER_ADDRESS`,
    `fundingRuleIndex` stays 4 and the gas rule 5. For a Bootr agent layout 4 encodes byte for byte what layout 3 did:
    existing Bootr keys are untouched and need no rotation.
 4. **After the claim** the WETH is in the kernel and the swap / spender-funding steps are the same as for Bootr coins.
+
+## Fee claims (launched through Clanker v5)
+
+Coins launched through `BootrClankerLauncherV5` (`BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`, `sv_agents.source = 'clanker-v5'`,
+[`docs/design/clanker-v5-migration.md`](../../docs/design/clanker-v5-migration.md) section 3) pay a buy and sell tax;
+Clanker's `TaxLaunchHook` credits every slot's share on each swap, in the pool's quote (native ETH), to Clanker's
+`FeeEscrow` (`0x5dd237d1…FA61` on Base), one balance per recipient and currency across every v5 pool.
+
+1. **Read**: `settled = FeeEscrow.owed(kernel, 0x0)`; `pending` is `0` (nothing waits in the pool); the snapshot
+   carries `source: 'clanker-v5'`, `claimable.asset: 'ETH'` (the `weth` field names stay, the amounts are ETH),
+   `claimable.poolId` from `ClankerV5Launched` and `claimable.note`; `treasury_read` repeats it under `policy.fees`.
+   The escrow is the one `config.clankerV5` names, else `addresses.clankerV5.feeEscrow`.
+2. **Claim** (`claim_fees`): one call, no collection step: `FeeEscrow.claimFor(kernel, 0x0)`, which pays the kernel's
+   whole ETH balance to the kernel (it reverts `NothingToClaim` on zero, so an empty escrow is never claimed). Anyone
+   may call it for the kernel (`cast send 0x5dd237d1f716C65426CCd2FAe82B95109825FA61 "claimFor(address,address)" <kernel> 0x0000000000000000000000000000000000000000`).
+3. **Policy**: rule layout 5 (`CALL_POLICY_RULES_VERSION`, `CLANKER_V5_RULES_VERSION`; `rulesVersionFor` gives 5 to
+   `clanker-v5` and keeps 4 for `bootr` and `clanker`) has ONE claim rule, `claims.claimFor`: target the escrow, selector
+   `claimFor(address,address)` = `0xb4ba9e11`, window 0, word 0 (`recipient`) `EQUAL` the kernel; the currency is free
+   (the payee is fixed). The four shared rules follow one place earlier, so the funding rule is at index 3
+   (`fundingRuleIndex` reads it from the layout: 4 for Bootr and Clanker v4, 3 for v5) and the gas rule at 4.
+4. **Gas and fuel**: ETH on the kernel is gas by itself, so the claim IS the gas top-up and `fund_gas` never runs for
+   a v5 agent; low gas claims the escrow below `CLAIM_THRESHOLD_USD` whatever WETH the kernel holds. The fee ETH is not
+   swapped to USDC: that needs a value-carrying call and `BootrCallPolicy` refuses every call with value until its v2,
+   so a v5 agent's fuel stays the creator's USDC (stray WETH on the kernel would still be swapped as before).
+5. **USDC-paired coins** ([`docs/design/clanker-v5-token-settings.md`](../../docs/design/clanker-v5-token-settings.md)
+   section 3; the paired asset is `config.clankerV5.quoteToken`, `launch-source.ts` `pairedAssetOf`): the read is
+   `owed(kernel, USDC)` (6 decimals, valued at $1; `claimable.asset: 'USDC'`, `CLANKER_V5_USDC_NOTE`), the claim is
+   `claimFor(kernel, USDC)` under the same rule (recipient pinned, currency free: the policy bytes are the ETH agent's),
+   and the claimed USDC is fuel: it is the kernel's USDC that funds the spender in the same pass. Below the threshold it
+   claims for fuel when kernel + spender USDC is under `FUEL_TARGET_USDC` and at least `USDC_FUEL_CLAIM_MIN` (1 USDC)
+   is owed. Gas comes only from the creator (owner's answer 6, no USDC -> ETH rule): low gas never claims or unwraps
+   (`skipped: gas_from_creator`), and the `gas_out` notice says so (`data.creatorOnly = 1`). A quote that is neither
+   ETH nor USDC (`asset: 'other'`) is read raw and never valued or claimed.
+6. **Dividends** (owner's answer 7): the kernel never claims holder dividends; when the coin pays them the snapshot's
+   `claimable.dividends` says so.
+7. **What the agent says**: `coin-fees.ts` describes the coin's real settings: the buy and the sell tax (`taxPct`,
+   `sellTaxPct`), Clanker's cut of each (`clamp(tax × 10%, 0.5%, 1%)` of the trade, or the policy from the receipt),
+   the agent, creator and platform slots, extra reward rows as `otherRecipients` (never their addresses), the
+   `holderDividends` with `holderMinimumCoins`, the burn and `pairedAsset`; a recipient the coin does not have is not
+   listed. The agent's own coin comes from `config.clankerV5.settings`, any other coin (`read_coin`) from the indexer
+   row, which for a v5 coin must carry `buyTaxBps`, `sellTaxBps` (hundredths of a bip), `rewardsBps` and
+   `dividendBps` (bps of the tax, like `agentBps`), and may carry `pairedToken` and `minDividendHolding` (raw units);
+   a v5 row without them gets no split.
 
 ## Gas
 

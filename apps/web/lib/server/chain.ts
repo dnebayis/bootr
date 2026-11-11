@@ -29,3 +29,18 @@ export function serverPublicClient(chainId: ServerChainId): PublicClient {
   }
   return client;
 }
+
+/**
+ * The chain's public RPC (viem's default for the chain, no key), for one method the keyed provider may not serve:
+ * `eth_simulateV1`, used by the v5 dev-buy quote (app/api/agent/launch). Read-only, no CCIP-Read.
+ */
+const publicClients = new Map<ServerChainId, PublicClient>();
+
+export function serverPublicFallbackClient(chainId: ServerChainId): PublicClient {
+  let client = publicClients.get(chainId);
+  if (!client) {
+    client = createPublicClient({ chain: chainId === 8453 ? base : baseSepolia, transport: http(), ccipRead: false }) as PublicClient;
+    publicClients.set(chainId, client);
+  }
+  return client;
+}

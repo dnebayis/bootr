@@ -96,7 +96,8 @@ export function TokenFilterBar({ tab, filters }: { tab: TokenTab; filters: Token
               options={[
                 { value: ANY, label: 'Any' },
                 { value: 'bootr', label: 'Bootr' },
-                { value: 'clanker', label: 'Clanker' },
+                { value: 'clanker', label: 'Clanker v4' },
+                { value: 'clanker-v5', label: 'Clanker v5' },
               ]}
               onValueChange={(v) => set('path', v === ANY ? undefined : (v as LaunchSource))}
             />

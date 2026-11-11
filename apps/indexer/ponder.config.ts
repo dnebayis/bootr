@@ -3,11 +3,13 @@ import { getAbiItem } from 'viem';
 
 import { AgentGuardianAbi } from './abis/AgentGuardian';
 import { BootrClankerLauncherAbi } from './abis/BootrClankerLauncher';
+import { ClankerV5LaunchedEvent, ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent } from './abis/BootrClankerLauncherV5';
 import { BootrLauncherAbi } from './abis/BootrLauncher';
 import { BuybackBurnerAbi } from './abis/BuybackBurner';
 import { B20TokenAbi } from './abis/B20Token';
 import { ClankerFeeLockerAbi } from './abis/ClankerFeeLocker';
 import { ClankerLpLockerFeeConversionAbi } from './abis/ClankerLpLockerFeeConversion';
+import { ClankerV5FeeEscrowAbi, ClankerV5HookAbi } from './abis/ClankerV5';
 import { PoolManagerAbi } from './abis/PoolManager';
 import { ReputationRegistryAbi } from './abis/ReputationRegistry';
 import { RwagmiHookV3Abi } from './abis/RwagmiHookV3';
@@ -24,12 +26,16 @@ import { enabledSources, indexerEnv, snapshotBlockSources } from './src/lib/env'
  * - Bootr path: `BootrLauncher` launches through the RWAGMI v3 launcher (B20 tokens in Uniswap v4 pools, swap fee
  *   taken in WETH by the RWAGMI hook, reward ledger in the RWAGMI LP locker; docs/rwagmi-migration.md). Needs
  *   `BOOTR_LAUNCHERS` (or `BOOTR_LAUNCHER_ADDRESS`) and the RWAGMI v3 stack (Base mainnet only).
- * - Clanker path: `BootrClankerLauncher` launches through Clanker v4 (`BOOTR_CLANKER_LAUNCHERS=addr@block,...`,
- *   empty = off). The wrapper emits the same `AgentLaunched` plus `ClankerLaunched` (pool id, hook, locker, fee);
- *   rewards are collected by `ClankerLpLockerFeeConversion` (`ClaimedRewards`, per slot, after conversion) and
- *   paid out by `ClankerFeeLocker` (`ClaimTokens`). Both lockers are single public contracts: Ponder's log filter
- *   cannot take a dynamic token set, so the handlers drop events of coins that are not ours (as the Bootr path
- *   does for the RWAGMI hook / locker).
+ * - Clanker path: `BootrClankerLauncher` launches through Clanker v4 and `BootrClankerLauncherV5` through Clanker
+ *   v5 (`BOOTR_CLANKER_LAUNCHERS=addr@block,...` lists both kinds, empty = off). Both wrappers emit the same
+ *   `AgentLaunched`; v4 adds `ClankerLaunched` (pool id, hook, locker, fee) and v5 `ClankerV5Launched` (pool id,
+ *   hook, escrow, quote, tick spacing, tax), which is how the launch handler tells them apart. v4 rewards are
+ *   collected by `ClankerLpLockerFeeConversion` (`ClaimedRewards`, per slot, after conversion) and paid out by
+ *   `ClankerFeeLocker` (`ClaimTokens`); v5 taxes are credited per swap by the `TaxLaunchHook`
+ *   (`CreatorTaxCredited` per slot, `BurnTaxCredited` in the coin) and paid out by the `FeeEscrow` (`Claimed`).
+ *   The lockers, the hook and the escrow are single public contracts: Ponder's log filter cannot take a dynamic
+ *   token set, so the handlers drop events of coins that are not ours (as the Bootr path does for the RWAGMI
+ *   hook / locker). docs/design/clanker-launch.md (v4), docs/design/clanker-v5-migration.md (v5).
  *
  * When neither path is configured every launch-derived source is skipped with a warning and only the periodic
  * snapshot block handler runs (ETH/USD + platform rollups), so `ponder dev` still boots.
@@ -48,6 +54,7 @@ const chain = env.chainName;
 const startBlock = env.startBlock;
 const rwagmiStartBlock = env.rwagmiStartBlock;
 const clankerStartBlock = env.clankerStartBlock;
+const clankerV5StartBlock = env.clankerV5StartBlock;
 const anyStartBlock = env.anyStartBlock;
 
 const launcherAddresses = env.launchers.map((l) => l.address);
@@ -68,7 +75,12 @@ if (hasLauncher && !env.rwagmi) {
 }
 if (hasClankerLauncher && !env.clanker) {
   console.warn(
-    `[indexer] no Clanker v4 stack for chain ${env.chainId} (set CLANKER_FACTORY_ADDRESS, CLANKER_HOOK_ADDRESS, CLANKER_LOCKER_ADDRESS, CLANKER_FEE_LOCKER_ADDRESS): skipping BootrClankerLauncher and the Clanker path.`,
+    `[indexer] no Clanker v4 stack for chain ${env.chainId} (set CLANKER_FACTORY_ADDRESS, CLANKER_HOOK_ADDRESS, CLANKER_LOCKER_ADDRESS, CLANKER_FEE_LOCKER_ADDRESS): skipping the Clanker v4 fee sources.`,
+  );
+}
+if (hasClankerLauncher && !env.clankerV5) {
+  console.warn(
+    `[indexer] no Clanker v5 stack for chain ${env.chainId} (set CLANKER_V5_FACTORY_ADDRESS, CLANKER_V5_HOOK_ADDRESS, CLANKER_V5_FEE_ESCROW_ADDRESS): skipping the Clanker v5 fee sources.`,
   );
 }
 if ((enabled.BootrLauncher || enabled.BootrClankerLauncher) && !env.guardian) {
@@ -90,8 +102,13 @@ if ((enabled.BootrLauncher || enabled.BootrClankerLauncher) && !reputation) {
 const ZERO = '0x0000000000000000000000000000000000000000' as const;
 /** Every followed Bootr launcher (Ponder takes an address array per source and per factory). */
 const launchers: readonly `0x${string}`[] = hasLauncher ? launcherAddresses : [ZERO];
-/** Every followed Clanker launcher. */
+/** Every followed Clanker launcher (v4 and v5 wrappers alike). */
 const clankerLaunchers: readonly `0x${string}`[] = hasClankerLauncher ? clankerLauncherAddresses : [ZERO];
+/**
+ * The v4 wrapper's ABI plus the v5 wrapper's own events (its launch event, the creator's metadata edits and the
+ * paired-asset allow-list): one source follows every Clanker launcher.
+ */
+const clankerLauncherAbi = [...BootrClankerLauncherAbi, ClankerV5LaunchedEvent, ...ClankerV5MetadataEvents, QuoteAllowedUpdatedEvent] as const;
 /** Every launcher of either path: they emit the same `AgentLaunched`, which announces the coins. */
 const allLaunchers: readonly `0x${string}`[] = [
   ...(enabled.BootrLauncher ? launcherAddresses : []),
@@ -106,9 +123,14 @@ const allContracts = {
     address: launchers,
     startBlock,
   },
-  /** `AgentLaunched` (same ABI as BootrLauncher) and `ClankerLaunched` (pool id, hook, locker, MEV module, fee). */
+  /**
+   * `AgentLaunched` (same ABI as BootrLauncher), `ClankerLaunched` (v4: pool id, hook, locker, MEV module, fee) and
+   * `ClankerV5Launched` (v5: pool id, hook, escrow, quote, tick spacing, buy and sell tax, burn, dividends, sniper tax,
+   * editable metadata), the v5 creator's `CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked` and the
+   * owner's `QuoteAllowedUpdated`.
+   */
   BootrClankerLauncher: {
-    abi: BootrClankerLauncherAbi,
+    abi: clankerLauncherAbi,
     chain,
     address: clankerLaunchers,
     startBlock: clankerStartBlock,
@@ -162,6 +184,24 @@ const allContracts = {
     chain,
     address: env.clanker?.feeLocker ?? ZERO,
     startBlock: clankerStartBlock,
+  },
+  /**
+   * v5: `CreatorTaxCredited` (a fee slot's exact share of a swap's tax), `BurnTaxCredited` (the burn, in the coin),
+   * `DividendTaxCredited` / `DividendTaxRedirected` (the holder dividends' share) and a slot admin's
+   * `FeeSlotRecipientUpdated` / `FeeSlotAdminUpdated`.
+   */
+  ClankerV5Hook: {
+    abi: ClankerV5HookAbi,
+    chain,
+    address: env.clankerV5?.hook ?? ZERO,
+    startBlock: clankerV5StartBlock,
+  },
+  /** v5: `Claimed`: a recipient's whole escrow balance of a currency is paid out. */
+  ClankerV5FeeEscrow: {
+    abi: ClankerV5FeeEscrowAbi,
+    chain,
+    address: env.clankerV5?.feeEscrow ?? ZERO,
+    startBlock: clankerV5StartBlock,
   },
   /** Every v4 swap; the handler keeps the pool ids of both paths' coins. */
   PoolManager: {

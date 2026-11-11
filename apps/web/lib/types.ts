@@ -7,8 +7,12 @@ export type { CapabilityKey };
 
 export type AgentStatus = 'awake' | 'sleeping' | 'paused' | 'dormant' | 'claimed';
 export type RecipientKind = 'agent' | 'creator' | 'burn' | 'platform';
-/** Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker) or the Clanker wrapper (docs/design/clanker-launch.md). */
-export type LaunchSource = 'bootr' | 'clanker';
+/**
+ * Which launcher created the coin: Bootr's own (RWAGMI v3 pool and locker), the Clanker v4 wrapper
+ * (docs/design/clanker-launch.md) or the Clanker v5 wrapper (docs/design/clanker-v5-migration.md). Helpers in
+ * `lib/launch-source.ts`.
+ */
+export type LaunchSource = 'bootr' | 'clanker' | 'clanker-v5';
 export type TokenTab = 'newest' | 'trending' | 'graduated' | 'mcap' | 'active';
 
 export interface Agent {
@@ -54,9 +58,12 @@ export interface Token {
   agentId: string;
   poolId: Hex;
   pairedToken: Address;
-  /** The pool's swap fee, 1e6-based (10000 = 1%). Fixed at 1% on the Bootr path; per coin on the Clanker path. */
+  /**
+   * The pool's swap fee, 1e6-based (10000 = 1%). Fixed at 1% on the Bootr path; per coin on the Clanker v4 path (the
+   * trader pays it plus Clanker's 20%); on Clanker v5 the buy and sell tax itself (15000 = 1.5%, paid as is).
+   */
   lpFeeBps: number;
-  /** `bootr` (default; older indexers omit the field) or `clanker`. */
+  /** `bootr` (default; older indexers omit the field), `clanker` (v4) or `clanker-v5` (whose `pairedToken` is the zero address: native ETH). */
   source?: LaunchSource;
   agentBps: number;
   creatorBps: number;
@@ -84,6 +91,78 @@ export interface Token {
   /** Not in the table; optional 24h price change if the indexer provides it. */
   change24hPct?: number | null;
   agent?: Pick<Agent, 'id' | 'status'> | null;
+  /**
+   * The indexer's token-row fields for a Clanker v5 coin launched with creator-set settings (BootrClankerLauncherV5
+   * `launch(p, s)`, docs/design/clanker-v5-token-settings.md section 5); null or absent on every other coin. The one
+   * place the web names them; `v5SettingsOf` in lib/token-settings.ts reads them into `V5TokenSettings`.
+   */
+  /** The paired asset's symbol and decimals (`pairedToken` is its address: `0x0` for ETH). */
+  pairedSymbol?: string | null;
+  pairedDecimals?: number | null;
+  /** The coin's price in the paired asset. */
+  priceQuote?: number | null;
+  /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` carries the buy tax. */
+  buyTaxBps?: number | null;
+  sellTaxBps?: number | null;
+  /**
+   * The creator's extra reward rows together, and the holder dividends. Like `agentBps`, `creatorBps` (the creator's own
+   * row), `burnBps` and `platformBps` on a v5 coin, these are bps of the buy tax with Clanker's share inside it:
+   * `agent + creator + rewards + burn + dividend + platform = 10000 - protocolBps`.
+   */
+  rewardsBps?: number | null;
+  dividendBps?: number | null;
+  /** Clanker's share of a v5 coin's tax, in bps of it (3333 at 1.5%). */
+  protocolBps?: number | null;
+  /** Raw coin units (18 decimals) a holder needs for dividends. */
+  minDividendHolding?: string | null;
+  /** The coin's dividend tracker, and the dividends paid so far in USD. */
+  dividendContract?: Address | null;
+  dividendsTotalUsd?: number | null;
+  antiSnipe?: boolean | null;
+  /** The image and metadata can still change (false once locked), the creator's one-way lock, and the last edit. */
+  metadataEditable?: boolean | null;
+  metadataLocked?: boolean | null;
+  metadataUpdatedAt?: number | null;
+  /**
+   * Not from the indexer: what the token row does not carry, which mock mode fills in (the reward rows, in bps of creator
+   * funds, and the metadata JSON). Live, the coin page reads both from the chain.
+   */
+  v5Extras?: { rewards?: V5TokenSettings['rewards']; metadataJson?: string | null } | null;
+}
+
+/**
+ * A v5 coin launched with settings, as the web reads it (`v5SettingsOf` in lib/token-settings.ts, from the token row's
+ * fields above). `pairedToken` on the token row is the quote (`0x0` for native ETH, USDC's address for USDC).
+ */
+export interface V5TokenSettings {
+  /** Each side's tax, 1e6-based (15000 = 1.5%). `lpFeeBps` on the token row carries the buy tax. */
+  buyTaxBps: number;
+  sellTaxBps: number;
+  /**
+   * Shares of the tax pool after Clanker's cut, bps of 10000: the locked floors and the creator's choices, creator funds
+   * being the creator's own row and the extra rows together. All 0 when `splitKnown` is false: the indexer's row did not
+   * add up, and the web shows the split as unknown rather than guess one.
+   */
+  splitKnown: boolean;
+  agentShareBps: number;
+  creatorFundsBps: number;
+  platformShareBps: number;
+  burnBps: number;
+  dividendBps: number;
+  /** Raw coin units (18 decimals) a holder needs for dividends; "0" without dividends. */
+  minDividendHolding: string;
+  /**
+   * The creator funds' rows in slot order (the creator's own first), `bps` of creator funds (sum 10000). The token row
+   * does not carry them: empty unless read from the hook's `poolFeeSlots` (the coin page does) or set by mock mode.
+   */
+  rewards: { recipient: Address; admin: Address; bps: number }[];
+  antiSnipe: boolean;
+  /** The image and metadata can still change (the indexer turns it off once locked). */
+  metadataEditable: boolean;
+  /** The launcher's one-way lock (`lockMetadata`): an editable coin whose creator locked it can no longer change. */
+  metadataLocked: boolean;
+  /** The token's `metadata` extra-metadata key as last set (Clanker's JSON: description, socialMediaUrls, auditUrls). */
+  metadataJson?: string | null;
 }
 
 export interface Trade {

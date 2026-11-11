@@ -8,6 +8,7 @@ import {
   draftsDir,
   isDraftId,
   normalizeCoin,
+  normalizeDraftTokenSettings,
   normalizeIdentity,
   normalizeSource,
   normalizeWorker,
@@ -19,6 +20,7 @@ import {
   saveDraftIdentity,
   updateLaunchDraftLinks,
 } from './launch-drafts';
+import { defaultTokenSettings } from '@/lib/token-settings';
 
 const DRAFT = '0b7f6a52-3c1e-4d0a-9f3e-2a5b8c1d4e6f';
 const OTHER = '3b241101-e2bb-4255-8caf-4136c566a962';
@@ -111,13 +113,25 @@ describe('draft store', () => {
   it('stores the coin metadata next to the identity text', async () => {
     const coin = { name: 'Quiet Engine', symbol: 'QENG', image: 'https://gateway.pinata.cloud/ipfs/bafy', imageIpfs: 'ipfs://bafy', xHandle: null, links: { website: 'https://quiet.engine', x: 'https://x.com/quietengine', telegram: null, discord: null } };
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin });
-    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null, source: 'bootr' });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin, worker: null, source: 'bootr', tokenSettings: null });
     expect(await readLaunchDraft(OTHER, { dir })).toBeNull();
+  });
+
+  it('keeps a Clanker v5 launch’s token settings, and none on the other paths', async () => {
+    const creator = '0x1111111111111111111111111111111111111111' as const;
+    const settings = { ...defaultTokenSettings(creator), pairedAsset: 'USDC', sellTaxPct: 3, dividendsPct: 10 };
+    await saveDraftIdentity(DRAFT, TEXT, null, { dir, source: 'clanker-v5', tokenSettings: settings });
+    expect((await readLaunchDraft(DRAFT, { dir }))?.tokenSettings).toEqual(settings);
+    await saveDraftIdentity(OTHER, TEXT, null, { dir, source: 'clanker', tokenSettings: settings });
+    expect((await readLaunchDraft(OTHER, { dir }))?.tokenSettings).toBeNull();
+    // Out of bounds in the file reads back as none.
+    expect(normalizeDraftTokenSettings({ ...settings, buyTaxPct: 9 })).toBeNull();
   });
 
   it('stores which launcher the launch goes through; older drafts read as bootr', async () => {
     expect(normalizeSource(undefined)).toBe('bootr');
     expect(normalizeSource('clanker')).toBe('clanker');
+    expect(normalizeSource('clanker-v5')).toBe('clanker-v5');
     expect(normalizeSource('other')).toBeNull();
     await saveDraftIdentity(DRAFT, TEXT, null, { dir, source: 'clanker' });
     expect((await readLaunchDraft(DRAFT, { dir }))?.source).toBe('clanker');
@@ -150,7 +164,7 @@ describe('draft store', () => {
     const saved = await saveDraftIdentity(DRAFT, TEXT, null, { dir, coin, worker: { kind: 'trader' }, now: 1 });
     const links = { website: 'https://quiet.engine', x: 'https://x.com/bootrfun', telegram: null, discord: 'https://discord.gg/qeng' };
     expect(await updateLaunchDraftLinks(DRAFT, links, { dir, now: 2 })).toEqual({ ok: true });
-    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin: { ...coin, links }, worker: { kind: 'trader' }, source: 'bootr' });
+    expect(await readLaunchDraft(DRAFT, { dir })).toEqual({ identity: TEXT, coin: { ...coin, links }, worker: { kind: 'trader' }, source: 'bootr', tokenSettings: null });
     // The owner tag and the creation time survive; only `updatedAt` moves.
     const raw = JSON.parse(await readFile(path.join(dir, `${DRAFT}.json`), 'utf8'));
     expect(raw).toMatchObject({ ownerTag: saved.ok ? saved.ownerTag : '', createdAt: 1, updatedAt: 2 });

@@ -10,6 +10,7 @@ import { erc20Abi, type Address, type Hash, type PublicClient } from 'viem';
 import { useCapabilities, useConfig, useConnection, usePublicClient, useSendCalls, useSendTransaction } from 'wagmi';
 import { waitForCallsStatus } from 'wagmi/actions';
 import { builderDataSuffix } from '../attribution';
+import { parseLaunchSource } from '../launch-source';
 import { appChain } from '../chains';
 import { env } from '../env';
 import { qk } from '../indexer';
@@ -17,7 +18,10 @@ import type { Token } from '../types';
 import {
   approvalCalls,
   buildBuyTx,
+  buildEthViaPairedBuyTx,
   buildSellTx,
+  isErc20Paired,
+  pairedCurrency,
   permit2Abi,
   poolKeyOf,
   SWAP_CONTRACTS,
@@ -31,8 +35,14 @@ import {
   type SwapTx,
 } from './core';
 import { SwapFailure } from './errors';
-import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, mockQuote } from './mock';
-import { quoteSwap, type SwapQuote } from './quote';
+import { MOCK_COIN_BALANCE, MOCK_ETH_BALANCE, MOCK_PAIRED_BALANCE, mockEthViaPairedQuote, mockQuote } from './mock';
+import { quoteEthViaPaired, quoteSwap, type SwapQuote } from './quote';
+
+/**
+ * How a buy on a USDC-paired pool is paid: with USDC itself, or with ETH through the two-hop route
+ * (`buildEthViaPairedBuyTx`). Other pools are always `direct`.
+ */
+export type PayWith = 'direct' | 'eth-via-paired';
 
 /** The chain the panel trades on: Base, or the app's chain in mock mode. */
 export const tradeChainId = env.useMock ? appChain.id : SWAP_CONTRACTS.chainId;
@@ -48,20 +58,27 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
  * The pool to trade on, or null when this deployment cannot trade the coin: not on Base, or a coin whose indexed pool id
  * matches neither launch path.
  */
-export function tradePoolKey(token: Pick<Token, 'id' | 'poolId' | 'source'>): PoolKey | null {
-  if (env.useMock) return poolKeyOf(token.id, token.source === 'clanker' ? 'clanker' : 'bootr');
+export function tradePoolKey(token: Pick<Token, 'id' | 'poolId' | 'source' | 'pairedToken'>): PoolKey | null {
+  // A v5 coin's pool is paired with its quote (native ETH, or USDC for a coin launched with that setting).
+  const paired = token.source === 'clanker-v5' ? token.pairedToken : null;
+  if (env.useMock) return poolKeyOf(token.id, parseLaunchSource(token.source), paired);
   if (env.chainId !== SWAP_CONTRACTS.chainId) return null;
-  return verifiedPoolKey(token.id, 'clanker', token.poolId) ?? verifiedPoolKey(token.id, 'bootr', token.poolId);
+  return (
+    verifiedPoolKey(token.id, 'clanker-v5', token.poolId, paired) ??
+    verifiedPoolKey(token.id, 'clanker', token.poolId) ??
+    verifiedPoolKey(token.id, 'bootr', token.poolId)
+  );
 }
 
 export function useTradeClient() {
   return usePublicClient({ chainId: tradeChainId }) as PublicClient | undefined;
 }
 
-export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, amountIn: bigint | null) {
+export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, amountIn: bigint | null, payWith: PayWith = 'direct') {
   const client = useTradeClient();
+  const viaEth = side === 'buy' && payWith === 'eth-via-paired';
   return useQuery<SwapQuote, SwapFailure>({
-    queryKey: ['swap', 'quote', token.id.toLowerCase(), side, amountIn?.toString() ?? ''],
+    queryKey: ['swap', 'quote', token.id.toLowerCase(), side, amountIn?.toString() ?? '', viaEth ? 'eth' : ''],
     enabled: !!key && !!amountIn && (env.useMock || !!client),
     retry: false,
     gcTime: 0,
@@ -71,7 +88,8 @@ export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, 
     },
     queryFn: async () => {
       try {
-        if (env.useMock) return mockQuote(token, side, amountIn!);
+        if (env.useMock) return viaEth ? mockEthViaPairedQuote(token, amountIn!) : mockQuote(token, side, amountIn!);
+        if (viaEth) return await quoteEthViaPaired(client!, { key: key!, amountIn: amountIn! });
         return await quoteSwap(client!, { key: key!, side, amountIn: amountIn! });
       } catch (e) {
         throw SwapFailure.from(e);
@@ -80,21 +98,23 @@ export function useSwapQuote(token: Token, key: PoolKey | null, side: SwapSide, 
   });
 }
 
-export type SwapBalances = { eth: bigint; coin: bigint };
+/** `paired`: the wallet's balance of an ERC-20 paired asset (USDC), null on the ETH pools. */
+export type SwapBalances = { eth: bigint; coin: bigint; paired: bigint | null };
 
-export function useSwapBalances(coin: Address, owner: Address | undefined) {
+export function useSwapBalances(coin: Address, owner: Address | undefined, pairedErc20: Address | null = null) {
   const client = useTradeClient();
   return useQuery<SwapBalances>({
-    queryKey: ['swap', 'balances', coin.toLowerCase(), owner?.toLowerCase() ?? ''],
+    queryKey: ['swap', 'balances', coin.toLowerCase(), owner?.toLowerCase() ?? '', pairedErc20?.toLowerCase() ?? ''],
     enabled: !!owner && (env.useMock || !!client),
     refetchInterval: BALANCE_POLL_MS,
     queryFn: async () => {
-      if (env.useMock) return { eth: MOCK_ETH_BALANCE, coin: MOCK_COIN_BALANCE };
-      const [eth, balance] = await Promise.all([
+      if (env.useMock) return { eth: MOCK_ETH_BALANCE, coin: MOCK_COIN_BALANCE, paired: pairedErc20 ? MOCK_PAIRED_BALANCE : null };
+      const [eth, balance, paired] = await Promise.all([
         client!.getBalance({ address: owner! }),
         client!.readContract({ address: coin, abi: erc20Abi, functionName: 'balanceOf', args: [owner!] }),
+        pairedErc20 ? client!.readContract({ address: pairedErc20, abi: erc20Abi, functionName: 'balanceOf', args: [owner!] }) : Promise.resolve(null),
       ]);
-      return { eth, coin: balance };
+      return { eth, coin: balance, paired };
     },
   });
 }
@@ -112,7 +132,10 @@ async function readAllowances(client: PublicClient, owner: Address, coin: Addres
   return { token, permit2Amount: permit2[0], permit2Expiration: permit2[1] };
 }
 
-/** The approvals a sell of `amount` still needs, to tell the user how many confirmations are coming. */
+/**
+ * The approvals a swap paying `amount` of the ERC-20 `coin` still needs (the coin on a sell, USDC on a buy on a USDC
+ * pool), to tell the user how many confirmations are coming.
+ */
 export function useSellApprovals(coin: Address, owner: Address | undefined, amount: bigint | null) {
   const client = useTradeClient();
   return useQuery<ApprovalCall[]>({
@@ -142,6 +165,8 @@ export type SwapIntent = {
   /** The minimum received the user saw: the floor on chain. */
   minOut: bigint;
   launchWindow: LaunchWindow | null;
+  /** A buy on a USDC pool paid with ETH through the two-hop route; `amountIn` is then wei. */
+  payWith?: PayWith;
 };
 
 export type SwapResult = { status: 'done'; hash: Hash | null } | { status: 'repriced' };
@@ -180,7 +205,8 @@ export function useSwapRunner() {
         if (!client) throw new SwapFailure('network');
 
         setStage('Checking the price');
-        const fresh = await quoteSwap(client, { key, side, amountIn });
+        const viaEth = side === 'buy' && intent.payWith === 'eth-via-paired';
+        const fresh = viaEth ? await quoteEthViaPaired(client, { key, amountIn }) : await quoteSwap(client, { key, side, amountIn });
         if (fresh.amountOut < minOut) {
           await refresh();
           return { status: 'repriced' };
@@ -216,16 +242,18 @@ export function useSwapRunner() {
           return hash;
         };
 
-        if (side === 'buy') {
-          const tx = buildBuyTx(swapArgs);
+        // ETH in needs no approval; a sell spends the coin and a buy on a USDC pool spends USDC, both through Permit2.
+        if (side === 'buy' && (!isErc20Paired(key) || viaEth)) {
+          const tx = viaEth ? buildEthViaPairedBuyTx(swapArgs) : buildBuyTx(swapArgs);
           await dryRun(tx);
           setStage('Confirm in your wallet');
           return { status: 'done', hash: await sendOne(tx) };
         }
 
-        const tx = buildSellTx(swapArgs);
-        const allowances = await readAllowances(client, address, coin);
-        const approvals = approvalCalls({ coin, amount: amountIn, allowances, now: nowSeconds(), dataSuffix: builderDataSuffix });
+        const tx = side === 'buy' ? buildBuyTx(swapArgs) : buildSellTx(swapArgs);
+        const spent = side === 'buy' ? pairedCurrency(key) : coin;
+        const allowances = await readAllowances(client, address, spent);
+        const approvals = approvalCalls({ coin: spent, amount: amountIn, allowances, now: nowSeconds(), dataSuffix: builderDataSuffix });
 
         if (approvals.length === 0) {
           await dryRun(tx);
@@ -253,7 +281,7 @@ export function useSwapRunner() {
           await sendOne(call);
         }
         await dryRun(tx, 3);
-        setStage(`Step ${total} of ${total}: confirm the sell of $${symbol}`);
+        setStage(`Step ${total} of ${total}: confirm the ${side === 'buy' ? 'buy' : 'sell'} of $${symbol}`);
         return { status: 'done', hash: await sendOne(tx) };
       } catch (e) {
         throw fail(e);

@@ -9,6 +9,11 @@ import { env } from '@/lib/env';
 import { BOOTR_FEE, feeModelOf, launcherName, launcherPct, ofVolume, pctLabel, slotsShare, splitFromSlots, swapFeePct, traderPaysPct, type FeeModel, type Split } from '@/lib/fee-split';
 import type { RecipientKind, Token } from '@/lib/types';
 import { Panel } from '@/components/ui/Panel';
+import { clankerV5HookSlotsAbi, coinTradeSplits, pairedAssetByAddress, rowsFromSlots, v5SettingsOf } from '@/lib/token-settings';
+import type { V5TokenSettings } from '@/lib/types';
+import type { Hex } from 'viem';
+import { shortAddr } from '@/lib/format';
+import { V5SplitBar } from './V5SplitBar';
 
 const ORDER: RecipientKind[] = ['agent', 'creator', 'burn', 'platform'];
 const LABEL: Record<RecipientKind, string> = { agent: 'Agent', creator: 'Creator', burn: 'Burn', platform: 'Platform' };
@@ -21,6 +26,9 @@ function fromToken(t: Token): Split {
 /** One sentence on what a trader pays and where it goes, for the coin's fee model. */
 export function feeSentence(fee: FeeModel): string {
   const total = pctLabel(traderPaysPct(fee));
+  if (fee.source === 'clanker-v5') {
+    return `Of trading volume. A ${total} tax on every trade: Clanker keeps its share (${pctLabel(launcherPct(fee))}), the rest goes to the recipients above. Fees arrive as ETH; a burn share is taken in the coin itself and sent to the dead address.`;
+  }
   if (fee.source === 'clanker') {
     return `Of trading volume. The swap fee is ${pctLabel(swapFeePct(fee))}, all of it to the recipients above, plus 20% on top for Clanker (${pctLabel(launcherPct(fee))}): a trader pays ${total} in total. Fees arrive as WETH; a burn share arrives as the coin itself, sent to the dead address.`;
   }
@@ -29,7 +37,8 @@ export function feeSentence(fee: FeeModel): string {
 
 /**
  * Fee split as a share of trading volume, over everything a trader pays: the reward slots, then the launcher's part
- * (RWAGMI's 10% within the 1% fee, or Clanker's 20% on top of the coin's fee). Shared with the /launch preview.
+ * (RWAGMI's 10% within the 1% fee, Clanker's 20% on top of a v4 coin's fee, or Clanker's share inside a v5 coin's tax).
+ * Shared with the /launch preview.
  */
 export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeModel }) {
   const parts = ORDER.filter((k) => split[k] > 0);
@@ -71,9 +80,88 @@ export function SplitBar({ split, fee = BOOTR_FEE }: { split: Split; fee?: FeeMo
   );
 }
 
+/**
+ * A Clanker v5 coin launched with creator-set settings: its own buy and sell tax, the split of each, the reward rows,
+ * holder dividends, the paired asset and the two switches, all as the indexer reports them (`v5SettingsOf`); the reward rows are read from the hook's `poolFeeSlots`.
+ */
+function V5SettingsSplit({ token, settings }: { token: Token; settings: V5TokenSettings }) {
+  const { buy, sell } = coinTradeSplits(settings);
+  // The creator-funds rows: slot 0 is the agent's and slot 1 the platform's, the rest are the creator's rows, whose
+  // weights share creator funds. Mock mode has them in the settings already.
+  const hook = contracts.clankerV5?.hook;
+  const slotsRead = useReadContract({
+    address: hook ?? undefined,
+    abi: clankerV5HookSlotsAbi,
+    functionName: 'poolFeeSlots',
+    args: [token.poolId as Hex],
+    chainId: appChain.id,
+    query: { enabled: !env.useMock && !!hook && settings.rewards.length === 0, staleTime: Infinity, retry: 0 },
+  });
+  const chainRows = slotsRead.data ? rowsFromSlots(slotsRead.data) : null;
+  const asset = pairedAssetByAddress(token.pairedToken)?.symbol ?? 'the paired asset';
+  const rows = settings.rewards.length > 0 ? settings.rewards : (chainRows ?? []);
+  const holding = BigInt(settings.minDividendHolding || '0') / 10n ** 18n;
+  return (
+    <Panel title="Locked fee split" action={<span className="font-mono text-micro text-mute">FROM INDEXER</span>}>
+      {settings.splitKnown ? (
+        <V5SplitBar buy={buy} sell={sell} asset={asset} />
+      ) : (
+        <p className="text-caption text-mute" data-testid="v5-split-unknown">
+          The split of this coin&rsquo;s tax is not known yet: the indexer&rsquo;s figures do not add up. Its {pctLabel(buy.tax)} buy and {pctLabel(sell.tax)} sell tax are below.
+        </p>
+      )}
+      <dl className="mt-4 grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-caption" data-testid="v5-settings">
+        {[
+          ['Paired asset', asset],
+          ['Buy tax · sell tax', `${pctLabel(buy.tax)} · ${pctLabel(sell.tax)}`],
+          ...(settings.splitKnown ? [['Agent · platform', `${settings.agentShareBps / 100}% · ${settings.platformShareBps / 100}% of the tax pool, locked`]] : []),
+          ...(settings.dividendBps > 0 ? [['Holder dividends', `${settings.dividendBps / 100}% of the tax pool, to wallets holding ${holding.toLocaleString('en-US')}+ coins`]] : []),
+          ...(settings.burnBps > 0 ? [['Burn', `${settings.burnBps / 100}% of the tax pool`]] : []),
+          ['Sniper tax', settings.antiSnipe ? 'On at launch' : 'Off'],
+          ['Image and metadata', settings.metadataLocked ? 'Locked by the creator' : settings.metadataEditable ? 'Editable by the creator' : 'Fixed at launch'],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">
+            <dt className="text-mute">{k}</dt>
+            <dd className="text-right font-mono text-ink">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {rows.length > 0 ? (
+        <div className="mt-3" data-testid="v5-reward-rows">
+          <span className="text-caption font-medium text-ink">Creator funds</span>
+          <ul className="mt-1 flex flex-col gap-0.5 text-caption">
+            {rows.map((r, i) => (
+              <li key={`${r.recipient}-${i}`} className="flex justify-between gap-3">
+                <span className="font-mono text-body" title={`Recipient ${r.recipient}, admin ${r.admin}`}>
+                  {shortAddr(r.recipient)}
+                  {r.recipient.toLowerCase() === token.creator.toLowerCase() ? <span className="text-mute"> (creator)</span> : null}
+                </span>
+                <span className="font-mono text-ink tabular">
+                  {pctLabel((buy.creatorFunds * r.bps) / 10_000)} of volume
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="mt-3 text-caption text-mute">
+        Set at launch and locked in the coin&rsquo;s Clanker pool: nobody, including Bootr, can change a tax or a share. Each creator-funds row&rsquo;s admin can change
+        that row&rsquo;s recipient on Clanker; the agent&rsquo;s and the platform&rsquo;s rows cannot change.
+      </p>
+    </Panel>
+  );
+}
+
 export function FeeSplit({ token }: { token: Token }) {
+  const settings = v5SettingsOf(token);
+  if (settings) return <V5SettingsSplit token={token} settings={settings} />;
+  return <PresetFeeSplit token={token} />;
+}
+
+function PresetFeeSplit({ token }: { token: Token }) {
   const fee = feeModelOf(token);
   const bootr = fee.source === 'bootr';
+  const v5 = fee.source === 'clanker-v5';
   const locker = contracts.lpLocker;
   // The on-chain slots are read from RWAGMI's locker on the Bootr path; Clanker coins show the indexer's copy.
   const read = useReadContract({
@@ -98,11 +186,15 @@ export function FeeSplit({ token }: { token: Token }) {
       <p className="mt-3 text-caption text-mute">
         {bootr
           ? 'Set at launch and locked in RWAGMI’s LP locker (RwagmiLpLockerV3). Nobody, including Bootr, can change it for this coin.'
-          : 'Set at launch and locked in Clanker’s LP locker. Nobody, including Bootr, can change it for this coin.'}
+          : v5
+            ? 'Set at launch and locked in the coin’s Clanker pool. Nobody, including Bootr, can change it for this coin.'
+            : 'Set at launch and locked in Clanker’s LP locker. Nobody, including Bootr, can change it for this coin.'}
         {split.burn > 0
           ? bootr
             ? ' The burn share is claimed in WETH by the coin’s burner, which buys this coin back and burns it.'
-            : ' The locker turns the burn share into this coin and sends it to the dead address, so it is out of circulation as soon as it is collected.'
+            : v5
+              ? ' Clanker takes the burn share in this coin on every trade and sends it to the dead address.'
+              : ' The locker turns the burn share into this coin and sends it to the dead address, so it is out of circulation as soon as it is collected.'
           : ''}
       </p>
     </Panel>

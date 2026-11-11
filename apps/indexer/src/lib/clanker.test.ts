@@ -1,8 +1,19 @@
+import { encodeAbiParameters, encodeEventTopics, toEventSelector, type Abi, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
+
+import { ClankerV5LaunchedFixedEvent } from '../../abis/BootrClankerLauncherV5';
+import { ClankerV5FactoryAbi, ClankerV5HookAbi, PoolManagerLaunchAbi } from '../../abis/ClankerV5';
 
 import {
   CLANKER_TOKEN_SUPPLY,
   CLANKER_TOPICS,
+  CLANKER_V5_SUPPLY,
+  CLANKER_V5_TOPICS,
+  clankerV5LaunchFacts,
+  clankerV5PoolKey,
+  clankerV5PositionTicks,
+  clankerV5Slots,
+  pickV5Slot,
   clankerPoolKey,
   clankerPositionTicks,
   clankerSlots,
@@ -151,5 +162,154 @@ describe('a collection (ClaimedRewards) and the claims that follow', () => {
     // The dead address is the burn kind for any coin, with or without a burner on the token row.
     expect(classifyRecipient(DEAD_ADDRESS, { ...parties, burner: null })).toBe('burn');
     expect(classifyRecipient('0x000000000000000000000000000000000000dEaD', parties)).toBe('burn');
+  });
+});
+
+// ------------------------------------------------------------------ Clanker v5
+
+describe('a Clanker v5 launch (docs/design/clanker-v5-migration.md section 6)', () => {
+  const NATIVE = '0x0000000000000000000000000000000000000000';
+  const V5_COIN = '0x5eed00000000000000000000000000000000cccc';
+  const V5_HOOK = '0x5e320ea6278107968c119942e57d876c5f922acc';
+  const ESCROW = '0x5dd237d1f716c65426ccd2fae82b95109825fa61';
+  const FACTORY = '0x572e88d3cd7f23e4241eb6cedd96667271bf09a0';
+  const PM = '0x498581ff718922c3f8e6a244956af099b2652b2b';
+  const V5_LAUNCHER = '0x00000000000000000000000000000000000000e5';
+  const key = clankerV5PoolKey(V5_COIN, NATIVE, V5_HOOK, 200);
+  const poolId = poolIdOf(key);
+  const log = <A extends Abi>(address: string, abi: A, eventName: string, args: Record<string, unknown>) => {
+    const ev = (abi as readonly { type: string; name?: string; inputs?: readonly { name: string; type: string; indexed?: boolean; components?: unknown }[] }[]).find(
+      (i) => i.type === 'event' && i.name === eventName,
+    )!;
+    const topics = encodeEventTopics({ abi: [ev] as Abi, eventName, args: args as never }) as Hex[];
+    const plain = ev.inputs!.filter((i) => !i.indexed);
+    const data = encodeAbiParameters(plain as never, plain.map((i) => args[i.name]) as never);
+    return { address, topics, data };
+  };
+  const slotsIn = [
+    { recipient: parties.kernel, weightBps: 588 },
+    { recipient: parties.creator, weightBps: 5883 },
+    { recipient: parties.platformRecipient, weightBps: 3529 },
+  ];
+  const receipt = [
+    // the PoolManager first initialises the pool at Clanker's native start tick (coin = currency1: +201000)
+    log(PM, PoolManagerLaunchAbi, 'Initialize', { id: poolId, currency0: NATIVE, currency1: V5_COIN, fee: 0, tickSpacing: 200, hooks: V5_HOOK, sqrtPriceX96: 1n, tick: 201_000 }),
+    ...slotsIn.map((s, i) =>
+      log(V5_HOOK, ClankerV5HookAbi, 'FeeSlotCreated', { poolId, slotIndex: BigInt(i), recipient: s.recipient, admin: V5_LAUNCHER, weightBps: s.weightBps, isCreator: false }),
+    ),
+    log(PM, PoolManagerLaunchAbi, 'ModifyLiquidity', { id: poolId, sender: V5_HOOK, tickLower: -887_200, tickUpper: 201_000, liquidityDelta: 123_456n, salt: `0x${'0'.repeat(64)}` }),
+    // another pool's slot in the same receipt is ignored
+    log(V5_HOOK, ClankerV5HookAbi, 'FeeSlotCreated', { poolId: `0x${'1'.repeat(64)}`, slotIndex: 0n, recipient: parties.kernel, admin: V5_LAUNCHER, weightBps: 10_000, isCreator: false }),
+    log(FACTORY, ClankerV5FactoryAbi, 'LaunchTaxConfigured', {
+      poolId,
+      token: V5_COIN,
+      configVersion: 23n,
+      admittedPolicy: {
+        taxFeeBounds: { minimumBuyTaxRate: 1_000_000, maximumBuyTaxRate: 10_000_000, minimumSellTaxRate: 1_000_000, maximumSellTaxRate: 10_000_000 },
+        protocolFeeConfiguration: { protocolTaxShare: 10_000_000, minimumProtocolFeeRate: 500_000, maximumProtocolFeeRate: 1_000_000, protocolFeeRecipient: NATIVE },
+        antiSnipeConfiguration: { startTotalFeeRate: 99_000_000, windowSeconds: 20 },
+        minimumDividendHoldingRequirement: 10n ** 22n,
+      },
+      taxConfiguration: {
+        buyTaxRate: 1_500_000,
+        sellTaxRate: 1_500_000,
+        creatorAllocationShare: 85_000_000,
+        burnAllocationShare: 15_000_000,
+        dividendAllocationShare: 0,
+        integratorAllocationShare: 0,
+        minimumDividendHolding: 0n,
+      },
+      integratorFeeRecipient: NATIVE,
+      antiSnipeEnabled: true,
+    }),
+    log(FACTORY, ClankerV5FactoryAbi, 'Launched', { token: V5_COIN, poolId, originalCreator: V5_LAUNCHER, quoteToken: NATIVE, launchSupply: CLANKER_V5_SUPPLY, tickSpacing: 200 }),
+    log(V5_LAUNCHER, [ClankerV5LaunchedFixedEvent], 'ClankerV5Launched', { token: V5_COIN, poolId, hook: V5_HOOK, feeEscrow: ESCROW, quoteToken: NATIVE, tickSpacing: 200, taxBps: 15_000, antiSnipe: true }),
+  ];
+
+  it('pins the v5 event topics of the vendored verified ABIs (CreatorTaxCredited, FeeSlotCreated and Claimed seen on Base 2026-11-10)', () => {
+    expect(CLANKER_V5_TOPICS).toMatchObject({
+      ClankerV5LaunchedFixed: toEventSelector('ClankerV5Launched(address,bytes32,address,address,address,int24,uint24,bool)'),
+      CreatorTaxCredited: toEventSelector('CreatorTaxCredited(bytes32,address,address,uint256)'),
+      BurnTaxCredited: toEventSelector('BurnTaxCredited(bytes32,address,address,uint256)'),
+      FeeSlotCreated: toEventSelector('FeeSlotCreated(bytes32,uint256,address,address,uint16,bool)'),
+      Claimed: toEventSelector('Claimed(address,address,address,uint256)'),
+      Launched: toEventSelector('Launched(address,bytes32,address,address,uint256,int24)'),
+    });
+  });
+
+  it('builds the native-ETH pool key: ETH is currency0, fee 0, the shared hook', () => {
+    expect(key).toEqual({ currency0: NATIVE, currency1: V5_COIN, fee: 0, tickSpacing: 200, hooks: V5_HOOK });
+  });
+
+  it('reads the launch facts from the receipt: the wrapper’s event, the slots of this pool, the policy, the supply, the tick and the band', () => {
+    const f = clankerV5LaunchFacts(receipt, { token: V5_COIN, launcher: V5_LAUNCHER, poolManager: PM, factory: FACTORY });
+    // The fixed launcher's event (never deployed) still decodes: one tax for both sides, no settings.
+    expect(f.launched).toEqual({
+      token: V5_COIN,
+      poolId,
+      hook: V5_HOOK,
+      feeEscrow: ESCROW,
+      quoteToken: NATIVE,
+      tickSpacing: 200,
+      taxBps: 15_000,
+      buyTaxBps: 15_000,
+      sellTaxBps: 15_000,
+      burnBps: null,
+      dividendBps: null,
+      antiSnipe: true,
+      metadataEditable: null,
+      layout: 'fixed',
+    });
+    expect(f.slots.map((s) => [s.slot, s.recipient, s.weightBps])).toEqual(slotsIn.map((s, i) => [i, s.recipient, s.weightBps]));
+    expect(f.policy).toEqual({ protocolTaxShare: 10_000_000, minimumProtocolFeeRate: 500_000, maximumProtocolFeeRate: 1_000_000 });
+    expect(f.taxRate).toBe(1_500_000);
+    expect(f.burnBps).toBe(1500);
+    expect(f.launchSupply).toBe(CLANKER_V5_SUPPLY);
+    expect(f.startingTick).toBe(201_000);
+    expect(f.position).toEqual({ tickLower: -887_200, tickUpper: 201_000, liquidity: 123_456n });
+    // A v4 receipt (no ClankerV5Launched from this launcher) is not a v5 launch.
+    expect(clankerV5LaunchFacts(receipt, { token: V5_COIN, launcher: LAUNCHER, poolManager: PM, factory: FACTORY }).launched).toBeNull();
+    // Without the band the seeded range runs from the opening tick to the far edge on the coin's side.
+    expect(clankerV5PositionTicks(201_000, false, 200)).toEqual({ tickLower: -887_200, tickUpper: 201_000 });
+  });
+
+  it('stores the paid slots in bps of the tax plus a synthetic burn slot; with Clanker’s share they sum to 10000', () => {
+    const f = clankerV5LaunchFacts(receipt, { token: V5_COIN, launcher: V5_LAUNCHER, poolManager: PM, factory: FACTORY });
+    const defaults = { agentBps: 500, burnBps: 1500, platformBps: 3000, platformRecipient: parties.platformRecipient };
+    const { rewards, kinds, burnSlot, protocolBps } = clankerV5Slots(f, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: f.burnBps!, defaults });
+    expect(protocolBps).toBe(3333);
+    expect(burnSlot).toBe(3);
+    expect(rewards.map((r) => r.recipient)).toEqual([parties.kernel, parties.creator, parties.platformRecipient, DEAD_ADDRESS]);
+    expect(kinds).toEqual(['agent', 'creator', 'platform', 'burn']);
+    expect(kinds.slice(0, 3)).toEqual(classifySlots(rewards.slice(0, 3), { ...parties, burner: null }, 'clanker-v5'));
+    const bps = bpsByKind(rewards, kinds);
+    expect(bps.agent + bps.creator + bps.burn + bps.platform + protocolBps).toBe(10_000);
+    expect(bps.burn).toBe(1000);
+    // Same answer from the preset alone (no FeeSlotCreated, no LaunchTaxConfigured).
+    const fallback = clankerV5Slots({ slots: [], policy: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: 1500, defaults });
+    expect(fallback.rewards.map((r) => [r.recipient, r.bps])).toEqual(rewards.map((r) => [r.recipient, r.bps]));
+    // The standard preset has no burn slot.
+    const std = clankerV5Slots({ slots: [], policy: null }, { launcher: V5_LAUNCHER, kernel: parties.kernel, creator: parties.creator, taxBps: 15_000, burnBps: 0, defaults: { ...defaults, agentBps: 500, burnBps: 0 } });
+    expect(std.burnSlot).toBeNull();
+    expect(std.rewards).toHaveLength(3);
+  });
+
+  it('a hook credit names the recipient, not the slot: one wallet with two slots takes them in turn', () => {
+    const slots = [
+      { slot: 0, recipient: parties.kernel, recipientKind: 'agent' },
+      { slot: 1, recipient: parties.platformRecipient, recipientKind: 'creator' },
+      { slot: 2, recipient: parties.platformRecipient, recipientKind: 'platform' },
+      { slot: 3, recipient: DEAD_ADDRESS, recipientKind: 'burn' },
+    ];
+    expect(pickV5Slot(slots, parties.kernel.toUpperCase().replace('0X', '0x'), 0)?.slot).toBe(0);
+    expect([0, 1, 2, 3].map((n) => pickV5Slot(slots, parties.platformRecipient, n)?.slot)).toEqual([1, 2, 1, 2]);
+    // The burn slot is never a CreatorTaxCredited target; strangers hold no slot.
+    expect(pickV5Slot(slots, DEAD_ADDRESS, 0)).toBeNull();
+    expect(pickV5Slot(slots, '0x0000000000000000000000000000000000000999', 0)).toBeNull();
+  });
+
+  it('the dead address claiming the coin from the escrow is the v5 burn; its ETH would not be', () => {
+    expect(isBurnClaim({ recipientKind: 'burn', recipient: DEAD_ADDRESS, asset: V5_COIN, token: V5_COIN })).toBe(true);
+    expect(isBurnClaim({ recipientKind: 'burn', recipient: DEAD_ADDRESS, asset: NATIVE, token: V5_COIN })).toBe(false);
   });
 });

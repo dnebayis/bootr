@@ -38,6 +38,7 @@ import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requ
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { coinFeesSection } from './coin-fees.js';
+import { clankerV5CoinOf } from './launch-source.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
 import { postBudgetSection } from './post-budget.js';
@@ -398,8 +399,8 @@ async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, co
       ...(await fuelSection(ctx, agent.agentId, inputs.treasury)),
       // Whether a picture fits this turn, what one costs and how many are left today (images on only): picture-hint.ts.
       ...(await pictureSection(ctx, agent, config, catalog, { ...inputs, creatorAsked: requests.some((r) => r.picture) }, directory)),
-      // How its own coin's trades pay their fee, in percentages, from the market snapshot above (no extra read): coin-fees.ts.
-      ...coinFeesSection(config, inputs.market),
+      // How its own coin's trades pay their fee, in percentages, from the market snapshot above or, for a Clanker v5 coin, the settings its launch receipt carried (no extra read): coin-fees.ts.
+      ...coinFeesSection(config, inputs.market, clankerV5CoinOf(ctx, agent)),
       // Why the money tools are gone and how to leave the treasury turn a note (treasury turn on only): roles.ts.
       ...treasuryTurnSection(agent.config),
       // Replies to a bounty job are entries code judges, never mentions to answer (bounties power on only): an observation section, not a prompt line.

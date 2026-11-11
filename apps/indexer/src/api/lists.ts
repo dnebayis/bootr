@@ -2,6 +2,7 @@
  * Pure parts of the public list routes (`/tokens/list`, `/tokens/trending`, `/leaderboards/:board`, `/creator/:address`):
  * query parsing, board rules and ranking. The SQL lives in api/index.ts. API code, so no new DATABASE_SCHEMA.
  */
+import { isLaunchSource, LAUNCH_SOURCES, type LaunchSource } from '../lib/fees';
 
 export const LIST_MAX = 100;
 export const LIST_DEFAULT = 48;
@@ -14,7 +15,7 @@ const SORTS: readonly TokenSort[] = ['bumped', 'launched', 'mcap', 'volume24h', 
 export type TokenFilters = {
   /** Lowercase address. */
   creator?: string;
-  source?: 'bootr' | 'clanker';
+  source?: LaunchSource;
   /** Launched at or after, unix s. */
   from?: number;
   /** Launched at or before, unix s. */
@@ -48,7 +49,7 @@ export function parseTokenFilters(q: Record<string, string | undefined>): TokenF
     filters.creator = q.creator.toLowerCase();
   }
   if (q.source) {
-    if (q.source !== 'bootr' && q.source !== 'clanker') return 'source must be bootr or clanker';
+    if (!isLaunchSource(q.source)) return `source must be one of ${LAUNCH_SOURCES.join(', ')}`;
     filters.source = q.source;
   }
   const from = unixParam(q.from);

@@ -58,8 +58,9 @@ export function AnalyticsView() {
   const p = platform.data;
   const burnedTotal = p ? Number(formatUnits(BigInt(p.bootBurnedTotal || '0'), 18)) : null;
   const sum = (k: 'volumeUsd' | 'feesUsd' | 'launches') => rows.reduce((a, d) => a + d[k], 0);
-  // What the four reward slots received; `feesUsd` is the gross swap fee, with RWAGMI's 10% (bootr) or
-  // Clanker's 20% on top (clanker) included, and had been shown as if it all went to the recipients.
+  // What the four reward slots received; `feesUsd` is the gross swap fee, with RWAGMI's 10% (bootr), Clanker's 20% on
+  // top (clanker) or Clanker's share inside the tax (clanker-v5) included, and had been shown as if it all went to the
+  // recipients.
   const toRecipients = rows.reduce((a, d) => a + d.feesAgentUsd + d.feesCreatorUsd + d.feesBurnUsd + d.feesPlatformUsd, 0);
 
   return (

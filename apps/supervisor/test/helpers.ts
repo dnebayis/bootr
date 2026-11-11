@@ -43,6 +43,14 @@ export const CLANKER_LAUNCHER: Address = '0xA00000000000000000000000000000000000
 /** Clanker v4 locker placeholders (`CLANKER_LOCKER_ADDRESS` / `CLANKER_FEE_LOCKER_ADDRESS` in the test config). */
 export const CLANKER_LP_LOCKER: Address = '0xB00000000000000000000000000000000000000B';
 export const CLANKER_FEE_LOCKER: Address = '0xC000000000000000000000000000000000000000';
+/** `BootrClankerLauncherV5` placeholder (`BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` in a test config; unset by default). */
+export const CLANKER_V5_LAUNCHER: Address = '0xD00000000000000000000000000000000000000D';
+/** Clanker v5 `FeeEscrow`: the real Base address (`addresses[8453].clankerV5.feeEscrow`), so the v5 fixture carries the real rule bytes. */
+export const CLANKER_V5_FEE_ESCROW: Address = '0x5dd237d1f716C65426CCd2FAe82B95109825FA61';
+/** The v5 `TaxLaunchHook` on Base (`ClankerV5Launched.hook`). */
+export const CLANKER_V5_HOOK: Address = '0x5E320eA6278107968C119942E57d876c5F922AcC';
+/** Uniswap v4 pool id of a Clanker v5 test coin (`ClankerV5Launched.poolId`). */
+export const CLANKER_V5_POOL_ID: Hex = '0xd500000000000000000000000000000000000000000000000000000000000d5d';
 /** Uniswap v4 pool id of a Clanker test coin (`ClankerLaunched.poolId`). */
 export const CLANKER_POOL_ID: Hex = '0xc000000000000000000000000000000000000000000000000000000000000c0c';
 export const SERVICE_KEY = 'test-service-key-0123456789abcdef0123456789';
@@ -107,6 +115,10 @@ export interface ChainState {
   poolId: Hex | null;
   /** `ClankerFeeLocker.availableFees(kernel, WETH)`: what the Clanker LP locker has deposited for the kernel so far. */
   clankerAvailableWeth: bigint;
+  /** Clanker v5 `FeeEscrow.owed(kernel, 0x0)`: native ETH the hook has credited to the kernel's slot. */
+  clankerV5OwedEth: bigint;
+  /** Clanker v5 `FeeEscrow.owed(kernel, USDC)`: USDC (6 dp) the hook has credited to the kernel's slot of a USDC-paired coin. */
+  clankerV5OwedUsdc?: bigint;
   ethUsd: bigint; // 8 dp
   paused: boolean;
   logs: unknown[];
@@ -142,6 +154,7 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
     claimableWeth: 0n,
     poolId: POOL_ID,
     clankerAvailableWeth: 0n,
+    clankerV5OwedEth: 0n,
     ethUsd: 3000_00000000n,
     paused: false,
     logs: [],
@@ -158,10 +171,12 @@ export function chainState(over: Partial<ChainState> = {}): ChainState {
 
 /**
  * The mocked chain context. `clankerLauncher` adds `BootrClankerLauncher` to the followed launchers (what a config
- * with `BOOTR_CLANKER_LAUNCHER_ADDRESS` does in `createChainContext`); `makeWorld` passes the test config's value.
+ * with `BOOTR_CLANKER_LAUNCHER_ADDRESS` does in `createChainContext`), `clankerV5Launcher` adds `BootrClankerLauncherV5`
+ * (`BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`); `makeWorld` passes the test config's values.
  */
-export function mockChain(state: ChainState, opts: { clankerLauncher?: Address | null } = {}): ChainContext {
+export function mockChain(state: ChainState, opts: { clankerLauncher?: Address | null; clankerV5Launcher?: Address | null } = {}): ChainContext {
   const clankerLauncher = opts.clankerLauncher ?? null;
+  const clankerV5Launcher = opts.clankerV5Launcher ?? null;
   const publicClient = {
     chain: baseSepolia,
     async readContract(args: { address: Address; functionName: string; args?: unknown[] }) {
@@ -215,6 +230,13 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
           if (addr !== CLANKER_FEE_LOCKER) throw new Error('availableFees on an unexpected address');
           const [feeOwner, token] = args.args as [Address, Address];
           return getAddress(feeOwner) === KERNEL && getAddress(token) === ADDR.weth ? state.clankerAvailableWeth : 0n;
+        }
+        case 'owed': {
+          if (addr !== CLANKER_V5_FEE_ESCROW) throw new Error('owed on an unexpected address');
+          const [recipient, currency] = args.args as [Address, Address];
+          if (getAddress(recipient) !== KERNEL) return 0n;
+          if (currency === '0x0000000000000000000000000000000000000000') return state.clankerV5OwedEth;
+          return getAddress(currency) === ADDR.usdc ? (state.clankerV5OwedUsdc ?? 0n) : 0n;
         }
         case 'latestRoundData':
           // a fresh answer: `updatedAt` = the mocked block time (= the world's `now`), same round
@@ -284,7 +306,11 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
       return { number: blockNumber, timestamp: state.blockTimestamp };
     },
   } as unknown as ChainContext['publicClient'];
-  const launchers: LauncherEntry[] = [{ address: LAUNCHER, source: 'bootr' }, ...(clankerLauncher ? [{ address: clankerLauncher, source: 'clanker' as const }] : [])];
+  const launchers: LauncherEntry[] = [
+    { address: LAUNCHER, source: 'bootr' },
+    ...(clankerLauncher ? [{ address: clankerLauncher, source: 'clanker' as const }] : []),
+    ...(clankerV5Launcher ? [{ address: clankerV5Launcher, source: 'clanker-v5' as const }] : []),
+  ];
   return {
     chain: baseSepolia,
     chainId: 84532,
@@ -292,11 +318,13 @@ export function mockChain(state: ChainState, opts: { clankerLauncher?: Address |
     addresses: ADDR,
     launcher: LAUNCHER,
     clankerLauncher,
+    clankerV5Launcher,
     launchers,
     guardian: GUARDIAN,
     ethUsdFeed: '0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1',
     rwagmi: { launcher: RWAGMI_LAUNCHER, lpLocker: RWAGMI_LP_LOCKER },
     clanker: { lpLocker: CLANKER_LP_LOCKER, feeLocker: CLANKER_FEE_LOCKER },
+    clankerV5: { feeEscrow: CLANKER_V5_FEE_ESCROW },
   };
 }
 
@@ -664,7 +692,7 @@ export async function makeWorld(opts: { chain?: Partial<ChainState>; script?: Re
   const ctx: SupervisorContext = {
     config,
     db,
-    chain: mockChain(state, { clankerLauncher: (config.BOOTR_CLANKER_LAUNCHER_ADDRESS as Address | undefined) ?? null }),
+    chain: mockChain(state, { clankerLauncher: (config.BOOTR_CLANKER_LAUNCHER_ADDRESS as Address | undefined) ?? null, clankerV5Launcher: (config.BOOTR_CLANKER_V5_LAUNCHER_ADDRESS as Address | undefined) ?? null }),
     sender: sender.client,
     indexer: indexer.client,
     memories: new MemoryStore(db),

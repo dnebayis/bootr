@@ -3,7 +3,7 @@
  * hook and reverts with the result, so its figure is net of the pool's fee and of Clanker's launch fee.
  */
 import type { PublicClient } from 'viem';
-import { idealOut, impactPct, poolIdOf, shortfallPct, SWAP_CONTRACTS, zeroForOne, type LaunchWindow, type PoolKey, type SwapSide } from './core';
+import { idealOut, impactPct, poolIdOf, shortfallPct, SWAP_CONTRACTS, V3_WETH_USDC, wethToPairedEstimate, zeroForOne, type LaunchWindow, type PoolKey, type SwapSide } from './core';
 import { SwapFailure } from './errors';
 
 /** Written as `view`: the quoter is not one on chain, but this only ever runs in `eth_call`. */
@@ -147,4 +147,35 @@ function feeInEth(side: SwapSide, amountIn: bigint, amountOut: bigint, feePct: n
   if (feePct === null) return null;
   const ppm = BigInt(Math.min(Math.round(feePct * 10_000), 999_999));
   return side === 'buy' ? (amountIn * ppm) / 1_000_000n : (amountOut * ppm) / (1_000_000n - ppm);
+}
+
+const v3Slot0Abi = [
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+
+/**
+ * A buy of a USDC-paired coin with ETH (`buildEthViaPairedBuyTx`): the first hop's USDC estimated at the v3 WETH/USDC
+ * pool's price less its fee, then the coin's pool quoted for that USDC. The answer's `amountIn` is the ETH; its fee
+ * figures are the coin pool's, in USDC. `viaPaired` is the USDC the first hop is expected to give.
+ */
+export async function quoteEthViaPaired(client: QuoteClient & Pick<PublicClient, 'readContract'>, { key, amountIn }: { key: PoolKey; amountIn: bigint }): Promise<SwapQuote & { viaPaired: bigint }> {
+  const [sqrtPriceX96] = await client.readContract({ address: V3_WETH_USDC.pool, abi: v3Slot0Abi, functionName: 'slot0' });
+  const viaPaired = wethToPairedEstimate(amountIn, sqrtPriceX96);
+  if (viaPaired === 0n) throw new SwapFailure('no_liquidity');
+  const q = await quoteSwap(client, { key, side: 'buy', amountIn: viaPaired });
+  return { ...q, amountIn, viaPaired };
 }

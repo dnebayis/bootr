@@ -1,8 +1,9 @@
 import type { Address } from 'viem';
 
+import { clankerLauncherV5Abi } from './clankerLauncherV5.abi';
 import { launcherAbi } from './launcher.abi';
 
-export { launcherAbi };
+export { clankerLauncherV5Abi, launcherAbi };
 
 /**
  * BootrClankerLauncher: the same `launch(LaunchParams)`, defaults, fee and `predictKernel` as BootrLauncher (one ABI
@@ -76,3 +77,17 @@ export const FALLBACK_STANDARD: LaunchDefaults = {
 };
 
 export const FALLBACK_BUYBACK: LaunchDefaults = { ...FALLBACK_STANDARD, creatorBps: 5000, burnBps: 1500 };
+
+/**
+ * The Clanker v5 default tax as a preset (15_000 = 1.5%, the owner's answer of 2026-11-10), for the fee tables of the
+ * docs and the skill. The v5 launcher has no presets: its bounds are `agentDefaults()` (lib/token-settings.ts) and the
+ * creator sets the rest.
+ */
+export const FALLBACK_V5_STANDARD: LaunchDefaults = { ...FALLBACK_STANDARD, lpFeeBps: 15_000 };
+export const FALLBACK_V5_BUYBACK: LaunchDefaults = { ...FALLBACK_BUYBACK, lpFeeBps: 15_000 };
+
+/** The fallback presets of a launch path. */
+export function fallbackDefaults(source: 'bootr' | 'clanker' | 'clanker-v5', buyback: boolean): LaunchDefaults {
+  if (source === 'clanker-v5') return buyback ? FALLBACK_V5_BUYBACK : FALLBACK_V5_STANDARD;
+  return buyback ? FALLBACK_BUYBACK : FALLBACK_STANDARD;
+}

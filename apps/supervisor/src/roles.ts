@@ -35,6 +35,7 @@ import { bountiesSection, jobClosedSince } from './bounties.js';
 import { availableTools } from './broker/index.js';
 import { coinFeesSection } from './coin-fees.js';
 import { creatorRequestsSection, openRequests, type CreatorRequest } from './creator-requests.js';
+import { clankerV5CoinOf } from './launch-source.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { memories } from './db/schema.js';
 import { fuelSection } from './fuel.js';
@@ -241,7 +242,7 @@ export async function buildTreasuryObservation(ctx: SupervisorContext, agent: Ag
       checkpoint: cp ? { memory: cp.memory, agenda: cp.agenda, summary: cp.summary, at: new Date(cp.at).toISOString() } : null,
       ...caps,
       ...(await fuelSection(ctx, agent.agentId, t)),
-      ...coinFeesSection(config, inputs.market),
+      ...coinFeesSection(config, inputs.market, clankerV5CoinOf(ctx, agent)),
       // The bounties power (bounties.ts): the day's headroom, the open jobs, the last verdicts and the policy; empty while off.
       ...(await bountiesSection(ctx, agent, config)),
       ...(inputs.notes.length ? { treasuryNotes: { meaning: NOTES_MEANING, items: inputs.notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt })) } } : {}),

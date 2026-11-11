@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/Button';
 import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { XLinkedBadge } from '@/components/token/XLinkedBadge';
 import { CoinLabel, Rows } from './ProfileView';
+import { isClankerSource } from '@/lib/launch-source';
 
 function CoinLinks({ coin }: { coin: CreatorCoin }) {
   const links = useCoinLinks(coin.metadata);
@@ -58,7 +59,7 @@ function CoinRow({ coin }: { coin: CreatorCoin }) {
             <span className="text-caption text-mute">No agent</span>
           )}
           <XLinkedBadge agentId={coin.agentId} />
-          {coin.source === 'clanker' ? <Badge>Clanker</Badge> : null}
+          {isClankerSource(coin.source) ? <Badge>Clanker</Badge> : null}
           <CoinLinks coin={coin} />
         </div>
       </div>

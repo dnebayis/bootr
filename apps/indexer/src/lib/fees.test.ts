@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import { bpsByKind, classifyRecipient, classifySlots, DEAD_ADDRESS, REWARD_BPS_TOTAL, SLOTS_BPS_TOTAL, splitFee, swapFeePips, type RewardSlot } from './fees';
+import {
+  allocateClaim,
+  bpsByKind,
+  claimParts,
+  classifyRecipient,
+  classifySlots,
+  clankerV5ProtocolBps,
+  clankerV5ProtocolRate,
+  clankerV5SlotBps,
+  clankerV5SlotWeights,
+  DEAD_ADDRESS,
+  REWARD_BPS_TOTAL,
+  SLOTS_BPS_TOTAL,
+  slotsBpsTotal,
+  splitFee,
+  swapFeePips,
+  type LaunchSource,
+  type RewardSlot,
+} from './fees';
 
 const parties = {
   kernel: '0x00000000000000000000000000000000000000a1',
@@ -17,7 +35,7 @@ describe('RWAGMI reward slots', () => {
     const rewards = [slot(parties.kernel, 450), slot(parties.creator, 5850), slot(parties.platformRecipient, 2700), slot(RWAGMI, 1000, RWAGMI)];
     const kinds = classifySlots(rewards, { ...parties, burner: null });
     expect(kinds).toEqual(['agent', 'creator', 'platform', 'protocol']);
-    expect(bpsByKind(rewards, kinds)).toEqual({ agent: 450, creator: 5850, burn: 0, platform: 2700, protocol: 1000 });
+    expect(bpsByKind(rewards, kinds)).toEqual({ agent: 450, creator: 5850, burn: 0, platform: 2700, recipient: 0, protocol: 1000 });
   });
 
   it('classifies the buyback preset [kernel, creator, burner, platform] + RWAGMI', () => {
@@ -77,5 +95,90 @@ describe('two launch paths', () => {
     expect(swapFeePips('clanker', 10_000, 10_000)).toBe(12_000);
     expect(swapFeePips('clanker', 20_000, 20_000)).toBe(24_000);
     expect(swapFeePips('clanker', 0, 20_000)).toBe(24_000);
+    // Clanker v5: the pool's fee is 0 and the trader pays the tax as is, Clanker's share inside it.
+    expect(swapFeePips('clanker-v5', 0, 15_000)).toBe(15_000);
+  });
+});
+
+describe('Clanker v5 tax arithmetic (docs/design/clanker-v5-migration.md section 4)', () => {
+  it('Clanker keeps 10% of the tax, at least 0.5% and at most 1% of the trade', () => {
+    // 1e8 scale: 1.5% tax = 1_500_000; 10% of it (150_000) is under the 0.5% floor.
+    expect(clankerV5ProtocolRate(1_500_000)).toBe(500_000);
+    expect(clankerV5ProtocolRate(8_000_000)).toBe(800_000);
+    expect(clankerV5ProtocolRate(10_000_000)).toBe(1_000_000);
+    expect(clankerV5ProtocolRate(20_000_000)).toBe(1_000_000);
+    expect(clankerV5ProtocolBps(15_000)).toBe(3333);
+    expect(clankerV5ProtocolBps(12_000)).toBe(4166);
+    expect(clankerV5ProtocolBps(20_000)).toBe(2500);
+    // A policy read from LaunchTaxConfigured replaces the default.
+    expect(clankerV5ProtocolBps(15_000, { protocolTaxShare: 20_000_000, minimumProtocolFeeRate: 0, maximumProtocolFeeRate: 1_000_000 })).toBe(2000);
+    expect(slotsBpsTotal('clanker-v5', 3333)).toBe(6667);
+    expect(slotsBpsTotal('bootr', 1000)).toBe(9000);
+    expect(slotsBpsTotal('clanker', 2000)).toBe(10_000);
+  });
+
+  it('the launcher’s slot weights: the preset renormalised over the pool left after the burn, the creator takes the gap', () => {
+    expect(clankerV5SlotWeights({ agentBps: 500, burnBps: 0, platformBps: 3000 })).toEqual([500, 6500, 3000]);
+    expect(clankerV5SlotWeights({ agentBps: 500, burnBps: 1500, platformBps: 3000 })).toEqual([588, 5883, 3529]);
+  });
+
+  it('per-kind bps of the tax: the four kinds and Clanker’s share sum to 10000, the platform never above its share', () => {
+    // Standard preset at 1.5%: Clanker 3333, slots 6667 split 5 / 65 / 30.
+    const std = clankerV5SlotBps([500, 6500, 3000], 0, 3333);
+    expect(std).toEqual({ paid: [333, 4334, 2000], burn: 0, dividend: 0 });
+    expect(std.paid.reduce((a, b) => a + b, 0) + std.burn + 3333).toBe(REWARD_BPS_TOTAL);
+    // Buyback preset: the burn is 15% of the slot pool, in the coin; the paid slots share the other 85%.
+    const bb = clankerV5SlotBps([588, 5883, 3529], 1500, 3333);
+    expect(bb.burn).toBe(1000);
+    expect(bb.paid.reduce((a, b) => a + b, 0) + bb.burn + 3333).toBe(REWARD_BPS_TOTAL);
+    expect(bb.paid[2]! / 6667).toBeLessThanOrEqual(0.3);
+    expect(bb.paid[0]! / 6667).toBeCloseTo(0.05, 2);
+  });
+});
+
+describe('a claim is split over the claiming locker’s own path (the 2026-11-08 cross-booking fix)', () => {
+  // One wallet (FORK's creator, also a $BOOTR fee recipient) holds WETH balances on both a RWAGMI coin and a
+  // Clanker v4 coin; `feeBalance` groups by (recipient, asset) only, so both rows answer a WETH claim.
+  const RWAGMI_COIN = '0xb20000000000000000000000000000000000f0cc';
+  const BOOTR = '0xb1c3000000000000000000000000000000009565';
+  const source: Record<string, LaunchSource> = { [RWAGMI_COIN]: 'bootr', [BOOTR]: 'clanker' };
+  const rows = [
+    // RWAGMI: 0.00045 WETH settled, not yet claimed.
+    { id: `0xw-weth-${RWAGMI_COIN}`, token: RWAGMI_COIN, settled: 450_000_000_000_000n, claimed: 0n },
+    // Clanker v4: 0.0012 WETH stored in the fee locker.
+    { id: `0xw-weth-${BOOTR}`, token: BOOTR, settled: 1_200_000_000_000_000n, claimed: 0n },
+  ];
+  const claim = 1_200_000_000_000_000n; // ClankerFeeLocker.ClaimTokens: exactly the $BOOTR balance
+
+  it('reproduces the bug: split over every row of the wallet, the Clanker coin comes out short', () => {
+    const naive = allocateClaim(
+      rows.map((r) => r.settled - r.claimed),
+      claim,
+    );
+    expect(naive[1]).toBeLessThan(claim);
+    expect(claim - naive[1]!).toBeGreaterThan(0n);
+    expect(naive[0]).toBeGreaterThan(0n); // booked against a RWAGMI coin the Clanker locker never paid
+  });
+
+  it('with the source filter the Clanker claim lands on the Clanker coin in full, and a RWAGMI claim on the RWAGMI coin', () => {
+    const v4 = claimParts(rows, (t) => source[t] ?? null, 'clanker', claim);
+    expect(v4.map((p) => [p.row.token, p.part])).toEqual([[BOOTR, claim]]);
+    const rw = claimParts(rows, (t) => source[t] ?? null, 'bootr', 450_000_000_000_000n);
+    expect(rw.map((p) => [p.row.token, p.part])).toEqual([[RWAGMI_COIN, 450_000_000_000_000n]]);
+    // A v5 escrow claim never touches either; unknown coins are dropped too.
+    expect(claimParts(rows, (t) => source[t] ?? null, 'clanker-v5', claim)).toEqual([]);
+    expect(claimParts(rows, () => null, 'clanker', claim)).toEqual([]);
+  });
+
+  it('still pro-rates within one path (a creator with several coins of the same locker)', () => {
+    const two = [
+      { id: 'b', token: '0xbb', settled: 300n, claimed: 0n },
+      { id: 'a', token: '0xaa', settled: 100n, claimed: 0n },
+    ];
+    const parts = claimParts(two, () => 'clanker-v5', 'clanker-v5', 200n);
+    expect(parts.map((p) => [p.row.id, p.part])).toEqual([
+      ['a', 50n],
+      ['b', 150n],
+    ]);
   });
 });

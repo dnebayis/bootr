@@ -12,6 +12,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { agents, approvals, notificationSettings, runtimes } from './db/schema.js';
 import { agentHasGasRule, gasReading, gasSelfFunded, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasStatus } from './gas.js';
 import { fuelReport, recentThoughtCost } from './inference.js';
+import { agentSource, clankerV5QuoteOf, pairedAssetOf } from './launch-source.js';
 import { applyOutcomes, flushNotifications, MODEL_CHANGED_VISIBLE_MS, pruneNotifications, resolveNotification, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
 import { notifications } from './db/schema.js';
 import type { SenderAccount } from './sender-client.js';
@@ -50,6 +51,11 @@ export interface HealthFacts {
   fuel: FuelFacts | null;
   /** null: could not be read. */
   gas: GasStatus | null;
+  /**
+   * True for an agent whose own fees can never become gas (a Clanker v5 coin paired with USDC; owner's answer 6,
+   * 2026-11-10): the out-of-gas notice then says the gas comes only from the creator. Absent = false.
+   */
+  gasFromCreatorOnly?: boolean;
   /** null: the sender could not be reached. */
   x: Pick<SenderAccount, 'connected' | 'revoked'> | null;
   key: { validUntil: number | null; rotateBeforeMs: number; outdated: boolean };
@@ -78,7 +84,7 @@ function reviewOutcomes(reviews: ReviewFacts, now: number): Pick<HealthOutcomes,
 /** The pure part of the check: facts in, per-event outcome out; anything unknown is left out of the answer. */
 export function evaluateHealth(f: HealthFacts): HealthOutcomes {
   const out: HealthOutcomes = reviewOutcomes(f.reviews, f.now);
-  if (f.gas) out.gas_out = f.gas === 'empty' ? {} : false;
+  if (f.gas) out.gas_out = f.gas === 'empty' ? (f.gasFromCreatorOnly ? { creatorOnly: 1 } : {}) : false;
   // Before an agent is active it has no turns to speak of; gas is what can hold its setup up (onboarding.ts).
   if (f.agentStatus !== 'active') return out;
 
@@ -208,6 +214,7 @@ export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, 
     reviews,
     fuel,
     gas,
+    gasFromCreatorOnly: agentSource(agent) === 'clanker-v5' && pairedAssetOf(ctx, clankerV5QuoteOf(agent)) === 'USDC',
     x,
     key: {
       validUntil: agent.sessionValidUntil ? agent.sessionValidUntil.getTime() : null,

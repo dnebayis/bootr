@@ -17,3 +17,9 @@ interface ISwapRouter02 {
 
     function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 }
+
+/// @dev Uniswap v3 `UniswapV3Factory` (`getPool` is order-insensitive and returns `address(0)` for no pool).
+///      Base: 0x33128a8fC17869897dcE68Ed026d694621f6FDfD (the factory Clanker v5's launch-buy adapter accepts).
+interface IUniswapV3Factory {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+}

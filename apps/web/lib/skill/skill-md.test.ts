@@ -7,6 +7,20 @@ import { describe, expect, it } from 'vitest';
 import { DOC_CONTENT } from '@/components/docs/content';
 import { DOC_PAGES, type DocSlug } from '@/components/docs/pages';
 import { SKILL_NAME, skillMarkdown } from './skill-md';
+import {
+  creatorPoolBps,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
+  DEFAULT_TAX_PCT,
+  defaultTokenSettings,
+  FALLBACK_V5_BOUNDS,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  MIN_DIVIDEND_HOLDING,
+  pairedAssetsFor,
+  V5_STRING_CAPS,
+  viewPins,
+  type TokenSettingsInput,
+} from '@/lib/token-settings';
+import { clankerLauncherV5Abi } from '@/lib/abi/clankerLauncherV5.abi';
 
 const SITE = 'https://bootr.fun';
 const md = skillMarkdown(SITE);
@@ -186,6 +200,48 @@ describe('matches the agent API', () => {
     expect(post).not.toMatch(/origin: SITE/i);
     expect(post).toContain('a browser sends its own `Origin`');
     expect(errors).not.toContain('Send `Origin:');
+  });
+
+  it('documents every Clanker v5 token setting with the bounds the API checks', () => {
+    const reference = section('Launch Configuration Reference');
+    const fields = Object.keys(defaultTokenSettings('0x1111111111111111111111111111111111111111')) as (keyof TokenSettingsInput)[];
+    for (const f of fields) expect(reference, f).toMatch(new RegExp(`\\| [^|]*\`${f}\`[^|]*\\|`));
+    const b = FALLBACK_V5_BOUNDS;
+    expect(reference).toContain(`${b.minTaxBps / 10_000} to ${b.maxTaxBps / 10_000}, each side on its own`);
+    expect(reference).toContain(`| \`buyTaxPct\`, \`sellTaxPct\` | \`${DEFAULT_TAX_PCT}\` |`);
+    expect(reference).toContain(`The agent keeps ${b.agentShareBps / 100}% and the platform ${b.platformShareBps / 100}%, locked`);
+    expect(reference).toContain(`together take at most ${creatorPoolBps(b) / 100}%`);
+    expect(reference).toContain(`1 to ${b.maxRewardRows} rows`);
+    expect(reference).toContain(`up to ${b.maxRewardRows - 1} more`);
+    expect(reference).toContain(`| \`minDividendHolding\` | \`${MIN_DIVIDEND_HOLDING}\` |`);
+    for (const a of pairedAssetsFor('agent')) expect(reference).toContain(`\`${a.symbol}\``);
+    // The route parses `token` with the same module and refuses it off v5.
+    expect(LAUNCH).toContain('parseTokenSettings(l.token, creator, terms.bounds)');
+    expect(LAUNCH).toContain("return invalid('token', `token settings apply to Clanker v5 launches only");
+  });
+
+  it('documents the v5 pins, the byte caps and the dev buy’s minimum from the code', () => {
+    const reference = section('Launch Configuration Reference');
+    // every pin the settings builder fills, by its struct name
+    for (const pin of Object.keys(viewPins())) expect(reference, pin).toContain(`\`${pin}\``);
+    const launch = clankerLauncherV5Abi.find((e) => e.type === 'function' && e.name === 'launch')!;
+    const struct = (launch.inputs[1] as { components: readonly { name: string }[] }).components.map((c) => c.name);
+    expect(struct.slice(-5)).toEqual(Object.keys(viewPins()));
+    // the caps, in bytes, as the contract and lib/token-settings.ts have them
+    for (const [k, v] of Object.entries(V5_STRING_CAPS)) expect(reference, k).toContain(`${v.toLocaleString('en-US')}`);
+    expect(reference).toContain(`| \`devBuySlippagePct\` | \`${DEFAULT_DEV_BUY_SLIPPAGE_PCT}\` |`);
+    expect(reference).toContain(`0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT}`);
+    // the route applies them: default slippage, the quote, the caps
+    expect(LAUNCH).toContain('DEFAULT_DEV_BUY_SLIPPAGE_PCT');
+    expect(LAUNCH).toContain('minDevBuyOutFrom(quotedOut, slippagePct)');
+    expect(LAUNCH).toContain('launchStringProblems(');
+    // every launcher revert the skill names exists in the ABI (StaleConfig is Clanker's, through the launcher)
+    const errorNames = new Set<string>(clankerLauncherV5Abi.filter((e) => e.type === 'error').map((e) => e.name));
+    for (const name of ['LaunchFeeAboveMax', 'LockedSharesChanged', 'MinDevBuyOutRequired', 'StringTooLong', 'InsufficientValue', 'InsufficientFuel', 'EmptyNameOrSymbol']) {
+      expect(errorNames.has(name), name).toBe(true);
+      expect(md, name).toContain(`\`${name}`);
+    }
+    expect(md).toContain('`StaleConfig`');
   });
 
   it('documents every field of the launch body', () => {

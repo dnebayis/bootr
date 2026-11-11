@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Field';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { useCreatorSignature } from './creator-signature';
+import { isClankerSource } from '@/lib/launch-source';
 
 type Draft = Record<LinkKind, string>;
 
@@ -107,7 +108,7 @@ export function CoinLinksForm({ token }: { token: Token }) {
     >
       <div>
         <h3 className="text-caption font-medium text-ink">Links</h3>
-        <p className="mt-0.5 text-caption text-mute">Shown on the coin page and written into the coin’s contract metadata. Clear a field to remove a link.{token.source === 'clanker' ? ' Clanker’s own page keeps the links set at launch.' : ''}</p>
+        <p className="mt-0.5 text-caption text-mute">Shown on the coin page and written into the coin’s contract metadata. Clear a field to remove a link.{isClankerSource(token.source) ? ' Clanker’s own page keeps the links set at launch.' : ''}</p>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {FIELDS.map(({ kind, label, placeholder, url }) => (

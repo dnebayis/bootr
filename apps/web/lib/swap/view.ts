@@ -9,28 +9,31 @@ export const GAS_RESERVE_WEI = 500_000_000_000_000n;
 /** A fee this far above the coin's normal one is Clanker's launch fee. Measured fees sit within 0.02 of normal. */
 export const LAUNCH_FEE_MARGIN_PCT = 0.5;
 
-/** Text the user typed as base units; null for anything that is not a positive amount a swap can carry. */
-export function parseAmount(text: string): bigint | null {
+/**
+ * Text the user typed as base units (18 decimals for ETH and every coin, 6 for USDC); null for anything that is not a
+ * positive amount a swap can carry.
+ */
+export function parseAmount(text: string, decimals = COIN_DECIMALS): bigint | null {
   const s = text.trim();
   if (!/^(\d+\.?\d*|\.\d+)$/.test(s)) return null;
   const fraction = s.split('.')[1] ?? '';
-  if (fraction.length > COIN_DECIMALS) return null;
-  const value = parseUnits(s, COIN_DECIMALS);
+  if (fraction.length > decimals) return null;
+  const value = parseUnits(s, decimals);
   return value > 0n && value < 1n << 128n ? value : null;
 }
 
 /** An amount for reading, not for arithmetic: 28.64M, 1,234.5, 0.0071479. */
-export function formatAmount(raw: bigint): string {
-  const n = Number(formatUnits(raw, COIN_DECIMALS));
+export function formatAmount(raw: bigint, decimals = COIN_DECIMALS): string {
+  const n = Number(formatUnits(raw, decimals));
   if (n === 0) return '0';
   if (n >= 1_000_000) return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(n);
   if (n >= 1) return n.toLocaleString('en-US', { maximumFractionDigits: 4 });
-  return n.toLocaleString('en-US', { maximumSignificantDigits: 5, maximumFractionDigits: COIN_DECIMALS });
+  return n.toLocaleString('en-US', { maximumSignificantDigits: 5, maximumFractionDigits: decimals });
 }
 
 /** A user's own amount as an input value, in full: no rounding, no separators. */
-export function amountInput(raw: bigint): string {
-  return formatUnits(raw, COIN_DECIMALS);
+export function amountInput(raw: bigint, decimals = COIN_DECIMALS): string {
+  return formatUnits(raw, decimals);
 }
 
 /** Basis points from a percent the user typed; null outside 0.01% to the maximum. */

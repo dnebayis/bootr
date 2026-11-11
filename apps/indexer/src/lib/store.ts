@@ -9,8 +9,9 @@ import { ChainlinkAggregatorAbi } from '../../abis/ChainlinkAggregator';
 import { safeMessage } from '../../rpc-budget';
 import { secondsBetweenBlocks } from './blocks';
 import { indexerEnv } from './env';
-import { classifyRecipient, DEAD_ADDRESS as DEAD, type LaunchSource, type RecipientKind } from './fees';
-import { chainlinkToUsd, coinPriceInWeth, liquidityUsd, toUnits, unitPrice, usd } from './price';
+import { classifyRecipient, DEAD_ADDRESS as DEAD, parseLaunchSource, type LaunchSource, type RecipientKind } from './fees';
+import { chainlinkToUsd, toUnits, usd } from './price';
+import { marketFields } from './quote';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
 import { addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
@@ -59,11 +60,16 @@ export async function getEthUsd(context: Ctx, blockNumber: bigint, force = false
   return row?.priceUsd ?? 0;
 }
 
-/** USD value of a fee/treasury asset amount: WETH at ETH/USD, the coin at its pool price. */
+/**
+ * USD value of a fee/treasury asset amount: WETH or native ETH (the zero address, the v5 quote) at ETH/USD, USDC at
+ * one dollar (6 decimals), the coin at its pool price.
+ */
 export function assetUsd(asset: string, amount: bigint, coin: TokenRow, ethUsd: number): number {
-  const weth = lc(indexerEnv().addresses.weth);
-  if (lc(asset) === weth) return usd(toUnits(amount, 18) * ethUsd);
-  if (lc(asset) === lc(coin.id)) return usd(toUnits(amount, 18) * coin.priceUsd);
+  const a = lc(asset);
+  const env = indexerEnv();
+  if (a === lc(env.addresses.weth) || a === ZERO_ADDRESS) return usd(toUnits(amount, 18) * ethUsd);
+  if (a === lc(env.addresses.usdc)) return usd(toUnits(amount, 6));
+  if (a === lc(coin.id)) return usd(toUnits(amount, 18) * coin.priceUsd);
   return 0;
 }
 
@@ -247,9 +253,9 @@ export async function bumpSource(context: Ctx, source: LaunchSource, ts: number,
 }
 
 /** `token.source` as the typed union (the column is text). */
-export const sourceOf = (t: Pick<TokenRow, 'source'>): LaunchSource => (t.source === 'clanker' ? 'clanker' : 'bootr');
+export const sourceOf = (t: Pick<TokenRow, 'source'>): LaunchSource => parseLaunchSource(t.source);
 
-/** The kind of a fee recipient of this coin; the dead address is the burn slot on either path. */
+/** The kind of a fee recipient of this coin; the dead address is the burn slot on every path. */
 export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind | null {
   return classifyRecipient(recipient, {
     kernel: t.kernel,
@@ -261,26 +267,8 @@ export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind 
 
 // ------------------------------------------------------------------ token market state
 
-/** Recompute price-derived fields of a token from its pool state. */
-export function marketFields(t: TokenRow, ethUsd: number) {
-  const priceWeth = coinPriceInWeth(t.sqrtPriceX96, t.coinIsToken0);
-  const priceUsd = unitPrice(priceWeth * ethUsd);
-  return {
-    priceWeth,
-    priceUsd,
-    marketCapUsd: usd(priceUsd * toUnits(t.totalSupply, 18)),
-    liquidityUsd: liquidityUsd({
-      // The locked position; active liquidity is 0 while the price sits on the range edge.
-      liquidity: t.positionLiquidity > t.poolLiquidity ? t.positionLiquidity : t.poolLiquidity,
-      sqrtPriceX96: t.sqrtPriceX96,
-      // The token's own position range (Clanker pools are not the RWAGMI launch range).
-      tickLower: t.tickLower,
-      tickUpper: t.tickUpper,
-      coinIsToken0: t.coinIsToken0,
-      ethUsd,
-    }),
-  };
-}
+/** Recompute price-derived fields of a token from its pool state (lib/quote.ts `marketFields`). */
+export { marketFields };
 
 /** Rolling-window fields from the token's hourly buckets. */
 export function windowFields(buckets: Bucket[], now: number, priceUsd: number) {

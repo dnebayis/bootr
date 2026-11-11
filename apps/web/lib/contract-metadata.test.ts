@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CardToken } from './agent-card';
 import { contractUriUrl } from './agent-card';
-import { buildContractMetadata, clankerTokenMetadata } from './contract-metadata';
+import { buildContractMetadata, clankerTokenMetadata, coinDescription } from './contract-metadata';
 import { env } from './env';
 
 const DRAFT = '3b241101-e2bb-4255-8caf-4136c566a962';
@@ -93,8 +93,58 @@ describe('a Clanker token\'s on-chain metadata', () => {
         { platform: 'telegram', url: 'https://t.me/quiet' },
         { platform: 'website', url: 'https://quiet.engine' },
       ],
+      auditUrls: [],
       contractUri: uri,
     });
+  });
+
+  it("is the JSON itself in the shape Clanker's deploy form writes, never a link", () => {
+    const links = { website: 'https://bootr.fun', x: 'https://x.com/bootrfun', telegram: null, discord: null };
+    const raw = clankerTokenMetadata({ ...coin, name: 'Bootr', xHandle: null, links }, uri, 'Runs the Bootr launchpad.\nMore lines.');
+    expect(raw.startsWith('{')).toBe(true);
+    const doc = JSON.parse(raw) as Record<string, unknown>;
+    // Clanker's keys in Clanker's order, our hosted document last (clanker.world keeps the extra key).
+    expect(Object.keys(doc)).toEqual(['description', 'socialMediaUrls', 'auditUrls', 'contractUri']);
+    expect(doc).toEqual({
+      description: 'Runs the Bootr launchpad. — an autonomous agent coin launched on Bootr.',
+      socialMediaUrls: [
+        { platform: 'x', url: 'https://x.com/bootrfun' },
+        { platform: 'website', url: 'https://bootr.fun' },
+      ],
+      auditUrls: [],
+      contractUri: uri,
+    });
+    for (const s of doc.socialMediaUrls as { platform: string; url: string }[]) {
+      expect(['x', 'website', 'telegram', 'discord']).toContain(s.platform);
+      expect(s.url).toMatch(/^https:\/\//);
+    }
+  });
+
+  it('lists Discord under its own platform key and escapes what JSON must', () => {
+    const links = { ...none, discord: 'https://discord.gg/quiet' };
+    const raw = clankerTokenMetadata({ ...coin, xHandle: null, links }, uri, 'Says "hello" and \\ backslashes, ünïcode 🚀');
+    const doc = JSON.parse(raw) as { description: string; socialMediaUrls: unknown[] };
+    expect(doc.description).toBe('Says "hello" and \\ backslashes, ünïcode 🚀 — an autonomous agent coin launched on Bootr.');
+    expect(doc.socialMediaUrls).toEqual([
+      { platform: 'discord', url: 'https://discord.gg/quiet' },
+      { platform: 'website', url: env.siteUrl },
+    ]);
+  });
+
+  it('describes the coin the same way on chain and in the hosted document', () => {
+    const identity = 'A patient onchain analyst.\nNo hype.';
+    const hosted = buildContractMetadata({ identity, coin }, null);
+    expect(JSON.parse(clankerTokenMetadata(coin, uri, identity)).description).toBe(hosted.description);
+    // The browser sends the raw text, the server stores it normalized: both give the same line.
+    expect(coinDescription('Quiet Engine', '\n  A  patient​ onchain analyst.\r\nNo hype.')).toBe(hosted.description);
+    expect(coinDescription('Quiet Engine', null)).toBe('Quiet Engine: an autonomous agent coin launched on Bootr.');
+    expect(coinDescription('Quiet Engine', '   ')).toBe('Quiet Engine: an autonomous agent coin launched on Bootr.');
+  });
+
+  it('stays small at the longest instructions and links (the fork tests launch a string this size)', () => {
+    const long = { website: `https://${'w'.repeat(180)}.example`, x: 'https://x.com/abcdefghijklmno', telegram: `https://t.me/${'t'.repeat(32)}`, discord: `https://discord.gg/${'d'.repeat(32)}` };
+    const raw = clankerTokenMetadata({ ...coin, xHandle: 'zyxwvutsrqponml', links: long }, uri, 'a'.repeat(600));
+    expect(new TextEncoder().encode(raw).length).toBeLessThan(1_500);
   });
 
   it('lists one X entry when the accounts are the same, and the site when no website was given', () => {

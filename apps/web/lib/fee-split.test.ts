@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Address } from 'viem';
-import { DEAD_ADDRESS, feeModelOf, launcherPct, ofVolume, pctLabel, platformSlot, slotsBps, splitFromSlots, swapFeePct, traderPaysPct, type FeeModel, type Slot } from './fee-split';
+import { clankerV5ProtocolBps, DEAD_ADDRESS, feeModelOf, launcherName, launcherPct, ofVolume, pctLabel, platformSlot, slotsBps, splitFromSlots, swapFeePct, traderPaysPct, type FeeModel, type Slot } from './fee-split';
 
 const KERNEL = '0x1000000000000000000000000000000000000001' as Address;
 const CREATOR = '0x2000000000000000000000000000000000000002' as Address;
@@ -73,6 +73,29 @@ describe('fee model (Bootr vs Clanker)', () => {
     expect(pctLabel(ofVolume(preset, 'platform', clanker))).toBe('0.30%');
     expect(pctLabel(ofVolume(preset, 'creator', clanker2))).toBe('1.30%');
     expect(slotsBps(clanker)).toBe(10_000);
+  });
+
+  it('Clanker v5: the trader pays the tax, Clanker keeps its share inside it, the slots share the rest', () => {
+    const v5: FeeModel = { source: 'clanker-v5', lpFeeBps: 15_000 };
+    expect(clankerV5ProtocolBps(15_000)).toBe(3333);
+    expect(clankerV5ProtocolBps(20_000)).toBe(2500);
+    expect(clankerV5ProtocolBps(100_000)).toBe(1000);
+    expect(pctLabel(traderPaysPct(v5))).toBe('1.50%');
+    expect(pctLabel(launcherPct(v5))).toBe('0.50%');
+    expect(slotsBps(v5)).toBe(6667);
+    const standard = { agent: 500, creator: 6500, burn: 0, platform: 3000 };
+    expect(pctLabel(ofVolume(standard, 'agent', v5))).toBe('0.05%');
+    expect(pctLabel(ofVolume(standard, 'creator', v5))).toBe('0.65%');
+    expect(pctLabel(ofVolume(standard, 'platform', v5))).toBe('0.30%');
+    const buyback = { agent: 500, creator: 5000, burn: 1500, platform: 3000 };
+    expect(pctLabel(ofVolume(buyback, 'burn', v5))).toBe('0.15%');
+    // The coin's indexed slots (summing to 10000 − protocolBps) give the same shares and Clanker's share back.
+    const coin = feeModelOf({ source: 'clanker-v5', lpFeeBps: 15_000, agentBps: 333, creatorBps: 4334, burnBps: 0, platformBps: 2000 });
+    expect(coin).toEqual({ source: 'clanker-v5', lpFeeBps: 15_000, protocolBps: 3333 });
+    expect(pctLabel(ofVolume({ agent: 333, creator: 4334, burn: 0, platform: 2000 }, 'creator', coin))).toBe('0.65%');
+    // Without slots or a fee, a v5 coin reads as the 1.5% default.
+    expect(feeModelOf({ source: 'clanker-v5' })).toEqual({ source: 'clanker-v5', lpFeeBps: 15_000, protocolBps: 3333 });
+    expect(launcherName(v5)).toBe('Clanker');
   });
 
   it('classifies Clanker slots that total 10000 bps, with the burn slot at the dead address', () => {

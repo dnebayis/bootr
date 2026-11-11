@@ -62,9 +62,20 @@ class IndexerError extends Error {}
  */
 let indexerHasSource = true;
 const SOURCE_FIELD = /\bsource\b/g;
+/**
+ * The token row's Clanker v5 settings fields (lib/types.ts) arrive with the v5 settings launcher; an indexer without
+ * them rejects the first one, and every later query drops the whole group (the coin pages then show a v5 coin from its
+ * slot fields, as before).
+ */
+let indexerHasV5Settings = true;
+const V5_FIELDS =
+  'pairedSymbol pairedDecimals priceQuote buyTaxBps sellTaxBps rewardsBps dividendBps protocolBps minDividendHolding dividendContract dividendsTotalUsd antiSnipe metadataEditable metadataLocked metadataUpdatedAt';
+const V5_SETTINGS_FIELD = new RegExp(V5_FIELDS.replace(/ /g, '\\s+'), 'g');
+const V5_FIELD_ERROR = new RegExp(`Cannot query field "(${V5_FIELDS.split(' ').join('|')})"`);
 
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
+  let q = indexerHasSource ? query : query.replace(SOURCE_FIELD, '');
+  if (!indexerHasV5Settings) q = q.replace(V5_SETTINGS_FIELD, '');
   const res = await fetch(`${env.indexerUrl}/graphql`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -76,6 +87,10 @@ async function gql<T>(query: string, variables: Record<string, unknown> = {}): P
     const message = json.errors.map((e) => e.message).join('; ');
     if (indexerHasSource && /Cannot query field "source"/.test(message)) {
       indexerHasSource = false;
+      return gql(query, variables);
+    }
+    if (indexerHasV5Settings && V5_FIELD_ERROR.test(message)) {
+      indexerHasV5Settings = false;
       return gql(query, variables);
     }
     throw new IndexerError(message);
@@ -99,6 +114,7 @@ const TOKEN_FIELDS = /* GraphQL */ `
   id chainId name symbol image creator kernel burner platformRecipient agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
   priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt lastTradeAt
+  ${V5_FIELDS}
   agent { id status }
 `;
 

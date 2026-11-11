@@ -3,7 +3,9 @@
  * Deterministic (seeded) so reloads look the same; a small simulator mutates the store
  * and emits stream hints so live UI (reordering grid, ticking numbers) can be exercised.
  */
-import type { Address, Hex } from 'viem';
+import { zeroAddress, type Address, type Hex } from 'viem';
+import { CLANKER_V5_DEFAULT_TAX_BPS, clankerV5ProtocolBps } from './fee-split';
+import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, viewPins, type ContractTokenSettings, type V5Bounds } from './token-settings';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
@@ -180,8 +182,9 @@ const TWO_SLOT_WALLETS: Record<string, CreatorCoin['creatorFees']> = {
   },
 };
 
-function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number): { token: Token; agent: Agent } {
-  const id = hex(rand, 20) as Address;
+function makeToken(i: number, name: string, symbol: string, launchedAt: number, rand: () => number, idOverride?: Address): { token: Token; agent: Agent } {
+  const drawn = hex(rand, 20) as Address;
+  const id = idOverride ?? drawn;
   const kernel = hex(rand, 20) as Address;
   const buyback = rand() < 0.35;
   // Skewed: most coins are small; older coins drift larger. ~1 in 4 graduates.
@@ -262,6 +265,13 @@ function makeToken(i: number, name: string, symbol: string, launchedAt: number, 
 
 /** The one mock coin launched through Clanker (`Basewatch`): the fourth newest, so the newest coin stays a Bootr coin. */
 const CLANKER_INDEX = 3;
+/** The one mock coin launched through Clanker v5 (`Gas Station`, $GAS): the eighth newest, out of the tests' first cards. */
+const CLANKER_V5_INDEX = 7;
+/**
+ * The mock coin launched through the settings launcher (`Sigma Desk`, $SIGMA): paired with USDC, 2% buy and 3% sell tax,
+ * 10% burn, 5% holder dividends, two reward rows, editable metadata.
+ */
+const CLANKER_V5_USDC_INDEX = 8;
 /** The one mock coin whose agent is brand new (`Night Shift`): the fifth newest, so the tests' "first card" keeps a working agent. */
 const FRESH_INDEX = 4;
 
@@ -313,6 +323,65 @@ function clankerize(token: Token, lpFeeBps = 10000) {
   token.burner = token.burnBps > 0 ? DEAD : null;
 }
 
+/**
+ * Turns a mock token into a Clanker v5 coin: a 1.5% tax, paired with native ETH, and the slots stored the way the
+ * indexer stores them (the preset scaled to the tax less Clanker's share, the rounding gap to the creator).
+ */
+function clankerizeV5(token: Token, taxBps = CLANKER_V5_DEFAULT_TAX_BPS) {
+  const protocolBps = clankerV5ProtocolBps(taxBps);
+  const pool = 10_000 - protocolBps;
+  const scale = (bps: number) => Math.floor((bps * pool) / 10_000);
+  token.source = 'clanker-v5';
+  token.lpFeeBps = taxBps;
+  token.pairedToken = zeroAddress;
+  token.burner = token.burnBps > 0 ? DEAD : null;
+  const agent = scale(token.agentBps);
+  const burn = scale(token.burnBps);
+  const platform = scale(token.platformBps);
+  token.agentBps = agent;
+  token.burnBps = burn;
+  token.platformBps = platform;
+  token.creatorBps = pool - agent - burn - platform;
+}
+
+/**
+ * Turns a mock token into a v5 coin launched with creator-set settings, stored the way the indexer reports it
+ * (apps/indexer README, "Clanker v5 token settings"): `pairedToken` the quote, `lpFeeBps` the buy tax, and every share
+ * in bps of the buy tax with Clanker's share inside it, `agent + creator + rewards + burn + dividend + platform =
+ * 10000 − protocolBps`, the creator's own row in `creatorBps`, the extra rows in `rewardsBps`, the rounding gap to the
+ * last creator row.
+ */
+function applyV5Settings(token: Token, s: ContractTokenSettings, b: V5Bounds = FALLBACK_V5_BOUNDS) {
+  token.source = 'clanker-v5';
+  token.lpFeeBps = s.buyTaxBps;
+  token.pairedToken = s.quoteToken;
+  token.burner = s.burnBps > 0 ? DEAD : null;
+  const protocolBps = clankerV5ProtocolBps(s.buyTaxBps);
+  const pool = 10_000 - protocolBps;
+  const scale = (bps: number) => Math.floor((bps * pool) / 10_000);
+  token.protocolBps = protocolBps;
+  token.agentBps = scale(b.agentShareBps);
+  token.platformBps = scale(b.platformShareBps);
+  token.burnBps = scale(s.burnBps);
+  token.dividendBps = scale(s.dividendBps);
+  const funds = pool - token.agentBps - token.platformBps - token.burnBps - token.dividendBps;
+  const own = s.rewards[0]?.bps ?? 0;
+  token.creatorBps = s.rewards.length > 1 ? Math.floor((funds * own) / 10_000) : funds;
+  token.rewardsBps = funds - token.creatorBps;
+  // The other token-row fields (lib/types.ts), as the indexer reports them for a settings coin.
+  const asset = pairedAssetByAddress(s.quoteToken);
+  token.pairedSymbol = asset?.symbol ?? null;
+  token.pairedDecimals = asset?.decimals ?? null;
+  token.buyTaxBps = s.buyTaxBps;
+  token.sellTaxBps = s.sellTaxBps;
+  token.minDividendHolding = s.minDividendHolding.toString();
+  token.antiSnipe = s.antiSnipe;
+  token.metadataEditable = s.metadataEditable;
+  token.metadataLocked = false;
+  // Mock mode also keeps what the row does not carry (live, the coin page reads them from the chain).
+  token.v5Extras = { rewards: s.rewards.map((r) => ({ ...r })), metadataJson: null };
+}
+
 function makeTrades(t: Token, rand: () => number, now: number): Trade[] {
   const out: Trade[] = [];
   let ts = now - Math.floor(rand() * 120);
@@ -349,6 +418,26 @@ function init(): Store {
   NAMES.forEach(([name, symbol], i) => {
     const { token, agent } = makeToken(i, name, symbol, launchedAt, rand);
     if (i === CLANKER_INDEX) clankerize(token);
+    if (i === CLANKER_V5_INDEX) clankerizeV5(token);
+    if (i === CLANKER_V5_USDC_INDEX) {
+      applyV5Settings(token, {
+        quoteToken: pairedAssetBySymbol('USDC')!.address,
+        buyTaxBps: 20_000,
+        sellTaxBps: 30_000,
+        burnBps: 1_000,
+        dividendBps: 500,
+        minDividendHolding: 10_000n * 10n ** 18n,
+        rewards: [
+          { recipient: token.creator, admin: token.creator, bps: 8_000 },
+          { recipient: '0x00000000000000000000000000000000000c0de5', admin: token.creator, bps: 2_000 },
+        ],
+        antiSnipe: true,
+        metadataEditable: true,
+        contractURI: token.metadata,
+        ...viewPins(),
+      });
+      token.v5Extras!.metadataJson = JSON.stringify({ description: `${name}: an autonomous agent coin launched on Bootr.`, socialMediaUrls: [], auditUrls: [] });
+    }
     if (i === FRESH_INDEX) {
       freshen(token, agent);
       fresh.add(token.kernel.toLowerCase());
@@ -531,14 +620,38 @@ export const mock = {
   },
   /**
    * Deterministic WETH balance (wei) waiting in Clanker's fee locker for `owner`, in place of
-   * `ClankerFeeLocker.availableFees(owner, WETH)`: between 0.001 and 0.05 WETH, never zero, so the creator panels
-   * always have something to claim in mock mode.
+   * `ClankerFeeLocker.availableFees(owner, WETH)` (or, `version` 5, the ETH in Clanker v5's escrow,
+   * `FeeEscrow.owed(owner, 0x0)`): between 0.001 and 0.05, never zero, so the creator panels always have something to
+   * claim in mock mode.
    */
-  clankerFees(owner: string): bigint {
+  clankerFees(owner: string, version: 4 | 5 = 4, asset: Address = zeroAddress): bigint {
     let h = 2166136261;
-    for (const ch of `${owner.toLowerCase()}:clanker-fees`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const usdc = BigInt(asset) !== 0n;
+    for (const ch of `${owner.toLowerCase()}:${version === 5 ? 'clanker-v5-fees' : 'clanker-fees'}${usdc ? `:${asset.toLowerCase()}` : ''}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
     const r = mulberry32(h >>> 0);
+    // USDC (6 decimals): between 1 and 50 USDC.
+    if (usdc) return BigInt(1_000_000 + Math.floor(r() * 49_000_000));
     return BigInt(1000 + Math.floor(r() * 49_000)) * 10n ** 12n;
+  },
+  /**
+   * The creator's on-chain image and metadata edits of an editable v5 coin (`updateImage`, `updateMetadata`,
+   * `lockMetadata` on the launcher), applied to the mock store like the indexer applies `ExtraMetadataUpdated`.
+   */
+  updateV5Metadata(tokenId: string, edit: { image?: string; metadataJson?: string; lock?: boolean }): boolean {
+    const t = mockStore().tokens.find((x) => x.id.toLowerCase() === tokenId.toLowerCase());
+    if (!t || t.source !== 'clanker-v5' || !t.metadataEditable || t.metadataLocked) return false;
+    if (edit.image !== undefined) {
+      t.image = edit.image;
+      delete t.imageOnChain;
+    }
+    if (edit.metadataJson !== undefined) t.v5Extras = { ...t.v5Extras, metadataJson: edit.metadataJson };
+    // Like the indexer: locked, and no longer editable.
+    if (edit.lock) {
+      t.metadataLocked = true;
+      t.metadataEditable = false;
+    }
+    t.metadataUpdatedAt = Math.floor(Date.now() / 1000);
+    return true;
   },
   /**
    * Deterministic agent gas (wei) for mock mode, in place of `EntryPoint.balanceOf(kernel)` and the kernel's
@@ -756,7 +869,7 @@ export const mock = {
     const s = mockStore();
     const mine = s.tokens.filter((t) => t.creator.toLowerCase() === creator.toLowerCase());
     // Demo fallback so a freshly connected wallet sees a populated profile in mock mode.
-    return clone(mine.length ? mine : s.tokens.slice(2, 5));
+    return clone(mine.length ? mine : [...s.tokens.slice(2, 5), s.tokens[CLANKER_V5_INDEX]!]);
   },
   holdings(): Holding[] {
     const s = mockStore();
@@ -1439,10 +1552,14 @@ export function mockLaunch(input: {
   workerHash?: Hex;
   /** The coin's own links from the form, shown on the mock coin page like the hosted contract URI would. */
   links?: CoinPageLinks;
+  /** The coin's address when the form predicted it (a Clanker v5 launch mines one ending in `cccc`). */
+  id?: Address;
+  /** A v5 launch's token settings as sent to the launcher, and the bounds they were checked against. */
+  v5Settings?: { settings: ContractTokenSettings; bounds: V5Bounds };
 }): Address {
   const s = mockStore();
   const rand = mulberry32(Date.now() % 1_000_000);
-  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand);
+  const { token, agent } = makeToken(s.tokens.length + 5000, input.name, input.symbol, Math.floor(Date.now() / 1000), rand, input.id);
   token.image = input.image || avatarFor(input.symbol, s.tokens.length);
   token.model = input.model;
   token.xHandle = input.xHandle;
@@ -1456,6 +1573,10 @@ export function mockLaunch(input: {
   token.creatorBps = input.buyback ? 5000 : 6500;
   token.burnBps = input.buyback ? 1500 : 0;
   if (input.source === 'clanker') clankerize(token);
+  if (input.source === 'clanker-v5') {
+    if (input.v5Settings) applyV5Settings(token, input.v5Settings.settings, input.v5Settings.bounds);
+    else clankerizeV5(token);
+  }
   if (input.workerHash) token.workerHash = input.workerHash;
   if (input.links) s.links.set(token.metadata, { ...input.links });
   if (input.instructions) s.configs.set(token.kernel.toLowerCase(), buildConfig(token, input.instructions));
