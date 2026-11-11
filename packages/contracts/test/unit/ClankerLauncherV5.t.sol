@@ -17,13 +17,14 @@ contract MockClankerV5Factory {
     string public lastKey;
     string public lastValue;
     uint256 public edits;
+    int24 public tickSpacing = 200;
 
     function configVersion() external pure returns (uint64) {
         return 7;
     }
 
-    function tickSpacing() external pure returns (int24) {
-        return 200;
+    function setTickSpacing(int24 spacing) external {
+        tickSpacing = spacing;
     }
 
     function launchTokenInitCodeHash(ClankerV5.LaunchParams calldata lp) external pure returns (bytes32) {
@@ -63,10 +64,12 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
         BootrClankerLauncherV5(owner_, deps, d, minPlatformBps_)
     {}
 
+    /// @dev A coin as `launch` records it, with the tick spacing Clanker had at that moment.
     function seedCoin(address token, address creator, address quote, bool editable) external {
         coinCreator[token] = creator;
         quoteOf[token] = quote;
         metadataEditable[token] = editable;
+        tickSpacingOf[token] = factory.tickSpacing();
     }
 
     function exposedV5Params(LaunchParams calldata p, TokenSettings calldata s, address kernel, address creator)
@@ -972,6 +975,7 @@ contract ClankerLauncherV5Test is Test {
         assertEq(key.currency1, token);
         assertEq(key.fee, 0, "v5 pools carry fee 0; the hook takes the tax");
         assertEq(key.tickSpacing, 200);
+        assertEq(launcher.tickSpacingOf(token), 200);
         assertEq(key.hooks, hook);
         // a USDC coin sorts by address
         address high = 0xfFFffFfffffFffffFfffFfFFFFffFfFfFfFFcccc;
@@ -982,6 +986,22 @@ contract ClankerLauncherV5Test is Test {
         key = launcher.poolKeyFor(token, USDC, 200);
         assertEq(key.currency0, token);
         assertEq(key.currency1, USDC);
+    }
+
+    /// @dev A coin's pool key keeps the tick spacing its pool was created with: Clanker changing its own spacing
+    ///      moves the key of later coins only.
+    function test_poolKeyKeepsTheTickSpacingOfTheLaunch() public {
+        address first = 0x000000000000000000000000000000000001cCCC;
+        address second = 0x000000000000000000000000000000000002ccCc;
+        launcher.seedCoin(first, creator, NATIVE, false);
+        factory.setTickSpacing(100);
+        launcher.seedCoin(second, creator, NATIVE, false);
+        assertEq(launcher.poolKeyFor(first).tickSpacing, 200, "the first coin's key did not move");
+        assertEq(launcher.poolKeyFor(second).tickSpacing, 100);
+        assertEq(launcher.tickSpacingOf(first), 200);
+        assertEq(launcher.tickSpacingOf(second), 100);
+        // a token never launched here has no stored spacing (and no quote): the key is not a pool's
+        assertEq(launcher.poolKeyFor(makeAddr("unknown")).tickSpacing, 0);
     }
 
     function test_scopedSalt() public view {

@@ -25,6 +25,11 @@ interface IUniswapV3FactoryLike {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
+/// @dev The owner-only tick-spacing setter of Clanker's `TaxLaunchpadFactoryCore` (verified source).
+interface IClankerV5FactoryAdminLike {
+    function setTickSpacing(int24 newTickSpacing) external;
+}
+
 /// @notice Fork tests of the Clanker v5 path against Base MAINNET: `BootrClankerLauncherV5` with creator-set token
 ///         settings through the live v5 factory (`TaxRWAERC20LaunchpadFactory`, the `TaxLaunchHook`, the
 ///         `FeeEscrow`, the launch-buy adapter, the per-coin `TaxDividend`), registering through the
@@ -1139,6 +1144,50 @@ contract ClankerV5ForkTest is Test {
         assertEq(slots[0].weightBps, 500, "the shares that were signed");
         assertEq(slots[1].weightBps, 3000);
         assertEq(slots[2].weightBps, 6500);
+    }
+
+    /// @dev Each coin keeps the tick spacing of its own launch: after Clanker changes its spacing the first coin's
+    ///      `poolKeyFor` still hashes to its pool and still trades, and a coin launched afterwards (under the new
+    ///      config version) carries the new spacing.
+    function test_poolKeySurvivesAClankerTickSpacingChange() public {
+        (address first,) = _launch(_settings(NATIVE), 0);
+        bytes32 firstPool = factory.creatorRights(first).poolId;
+        assertEq(launcher.tickSpacingOf(first), 200);
+        assertEq(_poolId(first), firstPool);
+
+        vm.prank(factory.owner());
+        IClankerV5FactoryAdminLike(FACTORY).setTickSpacing(100);
+        assertEq(factory.tickSpacing(), 100);
+        assertEq(launcher.tickSpacingOf(first), 200, "stored at launch");
+        assertEq(launcher.poolKeyFor(first).tickSpacing, 200);
+        assertEq(_poolId(first), firstPool, "the first coin's key is still its pool's");
+        _passAntiSnipe();
+        _buy(first, 0.01 ether);
+        assertGt(IERC20(first).balanceOf(trader), 0, "and the pool trades through that key");
+
+        // a launch signed before the change is stale; one signed after it gets the new spacing
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(8)));
+        vm.recordLogs();
+        vm.prank(creator);
+        (address second,,,) = launcher.launch{value: 0.01 ether}(p, s);
+        assertEq(launcher.tickSpacingOf(second), 100);
+        assertEq(_poolId(second), factory.creatorRights(second).poolId, "the second coin's key, under the new spacing");
+        assertGt(IERC20(second).balanceOf(creator), 0, "its dev buy went through the 100-spaced pool");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(launcher)) continue;
+            if (logs[i].topics[0] != BootrClankerLauncherV5.ClankerV5Launched.selector) continue;
+            (,,,, int24 spacing,,,,,,) = abi.decode(
+                logs[i].data, (bytes32, address, address, address, int24, uint24, uint24, uint16, uint16, bool, bool)
+            );
+            assertEq(spacing, 100, "ClankerV5Launched carries the launch's own spacing");
+            seen = true;
+        }
+        assertTrue(seen);
+        assertEq(_poolId(first), firstPool);
     }
 
     function test_launchPredictsKernelAndTokenAndRejectsReplay() public {

@@ -218,6 +218,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
     /// @notice The pool's paired asset of each coin launched here.
     mapping(address token => address) public quoteOf;
+    /// @notice The tick spacing of each coin's pool, fixed at launch (Clanker may change its own for later coins).
+    mapping(address token => int24) public tickSpacingOf;
     /// @notice The wallet that launched each coin: the only one that may edit its image and metadata.
     mapping(address token => address) public coinCreator;
     /// @notice Whether the creator may still edit the coin's image and metadata (launched editable, not locked).
@@ -437,9 +439,11 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
         // (c) Clanker v5 token + pool + seeded liquidity (+ dev buy, forwarded to the creator)
         bytes32 poolId;
+        int24 spacing = factory.tickSpacing();
         (token, poolId) =
-            _createToken(p, s, _feeSlots(s, weights, kernel, d.platformRecipient), creator, salt, clankerFee);
+            _createToken(p, s, _feeSlots(s, weights, kernel, d.platformRecipient), creator, salt, clankerFee, spacing);
         quoteOf[token] = s.quoteToken;
+        tickSpacingOf[token] = spacing;
         coinCreator[token] = creator;
         if (s.metadataEditable) metadataEditable[token] = true;
 
@@ -469,7 +473,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             p.supervisorSessionKey
         );
         emit LaunchContext(token, p.context);
-        _emitClankerV5Launched(token, poolId, s);
+        _emitClankerV5Launched(token, poolId, spacing, s);
 
         // (h) launch fee to the platform, excess back to the creator
         if (fee > 0) {
@@ -554,9 +558,10 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         return _taxConfiguration(s);
     }
 
-    /// @notice The v4 pool key of a coin launched here: its quote, fee 0, the factory's tick spacing, the hook.
+    /// @notice The v4 pool key of a coin launched here: its quote, fee 0, the tick spacing its pool was created
+    ///         with (stored at launch), the hook.
     function poolKeyFor(address token) external view returns (PoolKey memory) {
-        return poolKeyFor(token, quoteOf[token], factory.tickSpacing());
+        return poolKeyFor(token, quoteOf[token], tickSpacingOf[token]);
     }
 
     /// @notice The v4 pool key Clanker creates for `token` paired with `quote`: currencies sorted (native ETH is
@@ -593,14 +598,16 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         if (!metadataEditable[token]) revert MetadataNotEditable();
     }
 
-    function _emitClankerV5Launched(address token, bytes32 poolId, TokenSettings calldata s) internal {
+    function _emitClankerV5Launched(address token, bytes32 poolId, int24 spacing, TokenSettings calldata s)
+        internal
+    {
         emit ClankerV5Launched(
             token,
             poolId,
             hook,
             feeEscrow,
             s.quoteToken,
-            factory.tickSpacing(),
+            spacing,
             s.buyTaxBps,
             s.sellTaxBps,
             s.burnBps,
@@ -714,7 +721,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         ClankerV5.FeeSlotInput[] memory slots,
         address creator,
         bytes32 salt,
-        uint256 clankerFee
+        uint256 clankerFee,
+        int24 spacing
     ) internal returns (address token, bytes32 poolId) {
         ClankerV5.LaunchParams memory params = _v5Params(p, s, slots, creator, s.expectedConfigVersion);
         params.creatorSalt = salt;
@@ -745,7 +753,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             tokenOut: predicted,
             poolAddress: address(0),
             fee: 0,
-            tickSpacing: factory.tickSpacing(),
+            tickSpacing: spacing,
             hooks: hook,
             hookData: ""
         });

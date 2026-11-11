@@ -352,10 +352,12 @@ contract ClankerV5LauncherReviewTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // Finding: poolKeyFor(token) reads Clanker's live tick spacing, not the coin's
+    // Fixed (L4): poolKeyFor(token) reads the tick spacing stored at the coin's launch, not Clanker's live one
     // ------------------------------------------------------------------
 
-    function test_review_poolKeyForBreaksWhenClankerChangesTickSpacing() public {
+    /// @notice After Clanker changes its tick spacing, `poolKeyFor` of a coin already launched used to hash to a
+    ///         pool that does not exist. The spacing is stored per coin now, so the key stays the pool's.
+    function test_review_poolKeyForSurvivesAClankerTickSpacingChange() public {
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);
         BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         p.salt = _mineSalt(launcher, creator, p, s);
@@ -363,10 +365,13 @@ contract ClankerV5LauncherReviewTest is Test {
         (address token,,,) = launcher.launch(p, s);
         bytes32 poolId = _poolIdOf(token);
         assertEq(V4Constants.poolId(launcher.poolKeyFor(token)), poolId, "right today");
+        assertEq(launcher.tickSpacingOf(token), factory.tickSpacing());
 
         vm.prank(factory.owner());
         IClankerV5FactoryAdmin(FACTORY).setTickSpacing(100);
-        assertTrue(V4Constants.poolId(launcher.poolKeyFor(token)) != poolId, "wrong key for a coin already launched");
+        assertEq(factory.tickSpacing(), 100);
+        assertEq(launcher.tickSpacingOf(token), 200, "the coin keeps the spacing of its launch");
+        assertEq(V4Constants.poolId(launcher.poolKeyFor(token)), poolId, "still the key of the coin's pool");
     }
 
     // ------------------------------------------------------------------
