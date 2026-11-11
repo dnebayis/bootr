@@ -45,7 +45,9 @@ import {PoolKey} from "./interfaces/IUniswapV4.sol";
 ///
 ///         What the creator signs is what runs (the pins in `TokenSettings`): the launch reverts when Clanker's
 ///         config version is not the one the creator read (`expectedConfigVersion`, Clanker's own `StaleConfig`
-///         guard) and when a dev buy would deliver fewer coins than `minDevBuyOut`.
+///         guard), when the locked shares are not the ones previewed (`expectedAgentShareBps` /
+///         `expectedPlatformShareBps`), when the launch fee is above `maxLaunchFeeWei`, and when a dev buy would
+///         deliver fewer coins than `minDevBuyOut`.
 ///
 ///         Token addresses on v5 end in `0xcccc`: the web mines `LaunchParams.salt` with `tokenInitCodeHash(p, s)` /
 ///         `predictToken` before signing (the factory reverts `InvalidTokenAddressSuffix` otherwise). The opening
@@ -114,6 +116,9 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         // --- pins: what the creator read before signing; the launch reverts when the live value differs ---
         uint256 minDevBuyOut; // least coins (raw units) the dev buy must deliver; required (> 0) when devBuyWei > 0
         uint64 expectedConfigVersion; // Clanker's `factory.configVersion()` (tax policy, tick spacing, native fee)
+        uint256 maxLaunchFeeWei; // the most this launcher may charge as its flat launch fee
+        uint16 expectedAgentShareBps; // `agentDefaults.agentShareBps`
+        uint16 expectedPlatformShareBps; // `agentDefaults.platformShareBps`
     }
 
     /// @notice The launcher's own numbers for future agent launches (owner-settable within fixed bounds).
@@ -174,6 +179,9 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @dev bps (1e4 = 100%) -> Clanker's 1e8 share scale.
     uint32 internal constant SHARE_MULTIPLIER = 10_000;
     uint32 public constant MIN_DORMANCY_PERIOD = 30 days;
+    /// @notice The flat launch fee can never be set above this (the creator's own bound is
+    ///         `TokenSettings.maxLaunchFeeWei`).
+    uint256 public constant MAX_LAUNCH_FEE_WEI = 0.05 ether;
     /// @notice The highest Uniswap v3 fee tier a dev-buy first hop may use (0.3%, hundredths of a bip).
     uint24 public constant MAX_DEV_BUY_ROUTE_FEE = 3000;
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
@@ -288,6 +296,12 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     error MetadataNotEditable();
     /// @notice A dev buy needs the creator's minimum output (`TokenSettings.minDevBuyOut > 0`).
     error MinDevBuyOutRequired();
+    /// @notice The locked shares are not the ones the creator signed for (the live values are returned).
+    error LockedSharesChanged(uint16 agentShareBps, uint16 platformShareBps);
+    /// @notice The launch fee is above the creator's `maxLaunchFeeWei`.
+    error LaunchFeeAboveMax(uint256 launchFeeWei, uint256 maxLaunchFeeWei);
+    /// @notice `setLaunchFee` above `MAX_LAUNCH_FEE_WEI`.
+    error LaunchFeeTooHigh();
     /// @notice A dev-buy route's fee is 0 or above `MAX_DEV_BUY_ROUTE_FEE`.
     error DevBuyRouteFeeOutOfBounds();
     /// @notice A dev-buy route's pool is not the Uniswap v3 factory's pool for WETH / quote at that fee.
@@ -339,8 +353,10 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         emit MinPlatformBpsUpdated(minPlatformBps_);
     }
 
-    /// @notice Flat ETH launch fee for FUTURE launches (0 disables it).
+    /// @notice Flat ETH launch fee for FUTURE launches (0 disables it), at most `MAX_LAUNCH_FEE_WEI`. A launch
+    ///         signed under a lower fee reverts instead of paying more (`TokenSettings.maxLaunchFeeWei`).
     function setLaunchFee(uint256 launchFeeWei_) external onlyOwner {
+        if (launchFeeWei_ > MAX_LAUNCH_FEE_WEI) revert LaunchFeeTooHigh();
         launchFeeWei = launchFeeWei_;
         emit LaunchFeeUpdated(launchFeeWei_);
     }
@@ -398,8 +414,13 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
                 revert DevBuyRouteMissing(s.quoteToken);
             }
         }
-
+        // the creator's pins on this launcher's own terms (Clanker's are pinned by `expectedConfigVersion`)
+        if (s.expectedAgentShareBps != d.agentShareBps || s.expectedPlatformShareBps != d.platformShareBps) {
+            revert LockedSharesChanged(d.agentShareBps, d.platformShareBps);
+        }
         uint256 fee = launchFeeWei;
+        if (fee > s.maxLaunchFeeWei) revert LaunchFeeAboveMax(fee, s.maxLaunchFeeWei);
+
         // Clanker's own native launch fee (0 today) is paid through to the factory; changing it bumps Clanker's
         // config version, so a launch signed under another fee reverts `StaleConfig`.
         uint256 clankerFee = factory.nativeLaunchFee();
@@ -522,7 +543,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
 
     /// @notice The fee-slot weights `launch` would create for `s` under the current defaults (agent, platform,
     ///         then one per reward row; sum 10_000). Reverts exactly as `launch` would on the settings' own rules;
-    ///         the pins are not read here: `launch` alone checks them.
+    ///         the pins (`minDevBuyOut`, `expectedConfigVersion`, `maxLaunchFeeWei`, the expected shares) are
+    ///         not read here: `launch` alone checks them.
     function previewSlotWeights(TokenSettings calldata s) external view returns (uint16[] memory) {
         return _slotWeights(s, agentDefaults);
     }

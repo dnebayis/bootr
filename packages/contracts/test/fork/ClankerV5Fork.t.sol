@@ -172,6 +172,9 @@ contract ClankerV5ForkTest is Test {
         s.quoteToken = quote;
         s.minDevBuyOut = 1;
         s.expectedConfigVersion = factory.configVersion();
+        // what the web reads before signing: the live shares and the live launch fee
+        (s.expectedAgentShareBps, s.expectedPlatformShareBps,,,,,,) = launcher.agentDefaults();
+        s.maxLaunchFeeWei = launcher.launchFeeWei();
         s.buyTaxBps = TAX;
         s.sellTaxBps = TAX;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -1088,6 +1091,54 @@ contract ClankerV5ForkTest is Test {
         vm.prank(creator);
         vm.expectRevert(BootrClankerLauncherV5.InsufficientValue.selector);
         launcher.launch{value: 0.01 ether}(p, s);
+    }
+
+    /// @dev The creator's pins on the launcher's own terms hold against the owner: a signed launch reverts when
+    ///      the locked shares or the launch fee moved, and runs unchanged once they are back.
+    function test_signedSharesAndFeeHoldAgainstTheOwner() public {
+        launcher.setLaunchFee(0.0005 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(60)));
+        assertEq(s.maxLaunchFeeWei, 0.0005 ether);
+
+        // the platform share up, then down: both are a change of what was signed
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 4500;
+        launcher.setAgentDefaults(d);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 4500));
+        launcher.launch{value: 1 ether}(p, s);
+        d = _defaults();
+        d.agentShareBps = 2000;
+        launcher.setAgentDefaults(d);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 2000, 3000));
+        launcher.launch{value: 1 ether}(p, s);
+        launcher.setAgentDefaults(_defaults());
+
+        // the fee up, to the contract's cap
+        launcher.setLaunchFee(0.05 ether);
+        uint256 before = creator.balance;
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.05 ether, 0.0005 ether)
+        );
+        launcher.launch{value: 1 ether}(p, s);
+        assertEq(creator.balance, before, "nothing was charged");
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(0.05 ether + 1);
+
+        // a lower fee than the bound is fine: the creator pays the live fee, not the bound
+        launcher.setLaunchFee(0.0002 ether);
+        vm.prank(creator);
+        (address token,,,) = launcher.launch{value: 1 ether}(p, s);
+        assertEq(before - creator.balance, 0.0002 ether, "the live fee, the rest refunded");
+        assertEq(platformRecipient.balance, 0.0002 ether);
+        ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(_poolId(token));
+        assertEq(slots[0].weightBps, 500, "the shares that were signed");
+        assertEq(slots[1].weightBps, 3000);
+        assertEq(slots[2].weightBps, 6500);
     }
 
     function test_launchPredictsKernelAndTokenAndRejectsReplay() public {

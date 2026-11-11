@@ -145,6 +145,8 @@ contract ClankerLauncherV5Test is Test {
     function _settings() internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = NATIVE;
         s.expectedConfigVersion = 7;
+        s.expectedAgentShareBps = 500;
+        s.expectedPlatformShareBps = 3000;
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -202,6 +204,7 @@ contract ClankerLauncherV5Test is Test {
         assertEq(launcher.MAX_LOCKED_SHARE_BPS(), 5000);
         assertEq(launcher.MAX_REWARD_ROWS(), 5, "7 Clanker slots - agent - platform");
         assertEq(launcher.MAX_TAX_CEILING_BPS(), 100_000);
+        assertEq(launcher.MAX_LAUNCH_FEE_WEI(), 0.05 ether);
         assertEq(launcher.launchFeeWei(), 0);
         assertEq(launcher.owner(), owner);
         assertEq(launcher.ROOT_VALIDATION_ID(), KernelLib.validatorId(guardian));
@@ -772,6 +775,80 @@ contract ClankerLauncherV5Test is Test {
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.DevBuyRouteMissing.selector, USDC));
         launcher.launch{value: 0.01 ether}(p, s);
+    }
+
+    /// @dev The creator's pins on the launcher's own terms: the locked shares must be the ones signed for, and the
+    ///      launch fee at most the creator's bound. Checked after the settings' own rules, before any external call.
+    function test_launchRefusesChangedSharesAndAFeeAboveTheCreatorsMax() public {
+        BootrClankerLauncherV5.LaunchParams memory p = _params();
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+
+        // the creator signed for other shares than the live ones (either one)
+        s.expectedPlatformShareBps = 2999;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+        s = _settings();
+        s.expectedAgentShareBps = 501;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+        // unset pins are refused like any other mismatch
+        s.expectedAgentShareBps = 0;
+        s.expectedPlatformShareBps = 0;
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 3000));
+        launcher.launch(p, s);
+
+        // the owner moves the shares under a pending launch: the error carries the live values
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 4500;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        s = _settings();
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 4500));
+        launcher.launch(p, s);
+        // ... even in the creator's favour: what was signed is what runs
+        d.platformShareBps = 1000;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 1000));
+        launcher.launch(p, s);
+        vm.prank(owner);
+        launcher.setAgentDefaults(_defaults());
+
+        // the launch fee above the creator's bound
+        vm.prank(owner);
+        launcher.setLaunchFee(0.0005 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.0005 ether, uint256(0))
+        );
+        launcher.launch(p, s);
+        s.maxLaunchFeeWei = 0.0005 ether - 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.0005 ether, 0.0005 ether - 1)
+        );
+        launcher.launch(p, s);
+        // at the bound (and above it) the pins pass: the launch goes on to its first external call, which the
+        // mock factory does not answer
+        s.maxLaunchFeeWei = 0.0005 ether;
+        vm.expectRevert(bytes(""));
+        launcher.launch(p, s);
+    }
+
+    function test_launchFeeCap() public {
+        vm.startPrank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(0.05 ether + 1);
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
+        launcher.setLaunchFee(type(uint256).max);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.LaunchFeeUpdated(0.05 ether);
+        launcher.setLaunchFee(0.05 ether);
+        assertEq(launcher.launchFeeWei(), 0.05 ether, "the cap itself is admitted");
+        launcher.setLaunchFee(0);
+        assertEq(launcher.launchFeeWei(), 0);
+        vm.stopPrank();
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.setLaunchFee(0);
     }
 
     function test_pauseRefusesLaunches() public {

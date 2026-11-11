@@ -139,6 +139,9 @@ contract ClankerV5LauncherReviewTest is Test {
         s.quoteToken = quote;
         s.minDevBuyOut = 1;
         s.expectedConfigVersion = factory.configVersion();
+        // what the creator reads before signing: the live shares and the live launch fee
+        (s.expectedAgentShareBps, s.expectedPlatformShareBps,,,,,,) = launcher.agentDefaults();
+        s.maxLaunchFeeWei = launcher.launchFeeWei();
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -301,30 +304,51 @@ contract ClankerV5LauncherReviewTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // Finding: the launcher's own terms can change between signing and inclusion, with no bound from the creator
+    // Fixed (L1): the creator pins the launcher's own terms (the locked shares, the most the launch fee may be),
+    // and the launch fee has a hard cap
     // ------------------------------------------------------------------
 
     /// @notice The creator previews 500 / 3000 / 6500 and sends 1 ETH expecting it back (no fee, no dev buy). The
-    ///         owner raises the platform share to 45% and sets a 0.5 ETH launch fee first: the launch succeeds with
-    ///         the creator's row at 5000 and half an ETH gone to the platform recipient.
-    function test_review_ownerChangesSharesAndFeeAheadOfAPendingLaunch() public {
+    ///         owner raises the platform share to 45% and tries a 0.5 ETH launch fee first. That launch used to
+    ///         succeed with the creator's row at 5000 and half an ETH gone to the platform recipient. Now the fee
+    ///         cannot be set that high at all, and the launch reverts on the changed share and on any fee above
+    ///         the one the creator saw; with the terms back it runs exactly as previewed.
+    function test_review_ownerCannotChangeSharesOrFeeUnderAPendingLaunch() public {
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);
         BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         p.salt = _mineSalt(launcher, creator, p, s);
         uint16[] memory previewed = launcher.previewSlotWeights(s);
         assertEq(previewed[2], 6500);
+        assertEq(s.maxLaunchFeeWei, 0, "the creator saw no launch fee");
 
-        launcher.setAgentDefaults(_defaults(500, 4500, platformRecipient));
+        // the hard cap: 0.5 ETH is not a fee the owner can set
+        vm.expectRevert(BootrClankerLauncherV5.LaunchFeeTooHigh.selector);
         launcher.setLaunchFee(0.5 ether);
 
+        // the shares moved under the signed launch
+        launcher.setAgentDefaults(_defaults(500, 4500, platformRecipient));
         uint256 before = creator.balance;
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LockedSharesChanged.selector, 500, 4500));
+        launcher.launch{value: 1 ether}(p, s);
+
+        // the shares back, the fee at the most the contract admits
+        launcher.setAgentDefaults(_defaults(500, 3000, platformRecipient));
+        launcher.setLaunchFee(0.05 ether);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.LaunchFeeAboveMax.selector, 0.05 ether, 0));
+        launcher.launch{value: 1 ether}(p, s);
+        assertEq(creator.balance, before, "the creator paid nothing");
+        assertEq(platformRecipient.balance, 0);
+
+        // under the terms that were signed the launch runs as previewed and the whole ETH comes back
+        launcher.setLaunchFee(0);
         vm.prank(creator);
         (address token,,,) = launcher.launch{value: 1 ether}(p, s);
         ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(_poolIdOf(token));
-        assertEq(slots[1].weightBps, 4500, "platform");
-        assertEq(slots[2].weightBps, 5000, "the creator's row, previewed at 6500");
-        assertEq(before - creator.balance, 0.5 ether, "a fee the creator never saw");
-        assertEq(platformRecipient.balance, 0.5 ether);
+        assertEq(slots[1].weightBps, 3000, "platform, as signed");
+        assertEq(slots[2].weightBps, 6500, "the creator's row, as previewed");
+        assertEq(creator.balance, before, "no fee the creator never saw");
     }
 
     // ------------------------------------------------------------------
@@ -387,6 +411,7 @@ contract ClankerV5LauncherReviewTest is Test {
         BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         p.salt = _mineSalt(v5, creator, p, s);
         uint256 fee = v5.launchFeeWei();
+        s.maxLaunchFeeWei = fee;
         vm.prank(creator);
         IERC20(USDC).approve(address(v5), type(uint256).max);
         vm.prank(creator);
@@ -397,9 +422,10 @@ contract ClankerV5LauncherReviewTest is Test {
         vm.prank(admin);
         liveGate.addLauncher(address(v5));
 
-        // whoever holds the deployer key now sets the platform recipient of every future coin
+        // whoever holds the deployer key now sets the platform recipient of every future coin (the shares are
+        // the creator's pin, the recipient is not)
         vm.prank(deployer);
-        v5.setAgentDefaults(_defaults(500, 4500, thief));
+        v5.setAgentDefaults(_defaults(500, 3000, thief));
         vm.prank(creator);
         (address token, address kernel,,) = v5.launch{value: fee}(p, s);
         ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(_poolIdOf(token));
