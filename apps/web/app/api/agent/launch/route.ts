@@ -30,7 +30,7 @@ import {
 } from '@/lib/token-settings';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
-import { serverPublicClient } from '@/lib/server/chain';
+import { serverPublicClient, serverPublicFallbackClient, serverRpcUrl } from '@/lib/server/chain';
 import { pinataEnv } from '@/lib/server/env';
 import { fetchImageFromUrl } from '@/lib/server/image-fetch';
 import { relayModels } from '@/lib/server/relay-models';
@@ -355,9 +355,15 @@ export async function POST(req: NextRequest) {
   let devBuyQuote: DevBuyQuote | null = null;
   if (isV5 && tokenSettings && mined && devBuyWei > 0n) {
     try {
+      const quote = (c: typeof client) => quoteDevBuy({ client: c, launcher, usdc: contracts.usdc, creator, token: mined!.token, params, settings: tokenSettings!, value: launchValue(devBuyWei, terms) });
+      // The keyed RPC may not serve `eth_simulateV1`; a failure that is not the launcher's own refusal is tried once on
+      // the chain's public RPC before the quote counts as unavailable.
       const quotedOut = env.useMock
         ? mockDevBuyQuote(devBuyWei)
-        : await quoteDevBuy({ client, launcher, usdc: contracts.usdc, creator, token: mined.token, params, settings: tokenSettings, value: launchValue(devBuyWei, terms) });
+        : await quote(client).catch((err) => {
+            if (err instanceof V5LaunchRefused || !serverRpcUrl(chainId)) throw err;
+            return quote(serverPublicFallbackClient(chainId));
+          });
       devBuyQuote = { quotedOut, minOut: minDevBuyOutFrom(quotedOut, slippagePct), slippagePct };
       tokenSettings.minDevBuyOut = devBuyQuote.minOut;
     } catch (err) {
