@@ -1219,6 +1219,63 @@ contract ClankerV5ForkTest is Test {
         assertEq(IERC20(USDC).balanceOf(address(launcher)), 0);
     }
 
+    function _fill(uint256 n) internal pure returns (string memory) {
+        bytes memory b = new bytes(n);
+        for (uint256 i; i < n; ++i) {
+            b[i] = "a";
+        }
+        return string(b);
+    }
+
+    /// @dev The caps fit Clanker and the chain: a launch with every string at its cap, the heaviest settings
+    ///      (USDC, five rows, burn, dividends, a dev buy) goes through the live factory under the 2^24 gas a
+    ///      single transaction may use (EIP-7825), and an edit at the cap reaches the token.
+    function test_launchWithEveryStringAtItsCap() public {
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        p.name = _fill(launcher.MAX_NAME_BYTES());
+        p.symbol = _fill(launcher.MAX_SYMBOL_BYTES());
+        p.image = _fill(launcher.MAX_URI_BYTES());
+        p.metadata = _fill(launcher.MAX_METADATA_BYTES());
+        p.context = _fill(launcher.MAX_CONTEXT_BYTES());
+        p.agentURI = _fill(launcher.MAX_URI_BYTES());
+        p.model = _fill(launcher.MAX_MODEL_BYTES());
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
+        s.contractURI = _fill(launcher.MAX_URI_BYTES());
+        s.burnBps = 1000;
+        s.dividendBps = 1000;
+        s.minDividendHolding = MIN_HOLDING;
+        s.rewards = _fiveRows();
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(62)));
+
+        vm.prank(creator);
+        uint256 gasBefore = gasleft();
+        (address token,,,) = launcher.launch{value: 0.01 ether}(p, s);
+        uint256 gasUsed = gasBefore - gasleft();
+        console2.log("launch gas with every string at its cap:", gasUsed);
+        assertLt(gasUsed, 15_000_000, "a launch at the caps must fit one transaction (2^24 gas)");
+        assertEq(bytes(IClankerV5Token(token).extraMetadata("metadata")).length, 4096);
+        assertEq(bytes(IClankerV5Token(token).contractURI()).length, 512);
+
+        vm.startPrank(creator);
+        launcher.updateMetadata(token, _fill(4096));
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.updateMetadata(token, _fill(4097));
+        vm.stopPrank();
+
+        // one byte over on the launch itself
+        p.metadata = _fill(4097);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.launch{value: 0.01 ether}(p, s);
+    }
+
+    /// @dev The launcher cannot be left without an owner.
+    function test_renounceOwnershipIsDisabled() public {
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        assertEq(launcher.owner(), address(this));
+    }
+
     function test_launchPredictsKernelAndTokenAndRejectsReplay() public {
         BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);

@@ -325,14 +325,30 @@ contract ClankerLauncherV5Test is Test {
     }
 
     function test_minPlatformBpsGuardsThePlatformShare() public {
+        // the minimum may not pass the current default (3000): the stored share would sit under its own floor
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
+        launcher.setMinPlatformBps(3001);
+        assertEq(launcher.minPlatformBps(), 1000);
+        // raising the floor above today's share takes the share first
+        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        d.platformShareBps = 3500;
+        vm.prank(owner);
+        launcher.setAgentDefaults(d);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.MinPlatformBpsUpdated(3500);
         vm.prank(owner);
         launcher.setMinPlatformBps(3500);
-        BootrClankerLauncherV5.AgentDefaults memory d = _defaults();
+        (, uint16 share,,,,,,) = launcher.agentDefaults();
+        assertGe(share, launcher.minPlatformBps(), "the default satisfies the minimum");
         d.platformShareBps = 3499;
         _setDefaultsExpect(d, BootrClankerLauncherV5.InvalidPlatformShare.selector);
         vm.prank(owner);
         vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
         launcher.setMinPlatformBps(5001);
+        // lowering it is always possible
+        vm.prank(owner);
+        launcher.setMinPlatformBps(0);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         launcher.setMinPlatformBps(0);
@@ -951,6 +967,131 @@ contract ClankerLauncherV5Test is Test {
         );
         assertEq(address(reenterer).balance, 0.5 ether, "only the outer rescue paid");
         assertEq(address(launcher).balance, 0.5 ether);
+    }
+
+    // ------------------------------------------------------------------
+    // The launcher always has an owner
+    // ------------------------------------------------------------------
+
+    function test_renounceOwnershipIsDisabled() public {
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+        assertEq(launcher.owner(), owner);
+
+        // the two-step handover is untouched
+        vm.prank(owner);
+        launcher.transferOwnership(stranger);
+        assertEq(launcher.owner(), owner, "until the new owner accepts");
+        assertEq(launcher.pendingOwner(), stranger);
+        vm.prank(stranger);
+        launcher.acceptOwnership();
+        assertEq(launcher.owner(), stranger);
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.RenounceDisabled.selector);
+        launcher.renounceOwnership();
+    }
+
+    // ------------------------------------------------------------------
+    // String caps
+    // ------------------------------------------------------------------
+
+    function _fill(uint256 n) internal pure returns (string memory) {
+        bytes memory b = new bytes(n);
+        for (uint256 i; i < n; ++i) {
+            b[i] = "a";
+        }
+        return string(b);
+    }
+
+    /// @dev `launch` and the salt-mining view refuse the same string, with the field, its length and the cap.
+    function _expectTooLong(
+        BootrClankerLauncherV5.LaunchParams memory p,
+        BootrClankerLauncherV5.TokenSettings memory s,
+        string memory field,
+        uint256 max
+    ) internal {
+        bytes memory err = abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, field, max + 1, max);
+        vm.expectRevert(err);
+        launcher.launch(p, s);
+        vm.expectRevert(err);
+        launcher.tokenInitCodeHash(p, s);
+    }
+
+    function test_stringCaps() public {
+        assertEq(launcher.MAX_NAME_BYTES(), 160);
+        assertEq(launcher.MAX_SYMBOL_BYTES(), 32);
+        assertEq(launcher.MAX_URI_BYTES(), 512);
+        assertEq(launcher.MAX_METADATA_BYTES(), 4096);
+        assertEq(launcher.MAX_CONTEXT_BYTES(), 512);
+        assertEq(launcher.MAX_MODEL_BYTES(), 128);
+
+        // every string at its cap is admitted
+        BootrClankerLauncherV5.LaunchParams memory p = _params();
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+        p.name = _fill(160);
+        p.symbol = _fill(32);
+        p.image = _fill(512);
+        p.metadata = _fill(4096);
+        p.context = _fill(512);
+        p.agentURI = _fill(512);
+        p.model = _fill(128);
+        s.contractURI = _fill(512);
+        launcher.tokenInitCodeHash(p, s);
+
+        // one byte over, field by field
+        p.name = _fill(161);
+        _expectTooLong(p, s, "name", 160);
+        p.name = _fill(160);
+        p.symbol = _fill(33);
+        _expectTooLong(p, s, "symbol", 32);
+        p.symbol = _fill(32);
+        p.image = _fill(513);
+        _expectTooLong(p, s, "image", 512);
+        p.image = _fill(512);
+        p.metadata = _fill(4097);
+        _expectTooLong(p, s, "metadata", 4096);
+        p.metadata = _fill(4096);
+        p.context = _fill(513);
+        _expectTooLong(p, s, "context", 512);
+        p.context = _fill(512);
+        s.contractURI = _fill(513);
+        _expectTooLong(p, s, "contractURI", 512);
+        s.contractURI = _fill(512);
+        p.agentURI = _fill(513);
+        _expectTooLong(p, s, "agentURI", 512);
+        p.agentURI = _fill(512);
+        p.model = _fill(129);
+        _expectTooLong(p, s, "model", 128);
+        p.model = _fill(128);
+        launcher.tokenInitCodeHash(p, s);
+
+        // an empty name or symbol is refused by the view as by the launch
+        p.symbol = "";
+        vm.expectRevert(BootrClankerLauncherV5.EmptyNameOrSymbol.selector);
+        launcher.tokenInitCodeHash(p, s);
+    }
+
+    function test_editsAreCappedLikeTheLaunch() public {
+        address token = makeAddr("token");
+        launcher.seedCoin(token, creator, NATIVE, true);
+        vm.startPrank(creator);
+        launcher.updateImage(token, _fill(512));
+        launcher.updateMetadata(token, _fill(4096));
+        assertEq(factory.edits(), 2, "at the cap both edits reach Clanker");
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "image", 513, 512));
+        launcher.updateImage(token, _fill(513));
+        vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.StringTooLong.selector, "metadata", 4097, 4096));
+        launcher.updateMetadata(token, _fill(4097));
+        vm.stopPrank();
+        assertEq(factory.edits(), 2);
+        // the cap is checked after the editor: a stranger learns nothing new
+        vm.prank(stranger);
+        vm.expectRevert(BootrClankerLauncherV5.NotCoinCreator.selector);
+        launcher.updateImage(token, _fill(513));
     }
 
     function test_pauseRefusesLaunches() public {

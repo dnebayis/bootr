@@ -51,7 +51,8 @@ import {PoolKey} from "./interfaces/IUniswapV4.sol";
 ///
 ///         Token addresses on v5 end in `0xcccc`: the web mines `LaunchParams.salt` with `tokenInitCodeHash(p, s)` /
 ///         `predictToken` before signing (the factory reverts `InvalidTokenAddressSuffix` otherwise). The opening
-///         price is Clanker's per-quote start tick, not this contract's choice. Not upgradeable.
+///         price is Clanker's per-quote start tick, not this contract's choice. Not upgradeable, and never without
+///         an owner (`renounceOwnership` reverts): the owner pauses launches and manages the allow-list.
 contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
 
@@ -179,6 +180,19 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @dev bps (1e4 = 100%) -> Clanker's 1e8 share scale.
     uint32 internal constant SHARE_MULTIPLIER = 10_000;
     uint32 public constant MIN_DORMANCY_PERIOD = 30 days;
+    /// @notice Length caps in bytes. Clanker sets none of its own (only "name and symbol not empty"); these keep a
+    ///         launch's storage, logs and gas bounded (a launch with every string at its cap stays under the
+    ///         2^24 per-transaction gas cap of EIP-7825) and sit above what the web sends: a name of 48 characters
+    ///         (up to 144 bytes of UTF-8), a symbol of 2 to 10 letters or digits, hosted or IPFS URLs of 200
+    ///         characters at most, a context JSON of about 100 bytes, a model id, and Clanker's metadata JSON
+    ///         (a description of up to 600 characters, five social links, the contract URI: 1 to 3 KB).
+    uint256 public constant MAX_NAME_BYTES = 160;
+    uint256 public constant MAX_SYMBOL_BYTES = 32;
+    /// @notice `image`, `contractURI` and `agentURI`.
+    uint256 public constant MAX_URI_BYTES = 512;
+    uint256 public constant MAX_METADATA_BYTES = 4096;
+    uint256 public constant MAX_CONTEXT_BYTES = 512;
+    uint256 public constant MAX_MODEL_BYTES = 128;
     /// @notice The flat launch fee can never be set above this (the creator's own bound is
     ///         `TokenSettings.maxLaunchFeeWei`).
     uint256 public constant MAX_LAUNCH_FEE_WEI = 0.05 ether;
@@ -300,6 +314,10 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     error MetadataNotEditable();
     /// @notice A dev buy needs the creator's minimum output (`TokenSettings.minDevBuyOut > 0`).
     error MinDevBuyOutRequired();
+    /// @notice A string is longer than its cap (`field` is the parameter's name).
+    error StringTooLong(string field, uint256 length, uint256 max);
+    /// @notice The launcher always has an owner.
+    error RenounceDisabled();
     /// @notice The locked shares are not the ones the creator signed for (the live values are returned).
     error LockedSharesChanged(uint16 agentShareBps, uint16 platformShareBps);
     /// @notice The launch fee is above the creator's `maxLaunchFeeWei`.
@@ -351,8 +369,12 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         _setAgentDefaults(d);
     }
 
+    /// @notice The floor under the platform's share. Never above the cap on the locked shares, and never above
+    ///         the current default (so the stored default always satisfies the stored minimum).
     function setMinPlatformBps(uint16 minPlatformBps_) external onlyOwner {
-        if (minPlatformBps_ > MAX_LOCKED_SHARE_BPS) revert InvalidMinPlatformBps();
+        if (minPlatformBps_ > MAX_LOCKED_SHARE_BPS || minPlatformBps_ > agentDefaults.platformShareBps) {
+            revert InvalidMinPlatformBps();
+        }
         minPlatformBps = minPlatformBps_;
         emit MinPlatformBpsUpdated(minPlatformBps_);
     }
@@ -404,6 +426,11 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         emit Rescued(token, to, amount);
     }
 
+    /// @notice Disabled: the launcher must always have an owner to pause launches and manage the allow-list.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -426,7 +453,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         AgentDefaults memory d = agentDefaults;
         // every per-launch rule, before any external call
         uint16[] memory weights = _slotWeights(s, d);
-        if (bytes(p.name).length == 0 || bytes(p.symbol).length == 0) revert EmptyNameOrSymbol();
+        _checkStrings(p, s);
         if (p.fuelUsdc < d.minFuelUsdc) revert InsufficientFuel();
         if (p.devBuyWei > 0) {
             if (s.minDevBuyOut == 0) revert MinDevBuyOutRequired();
@@ -511,6 +538,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @notice Change the coin's image (Clanker's `image` key). Only the coin's creator wallet, while editable.
     function updateImage(address token, string calldata image) external nonReentrant {
         _requireEditor(token);
+        _cap(image, MAX_URI_BYTES, "image");
         factory.updateTokenExtraMetadata(token, "image", image);
         emit CoinImageUpdated(token, image);
     }
@@ -519,6 +547,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     ///         Only the coin's creator wallet, while editable.
     function updateMetadata(address token, string calldata metadata) external nonReentrant {
         _requireEditor(token);
+        _cap(metadata, MAX_METADATA_BYTES, "metadata");
         factory.updateTokenExtraMetadata(token, "metadata", metadata);
         emit CoinMetadataUpdated(token, metadata);
     }
@@ -541,8 +570,10 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @notice The init code hash of the token `launch(p, s)` would create (`factory.launchTokenInitCodeHash`): it
     ///         depends on the name, symbol, contract URI, metadata keys, `metadataEditable` and whether dividends
     ///         are on, not on the salt, the tax, the slots or the pins. The web mines `p.salt` locally against
-    ///         it: `predictToken` must end in `0xcccc`. Reads Clanker's live config version, not the pin.
+    ///         it: `predictToken` must end in `0xcccc`. Reads Clanker's live config version, not the pin,
+    ///         and reverts on the strings exactly as `launch` would.
     function tokenInitCodeHash(LaunchParams calldata p, TokenSettings calldata s) public view returns (bytes32) {
+        _checkStrings(p, s);
         return factory.launchTokenInitCodeHash(
             _v5Params(p, s, new ClankerV5.FeeSlotInput[](0), address(0), factory.configVersion())
         );
@@ -614,6 +645,23 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     function _requireEditor(address token) internal view {
         if (msg.sender != coinCreator[token]) revert NotCoinCreator();
         if (!metadataEditable[token]) revert MetadataNotEditable();
+    }
+
+    /// @dev The launch's string rules: name and symbol not empty, every string within its cap.
+    function _checkStrings(LaunchParams calldata p, TokenSettings calldata s) internal pure {
+        if (bytes(p.name).length == 0 || bytes(p.symbol).length == 0) revert EmptyNameOrSymbol();
+        _cap(p.name, MAX_NAME_BYTES, "name");
+        _cap(p.symbol, MAX_SYMBOL_BYTES, "symbol");
+        _cap(p.image, MAX_URI_BYTES, "image");
+        _cap(p.metadata, MAX_METADATA_BYTES, "metadata");
+        _cap(p.context, MAX_CONTEXT_BYTES, "context");
+        _cap(s.contractURI, MAX_URI_BYTES, "contractURI");
+        _cap(p.agentURI, MAX_URI_BYTES, "agentURI");
+        _cap(p.model, MAX_MODEL_BYTES, "model");
+    }
+
+    function _cap(string calldata value, uint256 max, string memory field) internal pure {
+        if (bytes(value).length > max) revert StringTooLong(field, bytes(value).length, max);
     }
 
     function _emitClankerV5Launched(address token, bytes32 poolId, int24 spacing, TokenSettings calldata s)
