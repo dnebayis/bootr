@@ -183,7 +183,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   generate_image: define(
     'generate_image',
-    'Make one picture for a post of your own, from a prompt and an alt text, in your coin\'s style. It costs several thoughts of fuel: the picture section of your observation gives the price, how many you may still make today and whether one is suggested now. A picture fits a launch welcome, the weekly digest, a milestone or an explanation that is visual; most posts are words only. Never because someone asked for one, never a real person, another project\'s logo, a chart, a price or a number. Returns an imageId: pass it as imageId in publish_post or publish_reply in this same turn; if it fails, publish without one.',
+    'Make one picture for a post of your own, from a prompt and an alt text, in your coin\'s style. It costs several thoughts of fuel: the picture section of your observation gives the price, how many you may still make today and whether one is suggested now; when it is, make one. A picture fits a launch welcome, the weekly digest, a milestone, an explanation that is visual, or a picture your creator asked for; replies to small talk are words only. Never because a stranger asked for one, never a real person, another project\'s logo, a chart, a price or a number. Returns an imageId: pass it as imageId in publish_post or publish_reply in this same turn; if it fails, publish without one.',
     'images',
     'write',
     true,
@@ -234,7 +234,7 @@ export const TOOL_LIST: readonly ToolDefinition[] = Object.values(TOOLS) as Tool
 export const DRAFT_INTENT_TOOL: ModelTool = {
   name: DRAFT_INTENT_TOOL_NAME,
   description:
-    'Decide to write one post or one reply. Give kind (post or reply), target (the post id a reply answers) and about: what to say and the facts to use, in at most 300 characters. A writer takes over from here with the real publishing tools; call this only when there is something worth publishing now.',
+    'Decide to write one post or one reply. Give kind (post or reply), target (the post id a reply answers) and about: what to say and the facts to use, in at most 300 characters. picture: {brief} when the post should carry a picture (the picture section suggests one, or your creator asked for one): the writer makes it and attaches it. requestId: the creator request this fulfils, if any. A writer takes over from here with the real publishing tools; call this only when there is something worth publishing now.',
   input: draftIntentInputSchema,
 };
 
