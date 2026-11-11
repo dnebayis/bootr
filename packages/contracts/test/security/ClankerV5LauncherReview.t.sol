@@ -24,8 +24,10 @@ interface IClankerV5FactoryAdmin {
     function setTickSpacing(int24 newTickSpacing) external;
 }
 
-/// @notice Proofs for the independent security review of `BootrClankerLauncherV5` (2026-11-11), against Base
-///         mainnet state: each test demonstrates one finding or one property the review relied on.
+/// @notice Regression tests for the independent security review of `BootrClankerLauncherV5` (2026-11-11), against
+///         Base mainnet state. Each `test_review_*` began as the reviewer's proof of one finding (or of one
+///         property the review relied on); where the finding is fixed the same scenario now shows the attack
+///         failing, and the comment says what used to happen.
 ///         RPC: `BASE_RPC_URL` env or https://mainnet.base.org.
 contract ClankerV5LauncherReviewTest is Test {
     address constant FACTORY = 0x572e88D3cD7f23E4241EB6ceDD96667271bF09A0;
@@ -38,6 +40,7 @@ contract ClankerV5LauncherReviewTest is Test {
     /// @dev Uniswap v3 WETH/USDC 0.04%: a real pool of the factory Clanker's adapter accepts, holding about
     ///      0.09 WETH and 67 USDC on 2026-11-11.
     address constant WETH_USDC_400 = 0x56C8989222ed293E3c4a22628d8BCA633cE1eb99;
+    address constant UNISWAP_V3_FACTORY = 0x33128a8fC17869897dcE68Ed026d694621f6FDfD;
     address constant IDENTITY = 0x8004A169FB4a3325136EB29fA0ceB6D2e539a432;
     address constant KERNEL_FACTORY = 0xaac5D4240AF87249B3f71BC8E4A2cae074A3E419;
     address constant ENTRY_POINT = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
@@ -69,6 +72,7 @@ contract ClankerV5LauncherReviewTest is Test {
                 hook: HOOK,
                 feeEscrow: ESCROW,
                 weth: WETH,
+                uniswapV3Factory: UNISWAP_V3_FACTORY,
                 usdc: USDC,
                 identityRegistry: IDENTITY,
                 kernelFactory: KERNEL_FACTORY,
@@ -129,9 +133,11 @@ contract ClankerV5LauncherReviewTest is Test {
         });
     }
 
-    /// @dev The form's defaults: 1.5% both ways, everything to creator funds, one row for the creator.
+    /// @dev The form's defaults: 1.5% both ways, everything to creator funds, one row for the creator. The
+    ///      dev-buy minimum is the smallest the launcher admits; the dev-buy test sets a real one.
     function _settings(address quote) internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = quote;
+        s.minDevBuyOut = 1;
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -180,41 +186,62 @@ contract ClankerV5LauncherReviewTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // Finding: the dev buy has no minimum output, and the owner-set first hop is not bounded in quality
+    // Fixed (M1): the dev buy carries the creator's minimum output, and the owner-set first hop is bound to the
+    // Uniswap v3 factory's own pool at a fee of 0.3% or less
     // ------------------------------------------------------------------
 
-    /// @notice The same 1 ETH dev buy into a USDC-paired coin, once through the 0.05% pool and once after the
-    ///         owner pointed the route at another real Uniswap v3 WETH/USDC pool with almost no liquidity (the
-    ///         0.04% tier). Nothing reverts: `minAmountOut` is 1, so the creator's ETH is sold for whatever the
-    ///         pool gives and the launch goes through with a fraction of the coins.
-    function test_review_devBuyThroughAThinRouteLosesAlmostEverything() public {
+    /// @notice The same 1 ETH dev buy into a USDC-paired coin: the creator quotes it through the 0.05% pool and
+    ///         signs with a 5% tolerance. The owner then points the route at another real Uniswap v3 WETH/USDC
+    ///         pool with almost no liquidity (the 0.04% tier; the contract cannot judge depth, so the setter
+    ///         admits it). The launch used to go through with under 5% of the coins (`minAmountOut` was 1); now
+    ///         it reverts and the creator keeps the ETH. Back on the deep pool the same signed launch succeeds.
+    function test_review_devBuyThroughAThinRouteRevertsUnderTheCreatorsMinimum() public {
         BootrClankerLauncherV5.LaunchParams memory p = _params(1 ether);
         BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
         p.salt = _mineSalt(launcher, creator, p, s);
 
+        // the quote the web takes before signing: what the route delivers now
         uint256 snap = vm.snapshotState();
         vm.prank(creator);
         (address token,,,) = launcher.launch{value: 1 ether}(p, s);
         uint256 coinsThroughDeepPool = IERC20(token).balanceOf(creator);
         vm.revertToState(snap);
+        s.minDevBuyOut = coinsThroughDeepPool * 95 / 100;
 
-        // the owner (or whoever holds the owner key) moves the route; no check on the pool or its depth
+        // a dev buy without a minimum is no longer accepted at all
+        BootrClankerLauncherV5.TokenSettings memory unprotected = _settings(USDC);
+        unprotected.minDevBuyOut = 0;
+        vm.prank(creator);
+        vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+        launcher.launch{value: 1 ether}(p, unprotected);
+
+        // a pool that is not Uniswap v3's own WETH/USDC pool at that fee cannot be set (a typo, a hostile pool)
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, WETH_USDC_400, 500);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, thief, 400);
+
+        // the thin pool is a real factory pool, so the owner key can still select it
         launcher.setDevBuyRoute(USDC, WETH_USDC_400, 400);
         uint256 thinPoolUsdcBefore = IERC20(USDC).balanceOf(WETH_USDC_400);
         uint256 creatorEthBefore = creator.balance;
         vm.prank(creator);
-        (address token2,,,) = launcher.launch{value: 1 ether}(p, s);
-        uint256 coinsThroughThinPool = IERC20(token2).balanceOf(creator);
-        uint256 usdcReceivedForOneEth = thinPoolUsdcBefore - IERC20(USDC).balanceOf(WETH_USDC_400);
+        vm.expectRevert();
+        launcher.launch{value: 1 ether}(p, s);
+        assertEq(creator.balance, creatorEthBefore, "the creator's ETH never left");
+        assertEq(IERC20(USDC).balanceOf(WETH_USDC_400), thinPoolUsdcBefore, "the thin pool was not traded");
+        assertEq(token.code.length, 0, "no coin was created");
 
+        // the same signed launch goes through once the route is the deep pool again
+        launcher.setDevBuyRoute(USDC, WETH_USDC_500, 500);
+        vm.prank(creator);
+        (address token2,,,) = launcher.launch{value: 1 ether}(p, s);
         assertEq(token2, token, "same launch, same coin");
-        assertEq(creatorEthBefore - creator.balance, 1 ether, "the whole dev buy was spent");
+        assertGe(IERC20(token2).balanceOf(creator), s.minDevBuyOut, "at least the signed minimum");
+        assertEq(creatorEthBefore - creator.balance, 1 ether);
         assertEq(IERC20(WETH).balanceOf(address(launcher)), 0);
-        assertLt(usdcReceivedForOneEth, 100e6, "1 ETH bought less than 100 USDC");
-        assertLt(coinsThroughThinPool * 20, coinsThroughDeepPool, "the creator got under 5% of the coins");
         console2.log("coins for 1 ETH through the 0.05% pool:", coinsThroughDeepPool / 1e18);
-        console2.log("coins for 1 ETH through the thin pool: ", coinsThroughThinPool / 1e18);
-        console2.log("USDC the thin pool paid for 1 ETH (6 dec):", usdcReceivedForOneEth);
+        console2.log("the signed minimum (95%):              ", s.minDevBuyOut / 1e18);
     }
 
     // ------------------------------------------------------------------

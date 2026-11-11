@@ -105,6 +105,7 @@ contract ClankerV5ForkTest is Test {
                 hook: HOOK,
                 feeEscrow: ESCROW,
                 weth: WETH,
+                uniswapV3Factory: UNISWAP_V3_FACTORY,
                 usdc: USDC,
                 identityRegistry: IDENTITY,
                 kernelFactory: KERNEL_FACTORY,
@@ -165,9 +166,11 @@ contract ClankerV5ForkTest is Test {
     }
 
     /// @dev The recommended settings (design note section 2.3) on `quote`: 1.5% both ways, all to creator funds,
-    ///      one row (the creator, admin the creator), sniper tax on, editable metadata.
+    ///      one row (the creator, admin the creator), sniper tax on, editable metadata. The dev-buy minimum is the
+    ///      smallest the launcher admits (1 unit); the tests of the minimum set a real one.
     function _settings(address quote) internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = quote;
+        s.minDevBuyOut = 1;
         s.buyTaxBps = TAX;
         s.sellTaxBps = TAX;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -470,6 +473,67 @@ contract ClankerV5ForkTest is Test {
         assertEq(before - creator.balance, 0.01 ether, "funded in ETH");
         assertEq(IERC20(USDC).balanceOf(address(launcher)), 0, "no USDC left behind");
         _assertDevBuyForwarded(vm.getRecordedLogs(), token, 0.01 ether);
+    }
+
+    /// @dev The dev buy's minimum output is the creator's: none at all is refused before anything is created, one
+    ///      unit above what the route delivers reverts the whole launch (nothing spent), and the exact output
+    ///      goes through. Both the one-hop (ETH) and the two-hop (USDC) route.
+    function test_devBuyMinimumOutputIsEnforced() public {
+        address[2] memory quotes = [NATIVE, USDC];
+        for (uint256 i; i < quotes.length; ++i) {
+            BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+            BootrClankerLauncherV5.TokenSettings memory s = _settings(quotes[i]);
+            p.salt = _mineSalt(creator, p, s, bytes32(uint256(40 + i)));
+
+            s.minDevBuyOut = 0;
+            vm.prank(creator);
+            vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+            launcher.launch{value: 0.01 ether}(p, s);
+
+            // what the route delivers right now
+            s.minDevBuyOut = 1;
+            uint256 snap = vm.snapshotState();
+            vm.prank(creator);
+            (address token,,,) = launcher.launch{value: 0.01 ether}(p, s);
+            uint256 delivered = IERC20(token).balanceOf(creator);
+            assertGt(delivered, 0);
+            vm.revertToState(snap);
+
+            uint256 before = creator.balance;
+            s.minDevBuyOut = delivered + 1;
+            vm.prank(creator);
+            vm.expectRevert();
+            launcher.launch{value: 0.01 ether}(p, s);
+            assertEq(creator.balance, before, "a launch under the minimum spends nothing");
+            assertEq(token.code.length, 0, "and creates no coin");
+
+            s.minDevBuyOut = delivered;
+            vm.prank(creator);
+            (address again,,,) = launcher.launch{value: 0.01 ether}(p, s);
+            assertEq(again, token);
+            assertEq(IERC20(token).balanceOf(creator), delivered, "exactly the minimum is enough");
+        }
+    }
+
+    /// @dev The owner's route can only be Uniswap v3's own WETH / quote pool at a fee of 0.3% or less.
+    function test_devBuyRouteIsBoundToTheUniswapV3Factory() public {
+        assertEq(address(launcher.uniswapV3Factory()), UNISWAP_V3_FACTORY);
+        // the launch pool manager is a contract, and not a v3 pool of the pair
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, POOL_MANAGER, 500);
+        // the real 0.05% pool under the wrong tier
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, WETH_USDC_500, 3000);
+        // the 1% tier is out of the bound even with its real pool
+        address onePercent = IUniswapV3FactoryLike(UNISWAP_V3_FACTORY).getPool(WETH, USDC, 10_000);
+        assertTrue(onePercent != address(0), "Uniswap v3 has a WETH/USDC 1% pool on Base");
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, onePercent, 10_000);
+        // the 0.3% pool is admitted, and a dev buy runs through it
+        address thirty = IUniswapV3FactoryLike(UNISWAP_V3_FACTORY).getPool(WETH, USDC, 3000);
+        launcher.setDevBuyRoute(USDC, thirty, 3000);
+        (address token,) = _launch(_settings(USDC), 0.01 ether);
+        assertGt(IERC20(token).balanceOf(creator), 0);
     }
 
     function test_launchUsdcWithoutDevBuy() public {

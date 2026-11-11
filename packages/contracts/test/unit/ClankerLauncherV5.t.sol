@@ -34,6 +34,24 @@ contract MockClankerV5Factory {
     }
 }
 
+/// @dev Uniswap v3's `getPool`: the pools the test registers, order-insensitive, zero for none.
+contract MockUniswapV3Factory {
+    mapping(bytes32 => address) internal _pools;
+
+    function setPool(address a, address b, uint24 fee, address pool) external {
+        _pools[_key(a, b, fee)] = pool;
+    }
+
+    function getPool(address a, address b, uint24 fee) external view returns (address) {
+        return _pools[_key(a, b, fee)];
+    }
+
+    function _key(address a, address b, uint24 fee) internal pure returns (bytes32) {
+        (address lo, address hi) = a < b ? (a, b) : (b, a);
+        return keccak256(abi.encode(lo, hi, fee));
+    }
+}
+
 /// @dev Exposes the launcher's internals that the unit tests check without a Clanker deployment: a coin's
 ///      records (normally written by `launch`) and the Clanker `LaunchParams` the launcher builds.
 contract LauncherV5Harness is BootrClankerLauncherV5 {
@@ -66,6 +84,8 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
 contract ClankerLauncherV5Test is Test {
     LauncherV5Harness launcher;
     MockClankerV5Factory factory;
+    MockUniswapV3Factory v3Factory;
+    address weth = makeAddr("weth");
     address owner = makeAddr("owner");
     address platform = makeAddr("platform");
     address guardian = makeAddr("guardian");
@@ -82,7 +102,8 @@ contract ClankerLauncherV5Test is Test {
             factory: address(factory),
             hook: hook,
             feeEscrow: makeAddr("feeEscrow"),
-            weth: makeAddr("weth"),
+            weth: weth,
+            uniswapV3Factory: address(v3Factory),
             usdc: USDC,
             identityRegistry: makeAddr("identity"),
             kernelFactory: makeAddr("kernelFactory"),
@@ -106,6 +127,7 @@ contract ClankerLauncherV5Test is Test {
 
     function setUp() public {
         factory = new MockClankerV5Factory();
+        v3Factory = new MockUniswapV3Factory();
         launcher = new LauncherV5Harness(owner, _deps(), _defaults(), 1000);
         vm.startPrank(owner);
         launcher.setQuoteAllowed(AGENT, NATIVE, true);
@@ -187,6 +209,10 @@ contract ClankerLauncherV5Test is Test {
         new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
         d = _deps();
         d.weth = address(0);
+        vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
+        new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
+        d = _deps();
+        d.uniswapV3Factory = address(0);
         vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
         new BootrClankerLauncherV5(owner, d, _defaults(), 1000);
         vm.expectRevert(BootrClankerLauncherV5.InvalidMinPlatformBps.selector);
@@ -320,6 +346,9 @@ contract ClankerLauncherV5Test is Test {
 
     function test_devBuyRouteAdmin() public {
         address pool = makeAddr("pool");
+        v3Factory.setPool(weth, USDC, 500, pool);
+        assertEq(address(launcher.uniswapV3Factory()), address(v3Factory));
+        assertEq(launcher.MAX_DEV_BUY_ROUTE_FEE(), 3000, "0.3% at most");
         vm.expectEmit(address(launcher));
         emit BootrClankerLauncherV5.DevBuyRouteUpdated(USDC, pool, 500);
         vm.prank(owner);
@@ -333,6 +362,53 @@ contract ClankerLauncherV5Test is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         launcher.setDevBuyRoute(USDC, address(0), 0);
+    }
+
+    /// @dev A route must be the Uniswap v3 factory's own WETH / quote pool at that fee, at a fee of 0.3% or less:
+    ///      a mistyped pool, a pool of another pair or tier, and the 1% tier are refused by the setter.
+    function test_devBuyRouteMustBeTheFactoryPoolWithinTheFeeBound() public {
+        address pool = makeAddr("pool");
+        address other = makeAddr("otherPool");
+        address cbBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
+        v3Factory.setPool(weth, USDC, 500, pool);
+        v3Factory.setPool(weth, USDC, 3000, other);
+        v3Factory.setPool(weth, USDC, 10_000, makeAddr("onePercentPool"));
+        v3Factory.setPool(weth, cbBTC, 500, makeAddr("cbBtcPool"));
+        vm.startPrank(owner);
+
+        // not a pool of the factory at all (a typo), or the factory's pool of another tier or another pair
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("typo"), 500);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, other, 500);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("cbBtcPool"), 500);
+        // a tier with no pool: the factory answers address(0), which is not the pool given
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteNotFactoryPool.selector);
+        launcher.setDevBuyRoute(USDC, pool, 100);
+
+        // the fee bound: 0 and anything above 0.3%, even when the pool is the factory's
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, pool, 0);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, makeAddr("onePercentPool"), 10_000);
+        vm.expectRevert(BootrClankerLauncherV5.DevBuyRouteFeeOutOfBounds.selector);
+        launcher.setDevBuyRoute(USDC, other, 3001);
+
+        // the edge of the bound is accepted
+        launcher.setDevBuyRoute(USDC, other, 3000);
+        (address p, uint24 fee) = launcher.devBuyRoute(USDC);
+        assertEq(p, other);
+        assertEq(fee, 3000);
+
+        // clearing needs no pool and stores no fee, whatever fee is passed
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.DevBuyRouteUpdated(USDC, address(0), 0);
+        launcher.setDevBuyRoute(USDC, address(0), 500);
+        (p, fee) = launcher.devBuyRoute(USDC);
+        assertEq(p, address(0));
+        assertEq(fee, 0);
+        vm.stopPrank();
     }
 
     // ------------------------------------------------------------------
@@ -661,11 +737,19 @@ contract ClankerLauncherV5Test is Test {
         p.fuelUsdc = 25e6 - 1;
         vm.expectRevert(BootrClankerLauncherV5.InsufficientFuel.selector);
         launcher.launch(p, s);
-        // a dev buy into USDC needs the owner's v3 route
+        // a dev buy needs the creator's minimum output, into ETH and into USDC alike
         p = _params();
         p.devBuyWei = 0.01 ether;
-        s.quoteToken = USDC;
         vm.deal(creator, 1 ether);
+        vm.prank(creator);
+        vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+        launcher.launch{value: 0.01 ether}(p, s);
+        s.quoteToken = USDC;
+        vm.prank(creator);
+        vm.expectRevert(BootrClankerLauncherV5.MinDevBuyOutRequired.selector);
+        launcher.launch{value: 0.01 ether}(p, s);
+        // and a dev buy into USDC needs the owner's v3 route
+        s.minDevBuyOut = 1;
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(BootrClankerLauncherV5.DevBuyRouteMissing.selector, USDC));
         launcher.launch{value: 0.01 ether}(p, s);

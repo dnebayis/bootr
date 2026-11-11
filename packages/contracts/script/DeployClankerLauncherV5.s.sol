@@ -91,6 +91,7 @@ contract DeployClankerLauncherV5 is Script {
                 hook: HOOK,
                 feeEscrow: FEE_ESCROW,
                 weth: WETH,
+                uniswapV3Factory: UNISWAP_V3_FACTORY,
                 usdc: address(old.usdc()),
                 identityRegistry: address(old.identityRegistry()),
                 kernelFactory: address(old.kernelFactory()),
