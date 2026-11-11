@@ -150,6 +150,12 @@ struct TokenSettings {
     bool antiSnipe;
     bool metadataEditable;
     string contractURI;          // Bootr's hosted ERC-7572 document (/tokens/<launchId>.json)
+    // pins (security review 2026-11-11): what the creator read before signing; the launch reverts on a difference
+    uint256 minDevBuyOut;             // least coins the dev buy must deliver; required when devBuyWei > 0
+    uint64 expectedConfigVersion;     // Clanker's factory.configVersion()
+    uint256 maxLaunchFeeWei;          // the most the launcher may charge as its launch fee
+    uint16 expectedAgentShareBps;     // agentDefaults.agentShareBps
+    uint16 expectedPlatformShareBps;  // agentDefaults.platformShareBps
 }
 
 function launch(LaunchParams calldata p, TokenSettings calldata s) external payable returns (...);
@@ -182,6 +188,12 @@ Per launch (`launch(p, s)` reverts otherwise):
 4. `creatorFunds > 0` ⇒ `1 ≤ rewards.length ≤ maxRewardRows`, rows sum to 10,000, every row's bps > 0, admin
    ≠ launcher; `creatorFunds == 0` ⇒ `rewards` empty.
 5. `s.dividendBps > 0` ⇔ `s.minDividendHolding > 0` (Clanker checks ≥ its policy minimum, 10,000 tokens, and ≤ supply).
+6. The pins (added by the security review of 2026-11-11, section 8): `s.expectedAgentShareBps` and
+   `s.expectedPlatformShareBps` equal the live shares (`LockedSharesChanged`), `launchFeeWei ≤ s.maxLaunchFeeWei`
+   (`LaunchFeeAboveMax`), `p.devBuyWei > 0` ⇒ `s.minDevBuyOut > 0` (`MinDevBuyOutRequired`; the buy itself reverts
+   under the minimum), and Clanker reverts `StaleConfig` unless `s.expectedConfigVersion` is its live version.
+7. String caps in bytes: name 160, symbol 32, image / contract URI / agent URI 512 each, metadata 4,096, context
+   512, model 128 (`StringTooLong(field, length, max)`); `updateImage` and `updateMetadata` carry the same caps.
 
 Clanker parameters the launcher builds:
 
@@ -335,22 +347,26 @@ indexer and supervisor in parallel with the form.
 ## 7. Risks
 
 - Clanker can unregister a quote, move its start tick, change the policy bounds or disable launches for future
-  launches; the launcher reads all of it in the same transaction, and a launch outside the new bounds reverts with
-  Clanker's error (nothing is stuck). The deploy-day fork run checks the live policy.
+  launches; a launch outside the new bounds reverts with Clanker's error, and a launch signed before any change of
+  Clanker's configuration reverts `StaleConfig` (the creator's `expectedConfigVersion`), so no coin is created under
+  a policy its creator did not see (nothing is stuck). The deploy-day fork run checks the live policy.
 - The dividend backing is under Clanker's emergency withdrawal; the form should say dividends are held by Clanker.
 - Editable metadata means a creator can change the image and description to anything; Bootr's coin page shows what the
   chain says. The existing image moderation (if any) must read on-chain updates too (I).
 - `contractURI` moving out of `metadata` changes how the indexer finds the hosted document for v2 coins (it reads the
   calldata or `contractURI()`); `ownContractUri` keeps reading `contractUri` inside the JSON for v4 and fixed-v5 coins.
 
-## 8. Built (contracts, 2026-11-10)
+## 8. Built (contracts, 2026-11-10; security-review fixes 2026-11-11)
 
-`packages/contracts/src/BootrClankerLauncherV5.sol` on branch `worktree-agent-a13d6a48bc2c37396` (commits `ce173bb`,
-`0d34f73`), not deployed. One entry point, not upgradeable, the gate registration and `AgentLaunched` unchanged.
-31 unit tests (`test/unit/ClankerLauncherV5.t.sol`, one fuzz) and 24 Base fork tests
-(`test/fork/ClankerV5Fork.t.sol`, live factory at block ~55.77 M) pass; the deploy script was dry-run against Base
-(no broadcast). Runtime size 18,137 bytes; launch gas 3.82 M (ETH, one row, dev buy) to 5.50 M (USDC, five rows,
-dividends, dev buy).
+`packages/contracts/src/BootrClankerLauncherV5.sol`, first built on branch `worktree-agent-a13d6a48bc2c37396`
+(commits `ce173bb`, `0d34f73`), then changed on branch `worktree-agent-a838364dfd2845d29` for the findings of the
+independent security review of 2026-11-11 (section 8.1). Not deployed. One entry point, not upgradeable, the gate
+registration and `AgentLaunched` unchanged. 42 unit tests (`test/unit/ClankerLauncherV5.t.sol`, one fuzz),
+32 Base fork tests (`test/fork/ClankerV5Fork.t.sol`) and 8 review regressions
+(`test/security/ClankerV5LauncherReview.t.sol`, which runs the deploy script against the live v4 launcher, gate and
+guardian) pass on the live factory (Base block ~56.17 M); the deploy script was also dry-run against Base with the
+runbook's variables (no broadcast). Runtime size 19,395 bytes (limit 24,576); launch gas 3.83 M (ETH, one row,
+dev buy) to 5.52 M (USDC, five rows, dividends, dev buy), 9.92 M with every string at its cap.
 
 ```solidity
 struct LaunchParams {            // unchanged; metadata = Clanker's JSON, buybackBurn ignored
@@ -362,24 +378,35 @@ struct RewardInput { address recipient; address admin; uint16 bps; }
 struct TokenSettings {
     address quoteToken; uint24 buyTaxBps; uint24 sellTaxBps; uint16 burnBps; uint16 dividendBps;
     uint256 minDividendHolding; RewardInput[] rewards; bool antiSnipe; bool metadataEditable; string contractURI;
+    // the pins, in this order, after contractURI
+    uint256 minDevBuyOut; uint64 expectedConfigVersion; uint256 maxLaunchFeeWei;
+    uint16 expectedAgentShareBps; uint16 expectedPlatformShareBps;
 }
 struct AgentDefaults {
     uint16 agentShareBps; uint16 platformShareBps; address platformRecipient; uint256 minFuelUsdc;
     uint32 dormancyPeriod; uint24 minTaxBps; uint24 maxTaxBps; uint8 maxRewardRows;
 }
+struct Deps {                    // constructor only
+    address factory; address hook; address feeEscrow; address weth; address uniswapV3Factory; address usdc;
+    address identityRegistry; address kernelFactory; address guardian; address gate;
+}
 enum LaunchKind { Agent, Plain }
 
 function launch(LaunchParams calldata p, TokenSettings calldata s) external payable
     returns (address token, address kernel, address burner, uint256 agentId);
-function updateImage(address token, string calldata image) external;        // coinCreator[token] only, while editable
-function updateMetadata(address token, string calldata metadata) external;  // the `metadata` key
+function updateImage(address token, string calldata image) external;        // coinCreator[token] only, while editable; <= 512 bytes
+function updateMetadata(address token, string calldata metadata) external;  // the `metadata` key; <= 4096 bytes
 function lockMetadata(address token) external;                               // one way
-// views: tokenInitCodeHash(p, s), predictToken(creator, p, s), predictKernel(creator, salt), scopedSalt(creator, salt),
-// previewSlotWeights(s) -> uint16[] (reverts as launch would), taxConfigurationFor(s), poolKeyFor(token),
-// poolKeyFor(token, quote, tickSpacing), quoteOf(token), coinCreator(token), metadataEditable(token),
-// allowedQuote(kind, quote), devBuyRoute(quote), agentDefaults(), minPlatformBps(), launchFeeWei()
+// views: tokenInitCodeHash(p, s) (reads Clanker's live config version, checks the strings), predictToken(creator, p, s),
+// predictKernel(creator, salt), scopedSalt(creator, salt), previewSlotWeights(s) -> uint16[] (the settings' own rules;
+// the pins are checked by launch only), taxConfigurationFor(s), poolKeyFor(token) (the spacing stored at launch),
+// poolKeyFor(token, quote, tickSpacing), quoteOf(token), tickSpacingOf(token), coinCreator(token),
+// metadataEditable(token), allowedQuote(kind, quote), devBuyRoute(quote), agentDefaults(), minPlatformBps(),
+// launchFeeWei(), uniswapV3Factory()
+// constants: MAX_LAUNCH_FEE_WEI (0.05 ether), MAX_DEV_BUY_ROUTE_FEE (3000), MAX_NAME_BYTES (160),
+// MAX_SYMBOL_BYTES (32), MAX_URI_BYTES (512), MAX_METADATA_BYTES (4096), MAX_CONTEXT_BYTES (512), MAX_MODEL_BYTES (128)
 // owner: setAgentDefaults, setMinPlatformBps, setLaunchFee, setQuoteAllowed(kind, quote, allowed),
-// setDevBuyRoute(quote, v3Pool, fee), pause, unpause
+// setDevBuyRoute(quote, v3Pool, fee), rescue(token, to, amount), pause, unpause; renounceOwnership() reverts
 ```
 
 Events (topic order as written):
@@ -391,7 +418,7 @@ event AgentLaunched(address indexed token, address indexed kernel, address index
                                      // platform, platformRecipient, minFuelUsdc, dormancyPeriod); burner = 0xdEaD iff burnBps > 0
 event ClankerV5Launched(address indexed token, bytes32 poolId, address hook, address feeEscrow, address quoteToken,
     int24 tickSpacing, uint24 buyTaxBps, uint24 sellTaxBps, uint16 burnBps, uint16 dividendBps, bool antiSnipe,
-    bool metadataEditable);
+    bool metadataEditable);                                                      // unchanged
 event LaunchContext(address indexed token, string context);                      // unchanged
 event LaunchFeePaid(address indexed token, address indexed recipient, uint256 amount);  // unchanged
 event CoinImageUpdated(address indexed token, string image);
@@ -402,6 +429,7 @@ event DevBuyRouteUpdated(address indexed quote, address pool, uint24 fee);
 event AgentDefaultsUpdated(AgentDefaults defaults);
 event MinPlatformBpsUpdated(uint16 minPlatformBps);
 event LaunchFeeUpdated(uint256 launchFeeWei);
+event Rescued(address indexed token, address indexed to, uint256 amount);        // new; token 0x0 = native ETH
 ```
 
 In the same launch receipt Clanker emits what the launcher does not repeat: the hook's `FeeSlotCreated(poolId,
@@ -415,8 +443,44 @@ integratorFeeRecipient, antiSnipeEnabled)` with `minimumDividendHolding`. An edi
 Errors: `QuoteNotAllowed(address)`, `TaxOutOfBounds`, `SharesExceedPool`, `DividendHoldingMismatch`,
 `InvalidRewardCount`, `InvalidRewardBps`, `InvalidRewardRecipient`, `InvalidRewardAdmin`, `ZeroSlotWeight`,
 `DevBuyRouteMissing(address)`, `NotCoinCreator`, `MetadataNotEditable`, `InsufficientValue`, `InsufficientFuel`,
-`EmptyNameOrSymbol`; owner side `InvalidAgentShare`, `InvalidPlatformShare`, `InvalidTaxBounds`,
-`InvalidRewardRowLimit`, `InvalidDormancyPeriod`, `InvalidMinPlatformBps`, `ZeroAddress`.
+`EmptyNameOrSymbol`; added by the review fixes `MinDevBuyOutRequired`, `LockedSharesChanged(uint16 agentShareBps,
+uint16 platformShareBps)` (the live values), `LaunchFeeAboveMax(uint256 launchFeeWei, uint256 maxLaunchFeeWei)`,
+`StringTooLong(string field, uint256 length, uint256 max)`; owner side `InvalidAgentShare`, `InvalidPlatformShare`,
+`InvalidTaxBounds`, `InvalidRewardRowLimit`, `InvalidDormancyPeriod`, `InvalidMinPlatformBps`, `ZeroAddress`, and
+added `LaunchFeeTooHigh`, `DevBuyRouteFeeOutOfBounds`, `DevBuyRouteNotFactoryPool`, `RenounceDisabled`. From Clanker,
+through the launcher: `StaleConfig(uint64 expectedConfigVersion, uint64 actualConfigVersion)`.
+
+### 8.1 Security-review fixes (2026-11-11)
+
+The reviewer's proofs are `test/security/ClankerV5LauncherReview.t.sol`; each is now a regression test showing the
+attack failing.
+
+| Finding | What was wrong | What the contract does now |
+| --- | --- | --- |
+| M1 | the dev buy went out with `minAmountOut: 1`; the owner-set first hop could be any address | `TokenSettings.minDevBuyOut` is Clanker's `minAmountOut` and must be > 0 with a dev buy; `setDevBuyRoute` admits only the Uniswap v3 factory's own WETH/quote pool at that fee, fee ≤ 0.3% (`MAX_DEV_BUY_ROUTE_FEE`). The contract cannot judge a pool's depth: the minimum is what protects the creator from a thin pool |
+| M2 | `expectedConfigVersion` was read inside the launch, so Clanker's stale-config guard never fired | the creator's `TokenSettings.expectedConfigVersion` is passed through; a Clanker policy, tick-spacing or native-fee change after signing reverts `StaleConfig`. The views (`tokenInitCodeHash`, `predictToken`) read the live version |
+| L1 | the owner could raise the platform share or the launch fee ahead of a pending launch | `expectedAgentShareBps` / `expectedPlatformShareBps` must equal the live shares, the fee may not exceed `maxLaunchFeeWei`, and `setLaunchFee` is capped at `MAX_LAUNCH_FEE_WEI` (0.05 ETH, a hundred times the fee of 2026-11-11) |
+| L2 | the deploy script defaulted the owner to the deployer key and the runbook opened the gate before the admin had accepted | `PLATFORM_ADMIN` is required; the order is deploy, `acceptOwnership` from the admin, read back `owner() == admin`, then `gate.addLauncher(v5)` (below, and [`clanker-v5-migration.md`](./clanker-v5-migration.md) section 8) |
+| L3 | the platform recipient frozen into every coin was copied from v4 without a choice | `PLATFORM_RECIPIENT` is a required script variable. Owner decision 2026-11-11: keep `0x55e66C7F30Ac6d5C0C757fDdaF56D66506439d82` (the v4 recipient), knowing it is a plain key frozen into each coin |
+| L4 | `poolKeyFor(token)` read Clanker's live tick spacing | `tickSpacingOf[token]` is stored at launch and read from storage |
+| L5 | an ERC-20 sent to the launcher had no way out | owner-only `rescue(token, to, amount)` (`token = 0x0` for forced ETH) with `Rescued`; the launcher holds nothing between transactions and `rescue` cannot run inside a launch |
+| informational | `setMinPlatformBps` could pass the current default; the owner could renounce; strings were unbounded | the minimum may not exceed the current `platformShareBps`; `renounceOwnership` reverts `RenounceDisabled`; the byte caps of section 2.2 on the launch and on both edits |
+
+What the web, the indexer and the supervisor must send or read after this: the five new `TokenSettings` fields
+(read `factory.configVersion()`, `agentDefaults()` and `launchFeeWei()` next to the numbers shown; quote the dev buy
+and sign a minimum with a tolerance; on `StaleConfig`, `LockedSharesChanged` or `LaunchFeeAboveMax` re-read and
+ask again), the byte caps, `tickSpacingOf(token)`, and the `Deps` field `uniswapV3Factory` in anything that deploys
+the launcher. No event changed; `Rescued` is new.
+
+**Deploy order** (full commands and the read-back list in the migration note, section 8): (1) the deploy script with
+`PLATFORM_ADMIN` and `PLATFORM_RECIPIENT`; (2) the admin calls `acceptOwnership()`; (3) read back `owner() ==
+admin`, `pendingOwner() == 0`, `agentDefaults()`, `minPlatformBps()`, `launchFeeWei()`, `allowedQuote(0, ETH)`,
+`allowedQuote(0, USDC)`, `devBuyRoute(USDC)`, `paused()`; (4) only then `gate.addLauncher(v5)`. Until step 4 every
+launch reverts `NotLauncher`, so the deployer key's ownership between steps 1 and 2 reaches no coin.
+
+Not pinned by the creator, by choice: `platformRecipient` (it moves where the platform's own share and the launch
+fee go, not what the creator or the agent gets), `dormancyPeriod` (bounded below at 30 days) and `minFuelUsdc`,
+the tax bounds and the row limit (a change can only make the launch revert).
 
 Where the build differs from section 2, and why:
 
@@ -424,13 +488,16 @@ Where the build differs from section 2, and why:
   `DefaultsUpdated`, `platformTaxBps` / `setPlatformTaxBps` / `PlatformTaxUpdated` (the treasury now picks its tax
   like any creator, inside the bounds), the launcher-wide `antiSnipe` / `setAntiSnipe` / `AntiSnipeUpdated` (per launch
   now), the immutable `quoteToken` (per coin: `quoteOf`), `slotWeightsFor(bool)` and `taxConfigurationFor(bool)`.
-  Constructor: `(owner, Deps, AgentDefaults, minPlatformBps)`; `Deps` gains `weth` and loses `quoteToken`.
+  Constructor: `(owner, Deps, AgentDefaults, minPlatformBps)`; `Deps` gains `weth` and `uniswapV3Factory` and loses
+  `quoteToken`.
 - **The tax bounds and the row limit live in `AgentDefaults`** (one setter, one event) next to the shares;
   `launchFeeWei` and `minPlatformBps` keep their own setters. Fixed bounds: agent ≥ 500, platform ≥ max(1,
-  `minPlatformBps`), agent + platform ≤ 5,000, 0 < minTax ≤ maxTax ≤ 100,000 (10%), rows 1..5, dormancy ≥ 30 days.
+  `minPlatformBps`), agent + platform ≤ 5,000, 0 < minTax ≤ maxTax ≤ 100,000 (10%), rows 1..5, dormancy ≥ 30 days,
+  launch fee ≤ 0.05 ETH, `minPlatformBps` ≤ the current platform share.
   The contract stores no default for the creator's choices (1.5%, sniper on, editable on, ETH): the form prefills them.
 - **The USDC dev-buy hop is owner-set** (`setDevBuyRoute(USDC, 0xd0b5…F224, 500)`, done by the deploy script), not
-  hard-coded; a dev buy into an ERC-20 pool without a route reverts `DevBuyRouteMissing` before any call.
+  hard-coded, and bound to the Uniswap v3 factory's own pool for WETH/quote at a fee of 0.3% or less; a dev buy into
+  an ERC-20 pool without a route reverts `DevBuyRouteMissing` before any call.
 - **A row's recipient may not be the launcher either** (as its admin may not): fees credited to the launcher would
   have no way out.
 - **The agent floor is "to the wei" after Clanker's flooring:** when the agent's weight is exact (P divides
@@ -442,4 +509,4 @@ Where the build differs from section 2, and why:
 - **The dev buy pays the buy tax** (only the sniper surcharge is waived): the launch receipt already carries slot,
   burn and dividend credits from it.
 - `poolKeyFor(token, tickSpacing)` became `poolKeyFor(token, quote, tickSpacing)`; `poolKeyFor(token)` reads
-  `quoteOf[token]`.
+  `quoteOf[token]` and `tickSpacingOf[token]`.
