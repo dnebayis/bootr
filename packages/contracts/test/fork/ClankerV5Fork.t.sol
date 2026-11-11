@@ -1190,6 +1190,35 @@ contract ClankerV5ForkTest is Test {
         assertEq(_poolId(first), firstPool);
     }
 
+    /// @dev The launcher holds nothing after a launch (fuel, dev-buy coins, WETH, ETH), so `rescue` has nothing of
+    ///      a creator's to reach; a stray transfer to it comes back out, by the owner only.
+    function test_rescueReachesOnlyStrayTransfers() public {
+        launcher.setLaunchFee(0.0005 ether);
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
+        BootrClankerLauncherV5.LaunchParams memory p = _params(0.01 ether);
+        p.salt = _mineSalt(creator, p, s, bytes32(uint256(61)));
+        vm.prank(creator);
+        (address token,,,) = launcher.launch{value: 1 ether}(p, s);
+        assertEq(address(launcher).balance, 0);
+        assertEq(IERC20(USDC).balanceOf(address(launcher)), 0);
+        assertEq(IERC20(WETH).balanceOf(address(launcher)), 0);
+        assertEq(IERC20(token).balanceOf(address(launcher)), 0);
+        assertEq(escrow.owed(address(launcher), USDC) + escrow.owed(address(launcher), NATIVE), 0, "no fees accrue here");
+
+        // someone sends USDC to the launcher by mistake
+        deal(USDC, stranger, 50e6);
+        vm.prank(stranger);
+        IERC20(USDC).transfer(address(launcher), 50e6);
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        launcher.rescue(USDC, stranger, 50e6);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(USDC, stranger, 50e6);
+        launcher.rescue(USDC, stranger, 50e6);
+        assertEq(IERC20(USDC).balanceOf(stranger), 50e6);
+        assertEq(IERC20(USDC).balanceOf(address(launcher)), 0);
+    }
+
     function test_launchPredictsKernelAndTokenAndRejectsReplay() public {
         BootrClankerLauncherV5.TokenSettings memory s = _settings(USDC);
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);

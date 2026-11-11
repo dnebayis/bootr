@@ -273,6 +273,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     event CoinMetadataUpdated(address indexed token, string metadata);
     /// @notice The creator locked the coin's image and metadata for good.
     event CoinMetadataLocked(address indexed token);
+    /// @notice The owner sent out an asset that had landed on this contract (`token == address(0)`: native ETH).
+    event Rescued(address indexed token, address indexed to, uint256 amount);
 
     error ZeroAddress();
     error InvalidAgentShare();
@@ -384,6 +386,22 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         }
         devBuyRoute[quote] = DevBuyRoute({pool: pool, fee: fee});
         emit DevBuyRouteUpdated(quote, pool, fee);
+    }
+
+    /// @notice Send out an asset that landed on this contract by mistake (`token == address(0)`: native ETH,
+    ///         which can only arrive by force: there is no `receive`). The launcher holds nothing between
+    ///         transactions: a launch pulls the fuel straight from the creator to the kernel, forwards the dev
+    ///         buy's coins whole and refunds the unspent ETH before it returns, and fees accrue in Clanker's
+    ///         escrow to the slot recipients, never here. So anything `rescue` can reach is a stray transfer, not
+    ///         a coin's or a creator's money; it cannot run inside a launch (`nonReentrant`).
+    function rescue(address token, address to, uint256 amount) external onlyOwner nonReentrant {
+        if (to == address(0)) revert ZeroAddress();
+        if (token == address(0)) {
+            Address.sendValue(payable(to), amount);
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
+        emit Rescued(token, to, amount);
     }
 
     function pause() external onlyOwner {

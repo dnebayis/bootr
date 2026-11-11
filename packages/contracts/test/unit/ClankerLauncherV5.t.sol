@@ -4,11 +4,13 @@ pragma solidity ^0.8.26;
 import {Test, Vm} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {BootrClankerLauncherV5} from "../../src/BootrClankerLauncherV5.sol";
 import {ClankerV5, IClankerV5Factory} from "../../src/interfaces/IClankerV5.sol";
 import {KernelLib} from "../../src/interfaces/IKernel.sol";
 import {PoolKey} from "../../src/interfaces/IUniswapV4.sol";
+import {MockERC20} from "../mocks/MockERC20.sol";
 
 /// @dev The factory surface the unit tests reach: the live config version, the tick spacing, the metadata
 ///      forwarder (recorded), and an init-code-hash view that answers with the config version it was handed.
@@ -54,6 +56,31 @@ contract MockUniswapV3Factory {
     function _key(address a, address b, uint24 fee) internal pure returns (bytes32) {
         (address lo, address hi) = a < b ? (a, b) : (b, a);
         return keccak256(abi.encode(lo, hi, fee));
+    }
+}
+
+/// @dev An owner that calls `rescue` again while a rescue is paying it ETH.
+contract ReenteringOwner {
+    BootrClankerLauncherV5 public launcher;
+    bytes public reentryError;
+
+    function setLauncher(BootrClankerLauncherV5 launcher_) external {
+        launcher = launcher_;
+    }
+
+    function accept() external {
+        launcher.acceptOwnership();
+    }
+
+    function rescue(address token, address to, uint256 amount) external {
+        launcher.rescue(token, to, amount);
+    }
+
+    receive() external payable {
+        try launcher.rescue(address(0), address(this), 1) {}
+        catch (bytes memory err) {
+            reentryError = err;
+        }
     }
 }
 
@@ -852,6 +879,78 @@ contract ClankerLauncherV5Test is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         launcher.setLaunchFee(0);
+    }
+
+    // ------------------------------------------------------------------
+    // Rescue: stray assets out, owner only
+    // ------------------------------------------------------------------
+
+    function test_rescueSendsOutAStrayErc20OwnerOnly() public {
+        MockERC20 stray = new MockERC20("Stray", "STRAY", 18);
+        stray.mint(address(launcher), 100e18);
+
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.rescue(address(stray), stranger, 1);
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, creator));
+        launcher.rescue(address(stray), creator, 1);
+        vm.prank(owner);
+        vm.expectRevert(BootrClankerLauncherV5.ZeroAddress.selector);
+        launcher.rescue(address(stray), address(0), 1);
+
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(address(stray), stranger, 40e18);
+        vm.prank(owner);
+        launcher.rescue(address(stray), stranger, 40e18);
+        assertEq(stray.balanceOf(stranger), 40e18);
+        assertEq(stray.balanceOf(address(launcher)), 60e18);
+
+        // no more than is there
+        vm.prank(owner);
+        vm.expectRevert();
+        launcher.rescue(address(stray), stranger, 60e18 + 1);
+        vm.prank(owner);
+        launcher.rescue(address(stray), stranger, 60e18);
+        assertEq(stray.balanceOf(address(launcher)), 0);
+    }
+
+    /// @dev The launcher has no `receive`: ETH can only be forced onto it, and `rescue(address(0), ...)` sends
+    ///      that out.
+    function test_rescueSendsOutForcedEth() public {
+        vm.deal(stranger, 1 ether);
+        vm.prank(stranger);
+        (bool ok,) = address(launcher).call{value: 1 ether}("");
+        assertFalse(ok, "a plain transfer is refused");
+
+        vm.deal(address(launcher), 0.3 ether); // as a self-destruct would
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        launcher.rescue(NATIVE, stranger, 0.3 ether);
+        vm.expectEmit(address(launcher));
+        emit BootrClankerLauncherV5.Rescued(NATIVE, platform, 0.3 ether);
+        vm.prank(owner);
+        launcher.rescue(NATIVE, platform, 0.3 ether);
+        assertEq(platform.balance, 0.3 ether);
+        assertEq(address(launcher).balance, 0);
+    }
+
+    /// @dev `rescue` shares the launch's reentrancy lock: a call made while the launcher is paying out cannot
+    ///      enter it (the same lock keeps it out of a running launch).
+    function test_rescueCannotBeReentered() public {
+        ReenteringOwner reenterer = new ReenteringOwner();
+        reenterer.setLauncher(launcher);
+        vm.prank(owner);
+        launcher.transferOwnership(address(reenterer));
+        reenterer.accept();
+        vm.deal(address(launcher), 1 ether);
+
+        reenterer.rescue(NATIVE, address(reenterer), 0.5 ether);
+        assertEq(
+            bytes4(reenterer.reentryError()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector, "inner call refused"
+        );
+        assertEq(address(reenterer).balance, 0.5 ether, "only the outer rescue paid");
+        assertEq(address(launcher).balance, 0.5 ether);
     }
 
     function test_pauseRefusesLaunches() public {
