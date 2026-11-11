@@ -24,6 +24,7 @@ import {
 } from '@bootr/agent-core';
 import type { Logger } from 'pino';
 import { ZodError } from 'zod';
+import type { TurnRequest } from './creator-requests.js';
 import type { InferenceResult } from './inference.js';
 
 export interface RoutingState {
@@ -78,6 +79,23 @@ export interface RoutedTurn {
   routing?: RoutingState | null;
   /** The account's Premium flag (runtime.ts `Turn.premium`): the writer's prompt names the same post limit as the first one. */
   premium?: boolean | null;
+  /** The open creator requests this turn was shown (creator-requests.ts): an intent may name one by `requestId`. */
+  creatorRequests?: TurnRequest[];
+  /** The picture section of this turn said `suggested` (picture-hint.ts): the writer of a post is told to make one. */
+  pictureSuggested?: boolean;
+}
+
+/**
+ * The picture the writer is told to make, or null: the intent's own `picture`, else (for a post) the picture section's
+ * suggestion or a creator request for a picture that the intent names. Only while `generate_image` is in the catalog.
+ */
+export function writerPicture(turn: Pick<RoutedTurn, 'creatorRequests' | 'pictureSuggested'>, intent: DraftIntent, tools: readonly { name: string }[]): { brief: string | null; why: string } | null {
+  if (!tools.some((t) => t.name === 'generate_image')) return null;
+  if (intent.picture) return { brief: intent.picture.brief, why: 'you planned one' };
+  if (intent.kind !== 'post') return null;
+  if (intent.requestId && turn.creatorRequests?.some((r) => r.id === intent.requestId && r.picture)) return { brief: null, why: 'your creator asked for one' };
+  if (turn.pictureSuggested) return { brief: null, why: 'the picture section suggests one' };
+  return null;
 }
 
 function toolMessage(toolCallId: string, content: unknown): ChatMessage {
@@ -98,6 +116,7 @@ export function handleIntent(config: AgentConfig, turn: RoutedTurn, tools: reado
     intent = draftIntentInputSchema.parse(call.input);
     const needed = intent.kind === 'reply' ? 'publish_reply' : 'publish_post';
     if (!tools.some((t) => t.name === needed)) throw new Error(`${intent.kind === 'reply' ? 'replies' : 'original posts'} are not available this turn; resolve or finish instead`);
+    if (intent.requestId && !turn.creatorRequests?.some((r) => r.id === intent.requestId)) throw new Error(`${intent.requestId} is not an open creator request of this turn`);
   } catch (err) {
     const detail = err instanceof ZodError ? err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') : err instanceof Error ? err.message : String(err);
     turn.messages.push(toolMessage(call.id, { error: 'invalid_tool_call', detail }));
@@ -108,11 +127,18 @@ export function handleIntent(config: AgentConfig, turn: RoutedTurn, tools: reado
   routing.intent = intent;
   const system = turn.messages[0];
   if (system && system.role === 'system') system.content = buildSystemPrompt(config, 'social', { phase: 'write', postLimit: postLimitsFor(turn.premium ?? null).original });
+  const tool = intent.kind === 'reply' ? 'publish_reply' : 'publish_post';
+  const picture = writerPicture(turn, intent, tools);
+  const pictureNote = picture
+    ? ` Make the picture first (${picture.why}): call generate_image with ${picture.brief ? 'a prompt from intent.picture.brief' : 'a prompt of your own that fits the post'} and a plain alt text, then pass its imageId to ${tool}. Never a real person, another project's logo, a chart, a price or a number. If generate_image fails, publish the words without it.`
+    : '';
+  const requestNote = intent.requestId ? ` This fulfils your creator's request ${intent.requestId}; it is marked done when the ${intent.kind} goes out.` : '';
   turn.messages.push(
     toolMessage(call.id, {
       decided: true,
       intent,
-      note: `You decided to write this; now write it. From this step on you have ${intent.kind === 'reply' ? 'publish_reply' : 'publish_post'} and the other publishing tools; draft_intent is gone. Write the one ${intent.kind} described in intent.about, in your own voice, using only facts gathered in this turn, then finish.`,
+      ...(picture ? { picture: { make: true, brief: picture.brief, why: picture.why } } : {}),
+      note: `You decided to write this; now write it. From this step on you have ${tool} and the other publishing tools${picture ? ', and generate_image' : ''}; draft_intent is gone.${pictureNote} Write the one ${intent.kind} described in intent.about, in your own voice, from the facts gathered in this turn, then finish.${requestNote}`,
     }),
   );
   turn.recentSteps.push({ tool: DRAFT_INTENT_TOOL_NAME, status: 'completed', summary: `${intent.kind}${intent.target ? ` to ${intent.target}` : ''}: ${intent.about}`.slice(0, 200) });

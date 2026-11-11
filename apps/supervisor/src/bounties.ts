@@ -1267,7 +1267,42 @@ export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, li
   return items;
 }
 
-const BOUNTIES_MEANING = 'Your bounty jobs: the day\'s headroom, your open jobs with their close times, and the last verdicts. Code collects, judges and proposes; your creator pays. Nothing here is a target: posting no job is a normal hour.';
+const BOUNTIES_MEANING =
+  'Your bounty jobs: the day\'s headroom, your open jobs with their close times, and the last verdicts. Code collects, judges and proposes; your creator pays. Your creator turned this power on to have small jobs posted for work you use; the caps are limits, not targets. A suggestion, when present, is your cue to post one.';
+
+/** With no open job and room under the caps, a job is suggested once the last one is this old (or there never was one). */
+export const BOUNTY_SUGGEST_AFTER_MS = 2 * 86_400_000;
+
+/** What a good job looks like, in the suggestion: work the agent will use, never promotion. */
+export const BOUNTY_GOOD_JOBS: readonly string[] = [
+  'a picture for your next post (deliverable image): say what it shows and the style, e.g. "a hand-drawn map of how a fee becomes a burn"',
+  'a source you will cite (deliverable link): a public page that answers one question you have, e.g. "a page that explains how Base fees are set"',
+  'an explainer diagram (deliverable image) of one thing about your coin or Bootr that words make hard',
+];
+
+export interface BountySuggestion {
+  now: true;
+  why: string;
+  goodJobs: readonly string[];
+  how: string;
+}
+
+/**
+ * The suggestion of the bounties section, or null: no open job, room under the open-job cap, the day's headroom at
+ * least the smallest amount, and no job created for `BOUNTY_SUGGEST_AFTER_MS` (or never).
+ */
+export function bountySuggestion(args: { openJobs: number; maxOpen: number; remainingTodayMicroUsdc: bigint; lastJobAt: number | null; now: number }): BountySuggestion | null {
+  if (args.openJobs > 0 || args.openJobs >= args.maxOpen) return null;
+  if (args.remainingTodayMicroUsdc < BigInt(BOUNTY_MIN_AMOUNT_MICRO_USDC)) return null;
+  if (args.lastJobAt !== null && args.now - args.lastJobAt < BOUNTY_SUGGEST_AFTER_MS) return null;
+  const why = args.lastJobAt === null ? 'You have never posted a job, have no open one and have room in today\'s cap.' : `Your last job was ${Math.floor((args.now - args.lastJobAt) / 86_400_000)} days ago, none is open and today's cap has room.`;
+  return {
+    now: true,
+    why,
+    goodJobs: BOUNTY_GOOD_JOBS,
+    how: 'Post one with bounty_post this turn: a task in plain words, 1 to 4 criteria a judge can check from the artefact alone, image or link, 0.1 to 1 USDC. Work you will use, never promotion: no post, follow, like, repost or mention of your coin as the work. If you cannot name such work now, say why in your checkpoint.',
+  };
+}
 
 const ENTRIES_MEANING =
   'Replies to one of your bounty jobs are entries, not mentions: they are kept out of your inbox and collected by code once the job\'s window closes. You never name a winner, never call an entry accepted or promising, and never answer an entry; a separate judge rules on the artefacts alone and your creator pays. If someone asks about their entry, say the job closes at its time and the result appears on your coin page.';
@@ -1288,9 +1323,12 @@ export async function bountiesSection(ctx: SupervisorContext, agent: AgentRow, c
   const [budget, rows] = await Promise.all([bountyBudget(ctx, agent.agentId, policy), ctx.db.select().from(bountyJobs).where(eq(bountyJobs.agentId, agent.agentId)).orderBy(desc(bountyJobs.createdAt)).limit(12)]);
   const open = rows.filter((j) => (OPEN_STATUSES as readonly string[]).includes(j.status));
   const verdicts = rows.filter((j) => j.verdict).slice(0, 5);
+  // rows are newest first; a draft that was never posted still counts as an attempt.
+  const suggestion = bountySuggestion({ openJobs: budget.openJobs, maxOpen: budget.maxOpen, remainingTodayMicroUsdc: budget.remainingTodayMicroUsdc, lastJobAt: rows[0] ? rows[0].createdAt.getTime() : null, now: ctx.now() });
   return {
     bounties: {
       meaning: BOUNTIES_MEANING,
+      ...(suggestion ? { suggestion } : {}),
       policy: { dailyCapUsdc: usdc(policy.dailyCapMicroUsdc), maxOpen: policy.maxOpen, cooldownDays: Math.round(policy.cooldownSeconds / 86_400), defaultHoursOpen: policy.defaultHoursOpen, review: policy.review, amountUsdc: { min: usdc(BOUNTY_MIN_AMOUNT_MICRO_USDC), max: usdc(BOUNTY_MAX_AMOUNT_MICRO_USDC) }, hoursOpen: { min: BOUNTY_MIN_HOURS_OPEN, max: BOUNTY_MAX_HOURS_OPEN } },
       headroom: bountyBudgetView(budget),
       openJobs: open.map((j) => ({ jobId: j.id, status: j.status, task: j.task, amountUsdc: usdc(j.amountMicroUsdc), deliverable: j.deliverable, closesAt: j.closesAt.toISOString(), ...(j.postId ? { postUrl: replyLink(j.postId) } : {}) })),
