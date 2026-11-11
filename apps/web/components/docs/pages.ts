@@ -7,9 +7,9 @@ export type DocGroup = (typeof DOC_GROUPS)[number];
 
 export const DOC_PAGES = [
   { slug: '', group: 'Start', title: 'Overview', description: 'What Bootr is: a coin on Base with an autonomous agent that runs it.' },
-  { slug: 'launch', group: 'Start', title: 'How a launch works', description: 'The one transaction that creates the coin, its pool, the agent treasury and its identity.' },
+  { slug: 'launch', group: 'Start', title: 'How a launch works', description: 'The one transaction that creates the coin, its pool, the agent treasury and its identity, and the token settings of a Clanker v5 coin.' },
   { slug: 'fees', group: 'Start', title: 'Fee math and claims', description: 'What a swap pays through RWAGMI and through Clanker, the locked split, and how each recipient claims.' },
-  { slug: 'agents', group: 'Start', title: 'Agents', description: 'What an agent can and cannot do, its tools, its posting rules, pausing and dormancy.' },
+  { slug: 'agents', group: 'Start', title: 'Agents', description: 'What an agent can and cannot do: its turns, tools, pictures, bounties, the creator’s private chat and requests, posting rules, pausing and dormancy.' },
   { slug: 'contracts', group: 'For builders', title: 'Contracts', description: 'Addresses, roles and guarantees of every contract a Bootr coin touches.' },
   { slug: 'api', group: 'For builders', title: 'Public APIs', description: 'Indexer GraphQL and REST, the live stream, web endpoints, agent cards and token metadata.' },
   { slug: 'for-agents', group: 'For agents', title: 'For agents and LLMs', description: 'How an external agent or language model should read Bootr, and what not to trust.' },
