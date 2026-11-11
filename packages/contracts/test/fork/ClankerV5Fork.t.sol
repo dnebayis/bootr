@@ -171,6 +171,7 @@ contract ClankerV5ForkTest is Test {
     function _settings(address quote) internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = quote;
         s.minDevBuyOut = 1;
+        s.expectedConfigVersion = factory.configVersion();
         s.buyTaxBps = TAX;
         s.sellTaxBps = TAX;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -534,6 +535,27 @@ contract ClankerV5ForkTest is Test {
         launcher.setDevBuyRoute(USDC, thirty, 3000);
         (address token,) = _launch(_settings(USDC), 0.01 ether);
         assertGt(IERC20(token).balanceOf(creator), 0);
+    }
+
+    /// @dev Clanker's stale-config guard is the creator's: a launch pinned to any version but the live one reverts
+    ///      `StaleConfig(expected, actual)`, with and without a dev buy, and the views still answer.
+    function test_staleConfigVersionReverts() public {
+        uint64 live = factory.configVersion();
+        for (uint256 devBuy = 0; devBuy <= 0.01 ether; devBuy += 0.01 ether) {
+            BootrClankerLauncherV5.LaunchParams memory p = _params(devBuy);
+            BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
+            p.salt = _mineSalt(creator, p, s, bytes32(uint256(50)));
+            uint64[3] memory stale = [uint64(0), live - 1, live + 1];
+            for (uint256 i; i < stale.length; ++i) {
+                s.expectedConfigVersion = stale[i];
+                vm.prank(creator);
+                vm.expectRevert(abi.encodeWithSelector(IClankerV5Factory.StaleConfig.selector, stale[i], live));
+                launcher.launch{value: devBuy}(p, s);
+                // the pin is not part of the token's init code: the mined salt stays valid
+                assertEq(uint160(launcher.predictToken(creator, p, s)) & 0xffff, 0xcccc);
+            }
+            assertEq(launcher.predictKernel(creator, p.salt).code.length, 0, "nothing was created");
+        }
     }
 
     function test_launchUsdcWithoutDevBuy() public {
@@ -1108,9 +1130,11 @@ contract ClankerV5ForkTest is Test {
 
     function test_pausedLauncherRejects() public {
         launcher.pause();
+        // the settings are built first: they read the live config version, a call `expectRevert` would catch
+        BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         vm.prank(creator);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        launcher.launch(_params(0), _settings(NATIVE));
+        launcher.launch(_params(0), s);
         launcher.unpause();
         _launch(_settings(NATIVE), 0);
     }

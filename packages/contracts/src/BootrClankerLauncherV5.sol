@@ -43,8 +43,9 @@ import {PoolKey} from "./interfaces/IUniswapV4.sol";
 ///         symbol and the contract URI stay as launched: nothing here forwards `updateTokenName`,
 ///         `updateTokenSymbol` or `updateTokenContractURI`.
 ///
-///         What the creator signs is what runs (the pins in `TokenSettings`): the launch reverts when a dev buy
-///         would deliver fewer coins than `minDevBuyOut`.
+///         What the creator signs is what runs (the pins in `TokenSettings`): the launch reverts when Clanker's
+///         config version is not the one the creator read (`expectedConfigVersion`, Clanker's own `StaleConfig`
+///         guard) and when a dev buy would deliver fewer coins than `minDevBuyOut`.
 ///
 ///         Token addresses on v5 end in `0xcccc`: the web mines `LaunchParams.salt` with `tokenInitCodeHash(p, s)` /
 ///         `predictToken` before signing (the factory reverts `InvalidTokenAddressSuffix` otherwise). The opening
@@ -112,6 +113,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         string contractURI; // the token's contractURI(): Bootr's hosted document
         // --- pins: what the creator read before signing; the launch reverts when the live value differs ---
         uint256 minDevBuyOut; // least coins (raw units) the dev buy must deliver; required (> 0) when devBuyWei > 0
+        uint64 expectedConfigVersion; // Clanker's `factory.configVersion()` (tax policy, tick spacing, native fee)
     }
 
     /// @notice The launcher's own numbers for future agent launches (owner-settable within fixed bounds).
@@ -398,7 +400,8 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         }
 
         uint256 fee = launchFeeWei;
-        // Clanker's own native launch fee (0 today) is paid through to the factory.
+        // Clanker's own native launch fee (0 today) is paid through to the factory; changing it bumps Clanker's
+        // config version, so a launch signed under another fee reverts `StaleConfig`.
         uint256 clankerFee = factory.nativeLaunchFee();
         if (msg.value < p.devBuyWei + fee + clankerFee) revert InsufficientValue();
 
@@ -495,9 +498,11 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @notice The init code hash of the token `launch(p, s)` would create (`factory.launchTokenInitCodeHash`): it
     ///         depends on the name, symbol, contract URI, metadata keys, `metadataEditable` and whether dividends
     ///         are on, not on the salt, the tax, the slots or the pins. The web mines `p.salt` locally against
-    ///         it: `predictToken` must end in `0xcccc`.
+    ///         it: `predictToken` must end in `0xcccc`. Reads Clanker's live config version, not the pin.
     function tokenInitCodeHash(LaunchParams calldata p, TokenSettings calldata s) public view returns (bytes32) {
-        return factory.launchTokenInitCodeHash(_v5Params(p, s, new ClankerV5.FeeSlotInput[](0), address(0)));
+        return factory.launchTokenInitCodeHash(
+            _v5Params(p, s, new ClankerV5.FeeSlotInput[](0), address(0), factory.configVersion())
+        );
     }
 
     /// @notice The scoped CREATE2 salt Clanker uses for a launch by `creator` with `salt`:
@@ -680,7 +685,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     /// @dev `createLaunch`, or `createLaunchAndBuy` when there is a dev buy: one hop into a native-ETH pool, two
     ///      (v3 WETH -> quote, then the launch pool) into an ERC-20 pool, always funded in ETH. The bought coins
     ///      land on this contract (`originalCreator` of the factory call) and are forwarded whole; the buy reverts
-    ///      under the creator's `minDevBuyOut`.
+    ///      under the creator's `minDevBuyOut`. Clanker's `expectedConfigVersion` is the creator's pin.
     function _createToken(
         LaunchParams calldata p,
         TokenSettings calldata s,
@@ -689,7 +694,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
         bytes32 salt,
         uint256 clankerFee
     ) internal returns (address token, bytes32 poolId) {
-        ClankerV5.LaunchParams memory params = _v5Params(p, s, slots, creator);
+        ClankerV5.LaunchParams memory params = _v5Params(p, s, slots, creator, s.expectedConfigVersion);
         params.creatorSalt = salt;
         if (p.devBuyWei == 0) {
             (token, poolId) = factory.createLaunch{value: clankerFee}(params);
@@ -736,13 +741,15 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
     }
 
     /// @dev Clanker's `LaunchParams` for `p` and `s`. The views pass no slots and no creator (the init code hash
-    ///      depends on neither). `creatorSalt` is set by the caller; `creator = address(0)` makes this contract the
-    ///      creator-rights holder.
+    ///      depends on neither) and Clanker's live config version; `launch` passes the creator's pin, so Clanker
+    ///      reverts `StaleConfig` when its policy moved after the creator read it. `creatorSalt` is set by the
+    ///      caller; `creator = address(0)` makes this contract the creator-rights holder.
     function _v5Params(
         LaunchParams calldata p,
         TokenSettings calldata s,
         ClankerV5.FeeSlotInput[] memory slots,
-        address creator
+        address creator,
+        uint64 configVersion
     ) internal view returns (ClankerV5.LaunchParams memory params) {
         // the keys clanker-sdk writes, so clanker.world shows the image and the metadata JSON
         string[] memory keys = new string[](3);
@@ -762,7 +769,7 @@ contract BootrClankerLauncherV5 is Ownable2Step, Pausable, ReentrancyGuard, IERC
             tokenContractURI: s.contractURI,
             creatorSalt: bytes32(0),
             quoteToken: s.quoteToken,
-            expectedConfigVersion: factory.configVersion(),
+            expectedConfigVersion: configVersion,
             deadline: uint64(block.timestamp),
             metadataEditable: s.metadataEditable,
             metadataKeys: keys,

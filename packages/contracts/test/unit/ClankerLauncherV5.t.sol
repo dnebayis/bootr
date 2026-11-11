@@ -10,8 +10,8 @@ import {ClankerV5, IClankerV5Factory} from "../../src/interfaces/IClankerV5.sol"
 import {KernelLib} from "../../src/interfaces/IKernel.sol";
 import {PoolKey} from "../../src/interfaces/IUniswapV4.sol";
 
-/// @dev The factory surface the unit tests reach: the config version the params carry, the tick spacing, and
-///      the metadata forwarder (recorded).
+/// @dev The factory surface the unit tests reach: the live config version, the tick spacing, the metadata
+///      forwarder (recorded), and an init-code-hash view that answers with the config version it was handed.
 contract MockClankerV5Factory {
     address public lastToken;
     string public lastKey;
@@ -24,6 +24,10 @@ contract MockClankerV5Factory {
 
     function tickSpacing() external pure returns (int24) {
         return 200;
+    }
+
+    function launchTokenInitCodeHash(ClankerV5.LaunchParams calldata lp) external pure returns (bytes32) {
+        return bytes32(uint256(lp.expectedConfigVersion));
     }
 
     function updateTokenExtraMetadata(address token, string calldata key, string calldata value) external {
@@ -72,7 +76,7 @@ contract LauncherV5Harness is BootrClankerLauncherV5 {
     {
         AgentDefaults memory d = agentDefaults;
         uint16[] memory w = _slotWeights(s, d);
-        return _v5Params(p, s, _feeSlots(s, w, kernel, d.platformRecipient), creator);
+        return _v5Params(p, s, _feeSlots(s, w, kernel, d.platformRecipient), creator, s.expectedConfigVersion);
     }
 }
 
@@ -136,9 +140,11 @@ contract ClankerLauncherV5Test is Test {
     }
 
     /// @dev The recommended settings (design note section 2.3): ETH, 1.5% both ways, all to creator funds, one
-    ///      row (the creator, admin the creator), sniper tax on, editable metadata.
+    ///      row (the creator, admin the creator), sniper tax on, editable metadata; pinned to the mock factory's
+    ///      config version.
     function _settings() internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = NATIVE;
+        s.expectedConfigVersion = 7;
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -688,6 +694,19 @@ contract ClankerLauncherV5Test is Test {
         assertEq(v.creatorFeeRecipient, creator);
         assertEq(v.integratorFeeRecipient, address(0));
         assertEq(v.expectedConfigVersion, 7);
+    }
+
+    /// @dev The launch hands Clanker the config version the creator signed (so Clanker's `StaleConfig` guard
+    ///      works), never the live one; the salt-mining view reads the live one and ignores the pin.
+    function test_v5ParamsCarryTheCreatorsConfigVersionAndTheViewsTheLiveOne() public view {
+        BootrClankerLauncherV5.TokenSettings memory s = _settings();
+        s.expectedConfigVersion = 3;
+        ClankerV5.LaunchParams memory v = launcher.exposedV5Params(_params(), s, address(1), creator);
+        assertEq(v.expectedConfigVersion, 3, "the creator's pin, though the factory is at 7");
+        s.expectedConfigVersion = 0;
+        v = launcher.exposedV5Params(_params(), s, address(1), creator);
+        assertEq(v.expectedConfigVersion, 0, "an unset pin is passed as it is (Clanker refuses it)");
+        assertEq(launcher.tokenInitCodeHash(_params(), s), bytes32(uint256(7)), "the view reads the live version");
     }
 
     function test_v5ParamsCarrySniperSwitchMetadataAndContractUri() public view {

@@ -138,6 +138,7 @@ contract ClankerV5LauncherReviewTest is Test {
     function _settings(address quote) internal view returns (BootrClankerLauncherV5.TokenSettings memory s) {
         s.quoteToken = quote;
         s.minDevBuyOut = 1;
+        s.expectedConfigVersion = factory.configVersion();
         s.buyTaxBps = 15_000;
         s.sellTaxBps = 15_000;
         s.rewards = new BootrClankerLauncherV5.RewardInput[](1);
@@ -245,41 +246,58 @@ contract ClankerV5LauncherReviewTest is Test {
     }
 
     // ------------------------------------------------------------------
-    // Finding: the launcher reads Clanker's config version in the launch itself, so a creator's signed launch
-    // runs under whatever policy is live, and that policy is frozen into the coin
+    // Fixed (M2): the creator's signed launch carries the Clanker config version the creator read, so Clanker's
+    // own stale-config guard stops a launch under any other policy
     // ------------------------------------------------------------------
 
     /// @notice A creator mines the salt and signs under today's policy (Clanker keeps 0.5% of a 1.5% tax, the
     ///         slots share 1%). Before the transaction lands Clanker's owner raises its share to 99% of the tax.
-    ///         Clanker's own `expectedConfigVersion` guard would stop the launch; the launcher passes the live
-    ///         version, so the launch succeeds and the coin's slots share 0.015% of each trade for good.
-    function test_review_clankerPolicyChangeBetweenSigningAndLaunchIsNotCaught() public {
+    ///         The launcher used to pass the live version, so the launch succeeded and the coin's slots shared
+    ///         0.015% of each trade for good. Now the launch reverts `StaleConfig`; the creator re-reads the
+    ///         policy, and a launch under the policy that was signed keeps the 1%.
+    function test_review_clankerPolicyChangeBetweenSigningAndLaunchReverts() public {
         BootrClankerLauncherV5.LaunchParams memory p = _params(0);
         BootrClankerLauncherV5.TokenSettings memory s = _settings(NATIVE);
         p.salt = _mineSalt(launcher, creator, p, s);
         uint64 versionWhenSigned = factory.configVersion();
+        assertEq(s.expectedConfigVersion, versionWhenSigned, "what the creator signed");
         ClankerV5.ProtocolFeeConfiguration memory live = factory.taxPolicy().protocolFeeConfiguration;
 
-        ClankerV5.ProtocolFeeConfiguration memory raised = live;
-        raised.protocolTaxShare = 99_000_000;
-        raised.maximumProtocolFeeRate = 99_000_000;
+        // a copy of its own (assigning the memory struct would alias `live`)
+        ClankerV5.ProtocolFeeConfiguration memory raised = ClankerV5.ProtocolFeeConfiguration({
+            protocolTaxShare: 99_000_000,
+            minimumProtocolFeeRate: live.minimumProtocolFeeRate,
+            maximumProtocolFeeRate: 99_000_000,
+            protocolFeeRecipient: live.protocolFeeRecipient
+        });
         vm.prank(factory.owner());
         IClankerV5FactoryAdmin(FACTORY).setProtocolFeeConfiguration(raised);
-        assertGt(factory.configVersion(), versionWhenSigned, "Clanker bumped its config version");
+        uint64 versionAfter = factory.configVersion();
+        assertGt(versionAfter, versionWhenSigned, "Clanker bumped its config version");
 
         vm.prank(creator);
-        (address token,,,) = launcher.launch(p, s);
-        bytes32 poolId = _poolIdOf(token);
+        vm.expectRevert(
+            abi.encodeWithSelector(IClankerV5Factory.StaleConfig.selector, versionWhenSigned, versionAfter)
+        );
+        launcher.launch(p, s);
+        assertEq(launcher.predictToken(creator, p, s).code.length, 0, "no coin under the raised policy");
+        assertEq(launcher.predictKernel(creator, p.salt).code.length, 0, "and no kernel");
 
-        // Clanker puts its policy back; the coin keeps the one it was launched under
+        // Clanker puts its numbers back; that is one more version, so the old signature stays refused
         vm.prank(factory.owner());
         IClankerV5FactoryAdmin(FACTORY).setProtocolFeeConfiguration(live);
+        vm.prank(creator);
+        vm.expectPartialRevert(IClankerV5Factory.StaleConfig.selector);
+        launcher.launch(p, s);
+
+        // the creator reads the policy again and signs under it: the coin's slots share the 1% that was shown
+        s.expectedConfigVersion = factory.configVersion();
+        vm.prank(creator);
+        (address token,,,) = launcher.launch(p, s);
         vm.warp(vm.getBlockTimestamp() + 21);
-        (ClankerV5.Rates memory buy,) = hook.effectiveFeeRates(poolId, true);
-        assertEq(buy.protocolRate, 14_850 * 1e18, "Clanker: 1.485% of every trade");
-        assertEq(buy.creatorRate, 150 * 1e18, "all slots together: 0.015% of every trade (1% under the signed policy)");
-        ClankerV5.FeeSlot[] memory slots = hook.poolFeeSlots(poolId);
-        assertEq(slots[0].weightBps, 500, "the agent still has 5% of the pool, of a pool 67 times smaller");
+        (ClankerV5.Rates memory buy,) = hook.effectiveFeeRates(_poolIdOf(token), true);
+        assertEq(buy.protocolRate, 500_000 * 1e16, "Clanker: 0.5% of every trade");
+        assertEq(buy.creatorRate, 1_000_000 * 1e16, "all slots together: 1% of every trade, as signed");
     }
 
     // ------------------------------------------------------------------
