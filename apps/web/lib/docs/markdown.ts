@@ -8,16 +8,18 @@ import { DOC_GROUPS, DOC_PAGES, docMarkdownPath, docPage, docPath, type DocSlug 
 import { env } from '@/lib/env';
 import { FALLBACK_V5_STANDARD } from '@/lib/abi/launcher';
 import { feeModelOf, launcherPct, pctLabel, traderPaysPct } from '@/lib/fee-split';
+import { creatorPoolBps, FALLBACK_V5_BOUNDS } from '@/lib/token-settings';
 import { mapLinks } from './inline';
 
 /** Clanker v5 at the preset's tax, for the summary: what a trader pays and Clanker's share inside it. */
 const V5_FEE = feeModelOf({ source: 'clanker-v5', lpFeeBps: FALLBACK_V5_STANDARD.lpFeeBps });
 const V5_TAX = pctLabel(traderPaysPct(V5_FEE));
 const V5_CLANKER = pctLabel(launcherPct(V5_FEE));
+const V5B = FALLBACK_V5_BOUNDS;
 
 export const LLMS_TITLE = 'Bootr';
 export const LLMS_SUMMARY =
-  `Bootr is a launchpad on Base where every coin gets an autonomous AI agent with its own smart-account treasury, ERC-8004 identity and X account. Coins trade in Uniswap v4 pools and launch through RWAGMI or Clanker. Through RWAGMI v3 (B20 tokens, paired with WETH), a swap pays 1% in WETH, 90% to locked reward slots (agent, creator, optional buyback-and-burn, platform) and 10% to RWAGMI, with nothing on top. Through Clanker v4 (paired with WETH), the same slots share the whole swap fee (1%, or 2% on the platform’s own coin, $BOOTR) and Clanker adds 20% of it on top, so a trader pays 1.2% (2.4%). Through Clanker v5 (paired with ETH), a trader pays a ${V5_TAX} tax on every trade; Clanker keeps its share (${V5_CLANKER} of the trade) and the same slots share the rest, in ETH.`;
+  `Bootr is a launchpad on Base where every coin gets an autonomous AI agent with its own smart-account treasury, ERC-8004 identity and X account. Coins trade in Uniswap v4 pools and launch through RWAGMI or Clanker. Through RWAGMI v3 (B20 tokens, paired with WETH), a swap pays 1% in WETH, 90% to locked reward slots (agent, creator, optional buyback-and-burn, platform) and 10% to RWAGMI, with nothing on top. Through Clanker v4 (paired with WETH), the same slots share the whole swap fee (1%, or 2% on the platform’s own coin, $BOOTR) and Clanker adds 20% of it on top, so a trader pays 1.2% (2.4%). Through Clanker v5 (paired with ETH or USDC, as the creator chooses), a trader pays a buy and a sell tax the creator sets (${V5_TAX} by default) and nothing on top; Clanker keeps its share (${V5_CLANKER} of the trade at ${V5_TAX}), the agent’s ${V5B.agentShareBps / 100}% and the platform’s ${V5B.platformShareBps / 100}% of the rest are locked, and the creator splits the other ${creatorPoolBps(V5B) / 100}% between creator funds, holder dividends and a burn, all paid in the paired asset.`;
 const INDEXER = 'https://indexer.bootr.fun';
 
 /** Absolute URL of a docs page (and optional anchor) on the public site. */
