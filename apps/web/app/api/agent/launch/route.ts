@@ -6,7 +6,8 @@ import { agentCardUrl, contractUriUrl } from '@/lib/agent-card';
 import { checkLinks } from '@/lib/coin-link-rules';
 import { clankerTokenMetadata } from '@/lib/contract-metadata';
 import { CLANKER_PATHS, clankerPath, contracts, USDC_DECIMALS } from '@/lib/contracts';
-import { clankerV5FactoryAbi, mineLaunchSalt, SaltMiningError, type MinedSalt } from '@/lib/clanker-v5';
+import { mineLaunchSalt, SaltMiningError, type MinedSalt } from '@/lib/clanker-v5';
+import { launchValue, mockDevBuyQuote, pinsOf, quoteDevBuy, readLaunchTerms, V5LaunchRefused, type DevBuyQuote, type V5LaunchTerms } from '@/lib/v5-launch';
 import type { LaunchSource } from '@/lib/types';
 import { addresses } from '@bootr/shared/addresses';
 import { chainAddresses } from '@/lib/chains';
@@ -14,7 +15,19 @@ import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
 import { CUSTOM_WORKER_ID, customWorker, normalizeWorkerPreset, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaultsTuple } from '@/lib/abi/launcher';
-import { FALLBACK_V5_BOUNDS, LAUNCH_KIND_ID, parseTokenSettings, toContractSettings, v5BoundsFromTuple, type ContractTokenSettings, type V5Bounds } from '@/lib/token-settings';
+import {
+  contractSettingsJson,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
+  FALLBACK_V5_BOUNDS,
+  launchStringProblems,
+  LAUNCH_KIND_ID,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  minDevBuyOutFrom,
+  parseSlippagePct,
+  parseTokenSettings,
+  toContractSettings,
+  type ContractTokenSettings,
+} from '@/lib/token-settings';
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient } from '@/lib/server/chain';
@@ -49,6 +62,8 @@ type LaunchInput = {
   launchThrough?: unknown;
   /** Clanker v5 only: the token settings (lib/token-settings.ts `parseTokenSettings`). */
   token?: unknown;
+  /** Clanker v5 only: the dev buy's slippage tolerance in percent (default 3): the signed minimum is the quote less this. */
+  devBuySlippagePct?: unknown;
 };
 
 function fail(status: number, error: string, message: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
@@ -173,6 +188,9 @@ export async function POST(req: NextRequest) {
   if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
   if (!DECIMAL.test(devBuy)) return invalid('devBuyEth', `devBuyEth must be a decimal ETH amount such as "0.01", got ${quoted(l.devBuyEth)}.`);
+  if (!isV5 && l.devBuySlippagePct !== undefined) return invalid('devBuySlippagePct', `devBuySlippagePct applies to Clanker v5 launches only; this launch goes through ${launchThrough}.`);
+  const slippagePct = l.devBuySlippagePct === undefined ? DEFAULT_DEV_BUY_SLIPPAGE_PCT : parseSlippagePct(l.devBuySlippagePct);
+  if (slippagePct === null) return invalid('devBuySlippagePct', `devBuySlippagePct must be a percent from 0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT} (default ${DEFAULT_DEV_BUY_SLIPPAGE_PCT}), got ${quoted(l.devBuySlippagePct)}.`);
   const gas = l.gasEth === undefined ? GAS_DEFAULT_ETH : String(l.gasEth);
   if (!DECIMAL.test(gas)) return invalid('gasEth', `gasEth must be a decimal ETH amount (0 allowed), got ${quoted(l.gasEth)}.`);
   const gasWei = parseEther(gas);
@@ -227,28 +245,20 @@ export async function POST(req: NextRequest) {
   const client = serverPublicClient(chainId);
   const salt = keccak256(toHex(draftId));
   let feeWei = FEE_FALLBACK_WEI;
-  let clankerFeeWei = 0n;
   let defaults = fallbackDefaults(launchThrough, buyback);
-  let bounds: V5Bounds = FALLBACK_V5_BOUNDS;
+  // Clanker v5: the numbers the creator's pins are made of, read now, when the transaction is prepared (mock mode: the
+  // deploy values, Clanker's config version 0).
+  let terms: V5LaunchTerms = { launchFeeWei: FEE_FALLBACK_WEI, clankerFeeWei: 0n, configVersion: 0n, bounds: FALLBACK_V5_BOUNDS, minFuelUsdc: defaults.minFuelUsdc };
   let predictedKernel: Address | null = null;
   if (!env.useMock) {
     try {
       // One multicall, not three requests: the RPC key is shared with the indexer's block tail. On v5 the kernel is
       // predicted after the salt is mined (the salt picks the kernel address too), the launcher's bounds come from
-      // `agentDefaults()` (it has no presets), and Clanker's own launch fee is read.
+      // `agentDefaults()` (it has no presets), and Clanker's own launch fee and config version are read.
       if (isV5) {
-        const [fee, tuple, clankerFee] = await client.multicall({
-          allowFailure: false,
-          contracts: [
-            { address: launcher, abi: clankerLauncherV5Abi, functionName: 'launchFeeWei' },
-            { address: launcher, abi: clankerLauncherV5Abi, functionName: 'agentDefaults' },
-            { address: v5!.factory as Address, abi: clankerV5FactoryAbi, functionName: 'nativeLaunchFee' },
-          ],
-        });
-        feeWei = fee;
-        bounds = v5BoundsFromTuple(tuple);
-        defaults = { ...defaults, minFuelUsdc: tuple[3] };
-        clankerFeeWei = clankerFee;
+        terms = await readLaunchTerms(client, launcher, v5!.factory as Address);
+        feeWei = terms.launchFeeWei;
+        defaults = { ...defaults, minFuelUsdc: terms.minFuelUsdc };
       } else {
         const [fee, tuple, kernel] = await client.multicall({
           allowFailure: false,
@@ -270,10 +280,11 @@ export async function POST(req: NextRequest) {
   let tokenSettings: ContractTokenSettings | null = null;
   let tokenInput = null;
   if (isV5) {
-    const checked = parseTokenSettings(l.token, creator, bounds);
+    const checked = parseTokenSettings(l.token, creator, terms.bounds);
     if (!checked.ok) return invalid(checked.field === 'token' ? 'token' : `token.${checked.field}`, checked.message);
     tokenInput = checked.settings;
-    tokenSettings = toContractSettings(checked.settings, contractUriUrl(draftId), bounds);
+    // The pins from the terms just read; the dev buy's minimum is set from its quote once the salt is mined (1 until then).
+    tokenSettings = toContractSettings(checked.settings, contractUriUrl(draftId), terms.bounds, pinsOf(terms, parseEther(devBuy) > 0n ? 1n : 0n));
     // The launcher's own checks, before anything is signed: the paired asset is allowed for agent coins,
     // `previewSlotWeights` reverts exactly as `launch` would, and a non-ETH dev buy has its route.
     if (!env.useMock) {
@@ -317,6 +328,12 @@ export async function POST(req: NextRequest) {
     agentURI: agentCardUrl(draftId),
     supervisorSessionKey: env.supervisorSessionKey ?? zeroAddress,
   };
+  // The launcher's byte caps (`StringTooLong`), before the salt is mined and anything is signed. The metadata is the
+  // identity (as the coin's description) and the links, so a long metadata is reported on `identity`.
+  if (isV5 && tokenSettings) {
+    const [tooLong] = launchStringProblems({ ...params, contractURI: tokenSettings.contractURI });
+    if (tooLong) return invalid(tooLong.field === 'metadata' ? 'identity' : tooLong.field, tooLong.message);
+  }
   // Clanker v5 refuses a token address that does not end in cccc: mine the salt (lib/clanker-v5.ts), check it with the
   // launcher's own predictToken, and predict the kernel from the mined salt.
   let mined: MinedSalt | null = null;
@@ -331,6 +348,22 @@ export async function POST(req: NextRequest) {
       return err instanceof SaltMiningError
         ? refuse(503, 'salt_not_found', err.message)
         : refuse(502, 'chain_unavailable', 'Could not read the launcher. Nothing was launched: try again in a moment.');
+    }
+  }
+  // The dev buy's minimum: what the launch delivers now (a simulation of this very launch, lib/v5-launch.ts) less the
+  // slippage tolerance. A launch that would revert is refused here with the launcher's reason.
+  let devBuyQuote: DevBuyQuote | null = null;
+  if (isV5 && tokenSettings && mined && devBuyWei > 0n) {
+    try {
+      const quotedOut = env.useMock
+        ? mockDevBuyQuote(devBuyWei)
+        : await quoteDevBuy({ client, launcher, usdc: contracts.usdc, creator, token: mined.token, params, settings: tokenSettings, value: launchValue(devBuyWei, terms) });
+      devBuyQuote = { quotedOut, minOut: minDevBuyOutFrom(quotedOut, slippagePct), slippagePct };
+      tokenSettings.minDevBuyOut = devBuyQuote.minOut;
+    } catch (err) {
+      return err instanceof V5LaunchRefused
+        ? refuse(409, 'launch_would_revert', err.message, { code: err.problem.code, ...(err.problem.field ? { field: err.problem.field } : {}) })
+        : refuse(502, 'quote_unavailable', 'Could not quote the dev buy (the RPC could not simulate the launch). Nothing was launched: try again in a moment, or set devBuyEth to 0.');
     }
   }
   const usdc = contracts.usdc;
@@ -349,9 +382,9 @@ export async function POST(req: NextRequest) {
       data: tokenSettings
         ? encodeFunctionData({ abi: clankerLauncherV5Abi, functionName: 'launch', args: [params, tokenSettings] })
         : encodeFunctionData({ abi: launcherAbi, functionName: 'launch', args: [params] }),
-      value: (devBuyWei + feeWei + clankerFeeWei).toString(),
+      value: (isV5 ? launchValue(devBuyWei, terms) : devBuyWei + feeWei).toString(),
       note: isV5
-        ? `BootrClankerLauncherV5.launch(params, settings): value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei${clankerFeeWei > 0n ? ` + Clanker's launch fee ${clankerFeeWei.toString()} wei` : ''}. The salt is mined so the coin's address ends in cccc (${mined?.token}). Emits AgentLaunched(token, kernel, ...).`
+        ? `BootrClankerLauncherV5.launch(params, settings): value = dev buy ${devBuy} ETH + launch fee ${terms.launchFeeWei.toString()} wei${terms.clankerFeeWei > 0n ? ` + Clanker's launch fee ${terms.clankerFeeWei.toString()} wei` : ''}. The salt is mined so the coin's address ends in cccc (${mined?.token}). The settings pin Clanker's config version ${terms.configVersion.toString()}, the launch fee and the locked shares${devBuyQuote ? `, and the dev buy's minimum of ${devBuyQuote.minOut.toString()} raw coins (the quote less ${slippagePct}%)` : ''}: send it soon; if any of them moved the launch reverts (StaleConfig, LaunchFeeAboveMax, LockedSharesChanged, or the dev buy's minimum) and spends nothing but gas, so call this endpoint again. Emits AgentLaunched(token, kernel, ...).`
         : `${launchThrough === 'clanker' ? 'BootrClankerLauncher' : 'BootrLauncher'}.launch: value = dev buy ${devBuy} ETH + launch fee ${feeWei.toString()} wei. Emits AgentLaunched(token, kernel, ...).`,
     },
   ];
@@ -388,9 +421,10 @@ export async function POST(req: NextRequest) {
       ...(tokenInput && tokenSettings
         ? {
             token: tokenInput,
-            tokenSettings: { ...tokenSettings, minDividendHolding: tokenSettings.minDividendHolding.toString() },
+            tokenSettings: contractSettingsJson(tokenSettings),
           }
         : {}),
+      ...(devBuyQuote ? { devBuy: { quotedOut: devBuyQuote.quotedOut.toString(), minOut: devBuyQuote.minOut.toString(), slippagePct: devBuyQuote.slippagePct } } : {}),
       launchFeeWei: feeWei.toString(),
       transactions,
       next: {

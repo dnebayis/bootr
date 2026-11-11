@@ -21,12 +21,31 @@ import {
 import { addresses } from '@bootr/shared/addresses';
 import { clankerLauncherAbi, clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { clankerV5FactoryAbi, FALLBACK_V5_START_TICK, mineLaunchSalt, openingCapEth, SaltMiningError } from '@/lib/clanker-v5';
+import {
+  devBuyLine,
+  launchValue,
+  mockDevBuyQuote,
+  pinsOf,
+  quoteDevBuy,
+  readLaunchTerms,
+  termsChanged,
+  v5LaunchProblem,
+  V5LaunchRefused,
+  type DevBuyQuote,
+  type V5LaunchTerms,
+} from '@/lib/v5-launch';
 import { erc20Abi } from '@/lib/abi/erc20';
 import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeModel } from '@/lib/fee-split';
 import {
+  coinsLabel,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
   DEFAULT_TAX_PCT,
   FALLBACK_V5_BOUNDS,
+  launchStringProblems,
   LAUNCH_KIND_ID,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  minDevBuyOutFrom,
+  parseSlippagePct,
   pairedAssetBySymbol,
   pairedAssetsFor,
   poolSharesOf,
@@ -224,6 +243,10 @@ export function LaunchForm() {
   // (a second transaction). The platform pays no gas; the agent refills from its own WETH fees afterwards.
   const [gas, setGas] = useState(GAS_TOPUP_DEFAULT_ETH);
   const [devBuy, setDevBuy] = useState('');
+  // Clanker v5: the dev buy's slippage tolerance; the creator signs the quote less this (`minDevBuyOut`).
+  const [slippage, setSlippage] = useState(String(DEFAULT_DEV_BUY_SLIPPAGE_PCT));
+  // The last dev buy quote, taken when the launch is prepared, so the summary shows what was signed.
+  const [devBuyQuote, setDevBuyQuote] = useState<DevBuyQuote | null>(null);
   const [buyback, setBuyback] = useState(false);
   // Launch through RWAGMI (the default; source id 'bootr') or Clanker. The Clanker launcher is optional per deployment; while it
   // is not configured the choice is hidden and every launch goes through RWAGMI. Mock mode always offers both. Which
@@ -312,6 +335,12 @@ export function LaunchForm() {
   // Flat ETH launch fee (0 when unset). Added to msg.value next to the dev buy; the contract forwards it to the platform.
   const launchFeeRead = useReadContract({ address: launcher, abi: launcherAbi, functionName: 'launchFeeWei', chainId: appChain.id, query: { enabled: onChain } });
   const launchFeeWei = launchFeeRead.data ?? 0n;
+  /** Reads the v5 numbers the pins are made of again (after a stale pin), so the form shows the new ones. */
+  const rereadV5 = () => {
+    void launchFeeRead.refetch();
+    void v5DefaultsRead.refetch();
+    void clankerFeeRead.refetch();
+  };
   const presetDefaults: LaunchDefaults = buyback
     ? buybackRead.data
       ? defaultsFromTuple(buybackRead.data)
@@ -344,6 +373,7 @@ export function LaunchForm() {
   const devBuyWei = devBuy === '' ? 0n : /^\d+(\.\d{0,18})?$/.test(devBuy) ? parseEther(devBuy) : null;
   // Empty or 0 = launch without gas (the agent waits until someone adds some); otherwise at least the form minimum.
   const gasWei = gas === '' || /^0(\.0*)?$/.test(gas) ? 0n : validTopUp(gas) ? parseEther(gas) : null;
+  const slippagePct = parseSlippagePct(slippage);
 
   const allowance = useReadContract({
     address: contracts.usdc,
@@ -399,12 +429,33 @@ export function LaunchForm() {
     discord: normalizeLink('discord', discord),
   };
   for (const kind of LINK_KINDS) if (links[kind] === undefined) errors.push(LINK_ERRORS[kind]);
+  // The v5 launcher's byte caps (`StringTooLong`), checked on the strings the launch will carry, before anything is
+  // signed; the name's and the instructions' problems also show under their fields.
+  const capProblems = isV5 && draftId
+    ? launchStringProblems({
+        name: name.trim(),
+        symbol: symbol.toUpperCase(),
+        image: pinned?.url ?? '',
+        metadata: clankerTokenMetadata(
+          { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned?.url ?? '', imageIpfs: pinned?.ipfsUri || null, xHandle, links: { website: links.website ?? null, x: links.x ?? null, telegram: links.telegram ?? null, discord: links.discord ?? null } },
+          contractUriUrl(draftId),
+          identity,
+        ),
+        context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
+        model: selectedModel?.id ?? '',
+        agentURI: agentCardUrl(draftId),
+        contractURI: contractUriUrl(draftId),
+      })
+    : [];
+  const capProblem = (field: string) => capProblems.find((p) => p.field === field)?.message ?? null;
   if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
   if (!xHandle && !silentOk) errors.push('Connect an X account, or confirm launching without one.');
   if (settingsProblems.length > 0) errors.push('Fix the token settings.');
   if (isV5 && launcherRefusal) errors.push(launcherRefusal);
+  if (isV5 && devBuyWei != null && devBuyWei > 0n && slippagePct == null) errors.push(`Dev buy slippage must be 0.1% to ${MAX_DEV_BUY_SLIPPAGE_PCT}%.`);
+  for (const p of capProblems) errors.push(p.message);
   if (isV5 && noDevBuyRoute && devBuyWei != null && devBuyWei > 0n) errors.push(`A dev buy through ${pairedAsset?.symbol} is not available yet: launch without one, and buy from the coin page afterwards.`);
   const blocked = platform.data?.launchesPaused
     ? 'Launches are paused by the platform.'
@@ -460,6 +511,30 @@ export function LaunchForm() {
     if (links.website === undefined || links.x === undefined || links.telegram === undefined || links.discord === undefined) return;
     const modelId = selectedModel?.id ?? '';
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
+    // Clanker v5: the numbers the creator's pins are made of, read again now. When one of them moved since the form
+    // showed it, nothing is signed: the form shows the new numbers and the creator presses Launch again.
+    let terms: V5LaunchTerms | null = null;
+    const v5 = isV5 ? (contracts.clankerV5 ?? addresses[8453].clankerV5) : null;
+    if (isV5) {
+      setDevBuyQuote(null);
+      if (!v5 || (!env.useMock && (!launcher || !address || !publicClient))) return;
+      if (env.useMock) {
+        terms = { launchFeeWei, clankerFeeWei, configVersion: 0n, bounds: v5Bounds, minFuelUsdc: defaults.minFuelUsdc };
+      } else {
+        try {
+          terms = await readLaunchTerms(publicClient!, launcher!, v5.factory as Address);
+        } catch {
+          toast.error('Could not read the launcher. Nothing was sent: check your connection and try again.');
+          return;
+        }
+        const changed = termsChanged({ launchFeeWei, clankerFeeWei, bounds: v5Bounds }, terms);
+        if (changed) {
+          toast.error(changed);
+          rereadV5();
+          return;
+        }
+      }
+    }
     if (!(await saveDraft(draftId, coin))) return;
     const params = {
       name: name.trim(),
@@ -482,11 +557,9 @@ export function LaunchForm() {
     };
     // Clanker v5: the creator's token settings (the hosted contract URI moves into them), and a salt whose token address
     // ends in cccc, mined here, in slices, before the wallet is asked.
-    const v5Settings = isV5 ? toContractSettings(settings, contractUriUrl(draftId), v5Bounds) : null;
+    const v5Settings = isV5 && terms ? toContractSettings(settings, contractUriUrl(draftId), terms.bounds, pinsOf(terms, devBuyWei > 0n ? 1n : 0n)) : null;
     let v5Token: Address | null = null;
-    if (isV5 && v5Settings) {
-      const v5 = contracts.clankerV5 ?? addresses[8453].clankerV5;
-      if (!v5 || (!env.useMock && (!launcher || !address || !publicClient))) return;
+    if (isV5 && v5Settings && v5 && terms) {
       setMining(true);
       try {
         const mined = await mineLaunchSalt({
@@ -499,8 +572,23 @@ export function LaunchForm() {
         });
         params.salt = mined.salt;
         v5Token = mined.token;
+        // The dev buy's minimum: what this very launch delivers now (simulated), less the creator's slippage.
+        if (devBuyWei > 0n) {
+          const quotedOut = env.useMock
+            ? mockDevBuyQuote(devBuyWei)
+            : await quoteDevBuy({ client: publicClient!, launcher: launcher!, usdc: contracts.usdc, creator: address!, token: mined.token, params, settings: v5Settings, value: launchValue(devBuyWei, terms) });
+          const quote = { quotedOut, minOut: minDevBuyOutFrom(quotedOut, slippagePct ?? DEFAULT_DEV_BUY_SLIPPAGE_PCT), slippagePct: slippagePct ?? DEFAULT_DEV_BUY_SLIPPAGE_PCT };
+          v5Settings.minDevBuyOut = quote.minOut;
+          setDevBuyQuote(quote);
+          toast(`Dev buy: ${devBuyLine(quote, symbol.toUpperCase())}.`, { description: 'The launch reverts, and spends nothing but gas, if it would deliver less.' });
+        }
       } catch (e) {
-        toast.error(e instanceof SaltMiningError ? e.message : 'Could not prepare the coin’s address. Nothing was sent: check your connection and try again.');
+        if (e instanceof V5LaunchRefused) {
+          toast.error(e.problem.message);
+          if (e.problem.reread) rereadV5();
+        } else {
+          toast.error(e instanceof SaltMiningError ? e.message : 'Could not prepare the launch (the coin’s address or the dev buy quote). Nothing was sent: check your connection and try again.');
+        }
         return;
       } finally {
         setMining(false);
@@ -528,11 +616,22 @@ export function LaunchForm() {
     // The chosen launcher; all three take the same `LaunchParams`. The token address is read from the receipt's
     // `AgentLaunched` log below (on v5 it is also known up front: `v5Token`).
     if (!launcher) return;
-    const value = devBuyWei + launchFeeWei + clankerFeeWei;
-    const receipt = await run('Launch', () =>
+    const value = terms ? launchValue(devBuyWei, terms) : devBuyWei + launchFeeWei + clankerFeeWei;
+    const receipt = await run(
+      'Launch',
+      () =>
+        v5Settings
+          ? write.mutateAsync({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'launch', args: [params, v5Settings], value, chainId: appChain.id, dataSuffix: builderDataSuffix })
+          : write.mutateAsync({ address: launcher, abi: launchThrough === 'clanker' ? clankerLauncherAbi : launcherAbi, functionName: 'launch', args: [params], value, chainId: appChain.id, dataSuffix: builderDataSuffix }),
+      // The v5 launcher's and Clanker's reverts in plain words; a stale pin reads the numbers again.
       v5Settings
-        ? write.mutateAsync({ address: launcher, abi: clankerLauncherV5Abi, functionName: 'launch', args: [params, v5Settings], value, chainId: appChain.id, dataSuffix: builderDataSuffix })
-        : write.mutateAsync({ address: launcher, abi: launchThrough === 'clanker' ? clankerLauncherAbi : launcherAbi, functionName: 'launch', args: [params], value, chainId: appChain.id, dataSuffix: builderDataSuffix }),
+        ? {
+            describeError: (e) => v5LaunchProblem(e, { devBuy: devBuyWei > 0n })?.message ?? null,
+            onError: (e) => {
+              if (v5LaunchProblem(e, { devBuy: devBuyWei > 0n })?.reread) rereadV5();
+            },
+          }
+        : {},
     );
     if (!receipt) return;
     const [ev] = parseEventLogs({ abi, eventName: 'AgentLaunched', logs: receipt.logs });
@@ -564,7 +663,12 @@ export function LaunchForm() {
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
             <div>
               <Label htmlFor="name">Name</Label>
-              <Input id="name" inputSize="lg" maxLength={48} placeholder="Quiet Engine" value={name} onChange={(e) => setName(e.target.value)} />
+              <Input id="name" inputSize="lg" maxLength={48} placeholder="Quiet Engine" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!capProblem('name')} />
+              {capProblem('name') ? (
+                <p className="mt-1.5 text-caption text-danger" data-testid="name-cap">
+                  {capProblem('name')}
+                </p>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="symbol">Symbol</Label>
@@ -755,6 +859,11 @@ export function LaunchForm() {
               placeholder={'Who it is: a patient onchain analyst for small Base coins.\nHow it talks: short, plain, no hype, no emoji.\nWhat it never does: give price targets or financial advice.'}
             />
             <p className="mt-1.5 text-caption text-mute">Personality, goals, strategy, what it should and should not do. 20 to 600 characters; the agent reads this before every turn.</p>
+            {capProblem('metadata') ? (
+              <p className="mt-1 text-caption text-danger" data-testid="metadata-cap">
+                {capProblem('metadata')}
+              </p>
+            ) : null}
           </div>
           <div data-testid="job-lines">
             <div className="mb-1.5 flex items-baseline justify-between gap-3">
@@ -883,6 +992,15 @@ export function LaunchForm() {
                   ? `Bought in the launch transaction with ETH, through ${pairedAsset.symbol} (two swaps), and sent to your wallet.`
                   : 'Bought in the launch transaction, sent to your wallet.'}
               </p>
+              {isV5 && devBuyWei != null && devBuyWei > 0n ? (
+                <div className="mt-3">
+                  <Label htmlFor="slippage" hint={`Default ${DEFAULT_DEV_BUY_SLIPPAGE_PCT}%`}>
+                    Dev buy slippage
+                  </Label>
+                  <Input id="slippage" inputMode="decimal" mono suffix="%" value={slippage} onChange={(e) => setSlippage(e.target.value.trim())} aria-invalid={slippagePct == null} />
+                  <p className="mt-1.5 text-caption text-mute">The dev buy is quoted when you press Launch; you sign that quote less this as the least you get. If the launch would deliver less, it reverts and spends nothing but gas.</p>
+                </div>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="gas" hint="Optional">
@@ -957,6 +1075,10 @@ export function LaunchForm() {
               ...(links.x ? [['Project X', `@${xHandleOfUrl(links.x) ?? ''}`]] : []),
               ['Fuel', `${fuel || 0} USDC`],
               ...(devBuyWei && devBuyWei > 0n ? [['Dev buy', `${devBuy} ETH`]] : []),
+              ...(isV5 && devBuyWei && devBuyWei > 0n
+                ? [['Dev buy minimum', devBuyQuote ? `${coinsLabel(devBuyQuote.minOut)} $${symbol || 'TICKER'}` : `quote − ${slippagePct ?? DEFAULT_DEV_BUY_SLIPPAGE_PCT}%`]]
+                : []),
+              ...(isV5 ? [['Launch fee', `${formatEther(launchFeeWei + clankerFeeWei)} ETH`]] : []),
               ['Your share', `${pctLabel(isV5 ? ownRowPct : ofVolume(split, 'creator', fee))} of volume`],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between gap-3 bg-canvas px-3 py-1.5">

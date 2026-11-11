@@ -1,10 +1,12 @@
 /**
  * BootrClankerLauncherV5 ABI with creator-set token settings, copied verbatim from
- * packages/contracts/out/BootrClankerLauncherV5.sol/BootrClankerLauncherV5.json (forge build of branch
- * worktree-agent-a13d6a48bc2c37396, 2026-11-10; docs/design/clanker-v5-token-settings.md section 2). The one place the
- * web names the v5 launcher's functions, events and errors: `launch(p, s)`, `tokenInitCodeHash(p, s)`,
- * `predictToken(creator, p, s)`, `previewSlotWeights(s)`, `agentDefaults()`, `allowedQuote(kind, quote)`,
- * `devBuyRoute(quote)`, `updateImage`, `updateMetadata`, `lockMetadata`, `metadataEditable(token)`. Re-copy after
+ * packages/contracts/out/BootrClankerLauncherV5.sol/BootrClankerLauncherV5.json (forge build of the security-reviewed
+ * launcher on branch clanker-v5-2026-11-10, 2026-11-11; docs/design/clanker-v5-token-settings.md section 8). The one
+ * place the web names the v5 launcher's functions, events and errors: `launch(p, s)`, `tokenInitCodeHash(p, s)`,
+ * `predictToken(creator, p, s)`, `previewSlotWeights(s)`, `agentDefaults()`, `launchFeeWei()`, `allowedQuote(kind,
+ * quote)`, `devBuyRoute(quote)`, `updateImage`, `updateMetadata`, `lockMetadata`, `metadataEditable(token)`, the byte
+ * caps (`MAX_*_BYTES`) and the pins' errors. `TokenSettings` ends in the five pins (`minDevBuyOut`,
+ * `expectedConfigVersion`, `maxLaunchFeeWei`, `expectedAgentShareBps`, `expectedPlatformShareBps`). Re-copy after
  * contract changes: do not import from out/ at runtime.
  */
 // prettier-ignore
@@ -39,6 +41,11 @@ export const clankerLauncherV5Abi = [
           },
           {
             "name": "weth",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "uniswapV3Factory",
             "type": "address",
             "internalType": "address"
           },
@@ -152,6 +159,45 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "function",
+    "name": "MAX_CONTEXT_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_DEV_BUY_ROUTE_FEE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_LAUNCH_FEE_WEI",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_LOCKED_SHARE_BPS",
     "inputs": [],
     "outputs": [
@@ -159,6 +205,45 @@ export const clankerLauncherV5Abi = [
         "name": "",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_METADATA_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_MODEL_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_NAME_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -178,6 +263,19 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "function",
+    "name": "MAX_SYMBOL_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_TAX_CEILING_BPS",
     "inputs": [],
     "outputs": [
@@ -185,6 +283,19 @@ export const clankerLauncherV5Abi = [
         "name": "",
         "type": "uint24",
         "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_URI_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -588,6 +699,31 @@ export const clankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1032,6 +1168,31 @@ export const clankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1120,6 +1281,31 @@ export const clankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1156,6 +1342,29 @@ export const clankerLauncherV5Abi = [
     "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
+    "outputs": [],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "rescue",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -1385,6 +1594,31 @@ export const clankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1434,6 +1668,25 @@ export const clankerLauncherV5Abi = [
       }
     ],
     "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "tickSpacingOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1582,6 +1835,31 @@ export const clankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1607,6 +1885,19 @@ export const clankerLauncherV5Abi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "uniswapV3Factory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IUniswapV3Factory"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2144,6 +2435,31 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "event",
+    "name": "Rescued",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unpaused",
     "inputs": [
       {
@@ -2157,6 +2473,11 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "DevBuyRouteFeeOutOfBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "DevBuyRouteMissing",
     "inputs": [
       {
@@ -2165,6 +2486,11 @@ export const clankerLauncherV5Abi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "DevBuyRouteNotFactoryPool",
+    "inputs": []
   },
   {
     "type": "error",
@@ -2269,7 +2595,49 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "LaunchFeeAboveMax",
+    "inputs": [
+      {
+        "name": "launchFeeWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxLaunchFeeWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "LaunchFeeTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LockedSharesChanged",
+    "inputs": [
+      {
+        "name": "agentShareBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "platformShareBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "MetadataNotEditable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MinDevBuyOutRequired",
     "inputs": []
   },
   {
@@ -2317,6 +2685,11 @@ export const clankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "RenounceDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -2330,6 +2703,27 @@ export const clankerLauncherV5Abi = [
     "type": "error",
     "name": "SharesExceedPool",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "field",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

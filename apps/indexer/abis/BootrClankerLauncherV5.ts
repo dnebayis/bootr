@@ -1,9 +1,10 @@
 // Generated from packages/contracts/out/BootrClankerLauncherV5.sol/BootrClankerLauncherV5.json (forge build of the
-// token-settings launcher, 2026-11-10): `launch(LaunchParams, TokenSettings)`, the same `AgentLaunched` /
-// `LaunchContext` / `LaunchFeePaid` as BootrLauncher and BootrClankerLauncher, `ClankerV5Launched` with the coin's
-// settings, the creator's `CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked` and the owner's
-// `QuoteAllowedUpdated`. Regenerate from forge whenever the contract changes; the indexer takes the events it follows
-// from this ABI below (one decoder each in src/lib/clanker.ts).
+// security-reviewed launcher on branch clanker-v5-2026-11-10, 2026-11-11): `launch(LaunchParams, TokenSettings)` with
+// the five pins at the end of `TokenSettings`, the same `AgentLaunched` / `LaunchContext` / `LaunchFeePaid` as
+// BootrLauncher and BootrClankerLauncher, `ClankerV5Launched` with the coin's settings, the creator's
+// `CoinImageUpdated` / `CoinMetadataUpdated` / `CoinMetadataLocked`, the owner's `QuoteAllowedUpdated` and the new
+// `Rescued`. The review fixes changed no event. Regenerate from forge whenever the contract changes; the indexer takes
+// the events it follows from this ABI below (one decoder each in src/lib/clanker.ts).
 import { getAbiItem } from 'viem';
 
 export const BootrClankerLauncherV5Abi = [
@@ -37,6 +38,11 @@ export const BootrClankerLauncherV5Abi = [
           },
           {
             "name": "weth",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "uniswapV3Factory",
             "type": "address",
             "internalType": "address"
           },
@@ -150,6 +156,45 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
+    "name": "MAX_CONTEXT_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_DEV_BUY_ROUTE_FEE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_LAUNCH_FEE_WEI",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_LOCKED_SHARE_BPS",
     "inputs": [],
     "outputs": [
@@ -157,6 +202,45 @@ export const BootrClankerLauncherV5Abi = [
         "name": "",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_METADATA_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_MODEL_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_NAME_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -176,6 +260,19 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "function",
+    "name": "MAX_SYMBOL_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_TAX_CEILING_BPS",
     "inputs": [],
     "outputs": [
@@ -183,6 +280,19 @@ export const BootrClankerLauncherV5Abi = [
         "name": "",
         "type": "uint24",
         "internalType": "uint24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_URI_BYTES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -586,6 +696,31 @@ export const BootrClankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1030,6 +1165,31 @@ export const BootrClankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1118,6 +1278,31 @@ export const BootrClankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1154,6 +1339,29 @@ export const BootrClankerLauncherV5Abi = [
     "type": "function",
     "name": "renounceOwnership",
     "inputs": [],
+    "outputs": [],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "rescue",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -1383,6 +1591,31 @@ export const BootrClankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1432,6 +1665,25 @@ export const BootrClankerLauncherV5Abi = [
       }
     ],
     "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "tickSpacingOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1580,6 +1832,31 @@ export const BootrClankerLauncherV5Abi = [
             "name": "contractURI",
             "type": "string",
             "internalType": "string"
+          },
+          {
+            "name": "minDevBuyOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedConfigVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maxLaunchFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expectedAgentShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "expectedPlatformShareBps",
+            "type": "uint16",
+            "internalType": "uint16"
           }
         ]
       }
@@ -1605,6 +1882,19 @@ export const BootrClankerLauncherV5Abi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "uniswapV3Factory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IUniswapV3Factory"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2142,6 +2432,31 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "event",
+    "name": "Rescued",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unpaused",
     "inputs": [
       {
@@ -2155,6 +2470,11 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "DevBuyRouteFeeOutOfBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "DevBuyRouteMissing",
     "inputs": [
       {
@@ -2163,6 +2483,11 @@ export const BootrClankerLauncherV5Abi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "DevBuyRouteNotFactoryPool",
+    "inputs": []
   },
   {
     "type": "error",
@@ -2267,7 +2592,49 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "LaunchFeeAboveMax",
+    "inputs": [
+      {
+        "name": "launchFeeWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxLaunchFeeWei",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "LaunchFeeTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LockedSharesChanged",
+    "inputs": [
+      {
+        "name": "agentShareBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "platformShareBps",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "MetadataNotEditable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MinDevBuyOutRequired",
     "inputs": []
   },
   {
@@ -2315,6 +2682,11 @@ export const BootrClankerLauncherV5Abi = [
   },
   {
     "type": "error",
+    "name": "RenounceDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -2328,6 +2700,27 @@ export const BootrClankerLauncherV5Abi = [
     "type": "error",
     "name": "SharesExceedPool",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "field",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",

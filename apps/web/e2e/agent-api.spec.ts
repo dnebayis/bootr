@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { SiweMessage } from 'siwe';
+import { decodeFunctionData } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { clankerLauncherV5Abi } from '../lib/abi/clankerLauncherV5.abi';
 
 /** A throwaway key for the e2e build only (its address owns nothing). */
 const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
@@ -65,6 +67,49 @@ test('agent API: launchThrough clanker-v5 mines the salt so the coin address end
   expect(meta.socialMediaUrls).toEqual([{ platform: 'website', url: 'https://bootr.fun' }]);
   expect(meta.auditUrls).toEqual([]);
   expect(meta.contractUri).toMatch(/^https:\/\/bootr\.fun\/tokens\/[0-9a-f-]{36}\.json$/);
+});
+
+test('agent API: a v5 launch carries the five pins, quotes the dev buy and signs its minimum (mock mode)', async ({ request }) => {
+  const launch = { name: 'Pin Five', symbol: 'pin', identity: 'A patient onchain analyst for small Base coins.', image: { dataUrl: `data:image/png;base64,${PNG.toString('base64')}` }, launchThrough: 'clanker-v5' };
+  const headers = { 'x-real-ip': '10.7.0.31' };
+  const res = await request.post('/api/agent/launch', { headers, data: { ...(await sign(request, 'Prepare a Bootr launch.')), launch: { ...launch, devBuyEth: '0.01', devBuySlippagePct: 2 } } });
+  expect(res.status(), await res.text()).toBe(200);
+  const body = (await res.json()) as {
+    launchFeeWei: string;
+    devBuy: { quotedOut: string; minOut: string; slippagePct: number };
+    tokenSettings: Record<string, unknown>;
+    transactions: { step: string; data: `0x${string}`; value: string; note: string }[];
+  };
+  // Mock mode's quote: 500 M coins per ETH, so 0.01 ETH quotes 5 M coins and 2% below is 4.9 M.
+  expect(body.devBuy).toEqual({ quotedOut: (5_000_000n * 10n ** 18n).toString(), minOut: (4_900_000n * 10n ** 18n).toString(), slippagePct: 2 });
+  expect(body.tokenSettings).toMatchObject({
+    minDevBuyOut: body.devBuy.minOut,
+    expectedConfigVersion: '0',
+    maxLaunchFeeWei: body.launchFeeWei,
+    expectedAgentShareBps: 500,
+    expectedPlatformShareBps: 3000,
+  });
+  const step = body.transactions.find((t) => t.step === 'launch')!;
+  const call = decodeFunctionData({ abi: clankerLauncherV5Abi, data: step.data });
+  const [, s] = call.args as unknown as [unknown, { minDevBuyOut: bigint; maxLaunchFeeWei: bigint; expectedConfigVersion: bigint }];
+  expect(s.minDevBuyOut).toBe(4_900_000n * 10n ** 18n);
+  expect(s.maxLaunchFeeWei.toString()).toBe(body.launchFeeWei);
+  expect(BigInt(step.value)).toBe(10n ** 16n + BigInt(body.launchFeeWei));
+  expect(step.note).toContain('StaleConfig');
+
+  // The slippage is checked like the form checks it, and exists on v5 only.
+  const wide = await request.post('/api/agent/launch', { headers, data: { ...(await sign(request, 'Prepare a Bootr launch.')), launch: { ...launch, devBuyEth: '0.01', devBuySlippagePct: 60 } } });
+  expect(wide.status()).toBe(400);
+  expect(await wide.json()).toMatchObject({ error: 'invalid_request', field: 'devBuySlippagePct' });
+  const offV5 = await request.post('/api/agent/launch', { headers, data: { ...(await sign(request, 'Prepare a Bootr launch.')), launch: { ...launch, launchThrough: 'bootr', devBuySlippagePct: 2 } } });
+  expect(offV5.status()).toBe(400);
+  expect(await offV5.json()).toMatchObject({ field: 'devBuySlippagePct' });
+  // Without a dev buy there is no minimum to sign.
+  const none = await request.post('/api/agent/launch', { headers, data: { ...(await sign(request, 'Prepare a Bootr launch.')), launch } });
+  expect(none.status(), await none.text()).toBe(200);
+  const noneBody = (await none.json()) as { devBuy?: unknown; tokenSettings: { minDevBuyOut: string } };
+  expect(noneBody.devBuy).toBeUndefined();
+  expect(noneBody.tokenSettings.minDevBuyOut).toBe('0');
 });
 
 test('agent API: a Clanker launch writes the links the creator entered into the on-chain metadata (mock mode)', async ({ request }) => {

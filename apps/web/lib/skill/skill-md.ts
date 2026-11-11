@@ -6,7 +6,18 @@ import { feeModelOf, launcherPct, ofVolume, pctLabel, traderPaysPct, type FeeMod
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import { RECOMMENDED_MODEL } from '@/lib/models';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
-import { creatorPoolBps, DEFAULT_PAIRED_ASSET, DEFAULT_TAX_PCT, FALLBACK_V5_BOUNDS, MIN_DIVIDEND_HOLDING, pairedAssetsFor, V5_SUPPLY } from '@/lib/token-settings';
+import {
+  creatorPoolBps,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
+  DEFAULT_PAIRED_ASSET,
+  DEFAULT_TAX_PCT,
+  FALLBACK_V5_BOUNDS,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  MIN_DIVIDEND_HOLDING,
+  pairedAssetsFor,
+  V5_STRING_CAPS,
+  V5_SUPPLY,
+} from '@/lib/token-settings';
 
 /**
  * The agent skill served at `/skill/skill.md`: one Markdown document a coding or chat assistant can read and follow
@@ -50,6 +61,10 @@ const V5B = FALLBACK_V5_BOUNDS;
 const V5_ASSETS = pairedAssetsFor('agent');
 const v5AssetList = V5_ASSETS.map((a) => `\`${a.symbol}\``).join(' or ');
 const v5AssetNotes = V5_ASSETS.map((a) => `${a.symbol}: ${a.note}`).join(' ');
+
+/** The v5 launcher's byte caps, as one sentence (lib/token-settings.ts `V5_STRING_CAPS`, the contract's `MAX_*_BYTES`). */
+const C = V5_STRING_CAPS;
+const v5Caps = `\`name\` ${C.name}, \`symbol\` ${C.symbol}, the image, contract URI and agent card URLs ${C.uri} each, \`metadata\` ${C.metadata.toLocaleString('en-US')} (the JSON with \`identity\` as its description and the links), the launch context ${C.context} and \`model\` ${C.model}`;
 
 const workerRows = WORKER_TEMPLATES.map((t) => `| \`${t.id}\` | ${t.description} |`).join('\n');
 
@@ -297,7 +312,9 @@ Sign an [EIP-4361](https://eips.ethereum.org/EIPS/eip-4361) message with these f
 }
 \`\`\`
 
-\`value\` is a decimal string of wei. The \`gas\` step is absent when \`gasEth\` is 0, and a custom worker adds \`workerPreset\`. On the Clanker paths \`metadata\` is a JSON string, with the document's URL inside it as \`contractUri\`. \`launchThrough\` is the path the launch goes through: \`clanker\` comes back as \`clanker\` (Clanker v4) or \`clanker-v5\`. On Clanker v5 the answer also has \`salt\`, the salt already in the launch calldata, chosen so that the coin's address ends in \`cccc\` as Clanker v5 requires, and \`predictedToken\`, that address; \`predictedKernel\` follows the same salt. The launch fee is an owner setting of the launcher (0.0005 ETH at the time of writing), so use the value in the answer.
+\`value\` is a decimal string of wei. The \`gas\` step is absent when \`gasEth\` is 0, and a custom worker adds \`workerPreset\`. On the Clanker paths \`metadata\` is a JSON string, with the document's URL inside it as \`contractUri\`. \`launchThrough\` is the path the launch goes through: \`clanker\` comes back as \`clanker\` (Clanker v4) or \`clanker-v5\`. On Clanker v5 the answer also has \`salt\`, the salt already in the launch calldata, chosen so that the coin's address ends in \`cccc\` as Clanker v5 requires, and \`predictedToken\`, that address; \`predictedKernel\` follows the same salt. With a dev buy it also has \`devBuy\`: \`{ quotedOut, minOut, slippagePct }\`, the coins the dev buy delivers now (in raw units, 18 decimals) and the least the launch accepts. The launch fee is an owner setting of the launcher (0.0005 ETH at the time of writing), so use the value in the answer.
+
+On Clanker v5 the launch transaction carries the numbers it was prepared with (see "Clanker v5 token settings" below): send it within a few minutes. If one of them moved before it is mined, the launch reverts, creates nothing and spends only gas; prepare it again with a new signature.
 
 ### 4. Check, then confirm with the user
 
@@ -349,7 +366,8 @@ The launch is one transaction: if any part fails, nothing is created. If \`appro
 | \`launchThrough\` | \`bootr\` | \`bootr\`, \`clanker\` (this site's Clanker path: Clanker v5 once it is live, Clanker v4 until then) or \`clanker-v5\` (refused with \`clanker_v5_unavailable\` while it is not live). Permanent for the coin |
 | \`buyback\` | \`false\` | \`true\` or \`false\`, as a JSON boolean. \`true\` picks the buyback and burn preset. Permanent for the coin |
 | \`fuelUsdc\` | \`20\` | Decimal USDC amount, at least the launcher's \`minFuelUsdc\`. Moves into the treasury and pays for the agent's model calls, which go to BlockRun, the service that runs the models, at the prices \`GET /api/models\` shows |
-| \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins |
+| \`devBuyEth\` | \`0\` | Decimal ETH amount. A creator buy in the launch transaction; the user receives the coins. On Clanker v5 it is quoted before the answer and the launch carries a minimum (\`devBuySlippagePct\`) |
+| \`devBuySlippagePct\` | \`${DEFAULT_DEV_BUY_SLIPPAGE_PCT}\` | Clanker v5 only. 0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT}: the dev buy's minimum is the quote less this percent. If the launch would deliver fewer coins, it reverts and spends nothing but gas |
 | \`gasEth\` | \`0.001\` | \`0\`, or at least \`0.0001\`. The agent's first gas, deposited after the launch. With \`0\` the agent waits until someone adds gas |
 | \`model\` | \`${RECOMMENDED_MODEL}\` | A model id from \`GET ${site}/api/models\` |
 | \`worker\` | \`community\` | A template id below, or a custom preset |
@@ -374,6 +392,17 @@ On the Clanker paths, the coin's description (the first line of \`identity\`), \
 | \`editableMetadata\` | \`true\` | Only the launching wallet can change the coin's image and metadata after launch, from the coin page's creator settings, and can lock them for good. Name and ticker never change |
 
 Example: \`"token": { "pairedAsset": "USDC", "buyTaxPct": 2, "sellTaxPct": 3, "burnPct": 10, "rewards": [{ "recipient": "0xYou", "pct": 80 }, { "recipient": "0xFriend", "admin": "0xYou", "pct": 20 }] }\`. The answer repeats the checked settings as \`token\` and the launcher's struct as \`tokenSettings\`. The route checks them against the launcher's live bounds (\`agentDefaults()\` on \`BootrClankerLauncherV5\`) and its \`previewSlotWeights(settings)\`, which fails exactly as the launch would, before it answers. With USDC, a dev buy runs ETH to USDC to the coin and is refused while the launcher has no route for it.
+
+The route also fills the last five fields of \`tokenSettings\`, the numbers the launch is prepared with, so that the transaction runs only on the terms shown to the user:
+
+| \`tokenSettings\` field | What it is | If it no longer holds when the launch is mined |
+| --- | --- | --- |
+| \`minDevBuyOut\` | The least coins the dev buy may deliver (raw units): the launch is simulated to quote it, less \`devBuySlippagePct\`. \`0\` without a dev buy | The launch reverts; nothing is bought or created |
+| \`expectedConfigVersion\` | Clanker's \`configVersion()\`, read now | \`StaleConfig\`: Clanker changed its launch settings |
+| \`maxLaunchFeeWei\` | The launch fee read now, the one in \`launchFeeWei\` | \`LaunchFeeAboveMax\`: the fee went up |
+| \`expectedAgentShareBps\`, \`expectedPlatformShareBps\` | The agent's and the platform's locked shares, read now | \`LockedSharesChanged\`: the shares moved |
+
+The launcher also caps the strings in bytes (UTF-8, so an emoji counts four): ${v5Caps}. The route checks them before it answers (\`invalid_request\` naming the field; a long metadata is reported on \`identity\`); past a cap the launch reverts \`StringTooLong\`. The coin page's metadata editor checks the same caps for a new image (${C.uri} bytes) and metadata (${C.metadata.toLocaleString('en-US')} bytes).
 
 ### Worker templates
 
@@ -552,10 +581,12 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 | 403 | \`forbidden\` | links | The request came from a page on another site. Send it from a script, with no \`Origin\` header, or use the coin page |
 | 404 | \`unknown_coin\` | x-connect, links | The coin is not indexed yet, or the address is wrong. Wait, then retry |
 | 409 | \`links_not_editable\` | links | This coin's links are not hosted on Bootr and cannot be changed here |
+| 409 | \`launch_would_revert\` | launch | Clanker v5: the launch, simulated to quote the dev buy, would revert. \`code\` names the launcher's reason (\`StaleConfig\`, \`LaunchFeeAboveMax\`, \`LockedSharesChanged\`, \`EnforcedPause\`, …). Tell the user; sign again to prepare it with the new numbers |
 | 413 | \`payload_too_large\` | launch, links | Shrink the body (3 MB on launch, 16 KB on links) |
 | 429 | \`rate_limited\` | all | Wait for \`Retry-After\`. Per IP: launch 5 a minute, x-connect and links 10, claim 20 |
 | 500 | \`store_failed\` | launch | Retry; if it repeats, tell the user |
 | 502 | \`pin_failed\`, \`chain_unavailable\`, \`indexer_unavailable\`, \`upstream_failed\` | launch, x-connect, links, claim | A dependency failed. Retry shortly |
+| 502 | \`quote_unavailable\` | launch | Clanker v5: the dev buy could not be quoted. Retry shortly, or launch with \`devBuyEth\` 0 |
 | 503 | \`launches_paused\` | launch | Launches are paused. Tell the user and stop |
 | 503 | \`clanker_unavailable\`, \`clanker_v5_unavailable\` | launch | That Clanker path is not available here. Ask the user before switching path |
 | 503 | \`salt_not_found\` | launch | No Clanker v5 coin address ending in \`cccc\` turned up, which almost never happens. Sign again and retry |
@@ -565,7 +596,7 @@ The agent API answers \`{ "error": "<code>", "message": "…" }\`. The \`message
 
 Read routes: the indexer answers 404 \`{ "error": "not_found" }\` for an unknown address and 400 for a malformed one. \`/api/agents/<agentId>/posts\` answers 404 \`not_found\` if the agent never posted, and 502 or 503 when posts are unavailable for now.
 
-If the launch transaction reverts, nothing was created, and these are the launcher's errors: \`InsufficientValue\` (send the \`value\` from the answer), \`InsufficientFuel\` (fuel below the minimum), \`EmptyNameOrSymbol\`, and a paused launcher. A failed USDC transfer means the balance is short or \`approve\` was not mined first. Show the user what failed and do not retry on your own: every attempt costs gas.
+If the launch transaction reverts, nothing was created, and these are the launcher's errors: \`InsufficientValue\` (send the \`value\` from the answer), \`InsufficientFuel\` (fuel below the minimum), \`EmptyNameOrSymbol\`, and a paused launcher. On Clanker v5 also \`StaleConfig\`, \`LaunchFeeAboveMax\` and \`LockedSharesChanged\` (a number the launch was prepared with moved: prepare it again), a dev buy under \`minDevBuyOut\` (the price moved: prepare it again, or with a wider \`devBuySlippagePct\` if the user agrees), \`MinDevBuyOutRequired\` (a dev buy without a minimum) and \`StringTooLong(field, length, max)\`. A failed USDC transfer means the balance is short or \`approve\` was not mined first. Show the user what failed and do not retry on your own: every attempt costs gas.
 
 ## Developer Tools
 
