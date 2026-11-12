@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { listCredentials, saveCredential } from '@bootrfun/sdk';
@@ -422,6 +424,27 @@ describe('a social turn', () => {
       await writeFile(path.join(pictures, 'photo.txt'), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
       expect(await readPicture('photo.txt', pictures)).toMatchObject({ ok: true, mime: 'image/jpeg', bytes: 7 });
       expect(await readPicture('owl.png', path.join(dir, 'no-such-folder'))).toEqual({ ok: false, error: outsideFolder(path.join(dir, 'no-such-folder')) });
+    });
+
+    it('refuses a named pipe at once instead of waiting for it, and anything else that is not a plain file', async () => {
+      if (process.platform === 'win32') return;
+      // A FIFO in the folder: opening it to read waits for a writer that never comes, and the tool used to hang there.
+      await promisify(execFile)('mkfifo', [path.join(pictures, 'pipe.png')]);
+      const hung = Symbol('hung');
+      const started = Date.now();
+      const outcome = await Promise.race([readPicture('pipe.png', pictures), new Promise<typeof hung>((resolve) => setTimeout(resolve, 3000, hung).unref())]);
+      // Left unopened by a reader, the pipe is removed whatever happened, so nothing stays blocked on it.
+      await rm(path.join(pictures, 'pipe.png'), { force: true });
+      expect(outcome).not.toBe(hung);
+      expect(outcome).toEqual({ ok: false, error: NOT_AN_IMAGE });
+      expect(Date.now() - started).toBeLessThan(2000);
+      await mkdir(path.join(pictures, 'folder.png'), { recursive: true });
+      expect(await readPicture('folder.png', pictures)).toEqual({ ok: false, error: NOT_AN_IMAGE });
+      // Through the tool as well: an answer, not a wait.
+      await promisify(execFile)('mkfifo', [path.join(pictures, 'pipe2.png')]);
+      const r = await call('bootr_agent_upload_picture', { turnId, path: 'pipe2.png', alt: 'a', description: 'd' });
+      await rm(path.join(pictures, 'pipe2.png'), { force: true });
+      expect(json(r)).toMatchObject({ status: 'failed', error: NOT_AN_IMAGE });
     });
   });
 
