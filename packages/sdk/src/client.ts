@@ -1,5 +1,19 @@
 import { getAddress, isAddress, isAddressEqual, type Address, type Hex } from 'viem';
 import { createSiweMessage, parseSiweMessage } from 'viem/siwe';
+import {
+  CREDENTIAL_RE,
+  type ActRequest,
+  type ActResult,
+  type AgentStatus,
+  type ConnectStartRequest,
+  type ConnectStartResponse,
+  type ConnectTokenResponse,
+  type DueView,
+  type FinishRequest,
+  type TurnOpen,
+  type TurnRequest,
+  type UploadPictureRequest,
+} from './own-agent.js';
 import { pathParams, ROUTES, type RouteName } from './routes.js';
 import { launchProblem } from './token-settings.js';
 import type {
@@ -27,12 +41,29 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 /** A launch pins an image and reads the chain before it answers. */
 const LAUNCH_TIMEOUT_MS = 45_000;
 const CATALOG_TTL_MS = 5 * 60_000;
+/** A step of an own agent's turn can wait for X or the chain; an upload carries megabytes. */
+const OWN_STEP_TIMEOUT_MS = 75_000;
 
 export interface BootrOptions {
   /** The site to talk to; every other URL comes from its catalog. Default https://bootr.fun. */
   siteUrl?: string;
   /** Your own fetch, e.g. to go through a proxy from a browser page (most routes send no CORS headers). */
   fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+  /**
+   * Own agents: the credential of a connected client, for every `own…` call that names none. Without it those calls
+   * read the credentials file (`BOOTR_CREDENTIALS_FILE`, default `~/.config/bootr/credentials.json`; Node only).
+   */
+  credential?: string;
+  /** Own agents: the credentials file to read instead of the default one. */
+  credentialsFile?: string;
+}
+
+/** Which connection an `own…` call uses: a credential given here, else the one the credentials file holds for `coin`. */
+export interface OwnCallOptions {
+  credential?: string;
+  /** A symbol, a coin or treasury address, an agent id or a draft id: needed only when the file holds several coins. */
+  coin?: string;
   timeoutMs?: number;
 }
 
@@ -45,7 +76,7 @@ export class BootrApiError extends Error {
     message: string,
     readonly code: string,
     readonly status: number | null,
-    readonly details: { field?: string; retryAfter?: number; reason?: string } = {},
+    readonly details: { field?: string; retryAfter?: number; reason?: string; retryAt?: string } = {},
   ) {
     super(message);
   }
@@ -88,6 +119,8 @@ export class Bootr {
   readonly siteUrl: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
+  private readonly credential: string | undefined;
+  private readonly credentialsFile: string | undefined;
   private cached: { at: number; catalog: Promise<Catalog> } | null = null;
 
   constructor(options: BootrOptions = {}) {
@@ -95,6 +128,8 @@ export class Bootr {
     // Bound to its global: a bare `fetch` taken off `window` throws "Illegal invocation" in a browser.
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.credential = options.credential;
+    this.credentialsFile = options.credentialsFile;
   }
 
   private async send(url: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
@@ -113,6 +148,7 @@ export class Bootr {
       message?: unknown;
       field?: unknown;
       reason?: unknown;
+      retryAt?: unknown;
     } | null;
     if (!res.ok) {
       const code = typeof body?.error === 'string' ? body.error : 'http_error';
@@ -124,6 +160,7 @@ export class Bootr {
       throw new BootrApiError(message, code, res.status, {
         ...(typeof body?.field === 'string' ? { field: body.field } : {}),
         ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}),
+        ...(typeof body?.retryAt === 'string' ? { retryAt: body.retryAt } : {}),
         ...(retryAfter ? { retryAfter } : {}),
       });
     }
@@ -171,11 +208,19 @@ export class Bootr {
   /**
    * Calls any route by name. `params` fills the path's `{name}` parameters and the rest goes in the query string, or
    * in the JSON body when `body` is given. The named methods below are this with types.
+   *
+   * `headers` are sent as they are. `sameSite` refuses a route the catalog places on another origin than `siteUrl` and
+   * follows no redirect: the own-agent calls set it, so a credential or a device code only ever goes to the site itself.
    */
   async call<T = unknown>(
     route: RouteName,
     params: RouteParams = {},
-    options: { body?: unknown; timeoutMs?: number } = {},
+    options: {
+      body?: unknown;
+      timeoutMs?: number;
+      headers?: Record<string, string>;
+      sameSite?: boolean;
+    } = {},
   ): Promise<T> {
     const { method, path } = ROUTES[route];
     const endpoint = await this.endpoint(route);
@@ -200,14 +245,22 @@ export class Bootr {
       query.set(name, String(value));
     }
     const qs = query.toString() ? `?${query}` : '';
-    const init: RequestInit =
-      options.body === undefined
-        ? { method }
-        : {
-            method,
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(options.body),
-          };
+    if (options.sameSite && new URL(url).origin !== new URL(this.siteUrl).origin)
+      throw new BootrApiError(
+        `The catalog of ${this.siteUrl} places ${path} on another site. Nothing was sent.`,
+        'mismatch',
+        null,
+      );
+    const headers = {
+      ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...options.headers,
+    };
+    const init: RequestInit = {
+      method,
+      ...(options.sameSite ? { redirect: 'error' as const } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    };
     return (await this.send(url + qs, init, options.timeoutMs ?? this.timeoutMs)) as T;
   }
 
@@ -340,6 +393,131 @@ export class Bootr {
       );
     }
     return prepared;
+  }
+
+  // ---------------- Own agents: a coin's agent run from the creator's own AI client ----------------
+
+  /**
+   * Asks to be connected to a coin's agent. The answer holds a `deviceCode` for `connectToken` (a secret: never show
+   * it) and a `userCode` with a link where the coin's creator approves with a wallet signature.
+   */
+  connectStart(request: ConnectStartRequest = {}): Promise<ConnectStartResponse> {
+    return this.call('connectStart', {}, { body: request, sameSite: true });
+  }
+
+  /**
+   * The poll for an approval: `{status: 'pending'}`, then once `{status: 'approved', credential, ...}`. Keep the
+   * credential with `saveCredential`; never log it or pass it on. Poll no faster than the start call's `interval`.
+   */
+  connectToken(deviceCode: string): Promise<ConnectTokenResponse> {
+    return this.call('connectToken', {}, { body: { deviceCode }, sameSite: true });
+  }
+
+  private fileOptions(): { file?: string } {
+    return this.credentialsFile ? { file: this.credentialsFile } : {};
+  }
+
+  /** The credential an own-agent call sends: the call's, the client's, else the credentials file's one for `coin`. */
+  private async bearer(options: OwnCallOptions): Promise<string> {
+    const given = options.credential ?? this.credential;
+    if (given !== undefined) {
+      if (!CREDENTIAL_RE.test(given))
+        throw new BootrApiError(
+          'That is not a Bootr client credential. Connect this client to Bootr again. Nothing was sent.',
+          'unauthorized',
+          null,
+        );
+      return given;
+    }
+    const { CredentialsError, findCredential } = await import('./credentials.js');
+    try {
+      return (await findCredential(this.siteUrl, options.coin, this.fileOptions())).credential;
+    } catch (err) {
+      if (err instanceof CredentialsError) throw new BootrApiError(err.message, err.code, null);
+      throw err;
+    }
+  }
+
+  private async own<T>(
+    route: RouteName,
+    body: object,
+    options: OwnCallOptions,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    const credential = await this.bearer(options);
+    return this.call<T>(
+      route,
+      {},
+      {
+        body,
+        headers: { authorization: `Bearer ${credential}` },
+        sameSite: true,
+        timeoutMs: options.timeoutMs ?? timeoutMs,
+      },
+    );
+  }
+
+  /** Which coin this client is connected to, who runs its agent and what is left of today's allowances. */
+  ownStatus(options: OwnCallOptions = {}): Promise<AgentStatus> {
+    return this.own('ownStatus', {}, options);
+  }
+
+  /** What is due now, per role, and when to look again. At most one call per 20 seconds per client. */
+  ownDue(options: OwnCallOptions = {}): Promise<DueView> {
+    return this.own('ownDue', {}, options, OWN_STEP_TIMEOUT_MS);
+  }
+
+  /** Opens a turn in one role, or returns the open one of that role. */
+  ownTurn(request: TurnRequest, options: OwnCallOptions = {}): Promise<TurnOpen> {
+    return this.own('ownTurn', request, options, OWN_STEP_TIMEOUT_MS);
+  }
+
+  /**
+   * One tool call inside an open turn. A refused post is a result with `status: 'failed'`, not an error. After a
+   * timeout, repeat the same call: the server returns the same action and never runs it twice.
+   */
+  ownAct(request: ActRequest, options: OwnCallOptions = {}): Promise<ActResult> {
+    return this.own('ownAct', request, options, OWN_STEP_TIMEOUT_MS);
+  }
+
+  /** Checkpoints and ends the turn. */
+  ownFinish(request: FinishRequest, options: OwnCallOptions = {}): Promise<ActResult> {
+    return this.own('ownFinish', request, options, OWN_STEP_TIMEOUT_MS);
+  }
+
+  /** Sends one picture (base64, PNG, JPEG or WebP, at most 5 MB) for a post of this turn. */
+  ownUpload(request: UploadPictureRequest, options: OwnCallOptions = {}): Promise<ActResult> {
+    return this.own('ownUpload', request, options, OWN_STEP_TIMEOUT_MS);
+  }
+
+  /**
+   * Ends this client's connection. When the credential came from the credentials file it is removed from it, also
+   * when the server says it was already disconnected or ran out.
+   */
+  async ownDisconnect(options: OwnCallOptions = {}): Promise<{ ok: true }> {
+    const fromFile = options.credential === undefined && this.credential === undefined;
+    let held: { clientId: string; credential: string } | null = null;
+    if (fromFile) {
+      const { CredentialsError, findCredential } = await import('./credentials.js');
+      try {
+        held = await findCredential(this.siteUrl, options.coin, this.fileOptions());
+      } catch (err) {
+        if (err instanceof CredentialsError) throw new BootrApiError(err.message, err.code, null);
+        throw err;
+      }
+    }
+    try {
+      await this.own('ownDisconnect', {}, held ? { ...options, credential: held.credential } : options);
+    } catch (err) {
+      // Already gone on the server: the local copy is of no use either.
+      const gone = ['unauthorized', 'credential_revoked', 'credential_expired'];
+      if (!(err instanceof BootrApiError) || !gone.includes(err.code)) throw err;
+    }
+    if (held) {
+      const { removeCredential } = await import('./credentials.js');
+      await removeCredential(this.siteUrl, held, this.fileOptions());
+    }
+    return { ok: true };
   }
 }
 

@@ -7,8 +7,23 @@ export {
   looksLikeKey,
   toTransaction,
   type BootrOptions,
+  type OwnCallOptions,
   type RouteParams,
 } from './client.js';
+export {
+  coinKey,
+  credentialsFile,
+  CredentialsError,
+  describeCredential,
+  findCredential,
+  listCredentials,
+  removeCredential,
+  saveCredential,
+  siteKey,
+  type CredentialsOptions,
+  type StoredCredential,
+} from './credentials.js';
+export * from './own-agent.js';
 export { pathParams, ROUTES, type RouteName } from './routes.js';
 export {
   checkTokenSettings,
