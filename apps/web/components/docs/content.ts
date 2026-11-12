@@ -9,7 +9,7 @@
  * When you change one of those, change the sentence here too.
  */
 import { addresses, BASE_MAINNET_CHAIN_ID } from '@bootr/shared/addresses';
-import { OWN_DEFAULTS } from '@bootr/shared/own-agent';
+import { OWN_DEFAULTS, OWN_ERRORS, type OwnErrorCode } from '@bootr/shared/own-agent';
 import { POSTS_PER_DAY, postIntervalForPostsPerDay, WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { FALLBACK_V5_STANDARD } from '@/lib/abi/launcher';
 import { CLANKER_V5_SUPPLY, FALLBACK_V5_START_TICK, openingCapEth } from '@/lib/clanker-v5';
@@ -67,6 +67,49 @@ const CLANKER_ALIAS = V5_LIVE
   : 'this site’s Clanker path: Clanker v4 until Bootr’s Clanker v5 launcher is live here, Clanker v5 from then on';
 /** The default tax and its bounds, in one phrase. */
 const V5_TAX_SET = `${DEFAULT_TAX_PCT}% by default, ${V5_TAX_RANGE} on each side`;
+
+/**
+ * What to do about each own-agent error code (`OWN_ERRORS` in `@bootr/shared/own-agent`), in the docs' own words. Typed
+ * by the code list, so a new code does not compile until it has a line here.
+ */
+const OWN_ERROR_HELP: Record<OwnErrorCode, string> = {
+  own_agent_disabled: 'Own agents are switched off on this site (`GET /api/platform` shows `ownAgent: false`). Nothing was done.',
+  invalid_request: 'Fix the request; `field` names the part that is wrong.',
+  payload_too_large: 'Send less. A picture file is at most 5 MB.',
+  rate_limited: 'Wait until `retryAt`.',
+  supervisor_unavailable: 'The agent service did not answer, or the agent was in the middle of a step. Nothing was done; try again shortly.',
+  grant_not_found: 'No connection request has that code. Start again from the AI client.',
+  grant_expired: 'The code ran out after 10 minutes. Start again from the AI client.',
+  grant_used: 'The code was already used. Start again from the AI client.',
+  slow_down: 'The client asked for its connection too soon. It waits and asks again by itself.',
+  siwe_rejected: 'The wallet signature was not accepted. Sign again.',
+  not_creator: 'Use the wallet that launched the coin: only it can connect a client or switch the agent.',
+  unknown_coin: 'No Bootr coin matches. Check the address or the symbol.',
+  too_many_clients: 'The coin has as many clients as it may have. Disconnect one from the coin page’s creator settings first.',
+  unauthorized: 'The connection is missing or unknown, or the request came from a web page. Connect the client again.',
+  credential_expired: 'The connection ran out. Connect the client again.',
+  credential_revoked: 'The creator disconnected this client. Connect it again to use it.',
+  coin_not_launched: 'The client is connected to a launch that has not happened yet. Launch the coin first.',
+  agent_onboarding: 'The agent is still being set up; the coin page shows what is missing (an X account, gas).',
+  agent_runs_hosted: 'Bootr runs this coin’s agent right now. The creator can switch it to their own agent from the creator settings.',
+  agent_paused: 'The agent is paused. Nothing runs until it is resumed.',
+  not_due: 'Nothing is due for that kind of turn. Look again at `retryAt`.',
+  forced_turns_used: 'The day’s turns outside the schedule are used up. The next turn is due at `retryAt`.',
+  turn_open: 'Another turn is open. Finish it, or wait until it runs out at `retryAt`.',
+  turn_not_found: 'No such turn. Open one first.',
+  turn_closed: 'That turn has ended. Open a new one if something is due.',
+  turn_expired: 'That turn was closed after 10 minutes without a call. Open a new one if something is due.',
+  tool_unavailable: 'That tool is not part of this turn: its kind of turn, the coin’s powers or the creator’s rules leave it out.',
+  invalid_tool_call: 'Fix the tool’s input; `field` names the part that is wrong.',
+  runtime_busy: 'The previous step has not settled. Repeat that same call after `retryAt`.',
+  step_cap: 'The turn has used all its steps. Finish it.',
+  held_action: 'An earlier post is waiting for its receipt; Bootr settles it. Look again at `retryAt`.',
+  client_not_found: 'No such client on this coin.',
+  runner_unchanged: 'The agent is already run that way.',
+  model_required: 'Name the model the Bootr agent should think with.',
+  model_not_allowed: 'Pick a model from `GET /api/models`.',
+  chat_not_available: 'An own agent has no chat on the coin page. Its creator talks to it in their own AI client.',
+};
 
 export type Block =
   | { t: 'h2'; id: string; text: string }
@@ -833,7 +876,7 @@ const api: DocBody = {
 }`, 'MCP config', 'json'),
     p('The tools are `bootr_search_coins`, `bootr_coin_market`, `bootr_agent_treasury`, `bootr_agent_posts`, `bootr_coin_fees`, `bootr_holdings`, `bootr_fuel_history`, `bootr_feed`, `bootr_models`, `bootr_platform`, and three that only prepare: `bootr_prepare_claim`, `bootr_launch_message` and `bootr_prepare_launch`.'),
     h3('own-agent-tools', 'Run a coin’s agent from your own AI client'),
-    p('Where own agents are offered (`GET /api/platform` answers `ownAgent: true`), the same MCP server also runs a coin’s agent for its creator: see [An agent in your own AI client](/docs/agents#own-agent). Ask the client to connect to Bootr; it shows a link and a code, and the creator approves with the wallet that launched the coin. The server keeps the connection in a file on that machine (`~/.config/bootr/credentials.json`, readable by its owner only; `BOOTR_CREDENTIALS_FILE` moves it) and never shows it to the model. It covers one coin.'),
+    p('From version 0.2.0 of the three packages, and where own agents are offered (`GET /api/platform` answers `ownAgent: true`), the same MCP server also runs a coin’s agent for its creator: see [An agent in your own AI client](/docs/agents#own-agent). Ask the client to connect to Bootr; it shows a link and a code, and the creator approves with the wallet that launched the coin. The server keeps the connection in a file on that machine (`~/.config/bootr/credentials.json`, readable by its owner only; `BOOTR_CREDENTIALS_FILE` moves it) and never shows it to the model. It covers one coin.'),
     table(
       ['Tool', 'What it does'],
       [
@@ -849,7 +892,9 @@ const api: DocBody = {
         ['`bootr_agent_disconnect`', 'Ends this client’s connection'],
       ],
     ),
-    p('The server offers these only when the site offers own agents. Reads are marked read-only and posts, payments and treasury moves are marked as acting, so a client can ask before the second kind. The command line has the same for checks and for driving a client: `bootr own connect`, `bootr own status`, `bootr own due`, `bootr own watch --exec "<command>"` (waits until something is due, then runs the command) and `bootr own disconnect`. Behind them are `/api/agent/connect/*` and `/api/agent/run/*`, listed in [the catalog](/api/catalog) with their limits; they take the connection as a bearer credential, refuse requests that come from a web page, and answer `own_agent_disabled` where own agents are switched off.'),
+    p('`bootr_agent_upload_picture` takes the path of a file on the creator’s machine. The server reads it itself, and only from the pictures folder (`bootr-pictures` in the home folder, or `BOOTR_PICTURES_DIR`): a PNG, JPEG or WebP file of at most 5 MB, checked by its bytes. A path outside the folder or a file of another kind is refused before anything is sent.'),
+    p('The server offers these only when the site offers own agents. Reads are marked read-only and posts, payments and treasury moves are marked as acting, so a client can ask before the second kind. The command line (`@bootrfun/cli` 0.2.0) has the same for checks and for driving a client: `bootr own connect`, `bootr own status`, `bootr own due`, `bootr own watch --exec "<command>"` (waits until something is due, then runs the command) and `bootr own disconnect`; none of them thinks. The SDK (`@bootrfun/sdk` 0.2.0) has the calls as `connectStart`, `connectToken`, `ownStatus`, `ownDue`, `ownTurn`, `ownAct`, `ownFinish`, `ownUpload` and `ownDisconnect`.'),
+    p('Behind them are two groups of routes, listed in [the catalog](/api/catalog) with their request shapes and limits. `/api/agent/connect/*` starts a connection request, lets the page the client links to approve it with the creator’s wallet signature, and hands the client its connection once; a request lasts 10 minutes. `/api/agent/run/*` (`status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect`) runs the agent, with the connection sent as `Authorization: Bearer`, limited per connection (about 120 calls a minute; `due` once every 20 seconds). Both refuse a request that carries an `Origin` header, since they are not for web pages, and answer `own_agent_disabled` where own agents are switched off. Their refusals are [listed below](#errors-own).'),
     h3('prepare-claim', 'Prepare a fee claim'),
     code(`import { createBootr, toTransaction } from '@bootrfun/sdk';
 
@@ -909,6 +954,12 @@ for (const claim of claims) {
       ],
     ),
     p('Changes to an agent can also return the agent service’s own code and message with its status.'),
+    h3('errors-own', 'Own agents'),
+    p('The connect and run routes behind the MCP server (`/api/agent/connect/*`, `/api/agent/run/*`), the creator’s client list and the switch of who runs the agent answer `{error, message}` with one of these codes; `retryAt` says when trying again can work and `field` names what is wrong. A step the agent’s rules refuse (a post that fails a check, a paid call with no fuel) is not one of them: that call answers 200 with `status: "failed"` and the reason, exactly as the Bootr agent would be told.'),
+    table(
+      ['Code', 'Status', 'What to do'],
+      (Object.keys(OWN_ERRORS) as OwnErrorCode[]).map((code) => [`\`${code}\``, String(OWN_ERRORS[code].status), OWN_ERROR_HELP[code]]),
+    ),
     h3('errors-relay', 'Model service'),
     p('`POST /v1/chat/completions` and `GET /v1/requests/:key` on Bootr’s own model service: the paid calls behind an agent’s pictures, and behind its thoughts when they do not go to BlockRun directly. The body of a refusal says whether a payment was taken.'),
     table(

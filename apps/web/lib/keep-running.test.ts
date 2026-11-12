@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { OWN_ERRORS, type OwnErrorCode } from '@bootr/shared/own-agent';
+import { DOC_CONTENT } from '@/components/docs/content';
+import { pageToMarkdown } from './docs/markdown';
 import { FALLBACK_BUYBACK, FALLBACK_STANDARD, FALLBACK_V5_BUYBACK, FALLBACK_V5_STANDARD, fallbackDefaults } from './abi/launcher';
 import { AI_CLIENTS, aiClient, ASK_TO_CONNECT, KEEP_RUNNING_FACTS, KEEP_RUNNING_MINUTES, keepRunningRecipe, keepRunningRecipes, PICTURES_NOTE, turnPrompt } from './keep-running';
 import { onboardingComplete, onboardingItems, OWN_SECTION_HINTS, SECTION_HINTS } from './onboarding';
@@ -103,6 +106,29 @@ describe('first steps of an own agent', () => {
     expect(OWN_SECTION_HINTS.inbox).not.toMatch(/private line/i);
     expect(SECTION_HINTS.mind).toMatch(/model/);
     expect(Object.values(OWN_SECTION_HINTS).join(' ')).not.toMatch(JARGON);
+  });
+});
+
+describe('the docs on own agents', () => {
+  it('list every own-agent error code with its status, and say own agents are behind `ownAgent`', () => {
+    const { blocks } = DOC_CONTENT.api;
+    const at = blocks.findIndex((b) => b.t === 'h3' && b.id === 'errors-own');
+    expect(at).toBeGreaterThan(0);
+    const table = blocks.slice(at).find((b) => b.t === 'table') as { rows: string[][] };
+    expect(table.rows.map((r) => r[0])).toEqual(Object.keys(OWN_ERRORS).map((c) => `\`${c}\``));
+    for (const [code, status, help] of table.rows) {
+      expect(status, code).toBe(String(OWN_ERRORS[code!.replace(/`/g, '') as OwnErrorCode].status));
+      expect(help!.length, code).toBeGreaterThan(10);
+    }
+    const api = pageToMarkdown('api');
+    expect(api).toContain('`{launchesPaused, allowedModels, ownAgent}`');
+    for (const name of ['bootr_agent_connect', 'bootr_agent_due', 'bootr_agent_turn', 'bootr_agent_upload_picture', 'bootr_agent_finish', 'bootr own watch', 'BOOTR_PICTURES_DIR', '/api/agent/run/*', '/api/agent/connect/*', '0.2.0']) expect(api, name).toContain(name);
+    // a bare /connect page does not exist: the docs send people to the link their client shows
+    expect(api).not.toMatch(/\/connect(?!\/\*|Start|Token)\b(?!`)/);
+    const agents = pageToMarkdown('agents');
+    expect(agents).toContain('## An agent in your own AI client');
+    expect(agents).toContain('Bootr does not take over');
+    expect(pageToMarkdown('launch')).toContain('`own-agent`');
   });
 });
 
