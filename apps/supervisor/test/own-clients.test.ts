@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { CREDENTIAL_RE, DEVICE_CODE_TTL_S, OWN_ERRORS, USER_CODE_RE, type AgentStatus, type ClientsResponse, type ConnectApproveResponse, type ConnectCoinsResponse, type ConnectGrantView, type ConnectStartResponse, type ConnectTokenResponse, type DraftClientsResponse, type DueView, type OwnErrorBody } from '@bootr/shared/own-agent';
 import { actions, agentClients, agentGrants, agents } from '../src/db/schema.js';
-import { adoptDraftClients, cleanText, hashSecret, newUserCode } from '../src/own/clients.js';
+import { GRANT_MISSES_PER_MINUTE, MAX_PENDING_GRANTS, adoptDraftClients, cleanText, hashSecret, newUserCode } from '../src/own/clients.js';
 import { ownHooks } from '../src/own/registry.js';
 import { AGENT_ID, CREATOR, KERNEL, TOKEN } from './helpers.js';
 import { OTHER_AGENT_ID, OTHER_CREATOR, OTHER_KERNEL, connectClient, credentialHash, newCredential, openSocial, ownWorld, seedOther, seedOwn, turnOf, type OwnWorld } from './own-helpers.js';
@@ -200,6 +200,69 @@ describe('own agent: connecting a client', () => {
       w.setNow(t0 + DAY + 1000);
       await start(w);
       expect(await w.db.select().from(agentGrants)).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('holds the requests waiting for an approval to five hundred over all callers, and frees a place when one is approved or runs out (security review M4)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      const t0 = w.ctx.now();
+      const first = await start(w);
+      // Starting needs no credential: a flood of them from anywhere stops at the cap, whoever sends them.
+      const row = (n: number) => ({ deviceHash: hashSecret(`flood-${n}`), userCode: `flood-${n}`, clientName: 'AI client', status: 'pending' as const, createdAt: new Date(t0), expiresAt: new Date(t0 + (n === 0 ? 120_000 : DEVICE_CODE_TTL_S * 1000)) });
+      await w.db.insert(agentGrants).values(Array.from({ length: MAX_PENDING_GRANTS - 1 }, (_, n) => row(n)));
+      const refused = await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' });
+      expect([refused.status, refused.body.error]).toEqual([429, 'rate_limited']);
+      // It says when the oldest waiting request runs out, which is when a place is free again.
+      expect(refused.body.retryAt).toBe(new Date(t0 + 120_000).toISOString());
+      expect(await w.db.select({ n: agentGrants.userCode }).from(agentGrants)).toHaveLength(MAX_PENDING_GRANTS);
+      // A request that was approved no longer waits: its place is free.
+      expect((await approveCoin(w, first.userCode)).status).toBe(200);
+      const next = await start(w);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' })).body.error).toBe('rate_limited');
+      // So is one that ran out.
+      w.setNow(t0 + 120_000);
+      await start(w);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' })).body.error).toBe('rate_limited');
+      // None of it touched a request that was already waiting.
+      expect((await approveCoin(w, next.userCode)).status).toBe(200);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('stops looking codes up for the rest of the minute once a hundred and twenty lookups found nothing, over all callers (security review M4)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      const t0 = w.ctx.now();
+      const real = await start(w);
+      const letters = 'BCDFGHJKLMNPQRSTVWXZ';
+      const guess = (n: number) => `${letters[n % 20]}${letters[Math.floor(n / 20) % 20]}${letters[Math.floor(n / 400) % 20]}Z-ZZZZ`;
+      const view = (code: string) => w.call<ConnectGrantView & OwnErrorBody>('GET', `/internal/own/connect/grant?code=${code}`);
+      // Guesses, through the page's read and through an approval alike.
+      for (let n = 0; n < GRANT_MISSES_PER_MINUTE; n++) {
+        const miss = n % 2 ? await view(guess(n)) : await approveCoin(w, guess(n));
+        expect([n, miss.body.error]).toEqual([n, 'grant_not_found']);
+      }
+      // Now nothing is looked up, a guess or the real code: a guesser learns nothing more this minute.
+      for (const code of [guess(999), real.userCode]) {
+        const closed = await view(code);
+        expect([closed.status, closed.body.error, closed.body.retryAt]).toEqual([429, 'rate_limited', new Date(t0 + 60_000).toISOString()]);
+      }
+      expect((await approveCoin(w, real.userCode)).body.error).toBe('rate_limited');
+      // A code of another shape was never a lookup, and the client's own poll goes by its device code, not by this.
+      expect((await view('nope')).body.error).toBe('grant_not_found');
+      expect((await token(w, real.deviceCode)).body).toEqual({ status: 'pending' });
+      // The next minute it is open again, and the real request was not harmed.
+      w.setNow(t0 + 60_000);
+      expect((await view(real.userCode)).body.status).toBe('pending');
+      expect((await approveCoin(w, real.userCode)).status).toBe(200);
+      // Lookups that find their request never count.
+      for (let n = 0; n < GRANT_MISSES_PER_MINUTE + 5; n++) expect((await view(real.userCode)).status).toBe(200);
     } finally {
       await w.close();
     }

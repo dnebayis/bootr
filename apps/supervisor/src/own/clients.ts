@@ -51,6 +51,10 @@ type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'config' | 'log'>;
 export const GRANT_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** `last_used_at` is written at most this often, so a busy client does not write a row on every call. */
 export const LAST_USED_WRITE_MS = 60_000;
+/** Requests waiting for an approval at one time, over all callers: beyond it a new one is `rate_limited`. */
+export const MAX_PENDING_GRANTS = 500;
+/** Lookups of a user code that found nothing, a minute, over all callers: beyond it no code is looked up until the minute ends. */
+export const GRANT_MISSES_PER_MINUTE = 120;
 export const DEFAULT_CLIENT_NAME = 'AI client';
 export const COIN_HINT_MAX = 80;
 
@@ -201,6 +205,16 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
   if (input.coin !== undefined && typeof input.coin !== 'string') throw invalid('coin', 'coin must be text.');
   const now = ctx.now();
   await ctx.db.delete(agentGrants).where(lt(agentGrants.createdAt, new Date(now - GRANT_RETENTION_MS)));
+  // Starting a request needs no credential and no signature, so what bounds the table is this count: the requests
+  // still waiting for an approval, over every caller. One lasts ten minutes; the oldest says when a place frees up.
+  const [waiting] = await ctx.db
+    .select({ n: sql<number>`count(*)::int`, soonest: sql<Date | string | null>`min(${agentGrants.expiresAt})` })
+    .from(agentGrants)
+    .where(and(eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))));
+  if (Number(waiting?.n ?? 0) >= MAX_PENDING_GRANTS) {
+    const soonest = waiting?.soonest ? new Date(waiting.soonest).getTime() : NaN;
+    throw new OwnError('rate_limited', { retryAt: Number.isFinite(soonest) ? Math.max(soonest, now + 1000) : now + 60_000 });
+  }
   const clientName = cleanText(input.clientName, CLIENT_LABEL_MAX) || DEFAULT_CLIENT_NAME;
   const coinHint = cleanText(input.coin, COIN_HINT_MAX) || null;
   const bound = await resolveCoin(ctx, coinHint);
@@ -227,10 +241,29 @@ function grantStatus(grant: GrantRow, now: number): ConnectGrantView['status'] {
   return grant.status;
 }
 
+/** The window of user-code lookups that found nothing, per database (one per process; a test world has its own). */
+const grantMisses = new WeakMap<object, { count: number; reset: number }>();
+
+/**
+ * A grant by the code a person reads off their AI client. A code is eight letters of twenty and worth nothing without
+ * a wallet's signature, but whoever guesses the code of somebody's waiting request can approve it for a coin of their
+ * own, and that somebody's client is then connected to the guesser's coin. The per-address limits in front (the web's)
+ * do not bound guessing from many addresses, so the misses are counted here, over every caller:
+ * `GRANT_MISSES_PER_MINUTE` in a minute, and for the rest of that minute no code is looked up at all (`rate_limited`),
+ * a real one included.
+ */
 async function grantByUserCode(ctx: Ctx, userCode: unknown): Promise<GrantRow> {
   if (typeof userCode !== 'string' || !USER_CODE_RE.test(userCode)) throw new OwnError('grant_not_found');
+  const now = ctx.now();
+  let window = grantMisses.get(ctx.db);
+  if (!window || window.reset <= now) grantMisses.set(ctx.db, (window = { count: 0, reset: now + 60_000 }));
+  if (window.count >= GRANT_MISSES_PER_MINUTE) throw new OwnError('rate_limited', { retryAt: window.reset });
   const grant = await ctx.db.query.agentGrants.findFirst({ where: eq(agentGrants.userCode, userCode) });
-  if (!grant) throw new OwnError('grant_not_found');
+  if (!grant) {
+    window.count += 1;
+    if (window.count === GRANT_MISSES_PER_MINUTE) ctx.log.warn({ misses: window.count }, 'own agent: many lookups of connection codes that do not exist; code lookups are refused for the rest of this minute');
+    throw new OwnError('grant_not_found');
+  }
   return grant;
 }
 

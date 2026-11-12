@@ -132,6 +132,33 @@ describe('POST /api/agent/connect/start', () => {
     expect(fake.seen).toHaveLength(5);
   });
 
+  it('counts by the address Cloudflare saw under TRUSTED_PROXY=cloudflare: a caller cannot pick a new key by writing a header (security review M4)', async () => {
+    // As it was: whoever writes X-Real-IP (or reaches the origin around its proxy) is a new visitor every time.
+    for (let i = 0; i < 8; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.0.${i}`, 'cf-connecting-ip': '198.51.100.44' }))).status).toBe(200);
+    vi.stubEnv('TRUSTED_PROXY', 'cloudflare');
+    resetOwnLimits();
+    fake.seen.length = 0;
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.1.${i}`, 'x-forwarded-for': `10.9.2.${i}`, 'cf-connecting-ip': '198.51.100.45' }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.1.99', 'x-forwarded-for': '10.9.2.99', 'cf-connecting-ip': '198.51.100.45' })), 'rate_limited');
+    // Another visitor behind the same Cloudflare address in X-Real-IP is not held up by it,
+    expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.1.0', 'cf-connecting-ip': '198.51.100.46' }))).status).toBe(200);
+    // an IPv6 visitor is one visitor across its /64,
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'cf-connecting-ip': `2001:db8:1:2::${i + 1}` }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'cf-connecting-ip': '2001:db8:1:2:aaaa:bbbb:cccc:dddd' })), 'rate_limited');
+    // and requests that carry no address from Cloudflare share one count, whatever else they claim.
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.3.${i}` }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.3.200', 'x-forwarded-for': '8.8.8.8' })), 'rate_limited');
+    expect(fake.seen).toHaveLength(16);
+  });
+
+  it('relays the agent service’s global cap on waiting requests with when to try again', async () => {
+    const retryAt = new Date(Date.now() + 45_000).toISOString();
+    fake.backend.failNext('rate_limited', { retryAt });
+    const res = await start(post('/api/agent/connect/start', {}));
+    expect((await error(res, 'rate_limited')).retryAt).toBe(retryAt);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
   it('refuses a body that is too large or is not a JSON object', async () => {
     await error(await start(post('/api/agent/connect/start', { clientName: 'x'.repeat(20_000) })), 'payload_too_large');
     await error(await start(post('/api/agent/connect/start', '{')), 'invalid_request');

@@ -168,6 +168,10 @@ services:
       # internal API, signed with the key the supervisor also holds.
       SUPERVISOR_URL: http://supervisor:3004
       SUPERVISOR_SERVICE_KEY: ${SUPERVISOR_SERVICE_KEY}
+      # Whose address the per-address limits count. Empty = X-Real-IP as Traefik sets it. `cloudflare` = the address
+      # Cloudflare saw (CF-Connecting-IP): set it only once the origin firewall admits Cloudflare's ranges alone
+      # (docs/deploy/coolify.md, "Cloudflare in front").
+      TRUSTED_PROXY: ${TRUSTED_PROXY:-}
     volumes:
       # Admin config and launch drafts (docs/deploy/railway.md section 7). The image owns /data as `node`,
       # and a named volume inherits that ownership on first use.
