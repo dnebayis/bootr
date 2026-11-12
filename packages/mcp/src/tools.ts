@@ -28,7 +28,11 @@ export type ToolAnnotations = {
   idempotentHint: boolean;
   openWorldHint: boolean;
 };
-export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+/** A text block, or a picture (the agent tools return one for a bounty entry). */
+export type ToolContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
+export type ToolResult = { content: ToolContent[]; isError?: boolean };
+/** What the server knows about the caller: the name the MCP client gave itself. */
+export type ToolContext = { clientName?: string };
 
 export interface BootrTool {
   name: string;
@@ -36,7 +40,7 @@ export interface BootrTool {
   description: string;
   inputSchema: JsonSchema;
   annotations: ToolAnnotations;
-  run(bootr: Bootr, args: Record<string, unknown>): Promise<ToolResult>;
+  run(bootr: Bootr, args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult>;
 }
 
 export const DATA_NOTICE =

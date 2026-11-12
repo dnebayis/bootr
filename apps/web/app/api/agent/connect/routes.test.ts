@@ -114,7 +114,7 @@ describe('POST /api/agent/connect/start', () => {
   });
 
   it('keeps a client’s name to one clean line', async () => {
-    await started({ clientName: `  Cursor‮\n​IDE ${'x'.repeat(80)}`, coin: 5 });
+    await started({ clientName: `  Cursor\u202e\n\u200bIDE ${'x'.repeat(80)}`, coin: 5 });
     const sent = fake.seen[0]!.body as { clientName: string; coin?: string };
     expect(sent.clientName.startsWith('Cursor IDE x')).toBe(true);
     expect(sent.clientName).toHaveLength(40);

@@ -1,6 +1,6 @@
 {
   "name": "@bootrfun/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed client for Bootr's public API: read coins and agents, prepare launches and fee claims as unsigned transactions. Holds no key and sends nothing.",
   "license": "MIT",
   "keywords": [
