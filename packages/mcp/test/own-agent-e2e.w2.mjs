@@ -8,7 +8,7 @@
  * the supervisor behind them, with the seeded own-agent coin of `apps/supervisor/scripts/seed-own-agent.ts`:
  *
  *   1. paid services with no fuel: a social turn the creator asked for calls `bootr_agent_x402_fetch` and is refused
- *      with `services_insufficient_fuel`, with nothing signed (the service-call row holds no payment);
+ *      with `services_insufficient_fuel` before any request (no service-call row is started, so nothing is signed);
  *   2. a treasury turn: `due` says why, the turn holds no X tool and its observation no mention, it reads the treasury
  *      and prepares one operation (USDC to the agent's own spender; nothing is executed);
  *   3. a creator request filed the way the hosted chat files it is shown to that turn and closed by
@@ -26,9 +26,8 @@
  *     open for at least an hour, and planting a reply on the stub X is the stub's own interface. So the sweep's reading
  *     of replies is not exercised here (test/own-w2-judge.test.ts in the supervisor does that against a fake sender).
  *
- * Step 1 needs a public https endpoint that answers 402 with x402 `exact` USDC on Base, because `x402_fetch` refuses
- * private hosts by design: `env.x402Url` or E2E_X402_URL names one, else the catalogue is asked through
- * `bootr_agent_discover_services`; with neither the step is skipped and says so.
+ * Step 1 contacts nobody: an own coin with no fuel is refused before the host is looked up, so the address is only a
+ * name (`env.x402Url` or E2E_X402_URL, else a reserved example name).
  *
  * Only a local database and a local anvil fork are ever written to; the script refuses anything else.
  *
@@ -140,6 +139,22 @@ export async function run(env = {}) {
   };
   const act = async (tool, turnId, input = {}) => (await must(tool, { turnId, ...input })).json;
   const finish = (turnId, summary) => must('finish', { turnId, memory: 'e2e: nothing to keep', agenda: 'e2e: nothing planned', summary, nextAt: new Date(Date.now() + 3_600_000).toISOString() });
+  /**
+   * What is due. The site answers `due` once per 20 seconds per credential (section 3.3) and the first part has just
+   * asked, so a `rate_limited` answer is waited out until the time it names; any other refusal fails the part.
+   */
+  const dueNow = async () => {
+    for (let i = 0; i < 4; i++) {
+      const r = await call('due');
+      if (r.error !== 'rate_limited') {
+        assert.equal(r.error, null, `bootr_agent_due was refused: ${r.text}`);
+        return r.json;
+      }
+      const at = Date.parse(/retryAt: ([^)\s]+)/.exec(r.text)?.[1] ?? '');
+      await sleep(Math.min(30_000, Math.max(1_000, (Number.isFinite(at) ? at - Date.now() : 20_000) + 500)));
+    }
+    throw new Error('bootr_agent_due stayed rate_limited');
+  };
 
   let original = null;
   try {
@@ -161,7 +176,7 @@ export async function run(env = {}) {
       const shown = await call('connect', { coin: seed.symbol });
       const userCode = USER_CODE.exec(shown.text)?.[0];
       assert.ok(userCode, `bootr_agent_connect showed no code: ${shown.text.slice(0, 200)}`);
-      const { nonce } = await (await fetch(`${site}/api/siwe/nonce`, { method: 'POST' })).json();
+      const { nonce } = await (await fetch(`${site}/api/agent/nonce`, { method: 'POST' })).json();
       const statement = `Let an AI client run the agent of Bootr coin $${seed.symbol} (#${seed.agentId}, ${seed.kernel}). Code ${userCode}.`;
       const message = [`${new URL(site).host} wants you to sign in with your Ethereum account:`, creator.address, '', statement, '', `URI: ${site}`, 'Version: 1', 'Chain ID: 8453', `Nonce: ${nonce}`, `Issued At: ${new Date().toISOString()}`].join('\n');
       const approved = await fetch(`${site}/api/agent/connect/approve`, { method: 'POST', headers: { 'content-type': 'application/json', origin: site }, body: JSON.stringify({ userCode, message, signature: await creator.signMessage({ message }), label: 'e2e w2' }) });
@@ -175,29 +190,26 @@ export async function run(env = {}) {
     assert.equal(status.powers?.services, true, 'the Paid services power did not reach the status');
 
     // A turn left open by an earlier part would answer `turn_open`: say so plainly instead of failing later.
-    const before = (await must('due')).json;
+    const before = (await dueNow());
     assert.equal(before.openTurn ?? null, null, `a turn is still open (${before.openTurn?.role}): finish it before this part runs`);
 
     // ---------------- 1. paid services with no fuel ----------------
     const social = (await must('turn', { role: 'social', reason: 'creator_asked' })).json;
     for (const tool of MONEY_TOOLS) assert.ok(!social.tools.includes(`bootr_agent_${tool}`), `a social turn holds ${tool} while the treasury turn is on`);
     assert.ok(social.tools.includes('bootr_agent_x402_fetch'), 'the social turn does not hold x402_fetch although the power is on');
-    let paidUrl = x402Url ?? null;
-    if (!paidUrl) {
-      const found = await call('discover_services', { turnId: social.turnId, query: 'price' });
-      const listing = (found.json.result?.services ?? []).find((s) => s.allowed && String(s.url).startsWith('https://'));
-      paidUrl = listing?.url ?? null;
-    }
-    if (paidUrl) {
-      const refused = await act('x402_fetch', social.turnId, { url: paidUrl, reason: 'e2e: a paid call with no fuel must be refused' });
-      assert.equal(refused.status, 'failed', `a paid call with no fuel was not refused: ${JSON.stringify(refused).slice(0, 300)}`);
-      assert.equal(refused.error, NO_FUEL);
-      const row = await one('select status, payment, quote_micro_usdc, error from sv_service_calls where agent_id = $1 order by created_at desc limit 1', [agent.agent_id]);
-      assert.equal(row?.status, 'failed');
-      assert.equal(row?.payment, null, 'a payment was signed although the spender is empty');
-      assert.equal(row?.error, NO_FUEL);
-      ok('x402_fetch refused with no fuel, nothing signed', new URL(paidUrl).host);
-    } else skip('x402_fetch refused with no fuel', 'no public x402 endpoint: set E2E_X402_URL (the tool refuses private hosts by design)');
+    // An own coin with too little fuel sends nothing at all (section 7.1): not the unpaid request that asks for the
+    // price, not the host lookup, and no service-call row is started. So any public https address will do here, and
+    // none is ever contacted; the default is a reserved example name.
+    const paidUrl = x402Url ?? 'https://paid.example.com/price';
+    const callsBefore = (await one('select count(*)::int as n from sv_service_calls where agent_id = $1', [agent.agent_id])).n;
+    const refused = await act('x402_fetch', social.turnId, { url: paidUrl, reason: 'e2e: a paid call with no fuel must be refused' });
+    assert.equal(refused.status, 'failed', `a paid call with no fuel was not refused: ${JSON.stringify(refused).slice(0, 300)}`);
+    assert.equal(refused.error, NO_FUEL);
+    const callsAfter = (await one('select count(*)::int as n from sv_service_calls where agent_id = $1', [agent.agent_id])).n;
+    assert.equal(callsAfter, callsBefore, 'a service call was started although the spender is empty: the refusal must come before any request');
+    const refusal = await one("select status, result->>'error' as error from sv_actions where action_id = $1", [refused.actionId]);
+    assert.deepEqual(refusal, { status: 'failed', error: NO_FUEL }, 'the refusal is on the record as a failed action');
+    ok('x402_fetch refused with no fuel, before any request and with nothing signed', new URL(paidUrl).host);
     await finish(social.turnId, 'e2e: paid services checked');
 
     // ---------------- 2 and 3. the treasury turn, with a request of the creator's ----------------
@@ -211,7 +223,7 @@ export async function run(env = {}) {
     await anvil.waitForTransactionReceipt({ hash: funded });
     await anvil.stopImpersonatingAccount({ address: USDC_WHALE });
 
-    const due = (await must('due')).json;
+    const due = (await dueNow());
     assert.equal(due.treasury.on, true, 'the treasury turn is off although the Bounties power is on');
     assert.equal(due.treasury.due, true, `the treasury turn is not due: ${JSON.stringify(due.treasury)}`);
     assert.ok(due.treasury.reasons.includes('treasury_interval'));
@@ -261,7 +273,7 @@ export async function run(env = {}) {
     const jobId = posted.result.jobId;
     assert.match(jobId, /^0x[0-9a-f]{64}$/);
     await finish(treasury.turnId, 'e2e: one operation prepared, one request answered, one job posted');
-    assert.equal((await must('due')).json.treasury.due, false, 'the treasury turn is due again right after its finish');
+    assert.equal((await dueNow()).treasury.due, false, 'the treasury turn is due again right after its finish');
     ok('bounty job posted from the treasury turn', `${jobId.slice(0, 18)} ${posted.result.status}`);
 
     // The window closes and one page entry is collected: written here as the sweep leaves it for an own coin.
@@ -276,7 +288,7 @@ export async function run(env = {}) {
     );
     await db.query('commit');
 
-    const waiting = (await must('due')).json;
+    const waiting = (await dueNow());
     assert.equal(waiting.judge.due, true, `no job waits for a ruling: ${JSON.stringify(waiting.judge)}`);
     assert.ok(waiting.judge.jobs.some((j) => j.jobId === jobId && j.entries === 1));
     const judge = (await must('turn', { role: 'judge', jobId })).json;
@@ -306,7 +318,7 @@ export async function run(env = {}) {
     assert.equal(approval.meta.payee, PAYEE);
     // One ruling per job: the turn is over, and no second turn opens for it.
     assert.ok(['turn_closed', 'turn_not_found'].includes((await call('judge', { turnId: judge.turnId, winner: null, perCriterion: { 1: ['fail', 'fail'] }, reason: 'changed my mind' })).error));
-    assert.equal((await must('due')).json.judge.due, false);
+    assert.equal((await dueNow()).judge.due, false);
     assert.equal((await one('select payee from sv_bounty_jobs where id = $1', [jobId])).payee, PAYEE);
     ok('bounty job ruled by the client and proposed to the creator', `${jobId.slice(0, 18)} entry 1`);
 
