@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
   ...(process.env.NEXT_OUTPUT === 'standalone' ? { output: 'standalone' as const } : {}),
   // No `x-powered-by: Next.js` on responses: nothing in the stack should advertise its framework.
   poweredByHeader: false,
+  // The build type-checks the app only: tests may import the indexer or the SDK sources, whose dependencies the web
+  // image does not install (`pnpm install --filter "web..."`). `pnpm typecheck` still checks them with tsconfig.json.
+  typescript: { tsconfigPath: 'tsconfig.build.json' },
   cacheComponents: true,
   partialPrefetching: true,
   transpilePackages: ['@bootr/shared'],
