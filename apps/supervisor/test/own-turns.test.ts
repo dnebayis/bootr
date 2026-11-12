@@ -512,6 +512,37 @@ describe('own agent: nothing is done twice', () => {
     }
   });
 
+  it('...and the same holds when the tick settled it from the receipt before the client came back', async () => {
+    const { w, credential } = await setup();
+    try {
+      const turn = await openSocial(w, credential);
+      const runtime = await runtimeOf(w);
+      const action = parseAction({ tool: 'publish_post', input: { text: 'Good morning from the test coin, sent just before the crash.' } });
+      const pending: PendingAction = markSent(beginAction({ runtimeId: AGENT_ID, cycle: runtime.cycle, pending: null }, action, runtime.cycle, w.ctx.now()));
+      const stored = (await turnOf(w))!;
+      await w.db.insert(actions).values({ actionId: pending.id, agentId: AGENT_ID, cycleKey: pending.cycleKey, action: { ...action, via: 'own' }, status: 'sending', createdAt: new Date(w.ctx.now()), updatedAt: new Date(w.ctx.now()) });
+      await w.db.update(runtimes).set({ pending: pending as unknown as Record<string, unknown>, turn: { ...stored, steps: 1 } as unknown as Record<string, unknown> }).where(eq(runtimes.agentId, AGENT_ID));
+      w.sender.receipts[pending.id] = { status: 'sent', providerPostId: '9300' };
+      // A tick passes first: it reconciles the action and leaves it settled on the row, the turn still open.
+      w.setNow(w.ctx.now() + MIN);
+      await tick(w.ctx);
+      expect((await runtimeOf(w)).pending).toMatchObject({ status: 'completed', id: pending.id });
+      expect((await turnOf(w))?.own?.turnId).toBe(turn.turnId);
+
+      const retried = await act(w, credential, turn.turnId, 'publish_post', action.input as Record<string, unknown>);
+      expect(retried.body).toMatchObject({ status: 'completed', actionId: pending.id, stepsUsed: 1 });
+      expect((retried.body.result as { postId?: string }).postId).toBe('9300');
+      expect(w.sender.published).toHaveLength(0);
+      expect(await actionRows(w, 'publish_post')).toHaveLength(1);
+      // A different call after it is a new step of its own, and the slot is spent.
+      const second = await act(w, credential, turn.turnId, 'publish_post', { text: 'A second original post in the same slot.' });
+      expect(second.body.error).toMatch(/^post_slot_not_due: /);
+      expect(w.sender.published).toHaveLength(0);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a held publish ends the turn, blocks the next one, and is settled by the tick from its receipt', async () => {
     const { w, credential } = await setup();
     try {

@@ -824,8 +824,9 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
     }
 
     // The action this very call made earlier, when its answer never reached the client or the process died after it
-    // was sent: once its receipt settles it, it is answered from its row and never run again.
-    const before = s.broker.pending && (s.broker.pending.status === 'sent' || s.broker.pending.status === 'held') ? s.broker.pending : null;
+    // was sent: once its receipt settles it (here, or by the tick in the meantime, which leaves it settled but still on
+    // the row), it is answered from its row and never run again.
+    const before = s.broker.pending;
     const sameAsBefore = before !== null && actionIdOf(before.cycleKey, action) === before.id;
     const resumable = await leftoverInTurn(s);
     if (before && !resumable && sameAsBefore) {
