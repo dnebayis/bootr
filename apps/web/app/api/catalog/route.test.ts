@@ -194,7 +194,10 @@ describe('matches the routes', () => {
     const src = readFileSync(path.join(REPO, 'packages/sdk/src/routes.ts'), 'utf8');
     const routes = [...src.matchAll(/method: '(GET|POST)', path: '([^']+)'/g)].map((m) => `${m[1]} ${m[2]}`);
     expect(routes.length).toBeGreaterThan(10);
+    // The SDK's own-agent routes are in the catalog only while own agents are switched on (lib/server/catalog-own.ts).
+    vi.stubEnv('OWN_AGENT_ENABLED', 'true');
     const listed = catalog().endpoints.map((e) => `${e.method} ${e.url.replace(e.service === 'web' ? SITE : INDEXER, '')}`);
+    vi.unstubAllEnvs();
     for (const r of routes) expect(listed, r).toContain(r);
   });
 
