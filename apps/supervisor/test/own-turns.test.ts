@@ -9,6 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import { beginAction, markSent, parseAction, type PendingAction } from '@bootr/agent-core';
 import { OWN_ERRORS, type ActResult, type DueView, type OwnErrorBody, type TurnOpen } from '@bootr/shared/own-agent';
 import { utcMinuteLabel } from '@bootr/shared/own-presence';
+import { statusItem } from '../src/activity.js';
 import { IMAGE_NOT_FROM_THIS_TURN, ownGuard, postSlotNotDue, readUrlDailyCap, searchDailyCap } from '../src/broker/index.js';
 import { fileRequest } from '../src/creator-requests.js';
 import { actions, approvals, images, memories, notifications, runtimes } from '../src/db/schema.js';
@@ -932,6 +933,26 @@ describe('own agent: the public record', () => {
       expect((await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true })).status).toBe(200);
       expect(await status()).toBe(`Waiting for its creator’s AI client: none is connected · away since ${at}`);
       for (const word of [/awake/i, /sleep/i, /fuel/i]) expect(await status()).not.toMatch(word);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('what comes before the client is said first: setup, a missing X account, a pause', async () => {
+    const w = await ownWorld();
+    try {
+      const agent = await seedOwn(w, { agent: { status: 'onboarding' } });
+      const runtime = await runtimeOf(w);
+      const own = { clients: 0, now: w.ctx.now() };
+      // Still being set up: no word of the limited key that is being installed, and no "sleeping".
+      expect(statusItem(agent, runtime, own).summary).toBe('Being set up');
+      expect(statusItem({ ...agent, config: { ...(agent.config as object), xHandle: null } }, runtime, own).summary).toBe('Waiting for an X account');
+      // Paused or held, an own coin says what a coin Bootr runs says: the client is not what it waits for.
+      expect(statusItem({ ...agent, status: 'active' }, { ...runtime!, status: 'paused', pausedBy: 'guardian' }, own).summary).toBe('Paused by creator');
+      expect(statusItem({ ...agent, status: 'active' }, { ...runtime!, status: 'held' }, own).summary).toBe('Waiting on a held action');
+      expect(statusItem({ ...agent, status: 'revoked' }, runtime, own).summary).toBe('Revoked');
+      // The same rows without `own` are the hosted ones, word for word.
+      expect(statusItem(agent, runtime).summary).toBe('Onboarding: installing the session key');
     } finally {
       await w.close();
     }
