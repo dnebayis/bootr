@@ -16,13 +16,14 @@ copy it here.
 
 **Chain (Base mainnet, 8453).** Two launch paths behind `BootrLaunchGate` `0x7ddaf2A1FC0861B288c7b0BDfA8314621C47c3a5`:
 `BootrLauncher` v3.1 `0x62c038dA8A409ad1CD811df980A6F9867cd453fd` (RWAGMI v3, ~$6k opening cap) and
-`BootrClankerLauncher` `0x387f1B0aC128D534E822c344D829645336BDAbbB` (Clanker v4), both deployed 2026-11-04 at block
-53503025; `AgentGuardian` `0x799Ab875294E37839883D12084aB4BE3f7633630`, `BootrCallPolicy`
+`BootrClankerLauncherV5` `0xA70D4fCbcD7979609E0e66E7b581bE2711A8FE69` (Clanker v5 with creator token settings,
+since 2026-11-11, block 56190112); the v4 `BootrClankerLauncher` `0x387f1B0aC128D534E822c344D829645336BDAbbB` is paused
+since 2026-11-12 and its coins keep trading and claiming; `AgentGuardian` `0x799Ab875294E37839883D12084aB4BE3f7633630`, `BootrCallPolicy`
 `0x8586BdE0339b85bb9c0f0612954CCdF7fDCF9cE8`, `BootrSwapHelper` `0x5723152f21ed7E305312fd90a2Bb94864BA9D80d`. $BOOTR
 launched through the Clanker path on 2026-11-04 (agent 1153600, `@AgentBootr`). The RWAGMI v2 and v3 launchers are
 paused and still followed by the indexer. Source of truth: `packages/shared/src/addresses.ts`.
 
-**Indexer.** Schema `bootr_v8` (a fixed name, since 2026-11-08; the next is `bootr_v9`). One snapshot per 60 s of chain
+**Indexer.** Schema `bootr_v9` (since 2026-11-11; the next is `bootr_v10`). One snapshot per 60 s of chain
 time on both sides of the Denim fork (30 blocks before, 300 after). Block reads go to
 `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org`, `eth_getLogs` to the CDP key under `INDEXER_RPC_BU_PER_SEC` (1300):
 about 500 BU/s on the key, half of before. `/sql/*` is gone.
@@ -58,9 +59,9 @@ limits on the draft and nonce routes. Private key inventory and removal plan:
 coming Trade and Payouts contracts are upgradeable (UUPS proxy and feature modules), no timelock, the admin wallet is
 the upgrade key ([`design/agent-capabilities.md`](./design/agent-capabilities.md) section 4).
 
-**Environment that matters** (Coolify → `bootr-stack` → Environment Variables): `DATABASE_SCHEMA=bootr_v8`,
-`BOOTR_LAUNCHERS` and `BOOTR_CLANKER_LAUNCHERS` (every launcher ever used), `BOOTR_LAUNCHER_ADDRESS` and
-`BOOTR_CLANKER_LAUNCHER_ADDRESS`, `INDEXER_BLOCKS_RPC_URL`, `BLOCKRUN_DIRECT_MODE=all`, `BLOCKRUN_IMAGE_ROUTE` unset,
+**Environment that matters** (Coolify → `bootr-stack` → Environment Variables): `DATABASE_SCHEMA=bootr_v9`,
+`BOOTR_LAUNCHERS` and `BOOTR_CLANKER_LAUNCHERS` (every launcher ever used), `BOOTR_LAUNCHER_ADDRESS`,
+`BOOTR_CLANKER_LAUNCHER_ADDRESS`, `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`, `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS`, `INDEXER_BLOCKS_RPC_URL`, `BLOCKRUN_DIRECT_MODE=all`, `BLOCKRUN_IMAGE_ROUTE` unset,
 `OPENROUTER_API_KEY` funded, `PLATFORM_WATCHLIST` (default `bootrfun,base,jessepollak,clanker_world`),
 `ENABLE_MODE_SELF_BUNDLE=true`, `PAYMASTER_URL` empty. `IMAGE_TAG` empty means `:main`.
 
@@ -201,43 +202,26 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 7. **Ledger page** (web, two days; can run beside 5 or 6).
 8. **Kind presets v2** (one day): Community, Researcher, Trader, Patron (Bounties), Custom; Researcher v2 and the Paid
    services box on Custom can ship earlier.
-9. **Clanker v5 migration + the indexer claim cross-booking fix** (built 2026-11-10 on a branch, not deployed;
-   [`design/clanker-v5-migration.md`](./design/clanker-v5-migration.md)). Built: the design note (v5 from the verified
-   sources, the slot arithmetic, the runbook in section 8); the contracts (`BootrClankerLauncherV5`, its interfaces,
-   `script/DeployClankerLauncherV5.s.sol`, unit tests and the Base fork suite `test/fork/ClankerV5Fork.t.sol`, 17
-   passing on 2026-11-10 including the sell-side split) and the `clankerV5` block of `packages/shared/src/addresses.ts`;
-   the indexer (`source: 'clanker-v5'`: the v5 wrapper on the same `BOOTR_CLANKER_LAUNCHERS` list, the hook's per-swap
-   tax credits and the escrow's claims in the existing fee tables, `/treasury/:kernel` reading `FeeEscrow.owed`) and
-   the claim cross-booking fix (a claim is split only over the claiming locker's own path; `claimParts`, tested).
-   Also built the same day: the supervisor (`clanker-v5` source, `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS`, rule layout 5
-   with one `FeeEscrow.claimFor(kernel, *)` claim rule for v5 agents only, today's agents byte-identical at layout 4,
-   the v5 treasury read and claim, no `fund_gas` for v5, the tax in `coin-fees.ts`) and the web of design section 7
-   (one switch, `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS` read by `lib/contracts.ts` `clankerPath`: empty keeps the
-   Clanker card on v4 exactly as today; set, new Clanker launches go through v5 with a mined `cccc` salt in the form
-   and in `/api/agent/launch`; claims through the FeeEscrow in ETH; the native-ETH swap with a 20 s anti-snipe wait;
-   copy for both versions). Not yet tested on a fork: the web's native-ETH swap calldata (no v5 Bootr coin exists).
-   **Token settings, built 2026-11-11** ([`design/clanker-v5-token-settings.md`](./design/clanker-v5-token-settings.md),
-   the owner's answers in its section 6): the launcher takes `launch(LaunchParams, TokenSettings)` with the creator's
-   buy and sell tax (1 to 5%, default 1.5%), burn, holder dividends, up to four extra reward rows with their own admins,
-   the sniper switch and editable metadata (creator wallet only, image and metadata, lockable; name and symbol fixed);
-   the agent (5%) and platform (30%) slots are locked with the launcher as admin; agent coins pair with ETH or USDC from
-   an owner allow-list kept per launch kind (a future plain-token kind is reserved). Base fork suite 24/24 against the
-   live factory, including both splits to the wei and a USDC claim by the kernel. The indexer prices USDC pools and
-   indexes the settings, slots, dividends and metadata edits; the supervisor claims a USDC agent's fees as fuel (gas
-   from the creator only); the web has the Clanker-style form, `/api/quote-market` from clanker.world (server side,
-   cached, with a fallback), USDC trading including ETH buys through USDC, claims per paired asset and the creator's
-   image/metadata editor. Not fork-tested: the web's swap calldata (no v5 Bootr coin exists yet).
-   Remains, in order: the deploy, `acceptOwnership` and `gate.addLauncher(v5)` from the admin wallet (design section 8
-   of the token settings note), then one release with `DATABASE_SCHEMA=bootr_v9` (backup first),
-   `BOOTR_CLANKER_LAUNCHERS` with the new launcher and its deploy block appended, `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` and
-   `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS` (the web one rebuilds the web image), then `pause()` on the v4 launcher, a
-   Bootr-owned test coin and a fork run of a buy and a sell through the web's calldata.
+9. **Clanker v5 migration + the indexer claim cross-booking fix** (live 2026-11-11/12;
+   [`design/clanker-v5-migration.md`](./design/clanker-v5-migration.md),
+   [`design/clanker-v5-token-settings.md`](./design/clanker-v5-token-settings.md)). `BootrClankerLauncherV5`
+   `0xA70D4fCbcD7979609E0e66E7b581bE2711A8FE69` deployed at block 56190112, owner accepted, on the gate, Sourcify exact
+   match, security-reviewed (token settings note 8.1). Released at `7d82ff3` with `DATABASE_SCHEMA=bootr_v9` (backup
+   first; backfill done 2026-11-11 22:16 UTC), the launcher appended to `BOOTR_CLANKER_LAUNCHERS`,
+   `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` and `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS`. The v4 `BootrClankerLauncher` was
+   paused 2026-11-12 (block 56350801); `pause()` gates `launch()` only, so v4 coins keep trading and their fees stay
+   claimable. Remains: a Bootr-owned v5 test coin and a fork run of a buy and a sell through the web's calldata on it.
 10. **Clanker on Robinhood Chain** (research only, nothing built; design note section 11): Clanker v5 is live there
    (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
    supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
    launchpad can close there but the agent economy needs a bridge step. The staged plan and sizes are in section 11.
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
+
+- Indexer reads every Uniswap v4 swap on Base (noted 2026-11-11): the `PoolManager` source has no filter, because Ponder
+  cannot filter by pool ids unknown before each launch, so a full re-read (the `bootr_v9` backfill took ~40 min) walks
+  all of Base's v4 swaps. Fix: listen to the RWAGMI, Clanker v4 and Clanker v5 hooks instead, after checking that price
+  and volume come out the same as from `Swap`; ships as `bootr_v10` with the next indexer change.
 
 - Roadmap page: where it lives and how open it is (the direction of 2026-11-08 says agents trade, run their treasury
   and use x402 services, and later a bring-your-own agent).
