@@ -20,7 +20,7 @@ import type { SupervisorContext } from '../context.js';
 import { agents } from '../db/schema.js';
 import type { AuthEnv } from '../hmac.js';
 import { rpcErrorText } from '../log.js';
-import { OwnError, adoptDraftClients, approveGrant, coinsOf, countClients, disconnectClient, draftClients, grantView, listClients, ownErrorResponse, redeemGrant, revokeClients, startGrant, verifyCredential } from './clients.js';
+import { OwnError, adoptDraftClients, approveGrant, coinsOf, countClients, disconnectClient, draftClients, findClient, grantView, listClients, ownErrorResponse, redeemGrant, revokeClients, startGrant, verifyCredential } from './clients.js';
 import { applyRunnerQuota } from './quota.js';
 import { ownEnabled, registerOwnRole, setOwnHooks } from './registry.js';
 import { ownSocialRole } from './social.js';
@@ -138,7 +138,7 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     '/internal/own/drafts/:draftId/clients',
     answer(async (c) => {
       flagOn();
-      return draftClients(ctx, c.req.param('draftId'));
+      return draftClients(ctx, c.req.param('draftId'), c.req.query('creator'));
     }),
   );
 
@@ -150,6 +150,14 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
       flagOn();
       const op = c.req.param('op') as RunOp | typeof VERIFY_OP;
       if (op !== VERIFY_OP && !(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
+      if (op === 'disconnect') {
+        // The one call a client connected for a launch that has not happened yet can make: it gives its credential up.
+        const found = await findClient(ctx, credentialHashOf(c));
+        if ((await bodyOf(c)).credentialHash !== found.client.tokenHash) throw new OwnError('unauthorized');
+        await disconnectClient(ctx, found.client);
+        if (found.agent) await closeTurnOfClients(ctx, found.agent, [found.client.id]);
+        return { ok: true as const };
+      }
       const verified = await verifyCredential(ctx, credentialHashOf(c));
       if (op === VERIFY_OP) {
         // What the web asks before it reads an upload's megabytes: the answers every run call gives before its own checks.
@@ -172,10 +180,6 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
           return finishTurn(ctx, verified, request);
         case 'upload':
           return uploadPicture(ctx, verified, request);
-        case 'disconnect':
-          await disconnectClient(ctx, verified.client);
-          await closeTurnOfClients(ctx, verified.agent, [verified.client.id]);
-          return { ok: true as const };
       }
     }),
   );

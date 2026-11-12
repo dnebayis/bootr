@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useConnection } from 'wagmi';
 import { CLIENT_LABEL_MAX, type DraftClientsResponse } from '@bootr/shared/own-agent';
 import { aiClient, ASK_TO_CONNECT, PICTURES_NOTE, type AiClientId } from '@/lib/keep-running';
 import { CheckIcon } from '@/components/ui/Icons';
@@ -37,9 +38,12 @@ export function forgetLaunchDraft(): void {
  * The AI clients approved for a launch draft (`GET /api/agent/connect/draft`). Anything but a readable answer counts
  * as "none yet": the step keeps waiting and the launch is never blocked by this read.
  */
-export async function fetchDraftClients(draftId: string): Promise<DraftClientsResponse> {
+export async function fetchDraftClients(draftId: string, creator?: string | null): Promise<DraftClientsResponse> {
   try {
-    const res = await fetch(`/api/agent/connect/draft?draft=${encodeURIComponent(draftId)}`, { cache: 'no-store' });
+    // With the wallet the launch will be sent from, only the clients that wallet approved count: one approved by
+    // another wallet never becomes a client of the coin, so it must not make this step say "connected".
+    const wallet = creator && /^0x[0-9a-fA-F]{40}$/.test(creator) ? `&creator=${creator}` : '';
+    const res = await fetch(`/api/agent/connect/draft?draft=${encodeURIComponent(draftId)}${wallet}`, { cache: 'no-store' });
     if (!res.ok) return NOT_CONNECTED;
     const json = (await res.json()) as Partial<DraftClientsResponse>;
     const clients = (Array.isArray(json.clients) ? json.clients : [])
@@ -52,10 +56,10 @@ export async function fetchDraftClients(draftId: string): Promise<DraftClientsRe
 }
 
 /** The clients connected to this launch draft, polled while the step is open. */
-export function useDraftClients(draftId: string | null, enabled = true) {
+export function useDraftClients(draftId: string | null, creator: string | null = null, enabled = true) {
   return useQuery({
-    queryKey: ['own-agent', 'draft-clients', draftId],
-    queryFn: () => fetchDraftClients(draftId!),
+    queryKey: ['own-agent', 'draft-clients', draftId, creator?.toLowerCase() ?? null],
+    queryFn: () => fetchDraftClients(draftId!, creator),
     enabled: enabled && !!draftId,
     refetchInterval: (query) => (query.state.data?.connected ? CONNECTED_POLL_MS : WAITING_POLL_MS),
     staleTime: 0,
@@ -135,7 +139,9 @@ export function ConnectClientStep({
   onClients: (labels: string[]) => void;
 }) {
   const [client, setClient] = useState<AiClientId>('claude-code');
-  const clients = useDraftClients(draftId);
+  // The wallet that is connected is the one the launch is sent from: its own clients are the ones that will run the coin.
+  const { address } = useConnection();
+  const clients = useDraftClients(draftId, address ?? null);
   const labels = clients.data?.connected ? clients.data.clients.map((c) => c.label) : [];
   const connected = labels.length > 0;
   const key = labels.join('\n');

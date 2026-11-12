@@ -364,8 +364,12 @@ export class FakeOwnBackend {
     return { coins: String(creator).toLowerCase() === this.creator.toLowerCase() ? [...this.coins] : [] };
   }
 
-  draftClients(draftId) {
-    const clients = [...this.clients.values()].filter((c) => c.draftId === draftId && !c.revokedAt).map((c) => ({ clientId: c.clientId, label: c.label, createdAt: iso(c.createdAt) }));
+  /** With `creator`, only the clients that wallet approved (the wallet the launch will be sent from). */
+  draftClients(draftId, creator = null) {
+    const wallet = creator ? String(creator).toLowerCase() : null;
+    const clients = [...this.clients.values()]
+      .filter((c) => c.draftId === draftId && !c.agentId && !c.revokedAt && (!wallet || String(c.creator).toLowerCase() === wallet))
+      .map((c) => ({ clientId: c.clientId, label: c.label, createdAt: iso(c.createdAt) }));
     return { connected: clients.length > 0, clients };
   }
 
@@ -416,7 +420,8 @@ export class FakeOwnBackend {
     if (!client) throw new OwnError('unauthorized');
     if (client.revokedAt) throw new OwnError('credential_revoked');
     if (client.expiresAt <= this.now()) throw new OwnError('credential_expired');
-    if (!client.agentId) throw new OwnError('coin_not_launched');
+    // A client connected for a launch that has not happened yet can do one thing: give its credential up.
+    if (!client.agentId && op !== 'disconnect') throw new OwnError('coin_not_launched');
     if (this.runner === 'hosted' && op !== 'status' && op !== 'disconnect') throw new OwnError('agent_runs_hosted');
     client.lastUsedAt = this.now();
     return client;
@@ -689,7 +694,7 @@ export async function startFakeSupervisor({ key, port = 0, backend = new FakeOwn
     if (req.method === 'POST' && p === '/internal/own/connect/approve') return answer(res, () => (backend.takeScripted(), backend.connectApprove(body)));
     if (req.method === 'POST' && p === '/internal/own/connect/token') return answer(res, () => (backend.takeScripted(), backend.connectToken(body)));
     if (req.method === 'GET' && p === '/internal/own/connect/coins') return answer(res, () => (backend.takeScripted(), backend.connectCoins(url.searchParams.get('creator') ?? '')));
-    if (req.method === 'GET' && (m = /^\/internal\/own\/drafts\/([^/]+)\/clients$/.exec(p))) return answer(res, () => (backend.takeScripted(), backend.draftClients(decodeURIComponent(m[1]))));
+    if (req.method === 'GET' && (m = /^\/internal\/own\/drafts\/([^/]+)\/clients$/.exec(p))) return answer(res, () => (backend.takeScripted(), backend.draftClients(decodeURIComponent(m[1]), url.searchParams.get('creator'))));
     if (req.method === 'POST' && (m = /^\/internal\/own\/run\/(\w+)$/.exec(p))) return answer(res, () => backend.run(m[1], body));
     if (req.method === 'GET' && (m = /^\/internal\/agents\/([^/]+)\/clients$/.exec(p))) return answer(res, () => (backend.takeScripted(), backend.clientsOf(decodeURIComponent(m[1]))));
     if (req.method === 'POST' && (m = /^\/internal\/agents\/([^/]+)\/clients\/revoke$/.exec(p))) return answer(res, () => (backend.takeScripted(), backend.revokeClients(decodeURIComponent(m[1]), body)));

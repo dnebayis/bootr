@@ -122,10 +122,11 @@ export function ownAgentEndpointList(site: string, chainId: number): OwnCatalogE
       service: 'web',
       method: 'GET',
       url: `${site}/api/agent/connect/draft`,
-      description: 'Whether an AI client has been approved for a launch that has not happened yet. The draft id is known only to the browser that holds the draft.',
+      description:
+        'Whether an AI client has been approved for a launch that has not happened yet. The draft id is known only to the browser that holds the draft; once the launch has happened this answers nothing, and the coin’s clients are listed for its creator on the coin page. With creator, the wallet the launch will be sent from, only the clients that wallet approved are listed.',
       auth: { type: 'none' },
       cors: 'none',
-      parameters: { query: { type: 'object', properties: { draft: { type: 'string', format: 'uuid' } }, required: ['draft'], additionalProperties: false } },
+      parameters: { query: { type: 'object', properties: { draft: { type: 'string', format: 'uuid' }, creator: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' } }, required: ['draft'], additionalProperties: false } },
       response: { contentType: JSON_TYPE, shape: `{connected, clients: [{clientId, label, createdAt}]}. ${ERRORS}` },
       rateLimit: perIp(30),
     },

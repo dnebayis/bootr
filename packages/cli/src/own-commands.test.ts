@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { listCredentials, saveCredential } from '@bootrfun/sdk';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COIN, HIDDEN_CHARS, hide, SECOND_COIN, startFakeSite, TAG_SENTENCE, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
+import { COIN, DRAFT_ID, HIDDEN_CHARS, hide, SECOND_COIN, startFakeSite, TAG_SENTENCE, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
 import { run } from './commands.js';
 import { OWN_USAGE, runOwn, type OwnIo } from './own-commands.js';
 
@@ -324,6 +324,19 @@ describe('bootr own disconnect', () => {
     expect(await readFile(env.BOOTR_CREDENTIALS_FILE!, 'utf8')).not.toContain('bootr_agt_');
     expect(() => site.backend.runAs('status', credential)).toThrow('credential_revoked');
     await expect(own('disconnect')).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('ends a connection made for a launch that has not happened yet, before the launch (security review L3)', async () => {
+    onSleep = () => {
+      for (const grant of site.backend.grants.values()) if (grant.status === 'pending') site.backend.connectApprove({ userCode: grant.userCode, creator: site.backend.creator, target: { kind: 'draft', draftId: DRAFT_ID } });
+    };
+    expect((await own('connect')).notice).toContain('Connected to a launch that has not happened yet.');
+    // It runs nothing before the launch, and giving the credential up is the one thing it can do.
+    await expect(own('status')).rejects.toMatchObject({ code: 'coin_not_launched' });
+    expect(await own('disconnect')).toMatchObject({ data: { ok: true } });
+    expect(await stored()).toEqual([]);
+    expect([...site.backend.clients.values()].map((c) => c.revokedAt !== null)).toEqual([true]);
+    expect(site.backend.draftClients(DRAFT_ID)).toEqual({ connected: false, clients: [] });
   });
 });
 

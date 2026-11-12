@@ -42,7 +42,7 @@ export const MOCK_CODES = {
 export const MOCK_WALLET_WITHOUT_COINS = '0x00000000000000000000000000000000000e2e02';
 export const MOCK_CLIENT_NAME = 'Claude Code';
 
-type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null; approvedAt?: number; bound?: CoinRef | null };
+type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null; approvedAt?: number; bound?: CoinRef | null; creator?: string };
 
 /**
  * The one coin a client's `coin` names, as the agent service decides it: a treasury or coin address. A symbol is a hint
@@ -54,7 +54,7 @@ function boundCoin(named: unknown): CoinRef | null {
   const fits = mockCoins().filter((c) => c.kernel.toLowerCase() === wanted || c.token.toLowerCase() === wanted);
   return fits.length === 1 ? fits[0]! : null;
 }
-type Client = ClientView & { kernel: string | null; draftId: string | null; revoked: boolean };
+type Client = ClientView & { kernel: string | null; draftId: string | null; revoked: boolean; /** The wallet that approved it, lower case. */ creator: string | null };
 type State = { grants: Map<string, Grant>; clients: Client[]; seq: number };
 
 const KEY = Symbol.for('bootr.web.mock-own');
@@ -146,7 +146,7 @@ export const mockOwn = {
     const name = label(input.label, view.data.clientName);
     const grant = state.grants.get(input.userCode);
     // The fixed codes stay as they are: an approval of one answers and changes nothing.
-    if (grant) Object.assign(grant, { status: 'approved', target, label: name, approvedAt: now });
+    if (grant) Object.assign(grant, { status: 'approved', target, label: name, approvedAt: now, creator: input.creator.toLowerCase() });
     return { ok: true, data: { ok: true, target, label: name } };
   },
 
@@ -167,6 +167,7 @@ export const mockOwn = {
       kernel: target.kind === 'coin' ? target.coin.kernel.toLowerCase() : null,
       draftId: target.kind === 'draft' ? target.draftId : null,
       revoked: false,
+      creator: grant.creator ?? null,
     };
     state.clients.push(client);
     // Shaped like a credential so a client can store it; no route of a mock deployment takes it.
@@ -179,8 +180,12 @@ export const mockOwn = {
     return { coins: creator.toLowerCase() === MOCK_WALLET_WITHOUT_COINS ? [] : mockCoins() };
   },
 
-  draft(draftId: string): DraftClientsResponse {
-    const clients = state.clients.filter((c) => !c.revoked && c.draftId === draftId).map(({ clientId, label: l, createdAt }) => ({ clientId, label: l, createdAt }));
+  /** With `creator`, the wallet the launch will be sent from, only the clients that wallet approved. */
+  draft(draftId: string, creator: string | null = null): DraftClientsResponse {
+    const wallet = creator?.toLowerCase();
+    const clients = state.clients
+      .filter((c) => !c.revoked && c.draftId === draftId && (!wallet || c.creator === wallet))
+      .map(({ clientId, label: l, createdAt }) => ({ clientId, label: l, createdAt }));
     return { connected: clients.length > 0, clients };
   },
 

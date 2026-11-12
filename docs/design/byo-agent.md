@@ -1611,7 +1611,11 @@ CREATE UNIQUE INDEX "sv_agent_grants_user_code_idx" ON "sv_agent_grants" ("user_
 The credential is made by the web when an approved grant is redeemed (`connect/token`) and returned once; the
 supervisor is sent its SHA-256 and stores that, so the credential exists in the web process for one answer and
 nowhere else on Bootr's side. Every run call crosses to the supervisor as that hash too.
-Rows of `sv_agent_grants` older than a day are deleted whenever a new grant is started (W1a; no tick change for it).
+Rows of `sv_agent_grants` older than a day are deleted whenever a new grant is started (W1a; no tick change for it),
+and with them the `sv_agent_clients` rows approved for a launch draft a day or more ago whose launch never came. A
+draft belongs to the earliest launch that carries its id (lowest launch block, then lowest agent id), as for the X
+account: only that launch binds or revokes the draft's clients. A client bound to a draft can run nothing before the
+launch, but `run/disconnect` takes its credential, so it can be ended before the launch.
 
 Stored JSON that gains fields, no migration: `sv_agents.config.runner`; `sv_runtimes.turn.own` (`OwnTurnMeta`);
 `sv_runtimes.state.ownLastTurnAt`, `.ownForced`; `sv_actions.action.via` (`'own'`) and `.clientId`;
@@ -1635,7 +1639,7 @@ the answer **is** belongs to the owner of the internal route.
 | 2 | `GET /api/agent/connect/grant?code=<userCode>` | none; 30 a minute per IP; answers with the flag off too | - | `ConnectGrantView` | `grant_not_found` | W1b |
 | 3 | `POST /api/agent/connect/approve` | same origin; the SIWE message inside; 10 a minute per IP | `ConnectApproveRequest` | `ConnectApproveResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `siwe_rejected`, `not_creator`, `unknown_coin`, `too_many_clients`, `wrong_coin` (the client named exactly one coin at start and the signature is for another coin or for a draft) | W1b |
 | 4 | `POST /api/agent/connect/token` | the device code; one call per `interval` per code | `ConnectTokenRequest` | `ConnectTokenResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `slow_down` | W1b |
-| 5 | `GET /api/agent/connect/draft?draft=<uuid>` | none (the draft id is the secret); 30 a minute per IP | - | `DraftClientsResponse` | - | W1b |
+| 5 | `GET /api/agent/connect/draft?draft=<uuid>[&creator=<address>]` | none (the draft id is the secret, until the launch puts it on chain: from then on the answer is empty); 30 a minute per IP | - | `DraftClientsResponse`; with `creator`, the wallet the launch will be sent from, only the clients that wallet approved | - | W1b |
 | 6 | `POST /api/agent/run/status` | Bearer; 120 a minute per credential over all run routes | `{}` | `AgentStatus` | the credential errors: `unauthorized`, `credential_revoked`, `credential_expired`, `coin_not_launched`. A hosted coin is answered, with `runner: 'hosted'` | W1b |
 | 7 | `POST /api/agent/run/due` | Bearer; also one per `OWN_DUE_MIN_INTERVAL_MS` | `{}` | `DueView` | credential errors, `agent_onboarding`, `agent_runs_hosted` | W1b |
 | 8 | `POST /api/agent/run/turn` | Bearer | `TurnRequest` | `TurnOpen` | credential errors, `agent_onboarding`, `agent_runs_hosted`, `agent_paused`, `held_action`, `not_due`, `forced_turns_used`, `turn_open` | W1b |
@@ -1672,7 +1676,7 @@ Existing public routes that change:
 | `POST /internal/own/connect/approve` | `{ userCode: string; creator: string; label?: string; target: { kind: 'coin'; kernel: string; agentId: string } \| { kind: 'draft'; draftId: string } }`. `creator` is the address the web recovered from the signature; for a coin the supervisor checks it against `sv_agents.creator` and the agent id against the row (`not_creator`, `unknown_coin`). | `ConnectApproveResponse` | W1a |
 | `POST /internal/own/connect/token` | `ConnectTokenRequest` and `credentialHash: string` (the SHA-256, in hex, of the credential the web has just made) | `ConnectTokenResponse` without `credential`; the web adds the credential it made | W1a |
 | `GET /internal/own/connect/coins?creator=<address>` | - | `ConnectCoinsResponse` (from `sv_agents`, newest first, at most 50) | W1a |
-| `GET /internal/own/drafts/:draftId/clients` | - | `DraftClientsResponse` | W1a |
+| `GET /internal/own/drafts/:draftId/clients[?creator=<address>]` | - | `DraftClientsResponse`: empty once a launch carries the draft id; with `creator`, that wallet's clients only | W1a |
 | `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | `credentialHash: string` (the SHA-256, in hex, of the bearer credential) as the **first** member of the body, then the public body. The credential itself never leaves the web process; the supervisor reads the hash from the head of the body and checks it before it parses the rest | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
 | `POST /internal/own/run/verify` (no public route) | `credentialHash: string` alone | `{ ok: true }`, or the answers every run call gives before its own checks (the flag, the credential errors, `agent_onboarding`, `agent_runs_hosted`). The web asks it before it reads the body of an upload, so megabytes are only ever read for a live credential; the web also holds an upload to one at a time per credential and four in the process (`rate_limited` beyond), and the HMAC middleware refuses a header that cannot be valid before it reads a body and never reads past 8 MB and a little | W1a |
 | `GET /internal/agents/:id/clients` | - | `ClientsResponse` | W1a |

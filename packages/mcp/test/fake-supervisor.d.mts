@@ -81,7 +81,7 @@ export declare class FakeOwnBackend {
   connectToken(body: Record<string, unknown>): Record<string, unknown>;
   connectTokenAsWeb(body: Record<string, unknown>): Record<string, unknown>;
   connectCoins(creator: string): { coins: FakeCoin[] };
-  draftClients(draftId: string): { connected: boolean; clients: { clientId: string; label: string; createdAt: string }[] };
+  draftClients(draftId: string, creator?: string | null): { connected: boolean; clients: { clientId: string; label: string; createdAt: string }[] };
   issueCredential(coin?: FakeCoin, label?: string): string;
   clientsOf(agentId: string): { clients: unknown[]; max: number };
   revokeClients(agentId: string, body: Record<string, unknown>): { clients: unknown[]; max: number };

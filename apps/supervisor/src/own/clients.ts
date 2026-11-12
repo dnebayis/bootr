@@ -35,7 +35,7 @@ import {
   type OwnErrorCode,
   type WaitingApprovalView,
 } from '@bootr/shared/own-agent';
-import { and, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { getAddress, isAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, agentClients, agentGrants, agents } from '../db/schema.js';
@@ -205,6 +205,12 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
   if (input.coin !== undefined && typeof input.coin !== 'string') throw invalid('coin', 'coin must be text.');
   const now = ctx.now();
   await ctx.db.delete(agentGrants).where(lt(agentGrants.createdAt, new Date(now - GRANT_RETENTION_MS)));
+  // With them go the clients approved for a launch draft a day or more ago whose launch never came: a draft is
+  // offered for a day (the web's LAUNCH_DRAFT_MAX_AGE_MS), and such a row could otherwise wait for ever for a launch
+  // that names its draft id. One whose launch exists is left for `adoptDraftClients`.
+  await ctx.db
+    .delete(agentClients)
+    .where(and(isNull(agentClients.agentId), isNotNull(agentClients.draftId), lt(agentClients.createdAt, new Date(now - GRANT_RETENTION_MS)), sql`not exists (select 1 from ${agents} launched where launched.draft_id = ${agentClients}.draft_id)`));
   // Starting a request needs no credential and no signature, so what bounds the table is this count: the requests
   // still waiting for an approval, over every caller. One lasts ten minutes; the oldest says when a place frees up.
   const [waiting] = await ctx.db
@@ -422,6 +428,17 @@ export interface VerifiedClient {
  * approved it is still the coin's creator. Answers the first that fails, in the order of 13.6.
  */
 export async function verifyCredential(ctx: Ctx, credentialHash: unknown): Promise<VerifiedClient> {
+  const found = await findClient(ctx, credentialHash);
+  if (!found.agent) throw new OwnError('coin_not_launched');
+  return { client: found.client, agent: found.agent };
+}
+
+/**
+ * The client a credential belongs to, with its coin when it has one. A client approved for a launch that has not
+ * happened yet has none: it can run nothing (`verifyCredential` answers `coin_not_launched`), but it can give its
+ * credential up (`run/disconnect`), so a creator who connected the wrong client can end it before the launch.
+ */
+export async function findClient(ctx: Ctx, credentialHash: unknown): Promise<{ client: ClientRow; agent: AgentRow | null }> {
   if (typeof credentialHash !== 'string' || !CREDENTIAL_HASH_RE.test(credentialHash)) throw new OwnError('unauthorized');
   const tokenHash = credentialHash;
   let client = await ctx.db.query.agentClients.findFirst({ where: eq(agentClients.tokenHash, tokenHash) });
@@ -437,7 +454,7 @@ export async function verifyCredential(ctx: Ctx, credentialHash: unknown): Promi
     if (!client) throw new OwnError('unauthorized');
     if (client.revokedAt) throw new OwnError('credential_revoked');
   }
-  if (!client.agentId) throw new OwnError('coin_not_launched');
+  if (!client.agentId) return { client, agent: null };
   const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, client.agentId) });
   if (!agent || agent.status === 'revoked') throw new OwnError('unauthorized');
   if (!sameAddress(agent.creator, client.creator)) throw new OwnError('unauthorized');
@@ -551,6 +568,10 @@ export async function disconnectClient(ctx: Ctx, client: ClientRow): Promise<voi
  */
 export async function adoptDraftClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<number> {
   if (!agent.draftId || !DRAFT_ID_RE.test(agent.draftId)) return 0;
+  // Only the earliest launch that carries a draft id decides about the draft's clients: a later launch can copy an id
+  // that is public on chain, and must not get to revoke what the creator approved for the real one.
+  const first = await earliestLaunch(ctx, agent.draftId);
+  if (first && first.agentId !== agent.agentId) return 0;
   const now = new Date(ctx.now());
   const waiting = await ctx.db.select().from(agentClients).where(and(eq(agentClients.draftId, agent.draftId), isNull(agentClients.agentId), isNull(agentClients.revokedAt)));
   let bound = 0;
@@ -570,15 +591,42 @@ export async function adoptDraftClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId
   return bound;
 }
 
+/**
+ * The launch a draft id belongs to: the earliest one that carries it, as `adoptDraftAccount` (onboarding.ts) decides
+ * for the X account. A launch with no block on record counts as earlier than any with one; the lower agent id breaks a tie.
+ */
+async function earliestLaunch(ctx: Ctx, draftId: string): Promise<AgentRow | null> {
+  const rows = await ctx.db.select().from(agents).where(eq(agents.draftId, draftId));
+  const before = (a: AgentRow, b: AgentRow) => {
+    if (a.launchBlock == null || b.launchBlock == null) return a.launchBlock == null && (b.launchBlock != null || BigInt(a.agentId) < BigInt(b.agentId));
+    return a.launchBlock < b.launchBlock || (a.launchBlock === b.launchBlock && BigInt(a.agentId) < BigInt(b.agentId));
+  };
+  return rows.reduce<AgentRow | null>((first, row) => (first === null || before(row, first) ? row : first), null);
+}
+
 async function adoptLateDraft(ctx: Ctx, draftId: string): Promise<void> {
-  const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.draftId, draftId) });
+  const agent = await earliestLaunch(ctx, draftId);
   if (agent) await adoptDraftClients(ctx, agent);
 }
 
-/** `GET /internal/own/drafts/:draftId/clients`: what the launch wizard polls while the creator connects a client. */
-export async function draftClients(ctx: Ctx, draftId: unknown): Promise<DraftClientsResponse> {
+/**
+ * `GET /internal/own/drafts/:draftId/clients`: what the launch wizard polls while the creator connects a client.
+ * A draft id is a secret only until its launch: from then on it is on chain for anyone to read, so once a launch
+ * carries it this answers nothing (the coin's clients are the console's to list, inside its signed session). With
+ * `creator`, the wallet the wizard will launch from, only the clients that wallet approved are listed: another
+ * wallet's would be revoked at registration, and the wizard must not call the launch connected because of one.
+ */
+export async function draftClients(ctx: Ctx, draftId: unknown, creator?: unknown): Promise<DraftClientsResponse> {
   if (typeof draftId !== 'string' || !DRAFT_ID_RE.test(draftId)) throw invalid('draftId', 'draftId must be a launch draft id.');
-  const rows = await ctx.db.select().from(agentClients).where(and(eq(agentClients.draftId, draftId), live(new Date(ctx.now())))).orderBy(agentClients.createdAt);
+  if (creator !== undefined && (typeof creator !== 'string' || !isAddress(creator))) throw invalid('creator', 'creator must be an address.');
+  const launched = await ctx.db.select({ agentId: agents.agentId }).from(agents).where(eq(agents.draftId, draftId)).limit(1);
+  if (launched.length > 0) return { connected: false, clients: [] };
+  const mine = typeof creator === 'string' ? sql`lower(${agentClients.creator}) = ${creator.toLowerCase()}` : undefined;
+  const rows = await ctx.db
+    .select()
+    .from(agentClients)
+    .where(and(eq(agentClients.draftId, draftId), isNull(agentClients.agentId), live(new Date(ctx.now())), mine))
+    .orderBy(agentClients.createdAt);
   return { connected: rows.length > 0, clients: rows.map((r) => ({ clientId: r.id, label: r.label, createdAt: r.createdAt.toISOString() })) };
 }
 

@@ -580,9 +580,9 @@ describe('own agent: what a credential opens', () => {
 describe('own agent: a client connected before the launch', () => {
   const approveDraft = (w: OwnWorld, userCode: string, creator: string, draftId = DRAFT) => w.call<ConnectApproveResponse & OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode, creator, target: { kind: 'draft', draftId } });
 
-  async function connectDraft(w: OwnWorld, creator: string) {
+  async function connectDraft(w: OwnWorld, creator: string, draftId = DRAFT) {
     const grant = await start(w);
-    expect((await approveDraft(w, grant.userCode, creator)).body.target).toEqual({ kind: 'draft', draftId: DRAFT });
+    expect((await approveDraft(w, grant.userCode, creator, draftId)).body.target).toEqual({ kind: 'draft', draftId });
     const res = await token(w, grant.deviceCode);
     if (res.body.status !== 'approved') throw new Error('expected an approved grant');
     return res.body;
@@ -610,6 +610,114 @@ describe('own agent: a client connected before the launch', () => {
       expect((await w.run<OwnErrorBody>('status', strangers.credential)).body.error).toBe('credential_revoked');
       expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.clients.map((c) => c.clientId)).toEqual([mine.clientId]);
       expect(await adoptDraftClients(w.ctx, agent)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a later launch that copies the draft id decides nothing: the draft belongs to the earliest launch that carries it (security review L3)', async () => {
+    // Whichever row the database happens to answer first, the copy registered before or after the real launch.
+    for (const copyFirst of [true, false]) {
+      const w = await ownWorld();
+      try {
+        const mine = await connectDraft(w, CREATOR);
+        // The creator's launch at block 100; a stranger's at block 200 with the same draft id, read off the chain.
+        const real = () => seedOwn(w, { agent: { draftId: DRAFT, launchBlock: 100 } });
+        const copy = () => seedOther(w, { agent: { draftId: DRAFT, launchBlock: 200, creator: STRANGER }, config: { creator: { address: STRANGER } } });
+        const [realAgent, copyAgent] = copyFirst ? [await copy(), await real()].reverse() : [await real(), await copy()];
+        // The copy's registration neither binds nor revokes the creator's client,
+        expect(await adoptDraftClients(w.ctx, copyAgent!)).toBe(0);
+        expect((await w.db.select().from(agentClients))[0]).toMatchObject({ agentId: null, revokedAt: null });
+        // and the client's own first call finds the real launch, not whichever came back first.
+        const status = await w.run<AgentStatus & OwnErrorBody>('status', mine.credential);
+        expect([copyFirst, status.status, status.body.coin?.agentId]).toEqual([copyFirst, 200, AGENT_ID]);
+        expect(await adoptDraftClients(w.ctx, realAgent!)).toBe(0);
+        // A client the stranger approves for the id afterwards is judged against the real launch too: revoked.
+        const theirs = await connectDraft(w, STRANGER);
+        expect((await w.run<OwnErrorBody>('status', theirs.credential)).body.error).toBe('credential_revoked');
+        expect((await w.call<ClientsResponse>('GET', `/internal/agents/${OTHER_AGENT_ID}/clients`)).body.clients).toEqual([]);
+      } finally {
+        await w.close();
+      }
+    }
+  });
+
+  it('a launch with no block on record counts as the earliest, and the lower agent id breaks a tie', async () => {
+    const w = await ownWorld();
+    try {
+      const mine = await connectDraft(w, CREATOR);
+      await seedOther(w, { agent: { draftId: DRAFT, launchBlock: 100, creator: STRANGER } });
+      await seedOwn(w, { agent: { draftId: DRAFT, launchBlock: 100 } });
+      // Agent 7 and agent 8 in the same block: 7 is the draft's launch.
+      expect((await w.run<AgentStatus>('status', mine.credential)).body.coin.agentId).toBe(AGENT_ID);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the wizard\'s list is the draft\'s own secret: nothing after the launch, and only the launching wallet\'s clients when it is named', async () => {
+    const w = await ownWorld();
+    try {
+      const list = (query = '') => w.call<DraftClientsResponse & OwnErrorBody>('GET', `/internal/own/drafts/${DRAFT}/clients${query}`);
+      const mine = await connectDraft(w, CREATOR);
+      await connectDraft(w, STRANGER);
+      // Before the launch the id is known to the creator's browser alone. Told which wallet will launch, the wizard
+      // is shown that wallet's clients only: another wallet's would be revoked at registration.
+      expect((await list()).body.clients).toHaveLength(2);
+      const own = await list(`?creator=${CREATOR.toLowerCase()}`);
+      expect(own.body).toEqual({ connected: true, clients: [{ clientId: mine.clientId, label: 'Claude Code', createdAt: expect.any(String) }] });
+      expect((await list(`?creator=${OTHER_CREATOR}`)).body).toEqual({ connected: false, clients: [] });
+      expect((await list('?creator=nobody')).body.error).toBe('invalid_request');
+      // The launch puts the id on chain: from then on this route says nothing to anyone, whatever wallet is named.
+      await seedOwn(w, { agent: { draftId: DRAFT } });
+      for (const query of ['', `?creator=${CREATOR}`, `?creator=${STRANGER}`]) expect((await list(query)).body).toEqual({ connected: false, clients: [] });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a client connected for a launch can give its credential up before the launch, and that is all it can do', async () => {
+    const w = await ownWorld();
+    try {
+      const mine = await connectDraft(w, CREATOR);
+      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'verify']) {
+        expect([op, (await w.run<OwnErrorBody>(op, mine.credential, { role: 'social' })).body.error]).toEqual([op, 'coin_not_launched']);
+      }
+      expect((await w.run('disconnect', mine.credential)).body).toEqual({ ok: true });
+      expect((await w.run<OwnErrorBody>('disconnect', mine.credential)).body.error).toBe('credential_revoked');
+      expect((await w.call<DraftClientsResponse>('GET', `/internal/own/drafts/${DRAFT}/clients`)).body).toEqual({ connected: false, clients: [] });
+      // The launch that follows does not bring it back.
+      const agent = await seedOwn(w, { agent: { draftId: DRAFT } });
+      expect(await adoptDraftClients(w.ctx, agent)).toBe(0);
+      expect((await w.run<OwnErrorBody>('status', mine.credential)).body.error).toBe('credential_revoked');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a draft\'s clients whose launch never came are swept a day later, when a new request starts', async () => {
+    const w = await ownWorld();
+    try {
+      const t0 = w.ctx.now();
+      const OTHER_DRAFT = '99999999-2222-4333-8444-555555555555';
+      const orphan = await connectDraft(w, CREATOR);
+      // A second draft whose launch exists by then: its client is the launch's to bind, not the sweep's to delete.
+      const second = await start(w);
+      expect((await approveDraft(w, second.userCode, OTHER_CREATOR, OTHER_DRAFT)).status).toBe(200);
+      const launched = await token(w, second.deviceCode);
+      if (launched.body.status !== 'approved') throw new Error('expected an approved grant');
+      // A day on nothing has changed until somebody starts a request.
+      w.setNow(t0 + DAY - 1000);
+      await start(w);
+      expect(await w.db.select().from(agentClients)).toHaveLength(2);
+      await w.db.insert(agents).values({ ...(await seedOther(w)), agentId: '99', kernel: '0x2000000000000000000000000000000000000099', token: '0x3000000000000000000000000000000000000099', draftId: OTHER_DRAFT });
+      w.setNow(t0 + DAY + 1000);
+      const fresh = await connectDraft(w, CREATOR, '77777777-2222-4333-8444-555555555555');
+      const left = await w.db.select().from(agentClients);
+      expect(left.map((c) => c.id).sort()).toEqual([launched.body.clientId, fresh.clientId].sort());
+      // The swept credential is unknown from then on.
+      expect((await w.run<OwnErrorBody>('disconnect', orphan.credential)).body.error).toBe('unauthorized');
+      expect((await w.run<OwnErrorBody>('status', orphan.credential)).body.error).toBe('unauthorized');
     } finally {
       await w.close();
     }

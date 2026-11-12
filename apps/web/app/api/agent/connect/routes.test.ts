@@ -428,6 +428,25 @@ describe('GET /api/agent/connect/draft and /coins', () => {
   });
 });
 
+describe('GET /api/agent/connect/draft with the launching wallet named (security review L3)', () => {
+  it('lists that wallet’s clients only, asks with the checksummed address, and refuses anything that is not an address', async () => {
+    const id = '33333333-2222-4333-8444-555555555555';
+    for (const [signer, name] of [[creator, 'Mine'], [stranger, 'Theirs']] as const) {
+      const { userCode, deviceCode } = await started({ clientName: name });
+      await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(connectDraftStatement(id, userCode), signer)) }));
+      await token(post('/api/agent/connect/token', { deviceCode }));
+    }
+    const list = async (query: string) => (await (await draft(get(`/api/agent/connect/draft?draft=${id}${query}`))).json()) as { connected: boolean; clients: { label: string }[] };
+    expect((await list('')).clients.map((c) => c.label)).toEqual(['Mine', 'Theirs']);
+    expect((await list(`&creator=${creator.address.toLowerCase()}`)).clients.map((c) => c.label)).toEqual(['Mine']);
+    expect(fake.seen.at(-1)!.path).toBe(`/internal/own/drafts/${id}/clients?creator=${creator.address}`);
+    expect(await list(`&creator=0x000000000000000000000000000000000000dEaD`)).toEqual({ connected: false, clients: [] });
+    fake.seen.length = 0;
+    for (const bad of ['', '0x12', 'vitalik.eth', `${creator.address}%26x=1`, '../clients']) expect((await error(await draft(get(`/api/agent/connect/draft?draft=${id}&creator=${bad}`)), 'invalid_request')).field).toBe('creator');
+    expect(fake.seen).toHaveLength(0);
+  });
+});
+
 describe('with own agents switched off', () => {
   it('answers own_agent_disabled on start, approve, token and draft without asking the agent service', async () => {
     const { userCode, deviceCode } = await started();
