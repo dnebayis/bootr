@@ -300,6 +300,12 @@ export async function loadImage(ctx: SupervisorContext, agentId: string, imageId
   return { id: row.id, alt: row.alt, mime: row.mime as ImageMime, bytes: Buffer.from(row.bytes) };
 }
 
+/** When the agent's own stored image was stored (epoch ms), or null when it has none by that id (an own turn attaches only a picture of its own, broker `ownGuard`). */
+export async function imageStoredAt(ctx: Pick<SupervisorContext, 'db'>, agentId: string, imageId: string): Promise<number | null> {
+  const [row] = await ctx.db.select({ at: images.createdAt }).from(images).where(and(eq(images.id, imageId), eq(images.agentId, agentId))).limit(1);
+  return row ? row.at.getTime() : null;
+}
+
 /** The `media` field of the sender's publish body for a stored image (bytes as base64 over the HMAC channel). */
 export function mediaFor(image: StoredImage): { data: string; mime: string; alt: string } {
   return { data: image.bytes.toString('base64'), mime: image.mime, alt: image.alt };

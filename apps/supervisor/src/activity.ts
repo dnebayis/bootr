@@ -1,6 +1,8 @@
 /**
  * The coin page's activity tape (`GET /internal/agents/:id/activity`): one newest-first list merged from
- *   - `sv_actions`: completed posts, replies and images (`generate_image`), and `config_updated` rows (creator edits);
+ *   - `sv_actions`: completed posts, replies and images (`generate_image`, or `upload_picture` of an own agent), and
+ *     `config_updated` rows (creator edits, a client connected or disconnected, the runner switched). A row an own
+ *     agent's client made (`action.via === 'own'`, docs/design/byo-agent.md section 3.5) says so after its summary;
  *   - `sv_treasury_ops`: confirmed and failed fee claims, swaps, gas and fuel top-ups;
  *   - the runtime's current status (sleeping, paused, held, awake). The supervisor keeps no history of status
  *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake.
@@ -56,9 +58,19 @@ export function shortAmount(raw: string, decimals: number): string {
   return out.includes('.') ? out.replace(/0+$/, '').replace(/\.$/, '') : out;
 }
 
-const FIELD_LABELS: Record<string, string> = { instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps', bounties: 'bounty caps', treasuryTurn: 'treasury turn', judgeModel: 'judge model' };
+/** What a row made by an own agent's client carries after its summary. */
+export const OWN_AGENT_MARK = ' · own agent';
+
+const FIELD_LABELS: Record<string, string> = { runner: 'who runs the agent', clientConnected: 'AI client connected', clientDisconnected: 'AI client disconnected', instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps', bounties: 'bounty caps', treasuryTurn: 'treasury turn', judgeModel: 'judge model' };
 
 function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
+  const item = plainActionItem(row, xHandle);
+  // Who thought is part of the public record: a row an own agent's client made says so (no client id, no private detail).
+  if (item && item.kind !== 'config' && (row.action as { via?: unknown }).via === 'own') item.summary += OWN_AGENT_MARK;
+  return item;
+}
+
+function plainActionItem(row: typeof actions.$inferSelect, xHandle: string | null): ActivityItem | null {
   const a = row.action as { tool?: unknown; kind?: unknown; fields?: unknown; by?: unknown; summary?: unknown };
   if (a.kind === 'config_updated') {
     // A change the platform made (model-migration.ts) says so in its own sentence; the creator's edits list the fields.
@@ -70,6 +82,11 @@ function actionItem(row: typeof actions.$inferSelect, xHandle: string | null): A
   if (a.tool === 'generate_image') {
     const alt = (row.result as { result?: { alt?: unknown } } | null)?.result?.alt ?? (a as { input?: { altText?: unknown } }).input?.altText;
     return { at: row.createdAt.toISOString(), kind: 'image', summary: typeof alt === 'string' && alt ? `Made an image: ${alt}` : 'Made an image' };
+  }
+  if (a.tool === 'upload_picture') {
+    // A picture an own agent's client uploaded: the alt text is public (X shows it), the description is not put here.
+    const alt = (a as { input?: { alt?: unknown } }).input?.alt;
+    return { at: row.createdAt.toISOString(), kind: 'image', summary: typeof alt === 'string' && alt ? `Uploaded an image: ${alt}` : 'Uploaded an image' };
   }
   if (a.tool !== 'publish_post' && a.tool !== 'publish_reply') return null;
   // The row holds either the bare result or the agent-core ActionResult envelope (`{status, result: {...}}`).
@@ -158,7 +175,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   const before = query.before;
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
   // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
-  const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image') or ${actions.action}->>'kind' = 'config_updated')`;
+  const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image', 'upload_picture') or ${actions.action}->>'kind' = 'config_updated')`;
   const [actionRows, opRows, approvalItems, serviceRows, bountyItems] = await Promise.all([
     ctx.db
       .select()

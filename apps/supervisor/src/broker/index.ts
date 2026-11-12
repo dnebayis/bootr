@@ -20,7 +20,7 @@ import {
   type ToolDefinition,
   type ToolName,
 } from '@bootr/agent-core';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
 import { agentDirectory, bootrAgentOf, conversationGuard, markOf, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
 import type { AgentRow, SupervisorContext } from '../context.js';
@@ -33,7 +33,8 @@ import { readCoin } from '../coin-reader.js';
 import { readUrl, searchWeb } from '../web-reader.js';
 import { discoverServices, reconcileServiceCall, serviceFetch } from '../services.js';
 import { serviceCalls } from '../db/schema.js';
-import { generateImage, loadImage, mediaFor, WITHOUT_PICTURE } from '../images.js';
+import { generateImage, imageStoredAt, loadImage, mediaFor, WITHOUT_PICTURE } from '../images.js';
+import { isOwn, ownSetting } from '../own/registry.js';
 import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
 import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
@@ -68,6 +69,71 @@ export interface BrokerEnv {
   eligibility: Map<string, ReplyEligibility>;
   /** The runtime cycle executing the action (bookkeeping for paid relay calls); 0 when unknown. */
   cycle?: number;
+  /** The own agent's turn the action belongs to (own/turns.ts); the guards of `ownGuard` read it. Absent on a hosted turn. */
+  own?: OwnBrokerTurn;
+}
+
+/** What the broker needs to know of an own agent's turn for the guards the hosted prompt alone carries (`ownGuard`). */
+export interface OwnBrokerTurn {
+  /** When the turn opened (epoch ms): a picture attached to a publish must have been stored since. */
+  openedAt: number;
+  /** Whether an original post may go out now: the turn holds a due slot it has not used, an open creator request, the digest or the numbers post. */
+  postAllowed: boolean;
+  /** The agent's next original-post slot (epoch ms), for the refusal's text; null when it has none. */
+  nextSlotAt: number | null;
+}
+
+/** An original post outside its slot (docs/design/byo-agent.md section 1.6): the text an own agent's client reads. */
+export function postSlotNotDue(nextSlotAt: number): string {
+  return `post_slot_not_due: an original post needs a due slot or an open request from your creator; your next slot is at ${new Date(nextSlotAt).toISOString()}. Replies may still go out.`;
+}
+export const IMAGE_NOT_FROM_THIS_TURN = 'image_not_from_this_turn: attach only a picture uploaded in this turn. Publish your post without an imageId.';
+/** The window of an own coin's daily counts of `search_web` and `read_url`. */
+export const OWN_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+export function searchDailyCap(limit: number): string {
+  return `search_daily_cap: at most ${limit} web searches per 24 hours; this one was not run. Go on with what you already have.`;
+}
+export function readUrlDailyCap(limit: number): string {
+  return `read_url_daily_cap: at most ${limit} page reads per 24 hours; this one was not run. Go on with what you already have.`;
+}
+
+/** An own coin's calls of `tool` in the last 24 hours, whatever became of them, the action being decided left out. */
+async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string, tool: ToolName, exceptActionId: string): Promise<number> {
+  const since = new Date(ctx.now() - OWN_DAILY_WINDOW_MS);
+  const [row] = await ctx.db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(actions)
+    .where(and(eq(actions.agentId, agentId), gt(actions.createdAt, since), ne(actions.actionId, exceptActionId), sql`${actions.action}->>'tool' = ${tool}`));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * The guards an own agent's action passes before anything else runs (docs/design/byo-agent.md sections 1.5, 1.6 and 7).
+ * A hosted model is held to these by its prompt, its fuel and its loop; an own agent's client is held by code:
+ *   - `publish_post` needs a due slot of this turn, an open creator request, the digest or the numbers post;
+ *   - a picture attached to a publish must have been stored in this turn;
+ *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them).
+ * Null when the action may go on. `executeAction` calls it for an own coin; the engine calls it itself before a publish
+ * is queued for review, which never reaches `executeAction`. A turn that is not on record allows no original post.
+ */
+export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending: PendingAction, env: BrokerEnv): Promise<ActionOutcome | null> {
+  const action = pending.action;
+  const turn: OwnBrokerTurn = env.own ?? { openedAt: ctx.now(), postAllowed: false, nextSlotAt: null };
+  if (action.tool === 'publish_post' && !turn.postAllowed) return failed(postSlotNotDue(turn.nextSlotAt ?? ctx.now()));
+  if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && action.input.imageId) {
+    // A picture that does not exist (or is another coin's) is left to `mediaForAction`, which says so in the hosted words.
+    const storedAt = await imageStoredAt(ctx, agent.agentId, action.input.imageId);
+    if (storedAt !== null && storedAt < turn.openedAt) return failed(IMAGE_NOT_FROM_THIS_TURN);
+  }
+  if (action.tool === 'search_web') {
+    const limit = ownSetting(ctx, 'OWN_SEARCH_PER_DAY');
+    if ((await ownCallsInWindow(ctx, agent.agentId, 'search_web', pending.id)) >= limit) return failed(searchDailyCap(limit));
+  }
+  if (action.tool === 'read_url') {
+    const limit = ownSetting(ctx, 'OWN_READ_URL_PER_DAY');
+    if ((await ownCallsInWindow(ctx, agent.agentId, 'read_url', pending.id)) >= limit) return failed(readUrlDailyCap(limit));
+  }
+  return null;
 }
 
 /** Records the eligibility decisions of `views` in `env` (what `publish_reply` sends to the sender). */
@@ -224,6 +290,11 @@ export function withToolTimeout<T>(work: Promise<T>, tool: ToolName, timeoutMs: 
 export async function executeAction(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, pending: PendingAction, env: BrokerEnv): Promise<ActionOutcome> {
   const action = pending.action;
   try {
+    // An own agent's action passes the own guards first (the slot, the same-turn picture, the daily counts); a hosted one never meets them.
+    if (isOwn(agent)) {
+      const refused = await ownGuard(ctx, agent, pending, env);
+      if (refused) return refused;
+    }
     return await withToolTimeout(dispatch(ctx, agent, config, pending, action, env), action.tool, toolTimeoutMs(ctx.config, action.tool));
   } catch (err) {
     if (err instanceof ToolTimeoutError) {

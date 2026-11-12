@@ -33,7 +33,7 @@ import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
 import { buildTreasuryObservation, roleTools, treasuryTurnSection, treasuryWakeCapMs, type TreasuryTurnInputs } from './roles.js';
-import { rpcErrorText } from './log.js';
+import { rpcErrorText, type Logger } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
@@ -60,6 +60,7 @@ import { watchlistSection } from './watchlist.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
+import type { OwnTurnMeta } from './own/registry.js';
 
 export const LEASE_MS = 60_000;
 /** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
@@ -127,6 +128,26 @@ export interface AgentState {
   lastTreasuryNoteSeenAt?: number | null;
   /** The treasury turn's own `finish` checkpoint, bounded by `TREASURY_CHECKPOINT_CHARS`; the social checkpoint above is never touched by it. */
   treasuryCheckpoint?: { memory: string; agenda: string; summary: string; at: number } | null;
+  /**
+   * Own agents (docs/design/byo-agent.md; own/turns.ts). When the last own turn ended, whatever ended it (the coin page's
+   * "last active"); the turns of the current UTC day the creator opened while nothing was due; and the turn that closed
+   * last, so a late call with its id is told why it is gone (`turn_closed`, `turn_expired`) and a repeated closing call
+   * gets its stored answer. All absent on a coin that never ran as an own agent.
+   */
+  ownLastTurnAt?: number | null;
+  ownForced?: { day: string; count: number } | null;
+  ownClosed?: { turnId: string; why: string; at: number; last?: OwnCallRecord | null } | null;
+}
+
+/** One acting call of an own turn, kept so the same call is never carried out twice (own/turns.ts). */
+export interface OwnCallRecord {
+  /** The digest of the tool and its input. */
+  key: string;
+  /** The `sv_actions` row that holds what the call did. */
+  actionId: string;
+  tool: string;
+  /** The turn's step count once this call had been counted. */
+  stepsUsed: number;
 }
 
 /** What a treasury checkpoint may keep of a `finish` (the state has 12 KB for everything): the rest is cut, not refused. */
@@ -181,6 +202,16 @@ export interface Turn {
   creatorRequests?: TurnRequest[];
   /** The picture section of the first observation said `suggested` (picture-hint.ts): the writer of a post makes one (routing.ts). */
   pictureSuggested?: boolean;
+  /** An own agent's turn (own/registry.ts `OwnTurnMeta`): who opened it and when it was last used. Absent on every hosted turn. */
+  own?: OwnTurnMeta;
+  /**
+   * What an own turn was opened with (own/turns.ts): the brief, the first observation and the agent-core tools it may
+   * call. Kept so a client that asks again for the same role gets the same turn back without anything being rebuilt
+   * (rebuilding would mark review notes delivered twice); `messages` stays empty, the client holds the conversation.
+   */
+  ownOpen?: { brief: string; observation: Record<string, unknown>; tools: string[] };
+  /** The acting calls this own turn already carried out, newest last (own/turns.ts): a repeat is answered from its row. */
+  ownCalls?: OwnCallRecord[];
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
@@ -360,7 +391,7 @@ export function errorCodeOf(error: string | null | undefined): string {
  * role's whole catalog, which the picture section reads: the decide phase holds no `generate_image`, but its writer
  * does, and the decide model must see the picture section to plan one.
  */
-async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null, catalog: readonly { name: string }[] = tools) {
+export async function buildFirstObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TurnInputs, tools: readonly ModelTool[], directory: AgentDirectory, update: PlatformUpdate | null, premium: boolean | null = null, catalog: readonly { name: string }[] = tools) {
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory, inputs.bountyConversations ?? null);
   const eligible = views.filter((v) => v.eligible);
@@ -896,13 +927,9 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     }
 
     if (action.tool === 'finish') {
-      let cp;
-      // The state the floor reads is the one after this turn: a post or a passed slot moves the anchor first. A slot
-      // whose post X held (quota, credits, forbidden) is kept: the schedule wakes the agent again when the hold ends.
-      const skippedSlot = !!turn.postDue && !turn.posted && !turn.postHeld;
-      const floor = coinWakeFloor(config, skippedSlot ? { ...state, lastSlotSkippedAt: now } : state, turn, now);
+      let done;
       try {
-        cp = checkpoint(action.input as unknown as Record<string, unknown>, now, floor ? { floorMs: floor.at - now } : {});
+        done = socialCheckpoint(config, state, turn, action.input as unknown as Record<string, unknown>, now, log);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         broker.pending = recordOutcome(pending, { kind: 'failed', error }, now);
@@ -912,24 +939,10 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         await persist();
         continue;
       }
-      state.memory = cp.memory;
-      state.agenda = cp.agenda;
-      state.summary = cp.summary;
-      state.lastCheckpointAt = now;
-      state.continuation = null;
-      state.runtimeEnded = null;
-      state.lastResults = [];
-      state.phase = 'social';
-      // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
-      if (skippedSlot) state.lastSlotSkippedAt = now;
-      settleWeeklyDigest(state, turn);
-      settlePlatformNumbers(state, turn);
-      // A wake asked for before the cadence floor was lifted to it (coinWakeFloor); said once here, with no post text.
-      if (floor && cp.nextAtMs > Math.max(cp.requestedMs, now + 60_000)) log.info({ requestedAt: new Date(cp.requestedMs).toISOString(), nextAt: cp.nextAt, floor: floor.reason }, 'wake moved to the cadence floor');
       broker.pending = markSent(pending);
-      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt, ...(floor && cp.nextAtMs > cp.requestedMs ? { note: `your wake was moved to ${cp.nextAt} (${floor.reason === 'review_at' ? 'the mention you deferred' : 'your next original-post slot'}); mentions and a due post wake you on their own` } : {}) } }, now);
+      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: done.result }, now);
       await settle();
-      return endTurn('finished', { status: 'waiting', nextAt: new Date(cp.nextAtMs), failures: 0, lastError: null });
+      return endTurn('finished', { status: 'waiting', nextAt: new Date(done.nextAtMs), failures: 0, lastError: null });
     }
 
     pending = markSent(pending);
@@ -953,70 +966,112 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     }
     const result = await settle();
     if (result) {
-      const publish = action.tool === 'publish_post' || action.tool === 'publish_reply';
-      // Every refused publish is on the record at info, by its code alone (never the text): until now a refusal
-      // showed only in sv_actions, and three 403s in six minutes went unnoticed.
-      if (publish && result.status === 'failed') log.info({ tool: action.tool, actionId: pending.id, code: errorCodeOf(result.error) }, 'publish refused');
-      if (publish && result.status === 'failed' && isXForbiddenError(result.error)) {
-        // X refuses the account itself (403 "not permitted"): no retry fixes it, so posts and mention wakes are held for
-        // hours, longer each time (rhythm.ts `forbiddenHold`), and the creator is told to look at the X account.
-        const strikes = (state.postForbiddenStrikes ?? 0) + 1;
-        const until = ctx.now() + forbiddenHoldMs(strikes);
-        state.postForbiddenUntil = until;
-        state.postForbiddenStrikes = strikes;
-        state.postForbiddenAt = ctx.now();
-        noteHoldSet(state, 'x_forbidden', until);
-        if (action.tool === 'publish_post') turn.postHeld = true;
-        log.warn({ tool: action.tool, actionId: pending.id, strikes, until: new Date(until).toISOString() }, 'x refuses this account\'s posts (403); posts held and the creator told');
-        await raiseNotification(ctx, agent.agentId, 'x_forbidden', { strikes, hours: Math.round((until - ctx.now()) / 3_600_000), until: new Date(until).toISOString() });
-      }
-      if ((action.tool === 'resolve_mention' || action.tool === 'resolve_mentions') && result.status === 'completed' && action.input.outcome === 'defer' && action.input.reviewAt) {
-        // A deferred mention is the one concrete reason a coin agent may wake before its cadence (coinWakeFloor).
-        const at = Date.parse(action.input.reviewAt);
-        if (Number.isFinite(at) && (!turn.reviewAt || at < Date.parse(turn.reviewAt))) turn.reviewAt = new Date(at).toISOString();
-      }
-      if (publish && result.status === 'failed' && result.error === 'sender:quota_exceeded') {
-        // The sender's rolling 24 h quota is used up: hold posts and mention wakes until its retryAt (rhythm.ts).
-        const until = pending.nextAt ?? ctx.now() + QUOTA_FALLBACK_HOLD_MS;
-        state.postQuotaUntil = until;
-        noteHoldSet(state, 'x_quota', until);
-        if (action.tool === 'publish_post') turn.postHeld = true;
-        log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x quota used up; posts held');
-      }
-      if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'failed' && isXCreditsError(result.error)) {
-        // The X app is out of API credits (402): hold posts and mention wakes, then try once more (rhythm.ts).
-        const until = ctx.now() + X_CREDITS_RETRY_MS;
-        state.postCreditsUntil = until;
-        noteHoldSet(state, 'x_credits', until);
-        if (action.tool === 'publish_post') turn.postHeld = true;
-        log.warn({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
-      }
-      if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
-        state.postQuotaUntil = null;
-        state.postCreditsUntil = null;
-        // The post went out: there is no hold left to report on, and nothing to say about one that just ended.
-        state.postHoldEndedNote = null;
-        if (state.postForbiddenUntil || state.postForbiddenStrikes) {
-          state.postForbiddenUntil = null;
-          state.postForbiddenStrikes = 0;
-          state.postForbiddenAt = null;
-          await resolveNotification(ctx, agent.agentId, 'x_forbidden');
-        }
-        // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
-        if (action.tool === 'publish_post') turn.posted = true;
-        if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();
-        // The publish a draft_intent planned for a creator request went out: the request is done, by this action.
-        const fulfils = turn.routing?.intent?.requestId;
-        if (fulfils && turn.creatorRequests?.some((r) => r.id === fulfils)) {
-          const closed = await closeRequest(ctx, agent.agentId, fulfils, { outcome: 'done', reason: turn.routing!.intent!.about, actionId: pending.id }).catch(() => false);
-          forgetTurnRequest(turn, fulfils);
-          if (closed) log.info({ requestId: fulfils, actionId: pending.id }, 'creator request done by a publish');
-        }
-      }
+      await afterSettledAction(ctx, agent, state, turn, action, pending, result, log);
       turn.messages.push(toolMessage(inf.toolCall.id, result.status === 'completed' ? result.result : { error: result.error, status: result.status }));
       turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result) });
     }
     await persist();
+  }
+}
+
+/**
+ * The social turn's `finish` (the checkpoint, the cadence floor and the bookkeeping that goes with it), shared by the
+ * hosted loop (`runLoop`) and an own agent's turn (own/social.ts). Throws what agent-core's `checkpoint` throws on a
+ * bad checkpoint, before anything is written. Mutates `state` and `turn`; returns the tool result the model reads and
+ * the wake time the runtime moves to.
+ */
+export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: Turn, input: Record<string, unknown>, now: number, log: Logger): { result: Record<string, unknown>; nextAtMs: number } {
+  // The state the floor reads is the one after this turn: a post or a passed slot moves the anchor first. A slot
+  // whose post X held (quota, credits, forbidden) is kept: the schedule wakes the agent again when the hold ends.
+  const skippedSlot = !!turn.postDue && !turn.posted && !turn.postHeld;
+  const floor = coinWakeFloor(config, skippedSlot ? { ...state, lastSlotSkippedAt: now } : state, turn, now);
+  const cp = checkpoint(input, now, floor ? { floorMs: floor.at - now } : {});
+  state.memory = cp.memory;
+  state.agenda = cp.agenda;
+  state.summary = cp.summary;
+  state.lastCheckpointAt = now;
+  state.continuation = null;
+  state.runtimeEnded = null;
+  state.lastResults = [];
+  state.phase = 'social';
+  // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
+  if (skippedSlot) state.lastSlotSkippedAt = now;
+  settleWeeklyDigest(state, turn);
+  settlePlatformNumbers(state, turn);
+  // A wake asked for before the cadence floor was lifted to it (coinWakeFloor); said once here, with no post text.
+  if (floor && cp.nextAtMs > Math.max(cp.requestedMs, now + 60_000)) log.info({ requestedAt: new Date(cp.requestedMs).toISOString(), nextAt: cp.nextAt, floor: floor.reason }, 'wake moved to the cadence floor');
+  return {
+    result: { checkpointed: true, nextAt: cp.nextAt, ...(floor && cp.nextAtMs > cp.requestedMs ? { note: `your wake was moved to ${cp.nextAt} (${floor.reason === 'review_at' ? 'the mention you deferred' : 'your next original-post slot'}); mentions and a due post wake you on their own` } : {}) },
+    nextAtMs: cp.nextAtMs,
+  };
+}
+
+/**
+ * What follows a settled action of a social turn, shared by the hosted loop (`runLoop`) and an own agent's turn
+ * (own/social.ts): the X holds a refused publish sets (403, quota, credits), the review time of a deferred mention,
+ * and, once a publish went out, the cleared holds, the cadence anchor and the creator request its plan was for.
+ * `pending` is the action as it settled (its id, and the sender's `retryAt` in `nextAt`). Mutates `state` and `turn`.
+ */
+export async function afterSettledAction(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, state: AgentState, turn: Turn, action: Action, pending: Pick<PendingAction, 'id' | 'nextAt'>, result: ActionResult, log: Logger): Promise<void> {
+  const publish = action.tool === 'publish_post' || action.tool === 'publish_reply';
+  // Every refused publish is on the record at info, by its code alone (never the text): until now a refusal
+  // showed only in sv_actions, and three 403s in six minutes went unnoticed.
+  if (publish && result.status === 'failed') log.info({ tool: action.tool, actionId: pending.id, code: errorCodeOf(result.error) }, 'publish refused');
+  if (publish && result.status === 'failed' && isXForbiddenError(result.error)) {
+    // X refuses the account itself (403 "not permitted"): no retry fixes it, so posts and mention wakes are held for
+    // hours, longer each time (rhythm.ts `forbiddenHold`), and the creator is told to look at the X account.
+    const strikes = (state.postForbiddenStrikes ?? 0) + 1;
+    const until = ctx.now() + forbiddenHoldMs(strikes);
+    state.postForbiddenUntil = until;
+    state.postForbiddenStrikes = strikes;
+    state.postForbiddenAt = ctx.now();
+    noteHoldSet(state, 'x_forbidden', until);
+    if (action.tool === 'publish_post') turn.postHeld = true;
+    log.warn({ tool: action.tool, actionId: pending.id, strikes, until: new Date(until).toISOString() }, 'x refuses this account\'s posts (403); posts held and the creator told');
+    await raiseNotification(ctx, agent.agentId, 'x_forbidden', { strikes, hours: Math.round((until - ctx.now()) / 3_600_000), until: new Date(until).toISOString() });
+  }
+  if ((action.tool === 'resolve_mention' || action.tool === 'resolve_mentions') && result.status === 'completed' && action.input.outcome === 'defer' && action.input.reviewAt) {
+    // A deferred mention is the one concrete reason a coin agent may wake before its cadence (coinWakeFloor).
+    const at = Date.parse(action.input.reviewAt);
+    if (Number.isFinite(at) && (!turn.reviewAt || at < Date.parse(turn.reviewAt))) turn.reviewAt = new Date(at).toISOString();
+  }
+  if (publish && result.status === 'failed' && result.error === 'sender:quota_exceeded') {
+    // The sender's rolling 24 h quota is used up: hold posts and mention wakes until its retryAt (rhythm.ts).
+    const until = pending.nextAt ?? ctx.now() + QUOTA_FALLBACK_HOLD_MS;
+    state.postQuotaUntil = until;
+    noteHoldSet(state, 'x_quota', until);
+    if (action.tool === 'publish_post') turn.postHeld = true;
+    log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x quota used up; posts held');
+  }
+  if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'failed' && isXCreditsError(result.error)) {
+    // The X app is out of API credits (402): hold posts and mention wakes, then try once more (rhythm.ts).
+    const until = ctx.now() + X_CREDITS_RETRY_MS;
+    state.postCreditsUntil = until;
+    noteHoldSet(state, 'x_credits', until);
+    if (action.tool === 'publish_post') turn.postHeld = true;
+    log.warn({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
+  }
+  if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
+    state.postQuotaUntil = null;
+    state.postCreditsUntil = null;
+    // The post went out: there is no hold left to report on, and nothing to say about one that just ended.
+    state.postHoldEndedNote = null;
+    if (state.postForbiddenUntil || state.postForbiddenStrikes) {
+      state.postForbiddenUntil = null;
+      state.postForbiddenStrikes = 0;
+      state.postForbiddenAt = null;
+      await resolveNotification(ctx, agent.agentId, 'x_forbidden');
+    }
+    // The weekly digest and the daily numbers post are not the cadence post (weekly-digest.ts, platform-numbers.ts): the first original post of a turn that carries one closes it and leaves the anchor alone.
+    if (action.tool === 'publish_post') turn.posted = true;
+    if (action.tool === 'publish_post' && !settleWeeklyDigest(state, turn) && !settlePlatformNumbers(state, turn)) state.lastPostAt = ctx.now();
+    // The publish a draft_intent planned for a creator request went out: the request is done, by this action.
+    const fulfils = turn.routing?.intent?.requestId;
+    if (fulfils && turn.creatorRequests?.some((r) => r.id === fulfils)) {
+      const closed = await closeRequest(ctx, agent.agentId, fulfils, { outcome: 'done', reason: turn.routing!.intent!.about, actionId: pending.id }).catch(() => false);
+      forgetTurnRequest(turn, fulfils);
+      if (closed) log.info({ requestId: fulfils, actionId: pending.id }, 'creator request done by a publish');
+    }
   }
 }
 
