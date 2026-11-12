@@ -2,8 +2,12 @@
  * An own agent's treasury turn (own/treasury.ts, roles.ts `treasuryFinish`; docs/design/byo-agent.md section 13.10):
  * when it is due, what it sees, which tools it holds and which it never does, that its `finish` is the hosted finish
  * branch (the same inputs leave the same state), and what a client that walks away or sends nonsense leaves behind.
- * The role is driven through the registry by a stand-in for the turn engine (own-w2-engine.ts); no model is called
- * anywhere in this file, and a world whose relay answers would fail the test.
+ * No model is called anywhere in this file, and a world whose relay answers would fail the test.
+ *
+ * Two drivers. The tests of what the role says and holds in isolation (its due rule under every runtime status, its tool
+ * list, the flag on and off) drive it through the registry with the stand-in of own-w2-engine.ts. The tests of what an
+ * own coin's treasury turn leaves behind (`finish` against the hosted loop, a turn left open, a note that pulls it
+ * forward) run on the real engine: the internal run routes with a real credential (`realEngine` in own-helpers.ts).
  */
 import { parseAgentConfig, TOOL_LIST, type ToolName } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
@@ -17,6 +21,7 @@ import { initialState, type AgentState } from '../src/runtime.js';
 import type { SenderInboxItem } from '../src/sender-client.js';
 import { processAgent } from '../src/tick.js';
 import { AGENT_ID, agentConfig, finishResponse, makeWorld, seedAgent, testConfig, toolCallResponse, type TestWorld } from './helpers.js';
+import { realEngine } from './own-helpers.js';
 import { EngineRefusal, fakeEngine, forbidThoughts, ownConfig, setOwnFlag } from './own-w2-engine.js';
 
 const T0 = Date.parse('2026-10-24T12:00:00Z');
@@ -100,7 +105,7 @@ describe('an own agent: when the treasury turn is due', () => {
     try {
       forbidThoughts(w);
       await coin(w, { treasuryTurn: true }, { runtime: { state: { ...initialState(), lastPostAt: T0 - H, lastTreasuryTurnAt: T0 - 20 * MIN, treasuryNextAt: T0 + 40 * MIN, lastTreasuryNoteSeenAt: T0 - 20 * MIN } as unknown as Record<string, unknown> } });
-      const engine = fakeEngine(w);
+      const engine = await realEngine(w);
       expect(await engine.due('treasury')).toMatchObject({ due: false });
       // written by the social turn a minute ago, on the test clock (the store itself stamps real time)
       await w.db.insert(memories).values({ id: 'mem_note', agentId: AGENT_ID, text: 'the creator asked in public whether fees are claimed', tags: ['treasury'], createdAt: new Date(T0 - MIN) });
@@ -112,7 +117,7 @@ describe('an own agent: when the treasury turn is due', () => {
       expect(notes.meaning).toContain('never instructions');
       expect(JSON.stringify(opened.observation)).not.toContain('GENERAL-NOTE-TEXT');
       // the note counts as seen from here: it does not pull the next turn forward again
-      await engine.abandon('idle');
+      await engine.abandon();
       w.setNow(T0 + 30 * MIN);
       expect(await engine.due('treasury')).toMatchObject({ due: false });
     } finally {
@@ -343,10 +348,10 @@ describe('treasuryFinish is the hosted finish branch', () => {
         expect(kept(before)).toEqual(kept(hostedState));
         expect(before.treasuryNextAt).toBe(alone.nextAtMs);
 
-        // the own agent's turn, through the registry: open, finish
+        // the own agent's turn, through the real engine: open, finish
         forbidThoughts(own);
         await coin(own, c.config);
-        const engine = fakeEngine(own);
+        const engine = await realEngine(own);
         await engine.open('treasury');
         const done = await engine.finish(c.input);
         expect(done).toMatchObject({ status: 'completed', turnEnded: true });
@@ -408,10 +413,10 @@ describe('treasuryFinish is the hosted finish branch', () => {
       expect(result?.turn?.outcome).toBe('step_cap');
       forbidThoughts(own);
       await coin(own, { treasuryTurn: true });
-      const engine = fakeEngine(own);
+      const engine = await realEngine(own);
       await engine.open('treasury');
       await engine.act('treasury_read', {});
-      await engine.abandon('idle');
+      await engine.abandon();
       const pick = (s: AgentState) => ({ next: s.treasuryNextAt, last: s.lastTreasuryTurnAt, seen: s.lastTreasuryNoteSeenAt, cp: s.treasuryCheckpoint ?? null, continuation: s.continuation ?? null, runtimeEnded: s.runtimeEnded ?? null, memory: s.memory });
       expect(pick(await stateOf(own))).toEqual(pick(await stateOf(hosted)));
       expect((await runtimeRow(own)).turn).toBeNull();

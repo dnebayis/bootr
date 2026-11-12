@@ -5,7 +5,14 @@
  * refuse past the step cap, then either a special tool (`offered`, parse the input, `run`) or an agent-core tool (it
  * must be in the turn's `tools`, then `parseAction`, `beginAction`, the action row with `via: 'own'`, `executeAction`
  * or `queueForApproval`, `recordOutcome`, the row's update, `settleCycle`, the role's `settled`), then count the step
- * and persist state and turn. No credential, no lease, no expiry: those are the real engine's.
+ * and persist state and turn. No credential, no lease, no expiry, no replay of a repeated call: those are the real
+ * engine's.
+ *
+ * It is kept for the tests that are about a role in isolation (what a role says is due, what it shows, what its tools
+ * check, with the flag on and off, where the real routes would answer `own_agent_disabled`). A test about what an own
+ * coin really does runs through the real engine instead (`realEngine` in own-helpers.ts, the internal routes with a real
+ * credential): a stand-in that leaves out a step of the engine reports a bug the engine does not have, as this one did
+ * for the platform update before it marked it the way the engine does.
  */
 import { PolicyError, beginAction, markSent, parseAction, recordOutcome, settleCycle, type Action, type ActionResult, type AgentConfig, type BrokerRuntime, type PendingAction } from '@bootr/agent-core';
 import type { ActResult, DueRole, FinishRequest, OwnRole } from '@bootr/shared/own-agent';
@@ -17,6 +24,7 @@ import type { AgentRow, RuntimeRow } from '../src/context.js';
 import { actions, agents, runtimes } from '../src/db/schema.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { ownRole, ownTool, ownTools, type OwnCall, type OwnOpened, type OwnTurnMeta } from '../src/own/registry.js';
+import { settlePlatformUpdate } from '../src/platform-updates.js';
 import type { AgentState, Turn } from '../src/runtime.js';
 import { AGENT_ID, type TestWorld } from './helpers.js';
 
@@ -139,10 +147,13 @@ export function fakeEngine(w: TestWorld, agentId: string = AGENT_ID): FakeEngine
         return done({ actionId: pending.id, status: pending.status === 'held' ? 'held' : 'pending', error: pending.reason ?? pending.status }, pending.status === 'held', { pending: json(pending), status: pending.status === 'held' ? 'held' : 'running' });
       }
       broker.pending = pending;
+      // As the real engine settles (`settlePending` in src/own/turns.ts, the hosted `settle`): a platform update the post
+      // carried is marked before the cycle moves on, and the role is handed the action as it settled in the call's runtime.
+      settlePlatformUpdate(config, call.state, pending, ctx.now());
       const settled = settleCycle(broker);
       broker = settled.runtime;
       const result = settled.observation as ActionResult;
-      await ownRole(role)?.settled?.(call, turn, action, result);
+      await ownRole(role)?.settled?.({ ...call, runtime: { ...runtime, pending: pending as unknown as Record<string, unknown> } }, turn, action, result);
       return done({ actionId: pending.id, status: result.status === 'completed' ? 'completed' : 'failed', ...(result.status === 'completed' ? { result: result.result } : { error: result.error ?? result.status }) }, false, { cycle: broker.cycle, pending: null });
     },
 

@@ -4,6 +4,11 @@
  * own turn of its kind shows it under `creatorRequests` with the creator's authority and `answer_request` closes it,
  * by the same function as the hosted turn: `done` needs an action of this turn that is not a read, a request closes
  * once, and a request the turn was not shown cannot be answered. No model is called in this file.
+ *
+ * The tests that follow a request through a whole turn run on the real engine (the internal run routes with a real
+ * credential, `realEngine` in own-helpers.ts). Two stay closer to the tool: the one that lets a request run out while
+ * its turn is open (the real engine would have closed a turn left idle for two days long before; the stand-in of
+ * own-w2-engine.ts has no idle rule), and the one that calls the tool directly.
  */
 import { DEFAULT_BOUNTIES_POLICY, parseAgentConfig } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
@@ -11,9 +16,10 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
 import { CREATOR_REQUEST_TTL_MS, creatorRequestsSection, fileRequest, openRequests, recentRequests } from '../src/creator-requests.js';
 import { actions, agents, bountyJobs, memories, runtimes } from '../src/db/schema.js';
-import { ownRole, ownTool, type OwnCall } from '../src/own/registry.js';
+import { ownTool, type OwnCall } from '../src/own/registry.js';
 import { initialState, type AgentState, type Turn } from '../src/runtime.js';
 import { AGENT_ID, agentConfig, makeWorld, seedAgent, type TestWorld } from './helpers.js';
+import { realEngine } from './own-helpers.js';
 import { fakeEngine, forbidThoughts, ownConfig } from './own-w2-engine.js';
 
 const T0 = Date.parse('2026-10-24T12:00:00Z');
@@ -57,7 +63,7 @@ describe('a request filed while hosted, answered by the own agent', () => {
       // the creator switches the coin to their own agent: the rows are still there
       await switchToOwn(w);
       forbidThoughts(w);
-      const engine = fakeEngine(w);
+      const engine = await realEngine(w);
       expect(await engine.due('treasury')).toMatchObject({ on: true, due: true, reasons: ['treasury_request'] });
       const opened = await engine.open('treasury');
       const section = opened.observation.creatorRequests as { meaning: string; items: Record<string, unknown>[] };
@@ -67,7 +73,8 @@ describe('a request filed while hosted, answered by the own agent', () => {
       // the social request is the social turn's: not shown here, not answerable here
       expect(JSON.stringify(opened.observation)).not.toContain(post.id);
       expect(opened.observation.tools).toEqual(expect.arrayContaining(['answer_request', 'bounty_post']));
-      expect(opened.turn.creatorRequests).toEqual([{ id: bounty.id, picture: false }]);
+      expect((await engine.turn())?.creatorRequests).toEqual([{ id: bounty.id, picture: false }]);
+      expect(opened.tools).toEqual(expect.arrayContaining(['bootr_agent_answer_request', 'bootr_agent_bounty_post']));
       expect(await engine.offered()).toEqual(['answer_request']);
 
       // `done` before anything was done is refused, in the hosted words; the request stays open
@@ -87,7 +94,7 @@ describe('a request filed while hosted, answered by the own agent', () => {
       const posted = await engine.act('bounty_post', JOB);
       expect(posted).toMatchObject({ status: 'completed', result: { status: 'open' } });
       const done = await engine.act('answer_request', { requestId: bounty.id, outcome: 'done', reason: 'opened a 0.5 USDC job for the diagram' });
-      expect(done).toEqual({ tool: 'answer_request', actionId: null, status: 'completed', result: { requestId: bounty.id, outcome: 'done', closed: true }, stepsUsed: 8, turnEnded: false });
+      expect(done).toEqual({ turnId: opened.turnId, tool: 'answer_request', actionId: null, status: 'completed', result: { requestId: bounty.id, outcome: 'done', closed: true }, stepsUsed: 8, stepsLeft: 0, turnEnded: false });
       // closed on the same rows the chat reads, pointing at the action that did it
       const request = (await w.db.select().from(memories).where(eq(memories.id, bounty.id)))[0]!;
       expect(request.tags).toEqual(['creator-request', 'for-treasury', 'request-done']);
@@ -96,14 +103,16 @@ describe('a request filed while hosted, answered by the own agent', () => {
       expect((await recentRequests(w.ctx, AGENT_ID)).find((r) => r.id === bounty.id)).toMatchObject({ status: 'done', answer: 'Done: opened a 0.5 USDC job for the diagram' });
       expect(await openRequests(w.ctx, AGENT_ID, 'treasury')).toEqual([]);
       // the tool goes with the last open request; answering makes no action row and publishes nothing of its own
+      // ...and the turn as the engine stored it after the call no longer holds the request
       expect((await engine.turn())?.creatorRequests).toBeUndefined();
       expect(await engine.offered()).toEqual([]);
-      expect((await w.db.select().from(actions)).map((a) => (a.action as { tool: string }).tool).sort()).toEqual(['bounty_post', 'treasury_read']);
+      await expect(engine.act('answer_request', { requestId: bounty.id, outcome: 'done', reason: 'again' })).rejects.toMatchObject({ code: 'step_cap' });
+      expect((await w.db.select().from(actions)).map((a) => (a.action as { tool?: string }).tool).filter(Boolean).sort()).toEqual(['bounty_post', 'treasury_read']);
       expect(await w.db.select().from(bountyJobs)).toHaveLength(1);
       // the social turn's request was not touched
       expect((await openRequests(w.ctx, AGENT_ID, 'social')).map((r) => r.id)).toEqual([post.id]);
       // shown once, it does not pull the next treasury turn forward again
-      await engine.abandon('step_cap');
+      await engine.abandon();
       w.setNow(T0 + 30 * MIN);
       expect(await engine.due('treasury')).toMatchObject({ due: false });
     } finally {
@@ -181,22 +190,33 @@ describe('a request filed while hosted, answered by the own agent', () => {
     }
   });
 
-  it('the own social role, once its workstream is merged, shows the request and the registry tool closes it', async (t) => {
+  it('the own social turn shows the request, is due for it, and the registry tool closes it on the turn the engine keeps', async () => {
     const w = await makeWorld();
     try {
       await hostedCoin(w);
-      if (!ownRole('social')) return t.skip();
       w.setNow(T0 - MIN);
       const post = await fileRequest(w.ctx, AGENT_ID, { text: 'Say something about the week.', turn: 'social' });
       w.setNow(T0);
       await switchToOwn(w);
       forbidThoughts(w);
-      const engine = fakeEngine(w);
-      const opened = await engine.open('social', { forced: true });
+      const engine = await realEngine(w);
+      // nothing else is due (the post slot is an hour away): the request the chat filed is the reason, and no turn has to be forced
+      expect(await engine.due('social')).toMatchObject({ due: true, reasons: ['creator_request'] });
+      const opened = await engine.open('social');
+      expect(opened.reasons).toEqual(['creator_request']);
+      expect((await engine.turn())?.creatorRequests).toEqual([{ id: post.id, picture: false }]);
       expect((opened.observation.creatorRequests as { items: { requestId: string }[] }).items.map((i) => i.requestId)).toEqual([post.id]);
       expect(await engine.offered()).toContain('answer_request');
       expect(await engine.act('answer_request', { requestId: post.id, outcome: 'not_done', reason: 'nothing worth saying this week' })).toMatchObject({ status: 'completed', result: { requestId: post.id, outcome: 'not_done', closed: true } });
       expect(await openRequests(w.ctx, AGENT_ID, 'social')).toEqual([]);
+      // the stored turn lost the request with the call, so the tool is gone and the request opens no post slot any more
+      expect((await engine.turn())?.creatorRequests).toBeUndefined();
+      expect(await engine.offered()).toEqual([]);
+      expect(await engine.act('publish_post', { text: 'Something about the week after all.' })).toMatchObject({ status: 'failed', error: expect.stringMatching(/^post_slot_not_due: /) });
+      expect(w.sender.published).toHaveLength(0);
+      // shown once: it is not a reason for the next turn
+      expect(await engine.finish()).toMatchObject({ status: 'completed', turnEnded: true });
+      expect(await engine.due('social')).toMatchObject({ due: false });
     } finally {
       await w.close();
     }
@@ -213,7 +233,7 @@ describe('a request filed while hosted, answered by the own agent', () => {
       w.setNow(T0);
       await switchToOwn(w);
       forbidThoughts(w);
-      const engine = fakeEngine(w);
+      const engine = await realEngine(w);
       await engine.open('treasury');
       for (const bad of [{}, { requestId: mine.id }, { requestId: mine.id, outcome: 'maybe', reason: 'x' }, { requestId: mine.id, outcome: 'not_done', reason: '' }, { requestId: mine.id, outcome: 'not_done', reason: 'x'.repeat(301) }, { requestId: mine.id, outcome: 'not_done', reason: 'x', actionId: 'act_forged' }, { requestId: 'r'.repeat(65), outcome: 'not_done', reason: 'x' }]) {
         await expect(engine.act('answer_request', bad as Record<string, unknown>), JSON.stringify(bad).slice(0, 60)).rejects.toMatchObject({ code: 'invalid_tool_call' });
