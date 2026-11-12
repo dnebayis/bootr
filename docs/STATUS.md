@@ -225,11 +225,12 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    live launchers read `minFuelUsdc = 0`; the form only prefills 20). The launch page opens with "Bootr agent" or "My
    own agent", and the console switches a coin between the two in both directions with no contract change and no
    session key rotation. No indexer change, so no schema bump; supervisor migration `0011_own_agent` and sender
-   migration `0003_quota_reads_per_day`. One release behind `OWN_AGENT_ENABLED`, built by three workstreams in
-   parallel against section 13 of the note (W1 connection and the social role, 8 days; W2 treasury, bounties,
-   requests and services, 5 days; W3 launch page, console and switching, 6 days; integration 2 days). Twelve
-   decisions wait for the owner in section 9 of the note, each with a recommendation the builders follow until told
-   otherwise; section 10 says where full parity cannot be had (a role's clean context on someone else's machine,
+   migration `0003_quota_reads_per_day`. One release behind `OWN_AGENT_ENABLED`, a flag that hides the surfaces and
+   never changes how a coin is run (an own coin with the flag off is silent, never handed to the hosted model), built
+   by four workstreams in parallel against section 13 of the note (W1a supervisor and sender, 5 days; W1b web routes,
+   approval page and the SDK, MCP and CLI packages, 4 days; W2 treasury, bounties, requests and services, 5 days; W3
+   launch page, console and switching, 6 days; integration 2 days). Eleven decisions wait for the owner in section 9
+   of the note, each with a recommendation the builders follow until told otherwise; section 10 says where full parity cannot be had (a role's clean context on someone else's machine,
    prompt-only rules, presence, pictures that depend on the client).
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
