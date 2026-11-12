@@ -968,6 +968,7 @@ export type OwnErrorCode =
   | 'not_creator'
   | 'unknown_coin'
   | 'too_many_clients'
+  | 'wrong_coin'
   | 'unauthorized'
   | 'credential_expired'
   | 'credential_revoked'
@@ -1017,6 +1018,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   not_creator: { status: 403, message: 'Only the wallet that launched the coin can connect a client to its agent.' },
   unknown_coin: { status: 404, message: 'No Bootr coin matches that.' },
   too_many_clients: { status: 409, message: 'This coin already has as many clients as it may have. Disconnect one in the creator console first.' },
+  wrong_coin: { status: 409, message: 'This connection request is for another coin. Approve it for the coin it names, or start again from your AI client.' },
   unauthorized: { status: 401, message: 'Missing or unknown credential. Connect this client to Bootr again.' },
   credential_expired: { status: 401, message: "This client's connection ran out. Connect it to Bootr again." },
   credential_revoked: { status: 401, message: 'This client was disconnected in the creator console. Connect it again to use it.' },
@@ -1059,7 +1061,10 @@ export type ConnectTarget = { kind: 'coin'; coin: CoinRef } | { kind: 'draft'; d
 export interface ConnectStartRequest {
   /** What the client calls itself (MCP `clientInfo.name`), shown on the approval page; at most CLIENT_LABEL_MAX characters. */
   clientName?: string;
-  /** A coin the user named (symbol, token or kernel address), prefilled on the approval page; never trusted. */
+  /**
+   * A coin the user named (symbol, token or kernel address). When it names exactly one coin the request is bound to that
+   * coin (`ConnectStartResponse.coin`); otherwise it is a hint the approval page puts first, and never trusted.
+   */
   coin?: string;
 }
 
@@ -1075,6 +1080,12 @@ export interface ConnectStartResponse {
   expiresIn: number;
   /** Seconds between token polls: DEVICE_POLL_INTERVAL_S. */
   interval: number;
+  /**
+   * The one coin the request's `coin` named, when it named exactly one (a kernel or token address, or a symbol only one
+   * coin has). The request is then for that coin alone: an approval for anything else is refused with `wrong_coin`.
+   * Absent when no coin was named or the name fits none or several; the creator then chooses on the approval page.
+   */
+  coin?: CoinRef;
 }
 
 export interface ConnectGrantView {
@@ -1083,6 +1094,8 @@ export interface ConnectGrantView {
   coinHint: string | null;
   status: 'pending' | 'approved' | 'redeemed' | 'expired';
   expiresAt: string;
+  /** The one coin this request is for (`ConnectStartResponse.coin`): the approval page shows it fixed, with no other choice. */
+  coin?: CoinRef | null;
 }
 
 export interface ConnectApproveRequest {
@@ -1614,7 +1627,7 @@ the answer **is** belongs to the owner of the internal route.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `POST /api/agent/connect/start` | none; 5 a minute per IP | `ConnectStartRequest` | `ConnectStartResponse` | - | W1b |
 | 2 | `GET /api/agent/connect/grant?code=<userCode>` | none; 30 a minute per IP; answers with the flag off too | - | `ConnectGrantView` | `grant_not_found` | W1b |
-| 3 | `POST /api/agent/connect/approve` | same origin; the SIWE message inside; 10 a minute per IP | `ConnectApproveRequest` | `ConnectApproveResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `siwe_rejected`, `not_creator`, `unknown_coin`, `too_many_clients` | W1b |
+| 3 | `POST /api/agent/connect/approve` | same origin; the SIWE message inside; 10 a minute per IP | `ConnectApproveRequest` | `ConnectApproveResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `siwe_rejected`, `not_creator`, `unknown_coin`, `too_many_clients`, `wrong_coin` (the client named exactly one coin at start and the signature is for another coin or for a draft) | W1b |
 | 4 | `POST /api/agent/connect/token` | the device code; one call per `interval` per code | `ConnectTokenRequest` | `ConnectTokenResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `slow_down` | W1b |
 | 5 | `GET /api/agent/connect/draft?draft=<uuid>` | none (the draft id is the secret); 30 a minute per IP | - | `DraftClientsResponse` | - | W1b |
 | 6 | `POST /api/agent/run/status` | Bearer; 120 a minute per credential over all run routes | `{}` | `AgentStatus` | the credential errors: `unauthorized`, `credential_revoked`, `credential_expired`, `coin_not_launched`. A hosted coin is answered, with `runner: 'hosted'` | W1b |

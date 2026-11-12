@@ -125,6 +125,48 @@ describe('bootr own connect', () => {
     expect(await stored()).toHaveLength(1);
   });
 
+  it('names the coin with its treasury address, and never keeps an approval for another coin than the one --coin named (security review M2)', async () => {
+    onSleep = (n) => {
+      if (n === 1) approveAll();
+    };
+    const out = await own('connect', '--coin', 'OWL');
+    // Before the approval: the one coin the site said "OWL" names. After: the symbol and the treasury address, both.
+    expect(notices[0]).toContain(`Coin: $OWL (treasury address ${COIN.kernel})  (the page must show this coin and no other)`);
+    expect(out.notice).toContain(`Connected to $OWL (treasury address ${COIN.kernel}).`);
+    expect(await own('connect', '--coin', 'OWL')).toMatchObject({ notice: expect.stringContaining(`Already connected to $OWL (treasury address ${COIN.kernel})`) });
+
+    // The site holds the request to its coin.
+    await own('disconnect');
+    site.backend.grants.clear();
+    site.backend.clients.clear();
+    const toFox = (userCode: string) => site.backend.connectApprove({ userCode, creator: site.backend.creator, target: { kind: 'coin', kernel: SECOND_COIN.kernel, agentId: SECOND_COIN.agentId } });
+    let lured = false;
+    onSleep = () => {
+      if (lured) return;
+      lured = true;
+      const [grant] = [...site.backend.grants.values()];
+      expect(() => toFox(grant!.userCode)).toThrow('wrong_coin');
+      // A site that did not (an older one, or a symbol two coins share), and a creator who approved for $FOX all the same.
+      (grant as unknown as { bound: unknown }).bound = null;
+      toFox(grant!.userCode);
+    };
+    site.seen.length = 0;
+    await expect(own('connect', '--coin', COIN.kernel)).rejects.toMatchObject({ code: 'wrong_coin', message: expect.stringContaining(`The approval was for $FOX (treasury address ${SECOND_COIN.kernel}), not for the coin --coin named.`) });
+    // Nothing was stored, and the client that approval made is disconnected on the site.
+    expect(await stored()).toEqual([]);
+    expect(await readFile(env.BOOTR_CREDENTIALS_FILE!, 'utf8').catch(() => '')).not.toContain('bootr_agt_');
+    expect([...site.backend.clients.values()].map((c) => c.revokedAt !== null)).toEqual([true]);
+    expect(site.seen.some((s) => s.path === '/api/agent/run/disconnect')).toBe(true);
+
+    // With no coin named any approval is taken, and what it is for is said in full.
+    site.backend.grants.clear();
+    onSleep = () => {
+      const [grant] = [...site.backend.grants.values()];
+      if (grant!.status === 'pending') toFox(grant!.userCode);
+    };
+    expect((await own('connect')).notice).toContain(`Connected to $FOX (treasury address ${SECOND_COIN.kernel}).`);
+  });
+
   it('gives up when nobody approves in time, and saves nothing', async () => {
     await expect(own('connect')).rejects.toMatchObject({ code: 'grant_expired' });
     expect(sleeps.length).toBe(100);

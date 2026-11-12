@@ -29,8 +29,10 @@ import { mockStore } from '@/lib/mock';
 export const MOCK_CODES = {
   /** Waiting for approval, from a client that named no coin. */
   pending: 'BCDF-GHJK',
-  /** Waiting for approval, from a client that named the second mock coin. */
+  /** Waiting for approval, from a client whose hint fits the second mock coin without naming exactly one coin: a hint only. */
   hinted: 'HNTD-CLNT',
+  /** Waiting for approval, from a client that named the second mock coin and nothing else: the request is for that coin alone. */
+  bound: 'BNDC-CLNT',
   /** Ran out. */
   expired: 'XPRD-XPRD',
   /** Already used. */
@@ -40,7 +42,18 @@ export const MOCK_CODES = {
 export const MOCK_WALLET_WITHOUT_COINS = '0x00000000000000000000000000000000000e2e02';
 export const MOCK_CLIENT_NAME = 'Claude Code';
 
-type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null; approvedAt?: number };
+type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null; approvedAt?: number; bound?: CoinRef | null };
+
+/**
+ * The one coin a client's `coin` names, as the agent service decides it: a treasury or coin address. A symbol is a hint
+ * only here (the mock's coins are few, and the fixed code `hinted` stands for a symbol several coins share).
+ */
+function boundCoin(named: unknown): CoinRef | null {
+  const wanted = typeof named === 'string' ? named.trim().toLowerCase() : '';
+  if (!/^0x[0-9a-f]{40}$/.test(wanted)) return null;
+  const fits = mockCoins().filter((c) => c.kernel.toLowerCase() === wanted || c.token.toLowerCase() === wanted);
+  return fits.length === 1 ? fits[0]! : null;
+}
 type Client = ClientView & { kernel: string | null; draftId: string | null; revoked: boolean };
 type State = { grants: Map<string, Grant>; clients: Client[]; seq: number };
 
@@ -71,6 +84,7 @@ function fixed(code: string, now: number): ConnectGrantView | null {
   const base = { userCode: code, clientName: MOCK_CLIENT_NAME, coinHint: null };
   if (code === MOCK_CODES.pending) return { ...base, status: 'pending', expiresAt: iso(now + DEVICE_CODE_TTL_S * 1000) };
   if (code === MOCK_CODES.hinted) return { ...base, coinHint: mockCoins()[1]?.symbol ?? null, status: 'pending', expiresAt: iso(now + DEVICE_CODE_TTL_S * 1000) };
+  if (code === MOCK_CODES.bound) return { ...base, coinHint: mockCoins()[1]?.kernel ?? null, coin: mockCoins()[1] ?? null, status: 'pending', expiresAt: iso(now + DEVICE_CODE_TTL_S * 1000) };
   if (code === MOCK_CODES.expired) return { ...base, status: 'expired', expiresAt: iso(now - 60_000) };
   if (code === MOCK_CODES.used) return { ...base, status: 'redeemed', expiresAt: iso(now + 60_000) };
   return null;
@@ -93,9 +107,10 @@ export const mockOwn = {
     const userCode = randomCode();
     const deviceCode = random(32);
     for (const [code, grant] of state.grants) if (grant.expiresAt + 86_400_000 < now) state.grants.delete(code);
-    state.grants.set(userCode, { userCode, deviceCode, clientName: label(input.clientName, 'AI client'), coinHint: typeof input.coin === 'string' && input.coin ? input.coin.slice(0, 64) : null, status: 'pending', expiresAt: now + DEVICE_CODE_TTL_S * 1000, target: null, label: null });
+    const bound = boundCoin(input.coin);
+    state.grants.set(userCode, { userCode, deviceCode, clientName: label(input.clientName, 'AI client'), coinHint: typeof input.coin === 'string' && input.coin ? input.coin.slice(0, 64) : null, status: 'pending', expiresAt: now + DEVICE_CODE_TTL_S * 1000, target: null, label: null, bound });
     const site = siteUrl.replace(/\/+$/, '');
-    return { deviceCode, userCode, verificationUri: `${site}/connect`, verificationUriComplete: `${site}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S };
+    return { deviceCode, userCode, verificationUri: `${site}/connect`, verificationUriComplete: `${site}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S, ...(bound ? { coin: bound } : {}) };
   },
 
   grant(code: string, now = Date.now()): MockOwnResult<ConnectGrantView> {
@@ -104,7 +119,7 @@ export const mockOwn = {
     const grant = state.grants.get(code);
     if (!grant) return fail('grant_not_found');
     const status = grant.status === 'pending' && grant.expiresAt <= now ? 'expired' : grant.status;
-    return { ok: true, data: { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status, expiresAt: iso(grant.expiresAt) } };
+    return { ok: true, data: { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status, expiresAt: iso(grant.expiresAt), coin: status === 'pending' ? (grant.bound ?? null) : null } };
   },
 
   /** Everyone is the creator in mock mode; only the wallet without coins is told it is not. */
@@ -113,6 +128,9 @@ export const mockOwn = {
     if (!view.ok) return view;
     if (view.data.status === 'expired') return fail('grant_expired');
     if (view.data.status !== 'pending') return fail('grant_used');
+    // A request for one coin is approved for that coin or not at all.
+    const bound = view.data.coin;
+    if (bound && (input.target.kind !== 'coin' || input.target.agentId !== bound.agentId)) return fail('wrong_coin');
     let target: ConnectTarget;
     if (input.target.kind === 'coin') {
       const kernel = input.target.kernel.toLowerCase();

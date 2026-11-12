@@ -256,6 +256,21 @@ describe('POST /api/agent/connect/approve', () => {
     await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) })), 'grant_used');
   });
 
+  it('holds a request that names one coin to that coin: the creator’s signature for another coin or for a draft approves nothing (security review M2)', async () => {
+    const answer = (await started({ clientName: 'Claude Code', coin: COIN.kernel })) as Awaited<ReturnType<typeof started>> & { coin?: unknown };
+    // The client is told which one coin its request is for, and so is the approval page.
+    expect(answer.coin).toEqual(COIN);
+    const { userCode } = answer;
+    expect(await (await grant(get(`/api/agent/connect/grant?code=${userCode}`))).json()).toMatchObject({ status: 'pending', coin: COIN });
+    const other = await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode, SECOND_COIN))) })), 'wrong_coin');
+    expect(other.message).toBe(OWN_ERRORS.wrong_coin.message);
+    await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(connectDraftStatement(DRAFT_ID, userCode))) })), 'wrong_coin');
+    // Nothing was used up: the request is still there for the coin it names.
+    expect((await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) }))).status).toBe(200);
+    // A request that named no coin, or a name that fits none, is the creator's to choose as before.
+    expect(((await started({ coin: '$NOPE' })) as { coin?: unknown }).coin).toBeUndefined();
+  });
+
   it('is for the site’s own page: another origin, or none, is refused before the signature is looked at', async () => {
     const { userCode } = await started();
     fake.seen.length = 0;

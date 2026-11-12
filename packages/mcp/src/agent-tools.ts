@@ -1,5 +1,6 @@
 import {
   BootrApiError,
+  coinLine,
   CREDENTIAL_PREFIX,
   CredentialsError,
   describeCredential,
@@ -11,6 +12,7 @@ import {
   PICTURE_MIMES,
   removeCredential,
   saveCredential,
+  targetMatches,
   USER_CODE_RE,
   type ActResult,
   type Bootr,
@@ -65,7 +67,9 @@ const REPEAT_ADVICE =
 const CONNECT_FIRST = ' Call bootr_agent_connect first.';
 const UNWRITABLE =
   'credentials_unwritable: The approval arrived, but this machine could not write the credentials file, so the connection was ended again. Check the folder of the credentials file and its permissions, then call bootr_agent_connect once more.';
-const NO_CREDENTIALS = 'Never put a credential in a tool call: this server reads it from its own file. Nothing was sent.';
+const wrongCoin = (approvedFor: string) =>
+  `wrong_coin: The approval was for ${approvedFor}, not for the coin this client was asked to connect. That connection was ended again and nothing was stored. To connect that coin instead, call bootr_agent_connect with it as coin; to connect the coin you named, call bootr_agent_connect again and approve for that coin.`;
+const NO_CREDENTIALS ='Never put a credential in a tool call: this server reads it from its own file. Nothing was sent.';
 /** The cap on one JSON block. An observation is at most 60,000 bytes on the server; this leaves room for escaping. */
 const MAX_AGENT_CHARS = 90_000;
 const MAX_ERROR_CHARS = 600;
@@ -159,7 +163,31 @@ const refusedCredential = (): ToolResult => ({ isError: true, content: [text(`cr
 // The connection: the approval in the browser and the credentials file
 // ---------------------------------------------------------------------------
 
-type Pending = { key: string; deviceCode: string; userCode: string; link: string; expiresAt: number; intervalMs: number; lastPollAt: number; inflight: Promise<void> | null; timer: ReturnType<typeof setTimeout> | null; connected: StoredCredential | null; ended: string | null };
+type Pending = {
+  key: string;
+  /** What the user named when the request was started, and the one coin the site said that names (when it names one). */
+  asked: string | undefined;
+  bound: { symbol: string; kernel: string } | null;
+  deviceCode: string;
+  userCode: string;
+  link: string;
+  expiresAt: number;
+  intervalMs: number;
+  lastPollAt: number;
+  inflight: Promise<void> | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  connected: StoredCredential | null;
+  ended: string | null;
+  /** For `wrong_coin`: the coin the approval was for, in words safe to show. */
+  endedFor?: string;
+};
+
+/** The coin of a start answer when it is one this package will show: a plain symbol and a well-formed address. */
+function boundCoin(coin: unknown): { symbol: string; kernel: string } | null {
+  const c = coin as { symbol?: unknown; kernel?: unknown } | null | undefined;
+  if (!c || typeof c.symbol !== 'string' || typeof c.kernel !== 'string') return null;
+  return /^[A-Za-z0-9_]{1,16}$/.test(c.symbol) && /^0x[0-9a-fA-F]{40}$/.test(c.kernel) ? { symbol: c.symbol, kernel: c.kernel } : null;
+}
 
 /**
  * One per server process. It keeps the device codes of the approvals it started (in memory only, never in a result),
@@ -208,6 +236,15 @@ export class AgentConnection {
         const answered = await this.bootr.connectToken(p.deviceCode);
         if (answered.status !== 'approved') return;
         const entry = { credential: answered.credential, clientId: answered.clientId, label: answered.label, target: answered.target, expiresAt: answered.expiresAt };
+        // The approval must be for the coin that was asked for. One for another coin (the creator chose, or was talked
+        // into choosing, a different one on the approval page) is ended at once and never stored.
+        if (!targetMatches(p.asked, entry.target, p.bound)) {
+          await this.bootr.ownDisconnect({ credential: entry.credential }).catch(() => undefined);
+          p.endedFor = coinLine(entry.target);
+          this.stop(p, 'wrong_coin');
+          this.log(`[bootr-mcp] the approval was for ${p.endedFor}, not for the coin that was asked for. The connection was ended and nothing was stored.`);
+          return;
+        }
         try {
           await saveCredential(this.bootr.siteUrl, entry);
         } catch {
@@ -221,7 +258,7 @@ export class AgentConnection {
         this.stop(p, 'connected');
         await ensurePicturesDir();
         // The coin and the label only: the credential is never written anywhere but its file.
-        this.log(`[bootr-mcp] connected to ${describeCredential(p.connected).coin} as "${clean(p.connected.label)}".`);
+        this.log(`[bootr-mcp] connected to ${coinLine(p.connected.target)} as "${clean(p.connected.label)}".`);
       } catch (err) {
         const code = err instanceof BootrApiError ? err.code : '';
         if (['grant_expired', 'grant_used', 'grant_not_found', 'own_agent_disabled'].includes(code)) this.stop(p, code);
@@ -242,12 +279,15 @@ export class AgentConnection {
   }
 
   private waiting(p: Pending) {
+    // The site said which one coin the request is for: the page will show that coin and no other, and so does this.
+    const forCoin = p.bound ? ` This request is for $${p.bound.symbol} (treasury address ${p.bound.kernel}) and no other coin: the page must show that coin.` : '';
     return {
       connected: false,
       link: p.link,
       userCode: p.userCode,
+      ...(p.bound ? { coin: { symbol: p.bound.symbol, kernel: p.bound.kernel } } : {}),
       expiresAt: new Date(p.expiresAt).toISOString(),
-      message: `Not connected yet. The coin’s creator opens the link in a browser, checks that the page shows the code ${p.userCode}, and approves with the wallet that launched the coin. Signing moves no funds. Then call bootr_agent_connect again.`,
+      message: `Not connected yet. The coin’s creator opens the link in a browser, checks that the page shows the code ${p.userCode}, and approves with the wallet that launched the coin.${forCoin} Signing moves no funds. Then call bootr_agent_connect again.`,
     };
   }
 
@@ -257,7 +297,8 @@ export class AgentConnection {
       const status = await patient(() => this.bootr.ownStatus({ credential: entry.credential }));
       // A connection approved before the launch belongs to the coin from now on.
       if (entry.target.kind === 'draft') await saveCredential(this.bootr.siteUrl, { ...entry, target: { kind: 'coin', coin: status.coin } });
-      return answer({ connected: true, coin: status.coin, label: entry.label, runner: status.runner, message: `Connected to $${status.coin.symbol}.${status.runner === 'own' ? '' : ' Bootr runs this coin’s agent right now: the creator switches it to their own agent in the creator console.'}` });
+      // The symbol and the treasury address, always both: a symbol alone can belong to several coins.
+      return answer({ connected: true, coin: status.coin, label: entry.label, runner: status.runner, message: `Connected to ${coinLine({ kind: 'coin', coin: status.coin })}.${status.runner === 'own' ? '' : ' Bootr runs this coin’s agent right now: the creator switches it to their own agent in the creator console.'}` });
     } catch (err) {
       if (err instanceof BootrApiError && err.code === 'coin_not_launched') return answer({ connected: true, coin: null, label: entry.label, message: 'Connected for a launch that has not happened yet. Launch the coin from the wallet that approved, then call this again.' });
       if (err instanceof BootrApiError && ['unauthorized', 'credential_revoked', 'credential_expired'].includes(err.code)) {
@@ -271,14 +312,22 @@ export class AgentConnection {
   private async start(coin: string | undefined, clientName: string | undefined, note = ''): Promise<ToolResult> {
     const key = (coin ?? '').toLowerCase();
     const held = this.pending.get(key);
-    if (held?.ended === 'credentials_unwritable') {
+    const refused = (p: Pending): ToolResult | null => {
+      if (p.ended !== 'credentials_unwritable' && p.ended !== 'wrong_coin') return null;
       this.pending.delete(key);
-      return { isError: true, content: [text(UNWRITABLE)] };
+      return { isError: true, content: [text(p.ended === 'wrong_coin' ? wrongCoin(p.endedFor ?? 'another coin') : UNWRITABLE)] };
+    };
+    if (held) {
+      const told = refused(held);
+      if (told) return told;
     }
     if (held && !held.ended && Date.now() < held.expiresAt) {
       await this.poll(held);
       if (held.connected) return this.connectedTo(held.connected, clientName);
       if (!held.ended) return answer(this.waiting(held));
+      // The poll just now ended it for a reason the caller must hear, not be handed a new link for.
+      const told = refused(held);
+      if (told) return told;
     }
     if (held) this.stop(held, held.ended ?? 'replaced');
     let started;
@@ -290,6 +339,8 @@ export class AgentConnection {
     if (!USER_CODE_RE.test(started.userCode) || typeof started.deviceCode !== 'string') return failure(new BootrApiError('The site answered with a malformed connection request.', 'bad_response', null));
     const p: Pending = {
       key,
+      asked: coin,
+      bound: boundCoin(started.coin),
       deviceCode: started.deviceCode,
       userCode: started.userCode,
       // Built here from the site this server was started for: a link from the network is never shown.

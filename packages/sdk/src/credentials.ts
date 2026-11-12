@@ -153,6 +153,38 @@ export function describeCredential(entry: StoredCredential): { coin: string; ker
   };
 }
 
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+/**
+ * Whether a connection that came back approved is for what was asked for. `asked` is what the user named when the
+ * request was started: a symbol (with or without `$`), or a coin or treasury address. Nothing named fits any target.
+ * A launch that has not happened yet never fits a named coin. With `bound`, the coin the site said the request was
+ * for (`ConnectStartResponse.coin`), only that very coin fits: a symbol alone can belong to several coins.
+ *
+ * A client must check this before it keeps a credential: an approval page is where a person can be talked into
+ * approving for another coin than the one the client was asked to connect.
+ */
+export function targetMatches(asked: string | undefined, target: ConnectTarget, bound?: { kernel?: unknown } | null): boolean {
+  const kernel = target.kind === 'coin' && typeof target.coin?.kernel === 'string' ? target.coin.kernel.toLowerCase() : null;
+  if (bound && typeof bound.kernel === 'string') return kernel !== null && kernel === bound.kernel.toLowerCase();
+  const wanted = (asked ?? '').trim().replace(/^\$/, '').toLowerCase();
+  if (!wanted) return true;
+  if (target.kind !== 'coin' || kernel === null) return false;
+  if (ADDRESS_RE.test(wanted)) return kernel === wanted || String(target.coin.token ?? '').toLowerCase() === wanted;
+  return String(target.coin.symbol ?? '').toLowerCase() === wanted;
+}
+
+/**
+ * A connection's coin in words that tell it from every other coin: its symbol and its treasury address (symbols are
+ * not unique). Only letters, digits and `_` of the symbol and a well-formed address are shown, whatever was stored.
+ */
+export function coinLine(target: ConnectTarget): string {
+  if (target.kind !== 'coin') return 'a launch that has not happened yet';
+  const symbol = String(target.coin?.symbol ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 16) || '?';
+  const kernel = String(target.coin?.kernel ?? '');
+  return `$${symbol} (treasury address ${/^0x[0-9a-fA-F]{40}$/.test(kernel) ? kernel : 'unknown'})`;
+}
+
 function matches(entry: StoredCredential, coin: string): boolean {
   const wanted = coin.trim().replace(/^[$#]/, '').toLowerCase();
   if (!wanted) return false;

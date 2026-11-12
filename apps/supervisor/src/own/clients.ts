@@ -161,7 +161,34 @@ async function noteOnTape(ctx: Ctx, agentId: string, field: 'clientConnected' | 
 // Grants
 // ---------------------------------------------------------------------------
 
-/** `POST /internal/own/connect/start`: a new grant. The device code is returned here once and kept nowhere. */
+/**
+ * The one coin a client's `coin` names, or null: a kernel or token address of a coin, or a symbol (with or without `$`)
+ * that exactly one coin has. Symbols are not unique on a launchpad, so one that two coins share names neither. A
+ * revoked coin is no coin.
+ */
+async function resolveCoin(ctx: Ctx, hint: string | null): Promise<AgentRow | null> {
+  const named = (hint ?? '').trim();
+  if (!named) return null;
+  const listed = ne(agents.status, 'revoked');
+  let match;
+  if (isAddress(named, { strict: false })) {
+    const address = named.toLowerCase();
+    match = or(sql`lower(${agents.kernel}) = ${address}`, sql`lower(${agents.token}) = ${address}`);
+  } else {
+    const symbol = named.replace(/^\$/, '');
+    if (!/^[A-Za-z0-9_]{1,16}$/.test(symbol)) return null;
+    match = sql`lower(${agents.config}->'token'->>'symbol') = ${symbol.toLowerCase()}`;
+  }
+  const rows = await ctx.db.select().from(agents).where(and(listed, match)).limit(2);
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+/**
+ * `POST /internal/own/connect/start`: a new grant. The device code is returned here once and kept nowhere. A `coin`
+ * that names exactly one coin binds the grant to it (the row's `agent_id`, set while it is still pending): the
+ * approval page shows that coin and no other, and `approveGrant` refuses any other target, so a request the client
+ * made for one coin cannot be approved for another.
+ */
 export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?: unknown; siteUrl?: unknown }): Promise<ConnectStartResponse> {
   let site: URL;
   try {
@@ -176,6 +203,7 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
   await ctx.db.delete(agentGrants).where(lt(agentGrants.createdAt, new Date(now - GRANT_RETENTION_MS)));
   const clientName = cleanText(input.clientName, CLIENT_LABEL_MAX) || DEFAULT_CLIENT_NAME;
   const coinHint = cleanText(input.coin, COIN_HINT_MAX) || null;
+  const bound = await resolveCoin(ctx, coinHint);
   const deviceCode = randomSecret();
   const expiresAt = new Date(now + DEVICE_CODE_TTL_S * 1000);
   // A user code is unique among the grants of the last day; a clash (one in 20^8) draws again.
@@ -183,12 +211,12 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
     const userCode = newUserCode();
     const rows = await ctx.db
       .insert(agentGrants)
-      .values({ deviceHash: hashSecret(deviceCode), userCode, clientName, coinHint, status: 'pending', createdAt: new Date(now), expiresAt })
+      .values({ deviceHash: hashSecret(deviceCode), userCode, clientName, coinHint, status: 'pending', agentId: bound?.agentId ?? null, createdAt: new Date(now), expiresAt })
       .onConflictDoNothing()
       .returning({ userCode: agentGrants.userCode });
     if (rows.length === 0) continue;
     const base = site.origin;
-    return { deviceCode, userCode, verificationUri: `${base}/connect`, verificationUriComplete: `${base}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S };
+    return { deviceCode, userCode, verificationUri: `${base}/connect`, verificationUriComplete: `${base}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S, ...(bound ? { coin: coinRef(bound) } : {}) };
   }
   throw new OwnError('supervisor_unavailable');
 }
@@ -209,7 +237,11 @@ async function grantByUserCode(ctx: Ctx, userCode: unknown): Promise<GrantRow> {
 /** `GET /internal/own/connect/grant?code=`: what the approval page shows. Never the device code's hash, never who approved. */
 export async function grantView(ctx: Ctx, userCode: unknown): Promise<ConnectGrantView> {
   const grant = await grantByUserCode(ctx, userCode);
-  return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status: grantStatus(grant, ctx.now()), expiresAt: grant.expiresAt.toISOString() };
+  const status = grantStatus(grant, ctx.now());
+  // The coin a waiting request is bound to (public facts of a coin). Once approved the page has nothing more to choose,
+  // and what was approved for is not this route's to say.
+  const bound = status === 'pending' && grant.agentId ? await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, grant.agentId) }) : null;
+  return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status, expiresAt: grant.expiresAt.toISOString(), coin: bound ? coinRef(bound) : null };
 }
 
 export type ApproveTarget = { kind: 'coin'; kernel: string; agentId: string } | { kind: 'draft'; draftId: string };
@@ -257,6 +289,9 @@ export async function approveGrant(ctx: Ctx, input: { userCode?: unknown; creato
   const grant = await grantByUserCode(ctx, input.userCode);
   if (grant.status !== 'pending') throw new OwnError('grant_used');
   if (grant.expiresAt.getTime() <= now) throw new OwnError('grant_expired');
+  // A request the client made for one coin is approved for that coin or not at all: not for another coin of the same
+  // wallet, and not for a launch draft. (A pending grant's `agent_id` is the binding `startGrant` wrote.)
+  if (grant.agentId && (target.kind !== 'coin' || target.agentId !== grant.agentId)) throw new OwnError('wrong_coin');
   const label = cleanText(input.label, CLIENT_LABEL_MAX) || grant.clientName;
   const max = ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT');
 

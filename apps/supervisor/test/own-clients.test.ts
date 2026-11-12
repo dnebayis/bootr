@@ -120,6 +120,61 @@ describe('own agent: connecting a client', () => {
     }
   });
 
+  it('a request that names one coin is for that coin alone: no other coin and no launch draft can be approved for it (security review M2)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      // A second coin of the same creator, and a third with the same symbol as the second (symbols are not unique).
+      const address = (lead: string, n: string) => `0x${lead}${n.padStart(39, '0')}`;
+      const SECOND = { agentId: '9', kernel: address('2', '9'), token: address('3', '9') };
+      const twin = (n: string, creator: string) => ({ config: { runner: 'own', agentId: n, token: { address: address('3', n), symbol: 'TWIN', name: `Twin ${n}`, chainId: 84532 }, kernel: { address: address('2', n) } }, agent: { agentId: n, token: address('3', n), kernel: address('2', n), creator }, runtime: { agentId: n } });
+      await seedOwn(w, { config: { agentId: SECOND.agentId, token: { address: SECOND.token, symbol: 'SECOND', name: 'Second Coin', chainId: 84532 }, kernel: { address: SECOND.kernel } }, agent: { ...SECOND }, runtime: { agentId: SECOND.agentId } });
+      await seedOwn(w, twin('11', CREATOR));
+      await seedOwn(w, twin('12', STRANGER));
+      const mine = { agentId: AGENT_ID, kernel: KERNEL, token: TOKEN, symbol: 'TEST', name: 'Test Coin' };
+      const toSecond = { target: { kind: 'coin', kernel: SECOND.kernel, agentId: SECOND.agentId } };
+
+      // Named by its symbol (with or without the $, in any case), its kernel or its token: the start answer says which coin.
+      for (const named of ['$TEST', 'test', KERNEL, KERNEL.toLowerCase(), TOKEN]) {
+        const grant = await start(w, { coin: named });
+        expect([named, grant.coin]).toEqual([named, mine]);
+        const view = await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${grant.userCode}`);
+        expect(view.body.coin).toEqual(mine);
+        // The creator signs for another of their own coins, or for the draft of their next launch: refused, and nothing is used up.
+        const other = await approveCoin(w, grant.userCode, toSecond);
+        expect([other.status, other.body.error, other.body.message]).toEqual([409, 'wrong_coin', OWN_ERRORS.wrong_coin.message]);
+        expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode: grant.userCode, creator: CREATOR, target: { kind: 'draft', draftId: DRAFT } })).body.error).toBe('wrong_coin');
+        expect((await token(w, grant.deviceCode)).body).toEqual({ status: 'pending' });
+      }
+      expect(await w.db.select().from(agentClients)).toHaveLength(0);
+      // For the coin it names it is approved as ever, and the credential is that coin's.
+      const grant = await start(w, { coin: '$TEST' });
+      expect((await approveCoin(w, grant.userCode)).status).toBe(200);
+      expect((await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${grant.userCode}`)).body.coin ?? null).toBeNull();
+      const got = await token(w, grant.deviceCode);
+      expect(got.body.status === 'approved' && got.body.target).toEqual({ kind: 'coin', coin: mine });
+
+      // A name that fits no coin, or two, binds nothing: it stays a hint and the creator chooses.
+      for (const named of ['$TWIN', '$NOPE', '0x00000000000000000000000000000000000000aa', 'two words', undefined]) {
+        const loose = await start(w, named === undefined ? {} : { coin: named });
+        expect([named, loose.coin]).toEqual([named, undefined]);
+        expect((await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${loose.userCode}`)).body.coin).toBeNull();
+        expect((await w.db.select().from(agentGrants)).find((g) => g.userCode === loose.userCode)?.agentId).toBeNull();
+      }
+      const loose = await start(w, { coin: '$TWIN' });
+      expect((await approveCoin(w, loose.userCode, toSecond)).status).toBe(200);
+      // A request started for this coin and not yet approved goes with "disconnect all" too.
+      const bound = await start(w, { coin: KERNEL });
+      await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      expect((await token(w, bound.deviceCode)).body.error).toBe('grant_not_found');
+      // A revoked coin is no coin to name.
+      await w.db.update(agents).set({ status: 'revoked' }).where(eq(agents.agentId, AGENT_ID));
+      expect((await start(w, { coin: KERNEL })).coin).toBeUndefined();
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a grant runs out after ten minutes, approved or not', async () => {
     const w = await ownWorld();
     try {

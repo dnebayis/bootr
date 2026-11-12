@@ -47,6 +47,7 @@ export const OWN_ERRORS = {
   not_creator: { status: 403, message: 'Only the wallet that launched the coin can connect a client to its agent.' },
   unknown_coin: { status: 404, message: 'No Bootr coin matches that.' },
   too_many_clients: { status: 409, message: 'This coin already has as many clients as it may have. Disconnect one in the creator console first.' },
+  wrong_coin: { status: 409, message: 'This connection request is for another coin. Approve it for the coin it names, or start again from your AI client.' },
   unauthorized: { status: 401, message: 'Missing or unknown credential. Connect this client to Bootr again.' },
   credential_expired: { status: 401, message: "This client's connection ran out. Connect it to Bootr again." },
   credential_revoked: { status: 401, message: 'This client was disconnected in the creator console. Connect it again to use it.' },
@@ -207,11 +208,16 @@ export class FakeOwnBackend {
     const deviceCode = randomBytes(32).toString('base64url');
     const code = userCode();
     const site = String(body.siteUrl ?? 'https://bootr.fun').replace(/\/+$/, '');
+    // As the real route: a `coin` that names exactly one coin (its kernel, its token, or a symbol only one coin has) binds the request to it.
+    const named = typeof body.coin === 'string' ? body.coin.trim().replace(/^\$/, '').toLowerCase() : '';
+    const fits = named ? this.coins.filter((c) => [c.kernel, c.token, c.symbol].some((v) => v.toLowerCase() === named)) : [];
+    const bound = fits.length === 1 ? fits[0] : null;
     this.grants.set(code, {
       deviceHash: sha256(deviceCode),
       userCode: code,
       clientName,
       coinHint: typeof body.coin === 'string' && body.coin ? body.coin : null,
+      bound,
       status: 'pending',
       expiresAt: this.now() + DEVICE_CODE_TTL_S * 1000,
       target: null,
@@ -225,6 +231,7 @@ export class FakeOwnBackend {
       verificationUriComplete: `${site}/connect/${code}`,
       expiresIn: DEVICE_CODE_TTL_S,
       interval: DEVICE_POLL_INTERVAL_S,
+      ...(bound ? { coin: bound } : {}),
     };
   }
 
@@ -232,7 +239,7 @@ export class FakeOwnBackend {
     const grant = this.grants.get(code);
     if (!grant) throw new OwnError('grant_not_found');
     const expired = grant.status === 'pending' && grant.expiresAt <= this.now();
-    return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status: expired ? 'expired' : grant.status, expiresAt: iso(grant.expiresAt) };
+    return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status: expired ? 'expired' : grant.status, expiresAt: iso(grant.expiresAt), coin: grant.status === 'pending' && !expired ? (grant.bound ?? null) : null };
   }
 
   liveClients(agentId) {
@@ -246,6 +253,8 @@ export class FakeOwnBackend {
     if (grant.status !== 'pending') throw new OwnError('grant_used');
     if (grant.expiresAt <= this.now()) throw new OwnError('grant_expired');
     const creator = String(body.creator ?? '');
+    // A request bound to one coin is approved for that coin or not at all.
+    if (grant.bound && (body.target?.kind !== 'coin' || String(body.target.agentId) !== grant.bound.agentId)) throw new OwnError('wrong_coin');
     let target;
     if (body.target?.kind === 'coin') {
       const coin = this.coins.find((c) => c.kernel.toLowerCase() === String(body.target.kernel).toLowerCase());

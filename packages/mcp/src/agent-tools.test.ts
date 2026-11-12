@@ -200,7 +200,8 @@ describe('connecting', () => {
 
     site.backend.connectApprove({ userCode: waiting.userCode, creator: site.backend.creator, label: 'Test laptop', target: { kind: 'coin', kernel: COIN.kernel, agentId: COIN.agentId } });
     const done = json<{ connected: boolean; coin: typeof COIN; label: string; message: string }>(await call('bootr_agent_connect', { coin: 'OWL' }));
-    expect(done).toMatchObject({ connected: true, coin: COIN, label: 'Test laptop', message: 'Connected to $OWL.' });
+    // The symbol and the treasury address, always both: a symbol alone can belong to several coins.
+    expect(done).toMatchObject({ connected: true, coin: COIN, label: 'Test laptop', message: `Connected to $OWL (treasury address ${COIN.kernel}).` });
 
     // The credential is in its file, for its owner only, and nowhere else.
     const held = await stored();
@@ -559,13 +560,44 @@ describe('several coins and disconnecting', () => {
   });
 });
 
+describe('an approval for another coin than the one asked for (security review M2)', () => {
+  it('is never stored: the connection is ended again and the tool says which coin it was for', async () => {
+    // Whatever the earlier tests left waiting is not this test's business.
+    for (const [key, grant] of site.backend.grants) if (grant.status !== 'redeemed') site.backend.grants.delete(key);
+    const first = json<{ connected: boolean; userCode: string; coin?: { symbol: string; kernel: string }; message: string }>(await call('bootr_agent_connect', { coin: 'OWL' }));
+    expect(first.connected).toBe(false);
+    // The site said which one coin "OWL" names, and the tool shows it with its treasury address.
+    expect(first.coin).toEqual({ symbol: 'OWL', kernel: COIN.kernel });
+    expect(first.message).toContain(`This request is for $OWL (treasury address ${COIN.kernel}) and no other coin`);
+    const grant = site.backend.grants.get(first.userCode)!;
+    // The site refuses an approval of this request for any other coin.
+    expect(() => site.backend.connectApprove({ userCode: first.userCode, creator: site.backend.creator, target: { kind: 'coin', kernel: SECOND_COIN.kernel, agentId: SECOND_COIN.agentId } })).toThrow('wrong_coin');
+    // A site that did not hold it to its coin (an older one, or a symbol two coins share): the creator approves for $FOX.
+    (grant as unknown as { bound: unknown }).bound = null;
+    site.backend.connectApprove({ userCode: first.userCode, creator: site.backend.creator, label: 'Lured', target: { kind: 'coin', kernel: SECOND_COIN.kernel, agentId: SECOND_COIN.agentId } });
+    const refused = await call('bootr_agent_connect', { coin: 'OWL' });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toMatch(new RegExp(`^wrong_coin: The approval was for \\$FOX \\(treasury address ${SECOND_COIN.kernel}\\), not for the coin this client was asked to connect\\. That connection was ended again and nothing was stored\\.`));
+    // Nothing was kept on this machine, and the client the approval made is disconnected on the site.
+    expect(await stored()).toEqual([]);
+    expect(await readFile(credentialsFile, 'utf8').catch(() => '')).not.toContain('bootr_agt_');
+    expect(site.backend.clientsOf(SECOND_COIN.agentId).clients).toEqual([]);
+    expect(runs('disconnect').length).toBeGreaterThan(0);
+    expect(stderr).toContain(`the approval was for $FOX (treasury address ${SECOND_COIN.kernel}), not for the coin that was asked for`);
+    // Asked again, a new request starts: the refusal is told once.
+    const again = json<{ connected: boolean; userCode: string }>(await call('bootr_agent_connect', { coin: 'OWL' }));
+    expect(again.connected).toBe(false);
+    expect(again.userCode).not.toBe(first.userCode);
+  });
+});
+
 describe('a credential', () => {
   it('appeared in no result and no log line of this whole run', () => {
     const all = `${everything.join('\n')}\n${stderr}`;
     expect(everything.length).toBeGreaterThan(60);
     expect(all).not.toContain('bootr_agt_');
     expect(all).not.toContain('deviceCode');
-    expect(stderr).toContain('connected to $OWL as "Test laptop"');
+    expect(stderr).toContain(`connected to $OWL (treasury address ${COIN.kernel}) as "Test laptop"`);
     // Nor in a URL: every request that carried one carried it as a header.
     for (const s of site.seen) expect(s.path).not.toContain('bootr_agt_');
   });
