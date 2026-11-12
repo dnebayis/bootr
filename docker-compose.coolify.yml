@@ -172,6 +172,9 @@ services:
       # Cloudflare saw (CF-Connecting-IP): set it only once the origin firewall admits Cloudflare's ranges alone
       # (docs/deploy/coolify.md, "Cloudflare in front").
       TRUSTED_PROXY: ${TRUSTED_PROXY:-}
+      # Bring your own agent (docs/design/byo-agent.md 13.2): the one flag, read by the web and the supervisor alike.
+      # Empty or `false` = off; exactly `true` = on. Set it once in Coolify; both services take it from here.
+      OWN_AGENT_ENABLED: ${OWN_AGENT_ENABLED:-}
     volumes:
       # Admin config and launch drafts (docs/deploy/railway.md section 7). The image owns /data as `node`,
       # and a named volume inherits that ownership on first use.
@@ -234,6 +237,9 @@ services:
       BLOCKRUN_BASE_URL: ${BLOCKRUN_BASE_URL:-}
       BLOCKRUN_PAYTO_ADDRESS: ${BLOCKRUN_PAYTO_ADDRESS:-}
       BLOCKRUN_ALLOW_EXACT: ${BLOCKRUN_ALLOW_EXACT:-}
+      # Bring your own agent: the same flag as the web's (empty = off). The limits (`OWN_*` in src/config.ts) keep their
+      # defaults unless a line is added here for one.
+      OWN_AGENT_ENABLED: ${OWN_AGENT_ENABLED:-}
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}
