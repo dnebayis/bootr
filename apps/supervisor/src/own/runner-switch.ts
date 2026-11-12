@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { boundedState, directModelId } from '@bootr/agent-core';
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorBody, type OwnErrorCode, type Runner, type RunnerSwitchResponse } from '@bootr/shared/own-agent';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { erc20Abi, getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, RuntimeRow, SupervisorContext } from '../context.js';
 import { actions, agents, runtimes } from '../db/schema.js';
@@ -42,7 +42,11 @@ export interface RunnerSwitchInput {
   by?: unknown;
   /** The models offered right now (the catalog under the admin allow-list), as the web reads them. */
   allowedModels?: unknown;
+  /** The config revision the web read before it asked; a stored revision that differs refuses the switch (`settings_changed`). */
+  expectedRevision?: unknown;
 }
+
+const revisionOf = (config: Record<string, unknown>): number => (typeof config.revision === 'number' ? config.revision : 0);
 
 export type RunnerSwitchResult = { ok: true; response: RunnerSwitchResponse } | { ok: false; status: number; body: OwnErrorBody };
 
@@ -144,6 +148,12 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
   if (!isAddressEqual(by, agent.creator as Address)) return refuse('not_creator');
   if (typeof input.runner !== 'string' || !(RUNNERS as readonly string[]).includes(input.runner)) return refuse('invalid_request', { field: 'runner', detail: 'runner must be hosted or own.' });
   const runner = input.runner as Runner;
+  // The revision the caller read, when it names one. Every `/internal/*` request is good for the whole HMAC window, so a
+  // captured switch could be sent again after the creator had switched back; a switch bumps the revision, so the copy
+  // names a revision that is no longer the stored one and does nothing.
+  const expected = input.expectedRevision;
+  if (expected !== undefined && (typeof expected !== 'number' || !Number.isInteger(expected) || expected < 0)) return refuse('invalid_request', { field: 'expectedRevision', detail: 'expectedRevision, when sent, is the config revision that was read.' });
+  if (expected !== undefined && revisionOf(agent.config) !== expected) return refuse('settings_changed');
   if (runnerOf(agent.config) === runner) return refuse('runner_unchanged');
 
   // The one place the flag is asked: a coin may not become own while the feature is off. Leaving own is never refused.
@@ -172,6 +182,7 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
   try {
     // Under the lease nothing else writes this agent: read it again and decide on what is stored now.
     const current = (await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agent.agentId) })) ?? agent;
+    if (expected !== undefined && revisionOf(current.config) !== expected) return refuse('settings_changed');
     if (runnerOf(current.config) === runner) return refuse('runner_unchanged');
     const log = ctx.log.child({ agentId: agent.agentId });
 
@@ -212,10 +223,25 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
       await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: null, status, ...(status === 'paused' ? {} : { nextAt: new Date(ctx.now()) }) });
     }
 
-    const revision = (typeof current.config.revision === 'number' ? current.config.revision : 0) + 1;
-    const config: Record<string, unknown> = { ...current.config, runner, ...(model ? { model } : {}), revision };
+    // The config route takes no lease, so a setting the creator saved while this switch waited (on the relay, on the
+    // open turn) is in the stored config by now and not in `current`. The switch writes its own keys onto the config
+    // as it is stored at this moment, and only if the revision it read is still the stored one; otherwise it reads again.
+    let revision = 0;
+    let written = false;
     const now = new Date(ctx.now());
-    await ctx.db.update(agents).set({ config, updatedAt: now }).where(eq(agents.agentId, agent.agentId));
+    for (let attempt = 0; attempt < 3 && !written; attempt++) {
+      const latest = (await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agent.agentId), columns: { config: true } }))?.config ?? current.config;
+      const base = revisionOf(latest);
+      revision = base + 1;
+      const config: Record<string, unknown> = { ...latest, runner, ...(model ? { model } : {}), revision };
+      const rows = await ctx.db
+        .update(agents)
+        .set({ config, updatedAt: now })
+        .where(and(eq(agents.agentId, agent.agentId), sql`coalesce((${agents.config}->>'revision')::int, 0) = ${base}`))
+        .returning({ agentId: agents.agentId });
+      written = rows.length > 0;
+    }
+    if (!written) return refuse('supervisor_unavailable');
     await ctx.db
       .insert(actions)
       .values({

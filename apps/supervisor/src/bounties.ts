@@ -920,6 +920,16 @@ export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, c
     return { job: await jobByIdOrThrow(ctx, job.id), verdict: null };
   }
 
+  // The agent row is the sweep's (read once per sweep), and the collection above read X and fetched every artefact:
+  // seconds, at times minutes. A coin switched to its creator's own agent in that time is own now, whatever the row in
+  // hand says, and no thought is bought for it. The stored config is read again here, directly before the judge; the
+  // job stays `judging` and the next sweep, which reads the row afresh, collects it as an own coin's job.
+  const stored = await ctx.db.query.agents.findFirst({ where: (t, { eq: eqf }) => eqf(t.agentId, agent.agentId), columns: { config: true } });
+  if (!stored || isOwn(stored)) {
+    log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { considered: considered.length }, "the coin became its creator's own agent's while the entries were collected; no thought bought");
+    return { job: await jobByIdOrThrow(ctx, job.id), verdict: null };
+  }
+
   const entries: JudgeEntry[] = considered.map((c) => (c.fetched.kind === 'image' ? { n: c.n, kind: 'image', image: { mime: c.fetched.mime, bytes: c.fetched.bytes } } : { n: c.n, kind: 'link', excerpt: c.fetched.excerpt }));
   const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries });
   if (verdict.invalid === 'thought_pending') {

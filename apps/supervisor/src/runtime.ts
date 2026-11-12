@@ -584,6 +584,18 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
 export async function continueTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, lease: string): Promise<TurnResult | null> {
   const turn = runtime.turn as unknown as Turn | null;
   if (!turn) return null;
+  if (turn.own) {
+    // A turn the creator's own client opened: its conversation lives in that client and `messages` is empty here, so
+    // the hosted loop has nothing to continue and would buy thoughts on a turn that is not its own. No path should
+    // leave one on a hosted coin (the runner switch closes it under the lease); should one be found all the same, it
+    // is dropped the way a cut-short turn ends and the caller starts a turn of its own.
+    const state = runtime.state as unknown as AgentState;
+    if ((turn.role ?? 'social') === 'social') state.continuation = { progress: 'Turn ended by the runtime (the agent is now run by Bootr). Continue from the agenda.', recentSteps: (turn.recentSteps ?? []).slice(-6) };
+    await saveRuntime(ctx, agent.agentId, { turn: null, state: boundedState(trimState(state)) as unknown as Record<string, unknown>, status: 'waiting' });
+    runtime.turn = null;
+    ctx.log.warn({ agentId: agent.agentId, turnId: turn.own.turnId }, 'a stored own turn was found on a hosted coin and dropped; the hosted loop does not resume it');
+    return null;
+  }
   return runLoop(ctx, agent, runtime, config, turn, lease);
 }
 

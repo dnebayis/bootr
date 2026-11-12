@@ -554,6 +554,12 @@ export async function sendChatMessage(ctx: SupervisorContext, agent: AgentRow, b
     throw err;
   }
 
+  // The agent row was read when the request came in, and the fuel read and the prompt above took their time. A switch
+  // to the creator's own agent since then means there is no mind here to answer: the stored config is read again,
+  // directly before the thought is reserved and bought.
+  const stored = await ctx.db.query.agents.findFirst({ where: (t, { eq: eqf }) => eqf(t.agentId, agent.agentId), columns: { config: true } });
+  if (!stored || runnerOf(stored.config) === 'own') return { ok: false, status: 409, error: 'chat_not_available', message: OWN_ERRORS.chat_not_available.message };
+
   const now = ctx.now();
   const key = `chat:${agent.agentId}:${randomUUID()}`;
   const agentRowId = `msg_${randomUUID()}`;

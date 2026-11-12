@@ -136,6 +136,7 @@ export type OwnErrorCode =
   | 'held_action'
   | 'client_not_found'
   | 'runner_unchanged'
+  | 'settings_changed'
   | 'model_required'
   | 'model_not_allowed'
   | 'chat_not_available';
@@ -186,6 +187,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   held_action: { status: 409, message: 'An earlier action is waiting for its receipt. The server settles it; look again at retryAt.' },
   client_not_found: { status: 404, message: 'No such client on this coin.' },
   runner_unchanged: { status: 409, message: 'The agent is already run that way.' },
+  settings_changed: { status: 409, message: "The agent's settings changed since they were read. Nothing was done; read them again, then retry." },
   model_required: { status: 400, message: 'Choose the model the Bootr agent should think with.' },
   model_not_allowed: { status: 400, message: 'That model is not offered right now. Choose another.' },
   chat_not_available: { status: 409, message: "This coin's agent runs in its creator's own AI client. Talk to it there." },
@@ -495,6 +497,11 @@ export interface RunnerSwitchRequest {
   runner: Runner;
   /** Switching to `hosted`: the model to think with; required when the stored one is not on the allowed list. */
   model?: string;
+  /**
+   * The config revision the caller read before it asked. When the stored revision is another one the switch answers
+   * `settings_changed` and does nothing, so the same request sent a second time (a switch bumps the revision) is refused.
+   */
+  expectedRevision?: number;
 }
 
 export interface RunnerSwitchResponse {

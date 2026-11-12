@@ -5,7 +5,7 @@ import { mock } from '@/lib/mock';
 import { filterAllowedModels } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { relayModels } from '@/lib/server/relay-models';
-import { parseRunnerSwitch, switchAgentRunner } from '@/lib/server/supervisor';
+import { getAgentConfig, parseRunnerSwitch, switchAgentRunner } from '@/lib/server/supervisor';
 import { authorizeReview, fail, ok, readBody, relay } from '../approvals/review';
 
 /**
@@ -16,7 +16,8 @@ import { authorizeReview, fail, ok, readBody, relay } from '../approvals/review'
  * step in progress has finished. `model` is the model the Bootr agent should think with; it is needed only when the
  * stored one is no longer offered (`model_required`), and must be one of `GET /api/models` (`model_not_allowed`).
  * While own agents are switched off on the deployment a switch to `own` answers `own_agent_disabled` and a switch to
- * `hosted` works as always: the agent service decides both. `runner_unchanged` when the agent is already run that way.
+ * `hosted` works as always: the agent service decides both. `runner_unchanged` when the agent is already run that way,
+ * `settings_changed` when the settings were changed between this route's read of them and the switch.
  * Errors are the own-agent error body `{error, message}` (docs/design/byo-agent.md section 13.3).
  */
 export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kernel]/runner'>) {
@@ -36,7 +37,11 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kern
   try {
     // The same list as GET /api/models: the catalog under the admin allow-list. Only a switch to the Bootr agent needs it.
     const allowedModels = change.runner === 'hosted' ? filterAllowedModels((await relayModels()).models, (await readConfig()).allowedModels).map((m) => m.id) : [];
-    return ok({ ...(await switchAgentRunner(auth.agentId, { ...change, by: auth.address, allowedModels })), token: auth.token });
+    // The revision of the settings as they are stored now goes with the request: the agent service refuses a switch
+    // whose revision is no longer the stored one (`settings_changed`), so a copy of this request sent again does nothing.
+    const stored = await getAgentConfig(auth.agentId);
+    if (!stored) return fail(OWN_ERRORS.unknown_coin.status, 'unknown_coin', OWN_ERRORS.unknown_coin.message);
+    return ok({ ...(await switchAgentRunner(auth.agentId, { ...change, by: auth.address, allowedModels, expectedRevision: stored.revision })), token: auth.token });
   } catch (err) {
     return relay(err);
   }

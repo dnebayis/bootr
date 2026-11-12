@@ -233,7 +233,10 @@ export async function judgeJob(ctx: SupervisorContext, agent: AgentRow, config: 
   const key = judgeKey(agent.agentId, typeof rawInput?.jobId === 'string' ? rawInput.jobId.trim() : '');
   // An own coin buys no thought, ever: the caller (bounties.ts) does not ask for one, and this is the lock behind that
   // door. `thought_pending` leaves the job as it is, waiting for its own agent's ruling.
-  if (isOwn(agent)) {
+  // ...and the row in the caller's hand may be older than a runner switch (the bounty sweep reads it once per sweep),
+  // so the stored config is asked too: either one saying `own` is enough.
+  const stored = await ctx.db.query.agents.findFirst({ where: (t, { eq }) => eq(t.agentId, agent.agentId), columns: { config: true } });
+  if (isOwn(agent) || (stored && isOwn(stored))) {
     ctx.log.warn({ agentId: agent.agentId, role: 'judge', jobId: rawInput?.jobId }, "judge asked for an own-agent coin; no thought bought, the job waits for its own agent's ruling");
     return { jobId: typeof rawInput?.jobId === 'string' ? rawInput.jobId : '', winner: null, perCriterion: {}, reason: '', invalid: 'thought_pending', thought: thoughtOf(key, model, null) };
   }

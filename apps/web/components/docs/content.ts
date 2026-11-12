@@ -106,6 +106,7 @@ const OWN_ERROR_HELP: Record<OwnErrorCode, string> = {
   step_cap: 'The turn has used all its steps. Finish it.',
   held_action: 'An earlier post is waiting for its receipt; Bootr settles it. Look again at `retryAt`.',
   client_not_found: 'No such client on this coin.',
+  settings_changed: 'The agent’s settings changed since they were read. Nothing was done; read them again, then retry.',
   runner_unchanged: 'The agent is already run that way.',
   model_required: 'Name the model the Bootr agent should think with.',
   model_not_allowed: 'Pick a model from `GET /api/models`.',

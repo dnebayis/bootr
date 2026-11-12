@@ -9,7 +9,7 @@
 import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
 import { runnerOf, type Runner, type RunnerView } from '@bootr/shared/own-agent';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes } from './db/schema.js';
@@ -469,10 +469,33 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     }
   }
 
-  const revision = (typeof before.revision === 'number' ? before.revision : 0) + 1;
-  config.revision = revision;
+  // `before` is the row the route read when the request came in, and the sender call above took its time. Another
+  // write may have landed since: above all a runner switch, which writes `runner` and bumps the revision under the
+  // runtime lease this route does not take. Writing the whole of `config` would put the old runner back and hand the
+  // coin to the other mind. So only the keys this update changed are written, onto the config as it is stored now, and
+  // only if the revision read with it is still the stored one; otherwise it is read again.
+  const changedKeys = [...new Set([...Object.keys(before), ...Object.keys(config)])].filter((key) => key !== 'revision' && key !== 'runner' && JSON.stringify(before[key]) !== JSON.stringify(config[key]));
   const now = new Date(ctx.now());
-  const [row] = await ctx.db.update(agents).set({ config, updatedAt: now }).where(eq(agents.agentId, agent.agentId)).returning();
+  let revision = 0;
+  let row: AgentRow | undefined;
+  for (let attempt = 0; attempt < 3 && !row; attempt++) {
+    const stored = (await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agent.agentId), columns: { config: true } }))?.config ?? before;
+    const base = typeof stored.revision === 'number' ? stored.revision : 0;
+    const next: Record<string, unknown> = { ...stored };
+    for (const key of changedKeys) {
+      if (key in config) next[key] = config[key];
+      else delete next[key];
+    }
+    revision = base + 1;
+    next.revision = revision;
+    [row] = await ctx.db
+      .update(agents)
+      .set({ config: next, updatedAt: now })
+      .where(and(eq(agents.agentId, agent.agentId), sql`coalesce((${agents.config}->>'revision')::int, 0) = ${base}`))
+      .returning();
+    if (row) config = next;
+  }
+  if (!row) return reject(409, 'config_changed', 'the settings changed while this was being saved; nothing was written, try again');
   await ctx.db
     .insert(actions)
     .values({
@@ -488,6 +511,5 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     })
     .onConflictDoNothing();
   ctx.log.info({ agentId: agent.agentId, by, revision, fields }, 'agent config updated by the creator');
-  const next = row ?? { ...agent, config, updatedAt: now };
-  return { ok: true, config: configView(next, null, null, await ownViewOf(ctx, next)), fields };
+  return { ok: true, config: configView(row, null, null, await ownViewOf(ctx, row)), fields };
 }

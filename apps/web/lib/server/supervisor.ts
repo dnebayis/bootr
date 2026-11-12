@@ -561,7 +561,9 @@ export function parseRunnerSwitch(input: unknown): RunnerSwitchRequest | null {
  * `POST /internal/agents/:id/runner` (docs/design/byo-agent.md section 13.6): the creator moves the coin between "My
  * own agent" and "Bootr agent". The agent service checks the creator, the flag (for a switch to own only) and the
  * model, takes the agent's lease and answers what the creator should know. Its refusals arrive as the own-agent error
- * body and are relayed with their code (`runner_unchanged`, `model_required`, `model_not_allowed`, `own_agent_disabled`).
+ * body and are relayed with their code (`runner_unchanged`, `model_required`, `model_not_allowed`, `own_agent_disabled`,
+ * `settings_changed`). `expectedRevision` is the config revision the route read: the agent service does nothing when
+ * the stored one differs, which is what makes a captured copy of this request worthless once the switch has happened.
  */
 export async function switchAgentRunner(agentId: string, body: RunnerSwitchRequest & { by: Address; allowedModels: string[] }): Promise<RunnerSwitchResponse> {
   const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/runner`, body, RUNNER_SWITCH_TIMEOUT_MS);
