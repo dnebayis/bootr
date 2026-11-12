@@ -24,7 +24,7 @@ import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
 import { agentDirectory, bootrAgentOf, conversationGuard, markOf, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
 import type { AgentRow, SupervisorContext } from '../context.js';
-import { actions, treasuryOps } from '../db/schema.js';
+import { actions, approvals, treasuryOps } from '../db/schema.js';
 import { originalPostGate } from '../rhythm.js';
 import { SenderError, type SenderInboxItem, type ReplyEligibility } from '../sender-client.js';
 import { clampSlippageBps, encodeFundSpenderCall, encodeSwapCalls, executeOp, fundingBudget, minUsdcOut, opView, openOps, prepareOp, readTreasuryOnChain, recentOps, swapHelperAddress } from '../treasury.js';
@@ -81,12 +81,26 @@ export interface OwnBrokerTurn {
   postAllowed: boolean;
   /** The agent's next original-post slot (epoch ms), for the refusal's text; null when it has none. */
   nextSlotAt: number | null;
+  /** This turn already carried one original post (sent, or queued for review): a turn has one, whatever let it out. */
+  postedThisTurn?: boolean;
+  /** The coin is in approval mode: an original post is queued, and one queued original per slot is all the queue holds. */
+  reviewed?: boolean;
+  /** The coin's own post interval (ms): how long one queued original stands for its slot. */
+  postIntervalMs?: number | null;
 }
 
 /** An original post outside its slot (docs/design/byo-agent.md section 1.6): the text an own agent's client reads. */
 export function postSlotNotDue(nextSlotAt: number): string {
   return `post_slot_not_due: an original post needs a due slot or an open request from your creator; your next slot is at ${new Date(nextSlotAt).toISOString()}. Replies may still go out.`;
 }
+/** A second original post in one turn: a due slot, a creator request, the digest or the numbers post each let one post out, not several. */
+export const POST_ALREADY_SENT_THIS_TURN = 'post_already_sent: this turn already carried its one original post; nothing was posted. Replies may still go out, and the next original post waits for your next slot.';
+/** Approval mode: an original post is already waiting for the creator, so a second one for the same slot is not queued. */
+export function postAlreadyQueued(approvalId: string): string {
+  return `post_already_queued: an original post of yours (${approvalId}) is still waiting for your creator's review; nothing more is queued for this slot until it is decided. Replies may still go out.`;
+}
+/** How long one queued original stands for its slot when the coin has no interval on record. */
+export const QUEUED_POST_SLOT_MS = 60 * 60 * 1000;
 export const IMAGE_NOT_FROM_THIS_TURN = 'image_not_from_this_turn: attach only a picture uploaded in this turn. Publish your post without an imageId.';
 /** The window of an own coin's daily counts of `search_web` and `read_url`. */
 export const OWN_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -110,7 +124,8 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
 /**
  * The guards an own agent's action passes before anything else runs (docs/design/byo-agent.md sections 1.5, 1.6 and 7).
  * A hosted model is held to these by its prompt, its fuel and its loop; an own agent's client is held by code:
- *   - `publish_post` needs a due slot of this turn, an open creator request, the digest or the numbers post;
+ *   - `publish_post` needs a due slot of this turn, an open creator request, the digest or the numbers post, a turn
+ *     carries one original post at most, and in approval mode one queued original per slot is all the queue holds;
  *   - a picture attached to a publish must have been stored in this turn;
  *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them).
  * Null when the action may go on. `executeAction` calls it for an own coin; the engine calls it itself before a publish
@@ -120,6 +135,16 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
   const action = pending.action;
   const turn: OwnBrokerTurn = env.own ?? { openedAt: ctx.now(), postAllowed: false, nextSlotAt: null };
   if (action.tool === 'publish_post' && !turn.postAllowed) return failed(postSlotNotDue(turn.nextSlotAt ?? ctx.now()));
+  if (action.tool === 'publish_post' && turn.postedThisTurn) return failed(POST_ALREADY_SENT_THIS_TURN);
+  if (action.tool === 'publish_post' && turn.reviewed) {
+    // A queued post never reaches X until the creator approves it, so nothing else bounds how many wait: one per slot.
+    const since = new Date(ctx.now() - (turn.postIntervalMs && turn.postIntervalMs > 0 ? turn.postIntervalMs : QUEUED_POST_SLOT_MS));
+    const waiting = await ctx.db.query.approvals.findFirst({
+      where: and(eq(approvals.agentId, agent.agentId), eq(approvals.kind, 'post'), eq(approvals.status, 'pending_approval'), gt(approvals.createdAt, since), ne(approvals.id, pending.id)),
+      columns: { id: true },
+    });
+    if (waiting) return failed(postAlreadyQueued(waiting.id));
+  }
   if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && action.input.imageId) {
     // A picture that does not exist (or is another coin's) is left to `mediaForAction`, which says so in the hosted words.
     const storedAt = await imageStoredAt(ctx, agent.agentId, action.input.imageId);

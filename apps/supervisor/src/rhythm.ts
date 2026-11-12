@@ -148,7 +148,12 @@ export function formatQuietHours(hours: QuietHours): string {
 // Slots
 // ---------------------------------------------------------------------------
 
-/** Original posts (any Bootr agent) decided in the last slot window: in flight or sent. A refused post is not one. */
+/**
+ * Original posts (any Bootr agent) decided in the last slot window: in flight or sent. A refused post is not one, and
+ * neither is a post queued for its creator's review (approvals.ts records it `completed` with `queued: true`): it has
+ * not reached X and may never. The slot is counted when an approved post is sent, by the row `decideApproval` writes
+ * then. Counting the queued row let one coin in approval mode fill the window for every agent with posts nobody saw.
+ */
 export async function slotsUsed(ctx: Pick<SupervisorContext, 'db'>, now: number, opts: { excludeActionId?: string } = {}): Promise<number> {
   const since = new Date(now - SLOT_WINDOW_MS);
   const rows = await ctx.db
@@ -159,6 +164,7 @@ export async function slotsUsed(ctx: Pick<SupervisorContext, 'db'>, now: number,
         gt(actions.createdAt, since),
         inArray(actions.status, ['sending', 'sent', 'completed']),
         sql`${actions.action}->>'tool' = 'publish_post'`,
+        sql`coalesce(${actions.result}->'result'->>'queued', 'false') <> 'true'`,
         ...(opts.excludeActionId ? [ne(actions.actionId, opts.excludeActionId)] : []),
       ),
     );

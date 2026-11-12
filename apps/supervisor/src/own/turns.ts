@@ -461,7 +461,9 @@ async function replay(s: Session, record: OwnCallRecord, turnId: string, turnEnd
 function brokerTurn(s: Session, turn: Turn): OwnBrokerTurn {
   const slotOpen = !!turn.postDue && (s.state.lastPostAt ?? 0) < turn.startedAt;
   const postAllowed = !!turn.digestWeek || !!turn.numbersDay || (turn.creatorRequests?.length ?? 0) > 0 || slotOpen;
-  return { openedAt: turn.own?.openedAt ?? turn.startedAt, postAllowed, nextSlotAt: scheduleFor(s.config, s.state, s.ctx.now())?.nextAt ?? null };
+  const schedule = scheduleFor(s.config, s.state, s.ctx.now());
+  // `turn.posted` is set when an original post of this turn settled as sent or queued (runtime.ts `afterSettledAction`).
+  return { openedAt: turn.own?.openedAt ?? turn.startedAt, postAllowed, nextSlotAt: schedule?.nextAt ?? null, postedThisTurn: turn.posted === true, reviewed: requiresApproval(s.agent.config), postIntervalMs: schedule?.intervalMs ?? null };
 }
 
 /** The agent-core tools this turn may call now: what it was opened with, as far as the coin's powers and owner rules still allow. */
