@@ -11,6 +11,7 @@
     "./config": "./src/config.ts",
     "./fuel": "./src/fuel.ts",
     "./own-agent": "./src/own-agent.ts",
+    "./own-presence": "./src/own-presence.ts",
     "./public-fetch": "./src/public-fetch.ts",
     "./trending": "./src/trending.ts",
     "./workers": "./src/workers.ts"

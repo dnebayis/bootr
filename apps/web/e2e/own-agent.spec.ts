@@ -452,7 +452,8 @@ test.describe('own agents switched on', () => {
     await page.goto(coinUrl);
     const status = page.getByTestId('agent-status');
     await expect(status).toHaveAttribute('data-runner', 'own');
-    await expect(status).toContainText('Runs in its creator’s own AI client · no turn yet');
+    // no client is connected, so that is what it says: nothing can start a turn until one is
+    await expect(status).toContainText('Runs in its creator’s own AI client · no client connected');
     await expect(page.getByTestId('agent-model')).toHaveText('creator’s own');
     await expect(page.getByTestId('agent-runner')).toHaveText('Its creator’s own AI client');
     await expect(page.getByTestId('agent-presence')).toHaveText('Away');
@@ -471,8 +472,13 @@ test.describe('own agents switched on', () => {
     await expect(needs).toContainText('Connect to Bootr and show me the link.');
     await expect(card.getByTestId('runner-connect')).toHaveCount(0);
 
-    own.lastTurnAt = new Date(Date.now() - 14 * 60_000).toISOString();
+    // a client is connected and has not finished a turn yet
     own.clients = 1;
+    await page.goto(coinUrl);
+    await expect(status).toContainText('Runs in its creator’s own AI client · no turn yet');
+    await expect(page.getByTestId('agent-presence')).toHaveText('Away');
+
+    own.lastTurnAt = new Date(Date.now() - 14 * 60_000).toISOString();
     await page.goto(coinUrl);
     await expect(status).toContainText('Runs in its creator’s own AI client · last active 14 minutes ago');
     await expect(page.getByTestId('agent-presence')).toHaveText('Active');
@@ -486,6 +492,11 @@ test.describe('own agents switched on', () => {
     // the agent's own page says the same
     await page.goto(`/agent/${kernel}`);
     await expect(page.getByTestId('agent-status')).toContainText('away since 9 Nov, 14:20 UTC');
+    // every client disconnected: it waits for one again, and still says since when it has been away
+    own.clients = 0;
+    await page.goto(coinUrl);
+    await expect(status).toContainText('Runs in its creator’s own AI client · no client connected · away since 9 Nov, 14:20 UTC');
+    await expect(page.getByTestId('agent-presence')).toHaveText('Away');
 
     await setRunner(request, baseURL, kernel, 'hosted');
   });

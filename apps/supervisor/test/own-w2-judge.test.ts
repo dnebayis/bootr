@@ -361,7 +361,8 @@ describe('the judge turn of an own agent', () => {
       expect(await jobOf(w)).toMatchObject({ status: 'paid', txHash: TX, payee: ADDR_A });
       expect(published(w).at(-1)).toMatchObject({ actionId: `bounty:${job.id}:paid`, replyTo: '7003' });
       const tape = (await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty');
-      expect(tape.map((i) => i.summary)).toEqual(['Paid 0.5 USDC for a bounty entry', 'Judged a bounty: entry 2 of 2 won', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);
+      // the ruling was the client's, and its row says so; the job was posted while Bootr ran the agent, and the payment is the creator's
+      expect(tape.map((i) => i.summary)).toEqual(['Paid 0.5 USDC for a bounty entry', 'Judged a bounty: entry 2 of 2 won · own agent', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);
     } finally {
       await w.close();
     }
@@ -623,6 +624,8 @@ describe('the sweep and an own coin’s jobs', () => {
       expect(report).not.toHaveProperty('unjudged');
       expect(job).toMatchObject({ status: 'proposed', payee: ADDR_A });
       expect(thoughts(w)).toHaveLength(1);
+      const tape = (await agentActivity(w.ctx, (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!, null)).filter((i) => i.kind === 'bounty');
+      expect(tape.map((i) => i.summary)).toEqual(['Judged a bounty: entry 2 of 2 won', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);
       const rows = (await entriesOf(w, job.id)).filter((e) => e.considered);
       for (const e of rows) expect(Object.keys(e.artefact as object).sort()).toEqual(['mediaKey', 'sha256', 'url']);
       // two days on, the wait of an own coin means nothing to it

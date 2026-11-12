@@ -5,20 +5,26 @@
  *     agent's client made (`action.via === 'own'`, docs/design/byo-agent.md section 3.5) says so after its summary;
  *   - `sv_treasury_ops`: confirmed and failed fee claims, swaps, gas and fuel top-ups;
  *   - the runtime's current status (sleeping, paused, held, awake). The supervisor keeps no history of status
- *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake.
+ *     changes, so this is one item at `sv_runtimes.updated_at`, not a log of every sleep and wake. An own coin is
+ *     never "awake" or "sleeping": its row says that it waits for its creator's AI client, or when that client was
+ *     last at work, by the rule the coin page's status line uses (`@bootr/shared/own-presence`);
  *   - `sv_approvals`: posts waiting for the creator's review, approvals (the sent post is its own `post` row) and
  *     rejections; texts and notes stay private (this is a public read).
  *   - `sv_service_calls`: paid web services (`x402_fetch`): host, amount and the model's reason, answered or lost;
  *   - `sv_bounty_jobs`: one row per job event (posted, judged, paid, no winner, cancelled, expired), in plain words
- *     with no address (bounties.ts `bountyActivity`).
+ *     with no address (bounties.ts `bountyActivity`). The job an own agent's client posted and the ruling it gave
+ *     carry the same mark as its other rows.
  * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer` | `service` | `bounty`;
  * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
+import { ownPresenceOf, ownTapeStatus } from '@bootr/shared/own-presence';
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { postIntervalMsOf } from './agent-config.js';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { approvalActivity } from './approvals.js';
 import { bountyActivity } from './bounties.js';
 import { actions, images, treasuryOps } from './db/schema.js';
+import { isOwn, OWN_AGENT_MARK, ownHooks } from './own/registry.js';
 import { tapeServiceCalls, type ServiceCallRow } from './services.js';
 import { formatUnits } from 'viem';
 
@@ -58,8 +64,8 @@ export function shortAmount(raw: string, decimals: number): string {
   return out.includes('.') ? out.replace(/0+$/, '').replace(/\.$/, '') : out;
 }
 
-/** What a row made by an own agent's client carries after its summary. */
-export const OWN_AGENT_MARK = ' · own agent';
+/** What a row made by an own agent's client carries after its summary (own/registry.ts holds the text; bounties.ts marks its rows with it too). */
+export { OWN_AGENT_MARK };
 
 const FIELD_LABELS: Record<string, string> = { runner: 'who runs the agent', clientConnected: 'AI client connected', clientDisconnected: 'AI client disconnected', instructions: 'instructions', model: 'model', powers: 'powers', cadence: 'cadence', postsPerDay: 'posts per day', jobLines: 'job lines', requireApproval: 'post review', imageModel: 'image model', imageStyle: 'image style', routing: 'economy mode', services: 'paid services caps', bounties: 'bounty caps', treasuryTurn: 'treasury turn', judgeModel: 'judge model' };
 
@@ -140,12 +146,26 @@ export function serviceItem(chainId: number, row: ServiceCallRow): ActivityItem 
   return { at: row.updatedAt.toISOString(), kind: 'service', summary, ...(row.txHash ? { txHash: row.txHash, url: explorerTxUrl(chainId, row.txHash) } : {}) };
 }
 
-/** The current status as one tape item (no history is kept; see the module comment). */
-export function statusItem(agent: AgentRow, runtime: RuntimeRow | null): ActivityItem {
+/** What the status row of an own coin is written from: the clients connected now, and the clock of the read. */
+export interface OwnStatusInput {
+  clients: number;
+  now: number;
+}
+
+/**
+ * The current status as one tape item (no history is kept; see the module comment). `own` is given for an own coin
+ * and only for one: its row never says "awake" or "sleeping", since no fuel and no tick moves it. It says what it
+ * waits for (an X account, its creator's AI client) or when that client last finished a turn.
+ */
+export function statusItem(agent: AgentRow, runtime: RuntimeRow | null, own?: OwnStatusInput): ActivityItem {
   const at = (runtime?.updatedAt ?? agent.updatedAt).toISOString();
   const xHandle = (agent.config as { xHandle?: unknown }).xHandle;
   let summary: string;
-  if (agent.status === 'onboarding') summary = xHandle ? 'Onboarding: installing the session key' : 'Sleeping: waiting for an X account';
+  if (own && agent.status === 'onboarding') summary = xHandle ? 'Being set up' : 'Waiting for an X account';
+  else if (own && agent.status !== 'revoked' && runtime?.status !== 'paused' && runtime?.status !== 'held') {
+    const lastTurnAt = ((runtime?.state ?? {}) as { ownLastTurnAt?: unknown }).ownLastTurnAt;
+    summary = ownTapeStatus(ownPresenceOf({ lastTurnAt: typeof lastTurnAt === 'number' ? lastTurnAt : null, clients: own.clients }, postIntervalMsOf(agent.config as Record<string, unknown>), own.now));
+  } else if (agent.status === 'onboarding') summary = xHandle ? 'Onboarding: installing the session key' : 'Sleeping: waiting for an X account';
   else if (agent.status === 'revoked') summary = 'Revoked';
   else if (!runtime) summary = 'Awake';
   else if (runtime.status === 'sleeping') summary = 'Went to sleep: fuel below 1 USDC';
@@ -209,7 +229,9 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   for (const item of approvalItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
   for (const row of serviceRows) items.push(serviceItem(ctx.chain.chainId, row));
   for (const item of bountyItems) items.push(item);
-  const status = statusItem(agent, runtime);
+  // An own coin's row needs the clients connected now. A count that cannot be read is taken as one, so a database
+  // hiccup never makes the public tape say that nothing is connected.
+  const status = statusItem(agent, runtime, isOwn(agent) ? { clients: await ownHooks.countClients(ctx, agent.agentId).catch(() => 1), now: ctx.now() } : undefined);
   if (!before || Date.parse(status.at) < before.getTime()) items.push(status);
   items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return items.slice(0, limit);

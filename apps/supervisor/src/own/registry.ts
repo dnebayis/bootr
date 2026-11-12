@@ -27,6 +27,12 @@ export function isOwn(agent: Pick<AgentRow, 'config'>): boolean {
   return runnerOf(agent.config) === 'own';
 }
 
+/**
+ * What a row of the coin's public tape carries after its summary when an own agent's client made it (a post, a reply,
+ * a picture, a bounty job, a ruling): who thought is part of the public record. No client id, no private detail.
+ */
+export const OWN_AGENT_MARK = ' · own agent';
+
 /** One of the supervisor's own-agent settings: the config value when config.ts carries it, else the default. */
 export function ownSetting<K extends keyof typeof OWN_DEFAULTS>(ctx: Pick<SupervisorContext, 'config'>, name: K): number {
   const value = (ctx.config as unknown as Record<string, unknown>)[name];

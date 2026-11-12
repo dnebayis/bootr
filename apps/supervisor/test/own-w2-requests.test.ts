@@ -13,6 +13,7 @@
 import { DEFAULT_BOUNTIES_POLICY, parseAgentConfig } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
+import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { CREATOR_REQUEST_TTL_MS, creatorRequestsSection, fileRequest, openRequests, recentRequests } from '../src/creator-requests.js';
 import { actions, agents, bountyJobs, memories, runtimes } from '../src/db/schema.js';
@@ -109,6 +110,9 @@ describe('a request filed while hosted, answered by the own agent', () => {
       await expect(engine.act('answer_request', { requestId: bounty.id, outcome: 'done', reason: 'again' })).rejects.toMatchObject({ code: 'step_cap' });
       expect((await w.db.select().from(actions)).map((a) => (a.action as { tool?: string }).tool).filter(Boolean).sort()).toEqual(['bounty_post', 'treasury_read']);
       expect(await w.db.select().from(bountyJobs)).toHaveLength(1);
+      // the client posted the job, and the coin's tape says so like its other rows
+      const row = (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect((await agentActivity(w.ctx, row, null)).filter((i) => i.kind === 'bounty').map((i) => i.summary)).toEqual([`Posted a bounty for 0.5 USDC: ${JOB.task} · own agent`]);
       // the social turn's request was not touched
       expect((await openRequests(w.ctx, AGENT_ID, 'social')).map((r) => r.id)).toEqual([post.id]);
       // shown once, it does not pull the next treasury turn forward again

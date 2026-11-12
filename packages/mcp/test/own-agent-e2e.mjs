@@ -284,6 +284,9 @@ async function w1(env, mcp) {
   assert.equal(read.status, 200, read.json?.error === 'unknown_coin' ? 'the indexer does not know the seeded coin: pass SUPERVISOR_URL and SUPERVISOR_SERVICE_KEY so the tape is read from the supervisor' : `the tape answered ${read.status}`);
   const rows = JSON.stringify(read.json.items);
   assert.ok(rows.includes('own agent'), 'rows are marked "· own agent"');
+  // An own coin is never "awake" or "sleeping": with a client connected and a turn finished, its status row says when.
+  const statusRow = read.json.items.find((i) => i.kind === 'status');
+  assert.ok(statusRow && /^Last active \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2} UTC$/.test(statusRow.summary) && !/awake|sleep/i.test(statusRow.summary), `the status row says when the client was last at work, got ${JSON.stringify(statusRow?.summary)}`);
   assert.ok(!rows.includes('bootr_agt_'), 'no credential on the tape');
   ok(`${read.json.items.length} rows on the tape`);
 

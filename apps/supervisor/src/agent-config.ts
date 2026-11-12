@@ -166,6 +166,11 @@ function currentPreset(config: Record<string, unknown>): WorkerPreset {
   return { capabilities: caps, postIntervalMs: interval, identity: stored.identity };
 }
 
+/** The posting interval in force for a stored config (`worker.postIntervalMs` of the config view). */
+export function postIntervalMsOf(config: Record<string, unknown>): number {
+  return currentPreset(config).postIntervalMs;
+}
+
 /** The stored `routing` block, or off when it is missing or malformed. */
 function routingOf(config: Record<string, unknown>): { decideModel: string | null } {
   const r = config.routing as { decideModel?: unknown } | null | undefined;

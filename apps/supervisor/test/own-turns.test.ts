@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { beginAction, markSent, parseAction, type PendingAction } from '@bootr/agent-core';
 import { OWN_ERRORS, type ActResult, type DueView, type OwnErrorBody, type TurnOpen } from '@bootr/shared/own-agent';
+import { utcMinuteLabel } from '@bootr/shared/own-presence';
 import { IMAGE_NOT_FROM_THIS_TURN, ownGuard, postSlotNotDue, readUrlDailyCap, searchDailyCap } from '../src/broker/index.js';
 import { fileRequest } from '../src/creator-requests.js';
 import { actions, approvals, images, memories, notifications, runtimes } from '../src/db/schema.js';
@@ -15,7 +16,7 @@ import { registerOwnRole, type OwnRoleHandler } from '../src/own/registry.js';
 import { STALE_MENTION_REASON, TURN_ENDED_ERROR } from '../src/own/turns.js';
 import { acquireLease, releaseLease, type Turn } from '../src/runtime.js';
 import { tick } from '../src/tick.js';
-import { AGENT_ID, seedAgent } from './helpers.js';
+import { AGENT_ID, CREATOR, seedAgent } from './helpers.js';
 import { act, connectClient, finishInput, mention, openSocial, ownWorld, patchState, quietRuntime, runtimeOf, seedOwn, stateOf, turnOf, type OwnWorld } from './own-helpers.js';
 
 const MIN = 60_000;
@@ -911,6 +912,42 @@ describe('own agent: coming back after a downtime', () => {
 });
 
 describe('own agent: the public record', () => {
+  it('the status row never says awake or sleeping: it waits for its creator\'s AI client, or says when that client was last at work', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      const status = async () => (await w.call<{ items: { kind: string; summary: string }[] }>('GET', `/internal/agents/${AGENT_ID}/activity`)).body.items.find((i) => i.kind === 'status')!.summary;
+      // No client was ever connected: nothing can start a turn, and the row says what it waits for.
+      expect(await status()).toBe('Waiting for its creator’s AI client: none is connected');
+      const { credential } = await connectClient(w);
+      expect(await status()).toBe('AI client connected · no turn yet');
+      const turn = await openSocial(w, credential);
+      expect((await finish(w, credential, turn.turnId)).body.turnEnded).toBe(true);
+      const at = utcMinuteLabel(w.ctx.now());
+      // The moment, not "n minutes ago": a stored row cannot count. The coin page says the same from the same rule.
+      expect(await status()).toBe(`Last active ${at}`);
+      w.setNow(w.ctx.now() + 3 * DAY);
+      expect(await status()).toBe(`Away since ${at}`);
+      // The creator disconnects every client: it waits for one again, and still says since when it has been away.
+      expect((await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true })).status).toBe(200);
+      expect(await status()).toBe(`Waiting for its creator’s AI client: none is connected · away since ${at}`);
+      for (const word of [/awake/i, /sleep/i, /fuel/i]) expect(await status()).not.toMatch(word);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the status row of a coin Bootr runs is the one it always was', async () => {
+    const w = await ownWorld();
+    try {
+      await seedAgent(w);
+      const tape = await w.call<{ items: { kind: string; summary: string }[] }>('GET', `/internal/agents/${AGENT_ID}/activity`);
+      expect(tape.body.items.find((i) => i.kind === 'status')!.summary).toBe('Awake');
+    } finally {
+      await w.close();
+    }
+  });
+
   it('marks what an own agent\'s client did on the coin\'s tape, and leaves a hosted row as it was', async () => {
     const { w, credential } = await setup({ mentions: [mention('1001')] });
     try {

@@ -54,11 +54,11 @@ import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { encodeAbiParameters, formatUnits, getAddress, isAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
+import { actions, agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
 import { JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, judgeJob, type JudgeEntry, type JudgeVerdict } from './judge.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
-import { isOwn, ownSetting } from './own/registry.js';
+import { isOwn, OWN_AGENT_MARK, ownSetting } from './own/registry.js';
 import { originalPostGate } from './rhythm.js';
 import { SenderError, type SenderConversationReply } from './sender-client.js';
 import { assertPublicHost, htmlToText } from './web-reader.js';
@@ -1424,7 +1424,12 @@ export interface BountyTapeItem {
 
 const short = (task: string) => (task.length > 80 ? `${task.slice(0, 77).trimEnd()}...` : task);
 
-/** One tape row per job event: posted, judged, paid, no winner, cancelled, expired, failed. Plain words, no address. */
+/**
+ * One tape row per job event: posted, judged, paid, no winner, cancelled, expired, failed. Plain words, no address.
+ * Two of them are the agent's own doing, and when an own agent's client did them they carry the mark its other rows
+ * carry: the job it posted (its `bounty_post` action says `via: 'own'`) and the ruling it gave (the verdict's model is
+ * the own-agent id). The rest is code or the creator, and is never marked.
+ */
 export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, limit: number, before?: Date): Promise<BountyTapeItem[]> {
   const rows = await ctx.db
     .select()
@@ -1437,11 +1442,25 @@ export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, li
     if (!at || (before && at.getTime() >= before.getTime())) return;
     items.push({ at: at.toISOString(), kind: 'bounty', summary, ...extra });
   };
+  // The jobs an own agent's client posted, in one read (none when no job is listed).
+  const postedByOwn = new Set(
+    rows.length
+      ? (
+          await ctx.db
+            .select({ actionId: actions.actionId })
+            .from(actions)
+            .where(and(inArray(actions.actionId, rows.map((j) => j.actionId)), sql`${actions.action}->>'via' = 'own'`))
+        ).map((r) => r.actionId)
+      : [],
+  );
   for (const job of rows) {
     const amount = `${usdc(job.amountMicroUsdc)} USDC`;
     const postUrl = job.postId ? replyLink(job.postId) : undefined;
-    push(job.openedAt, `Posted a bounty for ${amount}: ${short(job.task)}`, postUrl ? { url: postUrl } : {});
-    if (job.judgedAt && job.status !== 'no_winner') push(job.judgedAt, `Judged a bounty: entry ${(job.verdict as { winner?: unknown } | null)?.winner ?? '?'} of ${job.entriesConsidered} won`, postUrl ? { url: postUrl } : {});
+    push(job.openedAt, `Posted a bounty for ${amount}: ${short(job.task)}${postedByOwn.has(job.actionId) ? OWN_AGENT_MARK : ''}`, postUrl ? { url: postUrl } : {});
+    if (job.judgedAt && job.status !== 'no_winner') {
+      const verdict = job.verdict as { winner?: unknown; thought?: { model?: unknown } } | null;
+      push(job.judgedAt, `Judged a bounty: entry ${verdict?.winner ?? '?'} of ${job.entriesConsidered} won${verdict?.thought?.model === OWN_AGENT_MODEL_ID ? OWN_AGENT_MARK : ''}`, postUrl ? { url: postUrl } : {});
+    }
     switch (job.status) {
       case 'paid':
         push(job.paidAt, `Paid ${amount} for a bounty entry`, { ...(job.txHash ? { txHash: job.txHash, url: explorerTxUrl(ctx.chain.chainId, job.txHash) } : {}) });
