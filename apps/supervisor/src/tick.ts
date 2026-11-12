@@ -2,9 +2,15 @@
  * The supervisor tick: onboarding, then up to MAX_AGENTS_PER_TICK awake runtimes ordered by nextAt, then a sweep of
  * up to MAX_SLEEPING_PER_TICK sleeping runtimes (one treasury read each), then the paused ones (reconciliation only).
  * Per runtime: lease -> reconcile pending effects -> sleep rule -> fee policy -> wake decision -> turn.
+ *
+ * An own-agent coin (its stored config says `runner: 'own'`, docs/design/byo-agent.md section 2.4) gets everything above
+ * the wake decision and nothing below it: no sleep rule, no background mention read, no wake decision and no turn, with
+ * the feature's flag on or off. Its turns are opened by its creator's client (own/turns.ts); the tick only closes one
+ * the client left open.
  */
 import { randomUUID } from 'node:crypto';
-import { interruptionPlan, pendingReplyDue, reconcile, wakeDecision, type AgentRole, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
+import { interruptionPlan, pendingReplyDue, reconcile, wakeDecision, type AgentConfig, type AgentRole, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
+import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { kernelAbi } from './abi.js';
@@ -28,6 +34,10 @@ import { SenderError, type SenderInboxItem } from './sender-client.js';
 import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, type AgentChainState } from './treasury.js';
 import { openServiceCalls, reconcileServiceCall } from './services.js';
 import { bountyConversationIds, sweepBounties } from './bounties.js';
+import type { Logger } from './log.js';
+import { isOwn } from './own/registry.js';
+import { expireOwnTurn } from './own/turns.js';
+import type { TreasurySnapshot } from './treasury.js';
 
 export { SLEEP_USDC };
 
@@ -155,11 +165,15 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // REST_CHECK_MS and not every tick: with 200 ms blocks the RPC key is the scarce resource, not the minute. Its
     // receipts are still reconciled below, and its social line still goes out.
     const state0 = runtime.state as unknown as AgentState;
-    const resting = runtime.status === 'sleeping' || runtime.status === 'paused';
+    // How this coin is run is read from its stored config and nothing else (own/registry.ts `isOwn`): the flag is not asked.
+    const own = isOwn(agent);
+    // An own coin with no open turn asks the chain as seldom as a resting agent: nothing of its own is waiting on it.
+    const resting = runtime.status === 'sleeping' || runtime.status === 'paused' || (own && !runtime.turn);
     const restDue = !resting || ctx.now() - (state0.chainCheckedAt ?? 0) >= ctx.config.REST_CHECK_MS;
     if (resting && !restDue) {
       await reconcileOps(ctx, agent).catch((err) => log.warn({ err }, 'treasury reconcile failed'));
       runtime = await reconcilePending(ctx, agent, runtime);
+      if (own && runtime.status !== 'paused') return await processOwn(ctx, agent, config, runtime, null, log);
       if (runtime.status === 'sleeping' || runtime.status === 'paused') {
         await postSocial(ctx, agent, config, runtime, runtime.status);
         return { ran: false, reasons: ['resting'], skipped: runtime.status };
@@ -199,6 +213,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     await reconcileServiceCalls(ctx, agent).catch((err) => log.warn({ err }, 'service call reconcile failed'));
     runtime = await reconcilePending(ctx, agent, runtime);
     if (runtime.status === 'paused') return { ran: false, reasons: ['paused'], skipped: 'paused' };
+
+    // An own coin stops here: the fee policy, the hold bookkeeping and the idle rule for its turn, and no hosted turn.
+    if (own) return await processOwn(ctx, agent, config, runtime, chainState?.treasury ?? null, log);
 
     // 2. Sleep rule: no inference without fuel; refuel detection from the snapshot read above.
     const treasury = chainState?.treasury ?? null;
@@ -358,6 +375,34 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
   } finally {
     await releaseLease(ctx, agent.agentId, lease);
   }
+}
+
+/**
+ * The rest of a tick for an own-agent coin, after the pauses and the reconciliation every coin gets. It never reaches
+ * the sleep rule, the mention read, the wake decision or a turn, so no model is ever called for it and no thought is
+ * bought, whatever its fuel and whatever the feature's flag says. What still runs: the fee policy (claims and gas), the
+ * X hold bookkeeping (a 403 hold lifted on reconnect, the ended-hold note), and the idle rule that closes a turn the
+ * client left open. A coin that was asleep when it became own is awake from here on: an own agent never sleeps for fuel.
+ */
+async function processOwn(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, leased: RuntimeRow, treasury: TreasurySnapshot | null, log: Logger): Promise<ProcessResult> {
+  let runtime = leased;
+  if (treasury) await runFeePolicy(ctx, agent, treasury).catch((err) => log.warn({ err }, 'fee policy failed'));
+  if (runtime.status === 'sleeping') {
+    await saveRuntime(ctx, agent.agentId, { status: 'waiting' });
+    runtime = { ...runtime, status: 'waiting' };
+  }
+  const state = runtime.state as unknown as AgentState;
+  const now = ctx.now();
+  let changed = false;
+  if (state.postForbiddenUntil && agent.status === 'active' && (await liftForbiddenHoldOnReconnect(ctx, agent, state))) changed = true;
+  const stateHold = quotaHold(state.postQuotaUntil, now) ?? creditsHold(state.postCreditsUntil, now) ?? forbiddenHold(state.postForbiddenUntil, now);
+  if (trackHoldEnd(state, stateHold, now)) changed = true;
+  if (changed) await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
+  // A turn the client left open (idle, or open too long) is closed like a cut-short turn; with the flag off this is what ends it.
+  if (await expireOwnTurn(ctx, agent, runtime)) runtime = (await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) })) ?? runtime;
+  // The coin page's model line follows the runner: the reserved id while own (the indexer's off-chain social store).
+  await postSocial(ctx, agent, { xHandle: config.xHandle, model: OWN_AGENT_MODEL_ID }, runtime, 'awake');
+  return { ran: false, reasons: ['own_agent'], skipped: 'own_agent' };
 }
 
 /** Closes `paid` / `unknown` service calls whose action is no longer pending (a crashed turn) from the chain; the pending one goes through `reconcilePending`. */

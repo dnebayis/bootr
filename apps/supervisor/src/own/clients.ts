@@ -117,7 +117,7 @@ export function newUserCode(): string {
 export function cleanText(raw: unknown, max: number): string {
   if (typeof raw !== 'string') return '';
   const text = raw
-    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return [...text].slice(0, max).join('').trim();

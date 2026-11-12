@@ -27,6 +27,7 @@ import { providerHold } from './provider-hold.js';
 import { checkModelCatalog, lastCatalogCheck } from './model-check.js';
 import { migrateModels } from './model-migration.js';
 import type { AgentState } from './runtime.js';
+import { mountOwnRoutes } from './own/routes.js';
 
 export interface PanicRevokeResult {
   /** Kernels whose valid nonce was bumped (`revokeAllSessionKeysBatch`), by batch tx. */
@@ -115,6 +116,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   });
 
   app.use('/internal/*', hmacAuth(ctx.config.SUPERVISOR_SERVICE_KEY, nowSec));
+  mountOwnRoutes(app, ctx);
 
   app.get('/internal/agents', async (c) => {
     const rows = await ctx.db.select({ agent: agents, runtime: runtimes }).from(agents).leftJoin(runtimes, eq(runtimes.agentId, agents.agentId));
