@@ -5,7 +5,8 @@ import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Addres
 import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { bountyJobViews } from './bounties.js';
-import { configView, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
+import { configView, ownViewOf, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
+import { mountRunnerRoutes } from './own/runner-routes.js';
 import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes, treasuryOps } from './db/schema.js';
@@ -185,8 +186,9 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     if (!agent) return c.json({ error: 'not_found' }, 404);
     // `xHold`: the 403 hold on the X account, if one is in force; `xConnection`: the sender's account row in a word.
     // The coin page shows the creator the way out of either (CreatorXBanner).
-    const [xHold, xConnection] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId)]);
-    return c.json(configView(agent, xHold, xConnection));
+    // `own`: for an own coin, when its client last finished a turn and how many clients are connected (agent-config.ts).
+    const [xHold, xConnection, own] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId), ownViewOf(ctx, agent)]);
+    return c.json(configView(agent, xHold, xConnection, own));
   });
 
   /**
@@ -203,6 +205,9 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const [xHold, xConnection] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId)]);
     return c.json({ ...result.config, xHold, xConnection });
   });
+
+  // ---- Own agents (docs/design/byo-agent.md): the creator's switch between "My own agent" and "Bootr agent".
+  mountRunnerRoutes(app, ctx);
 
   /** `?limit=50` (max 200) `&before=<iso>`: newest first; see activity.ts for the kinds and summaries. */
   app.get('/internal/agents/:id/activity', async (c) => {

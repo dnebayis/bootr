@@ -8,6 +8,7 @@
  *      `EntryPoint.handleOps` when ENABLE_MODE_SELF_BUNDLE is on (strict bundlers reject enable mode)
  */
 import { composeIdentityText, DEFAULT_MIND_MODEL, directModelId, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { OWN_AGENT_MODEL_ID, runnerOf } from '@bootr/shared/own-agent';
 import { CUSTOM_WORKER_ID, DEFAULT_WORKER_TEMPLATE, normalizeWorkerPreset, POSTS_PER_DAY, workerFromCard, workerTemplateByHash, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLogs, type Address, type Hex, type Log } from 'viem';
@@ -20,6 +21,7 @@ import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
 import { createKernelClient } from './kernel.js';
 import { agentSource, clankerDetailsOf, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, CLANKER_V5_DEFAULT_POLICY, type ClankerLaunchDetails, type ClankerV5LaunchDetails, type ClankerV5TokenSettings } from './launch-source.js';
+import { ownHooks } from './own/registry.js';
 import { initialState } from './runtime.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 import type { SenderAccount } from './sender-client.js';
@@ -321,6 +323,11 @@ export function buildLaunchConfig(
   const treasury = ctx.config.PLATFORM_TREASURY_ADDRESS;
   const platform = !!treasury && isAddressEqual(launch.creator, treasury as Address);
   const { preset } = worker;
+  // An own-agent launch (docs/design/byo-agent.md section 6) writes the reserved id `own-agent` as its model: the
+  // creator's own AI client thinks, so no hosted model was chosen. That alone makes the coin own, whatever the
+  // feature's flag says, and the default hosted model is kept for a later switch to the Bootr agent.
+  const own = launch.model === OWN_AGENT_MODEL_ID;
+  const hostedModel = own ? DEFAULT_MODEL : launch.model || DEFAULT_MODEL;
   return {
     agentId: launch.agentId.toString(),
     token: { address: getAddress(launch.token), symbol: token.symbol, name: token.name, chainId: ctx.chain.chainId },
@@ -332,7 +339,8 @@ export function buildLaunchConfig(
     xHandle: null,
     xUserId: null,
     // The launch event carries the id the form offered at the time; a retired one starts on the catalog model that stands in for it.
-    model: directModelId(launch.model || DEFAULT_MODEL) ?? (launch.model || DEFAULT_MODEL),
+    model: directModelId(hostedModel) ?? hostedModel,
+    ...(own ? { runner: 'own' } : {}),
     identityText: composeIdentityText(creatorIdentity, defaultIdentity(token.name, token.symbol, launch.agentURI, platform, platform && worker.id !== CUSTOM_WORKER_ID ? [] : preset.identity)),
     creatorIdentity,
     platform,
@@ -538,6 +546,23 @@ async function backfillDraftIds(ctx: SupervisorContext, pending: AgentRow[]): Pr
     if (draftId === null) continue;
     await ctx.db.update(agents).set({ draftId, updatedAt: new Date(ctx.now()) }).where(eq(agents.agentId, agent.agentId));
     agent.draftId = draftId;
+    // The draft id was not readable at registration, so its AI clients could not be adopted then.
+    await adoptDraftClients(ctx, agent);
+  }
+}
+
+/**
+ * Own agents: the AI clients the creator approved for this launch's draft before the coin existed move to the agent
+ * (`ownHooks.adoptDraftClients` checks that the approving wallet is the launch's creator and revokes them otherwise).
+ * Best effort: a failure is logged and never stops a registration.
+ */
+async function adoptDraftClients(ctx: SupervisorContext, agent: AgentRow): Promise<void> {
+  if (!agent.draftId) return;
+  try {
+    const adopted = await ownHooks.adoptDraftClients(ctx, agent);
+    if (adopted > 0) ctx.log.info({ agentId: agent.agentId, draftId: agent.draftId, adopted }, 'AI clients adopted from the launch draft');
+  } catch (err) {
+    ctx.log.warn({ agentId: agent.agentId, err }, 'could not adopt the AI clients of the launch draft');
   }
 }
 
@@ -668,7 +693,12 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
     .insert(runtimes)
     .values({ agentId, state: initialState() as unknown as Record<string, unknown>, cycle: 0, nextAt: now, status: 'ready', configRevision: 0, updatedAt: now })
     .onConflictDoNothing();
-  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, source: launch.source, block: launch.blockNumber.toString(), draftId, worker: worker.id, creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
+  ctx.log.info({ agentId, kernel: row.kernel, token: row.token, source: launch.source, block: launch.blockNumber.toString(), draftId, worker: worker.id, runner: runnerOf(config), creatorIdentity: creatorIdentity === null ? 'pending' : creatorIdentity ? 'set' : 'none' }, 'agent registered');
+  // Own agents (docs/design/byo-agent.md section 5.1): the draft's AI clients move to the agent, and for an own coin
+  // the sender learns its X read budget (a hosted coin starts on the sender's default, as always). Neither can fail a
+  // registration.
+  await adoptDraftClients(ctx, row);
+  if (runnerOf(config) === 'own') await ownHooks.applyRunnerQuota(ctx, agentId, 'own').catch((err: unknown) => ctx.log.warn({ agentId, err }, 'could not set the X read budget of an own agent'));
   // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
   const builderCode = await ensureBuilderCode(ctx, row);
   return builderCode ? { ...row, builderCode } : row;
