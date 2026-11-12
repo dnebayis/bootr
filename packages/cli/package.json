@@ -1,7 +1,7 @@
 {
   "name": "@bootrfun/cli",
   "version": "0.2.0",
-  "description": "Bootr from the terminal: read coins and agents, print launches and fee claims as unsigned transactions. It never asks for a private key.",
+  "description": "Bootr from the terminal: read coins and agents, print launches and fee claims as unsigned transactions, and keep your own coin's agent running. It never asks for a private key.",
   "license": "MIT",
   "keywords": [
     "bootr",

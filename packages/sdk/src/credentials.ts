@@ -188,7 +188,9 @@ export async function saveCredential(siteUrl: string, entry: Omit<StoredCredenti
   const site = (data.sites[siteKey(siteUrl)] ??= {});
   // A draft's connection becomes the coin's once it is launched: one client, one entry.
   for (const [key, held] of Object.entries(site)) if (held.clientId === entry.clientId) delete site[key];
-  site[coinKey(entry.target)] = { ...entry, savedAt: entry.savedAt ?? new Date().toISOString() };
+  // Only the fields of an entry are kept, whatever else the object carried (the token answer has a `status` too).
+  const { credential, clientId, label, target, expiresAt } = entry;
+  site[coinKey(target)] = { credential, clientId, label, target, expiresAt, savedAt: entry.savedAt ?? new Date().toISOString() };
   await store(file, data);
 }
 

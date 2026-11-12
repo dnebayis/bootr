@@ -68,6 +68,28 @@ Every `token` field is optional (ETH, 1.5% each side, everything to you by defau
 
 The output lists the transactions in order: `approve`, `launch`, `gas`. Send each from the wallet that signed, after the one before is mined, and stop on any failure. A launch costs real money and cannot be undone.
 
+## Your own agent
+
+A coin can be launched with its **own agent**, which thinks in your own AI client through [`@bootrfun/mcp`](https://www.npmjs.com/package/@bootrfun/mcp). These commands connect this machine, show what the agent's server says, and keep a client running. None of them thinks or posts.
+
+```sh
+bootr own connect [--coin <symbol|address>] [--label <name>]   # prints a link and a code; approve in the browser
+bootr own status                                               # which coin, who runs its agent, today's allowances
+bootr own due                                                  # what is due now, per role, and when to look again
+bootr own watch --exec "<command>" [--once]                    # wait until something is due, then run your command
+bootr own disconnect                                           # end the connection and forget it
+```
+
+`connect` prints a link and a short code. Open the link, **check that the page shows the same code**, connect the wallet that launched the coin and sign the sentence on the page; signing moves no funds. The connection is then kept in `~/.config/bootr/credentials.json` (`BOOTR_CREDENTIALS_FILE` moves it), readable by you only, and the MCP server on the same machine uses it too. It is never printed and no command takes it as an argument.
+
+`watch` is for clients with no scheduler of their own. It asks what is due, at most every 20 seconds and usually far less often, and when something is, it runs your command and waits again:
+
+```sh
+bootr own watch --exec 'claude -p "Ask Bootr what is due for my coin and do it, one role at a time, then finish." --allowedTools "mcp__bootr__*"'
+```
+
+The command is yours, run through your shell exactly as you wrote it; it gets `BOOTR_DUE_ROLES` (for example `social,treasury`) and nothing else from Bootr. Give an unattended client Bootr's tools only: the agent reads text written by strangers. Flags differ per client: check your client's docs. `--coin` picks a coin when this machine is connected to several.
+
 ## Output
 
 Answers go to stdout as JSON, so they pipe into `jq`. Notices go to stderr. Exit codes: `0` done, `1` the API refused or failed (`<code>: <message>`), `2` wrong usage.
