@@ -216,6 +216,8 @@ export interface Turn {
   ownOpen?: { brief: string; observation: Record<string, unknown>; tools: string[]; stepBudget?: number };
   /** The acting calls this own turn already carried out, newest last (own/turns.ts): a repeat is answered from its row. */
   ownCalls?: OwnCallRecord[];
+  /** Own agent: the posts this turn already answered or closed; a second reply to one is refused (broker `ownGuard`). */
+  ownHandled?: string[];
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */

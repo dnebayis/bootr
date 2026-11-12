@@ -469,7 +469,18 @@ function brokerTurn(s: Session, turn: Turn): OwnBrokerTurn {
   const postAllowed = !!turn.digestWeek || !!turn.numbersDay || (turn.creatorRequests?.length ?? 0) > 0 || slotOpen;
   const schedule = scheduleFor(s.config, s.state, s.ctx.now());
   // `turn.posted` is set when an original post of this turn settled as sent or queued (runtime.ts `afterSettledAction`).
-  return { openedAt: turn.own?.openedAt ?? turn.startedAt, postAllowed, nextSlotAt: schedule?.nextAt ?? null, postedThisTurn: turn.posted === true, reviewed: requiresApproval(s.agent.config), postIntervalMs: schedule?.intervalMs ?? null };
+  const now = s.ctx.now();
+  const hold = quotaHold(s.state.postQuotaUntil, now) ?? creditsHold(s.state.postCreditsUntil, now) ?? forbiddenHold(s.state.postForbiddenUntil, now);
+  return {
+    openedAt: turn.own?.openedAt ?? turn.startedAt,
+    postAllowed,
+    nextSlotAt: schedule?.nextAt ?? null,
+    postedThisTurn: turn.posted === true,
+    reviewed: requiresApproval(s.agent.config),
+    postIntervalMs: schedule?.intervalMs ?? null,
+    handledPostIds: turn.ownHandled ?? [],
+    hold: hold ? { reason: hold.reason, until: hold.until, message: hold.message } : null,
+  };
 }
 
 /** The agent-core tools this turn may call now: what it was opened with, as far as the coin's powers and owner rules still allow. */
@@ -819,6 +830,17 @@ function takeStep(s: Session, turn: Turn): void {
   countUse(s.state, 'steps', s.ctx.now());
 }
 
+/** The posts a settled action answered or closed are kept on the turn: a mention is answered once (broker `ownGuard`). */
+function noteHandled(turn: Turn, action: Action, result: ActionResult): void {
+  const ids: string[] = [];
+  if (action.tool === 'publish_reply' || action.tool === 'resolve_mention') ids.push(action.input.postId);
+  if (action.tool === 'resolve_mentions') {
+    const resolved = (result.result as { resolved?: unknown } | undefined)?.resolved;
+    if (Array.isArray(resolved)) ids.push(...resolved.filter((id): id is string => typeof id === 'string'));
+  }
+  if (ids.length) turn.ownHandled = [...new Set([...(turn.ownHandled ?? []), ...ids])].slice(-500);
+}
+
 /** `run/act`: one tool call of an open turn. Tool outcomes are results (HTTP 200, `failed` included); only a call that could not be taken throws. */
 export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Partial<ActRequest>): Promise<ActResult> {
   const turnId = requireTurnId(req?.turnId);
@@ -968,6 +990,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
     }
     turn.recentSteps.push({ tool: result.tool, status: result.status, summary: summarize(result.status, result.result, result.error) });
     if (acting && result.status === 'completed') (turn.ownCalls ??= []).push({ key, actionId: settledAs.id, tool, stepsUsed: turn.steps });
+    if (result.status === 'completed') noteHandled(turn, action, result);
     await persist(s);
     return actResult(s, turn, { tool, actionId: settledAs.id, status: result.status === 'completed' ? 'completed' : 'failed', ...(result.status === 'completed' ? { result: jsonSafe(result.result ?? null) } : { error: result.error ?? 'failed' }) }, false);
   }, { ownOnly: true });

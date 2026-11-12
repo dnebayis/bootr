@@ -87,6 +87,10 @@ export interface OwnBrokerTurn {
   reviewed?: boolean;
   /** The coin's own post interval (ms): how long one queued original stands for its slot. */
   postIntervalMs?: number | null;
+  /** Posts this turn already answered or closed (`publish_reply`, `resolve_mention`, `resolve_mentions`): none is answered again. */
+  handledPostIds?: readonly string[];
+  /** The X hold on the coin's state right now (quota, credits or 403; rhythm.ts), in the words the client is shown; null when none. */
+  hold?: { reason: string; until: number; message: string } | null;
 }
 
 /** An original post outside its slot (docs/design/byo-agent.md section 1.6): the text an own agent's client reads. */
@@ -98,6 +102,10 @@ export const POST_ALREADY_SENT_THIS_TURN = 'post_already_sent: this turn already
 /** Approval mode: an original post is already waiting for the creator, so a second one for the same slot is not queued. */
 export function postAlreadyQueued(approvalId: string): string {
   return `post_already_queued: an original post of yours (${approvalId}) is still waiting for your creator's review; nothing more is queued for this slot until it is decided. Replies may still go out.`;
+}
+/** A second reply to a post the turn already answered or closed: the first answer stands. */
+export function mentionAlreadyHandled(postId: string): string {
+  return `mention_already_handled: this turn already answered or closed post ${postId}; nothing was posted. One reply per mention: go on with the others.`;
 }
 /** How long one queued original stands for its slot when the coin has no interval on record. */
 export const QUEUED_POST_SLOT_MS = 60 * 60 * 1000;
@@ -140,6 +148,7 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
  *   - `publish_post` needs a due slot of this turn, an open creator request, the digest or the numbers post, a turn
  *     carries one original post at most, and in approval mode one queued original per slot is all the queue holds;
  *   - a picture attached to a publish must have been stored in this turn;
+ *   - no publish goes out while an X hold stands, and a mention the turn already answered or closed is not answered again;
  *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them),
  *     and so are `remember`, `treasury_prepare`, `treasury_execute` and the paid-service tools (`x402_fetch` and
  *     `discover_services` together).
@@ -149,6 +158,9 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
 export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending: PendingAction, env: BrokerEnv): Promise<ActionOutcome | null> {
   const action = pending.action;
   const turn: OwnBrokerTurn = env.own ?? { openedAt: ctx.now(), postAllowed: false, nextSlotAt: null };
+  // An X hold (quota, credits, 403) is on the coin's state: a hosted agent is not woken while it stands, and an own
+  // client is told in the due view; here it is a refusal, so a client that calls anyway reaches neither the sender nor X.
+  if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && turn.hold && turn.hold.until > ctx.now()) return failed(turn.hold.message, turn.hold.until);
   if (action.tool === 'publish_post' && !turn.postAllowed) return failed(postSlotNotDue(turn.nextSlotAt ?? ctx.now()));
   if (action.tool === 'publish_post' && turn.postedThisTurn) return failed(POST_ALREADY_SENT_THIS_TURN);
   if (action.tool === 'publish_post' && turn.reviewed) {
@@ -165,6 +177,7 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
     const storedAt = await imageStoredAt(ctx, agent.agentId, action.input.imageId);
     if (storedAt !== null && storedAt < turn.openedAt) return failed(IMAGE_NOT_FROM_THIS_TURN);
   }
+  if (action.tool === 'publish_reply' && turn.handledPostIds?.includes(action.input.postId)) return failed(mentionAlreadyHandled(action.input.postId));
   if (action.tool === 'publish_reply') {
     // Other Bootr agents named in a reply: each name is a mention in their inbox, and for a hosted one a thought it pays for.
     const named = await replyNamingGuard(ctx, agent, pending, env);
