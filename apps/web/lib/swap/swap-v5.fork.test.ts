@@ -4,7 +4,8 @@
  * without the sniper tax, an ETH coin with it, and a USDC coin. Skipped unless V5_SWAP_FORK_RPC points at a fork:
  *
  *   anvil --fork-url <Base RPC> --port 8661
- *   V5_SWAP_FORK_RPC=http://127.0.0.1:8661 pnpm --filter web exec vitest run lib/swap/swap-v5.fork.test.ts --testTimeout=300000
+ *   V5_SWAP_FORK_RPC=http://127.0.0.1:8661 pnpm --filter web exec vitest run lib/swap/swap-v5.fork.test.ts --testTimeout=300000 \
+ *     --hookTimeout=300000
  *
  * The launcher, gate, Clanker v5 factory, hook and fee escrow are the deployed ones at the fork block; nothing is
  * deployed or impersonated. Plain `anvil` is enough (no B20 tokens here). Every coin is a fresh launch, so the file
