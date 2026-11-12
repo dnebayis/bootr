@@ -55,6 +55,13 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # pointed at them remain, dangling.
 RUN find node_modules/.pnpm -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -name '*.md' -o -name '*.markdown' \) -delete \
  && rm -rf node_modules/.pnpm/typescript@* node_modules/.pnpm/@electric-sql+pglite@*
+# sharp (own agents' picture uploads, src/own/pictures.ts) is a native module, and the bundle imports it when the
+# supervisor starts: without its binary nothing starts, hosted agents included. The binary is not built here and no
+# install script fetches it (sharp has none, so --ignore-scripts changes nothing): it is the optional dependency pnpm
+# picks for this platform (@img/sharp-linux-x64 and its libvips, glibc 2.28 or later; this base image has 2.36). One
+# pixel is written here, on the tree the runtime stage copies, so a tree where it cannot load fails this build.
+RUN cd apps/supervisor \
+ && node -e "require('sharp')({create:{width:1,height:1,channels:3,background:'#000'}}).png().toBuffer().then((b)=>{if(b.length<8)process.exit(1)},(e)=>{console.error(e);process.exit(1)})"
 
 # ---------------------------------------------------------------- runtime
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
