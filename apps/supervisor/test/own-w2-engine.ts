@@ -123,7 +123,11 @@ export function fakeEngine(w: TestWorld, agentId: string = AGENT_ID): FakeEngine
         .values({ actionId: pending.id, agentId: agent.agentId, cycleKey: pending.cycleKey, action: { ...(action as unknown as Record<string, unknown>), ...(role !== 'social' ? { role } : {}), via: 'own', clientId: turn.own?.clientId ?? null }, status: 'sending', createdAt: new Date(now), updatedAt: new Date(now) })
         .onConflictDoNothing();
       pending = markSent(pending);
-      const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle };
+      // What the real engine hands the broker's own guards (`brokerTurn` in src/own/turns.ts): without it `ownGuard` takes
+      // the turn for one with no due slot and refuses every original post.
+      const lastPostAt = ((runtime.state as { lastPostAt?: number } | null)?.lastPostAt ?? 0) as number;
+      const postAllowed = !!turn.digestWeek || !!turn.numbersDay || (turn.creatorRequests?.length ?? 0) > 0 || (!!turn.postDue && lastPostAt < turn.startedAt);
+      const env: BrokerEnv = { inbox: new Map(Object.entries(turn.inbox)), eligibility: new Map(Object.entries(turn.eligibility ?? {})), cycle: broker.cycle, own: { openedAt: turn.own?.openedAt ?? turn.startedAt, postAllowed, nextSlotAt: null } };
       const reviewed = (action.tool === 'publish_post' || action.tool === 'publish_reply') && requiresApproval(agent.config);
       const outcome = reviewed ? await queueForApproval(ctx, agent, pending, env) : await executeAction(ctx, agent, config, pending, env);
       pending = recordOutcome(pending, outcome, ctx.now());

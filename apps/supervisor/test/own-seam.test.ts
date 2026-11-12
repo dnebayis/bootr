@@ -300,10 +300,10 @@ describe('own agent: the hooks and helpers the other workstreams call', () => {
       expect(ownSetting(on.ctx, 'OWN_TURN_IDLE_MS')).toBe(120_000);
       expect(ownSetting(off.ctx, 'OWN_TURN_IDLE_MS')).toBe(OWN_DEFAULTS.OWN_TURN_IDLE_MS);
       for (const name of Object.keys(OWN_DEFAULTS) as (keyof typeof OWN_DEFAULTS)[]) expect([name, ownSetting(off.ctx, name)]).toEqual([name, OWN_DEFAULTS[name]]);
-      // Mounting the routes registered the social role (that no other role comes with it is checked in own-turns.test.ts,
-      // where no test registers one; here the judge stand-in of the tests above is still in the registry).
+      // Mounting the routes registered the social role; `createApp` also registers the treasury and judge roles
+      // (`registerW2`), so all three are present once the app is built.
       expect(ownRole('social')?.role).toBe('social');
-      expect(ownRole('treasury')).toBeNull();
+      expect(ownRole('treasury')?.role).toBe('treasury');
     } finally {
       await on.close();
       await off.close();
