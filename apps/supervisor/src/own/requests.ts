@@ -39,9 +39,10 @@ export const answerRequestTool: OwnSpecialTool = {
   async run(call: OwnCall, turn: Turn, input: unknown): Promise<Answer> {
     try {
       if ((turn.role ?? 'social') === 'judge' || !turn.creatorRequests?.length) return { status: 'failed', error: 'invalid_tool_call: this turn holds no open request of your creator' };
-      // The hosted function writes its answer into the conversation it is given. An own turn keeps no conversation on
-      // the server (`messages` stays empty), so it gets a scratch one; the step summary and the request list are the turn's own.
-      const scratch: RequestTurnState = { startedAt: turn.startedAt, messages: [], recentSteps: turn.recentSteps, creatorRequests: turn.creatorRequests };
+      // The hosted function writes its answer into the conversation it is given and adds a line to the step summary. An
+      // own turn keeps no conversation on the server (`messages` stays empty) and the engine writes the step summary of
+      // every call itself (own/turns.ts), so both go to a scratch copy; the request list is the turn's own.
+      const scratch: RequestTurnState = { startedAt: turn.startedAt, messages: [], recentSteps: [], creatorRequests: turn.creatorRequests };
       const outcome = await answerRequest(call.ctx, call.agent.agentId, scratch, { id: 'own', name: ANSWER_REQUEST_TOOL_NAME, input });
       // `answerRequest` drops a request it closed (or found closed) from the list it was given: the turn keeps what is left.
       if (scratch.creatorRequests?.length) turn.creatorRequests = scratch.creatorRequests;
