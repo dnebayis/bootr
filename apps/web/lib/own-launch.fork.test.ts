@@ -32,7 +32,8 @@ const USDC = A.usdc as Address;
 
 // A throwaway key made for this test (the hash of a fixed phrase, so it is public and owns nothing anywhere): on a
 // mainnet fork anvil's own default accounts carry years of other people's state. The fork gives it ETH; it never holds USDC.
-const creator = privateKeyToAccount(keccak256(toHex('bootr own-agent fork test creator')));
+// OWN_FORK_CREATOR_KEY names another test key (for instance anvil's first, the creator of the end-to-end script).
+const creator = privateKeyToAccount((process.env.OWN_FORK_CREATOR_KEY as `0x${string}` | undefined) ?? keccak256(toHex('bootr own-agent fork test creator')));
 const client = createPublicClient({ chain: base, transport: http(RPC) });
 const wallet = createWalletClient({ account: creator, chain: base, transport: http(RPC) });
 const testClient = createTestClient({ chain: base, mode: 'anvil', transport: http(RPC) });
