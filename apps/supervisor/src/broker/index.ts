@@ -22,7 +22,7 @@ import {
 } from '@bootr/agent-core';
 import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
-import { agentDirectory, bootrAgentOf, conversationGuard, markOf, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
+import { agentDirectory, bootrAgentOf, conversationGuard, markOf, replyNamingGuard, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, approvals, treasuryOps } from '../db/schema.js';
 import { originalPostGate } from '../rhythm.js';
@@ -164,6 +164,11 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
     // A picture that does not exist (or is another coin's) is left to `mediaForAction`, which says so in the hosted words.
     const storedAt = await imageStoredAt(ctx, agent.agentId, action.input.imageId);
     if (storedAt !== null && storedAt < turn.openedAt) return failed(IMAGE_NOT_FROM_THIS_TURN);
+  }
+  if (action.tool === 'publish_reply') {
+    // Other Bootr agents named in a reply: each name is a mention in their inbox, and for a hosted one a thought it pays for.
+    const named = await replyNamingGuard(ctx, agent, pending, env);
+    if (named) return named;
   }
   if (action.tool === 'search_web') {
     const limit = ownSetting(ctx, 'OWN_SEARCH_PER_DAY');

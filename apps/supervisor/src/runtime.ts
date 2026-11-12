@@ -136,6 +136,8 @@ export interface AgentState {
    */
   ownLastTurnAt?: number | null;
   ownForced?: { day: string; count: number } | null;
+  /** Turns of the last 24 hours that another Bootr agent's mention woke this agent for, per peer agent id (agent-directory.ts `PEER_WAKE_CAP`). */
+  peerWakes?: Record<string, number[]> | null;
   /** Own agent: turns opened and tool calls made, one bucket per hour, for the rolling 24-hour budgets (own/budget.ts). */
   ownUsage?: { turns?: [number, number][]; steps?: [number, number][] } | null;
   ownClosed?: { turnId: string; why: string; at: number; last?: OwnCallRecord | null } | null;

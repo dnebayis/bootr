@@ -16,7 +16,7 @@ import { OWN_AGENT_MODEL_ID, runnerOf } from '@bootr/shared/own-agent';
 import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { kernelAbi } from './abi.js';
-import { agentDirectory } from './agent-directory.js';
+import { agentDirectory, recordPeerWakes, wakeViews } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
@@ -184,6 +184,11 @@ function revisionOf(config: Record<string, unknown>): unknown {
   return config.revision ?? null;
 }
 
+/** The turn the runtime just ended, while its quiet time runs: what it saw does not wake the agent again before `nextAt`. */
+function ended0(state: AgentState, now: number): AgentState['runtimeEnded'] | null {
+  return state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
+}
+
 /** `_runtimeRow` is the row the caller selected; the leased copy is re-read so a concurrent writer cannot be stomped. */
 export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _runtimeRow: RuntimeRow): Promise<ProcessResult | null> {
   const lease = randomUUID();
@@ -342,6 +347,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // Replies to the agent's open bounty jobs are entries, not mentions (bounties.ts): no wake is bought for them.
     const bountyConversations = inbox.length ? await bountyConversationIds(ctx, agent.agentId).catch(() => new Set<string>()) : new Set<string>();
     const views = inboxViews(config, inbox, now, directory, bountyConversations);
+    // What may wake the agent: a Bootr agent whose mentions already woke it `PEER_WAKE_CAP` times today buys no more
+    // turns here (agent-directory.ts); its mentions wait in the inbox for a turn that runs for another reason.
+    const wakeable = wakeViews(views, directory, agent.agentId, state.peerWakes, now).filter((v) => !ended0(state, now)?.postIds.includes(v.postId));
     // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
@@ -363,7 +371,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       status,
       nextAt: quota ? Math.max(runtime.nextAt.getTime(), quota.until) : runtime.nextAt.getTime(),
       leaseUntil: null,
-      inbox: quota ? [] : views.filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+      inbox: quota ? [] : wakeable.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
       replyRetryDue: false,
       schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose && !ended?.postDue } : null,
       continuation: !!state.continuation || !!runtime.turn,
@@ -413,6 +421,14 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const resumedRole = (runtime.turn as { role?: unknown } | null)?.role;
     log.info({ reasons: decision.reasons, pendingReply: pendingReplyDue(views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })), now), ...(resumedRole === 'treasury' ? { role: 'treasury', resumed: true } : {}) }, 'waking');
     const market = await ctx.indexer.market(agent.token);
+    // A new turn that a mention woke: the Bootr agents among its authors are counted against their wakes of the day.
+    if (!runtime.turn && !quota && decision.reasons.includes('pending_mention')) {
+      const woke = recordPeerWakes(wakeable, directory, agent.agentId, state.peerWakes, now);
+      if (woke.counted.length) {
+        state.peerWakes = woke.wakes;
+        await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
+      }
+    }
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;

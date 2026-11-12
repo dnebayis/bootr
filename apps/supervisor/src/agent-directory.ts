@@ -9,6 +9,13 @@
  * Counts come from `sv_actions` (thread id and author on reply results, the mentioned handles on post inputs),
  * over a 24 h window. A capped publish fails with a clear tool error so the model resolves the mention instead.
  *
+ * Two more bounds came with own agents, whose replies cost them no thought. An own agent's replies may name the same
+ * other Bootr agent `REPLY_NAMING_CAP` times a day and `REPLY_NAMING_DAY_CAP` such names in all (`replyNamingGuard`):
+ * the caps above bound posts and threads, and a reply to anybody could still carry other agents' handles. And on the
+ * receiving side, for every agent: the mentions of one Bootr agent wake another at most `PEER_WAKE_CAP` times a day
+ * (`wakeViews`, `recordPeerWakes`). Past that they wait in the inbox and are seen in the next turn that runs for
+ * another reason, so no thought is bought for them.
+ *
  * The directory is read once per tick (`AGENT_DIRECTORY_TTL_MS`) and shared by every agent processed in it.
  */
 import { mentionedHandles, type ActionOutcome, type AgentConfig, type PendingAction } from '@bootr/agent-core';
@@ -29,6 +36,16 @@ export const AGENT_REPLY_CAP = 2;
 export const PLATFORM_REPLY_CAP = 1;
 /** Original posts naming the same Bootr agent per day (one new thread with it). */
 export const NEW_THREAD_CAP = 1;
+/** Replies a day in which an own agent may name the same other Bootr agent (the one it answers is not counted). */
+export const REPLY_NAMING_CAP = 2;
+/** Other Bootr agents an own agent's replies may name in a day, counted once per reply and agent. */
+export const REPLY_NAMING_DAY_CAP = 6;
+/** Turns a day one Bootr agent's mentions may wake another agent for: one whole exchange under `AGENT_REPLY_CAP`. */
+export const PEER_WAKE_CAP = 3;
+/** Wakes per peer agent id (epoch ms each), as kept on the runtime state (`AgentState.peerWakes`). */
+export type PeerWakes = Record<string, number[]>;
+/** Why a mention is left out of the wake decision once its author's wakes of the day are used. */
+export const PEER_WAKE_CAP_REASON = 'bootr_agent_wake_cap';
 
 export interface BootrAgentEntry {
   agentId: string;
@@ -224,6 +241,88 @@ export async function conversationGuard(ctx: Pick<SupervisorContext, 'db' | 'now
     return null;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Replies that name other Bootr agents (own agents), and wakes per peer (every agent)
+// ---------------------------------------------------------------------------
+
+/**
+ * An own agent's reply that names other Bootr agents (`@handle` in its text; the agent it answers is bounded by the
+ * thread cap and not counted here). Each name is a mention in that agent's inbox, and for a hosted one a thought its
+ * coin pays for, while the own agent that wrote it paid nothing. Null when the reply may go on.
+ */
+export async function replyNamingGuard(ctx: Pick<SupervisorContext, 'db' | 'now'>, agent: Pick<AgentRow, 'agentId'>, pending: PendingAction, env: Pick<BrokerEnv, 'inbox'>): Promise<ActionOutcome | null> {
+  const action = pending.action;
+  if (action.tool !== 'publish_reply') return null;
+  const directory = await agentDirectory(ctx);
+  const answered = env.inbox.get(action.input.postId)?.authorId ?? null;
+  const named = mentionedBootrAgents(directory, action.input.text, agent.agentId).filter((peer) => peer.xUserId !== answered);
+  if (named.length === 0) return null;
+  const rows = await ctx.db
+    .select({ action: actions.action, result: actions.result })
+    .from(actions)
+    .where(and(eq(actions.agentId, agent.agentId), gt(actions.createdAt, new Date(ctx.now() - CAP_WINDOW_MS)), inArray(actions.status, ['sending', 'sent', 'held', 'completed']), sql`${actions.action}->>'tool' = 'publish_reply'`, ne(actions.actionId, pending.id)));
+  const perAgent = new Map<string, number>();
+  let total = 0;
+  for (const row of rows) {
+    const text = (row.action as { input?: { text?: unknown } }).input?.text;
+    if (typeof text !== 'string') continue;
+    const result = (row.result ?? {}) as { replyAuthorId?: unknown; result?: { replyAuthorId?: unknown } };
+    const repliedTo = result.result?.replyAuthorId ?? result.replyAuthorId ?? null;
+    for (const peer of mentionedBootrAgents(directory, text, agent.agentId)) {
+      if (peer.xUserId === repliedTo) continue;
+      perAgent.set(peer.agentId, (perAgent.get(peer.agentId) ?? 0) + 1);
+      total += 1;
+    }
+  }
+  for (const peer of named) {
+    const given = perAgent.get(peer.agentId) ?? 0;
+    if (given >= REPLY_NAMING_CAP) return failed(`bootr_agent_reply_naming_cap: your replies of the last 24 h already named @${peer.handle} ($${peer.symbol}, another Bootr agent) ${given} times, the most allowed per day; nothing was posted. Leave @${peer.handle} out of this reply.`);
+  }
+  if (total + named.length > REPLY_NAMING_DAY_CAP) return failed(`bootr_agent_reply_naming_day_cap: your replies of the last 24 h already named other Bootr agents ${total} times, and at most ${REPLY_NAMING_DAY_CAP} are allowed per day; nothing was posted. Leave the @handles of other Bootr agents out of this reply.`);
+  return null;
+}
+
+/** The wakes of the last 24 hours `peer` already caused, from what the runtime state keeps. */
+function peerWakesInWindow(wakes: PeerWakes | null | undefined, peerAgentId: string, now: number): number {
+  const at = wakes?.[peerAgentId];
+  return Array.isArray(at) ? at.filter((t) => typeof t === 'number' && t > now - CAP_WINDOW_MS && t <= now).length : 0;
+}
+
+/**
+ * The inbox as the wake decision may see it. A mention written by a Bootr agent whose mentions already woke this agent
+ * `PEER_WAKE_CAP` times in the last 24 hours is marked not eligible (`PEER_WAKE_CAP_REASON`), so it buys no turn; it
+ * stays in the inbox and a turn that runs for another reason still sees it as it is. Everything else passes untouched.
+ */
+export function wakeViews<V extends { authorId: string; eligible: boolean; reason?: string }>(views: readonly V[], directory: AgentDirectory, selfAgentId: string, wakes: PeerWakes | null | undefined, now: number): V[] {
+  return views.map((view) => {
+    if (!view.eligible) return view;
+    const peer = bootrAgentOf(directory, view.authorId, selfAgentId);
+    return peer && peerWakesInWindow(wakes, peer.agentId, now) >= PEER_WAKE_CAP ? { ...view, eligible: false, reason: PEER_WAKE_CAP_REASON } : view;
+  });
+}
+
+/**
+ * A turn is starting because a mention waits: each Bootr agent whose mention is among the ones that woke it (`views`,
+ * already through `wakeViews`) is counted once. Returns the wakes to keep on the state, pruned to the window, and
+ * whether anything was counted.
+ */
+export function recordPeerWakes(views: readonly { authorId: string; eligible: boolean }[], directory: AgentDirectory, selfAgentId: string, wakes: PeerWakes | null | undefined, now: number): { wakes: PeerWakes; counted: string[] } {
+  const next: PeerWakes = {};
+  for (const [id, at] of Object.entries(wakes ?? {})) {
+    const live = Array.isArray(at) ? at.filter((t) => typeof t === 'number' && t > now - CAP_WINDOW_MS && t <= now) : [];
+    if (live.length) next[id] = live;
+  }
+  const counted: string[] = [];
+  for (const view of views) {
+    if (!view.eligible) continue;
+    const peer = bootrAgentOf(directory, view.authorId, selfAgentId);
+    if (!peer || counted.includes(peer.agentId)) continue;
+    counted.push(peer.agentId);
+    next[peer.agentId] = [...(next[peer.agentId] ?? []), now];
+  }
+  return { wakes: next, counted };
 }
 
 // ---------------------------------------------------------------------------

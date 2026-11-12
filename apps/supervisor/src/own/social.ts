@@ -14,7 +14,7 @@
  */
 import { buildSystemPrompt, compactView, observationFits, postLimitsFor, wakeDecision, type AgentConfig, type PendingAction, type RuntimeStatus, type WakeDecision } from '@bootr/agent-core';
 import type { DueRole } from '@bootr/shared/own-agent';
-import { agentDirectory, type AgentDirectory } from '../agent-directory.js';
+import { agentDirectory, recordPeerWakes, wakeViews, type AgentDirectory } from '../agent-directory.js';
 import { bountyConversationIds } from '../bounties.js';
 import { inboxViews, type InboxView } from '../broker/index.js';
 import { openRequests, type CreatorRequest, type TurnRequest } from '../creator-requests.js';
@@ -98,7 +98,8 @@ async function socialWake(call: OwnCall): Promise<SocialWake> {
     status,
     nextAt: scheduledAt,
     leaseUntil: null,
-    inbox: quota ? [] : views.filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+    // A Bootr agent whose mentions already made this role due `PEER_WAKE_CAP` times today makes it due no more (agent-directory.ts).
+    inbox: quota ? [] : wakeViews(views, directory, agent.agentId, state.peerWakes, now).filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
     replyRetryDue: false,
     schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose && !ended?.postDue } : null,
     continuation: !!state.continuation,
@@ -142,6 +143,11 @@ export const ownSocialRole: OwnRoleHandler = {
     const { ctx, agent, runtime, config, state } = call;
     const wake = await socialWake(call);
     const now = ctx.now();
+    // A turn a mention made due: the Bootr agents among the authors are counted against their wakes of the day, as in the tick.
+    if (opts.reasons.includes('pending_mention')) {
+      const woke = recordPeerWakes(wakeViews(wake.views, wake.directory, agent.agentId, state.peerWakes, now), wake.directory, agent.agentId, state.peerWakes, now);
+      if (woke.counted.length) state.peerWakes = woke.wakes;
+    }
     // The account's post limit for this turn (one internal read at the sender), as in `startTurn`.
     const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
     const catalog = ownSocialTools(ctx, config, agent.config, premium);
