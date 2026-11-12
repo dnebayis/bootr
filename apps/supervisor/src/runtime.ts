@@ -60,7 +60,7 @@ import { watchlistSection } from './watchlist.js';
 import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from './weekly-digest.js';
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
-import type { OwnTurnMeta } from './own/registry.js';
+import { isOwn, type OwnTurnMeta } from './own/registry.js';
 
 export const LEASE_MS = 60_000;
 /** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
@@ -209,7 +209,7 @@ export interface Turn {
    * call. Kept so a client that asks again for the same role gets the same turn back without anything being rebuilt
    * (rebuilding would mark review notes delivered twice); `messages` stays empty, the client holds the conversation.
    */
-  ownOpen?: { brief: string; observation: Record<string, unknown>; tools: string[] };
+  ownOpen?: { brief: string; observation: Record<string, unknown>; tools: string[]; stepBudget?: number };
   /** The acting calls this own turn already carried out, newest last (own/turns.ts): a repeat is answered from its row. */
   ownCalls?: OwnCallRecord[];
 }
@@ -418,7 +418,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
     extra: {
       wakeReasons: inputs.reasons,
       // What the creator asked of this turn in the private chat, with the owner's authority (creator-requests.ts).
-      ...creatorRequestsSection('social', requests),
+      ...ownRequestsWording(agent, creatorRequestsSection('social', requests)),
       ...(holdEnded ? { holdEnded: holdEndedMessage(holdEnded) } : {}),
       ineligibleMentions: views.length - eligible.length,
       checkpoint: { memory: state.memory, agenda: state.agenda, summary: state.summary, at: state.lastCheckpointAt ? new Date(state.lastCheckpointAt).toISOString() : null },
@@ -458,6 +458,18 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...(await watchlistSection(ctx, agent, config)),
     },
   });
+}
+
+/**
+ * The `creatorRequests` section as an own agent reads it (docs/design/byo-agent.md section 11): the hosted meaning
+ * tells the model that a post planned with `draft_intent` closes its request, and an own agent has no `draft_intent`
+ * (economy mode is not carried over), so that one clause is left out. A hosted agent's section is returned as it is,
+ * the same object, so its text stays byte for byte what it was.
+ */
+export function ownRequestsWording(agent: Pick<AgentRow, 'config'>, section: Record<string, unknown>): Record<string, unknown> {
+  const requests = section.creatorRequests as { meaning?: unknown } | undefined;
+  if (!requests || typeof requests.meaning !== 'string' || !isOwn(agent)) return section;
+  return { ...section, creatorRequests: { ...requests, meaning: requests.meaning.replace(/ \([^()]*draft_intent[^()]*\)/g, '') } };
 }
 
 /**

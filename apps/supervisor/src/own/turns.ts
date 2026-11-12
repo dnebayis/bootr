@@ -210,8 +210,23 @@ function roleOf(turn: Turn): OwnRole {
   return turn.role === 'treasury' || turn.role === 'judge' ? turn.role : 'social';
 }
 
-function stepBudget(ctx: Pick<SupervisorContext, 'config'>): number {
-  return ctx.config.MAX_TOOL_STEPS;
+/**
+ * The steps a turn may take: `MAX_TOOL_STEPS`, the hosted cap, for a social and a treasury turn. A judge turn reads
+ * its entries one call at a time and then rules, so its budget is one step per entry and one for the ruling when that
+ * is more than the cap: with eight steps a job with eight entries or more could never be ruled on. A turn stored
+ * without a budget of its own (or no turn at all) has the cap.
+ */
+function stepBudget(ctx: Pick<SupervisorContext, 'config'>, turn?: Turn | null): number {
+  const own = turn?.ownOpen?.stepBudget;
+  return typeof own === 'number' && Number.isFinite(own) && own > ctx.config.MAX_TOOL_STEPS ? Math.floor(own) : ctx.config.MAX_TOOL_STEPS;
+}
+
+/** The step budget a turn is opened with: for a judge turn, the entries of its job (`JudgeObservation.job.entries`) plus the ruling; otherwise none of its own. */
+function openedStepBudget(ctx: Pick<SupervisorContext, 'config'>, role: OwnRole, observation: Record<string, unknown>): number | undefined {
+  if (role !== 'judge') return undefined;
+  const entries = (observation as { job?: { entries?: unknown } }).job?.entries;
+  const needed = Array.isArray(entries) ? entries.length + 1 : 0;
+  return needed > ctx.config.MAX_TOOL_STEPS ? needed : undefined;
 }
 
 /** When the server closes this turn if nothing more is heard of it: idle for `OWN_TURN_IDLE_MS`, or open for `OWN_TURN_MAX_MS`. */
@@ -418,7 +433,7 @@ function requireRunning(s: Session): void {
 }
 
 /** The answer of an acting call this turn already carried out, read back from its row: nothing runs again. */
-async function replay(s: Session, record: OwnCallRecord, turnId: string, turnEnded: boolean): Promise<ActResult> {
+async function replay(s: Session, record: OwnCallRecord, turnId: string, turnEnded: boolean, turn: Turn | null = s.turn): Promise<ActResult> {
   const row = await s.ctx.db.query.actions.findFirst({ where: and(eq(actions.actionId, record.actionId), eq(actions.agentId, s.agent.agentId)) });
   const stored = (row?.result ?? null) as { result?: unknown; error?: unknown } | null;
   const completed = row?.status === 'completed';
@@ -430,7 +445,7 @@ async function replay(s: Session, record: OwnCallRecord, turnId: string, turnEnd
     status: completed ? 'completed' : 'failed',
     ...(completed ? { result: jsonSafe(stored?.result ?? null) } : { error: typeof stored?.error === 'string' ? stored.error : 'failed' }),
     stepsUsed: record.stepsUsed,
-    stepsLeft: Math.max(0, stepBudget(s.ctx) - record.stepsUsed),
+    stepsLeft: Math.max(0, stepBudget(s.ctx, turn) - record.stepsUsed),
     turnEnded,
   };
 }
@@ -481,14 +496,14 @@ function turnOpenView(s: Session, turn: Turn, resumed: boolean): TurnOpen {
     brief: turn.ownOpen?.brief ?? '',
     observation: turn.ownOpen?.observation ?? {},
     tools: mcpTools(s, turn),
-    stepBudget: stepBudget(s.ctx),
+    stepBudget: stepBudget(s.ctx, turn),
     stepsUsed: turn.steps,
     expiresAt: iso(ownTurnExpiresAt(s.ctx, own)),
   };
 }
 
 function actResult(s: Session, turn: Turn, fields: Pick<ActResult, 'tool' | 'actionId' | 'status'> & Partial<Pick<ActResult, 'result' | 'error' | 'retryAt' | 'image'>>, turnEnded: boolean): ActResult {
-  return { turnId: turn.own!.turnId, ...fields, stepsUsed: turn.steps, stepsLeft: Math.max(0, stepBudget(s.ctx) - turn.steps), turnEnded };
+  return { turnId: turn.own!.turnId, ...fields, stepsUsed: turn.steps, stepsLeft: Math.max(0, stepBudget(s.ctx, turn) - turn.steps), turnEnded };
 }
 
 /** Ends a turn that ran to its end (a `finish`, a special tool that ends it): the last-active stamp and the closed-turn record. */
@@ -686,13 +701,21 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
     const opened = await handler.open(call, { reasons, forced, ...(req.jobId ? { jobId: req.jobId } : {}) });
     if (forced) s.state.ownForced = { day, count: forcedUsed + 1 };
     const opensAt = ctx.now();
-    const own: OwnTurnMeta = { turnId: TURN_ID_PREFIX + randomBytes(16).toString('hex'), clientId: v.client.id, openedAt: opensAt, lastCallAt: opensAt, forced, ...(req.jobId ? { jobId: req.jobId } : {}) };
+    // The job a judge turn rules on: what the role resolved (it may have picked the oldest waiting one, or completed a
+    // short id), before what the request named.
+    const pickedJob = (opened.turn as { judgeJobId?: unknown }).judgeJobId;
+    const jobId = typeof pickedJob === 'string' && pickedJob ? pickedJob : (opened.turn.own?.jobId ?? req.jobId);
+    const own: OwnTurnMeta = { turnId: TURN_ID_PREFIX + randomBytes(16).toString('hex'), clientId: v.client.id, openedAt: opensAt, lastCallAt: opensAt, forced, ...(jobId ? { jobId } : {}) };
+    const observation = jsonSafe(opened.observation);
+    const budget = openedStepBudget(ctx, role as OwnRole, observation);
+    // The turn the role returned is stored whole, with every field of its own (a role may keep what it needs on it);
+    // the engine adds its own three and keeps no conversation.
     const turn: Turn = {
       ...opened.turn,
       role: role as AgentRole,
       messages: [],
       own: { ...(opened.turn.own ?? {}), ...own },
-      ownOpen: { brief: opened.brief, observation: jsonSafe(opened.observation), tools: [...new Set(opened.tools)] },
+      ownOpen: { brief: opened.brief, observation, tools: [...new Set(opened.tools)], ...(budget !== undefined ? { stepBudget: budget } : {}) },
       ownCalls: [],
     };
     s.turn = turn;
@@ -729,7 +752,7 @@ async function busy(s: Session, pending: PendingAction): Promise<never> {
 
 /** The step cap (`MAX_TOOL_STEPS`), on every call but `finish`: a guard, not model handling, so it stays on the server. */
 async function requireStep(s: Session, turn: Turn): Promise<void> {
-  if (turn.steps < stepBudget(s.ctx)) return;
+  if (turn.steps < stepBudget(s.ctx, turn)) return;
   await persist(s);
   throw new OwnError('step_cap');
 }
