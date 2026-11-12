@@ -214,7 +214,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       parameters: { body: launchBody() },
       response: {
         contentType: JSON_TYPE,
-        shape: '{launchId, chainId, creator, launcher, launchThrough: bootr|clanker|clanker-v5, predictedKernel, salt, predictedToken?, saltTries?, agentURI, metadata, image: {url, ipfsUri}, model, worker, workerHash, workerPreset?, buyback, token?, tokenSettings?, devBuy?: {quotedOut, minOut, slippagePct}, launchFeeWei, transactions: [{step: approve|launch|gas, to, data, value, note}], next: {status, xConnect, docs}}; on clanker-v5, token is the checked settings, tokenSettings the launcher struct in the calldata and predictedToken the coin address (ends in cccc); errors {error, message, field?} with 400, 401, 409, 413, 429, 500, 502, 503',
+        shape: '{launchId, chainId, creator, launcher, launchThrough: bootr|clanker|clanker-v5, predictedKernel, salt, predictedToken?, saltTries?, agentURI, metadata, image: {url, ipfsUri}, model, runner: hosted|own, fuelUsdc, worker, workerHash, workerPreset?, buyback, token?, tokenSettings?, devBuy?: {quotedOut, minOut, slippagePct}, launchFeeWei, transactions: [{step: approve|launch|gas, to, data, value, note}] (no approve step when fuelUsdc is 0), next: {status, xConnect, docs}}; on clanker-v5, token is the checked settings, tokenSettings the launcher struct in the calldata and predictedToken the coin address (ends in cccc); errors {error, message, field?} with 400, 401, 409, 413, 429, 500, 502, 503',
       },
     },
     {
@@ -293,7 +293,13 @@ function launchBody(): JsonSchema {
               { type: 'object', properties: { dataUrl: { type: 'string', pattern: '^data:image/[a-z+]+;base64,' } }, required: ['dataUrl'] },
             ],
           },
-          model: { type: 'string', description: 'A model id. Refused with the accepted list when it is not one of them.' },
+          model: { type: 'string', description: 'A model id. Refused with the accepted list when it is not one of them. Leave it out when runner is own.' },
+          runner: {
+            type: 'string',
+            enum: ['hosted', 'own'],
+            default: 'hosted',
+            description: 'Who runs the agent. hosted: Bootr runs it on model, paid from fuel. own: it thinks in the creator’s own AI client through the Bootr MCP server; no model is named (the launch writes own-agent), fuelUsdc defaults to 0, and the launch is refused with own_agent_disabled while own agents are switched off (GET /api/platform shows ownAgent).',
+          },
           worker: {
             description: 'A template id (default community), or a custom preset.',
             oneOf: [
@@ -316,7 +322,7 @@ function launchBody(): JsonSchema {
             default: 'bootr',
             description: 'clanker: the deployment’s current Clanker launcher (v5 once it is live, else v4); clanker-v5: v5 only, refused while it is not live.',
           },
-          fuelUsdc: decimal('Decimal USDC, default 20, at least the preset’s minimum.'),
+          fuelUsdc: decimal('Decimal USDC, any amount, 0 included: default 20 for runner hosted (it pays for the agent’s thinking; with none the agent stays silent until some arrives), default 0 for runner own (only paid services use fuel). With 0 there is no approve step.'),
           devBuyEth: decimal('Decimal ETH, default 0.'),
           devBuySlippagePct: decimal(`Clanker v5 only: the dev buy’s minimum is the quote less this percent, 0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT}, default ${DEFAULT_DEV_BUY_SLIPPAGE_PCT}.`),
           token: tokenSettingsSchema(),

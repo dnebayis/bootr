@@ -9,7 +9,8 @@ import { FALLBACK_V5_BOUNDS, pairedAssetByAddress, pairedAssetBySymbol, viewPins
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, DEFAULT_WORKER_TEMPLATE, POSTS_PER_DAY, postIntervalForPostsPerDay, workerTemplateByHash, workerTemplateById } from '@bootr/shared/workers';
 import { agentCardUrl, contractUriUrl, mockLaunchId } from './agent-card';
 import type { CoinPageLinks } from './coin-links';
-import { DEFAULT_IMAGE_MODEL } from './models';
+import { OWN_AGENT_MODEL_ID, OWN_ERRORS, type RunnerSwitchRequest, type RunnerSwitchResponse } from '@bootr/shared/own-agent';
+import { DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, RECOMMENDED_MODEL } from './models';
 import { BOUNTIES_DEFAULTS, SERVICES_DEFAULTS } from './types';
 import type {
   Agent,
@@ -982,6 +983,37 @@ export const mock = {
     activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed ${fields.join(', ')} (revision ${cfg.revision}).` });
     return { ok: true, config: clone(cfg) };
   },
+  /**
+   * Moves the coin between "My own agent" and "Bootr agent" the way the agent service's switch would: one stored
+   * value, `revision` bumped, a row on the tape, the notes the creator should read, and the coin's model line following
+   * the runner (`own-agent` while own). Mock mode has no flag and no lease: it refuses only what the page can show
+   * (`runner_unchanged`, a model outside the catalog).
+   */
+  switchRunner(kernel: string, change: RunnerSwitchRequest, by: string): { ok: true; response: RunnerSwitchResponse } | { ok: false; error: 'runner_unchanged' | 'model_required' | 'model_not_allowed' } {
+    const cfg = configFor(kernel);
+    if (cfg.runner === change.runner) return { ok: false, error: 'runner_unchanged' };
+    const s = mockStore();
+    const token = s.tokens.find((t) => t.kernel.toLowerCase() === kernel.toLowerCase());
+    const agent = s.agents.get(kernel.toLowerCase());
+    const notes: string[] = [];
+    if (change.runner === 'hosted') {
+      if (change.model !== undefined && !FALLBACK_MODELS.some((m) => m.id === change.model)) return { ok: false, error: 'model_not_allowed' };
+      if (change.model === undefined && !FALLBACK_MODELS.some((m) => m.id === cfg.model)) return { ok: false, error: 'model_required' };
+      if (change.model) cfg.model = change.model;
+      cfg.own = null;
+      const fuel = agent ? (Number(agent.treasuryUsdc || '0') + Number(agent.spenderUsdc || '0')) / 1e6 : 0;
+      notes.push(`The Bootr agent pays for its thinking from fuel. This coin holds ${fuel.toFixed(2).replace(/\.?0+$/, '') || '0'} USDC; under 1 USDC it stays silent.`, 'Pictures are made by Bootr again and paid from fuel.');
+    } else {
+      cfg.own = { lastTurnAt: null, clients: 0 };
+      notes.push('Connect an AI client, or the agent stays silent.');
+    }
+    cfg.runner = change.runner;
+    cfg.revision += 1;
+    cfg.updatedAt = new Date().toISOString();
+    if (token) token.model = change.runner === 'own' ? OWN_AGENT_MODEL_ID : cfg.model;
+    activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed who runs the agent: ${change.runner === 'own' ? 'their own AI client' : 'Bootr'} (revision ${cfg.revision}).` });
+    return { ok: true, response: { runner: change.runner, revision: cfg.revision, notes } };
+  },
   /** The creator's inbox (lib/types AgentNotifications). */
   agentNotifications(kernel: string): AgentNotifications {
     return inboxView(inboxFor(kernel));
@@ -1023,6 +1055,8 @@ export const mock = {
   },
   /** One message and a canned answer. "Remember ..." pretends to store a note; everything else only talks. */
   sendAgentChat(kernel: string, text: string): { ok: true; reply: AgentChatMessage } | { ok: false; status: 409 | 429; error: string; message: string } {
+    // An own agent has no mind on Bootr's side to answer; refused before anything is stored, as the agent service does.
+    if (configFor(kernel).runner === 'own') return { ok: false, status: 409, error: 'chat_not_available', message: OWN_ERRORS.chat_not_available.message };
     const messages = chatFor(kernel);
     if (messages.filter((m) => m.role === 'creator').length >= MOCK_CHAT_LIMITS.perHour) return { ok: false, status: 429, error: 'chat_rate_limited', message: 'That is the chat limit for now: 20 messages an hour, 60 a day.' };
     const at = new Date().toISOString();
@@ -1201,7 +1235,8 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     agentId: t.agentId,
     kernel: t.kernel,
     creator: t.creator,
-    model: t.model,
+    // a coin launched with the reserved id `own-agent` keeps a hosted model for a switch back, as registration does
+    model: t.model === OWN_AGENT_MODEL_ID ? RECOMMENDED_MODEL : t.model,
     instructions,
     worker: { kind, capabilities: { services: false, bounties: false, ...template.preset.capabilities }, postIntervalMs: template.preset.postIntervalMs, jobLines: [...template.preset.identity] },
     workerHash: t.workerHash,
@@ -1217,6 +1252,8 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
     xConnection: t.xHandle ? 'connected' : 'none',
+    // a coin launched with the reserved model id `own-agent` runs in its creator's own AI client
+    ...(t.model === OWN_AGENT_MODEL_ID ? { runner: 'own' as const, own: { lastTurnAt: null, clients: 0 } } : { runner: 'hosted' as const, own: null }),
   };
 }
 
@@ -1242,6 +1279,8 @@ function orphanConfig(kernel: Address): AgentConfig {
     updatedAt: new Date().toISOString(),
     xHold: null,
     xConnection: 'none',
+    runner: 'hosted',
+    own: null,
   };
 }
 

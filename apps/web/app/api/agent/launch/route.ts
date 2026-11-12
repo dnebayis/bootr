@@ -10,6 +10,7 @@ import { mineLaunchSalt, SaltMiningError, type MinedSalt } from '@/lib/clanker-v
 import { launchValue, mockDevBuyQuote, pinsOf, quoteDevBuy, readLaunchTerms, V5LaunchRefused, type DevBuyQuote, type V5LaunchTerms } from '@/lib/v5-launch';
 import type { LaunchSource } from '@/lib/types';
 import { addresses } from '@bootr/shared/addresses';
+import { OWN_AGENT_MODEL_ID, OWN_ERRORS, type Runner } from '@bootr/shared/own-agent';
 import { chainAddresses } from '@/lib/chains';
 import { env } from '@/lib/env';
 import { WORKER_TEMPLATES } from '@/lib/launch';
@@ -46,12 +47,23 @@ const FEE_FALLBACK_WEI = 500_000_000_000_000n; // 0.0005 ETH, the value read fro
 const GAS_DEFAULT_ETH = '0.001';
 const GAS_MIN_ETH = '0.0001';
 
+/**
+ * The feature's one flag (`OWN_AGENT_ENABLED`, docs/design/byo-agent.md section 13.2), read the way the agent service
+ * reads it: on only for the exact value `true`. It decides one thing here, whether a launch may be prepared as an
+ * own-agent launch. (lib/server/env.ts gains `ownAgentEnabled()` with the same read in the web-routes workstream.)
+ */
+function ownAgentFlag(): boolean {
+  return (process.env.OWN_AGENT_ENABLED ?? '').trim() === 'true';
+}
+
 type LaunchInput = {
   name?: unknown;
   symbol?: unknown;
   identity?: unknown;
   image?: { url?: unknown; dataUrl?: unknown } | unknown;
   model?: unknown;
+  /** `hosted` (default): the Bootr agent thinks on `model`, paid from fuel. `own`: the agent thinks in the creator's own AI client. */
+  runner?: unknown;
   worker?: unknown;
   buyback?: unknown;
   fuelUsdc?: unknown;
@@ -128,6 +140,12 @@ async function loadImage(image: unknown): Promise<{ bytes: Uint8Array; type: 'im
  * the same bounds as the launch form: lib/token-settings.ts), and the agent's first gas
  * (`EntryPoint.depositTo(predictedKernel)`). Nothing is sent on the caller's behalf
  * and no key ever reaches this server. 5 calls per minute per IP.
+ *
+ * `launch.runner` says who runs the agent (docs/design/byo-agent.md): `hosted` (the default, exactly as before) or
+ * `own`, an agent that thinks in the creator's own AI client. An own launch names no model (the reserved id
+ * `own-agent` is written on chain, which is what tells the agent service), carries no fuel unless `fuelUsdc` says so
+ * (only paid services use fuel), and is refused with `own_agent_disabled` while own agents are switched off. With no
+ * fuel there is no USDC approval: the first transaction is the launch.
  */
 export async function POST(req: NextRequest) {
   const retryAfter = limiter.hit(clientIp(req.headers));
@@ -154,11 +172,22 @@ export async function POST(req: NextRequest) {
   if (!/^[A-Z0-9]{2,10}$/.test(symbol)) return invalid('symbol', `symbol must be 2 to 10 letters or digits, got ${quoted(l.symbol)}.`);
   const identity = normalizeIdentity(l.identity);
   if (identity === null) return invalid('identity', `identity must be plain text of ${MIN_IDENTITY_CHARS} to ${MAX_IDENTITY_CHARS} characters.`);
-  // The same list as GET /api/models: the model catalog under the admin allow-list.
-  const allowed = filterAllowedModels((await relayModels()).models, platform?.allowedModels ?? []);
-  const model = typeof l.model === 'string' && l.model ? l.model : RECOMMENDED_MODEL;
-  if (!allowed.some((m) => m.id === model)) {
-    return invalid('model', `model must be one of: ${allowed.map((m) => m.id).join(', ')}; got ${quoted(l.model)}.`);
+  // Who runs the agent. Anything but `hosted` and `own` is refused: the choice changes what the launch writes on chain.
+  if (l.runner !== undefined && l.runner !== 'hosted' && l.runner !== 'own') return invalid('runner', `runner must be hosted (default: Bootr runs the agent) or own (it thinks in your own AI client), got ${quoted(l.runner)}.`);
+  const runner: Runner = l.runner === 'own' ? 'own' : 'hosted';
+  let model: string;
+  if (runner === 'own') {
+    if (!ownAgentFlag()) return refuse(404, 'own_agent_disabled', OWN_ERRORS.own_agent_disabled.message, { field: 'runner' });
+    // No hosted model thinks for an own agent, so none can be chosen; the reserved id says so on chain.
+    if (l.model !== undefined && l.model !== '' && l.model !== OWN_AGENT_MODEL_ID) return invalid('model', `An own-agent launch names no model: leave model out (the launch writes ${OWN_AGENT_MODEL_ID}); got ${quoted(l.model)}.`);
+    model = OWN_AGENT_MODEL_ID;
+  } else {
+    // The same list as GET /api/models: the model catalog under the admin allow-list.
+    const allowed = filterAllowedModels((await relayModels()).models, platform?.allowedModels ?? []);
+    model = typeof l.model === 'string' && l.model ? l.model : RECOMMENDED_MODEL;
+    if (!allowed.some((m) => m.id === model)) {
+      return invalid('model', `model must be one of: ${allowed.map((m) => m.id).join(', ')}; got ${quoted(l.model)}.`);
+    }
   }
   // The worker: a template id, or a custom preset {capabilities, postIntervalMs, jobLines} hashed like a template and
   // published in the agent card (`bootr.worker`) so the supervisor can verify the hash the launch writes on-chain.
@@ -184,8 +213,11 @@ export async function POST(req: NextRequest) {
     const first = parseTokenSettings(l.token, creator, FALLBACK_V5_BOUNDS);
     if (!first.ok) return invalid(first.field === 'token' ? 'token' : `token.${first.field}`, first.message);
   }
-  const fuel = l.fuelUsdc === undefined ? '20' : typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '';
-  if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20", got ${quoted(l.fuelUsdc)}.`);
+  // No minimum: any amount launches, 0 included. Left out, a Bootr-agent launch carries the suggested 20 (it pays for
+  // the agent's thinking) and an own-agent launch carries none (only paid services use fuel).
+  let fuel = l.fuelUsdc === undefined ? '20' : typeof l.fuelUsdc === 'string' || typeof l.fuelUsdc === 'number' ? String(l.fuelUsdc) : '';
+  if (runner === 'own' && l.fuelUsdc === undefined) fuel = '0';
+  if (!DECIMAL.test(fuel)) return invalid('fuelUsdc', `fuelUsdc must be a decimal USDC amount such as "20" (0 is allowed), got ${quoted(l.fuelUsdc)}.`);
   const devBuy = l.devBuyEth === undefined ? '0' : String(l.devBuyEth);
   if (!DECIMAL.test(devBuy)) return invalid('devBuyEth', `devBuyEth must be a decimal ETH amount such as "0.01", got ${quoted(l.devBuyEth)}.`);
   if (!isV5 && l.devBuySlippagePct !== undefined) return invalid('devBuySlippagePct', `devBuySlippagePct applies to Clanker v5 launches only; this launch goes through ${launchThrough}.`);
@@ -234,6 +266,7 @@ export async function POST(req: NextRequest) {
       worker: worker.draft,
       source: launchThrough,
       tokenSettings: isV5 ? parseTokenSettingsOrNull(l.token, creator) : null,
+      runner,
     });
     if (!saved.ok && saved.reason === 'full') return refuse(503, 'store_full', 'The launch draft store is full right now. Nothing was launched: try again in a few minutes.');
     if (!saved.ok) return refuse(500, 'store_failed', 'Could not store the launch draft. Nothing was launched: try again in a moment.');
@@ -308,7 +341,8 @@ export async function POST(req: NextRequest) {
     }
   }
   const fuelUnits = parseUnits(fuel, USDC_DECIMALS);
-  if (fuelUnits < defaults.minFuelUsdc) return invalid('fuelUsdc', `fuelUsdc must be at least ${Number(defaults.minFuelUsdc) / 1e6} USDC, got ${quoted(fuel)}.`);
+  // Both live launchers read 0 here; should the owner ever set a floor on chain, a launch below it would revert, so it is refused first.
+  if (fuelUnits < defaults.minFuelUsdc) return invalid('fuelUsdc', `The launcher takes at least ${Number(defaults.minFuelUsdc) / 1e6} USDC of fuel right now, got ${quoted(fuel)}.`);
   const devBuyWei = parseEther(devBuy);
 
   const params = {
@@ -375,13 +409,18 @@ export async function POST(req: NextRequest) {
   const usdc = contracts.usdc;
   const entryPoint = chainAddresses().entryPointV07;
   const transactions: { step: string; to: Address; data: Hex; value: string; note: string }[] = [
-    {
-      step: 'approve',
-      to: usdc,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [launcher, fuelUnits] }),
-      value: '0',
-      note: `USDC.approve(launcher, ${fuel} USDC): the launch pulls the fuel into the agent's treasury.`,
-    },
+    // A launch with no fuel pulls no USDC (both launchers skip the transfer for 0), so there is nothing to approve.
+    ...(fuelUnits > 0n
+      ? [
+          {
+            step: 'approve',
+            to: usdc,
+            data: encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [launcher, fuelUnits] }),
+            value: '0',
+            note: `USDC.approve(launcher, ${fuel} USDC): the launch pulls the fuel into the agent's treasury.`,
+          },
+        ]
+      : []),
     {
       step: 'launch',
       to: launcher,
@@ -420,6 +459,8 @@ export async function POST(req: NextRequest) {
       metadata: params.metadata,
       image: { url: imageUrl, ipfsUri: `ipfs://${cid}` },
       model,
+      runner,
+      fuelUsdc: fuel,
       worker: worker.id,
       workerHash: worker.hash,
       ...(worker.draft.kind === CUSTOM_WORKER_ID ? { workerPreset: worker.draft.preset } : {}),
