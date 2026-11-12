@@ -305,11 +305,11 @@ function parseTarget(raw: unknown): ApproveTarget {
  * draft id is no secret once the launch is on chain, and a stranger who approves clients for somebody's draft must not
  * be able to fill the places of the creator (the stranger's are revoked at registration anyway).
  */
-async function claimsOn(ctx: Ctx, target: { agentId: string } | { draftId: string; creator: string }, now: Date): Promise<number> {
+async function claimsOn(db: Pick<Ctx['db'], 'select'>, target: { agentId: string } | { draftId: string; creator: string }, now: Date): Promise<number> {
   const clientMatch = 'agentId' in target ? eq(agentClients.agentId, target.agentId) : and(eq(agentClients.draftId, target.draftId), isNull(agentClients.agentId), eq(agentClients.creator, target.creator));
   const grantMatch = 'agentId' in target ? eq(agentGrants.agentId, target.agentId) : and(eq(agentGrants.draftId, target.draftId), eq(agentGrants.creator, target.creator));
-  const [clients] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentClients).where(and(clientMatch, live(now)));
-  const [grants] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentGrants).where(and(grantMatch, eq(agentGrants.status, 'approved'), gt(agentGrants.expiresAt, now)));
+  const [clients] = await db.select({ n: sql<number>`count(*)::int` }).from(agentClients).where(and(clientMatch, live(now)));
+  const [grants] = await db.select({ n: sql<number>`count(*)::int` }).from(agentGrants).where(and(grantMatch, eq(agentGrants.status, 'approved'), gt(agentGrants.expiresAt, now)));
   return Number(clients?.n ?? 0) + Number(grants?.n ?? 0);
 }
 
@@ -336,26 +336,37 @@ export async function approveGrant(ctx: Ctx, input: { userCode?: unknown; creato
 
   let answer: ConnectTarget;
   let bind: { agentId: string | null; draftId: string | null };
+  let places: { agentId: string } | { draftId: string; creator: string };
   if (target.kind === 'coin') {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, target.agentId) });
     // The agent id and the kernel were both in the text the wallet signed: a mismatch means the text named no real coin.
     if (!agent || agent.status === 'revoked' || !sameAddress(agent.kernel, target.kernel)) throw new OwnError('unknown_coin');
     if (!sameAddress(agent.creator, creator)) throw new OwnError('not_creator');
-    if ((await claimsOn(ctx, { agentId: agent.agentId }, new Date(now))) >= max) throw new OwnError('too_many_clients');
     answer = { kind: 'coin', coin: coinRef(agent) };
     bind = { agentId: agent.agentId, draftId: null };
+    places = { agentId: agent.agentId };
   } else {
-    if ((await claimsOn(ctx, { draftId: target.draftId, creator }, new Date(now))) >= max) throw new OwnError('too_many_clients');
     answer = { kind: 'draft', draftId: target.draftId };
     bind = { agentId: null, draftId: target.draftId };
+    places = { draftId: target.draftId, creator };
   }
-  // Still pending and not run out at the moment of the write: two approvals of one code cannot both take.
-  const rows = await ctx.db
-    .update(agentGrants)
-    .set({ status: 'approved', ...bind, creator, label, approvedAt: new Date(now) })
-    .where(and(eq(agentGrants.deviceHash, grant.deviceHash), eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))))
-    .returning({ deviceHash: agentGrants.deviceHash });
-  if (rows.length === 0) throw new OwnError('grant_used');
+  // The count and the write in one transaction, one approval at a time per coin (or per draft and wallet): two
+  // approvals of different codes that arrive together would otherwise both count the places before either took one,
+  // and a coin would end with more clients than it may have.
+  const lockKey = 'agentId' in places ? `own-clients:${places.agentId}` : `own-clients:${places.draftId}:${places.creator.toLowerCase()}`;
+  const outcome = await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    if ((await claimsOn(tx, places, new Date(now))) >= max) return 'full' as const;
+    // Still pending and not run out at the moment of the write: two approvals of one code cannot both take.
+    const rows = await tx
+      .update(agentGrants)
+      .set({ status: 'approved', ...bind, creator, label, approvedAt: new Date(now) })
+      .where(and(eq(agentGrants.deviceHash, grant.deviceHash), eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))))
+      .returning({ deviceHash: agentGrants.deviceHash });
+    return rows.length === 0 ? ('used' as const) : ('approved' as const);
+  });
+  if (outcome === 'full') throw new OwnError('too_many_clients');
+  if (outcome === 'used') throw new OwnError('grant_used');
   ctx.log.info({ target: target.kind, agentId: bind.agentId, draft: bind.draftId !== null }, 'own agent: a client was approved');
   return { ok: true, target: answer, label };
 }

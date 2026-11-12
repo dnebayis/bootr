@@ -297,6 +297,32 @@ describe('own agent: connecting a client', () => {
     }
   });
 
+  it('approvals of different codes that arrive together cannot take more places than the coin has', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      // Eight requests, approved at the same moment: each used to count the places before any of them took one.
+      const grants = [];
+      for (let i = 0; i < 8; i++) grants.push(await start(w));
+      const answers = await Promise.all(grants.map((g) => approveCoin(w, g.userCode)));
+      expect(answers.map((a) => a.status).sort()).toEqual([200, 200, 200, 409, 409, 409, 409, 409]);
+      for (const refused of answers.filter((a) => a.status === 409)) expect(refused.body.error).toBe('too_many_clients');
+      expect((await w.db.select().from(agentGrants)).filter((g) => g.status === 'approved')).toHaveLength(3);
+      // The same for a launch draft, per approving wallet.
+      const drafts = [];
+      for (let i = 0; i < 6; i++) drafts.push(await start(w));
+      const forDraft = await Promise.all(drafts.map((g) => w.call<OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode: g.userCode, creator: STRANGER, target: { kind: 'draft', draftId: DRAFT } })));
+      expect(forDraft.map((a) => a.status).sort()).toEqual([200, 200, 200, 409, 409, 409]);
+      // One code approved twice at the same moment is still approved once.
+      const twice = await start(w);
+      await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      const both = await Promise.all([approveCoin(w, twice.userCode), approveCoin(w, twice.userCode)]);
+      expect(both.map((a) => a.status).sort()).toEqual([200, 410]);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a user code is eight consonants in two groups, and a name is cleaned before it is stored or shown', () => {
     for (let i = 0; i < 200; i++) expect(newUserCode()).toMatch(USER_CODE_RE);
     expect(cleanText(`  Claude${String.fromCodePoint(0x202e)} Code${String.fromCodePoint(0x200b)}\n\t(work)  `, 40)).toBe('Claude Code (work)');
