@@ -215,23 +215,38 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
    supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
    launchpad can close there but the agent economy needs a bridge step. The staged plan and sizes are in section 11.
-11. **Bring your own agent** (designed 2026-11-12, nothing built;
+11. **Bring your own agent** (built and merged 2026-11-13, not deployed, dark behind `OWN_AGENT_ENABLED`;
    [`design/byo-agent.md`](./design/byo-agent.md)): a coin's creator runs the coin's agent in their own AI client
    (Claude Code, Cursor, Codex, Claude Desktop) through the Bootr MCP server. Only the thinking moves to the client:
    the supervisor still builds the observation, runs the broker and every guard, keeps the state and the memory,
    posts through the sender and signs with the session key; the creator's wallet approves the client in the browser
    (a device-style approval, no key copied). Thinking costs no fuel, pictures are made by the client and uploaded,
-   paid x402 services are the only use of fuel, X reads stay Bootr's cost, and no fuel minimum exists anywhere (both
-   live launchers read `minFuelUsdc = 0`; the form only prefills 20). The launch page opens with "Bootr agent" or "My
-   own agent", and the console switches a coin between the two in both directions with no contract change and no
-   session key rotation. No indexer change, so no schema bump; supervisor migration `0011_own_agent` and sender
-   migration `0003_quota_reads_per_day`. One release behind `OWN_AGENT_ENABLED`, a flag that hides the surfaces and
-   never changes how a coin is run (an own coin with the flag off is silent, never handed to the hosted model), built
-   by four workstreams in parallel against section 13 of the note (W1a supervisor and sender, 5 days; W1b web routes,
-   approval page and the SDK, MCP and CLI packages, 4 days; W2 treasury, bounties, requests and services, 5 days; W3
-   launch page, console and switching, 6 days; integration 2 days). Eleven decisions wait for the owner in section 9
-   of the note, each with a recommendation the builders follow until told otherwise; section 10 says where full parity cannot be had (a role's clean context on someone else's machine,
-   prompt-only rules, presence, pictures that depend on the client).
+   paid x402 services are the only use of fuel, X reads stay Bootr's cost. The launch page opens with "Bootr agent"
+   or "My own agent", and the console switches a coin between the two in both directions with no contract change and
+   no session key rotation.
+   - **Where it stands.** All four workstreams are merged (supervisor and sender; web routes, approval page and the
+     SDK, MCP and CLI packages at 0.2.0; treasury, bounties, requests and services; launch page, console and
+     switching). Two independent security reviews were run and every finding is fixed (the limits they added are in
+     section 7.1 of the note). The end-to-end run passed on a local stack: the built MCP server driven by a real MCP
+     client, the real web and supervisor routes, the sender, a Base fork, and only X stubbed
+     ([`dev/own-agent-e2e.md`](./dev/own-agent-e2e.md) says how to run it again), followed by its flag-off pass. The
+     flag hides the surfaces and never changes how a coin is run: an own coin with the flag off is silent, never
+     handed to the hosted model. Hosted agents are unchanged.
+   - **What the release needs.** A database backup first (coolify.md section 6), because two migrations run at
+     start: supervisor `0011_own_agent` and sender `0003_quota_reads_per_day`. No indexer change, so no
+     `DATABASE_SCHEMA` bump. Leave `OWN_AGENT_ENABLED` unset at first: the release then ships dark, and the site,
+     the catalog and the MCP server show nothing of it.
+   - **Before the flag is turned on.** (a) The 0.2.0 packages (`@bootrfun/sdk`, `cli`, `mcp`) on npm: the connect
+     step tells a creator to run `npx -y @bootrfun/mcp`, and 0.1.0 has no agent tools. (b) A Bootr-owned test coin
+     run by a real AI client on production with the flag on for that check: connect, one social turn with a real
+     post on X, and one switch each way (to the Bootr agent and back). (c) The origin firewall admitting ports 80
+     and 443 only from Cloudflare, then `TRUSTED_PROXY=cloudflare`, in that order (coolify.md, "Cloudflare in
+     front"): the per-address limits of the connect and run routes count the wrong address until both are done.
+   - **Not in this release.** A hosted remote MCP server with OAuth (a client connects only through the local
+     stdio server, `npx -y @bootrfun/mcp`; note section 3.1). The admin console's sign-in still accepts a message
+     signed for chain 84532 next to 8453 (`apps/web/app/api/siwe/verify/route.ts`); the own-agent and launch routes
+     take the deployment's own chain only. Section 10 of the note says where full parity cannot be had (a role's
+     clean context on someone else's machine, prompt-only rules, presence, pictures that depend on the client).
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
 
