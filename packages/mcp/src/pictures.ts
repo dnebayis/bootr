@@ -68,8 +68,10 @@ export async function readPicture(file: string, dir = picturesDir()): Promise<Pi
   if (inside === '' || inside === '..' || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) return refused(outsideFolder(dir));
   let handle;
   try {
-    // The real path holds no link; O_NOFOLLOW refuses one swapped in after the check.
-    handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // The real path holds no link; O_NOFOLLOW refuses one swapped in after the check. O_NONBLOCK makes the open of a
+    // named pipe (a FIFO somebody put in the folder) return at once: without it the open waits for a writer that
+    // never comes and the tool hangs. It changes nothing for a plain file, and what is not one is refused just below.
+    handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch {
     return refused(outsideFolder(dir));
   }

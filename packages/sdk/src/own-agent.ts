@@ -115,6 +115,7 @@ export type OwnErrorCode =
   | 'not_creator'
   | 'unknown_coin'
   | 'too_many_clients'
+  | 'wrong_coin'
   | 'unauthorized'
   | 'credential_expired'
   | 'credential_revoked'
@@ -166,6 +167,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   not_creator: { status: 403, message: 'Only the wallet that launched the coin can connect a client to its agent.' },
   unknown_coin: { status: 404, message: 'No Bootr coin matches that.' },
   too_many_clients: { status: 409, message: 'This coin already has as many clients as it may have. Disconnect one in the creator console first.' },
+  wrong_coin: { status: 409, message: 'This connection request is for another coin. Approve it for the coin it names, or start again from your AI client.' },
   unauthorized: { status: 401, message: 'Missing or unknown credential. Connect this client to Bootr again.' },
   credential_expired: { status: 401, message: "This client's connection ran out. Connect it to Bootr again." },
   credential_revoked: { status: 401, message: 'This client was disconnected in the creator console. Connect it again to use it.' },
@@ -210,7 +212,10 @@ export type ConnectTarget = { kind: 'coin'; coin: CoinRef } | { kind: 'draft'; d
 export interface ConnectStartRequest {
   /** What the client calls itself (MCP `clientInfo.name`), shown on the approval page; at most CLIENT_LABEL_MAX characters. */
   clientName?: string;
-  /** A coin the user named (symbol, token or kernel address), prefilled on the approval page; never trusted. */
+  /**
+   * A coin the user named (symbol, token or kernel address). When it names exactly one coin the request is bound to that
+   * coin (`ConnectStartResponse.coin`); otherwise it is a hint the approval page puts first, and never trusted.
+   */
   coin?: string;
 }
 
@@ -226,6 +231,12 @@ export interface ConnectStartResponse {
   expiresIn: number;
   /** Seconds between token polls: DEVICE_POLL_INTERVAL_S. */
   interval: number;
+  /**
+   * The one coin the request's `coin` named, when it named exactly one (a kernel or token address, or a symbol only one
+   * coin has). The request is then for that coin alone: an approval for anything else is refused with `wrong_coin`.
+   * Absent when no coin was named or the name fits none or several; the creator then chooses on the approval page.
+   */
+  coin?: CoinRef;
 }
 
 export interface ConnectGrantView {
@@ -234,6 +245,8 @@ export interface ConnectGrantView {
   coinHint: string | null;
   status: 'pending' | 'approved' | 'redeemed' | 'expired';
   expiresAt: string;
+  /** The one coin this request is for (`ConnectStartResponse.coin`): the approval page shows it fixed, with no other choice. */
+  coin?: CoinRef | null;
 }
 
 export interface ConnectApproveRequest {
@@ -268,10 +281,24 @@ export interface ClientView {
   expiresAt: string;
 }
 
+/**
+ * An approval the creator signed whose client has not collected its credential yet: it can until `expiresAt`, ten
+ * minutes after the client asked. It takes one of the coin's places and can be cancelled like a client.
+ */
+export interface WaitingApprovalView {
+  /** The code the creator approved; names the approval when it is cancelled (it opens nothing by itself). */
+  userCode: string;
+  label: string;
+  approvedAt: string;
+  expiresAt: string;
+}
+
 export interface ClientsResponse {
   clients: ClientView[];
   /** OWN_CLIENTS_PER_AGENT. */
   max: number;
+  /** Approvals waiting to be collected, oldest first. Absent from a server that does not list them. */
+  waiting?: WaitingApprovalView[];
 }
 
 export interface DraftClientsResponse {

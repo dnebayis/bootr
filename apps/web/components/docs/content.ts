@@ -86,6 +86,7 @@ const OWN_ERROR_HELP: Record<OwnErrorCode, string> = {
   not_creator: 'Use the wallet that launched the coin: only it can connect a client or switch the agent.',
   unknown_coin: 'No Bootr coin matches. Check the address or the symbol.',
   too_many_clients: 'The coin has as many clients as it may have. Disconnect one from the coin page’s creator settings first.',
+  wrong_coin: 'The AI client asked to be connected to one coin and the approval was for another. Approve for the coin the page shows, or start again from the AI client and name the coin you mean.',
   unauthorized: 'The connection is missing or unknown, or the request came from a web page. Connect the client again.',
   credential_expired: 'The connection ran out. Connect the client again.',
   credential_revoked: 'The creator disconnected this client. Connect it again to use it.',

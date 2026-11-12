@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import { CONNECT_COIN_STATEMENT, connectCoinStatement, connectDraftStatement, OWN_ERRORS, USER_CODE_RE, type OwnErrorBody } from '@bootr/shared/own-agent';
 import { NextRequest } from 'next/server';
 import { SiweMessage } from 'siwe';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as platform } from '@/app/api/platform/route';
-import { resetOwnLimits } from '@/lib/server/own-agent';
+import { env } from '@/lib/env';
+import { ownLimitSizes, resetOwnLimits } from '@/lib/server/own-agent';
 import { issueNonce } from '@/lib/server/siwe-verify';
 import { COIN, DRAFT_ID, OWN_ERRORS as FAKE_ERRORS, SECOND_COIN, startFakeSupervisor, type FakeSupervisor } from '../../../../../../packages/mcp/test/fake-supervisor.mjs';
 import { POST as approve } from './approve/route';
@@ -80,7 +82,7 @@ async function started(input: Record<string, unknown> = { clientName: 'Claude Co
 }
 
 async function signed(statement: string, signer = creator, over: Partial<SiweMessage> = {}) {
-  const message = new SiweMessage({ domain: 'bootr.fun', address: signer.address, statement, uri: SITE, version: '1', chainId: 8453, nonce: issueNonce().nonce, issuedAt: new Date().toISOString(), ...over }).prepareMessage();
+  const message = new SiweMessage({ domain: 'bootr.fun', address: signer.address, statement, uri: SITE, version: '1', chainId: env.chainId, nonce: issueNonce().nonce, issuedAt: new Date().toISOString(), ...over }).prepareMessage();
   return { message, signature: await signer.signMessage({ message }) };
 }
 
@@ -129,6 +131,33 @@ describe('POST /api/agent/connect/start', () => {
     expect(Date.parse(body.retryAt!)).toBeGreaterThan(Date.now());
     expect(Number(sixth.headers.get('retry-after'))).toBeGreaterThan(0);
     expect(fake.seen).toHaveLength(5);
+  });
+
+  it('counts by the address Cloudflare saw under TRUSTED_PROXY=cloudflare: a caller cannot pick a new key by writing a header (security review M4)', async () => {
+    // As it was: whoever writes X-Real-IP (or reaches the origin around its proxy) is a new visitor every time.
+    for (let i = 0; i < 8; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.0.${i}`, 'cf-connecting-ip': '198.51.100.44' }))).status).toBe(200);
+    vi.stubEnv('TRUSTED_PROXY', 'cloudflare');
+    resetOwnLimits();
+    fake.seen.length = 0;
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.1.${i}`, 'x-forwarded-for': `10.9.2.${i}`, 'cf-connecting-ip': '198.51.100.45' }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.1.99', 'x-forwarded-for': '10.9.2.99', 'cf-connecting-ip': '198.51.100.45' })), 'rate_limited');
+    // Another visitor behind the same Cloudflare address in X-Real-IP is not held up by it,
+    expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.1.0', 'cf-connecting-ip': '198.51.100.46' }))).status).toBe(200);
+    // an IPv6 visitor is one visitor across its /64,
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'cf-connecting-ip': `2001:db8:1:2::${i + 1}` }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'cf-connecting-ip': '2001:db8:1:2:aaaa:bbbb:cccc:dddd' })), 'rate_limited');
+    // and requests that carry no address from Cloudflare share one count, whatever else they claim.
+    for (let i = 0; i < 5; i++) expect((await start(post('/api/agent/connect/start', {}, { 'x-real-ip': `10.9.3.${i}` }))).status).toBe(200);
+    await error(await start(post('/api/agent/connect/start', {}, { 'x-real-ip': '10.9.3.200', 'x-forwarded-for': '8.8.8.8' })), 'rate_limited');
+    expect(fake.seen).toHaveLength(16);
+  });
+
+  it('relays the agent service’s global cap on waiting requests with when to try again', async () => {
+    const retryAt = new Date(Date.now() + 45_000).toISOString();
+    fake.backend.failNext('rate_limited', { retryAt });
+    const res = await start(post('/api/agent/connect/start', {}));
+    expect((await error(res, 'rate_limited')).retryAt).toBe(retryAt);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
   });
 
   it('refuses a body that is too large or is not a JSON object', async () => {
@@ -218,6 +247,9 @@ describe('POST /api/agent/connect/approve', () => {
       // A message for another site, another chain, an old one.
       { userCode, ...(await signed(coinStatement(userCode), creator, { domain: 'evil.example', uri: 'https://evil.example' })) },
       { userCode, ...(await signed(coinStatement(userCode), creator, { chainId: 1 })) },
+      // Base's other network: only the chain this deployment runs on is taken (security review L2).
+      { userCode, ...(await signed(coinStatement(userCode), creator, { chainId: env.chainId === 8453 ? 84532 : 8453 })) },
+      { userCode, ...(await signed(connectDraftStatement(DRAFT_ID, userCode), creator, { chainId: env.chainId === 8453 ? 84532 : 8453 })) },
       { userCode, ...(await signed(coinStatement(userCode), creator, { issuedAt: new Date(Date.now() - 3_600_000).toISOString() })) },
       { userCode, message: 'not a siwe message', signature: '0x00' },
       { userCode, message: (await signed(coinStatement(userCode))).message },
@@ -253,6 +285,21 @@ describe('POST /api/agent/connect/approve', () => {
     // Still pending after all that: the creator's own signature takes it.
     expect((await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) }))).status).toBe(200);
     await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) })), 'grant_used');
+  });
+
+  it('holds a request that names one coin to that coin: the creator’s signature for another coin or for a draft approves nothing (security review M2)', async () => {
+    const answer = (await started({ clientName: 'Claude Code', coin: COIN.kernel })) as Awaited<ReturnType<typeof started>> & { coin?: unknown };
+    // The client is told which one coin its request is for, and so is the approval page.
+    expect(answer.coin).toEqual(COIN);
+    const { userCode } = answer;
+    expect(await (await grant(get(`/api/agent/connect/grant?code=${userCode}`))).json()).toMatchObject({ status: 'pending', coin: COIN });
+    const other = await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode, SECOND_COIN))) })), 'wrong_coin');
+    expect(other.message).toBe(OWN_ERRORS.wrong_coin.message);
+    await error(await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(connectDraftStatement(DRAFT_ID, userCode))) })), 'wrong_coin');
+    // Nothing was used up: the request is still there for the coin it names.
+    expect((await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) }))).status).toBe(200);
+    // A request that named no coin, or a name that fits none, is the creator's to choose as before.
+    expect(((await started({ coin: '$NOPE' })) as { coin?: unknown }).coin).toBeUndefined();
   });
 
   it('is for the site’s own page: another origin, or none, is refused before the signature is looked at', async () => {
@@ -299,6 +346,30 @@ describe('POST /api/agent/connect/token', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     resetOwnLimits();
     await error(await poll(), 'grant_used');
+    // The credential was made here: the agent service was sent its SHA-256 and stored that, and no call ever carried
+    // the credential itself. A poll that found the grant waiting sent another hash, which opens nothing.
+    const hash = createHash('sha256').update(body.credential).digest('hex');
+    const polls = fake.seen.filter((s) => s.path === '/internal/own/connect/token');
+    expect(polls).toHaveLength(3);
+    expect(polls[1]!.body).toEqual({ deviceCode, credentialHash: hash });
+    expect(new Set(polls.map((p) => p.body.credentialHash)).size).toBe(3);
+    expect(fake.seen.map((s) => s.raw + s.path).join('\n')).not.toContain('bootr_agt_');
+    expect(fake.backend.clients.has(hash)).toBe(true);
+    for (const p of [polls[0]!, polls[2]!]) expect(fake.backend.clients.has(String(p.body.credentialHash))).toBe(false);
+  });
+
+  it('never relays a credential the agent service answered with: the only one is the one made here', async () => {
+    const { userCode, deviceCode } = await started();
+    await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) }));
+    const real = fake.backend.connectToken.bind(fake.backend);
+    fake.backend.connectToken = (b) => ({ ...real(b), credential: `bootr_agt_${'s'.repeat(43)}` });
+    try {
+      const body = (await (await token(post('/api/agent/connect/token', { deviceCode }))).json()) as { credential: string };
+      expect(body.credential).not.toBe(`bootr_agt_${'s'.repeat(43)}`);
+      expect(fake.backend.clients.has(createHash('sha256').update(body.credential).digest('hex'))).toBe(true);
+    } finally {
+      fake.backend.connectToken = real;
+    }
   });
 
   it('takes one poll per interval per device code, whatever the IP', async () => {
@@ -320,6 +391,8 @@ describe('POST /api/agent/connect/token', () => {
       expect((await error(await token(post('/api/agent/connect/token', { deviceCode })), 'invalid_request')).field).toBe('deviceCode');
     }
     expect(fake.seen).toHaveLength(0);
+    // And nothing is counted under text that cannot be a device code.
+    expect(ownLimitSizes().tokenByCode).toBe(0);
     await error(await token(post('/api/agent/connect/token', { deviceCode: 'A'.repeat(43) })), 'grant_not_found');
   });
 
@@ -352,6 +425,25 @@ describe('GET /api/agent/connect/draft and /coins', () => {
     expect(fake.seen.at(-1)!.path).toBe(`/internal/own/connect/coins?creator=${creator.address}`);
     expect(await (await coins(get(`/api/agent/connect/coins?creator=${stranger.address}`))).json()).toEqual({ coins: [] });
     for (const bad of ['', '0x12', 'vitalik.eth', `${creator.address}&x=1`]) expect((await error(await coins(get(`/api/agent/connect/coins?creator=${encodeURIComponent(bad)}`)), 'invalid_request')).field).toBe('creator');
+  });
+});
+
+describe('GET /api/agent/connect/draft with the launching wallet named (security review L3)', () => {
+  it('lists that wallet’s clients only, asks with the checksummed address, and refuses anything that is not an address', async () => {
+    const id = '33333333-2222-4333-8444-555555555555';
+    for (const [signer, name] of [[creator, 'Mine'], [stranger, 'Theirs']] as const) {
+      const { userCode, deviceCode } = await started({ clientName: name });
+      await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(connectDraftStatement(id, userCode), signer)) }));
+      await token(post('/api/agent/connect/token', { deviceCode }));
+    }
+    const list = async (query: string) => (await (await draft(get(`/api/agent/connect/draft?draft=${id}${query}`))).json()) as { connected: boolean; clients: { label: string }[] };
+    expect((await list('')).clients.map((c) => c.label)).toEqual(['Mine', 'Theirs']);
+    expect((await list(`&creator=${creator.address.toLowerCase()}`)).clients.map((c) => c.label)).toEqual(['Mine']);
+    expect(fake.seen.at(-1)!.path).toBe(`/internal/own/drafts/${id}/clients?creator=${creator.address}`);
+    expect(await list(`&creator=0x000000000000000000000000000000000000dEaD`)).toEqual({ connected: false, clients: [] });
+    fake.seen.length = 0;
+    for (const bad of ['', '0x12', 'vitalik.eth', `${creator.address}%26x=1`, '../clients']) expect((await error(await draft(get(`/api/agent/connect/draft?draft=${id}&creator=${bad}`)), 'invalid_request')).field).toBe('creator');
+    expect(fake.seen).toHaveLength(0);
   });
 });
 

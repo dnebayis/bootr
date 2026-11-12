@@ -1,7 +1,7 @@
 import { type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
 import { mockOwn } from '@/lib/mock-own';
-import { forwardOwn, ownDisabled, ownError, ownJson, readOwnBody, SMALL_BODY_BYTES, tokenCodeLimited, tokenIpLimited } from '@/lib/server/own-agent';
+import { askOwn, mintCredential, ownDisabled, ownError, ownJson, readOwnBody, SMALL_BODY_BYTES, tokenCodeLimited, tokenIpLimited } from '@/lib/server/own-agent';
 
 /** A device code is 32 random bytes as text; anything far from that shape is not asked about. */
 const DEVICE_CODE_RE = /^[A-Za-z0-9_-]{20,128}$/;
@@ -27,5 +27,14 @@ export async function POST(req: NextRequest) {
     const token = mockOwn.token(deviceCode);
     return token.ok ? ownJson(token.data) : ownError(token.error);
   }
-  return forwardOwn('POST', '/internal/own/connect/token', { deviceCode });
+  // The credential is made here and only its SHA-256 goes to the agent service, which stores that and nothing else:
+  // the credential is in this process for one answer and in no other. A poll that finds the grant still waiting
+  // throws its credential away.
+  const { credential, credentialHash } = await mintCredential();
+  const answer = await askOwn('POST', '/internal/own/connect/token', { deviceCode, credentialHash });
+  if (!answer.ok) return answer.response;
+  const data = (answer.data ?? {}) as Record<string, unknown>;
+  if (data.status !== 'approved') return ownJson({ status: 'pending' }, answer.status);
+  // Whatever the service answered under `credential` is not relayed: the one credential is the one made here.
+  return ownJson({ ...data, credential }, answer.status);
 }

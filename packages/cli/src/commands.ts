@@ -4,6 +4,8 @@ import { parseArgs } from 'node:util';
 import {
   BootrApiError,
   claimsByAsset,
+  clean,
+  cleanText,
   coinTerms,
   createBootr,
   KEY_REFUSAL,
@@ -269,22 +271,25 @@ export async function main(
   out: (s: string) => void,
   err: (s: string) => void,
 ): Promise<number> {
+  // Whatever is printed came, in part, from the network: names, posts and error words other people wrote. Characters
+  // that take no room on the screen or change the reading order are removed first (the SDK's `clean`, the same the MCP
+  // server uses), from the JSON on stdout and from every line on stderr, so a terminal shows what is really there.
   try {
     const { data, text, notice } = await run(argv);
     if (text) out(text);
-    if (data !== undefined) out(`${JSON.stringify(data, null, 2)}\n`);
-    if (notice) err(`${notice}\n`);
+    if (data !== undefined) out(`${JSON.stringify(clean(data), null, 2)}\n`);
+    if (notice) err(`${cleanText(notice)}\n`);
     return 0;
   } catch (e) {
     if (e instanceof BootrApiError) {
-      err(`${e.code}: ${e.message}\n`);
+      err(`${cleanText(`${e.code}: ${e.message}`)}\n`);
       return 1;
     }
     const message =
       (e as NodeJS.ErrnoException).code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION'
         ? 'Unknown option. This command never takes a private key: your own wallet signs. See bootr --help.'
         : (e as Error).message;
-    err(`${message}\n`);
+    err(`${cleanText(String(message))}\n`);
     return 2;
   }
 }

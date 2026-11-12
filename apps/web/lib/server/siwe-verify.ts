@@ -1,5 +1,7 @@
 import { SiweMessage } from 'siwe';
 import { isAddress, isHex, recoverMessageAddress, type Address, type Hex } from 'viem';
+import { chainLabel } from '@/lib/chains';
+import { env } from '@/lib/env';
 import { serverPublicClient } from './chain';
 import { isAllowedOrigin, siteOrigin } from './env';
 import { NEW_NONCE, quoted } from './refusals';
@@ -9,8 +11,8 @@ import { consumeNonce, rememberNonce } from './server-state';
  * One SIWE check for every signed request the site accepts: the console sign-in (cookie-bound nonce), the
  * creator's X claim on the coin page (cookie-bound nonce) and the agent API (nonce returned in JSON by
  * `POST /api/agent/nonce`, single use, 10 minutes). The caller says which nonce it expects; this verifies
- * everything else: nonce consumption, site origin and domain, chain, times, address and the signature
- * (viem: EOA, ERC-1271 and ERC-6492 smart accounts).
+ * everything else: nonce consumption, site origin and domain, chain (the deployment's own, `NEXT_PUBLIC_CHAIN_ID`,
+ * and no other), times, address and the signature (viem: EOA, ERC-1271 and ERC-6492 smart accounts).
  */
 
 export const NONCE_TTL_S = 600;
@@ -33,7 +35,7 @@ export type SiweFailReason =
   | 'wrong_statement'
   | 'bad_signature'
   | 'signature_unverifiable';
-export type SiweFail = { ok: false; status: number; reason: SiweFailReason; error: string };
+export type SiweFail = { ok: false; status: number; reason: SiweFailReason; error: string; /** `unsupported_chain`: the chain the message was signed for. */ chainId?: number };
 
 export function issueNonce(now = Date.now()): { nonce: string; exp: number } {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -82,7 +84,9 @@ export async function verifySiwe(
   }
   if (!isAllowedOrigin(uri)) return spent(401, 'uri_mismatch', `uri must be ${site}, got ${quoted(msg.uri, 100)}.`);
   if (msg.domain !== uri.host) return spent(401, 'domain_mismatch', `domain must be the host of uri (${uri.host}), got ${quoted(msg.domain, 100)}.`);
-  if (msg.chainId !== 8453 && msg.chainId !== 84532) return spent(401, 'unsupported_chain', `chainId must be 8453 (Base) or 84532 (Base Sepolia), got ${msg.chainId}.`);
+  // The one chain this deployment runs on, for every statement: a message signed for Base Sepolia is nothing on the
+  // production site, and the other way round. (The site's own pages sign for this chain, `appChain`.)
+  if (msg.chainId !== env.chainId) return { ...spent(401, 'unsupported_chain', `chainId must be ${env.chainId} (${chainLabel(env.chainId)}), the chain this site runs on, got ${msg.chainId}.`), chainId: msg.chainId };
   if (msg.expirationTime && Date.parse(msg.expirationTime) < now) return spent(401, 'message_expired', `expirationTime ${quoted(msg.expirationTime)} has passed.`);
   if (msg.notBefore && Date.parse(msg.notBefore) > now) return spent(401, 'message_not_yet_valid', `notBefore ${quoted(msg.notBefore)} is still in the future.`);
   if (!msg.issuedAt || Math.abs(now - Date.parse(msg.issuedAt)) > 10 * 60_000) return spent(401, 'stale_message', `issuedAt must be within 10 minutes of now, got ${quoted(msg.issuedAt)}.`);
@@ -98,7 +102,7 @@ export async function verifySiwe(
   if (recovered && recovered.toLowerCase() === msg.address.toLowerCase()) return { ok: true, msg, address: msg.address as Address };
   // A smart account's signature (ERC-1271 / ERC-6492) is checked on the chain through a client that refuses CCIP-Read
   // (lib/server/chain.ts): the account is the caller's own contract, so its reverts must not make this server fetch URLs.
-  const client = serverPublicClient(msg.chainId);
+  const client = serverPublicClient(env.chainId);
   let valid = false;
   let unverifiable = false;
   try {

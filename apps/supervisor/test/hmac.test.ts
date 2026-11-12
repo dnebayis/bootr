@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
-import { signRequest, verifyRequest } from '../src/hmac.js';
+import { Hono } from 'hono';
+import { hmacAuth, INTERNAL_BODY_MAX_BYTES, signRequest, verifyRequest, type AuthEnv } from '../src/hmac.js';
 import { mockAdminSigner, makeWorld, SERVICE_KEY, SUPERVISOR_KEY, seedAgent } from './helpers.js';
 import { runtimes } from '../src/db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -79,6 +80,83 @@ describe('HMAC auth (sender scheme)', () => {
     } finally {
       await world.close();
     }
+  });
+
+  describe('the body is not read for a request that cannot be signed, nor past the cap (security review H1)', () => {
+    const PATH = '/internal/echo';
+    const LIMIT = 256 * 1024;
+    const NOW = 1_800_000_000;
+
+    function echoApp() {
+      const app = new Hono<AuthEnv>();
+      app.use('/internal/*', hmacAuth(SUPERVISOR_KEY, () => NOW, LIMIT));
+      // Read the way the admin routes read it, after the middleware has taken the stream.
+      app.post(PATH, async (c) => c.json({ raw: c.get('rawBody').length, json: await c.req.json().catch(() => null), text: (await c.req.text()).length }));
+      return app;
+    }
+
+    /** A body that makes its bytes only when asked and counts them. */
+    function counted(bytes: number) {
+      const chunk = new Uint8Array(16 * 1024).fill(0x61);
+      let left = bytes;
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (left <= 0) return controller.close();
+            const next = chunk.subarray(0, Math.min(chunk.length, left));
+            left -= next.length;
+            pulled += next.length;
+            controller.enqueue(next);
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      return { body, pulled: () => pulled };
+    }
+
+    const send = (body: ReadableStream<Uint8Array> | string, headers: Record<string, string>) => echoApp().request(PATH, { method: 'POST', body, headers, duplex: 'half' } as RequestInit);
+
+    it('answers a missing, malformed or out-of-date header without reading a byte, a hundred at a time', async () => {
+      const stale = signRequest(SUPERVISOR_KEY, 'POST', PATH, '', NOW - 3600);
+      const cases = [undefined, 'Bearer nothing', 'HMAC 12:zz', stale];
+      const flood = Array.from({ length: 100 }, (_, i) => ({ ...counted(8 * 1024 * 1024), header: cases[i % cases.length] }));
+      const answers = await Promise.all(flood.map((f) => send(f.body, f.header ? { authorization: f.header } : {})));
+      expect(new Set(answers.map((r) => r.status))).toEqual(new Set([401]));
+      expect(((await answers[3]!.json()) as { reason: string }).reason).toBe('stale_timestamp');
+      expect(flood.reduce((sum, f) => sum + f.pulled(), 0)).toBe(0);
+    });
+
+    it('refuses a declared length over the cap unread, and stops reading at the cap whatever was declared', async () => {
+      const fresh = signRequest(SUPERVISOR_KEY, 'POST', PATH, 'x', NOW);
+      const declared = counted(LIMIT * 4);
+      const tooLong = await send(declared.body, { authorization: fresh, 'content-length': String(LIMIT + 1) });
+      expect(tooLong.status).toBe(413);
+      expect(await tooLong.json()).toEqual({ error: 'payload_too_large', message: 'The request body is too large.' });
+      expect(declared.pulled()).toBe(0);
+      // No length, or one that lies: the stream is cut one chunk past the cap and the megabytes behind it are never asked for.
+      for (const headers of [{ authorization: fresh }, { authorization: fresh, 'content-length': '10' }] as Record<string, string>[]) {
+        const lying = counted(64 * 1024 * 1024);
+        expect((await send(lying.body, headers)).status).toBe(413);
+        expect(lying.pulled()).toBeGreaterThan(LIMIT);
+        expect(lying.pulled()).toBeLessThanOrEqual(LIMIT + 16 * 1024);
+      }
+      expect(INTERNAL_BODY_MAX_BYTES).toBeGreaterThan(8 * 1024 * 1024);
+      expect(INTERNAL_BODY_MAX_BYTES).toBeLessThan(9 * 1024 * 1024);
+    });
+
+    it('still hands a signed body to its handler, as text and as JSON, up to the cap', async () => {
+      const text = JSON.stringify({ pad: 'é'.repeat(1000), n: 1 });
+      const ok = await send(text, { authorization: signRequest(SUPERVISOR_KEY, 'POST', PATH, text, NOW) });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ raw: text.length, json: JSON.parse(text), text: text.length });
+      const full = 'a'.repeat(LIMIT);
+      expect((await send(full, { authorization: signRequest(SUPERVISOR_KEY, 'POST', PATH, full, NOW) })).status).toBe(200);
+      const over = `${full}a`;
+      expect((await send(over, { authorization: signRequest(SUPERVISOR_KEY, 'POST', PATH, over, NOW) })).status).toBe(413);
+      // A body under the cap with a signature that does not cover it is still refused as before.
+      expect((await send('{"a":2}', { authorization: signRequest(SUPERVISOR_KEY, 'POST', PATH, '{"a":1}', NOW) })).status).toBe(401);
+    });
   });
 
   it('refuses to panic-revoke without an admin signer', async () => {

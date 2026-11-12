@@ -37,7 +37,7 @@ describe('the SDK’s copy of the own-agent types', () => {
  */
 describe('the MCP server’s list of agent tools', () => {
   const src = readFileSync(path.join(REPO, 'packages/mcp/src/agent-tools.ts'), 'utf8');
-  const listed = [...src.matchAll(/\{ name: '(\w+)', title: '[^']+', annotations: (READ|WRITE|ACTS),/g)].map((m) => ({ name: m[1]!, kind: m[2]! }));
+  const listed = [...src.matchAll(/\{ name: '(\w+)', title: '[^']+', annotations: (READ|SENDS|WRITE|ACTS),/g)].map((m) => ({ name: m[1]!, kind: m[2]! }));
 
   it('is agent-core’s catalog without generate_image and finish, in its order', () => {
     expect(listed).toHaveLength(23);
@@ -45,9 +45,11 @@ describe('the MCP server’s list of agent tools', () => {
     expect(MCP_TOOL_PREFIX).toBe('bootr_agent_');
   });
 
-  it('marks as read-only exactly the tools whose effect is a read, and as acting the five the contract names', () => {
+  it('marks as read-only the tools whose effect is a read, less the three whose input leaves for a third party, and as acting the five the contract names', () => {
     const effect = new Map<string, string>(TOOL_LIST.map((t) => [t.name, t.effect]));
-    for (const t of listed) expect(t.kind === 'READ', t.name).toBe(effect.get(t.name) === 'read');
+    // A read is READ, or SENDS when what the model puts in goes out to the web, a search service or a directory.
+    for (const t of listed) expect(t.kind === 'READ' || t.kind === 'SENDS', t.name).toBe(effect.get(t.name) === 'read');
+    expect(listed.filter((t) => t.kind === 'SENDS').map((t) => t.name).sort()).toEqual(['discover_services', 'read_url', 'search_web']);
     expect(listed.filter((t) => t.kind === 'ACTS').map((t) => t.name).sort()).toEqual(['bounty_post', 'publish_post', 'publish_reply', 'treasury_execute', 'x402_fetch']);
     // Everything that moves money is among them.
     for (const t of TOOL_LIST.filter((x) => x.effect === 'money')) expect(listed.find((l) => l.name === t.name)?.kind, t.name).toBe('ACTS');

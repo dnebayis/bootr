@@ -78,8 +78,8 @@ import { settlePlatformUpdate } from '../platform-updates.js';
 import { creditsHold, forbiddenHold, quotaHold } from '../rhythm.js';
 import { LEASE_MS, acquireLease, releaseLease, saveRuntime, scheduleFor, trimState, type AgentState, type OwnCallRecord, type Turn } from '../runtime.js';
 import type { SenderInboxItem } from '../sender-client.js';
-import { readTreasuryOnChain } from '../treasury.js';
 import { budgetOpensAt, countUse, usedInWindow } from './budget.js';
+import { forgetStatusReads, statusReads } from './status-cache.js';
 import { OwnError, clientView, coinRef, type VerifiedClient } from './clients.js';
 import { storeUpload } from './pictures.js';
 import { applyRunnerQuota, runnerReadsPerDay } from './quota.js';
@@ -212,8 +212,11 @@ function gate(v: VerifiedClient): AgentConfig {
   return config;
 }
 
+/** `gate`, for the route that only asks whether a call would get past it (own/routes.ts `run/verify`). */
+export const ownGate: (v: VerifiedClient) => unknown = gate;
+
 const iso = (ms: number) => new Date(ms).toISOString();
-const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const utcDay =(ms: number) => new Date(ms).toISOString().slice(0, 10);
 const nextUtcMidnight = (ms: number) => {
   const d = new Date(ms);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
@@ -555,17 +558,17 @@ export async function ownStatus(ctx: SupervisorContext, v: VerifiedClient): Prom
   const powers: Record<string, boolean> = {};
   for (const [name, on] of Object.entries(config ? config.capabilities : rawPowers)) powers[name] = on === true;
 
-  const quota = await ctx.sender.quota(agent.agentId).catch(() => null);
+  // The sender's quota and the chain's balances, each read at most once in half a minute per agent (own/status-cache.ts).
+  const { quota, treasury } = await statusReads(ctx, agent);
   const postsLeftToday = quota && typeof quota.postsUsed24h === 'number' ? Math.max(0, quota.postsPerDay - quota.postsUsed24h) : null;
   const xReadsLeftToday = quota && typeof quota.readsPerDay === 'number' && quota.readsPerDay > 0 && typeof quota.readsUsedToday === 'number' ? Math.max(0, quota.readsPerDay - quota.readsUsedToday) : null;
   // The sender's read budget follows the runner (own/quota.ts); a write the sender missed is made up for here.
   if (quota && typeof quota.readsPerDay === 'number' && agent.status !== 'onboarding') {
     const wanted = runnerReadsPerDay(ctx, runner);
-    if (runner === 'own' && wanted !== null && quota.readsPerDay !== wanted) await applyRunnerQuota(ctx, agent.agentId, runner);
+    if (runner === 'own' && wanted !== null && quota.readsPerDay !== wanted) await applyRunnerQuota(ctx, agent.agentId, runner).finally(() => forgetStatusReads(ctx, agent.agentId));
   }
   const now = ctx.now();
   const forcedUsed = state.ownForced?.day === utcDay(now) ? state.ownForced.count : 0;
-  const treasury = await readTreasuryOnChain(ctx, agent).catch(() => null);
   return {
     coin: coinRef(agent),
     runner,

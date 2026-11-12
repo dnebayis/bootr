@@ -191,27 +191,104 @@ export class RateLimiter {
   /** Records one hit. Returns 0 when allowed, else the seconds until the window resets. */
   hit(key: string, now = Date.now()): number {
     let e = this.hits.get(key);
+    // Every hit puts its key at the end, so the map's order is the order of the last hits: when the table is full
+    // the callers that have been quiet longest are forgotten first, and one that keeps asking is not.
+    this.hits.delete(key);
     if (!e || e.reset <= now) {
       if (this.hits.size >= this.maxKeys) this.prune(now);
       e = { count: 0, reset: now + this.windowMs };
-      this.hits.set(key, e);
     }
+    this.hits.set(key, e);
     e.count += 1;
     return e.count > this.limit ? Math.max(1, Math.ceil((e.reset - now) / 1000)) : 0;
   }
 
+  /** How many keys are counted right now, for tests. */
+  get size(): number {
+    return this.hits.size;
+  }
+
   private prune(now: number) {
     for (const [k, v] of this.hits) if (v.reset <= now) this.hits.delete(k);
-    // Still full (a flood of distinct keys): start over rather than grow without bound.
-    if (this.hits.size >= this.maxKeys) this.hits.clear();
+    // Still full (a flood of distinct keys): the tenth that has been quiet longest goes, never the whole table.
+    // Forgetting every count at once would lift the limit for everybody, the callers already over theirs included,
+    // each time the flood filled it.
+    evictOldest(this.hits, this.maxKeys);
   }
 }
 
+/** Drops the entries at the front of a full map (a `Map` keeps the order its keys were put in): a tenth of its room. */
+export function evictOldest(map: Map<string, unknown>, maxKeys: number): void {
+  if (map.size < maxKeys) return;
+  let drop = map.size - maxKeys + Math.max(1, Math.ceil(maxKeys / 10));
+  for (const key of map.keys()) {
+    if (drop-- <= 0) break;
+    map.delete(key);
+  }
+}
+
+const IPV4_RE = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
 /**
- * Client IP for rate limiting. `X-Real-IP` is set by the hosting edge (Railway); otherwise the last
- * `X-Forwarded-For` hop, i.e. the one our own proxy appended. Earlier hops are client-controlled.
+ * An address as a limiter keys it, or null when the text is not an address: an IPv4 address whole, an IPv6 address by
+ * its first 64 bits (one subscriber holds a whole /64 and can use a new address of it for every request), an
+ * IPv4-mapped IPv6 address as its IPv4 address.
+ */
+export function ipKey(raw: string | null | undefined): string | null {
+  const text = (raw ?? '').trim().toLowerCase();
+  if (!text || text.length > 45) return null;
+  if (IPV4_RE.test(text)) return text;
+  if (!text.includes(':')) return null;
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const groupsOf = (part: string): string[] | null => {
+    if (part === '') return [];
+    const out: string[] = [];
+    const pieces = part.split(':');
+    for (const [i, piece] of pieces.entries()) {
+      if (i === pieces.length - 1 && IPV4_RE.test(piece)) {
+        // A dotted tail stands for the last two groups.
+        const [a, b, c, d] = piece.split('.').map(Number) as [number, number, number, number];
+        out.push(((a << 8) | b).toString(16), ((c << 8) | d).toString(16));
+      } else if (/^[0-9a-f]{1,4}$/.test(piece)) out.push(piece.replace(/^0+(?=.)/, ''));
+      else return null;
+    }
+    return out;
+  };
+  const head = groupsOf(halves[0]!);
+  const tail = halves.length === 2 ? groupsOf(halves[1]!) : [];
+  if (!head || !tail) return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...head, ...Array.from({ length: Math.max(missing, 0) }, () => '0'), ...tail];
+  if (groups.slice(0, 5).every((g) => g === '0') && groups[5] === 'ffff') {
+    const [hi, lo] = [parseInt(groups[6]!, 16), parseInt(groups[7]!, 16)];
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  return `${groups.slice(0, 4).join(':')}::/64`;
+}
+
+/** `TRUSTED_PROXY=cloudflare`: the site sits behind Cloudflare, and the origin takes connections from Cloudflare only. */
+export function trustedProxy(): 'cloudflare' | null {
+  return (process.env.TRUSTED_PROXY ?? '').trim().toLowerCase() === 'cloudflare' ? 'cloudflare' : null;
+}
+
+/**
+ * Client IP for rate limiting.
+ *
+ * Unset (the default): `X-Real-IP` as the hosting edge set it (Railway), otherwise the last `X-Forwarded-For` hop,
+ * i.e. the one our own proxy appended; earlier hops are client-controlled. Behind Cloudflare and Traefik that is not
+ * the visitor: it is a Cloudflare address shared by many visitors, or, when the origin can be reached around
+ * Cloudflare, whatever the caller wrote.
+ *
+ * `TRUSTED_PROXY=cloudflare`: the address Cloudflare saw, `CF-Connecting-IP`, and nothing else; an IPv6 visitor is
+ * keyed by its /64 (`ipKey`). A request without a well-formed one did not come through Cloudflare and shares the one
+ * key `unknown` with every other such request. This is only as good as the origin's firewall: `CF-Connecting-IP` is a
+ * header like any other to a caller who reaches the origin directly, so the origin must admit Cloudflare's ranges
+ * only (docs/deploy/coolify.md).
  */
 export function clientIp(headers: Headers): string {
+  if (trustedProxy() === 'cloudflare') return ipKey(headers.get('cf-connecting-ip')) ?? 'unknown';
   const real = headers.get('x-real-ip')?.trim();
   if (real) return real;
   const xff = headers.get('x-forwarded-for');

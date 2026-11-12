@@ -166,6 +166,39 @@ declares). `SEARCH_API_KEY` (Brave Search subscription token, with `SEARCH_API_U
 `BOOT_TOKEN_ADDRESS`, `ENABLE_MODE_*_URL`, `NEXT_PUBLIC_WC_PROJECT_ID`, `NEXT_PUBLIC_WORKER_SOURCE_BASE`,
 `NEXT_PUBLIC_INFERENCE_URL`. Changing a `NEXT_PUBLIC_*` value needs a redeploy (the web image is rebuilt).
 
+### Cloudflare in front: `TRUSTED_PROXY` and the origin firewall
+
+The web's per-address limits (the launch draft, the nonce, the upload, the own-agent connect and run routes) count
+by `clientIp` (`apps/web/lib/server/ipfs.ts`). With `TRUSTED_PROXY` unset it reads `X-Real-IP`, else the last
+`X-Forwarded-For` hop, which is right when Traefik faces the visitor itself. With Cloudflare proxying the domain
+(orange cloud) that header is a Cloudflare address many visitors share, so one busy visitor can use up the limit of
+everyone behind the same Cloudflare node; and when the server also answers on its own address, a caller who goes
+around Cloudflare writes the header himself and gets a fresh limit with every request.
+
+When Cloudflare proxies `bootr.fun`, do both, in this order:
+
+1. **Close the origin to everything but Cloudflare** (the owner does this; nothing in the repository can). In the
+   Hetzner cloud firewall, allow inbound TCP 80 and 443 only from Cloudflare's published ranges
+   (<https://www.cloudflare.com/ips-v4> and <https://www.cloudflare.com/ips-v6>; they change rarely, check them when
+   Cloudflare announces a change), keep SSH on its own rule, and remove the rule that admits 80 and 443 from
+   anywhere. Check from a machine outside Cloudflare: `curl -m 5 -sk -o /dev/null -w '%{http_code}\n' --resolve
+   bootr.fun:443:<server address> https://bootr.fun/` must time out. `api.bootr.fun` and `indexer.bootr.fun` sit on
+   the same ports: proxy them through Cloudflare as well before the rule goes in, or they stop answering.
+2. **Set `TRUSTED_PROXY=cloudflare`** in Coolify and redeploy (the compose file passes it to `web` only). `clientIp`
+   then takes `CF-Connecting-IP`, the address Cloudflare saw, and nothing else; an IPv6 visitor is counted by its
+   /64. A request without that header shares one count with every other such request.
+
+The order matters: `CF-Connecting-IP` is a header like any other to a caller who reaches the origin directly, so
+setting the variable while the origin is still open lets that caller choose the address he is counted under. With the
+variable set and no Cloudflare in front, every visitor shares the one count `unknown` and the limits bite at once:
+leave it unset then. `SENDER_TRUST_PROXY` is the sender's own setting and is not changed by this.
+
+Two bounds of the own-agent connect routes do not depend on an address at all and hold either way: at most 500
+connection requests wait for an approval at one time, and after 120 lookups of codes that do not exist in a minute no
+code is looked up for the rest of that minute (`MAX_PENDING_GRANTS`, `GRANT_MISSES_PER_MINUTE` in
+`apps/supervisor/src/own/clients.ts`). Both answer `rate_limited` with the time to try again. A flood that reaches
+either keeps real creators from connecting a client while it lasts; it cannot get a client approved.
+
 Hygiene: `.env` files are excluded from every image by `.dockerignore`; the images contain no secrets and the web
 build args are public values only. Services log to stdout and never log tokens or keys; the supervisor reduces
 every URL in an error to its origin because RPC and bundler URLs embed API keys. Rotate `SENDER_SERVICE_KEY` on

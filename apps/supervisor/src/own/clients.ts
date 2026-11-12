@@ -16,8 +16,6 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto
 import {
   CLIENT_ID_PREFIX,
   CLIENT_LABEL_MAX,
-  CREDENTIAL_PREFIX,
-  CREDENTIAL_RE,
   DEVICE_CODE_TTL_S,
   DEVICE_POLL_INTERVAL_S,
   OWN_ERRORS,
@@ -35,8 +33,9 @@ import {
   type DraftClientsResponse,
   type OwnErrorBody,
   type OwnErrorCode,
+  type WaitingApprovalView,
 } from '@bootr/shared/own-agent';
-import { and, desc, eq, gt, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { getAddress, isAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, agentClients, agentGrants, agents } from '../db/schema.js';
@@ -52,6 +51,10 @@ type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'config' | 'log'>;
 export const GRANT_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** `last_used_at` is written at most this often, so a busy client does not write a row on every call. */
 export const LAST_USED_WRITE_MS = 60_000;
+/** Requests waiting for an approval at one time, over all callers: beyond it a new one is `rate_limited`. */
+export const MAX_PENDING_GRANTS = 500;
+/** Lookups of a user code that found nothing, a minute, over all callers: beyond it no code is looked up until the minute ends. */
+export const GRANT_MISSES_PER_MINUTE = 120;
 export const DEFAULT_CLIENT_NAME = 'AI client';
 export const COIN_HINT_MAX = 80;
 
@@ -100,6 +103,9 @@ function sameHash(a: string, b: string): boolean {
   if (a.length !== b.length || !/^[0-9a-f]{64}$/.test(a) || !/^[0-9a-f]{64}$/.test(b)) return false;
   return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
+
+/** The SHA-256 of a credential as the web sends it (lower-case hex): the only form of a credential this service ever sees. */
+export const CREDENTIAL_HASH_RE = /^[0-9a-f]{64}$/;
 
 /** 32 random bytes as unpadded base64url (43 characters). */
 function randomSecret(): string {
@@ -159,7 +165,34 @@ async function noteOnTape(ctx: Ctx, agentId: string, field: 'clientConnected' | 
 // Grants
 // ---------------------------------------------------------------------------
 
-/** `POST /internal/own/connect/start`: a new grant. The device code is returned here once and kept nowhere. */
+/**
+ * The one coin a client's `coin` names, or null: a kernel or token address of a coin, or a symbol (with or without `$`)
+ * that exactly one coin has. Symbols are not unique on a launchpad, so one that two coins share names neither. A
+ * revoked coin is no coin.
+ */
+async function resolveCoin(ctx: Ctx, hint: string | null): Promise<AgentRow | null> {
+  const named = (hint ?? '').trim();
+  if (!named) return null;
+  const listed = ne(agents.status, 'revoked');
+  let match;
+  if (isAddress(named, { strict: false })) {
+    const address = named.toLowerCase();
+    match = or(sql`lower(${agents.kernel}) = ${address}`, sql`lower(${agents.token}) = ${address}`);
+  } else {
+    const symbol = named.replace(/^\$/, '');
+    if (!/^[A-Za-z0-9_]{1,16}$/.test(symbol)) return null;
+    match = sql`lower(${agents.config}->'token'->>'symbol') = ${symbol.toLowerCase()}`;
+  }
+  const rows = await ctx.db.select().from(agents).where(and(listed, match)).limit(2);
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+/**
+ * `POST /internal/own/connect/start`: a new grant. The device code is returned here once and kept nowhere. A `coin`
+ * that names exactly one coin binds the grant to it (the row's `agent_id`, set while it is still pending): the
+ * approval page shows that coin and no other, and `approveGrant` refuses any other target, so a request the client
+ * made for one coin cannot be approved for another.
+ */
 export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?: unknown; siteUrl?: unknown }): Promise<ConnectStartResponse> {
   let site: URL;
   try {
@@ -172,8 +205,25 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
   if (input.coin !== undefined && typeof input.coin !== 'string') throw invalid('coin', 'coin must be text.');
   const now = ctx.now();
   await ctx.db.delete(agentGrants).where(lt(agentGrants.createdAt, new Date(now - GRANT_RETENTION_MS)));
+  // With them go the clients approved for a launch draft a day or more ago whose launch never came: a draft is
+  // offered for a day (the web's LAUNCH_DRAFT_MAX_AGE_MS), and such a row could otherwise wait for ever for a launch
+  // that names its draft id. One whose launch exists is left for `adoptDraftClients`.
+  await ctx.db
+    .delete(agentClients)
+    .where(and(isNull(agentClients.agentId), isNotNull(agentClients.draftId), lt(agentClients.createdAt, new Date(now - GRANT_RETENTION_MS)), sql`not exists (select 1 from ${agents} launched where launched.draft_id = ${agentClients}.draft_id)`));
+  // Starting a request needs no credential and no signature, so what bounds the table is this count: the requests
+  // still waiting for an approval, over every caller. One lasts ten minutes; the oldest says when a place frees up.
+  const [waiting] = await ctx.db
+    .select({ n: sql<number>`count(*)::int`, soonest: sql<Date | string | null>`min(${agentGrants.expiresAt})` })
+    .from(agentGrants)
+    .where(and(eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))));
+  if (Number(waiting?.n ?? 0) >= MAX_PENDING_GRANTS) {
+    const soonest = waiting?.soonest ? new Date(waiting.soonest).getTime() : NaN;
+    throw new OwnError('rate_limited', { retryAt: Number.isFinite(soonest) ? Math.max(soonest, now + 1000) : now + 60_000 });
+  }
   const clientName = cleanText(input.clientName, CLIENT_LABEL_MAX) || DEFAULT_CLIENT_NAME;
   const coinHint = cleanText(input.coin, COIN_HINT_MAX) || null;
+  const bound = await resolveCoin(ctx, coinHint);
   const deviceCode = randomSecret();
   const expiresAt = new Date(now + DEVICE_CODE_TTL_S * 1000);
   // A user code is unique among the grants of the last day; a clash (one in 20^8) draws again.
@@ -181,12 +231,12 @@ export async function startGrant(ctx: Ctx, input: { clientName?: unknown; coin?:
     const userCode = newUserCode();
     const rows = await ctx.db
       .insert(agentGrants)
-      .values({ deviceHash: hashSecret(deviceCode), userCode, clientName, coinHint, status: 'pending', createdAt: new Date(now), expiresAt })
+      .values({ deviceHash: hashSecret(deviceCode), userCode, clientName, coinHint, status: 'pending', agentId: bound?.agentId ?? null, createdAt: new Date(now), expiresAt })
       .onConflictDoNothing()
       .returning({ userCode: agentGrants.userCode });
     if (rows.length === 0) continue;
     const base = site.origin;
-    return { deviceCode, userCode, verificationUri: `${base}/connect`, verificationUriComplete: `${base}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S };
+    return { deviceCode, userCode, verificationUri: `${base}/connect`, verificationUriComplete: `${base}/connect/${userCode}`, expiresIn: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_INTERVAL_S, ...(bound ? { coin: coinRef(bound) } : {}) };
   }
   throw new OwnError('supervisor_unavailable');
 }
@@ -197,17 +247,40 @@ function grantStatus(grant: GrantRow, now: number): ConnectGrantView['status'] {
   return grant.status;
 }
 
+/** The window of user-code lookups that found nothing, per database (one per process; a test world has its own). */
+const grantMisses = new WeakMap<object, { count: number; reset: number }>();
+
+/**
+ * A grant by the code a person reads off their AI client. A code is eight letters of twenty and worth nothing without
+ * a wallet's signature, but whoever guesses the code of somebody's waiting request can approve it for a coin of their
+ * own, and that somebody's client is then connected to the guesser's coin. The per-address limits in front (the web's)
+ * do not bound guessing from many addresses, so the misses are counted here, over every caller:
+ * `GRANT_MISSES_PER_MINUTE` in a minute, and for the rest of that minute no code is looked up at all (`rate_limited`),
+ * a real one included.
+ */
 async function grantByUserCode(ctx: Ctx, userCode: unknown): Promise<GrantRow> {
   if (typeof userCode !== 'string' || !USER_CODE_RE.test(userCode)) throw new OwnError('grant_not_found');
+  const now = ctx.now();
+  let window = grantMisses.get(ctx.db);
+  if (!window || window.reset <= now) grantMisses.set(ctx.db, (window = { count: 0, reset: now + 60_000 }));
+  if (window.count >= GRANT_MISSES_PER_MINUTE) throw new OwnError('rate_limited', { retryAt: window.reset });
   const grant = await ctx.db.query.agentGrants.findFirst({ where: eq(agentGrants.userCode, userCode) });
-  if (!grant) throw new OwnError('grant_not_found');
+  if (!grant) {
+    window.count += 1;
+    if (window.count === GRANT_MISSES_PER_MINUTE) ctx.log.warn({ misses: window.count }, 'own agent: many lookups of connection codes that do not exist; code lookups are refused for the rest of this minute');
+    throw new OwnError('grant_not_found');
+  }
   return grant;
 }
 
 /** `GET /internal/own/connect/grant?code=`: what the approval page shows. Never the device code's hash, never who approved. */
 export async function grantView(ctx: Ctx, userCode: unknown): Promise<ConnectGrantView> {
   const grant = await grantByUserCode(ctx, userCode);
-  return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status: grantStatus(grant, ctx.now()), expiresAt: grant.expiresAt.toISOString() };
+  const status = grantStatus(grant, ctx.now());
+  // The coin a waiting request is bound to (public facts of a coin). Once approved the page has nothing more to choose,
+  // and what was approved for is not this route's to say.
+  const bound = status === 'pending' && grant.agentId ? await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, grant.agentId) }) : null;
+  return { userCode: grant.userCode, clientName: grant.clientName, coinHint: grant.coinHint, status, expiresAt: grant.expiresAt.toISOString(), coin: bound ? coinRef(bound) : null };
 }
 
 export type ApproveTarget = { kind: 'coin'; kernel: string; agentId: string } | { kind: 'draft'; draftId: string };
@@ -232,11 +305,11 @@ function parseTarget(raw: unknown): ApproveTarget {
  * draft id is no secret once the launch is on chain, and a stranger who approves clients for somebody's draft must not
  * be able to fill the places of the creator (the stranger's are revoked at registration anyway).
  */
-async function claimsOn(ctx: Ctx, target: { agentId: string } | { draftId: string; creator: string }, now: Date): Promise<number> {
+async function claimsOn(db: Pick<Ctx['db'], 'select'>, target: { agentId: string } | { draftId: string; creator: string }, now: Date): Promise<number> {
   const clientMatch = 'agentId' in target ? eq(agentClients.agentId, target.agentId) : and(eq(agentClients.draftId, target.draftId), isNull(agentClients.agentId), eq(agentClients.creator, target.creator));
   const grantMatch = 'agentId' in target ? eq(agentGrants.agentId, target.agentId) : and(eq(agentGrants.draftId, target.draftId), eq(agentGrants.creator, target.creator));
-  const [clients] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentClients).where(and(clientMatch, live(now)));
-  const [grants] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentGrants).where(and(grantMatch, eq(agentGrants.status, 'approved'), gt(agentGrants.expiresAt, now)));
+  const [clients] = await db.select({ n: sql<number>`count(*)::int` }).from(agentClients).where(and(clientMatch, live(now)));
+  const [grants] = await db.select({ n: sql<number>`count(*)::int` }).from(agentGrants).where(and(grantMatch, eq(agentGrants.status, 'approved'), gt(agentGrants.expiresAt, now)));
   return Number(clients?.n ?? 0) + Number(grants?.n ?? 0);
 }
 
@@ -255,41 +328,60 @@ export async function approveGrant(ctx: Ctx, input: { userCode?: unknown; creato
   const grant = await grantByUserCode(ctx, input.userCode);
   if (grant.status !== 'pending') throw new OwnError('grant_used');
   if (grant.expiresAt.getTime() <= now) throw new OwnError('grant_expired');
+  // A request the client made for one coin is approved for that coin or not at all: not for another coin of the same
+  // wallet, and not for a launch draft. (A pending grant's `agent_id` is the binding `startGrant` wrote.)
+  if (grant.agentId && (target.kind !== 'coin' || target.agentId !== grant.agentId)) throw new OwnError('wrong_coin');
   const label = cleanText(input.label, CLIENT_LABEL_MAX) || grant.clientName;
   const max = ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT');
 
   let answer: ConnectTarget;
   let bind: { agentId: string | null; draftId: string | null };
+  let places: { agentId: string } | { draftId: string; creator: string };
   if (target.kind === 'coin') {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, target.agentId) });
     // The agent id and the kernel were both in the text the wallet signed: a mismatch means the text named no real coin.
     if (!agent || agent.status === 'revoked' || !sameAddress(agent.kernel, target.kernel)) throw new OwnError('unknown_coin');
     if (!sameAddress(agent.creator, creator)) throw new OwnError('not_creator');
-    if ((await claimsOn(ctx, { agentId: agent.agentId }, new Date(now))) >= max) throw new OwnError('too_many_clients');
     answer = { kind: 'coin', coin: coinRef(agent) };
     bind = { agentId: agent.agentId, draftId: null };
+    places = { agentId: agent.agentId };
   } else {
-    if ((await claimsOn(ctx, { draftId: target.draftId, creator }, new Date(now))) >= max) throw new OwnError('too_many_clients');
     answer = { kind: 'draft', draftId: target.draftId };
     bind = { agentId: null, draftId: target.draftId };
+    places = { draftId: target.draftId, creator };
   }
-  // Still pending and not run out at the moment of the write: two approvals of one code cannot both take.
-  const rows = await ctx.db
-    .update(agentGrants)
-    .set({ status: 'approved', ...bind, creator, label, approvedAt: new Date(now) })
-    .where(and(eq(agentGrants.deviceHash, grant.deviceHash), eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))))
-    .returning({ deviceHash: agentGrants.deviceHash });
-  if (rows.length === 0) throw new OwnError('grant_used');
+  // The count and the write in one transaction, one approval at a time per coin (or per draft and wallet): two
+  // approvals of different codes that arrive together would otherwise both count the places before either took one,
+  // and a coin would end with more clients than it may have.
+  const lockKey = 'agentId' in places ? `own-clients:${places.agentId}` : `own-clients:${places.draftId}:${places.creator.toLowerCase()}`;
+  const outcome = await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    if ((await claimsOn(tx, places, new Date(now))) >= max) return 'full' as const;
+    // Still pending and not run out at the moment of the write: two approvals of one code cannot both take.
+    const rows = await tx
+      .update(agentGrants)
+      .set({ status: 'approved', ...bind, creator, label, approvedAt: new Date(now) })
+      .where(and(eq(agentGrants.deviceHash, grant.deviceHash), eq(agentGrants.status, 'pending'), gt(agentGrants.expiresAt, new Date(now))))
+      .returning({ deviceHash: agentGrants.deviceHash });
+    return rows.length === 0 ? ('used' as const) : ('approved' as const);
+  });
+  if (outcome === 'full') throw new OwnError('too_many_clients');
+  if (outcome === 'used') throw new OwnError('grant_used');
   ctx.log.info({ target: target.kind, agentId: bind.agentId, draft: bind.draftId !== null }, 'own agent: a client was approved');
   return { ok: true, target: answer, label };
 }
 
+/** What the token route answers the web: the public answer without the credential, which never exists in this process. */
+export type RedeemAnswer = { status: 'pending' } | Omit<Extract<ConnectTokenResponse, { status: 'approved' }>, 'credential'>;
+
 /**
- * `POST /internal/own/connect/token`: `pending` until the creator approved, then the credential, once. The grant is
- * marked redeemed and the client row written in one transaction, so a crash between the two cannot leave a grant that
- * hands out a second credential or a credential with no row.
+ * `POST /internal/own/connect/token`: `pending` until the creator approved, then the client, once. The web makes the
+ * credential and sends only its SHA-256 (`credentialHash`); this service stores that hash and never sees the
+ * credential itself. The grant is marked redeemed and the client row written in one transaction, so a crash between
+ * the two cannot leave a grant that hands out a second credential or a credential with no row.
  */
-export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<ConnectTokenResponse> {
+export async function redeemGrant(ctx: Ctx, deviceCode: unknown, credentialHash: unknown): Promise<RedeemAnswer> {
+  if (typeof credentialHash !== 'string' || !CREDENTIAL_HASH_RE.test(credentialHash)) throw invalid('credentialHash', 'credentialHash must be the SHA-256 of the new credential, as 64 hex characters.');
   if (typeof deviceCode !== 'string' || deviceCode.length < 20 || deviceCode.length > 200) throw new OwnError('grant_not_found');
   const deviceHash = hashSecret(deviceCode);
   const grant = await ctx.db.query.agentGrants.findFirst({ where: eq(agentGrants.deviceHash, deviceHash) });
@@ -299,7 +391,6 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
   if (grant.expiresAt.getTime() <= now) throw new OwnError('grant_expired');
   if (grant.status === 'pending') return { status: 'pending' };
 
-  const credential = CREDENTIAL_PREFIX + randomSecret();
   const clientId = CLIENT_ID_PREFIX + randomBytes(8).toString('hex');
   const expiresAt = new Date(now + ownSetting(ctx, 'OWN_CLIENT_TTL_DAYS') * 86_400_000);
   const label = grant.label ?? grant.clientName;
@@ -312,7 +403,7 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
       .where(and(eq(agentGrants.deviceHash, deviceHash), eq(agentGrants.status, 'approved')))
       .returning({ deviceHash: agentGrants.deviceHash });
     if (flipped.length === 0) return false;
-    await tx.insert(agentClients).values({ id: clientId, agentId: grant.agentId, draftId: grant.draftId, creator, tokenHash: hashSecret(credential), label, createdAt: new Date(now), expiresAt });
+    await tx.insert(agentClients).values({ id: clientId, agentId: grant.agentId, draftId: grant.draftId, creator, tokenHash: credentialHash, label, createdAt: new Date(now), expiresAt });
     return true;
   });
   if (!taken) throw new OwnError('grant_used');
@@ -329,7 +420,7 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
     await adoptLateDraft(ctx, grant.draftId!);
   }
   ctx.log.info({ clientId, agentId: grant.agentId, draft: grant.draftId !== null }, 'own agent: a client was connected');
-  return { status: 'approved', credential, clientId, label, target, expiresAt: expiresAt.toISOString() };
+  return { status: 'approved', clientId, label, target, expiresAt: expiresAt.toISOString() };
 }
 
 // ---------------------------------------------------------------------------
@@ -342,13 +433,25 @@ export interface VerifiedClient {
 }
 
 /**
- * The credential of a run call, checked here in the supervisor whatever the web checked before: its shape, its hash
- * (compared in constant time), that it was not revoked and has not run out, that its coin exists, and that the wallet
- * that approved it is still the coin's creator. Answers the first that fails, in the order of 13.6.
+ * The credential of a run call, checked here in the supervisor whatever the web checked before. The web sends the
+ * SHA-256 of the credential, never the credential: this checks the hash's shape, looks the client up by it (compared
+ * in constant time), that it was not revoked and has not run out, that its coin exists, and that the wallet that
+ * approved it is still the coin's creator. Answers the first that fails, in the order of 13.6.
  */
-export async function verifyCredential(ctx: Ctx, credential: unknown): Promise<VerifiedClient> {
-  if (typeof credential !== 'string' || !CREDENTIAL_RE.test(credential)) throw new OwnError('unauthorized');
-  const tokenHash = hashSecret(credential);
+export async function verifyCredential(ctx: Ctx, credentialHash: unknown): Promise<VerifiedClient> {
+  const found = await findClient(ctx, credentialHash);
+  if (!found.agent) throw new OwnError('coin_not_launched');
+  return { client: found.client, agent: found.agent };
+}
+
+/**
+ * The client a credential belongs to, with its coin when it has one. A client approved for a launch that has not
+ * happened yet has none: it can run nothing (`verifyCredential` answers `coin_not_launched`), but it can give its
+ * credential up (`run/disconnect`), so a creator who connected the wrong client can end it before the launch.
+ */
+export async function findClient(ctx: Ctx, credentialHash: unknown): Promise<{ client: ClientRow; agent: AgentRow | null }> {
+  if (typeof credentialHash !== 'string' || !CREDENTIAL_HASH_RE.test(credentialHash)) throw new OwnError('unauthorized');
+  const tokenHash = credentialHash;
   let client = await ctx.db.query.agentClients.findFirst({ where: eq(agentClients.tokenHash, tokenHash) });
   if (!client || !sameHash(client.tokenHash, tokenHash)) throw new OwnError('unauthorized');
   const now = ctx.now();
@@ -362,7 +465,7 @@ export async function verifyCredential(ctx: Ctx, credential: unknown): Promise<V
     if (!client) throw new OwnError('unauthorized');
     if (client.revokedAt) throw new OwnError('credential_revoked');
   }
-  if (!client.agentId) throw new OwnError('coin_not_launched');
+  if (!client.agentId) return { client, agent: null };
   const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, client.agentId) });
   if (!agent || agent.status === 'revoked') throw new OwnError('unauthorized');
   if (!sameAddress(agent.creator, client.creator)) throw new OwnError('unauthorized');
@@ -383,25 +486,67 @@ export async function countClients(ctx: Ctx, agentId: string): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** `GET /internal/agents/:id/clients`. */
-export async function listClients(ctx: Ctx, agentId: string): Promise<ClientsResponse> {
-  return { clients: (await liveClients(ctx, agentId)).map(clientView), max: ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT') };
+/**
+ * The grants that can still become a client of this coin: approved for it, or for the launch draft it was launched
+ * from by the wallet that launched it (`redeemGrant` binds such a client at once). With `pending`, also the ones a
+ * client started for this coin by name that nobody has approved yet.
+ */
+function grantsToward(agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>, opts: { pending: boolean }) {
+  const ofDraft = agent.draftId && DRAFT_ID_RE.test(agent.draftId) ? and(eq(agentGrants.draftId, agent.draftId), sql`lower(${agentGrants.creator}) = ${agent.creator.toLowerCase()}`) : undefined;
+  const bound = ofDraft ? or(eq(agentGrants.agentId, agent.agentId), ofDraft) : eq(agentGrants.agentId, agent.agentId);
+  return and(bound, opts.pending ? inArray(agentGrants.status, ['pending', 'approved']) : eq(agentGrants.status, 'approved'));
+}
+
+/** Approvals the creator signed whose client has not collected its credential yet, oldest first. */
+async function waitingApprovals(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<WaitingApprovalView[]> {
+  const rows = await ctx.db
+    .select()
+    .from(agentGrants)
+    .where(and(grantsToward(agent, { pending: false }), gt(agentGrants.expiresAt, new Date(ctx.now()))))
+    .orderBy(agentGrants.approvedAt);
+  return rows.map((g) => ({ userCode: g.userCode, label: g.label ?? g.clientName, approvedAt: (g.approvedAt ?? g.createdAt).toISOString(), expiresAt: g.expiresAt.toISOString() }));
 }
 
 /**
- * `POST /internal/agents/:id/clients/revoke`: one client or all of them, by the coin's creator (`by` is the address
- * the web took from the console's signed session). Returns the ids that were revoked; the caller closes the turn one
- * of them had open. Never refused because of the flag: a creator can always disconnect a client.
+ * `GET /internal/agents/:id/clients`: the live clients, and the approvals still waiting to be collected. An approval
+ * is as good as a client for the ten minutes it lasts, so the creator sees it and can cancel it.
  */
-export async function revokeClients(ctx: Ctx, agent: AgentRow, input: { by?: unknown; clientId?: unknown; all?: unknown }): Promise<string[]> {
+export async function listClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<ClientsResponse> {
+  return { clients: (await liveClients(ctx, agent.agentId)).map(clientView), max: ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT'), waiting: await waitingApprovals(ctx, agent) };
+}
+
+/**
+ * `POST /internal/agents/:id/clients/revoke`: one client, one approval not yet collected (`userCode`) or all of both,
+ * by the coin's creator (`by` is the address the web took from the console's signed session). Returns the ids of the
+ * clients that were revoked; the caller closes the turn one of them had open. Never refused because of the flag: a
+ * creator can always disconnect a client.
+ *
+ * "All" means nothing in flight survives either: every grant that could still become a client of this coin is deleted
+ * first (approved and not collected, or started for this coin by name and not yet approved), so a credential cannot
+ * be collected a moment after the creator disconnected everything. The grants go before the clients: a redemption
+ * that won the race has its client row in place by then and is revoked with the rest.
+ */
+export async function revokeClients(ctx: Ctx, agent: AgentRow, input: { by?: unknown; clientId?: unknown; userCode?: unknown; all?: unknown }): Promise<string[]> {
   if (typeof input.by !== 'string' || !isAddress(input.by)) throw invalid('by', '`by` must be the creator address.');
   if (!sameAddress(input.by, agent.creator)) throw new OwnError('not_creator');
   const now = new Date(ctx.now());
   if (input.all === true) {
+    // A client of this coin's launch draft that registration did not bind yet would be bound on its next call: it is
+    // bound (or, approved by another wallet, revoked) now, so it is among the clients this disconnects.
+    await adoptDraftClients(ctx, agent);
+    const voided = await ctx.db.delete(agentGrants).where(grantsToward(agent, { pending: true })).returning({ status: agentGrants.status });
     const rows = await ctx.db.update(agentClients).set({ revokedAt: now }).where(and(eq(agentClients.agentId, agent.agentId), isNull(agentClients.revokedAt))).returning({ id: agentClients.id });
     for (const row of rows) await noteOnTape(ctx, agent.agentId, 'clientDisconnected', row.id);
-    if (rows.length) ctx.log.info({ agentId: agent.agentId, clients: rows.map((r) => r.id) }, 'own agent: every client was disconnected by the creator');
+    if (rows.length || voided.length) ctx.log.info({ agentId: agent.agentId, clients: rows.map((r) => r.id), approvals: voided.filter((g) => g.status === 'approved').length, requests: voided.filter((g) => g.status === 'pending').length }, 'own agent: every client was disconnected by the creator');
     return rows.map((r) => r.id);
+  }
+  if (input.userCode !== undefined) {
+    if (typeof input.userCode !== 'string' || !USER_CODE_RE.test(input.userCode)) throw invalid('userCode', 'userCode must be a code like BCDF-GHJK.');
+    // Only an approval for this coin: a code of another coin's approval, or one already collected, is no approval here.
+    const gone = await ctx.db.delete(agentGrants).where(and(eq(agentGrants.userCode, input.userCode), grantsToward(agent, { pending: false }))).returning({ userCode: agentGrants.userCode });
+    if (gone.length === 0) throw new OwnError('client_not_found');
+    ctx.log.info({ agentId: agent.agentId }, 'own agent: an approval not yet collected was cancelled by the creator');
+    return [];
   }
   if (typeof input.clientId !== 'string' || !input.clientId.startsWith(CLIENT_ID_PREFIX)) throw invalid('clientId', 'Name a client, or all of them.');
   const rows = await ctx.db
@@ -434,6 +579,10 @@ export async function disconnectClient(ctx: Ctx, client: ClientRow): Promise<voi
  */
 export async function adoptDraftClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<number> {
   if (!agent.draftId || !DRAFT_ID_RE.test(agent.draftId)) return 0;
+  // Only the earliest launch that carries a draft id decides about the draft's clients: a later launch can copy an id
+  // that is public on chain, and must not get to revoke what the creator approved for the real one.
+  const first = await earliestLaunch(ctx, agent.draftId);
+  if (first && first.agentId !== agent.agentId) return 0;
   const now = new Date(ctx.now());
   const waiting = await ctx.db.select().from(agentClients).where(and(eq(agentClients.draftId, agent.draftId), isNull(agentClients.agentId), isNull(agentClients.revokedAt)));
   let bound = 0;
@@ -453,15 +602,42 @@ export async function adoptDraftClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId
   return bound;
 }
 
+/**
+ * The launch a draft id belongs to: the earliest one that carries it, as `adoptDraftAccount` (onboarding.ts) decides
+ * for the X account. A launch with no block on record counts as earlier than any with one; the lower agent id breaks a tie.
+ */
+async function earliestLaunch(ctx: Ctx, draftId: string): Promise<AgentRow | null> {
+  const rows = await ctx.db.select().from(agents).where(eq(agents.draftId, draftId));
+  const before = (a: AgentRow, b: AgentRow) => {
+    if (a.launchBlock == null || b.launchBlock == null) return a.launchBlock == null && (b.launchBlock != null || BigInt(a.agentId) < BigInt(b.agentId));
+    return a.launchBlock < b.launchBlock || (a.launchBlock === b.launchBlock && BigInt(a.agentId) < BigInt(b.agentId));
+  };
+  return rows.reduce<AgentRow | null>((first, row) => (first === null || before(row, first) ? row : first), null);
+}
+
 async function adoptLateDraft(ctx: Ctx, draftId: string): Promise<void> {
-  const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.draftId, draftId) });
+  const agent = await earliestLaunch(ctx, draftId);
   if (agent) await adoptDraftClients(ctx, agent);
 }
 
-/** `GET /internal/own/drafts/:draftId/clients`: what the launch wizard polls while the creator connects a client. */
-export async function draftClients(ctx: Ctx, draftId: unknown): Promise<DraftClientsResponse> {
+/**
+ * `GET /internal/own/drafts/:draftId/clients`: what the launch wizard polls while the creator connects a client.
+ * A draft id is a secret only until its launch: from then on it is on chain for anyone to read, so once a launch
+ * carries it this answers nothing (the coin's clients are the console's to list, inside its signed session). With
+ * `creator`, the wallet the wizard will launch from, only the clients that wallet approved are listed: another
+ * wallet's would be revoked at registration, and the wizard must not call the launch connected because of one.
+ */
+export async function draftClients(ctx: Ctx, draftId: unknown, creator?: unknown): Promise<DraftClientsResponse> {
   if (typeof draftId !== 'string' || !DRAFT_ID_RE.test(draftId)) throw invalid('draftId', 'draftId must be a launch draft id.');
-  const rows = await ctx.db.select().from(agentClients).where(and(eq(agentClients.draftId, draftId), live(new Date(ctx.now())))).orderBy(agentClients.createdAt);
+  if (creator !== undefined && (typeof creator !== 'string' || !isAddress(creator))) throw invalid('creator', 'creator must be an address.');
+  const launched = await ctx.db.select({ agentId: agents.agentId }).from(agents).where(eq(agents.draftId, draftId)).limit(1);
+  if (launched.length > 0) return { connected: false, clients: [] };
+  const mine = typeof creator === 'string' ? sql`lower(${agentClients.creator}) = ${creator.toLowerCase()}` : undefined;
+  const rows = await ctx.db
+    .select()
+    .from(agentClients)
+    .where(and(eq(agentClients.draftId, draftId), isNull(agentClients.agentId), live(new Date(ctx.now())), mine))
+    .orderBy(agentClients.createdAt);
   return { connected: rows.length > 0, clients: rows.map((r) => ({ clientId: r.id, label: r.label, createdAt: r.createdAt.toISOString() })) };
 }
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { listCredentials, saveCredential } from '@bootrfun/sdk';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COIN, SECOND_COIN, startFakeSite, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
+import { COIN, DRAFT_ID, HIDDEN_CHARS, hide, SECOND_COIN, startFakeSite, TAG_SENTENCE, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
 import { run } from './commands.js';
 import { OWN_USAGE, runOwn, type OwnIo } from './own-commands.js';
 
@@ -123,6 +123,67 @@ describe('bootr own connect', () => {
     expect(again.data).toMatchObject({ connected: true, coin: '$OWL', label: 'bootr CLI' });
     expect(site.backend.grants.size).toBe(1);
     expect(await stored()).toHaveLength(1);
+  });
+
+  it('names the coin with its treasury address, and never keeps an approval for another coin than the one --coin named (security review M2)', async () => {
+    onSleep = (n) => {
+      if (n === 1) approveAll();
+    };
+    const out = await own('connect', '--coin', 'OWL');
+    // Before the approval: the one coin the site said "OWL" names. After: the symbol and the treasury address, both.
+    expect(notices[0]).toContain(`Coin: $OWL (treasury address ${COIN.kernel})  (the page must show this coin and no other)`);
+    expect(out.notice).toContain(`Connected to $OWL (treasury address ${COIN.kernel}).`);
+    expect(await own('connect', '--coin', 'OWL')).toMatchObject({ notice: expect.stringContaining(`Already connected to $OWL (treasury address ${COIN.kernel})`) });
+
+    // The site holds the request to its coin.
+    await own('disconnect');
+    site.backend.grants.clear();
+    site.backend.clients.clear();
+    const toFox = (userCode: string) => site.backend.connectApprove({ userCode, creator: site.backend.creator, target: { kind: 'coin', kernel: SECOND_COIN.kernel, agentId: SECOND_COIN.agentId } });
+    let lured = false;
+    onSleep = () => {
+      if (lured) return;
+      lured = true;
+      const [grant] = [...site.backend.grants.values()];
+      expect(() => toFox(grant!.userCode)).toThrow('wrong_coin');
+      // A site that did not (an older one, or a symbol two coins share), and a creator who approved for $FOX all the same.
+      (grant as unknown as { bound: unknown }).bound = null;
+      toFox(grant!.userCode);
+    };
+    site.seen.length = 0;
+    await expect(own('connect', '--coin', COIN.kernel)).rejects.toMatchObject({ code: 'wrong_coin', message: expect.stringContaining(`The approval was for $FOX (treasury address ${SECOND_COIN.kernel}), not for the coin --coin named.`) });
+    // Nothing was stored, and the client that approval made is disconnected on the site.
+    expect(await stored()).toEqual([]);
+    expect(await readFile(env.BOOTR_CREDENTIALS_FILE!, 'utf8').catch(() => '')).not.toContain('bootr_agt_');
+    expect([...site.backend.clients.values()].map((c) => c.revokedAt !== null)).toEqual([true]);
+    expect(site.seen.some((s) => s.path === '/api/agent/run/disconnect')).toBe(true);
+
+    // With no coin named any approval is taken, and what it is for is said in full.
+    site.backend.grants.clear();
+    onSleep = () => {
+      const [grant] = [...site.backend.grants.values()];
+      if (grant!.status === 'pending') toFox(grant!.userCode);
+    };
+    expect((await own('connect')).notice).toContain(`Connected to $FOX (treasury address ${SECOND_COIN.kernel}).`);
+  });
+
+  it('keeps and prints the site’s words with nothing hidden in them (security review M3 and L6)', async () => {
+    onSleep = () => {
+      approveAll();
+      // What the creator called this client reaches this machine from the site.
+      for (const grant of site.backend.grants.values()) grant.label = hide('Desk machine');
+    };
+    const out = await own('connect', '--coin', 'OWL');
+    expect((out.data as { label: string }).label).toBe('Desk machine');
+    expect((await stored())[0]!.label).toBe('Desk machine');
+    // A line for the person that carries a word of the site's (here the role of an open turn) is cleaned on its way to stderr.
+    site.backend.due.social = false;
+    site.backend.turn = { turnId: `otn_${'1'.repeat(32)}`, role: hide('social'), clientId: 'x', reasons: [], stepsUsed: 2, stepBudget: 8, expiresAt: Date.now() + 600_000 };
+    await own('watch', '--exec', 'true', '--once');
+    expect(notices.join('\n')).toContain('Due: an open social turn. Running your command.');
+    const printed = JSON.stringify([out, notices]) + notices.join('\n');
+    for (const [name, char] of Object.entries(HIDDEN_CHARS)) expect([name, printed.includes(char)]).toEqual([name, false]);
+    for (const char of TAG_SENTENCE) expect(printed).not.toContain(char);
   });
 
   it('gives up when nobody approves in time, and saves nothing', async () => {
@@ -261,8 +322,21 @@ describe('bootr own disconnect', () => {
     expect(await own('disconnect')).toMatchObject({ data: { ok: true } });
     expect(await stored()).toEqual([]);
     expect(await readFile(env.BOOTR_CREDENTIALS_FILE!, 'utf8')).not.toContain('bootr_agt_');
-    expect(() => site.backend.run('status', { credential })).toThrow('credential_revoked');
+    expect(() => site.backend.runAs('status', credential)).toThrow('credential_revoked');
     await expect(own('disconnect')).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('ends a connection made for a launch that has not happened yet, before the launch (security review L3)', async () => {
+    onSleep = () => {
+      for (const grant of site.backend.grants.values()) if (grant.status === 'pending') site.backend.connectApprove({ userCode: grant.userCode, creator: site.backend.creator, target: { kind: 'draft', draftId: DRAFT_ID } });
+    };
+    expect((await own('connect')).notice).toContain('Connected to a launch that has not happened yet.');
+    // It runs nothing before the launch, and giving the credential up is the one thing it can do.
+    await expect(own('status')).rejects.toMatchObject({ code: 'coin_not_launched' });
+    expect(await own('disconnect')).toMatchObject({ data: { ok: true } });
+    expect(await stored()).toEqual([]);
+    expect([...site.backend.clients.values()].map((c) => c.revokedAt !== null)).toEqual([true]);
+    expect(site.backend.draftClients(DRAFT_ID)).toEqual({ connected: false, clients: [] });
   });
 });
 

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   BootrApiError,
+  cleanText,
+  coinLine,
   createBootr,
   CREDENTIAL_PREFIX,
   credentialsFile,
@@ -15,6 +17,7 @@ import {
   looksLikeKey,
   removeCredential,
   saveCredential,
+  targetMatches,
   USER_CODE_RE,
   type Bootr,
   type DueView,
@@ -120,18 +123,21 @@ async function connect(bootr: Bootr, values: { coin?: string; label?: string }, 
         throw err;
       },
     );
-    if (live) return { data: { connected: true, ...describeCredential(held), credentialsFile: file }, notice: 'Already connected. To connect again, run: bootr own disconnect' };
+    if (live) return { data: { connected: true, ...describeCredential(held), credentialsFile: file }, notice: `Already connected to ${coinLine(held.target)}. To connect again, run: bootr own disconnect` };
     await removeCredential(bootr.siteUrl, held, { env });
   }
 
   const started = await bootr.connectStart({ clientName: values.label?.trim().slice(0, 40) || 'bootr CLI', ...(values.coin ? { coin: values.coin } : {}) });
   if (!USER_CODE_RE.test(started.userCode)) throw new BootrApiError('The site answered with a malformed connection request.', 'bad_response', null);
+  // The one coin the site says --coin names, when it names one: the request is then for that coin and no other.
+  const bound = started.coin && typeof started.coin.kernel === 'string' && /^0x[0-9a-fA-F]{40}$/.test(started.coin.kernel) ? started.coin : null;
   // The link is built here, for the site this command talks to: one from the network is never shown.
   io.notice(
     [
       'Open this link in a browser and approve with the wallet that launched the coin:',
       `  ${bootr.siteUrl}/connect/${started.userCode}`,
       `Code: ${started.userCode}  (the page must show this same code)`,
+      ...(bound ? [`Coin: ${coinLine({ kind: 'coin', coin: bound })}  (the page must show this coin and no other)`] : []),
       'Signing moves no funds. Waiting for the approval, for up to 10 minutes…',
     ].join('\n'),
   );
@@ -148,7 +154,13 @@ async function connect(bootr: Bootr, values: { coin?: string; label?: string }, 
       throw err;
     }
     if (answered.status !== 'approved') continue;
-    const entry = { credential: answered.credential, clientId: answered.clientId, label: answered.label, target: answered.target, expiresAt: answered.expiresAt, savedAt: new Date(io.now()).toISOString() };
+    // The label is words from the site: kept as they would be shown, with nothing hidden in them.
+    const entry = { credential: answered.credential, clientId: answered.clientId, label: cleanText(String(answered.label ?? '')), target: answered.target, expiresAt: answered.expiresAt, savedAt: new Date(io.now()).toISOString() };
+    // The approval must be for the coin --coin named. One for another coin is ended at once and never stored.
+    if (!targetMatches(values.coin, entry.target, bound)) {
+      await bootr.ownDisconnect({ credential: entry.credential }).catch(() => undefined);
+      throw new BootrApiError(`The approval was for ${coinLine(entry.target)}, not for the coin --coin named. That connection was ended again and nothing was stored. Run the command again and approve for the coin you named, or name the other coin with --coin.`, 'wrong_coin', null);
+    }
     try {
       await saveCredential(bootr.siteUrl, entry, { env });
     } catch (err) {
@@ -159,7 +171,8 @@ async function connect(bootr: Bootr, values: { coin?: string; label?: string }, 
     await mkdir(picturesDir(env), { recursive: true, mode: 0o700 }).catch(() => undefined);
     return {
       data: { connected: true, ...describeCredential(entry), credentialsFile: file, picturesFolder: picturesDir(env) },
-      notice: 'Connected. The credential is in the credentials file, readable by you only: it lets its holder post as your agent, so never share that file.',
+      // The symbol and the treasury address, always both: a symbol alone can belong to several coins.
+      notice: `Connected to ${coinLine(entry.target)}. The credential is in the credentials file, readable by you only: it lets its holder post as your agent, so never share that file.`,
     };
   }
   throw new BootrApiError('The connection request ran out after 10 minutes without an approval. Run the command again for a new code.', 'grant_expired', null);
@@ -222,7 +235,9 @@ export async function runOwn(argv: string[], env: Record<string, string | undefi
   if (rest.length > 0) throw new OwnUsageError(`own ${command} takes no further words. Quote the command of --exec.`);
   const site = values.site ?? env.BOOTR_SITE_URL;
   const bootr = createBootr({ ...(site ? { siteUrl: site } : {}), ...(env.BOOTR_CREDENTIALS_FILE ? { credentialsFile: env.BOOTR_CREDENTIALS_FILE } : {}) });
-  const all: OwnIo = { ...defaultIo, ...io };
+  const given: OwnIo = { ...defaultIo, ...io };
+  // A line for the person can carry words from the site (a coin's name, an error): cleaned like everything printed.
+  const all: OwnIo = { ...given, notice: (text) => given.notice(cleanText(text)) };
   const which = values.coin ? { coin: values.coin } : {};
   switch (command) {
     case 'connect':

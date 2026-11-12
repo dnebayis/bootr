@@ -3,7 +3,8 @@
  * client and for running a coin's agent from it. Like every `/internal/*` route they sit behind the HMAC of the shared
  * service key (api.ts mounts this directly after the middleware); the web app is the only caller and applies the rate
  * limits and body caps in front. What the web cannot be trusted with alone is decided here again: the credential of a
- * run call is verified in this process (`verifyCredential`: hash, revocation, expiry, coin, creator), and whether a
+ * run call, which arrives as its SHA-256 and never as itself, is verified in this process (`verifyCredential`: hash,
+ * revocation, expiry, coin, creator) before the rest of the body is parsed, and whether a
  * wallet is a coin's creator is read from the row this supervisor wrote from the launch.
  *
  * The flag (`OWN_AGENT_ENABLED`) is asked at the top of the connect and run handlers and nowhere else: with it off
@@ -19,16 +20,21 @@ import type { SupervisorContext } from '../context.js';
 import { agents } from '../db/schema.js';
 import type { AuthEnv } from '../hmac.js';
 import { rpcErrorText } from '../log.js';
-import { OwnError, adoptDraftClients, approveGrant, coinsOf, countClients, disconnectClient, draftClients, grantView, listClients, ownErrorResponse, redeemGrant, revokeClients, startGrant, verifyCredential } from './clients.js';
+import { OwnError, adoptDraftClients, approveGrant, coinsOf, countClients, disconnectClient, draftClients, findClient, grantView, listClients, ownErrorResponse, redeemGrant, revokeClients, startGrant, verifyCredential } from './clients.js';
 import { applyRunnerQuota } from './quota.js';
 import { ownEnabled, registerOwnRole, setOwnHooks } from './registry.js';
 import { ownSocialRole } from './social.js';
-import { actTurn, closeOwnTurn, closeTurnOfClients, finishTurn, openTurn, ownDue, ownStatus, uploadPicture } from './turns.js';
+import { actTurn, closeOwnTurn, closeTurnOfClients, finishTurn, openTurn, ownDue, ownGate, ownStatus, uploadPicture } from './turns.js';
 
 type C = Context<AuthEnv>;
 
 export const RUN_OPS = ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'] as const;
 export type RunOp = (typeof RUN_OPS)[number];
+/**
+ * Not a public route: the web asks `run/verify` with the hash alone before it reads the body of an upload, so a body
+ * of megabytes is only ever read for a credential that is live on a coin its client runs. Nothing happens on it.
+ */
+export const VERIFY_OP = 'verify';
 /** An upload is a picture of at most 5 MB as base64 with its words; the web caps the public body at 8 MB. */
 export const RUN_BODY_MAX_CHARS = 12 * 1024 * 1024;
 /** Every other body of these routes is a few fields. */
@@ -45,6 +51,17 @@ async function bodyOf(c: C, maxChars = SMALL_BODY_MAX_CHARS): Promise<Record<str
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new OwnError('invalid_request', { detail: 'The body must be a JSON object.' });
   return body as Record<string, unknown>;
+}
+
+/**
+ * The web puts the SHA-256 of the credential first in the body of a run call (`{"credentialHash":"<64 hex>",...}`), so
+ * it is read from the first hundred characters and checked before anything else of the body is parsed: megabytes sent
+ * under a hash nobody holds cost one lookup.
+ */
+const HASH_FIRST_RE = /^\{"credentialHash":"([0-9a-f]{64})"[,}]/;
+
+function credentialHashOf(c: C): string | null {
+  return HASH_FIRST_RE.exec((c.get('rawBody') ?? '').slice(0, 100))?.[1] ?? null;
 }
 
 export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void {
@@ -106,7 +123,8 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     '/internal/own/connect/token',
     answer(async (c) => {
       flagOn();
-      return redeemGrant(ctx, (await bodyOf(c)).deviceCode);
+      const body = await bodyOf(c);
+      return redeemGrant(ctx, body.deviceCode, body.credentialHash);
     }),
   );
 
@@ -120,7 +138,7 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     '/internal/own/drafts/:draftId/clients',
     answer(async (c) => {
       flagOn();
-      return draftClients(ctx, c.req.param('draftId'));
+      return draftClients(ctx, c.req.param('draftId'), c.req.query('creator'));
     }),
   );
 
@@ -130,10 +148,25 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     answer(async (c) => {
       // The order of 13.6: the flag, the credential, the coin, then the route's own checks (in own/turns.ts).
       flagOn();
-      const op = c.req.param('op') as RunOp;
-      if (!(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
-      const { credential, ...request } = await bodyOf(c, op === 'upload' ? RUN_BODY_MAX_CHARS : SMALL_BODY_MAX_CHARS);
-      const verified = await verifyCredential(ctx, credential);
+      const op = c.req.param('op') as RunOp | typeof VERIFY_OP;
+      if (op !== VERIFY_OP && !(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
+      if (op === 'disconnect') {
+        // The one call a client connected for a launch that has not happened yet can make: it gives its credential up.
+        const found = await findClient(ctx, credentialHashOf(c));
+        if ((await bodyOf(c)).credentialHash !== found.client.tokenHash) throw new OwnError('unauthorized');
+        await disconnectClient(ctx, found.client);
+        if (found.agent) await closeTurnOfClients(ctx, found.agent, [found.client.id]);
+        return { ok: true as const };
+      }
+      const verified = await verifyCredential(ctx, credentialHashOf(c));
+      if (op === VERIFY_OP) {
+        // What the web asks before it reads an upload's megabytes: the answers every run call gives before its own checks.
+        ownGate(verified);
+        return { ok: true as const };
+      }
+      const { credentialHash, ...request } = await bodyOf(c, op === 'upload' ? RUN_BODY_MAX_CHARS : SMALL_BODY_MAX_CHARS);
+      // The same member a second time further down the body would win the parse: it must be the one that was checked.
+      if (credentialHash !== verified.client.tokenHash) throw new OwnError('unauthorized');
       switch (op) {
         case 'status':
           return ownStatus(ctx, verified);
@@ -147,10 +180,6 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
           return finishTurn(ctx, verified, request);
         case 'upload':
           return uploadPicture(ctx, verified, request);
-        case 'disconnect':
-          await disconnectClient(ctx, verified.client);
-          await closeTurnOfClients(ctx, verified.agent, [verified.client.id]);
-          return { ok: true as const };
       }
     }),
   );
@@ -164,10 +193,10 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
 
   app.get(
     '/internal/agents/:id/clients',
-    answer(async (c) => listClients(ctx, (await agentOf(c)).agentId)),
+    answer(async (c) => listClients(ctx, await agentOf(c))),
   );
 
-  /** Body `{ by, clientId }` or `{ by, all: true }`; `by` is the address of the console's signed session and must be the coin's creator. */
+  /** Body `{ by, clientId }`, `{ by, userCode }` (an approval not yet collected) or `{ by, all: true }`; `by` is the address of the console's signed session and must be the coin's creator. */
   app.post(
     '/internal/agents/:id/clients/revoke',
     answer(async (c) => {
@@ -175,7 +204,7 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
       const revoked = await revokeClients(ctx, agent, await bodyOf(c));
       // A revoked credential is refused on its next call; the turn it had open is closed now.
       await closeTurnOfClients(ctx, agent, revoked);
-      return listClients(ctx, agent.agentId);
+      return listClients(ctx, agent);
     }),
   );
 }

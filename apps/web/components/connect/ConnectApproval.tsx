@@ -212,17 +212,36 @@ function Approve({ grant, onDone }: { grant: ConnectGrantView; onDone: (r: Conne
     );
   }
 
+  // The client asked for one coin and the request is for that coin alone: it is shown fixed, with no other coin and no
+  // launch draft to pick instead, and the server refuses an approval for anything else.
+  const bound = grant.coin ?? null;
+  const mine = bound ? coins.data.data.coins.filter((c) => c.kernel.toLowerCase() === bound.kernel.toLowerCase() && c.agentId === bound.agentId) : orderCoins(coins.data.data.coins, grant.coinHint);
   const choices: Choice[] = [
-    ...orderCoins(coins.data.data.coins, grant.coinHint).map((c) => ({
+    ...mine.map((c) => ({
       value: c.kernel.toLowerCase(),
       title: `$${c.symbol}`,
       detail: `${c.name} · agent #${c.agentId}`,
       statement: connectCoinStatement(c.symbol, c.agentId, c.kernel, grant.userCode),
     })),
-    ...(draftId ? [{ value: DRAFT_CHOICE, title: 'My next launch', detail: 'The coin you are setting up on the launch page in this browser', statement: connectDraftStatement(draftId, grant.userCode) }] : []),
+    ...(draftId && !bound ? [{ value: DRAFT_CHOICE, title: 'My next launch', detail: 'The coin you are setting up on the launch page in this browser', statement: connectDraftStatement(draftId, grant.userCode) }] : []),
   ];
   const chosen = choices.find((c) => c.value === picked) ?? (choices.length === 1 ? choices[0]! : null);
 
+  if (bound && choices.length === 0) {
+    return (
+      <Notice title="This request is for another wallet’s coin" testid="connect-bound-other">
+        <p>
+          The AI client asked to run the agent of <span className="font-mono text-ink">${bound.symbol}</span> ({bound.name}), treasury address{' '}
+          <span className="break-all font-mono text-ink">{bound.kernel}</span>. The wallet <span className="font-mono">{shortAddr(address, 6, 4)}</span> did not launch that coin, so
+          it cannot approve this request, and the request cannot be approved for any other coin.
+        </p>
+        <p>Connect the wallet that launched ${bound.symbol}. To connect another coin, ask your AI client to connect again and name that coin.</p>
+        <div>
+          <ConnectButton />
+        </div>
+      </Notice>
+    );
+  }
   if (choices.length === 0) {
     return (
       <Notice title="No coin to connect" testid="connect-no-coins">
@@ -270,23 +289,35 @@ function Approve({ grant, onDone }: { grant: ConnectGrantView; onDone: (r: Conne
   };
 
   return (
-    <Panel title="2. Choose the coin and approve">
+    <Panel title={bound ? '2. Check the coin and approve' : '2. Choose the coin and approve'}>
       <div className="flex flex-col gap-4">
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-caption text-mute">The client will run the agent of</legend>
-          {choices.map((c) => {
-            const on = chosen?.value === c.value;
-            return (
-              <label key={c.value} className={cn('flex cursor-pointer items-start gap-3 rounded-sm border px-3 py-2 transition-colors', on ? 'border-ink bg-canvas-sub' : 'border-hairline hover:border-hairline-strong')}>
-                <input type="radio" name="connect-target" className="mt-1 accent-current" checked={on} onChange={() => setPicked(c.value)} data-testid={`connect-choice-${c.value === DRAFT_CHOICE ? 'draft' : c.title.slice(1)}`} />
-                <span className="min-w-0">
-                  <span className="block font-mono text-sm font-medium text-ink">{c.title}</span>
-                  <span className="block break-words text-caption text-mute">{c.detail}</span>
-                </span>
-              </label>
-            );
-          })}
-        </fieldset>
+        {bound && chosen ? (
+          <div data-testid="connect-bound-coin">
+            <p className="mb-1 text-caption text-mute">The client asked to run the agent of this coin, and of no other</p>
+            <div className="rounded-sm border border-ink bg-canvas-sub px-3 py-2">
+              <span className="block font-mono text-sm font-medium text-ink">{chosen.title}</span>
+              <span className="block break-words text-caption text-mute">{chosen.detail}</span>
+              <span className="block break-all font-mono text-caption text-mute">treasury address {bound.kernel}</span>
+            </div>
+            <p className="mt-1 text-micro text-mute">To connect another coin, ask your AI client to connect again and name that coin.</p>
+          </div>
+        ) : (
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1 text-caption text-mute">The client will run the agent of</legend>
+            {choices.map((c) => {
+              const on = chosen?.value === c.value;
+              return (
+                <label key={c.value} className={cn('flex cursor-pointer items-start gap-3 rounded-sm border px-3 py-2 transition-colors', on ? 'border-ink bg-canvas-sub' : 'border-hairline hover:border-hairline-strong')}>
+                  <input type="radio" name="connect-target" className="mt-1 accent-current" checked={on} onChange={() => setPicked(c.value)} data-testid={`connect-choice-${c.value === DRAFT_CHOICE ? 'draft' : c.title.slice(1)}`} />
+                  <span className="min-w-0">
+                    <span className="block font-mono text-sm font-medium text-ink">{c.title}</span>
+                    <span className="block break-words text-caption text-mute">{c.detail}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </fieldset>
+        )}
         <div>
           <Label htmlFor="connect-label" hint="optional">
             Your name for this client
@@ -324,6 +355,7 @@ const APPROVE_PROBLEMS: Partial<Record<OwnErrorCode, string>> = {
   siwe_rejected: 'The wallet signature was not accepted. Approve again, and sign with the wallet shown here.',
   not_creator: 'This wallet did not launch that coin. Only the wallet that launched the coin can connect a client to its agent.',
   too_many_clients: 'This coin already has as many clients as it may have. Disconnect one in the creator console, then ask your AI client to connect again.',
+  wrong_coin: 'This request is for another coin than the one you approved for. Nothing was connected. Reload this page: it shows the coin the request is for.',
   grant_expired: 'This request ran out while you were here. Ask your AI client to connect again: it will show a new code.',
   grant_used: 'This request was already approved. Ask your AI client to connect again if it is still waiting.',
   own_agent_disabled: 'Connecting AI clients is switched off on this site right now. Nothing was connected.',
