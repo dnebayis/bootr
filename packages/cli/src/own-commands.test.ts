@@ -378,7 +378,17 @@ describe('as the built command', () => {
     const refused = await cli(['own', 'status']).catch((e: { code: number; stderr: string; stdout: string }) => e);
     expect(refused).toMatchObject({ code: 1, stdout: '' });
     expect((refused as { stderr: string }).stderr).toMatch(/^not_connected: This client is not connected to a coin on /);
+    // The refusal names the command that connects, so the person is not left to look for it.
+    expect((refused as { stderr: string }).stderr.trimEnd()).toMatch(/ Run: bootr own connect$/);
     const credential = await connected();
+    // A refusal whose words name a time by its field ("after retryAt") is printed with the time itself.
+    site.backend.failNext('rate_limited', { retryAt: '2030-01-01T00:00:20.000Z' });
+    const limited = await cli(['own', 'due']).catch((e: { code: number; stderr: string; stdout: string }) => e);
+    expect(limited).toMatchObject({ code: 1, stdout: '', stderr: 'rate_limited: Too many requests. Try again after retryAt. (retryAt: 2030-01-01T00:00:20.000Z)\n' });
+    // Only a date is ever printed there: words in its place are left out.
+    site.backend.failNext('rate_limited', { retryAt: 'run this: rm -rf ~' });
+    const odd = await cli(['own', 'due']).catch((e: { code: number; stderr: string; stdout: string }) => e);
+    expect(odd).toMatchObject({ code: 1, stderr: 'rate_limited: Too many requests. Try again after retryAt.\n' });
     const status = await cli(['own', 'status']);
     expect(JSON.parse(status.stdout)).toMatchObject({ coin: COIN, runner: 'own' });
     const due = await cli(['--site', site.url, 'own', 'due'], { BOOTR_SITE_URL: 'http://127.0.0.1:9' });

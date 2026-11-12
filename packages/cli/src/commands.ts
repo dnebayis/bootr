@@ -265,6 +265,17 @@ export async function run(
   }
 }
 
+/**
+ * What a refusal's own words leave out. Several of the site's messages name a time by its field ("Try again after
+ * retryAt."): the time itself is added, written again from the parsed date so nothing but a date is printed. And a
+ * machine that is not connected is told the command that connects it.
+ */
+function refusalTail(e: BootrApiError): string {
+  const at = typeof e.details.retryAt === 'string' ? Date.parse(e.details.retryAt) : NaN;
+  const when = Number.isFinite(at) ? ` (retryAt: ${new Date(at).toISOString()})` : '';
+  return `${when}${e.code === 'not_connected' ? ' Run: bootr own connect' : ''}`;
+}
+
 /** The exit code. Refusals print the API's own message and code, never the input. */
 export async function main(
   argv: string[],
@@ -282,7 +293,7 @@ export async function main(
     return 0;
   } catch (e) {
     if (e instanceof BootrApiError) {
-      err(`${cleanText(`${e.code}: ${e.message}`)}\n`);
+      err(`${cleanText(`${e.code}: ${e.message}`)}${refusalTail(e)}\n`);
       return 1;
     }
     const message =
