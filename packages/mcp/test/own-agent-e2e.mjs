@@ -19,7 +19,11 @@
  *   Postgres; `base-anvil` forking Base; the indexer on the fork;
  *   `node packages/mcp/test/stub-x.mjs` (STUB_X_USER_ID / STUB_X_HANDLE as the seed stored them);
  *   the sender with X_API_BASE_URL pointed at the stub;
- *   the supervisor with OWN_AGENT_ENABLED=true and a 5-second tick;
+ *   the supervisor with OWN_AGENT_ENABLED=true and a 5-second tick. Its SITE_URL must not be a localhost address (leave
+ *     it unset, or give any public-looking name): the links it writes into a bounty job's post go through the publish
+ *     gate, which refuses a post that names localhost. For the W3 part's coin to leave setup it also needs
+ *     ADMIN_PRIVATE_KEY set to a test key that owns the guardian on the fork (hand the ownership over with anvil's
+ *     impersonation) and ENABLE_MODE_SELF_BUNDLE=true, so the session key is installed without a bundler;
  *   the web app in `next dev` with OWN_AGENT_ENABLED=true, NEXT_PUBLIC_USE_MOCK=0, NEXT_PUBLIC_SITE_URL=<its own address>,
  *     SUPERVISOR_URL and SUPERVISOR_SERVICE_KEY.
  * Before it: `apps/supervisor/scripts/seed-own-agent.ts`, whose one JSON line goes in E2E_SEED. Its creator must be
@@ -28,7 +32,14 @@
  * Run: SITE=http://localhost:3200 RPC=http://127.0.0.1:8555 DATABASE_URL=postgres://localhost:5432/bootr \
  *      STUB=http://127.0.0.1:4010 E2E_SEED='{"agentId":"…","kernel":"0x…","token":"0x…","symbol":"…"}' \
  *      SUPERVISOR_URL=http://127.0.0.1:3004 SUPERVISOR_SERVICE_KEY=<the local stack's key> \
+ *      INDEXER_URL=http://127.0.0.1:42069 SENDER_ENCRYPTION_KEY=<the local sender's key> \
  *      node packages/mcp/test/own-agent-e2e.mjs
+ *
+ * INDEXER_URL and SENDER_ENCRYPTION_KEY are for the W3 part: it reads its coin from the indexer, and it stores a stub
+ * X account for the coin it launches (as the seed script does for the seeded coin) so that coin leaves setup.
+ *
+ * The seeded coin must be fresh for every run: the first part needs an original post due and no client connected.
+ * Seeding again does not undo a run (the posts of the last one stay on record), so empty the seeded coin's rows first.
  *
  * SUPERVISOR_URL and SUPERVISOR_SERVICE_KEY are for one check only, the coin's tape: the seeded coin is in the
  * supervisor's database and not on the fork, so the web's public tape route (which asks the indexer who the coin is)
@@ -164,7 +175,7 @@ async function w1(env, mcp) {
   for (const needed of ['bootr_agent_connect', 'bootr_agent_due', 'bootr_agent_turn', 'bootr_agent_publish_reply', 'bootr_agent_upload_picture', 'bootr_agent_finish']) assert.ok(names.includes(needed), `${needed} is listed`);
   const before = await call('bootr_agent_due');
   assert.ok(before.isError && before.text.startsWith('not_connected:'), before.text);
-  ok('46 tools; due answers not_connected');
+  ok(`${names.length} tools; due answers not_connected`);
 
   step('Connect through the real routes, with a signature made here');
   const first = (await call('bootr_agent_connect', { coin: seed.symbol })).json();
