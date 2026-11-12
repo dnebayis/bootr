@@ -51,7 +51,8 @@ export function supervisorEnv(): SupervisorServerEnv {
  * `GET /api/platform`. It never says how a coin is run: that is the coin's stored config, which the supervisor reads.
  */
 export function ownAgentEnabled(): boolean {
-  return str(process.env.OWN_AGENT_ENABLED).toLowerCase() === 'true';
+  // Exactly `true`, as the supervisor's config reads it: one variable in Coolify drives both, so both must agree on every value.
+  return str(process.env.OWN_AGENT_ENABLED) === 'true';
 }
 
 /**

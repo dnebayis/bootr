@@ -505,7 +505,7 @@ export interface BountyJob {
    * Only on a job of an own-agent coin that waits for its creator's agent to judge: `ruleBy` is the ISO time by which
    * it must rule; after that the job closes with no winner. Absent on every other job.
    */
-  ownJudge?: { ruleBy: string };
+  ownJudge?: { ruleBy: string } | null;
   verdict: {
     /** 1-based number of the winning entry among those considered; null when nothing met the job. */
     winner: number | null;

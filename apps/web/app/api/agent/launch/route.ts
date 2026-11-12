@@ -32,7 +32,7 @@ import {
 import { filterAllowedModels, RECOMMENDED_MODEL } from '@/lib/models';
 import { readConfig } from '@/lib/server/admin-config';
 import { serverPublicClient, serverPublicFallbackClient, serverRpcUrl } from '@/lib/server/chain';
-import { pinataEnv } from '@/lib/server/env';
+import { ownAgentEnabled, pinataEnv } from '@/lib/server/env';
 import { fetchImageFromUrl } from '@/lib/server/image-fetch';
 import { relayModels } from '@/lib/server/relay-models';
 import { clientIp, PinError, pinFile, RateLimiter, sha256Hex, sniffImage, svgProblem } from '@/lib/server/ipfs';
@@ -46,15 +46,6 @@ const STATEMENT = /^Prepare a Bootr launch\.$/;
 const FEE_FALLBACK_WEI = 500_000_000_000_000n; // 0.0005 ETH, the value read from the mainnet launcher on 2026-10-29
 const GAS_DEFAULT_ETH = '0.001';
 const GAS_MIN_ETH = '0.0001';
-
-/**
- * The feature's one flag (`OWN_AGENT_ENABLED`, docs/design/byo-agent.md section 13.2), read the way the agent service
- * reads it: on only for the exact value `true`. It decides one thing here, whether a launch may be prepared as an
- * own-agent launch. (lib/server/env.ts gains `ownAgentEnabled()` with the same read in the web-routes workstream.)
- */
-function ownAgentFlag(): boolean {
-  return (process.env.OWN_AGENT_ENABLED ?? '').trim() === 'true';
-}
 
 type LaunchInput = {
   name?: unknown;
@@ -177,7 +168,7 @@ export async function POST(req: NextRequest) {
   const runner: Runner = l.runner === 'own' ? 'own' : 'hosted';
   let model: string;
   if (runner === 'own') {
-    if (!ownAgentFlag()) return refuse(404, 'own_agent_disabled', OWN_ERRORS.own_agent_disabled.message, { field: 'runner' });
+    if (!ownAgentEnabled()) return refuse(404, 'own_agent_disabled', OWN_ERRORS.own_agent_disabled.message, { field: 'runner' });
     // No hosted model thinks for an own agent, so none can be chosen; the reserved id says so on chain.
     if (l.model !== undefined && l.model !== '' && l.model !== OWN_AGENT_MODEL_ID) return invalid('model', `An own-agent launch names no model: leave model out (the launch writes ${OWN_AGENT_MODEL_ID}); got ${quoted(l.model)}.`);
     model = OWN_AGENT_MODEL_ID;

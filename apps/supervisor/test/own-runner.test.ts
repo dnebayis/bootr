@@ -302,7 +302,8 @@ describe('switching: what is written', () => {
       const [action] = await world.db.select().from(actions);
       expect(action).toMatchObject({ actionId: `config-${AGENT_ID}-r2`, status: 'completed', action: { kind: 'config_updated', fields: ['runner'], by: CREATOR, revision: 2, runner: 'own' } });
       const tape = await agentActivity(world.ctx, row, await runtimeRow(world), {});
-      expect(tape.some((i) => i.kind === 'config' && i.summary.includes('runner'))).toBe(true);
+      // The tape names the field in plain words (the engine's label for `runner`).
+      expect(tape.some((i) => i.kind === 'config' && i.summary.includes('who runs the agent'))).toBe(true);
       expect((await runtimeRow(world)).leaseToken).toBeNull();
       expect(quotas).toEqual(['own']);
 
@@ -662,7 +663,9 @@ describe('GET /internal/agents/:id/config: runner and own', () => {
       await withWorld(async (world) => {
         setFlag(world, flag);
         const agent = await seedAgent(world);
-        const read = async () => (await (await api(world).get(`/internal/agents/${AGENT_ID}/config`)).json()) as { runner: string; own: unknown; model: string };
+        // One app for the whole test: building the app mounts the engine's real hooks, which would replace the stand-ins set below.
+        const http = api(world);
+        const read = async () => (await (await http.get(`/internal/agents/${AGENT_ID}/config`)).json()) as { runner: string; own: unknown; model: string };
         expect(await read()).toMatchObject({ runner: 'hosted', own: null });
         await world.db.update(agents).set({ config: { ...agent.config, runner: 'own' } }).where(eq(agents.agentId, AGENT_ID));
         expect(await read()).toMatchObject({ runner: 'own', own: { lastTurnAt: null, clients: 0 }, model: MODEL });
