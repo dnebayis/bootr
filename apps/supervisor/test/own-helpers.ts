@@ -4,11 +4,12 @@
  * connected through the real grant routes.
  */
 import { eq } from 'drizzle-orm';
-import type { ActResult, ConnectStartResponse, ConnectTokenResponse, TurnOpen } from '@bootr/shared/own-agent';
+import type { ActResult, ConnectStartResponse, ConnectTokenResponse, DueRole, DueView, OwnErrorBody, OwnRole, TurnOpen } from '@bootr/shared/own-agent';
 import { createApp } from '../src/api.js';
 import { agents, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
-import type { AgentState, Turn } from '../src/runtime.js';
+import { ownHooks } from '../src/own/registry.js';
+import { acquireLease, releaseLease, type AgentState, type Turn } from '../src/runtime.js';
 import type { SenderInboxItem } from '../src/sender-client.js';
 import { AGENT_ID, CREATOR, KERNEL, SUPERVISOR_KEY, agentConfig, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 
@@ -31,6 +32,25 @@ export interface OwnWorld extends TestWorld {
   modelCalls(): number;
 }
 
+/**
+ * Mounts the supervisor's app on a world and adds the signed calls of the internal routes, the way the web makes them.
+ * The HMAC clock is the world's own, so a test that moves the time still signs a fresh request.
+ */
+export function withRoutes<W extends TestWorld>(world: W, modelCalls: () => number = () => 0): W & Pick<OwnWorld, 'call' | 'run' | 'modelCalls'> {
+  const nowSec = () => Math.floor(world.ctx.now() / 1000);
+  const app = createApp(world.ctx, nowSec);
+  const call = async <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Answer<T>> => {
+    const text = method === 'GET' ? '' : JSON.stringify(body ?? {});
+    const res = await app.request(path, { method, ...(method === 'GET' ? {} : { body: text }), headers: { 'content-type': 'application/json', authorization: signRequest(SUPERVISOR_KEY, method, path, text, nowSec()) } });
+    return { status: res.status, body: (await res.json()) as T };
+  };
+  return Object.assign(world, {
+    call,
+    run: <T>(op: string, credential: string, body: Record<string, unknown> = {}) => call<T>('POST', `/internal/own/run/${op}`, { ...body, credential }),
+    modelCalls,
+  });
+}
+
 export async function ownWorld(opts: Parameters<typeof makeWorld>[0] & { flag?: boolean } = {}): Promise<OwnWorld> {
   const { flag = true, ...rest } = opts;
   const world = await makeWorld({ ...rest, config: { ...(flag ? OWN_ON : OWN_OFF), ...(rest.config ?? {}) } });
@@ -45,18 +65,7 @@ export async function ownWorld(opts: Parameters<typeof makeWorld>[0] & { flag?: 
     }
     return inner(input, init);
   }) as typeof fetch;
-  const nowSec = () => Math.floor(world.ctx.now() / 1000);
-  const app = createApp(world.ctx, nowSec);
-  const call = async <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Answer<T>> => {
-    const text = method === 'GET' ? '' : JSON.stringify(body ?? {});
-    const res = await app.request(path, { method, ...(method === 'GET' ? {} : { body: text }), headers: { 'content-type': 'application/json', authorization: signRequest(SUPERVISOR_KEY, method, path, text, nowSec()) } });
-    return { status: res.status, body: (await res.json()) as T };
-  };
-  return Object.assign(world, {
-    call,
-    run: <T>(op: string, credential: string, body: Record<string, unknown> = {}) => call<T>('POST', `/internal/own/run/${op}`, { ...body, credential }),
-    modelCalls: () => modelCalls,
-  });
+  return withRoutes(world, () => modelCalls);
 }
 
 /** One active agent whose stored config says `runner: 'own'` (the test agent of helpers.ts, id 7). */
@@ -159,3 +168,92 @@ export function finishInput(world: TestWorld, over: Record<string, unknown> = {}
 }
 
 export { agentConfig };
+
+/** A run call the real routes could not take (`OwnErrorBody`): its code is what a test asserts on. */
+export class RouteRefusal extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    readonly body: OwnErrorBody,
+  ) {
+    super(`${code}: ${body.message ?? ''}`);
+    this.name = 'RouteRefusal';
+  }
+}
+
+/**
+ * One connected client driving the REAL engine: every call goes through `POST /internal/own/run/:op` with a credential
+ * made by the real grant routes, signed as the web signs it. The method names follow the stand-in engine of the role
+ * tests (own-w2-engine.ts) so a test moves from one to the other by changing one line; what comes back is what the
+ * routes answer (`TurnOpen`, `ActResult`), and a call the routes refuse throws a `RouteRefusal` with its code.
+ */
+export interface RealEngine {
+  world: OwnWorld;
+  credential: string;
+  clientId: string;
+  /** The id of the turn this driver opened last. */
+  turnId(): string;
+  dueView(): Promise<DueView>;
+  due(role: OwnRole): Promise<DueRole>;
+  /** `forced`: the creator asks for a social turn while nothing is due (`reason: 'creator_asked'`). */
+  open(role: OwnRole, opts?: { jobId?: string; forced?: boolean }): Promise<TurnOpen>;
+  act(tool: string, input?: Record<string, unknown>): Promise<ActResult>;
+  finish(input?: Record<string, unknown>): Promise<ActResult>;
+  /** Close the open turn the way the server does without a finish (`ownHooks.closeTurn`, under the lease, as the runner switch calls it). */
+  abandon(why?: 'runner_switched' | 'client_revoked' | 'expired'): Promise<void>;
+  /** The special tools (without the MCP prefix) the open turn is offered now, as a second `turn` call lists them. */
+  offered(): Promise<string[]>;
+  turn(): Promise<Turn | null>;
+  state(): Promise<AgentState>;
+}
+
+const SPECIAL_TOOLS = ['answer_request', 'judge', 'judge_entry'];
+
+export async function realEngine(w: TestWorld, opts: { agentId?: string; kernel?: string; creator?: string } = {}): Promise<RealEngine> {
+  // The run routes exist only with the flag on; a busy lease is waited for as in the service.
+  (w.ctx.config as unknown as Record<string, unknown>).OWN_AGENT_ENABLED = true;
+  const world = withRoutes(w) as OwnWorld;
+  const { credential, clientId } = await connectClient(world, opts);
+  const agentId = opts.agentId ?? AGENT_ID;
+  let turnId = '';
+  const run = async <T>(op: string, body: Record<string, unknown> = {}): Promise<T> => {
+    const res = await world.run<T>(op, credential, body);
+    if (res.status !== 200) {
+      const error = res.body as unknown as OwnErrorBody;
+      throw new RouteRefusal(error.error, res.status, error);
+    }
+    return res.body;
+  };
+  return {
+    world,
+    credential,
+    clientId,
+    turnId: () => turnId,
+    dueView: () => run<DueView>('due'),
+    due: async (role) => (await run<DueView>('due'))[role],
+    async open(role, o = {}) {
+      const opened = await run<TurnOpen>('turn', { role, ...(o.jobId ? { jobId: o.jobId } : {}), ...(o.forced ? { reason: 'creator_asked' } : {}) });
+      turnId = opened.turnId;
+      return opened;
+    },
+    act: (tool, input = {}) => run<ActResult>('act', { turnId, tool, input }),
+    finish: (input = {}) => run<ActResult>('finish', { turnId, ...finishInput(w, input) }),
+    async abandon(why = 'expired') {
+      const lease = `test-${Math.random().toString(16).slice(2)}`;
+      if (!(await acquireLease(w.ctx, agentId, lease))) throw new Error('the runtime is leased');
+      try {
+        await ownHooks.closeTurn(w.ctx, agentId, why);
+      } finally {
+        await releaseLease(w.ctx, agentId, lease);
+      }
+    },
+    async offered() {
+      const open = (await turnOf(w, agentId))?.own;
+      if (!open) return [];
+      const again = await run<TurnOpen>('turn', { role: (await turnOf(w, agentId))!.role ?? 'social' });
+      return again.tools.map((name) => name.replace(/^bootr_agent_/, '')).filter((name) => SPECIAL_TOOLS.includes(name)).sort();
+    },
+    turn: () => turnOf(w, agentId),
+    state: () => stateOf(w, agentId),
+  };
+}

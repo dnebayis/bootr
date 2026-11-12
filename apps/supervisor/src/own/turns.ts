@@ -173,7 +173,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * than one tool may run, so it cannot lapse inside a step. When the tick or another call holds it, the call waits
  * `OWN_LEASE_WAIT_MS` and then answers `runtime_busy`: nothing was done and the same call may be repeated.
  */
-async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtime: RuntimeRow) => Promise<T>): Promise<T> {
+async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtime: RuntimeRow) => Promise<T>, opts: { ownOnly?: boolean } = {}): Promise<T> {
   const token = randomUUID();
   const leaseMs = Math.max(LEASE_MS, ctx.config.TOOL_TIMEOUT_MS + 30_000);
   const waitMs = Math.max(0, Number((ctx.config as { OWN_LEASE_WAIT_MS?: number }).OWN_LEASE_WAIT_MS ?? 4000));
@@ -185,6 +185,13 @@ async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtim
   }
   if (!runtime) throw new OwnError('runtime_busy', { retryAt: ctx.now() + BUSY_RETRY_MS });
   try {
+    // The runner is read under the lease (docs/design/byo-agent.md section 2.3). The credential check read the agent's
+    // row before the lease was taken, and this call may have waited for it behind the very switch that moved the coin
+    // to the Bootr agent: an own turn opened now would sit on a hosted coin, where the hosted loop would pick it up.
+    if (opts.ownOnly) {
+      const stored = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agentId), columns: { config: true } });
+      if (!stored || !isOwn(stored)) throw new OwnError('agent_runs_hosted');
+    }
     return await fn(runtime);
   } finally {
     await releaseLease(ctx, agentId, token);
@@ -594,9 +601,13 @@ export async function ownDue(ctx: SupervisorContext, v: VerifiedClient): Promise
     for (const role of OWN_ROLES) {
       const handler = ownRole(role);
       if (!handler) roles[role] = ROLE_OFF;
-      // Paused, or waiting on a held action: nothing is due and no role is asked (the social role would read mentions).
-      else if (paused || held) roles[role] = { on: role === 'social' || openRole === role, due: false, reasons: [], nextAt: null };
-      else if (openRole === role) roles[role] = { on: true, due: true, reasons: ['continuation'], nextAt: null };
+      // Paused, or waiting on a held action: nothing is due. The social role is not asked (it would read mentions); the
+      // others read no X, so they still say whether they exist for this coin (a treasury turn that is on stays `on`).
+      else if (paused || held) {
+        const idle: DueRole = { on: role === 'social' || openRole === role, due: false, reasons: [], nextAt: null };
+        const asked = role === 'social' ? null : await handler.due(call).catch(() => null);
+        roles[role] = asked ? { ...asked, on: asked.on || idle.on, due: false, reasons: [] } : idle;
+      } else if (openRole === role) roles[role] = { on: true, due: true, reasons: ['continuation'], nextAt: null };
       else {
         try {
           roles[role] = await handler.due(call);
@@ -638,7 +649,7 @@ export async function ownDue(ctx: SupervisorContext, v: VerifiedClient): Promise
       holds,
       nextCheckAt: iso(Math.max(floor, next)),
     };
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +684,9 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
 
     // No turn is open and nothing is held: a status an earlier turn or a hosted sleep left behind no longer says anything.
     const idle: RuntimePatch = s.runtime.status === 'held' || s.runtime.status === 'running' || s.runtime.status === 'sleeping' ? { status: 'waiting' } : {};
+    // ...and the roles are asked with the status as it is about to be written: a role's due rule reads `held` as an action
+    // still waiting for its receipt, and the one that was has just been settled above.
+    if (idle.status) s.runtime = { ...s.runtime, status: idle.status };
     const handler = ownRole(role as OwnRole);
     if (!handler) {
       await persist(s, idle);
@@ -698,7 +712,18 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
       forced = true;
     }
     const reasons = forced ? ['creator_asked'] : due.reasons;
-    const opened = await handler.open(call, { reasons, forced, ...(req.jobId ? { jobId: req.jobId } : {}) });
+    let opened: Awaited<ReturnType<typeof handler.open>>;
+    try {
+      opened = await handler.open(call, { reasons, forced, ...(req.jobId ? { jobId: req.jobId } : {}) });
+    } catch (err) {
+      // A role that finds nothing to open after all (the job a judge turn was asked for does not wait for a ruling, or
+      // was ruled on since `due` was asked) says so with `not_due`; that is the route's answer, not a failure of the service.
+      if (err instanceof PolicyError && err.code === 'not_due') {
+        await persist(s, idle);
+        throw new OwnError('not_due');
+      }
+      throw err;
+    }
     if (forced) s.state.ownForced = { day, count: forcedUsed + 1 };
     const opensAt = ctx.now();
     // The job a judge turn rules on: what the role resolved (it may have picked the oldest waiting one, or completed a
@@ -723,7 +748,7 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
     await persist(s, { status: 'running', ...(role === 'social' ? { lastDecisionAt: new Date(opensAt), lastDecisionRevision: config.revision } : {}) });
     ctx.log.info({ agentId: v.agent.agentId, clientId: v.client.id, turnId: own.turnId, role, reasons, forced }, 'own agent: turn opened');
     return turnOpenView(s, turn, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -908,7 +933,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
     if (acting && result.status === 'completed') (turn.ownCalls ??= []).push({ key, actionId: settledAs.id, tool, stepsUsed: turn.steps });
     await persist(s);
     return actResult(s, turn, { tool, actionId: settledAs.id, status: result.status === 'completed' ? 'completed' : 'failed', ...(result.status === 'completed' ? { result: jsonSafe(result.result ?? null) } : { error: result.error ?? 'failed' }) }, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -964,6 +989,9 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
       const error = err instanceof Error ? err.message : String(err);
       s.broker.pending = recordOutcome(pending, { kind: 'failed', error }, now);
       await settlePending(s);
+      // A judge turn has no finish (its ruling ends it) and its budget is one step per entry and one for the ruling:
+      // a finish sent by mistake is refused by the role and must not cost the turn its ruling.
+      if (role === 'judge') turn.steps -= 1;
       turn.recentSteps.push({ tool: FINISH_TOOL, status: 'failed', summary: error.slice(0, 200) });
       await persist(s);
       return actResult(s, turn, { tool: FINISH_TOOL, actionId: pending.id, status: 'failed', error }, false);
@@ -976,7 +1004,7 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
     await persist(s, { status: 'waiting', ...(typeof done.nextAt === 'number' && Number.isFinite(done.nextAt) ? { nextAt: new Date(done.nextAt) } : {}), failures: 0, lastError: null });
     log.info({ steps: turn.steps, cycle: s.broker.cycle }, 'own agent: turn finished');
     return answer;
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1062,7 @@ export async function uploadPicture(ctx: SupervisorContext, v: VerifiedClient, r
     if (outcome.kind === 'completed') (turn.ownCalls ??= []).push({ key, actionId, tool: UPLOAD_TOOL, stepsUsed: turn.steps });
     await persist(s);
     return actResult(s, turn, { tool: UPLOAD_TOOL, actionId, status: outcome.kind, ...(outcome.kind === 'completed' ? { result: outcome.result } : { error: outcome.error }) }, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------

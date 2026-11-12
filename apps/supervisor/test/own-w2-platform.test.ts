@@ -6,16 +6,16 @@
  * that carries its link).
  *
  * Each test runs the hosted turn first (one scripted thought that posts, one that finishes) and keeps its first
- * observation and its final state; then the same coin as an own agent takes the same steps through the registry's
- * social role, and the two are compared. The social role is another workstream's (own/social.ts): until it is merged
- * the hosted half runs, which proves the fixtures, and the own half is skipped with the test.
+ * observation and its final state; then the same coin as an own agent takes the same steps through the real engine
+ * (the internal run routes with a real credential, `realEngine` in own-helpers.ts), and the two are compared. The
+ * engine marks the update where the hosted loop does, as the action settles (`settlePending` in own/turns.ts), also
+ * when the post's outcome was unknown and the tick settled it from its receipt after the turn was gone.
  */
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
 import { approvals, runtimes } from '../src/db/schema.js';
 import type { IndexerClient } from '../src/indexer-client.js';
-import { ownRole } from '../src/own/registry.js';
 import { NUMBERS_WAKE_REASON } from '../src/platform-numbers.js';
 import { PLATFORM_UPDATES } from '../src/platform-updates.js';
 import type { AgentState } from '../src/runtime.js';
@@ -23,7 +23,8 @@ import { processAgent } from '../src/tick.js';
 import { resetWatchlistCache } from '../src/watchlist.js';
 import { DIGEST_WAKE_REASON } from '../src/weekly-digest.js';
 import { AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
-import { fakeEngine, forbidThoughts, ownConfig, setOwnFlag } from './own-w2-engine.js';
+import { realEngine } from './own-helpers.js';
+import { forbidThoughts, ownConfig } from './own-w2-engine.js';
 
 const H = 3_600_000;
 /** Mid-morning UTC on a weekday: no digest, no numbers post, every seeded update inside its window. */
@@ -73,7 +74,7 @@ async function host(at: number, opts: { own: boolean; script?: Response[]; feed:
 }
 
 describe('the platform agent as an own agent', () => {
-  it('the platform update, the numbers, the watchlist and Bootr today: shown as to the hosted turn, and the update closes on the post that carries it', async (t) => {
+  it('the platform update, the numbers, the watchlist and Bootr today: shown as to the hosted turn, and the update closes on the post that carries it', async () => {
     const config = { requireApproval: false };
     const hosted = await host(WEEKDAY, { own: false, feed: null, config, script: [toolCallResponse('publish_post', { text: UPDATE_POST }, 'call_post'), finishResponse(WEEKDAY + 3 * H)] });
     try {
@@ -87,12 +88,10 @@ describe('the platform agent as an own agent', () => {
       expect(closed).toMatchObject({ lastUpdateDay: '2026-11-05', announcedUpdates: [UPDATE.id], lastPostAt: WEEKDAY });
       expect(hosted.w.sender.published).toHaveLength(1);
 
-      if (!ownRole('social')) return t.skip();
       const own = await host(WEEKDAY, { own: true, feed: null, config });
       try {
-        setOwnFlag(own.w, true);
         forbidThoughts(own.w);
-        const engine = fakeEngine(own.w);
+        const engine = await realEngine(own.w);
         const opened = await engine.open('social');
         expect(sections(opened.observation)).toEqual(shown);
         expect(await engine.act('publish_post', { text: UPDATE_POST })).toMatchObject({ status: 'completed' });
@@ -111,7 +110,42 @@ describe('the platform agent as an own agent', () => {
     }
   });
 
-  it('the weekly digest: due at its slot, handed the same week, closed by the post without moving the cadence anchor', async (t) => {
+  it('an update post whose outcome was unknown closes the update once the tick settled it from its receipt, before the next turn is shown anything', async () => {
+    const own = await host(WEEKDAY, { own: true, feed: null, config: { requireApproval: false } });
+    try {
+      forbidThoughts(own.w);
+      const engine = await realEngine(own.w);
+      const opened = await engine.open('social');
+      expect((opened.observation.platformUpdate as { update: { id: string } }).update.id).toBe(UPDATE.id);
+      // the sender cannot say whether X took the post: the action is held and the turn ends
+      own.w.sender.publishStatus = 'held';
+      const held = await engine.act('publish_post', { text: UPDATE_POST });
+      expect(held).toMatchObject({ status: 'held', turnEnded: true });
+      expect(bookkeeping(await stateOf(own.w))).toMatchObject({ lastUpdateDay: null, announcedUpdates: [], lastPostAt: null });
+      expect((await stateOf(own.w)).offeredUpdate).toBe(UPDATE.id);
+      // the receipt arrives and the tick settles the action on the row; no turn is open and no model is asked
+      own.w.sender.receipts[held.actionId!] = { status: 'sent', providerPostId: '9300' };
+      const ticked = await processAgent(own.w.ctx, own.agent, await runtimeRow(own.w));
+      expect(ticked).toMatchObject({ ran: false, skipped: 'own_agent' });
+      expect((await runtimeRow(own.w)).pending).toMatchObject({ status: 'completed', id: held.actionId });
+      // the next turn settles it first: the update is announced, the slot is used, and the turn is not shown the update again
+      own.w.setNow(WEEKDAY + 6 * 60_000);
+      const next = await engine.open('social');
+      expect(next.turnId).not.toBe(opened.turnId);
+      expect(next.observation.platformUpdate).toBeUndefined();
+      expect(bookkeeping(await stateOf(own.w))).toMatchObject({ lastUpdateDay: '2026-11-05', announcedUpdates: [UPDATE.id], lastPostAt: WEEKDAY });
+      expect((await stateOf(own.w)).offeredUpdate ?? null).toBeNull();
+      expect((await runtimeRow(own.w)).pending).toBeNull();
+      expect(own.w.sender.published).toHaveLength(1);
+      // and a second post in the same slot is refused: the held one was the slot's post
+      expect(await engine.act('publish_post', { text: UPDATE_POST })).toMatchObject({ status: 'failed', error: expect.stringMatching(/^post_slot_not_due: /) });
+      expect(own.w.sender.published).toHaveLength(1);
+    } finally {
+      await own.w.close();
+    }
+  });
+
+  it('the weekly digest: due at its slot, handed the same week, closed by the post without moving the cadence anchor', async () => {
     const cadence = { postIntervalMs: 6 * H, socialStartedAt: new Date(SUNDAY - H).toISOString() };
     const runtime = { nextAt: new Date(SUNDAY + 6 * H) };
     const hosted = await host(SUNDAY, { own: false, feed: week(), config: cadence, runtime, script: [toolCallResponse('publish_post', { text: DIGEST_POST }, 'call_post'), finishResponse(SUNDAY + 3 * H)] });
@@ -127,12 +161,10 @@ describe('the platform agent as an own agent', () => {
       // the platform agent's posts wait for the creator's review: queued counts as posted
       expect(await hosted.w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID))).toHaveLength(1);
 
-      if (!ownRole('social')) return t.skip();
       const own = await host(SUNDAY, { own: true, feed: week(), config: cadence, runtime });
       try {
-        setOwnFlag(own.w, true);
         forbidThoughts(own.w);
-        const engine = fakeEngine(own.w);
+        const engine = await realEngine(own.w);
         expect(await engine.due('social')).toMatchObject({ due: true, reasons: expect.arrayContaining([DIGEST_WAKE_REASON, NUMBERS_WAKE_REASON]) });
         const opened = await engine.open('social');
         expect(sections(opened.observation)).toEqual(shown);
@@ -151,7 +183,7 @@ describe('the platform agent as an own agent', () => {
     }
   });
 
-  it('a digest turn the own agent ends with finish and no post closes the week too, as the hosted one does', async (t) => {
+  it('a digest turn the own agent ends with finish and no post closes the week too, as the hosted one does', async () => {
     const cadence = { postIntervalMs: 6 * H, socialStartedAt: new Date(SUNDAY - H).toISOString() };
     const runtime = { nextAt: new Date(SUNDAY + 6 * H) };
     const hosted = await host(SUNDAY, { own: false, feed: week(), config: cadence, runtime, script: [finishResponse(SUNDAY + 3 * H)] });
@@ -159,12 +191,10 @@ describe('the platform agent as an own agent', () => {
       await processAgent(hosted.w.ctx, hosted.agent, await runtimeRow(hosted.w));
       const closed = bookkeeping(await stateOf(hosted.w));
       expect(closed).toMatchObject({ lastDigestWeek: '2026-W45', lastNumbersDay: '2026-11-08', lastPostAt: null });
-      if (!ownRole('social')) return t.skip();
       const own = await host(SUNDAY, { own: true, feed: week(), config: cadence, runtime });
       try {
-        setOwnFlag(own.w, true);
         forbidThoughts(own.w);
-        const engine = fakeEngine(own.w);
+        const engine = await realEngine(own.w);
         await engine.open('social');
         await engine.finish({ memory: 'm', agenda: 'a', summary: 's', nextAt: new Date(SUNDAY + 3 * H).toISOString() });
         expect(bookkeeping(await stateOf(own.w))).toEqual(closed);
