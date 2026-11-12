@@ -5,6 +5,7 @@ import { SiweMessage } from 'siwe';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as platform } from '@/app/api/platform/route';
+import { env } from '@/lib/env';
 import { ownLimitSizes, resetOwnLimits } from '@/lib/server/own-agent';
 import { issueNonce } from '@/lib/server/siwe-verify';
 import { COIN, DRAFT_ID, OWN_ERRORS as FAKE_ERRORS, SECOND_COIN, startFakeSupervisor, type FakeSupervisor } from '../../../../../../packages/mcp/test/fake-supervisor.mjs';
@@ -81,7 +82,7 @@ async function started(input: Record<string, unknown> = { clientName: 'Claude Co
 }
 
 async function signed(statement: string, signer = creator, over: Partial<SiweMessage> = {}) {
-  const message = new SiweMessage({ domain: 'bootr.fun', address: signer.address, statement, uri: SITE, version: '1', chainId: 8453, nonce: issueNonce().nonce, issuedAt: new Date().toISOString(), ...over }).prepareMessage();
+  const message = new SiweMessage({ domain: 'bootr.fun', address: signer.address, statement, uri: SITE, version: '1', chainId: env.chainId, nonce: issueNonce().nonce, issuedAt: new Date().toISOString(), ...over }).prepareMessage();
   return { message, signature: await signer.signMessage({ message }) };
 }
 
@@ -246,6 +247,9 @@ describe('POST /api/agent/connect/approve', () => {
       // A message for another site, another chain, an old one.
       { userCode, ...(await signed(coinStatement(userCode), creator, { domain: 'evil.example', uri: 'https://evil.example' })) },
       { userCode, ...(await signed(coinStatement(userCode), creator, { chainId: 1 })) },
+      // Base's other network: only the chain this deployment runs on is taken (security review L2).
+      { userCode, ...(await signed(coinStatement(userCode), creator, { chainId: env.chainId === 8453 ? 84532 : 8453 })) },
+      { userCode, ...(await signed(connectDraftStatement(DRAFT_ID, userCode), creator, { chainId: env.chainId === 8453 ? 84532 : 8453 })) },
       { userCode, ...(await signed(coinStatement(userCode), creator, { issuedAt: new Date(Date.now() - 3_600_000).toISOString() })) },
       { userCode, message: 'not a siwe message', signature: '0x00' },
       { userCode, message: (await signed(coinStatement(userCode))).message },

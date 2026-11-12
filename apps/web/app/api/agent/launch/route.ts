@@ -145,6 +145,11 @@ export async function POST(req: NextRequest) {
   const body = await readJsonObject<{ message?: unknown; signature?: unknown; launch?: LaunchInput }>(req);
   if (!body) return fail(400, 'invalid_json', 'Body must be a JSON object: {message, signature, launch}.');
   const v = await verifySiwe(body, { statement: STATEMENT, statementText: 'Prepare a Bootr launch.' });
+  // A message for Base's other network is refused by the check itself now (it takes this deployment's chain alone);
+  // the answer for it is the one this route has always given.
+  if (!v.ok && v.reason === 'unsupported_chain' && (v.chainId === 8453 || v.chainId === 84532)) {
+    return fail(400, 'wrong_chain', `The message is signed for chain ${v.chainId}, but this deployment launches on chain ${env.chainId}: set chainId to ${env.chainId}. ${NEW_NONCE}`);
+  }
   if (!v.ok) return fail(v.status, 'siwe_rejected', v.error, { reason: v.reason });
   const creator = v.address;
   const chainId = v.msg.chainId;
