@@ -130,11 +130,16 @@ describe('the tool list', () => {
   it('marks reads as read-only and the five acting tools as acting, so a client can ask before a post', async () => {
     const { tools } = await client.listTools();
     const hint = (n: string) => tools.find((t) => t.name === `bootr_agent_${n}`)!.annotations!;
-    for (const n of ['read_mentions', 'read_x_thread', 'read_x_account', 'recall_conversation', 'recall', 'read_url', 'search_web', 'read_market', 'read_coin', 'read_chain', 'treasury_read', 'discover_services', 'bounty_list', 'status', 'due', 'judge_entry']) {
+    for (const n of ['read_mentions', 'read_x_thread', 'read_x_account', 'recall_conversation', 'recall', 'read_market', 'read_coin', 'read_chain', 'treasury_read', 'bounty_list', 'status', 'due', 'judge_entry']) {
       expect(hint(n), n).toMatchObject({ readOnlyHint: true, destructiveHint: false });
     }
+    // Three reads whose input leaves for a third party (a page's address, a search's words, a need): not read-only,
+    // so a client that asks before anything but a read asks before these (security review L4).
+    for (const n of ['read_url', 'search_web', 'discover_services']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
     for (const n of ['publish_post', 'publish_reply', 'treasury_execute', 'x402_fetch', 'bounty_post']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-    for (const n of ['connect', 'disconnect', 'turn', 'remember', 'resolve_mention', 'resolve_mentions', 'treasury_prepare', 'bounty_cancel', 'upload_picture', 'answer_request', 'judge', 'finish']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    // Disconnecting cannot be undone from the client: connecting again takes the creator's wallet.
+    expect(hint('disconnect')).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    for (const n of ['connect', 'turn', 'remember', 'resolve_mention', 'resolve_mentions', 'treasury_prepare', 'bounty_cancel', 'upload_picture', 'answer_request', 'judge', 'finish']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false });
   });
 
   it('takes the agent tools’ schemas from the catalog, adds turnId, and keeps its own words for every description', async () => {

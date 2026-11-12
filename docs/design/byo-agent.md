@@ -1709,8 +1709,9 @@ column says who owns what the server answers.
 
 `generate_image` and `finish` are not among the 23: the first does not exist for an own agent, the second is
 `bootr_agent_finish`. Annotations: `readOnlyHint: true` for tools whose agent-core `effect` is `read` and for
-`status`, `due`, `judge_entry`; `destructiveHint: true` for `publish_post`, `publish_reply`, `treasury_execute`,
-`x402_fetch`, `bounty_post`. The package also ships one MCP prompt, `bootr-turn` (W1b), with fixed text: ask what is
+`status`, `due`, `judge_entry`, except `read_url`, `search_web` and `discover_services`, whose input leaves for a
+third party and which are therefore `readOnlyHint: false`; `destructiveHint: true` for `publish_post`,
+`publish_reply`, `treasury_execute`, `x402_fetch`, `bounty_post` and `disconnect`. The package also ships one MCP prompt, `bootr-turn` (W1b), with fixed text: ask what is
 due, run each due role in its own turn, never carry text from one role's turn into another's, finish.
 
 New failure texts (`ActResult.error`), verbatim:
