@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global process, console, setTimeout, fetch, URL */
+/* global process, console, setTimeout, fetch, URL, Buffer */
 /**
  * Own agents, end to end: the launch-and-switch part (docs/design/byo-agent.md section 13.10, W3's column).
  * `own-agent-e2e.mjs` imports this file when it exists and calls `run(env)`; it can also be run on its own.
@@ -30,7 +30,9 @@
  * The creator is anvil's first account, as in every part of the script: a public test key that owns nothing real.
  */
 import assert from 'node:assert/strict';
+import { createCipheriv, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -84,7 +86,10 @@ export async function run(env = {}) {
   const SITE = (read(env, 'site', 'siteUrl', 'SITE', 'SITE_URL', 'BOOTR_SITE_URL') ?? 'http://localhost:3200').replace(/\/$/, '');
   const RPC = read(env, 'rpc', 'rpcUrl', 'RPC', 'RPC_URL') ?? 'http://127.0.0.1:8555';
   const INDEXER = (read(env, 'indexer', 'indexerUrl', 'INDEXER', 'INDEXER_URL', 'NEXT_PUBLIC_INDEXER_URL') ?? 'http://localhost:42069').replace(/\/$/, '');
+  const DATABASE_URL = read(env, 'databaseUrl', 'DATABASE_URL');
+  const SENDER_ENCRYPTION_KEY = read(env, 'senderEncryptionKey', 'SENDER_ENCRYPTION_KEY');
   if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(RPC)) throw new Error('RPC must be a local anvil fork: this script sends transactions.');
+  if (DATABASE_URL && !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(DATABASE_URL.replace(/^postgres(ql)?:/, 'http:')).hostname)) throw new Error('DATABASE_URL must be a local database: this script stores a stub X account in it.');
   if (!/^http:\/\/(127\.0\.0\.1|localhost|[\w.-]+\.localhost)(:\d+)?$/.test(SITE)) throw new Error('SITE must be a local copy of the web app: this script approves a client and switches an agent.');
 
   const results = [];
@@ -152,6 +157,25 @@ export async function run(env = {}) {
     }
     return { data, text: texts.join('\n') };
   };
+
+  /**
+   * `bootr_agent_due`. The site answers it once per 20 seconds per credential (section 3.3), so a `rate_limited`
+   * answer is waited out until the time it names; every other answer, a refusal included, is returned as it came.
+   */
+  const dueNow = async () => {
+    for (let i = 0; i < 4; i += 1) {
+      const r = await call('bootr_agent_due', {});
+      if (r.error !== 'rate_limited') return r;
+      const at = Date.parse(/retryAt: ([^)\s]+)/.exec(r.text)?.[1] ?? '');
+      await sleep(Math.min(30_000, Math.max(1_000, (Number.isFinite(at) ? at - Date.now() : 20_000) + 500)));
+    }
+    throw new Error('bootr_agent_due stayed rate_limited');
+  };
+
+  /** The local database, when its address was given: it holds the stub X account of this part's coin (step 4). */
+  let db = null;
+  /** True once this part's coin has left setup. */
+  let active = false;
 
   try {
     const { tools } = await client.listTools();
@@ -227,10 +251,42 @@ export async function run(env = {}) {
     assert.equal(status.coin.token.toLowerCase(), token.toLowerCase());
     assert.equal(status.client.label, 'own-agent-e2e w3');
     ok('the draft’s client works after registration', `runner ${status.runner}, ${config.own.clients} client(s)`);
-    const due = await call('bootr_agent_due', {});
-    // No X account is connected to this coin, so it is still being set up: either answer is the engine at work.
-    assert.ok(due.data || due.error === 'agent_onboarding', `bootr_agent_due: ${due.text}`);
-    note(`bootr_agent_due answers ${due.data ? 'what is due' : due.error} (the coin has no X account)`);
+    // A coin with no X account stays in setup, and a run call says so before it says anything else (section 13.6:
+    // `agent_onboarding` comes before `agent_runs_hosted`).
+    const early = await dueNow();
+    assert.equal(early.error, 'agent_onboarding', `bootr_agent_due before the X account is connected: ${early.text}`);
+
+    // The X account, stored the way the seed script stores the seeded coin's (apps/supervisor/scripts/seed-own-agent.ts):
+    // a row at the sender whose tokens open nothing but the stub X. The real connection is X's OAuth, which the stub
+    // does not play. With it, and the session key the agent service installs on the fork (ADMIN_PRIVATE_KEY the
+    // guardian's owner there, ENABLE_MODE_SELF_BUNDLE=true), the coin leaves setup, so the switch below is tried on
+    // an active coin. Without a database address or the sender's key the coin stays in setup and the part says so.
+    if (DATABASE_URL && /^[0-9a-fA-F]{64}$/.test(SENDER_ENCRYPTION_KEY ?? '')) {
+      const pg = createRequire(path.resolve(import.meta.dirname, '../../../apps/supervisor/package.json'))('pg');
+      db = new pg.Client({ connectionString: DATABASE_URL });
+      await db.connect();
+      const key = Buffer.from(SENDER_ENCRYPTION_KEY, 'hex');
+      const seal = (plaintext, aad) => {
+        const iv = randomBytes(12);
+        const cipher = createCipheriv('aes-256-gcm', key, iv);
+        cipher.setAAD(Buffer.from(aad, 'utf8'));
+        const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+        return `v1.${Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64url')}`;
+      };
+      await db.query(
+        `insert into sender_accounts (agent_id, x_user_id, x_handle, encrypted_access_token, encrypted_refresh_token, scopes, expires_at, revoked_at, connected_at, updated_at, verified_type, verified_checked_at)
+         values ($1, $2, $3, $4, $5, 'tweet.read tweet.write users.read offline.access media.write', now() + interval '3650 days', null, now(), now(), 'blue', now())`,
+        [String(agentId), `77${agentId}`, `own_${symbol.toLowerCase()}`, seal('stub-x-access-token', `access:${agentId}`), seal('stub-x-refresh-token', `refresh:${agentId}`)],
+      );
+      await until('the agent service to finish setting the coin up (session key on the fork, X account)', async () => (await db.query("select 1 from sv_agents where agent_id = $1 and status = 'active'", [String(agentId)])).rowCount === 1, { timeoutMs: 120_000 });
+      const due = await until('bootr_agent_due to answer for the active coin', async () => {
+        const r = await dueNow();
+        return r.data ? r : null;
+      }, { timeoutMs: 60_000 });
+      assert.equal(typeof due.data.social?.due, 'boolean', `bootr_agent_due: ${due.text}`);
+      active = true;
+      ok('the coin leaves setup and bootr_agent_due answers what is due', `social due: ${due.data.social.due}`);
+    } else note('no DATABASE_URL and SENDER_ENCRYPTION_KEY: the coin has no X account and stays in setup, so the switch is tried on a coin that answers agent_onboarding');
 
     // ---------------- 5. the indexer's coin says own-agent ----------------
     const indexed = await until('the indexer to show the coin', async () => {
@@ -249,26 +305,31 @@ export async function run(env = {}) {
     assert.match(toHosted.json.notes.join(' '), /The Bootr agent pays for its thinking from fuel/);
     const sessionToken = toHosted.json.token;
     assert.equal((await api('POST', `/api/agent/${kernel.toLowerCase()}/runner`, { token: sessionToken, runner: 'hosted' }, { origin })).json.error, 'runner_unchanged');
-    const refused = await call('bootr_agent_due', {});
-    assert.equal(refused.error, 'agent_runs_hosted', `a run call on a Bootr-agent coin: ${refused.text}`);
+    const refused = await dueNow();
+    assert.equal(refused.error, active ? 'agent_runs_hosted' : 'agent_onboarding', `a run call on a Bootr-agent coin: ${refused.text}`);
     const hostedStatus = await call('bootr_agent_status', {});
     assert.equal(hostedStatus.data?.runner, 'hosted', 'the status route still answers, and says who runs the agent');
-    ok('switched to the Bootr agent: a run call answers agent_runs_hosted');
-    // Without fuel the Bootr agent sleeps. This coin has no X account, so the agent service may still be setting it
-    // up and never reach the sleep rule; the indexer's status says which.
-    const treasury = await fetch(`${INDEXER}/treasury/${kernel}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-    if (treasury?.status === 'sleeping') ok('the Bootr agent sleeps without fuel');
-    else note(`the Bootr agent's sleep was not observed (indexer status: ${treasury?.status ?? 'unknown'}; the coin has no X account, so it is not active)`);
+    ok(`switched to the Bootr agent: the status says hosted and a run call answers ${refused.error}`);
+    if (active) {
+      // Without fuel the Bootr agent sleeps: the tick puts it to sleep and buys no thought for it.
+      const asleep = await until('the Bootr agent to sleep without fuel', async () => (await db.query("select 1 from sv_runtimes where agent_id = $1 and status = 'sleeping'", [String(agentId)])).rowCount === 1, { timeoutMs: 60_000 });
+      assert.ok(asleep);
+      assert.equal((await db.query('select count(*)::int as n from sv_inference where agent_id = $1', [String(agentId)])).rows[0].n, 0, 'a thought was bought for a coin with no fuel');
+      const treasury = await fetch(`${INDEXER}/treasury/${kernel}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      ok('the Bootr agent sleeps without fuel and buys no thought', `the indexer's status: ${treasury?.status ?? 'unknown'}`);
+    } else note('the Bootr agent\'s sleep was not observed: the coin has no X account, so it is not active');
 
     // ---------------- 7. switch back to my own agent ----------------
     const toOwn = await api('POST', `/api/agent/${kernel.toLowerCase()}/runner`, { token: sessionToken, runner: 'own' }, { origin });
     assert.equal(toOwn.status, 200, `switch to my own agent: ${toOwn.text}`);
     assert.equal(toOwn.json.runner, 'own');
     const again = await until('the client to act for the coin again', async () => {
-      const r = await call('bootr_agent_due', {});
+      const r = await dueNow();
       return r.data || r.error === 'agent_onboarding' ? r : null;
-    }, { timeoutMs: 30_000 });
-    assert.notEqual(again.error, 'agent_runs_hosted');
+    }, { timeoutMs: 60_000 });
+    if (active) assert.ok(again.data, `bootr_agent_due after the switch back: ${again.text}`);
+    else assert.equal(again.error, 'agent_onboarding');
+    if (active) assert.equal((await db.query('select count(*)::int as n from sv_inference where agent_id = $1', [String(agentId)])).rows[0].n, 0, 'a thought was bought for this coin');
     const chat = await api('POST', `/api/agent/${kernel.toLowerCase()}/chat/send`, { token: toOwn.json.token ?? sessionToken, text: 'What did you do today?' }, { origin });
     assert.equal(chat.status, 409, `chat: ${chat.text}`);
     assert.equal(chat.json.error, 'chat_not_available');
@@ -279,6 +340,7 @@ export async function run(env = {}) {
     if (stderr.length) console.error(`[w3] MCP server stderr:\n${stderr.join('')}`);
     throw err;
   } finally {
+    await db?.end().catch(() => undefined);
     await client.close().catch(() => undefined);
     rmSync(home, { recursive: true, force: true });
   }
