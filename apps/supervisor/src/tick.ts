@@ -28,7 +28,7 @@ import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
 import { treasuryTurnDue } from './roles.js';
-import { acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, saveRuntime, scheduleFor, startTreasuryTurn, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
+import { LEASE_MS, acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, renewLease, saveRuntime, scheduleFor, startTreasuryTurn, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
@@ -101,15 +101,18 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     .limit(ctx.config.MAX_AGENTS_PER_TICK);
   // Own coins that are neither paused nor asleep get a sweep of their own, as the sleeping ones do and for the same
   // reason: the tick never moves an own coin's `nextAt`, so one whose client is away would sit at the head of the list
-  // above for good. One with a turn open or an action waiting for its receipt comes first (the idle rule and the
-  // reconciliation are what the tick owes it in time), then the least recently checked (each check touches the row).
-  const own = await ctx.db
-    .select({ runtime: runtimes, agent: agents })
-    .from(runtimes)
-    .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
-    .where(and(eq(agents.status, 'active'), notInArray(runtimes.status, ['paused', 'sleeping']), OWN_COIN))
-    .orderBy(sql`case when ${runtimes.status} in ('running', 'held') then 0 else 1 end`, asc(runtimes.updatedAt), asc(runtimes.nextAt))
-    .limit(ctx.config.MAX_AGENTS_PER_TICK);
+  // above for good. The sweep's slots are split in two (`ownSweep`): ones with a turn open or an action waiting for
+  // its receipt (the idle rule and the reconciliation are what the tick owes them in time), and the rest; each group
+  // least recently checked first (each check touches the row).
+  const ownRows = (busy: boolean) =>
+    ctx.db
+      .select({ runtime: runtimes, agent: agents })
+      .from(runtimes)
+      .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
+      .where(and(eq(agents.status, 'active'), busy ? inArray(runtimes.status, ['running', 'held']) : notInArray(runtimes.status, ['paused', 'sleeping', 'running', 'held']), OWN_COIN))
+      .orderBy(asc(runtimes.updatedAt), asc(runtimes.nextAt))
+      .limit(ctx.config.MAX_AGENTS_PER_TICK);
+  const own = ownSweep(await ownRows(true), await ownRows(false), ctx.config.MAX_AGENTS_PER_TICK);
   // Sleeping runtimes get their own sweep, least recently checked first (each check touches the row), so refuelling
   // is noticed in turn without a sleeping coin ever taking an awake agent's slot. One treasury read each, no turn.
   const sleepingCap = ctx.config.MAX_SLEEPING_PER_TICK ?? ctx.config.MAX_AGENTS_PER_TICK;
@@ -143,6 +146,22 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     }
   }
   return report;
+}
+
+/**
+ * The own sweep's slots, split so that neither group can starve the other. Half go to coins with an open turn or a
+ * held action, half to the rest; a half its group does not fill goes to the other. Before this the open turns came
+ * first without a bound, and keeping a turn open costs a client nothing: ten coins with one open each took every slot
+ * of every tick, and no idle own coin had its fees claimed, its gas kept or a hold lifted again. With a single slot
+ * the two groups share it, whichever was checked longest ago.
+ */
+export function ownSweep<T extends { runtime: { updatedAt: Date } }>(busy: T[], idle: T[], slots: number): T[] {
+  if (slots <= 0) return [];
+  if (slots === 1) return [...busy, ...idle].sort((a, b) => a.runtime.updatedAt.getTime() - b.runtime.updatedAt.getTime()).slice(0, 1);
+  const half = Math.ceil(slots / 2);
+  const busyTake = Math.min(busy.length, Math.max(half, slots - idle.length));
+  const idleTake = Math.min(idle.length, slots - busyTake);
+  return [...busy.slice(0, busyTake), ...idle.slice(0, idleTake)];
 }
 
 /**
@@ -209,7 +228,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     if (resting && !restDue) {
       await reconcileOps(ctx, agent).catch((err) => log.warn({ err }, 'treasury reconcile failed'));
       runtime = await reconcilePending(ctx, agent, runtime);
-      if (own && runtime.status !== 'paused') return await processOwn(ctx, agent, config, runtime, null, log);
+      if (own && runtime.status !== 'paused') return await processOwn(ctx, agent, config, runtime, null, log, lease);
       if (runtime.status === 'sleeping' || runtime.status === 'paused') {
         // A paused own coin's line still says who thinks: the reserved id, not the hosted model its config keeps.
         await postSocial(ctx, agent, own ? { xHandle: config.xHandle, model: OWN_AGENT_MODEL_ID } : config, runtime, runtime.status);
@@ -252,7 +271,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     if (runtime.status === 'paused') return { ran: false, reasons: ['paused'], skipped: 'paused' };
 
     // An own coin stops here: the fee policy, the hold bookkeeping and the idle rule for its turn, and no hosted turn.
-    if (own) return await processOwn(ctx, agent, config, runtime, chainState?.treasury ?? null, log);
+    if (own) return await processOwn(ctx, agent, config, runtime, chainState?.treasury ?? null, log, lease);
 
     // 2. Sleep rule: no inference without fuel; refuel detection from the snapshot read above.
     const treasury = chainState?.treasury ?? null;
@@ -421,9 +440,23 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
  * X hold bookkeeping (a 403 hold lifted on reconnect, the ended-hold note), and the idle rule that closes a turn the
  * client left open. A coin that was asleep when it became own is awake from here on: an own agent never sleeps for fuel.
  */
-async function processOwn(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, leased: RuntimeRow, treasury: TreasurySnapshot | null, log: Logger): Promise<ProcessResult> {
+async function processOwn(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, leased: RuntimeRow, treasury: TreasurySnapshot | null, log: Logger, lease: string): Promise<ProcessResult> {
   let runtime = leased;
-  if (treasury) await runFeePolicy(ctx, agent, treasury).catch((err) => log.warn({ err }, 'fee policy failed'));
+  if (treasury) {
+    // The fee policy waits for receipts and can outlast the tick's lease, and for an own coin somebody else is waiting
+    // for that lease: the creator's client. The lease is taken anew for as long as a tool may run before the policy
+    // starts, and checked after it. When it is no longer this tick's, a call of the client ran in between and wrote
+    // the runtime; the row this tick read is stale, and writing from it would undo that call (`saveRuntime` does not
+    // ask whose lease it is), so nothing more is written this tick.
+    await renewLease(ctx, agent.agentId, lease, Math.max(LEASE_MS, ctx.config.TOOL_TIMEOUT_MS + 30_000));
+    await runFeePolicy(ctx, agent, treasury).catch((err) => log.warn({ err }, 'fee policy failed'));
+    const fresh = (await renewLease(ctx, agent.agentId, lease)) ? await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) }) : null;
+    if (!fresh) {
+      log.info('the runtime lease was taken while the fee policy ran; nothing more is written this tick');
+      return { ran: false, reasons: ['lease_lost'], skipped: 'lease_lost' };
+    }
+    runtime = fresh;
+  }
   if (runtime.status === 'sleeping') {
     await saveRuntime(ctx, agent.agentId, { status: 'waiting' });
     runtime = { ...runtime, status: 'waiting' };
