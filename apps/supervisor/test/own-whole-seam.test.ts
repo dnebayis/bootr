@@ -17,7 +17,7 @@ import { fileRequest } from '../src/creator-requests.js';
 import { actions, agents, approvals, bountyJobs, inference as inferenceTable, serviceCalls, treasuryOps } from '../src/db/schema.js';
 import { JUDGE_JOB_CLOSED, judgeEntryUnknown } from '../src/own/judge.js';
 import { SERVICES_INSUFFICIENT_FUEL } from '../src/services.js';
-import { initialState } from '../src/runtime.js';
+import { acquireLease, initialState, releaseLease } from '../src/runtime.js';
 import type { SenderConversationReply } from '../src/sender-client.js';
 import { tick } from '../src/tick.js';
 import { ADDR, AGENT_ID, SPENDER, agentConfig, type TestWorld } from './helpers.js';
@@ -475,6 +475,46 @@ describe('own agent, the whole seam: a held action and the roles', () => {
       expect(next.body.turnId).not.toBe(turn.turnId);
       expect((await runtimeOf(w)).pending).toBeNull();
       expect(w.sender.published).toHaveLength(1);
+      expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The runner is read under the lease
+// ---------------------------------------------------------------------------
+
+describe('own agent, the whole seam: a call that waited for the lease behind a switch to the Bootr agent', () => {
+  it('is answered agent_runs_hosted and opens no turn: the credential check read the row before the switch wrote it', async () => {
+    const w = await ownWorld({ config: { OWN_LEASE_WAIT_MS: '4000' } });
+    try {
+      await seedOwn(w);
+      w.sender.items = [mention('801')];
+      const { credential } = await connectClient(w);
+      const before = await runtimeOf(w);
+      // The switch holds the lease while it works (own/runner-switch.ts).
+      expect(await acquireLease(w.ctx, AGENT_ID, 'runner-switch:test')).not.toBeNull();
+      // The client asks for a turn meanwhile: its credential is checked against the row as it is now (own), then it waits.
+      const waiting = w.run<TurnOpen & OwnErrorBody>('turn', credential, { role: 'social' });
+      const dueWaiting = w.run<DueView & OwnErrorBody>('due', credential);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      // The switch writes the runner and lets go.
+      await patchStoredConfig(w, { runner: 'hosted', revision: 2 });
+      await releaseLease(w.ctx, AGENT_ID, 'runner-switch:test');
+      const answer = await waiting;
+      expect([answer.status, answer.body.error, answer.body.message]).toEqual([409, 'agent_runs_hosted', OWN_ERRORS.agent_runs_hosted.message]);
+      expect(errorOf(await dueWaiting)).toBe('agent_runs_hosted');
+      // Nothing of an own turn is on the hosted coin: no turn for the hosted loop to pick up, no decision stamped, no status moved.
+      const after = await runtimeOf(w);
+      expect(after.turn).toBeNull();
+      expect(after.status).toBe(before.status);
+      expect(after.lastDecisionAt?.getTime()).toBe(before.lastDecisionAt?.getTime());
+      expect(after.leaseToken).toBeNull();
+      expect((await stateOf(w)).ownLastTurnAt ?? null).toBeNull();
+      // Every later call is told the same from the fresh row.
+      expect(errorOf(await w.run('turn', credential, { role: 'social' }))).toBe('agent_runs_hosted');
       expect(w.modelCalls()).toBe(0);
     } finally {
       await w.close();

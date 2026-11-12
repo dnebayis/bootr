@@ -12,7 +12,7 @@ import { type OwnErrorBody } from '@bootr/shared/own-agent';
 import { actions, agents, inference, runtimes, treasuryOps } from '../src/db/schema.js';
 import { processAgent, tick } from '../src/tick.js';
 import { acquireLease, releaseLease, type Turn } from '../src/runtime.js';
-import { AGENT_ID, seedAgent } from './helpers.js';
+import { AGENT_ID, agentConfig, finishResponse, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 import { OTHER_AGENT_ID, OTHER_KERNEL, act, connectClient, mention, openSocial, ownWorld, patchState, runtimeOf, seedOther, seedOwn, stateOf, turnOf, type OwnWorld } from './own-helpers.js';
 
 const MIN = 60_000;
@@ -173,6 +173,22 @@ describe('own agent: the tick', () => {
     }
   });
 
+  it('a paused own coin\'s line for the coin page still names the own agent, not the hosted model its config keeps', async () => {
+    const w = await ownWorld();
+    try {
+      // paused by the platform, its chain state read a moment ago: the tick only reconciles and writes the line
+      await seedOwn(w, { runtime: { status: 'paused', pausedBy: 'operator' } });
+      await patchState(w, { chainCheckedAt: w.ctx.now() - MIN });
+      const report = await tick(w.ctx);
+      expect(report.errors).toEqual([]);
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'paused', model: 'own-agent' });
+      expect((await runtimeOf(w)).status).toBe('paused');
+      expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('with the flag off an own turn left open is closed by the idle rule, and the X hold bookkeeping still runs', async () => {
     const w = await ownWorld();
     try {
@@ -313,9 +329,9 @@ describe('own agent: a runner switch between the tick\'s read of the agent row a
   it('...and inside one tick: the switch of a later agent lands while an earlier one is being processed', async () => {
     const w = await ownWorld();
     try {
-      // Two coins due in the same tick: an own one first, then a hosted one with fuel, a mention waiting and a post due
-      // (the mock chain holds fuel for the test agent's kernel alone, so that one is the hosted coin).
-      await seedOther(w, { runtime: { nextAt: new Date(w.ctx.now() - 10 * MIN) } });
+      // Two hosted coins due in the same tick. The first has no fuel and goes to sleep (the mock chain holds fuel for
+      // the test agent's kernel alone); the second has fuel, a mention waiting and a post due.
+      await seedOther(w, { config: { runner: 'hosted' }, runtime: { nextAt: new Date(w.ctx.now() - 10 * MIN) } });
       await seedAgent(w, { runtime: { nextAt: new Date(w.ctx.now() - MIN) } });
       w.sender.items = [mention('1001')];
       // While the first is processed (its line for the coin page is the last thing a tick does for an agent), the
@@ -339,10 +355,10 @@ describe('own agent: a runner switch between the tick\'s read of the agent row a
       expect((await runtimeOf(w)).leaseToken).toBeNull();
       expect(await w.db.select().from(inference)).toHaveLength(0);
       expect((await w.db.select().from(actions)).filter((r) => 'tool' in r.action)).toHaveLength(0);
-      // One tick later both are handled as own coins.
+      // One tick later it is handled as an own coin.
       w.setNow(w.ctx.now() + MIN);
       expect((await tick(w.ctx)).ran).toEqual([]);
-      expect(w.indexer.posted.at(-1)).toMatchObject({ model: 'own-agent' });
+      expect((w.indexer.posted as { xHandle: string; model: string }[]).filter((line) => line.xHandle === 'bootr_agent').at(-1)).toMatchObject({ status: 'awake', model: 'own-agent' });
       expect(w.modelCalls()).toBe(0);
     } finally {
       await w.close();
@@ -398,6 +414,67 @@ describe('own agent: a runner switch between the tick\'s read of the agent row a
       const own = (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
       expect(await processAgent(w.ctx, own, await runtimeOf(w))).toMatchObject({ ran: false, skipped: 'own_agent' });
       expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+/** An own coin whose client is away: nothing open, its `nextAt` long past and never moved by the tick. */
+async function seedAway(w: TestWorld, n: number, since: number, runtime: Record<string, unknown> = {}) {
+  const agentId = `own-${n}`;
+  const kernel = `0x${'e'.repeat(39)}${n.toString(16)}`;
+  const token = `0x${'f'.repeat(39)}${n.toString(16)}`;
+  await seedAgent(w, {
+    agent: { agentId, kernel, token },
+    config: agentConfig(w.ctx.now(), { runner: 'own', agentId, kernel: { address: kernel }, token: { address: token, symbol: `ZZ${n}`, name: `Own ${n}`, chainId: 84532 }, xHandle: `own_${n}`, xUserId: `${2000 + n}` }),
+    runtime: { agentId, status: 'waiting', nextAt: new Date(since), updatedAt: new Date(since), ...runtime },
+  });
+}
+
+describe('own agents and the tick\'s slots', () => {
+  it('ten own coins whose clients are away do not keep the one due hosted agent from running', async () => {
+    const w = await makeWorld({ script: [finishResponse(Date.parse('2026-10-24T13:00:00Z'))], config: { MAX_AGENTS_PER_TICK: '10' } });
+    try {
+      const dayAgo = w.ctx.now() - 86_400_000;
+      // Every one of them is "due" since yesterday by `nextAt`, which the tick never moves for an own coin.
+      for (let n = 1; n <= 10; n++) await seedAway(w, n, dayAgo - n * MIN);
+      await seedAgent(w); // the hosted agent, due since a second ago, with fuel
+      const report = await tick(w.ctx);
+      expect(report.errors).toEqual([]);
+      expect(report.ran).toEqual([AGENT_ID]);
+      // the own coins were looked at too, in their own sweep, and none of them was thought for
+      expect(report.processed.filter((id) => id.startsWith('own-'))).toHaveLength(10);
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(1);
+      const rows = await w.db.select().from(runtimes);
+      expect(rows.filter((r) => r.agentId.startsWith('own-')).every((r) => r.status === 'waiting' && r.turn === null && r.nextAt.getTime() < dayAgo)).toBe(true);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('own coins are checked in turn, least recently checked first, and one with a turn open or an action held comes before the idle ones', async () => {
+    const w = await makeWorld({ config: { MAX_AGENTS_PER_TICK: '3' } });
+    try {
+      const dayAgo = w.ctx.now() - 86_400_000;
+      for (let n = 1; n <= 5; n++) await seedAway(w, n, dayAgo + n * MIN); // 1 is the stalest
+      const first = await tick(w.ctx);
+      expect(first.processed).toEqual(['own-1', 'own-2', 'own-3']);
+      w.setNow(w.ctx.now() + MIN);
+      const second = await tick(w.ctx);
+      expect(second.processed).toEqual(['own-4', 'own-5', 'own-1']);
+      // a check touches the row, which is what the order follows; the client's own wake time is left alone
+      const touched = (await w.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, 'own-1') }))!;
+      expect(touched.updatedAt.getTime()).toBe(w.ctx.now());
+      expect(touched.nextAt.getTime()).toBe(dayAgo + MIN);
+      // the one checked last has a turn open now, another an action waiting for its receipt: both jump the queue
+      await w.db.update(runtimes).set({ status: 'running' }).where(eq(runtimes.agentId, 'own-1'));
+      await w.db.update(runtimes).set({ status: 'held' }).where(eq(runtimes.agentId, 'own-5'));
+      w.setNow(w.ctx.now() + MIN);
+      const third = await tick(w.ctx);
+      expect(third.processed).toEqual(['own-1', 'own-5', 'own-2']);
+      expect(third.ran).toEqual([]);
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
     } finally {
       await w.close();
     }

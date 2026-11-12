@@ -6,7 +6,9 @@
  * An own-agent coin (its stored config says `runner: 'own'`, docs/design/byo-agent.md section 2.4) gets everything above
  * the wake decision and nothing below it: no sleep rule, no background mention read, no wake decision and no turn, with
  * the feature's flag on or off. Its turns are opened by its creator's client (own/turns.ts); the tick only closes one
- * the client left open.
+ * the client left open. Own coins are selected apart from the awake hosted ones, least recently checked first: an own
+ * coin's `nextAt` is its client's business and stays in the past for as long as the client is away, so by `nextAt` a
+ * handful of them would hold every slot of every tick and no hosted agent would run again.
  */
 import { randomUUID } from 'node:crypto';
 import { interruptionPlan, pendingReplyDue, reconcile, wakeDecision, type AgentConfig, type AgentRole, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
@@ -94,8 +96,19 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     .select({ runtime: runtimes, agent: agents })
     .from(runtimes)
     .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
-    .where(and(eq(agents.status, 'active'), notInArray(runtimes.status, ['paused', 'sleeping'])))
+    .where(and(eq(agents.status, 'active'), notInArray(runtimes.status, ['paused', 'sleeping']), sql`not ${OWN_COIN}`))
     .orderBy(asc(runtimes.nextAt), asc(runtimes.updatedAt))
+    .limit(ctx.config.MAX_AGENTS_PER_TICK);
+  // Own coins that are neither paused nor asleep get a sweep of their own, as the sleeping ones do and for the same
+  // reason: the tick never moves an own coin's `nextAt`, so one whose client is away would sit at the head of the list
+  // above for good. One with a turn open or an action waiting for its receipt comes first (the idle rule and the
+  // reconciliation are what the tick owes it in time), then the least recently checked (each check touches the row).
+  const own = await ctx.db
+    .select({ runtime: runtimes, agent: agents })
+    .from(runtimes)
+    .innerJoin(agents, eq(agents.agentId, runtimes.agentId))
+    .where(and(eq(agents.status, 'active'), notInArray(runtimes.status, ['paused', 'sleeping']), OWN_COIN))
+    .orderBy(sql`case when ${runtimes.status} in ('running', 'held') then 0 else 1 end`, asc(runtimes.updatedAt), asc(runtimes.nextAt))
     .limit(ctx.config.MAX_AGENTS_PER_TICK);
   // Sleeping runtimes get their own sweep, least recently checked first (each check touches the row), so refuelling
   // is noticed in turn without a sleeping coin ever taking an awake agent's slot. One treasury read each, no turn.
@@ -118,7 +131,7 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     .where(and(eq(agents.status, 'active'), eq(runtimes.status, 'paused')))
     .limit(ctx.config.MAX_AGENTS_PER_TICK);
 
-  for (const { runtime, agent } of [...due, ...sleeping, ...paused]) {
+  for (const { runtime, agent } of [...due, ...own, ...sleeping, ...paused]) {
     report.processed.push(agent.agentId);
     try {
       const result = await processAgent(ctx, agent, runtime);
@@ -131,6 +144,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
   }
   return report;
 }
+
+/**
+ * The agent's stored config says `runner: 'own'` (`isOwn`, in SQL; the flag is not asked). Anything else, a config
+ * with no runner included, is a hosted coin.
+ */
+const OWN_COIN = sql`(${agents.config}->>'runner' is not distinct from 'own')`;
 
 export interface ProcessResult {
   ran: boolean;
@@ -192,7 +211,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       runtime = await reconcilePending(ctx, agent, runtime);
       if (own && runtime.status !== 'paused') return await processOwn(ctx, agent, config, runtime, null, log);
       if (runtime.status === 'sleeping' || runtime.status === 'paused') {
-        await postSocial(ctx, agent, config, runtime, runtime.status);
+        // A paused own coin's line still says who thinks: the reserved id, not the hosted model its config keeps.
+        await postSocial(ctx, agent, own ? { xHandle: config.xHandle, model: OWN_AGENT_MODEL_ID } : config, runtime, runtime.status);
         return { ran: false, reasons: ['resting'], skipped: runtime.status };
       }
     }
@@ -419,6 +439,8 @@ async function processOwn(ctx: SupervisorContext, agent: AgentRow, config: Agent
   if (await expireOwnTurn(ctx, agent, runtime)) runtime = (await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) })) ?? runtime;
   // The coin page's model line follows the runner: the reserved id while own (the indexer's off-chain social store).
   await postSocial(ctx, agent, { xHandle: config.xHandle, model: OWN_AGENT_MODEL_ID }, runtime, 'awake');
+  // Checked: the own sweep (tick) goes on to the least recently touched row next time.
+  await saveRuntime(ctx, agent.agentId, {});
   return { ran: false, reasons: ['own_agent'], skipped: 'own_agent' };
 }
 

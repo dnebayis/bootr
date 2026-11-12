@@ -5,9 +5,11 @@
  * closed. What still applies is told as for any coin: gas, the X connection, a pause or a held action, reviews, the
  * session key. A hosted coin's notices are what they were (test/notifications.test.ts is unchanged).
  */
+import { MODEL_CATALOG } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { agents, notifications, runtimes } from '../src/db/schema.js';
+import { checkModelCatalog } from '../src/model-check.js';
 import { notificationText, raiseNotification } from '../src/notifications.js';
 import { evaluateHealth, FAILING_TURNS, notifierPass, type HealthFacts } from '../src/notify-health.js';
 import { AGENT_ID, makeWorld, seedAgent, type TestWorld } from './helpers.js';
@@ -132,6 +134,48 @@ describe('the notifier pass over an own-agent coin', () => {
       expect(stopped.data).toEqual({ reason: 'blocked' });
       // nothing here asked a model for anything
       expect(w.inference.calls.filter((c) => /\/v1\/(chat\/completions|requests\/)/.test(c.url))).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('the model catalog check and an own-agent coin', () => {
+  it('never tells an own coin that its model is gone: the hosted model its config keeps for a switch back is not in use', async () => {
+    const w = await makeWorld({ config: { BLOCKRUN_DIRECT_MODE: 'all', BLOCKRUN_BASE_URL: 'https://blockrun.test/api/v1' } });
+    try {
+      // BlockRun's list: the whole catalog, and not the model this coin's config names
+      const live = { object: 'list', data: MODEL_CATALOG.map((m) => ({ id: m.id, available: true, pricing: 'perImageMicroUsdc' in m.price ? { per_image: m.price.perImageMicroUsdc / 1_000_000 } : { input: m.price.inputMicroUsdcPerKTokens / 1000, output: m.price.outputMicroUsdcPerKTokens / 1000 } })) };
+      const inner = w.ctx.fetch;
+      w.ctx.fetch = (async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.startsWith('https://blockrun.test/') && url.endsWith('/models')) return new Response(JSON.stringify(live), { status: 200, headers: { 'content-type': 'application/json' } });
+        return inner(input, init);
+      }) as typeof fetch;
+      await seedAgent(w, { config: { model: 'vendor/retired-forever' } });
+      w.ctx.telegram = null;
+
+      // hosted: the creator is told, as today
+      const hosted = await checkModelCatalog(w.ctx);
+      expect(hosted.agentsOnMissingModels).toEqual([{ agentId: AGENT_ID, field: 'model', model: 'vendor/retired-forever' }]);
+      expect(await openEvents(w)).toEqual(['model_unavailable']);
+
+      // own: the check closes the notice and no longer lists the coin as one that cannot think
+      await setRunner(w, 'own');
+      const own = await checkModelCatalog(w.ctx);
+      expect(own.read).toBe(true);
+      expect(own.agentsOnMissingModels).toEqual([]);
+      expect(await openEvents(w)).toEqual([]);
+      // the check and the notifier agree, pass after pass: nothing is raised by one and closed by the other
+      await notifierPass(w.ctx);
+      await checkModelCatalog(w.ctx);
+      expect(await openEvents(w)).toEqual([]);
+      expect(await w.db.select().from(notifications).where(eq(notifications.agentId, AGENT_ID))).toHaveLength(1);
+
+      // switched back to the Bootr agent on the same retired model, the creator hears of it again
+      await setRunner(w, 'hosted');
+      await checkModelCatalog(w.ctx);
+      expect(await openEvents(w)).toEqual(['model_unavailable']);
     } finally {
       await w.close();
     }

@@ -173,7 +173,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * than one tool may run, so it cannot lapse inside a step. When the tick or another call holds it, the call waits
  * `OWN_LEASE_WAIT_MS` and then answers `runtime_busy`: nothing was done and the same call may be repeated.
  */
-async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtime: RuntimeRow) => Promise<T>): Promise<T> {
+async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtime: RuntimeRow) => Promise<T>, opts: { ownOnly?: boolean } = {}): Promise<T> {
   const token = randomUUID();
   const leaseMs = Math.max(LEASE_MS, ctx.config.TOOL_TIMEOUT_MS + 30_000);
   const waitMs = Math.max(0, Number((ctx.config as { OWN_LEASE_WAIT_MS?: number }).OWN_LEASE_WAIT_MS ?? 4000));
@@ -185,6 +185,13 @@ async function withLease<T>(ctx: SupervisorContext, agentId: string, fn: (runtim
   }
   if (!runtime) throw new OwnError('runtime_busy', { retryAt: ctx.now() + BUSY_RETRY_MS });
   try {
+    // The runner is read under the lease (docs/design/byo-agent.md section 2.3). The credential check read the agent's
+    // row before the lease was taken, and this call may have waited for it behind the very switch that moved the coin
+    // to the Bootr agent: an own turn opened now would sit on a hosted coin, where the hosted loop would pick it up.
+    if (opts.ownOnly) {
+      const stored = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agentId), columns: { config: true } });
+      if (!stored || !isOwn(stored)) throw new OwnError('agent_runs_hosted');
+    }
     return await fn(runtime);
   } finally {
     await releaseLease(ctx, agentId, token);
@@ -642,7 +649,7 @@ export async function ownDue(ctx: SupervisorContext, v: VerifiedClient): Promise
       holds,
       nextCheckAt: iso(Math.max(floor, next)),
     };
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -741,7 +748,7 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
     await persist(s, { status: 'running', ...(role === 'social' ? { lastDecisionAt: new Date(opensAt), lastDecisionRevision: config.revision } : {}) });
     ctx.log.info({ agentId: v.agent.agentId, clientId: v.client.id, turnId: own.turnId, role, reasons, forced }, 'own agent: turn opened');
     return turnOpenView(s, turn, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -926,7 +933,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
     if (acting && result.status === 'completed') (turn.ownCalls ??= []).push({ key, actionId: settledAs.id, tool, stepsUsed: turn.steps });
     await persist(s);
     return actResult(s, turn, { tool, actionId: settledAs.id, status: result.status === 'completed' ? 'completed' : 'failed', ...(result.status === 'completed' ? { result: jsonSafe(result.result ?? null) } : { error: result.error ?? 'failed' }) }, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -997,7 +1004,7 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
     await persist(s, { status: 'waiting', ...(typeof done.nextAt === 'number' && Number.isFinite(done.nextAt) ? { nextAt: new Date(done.nextAt) } : {}), failures: 0, lastError: null });
     log.info({ steps: turn.steps, cycle: s.broker.cycle }, 'own agent: turn finished');
     return answer;
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,7 +1062,7 @@ export async function uploadPicture(ctx: SupervisorContext, v: VerifiedClient, r
     if (outcome.kind === 'completed') (turn.ownCalls ??= []).push({ key, actionId, tool: UPLOAD_TOOL, stepsUsed: turn.steps });
     await persist(s);
     return actResult(s, turn, { tool: UPLOAD_TOOL, actionId, status: outcome.kind, ...(outcome.kind === 'completed' ? { result: outcome.result } : { error: outcome.error }) }, false);
-  });
+  }, { ownOnly: true });
 }
 
 // ---------------------------------------------------------------------------

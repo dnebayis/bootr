@@ -11,6 +11,7 @@ import { inArray } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
 import { agents } from './db/schema.js';
 import { raiseNotification, resolveNotification } from './notifications.js';
+import { isOwn } from './own/registry.js';
 
 /** How often the running supervisor repeats the check. */
 export const CATALOG_CHECK_MS = 6 * 3_600_000;
@@ -104,6 +105,12 @@ export async function checkModelCatalog(ctx: SupervisorContext): Promise<Catalog
   try {
     const rows = await ctx.db.select({ agentId: agents.agentId, config: agents.config }).from(agents).where(inArray(agents.status, ['onboarding', 'active']));
     for (const row of rows) {
+      // An own-agent coin (own/registry.ts `isOwn`) thinks in its creator's client: the hosted model its config keeps for
+      // a switch back is not in use, so it is never told "cannot think", and a notice from its hosted days is closed.
+      if (isOwn(row)) {
+        await resolveNotification(ctx, row.agentId, 'model_unavailable');
+        continue;
+      }
       const bad = modelFieldsOf(row.config).filter((f) => !servedByBlockRun(f.model, served));
       // A picture model that is gone stops pictures, not the agent; the owner still reads it in the log, the creator in the inbox.
       if (bad.length) {
