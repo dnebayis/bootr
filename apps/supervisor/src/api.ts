@@ -1,4 +1,5 @@
 /** Admin / ops HTTP API (Hono). `/internal/*` requires `Authorization: HMAC <ts>:<hex>` like the sender. */
+import { registerW2 } from './own/w2.js';
 import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
@@ -442,5 +443,6 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     });
   });
 
+  registerW2();
   return app;
 }

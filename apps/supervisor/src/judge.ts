@@ -89,6 +89,15 @@ export function judgeModelFor(config: Pick<AgentConfig, 'model' | 'judgeModel'>)
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const plain = (text: string, max: number) => text.replace(CONTROL, '').replace(/\s+/g, ' ').trim().slice(0, max);
 
+/**
+ * A text as the judge gets it: control characters out, whitespace flattened, cut to `max`. The hosted thought's input
+ * goes through this in `normalizeJudgeInput`; an own agent's judge turn (own/judge.ts) uses the same function for the
+ * job text, the criteria and a page's excerpt, so both judges read the same words.
+ */
+export function judgeText(text: string, max: number): string {
+  return plain(text, max);
+}
+
 /** The input as the thought gets it (texts bounded and flattened, pictures as data urls), or the reason it is refused. */
 export function normalizeJudgeInput(input: JudgeInput): { ok: true; input: JudgeInput } | { ok: false; invalid: 'invalid_input' | 'input_too_large' } {
   const bad = { ok: false as const, invalid: 'invalid_input' as const };

@@ -19,6 +19,7 @@ import { treasuryOps, type TreasuryOpKind } from './db/schema.js';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
 import { encodeKernelExecute, type KernelCall } from './kernel.js';
 import { agentSource, clankerLockersFor, clankerV5DetailsOf, clankerV5EscrowFor, clankerV5QuoteOf, pairedAssetOf, type ClankerV5LaunchDetails, type PairedAsset } from './launch-source.js';
+import { isOwn } from './own/registry.js';
 import { defaultUnlessRateLimited } from './rpc-retry.js';
 
 export interface SerializedCall {
@@ -849,6 +850,16 @@ export async function runFeePolicy(ctx: SupervisorContext, agent: AgentRow, snap
     } else {
       out.skipped = 'no_weth_for_gas';
     }
+  }
+
+  // An own-agent coin (docs/design/byo-agent.md section 1.4, decision 10; `isOwn`, the stored config, whatever the flag
+  // says) buys no thought, so its fees are turned into fuel only while its paid-services power is on, the one thing of
+  // its that spends fuel: with it off nothing is swapped and the spender is not topped up. Everything above (the claim,
+  // the gas) ran as for any agent; a hosted agent goes on as before.
+  if (isOwn(agent)) {
+    const caps = agent.config.capabilities;
+    const servicesOn = !!caps && typeof caps === 'object' && !Array.isArray(caps) && (caps as Record<string, unknown>).services === true;
+    if (!servicesOn) return out;
   }
 
   // Fuel: WETH -> USDC. A v5 agent's fee ETH is not swapped: turning ETH into USDC needs a value-carrying call that
