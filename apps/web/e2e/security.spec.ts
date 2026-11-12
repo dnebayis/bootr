@@ -28,8 +28,9 @@ test('/api/platform exposes only the launch switches', async ({ request }) => {
   const res = await request.get('/api/platform');
   expect(res.status()).toBe(200);
   const body = await res.json();
-  expect(Object.keys(body).sort()).toEqual(['allowedModels', 'launchesPaused']);
+  expect(Object.keys(body).sort()).toEqual(['allowedModels', 'launchesPaused', 'ownAgent']);
   expect(typeof body.launchesPaused).toBe('boolean');
+  expect(typeof body.ownAgent).toBe('boolean');
   expect(Array.isArray(body.allowedModels)).toBe(true);
 });
 

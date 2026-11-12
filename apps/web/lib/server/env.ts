@@ -46,6 +46,15 @@ export function supervisorEnv(): SupervisorServerEnv {
 }
 
 /**
+ * The one flag of own agents (OWN_AGENT_ENABLED, the variable the supervisor reads too; docs/design/byo-agent.md
+ * section 13.2). On, the site offers the connect and run routes, the approval page and `ownAgent: true` on
+ * `GET /api/platform`. It never says how a coin is run: that is the coin's stored config, which the supervisor reads.
+ */
+export function ownAgentEnabled(): boolean {
+  return str(process.env.OWN_AGENT_ENABLED).toLowerCase() === 'true';
+}
+
+/**
  * Inference relay origin for server-side reads (`/api/models`): INFERENCE_URL (the internal relay
  * address), else NEXT_PUBLIC_INFERENCE_URL. Empty when neither is set.
  */
