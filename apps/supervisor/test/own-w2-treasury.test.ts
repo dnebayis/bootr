@@ -75,6 +75,10 @@ describe('an own agent: when the treasury turn is due', () => {
       expect(await engine.due('treasury')).toEqual({ on: true, due: false, reasons: [], nextAt: new Date(T0 + H).toISOString() });
       on.setNow(T0 + H);
       expect(await engine.due('treasury')).toMatchObject({ due: true, reasons: ['treasury_interval'] });
+      // a turn outside the schedule is a social turn's: the treasury role opens on its own clock and no other way
+      const agentNow = (await on.db.query.agents.findFirst())!;
+      const callNow = { ctx: on.ctx, agent: agentNow, runtime: await runtimeRow(on), config: agentConfigOf(agentNow)!, state: await stateOf(on), now: on.ctx.now() };
+      await expect(ownRole('treasury')!.open(callNow, { reasons: [], forced: true })).rejects.toThrow(/^not_due/);
       // a held action or a pause stops it as it stops the hosted turn
       await on.db.update(runtimes).set({ status: 'held' }).where(eq(runtimes.agentId, AGENT_ID));
       expect(await engine.due('treasury')).toMatchObject({ on: true, due: false });

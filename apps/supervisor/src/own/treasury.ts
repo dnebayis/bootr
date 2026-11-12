@@ -18,7 +18,7 @@
  * tool that reads or writes X. The observation never carries a mention, a page, a search result or a post. What the
  * server cannot do is keep the client's own context clean between turns (section 10).
  */
-import { buildSystemPrompt } from '@bootr/agent-core';
+import { PolicyError, buildSystemPrompt } from '@bootr/agent-core';
 import type { DueRole, FinishRequest } from '@bootr/shared/own-agent';
 import { openRequests, requestTools, type TurnRequest } from '../creator-requests.js';
 import { buildTreasuryObservation, pendingTreasuryNotes, roleTools, treasuryFinish, treasuryTurnDue, treasuryTurnOn, type TreasuryWakeReason } from '../roles.js';
@@ -52,6 +52,8 @@ export const treasuryRole: OwnRoleHandler = {
 
   async open(call: OwnCall, opts: { reasons: string[]; forced: boolean; jobId?: string }): Promise<OwnOpened> {
     const { ctx, agent, config, state, now } = call;
+    // A turn outside the schedule (`creator_asked`) is a social turn by definition: the treasury keeps its own clock.
+    if (opts.forced) throw new PolicyError('not_due', { message: 'not_due: a treasury turn opens on its own clock only' });
     const [treasury, market, requests, notes] = await Promise.all([
       readTreasuryOnChain(ctx, agent).catch((err: unknown) => {
         ctx.log.warn({ agentId: agent.agentId, role: 'treasury', err }, 'own agent: treasury read failed; the turn opens without balances');

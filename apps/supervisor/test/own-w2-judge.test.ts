@@ -14,7 +14,7 @@ import { JUDGE_ABSENT, NO_WINNER_TEXT, NOTHING_PAID_TEXT, bountyJobViews, jobsAw
 import { executeAction, type BrokerEnv } from '../src/broker/index.js';
 import { agents, approvals, bountyEntries, bountyJobs, inference, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
-import { JUDGE_MAX_EXCERPT_CHARS, judgeKey } from '../src/judge.js';
+import { JUDGE_MAX_EXCERPT_CHARS, judgeJob, judgeKey } from '../src/judge.js';
 import { JUDGE_JOB_CLOSED, judgeEntryUnknown, judgeEntryUnreadable } from '../src/own/judge.js';
 import { ownRole, ownTool } from '../src/own/registry.js';
 import { bountyJobClosed } from '../src/roles.js';
@@ -623,6 +623,23 @@ describe('the sweep and an own coin’s jobs', () => {
       w.setNow(job.closesAt.getTime() + WAIT + H);
       expect(await sweepBounties(w.ctx)).not.toHaveProperty('unjudged');
       expect(await jobOf(w)).toMatchObject({ status: 'expired' });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('judgeJob itself buys nothing for an own coin, whoever asks: it answers thought_pending and the job stays as it is', async () => {
+    const w = await makeWorld({ script: [new Response('{}', { status: 200 })] });
+    try {
+      createApp(w.ctx);
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      for (const flag of [true, false]) {
+        setOwnFlag(w, flag);
+        const verdict = await judgeJob(w.ctx, agent, parseAgentConfig(agent.config), { jobId: `0x${'a'.repeat(64)}`, task: JOB_INPUT.task, criteria: JOB_INPUT.criteria, entries: [{ n: 1, kind: 'link', excerpt: 'a page' }] });
+        expect(verdict).toMatchObject({ winner: null, invalid: 'thought_pending', thought: { outcome: 'none', chargedMicroUsdc: null } });
+      }
+      expect(thoughts(w)).toHaveLength(0);
+      expect(await w.db.select().from(inference)).toHaveLength(0);
     } finally {
       await w.close();
     }
