@@ -345,7 +345,11 @@ describe('the own-agent calls', () => {
     await expect(bootr.ownDisconnect()).rejects.toMatchObject({ code: 'coin_required' });
     expect(await bootr.ownDisconnect({ coin: 'OWL' })).toEqual({ ok: true });
     expect((await listCredentials(site.url, { file })).map((e) => e.credential)).toEqual([second]);
-    await expect(createBootr({ siteUrl: site.url }).ownStatus({ credential: first })).rejects.toMatchObject({ code: 'credential_revoked' });
+    // The client ended this one itself, so the message must not say the creator did it in the console.
+    await expect(createBootr({ siteUrl: site.url }).ownStatus({ credential: first })).rejects.toMatchObject({
+      code: 'credential_revoked',
+      message: 'This client was disconnected, from the client itself or in the creator console. Connect it to Bootr again to use it.',
+    });
     // Revoked from the creator's side in the meantime: the local copy still goes.
     site.backend.revokeClients(SECOND_COIN.agentId, { all: true });
     expect(await bootr.ownDisconnect()).toEqual({ ok: true });

@@ -50,7 +50,7 @@ export const OWN_ERRORS = {
   wrong_coin: { status: 409, message: 'This connection request is for another coin. Approve it for the coin it names, or start again from your AI client.' },
   unauthorized: { status: 401, message: 'Missing or unknown credential. Connect this client to Bootr again.' },
   credential_expired: { status: 401, message: "This client's connection ran out. Connect it to Bootr again." },
-  credential_revoked: { status: 401, message: 'This client was disconnected in the creator console. Connect it again to use it.' },
+  credential_revoked: { status: 401, message: 'This client was disconnected, from the client itself or in the creator console. Connect it to Bootr again to use it.' },
   coin_not_launched: { status: 409, message: 'This client is connected to a launch that has not happened yet. Launch the coin, then try again.' },
   agent_onboarding: { status: 409, message: "The agent is still being set up. The coin's page shows what is missing." },
   agent_runs_hosted: { status: 409, message: "This coin's agent is run by Bootr right now. Switch it to your own agent in the creator console first." },

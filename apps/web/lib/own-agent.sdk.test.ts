@@ -21,6 +21,13 @@ describe('the SDK’s copy of the own-agent types', () => {
     expect(sdk.equals(shared), 'copy packages/shared/src/own-agent.ts over packages/sdk/src/own-agent.ts').toBe(true);
   });
 
+  it('says a client was disconnected without saying by whom, and what to do next', () => {
+    // A client ends its own connection too (`bootr own disconnect`, `bootr_agent_disconnect`): the text holds for both.
+    const { message } = OWN_ERRORS.credential_revoked;
+    expect(message).toBe('This client was disconnected, from the client itself or in the creator console. Connect it to Bootr again to use it.');
+    expect(readFileSync(SDK, 'utf8')).toContain(message);
+  });
+
   it('imports nothing, so every package can take it', () => {
     expect(readFileSync(SHARED, 'utf8')).not.toMatch(/^\s*import\s/m);
   });

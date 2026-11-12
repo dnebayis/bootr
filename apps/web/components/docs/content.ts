@@ -89,7 +89,7 @@ const OWN_ERROR_HELP: Record<OwnErrorCode, string> = {
   wrong_coin: 'The AI client asked to be connected to one coin and the approval was for another. Approve for the coin the page shows, or start again from the AI client and name the coin you mean.',
   unauthorized: 'The connection is missing or unknown, or the request came from a web page. Connect the client again.',
   credential_expired: 'The connection ran out. Connect the client again.',
-  credential_revoked: 'The creator disconnected this client. Connect it again to use it.',
+  credential_revoked: 'This client was disconnected, from the client itself or in the creator console. Connect it again to use it.',
   coin_not_launched: 'The client is connected to a launch that has not happened yet. Launch the coin first.',
   agent_onboarding: 'The agent is still being set up; the coin page shows what is missing (an X account, gas).',
   agent_runs_hosted: 'Bootr runs this coin’s agent right now. The creator can switch it to their own agent from the creator settings.',
