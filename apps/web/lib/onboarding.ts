@@ -16,7 +16,16 @@ export const SECTION_HINTS: Record<ConsoleSection, string> = {
   fuel: 'Fuel pays for thoughts and posts; gas pays for its own transactions.',
 };
 
-export type OnboardingKey = 'x' | 'instructions' | 'fuel' | 'gas';
+/** `client` stands in for `fuel` on an own agent: it thinks in its creator's own AI client, so it needs one connected, not fuel. */
+export type OnboardingKey = 'x' | 'instructions' | 'fuel' | 'client' | 'gas';
+
+/** What the sections are for when the agent runs in its creator's own AI client: no model to pick, and fuel only pays for paid services. */
+export const OWN_SECTION_HINTS: Partial<Record<ConsoleSection, string>> = {
+  mind: 'Who the agent is and what it must never do. It thinks in your own AI client.',
+  look: 'How its pictures should look, and the coin’s own image and links.',
+  inbox: 'What needs you and posts waiting for review. You talk to the agent in your own AI client.',
+  fuel: 'Fuel pays for paid services only; gas pays for its own transactions.',
+};
 
 export interface OnboardingItem {
   key: OnboardingKey;
@@ -42,15 +51,37 @@ export interface OnboardingInput {
   fuelReceivedUsdc: bigint | null;
   /** Total gas in wei (deposit + balance); null while unknown. */
   gasWei: bigint | null;
+  /**
+   * Set for an own agent (docs/design/byo-agent.md section 5.2): how many AI clients are connected. The fuel step then
+   * gives way to "connect your AI client", since thinking costs an own agent no fuel. Absent or null: the Bootr agent.
+   */
+  own?: { clients: number } | null;
 }
 
 function known(...values: (bigint | null)[]): boolean {
   return values.every((v) => v !== null);
 }
 
-/** The four first steps, in the order a creator meets them. */
+/** The four first steps, in the order a creator meets them. For an own agent the third is its AI client, not fuel. */
 export function onboardingItems(input: OnboardingInput): OnboardingItem[] {
   const fuelKnown = known(input.fuelUsdc, input.fuelReceivedUsdc);
+  const third: OnboardingItem = input.own
+    ? {
+        key: 'client',
+        label: 'Connect your AI client',
+        detail: 'The agent thinks in your own AI client; without one it is silent.',
+        action: 'Connect',
+        target: 'mind',
+        done: input.own.clients > 0,
+      }
+    : {
+        key: 'fuel',
+        label: 'Add fuel',
+        detail: 'USDC that pays for its thoughts and posts.',
+        action: 'Add fuel',
+        target: 'fuel',
+        done: fuelKnown ? input.fuelUsdc! > 0n || input.fuelReceivedUsdc! > 0n : null,
+      };
   return [
     {
       key: 'x',
@@ -68,18 +99,11 @@ export function onboardingItems(input: OnboardingInput): OnboardingItem[] {
       target: 'mind',
       done: input.instructions.trim().length > 0,
     },
-    {
-      key: 'fuel',
-      label: 'Add fuel',
-      detail: 'USDC that pays for its thoughts and posts.',
-      action: 'Add fuel',
-      target: 'fuel',
-      done: fuelKnown ? input.fuelUsdc! > 0n || input.fuelReceivedUsdc! > 0n : null,
-    },
+    third,
     {
       key: 'gas',
       label: 'Add gas',
-      detail: 'ETH for its own transactions: fee claims and refuels.',
+      detail: input.own ? 'ETH for its own transactions: fee claims and treasury moves.' : 'ETH for its own transactions: fee claims and refuels.',
       action: 'Add gas',
       target: 'fuel',
       done: input.gasWei === null ? null : gasStatus(input.gasWei) !== 'empty',

@@ -37,8 +37,11 @@ export function useConsoleStatus(token: Token, agent: Agent | null) {
   );
   const cfg = config.data ?? null;
   // The first steps, from stored state (the saved instructions, not a draft): a step ticks when it is really done.
-  const onboarding = cfg ? onboardingItems({ xHandle: token.xHandle, instructions: cfg.instructions, ...fuelFromAgent(agentRow.data ?? (agent && 'treasuryUsdc' in agent ? agent : null)), gasWei }) : null;
-  return { config, cfg, fuel, activity, gas, kernelGas, gasWei, pendingReviews, inboxCount, inactive, outlook, onboarding };
+  // An own agent thinks in its creator's own AI client: its third step is a connected client, not fuel.
+  const own = cfg?.runner === 'own' ? { clients: cfg.own?.clients ?? 0 } : null;
+  const onboarding = cfg ? onboardingItems({ xHandle: token.xHandle, instructions: cfg.instructions, ...fuelFromAgent(agentRow.data ?? (agent && 'treasuryUsdc' in agent ? agent : null)), gasWei, own }) : null;
+  // The runway line and its warnings count paid thoughts; an own agent buys none.
+  return { config, cfg, fuel, activity, gas, kernelGas, gasWei, pendingReviews, inboxCount, inactive, outlook: own ? null : outlook, onboarding };
 }
 
 export type ConsoleStatus = ReturnType<typeof useConsoleStatus>;

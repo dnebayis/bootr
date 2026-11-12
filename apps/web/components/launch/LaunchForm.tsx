@@ -19,6 +19,7 @@ import {
   type WorkerTemplateId,
 } from '@bootr/shared/workers';
 import { addresses } from '@bootr/shared/addresses';
+import { OWN_AGENT_MODEL_ID, type Runner } from '@bootr/shared/own-agent';
 import { clankerLauncherAbi, clankerLauncherV5Abi, defaultsFromTuple, fallbackDefaults, launcherAbi, type LaunchDefaults } from '@/lib/abi/launcher';
 import { clankerV5FactoryAbi, FALLBACK_V5_START_TICK, mineLaunchSalt, openingCapEth, SaltMiningError } from '@/lib/clanker-v5';
 import {
@@ -75,10 +76,13 @@ import { SplitBar } from '@/components/token/FeeSplit';
 import { AgentPortrait } from '@/components/art/AgentPortrait';
 import { ImageUpload, type ImageUploadState } from './ImageUpload';
 import { XConnect } from './XConnect';
+import { ConnectClientStep, forgetLaunchDraft } from './ConnectClientStep';
+import { OwnSteps, RunnerChoice } from './RunnerChoice';
 import { DEFAULT_SETTINGS_DRAFT, settingsFromDraft, TokenSettingsPanel, type TokenSettingsDraft } from './TokenSettingsPanel';
 import { V5SplitBar } from '@/components/token/V5SplitBar';
 import { LINK_ERRORS, LINK_KINDS, normalizeLink } from '@/lib/coin-link-rules';
 import { xHandleOfUrl } from '@/lib/x-link';
+import { shortAddr } from '@/lib/format';
 
 function Section({ n, title, description, children }: { n: number; title: string; description: string; children: ReactNode }) {
   return (
@@ -93,7 +97,25 @@ function Section({ n, title, description, children }: { n: number; title: string
   );
 }
 
+/** One step of the own-agent path (wallet, connect your AI client, launch): a heading above what the step holds. */
+function OwnStep({ n, title, description, children, testId }: { n: number; title: string; description: string; children?: ReactNode; testId: string }) {
+  return (
+    <section className="flex flex-col gap-4 border-t border-hairline py-8" data-testid={testId}>
+      <div>
+        <div className="font-mono text-caption text-mute">STEP {n} OF 3</div>
+        <h2 className="mt-1 text-display-sm font-semibold text-ink">{title}</h2>
+        <p className="mt-1 text-sm text-mute">{description}</p>
+      </div>
+      {children ? <div className="min-w-0">{children}</div> : null}
+    </section>
+  );
+}
+
 const DRAFT_KEY = 'bootr.launch.draftId';
+
+/** The fuel a Bootr-agent launch is prefilled with: a suggestion, never a minimum. An own-agent launch starts at none. */
+const HOSTED_FUEL = '20';
+const OWN_FUEL = '0';
 
 function freshDraftId(): string {
   const v = crypto.randomUUID();
@@ -208,6 +230,14 @@ export function LaunchForm() {
   // Clanker v5: the salt is mined before the wallet is asked (the token address must end in cccc).
   const [mining, setMining] = useState(false);
 
+  // Who runs the agent (docs/design/byo-agent.md section 5.1): the Bootr agent, which is this form as it always was,
+  // or the creator's own AI client, which adds the connect step and drops the Mind section. The choice is offered only
+  // where own agents are switched on (`/api/platform`); everywhere else every launch is a Bootr-agent launch.
+  const [runnerPick, setRunnerPick] = useState<Runner>('hosted');
+  // The AI clients connected to this launch draft, by name, and the creator's "I will connect later".
+  const [clientLabels, setClientLabels] = useState<string[]>([]);
+  const [connectLater, setConnectLater] = useState(false);
+
   // 01 Coin
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
@@ -237,8 +267,14 @@ export function LaunchForm() {
   // Launching without an X account is allowed, but never by accident: the agent is silent until one is connected.
   const [silentOk, setSilentOk] = useState(false);
 
-  // 06 Fuel & options
-  const [fuel, setFuel] = useState('20');
+  // 06 Fuel & options. The field follows the runner (20 suggested for the Bootr agent, none for an own agent) until
+  // the creator types an amount of their own.
+  const [fuel, setFuelText] = useState(HOSTED_FUEL);
+  const [fuelTouched, setFuelTouched] = useState(false);
+  const setFuel = (v: string) => {
+    setFuelTouched(true);
+    setFuelText(v);
+  };
   // The agent's first gas: ETH the creator deposits into the EntryPoint for the new kernel right after the launch
   // (a second transaction). The platform pays no gas; the agent refills from its own WETH fees afterwards.
   const [gas, setGas] = useState(GAS_TOPUP_DEFAULT_ETH);
@@ -317,6 +353,13 @@ export function LaunchForm() {
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
   // Admin console switches (M-7): paused launches. The model allowlist is applied by /api/models.
   const platform = useQuery({ queryKey: ['platform'], queryFn: fetchPlatformFlags, staleTime: 30_000 });
+  const ownOffered = platform.data?.ownAgent === true;
+  const runner: Runner = ownOffered ? runnerPick : 'hosted';
+  const own = runner === 'own';
+  const chooseRunner = (next: Runner) => {
+    setRunnerPick(next);
+    if (!fuelTouched) setFuelText(next === 'own' ? OWN_FUEL : HOSTED_FUEL);
+  };
   const modelList = useMemo(() => models.data?.models ?? [], [models.data]);
   const selectedModel = modelList.find((m) => m.id === model) ?? modelList.find((m) => m.id === RECOMMENDED_MODEL) ?? groupByProvider(modelList)[0]?.models[0];
   // The search box narrows the list; the selected model always stays in it so the select never shows blank.
@@ -383,7 +426,8 @@ export function LaunchForm() {
     chainId: appChain.id,
     query: { enabled: !!address && !!launcher && !env.useMock },
   });
-  const needsApproval = !env.useMock && fuelUnits != null && (allowance.data ?? 0n) < fuelUnits;
+  // A launch with no fuel pulls no USDC (both launchers skip the transfer for 0), so it needs no approval.
+  const needsApproval = !env.useMock && fuelUnits != null && fuelUnits > 0n && (allowance.data ?? 0n) < fuelUnits;
 
   // Pinned image: the gateway URL goes on-chain (renders in wallets and explorers), the ipfs:// URI into metadata.
   const pinned = upload.status === 'done' ? upload.result : null;
@@ -442,16 +486,21 @@ export function LaunchForm() {
           identity,
         ),
         context: JSON.stringify({ interface: 'Bootr', platform: 'bootr.fun', id: draftId }),
-        model: selectedModel?.id ?? '',
+        model: own ? OWN_AGENT_MODEL_ID : (selectedModel?.id ?? ''),
         agentURI: agentCardUrl(draftId),
         contractURI: contractUriUrl(draftId),
       })
     : [];
   const capProblem = (field: string) => capProblems.find((p) => p.field === field)?.message ?? null;
-  if (fuelUnits == null || Number(fuel) < minFuel) errors.push(`Fuel must be at least ${minFuel} USDC.`);
+  // No minimum of Bootr's own: any amount launches, none included. Both launchers read 0 today; should the owner set
+  // a floor on chain, a launch below it would revert, so the launcher's own number is still checked.
+  if (fuelUnits == null) errors.push('Fuel must be a USDC amount; 0 is allowed.');
+  else if (Number(fuel) < minFuel) errors.push(`The launcher takes at least ${minFuel} USDC of fuel right now.`);
   if (devBuyWei == null) errors.push('Dev buy must be a valid ETH amount.');
   if (gasWei == null) errors.push(`Gas must be 0 or at least ${GAS_TOPUP_MIN_ETH} ETH.`);
   if (!xHandle && !silentOk) errors.push('Connect an X account, or confirm launching without one.');
+  // An own agent with no client is silent: allowed, but never by accident (like launching without an X account).
+  if (own && clientLabels.length === 0 && !connectLater) errors.push('Connect your AI client, or choose to connect it later.');
   if (settingsProblems.length > 0) errors.push('Fix the token settings.');
   if (isV5 && launcherRefusal) errors.push(launcherRefusal);
   if (isV5 && devBuyWei != null && devBuyWei > 0n && slippagePct == null) errors.push(`Dev buy slippage must be 0.1% to ${MAX_DEV_BUY_SLIPPAGE_PCT}%.`);
@@ -467,7 +516,7 @@ export function LaunchForm() {
         : 'The launcher contract is not configured (NEXT_PUBLIC_LAUNCHER_ADDRESS).'
       : pausedRead.data
         ? 'Launches are paused by the platform.'
-        : !models.isPending && modelList.length === 0
+        : !own && !models.isPending && modelList.length === 0
           ? 'No model is available for new agents right now.'
           : null;
 
@@ -509,7 +558,8 @@ export function LaunchForm() {
   async function launch() {
     if (errors.length || blocked || fuelUnits == null || devBuyWei == null || gasWei == null || !draftId || !pinned || upload.status !== 'done' || !workerHash) return;
     if (links.website === undefined || links.x === undefined || links.telegram === undefined || links.discord === undefined) return;
-    const modelId = selectedModel?.id ?? '';
+    // An own-agent launch names no hosted model: the reserved id says on chain that the creator's own client thinks.
+    const modelId = own ? OWN_AGENT_MODEL_ID : (selectedModel?.id ?? '');
     const coin = { name: name.trim(), symbol: symbol.toUpperCase(), image: pinned.url, imageIpfs: pinned.ipfsUri || null, xHandle, links: links as DraftLinks };
     // Clanker v5: the numbers the creator's pins are made of, read again now. When one of them moved since the form
     // showed it, nothing is signed: the form shows the new numbers and the creator presses Launch again.
@@ -610,6 +660,7 @@ export function LaunchForm() {
       });
       toast.success(`Mock: $${symbol.toUpperCase()} launched${gasWei > 0n ? ` with ${gas} ETH of gas` : ''}`);
       sessionStorage.removeItem(DRAFT_KEY);
+      forgetLaunchDraft();
       router.push(`/token/${id}`);
       return;
     }
@@ -637,6 +688,7 @@ export function LaunchForm() {
     const [ev] = parseEventLogs({ abi, eventName: 'AgentLaunched', logs: receipt.logs });
     const { token, kernel } = (ev?.args as { token?: Address; kernel?: Address } | undefined) ?? {};
     sessionStorage.removeItem(DRAFT_KEY);
+    forgetLaunchDraft();
     if (gasWei > 0n && kernel) {
       // The agent's first gas, from the creator's wallet. Skipping or failing this leaves a launched coin whose
       // agent waits for gas; the token page's "Add gas" covers it later.
@@ -651,15 +703,65 @@ export function LaunchForm() {
 
   const costLine = [`${launchFeeWei + clankerFeeWei > 0n ? formatEther(launchFeeWei + clankerFeeWei) : '0'} ETH`, `${gasWei && gasWei > 0n ? gas : '0'} ETH`, `${fuel || 0} USDC`].join(' + ');
 
+  // The section numbers: an own-agent launch has no Mind section (the creator's client is the mind).
+  const sec = own ? { coin: 1, mind: 0, kind: 2, character: 3, x: 4, fuel: 5, settings: 6 } : { coin: 1, mind: 2, kind: 3, character: 4, x: 5, fuel: 6, settings: 7 };
+  const walletReady = isConnected || env.useMock;
+  const clientReady = clientLabels.length > 0 || connectLater;
+  const fuelNote = own
+    ? 'Only paid services use fuel. Add some now or later, or none.'
+    : `${thoughts != null && thoughts > 0 ? `About ${thoughts.toLocaleString('en-US')} thoughts at the selected model. ` : ''}Suggested: ${HOSTED_FUEL} USDC. Fuel pays for the agent’s thinking; the Bootr agent stays silent until some arrives. Any amount, including none, launches the coin.`;
+
   return (
+    <>
+    {ownOffered ? <RunnerChoice value={runner} onChange={chooseRunner} /> : null}
     <div className="grid gap-8 pb-16 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-12">
       <div className="min-w-0">
+        {own ? (
+          <div data-testid="own-path">
+            <OwnSteps
+              steps={[
+                { label: 'Wallet', state: walletReady ? 'done' : 'current', ...(address ? { note: shortAddr(address) } : {}) },
+                {
+                  label: 'Connect your AI client',
+                  state: clientReady ? 'done' : walletReady ? 'current' : 'next',
+                  ...(clientLabels.length > 0 ? { note: clientLabels.join(', ') } : connectLater ? { note: 'Later, from the console' } : {}),
+                },
+                { label: 'Launch', state: walletReady && clientReady ? 'current' : 'next' },
+              ]}
+            />
+            <div className="mt-8">
+              <OwnStep n={1} title="Wallet" description="The wallet that launches the coin is its creator. It approves your AI client and opens the creator console." testId="own-step-wallet">
+                {isConnected && address ? (
+                  <p className="text-sm text-ink">
+                    Connected: <span className="font-mono">{shortAddr(address)}</span>
+                  </p>
+                ) : env.useMock ? (
+                  <p className="text-sm text-mute">Mock mode: no wallet is needed.</p>
+                ) : (
+                  <div className="flex flex-col items-start gap-2">
+                    <ConnectButton />
+                    <span className="text-caption text-mute">Connect a wallet on {appChain.name}.</span>
+                  </div>
+                )}
+              </OwnStep>
+              <OwnStep
+                n={2}
+                title="Connect your AI client"
+                description="The agent thinks in the client you already use. Bootr keeps every rule and limit on its side; your client is only the mind."
+                testId="own-step-connect"
+              >
+                <ConnectClientStep draftId={draftId} symbol={symbol} later={connectLater} onLater={setConnectLater} onClients={setClientLabels} />
+              </OwnStep>
+              <OwnStep n={3} title="Launch" description="The coin and its agent, in one transaction. Everything below is the same for both kinds of agent, without a model to choose." testId="own-step-launch" />
+            </div>
+          </div>
+        ) : null}
         {platform.data?.launchesPaused ? (
           <div role="status" className="mb-6 rounded-sm border border-hairline-strong bg-canvas-soft px-4 py-3 text-sm text-ink">
             Launches are paused by the platform. You can prepare a launch, but it cannot be sent until launches resume.
           </div>
         ) : null}
-        <Section n={1} title="Coin" description="Name, ticker and image. These are permanent.">
+        <Section n={sec.coin} title="Coin" description="Name, ticker and image. These are permanent.">
           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
             <div>
               <Label htmlFor="name">Name</Label>
@@ -715,7 +817,8 @@ export function LaunchForm() {
           </div>
         </Section>
 
-        <Section n={2} title="Mind" description="The model that thinks for the agent. Each thought is paid from its fuel.">
+        {own ? null : (
+        <Section n={sec.mind} title="Mind" description="The model that thinks for the agent. Each thought is paid from its fuel.">
           <div>
             <Label htmlFor="model" hint="Price per thought at BlockRun">
               Model
@@ -754,8 +857,9 @@ export function LaunchForm() {
             </p>
           </div>
         </Section>
+        )}
 
-        <Section n={3} title="Kind" description="What the agent is for. The preset's hash is written on-chain at launch.">
+        <Section n={sec.kind} title="Kind" description="What the agent is for. The preset's hash is written on-chain at launch.">
           <fieldset>
             <legend className="sr-only">Kind</legend>
             <div className="grid gap-2 sm:grid-cols-2" data-testid="kind-cards">
@@ -802,7 +906,7 @@ export function LaunchForm() {
                     <label htmlFor={`power-${key}`} className="text-sm font-medium text-ink">
                       {CAPABILITIES[key].label}
                     </label>
-                    <p className="mt-0.5 text-caption text-mute">{CAPABILITIES[key].description}</p>
+                    <p className="mt-0.5 text-caption text-mute">{own && key === 'images' ? 'Posts pictures your AI client makes and uploads from your machine. Nothing is bought.' : CAPABILITIES[key].description}</p>
                   </div>
                   <Switch
                     id={`power-${key}`}
@@ -821,7 +925,7 @@ export function LaunchForm() {
                     </span>
                   ))}
                 </div>
-                <p className="text-caption text-mute">Every agent keeps notes between cycles and runs its own treasury: fees become fuel.</p>
+                <p className="text-caption text-mute">{own ? 'Every agent keeps notes between cycles and runs its own treasury: it claims its fees and keeps its gas.' : 'Every agent keeps notes between cycles and runs its own treasury: fees become fuel.'}</p>
               </div>
             </div>
           </div>
@@ -845,7 +949,7 @@ export function LaunchForm() {
           </div>
         </Section>
 
-        <Section n={4} title="Character" description="Who the agent is and what it is told to do. Published in its agent card.">
+        <Section n={sec.character} title="Character" description="Who the agent is and what it is told to do. Published in its agent card.">
           <div>
             <Label htmlFor="identity" hint={`${identity.length}/600`}>
               Instructions
@@ -920,7 +1024,7 @@ export function LaunchForm() {
           </div>
         </Section>
 
-        <Section n={5} title="X account" description="The agent posts from its own account. Connect it here.">
+        <Section n={sec.x} title="X account" description="The agent posts from its own account. Connect it here.">
           <XConnect
             draftId={draftId}
             handle={xHandle}
@@ -935,8 +1039,9 @@ export function LaunchForm() {
             <div className="rounded-sm border border-warning bg-canvas-soft p-4" data-testid="no-x-notice">
               <p className="text-sm font-medium text-ink">No X account yet: the agent launches silent.</p>
               <p className="mt-1 text-caption text-body">
-                The agent only speaks through its own X account. Without one it will not post, and the coin page shows it as sleeping, until you connect an
-                account from the coin page with this wallet. Trading, fees and the treasury work either way.
+                {own
+                  ? 'The agent only speaks through its own X account. Without one it will not post until you connect an account from the coin page with this wallet. Trading, fees and the treasury work either way.'
+                  : 'The agent only speaks through its own X account. Without one it will not post, and the coin page shows it as sleeping, until you connect an account from the coin page with this wallet. Trading, fees and the treasury work either way.'}
               </p>
               <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-ink">
                 <input type="checkbox" className="mt-0.5" checked={silentOk} onChange={(e) => setSilentOk(e.target.checked)} />
@@ -946,7 +1051,7 @@ export function LaunchForm() {
           ) : null}
         </Section>
 
-        <Section n={6} title="Fuel & options" description="Where the coin launches, its starting treasury, an optional dev buy, and the fee preset.">
+        <Section n={sec.fuel} title="Fuel & options" description="Where the coin launches, its starting treasury, an optional dev buy, and the fee preset.">
           {clankerAvailable ? (
             <fieldset>
               <div className="mb-1.5 flex items-baseline justify-between gap-3">
@@ -976,11 +1081,13 @@ export function LaunchForm() {
           ) : null}
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <Label htmlFor="fuel" hint={`Min ${minFuel} USDC`}>
+              <Label htmlFor="fuel" hint={own ? 'Optional' : `Suggested ${HOSTED_FUEL} USDC`}>
                 Fuel
               </Label>
               <Input id="fuel" inputSize="lg" inputMode="decimal" mono suffix="USDC" value={fuel} onChange={(e) => setFuel(e.target.value.trim())} aria-invalid={fuelUnits == null || Number(fuel) < minFuel} />
-              <p className="mt-1.5 text-caption text-mute">{thoughts != null ? `About ${thoughts.toLocaleString('en-US')} thoughts at the selected model.` : 'Pays for the agent’s thoughts.'}</p>
+              <p className="mt-1.5 text-caption text-mute" data-testid="fuel-note">
+                {fuelNote}
+              </p>
             </div>
             <div>
               <Label htmlFor="devbuy" hint="Optional">
@@ -1032,7 +1139,7 @@ export function LaunchForm() {
         </Section>
 
         {isV5 ? (
-          <Section n={7} title="Token settings" description="Tax, rewards and the paired asset, the way Clanker’s own form sets them. Permanent, except the image and metadata while you keep them editable.">
+          <Section n={sec.settings} title="Token settings" description="Tax, rewards and the paired asset, the way Clanker’s own form sets them. Permanent, except the image and metadata while you keep them editable.">
             <TokenSettingsPanel draft={settingsDraft} onChange={setSettingsDraft} creator={address} bounds={v5Bounds} problems={settingsProblems} allowedAssets={allowedAssets} />
           </Section>
         ) : null}
@@ -1062,7 +1169,12 @@ export function LaunchForm() {
           <dl className="grid gap-px overflow-hidden rounded-sm border border-hairline bg-hairline text-sm">
             {[
               ['Kind', kindLabel],
-              ['Model', selectedModel?.label ?? '—'],
+              ...(own
+                ? [
+                    ['Agent', 'My own agent'],
+                    ['AI client', clientLabels.length > 0 ? clientLabels.join(', ') : connectLater ? 'Connect later' : 'Not connected'],
+                  ]
+                : [['Model', selectedModel?.label ?? '—']]),
               ['Launch through', launchThrough === 'bootr' ? 'RWAGMI' : 'Clanker'],
               ...(isV5
                 ? [
@@ -1164,5 +1276,6 @@ export function LaunchForm() {
         </div>
       </aside>
     </div>
+    </>
   );
 }

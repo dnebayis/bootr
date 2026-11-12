@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import type { Address } from 'viem';
 import { useConnection } from 'wagmi';
+import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import { useAgent } from '@/lib/indexer';
 import type { Agent, Token } from '@/lib/types';
 import { ago, shortHash, units, usd } from '@/lib/format';
@@ -19,6 +20,7 @@ import { formatGas, gasStatus, gasTotal } from '@/lib/gas';
 import { useKernelGas } from '@/lib/use-gas';
 import { GasChip } from './GasForm';
 import { shortAddr } from '@/lib/format';
+import { ownStatusLine, useAgentRunner } from './AgentStatusLine';
 
 function dormancyDays(a: Agent | null) {
   return Math.round((a?.dormancyPeriod ?? 90 * 86400) / 86400);
@@ -53,6 +55,9 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
   // Fuel, gas and the agent's settings are the creator's (CreatorConsole on the page); everyone sees the facts here.
   const { address } = useConnection();
   const isCreator = env.useMock || (!!address && !!token.creator && address.toLowerCase() === token.creator.toLowerCase());
+  // Who runs the agent (docs/design/byo-agent.md section 5.2): an own agent thinks in its creator's own AI client, so
+  // its model line names no model, and it is never "sleeping".
+  const runner = useAgentRunner(token);
 
   if (q.isPending && !agent) {
     return (
@@ -94,10 +99,25 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
           Agent
         </span>
       }
-      action={<StatusDot status={agent?.status} withLabel />}
+      action={
+        runner.own ? (
+          <span className="text-caption text-body" data-testid="agent-presence">
+            {agent?.status === 'paused' ? 'Paused' : agent?.status === 'dormant' ? 'Dormant' : agent?.status === 'claimed' ? 'Claimed' : ownStatusLine(token, agent, runner.config, now).active ? 'Active' : 'Away'}
+          </span>
+        ) : (
+          <StatusDot status={agent?.status} withLabel />
+        )
+      }
     >
       <dl className="divide-y divide-hairline">
-        <KV label="Model">{token.model || '—'}</KV>
+        {runner.own || runner.ownOffered ? (
+          <KV label="Run by" mono={false}>
+            <span data-testid="agent-runner">{runner.own ? 'Its creator’s own AI client' : 'Bootr'}</span>
+          </KV>
+        ) : null}
+        <KV label="Model">
+          <span data-testid="agent-model">{runner.own ? 'creator’s own' : token.model === OWN_AGENT_MODEL_ID ? runner.config?.model || '—' : token.model || '—'}</span>
+        </KV>
         <KV label="Worker">
           <span className="inline-flex items-center gap-1">
             {workerHref ? <ExternalLink href={workerHref} icon={false}>{shortHash(token.workerHash)}</ExternalLink> : shortHash(token.workerHash)}
