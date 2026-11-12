@@ -7,7 +7,7 @@
  * Same HMAC scheme as `lib/server/supervisor.ts` (apps/supervisor/src/hmac.ts). Every error a route answers is an
  * `OwnErrorBody` whose message is the one in `OWN_ERRORS`.
  */
-import { CREDENTIAL_RE, DEVICE_POLL_INTERVAL_S, OWN_DEFAULTS, OWN_ERRORS, type OwnErrorBody, type OwnErrorCode } from '@bootr/shared/own-agent';
+import { CREDENTIAL_PREFIX, CREDENTIAL_RE, DEVICE_POLL_INTERVAL_S, OWN_DEFAULTS, OWN_ERRORS, type OwnErrorBody, type OwnErrorCode } from '@bootr/shared/own-agent';
 import { NextResponse, type NextRequest } from 'next/server';
 import { ownAgentEnabled, supervisorEnv } from './env';
 import { clientIp, RateLimiter } from './ipfs';
@@ -157,7 +157,7 @@ export async function askOwn(method: 'GET' | 'POST', path: string, body?: unknow
     res = await fetch(`${url}${path}`, { method, headers, ...(body !== undefined ? { body: raw } : {}), cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
     answer = await res.json();
   } catch {
-    // Neither the URL, the body nor the fetch error is logged: the body of a run call holds a credential.
+    // Neither the URL, the body nor the fetch error is logged: the body of a run call holds a credential's hash, the token call's a device code.
     return failed(ownError('supervisor_unavailable'));
   }
   if (res.ok) return { ok: true, status: res.status, data: answer };
@@ -186,10 +186,30 @@ const RUN_BODY_BYTES: Record<RunOp, number> = { status: SMALL_BODY_BYTES, due: S
 const RUN_TIMEOUT_MS: Record<RunOp, number> = { status: QUICK_TIMEOUT_MS, due: STEP_TIMEOUT_MS, turn: STEP_TIMEOUT_MS, act: STEP_TIMEOUT_MS, finish: STEP_TIMEOUT_MS, upload: STEP_TIMEOUT_MS, disconnect: QUICK_TIMEOUT_MS };
 
 /**
+ * What a run call carries to the agent service in place of the credential: its SHA-256, as the first member of the
+ * body (the service reads it from there before it parses the rest). A `credentialHash` or `credential` member the
+ * caller put in its own body is dropped, so neither can stand in for the header's.
+ */
+export function withCredentialHash(credentialHash: string, body: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...body };
+  delete rest.credentialHash;
+  delete rest.credential;
+  return { credentialHash, ...rest };
+}
+
+/** A new credential, made here: `bootr_agt_` and 32 random bytes as unpadded base64url. The agent service is sent its hash only. */
+export async function mintCredential(): Promise<{ credential: string; credentialHash: string }> {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const credential = CREDENTIAL_PREFIX + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return { credential, credentialHash: await sha256Hex(credential) };
+}
+
+/**
  * A run route, whole: the flag; no `Origin` (these routes are for a program holding a credential, never for a web
  * page, so a browser on any site, this one included, is refused); the per-IP count; the credential's shape; the
  * per-credential count (and for `due` the minimum interval); the body cap; then the supervisor, which is the one that
- * knows whether the credential is live. The credential travels in the signed body, never in the path.
+ * knows whether the credential is live. The credential itself never leaves this process: the supervisor is sent its
+ * SHA-256, in the signed body, never in the path.
  */
 export async function runRoute(req: NextRequest, op: RunOp): Promise<NextResponse> {
   const off = ownDisabled();
@@ -217,8 +237,7 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
     }
     l.dueNext.set(who, now + l.dueWindowMs);
   }
-  // The header's credential last, so a `credential` field in the body cannot stand in for it.
-  const answer = await askOwn('POST', `/internal/own/run/${op}`, { ...body, credential }, RUN_TIMEOUT_MS[op]);
+  const answer = await askOwn('POST', `/internal/own/run/${op}`, withCredentialHash(who, body), RUN_TIMEOUT_MS[op]);
   if (answer.ok) return ownJson(answer.data, answer.status);
   // A look that found the agent busy was not a look: the client is told to come back at `retryAt` and may.
   if (op === 'due' && answer.code === 'runtime_busy') l.dueNext.delete(who);

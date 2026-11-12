@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { OWN_ERRORS, type ActResult, type OwnErrorBody, type OwnErrorCode, type TurnOpen } from '@bootr/shared/own-agent';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,13 +74,21 @@ async function openTurn(): Promise<TurnOpen> {
 }
 
 describe('the bearer credential', () => {
-  it('travels in the signed body of the forward, never in its path, and every route forwards to its own operation', async () => {
+  it('never leaves this server: the forward carries its SHA-256 first in the signed body, and every route forwards to its own operation', async () => {
+    const hash = createHash('sha256').update(credential).digest('hex');
     for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload'] as const) {
       await call(op, op === 'turn' ? { role: 'social' } : { turnId: 'otn_none' });
-      const seen = fake.seen.at(-1)!;
-      expect(seen).toMatchObject({ method: 'POST', path: `/internal/own/run/${op}`, authorized: true });
-      expect(seen.body.credential).toBe(credential);
-      expect(seen.path).not.toContain('bootr_agt_');
+      // The upload asks whether the credential is live before it reads the body: that call carries the hash alone.
+      for (const seen of fake.seen) {
+        expect(seen).toMatchObject({ method: 'POST', authorized: true });
+        expect(seen.body.credentialHash).toBe(hash);
+        expect(seen.raw.startsWith(`{"credentialHash":"${hash}"`)).toBe(true);
+        expect(seen.raw + seen.path).not.toContain('bootr_agt_');
+        expect(seen.raw + seen.path).not.toContain(credential.slice(10));
+        expect(seen.body).not.toHaveProperty('credential');
+      }
+      expect(fake.seen.at(-1)!.path).toBe(`/internal/own/run/${op}`);
+      fake.seen.length = 0;
     }
     const res = await call('disconnect');
     expect(await res.json()).toEqual({ ok: true });
@@ -87,10 +96,16 @@ describe('the bearer credential', () => {
     await error(await call('status'), 'credential_revoked');
   });
 
-  it('cannot be replaced by a field of the body', async () => {
+  it('cannot be replaced by a field of the body, as a credential or as a hash', async () => {
     const other = fake.backend.issueCredential();
-    await call('status', { credential: other });
-    expect(fake.seen.at(-1)!.body.credential).toBe(credential);
+    const hash = createHash('sha256').update(credential).digest('hex');
+    const otherHash = createHash('sha256').update(other).digest('hex');
+    await call('status', { credential: other, credentialHash: otherHash });
+    const seen = fake.seen.at(-1)!;
+    expect(seen.body.credentialHash).toBe(hash);
+    expect(seen.body).not.toHaveProperty('credential');
+    expect(seen.raw).not.toContain(otherHash);
+    expect(seen.raw).not.toContain('bootr_agt_');
   });
 
   it('is refused when missing or malformed, before the agent service is asked', async () => {

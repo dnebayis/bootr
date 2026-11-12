@@ -261,7 +261,7 @@ describe('bootr own disconnect', () => {
     expect(await own('disconnect')).toMatchObject({ data: { ok: true } });
     expect(await stored()).toEqual([]);
     expect(await readFile(env.BOOTR_CREDENTIALS_FILE!, 'utf8')).not.toContain('bootr_agt_');
-    expect(() => site.backend.run('status', { credential })).toThrow('credential_revoked');
+    expect(() => site.backend.runAs('status', credential)).toThrow('credential_revoked');
     await expect(own('disconnect')).rejects.toMatchObject({ code: 'not_connected' });
   });
 });

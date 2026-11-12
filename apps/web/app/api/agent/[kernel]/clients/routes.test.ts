@@ -109,7 +109,7 @@ describe('POST /api/agent/[kernel]/clients/revoke', () => {
     expect(body.clients.map((c) => c.label)).toEqual(['Desktop']);
     expect(body.token).toBe(session);
     expect(fake.seen).toEqual([{ method: 'POST', path: `/internal/agents/${COIN.agentId}/clients/revoke`, body: { by: CREATOR, clientId }, authorized: true }]);
-    expect(() => fake.backend.run('status', { credential: laptop })).toThrow('credential_revoked');
+    expect(() => fake.backend.runAs('status', laptop)).toThrow('credential_revoked');
     await error(await call(revoke, 'revoke', { token: session, clientId }), 'client_not_found');
   });
 

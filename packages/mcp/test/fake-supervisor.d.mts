@@ -76,12 +76,14 @@ export declare class FakeOwnBackend {
   grantView(code: string): { userCode: string; clientName: string; coinHint: string | null; status: string; expiresAt: string };
   connectApprove(body: Record<string, unknown>): { ok: true; target: unknown; label: string };
   connectToken(body: Record<string, unknown>): Record<string, unknown>;
+  connectTokenAsWeb(body: Record<string, unknown>): Record<string, unknown>;
   connectCoins(creator: string): { coins: FakeCoin[] };
   draftClients(draftId: string): { connected: boolean; clients: { clientId: string; label: string; createdAt: string }[] };
   issueCredential(coin?: FakeCoin, label?: string): string;
   clientsOf(agentId: string): { clients: unknown[]; max: number };
   revokeClients(agentId: string, body: Record<string, unknown>): { clients: unknown[]; max: number };
   run(op: string, body: Record<string, unknown>): unknown;
+  runAs(op: string, credential: string, body?: Record<string, unknown>): unknown;
 }
 
 export declare function verifyHmac(key: string, header: string | undefined, method: string, path: string, body: string, nowSec?: number): string | null;
@@ -89,7 +91,7 @@ export declare function verifyHmac(key: string, header: string | undefined, meth
 export interface FakeSupervisor {
   url: string;
   backend: FakeOwnBackend;
-  seen: { method: string; path: string; body: Record<string, unknown>; authorized: boolean }[];
+  seen: { method: string; path: string; body: Record<string, unknown>; raw: string; authorized: boolean }[];
   control: { status: number | null; raw: string | null; delayMs: number };
   close(): Promise<void>;
 }

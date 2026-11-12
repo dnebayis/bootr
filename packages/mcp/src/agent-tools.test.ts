@@ -548,7 +548,7 @@ describe('several coins and disconnecting', () => {
     expect(r.content[0]!.text).toBe(AGENT_DATA_NOTICE);
     expect(json(r)).toEqual({ ok: true });
     expect((await stored()).map((e) => e.label)).toEqual(['Second']);
-    expect(() => site.backend.run('status', { credential: owl!.credential })).toThrow('credential_revoked');
+    expect(() => site.backend.runAs('status', owl!.credential)).toThrow('credential_revoked');
     // A connection the creator ended from the console is cleared here on the next check, and a new approval starts.
     site.backend.revokeClients(SECOND_COIN.agentId, { all: true });
     const again = json<{ connected: boolean; note: string; userCode: string }>(await call('bootr_agent_connect'));

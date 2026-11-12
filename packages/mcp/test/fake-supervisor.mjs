@@ -263,8 +263,10 @@ export class FakeOwnBackend {
     return { ok: true, target, label };
   }
 
+  /** As the real route: the web makes the credential and sends its SHA-256 (`credentialHash`); the answer carries no credential. */
   connectToken(body) {
     this.requireEnabled();
+    if (typeof body.credentialHash !== 'string' || !/^[0-9a-f]{64}$/.test(body.credentialHash)) throw new OwnError('invalid_request', { field: 'credentialHash' });
     const hash = sha256(String(body.deviceCode ?? ''));
     const grant = [...this.grants.values()].find((g) => g.deviceHash === hash);
     if (!grant) throw new OwnError('grant_not_found');
@@ -274,7 +276,6 @@ export class FakeOwnBackend {
       return { status: 'pending' };
     }
     grant.status = 'redeemed';
-    const credential = `bootr_agt_${randomBytes(32).toString('base64url')}`;
     const client = {
       clientId: `cli_${randomBytes(8).toString('hex')}`,
       agentId: grant.target.kind === 'coin' ? grant.target.coin.agentId : null,
@@ -286,8 +287,15 @@ export class FakeOwnBackend {
       expiresAt: this.now() + 90 * 86_400_000,
       revokedAt: null,
     };
-    this.clients.set(sha256(credential), client);
-    return { status: 'approved', credential, clientId: client.clientId, label: client.label, target: grant.target, expiresAt: iso(client.expiresAt) };
+    this.clients.set(body.credentialHash, client);
+    return { status: 'approved', clientId: client.clientId, label: client.label, target: grant.target, expiresAt: iso(client.expiresAt) };
+  }
+
+  /** What the web does at its token route: it makes the credential, sends its hash and adds the credential to an approved answer. */
+  connectTokenAsWeb(body) {
+    const credential = `bootr_agt_${randomBytes(32).toString('base64url')}`;
+    const answer = this.connectToken({ ...body, credentialHash: sha256(credential) });
+    return answer.status === 'approved' ? { ...answer, credential } : answer;
   }
 
   connectCoins(creator) {
@@ -327,10 +335,10 @@ export class FakeOwnBackend {
 
   // ---- running
 
-  /** The checks in the order of section 13.6. */
-  authorize(credential, op) {
+  /** The checks in the order of section 13.6. A run call names its client by the SHA-256 of the credential, never by the credential. */
+  authorize(credentialHash, op) {
     this.requireEnabled();
-    const client = typeof credential === 'string' ? this.clients.get(sha256(credential)) : undefined;
+    const client = typeof credentialHash === 'string' ? this.clients.get(credentialHash) : undefined;
     if (!client) throw new OwnError('unauthorized');
     if (client.revokedAt) throw new OwnError('credential_revoked');
     if (client.expiresAt <= this.now()) throw new OwnError('credential_expired');
@@ -494,9 +502,14 @@ export class FakeOwnBackend {
     return this.result(t, 'upload_picture', { actionId: `0x${sha256(imageId)}`, status: 'completed', result: { imageId, alt: body.alt, mime, bytes: bytes.length } });
   }
 
+  /** A run call as the holder of a credential would make it through the web, which hashes the credential. */
+  runAs(op, credential, body = {}) {
+    return this.run(op, { ...body, credentialHash: sha256(String(credential)) });
+  }
+
   run(op, body) {
     this.takeScripted();
-    const client = this.authorize(body.credential, op);
+    const client = this.authorize(body.credentialHash, op);
     switch (op) {
       case 'status':
         return this.status(client);
@@ -583,7 +596,8 @@ export async function startFakeSupervisor({ key, port = 0, backend = new FakeOwn
     } catch {
       /* answered below */
     }
-    seen.push({ method: req.method, path, body, authorized: !reason });
+    // `raw`, the body's exact text, is kept out of the entry's listed fields so a test can compare an entry as a whole.
+    seen.push(Object.defineProperty({ method: req.method, path, body, authorized: !reason }, 'raw', { value: raw, enumerable: false }));
     // The real middleware's answer: no `message`, a `reason`. A web route must not relay it as a credential error.
     if (reason) return send(res, 401, { error: 'unauthorized', reason });
     if (control.delayMs) await new Promise((r) => setTimeout(r, control.delayMs));
@@ -679,12 +693,13 @@ export async function startFakeSite({ port = 0, backend = new FakeOwnBackend(), 
     if (req.method === 'GET' && p === '/api/platform') return send(res, 200, { launchesPaused: false, allowedModels: [], ownAgent: state.ownAgent });
     if (!state.ownAgent) return send(res, 404, errorBody('own_agent_disabled'));
     if (req.method === 'POST' && p === '/api/agent/connect/start') return answer(res, () => (backend.takeScripted(), backend.connectStart({ ...body, siteUrl: site })));
-    if (req.method === 'POST' && p === '/api/agent/connect/token') return answer(res, () => (backend.takeScripted(), backend.connectToken(body)));
+    if (req.method === 'POST' && p === '/api/agent/connect/token') return answer(res, () => (backend.takeScripted(), backend.connectTokenAsWeb(body)));
     const m = /^\/api\/agent\/run\/(\w+)$/.exec(p);
     if (req.method === 'POST' && m) {
       if (req.headers.origin !== undefined) return send(res, 401, errorBody('unauthorized'));
       const credential = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1];
-      return answer(res, () => backend.run(m[1], { ...body, credential }));
+      // As the web: the credential stays here and the backend is asked by its hash.
+      return answer(res, () => backend.run(m[1], { ...body, credentialHash: credential === undefined ? undefined : sha256(credential) }));
     }
     send(res, 404, { error: 'not_found' });
   });

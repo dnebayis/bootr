@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { CONNECT_COIN_STATEMENT, connectCoinStatement, connectDraftStatement, OWN_ERRORS, USER_CODE_RE, type OwnErrorBody } from '@bootr/shared/own-agent';
 import { NextRequest } from 'next/server';
 import { SiweMessage } from 'siwe';
@@ -299,6 +300,30 @@ describe('POST /api/agent/connect/token', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     resetOwnLimits();
     await error(await poll(), 'grant_used');
+    // The credential was made here: the agent service was sent its SHA-256 and stored that, and no call ever carried
+    // the credential itself. A poll that found the grant waiting sent another hash, which opens nothing.
+    const hash = createHash('sha256').update(body.credential).digest('hex');
+    const polls = fake.seen.filter((s) => s.path === '/internal/own/connect/token');
+    expect(polls).toHaveLength(3);
+    expect(polls[1]!.body).toEqual({ deviceCode, credentialHash: hash });
+    expect(new Set(polls.map((p) => p.body.credentialHash)).size).toBe(3);
+    expect(fake.seen.map((s) => s.raw + s.path).join('\n')).not.toContain('bootr_agt_');
+    expect(fake.backend.clients.has(hash)).toBe(true);
+    for (const p of [polls[0]!, polls[2]!]) expect(fake.backend.clients.has(String(p.body.credentialHash))).toBe(false);
+  });
+
+  it('never relays a credential the agent service answered with: the only one is the one made here', async () => {
+    const { userCode, deviceCode } = await started();
+    await approve(post('/api/agent/connect/approve', { userCode, ...(await signed(coinStatement(userCode))) }));
+    const real = fake.backend.connectToken.bind(fake.backend);
+    fake.backend.connectToken = (b) => ({ ...real(b), credential: `bootr_agt_${'s'.repeat(43)}` });
+    try {
+      const body = (await (await token(post('/api/agent/connect/token', { deviceCode }))).json()) as { credential: string };
+      expect(body.credential).not.toBe(`bootr_agt_${'s'.repeat(43)}`);
+      expect(fake.backend.clients.has(createHash('sha256').update(body.credential).digest('hex'))).toBe(true);
+    } finally {
+      fake.backend.connectToken = real;
+    }
   });
 
   it('takes one poll per interval per device code, whatever the IP', async () => {

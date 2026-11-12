@@ -12,7 +12,7 @@ import { actions, agentClients, agentGrants, agents } from '../src/db/schema.js'
 import { adoptDraftClients, cleanText, hashSecret, newUserCode } from '../src/own/clients.js';
 import { ownHooks } from '../src/own/registry.js';
 import { AGENT_ID, CREATOR, KERNEL, TOKEN } from './helpers.js';
-import { OTHER_AGENT_ID, OTHER_CREATOR, OTHER_KERNEL, connectClient, openSocial, ownWorld, seedOther, seedOwn, turnOf, type OwnWorld } from './own-helpers.js';
+import { OTHER_AGENT_ID, OTHER_CREATOR, OTHER_KERNEL, connectClient, credentialHash, newCredential, openSocial, ownWorld, seedOther, seedOwn, turnOf, type OwnWorld } from './own-helpers.js';
 
 const DAY = 86_400_000;
 const DRAFT = '11111111-2222-4333-8444-555555555555';
@@ -27,7 +27,18 @@ async function start(world: OwnWorld, body: Record<string, unknown> = {}) {
 const approveCoin = (world: OwnWorld, userCode: string, over: Record<string, unknown> = {}) =>
   world.call<ConnectApproveResponse & OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode, creator: CREATOR, target: { kind: 'coin', kernel: KERNEL, agentId: AGENT_ID }, ...over });
 
-const token = (world: OwnWorld, deviceCode: string) => world.call<ConnectTokenResponse & OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode });
+/**
+ * The token call as the web makes it: the web makes the credential and sends only its SHA-256. The supervisor's answer
+ * never carries a credential; the one this helper made is put on the body afterwards, as the web does for its caller.
+ */
+async function token(world: OwnWorld, deviceCode: string) {
+  const credential = newCredential();
+  const res = await world.call<ConnectTokenResponse & OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode, credentialHash: credentialHash(credential) });
+  expect(res.body).not.toHaveProperty('credential');
+  expect(JSON.stringify(res.body)).not.toContain('bootr_agt_');
+  if (res.body.status === 'approved') (res.body as { credential: string }).credential = credential;
+  return res;
+}
 
 describe('own agent: connecting a client', () => {
   it('a grant goes from pending to approved to redeemed, hands the credential out once, and stores hashes only', async () => {
@@ -233,15 +244,36 @@ describe('own agent: what a credential opens', () => {
       await seedOwn(w);
       const { credential } = await connectClient(w);
       const flipped = credential.slice(0, -1) + (credential.endsWith('A') ? 'B' : 'A');
-      for (const bad of [undefined, '', 'bootr_agt_short', credential.toUpperCase(), ` ${credential}`, `${credential}x`, flipped, { $ne: null }, ['bootr_agt_'], 12345]) {
+      const hash = credentialHash(credential);
+      // What arrives is the SHA-256 of a credential. None of these is the hash of a live one; the credential itself is not one either.
+      for (const bad of [undefined, '', 'abc', hash.toUpperCase(), ` ${hash}`, `${hash}0`, hash.slice(1), credentialHash(flipped), credential, { $ne: null }, [hash], 12345]) {
         for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect']) {
-          const res = await w.call<OwnErrorBody>('POST', `/internal/own/run/${op}`, { credential: bad, role: 'social' });
+          const res = await w.call<OwnErrorBody>('POST', `/internal/own/run/${op}`, { credentialHash: bad, role: 'social' });
           expect([op, res.status]).toEqual([op, 401]);
           expect(res.body).toEqual({ error: 'unauthorized', message: OWN_ERRORS.unauthorized.message });
         }
       }
-      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/steal', { credential })).body.error).toBe('invalid_request');
+      // The credential in the clear opens nothing, alone or beside a wrong hash: this service only ever compares hashes.
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { credential })).body.error).toBe('unauthorized');
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { credentialHash: credentialHash(flipped), credential })).body.error).toBe('unauthorized');
+      // The hash is read from the head of the body before the rest is parsed: anywhere else it is not looked for,
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { role: 'social', credentialHash: hash })).body.error).toBe('unauthorized');
+      // a body that is not JSON after a live hash is refused as a body, and after a dead one as a credential,
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}",oops`)).body.error).toBe('invalid_request');
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${credentialHash(flipped)}",oops`)).body.error).toBe('unauthorized');
+      // and a second hash further down, which would win the parse, does not stand in for the one that was checked.
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}","credentialHash":"${credentialHash(flipped)}"}`)).body.error).toBe('unauthorized');
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}"}`)).status).toBe(200);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/steal', { credentialHash: hash })).body.error).toBe('invalid_request');
       expect(await turnOf(w)).toBeNull();
+      // A grant is redeemed for a hash the web made; without one nothing is redeemed and no credential is made here.
+      const grant = await start(w);
+      expect((await approveCoin(w, grant.userCode)).status).toBe(200);
+      for (const missing of [undefined, '', credential, hash.toUpperCase()]) {
+        const refused = await w.call<OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode: grant.deviceCode, credentialHash: missing });
+        expect([refused.status, refused.body.error, refused.body.field]).toEqual([400, 'invalid_request', 'credentialHash']);
+      }
+      expect((await w.db.select().from(agentGrants)).find((g) => g.userCode === grant.userCode)?.status).toBe('approved');
     } finally {
       await w.close();
     }
@@ -442,9 +474,9 @@ describe('own agent: the flag off', () => {
       for (const [method, path, body] of [
         ['POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' }],
         ['POST', '/internal/own/connect/approve', { userCode: pendingGrant.userCode, creator: CREATOR, target: { kind: 'coin', kernel: KERNEL, agentId: AGENT_ID } }],
-        ['POST', '/internal/own/connect/token', { deviceCode: pendingGrant.deviceCode }],
+        ['POST', '/internal/own/connect/token', { deviceCode: pendingGrant.deviceCode, credentialHash: credentialHash(newCredential()) }],
         ['GET', `/internal/own/drafts/${DRAFT}/clients`, undefined],
-        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'].map((op) => ['POST', `/internal/own/run/${op}`, { credential: client.credential, role: 'social' }] as const),
+        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'].map((op) => ['POST', `/internal/own/run/${op}`, { credentialHash: credentialHash(client.credential), role: 'social' }] as const),
       ] as const) {
         const res = await on.call<OwnErrorBody>(method, path, body);
         expect([path, res.status]).toEqual([path, 404]);

@@ -1575,7 +1575,9 @@ CREATE TABLE "sv_agent_grants" (
 CREATE UNIQUE INDEX "sv_agent_grants_user_code_idx" ON "sv_agent_grants" ("user_code");
 ```
 
-The credential is made when an approved grant is redeemed (`connect/token`), returned once and stored as its hash.
+The credential is made by the web when an approved grant is redeemed (`connect/token`) and returned once; the
+supervisor is sent its SHA-256 and stores that, so the credential exists in the web process for one answer and
+nowhere else on Bootr's side. Every run call crosses to the supervisor as that hash too.
 Rows of `sv_agent_grants` older than a day are deleted whenever a new grant is started (W1a; no tick change for it).
 
 Stored JSON that gains fields, no migration: `sv_agents.config.runner`; `sv_runtimes.turn.own` (`OwnTurnMeta`);
@@ -1635,10 +1637,10 @@ Existing public routes that change:
 | `POST /internal/own/connect/start` | `ConnectStartRequest` and `siteUrl: string` | `ConnectStartResponse` | W1a |
 | `GET /internal/own/connect/grant?code=` | - | `ConnectGrantView` | W1a |
 | `POST /internal/own/connect/approve` | `{ userCode: string; creator: string; label?: string; target: { kind: 'coin'; kernel: string; agentId: string } \| { kind: 'draft'; draftId: string } }`. `creator` is the address the web recovered from the signature; for a coin the supervisor checks it against `sv_agents.creator` and the agent id against the row (`not_creator`, `unknown_coin`). | `ConnectApproveResponse` | W1a |
-| `POST /internal/own/connect/token` | `ConnectTokenRequest` | `ConnectTokenResponse` | W1a |
+| `POST /internal/own/connect/token` | `ConnectTokenRequest` and `credentialHash: string` (the SHA-256, in hex, of the credential the web has just made) | `ConnectTokenResponse` without `credential`; the web adds the credential it made | W1a |
 | `GET /internal/own/connect/coins?creator=<address>` | - | `ConnectCoinsResponse` (from `sv_agents`, newest first, at most 50) | W1a |
 | `GET /internal/own/drafts/:draftId/clients` | - | `DraftClientsResponse` | W1a |
-| `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | the public body and `credential: string` | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
+| `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | `credentialHash: string` (the SHA-256, in hex, of the bearer credential) as the **first** member of the body, then the public body. The credential itself never leaves the web process; the supervisor reads the hash from the head of the body and checks it before it parses the rest | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
 | `GET /internal/agents/:id/clients` | - | `ClientsResponse` | W1a |
 | `POST /internal/agents/:id/clients/revoke` | `{ by: string; clientId?: string; all?: true }` | `ClientsResponse` | W1a |
 | `POST /internal/agents/:id/runner` | `RunnerSwitchRequest` and `by: string; allowedModels: string[]` | `RunnerSwitchResponse` | W3 |

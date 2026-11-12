@@ -3,7 +3,8 @@
  * client and for running a coin's agent from it. Like every `/internal/*` route they sit behind the HMAC of the shared
  * service key (api.ts mounts this directly after the middleware); the web app is the only caller and applies the rate
  * limits and body caps in front. What the web cannot be trusted with alone is decided here again: the credential of a
- * run call is verified in this process (`verifyCredential`: hash, revocation, expiry, coin, creator), and whether a
+ * run call, which arrives as its SHA-256 and never as itself, is verified in this process (`verifyCredential`: hash,
+ * revocation, expiry, coin, creator) before the rest of the body is parsed, and whether a
  * wallet is a coin's creator is read from the row this supervisor wrote from the launch.
  *
  * The flag (`OWN_AGENT_ENABLED`) is asked at the top of the connect and run handlers and nowhere else: with it off
@@ -45,6 +46,17 @@ async function bodyOf(c: C, maxChars = SMALL_BODY_MAX_CHARS): Promise<Record<str
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new OwnError('invalid_request', { detail: 'The body must be a JSON object.' });
   return body as Record<string, unknown>;
+}
+
+/**
+ * The web puts the SHA-256 of the credential first in the body of a run call (`{"credentialHash":"<64 hex>",...}`), so
+ * it is read from the first hundred characters and checked before anything else of the body is parsed: megabytes sent
+ * under a hash nobody holds cost one lookup.
+ */
+const HASH_FIRST_RE = /^\{"credentialHash":"([0-9a-f]{64})"[,}]/;
+
+function credentialHashOf(c: C): string | null {
+  return HASH_FIRST_RE.exec((c.get('rawBody') ?? '').slice(0, 100))?.[1] ?? null;
 }
 
 export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void {
@@ -106,7 +118,8 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     '/internal/own/connect/token',
     answer(async (c) => {
       flagOn();
-      return redeemGrant(ctx, (await bodyOf(c)).deviceCode);
+      const body = await bodyOf(c);
+      return redeemGrant(ctx, body.deviceCode, body.credentialHash);
     }),
   );
 
@@ -132,8 +145,10 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
       flagOn();
       const op = c.req.param('op') as RunOp;
       if (!(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
-      const { credential, ...request } = await bodyOf(c, op === 'upload' ? RUN_BODY_MAX_CHARS : SMALL_BODY_MAX_CHARS);
-      const verified = await verifyCredential(ctx, credential);
+      const verified = await verifyCredential(ctx, credentialHashOf(c));
+      const { credentialHash, ...request } = await bodyOf(c, op === 'upload' ? RUN_BODY_MAX_CHARS : SMALL_BODY_MAX_CHARS);
+      // The same member a second time further down the body would win the parse: it must be the one that was checked.
+      if (credentialHash !== verified.client.tokenHash) throw new OwnError('unauthorized');
       switch (op) {
         case 'status':
           return ownStatus(ctx, verified);

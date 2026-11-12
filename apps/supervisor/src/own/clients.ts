@@ -16,8 +16,6 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto
 import {
   CLIENT_ID_PREFIX,
   CLIENT_LABEL_MAX,
-  CREDENTIAL_PREFIX,
-  CREDENTIAL_RE,
   DEVICE_CODE_TTL_S,
   DEVICE_POLL_INTERVAL_S,
   OWN_ERRORS,
@@ -100,6 +98,9 @@ function sameHash(a: string, b: string): boolean {
   if (a.length !== b.length || !/^[0-9a-f]{64}$/.test(a) || !/^[0-9a-f]{64}$/.test(b)) return false;
   return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
+
+/** The SHA-256 of a credential as the web sends it (lower-case hex): the only form of a credential this service ever sees. */
+export const CREDENTIAL_HASH_RE = /^[0-9a-f]{64}$/;
 
 /** 32 random bytes as unpadded base64url (43 characters). */
 function randomSecret(): string {
@@ -284,12 +285,17 @@ export async function approveGrant(ctx: Ctx, input: { userCode?: unknown; creato
   return { ok: true, target: answer, label };
 }
 
+/** What the token route answers the web: the public answer without the credential, which never exists in this process. */
+export type RedeemAnswer = { status: 'pending' } | Omit<Extract<ConnectTokenResponse, { status: 'approved' }>, 'credential'>;
+
 /**
- * `POST /internal/own/connect/token`: `pending` until the creator approved, then the credential, once. The grant is
- * marked redeemed and the client row written in one transaction, so a crash between the two cannot leave a grant that
- * hands out a second credential or a credential with no row.
+ * `POST /internal/own/connect/token`: `pending` until the creator approved, then the client, once. The web makes the
+ * credential and sends only its SHA-256 (`credentialHash`); this service stores that hash and never sees the
+ * credential itself. The grant is marked redeemed and the client row written in one transaction, so a crash between
+ * the two cannot leave a grant that hands out a second credential or a credential with no row.
  */
-export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<ConnectTokenResponse> {
+export async function redeemGrant(ctx: Ctx, deviceCode: unknown, credentialHash: unknown): Promise<RedeemAnswer> {
+  if (typeof credentialHash !== 'string' || !CREDENTIAL_HASH_RE.test(credentialHash)) throw invalid('credentialHash', 'credentialHash must be the SHA-256 of the new credential, as 64 hex characters.');
   if (typeof deviceCode !== 'string' || deviceCode.length < 20 || deviceCode.length > 200) throw new OwnError('grant_not_found');
   const deviceHash = hashSecret(deviceCode);
   const grant = await ctx.db.query.agentGrants.findFirst({ where: eq(agentGrants.deviceHash, deviceHash) });
@@ -299,7 +305,6 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
   if (grant.expiresAt.getTime() <= now) throw new OwnError('grant_expired');
   if (grant.status === 'pending') return { status: 'pending' };
 
-  const credential = CREDENTIAL_PREFIX + randomSecret();
   const clientId = CLIENT_ID_PREFIX + randomBytes(8).toString('hex');
   const expiresAt = new Date(now + ownSetting(ctx, 'OWN_CLIENT_TTL_DAYS') * 86_400_000);
   const label = grant.label ?? grant.clientName;
@@ -312,7 +317,7 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
       .where(and(eq(agentGrants.deviceHash, deviceHash), eq(agentGrants.status, 'approved')))
       .returning({ deviceHash: agentGrants.deviceHash });
     if (flipped.length === 0) return false;
-    await tx.insert(agentClients).values({ id: clientId, agentId: grant.agentId, draftId: grant.draftId, creator, tokenHash: hashSecret(credential), label, createdAt: new Date(now), expiresAt });
+    await tx.insert(agentClients).values({ id: clientId, agentId: grant.agentId, draftId: grant.draftId, creator, tokenHash: credentialHash, label, createdAt: new Date(now), expiresAt });
     return true;
   });
   if (!taken) throw new OwnError('grant_used');
@@ -329,7 +334,7 @@ export async function redeemGrant(ctx: Ctx, deviceCode: unknown): Promise<Connec
     await adoptLateDraft(ctx, grant.draftId!);
   }
   ctx.log.info({ clientId, agentId: grant.agentId, draft: grant.draftId !== null }, 'own agent: a client was connected');
-  return { status: 'approved', credential, clientId, label, target, expiresAt: expiresAt.toISOString() };
+  return { status: 'approved', clientId, label, target, expiresAt: expiresAt.toISOString() };
 }
 
 // ---------------------------------------------------------------------------
@@ -342,13 +347,14 @@ export interface VerifiedClient {
 }
 
 /**
- * The credential of a run call, checked here in the supervisor whatever the web checked before: its shape, its hash
- * (compared in constant time), that it was not revoked and has not run out, that its coin exists, and that the wallet
- * that approved it is still the coin's creator. Answers the first that fails, in the order of 13.6.
+ * The credential of a run call, checked here in the supervisor whatever the web checked before. The web sends the
+ * SHA-256 of the credential, never the credential: this checks the hash's shape, looks the client up by it (compared
+ * in constant time), that it was not revoked and has not run out, that its coin exists, and that the wallet that
+ * approved it is still the coin's creator. Answers the first that fails, in the order of 13.6.
  */
-export async function verifyCredential(ctx: Ctx, credential: unknown): Promise<VerifiedClient> {
-  if (typeof credential !== 'string' || !CREDENTIAL_RE.test(credential)) throw new OwnError('unauthorized');
-  const tokenHash = hashSecret(credential);
+export async function verifyCredential(ctx: Ctx, credentialHash: unknown): Promise<VerifiedClient> {
+  if (typeof credentialHash !== 'string' || !CREDENTIAL_HASH_RE.test(credentialHash)) throw new OwnError('unauthorized');
+  const tokenHash = credentialHash;
   let client = await ctx.db.query.agentClients.findFirst({ where: eq(agentClients.tokenHash, tokenHash) });
   if (!client || !sameHash(client.tokenHash, tokenHash)) throw new OwnError('unauthorized');
   const now = ctx.now();
