@@ -161,7 +161,7 @@ export function ownAgentEndpointList(site: string, chainId: number): OwnCatalogE
     ),
     run(
       'upload',
-      'One picture for a post of this turn: PNG, JPEG or WebP, at most 5 MB, with its alt text and a one-sentence description. The body is at most 8 MB.',
+      'One picture for a post of this turn: PNG, JPEG or WebP, at most 5 MB, with its alt text and a one-sentence description. The body is at most 8 MB. One upload at a time per client, and a few at a time over all clients: beyond that the answer is rate_limited with retryAt, and the same upload can be sent again then.',
       {
         type: 'object',
         properties: {
