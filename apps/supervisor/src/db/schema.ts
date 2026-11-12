@@ -519,3 +519,58 @@ export const bountyEntries = pgTable(
   },
   (t) => [index('sv_bounty_entries_job_idx').on(t.jobId), uniqueIndex('sv_bounty_entries_job_reply_idx').on(t.jobId, t.replyId)],
 );
+
+export const agentGrantStatuses = ['pending', 'approved', 'redeemed'] as const;
+export type AgentGrantStatus = (typeof agentGrantStatuses)[number];
+
+/**
+ * Own agents (docs/design/byo-agent.md section 3.3; own/clients.ts): the AI clients a creator connected to a coin's
+ * agent. One row per credential; only the SHA-256 of the credential is stored, the credential itself is returned once
+ * when its grant is redeemed. `agent_id` is null while the client is bound to a launch draft only (`draft_id`), until
+ * registration adopts it. `creator` is the checksummed address of the wallet that approved it, compared with the coin's
+ * creator on every call.
+ */
+export const agentClients = pgTable(
+  'sv_agent_clients',
+  {
+    /** `cli_` and 16 hex characters. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id'),
+    draftId: text('draft_id'),
+    creator: text('creator').notNull(),
+    /** sha256 (hex) of the credential. */
+    tokenHash: text('token_hash').notNull(),
+    label: text('label').notNull(),
+    createdAt: ts('created_at').notNull(),
+    lastUsedAt: ts('last_used_at'),
+    expiresAt: ts('expires_at').notNull(),
+    revokedAt: ts('revoked_at'),
+  },
+  (t) => [uniqueIndex('sv_agent_clients_token_idx').on(t.tokenHash), index('sv_agent_clients_agent_idx').on(t.agentId), index('sv_agent_clients_draft_idx').on(t.draftId)],
+);
+
+/**
+ * The device-style approval of a client (own/clients.ts): started by the client, approved in the browser by the
+ * creator's wallet, redeemed once for a credential. Keyed by the SHA-256 of the device code; the user code is what the
+ * creator sees and is no secret. Rows older than a day are deleted whenever a new grant is started.
+ */
+export const agentGrants = pgTable(
+  'sv_agent_grants',
+  {
+    /** sha256 (hex) of the device code. */
+    deviceHash: text('device_hash').primaryKey(),
+    userCode: text('user_code').notNull(),
+    clientName: text('client_name').notNull(),
+    coinHint: text('coin_hint'),
+    status: text('status', { enum: agentGrantStatuses }).notNull().default('pending'),
+    /** Set at approval, one of the two. */
+    agentId: text('agent_id'),
+    draftId: text('draft_id'),
+    creator: text('creator'),
+    label: text('label'),
+    createdAt: ts('created_at').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    approvedAt: ts('approved_at'),
+  },
+  (t) => [uniqueIndex('sv_agent_grants_user_code_idx').on(t.userCode)],
+);

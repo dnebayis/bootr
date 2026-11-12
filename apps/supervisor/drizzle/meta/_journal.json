@@ -78,6 +78,13 @@
       "when": 1794258911532,
       "tag": "0010_bounties",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794472127434,
+      "tag": "0011_own_agent",
+      "breakpoints": true
     }
   ]
 }

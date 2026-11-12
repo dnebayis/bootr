@@ -140,6 +140,8 @@ export const quotas = pgTable('sender_quotas', {
   agentId: text('agent_id').primaryKey(),
   postsPerDay: integer('posts_per_day'),
   mentionReadIntervalSec: integer('mention_read_interval_sec'),
+  /** X read units per UTC day for this agent (read-budget.ts); null = the sender's default (`SENDER_DEFAULT_READS_PER_DAY`). */
+  readsPerDay: integer('reads_per_day'),
   lastMentionsReadAt: ts('last_mentions_read_at'),
   mentionsSinceId: text('mentions_since_id'),
   updatedAt: ts('updated_at').notNull().defaultNow(),

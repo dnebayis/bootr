@@ -45,7 +45,8 @@ import {
   RateLimiter,
 } from './public-posts.js';
 import { AGENT_ID_RE, rebindAccount, rebindSchema } from './rebind.js';
-import { getQuota, setQuota } from './quota.js';
+import { POST_WINDOW_MS, getQuota, postsInWindow, setQuota } from './quota.js';
+import { readsToday } from './read-budget.js';
 import { getAction, toReceipt } from './receipt.js';
 
 export const PUBLIC_BODY_LIMIT = 8 * 1024;
@@ -57,6 +58,8 @@ const quotaSchema = z
   .object({
     postsPerDay: z.number().int().min(0).max(2400).nullable().optional(),
     mentionReadIntervalSec: z.number().int().min(0).max(86_400).nullable().optional(),
+    /** X read units per UTC day for this agent (read-budget.ts); null returns it to the sender's default. */
+    readsPerDay: z.number().int().min(1).max(100_000).nullable().optional(),
   })
   .strict();
 
@@ -454,7 +457,12 @@ export function createApp(ctx: SenderContext): Hono {
 
   internal.get('/quota/:agentId', async (c) => {
     const q = await getQuota(ctx, c.req.param('agentId'));
-    return c.json(quotaView(q));
+    // What is used of both budgets right now, so the caller can say what is left (the supervisor's agent status).
+    const [posts, readsUsedToday] = await Promise.all([
+      postsInWindow(ctx.db, q.agentId, new Date(ctx.now().getTime() - POST_WINDOW_MS)),
+      readsToday(ctx, q.agentId),
+    ]);
+    return c.json({ ...quotaView(q), postsUsed24h: posts.count, readsUsedToday });
   });
 
   internal.post('/quota/:agentId', async (c) => {
@@ -479,6 +487,7 @@ function quotaView(q: Awaited<ReturnType<typeof getQuota>>) {
     agentId: q.agentId,
     postsPerDay: q.postsPerDay,
     mentionReadIntervalSec: q.mentionReadIntervalSec,
+    readsPerDay: q.readsPerDay,
     lastMentionsReadAt: q.lastMentionsReadAt?.toISOString() ?? null,
   };
 }

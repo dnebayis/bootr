@@ -1,3 +1,4 @@
+import { OWN_DEFAULTS } from '@bootr/shared/own-agent';
 import { z } from 'zod';
 
 const hexKey = z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'expected a 32-byte 0x-prefixed hex key');
@@ -278,6 +279,38 @@ export const configSchema = z
     NOTIFY_SWEEP_MS: int(60_000, 1000),
     /** How long one agent may go between health checks (each reads its balances and the X account once). */
     NOTIFY_CHECK_MS: int(300_000, 1000),
+    /**
+     * Own agents (docs/design/byo-agent.md section 13.2). The one flag: `true` offers the feature's surfaces (the connect
+     * and run routes) and lets a coin become own. It never decides how a coin is run: a coin whose stored config says
+     * `runner: 'own'` is an own coin with the flag on or off (own/registry.ts `isOwn`), silent while the flag is off.
+     */
+    OWN_AGENT_ENABLED: bool('false'),
+    /** An own turn with no call for this long is closed by the server (a continuation note, no checkpoint). */
+    OWN_TURN_IDLE_MS: int(OWN_DEFAULTS.OWN_TURN_IDLE_MS, 1000),
+    /** An own turn open for this long is closed the same way, whatever its last call. */
+    OWN_TURN_MAX_MS: int(OWN_DEFAULTS.OWN_TURN_MAX_MS, 1000),
+    /** Social turns a day (UTC) the creator may open with `reason: 'creator_asked'` while nothing is due. */
+    OWN_FORCED_TURNS_PER_DAY: int(OWN_DEFAULTS.OWN_FORCED_TURNS_PER_DAY, 0),
+    /** The floor of `nextCheckAt` in the due view; the web applies the same interval to the due route. */
+    OWN_DUE_MIN_INTERVAL_MS: int(OWN_DEFAULTS.OWN_DUE_MIN_INTERVAL_MS, 0),
+    /** X read units a day the sender allows an own coin (own/quota.ts); 0 leaves the sender's default. */
+    OWN_READS_PER_DAY: int(OWN_DEFAULTS.OWN_READS_PER_DAY, 0),
+    /** `search_web` calls per rolling 24 hours for an own coin (broker). */
+    OWN_SEARCH_PER_DAY: int(OWN_DEFAULTS.OWN_SEARCH_PER_DAY, 0),
+    /** `read_url` calls per rolling 24 hours for an own coin (broker). */
+    OWN_READ_URL_PER_DAY: int(OWN_DEFAULTS.OWN_READ_URL_PER_DAY, 0),
+    /** How long a client's credential lasts. */
+    OWN_CLIENT_TTL_DAYS: int(OWN_DEFAULTS.OWN_CLIENT_TTL_DAYS, 1),
+    /** Live clients one coin (or one launch draft) may have. */
+    OWN_CLIENTS_PER_AGENT: int(OWN_DEFAULTS.OWN_CLIENTS_PER_AGENT, 1),
+    /** How long a bounty job of an own coin waits for its ruling before it closes with no winner (bounties.ts). */
+    OWN_JUDGE_WAIT_MS: int(OWN_DEFAULTS.OWN_JUDGE_WAIT_MS, 0),
+    /** Mentions older than this are closed unanswered when an own agent returns after at least as long away. */
+    OWN_STALE_MENTION_MS: int(OWN_DEFAULTS.OWN_STALE_MENTION_MS, 0),
+    /** The byte budget of the first observation handed to a client (clients cap a tool result well under 120 KB). */
+    OWN_OBSERVATION_BYTES: int(OWN_DEFAULTS.OWN_OBSERVATION_BYTES, 4000),
+    /** How long a run call waits for the runtime lease (the tick or another call holds it) before it answers busy. */
+    OWN_LEASE_WAIT_MS: int(4000, 0),
     LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),
   })
   .transform((c) => {

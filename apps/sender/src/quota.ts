@@ -9,6 +9,11 @@ export interface EffectiveQuota {
   agentId: string;
   postsPerDay: number;
   mentionReadIntervalSec: number;
+  /**
+   * X read units per UTC day in force for this agent (read-budget.ts): the agent's own value when one is set
+   * (`sender_quotas.reads_per_day`), else the sender's default; 0 = no budget.
+   */
+  readsPerDay: number;
   lastMentionsReadAt: Date | null;
   mentionsSinceId: string | null;
 }
@@ -26,6 +31,7 @@ export async function getQuota(
     agentId,
     postsPerDay: q?.postsPerDay ?? ctx.defaults.postsPerDay,
     mentionReadIntervalSec: q?.mentionReadIntervalSec ?? ctx.defaults.mentionReadIntervalSec,
+    readsPerDay: q?.readsPerDay ?? ctx.defaults.readsPerDay,
     lastMentionsReadAt: q?.lastMentionsReadAt ?? null,
     mentionsSinceId: q?.mentionsSinceId ?? null,
   };
@@ -34,12 +40,17 @@ export async function getQuota(
 export async function setQuota(
   ctx: SenderContext,
   agentId: string,
-  patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null },
+  patch: {
+    postsPerDay?: number | null;
+    mentionReadIntervalSec?: number | null;
+    readsPerDay?: number | null;
+  },
 ): Promise<EffectiveQuota> {
   const set: Partial<typeof quotas.$inferInsert> = { updatedAt: ctx.now() };
   if (patch.postsPerDay !== undefined) set.postsPerDay = patch.postsPerDay;
   if (patch.mentionReadIntervalSec !== undefined)
     set.mentionReadIntervalSec = patch.mentionReadIntervalSec;
+  if (patch.readsPerDay !== undefined) set.readsPerDay = patch.readsPerDay;
   await ctx.db
     .insert(quotas)
     .values({ agentId, ...set })

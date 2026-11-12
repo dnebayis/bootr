@@ -1,13 +1,15 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { SenderContext } from './context.js';
-import { reads } from './db/schema.js';
+import { quotas, reads } from './db/schema.js';
 
 /**
  * The X read budget: how many read units (posts returned, account lookups) one agent may spend per UTC day, across
  * every kind the metering records (`sender_reads`). X bills the app's owner per post read, and one agent's tools
  * (`read_x_thread` up to 8 posts, `read_x_account`, mention pages of up to 100) could run that bill up on their own,
  * so an agent past its budget is refused with a clear answer until the day rolls over. `SENDER_DEFAULT_READS_PER_DAY`
- * sets it; 0 turns it off.
+ * sets it; 0 turns it off. An agent may carry its own budget (`sender_quotas.reads_per_day`, set through
+ * `POST /internal/quota/:agentId`): it is used when set, whatever the default says, and null returns the agent to the
+ * default.
  */
 
 export const READ_BUDGET_EXHAUSTED = 'read_budget_exhausted';
@@ -38,8 +40,18 @@ export async function readsToday(ctx: SenderContext, agentId: string): Promise<n
   return Number(row?.n ?? 0);
 }
 
+/** The read units per UTC day in force for the agent: its own value when one is set, else the sender's default. */
+export async function readsPerDayFor(ctx: SenderContext, agentId: string): Promise<number> {
+  const [row] = await ctx.db
+    .select({ readsPerDay: quotas.readsPerDay })
+    .from(quotas)
+    .where(eq(quotas.agentId, agentId))
+    .limit(1);
+  return row?.readsPerDay ?? ctx.defaults.readsPerDay;
+}
+
 export async function readBudget(ctx: SenderContext, agentId: string): Promise<ReadBudget> {
-  const limit = ctx.defaults.readsPerDay;
+  const limit = await readsPerDayFor(ctx, agentId);
   if (limit <= 0) return { limit: 0, used: 0, remaining: Number.POSITIVE_INFINITY };
   const used = await readsToday(ctx, agentId);
   return { limit, used, remaining: Math.max(0, limit - used) };

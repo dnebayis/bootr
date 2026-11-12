@@ -1,0 +1,1 @@
+ALTER TABLE "sender_quotas" ADD COLUMN "reads_per_day" integer;

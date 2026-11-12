@@ -129,6 +129,12 @@ export interface SenderQuota {
   postsPerDay: number;
   mentionReadIntervalSec: number;
   lastMentionsReadAt: string | null;
+  /** X read units per UTC day in force for the agent (its own value, else the sender's default; 0 = no budget). Absent on an older sender. */
+  readsPerDay?: number;
+  /** `GET` only: posts and replies that count against `postsPerDay` in the last 24 hours. */
+  postsUsed24h?: number;
+  /** `GET` only: read units metered today (UTC). */
+  readsUsedToday?: number;
 }
 
 export class SenderError extends Error {
@@ -269,9 +275,10 @@ export class SenderClient {
 
   /**
    * `POST /internal/quota/:agentId`: sets the agent's posts per day (original posts and replies, rolling 24 h) and the
-   * mention-read interval; `null` returns a field to the sender's default. The sender's `setQuota` does the write.
+   * mention-read interval, and the agent's own X read budget (`readsPerDay`, own/quota.ts); `null` returns a field to the
+   * sender's default. The sender's `setQuota` does the write.
    */
-  setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null }) {
+  setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null; readsPerDay?: number | null }) {
     return this.call<SenderQuota>('POST', `/internal/quota/${encodeURIComponent(agentId)}`, patch);
   }
 
