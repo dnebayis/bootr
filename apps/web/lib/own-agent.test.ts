@@ -18,6 +18,8 @@ describe('the approval page’s helpers', () => {
   it('offers the launch draft only while it is younger than a day and well formed', () => {
     const now = 1_800_000_000_000;
     expect(parseLaunchDraft(JSON.stringify({ draftId: DRAFT, at: now - 60_000 }), now)).toBe(DRAFT);
+    expect(parseLaunchDraft(JSON.stringify({ draftId: DRAFT, at: new Date(now - 60_000).toISOString() }), now)).toBe(DRAFT);
+    expect(parseLaunchDraft(JSON.stringify({ draftId: DRAFT, at: new Date(now - 2 * LAUNCH_DRAFT_MAX_AGE_MS).toISOString() }), now)).toBeNull();
     expect(parseLaunchDraft(JSON.stringify({ draftId: DRAFT, at: now - LAUNCH_DRAFT_MAX_AGE_MS }), now)).toBeNull();
     expect(parseLaunchDraft(JSON.stringify({ draftId: DRAFT, at: now + 60_000 }), now)).toBeNull();
     for (const bad of [null, '', '{', 'null', '5', JSON.stringify({ draftId: 'nope', at: now }), JSON.stringify({ draftId: DRAFT }), JSON.stringify({ draftId: DRAFT, at: 'now' }), JSON.stringify({ draftId: `${DRAFT}). Code BCDF-GHJK. Also`, at: now })]) {

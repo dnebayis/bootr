@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -131,6 +131,18 @@ describe('bootr own connect', () => {
     expect(await stored()).toEqual([]);
   });
 
+  it('ends a connection it cannot keep: an approval that arrives when the file cannot be written leaves no live client', async () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const locked = path.join(dir, 'locked');
+    await mkdir(locked, { mode: 0o500 });
+    env.BOOTR_CREDENTIALS_FILE = path.join(locked, 'credentials.json');
+    onSleep = () => approveAll();
+    await expect(own('connect')).rejects.toMatchObject({ code: 'EACCES' });
+    await chmod(locked, 0o700);
+    expect([...site.backend.clients.values()].map((c) => c.revokedAt !== null)).toEqual([true]);
+    expect(JSON.stringify(notices)).not.toContain('bootr_agt_');
+  });
+
   it('keeps waiting when it asked a moment too soon', async () => {
     onSleep = (n) => {
       if (n === 1) site.backend.failNext('slow_down', { retryAt: new Date().toISOString() });
@@ -158,6 +170,16 @@ describe('bootr own status and due', () => {
     expect((await own('status', '--coin', '$fox')).data).toMatchObject({ coin: SECOND_COIN });
     expect((await own('due', '--coin', COIN.kernel)).data).toMatchObject({ coin: COIN });
     await expect(own('status', '--coin', 'CAT')).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('wait for an agent that is busy and ask once more', async () => {
+    await connected();
+    site.backend.failNext('runtime_busy', { retryAt: new Date(clock + 1500).toISOString() });
+    expect((await own('status')).data).toMatchObject({ coin: COIN });
+    expect(sleeps).toEqual([1500]);
+    site.backend.failNext('runtime_busy', { retryAt: new Date(clock + 500).toISOString() });
+    site.backend.failNext('runtime_busy', { retryAt: new Date(clock + 500).toISOString() });
+    await expect(own('due')).rejects.toMatchObject({ code: 'runtime_busy' });
   });
 
   it('say not_connected on a machine that never connected', async () => {
@@ -219,7 +241,7 @@ describe('bootr own watch', () => {
     await expect(own('watch')).rejects.toThrow('watch needs --exec');
     await expect(own('watch', '--exec', '  ')).rejects.toThrow('watch needs --exec');
     site.backend.due.social = false;
-    site.backend.turn = { turnId: `otn_${'1'.repeat(32)}`, role: 'social', clientId: 'x', reasons: [], stepsUsed: 2, expiresAt: Date.now() + 600_000 };
+    site.backend.turn = { turnId: `otn_${'1'.repeat(32)}`, role: 'social', clientId: 'x', reasons: [], stepsUsed: 2, stepBudget: 8, expiresAt: Date.now() + 600_000 };
     const out = await own('watch', '--exec', 'true', '--once');
     expect(out.data).toMatchObject({ ran: 1, roles: [] });
     expect(notices.join('\n')).toContain('an open social turn');

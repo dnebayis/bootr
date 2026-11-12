@@ -22,6 +22,7 @@ export declare const HOSTILE_TEXT: string;
 export declare const BRIEF: string;
 export declare const ACTION_TOOLS: string[];
 export declare const TINY_PNG_BASE64: string;
+export declare const SEARCH_CAP_TEXT: string;
 
 export declare class OwnError extends Error {
   code: string;
@@ -66,7 +67,7 @@ export declare class FakeOwnBackend {
   creator: string;
   runner: 'own' | 'hosted';
   due: { social: boolean; treasury: boolean; judge: boolean };
-  turn: { turnId: string; role: string; clientId: string; reasons: string[]; stepsUsed: number; expiresAt: number } | null;
+  turn: { turnId: string; role: string; clientId: string; reasons: string[]; stepsUsed: number; stepBudget: number; expiresAt: number } | null;
   closedTurns: Set<string>;
   uploads: { imageId: string; mime: string; bytes: number; alt: string; description: string; sha256: string }[];
   posts: { tool: string; text: string; imageId: string | null }[];

@@ -28,6 +28,7 @@ export const SMALL_BODY_BYTES = 16_384;
 export const ACT_BODY_BYTES = 65_536;
 export const UPLOAD_BODY_BYTES = 8 * 1024 * 1024;
 /** A step can wait for X or the chain; a read should not. */
+const MAX_DUE_KEYS = 10_000;
 const QUICK_TIMEOUT_MS = 10_000;
 const STEP_TIMEOUT_MS = 60_000;
 
@@ -38,7 +39,7 @@ export function dueIntervalMs(): number {
 }
 
 // One copy per server process, whichever route bundle asks first (the reason `server-state.ts` uses globalThis).
-type Limits = { runByCredential: RateLimiter; runByIp: RateLimiter; due: RateLimiter; dueWindowMs: number; tokenByIp: RateLimiter; tokenByCode: RateLimiter };
+type Limits = { runByCredential: RateLimiter; runByIp: RateLimiter; dueNext: Map<string, number>; dueWindowMs: number; tokenByIp: RateLimiter; tokenByCode: RateLimiter };
 const KEY = Symbol.for('bootr.web.own-agent-limits');
 const g = globalThis as unknown as Record<symbol, Limits | undefined>;
 
@@ -49,7 +50,7 @@ function limits(): Limits {
   return (g[KEY] = {
     runByCredential: new RateLimiter(RUN_PER_MINUTE, 60_000),
     runByIp: new RateLimiter(RUN_PER_MINUTE_PER_IP, 60_000),
-    due: new RateLimiter(1, dueWindowMs),
+    dueNext: new Map(),
     dueWindowMs,
     tokenByIp: new RateLimiter(TOKEN_PER_MINUTE_PER_IP, 60_000),
     tokenByCode: new RateLimiter(1, DEVICE_POLL_INTERVAL_S * 1000),
@@ -135,7 +136,7 @@ export async function readOwnBody(req: NextRequest, maxBytes: number): Promise<R
 
 const HMAC_REASONS = new Set(['missing_authorization', 'malformed_authorization', 'stale_timestamp', 'bad_signature']);
 
-export type OwnAnswer = { ok: true; status: number; data: unknown } | { ok: false; response: NextResponse };
+export type OwnAnswer = { ok: true; status: number; data: unknown } | { ok: false; response: NextResponse; code: OwnErrorCode };
 
 /**
  * One signed call to the supervisor. A 2xx answer comes back as it is. An error comes back as the response to relay,
@@ -144,7 +145,7 @@ export type OwnAnswer = { ok: true; status: number; data: unknown } | { ok: fals
  * not JSON, is `supervisor_unavailable`. `Retry-After` follows `retryAt`.
  */
 export async function askOwn(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = QUICK_TIMEOUT_MS): Promise<OwnAnswer> {
-  const failed = (response: NextResponse): OwnAnswer => ({ ok: false, response });
+  const failed = (response: NextResponse, code: OwnErrorCode = 'supervisor_unavailable'): OwnAnswer => ({ ok: false, response, code });
   const { serviceKey, url } = supervisorEnv();
   if (!serviceKey || !url) return failed(ownError('supervisor_unavailable'));
   const raw = body === undefined ? '' : JSON.stringify(body);
@@ -170,7 +171,7 @@ export async function askOwn(method: 'GET' | 'POST', path: string, body?: unknow
   const retryAt = typeof e.retryAt === 'string' && Number.isFinite(Date.parse(e.retryAt)) ? e.retryAt : undefined;
   const relayed: OwnErrorBody = { error: code, message: e.message as string, ...(retryAt ? { retryAt } : {}), ...(typeof e.field === 'string' ? { field: e.field.slice(0, 80) } : {}) };
   const retryAfter = retryAt ? Math.max(1, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000)) : 0;
-  return failed(NextResponse.json(relayed, { status: OWN_ERRORS[code].status, headers: { ...NO_STORE, ...(retryAfter ? { 'Retry-After': String(retryAfter) } : {}) } }));
+  return failed(NextResponse.json(relayed, { status: OWN_ERRORS[code].status, headers: { ...NO_STORE, ...(retryAfter ? { 'Retry-After': String(retryAfter) } : {}) } }), code);
 }
 
 /** `askOwn`, relayed: the answer or the error, unchanged. */
@@ -203,14 +204,25 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
   const who = await sha256Hex(credential);
   const byCredential = ownLimited(l.runByCredential, who);
   if (byCredential) return byCredential;
-  if (op === 'due') {
-    const tooSoon = ownLimited(l.due, who);
-    if (tooSoon) return tooSoon;
-  }
   const body = await readOwnBody(req, RUN_BODY_BYTES[op]);
   if (body instanceof NextResponse) return body;
+  if (op === 'due') {
+    // The agent service does not hold a client to the interval between two looks: this route is the one that does.
+    const now = Date.now();
+    const next = l.dueNext.get(who) ?? 0;
+    if (next > now) return ownError('rate_limited', { retryAt: new Date(next).toISOString(), retryAfter: Math.max(1, Math.ceil((next - now) / 1000)) });
+    if (l.dueNext.size >= MAX_DUE_KEYS) {
+      for (const [k, at] of l.dueNext) if (at <= now) l.dueNext.delete(k);
+      if (l.dueNext.size >= MAX_DUE_KEYS) l.dueNext.clear();
+    }
+    l.dueNext.set(who, now + l.dueWindowMs);
+  }
   // The header's credential last, so a `credential` field in the body cannot stand in for it.
-  return forwardOwn('POST', `/internal/own/run/${op}`, { ...body, credential }, RUN_TIMEOUT_MS[op]);
+  const answer = await askOwn('POST', `/internal/own/run/${op}`, { ...body, credential }, RUN_TIMEOUT_MS[op]);
+  if (answer.ok) return ownJson(answer.data, answer.status);
+  // A look that found the agent busy was not a look: the client is told to come back at `retryAt` and may.
+  if (op === 'due' && answer.code === 'runtime_busy') l.dueNext.delete(who);
+  return answer.response;
 }
 
 /** The token poll, per IP: counted before the body is read. */

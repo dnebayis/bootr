@@ -19,7 +19,7 @@ import {
   type OwnErrorCode,
 } from '@bootr/shared/own-agent';
 
-/** Where the launch page keeps the draft of this browser's next launch: `{ draftId, at }`, `at` in milliseconds. */
+/** Where the launch page keeps the draft of this browser's next launch: `{ draftId, at }`, `at` in milliseconds or as an ISO time. */
 export const LAUNCH_DRAFT_KEY = 'bootr.launchDraft';
 /** A draft older than this is not offered: the launch it belonged to is over or forgotten. */
 export const LAUNCH_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -34,8 +34,10 @@ export function parseLaunchDraft(raw: string | null, now = Date.now()): string |
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as { draftId?: unknown; at?: unknown };
-    if (!isDraftUuid(v.draftId) || typeof v.at !== 'number' || !Number.isFinite(v.at)) return null;
-    return now - v.at >= 0 && now - v.at < LAUNCH_DRAFT_MAX_AGE_MS ? v.draftId : null;
+    // `at` as the launch page wrote it: milliseconds, or an ISO time.
+    const at = typeof v.at === 'number' ? v.at : typeof v.at === 'string' ? Date.parse(v.at) : NaN;
+    if (!isDraftUuid(v.draftId) || !Number.isFinite(at)) return null;
+    return now - at >= 0 && now - at < LAUNCH_DRAFT_MAX_AGE_MS ? v.draftId : null;
   } catch {
     return null;
   }

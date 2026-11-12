@@ -11,7 +11,13 @@
  *   startFakeSite({ ownAgent })   the public routes (`/api/catalog`, `/api/platform`, `/api/agent/connect/*`,
  *                                 `/api/agent/run/*`) as the web app serves them, for the packages' tests.
  *
- * "Each error code on request": `backend.failNext(code, extra)` makes the next call answer that `OwnErrorBody`.
+ * "Each error code on request": `backend.failNext(code, extra)` makes the next call answer that `OwnErrorBody`
+ * (called twice, the next two).
+ *
+ * What it mirrors of the real engine, as its builder reported it: the supervisor never answers `slow_down` and does
+ * not enforce the `due` interval (the web routes do both); `runtime_busy` can come back on any run route; past the step
+ * cap every call but `finish` is `step_cap` and the turn stays open for `finish`; a judge turn's budget is its entries
+ * plus one; a completed call that is not a read is answered from its first action when repeated, a read runs again.
  */
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -118,6 +124,8 @@ export const ACTION_TOOLS = [
   'bounty_list',
 ];
 const SPECIAL_TOOLS = ['answer_request', 'judge_entry', 'judge'];
+/** A stand-in for one of the engine's failure texts: the fake answers it for the query "over the cap". */
+export const SEARCH_CAP_TEXT = 'search_daily_cap: the web searches of the last 24 hours are used up. Work with what you have.';
 /** A 1x1 PNG, the picture `judge_entry` answers with. */
 export const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
@@ -173,20 +181,18 @@ export class FakeOwnBackend {
     this.actions = new Map();
     this.uploads = [];
     this.posts = [];
-    this.nextError = null;
+    this.nextErrors = [];
     this.calls = [];
   }
 
   /** The next call answers this error (with `retryAt`, `field` or `detail` from `extra`) and nothing else happens. */
   failNext(code, extra = {}) {
-    this.nextError = { code, extra };
+    this.nextErrors.push({ code, extra });
   }
 
   takeScripted() {
-    if (!this.nextError) return;
-    const { code, extra } = this.nextError;
-    this.nextError = null;
-    throw new OwnError(code, extra);
+    const next = this.nextErrors.shift();
+    if (next) throw new OwnError(next.code, next.extra);
   }
 
   requireEnabled() {
@@ -378,7 +384,7 @@ export class FakeOwnBackend {
         : t.role === 'treasury'
           ? { role: 'treasury', treasury: { usdc: '12.5', weth: '0.01' } }
           : { role: 'social', instructionAuthority: false, mentions: [{ id: '1900000000000000001', author: 'stranger', text: HOSTILE_TEXT, untrusted: true }], postDue: true };
-    return { turnId: t.turnId, role: t.role, resumed, reasons: t.reasons, brief: BRIEF, observation, tools, stepBudget: 8, stepsUsed: t.stepsUsed, expiresAt: iso(t.expiresAt) };
+    return { turnId: t.turnId, role: t.role, resumed, reasons: t.reasons, brief: BRIEF, observation, tools, stepBudget: t.stepBudget, stepsUsed: t.stepsUsed, expiresAt: iso(t.expiresAt) };
   }
 
   openTurn(client, body) {
@@ -389,7 +395,7 @@ export class FakeOwnBackend {
     }
     const forced = body.role === 'social' && body.reason === 'creator_asked';
     if (!this.due[body.role] && !forced) throw new OwnError('not_due', { retryAt: iso(this.now() + 3_600_000) });
-    this.turn = { turnId: `otn_${randomBytes(16).toString('hex')}`, role: body.role, clientId: client.clientId, reasons: forced && !this.due.social ? ['creator_asked'] : body.role === 'social' ? ['pending_mention'] : body.role === 'treasury' ? ['treasury_interval'] : ['judge_job_waiting'], stepsUsed: 0, expiresAt: this.now() + 600_000 };
+    this.turn = { turnId: `otn_${randomBytes(16).toString('hex')}`, role: body.role, clientId: client.clientId, reasons: forced && !this.due.social ? ['creator_asked'] : body.role === 'social' ? ['pending_mention'] : body.role === 'treasury' ? ['treasury_interval'] : ['judge_job_waiting'], stepsUsed: 0, stepBudget: body.role === 'judge' ? 3 : 8, expiresAt: this.now() + 600_000 };
     return this.turnOpen(false);
   }
 
@@ -408,7 +414,7 @@ export class FakeOwnBackend {
     const { repeated, ...rest } = fields;
     if (rest.status !== 'pending' && !repeated) t.stepsUsed += 1;
     const turnEnded = rest.turnEnded === true;
-    const body = { turnId: t.turnId, tool, actionId: null, ...rest, stepsUsed: t.stepsUsed, stepsLeft: Math.max(0, 8 - t.stepsUsed), turnEnded };
+    const body = { turnId: t.turnId, tool, actionId: null, ...rest, stepsUsed: t.stepsUsed, stepsLeft: Math.max(0, t.stepBudget - t.stepsUsed), turnEnded };
     if (turnEnded) this.endTurn();
     return body;
   }
@@ -420,10 +426,13 @@ export class FakeOwnBackend {
     if (![...ACTION_TOOLS, ...SPECIAL_TOOLS].includes(tool)) throw new OwnError('tool_unavailable');
     if (t.role === 'treasury' && /^(read_mentions|read_x_|publish_|resolve_)/.test(tool)) throw new OwnError('tool_unavailable');
     if (t.role === 'social' && /^(treasury_(prepare|execute)|bounty_(post|cancel))$/.test(tool)) throw new OwnError('tool_unavailable');
-    if (t.stepsUsed >= 8) throw new OwnError('step_cap');
-    // The action id is the digest of the turn and the action: a repeated call is the same action.
+    // Past the cap every call but `finish` is refused; the turn stays open for `finish`.
+    if (t.stepsUsed >= t.stepBudget) throw new OwnError('step_cap');
+    // The action id is the digest of the turn and the action. A completed call that is not a read is answered from
+    // its first action when it is repeated; a read runs again.
     const actionId = `0x${sha256(JSON.stringify([t.turnId, tool, input])).slice(0, 64)}`;
-    const stored = this.actions.get(actionId);
+    const isRead = /^(read_|recall|treasury_read$|discover_services$|bounty_list$|search_web$)/.test(tool);
+    const stored = isRead ? undefined : this.actions.get(actionId);
     if (stored) return this.result(t, tool, { ...stored, actionId, repeated: true });
     let outcome;
     if (tool === 'publish_post' || tool === 'publish_reply') {
@@ -455,10 +464,12 @@ export class FakeOwnBackend {
     } else if (tool === 'judge') {
       outcome = { status: 'completed', result: { jobId: '0x00000000000000aa', accepted: true, winner: input.winner ?? null }, turnEnded: true };
       return this.result(t, tool, outcome);
+    } else if (tool === 'search_web' && input.query === 'over the cap') {
+      outcome = { status: 'failed', error: SEARCH_CAP_TEXT };
     } else {
       outcome = { status: 'completed', result: { tool, input, ok: true } };
     }
-    this.actions.set(actionId, outcome);
+    if (!isRead && outcome.status === 'completed') this.actions.set(actionId, outcome);
     return this.result(t, tool, { ...outcome, actionId });
   }
 

@@ -83,6 +83,19 @@ const defaultIo: OwnIo = {
   now: () => Date.now(),
 };
 
+/** `runtime_busy` means the server is settling something for the agent: wait until it says and ask once more. */
+async function patient<T>(call: () => Promise<T>, io: OwnIo): Promise<T> {
+  try {
+    return await call();
+  } catch (err) {
+    if (!(err instanceof BootrApiError) || err.code !== 'runtime_busy') throw err;
+    const wait = err.details.retryAt ? Date.parse(err.details.retryAt) - io.now() : 2000;
+    if (!Number.isFinite(wait) || wait > 30_000) throw err;
+    await io.sleep(Math.max(wait, 250));
+    return call();
+  }
+}
+
 function asApiError(err: unknown): unknown {
   return err instanceof CredentialsError ? new BootrApiError(err.message, err.code, null) : err;
 }
@@ -136,7 +149,13 @@ async function connect(bootr: Bootr, values: { coin?: string; label?: string }, 
     }
     if (answered.status !== 'approved') continue;
     const entry = { credential: answered.credential, clientId: answered.clientId, label: answered.label, target: answered.target, expiresAt: answered.expiresAt, savedAt: new Date(io.now()).toISOString() };
-    await saveCredential(bootr.siteUrl, entry, { env });
+    try {
+      await saveCredential(bootr.siteUrl, entry, { env });
+    } catch (err) {
+      // A credential that cannot be kept is ended at once, so it does not linger on the server.
+      await bootr.ownDisconnect({ credential: entry.credential }).catch(() => undefined);
+      throw asApiError(err);
+    }
     await mkdir(picturesDir(env), { recursive: true, mode: 0o700 }).catch(() => undefined);
     return {
       data: { connected: true, ...describeCredential(entry), credentialsFile: file, picturesFolder: picturesDir(env) },
@@ -170,7 +189,7 @@ async function watch(bootr: Bootr, values: { coin?: string; exec?: string; once?
     try {
       view = await bootr.ownDue({ credential: held.credential });
     } catch (err) {
-      if (!(err instanceof BootrApiError) || !['rate_limited', 'unreachable', 'supervisor_unavailable', 'bad_response'].includes(err.code)) throw err;
+      if (!(err instanceof BootrApiError) || !['rate_limited', 'runtime_busy', 'unreachable', 'supervisor_unavailable', 'bad_response'].includes(err.code)) throw err;
       io.notice(`${err.code}: looking again later.`);
       await io.sleep(err.details.retryAt ? waitUntil(err.details.retryAt, io.now()) : RETRY_WAIT_MS);
       continue;
@@ -209,9 +228,9 @@ export async function runOwn(argv: string[], env: Record<string, string | undefi
     case 'connect':
       return connect(bootr, values, env, all);
     case 'status':
-      return { data: await bootr.ownStatus(which) };
+      return { data: await patient(() => bootr.ownStatus(which), all) };
     case 'due':
-      return { data: await bootr.ownDue(which) };
+      return { data: await patient(() => bootr.ownDue(which), all) };
     case 'watch':
       return watch(bootr, values, env, all);
     case 'disconnect':

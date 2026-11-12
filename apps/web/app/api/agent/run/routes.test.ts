@@ -160,6 +160,10 @@ describe('the answers', () => {
     expect(again.actionId).toBe(first.actionId);
     expect(again.stepsUsed).toBe(1);
     expect(fake.backend.posts).toHaveLength(1);
+    // A read runs again and is a step of its own.
+    const read = { turnId: opened.turnId, tool: 'read_mentions', input: {} };
+    expect(((await (await call('act', read)).json()) as ActResult).stepsUsed).toBe(2);
+    expect(((await (await call('act', read)).json()) as ActResult).stepsUsed).toBe(3);
 
     const failed = await call('act', { turnId: opened.turnId, tool: 'publish_reply', input: { text: 'the price will double' } });
     expect(failed.status).toBe(200);
@@ -239,6 +243,37 @@ describe('the limits and the body caps', () => {
     // Other routes and other clients go on.
     expect((await call('status')).status).toBe(200);
     expect((await call('due', {}, {}, fake.backend.issueCredential())).status).toBe(200);
+  });
+
+  it('does not count a look that found the agent busy: the client may come back at retryAt', async () => {
+    const retryAt = new Date(Date.now() + 2000).toISOString();
+    fake.backend.failNext('runtime_busy', { retryAt });
+    const busy = await call('due');
+    expect((await error(busy, 'runtime_busy')).retryAt).toBe(retryAt);
+    expect(Number(busy.headers.get('retry-after'))).toBeGreaterThan(0);
+    // The agent service holds nobody to the interval, so this route is the only place that does.
+    expect((await call('due')).status).toBe(200);
+    await error(await call('due'), 'rate_limited');
+    expect(fake.seen.filter((s) => s.path.endsWith('/due'))).toHaveLength(2);
+    // Any other refusal still counts as a look.
+    const other = fake.backend.issueCredential();
+    fake.backend.failNext('agent_onboarding');
+    await error(await call('due', {}, {}, other), 'agent_onboarding');
+    await error(await call('due', {}, {}, other), 'rate_limited');
+  });
+
+  it('relays runtime_busy, agent_paused and payload_too_large from any run route', async () => {
+    const retryAt = new Date(Date.now() + 3000).toISOString();
+    for (const op of ['status', 'turn', 'act', 'finish', 'upload'] as const) {
+      fake.backend.failNext('runtime_busy', { retryAt });
+      expect((await error(await call(op, { role: 'social' }), 'runtime_busy')).retryAt, op).toBe(retryAt);
+    }
+    for (const op of ['act', 'finish', 'upload'] as const) {
+      fake.backend.failNext('agent_paused');
+      await error(await call(op, {}), 'agent_paused');
+    }
+    fake.backend.failNext('payload_too_large');
+    await error(await call('upload', { turnId: 'x', dataBase64: 'AAAA' }), 'payload_too_large');
   });
 
   it('caps a step’s body at 64 KB and an upload’s at 8 MB, whatever length is declared', async () => {
