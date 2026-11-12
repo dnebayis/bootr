@@ -418,7 +418,14 @@ export interface LaunchInput {
   symbol: string;
   identity: string;
   image: { url: string } | { dataUrl: string };
+  /** A model id from `GET /api/models`. Leave it out when `runner` is `own`: naming one is refused. */
   model?: string;
+  /**
+   * Who runs the coin's agent. `hosted` (default): Bootr runs it on `model`, paid from fuel. `own`: it thinks in the
+   * creator's own AI client through the Bootr MCP server; the launch writes the model id `own-agent`, `fuelUsdc`
+   * defaults to 0, and it is refused with `own_agent_disabled` while `GET /api/platform` shows `ownAgent: false`.
+   */
+  runner?: 'hosted' | 'own';
   worker?:
     | string
     | { capabilities?: Record<string, boolean>; postIntervalMs: number; jobLines?: string[] };
@@ -431,6 +438,7 @@ export interface LaunchInput {
   launchThrough?: LaunchSource;
   /** Clanker v5 only: the coin's token settings. Refused on the other paths. */
   token?: LaunchTokenSettings;
+  /** Decimal USDC, any amount, 0 included. Default 20 for `runner: hosted`, 0 for `runner: own`. With 0 the answer has no `approve` step. */
   fuelUsdc?: string | number;
   devBuyEth?: string | number;
   /** Clanker v5 only: the dev buy's minimum is the quote less this percent, 0.1 to 50, default 3. */

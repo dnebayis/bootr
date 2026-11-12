@@ -72,7 +72,8 @@ export const FALLBACK_STANDARD: LaunchDefaults = {
   burnBps: 0,
   platformBps: 3000,
   platformRecipient: ZERO,
-  minFuelUsdc: 10_000_000n,
+  // No minimum: both live launchers read 0 and skip the transfer for 0, so a launch needs no fuel (docs/design/byo-agent.md section 1.4).
+  minFuelUsdc: 0n,
   dormancyPeriod: 90 * 86400,
 };
 

@@ -7,6 +7,7 @@
  * live on the next tick; nothing is cached.
  */
 import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
+import { runnerOf, type Runner, type RunnerView } from '@bootr/shared/own-agent';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { eq } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -17,6 +18,7 @@ import { bountiesOf } from './bounties.js';
 import { relayImageModels } from './image-models.js';
 import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
+import { isOwn, ownHooks } from './own/registry.js';
 import { postsPerDayOf } from './post-budget.js';
 import { decideModelOf } from './routing.js';
 import { treasuryTurnOn } from './roles.js';
@@ -94,9 +96,33 @@ export interface AgentConfigView {
    * the page then shows nothing new. Read-only.
    */
   xConnection: XConnectionView | null;
+  /**
+   * Who runs the agent (docs/design/byo-agent.md): `hosted`, the Bootr agent, or `own`, the creator's own AI client.
+   * Read from the stored config and nothing else, so it says the same with the feature's flag on or off.
+   */
+  runner: Runner;
+  /**
+   * For an own coin: when its client last finished a turn (null = never) and how many clients are connected now.
+   * Null for a hosted coin. Read-only.
+   */
+  own: RunnerView['own'];
 }
 
 export type XConnectionView = 'connected' | 'revoked' | 'none';
+
+/**
+ * The `own` block of the config view: the last finished own turn from the runtime state (`ownLastTurnAt`, stamped by
+ * the own-agent engine) and the live clients (`ownHooks.countClients`). Null for a hosted coin; the flag is not asked.
+ */
+export async function ownViewOf(ctx: SupervisorContext, agent: AgentRow): Promise<RunnerView['own']> {
+  if (!isOwn(agent)) return null;
+  const [row, clients] = await Promise.all([
+    ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId), columns: { state: true } }),
+    ownHooks.countClients(ctx, agent.agentId).catch(() => 0),
+  ]);
+  const at = ((row?.state ?? {}) as { ownLastTurnAt?: unknown }).ownLastTurnAt;
+  return { lastTurnAt: typeof at === 'number' && Number.isFinite(at) && at > 0 ? new Date(at).toISOString() : null, clients };
+}
 
 /** The sender's account row as the three words the page needs; null when the sender does not answer. */
 export async function xConnectionOf(ctx: Pick<SupervisorContext, 'sender'>, agentId: string): Promise<XConnectionView | null> {
@@ -151,9 +177,10 @@ function workerKind(config: Record<string, unknown>): ResolvedWorker['id'] {
   return t === 'trader' || t === 'researcher' || t === 'community' || t === CUSTOM_WORKER_ID ? t : 'community';
 }
 
-export function configView(agent: AgentRow, xHold: XHoldView | null = null, xConnection: XConnectionView | null = null): AgentConfigView {
+export function configView(agent: AgentRow, xHold: XHoldView | null = null, xConnection: XConnectionView | null = null, own: RunnerView['own'] = null): AgentConfigView {
   const config = agent.config;
   const preset = currentPreset(config);
+  const runner = runnerOf(config);
   return {
     agentId: agent.agentId,
     kernel: agent.kernel,
@@ -176,6 +203,8 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     updatedAt: agent.updatedAt.toISOString(),
     xHold,
     xConnection,
+    runner,
+    own: runner === 'own' ? (own ?? { lastTurnAt: null, clients: 0 }) : null,
   };
 }
 
@@ -459,5 +488,6 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     })
     .onConflictDoNothing();
   ctx.log.info({ agentId: agent.agentId, by, revision, fields }, 'agent config updated by the creator');
-  return { ok: true, config: configView(row ?? { ...agent, config, updatedAt: now }), fields };
+  const next = row ?? { ...agent, config, updatedAt: now };
+  return { ok: true, config: configView(next, null, null, await ownViewOf(ctx, next)), fields };
 }

@@ -6,13 +6,13 @@ import { toast } from 'sonner';
 import type { Address } from 'viem';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, POSTS_PER_DAY, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { qk } from '@/lib/indexer';
-import { fetchImageModels, fetchModels } from '@/lib/launch';
+import { fetchImageModels, fetchModels, fetchPlatformFlags } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
 import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS, type ConsoleSection } from '@/lib/console-sections';
-import { SECTION_HINTS } from '@/lib/onboarding';
+import { OWN_SECTION_HINTS, SECTION_HINTS } from '@/lib/onboarding';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Label, Select, Switch, Textarea } from '@/components/ui/Field';
@@ -22,6 +22,7 @@ import { TokenImage } from '@/components/ui/TokenImage';
 import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
 import { AgentChat } from './AgentChat';
+import { AgentRunnerCard } from './AgentRunnerCard';
 import { ApprovalQueue } from './ApprovalQueue';
 import { CoinImageForm } from './CoinImageForm';
 import { CoinLinksForm } from './CoinLinksForm';
@@ -289,6 +290,10 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const { config, cfg, fuel, gas, kernelGas, gasWei, inboxCount, inactive, outlook } = useConsoleStatus(token, agent);
   const models = useQuery({ queryKey: ['models'], queryFn: fetchModels, staleTime: 60_000 });
   const imageModels = useQuery({ queryKey: ['models', 'image'], queryFn: fetchImageModels, staleTime: 60_000 });
+  // Whether this deployment offers own agents (docs/design/byo-agent.md): the Agent card of a Bootr-agent coin shows
+  // only then. An own coin's card shows either way, in its short form while they are switched off.
+  const platform = useQuery({ queryKey: ['platform'], queryFn: fetchPlatformFlags, staleTime: 30_000 });
+  const ownOffered = platform.data?.ownAgent === true;
   const [edits, setEdits] = useState<{ revision: number; draft: Draft } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -350,7 +355,9 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   // from what the agent's thoughts cost lately, else the model's listed price.
   const budgetInterval = cfg && draft ? shownInterval(draft.postsPerDay, { postsPerDay: cfg.postsPerDay, postIntervalMs: cfg.worker.postIntervalMs }) : null;
   const measuredCost = useMemo(() => measuredThoughtCost(fuel.data), [fuel.data]);
-  const budgetNote = draft && budgetInterval != null ? postBudgetNote({ postsPerDay: draft.postsPerDay, intervalMs: budgetInterval, measuredMicroUsdc: measuredCost, listedUsd: priceOf(draft.model) }) : '';
+  // An own agent thinks in its creator's own AI client: no model, no price per thought, no fuel cost of a post.
+  const own = cfg?.runner === 'own';
+  const budgetNote = draft && budgetInterval != null ? postBudgetNote({ postsPerDay: draft.postsPerDay, intervalMs: budgetInterval, measuredMicroUsdc: own ? null : measuredCost, listedUsd: own ? null : priceOf(draft.model) }) : '';
 
   const save = async () => {
     if (!cfg || !changes || !valid) return;
@@ -394,11 +401,11 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const hint = (id: ConsoleSection) =>
     cfg?.revision === 0 ? (
       <p className="text-caption text-mute" data-testid={`section-hint-${id}`}>
-        {SECTION_HINTS[id]}
+        {(own ? OWN_SECTION_HINTS[id] : undefined) ?? SECTION_HINTS[id]}
       </p>
     ) : null;
   const showSaveBar = !!cfg && !!draft && (SETTINGS_SECTIONS.includes(section) || dirty.length > 0);
-  const fuelAndGas = <FuelAndGas token={token} agent={agent} inactive={inactive} gasWei={gasWei} kernelGas={kernelGas} onGas={() => void gas.refetch()} />;
+  const fuelAndGas = <FuelAndGas token={token} agent={agent} inactive={inactive} gasWei={gasWei} kernelGas={kernelGas} onGas={() => void gas.refetch()} ownServices={own && cfg ? { on: cfg.worker.capabilities.services, dailyMicroUsdc: cfg.services.dailyMicroUsdc, perCallMicroUsdc: cfg.services.perCallMicroUsdc } : null} />;
 
   if (config.isPending) {
     return (
@@ -443,7 +450,9 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
       <div data-testid="creator-console" className="@container flex min-w-0 flex-col gap-4">
         <FuelOutlookStrip outlook={outlook} />
 
-        <TabPanel value="mind">
+        <TabPanel value="mind" className="flex flex-col gap-4">
+          {/* Who runs the agent, its connected AI clients and the switch; outside the settings form, which it is not part of. */}
+          {own || ownOffered ? <AgentRunnerCard token={token} agent={agent} config={cfg} ownOffered={ownOffered} /> : null}
           {settingsForm(
             'mind',
             <>
@@ -462,6 +471,8 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                   placeholder="Personality, goals, strategy, what it should and should not do."
                 />
               </Box>
+              {/* An own agent has no hosted model: the model and economy-mode fields are kept in its config for a switch back, and hidden. */}
+              {own ? null : (
               <div className={"grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-2"}>
                 <Box>
                   <Label htmlFor="console-model" hint={priceOf(draft.model) != null ? <span className="font-mono tabular">{formatThoughtPrice(priceOf(draft.model))} per thought</span> : undefined}>
@@ -519,6 +530,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                   ) : null}
                 </Box>
               </div>
+              )}
             </>,
           )}
         </TabPanel>
@@ -606,7 +618,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                       <span className="min-w-0 text-sm leading-tight text-ink">{CAPABILITIES[k].label}</span>
                       <Switch id={`power-${k}`} label={CAPABILITIES[k].label} checked={draft.capabilities[k]} onChange={(v) => update({ capabilities: { ...draft.capabilities, [k]: v } })} />
                     </div>
-                    <span className="text-micro text-mute">{CAPABILITIES[k].description}</span>
+                    <span className="text-micro text-mute">{own && k === 'images' ? 'Posts pictures your AI client makes and uploads from your machine. Nothing is bought.' : CAPABILITIES[k].description}</span>
                   </div>
                 ))}
               </div>
@@ -699,11 +711,17 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
           {settingsForm(
             'look',
             <Box className="flex flex-col gap-3" data-testid="image-style">
-              <BlockTitle hint={!draft.capabilities.images ? <span>Images are off under Powers</span> : imagePrice != null ? <span className="font-mono tabular">{formatThoughtPrice(imagePrice)} per image</span> : undefined}>
+              <BlockTitle hint={!draft.capabilities.images ? <span>Images are off under Powers</span> : own ? undefined : imagePrice != null ? <span className="font-mono tabular">{formatThoughtPrice(imagePrice)} per image</span> : undefined}>
                 Agent pictures
               </BlockTitle>
+              {own ? (
+                <p className="text-caption text-mute" data-testid="own-pictures-note">
+                  Your AI client makes the pictures and uploads them from the bootr-pictures folder on your machine. The notes and the reference below tell it how they should look.
+                </p>
+              ) : null}
               <div className={"grid grid-cols-1 gap-3 @min-[18rem]:grid-cols-2 @min-[40rem]:grid-cols-3"}>
-                <div>
+                {/* The image model belongs to the Bootr agent; kept in the config, hidden for an own agent. */}
+                <div className={own ? 'hidden' : undefined}>
                   <Label htmlFor="console-image-model">Image model</Label>
                   <Select id="console-image-model" value={draft.imageModel} onChange={(e) => update({ imageModel: e.target.value })}>
                     {imageModelGroups.map((g) => (
@@ -770,9 +788,17 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                 </Box>
                 <ApprovalQueueBox token={token} reviewing={cfg.requireApproval} />
               </div>
-              <Box className="self-start [&>[data-testid=agent-chat]]:border-t-0 [&>[data-testid=agent-chat]]:pt-0">
-                <AgentChat token={token} />
-              </Box>
+              {own ? (
+                // No chat for an own agent: there is no mind on Bootr's side to answer. The history is kept for a switch back.
+                <Box className="self-start" data-testid="chat-own-agent">
+                  <h3 className="text-caption font-medium text-ink">Chat with your agent</h3>
+                  <p className="mt-1 text-sm text-body">Your agent runs in your own AI client. Talk to it there.</p>
+                </Box>
+              ) : (
+                <Box className="self-start [&>[data-testid=agent-chat]]:border-t-0 [&>[data-testid=agent-chat]]:pt-0">
+                  <AgentChat token={token} />
+                </Box>
+              )}
             </div>
           </div>
         </TabPanel>
@@ -820,6 +846,7 @@ function FuelAndGas({
   gasWei,
   kernelGas,
   onGas,
+  ownServices,
 }: {
   token: Token;
   agent: Agent | null;
@@ -827,12 +854,19 @@ function FuelAndGas({
   gasWei: bigint | null;
   kernelGas: { deposit: bigint; balance: bigint } | null | undefined;
   onGas: () => void;
+  /** Set for an own agent: the paid-services power and its caps, the only thing its fuel pays for. Null for the Bootr agent. */
+  ownServices: { on: boolean; dailyMicroUsdc: number; perCallMicroUsdc: number } | null;
 }) {
   return (
     <div className={"grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-2"}>
       <Box>
         <BlockTitle>Fuel</BlockTitle>
-        <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
+        {ownServices ? (
+          <p className="mb-2 text-caption text-body" data-testid="own-fuel-note">
+            Pays for paid services only. {ownServices.on ? `That power is on: at most ${formatUsdcMicro(ownServices.perCallMicroUsdc)} USDC a call and ${formatUsdcMicro(ownServices.dailyMicroUsdc)} USDC a day.` : 'That power is off, so this agent spends no fuel.'} Thinking and pictures cost none.
+          </p>
+        ) : null}
+        <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} own={!!ownServices} />
         {inactive ? <p className="mt-2 text-caption text-mute">This agent is {agent?.status}. Fuel is held until it resumes.</p> : null}
       </Box>
       <Box>

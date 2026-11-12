@@ -34,7 +34,11 @@ export async function fetchModels(): Promise<ModelsResponse> {
   }
 }
 
-export type PlatformFlags = { launchesPaused: boolean; allowedModels: string[] };
+/**
+ * `ownAgent`: whether this deployment offers own agents (a coin's agent that thinks in its creator's own AI client,
+ * docs/design/byo-agent.md). False until the route says true, so the launch page stays the one form it is today.
+ */
+export type PlatformFlags = { launchesPaused: boolean; allowedModels: string[]; ownAgent: boolean };
 
 /** Public platform switches set in the admin console (`/api/platform`). Null when unavailable. */
 export async function fetchPlatformFlags(): Promise<PlatformFlags | null> {
@@ -45,6 +49,7 @@ export async function fetchPlatformFlags(): Promise<PlatformFlags | null> {
     return {
       launchesPaused: j.launchesPaused === true,
       allowedModels: Array.isArray(j.allowedModels) ? j.allowedModels.filter((m): m is string => typeof m === 'string') : [],
+      ownAgent: j.ownAgent === true,
     };
   } catch {
     return null;

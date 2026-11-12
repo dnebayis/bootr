@@ -74,6 +74,9 @@ describe('GET /internal/agents/:id/config', () => {
         updatedAt: expect.any(String),
         xHold: null,
         xConnection: 'connected',
+        // who runs the agent (docs/design/byo-agent.md): every coin without a stored runner is the Bootr agent
+        runner: 'hosted',
+        own: null,
       });
       expect((await api(world).get('/internal/agents/404/config')).status).toBe(404);
       // a custom worker reports its stored preset

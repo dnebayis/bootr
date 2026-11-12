@@ -7,6 +7,7 @@
  * Web Crypto only (route handlers). Shapes are the contract in docs/design/agent-launch-v2.md.
  */
 import { isImageModel } from '@bootr/agent-core';
+import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
 import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
@@ -232,7 +233,20 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
     xHold: sanitizeXHold(o.xHold),
     xConnection: sanitizeXConnection(o.xConnection),
+    runner: runnerOf(o),
+    own: sanitizeOwn(o),
   };
+}
+
+/**
+ * The `own` block of the config view: for an own agent, when its client last finished a turn and how many clients are
+ * connected; null for the Bootr agent, and for anything an older agent service sends (which names no runner).
+ */
+export function sanitizeOwn(raw: unknown): RunnerView['own'] {
+  if (runnerOf(raw) !== 'own') return null;
+  const own = ((raw as { own?: unknown }).own ?? {}) as { lastTurnAt?: unknown; clients?: unknown };
+  const clients = Number(own.clients);
+  return { lastTurnAt: iso(own.lastTurnAt), clients: Number.isInteger(clients) && clients > 0 ? clients : 0 };
 }
 
 /** Keeps only the fields the tape renders: time, kind, one line of text, a tx hash and an https link. */
@@ -385,6 +399,7 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
   const status = BOUNTY_STATUSES.includes(o.status as BountyStatus) ? (o.status as BountyStatus) : null;
   const deliverable = o.deliverable === 'image' || o.deliverable === 'link' ? o.deliverable : null;
   if (!id || !createdAt || !closesAt || !task || !amountMicroUsdc || !status || !deliverable) return null;
+  const ownJudge = ownJudgeOf(o.ownJudge);
   const shortId = typeof o.shortId === 'string' && SHORT_ID_RE.test(o.shortId) && id.startsWith(o.shortId.toLowerCase()) ? o.shortId.toLowerCase() : id.slice(0, 18);
   const amountUsdc = typeof o.amountUsdc === 'string' && USDC_RE.test(o.amountUsdc) ? o.amountUsdc : String(Number(amountMicroUsdc) / 1_000_000);
   const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, BOUNTIES_BOUNDS.maxCriterionChars)).filter((c): c is string => !!c).slice(0, BOUNTIES_BOUNDS.maxCriteria);
@@ -455,7 +470,19 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
     payment,
     closedAt: iso(o.closedAt),
     closeReplyUrl: xUrlOrNull(o.closeReplyUrl),
+    ...(ownJudge ? { ownJudge } : {}),
   };
+}
+
+/**
+ * `ownJudge` on a bounty job of an own coin that waits for its creator's agent to rule: `{ruleBy}`, the ISO time by
+ * which it must (after that the job closes with no winner). Null for anything else, and the field is then left out.
+ */
+function ownJudgeOf(raw: unknown): { ruleBy: string } | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const ruleBy = (raw as { ruleBy?: unknown }).ruleBy;
+  const at = typeof ruleBy === 'string' ? iso(ruleBy) : null;
+  return at ? { ruleBy: at } : null;
 }
 
 /** The job list as the page shows it: jobs in motion first, then newest first; rows that are not jobs are dropped. */
@@ -512,6 +539,45 @@ export async function putAgentConfig(agentId: string, body: PutAgentConfigBody):
   const cfg = sanitizeConfig(await res.json());
   if (!cfg) throw new SupervisorUnavailable('supervisor returned a malformed config');
   return cfg;
+}
+
+/**
+ * A switch of who runs the agent may wait for the step in progress (10 s at the agent service) and reconcile one paid
+ * thought (15 s) before it answers, so it gets more time than a plain read.
+ */
+const RUNNER_SWITCH_TIMEOUT_MS = 45_000;
+
+/** The switch request as the route takes it: `runner` one of the two, `model` a short id when present; null for anything else. */
+export function parseRunnerSwitch(input: unknown): RunnerSwitchRequest | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const { runner, model } = input as { runner?: unknown; model?: unknown };
+  if (typeof runner !== 'string' || !(RUNNERS as readonly string[]).includes(runner)) return null;
+  if (model === undefined || model === null) return { runner: runner as Runner };
+  if (typeof model !== 'string' || !MODEL_ID_RE.test(model)) return null;
+  return { runner: runner as Runner, model };
+}
+
+/**
+ * `POST /internal/agents/:id/runner` (docs/design/byo-agent.md section 13.6): the creator moves the coin between "My
+ * own agent" and "Bootr agent". The agent service checks the creator, the flag (for a switch to own only) and the
+ * model, takes the agent's lease and answers what the creator should know. Its refusals arrive as the own-agent error
+ * body and are relayed with their code (`runner_unchanged`, `model_required`, `model_not_allowed`, `own_agent_disabled`).
+ */
+export async function switchAgentRunner(agentId: string, body: RunnerSwitchRequest & { by: Address; allowedModels: string[] }): Promise<RunnerSwitchResponse> {
+  const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/runner`, body, RUNNER_SWITCH_TIMEOUT_MS);
+  if (!res.ok) {
+    const err = await errorOf(res);
+    // An agent service from before this route answers a bare 404: say what that means in the contract's own words.
+    if (res.status === 404 && !(err.code in OWN_ERRORS)) throw new SupervisorError(OWN_ERRORS.own_agent_disabled.status, 'own_agent_disabled' satisfies OwnErrorCode, OWN_ERRORS.own_agent_disabled.message);
+    throw err;
+  }
+  const json = (await res.json()) as { runner?: unknown; revision?: unknown; notes?: unknown };
+  const revision = Number(json.revision);
+  return {
+    runner: runnerOf(json),
+    revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
+    notes: Array.isArray(json.notes) ? json.notes.filter((n): n is string => typeof n === 'string' && n.length <= 300).slice(0, 4) : [],
+  };
 }
 
 /** `GET /internal/agents/:id/fuel?days=`: thoughts per model (economy mode shows its split here). Unknown agent = empty. */

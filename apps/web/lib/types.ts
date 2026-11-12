@@ -1,6 +1,7 @@
 /** Shapes from docs/data-contract.md. Amounts are integer base-unit strings. */
 import type { Address, Hex } from 'viem';
 import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_AMOUNT_MICRO_USDC, BOUNTY_MAX_CONSIDERED, BOUNTY_MAX_COOLDOWN_SECONDS, BOUNTY_MAX_CRITERIA, BOUNTY_MAX_CRITERION_CHARS, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MAX_TASK_CHARS, BOUNTY_MIN_AMOUNT_MICRO_USDC, BOUNTY_MIN_HOURS_OPEN, DEFAULT_BOUNTIES_POLICY } from '@bootr/agent-core';
+import type { Runner, RunnerView } from '@bootr/shared/own-agent';
 import type { CapabilityKey } from '@bootr/shared/workers';
 
 export type { CapabilityKey };
@@ -366,7 +367,16 @@ export interface AgentConfig {
    * same account again) or `none` (no account). Null when the service could not be asked: the page shows nothing new.
    */
   xConnection: AgentXConnection | null;
+  /**
+   * Who runs the agent: `hosted`, the Bootr agent, or `own`, the creator's own AI client (docs/design/byo-agent.md).
+   * Read from the stored config, so it says the same whether own agents are switched on or off on the deployment.
+   */
+  runner: Runner;
+  /** For an own agent: when its client last finished a turn (ISO, null = never) and how many clients are connected. Null for the Bootr agent. */
+  own: RunnerView['own'];
 }
+
+export type { Runner, RunnerView };
 
 export type AgentXConnection = 'connected' | 'revoked' | 'none';
 
@@ -491,6 +501,11 @@ export interface BountyJob {
   pageText: string;
   /** Replies seen, those that could be judged, those actually judged (the first 12), and why the rest were not, by reason. */
   entries: { received: number; eligible: number; considered: number; ineligible: Record<string, number> };
+  /**
+   * Only on a job of an own-agent coin that waits for its creator's agent to judge: `ruleBy` is the ISO time by which
+   * it must rule; after that the job closes with no winner. Absent on every other job.
+   */
+  ownJudge?: { ruleBy: string };
   verdict: {
     /** 1-based number of the winning entry among those considered; null when nothing met the job. */
     winner: number | null;

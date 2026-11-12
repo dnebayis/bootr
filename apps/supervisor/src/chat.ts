@@ -25,6 +25,7 @@ import { SLEEP_USDC } from './fuel.js';
 import { buildRequest, outputLimitReached, parseAssistant, reconcileRelay, recentThoughtCost, relayRequest, type RelayResult } from './inference.js';
 import { directEnabled } from './blockrun.js';
 import { agentConfigOf } from './onboarding.js';
+import { OWN_ERRORS, runnerOf } from '@bootr/shared/own-agent';
 import { recentPosts } from './recent-posts.js';
 import { decideModelOf } from './routing.js';
 import { treasuryTurnOn } from './treasury-switch.js';
@@ -515,6 +516,11 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
  * request on a key of its own, and stores the answer. Touches no runtime state.
  */
 export async function sendChatMessage(ctx: SupervisorContext, agent: AgentRow, body: { by?: unknown; text?: unknown }): Promise<ChatSendResult> {
+  // An own coin has no mind on Bootr's side to answer: refused before anything is read or paid, with the feature's flag
+  // on or off (docs/design/byo-agent.md section 5.3). The history is left as it is and is back with a switch to the Bootr agent.
+  // `runnerOf(agent.config) === 'own'` is exactly what own/registry.ts `isOwn` reads; it is spelled out so this file's
+  // imports stay the short list test/chat.test.ts pins.
+  if (runnerOf(agent.config) === 'own') return { ok: false, status: 409, error: 'chat_not_available', message: OWN_ERRORS.chat_not_available.message };
   let by: Address;
   try {
     by = getAddress(String(body.by));

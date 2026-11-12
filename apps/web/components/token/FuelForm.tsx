@@ -17,7 +17,7 @@ import { ConnectButton } from '@/components/shell/ConnectButton';
 const PRESETS = [5, 20, 50];
 
 /** "Fuel the agent": a plain USDC transfer to the agent's kernel. No approval needed. */
-export function FuelForm({ kernel, symbol, disabled }: { kernel: Address; symbol: string; disabled?: boolean }) {
+export function FuelForm({ kernel, symbol, disabled, own }: { kernel: Address; symbol: string; disabled?: boolean; /** The agent runs in its creator's own AI client: fuel pays for paid services only. */ own?: boolean }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState('20');
   const { isConnected } = useConnection();
@@ -59,8 +59,9 @@ export function FuelForm({ kernel, symbol, disabled }: { kernel: Address; symbol
       }}
     >
       <label htmlFor="fuel-amount" className="text-caption text-mute">
-        Send USDC to the agent treasury. It pays for thoughts and posts. This is not a purchase of ${symbol} and it is not refundable: the USDC belongs to the
-        agent once sent. To buy the coin, use Trade.
+        {own
+          ? `Send USDC to the agent treasury. This agent thinks in your own AI client, so fuel pays for paid services only. This is not a purchase of $${symbol} and it is not refundable: the USDC belongs to the agent once sent. To buy the coin, use Trade.`
+          : `Send USDC to the agent treasury. It pays for thoughts and posts. This is not a purchase of $${symbol} and it is not refundable: the USDC belongs to the agent once sent. To buy the coin, use Trade.`}
       </label>
       <Input id="fuel-amount" inputMode="decimal" mono suffix="USDC" value={amount} onChange={(e) => setAmount(e.target.value.trim())} aria-invalid={!valid} />
       <div className="flex gap-1.5">

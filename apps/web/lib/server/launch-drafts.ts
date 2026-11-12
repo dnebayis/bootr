@@ -27,7 +27,7 @@ import path from 'node:path';
 import { CUSTOM_WORKER_ID, normalizeWorkerPreset, workerTemplateById, type WorkerPreset, type WorkerTemplateId } from '@bootr/shared/workers';
 import { normalizeLinks, type CoinLinks } from '@/lib/coin-link-rules';
 import { parseTokenSettings, type TokenSettingsInput } from '@/lib/token-settings';
-import type { LaunchSource } from '@/lib/types';
+import type { LaunchSource, Runner } from '@/lib/types';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/launch-drafts must not be imported in the browser');
 
@@ -142,19 +142,29 @@ export function normalizeDraftTokenSettings(input: unknown): TokenSettingsInput 
   return r.ok ? r.settings : null;
 }
 
+/** Who the launch says runs the agent: `own` for an own-agent launch, `hosted` (the Bootr agent) for anything else, older drafts included. */
+export function normalizeRunner(input: unknown): Runner {
+  return input === 'own' ? 'own' : 'hosted';
+}
+
 type DraftFile = {
   identity: string;
   coin: DraftCoin | null;
   worker: DraftWorker | null;
   source: LaunchSource;
   tokenSettings: TokenSettingsInput | null;
+  /** Written only for an own-agent launch; absent means the Bootr agent. */
+  runner?: Runner;
   ownerTag: string;
   createdAt: number;
   updatedAt: number;
 };
 
-/** `source`: which launcher the launch went (or goes) through; older drafts read back as `bootr`. `tokenSettings`: Clanker v5 only. */
-export type LaunchDraft = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource; tokenSettings: TokenSettingsInput | null };
+/**
+ * `source`: which launcher the launch went (or goes) through; older drafts read back as `bootr`. `tokenSettings`: Clanker v5 only.
+ * `runner`: `own` when the launch was prepared as an own-agent launch (the agent thinks in its creator's own AI client); absent means the Bootr agent.
+ */
+export type LaunchDraft = { identity: string; coin: DraftCoin | null; worker: DraftWorker | null; source: LaunchSource; tokenSettings: TokenSettingsInput | null; runner?: Runner };
 
 function fileFor(dir: string, draftId: string): string {
   if (!isDraftId(draftId)) throw new Error('not a draft id');
@@ -171,6 +181,7 @@ async function readDraft(dir: string, draftId: string): Promise<DraftFile | null
       worker: normalizeWorker(raw.worker),
       source: normalizeSource(raw.source) ?? 'bootr',
       tokenSettings: normalizeDraftTokenSettings(raw.tokenSettings),
+      ...(normalizeRunner(raw.runner) === 'own' ? { runner: 'own' as const } : {}),
       ownerTag: raw.ownerTag,
       createdAt: Number(raw.createdAt) || 0,
       updatedAt: Number(raw.updatedAt) || 0,
@@ -191,7 +202,7 @@ export async function readDraftIdentity(draftId: string, opts: { dir?: string } 
 export async function readLaunchDraft(draftId: string, opts: { dir?: string } = {}): Promise<LaunchDraft | null> {
   if (!isDraftId(draftId)) return null;
   const draft = await readDraft(opts.dir ?? draftsDir(), draftId);
-  return draft ? { identity: draft.identity, coin: draft.coin, worker: draft.worker, source: draft.source, tokenSettings: draft.tokenSettings } : null;
+  return draft ? { identity: draft.identity, coin: draft.coin, worker: draft.worker, source: draft.source, tokenSettings: draft.tokenSettings, ...(draft.runner === 'own' ? { runner: 'own' as const } : {}) } : null;
 }
 
 function randomTag(): string {
@@ -286,7 +297,7 @@ export async function sweepDrafts(launched: (draftId: string) => Promise<boolean
 }
 
 /**
- * Stores `identity` (already normalized), `opts.coin`, `opts.worker` and `opts.source` (default `bootr`) under `draftId`. A new draft id gets a fresh owner
+ * Stores `identity` (already normalized), `opts.coin`, `opts.worker`, `opts.source` (default `bootr`) and `opts.runner` (kept only when `own`) under `draftId`. A new draft id gets a fresh owner
  * tag; an existing one is only replaced when `ownerTag` matches the stored tag, else `{ok: false, reason: 'owned'}`.
  * A new id is refused with `{ok: false, reason: 'full'}` once the store holds `opts.cap` (default MAX_DRAFTS) drafts.
  * Writes are atomic (temp file + rename).
@@ -295,7 +306,7 @@ export async function saveDraftIdentity(
   draftId: string,
   identity: string,
   ownerTag: string | null,
-  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource; tokenSettings?: TokenSettingsInput | null; cap?: number } = {},
+  opts: { dir?: string; now?: number; coin?: DraftCoin | null; worker?: DraftWorker | null; source?: LaunchSource; tokenSettings?: TokenSettingsInput | null; runner?: Runner; cap?: number } = {},
 ): Promise<SaveResult> {
   const dir = opts.dir ?? draftsDir();
   const now = opts.now ?? Math.floor(Date.now() / 1000);
@@ -310,6 +321,7 @@ export async function saveDraftIdentity(
     worker: opts.worker ?? null,
     source: opts.source ?? 'bootr',
     tokenSettings: opts.source === 'clanker-v5' ? (opts.tokenSettings ?? null) : null,
+    ...(opts.runner === 'own' ? { runner: 'own' as const } : {}),
     ownerTag: tag, createdAt: existing?.createdAt || now, updatedAt: now };
   await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.${randomTag().slice(0, 8)}.tmp`;

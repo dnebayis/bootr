@@ -236,11 +236,19 @@ export async function run(
             notice:
               'Sign "message" with your own wallet, then run: bootr prepare launch. It lasts 10 minutes, and the first attempt spends it.',
           };
-        case 'launch':
+        case 'launch': {
+          const data = await prepareLaunch(bootr, values);
+          // An own-agent launch ("runner": "own" in the spec): the coin's agent thinks in the creator's own AI client.
+          const own = (data as { runner?: unknown }).runner === 'own';
           return {
-            data: await prepareLaunch(bootr, values),
-            notice: `${NOT_SENT} A launch costs real money and cannot be undone: check every amount first.`,
+            data,
+            notice: `${NOT_SENT} A launch costs real money and cannot be undone: check every amount first.${
+              own
+                ? ' This coin’s agent will think in your own AI client: after the launch, connect one (bootr own connect), or the agent stays silent.'
+                : ''
+            }`,
           };
+        }
         default:
           throw new UsageError('prepare takes: claim, launch-message or launch.');
       }
