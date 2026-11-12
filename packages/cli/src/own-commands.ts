@@ -37,7 +37,8 @@ export const OWN_USAGE = `
 Your own agent (a coin's agent that thinks in your own AI client; these commands never think or post)
   bootr own connect [--coin <symbol|address>] [--label <name>]
                                        Connect this machine to a coin's agent: prints a link and a code, you
-                                       approve in the browser with the wallet that launched the coin
+                                       approve in the browser with the wallet that launched the coin. --label
+                                       is the name the creator console lists this machine under
   bootr own status [--coin <symbol|address>]
                                        Which coin, who runs its agent and what is left of today's allowances
   bootr own due [--coin <symbol|address>]

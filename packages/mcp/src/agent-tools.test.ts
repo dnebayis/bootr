@@ -634,6 +634,25 @@ describe('an approval for another coin than the one asked for (security review M
   });
 });
 
+describe('the name of a connection', () => {
+  it('is what the client calls itself, unless the creator typed another one on the approval page', async () => {
+    for (const [key, grant] of site.backend.grants) if (grant.status !== 'redeemed') site.backend.grants.delete(key);
+    // The page's field left empty: the approval names no label, and the client's own name stands.
+    const first = json<{ userCode: string }>(await call('bootr_agent_connect', { coin: 'OWL' }));
+    site.backend.connectApprove({ userCode: first.userCode, creator: site.backend.creator, target: { kind: 'coin', kernel: COIN.kernel, agentId: COIN.agentId } });
+    expect(json(await call('bootr_agent_connect', { coin: 'OWL' }))).toMatchObject({ connected: true, label: 'bootr-test' });
+    expect((await stored()).map((e) => e.label)).toEqual(['bootr-test']);
+    expect((site.backend.clientsOf(COIN.agentId).clients as { label: string }[]).map((c) => c.label)).toEqual(['bootr-test']);
+    expect(json(await call('bootr_agent_disconnect', { coin: 'OWL' }))).toEqual({ ok: true });
+    // The creator typed a name: that one is kept, on the site and on this machine.
+    const second = json<{ userCode: string }>(await call('bootr_agent_connect', { coin: 'OWL' }));
+    site.backend.connectApprove({ userCode: second.userCode, creator: site.backend.creator, label: 'Office', target: { kind: 'coin', kernel: COIN.kernel, agentId: COIN.agentId } });
+    expect(json(await call('bootr_agent_connect', { coin: 'OWL' }))).toMatchObject({ connected: true, label: 'Office' });
+    expect((await stored()).map((e) => e.label)).toEqual(['Office']);
+    expect(json(await call('bootr_agent_disconnect', { coin: 'OWL' }))).toEqual({ ok: true });
+  });
+});
+
 describe('a credential', () => {
   it('appeared in no result and no log line of this whole run', () => {
     const all = `${everything.join('\n')}\n${stderr}`;

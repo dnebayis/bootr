@@ -322,7 +322,11 @@ function Approve({ grant, onDone }: { grant: ConnectGrantView; onDone: (r: Conne
           <Label htmlFor="connect-label" hint="optional">
             Your name for this client
           </Label>
-          <Input id="connect-label" maxLength={CLIENT_LABEL_MAX} placeholder={grant.clientName} value={label} onChange={(e) => setLabel(e.target.value)} autoComplete="off" />
+          <Input id="connect-label" maxLength={CLIENT_LABEL_MAX} placeholder={grant.clientName} value={label} onChange={(e) => setLabel(e.target.value)} autoComplete="off" aria-describedby="connect-label-note" />
+          {/* An empty field sends no name, so the one the client gave (its --label, or what it calls itself) is kept. */}
+          <p id="connect-label-note" className="mt-1 text-micro text-mute" data-testid="connect-label-note">
+            Leave this empty to keep the name the client gave: <span className="break-all text-body">{grant.clientName}</span>.
+          </p>
         </div>
         {chosen ? (
           <div>

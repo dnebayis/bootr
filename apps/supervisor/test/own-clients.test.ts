@@ -268,6 +268,29 @@ describe('own agent: connecting a client', () => {
     }
   });
 
+  it('the name the client gave is its label, unless the creator typed another one on the approval page', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      // `bootr own connect --label "My laptop"` sends the name with the request; the page's field was left empty.
+      const untouched = await start(w, { clientName: 'My laptop' });
+      expect((await approveCoin(w, untouched.userCode)).body.label).toBe('My laptop');
+      expect((await token(w, untouched.deviceCode)).body).toMatchObject({ status: 'approved', label: 'My laptop' });
+      // A field holding spaces only is a field left empty.
+      const blank = await start(w, { clientName: 'Desk machine' });
+      expect((await approveCoin(w, blank.userCode, { label: '   ' })).body.label).toBe('Desk machine');
+      expect((await token(w, blank.deviceCode)).body).toMatchObject({ status: 'approved', label: 'Desk machine' });
+      // The creator typed a name of their own: that one is kept.
+      const typed = await start(w, { clientName: 'Third machine' });
+      expect((await approveCoin(w, typed.userCode, { label: 'Office' })).body.label).toBe('Office');
+      expect((await token(w, typed.deviceCode)).body).toMatchObject({ status: 'approved', label: 'Office' });
+      const list = await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`);
+      expect(list.body.clients.map((c) => c.label)).toEqual(['My laptop', 'Desk machine', 'Office']);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a coin has at most three clients, counting approvals not yet collected; disconnecting one frees a place', async () => {
     const w = await ownWorld();
     try {

@@ -220,8 +220,11 @@ test('the draft of this browser’s next launch can be approved, and an old draf
   // The only choice, so it is chosen; the sentence names the draft and the code.
   await expect(page.getByTestId('connect-choice-draft')).toBeChecked();
   await expect(page.getByTestId('connect-statement')).toHaveText(connectDraftStatement(DRAFT, MOCK_CODES.pending));
+  // The name field is left empty: the page says the client's own name is kept, and the approval then names no label.
+  await expect(page.getByLabel('Your name for this client')).toHaveValue('');
+  await expect(page.getByTestId('connect-label-note')).toHaveText('Leave this empty to keep the name the client gave: Claude Code.');
   await page.getByTestId('connect-approve').click();
-  await expect(page.getByTestId('connect-done')).toContainText('will run the agent of your next launch');
+  await expect(page.getByTestId('connect-done')).toContainText('Claude Code will run the agent of your next launch');
   await expect(page.getByRole('link', { name: 'Back to launch' })).toBeVisible();
   expect(sent[0]!.message).toContain(connectDraftStatement(DRAFT, MOCK_CODES.pending));
   expect(sent[0]!.label).toBeUndefined();

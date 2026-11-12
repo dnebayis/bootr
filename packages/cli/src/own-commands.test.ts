@@ -112,6 +112,36 @@ describe('bootr own connect', () => {
     for (const s of site.seen) expect(s.path).toMatch(/^\/api\/(catalog|agent\/connect\/(start|token)|agent\/run\/status)$/);
   });
 
+  it('keeps the name of --label unless the creator typed another one on the approval page', async () => {
+    // The page's field left empty: the approval names no label, and --label stands, here and on the site.
+    onSleep = (n) => {
+      if (n === 1) approveAll();
+    };
+    const kept = await own('connect', '--coin', 'OWL', '--label', 'My laptop');
+    expect(kept.data).toMatchObject({ connected: true, label: 'My laptop' });
+    expect((site.backend.clientsOf(COIN.agentId).clients as { label: string }[]).map((c) => c.label)).toEqual(['My laptop']);
+    expect((await stored()).map((e) => e.label)).toEqual(['My laptop']);
+    await own('disconnect');
+    // The creator typed a name of their own on the page: that one is kept, and this machine stores the same.
+    sleeps = [];
+    onSleep = (n) => {
+      if (n !== 1) return;
+      for (const grant of site.backend.grants.values()) {
+        if (grant.status === 'pending') site.backend.connectApprove({ userCode: grant.userCode, creator: site.backend.creator, label: 'Office', target: { kind: 'coin', kernel: COIN.kernel, agentId: COIN.agentId } });
+      }
+    };
+    const typed = await own('connect', '--coin', 'OWL', '--label', 'My laptop');
+    expect(typed.data).toMatchObject({ connected: true, label: 'Office' });
+    expect((site.backend.clientsOf(COIN.agentId).clients as { label: string }[]).map((c) => c.label)).toEqual(['Office']);
+    // Without --label the command names itself.
+    await own('disconnect');
+    sleeps = [];
+    onSleep = (n) => {
+      if (n === 1) approveAll();
+    };
+    expect((await own('connect', '--coin', 'OWL')).data).toMatchObject({ label: 'bootr CLI' });
+  });
+
   it('says so when this machine is already connected, and starts over when the connection was ended elsewhere', async () => {
     await connected();
     const already = await own('connect');

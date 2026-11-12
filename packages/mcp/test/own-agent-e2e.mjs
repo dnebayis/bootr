@@ -138,14 +138,18 @@ async function startMcp(env) {
   return { client, call };
 }
 
-/** The wallet's approval, as the page at /connect/<code> sends it: a nonce, a SIWE message, the signature. */
-async function approve(statement, userCode) {
+/**
+ * The wallet's approval, as the page at /connect/<code> sends it: a nonce, a SIWE message, the signature. It names no
+ * label, like the page whose name field was left empty, so the name the client gave stands; pass `label` for a creator
+ * who typed one (the W3 part does).
+ */
+async function approve(statement, userCode, label) {
   const nonce = await http('POST', `${SITE}/api/agent/nonce`);
   assert.equal(nonce.status, 200, 'POST /api/agent/nonce');
   const url = new URL(SITE);
   const message = createSiweMessage({ domain: url.host, uri: SITE, version: '1', chainId: 8453, address: creator.address, nonce: nonce.json.nonce, statement, issuedAt: new Date() });
   const signature = await creator.signMessage({ message });
-  return http('POST', `${SITE}/api/agent/connect/approve`, { body: { userCode, message, signature, label: 'e2e client' }, headers: { origin: SITE } });
+  return http('POST', `${SITE}/api/agent/connect/approve`, { body: { userCode, message, signature, ...(label ? { label } : {}) }, headers: { origin: SITE } });
 }
 
 async function flagOff(env) {
@@ -194,6 +198,8 @@ async function w1(env, mcp) {
   const approved = await approve(`Let an AI client run the agent of Bootr coin $${coin.symbol} (#${coin.agentId}, ${coin.kernel}). Code ${first.userCode}.`, first.userCode);
   assert.equal(approved.status, 200, JSON.stringify(approved.json));
   assert.equal(approved.json.target.coin.agentId, seed.agentId);
+  // The approval named no label, so the client is listed under the name it gave itself.
+  assert.equal(approved.json.label, 'bootr-own-agent-e2e');
   const second = (await call('bootr_agent_connect', { coin: seed.symbol })).json();
   assert.equal(second.connected, true, JSON.stringify(second));
   assert.equal(second.coin.kernel.toLowerCase(), seed.kernel.toLowerCase());
