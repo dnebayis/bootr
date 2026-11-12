@@ -21,6 +21,12 @@
  * eligible by time are judged. Reply text is read for the address and thrown away: no row and no model ever holds it.
  *
  * Every step logs `jobId`, `status` and counts under `module: 'bounties'`, never a reply's text or an entry's address.
+ *
+ * An own-agent coin (docs/design/byo-agent.md; `isOwn(agent)`, the stored config, whatever the flag says) is collected
+ * by the same code and never judged by a bought thought: its job stays `judging` with the artefacts pinned on the entry
+ * rows (`artefact.sha256`, and a page's excerpt) until the creator's own client rules through `settleOwnRuling`
+ * (own/judge.ts), which runs the same proposal step, or until `OWN_JUDGE_WAIT_MS` after the close, when it closes
+ * `no_winner` with `judge_absent`.
  */
 import {
   BOUNTY_DEFAULT_HOURS_OPEN,
@@ -42,15 +48,17 @@ import {
   type BountiesPolicy,
   type ToolInput,
 } from '@bootr/agent-core';
+import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { encodeAbiParameters, formatUnits, getAddress, isAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
+import { agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
 import { JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, judgeJob, type JudgeEntry, type JudgeVerdict } from './judge.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
+import { isOwn, ownSetting } from './own/registry.js';
 import { originalPostGate } from './rhythm.js';
 import { SenderError, type SenderConversationReply } from './sender-client.js';
 import { assertPublicHost, htmlToText } from './web-reader.js';
@@ -816,6 +824,8 @@ export interface CollectResult {
  */
 export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, job0: BountyJobRow): Promise<CollectResult> {
   const now = ctx.now();
+  /** How the coin is run, from its stored config alone: an own coin is collected here and never judged by a bought thought. */
+  const own = isOwn(agent);
   const job = job0.status === 'open' ? await setJob(ctx, job0.id, { status: 'judging', attempts: job0.attempts + 1 }) : await setJob(ctx, job0.id, { attempts: job0.attempts + 1 });
   if (!job.conversationId) return { job: await closeJob(ctx, job.id, 'failed', { error: 'no_conversation' }), verdict: null };
   const policy = bountiesPolicyOf(config);
@@ -863,6 +873,8 @@ export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, c
     }
     seenHashes.add(fetched.sha256);
     if (fetched.kind === 'image') entry.artefact = { ...entry.artefact, sha256: fetched.sha256 };
+    // An own coin's job is ruled later, by the creator's client: the page as it read at the close is pinned on the row.
+    else if (own) entry.artefact = { ...entry.artefact, sha256: fetched.sha256, excerpt: fetched.excerpt };
     considered.push({ entry, fetched, n: considered.length + 1 });
   }
 
@@ -901,33 +913,162 @@ export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, c
     return { job: await closeUnpaid(ctx, agent, config, job, verdict, NO_WINNER_TEXT), verdict: null };
   }
 
+  // An own coin: no thought is bought for it, with the flag on or off. The job stays `judging`, its artefacts pinned on
+  // the rows above, until the creator's client rules (`settleOwnRuling`) or the wait runs out (`sweepBounties`).
+  if (own) {
+    log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { considered: considered.length }, "bounty entries wait for the ruling of the creator's own agent; no thought bought");
+    return { job: await jobByIdOrThrow(ctx, job.id), verdict: null };
+  }
+
   const entries: JudgeEntry[] = considered.map((c) => (c.fetched.kind === 'image' ? { n: c.n, kind: 'image', image: { mime: c.fetched.mime, bytes: c.fetched.bytes } } : { n: c.n, kind: 'link', excerpt: c.fetched.excerpt }));
   const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries });
   if (verdict.invalid === 'thought_pending') {
     log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { key: verdict.thought.key }, 'judge thought pending; the job stays judging');
     return { job: await jobByIdOrThrow(ctx, job.id), verdict };
   }
-  const deliveryHash = deliveryHashOf(considered.map((c) => ({ n: c.n, kind: c.fetched.kind, sha256: c.fetched.sha256 })));
-  const stored = { winner: verdict.winner, perCriterion: verdict.perCriterion, reason: verdict.reason, ...(verdict.invalid ? { invalid: verdict.invalid } : {}), deliveryHash, reasonHash: sha256Hex(verdict.reason), judgedAt: new Date(ctx.now()).toISOString(), thought: verdict.thought };
-  log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { winner: verdict.winner, invalid: verdict.invalid ?? null, deliveryHash, outcome: verdict.thought.outcome }, 'bounty judged');
+  return { job: await settleVerdict(ctx, agent, config, job, verdict, considered.map((c) => ({ n: c.n, kind: c.fetched.kind, sha256: c.fetched.sha256, replyId: c.entry.replyId, payee: c.entry.payee }))), verdict };
+}
 
-  if (verdict.invalid || verdict.winner === null) return { job: await closeUnpaid(ctx, agent, config, job, stored, NO_WINNER_TEXT), verdict };
+/** One judged entry as the proposal step needs it: its number, what the judge saw of it (by hash) and who it would pay. */
+export interface JudgedEntryRef {
+  n: number;
+  kind: BountyDeliverable;
+  sha256: string;
+  replyId: string;
+  payee: string | null;
+}
+
+/** The verdict as the job row keeps it: the ruling, the hash of the bundle it was given on and of its reason, and the thought behind it. */
+function storedVerdict(ctx: Pick<SupervisorContext, 'now'>, verdict: JudgeVerdict, considered: readonly JudgedEntryRef[]): Record<string, unknown> & { deliveryHash: string } {
+  const deliveryHash = deliveryHashOf(considered.map((c) => ({ n: c.n, kind: c.kind, sha256: c.sha256 })));
+  return { winner: verdict.winner, perCriterion: verdict.perCriterion, reason: verdict.reason, ...(verdict.invalid ? { invalid: verdict.invalid } : {}), deliveryHash, reasonHash: sha256Hex(verdict.reason), judgedAt: new Date(ctx.now()).toISOString(), thought: verdict.thought };
+}
+
+/**
+ * What a verdict does to its job, the same for the hosted judge's and an own agent's: a ruling refused in code or with
+ * no winner closes the job unpaid in public; a winner becomes a payout proposal in the creator's queue, with the payee
+ * taken from the entry record, never from the judge's text.
+ */
+async function settleVerdict(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, job: BountyJobRow, verdict: JudgeVerdict, considered: readonly JudgedEntryRef[]): Promise<BountyJobRow> {
+  const stored = storedVerdict(ctx, verdict, considered);
+  log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { winner: verdict.winner, invalid: verdict.invalid ?? null, deliveryHash: stored.deliveryHash, outcome: verdict.thought.outcome }, 'bounty judged');
+
+  if (verdict.invalid || verdict.winner === null) return closeUnpaid(ctx, agent, config, job, stored, NO_WINNER_TEXT);
   const winner = considered.find((c) => c.n === verdict.winner);
-  if (!winner?.entry.payee) return { job: await closeUnpaid(ctx, agent, config, job, { ...stored, invalid: 'winner_without_payee' }, NO_WINNER_TEXT), verdict };
+  if (!winner?.payee) return closeUnpaid(ctx, agent, config, job, { ...stored, invalid: 'winner_without_payee' }, NO_WINNER_TEXT);
 
   // The proposal: the payee from the entry record, never from the judge's text.
   const approvalId = payoutApprovalId(job.id);
-  const entryUrl = replyLink(winner.entry.replyId);
-  const meta: BountyApprovalMeta = { bounty: 'payout', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, payee: winner.entry.payee, reason: verdict.reason, replyId: winner.entry.replyId, entryUrl };
-  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.entry.payee} for entry ${entryUrl} of job ${shortJobId(job.id)}. Why: ${verdict.reason}`;
+  const entryUrl = replyLink(winner.replyId);
+  const meta: BountyApprovalMeta = { bounty: 'payout', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, payee: winner.payee, reason: verdict.reason, replyId: winner.replyId, entryUrl };
+  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.payee} for entry ${entryUrl} of job ${shortJobId(job.id)}. Why: ${verdict.reason}`;
   await ctx.db
     .insert(approvals)
     .values({ id: approvalId, agentId: agent.agentId, kind: 'bounty_payout', text, textHash: sha256Hex(text), meta: meta as unknown as Record<string, unknown>, status: 'pending_approval', createdAt: new Date(ctx.now()) })
     .onConflictDoNothing();
-  const proposed = await closeJob(ctx, job.id, 'proposed', { verdict: stored, judgedAt: new Date(ctx.now()), payee: winner.entry.payee, approvalId });
+  const proposed = await closeJob(ctx, job.id, 'proposed', { verdict: stored, judgedAt: new Date(ctx.now()), payee: winner.payee, approvalId });
   await notifyReview(ctx, agent.agentId);
   log(ctx, agent.agentId, proposed, { approvalId, winner: verdict.winner }, 'bounty payout proposed to the creator');
-  return { job: proposed, verdict };
+  return proposed;
+}
+
+// ---------------------------------------------------------------------------
+// An own agent's ruling (own/judge.ts): the job waits, the client rules, the same proposal step runs
+// ---------------------------------------------------------------------------
+
+/** The error a job closes with when its own agent gave no ruling within `OWN_JUDGE_WAIT_MS` of the close. */
+export const JUDGE_ABSENT = 'judge_absent';
+export const JUDGE_ABSENT_TEXT = NOTHING_PAID_TEXT;
+
+/** A considered entry whose artefact was not pinned at collection (a page collected while the coin was hosted). */
+const UNPINNED_ENTRY = sql`exists (select 1 from ${bountyEntries} where ${bountyEntries.jobId} = ${bountyJobs.id} and ${bountyEntries.considered} and (${bountyEntries.artefact}->>'sha256') is null)`;
+/** The job belongs to a coin whose stored config says `runner: 'own'` (`isOwn`, in SQL; the flag is not asked). */
+const OWN_COIN_JOB = sql`${bountyJobs.agentId} in (select ${agents.agentId} from ${agents} where ${agents.config}->>'runner' = 'own')`;
+/**
+ * A job that waits for its own agent's ruling: `judging`, its entries collected and pinned, no verdict. The sweep leaves
+ * such a job alone (it would otherwise hold a sweep slot for two days) and the judge role lists it as due.
+ */
+const AWAITS_OWN_RULING = sql`(${bountyJobs.status} = 'judging' and ${bountyJobs.entriesConsidered} > 0 and ${bountyJobs.verdict} is null and ${OWN_COIN_JOB} and not ${UNPINNED_ENTRY})`;
+
+/** When an own coin's job closes unjudged: `OWN_JUDGE_WAIT_MS` after its window closed. */
+export function ruleByOf(ctx: Pick<SupervisorContext, 'config'>, job: Pick<BountyJobRow, 'closesAt'>): number {
+  return job.closesAt.getTime() + ownSetting(ctx, 'OWN_JUDGE_WAIT_MS');
+}
+
+/** The jobs of an own agent that wait for its ruling, the oldest close first. Empty for a hosted coin, whatever its jobs. */
+export async function jobsAwaitingRuling(ctx: Pick<SupervisorContext, 'db'>, agentId: string): Promise<BountyJobRow[]> {
+  return ctx.db.select().from(bountyJobs).where(and(eq(bountyJobs.agentId, agentId), AWAITS_OWN_RULING)).orderBy(asc(bountyJobs.closesAt), asc(bountyJobs.id)).limit(20);
+}
+
+/** One considered entry of a job as the judge role reads it: its number, its kind and the pinned artefact. Never the reply, its author or its address. */
+export interface PinnedEntry {
+  n: number;
+  kind: BountyDeliverable;
+  url: string;
+  sha256: string;
+  /** A page's text as it read when the window closed; absent for a picture. */
+  excerpt?: string;
+}
+
+async function consideredRows(ctx: Pick<SupervisorContext, 'db'>, jobId: string): Promise<BountyEntryRow[]> {
+  return ctx.db.select().from(bountyEntries).where(and(eq(bountyEntries.jobId, jobId), eq(bountyEntries.considered, true))).orderBy(asc(bountyEntries.n));
+}
+
+const artefactString = (row: BountyEntryRow, key: string): string => {
+  const value = (row.artefact as Record<string, unknown> | null)?.[key];
+  return typeof value === 'string' ? value : '';
+};
+
+/** The considered entries of a job, in the judge's numbering. */
+export async function pinnedEntries(ctx: Pick<SupervisorContext, 'db'>, jobId: string): Promise<PinnedEntry[]> {
+  const rows = await consideredRows(ctx, jobId);
+  return rows.filter((row) => row.n !== null).map((row) => ({ n: row.n!, kind: row.kind, url: artefactString(row, 'url'), sha256: artefactString(row, 'sha256'), ...(row.kind === 'link' ? { excerpt: artefactString(row, 'excerpt') } : {}) }));
+}
+
+async function judgedRefs(ctx: Pick<SupervisorContext, 'db'>, jobId: string): Promise<JudgedEntryRef[]> {
+  const rows = await consideredRows(ctx, jobId);
+  return rows.filter((row) => row.n !== null).map((row) => ({ n: row.n!, kind: row.kind, sha256: artefactString(row, 'sha256'), replyId: row.replyId, payee: row.payee }));
+}
+
+/**
+ * Takes an own agent's ruling for a job, once. The verdict is written first, under a condition (`judging`, no verdict
+ * yet), so a second ruling, or one that arrives after the wait ran out, finds nothing to claim and changes nothing;
+ * then the same proposal step as the hosted judge's runs. A crash between the two is finished by the sweep
+ * (`resumeOwnRuling`). `verdict` has already been through `parseVerdict` (own/judge.ts): this function checks nothing
+ * about the ruling itself. It takes a ruling for an own coin's job only, and only for one whose entries were collected:
+ * a hosted coin's job is ruled by its bought thought and by nothing else.
+ */
+export async function settleOwnRuling(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, jobId: string, verdict: JudgeVerdict): Promise<{ ok: true; job: BountyJobRow } | { ok: false }> {
+  if (!isOwn(agent)) return { ok: false };
+  const considered = await judgedRefs(ctx, jobId);
+  if (!considered.length || considered.some((entry) => !entry.sha256)) return { ok: false };
+  const stored = storedVerdict(ctx, verdict, considered);
+  const [claimed] = await ctx.db
+    .update(bountyJobs)
+    .set({ verdict: stored, judgedAt: new Date(ctx.now()), updatedAt: new Date(ctx.now()) })
+    .where(and(eq(bountyJobs.id, jobId), eq(bountyJobs.agentId, agent.agentId), eq(bountyJobs.status, 'judging'), isNull(bountyJobs.verdict)))
+    .returning();
+  if (!claimed) return { ok: false };
+  return { ok: true, job: await settleVerdict(ctx, agent, config, claimed, verdict, considered) };
+}
+
+/** The ruling an own agent gave and the row kept (`settleOwnRuling`), or null when the job's verdict is not one. */
+function ownRulingOf(job: BountyJobRow): JudgeVerdict | null {
+  const v = job.verdict as { winner?: unknown; perCriterion?: unknown; reason?: unknown; invalid?: unknown; thought?: { model?: unknown } } | null;
+  if (!v || v.thought?.model !== OWN_AGENT_MODEL_ID) return null;
+  return {
+    jobId: job.id,
+    winner: typeof v.winner === 'number' ? v.winner : null,
+    perCriterion: (v.perCriterion && typeof v.perCriterion === 'object' ? v.perCriterion : {}) as JudgeVerdict['perCriterion'],
+    reason: typeof v.reason === 'string' ? v.reason : '',
+    ...(typeof v.invalid === 'string' ? { invalid: v.invalid as NonNullable<JudgeVerdict['invalid']> } : {}),
+    thought: v.thought as JudgeVerdict['thought'],
+  };
+}
+
+/** A `judging` job that already holds an own agent's ruling (a crash after the claim): the proposal step runs from the stored ruling. */
+async function resumeOwnRuling(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, job: BountyJobRow, ruling: JudgeVerdict): Promise<BountyJobRow> {
+  return settleVerdict(ctx, agent, config, job, ruling, await judgedRefs(ctx, job.id));
 }
 
 async function jobByIdOrThrow(ctx: Pick<SupervisorContext, 'db'>, jobId: string): Promise<BountyJobRow> {
@@ -1013,6 +1154,8 @@ export interface BountySweepReport {
   judged: number;
   expired: number;
   failed: number;
+  /** Own coins' jobs closed with no winner because their agent gave no ruling in time (`judge_absent`); absent when none. */
+  unjudged?: number;
 }
 
 /**
@@ -1020,6 +1163,11 @@ export interface BountySweepReport {
  * collected and judged (a `judging` job left by a crash is resumed), proposals nobody acted on in 48 hours expire with
  * their approval withdrawn. At most MAX_JOBS_PER_SWEEP jobs move per tick; an error on one job is logged and counted
  * against its attempts, never thrown.
+ *
+ * An own coin's job (`isOwn`, with the flag on or off) is collected like any other and then left alone while it waits
+ * for its agent's ruling: it is not among the rows step 2 reads, so it holds no sweep slot. A job still unjudged
+ * `OWN_JUDGE_WAIT_MS` after its close is closed `no_winner` with `judge_absent` (step 2b). No step here buys a thought
+ * for an own coin.
  */
 export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweepReport> {
   const report: BountySweepReport = { posted: 0, judged: 0, expired: 0, failed: 0 };
@@ -1073,7 +1221,7 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
   const due = await ctx.db
     .select()
     .from(bountyJobs)
-    .where(or(eq(bountyJobs.status, 'judging'), and(eq(bountyJobs.status, 'open'), lte(bountyJobs.closesAt, new Date(now)))))
+    .where(and(or(eq(bountyJobs.status, 'judging'), and(eq(bountyJobs.status, 'open'), lte(bountyJobs.closesAt, new Date(now)))), sql`not ${AWAITS_OWN_RULING}`))
     .orderBy(asc(bountyJobs.closesAt))
     .limit(MAX_JOBS_PER_SWEEP);
   for (const job of due) {
@@ -1097,12 +1245,44 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
       continue;
     }
     try {
-      const { job: after } = await collectAndJudge(ctx, agent, config, job);
+      // A ruling an own agent already gave (the claim landed, the process died before the proposal): finished from the row, never asked again.
+      const ruling = job.status === 'judging' ? ownRulingOf(job) : null;
+      const { job: after } = ruling ? { job: await resumeOwnRuling(ctx, agent, config, job, ruling) } : await collectAndJudge(ctx, agent, config, job);
       if (after.status !== 'judging') report.judged += 1;
     } catch (err) {
       const error = err instanceof SenderError ? `sender:${err.code}` : err instanceof Error ? err.message.split('\n')[0]! : String(err);
       await setJob(ctx, job.id, { error }).catch(() => undefined);
       ctx.log.warn({ ...MODULE, agentId: job.agentId, jobId: job.id, error, attempts: job.attempts + 1 }, 'bounty collection failed; tried again next tick');
+    }
+  }
+
+  // 2b. Own coins: a job whose agent gave no ruling within the wait closes with no winner, in public. The close is a
+  //     conditional write (still `judging`, still no verdict), so a ruling that lands at the same moment wins or loses
+  //     whole: never a job both closed and proposed.
+  const unjudged = await ctx.db
+    .select()
+    .from(bountyJobs)
+    .where(and(eq(bountyJobs.status, 'judging'), isNull(bountyJobs.verdict), OWN_COIN_JOB, lte(bountyJobs.closesAt, new Date(now - ownSetting(ctx, 'OWN_JUDGE_WAIT_MS')))))
+    .orderBy(asc(bountyJobs.closesAt))
+    .limit(MAX_JOBS_PER_SWEEP);
+  for (const job of unjudged) {
+    try {
+      const closedAt = new Date(ctx.now());
+      const verdict = { winner: null, perCriterion: {}, reason: '', invalid: JUDGE_ABSENT, deliveryHash: deliveryHashOf([]), reasonHash: sha256Hex(''), judgedAt: closedAt.toISOString() };
+      const [closed] = await ctx.db
+        .update(bountyJobs)
+        .set({ status: 'no_winner', error: JUDGE_ABSENT, verdict, closedAt, updatedAt: closedAt })
+        .where(and(eq(bountyJobs.id, job.id), eq(bountyJobs.status, 'judging'), isNull(bountyJobs.verdict)))
+        .returning();
+      if (!closed) continue;
+      const agent = await agentFor(job.agentId);
+      const config = agent ? agentConfigOf(agent) : null;
+      const closeReplyId = agent && config && job.postId ? await templateReply(ctx, agent, config, `bounty:${job.id}:close`, job.postId, JUDGE_ABSENT_TEXT) : null;
+      if (closeReplyId) await setJob(ctx, job.id, { closeReplyId });
+      log(ctx, job.agentId, closed, { closeReplyId, considered: job.entriesConsidered }, "bounty closed unjudged: the creator's own agent gave no ruling in time");
+      report.unjudged = (report.unjudged ?? 0) + 1;
+    } catch (err) {
+      ctx.log.warn({ ...MODULE, agentId: job.agentId, jobId: job.id, err }, 'bounty unjudged close failed for one job');
     }
   }
 
@@ -1125,7 +1305,7 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
       ctx.log.warn({ ...MODULE, agentId: job.agentId, jobId: job.id, err }, 'bounty expiry failed for one job');
     }
   }
-  if (report.posted || report.judged || report.expired || report.failed) ctx.log.info({ ...MODULE, ...report }, 'bounty sweep');
+  if (report.posted || report.judged || report.expired || report.failed || report.unjudged) ctx.log.info({ ...MODULE, ...report }, 'bounty sweep');
   return report;
 }
 
@@ -1155,12 +1335,19 @@ export interface BountyJobView {
   payment: { status: 'proposed' | 'paid'; payee: string; amountUsdc: string; txHash: string | null; txUrl: string | null; replyUrl: string | null; paidAt: string | null } | null;
   closedAt: string | null;
   closeReplyUrl: string | null;
+  /**
+   * Set while the job waits for the ruling of the creator's own agent (an own-agent coin): when the wait ends and the
+   * job closes with no winner. Present on an own-agent coin's jobs only (null once the job is ruled or closed), so a hosted
+   * coin's view is what it was. A job that closed unjudged carries `verdict.invalid = 'judge_absent'`.
+   */
+  ownJudge?: { ruleBy: string } | null;
 }
 
 export async function bountyJobViews(ctx: SupervisorContext, agent: AgentRow, opts: { limit?: number; jobId?: string } = {}): Promise<BountyJobView[]> {
   const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 20)));
   const rows = opts.jobId ? [await jobById(ctx, agent.agentId, opts.jobId)].filter((r): r is BountyJobRow => !!r) : await ctx.db.select().from(bountyJobs).where(eq(bountyJobs.agentId, agent.agentId)).orderBy(desc(bountyJobs.createdAt)).limit(limit);
   if (!rows.length) return [];
+  const own = isOwn(agent);
   const entryRows = await ctx.db
     .select({ jobId: bountyEntries.jobId, replyId: bountyEntries.replyId, eligible: bountyEntries.eligible, ineligibleReason: bountyEntries.ineligibleReason, n: bountyEntries.n })
     .from(bountyEntries)
@@ -1208,6 +1395,7 @@ export async function bountyJobViews(ctx: SupervisorContext, agent: AgentRow, op
           : null,
       closedAt: job.closedAt?.toISOString() ?? null,
       closeReplyUrl: job.closeReplyId ? replyLink(job.closeReplyId) : null,
+      ...(own ? { ownJudge: job.status === 'judging' && !job.verdict ? { ruleBy: new Date(ruleByOf(ctx, job)).toISOString() } : null } : {}),
     };
   });
 }
@@ -1249,7 +1437,15 @@ export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, li
         push(job.paidAt, `Paid ${amount} for a bounty entry`, { ...(job.txHash ? { txHash: job.txHash, url: explorerTxUrl(ctx.chain.chainId, job.txHash) } : {}) });
         break;
       case 'no_winner':
-        push(job.closedAt, job.error?.startsWith('declined') ? 'Bounty closed: the creator declined the proposal, nothing paid' : `Bounty closed: no entry met the job (${job.entriesReceived} ${job.entriesReceived === 1 ? 'reply' : 'replies'}), nothing paid`, postUrl ? { url: postUrl } : {});
+        push(
+          job.closedAt,
+          job.error?.startsWith('declined')
+            ? 'Bounty closed: the creator declined the proposal, nothing paid'
+            : job.error === JUDGE_ABSENT
+              ? 'Bounty closed: the entries were not judged in time, nothing paid'
+              : `Bounty closed: no entry met the job (${job.entriesReceived} ${job.entriesReceived === 1 ? 'reply' : 'replies'}), nothing paid`,
+          postUrl ? { url: postUrl } : {},
+        );
         break;
       case 'cancelled':
         push(job.closedAt, job.openedAt ? 'Bounty cancelled' : 'Bounty draft withdrawn', postUrl ? { url: postUrl } : {});

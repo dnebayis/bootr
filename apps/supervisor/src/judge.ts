@@ -12,10 +12,15 @@
  * Never asked twice for one job: the thought's idempotency key is derived from the job id, so a second call for the
  * same job replays the stored answer (or reconciles an unknown one) through `relayRequest` and never pays again. The
  * model is the agent's own, or `config.judgeModel` when the console pinned a cheaper one (design decision 10).
+ *
+ * An own-agent coin (docs/design/byo-agent.md; `isOwn`, the stored config, whatever the flag says) is never ruled on
+ * here: its creator's client rules (own/judge.ts) through `parseVerdict`, the same check. Should anything ask
+ * `judgeJob` for such a coin all the same, it answers `thought_pending` and buys nothing.
  */
 import { buildSystemPrompt, countCashtags, digest, linkedHosts, maxQuoteFor, mentionedHandles, postValidation, type AgentConfig } from '@bootr/agent-core';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { assistantText, parseAssistant, relayRequest, type RelayResult } from './inference.js';
+import { isOwn } from './own/registry.js';
 
 export type JudgeMark = 'pass' | 'fail' | 'insufficient_evidence';
 export const JUDGE_MARKS: readonly JudgeMark[] = ['pass', 'fail', 'insufficient_evidence'];
@@ -88,6 +93,15 @@ export function judgeModelFor(config: Pick<AgentConfig, 'model' | 'judgeModel'>)
 // eslint-disable-next-line no-control-regex -- stripping them is the point
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const plain = (text: string, max: number) => text.replace(CONTROL, '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+/**
+ * A text as the judge gets it: control characters out, whitespace flattened, cut to `max`. The hosted thought's input
+ * goes through this in `normalizeJudgeInput`; an own agent's judge turn (own/judge.ts) uses the same function for the
+ * job text, the criteria and a page's excerpt, so both judges read the same words.
+ */
+export function judgeText(text: string, max: number): string {
+  return plain(text, max);
+}
 
 /** The input as the thought gets it (texts bounded and flattened, pictures as data urls), or the reason it is refused. */
 export function normalizeJudgeInput(input: JudgeInput): { ok: true; input: JudgeInput } | { ok: false; invalid: 'invalid_input' | 'input_too_large' } {
@@ -217,6 +231,12 @@ function thoughtOf(key: string, model: string, res: RelayResult | null): JudgeVe
 export async function judgeJob(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, rawInput: JudgeInput): Promise<JudgeVerdict> {
   const model = judgeModelFor(config);
   const key = judgeKey(agent.agentId, typeof rawInput?.jobId === 'string' ? rawInput.jobId.trim() : '');
+  // An own coin buys no thought, ever: the caller (bounties.ts) does not ask for one, and this is the lock behind that
+  // door. `thought_pending` leaves the job as it is, waiting for its own agent's ruling.
+  if (isOwn(agent)) {
+    ctx.log.warn({ agentId: agent.agentId, role: 'judge', jobId: rawInput?.jobId }, "judge asked for an own-agent coin; no thought bought, the job waits for its own agent's ruling");
+    return { jobId: typeof rawInput?.jobId === 'string' ? rawInput.jobId : '', winner: null, perCriterion: {}, reason: '', invalid: 'thought_pending', thought: thoughtOf(key, model, null) };
+  }
   const normalized = normalizeJudgeInput(rawInput);
   if (!normalized.ok) {
     ctx.log.info({ agentId: agent.agentId, role: 'judge', jobId: rawInput?.jobId, invalid: normalized.invalid }, 'judge refused the job input; no thought bought');

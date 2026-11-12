@@ -24,9 +24,15 @@
  *
  * The ledger: every call is on the coin page's activity tape with host, amount and the model's reason (activity.ts),
  * and the day's total is in `/fuel` (`servicesReport`).
+ *
+ * An own-agent coin (docs/design/byo-agent.md section 1.4; `isOwn`, the stored config, whatever the flag says): paid
+ * services are the only thing its fuel pays for, and a coin launched with none is the usual case. For it the spender's
+ * balance is read before the signature is made (`fuelCheckedSigner`), so with too little fuel nothing is signed at all;
+ * the answer is the same `services_insufficient_fuel`. A hosted agent's path is what it was (the check between the
+ * signature and the send).
  */
 import { PolicyError, DEFAULT_SERVICES_POLICY, servicesHostAllowed, type AgentConfig, type ServicesPolicy } from '@bootr/agent-core';
-import { createX402Payer, X402PaymentRefusedError } from '@bootr/inference/client';
+import { createX402Payer, X402PaymentRefusedError, type TypedDataPayload, type TypedDataSigner } from '@bootr/inference/client';
 import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { decodePaymentResponseHeader } from '@x402/core/http';
 import type { PaymentPayload } from '@x402/core/types';
@@ -35,6 +41,7 @@ import { formatUnits, getAddress, type Address, type Hex } from 'viem';
 import { DEADLINE_GRACE_SECONDS, InsufficientFloatError, paymentAuthorization, paymentSettled, requireFloat } from './blockrun.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { serviceCalls, type ServiceCallStatus } from './db/schema.js';
+import { isOwn } from './own/registry.js';
 import { assertPublicHost } from './web-reader.js';
 
 export type ServiceCallRow = typeof serviceCalls.$inferSelect;
@@ -53,6 +60,43 @@ const COUNTED: ServiceCallStatus[] = ['paid', 'succeeded', 'unknown'];
 
 export const SERVICES_PAID_NO_ANSWER = 'services_paid_no_answer';
 export const SERVICES_UNPAID = 'services_unpaid';
+/** What `x402_fetch` answers when the spender cannot cover the price: the one refusal an own coin without fuel meets. */
+export const SERVICES_INSUFFICIENT_FUEL = 'services_insufficient_fuel: your spendable fuel is below the price of this call';
+
+/** The amount a payment's typed data would move: an EIP-3009 authorization's `value`, or a Permit2 transfer's `permitted.amount`; null when it is neither. */
+export function signedAmountOf(typedData: TypedDataPayload): bigint | null {
+  const message = typedData.message as { value?: unknown; permitted?: { amount?: unknown } };
+  const raw = message.value ?? message.permitted?.amount;
+  try {
+    return typeof raw === 'bigint' ? raw : typeof raw === 'string' || typeof raw === 'number' ? BigInt(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The spender as a signer that looks at its own balance first: the amount is read from the typed data it is asked to
+ * sign and held against the spender's USDC, and with too little nothing is signed (`short.hit` tells the caller why the
+ * payer gave up, since the payer wraps the error). Typed data whose amount cannot be read is signed as before; the
+ * check between the signature and the send still stands for it.
+ */
+function fuelCheckedSigner(ctx: Pick<SupervisorContext, 'chain'>, spender: { address: Address; signTypedData(typedData: never): Promise<Hex> }, short: { hit: boolean }): TypedDataSigner {
+  return {
+    address: spender.address,
+    signTypedData: async (typedData) => {
+      const amount = signedAmountOf(typedData);
+      if (amount !== null) {
+        try {
+          await requireFloat(ctx, spender.address, amount);
+        } catch (err) {
+          if (err instanceof InsufficientFloatError) short.hit = true;
+          throw err;
+        }
+      }
+      return spender.signTypedData(typedData as never);
+    },
+  };
+}
 
 /** The policy in force for an agent: the config's block, or the defaults when the config has none. */
 export function servicesPolicyOf(config: Pick<AgentConfig, 'services'>): ServicesPolicy {
@@ -162,8 +206,10 @@ export async function serviceFetch(ctx: SupervisorContext, agent: AgentRow, conf
 
   const spender = ctx.spenderFor(agent);
   const signed: { payment: PaymentPayload | null } = { payment: null };
+  /** An own coin's spender signs nothing it cannot cover (`fuelCheckedSigner`); `short.hit` says that is why no payment was made. */
+  const short = { hit: false };
   const payer = createX402Payer({
-    signer: spender,
+    signer: isOwn(agent) ? fuelCheckedSigner(ctx, spender, short) : spender,
     maxPaymentMicroUsdc: cap,
     networks: [`eip155:${ctx.chain.chainId}` as `eip155:${string}`],
     asset: ctx.chain.addresses.usdc,
@@ -198,7 +244,7 @@ export async function serviceFetch(ctx: SupervisorContext, agent: AgentRow, conf
       ...(method === 'POST' ? { body: JSON.stringify(input.body ?? {}) } : {}),
     });
   } catch (err) {
-    if (err instanceof InsufficientFloatError) return fail(ctx, actionId, 'services_insufficient_fuel: your spendable fuel is below the price of this call');
+    if (err instanceof InsufficientFloatError || (short.hit && !signed.payment)) return fail(ctx, actionId, SERVICES_INSUFFICIENT_FUEL);
     const text = err instanceof Error ? `${err.name}: ${err.message.split('\n')[0]}` : String(err);
     if (!signed.payment) return fail(ctx, actionId, err instanceof X402PaymentRefusedError ? `services_price_refused: ${text.slice(0, 400)}` : `services_unreachable: ${text.slice(0, 300)}`);
     return hold(ctx, actionId, `services_transport: ${text.slice(0, 300)}`);

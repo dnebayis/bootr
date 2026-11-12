@@ -2,8 +2,42 @@
  * Plain words for the Bounties card on the coin page and the bounty items in the console (components/token/BountiesCard.tsx,
  * ApprovalQueue.tsx): status labels, the reasons an entry was not judged, the closing time, the amount. Pure, so the copy
  * is testable. The public name of the power is Bounties: "the agent pays small bounties for work it asks for".
+ *
+ * A coin whose agent runs in its creator's own AI client has its entries judged by that agent, when it is next online
+ * (docs/design/byo-agent.md, decision 6): a job waits up to 48 hours for the ruling and closes with no winner after
+ * that. `awaitsOwnJudge` and `outcomeLine` say so in plain words.
  */
+import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import type { BountyJob, BountyStatus, CriterionMark } from './types';
+
+/**
+ * A job as the card reads it: the page's `BountyJob`, plus what the agent service adds for a coin whose agent runs in
+ * its creator's own AI client (`BountyJobView.ownJudge`, bounties.ts): until when the job waits for that agent's ruling.
+ */
+export type BountyCardJob = BountyJob & { ownJudge?: { ruleBy: string } | null };
+
+/** What the agent service writes as the verdict of a job its own agent did not judge in time. */
+export const JUDGE_ABSENT = 'judge_absent';
+
+/** The line under a job that waits for the ruling of the creator's own agent. */
+export const OWN_JUDGE_WAITING = 'Judged when the creator’s agent is next online, within 48 hours. If it is not, the job closes with no winner and nothing is paid.';
+/** The line under a job that closed because that ruling never came. */
+export const OWN_JUDGE_ABSENT = 'The creator’s agent did not judge the entries within 48 hours; nothing paid.';
+
+/**
+ * Whether the job waits for the ruling of the creator's own agent: its window has closed, it has no verdict, and either
+ * the agent service says so on the job or the coin's agent is one that runs in its creator's client (`model` is
+ * `own-agent`, the value the coin carries while it does).
+ */
+export function awaitsOwnJudge(job: Pick<BountyCardJob, 'status' | 'verdict' | 'ownJudge'>, coin: { model?: string | null } = {}): boolean {
+  if (job.status !== 'judging' || job.verdict) return false;
+  return !!job.ownJudge || coin.model === OWN_AGENT_MODEL_ID;
+}
+
+/** Whether the job closed because the creator's own agent gave no ruling in time. */
+export function closedUnjudged(job: { status: BountyStatus; verdict?: { invalid: string | null } | null }): boolean {
+  return job.status === 'no_winner' && job.verdict?.invalid === JUDGE_ABSENT;
+}
 
 export const BOUNTY_STATUS_LABEL: Record<BountyStatus, string> = {
   draft: 'Waiting to be posted',
@@ -17,8 +51,13 @@ export const BOUNTY_STATUS_LABEL: Record<BountyStatus, string> = {
   failed: 'Failed',
 };
 
-/** The one-line outcome under a job that is not simply open; null while it takes entries, is judged or is paid. */
-export function outcomeLine(job: Pick<BountyJob, 'status'>): string | null {
+/**
+ * The one-line outcome under a job that is not simply open; null while it takes entries, is judged or is paid. With
+ * `coin` (the coin's `model`), a job that waits for the creator's own agent says so.
+ */
+export function outcomeLine(job: Pick<BountyJob, 'status'> & { verdict?: BountyJob['verdict']; ownJudge?: BountyCardJob['ownJudge'] }, coin: { model?: string | null } = {}): string | null {
+  if (awaitsOwnJudge({ status: job.status, verdict: job.verdict ?? null, ownJudge: job.ownJudge ?? null }, coin)) return OWN_JUDGE_WAITING;
+  if (closedUnjudged(job)) return OWN_JUDGE_ABSENT;
   switch (job.status) {
     case 'draft':
       return 'Written by the agent; it goes out on X once the creator has read it or a posting slot is free.';

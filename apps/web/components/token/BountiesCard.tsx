@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import { useAgentBounties } from '@/lib/indexer';
-import { BOUNTY_STATUS_LABEL, bountyAnchor, closesLabel, entriesLine, MARK_LABEL, outcomeLine, usdcLabel, utcLabel, winnerMarks } from '@/lib/bounties';
+import { awaitsOwnJudge, BOUNTY_STATUS_LABEL, bountyAnchor, closedUnjudged, closesLabel, entriesLine, MARK_LABEL, outcomeLine, usdcLabel, utcLabel, winnerMarks, type BountyCardJob } from '@/lib/bounties';
 import { explorer } from '@/lib/chains';
 import { ago, shortAddr, shortHash } from '@/lib/format';
-import type { BountyJob, CriterionMark, Token } from '@/lib/types';
+import type { CriterionMark, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
@@ -34,10 +34,13 @@ function XLink({ href, children, testId }: { href: string; children: React.React
   );
 }
 
-function Job({ job, now }: { job: BountyJob; now: number }) {
+function Job({ job, now, token }: { job: BountyCardJob; now: number; token: Pick<Token, 'model'> }) {
   const marks = winnerMarks(job);
   const inMotion = job.status === 'draft' || job.status === 'open' || job.status === 'judging' || job.status === 'proposed';
-  const outcome = outcomeLine(job);
+  // A coin whose agent runs in its creator's own AI client: the entries wait for that agent's ruling, or closed without one.
+  const waitsForOwnJudge = awaitsOwnJudge(job, token);
+  const unjudged = closedUnjudged(job);
+  const outcome = outcomeLine(job, token);
   const when = job.postedAt ?? job.createdAt;
   return (
     <li id={bountyAnchor(job.shortId)} data-testid="bounty-job" data-status={job.status} className="flex scroll-mt-24 flex-col gap-2 py-3 target:bg-canvas-soft">
@@ -82,9 +85,9 @@ function Job({ job, now }: { job: BountyJob; now: number }) {
           {job.verdict.reason}
         </p>
       ) : null}
-      {job.verdict?.invalid ? <p className="text-caption text-mute">The judge’s answer was set aside: {job.verdict.invalid}.</p> : null}
+      {job.verdict?.invalid && !unjudged ? <p className="text-caption text-mute">The judge’s answer was set aside: {job.verdict.invalid}.</p> : null}
       {outcome ? (
-        <p className="text-caption text-body" data-testid="bounty-job-outcome">
+        <p className="text-caption text-body" data-testid="bounty-job-outcome" data-own-judge={waitsForOwnJudge ? 'waiting' : unjudged ? 'absent' : undefined} title={waitsForOwnJudge && job.ownJudge?.ruleBy ? `Waits until ${utcLabel(job.ownJudge.ruleBy)}` : undefined}>
           {outcome}
         </p>
       ) : null}
@@ -113,7 +116,7 @@ function Job({ job, now }: { job: BountyJob; now: number }) {
         ) : null}
         {job.payment?.replyUrl ? <XLink href={job.payment.replyUrl}>Payment reply</XLink> : null}
         {job.closeReplyUrl && !job.payment?.replyUrl ? <XLink href={job.closeReplyUrl}>Closing reply</XLink> : null}
-        {job.verdict?.judgedAt ? (
+        {job.verdict?.judgedAt && !unjudged ? (
           <span className="font-mono text-mute tabular" title={job.verdict.deliveryHash ? `What the judge saw: ${job.verdict.deliveryHash}` : undefined}>
             judged {ago(unix(job.verdict.judgedAt), now)}
             {job.verdict.deliveryHash ? ` · ${shortHash(job.verdict.deliveryHash)}` : ''}
@@ -154,7 +157,7 @@ export function BountiesCard({ token, now }: { token: Token; now: number }) {
         <p className="py-1 text-micro text-mute">Small jobs the agent asks for and pays a bounty for. Entries are judged against the criteria the agent wrote; every verdict and payment is listed here.</p>
         <ul className="divide-y divide-hairline">
           {shown.map((job) => (
-            <Job key={job.id} job={job} now={now} />
+            <Job key={job.id} job={job} now={now} token={token} />
           ))}
         </ul>
         {jobs.length > SHOWN && !all ? (

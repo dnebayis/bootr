@@ -6,11 +6,17 @@
  * A picture costs more than a thought, so it is held to the fuel too: `pictureFits` says whether one leaves the
  * agent at least `LOW_FUEL_THOUGHTS` thoughts behind (the observation's `picture.affordable`, images.ts before the
  * paid call), and `pictureFuelCheck` reads the spender for that decision at the moment of the call.
+ *
+ * An own-agent coin (docs/design/byo-agent.md section 1.4; `isOwn`, the stored config, whatever the flag says) buys no
+ * thought, so its section says what fuel is for there, paid services, and carries no thought figure (`ownFuelView`).
  */
 import { averageThoughtCost, fuelIsLow, LOW_FUEL_THOUGHTS, thoughtsLeft } from '@bootr/shared/fuel';
+import { eq } from 'drizzle-orm';
 import { erc20Abi, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
+import { agents } from './db/schema.js';
 import { recentThoughtCost } from './inference.js';
+import { isOwn } from './own/registry.js';
 import type { TreasurySnapshot } from './treasury.js';
 
 export interface FuelView {
@@ -43,10 +49,32 @@ export function fuelView(usd: Pick<TreasurySnapshot['usd'], 'spenderUsdc' | 'usd
   };
 }
 
-/** The observation section, or `{}` without a treasury snapshot or when the cost cannot be read. */
-export async function fuelSection(ctx: Pick<SupervisorContext, 'db' | 'log'>, agentId: string, treasury: Pick<TreasurySnapshot, 'usd'> | null): Promise<Record<string, unknown>> {
+/** What an own-agent coin is told about its fuel: the two balances and what they are for. No thought is paid, so no thought figure. */
+export interface OwnFuelView {
+  meaning: string;
+  /** USDC that pays for paid services now (the spender's float). */
+  spendableUsdc: string;
+  /** USDC in the treasury that tops the spendable amount up while the paid-services power is on. */
+  reserveUsdc: string;
+}
+
+export const OWN_FUEL_MEANING = 'what you can spend on paid services; nothing else of yours costs fuel';
+
+export function ownFuelView(usd: Pick<TreasurySnapshot['usd'], 'spenderUsdc' | 'usdc'>): OwnFuelView {
+  return { meaning: OWN_FUEL_MEANING, spendableUsdc: usd.spenderUsdc.toFixed(2), reserveUsdc: usd.usdc.toFixed(2) };
+}
+
+/**
+ * The observation section, or `{}` without a treasury snapshot or when the cost cannot be read. `agent` is the agent's
+ * row when the caller has it (roles.ts), else its id (runtime.ts), for which the stored config is read here: how the
+ * coin is run decides which of the two views it gets, and a hosted coin's section is what it always was.
+ */
+export async function fuelSection(ctx: Pick<SupervisorContext, 'db' | 'log'>, agent: string | Pick<AgentRow, 'agentId' | 'config'>, treasury: Pick<TreasurySnapshot, 'usd'> | null): Promise<Record<string, unknown>> {
   if (!treasury) return {};
+  const agentId = typeof agent === 'string' ? agent : agent.agentId;
   try {
+    const row = typeof agent === 'string' ? (await ctx.db.select({ config: agents.config }).from(agents).where(eq(agents.agentId, agent)).limit(1))[0] : agent;
+    if (row && isOwn(row)) return { fuel: ownFuelView(treasury.usd) };
     return { fuel: fuelView(treasury.usd, await recentThoughtCost(ctx, agentId)) };
   } catch (err) {
     ctx.log.warn({ agentId, err }, 'fuel read failed; turn goes on without the section');

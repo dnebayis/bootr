@@ -27,7 +27,7 @@
  * runs and the treasury turn waits for the next tick, since mentions are the time-sensitive side and the treasury
  * turn is an hourly one anyway.
  */
-import { buildObservation, type AgentConfig, type AgentRole, type ObservationView, type ToolAccountOptions, type ToolDefinition, type ToolName } from '@bootr/agent-core';
+import { DEFAULT_OBSERVATION_BYTES, buildObservation, checkpoint, type AgentConfig, type AgentRole, type ObservationView, type ToolAccountOptions, type ToolDefinition, type ToolName } from '@bootr/agent-core';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { formatUnits } from 'viem';
 import { SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
@@ -40,7 +40,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { memories } from './db/schema.js';
 import { fuelSection } from './fuel.js';
 import type { MemoryRecord } from './memories.js';
-import type { AgentState } from './runtime.js';
+import { TREASURY_CHECKPOINT_CHARS, type AgentState } from './runtime.js';
 import { budgetView, servicesBudget, servicesPolicyOf } from './services.js';
 import { treasuryTurnOn } from './treasury-switch.js';
 import { fundingBudget, openOps, opView, recentOps, type TreasurySnapshot } from './treasury.js';
@@ -218,7 +218,7 @@ async function capsSection(ctx: SupervisorContext, agent: AgentRow, config: Agen
  * treasury notes under their heading. Never the inbox, a thread, a page, a search result, a recent post or a general
  * memory: nothing from this build reads `sv_actions`, the sender or the memories beyond the `treasury` tag.
  */
-export async function buildTreasuryObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TreasuryTurnInputs, tools: readonly { name: string }[]): Promise<ObservationView> {
+export async function buildTreasuryObservation(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, state: AgentState, inputs: TreasuryTurnInputs, tools: readonly { name: string }[], maxBytes: number = DEFAULT_OBSERVATION_BYTES): Promise<ObservationView> {
   const now = ctx.now();
   const [open, recent, caps] = await Promise.all([openOps(ctx, agent.agentId), recentOps(ctx, agent.agentId, 10), capsSection(ctx, agent, config)]);
   const t = inputs.treasury;
@@ -241,11 +241,52 @@ export async function buildTreasuryObservation(ctx: SupervisorContext, agent: Ag
       stepBudget: ctx.config.MAX_TOOL_STEPS,
       checkpoint: cp ? { memory: cp.memory, agenda: cp.agenda, summary: cp.summary, at: new Date(cp.at).toISOString() } : null,
       ...caps,
-      ...(await fuelSection(ctx, agent.agentId, t)),
+      // The agent row is handed over, so the section knows how the coin is run without a read of its own (fuel.ts).
+      ...(await fuelSection(ctx, agent, t)),
       ...coinFeesSection(config, inputs.market, clankerV5CoinOf(ctx, agent)),
       // The bounties power (bounties.ts): the day's headroom, the open jobs, the last verdicts and the policy; empty while off.
       ...(await bountiesSection(ctx, agent, config)),
       ...(inputs.notes.length ? { treasuryNotes: { meaning: NOTES_MEANING, items: inputs.notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt })) } } : {}),
     },
-  });
+  }, maxBytes);
+}
+
+// ---------------------------------------------------------------------------
+// How the treasury turn finishes
+// ---------------------------------------------------------------------------
+
+export interface TreasuryFinish {
+  /** What the `finish` call is answered with. */
+  result: Record<string, unknown>;
+  /** When the next treasury turn is due (epoch ms), after the floor and the bounties cap. */
+  nextAtMs: number;
+  /** The time the model asked for, clamped by the checkpoint's own bounds, before the bounties cap (epoch ms). */
+  requestedAtMs: number;
+}
+
+/**
+ * The treasury turn's `finish` (docs/design/byo-agent.md section 13.9): a faithful copy of the treasury branch of
+ * runtime.ts `runLoop`, for the turn an own agent's client closes. The checkpoint is checked with the interval as its
+ * floor (a bad one throws, as `checkpoint` does, and nothing is written), cut to `TREASURY_CHECKPOINT_CHARS` and kept
+ * in the treasury's own slot of `state`; the wake the model asked for is brought forward to `treasuryWakeCapMs` while
+ * the Bounties power is on and becomes `state.treasuryNextAt`. The social memory, agenda, summary, post slot and wake
+ * are not touched. Mutates `state`; the caller persists it and ends the turn (the hosted loop's `treasuryEnd` then holds
+ * the clock at least one interval from that moment, which this value already is whenever the interval fits in the
+ * checkpoint's own ceiling). Until the integration step folds the hosted branch onto this function, the two are kept
+ * equal by test/own-treasury.test.ts.
+ */
+export function treasuryFinish(ctx: Pick<SupervisorContext, 'config' | 'log'>, agent: Pick<AgentRow, 'agentId'>, config: Pick<AgentConfig, 'capabilities'>, state: AgentState, input: Record<string, unknown>, now: number): TreasuryFinish {
+  // The treasury's own checkpoint: its slot in the state, cut to size. The model's wake request is honoured only beyond the interval (and within a day).
+  const cp = checkpoint(input, now, { floorMs: ctx.config.TREASURY_TURN_INTERVAL_MS });
+  state.treasuryCheckpoint = { memory: cp.memory.slice(0, TREASURY_CHECKPOINT_CHARS.memory), agenda: cp.agenda.slice(0, TREASURY_CHECKPOINT_CHARS.agenda), summary: cp.summary.slice(0, TREASURY_CHECKPOINT_CHARS.summary), at: now };
+  // While the Bounties power is on, the turn's own wake may not push the next one past a few intervals (`treasuryWakeCapMs`).
+  const cap = treasuryWakeCapMs(ctx.config, config);
+  const nextAtMs = cap !== null ? Math.min(cp.nextAtMs, now + cap) : cp.nextAtMs;
+  state.treasuryNextAt = nextAtMs;
+  if (nextAtMs < cp.nextAtMs) ctx.log.info({ agentId: agent.agentId, role: 'treasury', requestedAt: cp.nextAt, nextAt: new Date(nextAtMs).toISOString() }, 'treasury wake brought forward to the bounties cap');
+  return {
+    result: { checkpointed: true, nextTreasuryTurnAt: new Date(nextAtMs).toISOString(), ...(nextAtMs < cp.nextAtMs ? { note: 'with bounties on, your next treasury turn is never more than two intervals away' } : {}) },
+    nextAtMs,
+    requestedAtMs: cp.nextAtMs,
+  };
 }
