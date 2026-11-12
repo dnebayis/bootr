@@ -2,6 +2,12 @@
  * The notifier's pass: looks at agents on its own clock, apart from the tick, and turns what it reads into notification
  * events (notifications.ts). It only reads the chain and the sender and only writes its own tables, so nothing here can
  * delay or disturb a turn. A read that fails leaves that event as it was rather than guessing either way.
+ *
+ * An own-agent coin (docs/design/byo-agent.md sections 1.4 and 11; `isOwn`, the stored config, whatever the flag says)
+ * thinks in its creator's own client: it buys no thought and never sleeps for fuel. The notices that are about paid
+ * thinking (fuel low with its thoughts left, asleep, failing turns, model not available) are never raised for it, and
+ * one left open from the coin's hosted days is closed. Everything that still applies is told as for any coin: gas, the
+ * X connection, a pause or a held action, posts waiting for review, the session key.
  */
 import { averageThoughtCost, fuelIsLow, runwayDays, thoughtsLeft } from '@bootr/shared/fuel';
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
@@ -15,6 +21,7 @@ import { fuelReport, recentThoughtCost } from './inference.js';
 import { agentSource, clankerV5QuoteOf, pairedAssetOf } from './launch-source.js';
 import { applyOutcomes, flushNotifications, MODEL_CHANGED_VISIBLE_MS, pruneNotifications, resolveNotification, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
 import { notifications } from './db/schema.js';
+import { isOwn } from './own/registry.js';
 import type { SenderAccount } from './sender-client.js';
 
 /** Under this many days of runway at the recent rate fuel counts as low, whatever is left in thoughts. */
@@ -59,6 +66,8 @@ export interface HealthFacts {
   /** null: the sender could not be reached. */
   x: Pick<SenderAccount, 'connected' | 'revoked'> | null;
   key: { validUntil: number | null; rotateBeforeMs: number; outdated: boolean };
+  /** True for an own-agent coin (`isOwn`): no notice about paid thinking is raised, and an open one is closed. Absent = false, a hosted coin. */
+  own?: boolean;
 }
 
 /**
@@ -84,22 +93,31 @@ function reviewOutcomes(reviews: ReviewFacts, now: number): Pick<HealthOutcomes,
 /** The pure part of the check: facts in, per-event outcome out; anything unknown is left out of the answer. */
 export function evaluateHealth(f: HealthFacts): HealthOutcomes {
   const out: HealthOutcomes = reviewOutcomes(f.reviews, f.now);
-  if (f.gas) out.gas_out = f.gas === 'empty' ? (f.gasFromCreatorOnly ? { creatorOnly: 1 } : {}) : false;
+  // `own: 1` only changes the wording of the creator-only notice: an own coin's USDC fees are fuel for paid services, not for thinking.
+  if (f.gas) out.gas_out = f.gas === 'empty' ? (f.gasFromCreatorOnly ? { creatorOnly: 1, ...(f.own === true ? { own: 1 } : {}) } : {}) : false;
   // Before an agent is active it has no turns to speak of; gas is what can hold its setup up (onboarding.ts).
   if (f.agentStatus !== 'active') return out;
 
-  const asleep = f.runtime?.status === 'sleeping';
+  const own = f.own === true;
+  // An own coin never sleeps for fuel (the tick wakes one that was asleep when it became own): it is never told so.
+  const asleep = !own && f.runtime?.status === 'sleeping';
   out.agent_asleep = asleep ? {} : false;
   const stopped: NotificationData | null =
     f.runtime?.status === 'paused'
       ? { reason: f.runtime.pausedBy === 'guardian' ? 'paused_onchain' : 'paused_by_bootr' }
       : f.runtime?.status === 'held'
         ? { reason: 'blocked' }
-        : (f.runtime?.failures ?? 0) >= FAILING_TURNS
+        : // Failing turns are hosted turns that crashed or could not buy a thought; a count left from hosted days says nothing of an own coin.
+          !own && (f.runtime?.failures ?? 0) >= FAILING_TURNS
           ? { reason: 'failing', failures: f.runtime!.failures }
           : null;
   out.agent_stopped = stopped ?? false;
-  if (asleep) {
+  if (own) {
+    // Fuel pays for an own coin's paid services only; a call without it is refused in plain words to the client itself
+    // (services.ts). No thought is bought, so there is no runway to warn about and no model to be unavailable.
+    out.fuel_low = false;
+    out.model_unavailable = false;
+  } else if (asleep) {
     // Asleep already says it: no second message about the same empty tank.
     out.fuel_low = false;
   } else if (f.fuel) {
@@ -196,6 +214,7 @@ export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, 
   await expireApprovals(ctx, agent.agentId);
   await expireModelChanged(ctx, agent.agentId);
   const active = agent.status === 'active';
+  const own = isOwn(agent);
   // One multicall for the four balances (it was four requests): the RPC key is shared with the indexer's block tail.
   const balances = await readHealthBalances(ctx, agent).catch((err) => {
     ctx.log.warn({ agentId: agent.agentId, err }, 'notifier: balance read failed');
@@ -204,7 +223,8 @@ export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, 
   const gas = balances.deposit !== null && balances.eth !== null ? gasReading({ deposit: balances.deposit, balance: balances.eth, minWei: BigInt(ctx.config.GAS_MIN_WEI), selfFunded: gasSelfFunded(ctx.config) }).status : null;
   const [reviews, fuel, x] = await Promise.all([
     reviewFacts(ctx, agent.agentId),
-    active ? readFuelFacts(ctx, agent, balances) : Promise.resolve(null),
+    // An own coin's thought figures are never read: nothing is told from them.
+    active && !own ? readFuelFacts(ctx, agent, balances) : Promise.resolve(null),
     active ? ctx.sender.account(agent.agentId).catch(() => null) : Promise.resolve(null),
   ]);
   const outcomes = evaluateHealth({
@@ -221,6 +241,7 @@ export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, 
       rotateBeforeMs: ctx.config.SESSION_ROTATE_BEFORE_DAYS * DAY_MS,
       outdated: keyOutdated(agent, ctx.config.SESSION_USEROP_LIMIT),
     },
+    ...(own ? { own: true } : {}),
   });
   await applyOutcomes(ctx, agent.agentId, outcomes);
 }

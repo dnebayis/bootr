@@ -86,6 +86,8 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
     case 'gas_out':
       // A USDC-paired Clanker v5 coin (notify-health.ts `gasFromCreatorOnly`): its fees are fuel, never gas.
       if (data.creatorOnly === 1) {
+        // An own-agent coin (notify-health.ts `own`) thinks in its creator's client: its USDC fees pay for paid services only.
+        if (data.own === 1) return { title: 'Out of gas', body: 'This coin’s fees arrive in USDC, which pays for the agent’s paid services but never its gas: gas comes only from you. The agent cannot claim fees or trade until you add gas on the coin page.' };
         return { title: 'Out of gas', body: 'This coin’s fees arrive in USDC, which pays the agent’s thinking but never its gas: gas comes only from you. The agent cannot claim fees, trade or refuel until you add gas on the coin page.' };
       }
       return { title: 'Out of gas', body: 'The agent cannot claim fees, trade or refuel until someone adds gas on the coin page.' };
