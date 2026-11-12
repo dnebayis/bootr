@@ -226,10 +226,15 @@ function parseTarget(raw: unknown): ApproveTarget {
   throw invalid('target', 'target.kind must be coin or draft.');
 }
 
-/** Clients that count against `OWN_CLIENTS_PER_AGENT` for a target: the live ones, and the grants approved for it that can still be redeemed. */
-async function claimsOn(ctx: Ctx, target: { agentId: string } | { draftId: string }, now: Date): Promise<number> {
-  const clientMatch = 'agentId' in target ? eq(agentClients.agentId, target.agentId) : and(eq(agentClients.draftId, target.draftId), isNull(agentClients.agentId));
-  const grantMatch = 'agentId' in target ? eq(agentGrants.agentId, target.agentId) : eq(agentGrants.draftId, target.draftId);
+/**
+ * Clients that count against `OWN_CLIENTS_PER_AGENT` for a target: the live ones, and the grants approved for it that
+ * can still be redeemed. A coin's clients are all its creator's. A launch draft's are counted per approving wallet: the
+ * draft id is no secret once the launch is on chain, and a stranger who approves clients for somebody's draft must not
+ * be able to fill the places of the creator (the stranger's are revoked at registration anyway).
+ */
+async function claimsOn(ctx: Ctx, target: { agentId: string } | { draftId: string; creator: string }, now: Date): Promise<number> {
+  const clientMatch = 'agentId' in target ? eq(agentClients.agentId, target.agentId) : and(eq(agentClients.draftId, target.draftId), isNull(agentClients.agentId), eq(agentClients.creator, target.creator));
+  const grantMatch = 'agentId' in target ? eq(agentGrants.agentId, target.agentId) : and(eq(agentGrants.draftId, target.draftId), eq(agentGrants.creator, target.creator));
   const [clients] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentClients).where(and(clientMatch, live(now)));
   const [grants] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(agentGrants).where(and(grantMatch, eq(agentGrants.status, 'approved'), gt(agentGrants.expiresAt, now)));
   return Number(clients?.n ?? 0) + Number(grants?.n ?? 0);
@@ -264,7 +269,7 @@ export async function approveGrant(ctx: Ctx, input: { userCode?: unknown; creato
     answer = { kind: 'coin', coin: coinRef(agent) };
     bind = { agentId: agent.agentId, draftId: null };
   } else {
-    if ((await claimsOn(ctx, { draftId: target.draftId }, new Date(now))) >= max) throw new OwnError('too_many_clients');
+    if ((await claimsOn(ctx, { draftId: target.draftId, creator }, new Date(now))) >= max) throw new OwnError('too_many_clients');
     answer = { kind: 'draft', draftId: target.draftId };
     bind = { agentId: null, draftId: target.draftId };
   }

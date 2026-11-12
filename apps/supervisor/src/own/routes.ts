@@ -66,8 +66,9 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
       if (err instanceof OwnError) own = err;
       else if (err instanceof PolicyError && err.code === 'runtime_busy') own = new OwnError('runtime_busy', { retryAt: ctx.now() + 5_000 });
       else {
-        // Never the body: only where it happened and what was thrown, with any RPC address scrubbed.
-        ctx.log.error({ path: new URL(c.req.url).pathname, err: rpcErrorText(err) }, 'own agent: route failed');
+        // Never the body: only where it happened and what was thrown, with any RPC address scrubbed, cut short (a
+        // database error can quote the values of the statement that failed, a picture's bytes among them).
+        ctx.log.error({ path: new URL(c.req.url).pathname, err: rpcErrorText(err).slice(0, 1000) }, 'own agent: route failed');
         own = new OwnError('supervisor_unavailable');
       }
       const { status, body } = ownErrorResponse(own);

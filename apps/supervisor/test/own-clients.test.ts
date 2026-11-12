@@ -394,6 +394,24 @@ describe('own agent: a client connected before the launch', () => {
     }
   });
 
+  it('a stranger who approves clients for somebody\'s draft cannot take the creator\'s places', async () => {
+    const w = await ownWorld();
+    try {
+      // The draft id is public once the launch is on chain; a stranger approves as many clients for it as one wallet may.
+      for (let n = 0; n < 3; n++) await connectDraft(w, STRANGER);
+      const fourth = await start(w);
+      expect((await approveDraft(w, fourth.userCode, STRANGER)).body.error).toBe('too_many_clients');
+      // The creator's own approval is not blocked by them, and is the only one bound at registration.
+      const mine = await connectDraft(w, CREATOR);
+      const agent = await seedOwn(w, { agent: { draftId: DRAFT } });
+      expect(await adoptDraftClients(w.ctx, agent)).toBe(1);
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.clients.map((c) => c.clientId)).toEqual([mine.clientId]);
+      expect(await ownHooks.countClients(w.ctx, AGENT_ID)).toBe(1);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('catches up with a launch that was registered before the hook ran, under the same creator check', async () => {
     const w = await ownWorld();
     try {
