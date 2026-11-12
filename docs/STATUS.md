@@ -215,6 +215,22 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
    supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
    launchpad can close there but the agent economy needs a bridge step. The staged plan and sizes are in section 11.
+11. **Bring your own agent** (designed 2026-11-12, nothing built;
+   [`design/byo-agent.md`](./design/byo-agent.md)): a coin's creator runs the coin's agent in their own AI client
+   (Claude Code, Cursor, Codex, Claude Desktop) through the Bootr MCP server. Only the thinking moves to the client:
+   the supervisor still builds the observation, runs the broker and every guard, keeps the state and the memory,
+   posts through the sender and signs with the session key; the creator's wallet approves the client in the browser
+   (a device-style approval, no key copied). Thinking costs no fuel, pictures are made by the client and uploaded,
+   paid x402 services are the only use of fuel, X reads stay Bootr's cost, and no fuel minimum exists anywhere (both
+   live launchers read `minFuelUsdc = 0`; the form only prefills 20). The launch page opens with "Bootr agent" or "My
+   own agent", and the console switches a coin between the two in both directions with no contract change and no
+   session key rotation. No indexer change, so no schema bump; supervisor migration `0011_own_agent` and sender
+   migration `0003_quota_reads_per_day`. One release behind `OWN_AGENT_ENABLED`, built by three workstreams in
+   parallel against section 13 of the note (W1 connection and the social role, 8 days; W2 treasury, bounties,
+   requests and services, 5 days; W3 launch page, console and switching, 6 days; integration 2 days). Twelve
+   decisions wait for the owner in section 9 of the note, each with a recommendation the builders follow until told
+   otherwise; section 10 says where full parity cannot be had (a role's clean context on someone else's machine,
+   prompt-only rules, presence, pictures that depend on the client).
 
 **Parked** (the owner brings them back; nothing is built meanwhile):
 
@@ -238,7 +254,6 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
   cli, mcp in that order.
 - X quota hold redesign: a launch-day agent fills its 24 posts and goes silent, mention reads included, until the
   window rolls. Options: a launch-day quota, or reading mentions during the hold and queueing replies.
-- Bring-your-own local agent (Claude, Codex) against Bootr, for creators who will not buy credits.
 - Chainstack ($49 a month) for the indexer's `eth_getLogs` if 429s persist on the CDP key.
 - Public-endpoint 429 noise: retry inside the indexer's blocks transport or rest longer, so each 429 stops showing as
   a Ponder error line.
