@@ -9,7 +9,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { getAddress } from 'viem';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import type { DueView, TurnOpen } from '@bootr/shared/own-agent';
-import { ANVIL_FIRST_ACCOUNT, SEED_DEFAULTS, isLocalDatabase, seedInto, seedOwnAgent } from '../scripts/seed-own-agent.js';
+import { ANVIL_FIRST_ACCOUNT, PER_AGENT_TABLES, SEED_DEFAULTS, isLocalDatabase, seedInto, seedOwnAgent } from '../scripts/seed-own-agent.js';
 import { connectClient, ownWorld } from './own-helpers.js';
 
 const KEY = '11'.repeat(32);
@@ -77,6 +77,27 @@ describe('seed-own-agent', () => {
       const turn = await w.run<TurnOpen>('turn', client.credential, { role: 'social' });
       expect(turn.status).toBe(200);
       expect(turn.body.tools).toEqual(expect.arrayContaining(['bootr_agent_publish_post', 'bootr_agent_upload_picture', 'bootr_agent_finish']));
+
+      // Seeding again starts the coin over (found by the first real run of the end-to-end script: a second run saw no
+      // original post due, and its mention read was held back by the sender's five-minute interval). What a run
+      // leaves is gone: the client, the open turn, actions and notes, another table of each service, the mention clock.
+      await w.db.execute(sql`insert into sv_actions (action_id, agent_id, cycle_key, action, status) values ('act_left_by_a_run', ${seed.agentId}, 'cycle:left', '{"tool":"publish_post"}'::jsonb, 'completed')`);
+      await w.db.execute(sql`insert into sv_memories (id, agent_id, text, sources, tags, created_at) values ('mem_left_by_a_run', ${seed.agentId}, 'left by an earlier run', '[]'::jsonb, '[]'::jsonb, now())`);
+      await w.db.execute(sql`insert into sender_reads (agent_id, kind, day, count) values (${seed.agentId}, 'mentions', '2026-11-12', 3)`);
+      await w.db.execute(sql`update sender_quotas set last_mentions_read_at = now(), mentions_since_id = '42' where agent_id = ${seed.agentId}`);
+      // Another coin's rows are not the seed's to touch.
+      await w.db.execute(sql`insert into sv_memories (id, agent_id, text, sources, tags, created_at) values ('mem_of_another_coin', '7', 'kept', '[]'::jsonb, '[]'::jsonb, now())`);
+      const count = async (table: string) => (await rows<{ n: number }>(sql`select count(*)::int as n from ${sql.identifier(table)} where agent_id = ${seed.agentId}`))[0]!.n;
+      for (const table of ['sv_agent_clients', 'sv_actions', 'sv_memories', 'sender_reads']) expect([table, await count(table)]).not.toEqual([table, 0]);
+      expect(await seedInto(w.db, env)).toEqual(seed);
+      for (const table of PER_AGENT_TABLES) expect([table, await count(table)]).toEqual([table, 0]);
+      expect(await rows(sql`select id from sv_memories`)).toEqual([{ id: 'mem_of_another_coin' }]);
+      expect(await rows(sql`select reads_per_day, last_mentions_read_at, mentions_since_id from sender_quotas where agent_id = ${seed.agentId}`)).toEqual([{ reads_per_day: 200, last_mentions_read_at: null, mentions_since_id: null }]);
+      expect(await rows(sql`select turn, cycle from sv_runtimes where agent_id = ${seed.agentId}`)).toEqual([{ turn: null, cycle: 0 }]);
+      // And it is again a coin a client can connect to, with its first post due.
+      w.setNow(Date.now() + 1000);
+      const again = await connectClient(w, { creator: ANVIL_FIRST_ACCOUNT, agentId: seed.agentId, kernel: seed.kernel });
+      expect((await w.run<DueView>('due', again.credential)).body.social.reasons).toContain('original_post_due');
     } finally {
       await w.close();
     }

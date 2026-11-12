@@ -38,8 +38,9 @@
  * INDEXER_URL and SENDER_ENCRYPTION_KEY are for the W3 part: it reads its coin from the indexer, and it stores a stub
  * X account for the coin it launches (as the seed script does for the seeded coin) so that coin leaves setup.
  *
- * The seeded coin must be fresh for every run: the first part needs an original post due and no client connected.
- * Seeding again does not undo a run (the posts of the last one stay on record), so empty the seeded coin's rows first.
+ * The seeded coin must be fresh for every run: the first part needs an original post due, no client connected and a
+ * mention read the sender does not hold back. Run the seed script again before each run (it starts the coin over) and
+ * empty the stub (`POST /__stub/reset`).
  *
  * SUPERVISOR_URL and SUPERVISOR_SERVICE_KEY are for one check only, the coin's tape: the seeded coin is in the
  * supervisor's database and not on the fork, so the web's public tape route (which asks the indexer who the coin is)

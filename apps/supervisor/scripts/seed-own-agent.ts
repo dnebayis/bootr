@@ -9,8 +9,12 @@
  *     pnpm --filter supervisor exec tsx scripts/seed-own-agent.ts
  *
  * It refuses a database whose host is not this machine, so it can never write a made-up coin into a real deployment.
- * Both services' migrations must have run (the supervisor's 0011 and the sender's 0003). Running it again replaces the
- * same rows. The X tokens it stores are the fixed words below: they open nothing but the stub.
+ * Both services' migrations must have run (the supervisor's 0011 and the sender's 0003). Running it again starts the
+ * coin over: the same rows are written again, and what an earlier run of the end-to-end script left for this agent id
+ * is removed first (its actions, notes, clients, pictures, bounty jobs and approvals, the sender's posts and inbox, and
+ * the sender's mention clock). Without that a second run finds no original post due (the last run's post is on record)
+ * and its first mention read is held back by the sender's five-minute interval. The X tokens it stores are the fixed
+ * words below: they open nothing but the stub.
  *
  * Environment: `DATABASE_URL` (required, local); `SENDER_ENCRYPTION_KEY` (required: the local sender's key, so the
  * sender can read the stub tokens); `SEED_CREATOR` (default: anvil's first account); `SEED_AGENT_ID`, `SEED_KERNEL`,
@@ -42,6 +46,30 @@ export const SEED_DEFAULTS = {
   chainId: 8453,
 } as const;
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+/**
+ * Every table that keeps rows per agent and is not written below: the supervisor's and, on a local stack in the same
+ * database, the sender's. A seed empties them for its agent id, so the coin starts over (the header says why).
+ */
+export const PER_AGENT_TABLES = [
+  'sv_actions',
+  'sv_agent_clients',
+  'sv_agent_grants',
+  'sv_approvals',
+  'sv_bounty_entries',
+  'sv_bounty_jobs',
+  'sv_chat_messages',
+  'sv_images',
+  'sv_inference',
+  'sv_memories',
+  'sv_notifications',
+  'sv_post_metrics',
+  'sv_service_calls',
+  'sv_treasury_ops',
+  'sender_actions',
+  'sender_inbox',
+  'sender_reads',
+  'sender_optouts',
+] as const;
 
 /** True when the database address points at this machine (a loopback host, or a unix socket given as `?host=/path`). */
 export function isLocalDatabase(databaseUrl: string): boolean {
@@ -151,6 +179,8 @@ export async function seedInto(db: Db, env: NodeJS.ProcessEnv): Promise<Seed> {
   };
 
   {
+    // What an earlier run left for this agent id goes first, so the rows below describe a coin that has done nothing yet.
+    for (const table of PER_AGENT_TABLES) await db.execute(sql`delete from ${sql.identifier(table)} where agent_id = ${agentId}`);
     const row = { agentId, token, kernel, creator, source: 'bootr' as const, config, permissionId, sessionKeyInstalledAt: permissionId ? now : null, status: 'active' as const, draftId: '', createdAt: now, updatedAt: now };
     const [agent] = await db
       .insert(agents)
@@ -174,10 +204,12 @@ export async function seedInto(db: Db, env: NodeJS.ProcessEnv): Promise<Seed> {
       values (${agentId}, ${xUserId}, ${xHandle}, ${access}, ${refresh}, ${'tweet.read tweet.write users.read offline.access media.write'}, ${expiresAt}, null, ${now}, ${now}, ${'blue'}, ${now})
       on conflict (agent_id) do update set x_user_id = excluded.x_user_id, x_handle = excluded.x_handle, encrypted_access_token = excluded.encrypted_access_token, encrypted_refresh_token = excluded.encrypted_refresh_token, scopes = excluded.scopes, expires_at = excluded.expires_at, revoked_at = null, connected_at = excluded.connected_at, updated_at = excluded.updated_at, verified_type = excluded.verified_type, verified_checked_at = excluded.verified_checked_at
     `);
-    // The X read budget an own coin starts on (own/quota.ts), as registration would have set it.
+    // The X read budget an own coin starts on (own/quota.ts), as registration would have set it, and no mention read
+    // yet: an earlier run's read would hold the next one back for the sender's interval, and its cursor would hide
+    // what the stub is asked for after a reset.
     await db.execute(sql`
       insert into sender_quotas (agent_id, reads_per_day, updated_at) values (${agentId}, ${OWN_DEFAULTS.OWN_READS_PER_DAY}, ${now})
-      on conflict (agent_id) do update set reads_per_day = excluded.reads_per_day, updated_at = excluded.updated_at
+      on conflict (agent_id) do update set reads_per_day = excluded.reads_per_day, last_mentions_read_at = null, mentions_since_id = null, updated_at = excluded.updated_at
     `);
   }
   return { agentId, kernel, token, symbol };
