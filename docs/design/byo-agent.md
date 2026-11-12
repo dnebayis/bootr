@@ -905,7 +905,7 @@ section wins for the build.
 | Name | Where | Default | Meaning | Owner |
 | --- | --- | --- | --- | --- |
 | `OWN_AGENT_ENABLED` | supervisor `config.ts` (`bool('false')`); web `lib/server/env.ts` (`ownAgentEnabled()`); set once in Coolify for both | `false` | the one flag | W1a in the supervisor, W1b in the web |
-| `OWN_TURN_IDLE_MS`, `OWN_TURN_MAX_MS`, `OWN_FORCED_TURNS_PER_DAY`, `OWN_DUE_MIN_INTERVAL_MS`, `OWN_READS_PER_DAY`, `OWN_SEARCH_PER_DAY`, `OWN_READ_URL_PER_DAY`, `OWN_CLIENT_TTL_DAYS`, `OWN_CLIENTS_PER_AGENT`, `OWN_JUDGE_WAIT_MS`, `OWN_STALE_MENTION_MS`, `OWN_OBSERVATION_BYTES` | supervisor `config.ts`, one block | `OWN_DEFAULTS` in 13.3 | the limits of sections 2 and 3 | W1a adds them; everyone in the supervisor reads them with `ownSetting(ctx, name)` |
+| `OWN_TURN_IDLE_MS`, `OWN_TURN_MAX_MS`, `OWN_FORCED_TURNS_PER_DAY`, `OWN_DUE_MIN_INTERVAL_MS`, `OWN_READS_PER_DAY`, `OWN_SEARCH_PER_DAY`, `OWN_READ_URL_PER_DAY`, `OWN_CLIENT_TTL_DAYS`, `OWN_CLIENTS_PER_AGENT`, `OWN_JUDGE_WAIT_MS`, `OWN_STALE_MENTION_MS`, `OWN_OBSERVATION_BYTES`, and the daily budgets of section 7.1 (`OWN_TURNS_PER_DAY`, `OWN_STEPS_PER_DAY`, `OWN_REMEMBER_PER_DAY`, `OWN_TREASURY_PREPARE_PER_DAY`, `OWN_TREASURY_EXECUTE_PER_DAY`, `OWN_SERVICE_CALLS_PER_DAY`, `OWN_UPLOAD_ATTEMPTS_PER_DAY`) | supervisor `config.ts`, one block | `OWN_DEFAULTS` in 13.3 | the limits of sections 2, 3 and 7.1 | W1a adds them; everyone in the supervisor reads them with `ownSetting(ctx, name)` |
 | `BOOTR_CREDENTIALS_FILE` | the MCP server's and the CLI's environment | `~/.config/bootr/credentials.json` (`%APPDATA%\bootr\credentials.json` on Windows) | where the credentials are kept, mode 0600 | W1b |
 | `BOOTR_PICTURES_DIR` | the MCP server's environment | `~/bootr-pictures` | the only folder `bootr_agent_upload_picture` reads | W1b |
 | `BOOTR_SITE_URL` | exists | `https://bootr.fun` | unchanged | - |
@@ -1010,6 +1010,20 @@ export const OWN_DEFAULTS = {
   OWN_JUDGE_WAIT_MS: 172_800_000,
   OWN_STALE_MENTION_MS: 86_400_000,
   OWN_OBSERVATION_BYTES: 60_000,
+  /** Turns one coin's clients may open per rolling 24 hours (a real agent needs a turn per mention and 48 posts at most). */
+  OWN_TURNS_PER_DAY: 300,
+  /** Tool calls of every kind, a refused `finish` included, per rolling 24 hours. */
+  OWN_STEPS_PER_DAY: 2_000,
+  /** `remember` calls per rolling 24 hours. */
+  OWN_REMEMBER_PER_DAY: 200,
+  /** `treasury_prepare` calls per rolling 24 hours. */
+  OWN_TREASURY_PREPARE_PER_DAY: 100,
+  /** `treasury_execute` calls per rolling 24 hours. */
+  OWN_TREASURY_EXECUTE_PER_DAY: 30,
+  /** `x402_fetch` and `discover_services` calls together per rolling 24 hours. */
+  OWN_SERVICE_CALLS_PER_DAY: 100,
+  /** Picture uploads tried per rolling 24 hours, kept or refused. */
+  OWN_UPLOAD_ATTEMPTS_PER_DAY: 24,
 } as const;
 
 export const PICTURE_MIMES = ['image/png', 'image/jpeg', 'image/webp'] as const;
@@ -1064,6 +1078,7 @@ export type OwnErrorCode =
   | 'agent_paused'
   | 'not_due'
   | 'forced_turns_used'
+  | 'daily_budget_used'
   | 'turn_open'
   | 'turn_not_found'
   | 'turn_closed'
@@ -1075,6 +1090,7 @@ export type OwnErrorCode =
   | 'held_action'
   | 'client_not_found'
   | 'runner_unchanged'
+  | 'settings_changed'
   | 'model_required'
   | 'model_not_allowed'
   | 'chat_not_available';
@@ -1083,7 +1099,7 @@ export interface OwnErrorBody {
   error: OwnErrorCode;
   /** Plain words for the person or the model reading it: `OWN_ERRORS[error].message`, with a detail appended after a space for `invalid_request` and `invalid_tool_call`. */
   message: string;
-  /** When trying again can work (`rate_limited`, `slow_down`, `not_due`, `forced_turns_used`, `turn_open`, `runtime_busy`, `held_action`). */
+  /** When trying again can work (`rate_limited`, `slow_down`, `not_due`, `forced_turns_used`, `daily_budget_used`, `turn_open`, `runtime_busy`, `held_action`). */
   retryAt?: string;
   /** The offending field of an `invalid_request` or `invalid_tool_call`. */
   field?: string;
@@ -1114,6 +1130,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   agent_paused: { status: 409, message: 'The agent is paused. Nothing runs until it is resumed.' },
   not_due: { status: 409, message: 'Nothing is due for this role now. Look again at retryAt.' },
   forced_turns_used: { status: 429, message: "Today's turns outside the schedule are used up. The next turn is due at retryAt." },
+  daily_budget_used: { status: 429, message: "This coin's agent has used the turns or the tool calls it may make in 24 hours. Nothing was done; look again at retryAt." },
   turn_open: { status: 409, message: 'Another turn is open. Finish it, or wait until it runs out at retryAt.' },
   turn_not_found: { status: 404, message: 'No such turn. Open one first.' },
   turn_closed: { status: 410, message: 'That turn has ended. Open a new one if something is due.' },
@@ -1125,6 +1142,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   held_action: { status: 409, message: 'An earlier action is waiting for its receipt. The server settles it; look again at retryAt.' },
   client_not_found: { status: 404, message: 'No such client on this coin.' },
   runner_unchanged: { status: 409, message: 'The agent is already run that way.' },
+  settings_changed: { status: 409, message: "The agent's settings changed since they were read. Nothing was done; read them again, then retry." },
   model_required: { status: 400, message: 'Choose the model the Bootr agent should think with.' },
   model_not_allowed: { status: 400, message: 'That model is not offered right now. Choose another.' },
   chat_not_available: { status: 409, message: "This coin's agent runs in its creator's own AI client. Talk to it there." },
@@ -1459,6 +1477,11 @@ export interface RunnerSwitchRequest {
   runner: Runner;
   /** Switching to `hosted`: the model to think with; required when the stored one is not on the allowed list. */
   model?: string;
+  /**
+   * The config revision the caller read before it asked. When the stored revision is another one the switch answers
+   * `settings_changed` and does nothing, so the same request sent a second time (a switch bumps the revision) is refused.
+   */
+  expectedRevision?: number;
 }
 
 export interface RunnerSwitchResponse {
