@@ -361,7 +361,7 @@ describe('own agent, the whole seam: a creator request and paid services', () =>
     }
   });
 
-  it('x402_fetch with an empty spender refuses in the fixed words before anything is signed, and the turn goes on', async () => {
+  it('x402_fetch with an empty spender refuses in the fixed words before anything is sent or signed, and the turn goes on', async () => {
     const w = await ownWorld({ chain: { spenderUsdc: 0n, usdc: 0n } });
     try {
       await seedOwn(w, { config: { capabilities: { ...CAPS, services: true }, services: { ...DEFAULT_SERVICES_POLICY } } });
@@ -395,11 +395,13 @@ describe('own agent, the whole seam: a creator request and paid services', () =>
       expect(refused.status).toBe(200);
       expect(refused.body).toMatchObject({ tool: 'x402_fetch', status: 'failed', error: SERVICES_INSUFFICIENT_FUEL, stepsUsed: 1, turnEnded: false });
       expect(SERVICES_INSUFFICIENT_FUEL).toBe('services_insufficient_fuel: your spendable fuel is below the price of this call');
-      // the price was asked for; nothing was signed, nothing was sent, nothing counts against the day
-      expect(service.calls).toEqual([false]);
+      // not even the price was asked for (the first request of a paid call is unpaid, so a coin with no fuel sends none);
+      // nothing was signed, and no service call is on record: the refusal is on the action's own row
+      expect(service.calls).toEqual([]);
       expect(service.payments).toHaveLength(0);
       expect(signatures).toBe(0);
-      expect(await w.db.query.serviceCalls.findFirst({ where: eq(serviceCalls.id, refused.body.actionId!) })).toMatchObject({ status: 'failed', payment: null, error: SERVICES_INSUFFICIENT_FUEL });
+      expect(await w.db.query.serviceCalls.findFirst({ where: eq(serviceCalls.id, refused.body.actionId!) })).toBeUndefined();
+      expect((await toolRows(w)).find((r) => r.actionId === refused.body.actionId)).toMatchObject({ status: 'failed' });
       // a call that failed did nothing: the same one again still signs nothing
       expect((await act(w, credential, turn.turnId, 'x402_fetch', { url: 'https://data.example/price', reason: 'the price' })).body).toMatchObject({ status: 'failed', error: SERVICES_INSUFFICIENT_FUEL });
       expect(signatures).toBe(0);

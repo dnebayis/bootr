@@ -111,6 +111,9 @@ export function readUrlDailyCap(limit: number): string {
   return `read_url_daily_cap: at most ${limit} page reads per 24 hours; this one was not run. Go on with what you already have.`;
 }
 
+export function servicesDailyCount(limit: number): string {
+  return `services_daily_count: at most ${limit} paid-service calls and catalogue searches per 24 hours; this one was not sent.`;
+}
 export function rememberDailyCap(limit: number): string {
   return `remember_daily_cap: at most ${limit} notes per 24 hours; this one was not kept. Put what matters in the memory of your finish.`;
 }
@@ -138,7 +141,8 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
  *     carries one original post at most, and in approval mode one queued original per slot is all the queue holds;
  *   - a picture attached to a publish must have been stored in this turn;
  *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them),
- *     and so are `remember`, `treasury_prepare` and `treasury_execute`.
+ *     and so are `remember`, `treasury_prepare`, `treasury_execute` and the paid-service tools (`x402_fetch` and
+ *     `discover_services` together).
  * Null when the action may go on. `executeAction` calls it for an own coin; the engine calls it itself before a publish
  * is queued for review, which never reaches `executeAction`. A turn that is not on record allows no original post.
  */
@@ -168,6 +172,12 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
   if (action.tool === 'read_url') {
     const limit = ownSetting(ctx, 'OWN_READ_URL_PER_DAY');
     if ((await ownCallsInWindow(ctx, agent.agentId, 'read_url', pending.id)) >= limit) return failed(readUrlDailyCap(limit));
+  }
+  // Outbound requests of an own coin's choosing: the catalogue search and the paid call share one count.
+  if (action.tool === 'x402_fetch' || action.tool === 'discover_services') {
+    const limit = ownSetting(ctx, 'OWN_SERVICE_CALLS_PER_DAY');
+    const used = (await ownCallsInWindow(ctx, agent.agentId, 'x402_fetch', pending.id)) + (await ownCallsInWindow(ctx, agent.agentId, 'discover_services', pending.id));
+    if (used >= limit) return failed(servicesDailyCount(limit));
   }
   // Rows and signatures nothing else bounds without fuel: notes, prepared operations, executed ones.
   if (action.tool === 'remember') {

@@ -69,7 +69,7 @@ const rowOf = async (w: TestWorld, id: string) => (await w.db.query.serviceCalls
 const FETCH = { url: 'https://data.example/price', reason: 'the price' };
 
 describe.each([{ flag: true }, { flag: false }])('paid services of an own coin with the flag $flag', ({ flag }) => {
-  it('with no fuel x402_fetch refuses in the fixed words before anything is signed, and everything else works', async () => {
+  it('with no fuel x402_fetch refuses in the fixed words before anything is sent or signed, and everything else works', async () => {
     const w = await makeWorld({ chain: { spenderUsdc: 0n, usdc: 0n } });
     try {
       setOwnFlag(w, flag);
@@ -82,15 +82,16 @@ describe.each([{ flag: true }, { flag: false }])('paid services of an own coin w
       const out = await executeAction(w.ctx, agent, config, pending('act_no_fuel', 'x402_fetch', FETCH), env());
       expect(out).toEqual({ kind: 'failed', error: 'services_insufficient_fuel: your spendable fuel is below the price of this call' });
       expect(SERVICES_INSUFFICIENT_FUEL).toBe('services_insufficient_fuel: your spendable fuel is below the price of this call');
-      // the price was asked for, nothing was signed and nothing was sent
-      expect(stub.calls).toEqual([{ url: 'https://data.example/price', signed: false }]);
+      // not even the price was asked for (that first request is unpaid, and a coin that cannot pay sends none),
+      // nothing was signed, and no service call is on record
+      expect(stub.calls).toEqual([]);
       expect(stub.payments).toHaveLength(0);
       expect(spender.signatures).toBe(0);
-      expect(await rowOf(w, 'act_no_fuel')).toMatchObject({ status: 'failed', payment: null, quoteMicroUsdc: null, error: SERVICES_INSUFFICIENT_FUEL });
-      // nothing counts against the day, and the same action asked again replays the refusal without a second request
+      expect(await rowOf(w, 'act_no_fuel')).toBeUndefined();
+      // nothing counts against the day, and the same action asked again is refused the same way without a request
       expect((await servicesBudget(w.ctx, AGENT_ID, DEFAULT_SERVICES_POLICY)).spentTodayMicroUsdc).toBe(0n);
       expect(await executeAction(w.ctx, agent, config, pending('act_no_fuel', 'x402_fetch', FETCH), env())).toEqual(out);
-      expect(stub.calls).toHaveLength(1);
+      expect(stub.calls).toHaveLength(0);
       // a little fuel, less than the price: still nothing signed
       w.state.spenderUsdc = 4_999n;
       expect(await executeAction(w.ctx, agent, config, pending('act_short', 'x402_fetch', FETCH), env())).toEqual(out);

@@ -37,7 +37,7 @@ import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { decodePaymentResponseHeader } from '@x402/core/http';
 import type { PaymentPayload } from '@x402/core/types';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { formatUnits, getAddress, type Address, type Hex } from 'viem';
+import { erc20Abi, formatUnits, getAddress, type Address, type Hex } from 'viem';
 import { DEADLINE_GRACE_SECONDS, InsufficientFloatError, paymentAuthorization, paymentSettled, requireFloat } from './blockrun.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { serviceCalls, type ServiceCallStatus } from './db/schema.js';
@@ -62,6 +62,24 @@ export const SERVICES_PAID_NO_ANSWER = 'services_paid_no_answer';
 export const SERVICES_UNPAID = 'services_unpaid';
 /** What `x402_fetch` answers when the spender cannot cover the price: the one refusal an own coin without fuel meets. */
 export const SERVICES_INSUFFICIENT_FUEL = 'services_insufficient_fuel: your spendable fuel is below the price of this call';
+/** An own coin's fuel could not be read before a paid call: nothing is sent on a guess. */
+export const SERVICES_FUEL_UNREADABLE = 'services_fuel_unreadable: your spendable fuel could not be read right now, so nothing was sent; try again later';
+
+/**
+ * An own coin's `x402_fetch` sends nothing while its spender cannot cover the creator's per-call cap. The first request
+ * of a paid call is unpaid (it asks the service for its price), so without this a coin with no fuel had a free HTTP
+ * client: any public host, as often as the engine took a step. A hosted agent pays for the thought that makes the
+ * call; an own one pays nothing, so it has to be able to pay for the call itself before a byte leaves. Null when it can.
+ */
+export async function ownFuelRefusal(ctx: Pick<SupervisorContext, 'chain'>, spender: Address, policy: ServicesPolicy): Promise<string | null> {
+  let balance: bigint;
+  try {
+    balance = await ctx.chain.publicClient.readContract({ address: ctx.chain.addresses.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [spender] });
+  } catch {
+    return SERVICES_FUEL_UNREADABLE;
+  }
+  return balance < BigInt(policy.perCallMicroUsdc) ? SERVICES_INSUFFICIENT_FUEL : null;
+}
 
 /** The amount a payment's typed data would move: an EIP-3009 authorization's `value`, or a Permit2 transfer's `permitted.amount`; null when it is neither. */
 export function signedAmountOf(typedData: TypedDataPayload): bigint | null {
@@ -189,6 +207,11 @@ export async function serviceFetch(ctx: SupervisorContext, agent: AgentRow, conf
   if (url.protocol !== 'https:' || url.username || url.password) return { kind: 'failed', error: 'url_not_public_https' };
   const host = url.hostname.toLowerCase();
   if (!servicesHostAllowed(policy, host)) return { kind: 'failed', error: `services_host_not_allowed: ${host} is outside the hosts your creator allows` };
+  if (isOwn(agent)) {
+    // Before the host is even looked up: a coin that cannot pay sends nothing at all (`ownFuelRefusal`).
+    const short = await ownFuelRefusal(ctx, ctx.spenderFor(agent).address, policy);
+    if (short) return { kind: 'failed', error: short };
+  }
   try {
     await assertPublicHost(host, ctx.resolveHost);
   } catch (err) {
@@ -450,7 +473,27 @@ interface BazaarItem {
 }
 
 const DISCOVERY_CACHE = new WeakMap<object, Map<string, { at: number; items: DiscoveredService[] }>>();
-const DISCOVERY_CACHE_MS = 10 * 60_000;
+export const DISCOVERY_CACHE_MS = 10 * 60_000;
+/** Searches kept at once. The key carries the query, which the caller chooses, so the map is bounded: oldest out. */
+export const DISCOVERY_CACHE_MAX = 200;
+
+/** How many searches the catalogue cache of this world holds (for the tests of its bound). */
+export function discoveryCacheSize(ctx: Pick<SupervisorContext, 'chain'>): number {
+  return DISCOVERY_CACHE.get(ctx.chain)?.size ?? 0;
+}
+
+/** Stores one search: what ran out is dropped first, then the oldest entries until the map is within its bound. */
+function cacheDiscovery(cache: Map<string, { at: number; items: DiscoveredService[] }>, key: string, entry: { at: number; items: DiscoveredService[] }): void {
+  for (const [k, v] of cache) if (entry.at - v.at >= DISCOVERY_CACHE_MS) cache.delete(k);
+  // Re-inserted so the map's order stays the order of writing: the first key is always the oldest.
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > DISCOVERY_CACHE_MAX) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
+}
 
 /** One line of plain text from the catalogue (third-party text). */
 function plainText(v: unknown, max: number): string {
@@ -533,7 +576,7 @@ export async function discoverServices(ctx: SupervisorContext, agent: AgentRow, 
       body = null;
     }
     items = discoveredFrom(body?.items, { chainId: ctx.chain.chainId, usdc: ctx.chain.addresses.usdc, maxPriceMicroUsdc: maxPrice, policy }).slice(0, limit);
-    cache.set(key, { at: ctx.now(), items });
+    cacheDiscovery(cache, key, { at: ctx.now(), items });
   }
   return {
     query: input.query,
