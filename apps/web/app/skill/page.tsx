@@ -1,13 +1,18 @@
 import type { Metadata } from 'next';
-import { H1, Lead } from '@/components/docs/Prose';
+import Link from 'next/link';
+import { H1, H2, Lead, P, UL } from '@/components/docs/Prose';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { env } from '@/lib/env';
 
 export const metadata: Metadata = {
   title: 'Skill',
-  description: 'A skill that lets an AI assistant launch a coin on Bootr for you. You check the details and sign with your own wallet.',
+  description: 'A skill and an MCP server that let an AI assistant launch a coin on Bootr for you. You check the details and sign with your own wallet.',
   alternates: { canonical: '/skill', types: { 'text/markdown': '/skill/skill.md' } },
 };
+
+/** The MCP server on npm (packages/mcp): the same lines as its README. */
+const MCP_CLAUDE_CODE = 'claude mcp add bootr -- npx -y @bootrfun/mcp';
+const MCP_CONFIG = '{ "mcpServers": { "bootr": { "command": "npx", "args": ["-y", "@bootrfun/mcp"] } } }';
 
 function CopyRow({ label, copyLabel, value, mono }: { label: string; copyLabel: string; value: string; mono?: boolean }) {
   return (
@@ -34,6 +39,24 @@ export default function SkillPage() {
         <a href="/skill/skill.md" className="text-link underline-offset-4 hover:underline">
           Open the raw file
         </a>
+      </p>
+
+      <H2 id="mcp">MCP server</H2>
+      <P>
+        The same help as tools your assistant can call: it reads coins, agents and fees, and prepares launches and fee claims. It never asks for a private key and sends nothing; your own wallet signs. It runs on your machine and needs Node 20 or later, no API key.
+      </P>
+      <CopyRow label="Claude Code" copyLabel="Copy the Claude Code command" value={MCP_CLAUDE_CODE} mono />
+      <CopyRow label="Claude Desktop, Cursor, Windsurf and other assistants: add this to the MCP config" copyLabel="Copy the MCP config" value={MCP_CONFIG} mono />
+      <p className="mt-6 text-caption text-mute">Then ask in plain words, for example:</p>
+      <UL>
+        <li>Launch a coin on Bootr called Night Shift, paired with USDC, 2% tax.</li>
+        <li>Which of my coins have fees waiting? Prepare the claim.</li>
+        <li>What did the $BOOTR agent post today?</li>
+      </UL>
+      <p className="mt-6 text-sm">
+        <Link href="/docs/api#developer-tools" className="text-link underline-offset-4 hover:underline">
+          All tools, the command line and the TypeScript SDK
+        </Link>
       </p>
     </div>
   );

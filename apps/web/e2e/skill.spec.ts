@@ -16,6 +16,17 @@ test('the Skill nav item opens the page, with the URL, the sentence and the raw 
   await expect(page.getByRole('link', { name: 'Open the raw file' })).toHaveAttribute('href', '/skill/skill.md');
 });
 
+test('the Skill page also gives the MCP server: the Claude Code command, the config and the docs link', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/skill');
+  await expect(page.getByRole('heading', { name: 'MCP server', level: 2 })).toBeVisible();
+  await expect(page.getByText('claude mcp add bootr -- npx -y @bootrfun/mcp', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Copy the MCP config' }).click();
+  const config = JSON.parse(await page.evaluate(() => navigator.clipboard.readText())) as { mcpServers: { bootr: { command: string; args: string[] } } };
+  expect(config.mcpServers.bootr).toEqual({ command: 'npx', args: ['-y', '@bootrfun/mcp'] });
+  await expect(page.getByRole('link', { name: 'All tools, the command line and the TypeScript SDK' })).toHaveAttribute('href', '/docs/api#developer-tools');
+});
+
 test('the copy button puts the skill URL on the clipboard', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/skill');
