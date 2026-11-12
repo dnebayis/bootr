@@ -7,10 +7,10 @@
  * Same HMAC scheme as `lib/server/supervisor.ts` (apps/supervisor/src/hmac.ts). Every error a route answers is an
  * `OwnErrorBody` whose message is the one in `OWN_ERRORS`.
  */
-import { CREDENTIAL_RE, DEVICE_POLL_INTERVAL_S, OWN_DEFAULTS, OWN_ERRORS, type OwnErrorBody, type OwnErrorCode } from '@bootr/shared/own-agent';
+import { CREDENTIAL_PREFIX, CREDENTIAL_RE, DEVICE_POLL_INTERVAL_S, OWN_DEFAULTS, OWN_ERRORS, type OwnErrorBody, type OwnErrorCode } from '@bootr/shared/own-agent';
 import { NextResponse, type NextRequest } from 'next/server';
 import { ownAgentEnabled, supervisorEnv } from './env';
-import { clientIp, RateLimiter } from './ipfs';
+import { clientIp, evictOldest, RateLimiter } from './ipfs';
 import { signSenderRequest } from './sender';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/own-agent must not be imported in the browser');
@@ -27,6 +27,15 @@ export const TOKEN_PER_MINUTE_PER_IP = 60;
 export const SMALL_BODY_BYTES = 16_384;
 export const ACT_BODY_BYTES = 65_536;
 export const UPLOAD_BODY_BYTES = 8 * 1024 * 1024;
+/**
+ * Uploads this process reads and forwards at one time, over all clients. One holds its body about four times over
+ * while it is parsed and written again (some 30 MB), so four are well inside a container of 1 GB.
+ */
+export const UPLOADS_IN_FLIGHT = 4;
+/** How long an upload's body may take to arrive before the read gives up and frees its place. */
+export const UPLOAD_READ_MS = 30_000;
+/** What a client refused for want of a place is told to wait, in seconds. */
+const UPLOAD_RETRY_S = 2;
 /** A step can wait for X or the chain; a read should not. */
 const MAX_DUE_KEYS = 10_000;
 const QUICK_TIMEOUT_MS = 10_000;
@@ -39,7 +48,16 @@ export function dueIntervalMs(): number {
 }
 
 // One copy per server process, whichever route bundle asks first (the reason `server-state.ts` uses globalThis).
-type Limits = { runByCredential: RateLimiter; runByIp: RateLimiter; dueNext: Map<string, number>; dueWindowMs: number; tokenByIp: RateLimiter; tokenByCode: RateLimiter };
+type Limits = {
+  runByCredential: RateLimiter;
+  runByIp: RateLimiter;
+  dueNext: Map<string, number>;
+  dueWindowMs: number;
+  tokenByIp: RateLimiter;
+  tokenByCode: RateLimiter;
+  /** The uploads in flight, by the digest of their credential: at most one each and `UPLOADS_IN_FLIGHT` together. */
+  uploads: Set<string>;
+};
 const KEY = Symbol.for('bootr.web.own-agent-limits');
 const g = globalThis as unknown as Record<symbol, Limits | undefined>;
 
@@ -54,7 +72,30 @@ function limits(): Limits {
     dueWindowMs,
     tokenByIp: new RateLimiter(TOKEN_PER_MINUTE_PER_IP, 60_000),
     tokenByCode: new RateLimiter(1, DEVICE_POLL_INTERVAL_S * 1000),
+    // Carried over when the interval changes: an upload in flight still holds its place.
+    uploads: existing?.uploads ?? new Set(),
   });
+}
+
+/**
+ * Notes when a client may look again. A full map loses the entries whose moment has passed, then the ones it has held
+ * longest, a tenth of its room; never all of it, which would let every client look again at once whenever a flood of
+ * made-up credentials filled it.
+ */
+export function rememberDue(next: Map<string, number>, who: string, at: number, now: number, maxKeys = MAX_DUE_KEYS): void {
+  // Put at the end, so the map's order is the order of the last looks.
+  next.delete(who);
+  if (next.size >= maxKeys) {
+    for (const [k, t] of next) if (t <= now) next.delete(k);
+    evictOldest(next, maxKeys);
+  }
+  next.set(who, at);
+}
+
+/** How many keys each own-agent limiter holds right now, for tests. */
+export function ownLimitSizes(): { runByCredential: number; runByIp: number; dueNext: number; tokenByCode: number } {
+  const l = limits();
+  return { runByCredential: l.runByCredential.size, runByIp: l.runByIp.size, dueNext: l.dueNext.size, tokenByCode: l.tokenByCode.size };
 }
 
 /** For tests: forget every count. */
@@ -98,23 +139,35 @@ async function sha256Hex(text: string): Promise<string> {
 
 /**
  * The JSON object of a request, read with a hard cap: the declared length is checked first and the stream is cut at
- * the cap whatever was declared. A body that is not a JSON object is `invalid_request`; an empty one is `{}`.
+ * the cap whatever was declared. A body that is not a JSON object is `invalid_request`; an empty one is `{}`. With
+ * `deadlineMs`, a body that has not wholly arrived by then is `invalid_request` too and the rest is not waited for.
  */
-export async function readOwnBody(req: NextRequest, maxBytes: number): Promise<Record<string, unknown> | NextResponse> {
+export async function readOwnBody(req: NextRequest, maxBytes: number, deadlineMs?: number): Promise<Record<string, unknown> | NextResponse> {
   if (Number(req.headers.get('content-length') ?? 0) > maxBytes) return ownError('payload_too_large');
   const chunks: Uint8Array[] = [];
   let size = 0;
   const reader = req.body?.getReader();
   if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return ownError('payload_too_large');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = deadlineMs === undefined ? null : new Promise<'late'>((resolve) => (timer = setTimeout(() => resolve('late'), deadlineMs)));
+    try {
+      for (;;) {
+        const next = await (late ? Promise.race([reader.read(), late]) : reader.read());
+        if (next === 'late') {
+          await reader.cancel().catch(() => undefined);
+          return ownError('invalid_request', { detail: 'The body did not arrive in time.' });
+        }
+        const { done, value } = next;
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          return ownError('payload_too_large');
+        }
+        chunks.push(value);
       }
-      chunks.push(value);
+    } finally {
+      clearTimeout(timer);
     }
   }
   if (size === 0) return {};
@@ -157,7 +210,7 @@ export async function askOwn(method: 'GET' | 'POST', path: string, body?: unknow
     res = await fetch(`${url}${path}`, { method, headers, ...(body !== undefined ? { body: raw } : {}), cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
     answer = await res.json();
   } catch {
-    // Neither the URL, the body nor the fetch error is logged: the body of a run call holds a credential.
+    // Neither the URL, the body nor the fetch error is logged: the body of a run call holds a credential's hash, the token call's a device code.
     return failed(ownError('supervisor_unavailable'));
   }
   if (res.ok) return { ok: true, status: res.status, data: answer };
@@ -186,10 +239,30 @@ const RUN_BODY_BYTES: Record<RunOp, number> = { status: SMALL_BODY_BYTES, due: S
 const RUN_TIMEOUT_MS: Record<RunOp, number> = { status: QUICK_TIMEOUT_MS, due: STEP_TIMEOUT_MS, turn: STEP_TIMEOUT_MS, act: STEP_TIMEOUT_MS, finish: STEP_TIMEOUT_MS, upload: STEP_TIMEOUT_MS, disconnect: QUICK_TIMEOUT_MS };
 
 /**
+ * What a run call carries to the agent service in place of the credential: its SHA-256, as the first member of the
+ * body (the service reads it from there before it parses the rest). A `credentialHash` or `credential` member the
+ * caller put in its own body is dropped, so neither can stand in for the header's.
+ */
+export function withCredentialHash(credentialHash: string, body: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...body };
+  delete rest.credentialHash;
+  delete rest.credential;
+  return { credentialHash, ...rest };
+}
+
+/** A new credential, made here: `bootr_agt_` and 32 random bytes as unpadded base64url. The agent service is sent its hash only. */
+export async function mintCredential(): Promise<{ credential: string; credentialHash: string }> {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const credential = CREDENTIAL_PREFIX + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return { credential, credentialHash: await sha256Hex(credential) };
+}
+
+/**
  * A run route, whole: the flag; no `Origin` (these routes are for a program holding a credential, never for a web
  * page, so a browser on any site, this one included, is refused); the per-IP count; the credential's shape; the
  * per-credential count (and for `due` the minimum interval); the body cap; then the supervisor, which is the one that
- * knows whether the credential is live. The credential travels in the signed body, never in the path.
+ * knows whether the credential is live. The credential itself never leaves this process: the supervisor is sent its
+ * SHA-256, in the signed body, never in the path.
  */
 export async function runRoute(req: NextRequest, op: RunOp): Promise<NextResponse> {
   const off = ownDisabled();
@@ -204,6 +277,7 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
   const who = await sha256Hex(credential);
   const byCredential = ownLimited(l.runByCredential, who);
   if (byCredential) return byCredential;
+  if (op === 'upload') return uploadRoute(req, l, who);
   const body = await readOwnBody(req, RUN_BODY_BYTES[op]);
   if (body instanceof NextResponse) return body;
   if (op === 'due') {
@@ -211,18 +285,41 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
     const now = Date.now();
     const next = l.dueNext.get(who) ?? 0;
     if (next > now) return ownError('rate_limited', { retryAt: new Date(next).toISOString(), retryAfter: Math.max(1, Math.ceil((next - now) / 1000)) });
-    if (l.dueNext.size >= MAX_DUE_KEYS) {
-      for (const [k, at] of l.dueNext) if (at <= now) l.dueNext.delete(k);
-      if (l.dueNext.size >= MAX_DUE_KEYS) l.dueNext.clear();
-    }
-    l.dueNext.set(who, now + l.dueWindowMs);
+    rememberDue(l.dueNext, who, now + l.dueWindowMs, now);
   }
-  // The header's credential last, so a `credential` field in the body cannot stand in for it.
-  const answer = await askOwn('POST', `/internal/own/run/${op}`, { ...body, credential }, RUN_TIMEOUT_MS[op]);
+  const answer = await askOwn('POST', `/internal/own/run/${op}`, withCredentialHash(who, body), RUN_TIMEOUT_MS[op]);
   if (answer.ok) return ownJson(answer.data, answer.status);
   // A look that found the agent busy was not a look: the client is told to come back at `retryAt` and may.
   if (op === 'due' && answer.code === 'runtime_busy') l.dueNext.delete(who);
   return answer.response;
+}
+
+/**
+ * The upload, the one run route whose body is megabytes. Nothing of the body is read until three things hold: the
+ * declared length fits; the agent service, asked with the hash alone, says the credential is live on a coin its
+ * client runs (any other answer is relayed: the credential errors, `agent_onboarding`, `agent_runs_hosted`); and there
+ * is a place, one upload at a time per credential and `UPLOADS_IN_FLIGHT` in this process (`rate_limited` beyond
+ * either). So a flood of uploads under made-up credentials costs one small question each and no memory, and what real
+ * clients can hold at once is bounded however many arrive. The read itself gives up after `UPLOAD_READ_MS`.
+ */
+async function uploadRoute(req: NextRequest, l: Limits, who: string): Promise<NextResponse> {
+  if (Number(req.headers.get('content-length') ?? 0) > UPLOAD_BODY_BYTES) return ownError('payload_too_large');
+  const live = await askOwn('POST', '/internal/own/run/verify', { credentialHash: who });
+  if (!live.ok) return live.response;
+  if (l.uploads.has(who) || l.uploads.size >= UPLOADS_IN_FLIGHT) return ownError('rate_limited', { retryAt: new Date(Date.now() + UPLOAD_RETRY_S * 1000).toISOString(), retryAfter: UPLOAD_RETRY_S });
+  l.uploads.add(who);
+  try {
+    const body = await readOwnBody(req, UPLOAD_BODY_BYTES, UPLOAD_READ_MS);
+    if (body instanceof NextResponse) return body;
+    return await forwardOwn('POST', '/internal/own/run/upload', withCredentialHash(who, body), RUN_TIMEOUT_MS.upload);
+  } finally {
+    l.uploads.delete(who);
+  }
+}
+
+/** Uploads being read or forwarded right now, for tests. */
+export function uploadsInFlight(): number {
+  return limits().uploads.size;
 }
 
 /** The token poll, per IP: counted before the body is read. */

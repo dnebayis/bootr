@@ -56,7 +56,7 @@ describe('the approval page’s helpers', () => {
 });
 
 describe('own agents in mock mode', () => {
-  it('has four codes that never change', () => {
+  it('has five codes that never change', () => {
     expect(mockOwn.grant(MOCK_CODES.pending)).toMatchObject({ ok: true, data: { status: 'pending', clientName: 'Claude Code', coinHint: null } });
     expect(mockOwn.grant(MOCK_CODES.hinted)).toMatchObject({ ok: true, data: { status: 'pending', coinHint: mockCoins()[1]!.symbol } });
     expect(mockOwn.grant(MOCK_CODES.expired)).toMatchObject({ ok: true, data: { status: 'expired' } });
@@ -98,6 +98,32 @@ describe('own agents in mock mode', () => {
     expect(listed.clients.map((c) => c.label)).toEqual(['Desk']);
     expect(mockOwn.revoke(coin.kernel, { clientId: 'cli_0000000000000000' })).toEqual({ ok: false, error: 'client_not_found' });
     expect(mockOwn.revoke(coin.kernel, { clientId: listed.clients[0]!.clientId })).toMatchObject({ ok: true, data: { clients: [] } });
+  });
+
+  it('holds a request that names one coin to that coin, and lists and cancels an approval nobody collected', () => {
+    const [first, second] = mockCoins();
+    // The fixed code for one coin says which, and takes no other coin and no draft.
+    expect(mockOwn.grant(MOCK_CODES.bound)).toMatchObject({ ok: true, data: { status: 'pending', coin: second } });
+    expect(mockOwn.grant(MOCK_CODES.hinted).ok && mockOwn.grant(MOCK_CODES.pending).ok).toBe(true);
+    expect(mockOwn.approve({ userCode: MOCK_CODES.bound, creator: WALLET, target: { kind: 'coin', kernel: first!.kernel, agentId: first!.agentId } })).toEqual({ ok: false, error: 'wrong_coin' });
+    expect(mockOwn.approve({ userCode: MOCK_CODES.bound, creator: WALLET, target: { kind: 'draft', draftId: DRAFT } })).toEqual({ ok: false, error: 'wrong_coin' });
+    expect(mockOwn.approve({ userCode: MOCK_CODES.bound, creator: WALLET, target: { kind: 'coin', kernel: second!.kernel, agentId: second!.agentId } })).toMatchObject({ ok: true });
+    // A request started for a coin's address is for that coin; one started for a symbol is a hint.
+    const bound = mockOwn.start({ coin: first!.kernel }, 'https://bootr.fun');
+    expect(bound.coin).toEqual(first);
+    expect(mockOwn.start({ coin: first!.symbol }, 'https://bootr.fun').coin).toBeUndefined();
+    expect(mockOwn.approve({ userCode: bound.userCode, creator: WALLET, target: { kind: 'coin', kernel: second!.kernel, agentId: second!.agentId } })).toEqual({ ok: false, error: 'wrong_coin' });
+    expect(mockOwn.approve({ userCode: bound.userCode, creator: WALLET, label: 'Waiting', target: { kind: 'coin', kernel: first!.kernel, agentId: first!.agentId } })).toMatchObject({ ok: true });
+    // Approved and not collected: the console lists it, and cancelling it leaves the client nothing to collect.
+    expect(mockOwn.clients(first!.kernel).waiting).toEqual([{ userCode: bound.userCode, label: 'Waiting', approvedAt: expect.any(String), expiresAt: expect.any(String) }]);
+    expect(mockOwn.revoke(second!.kernel, { userCode: bound.userCode })).toEqual({ ok: false, error: 'client_not_found' });
+    expect(mockOwn.revoke(first!.kernel, { userCode: bound.userCode })).toMatchObject({ ok: true, data: { waiting: [] } });
+    expect(mockOwn.token(bound.deviceCode)).toEqual({ ok: false, error: 'grant_not_found' });
+    // "All" takes the waiting approvals with the clients.
+    const again = mockOwn.start({ coin: first!.kernel }, 'https://bootr.fun');
+    mockOwn.approve({ userCode: again.userCode, creator: WALLET, target: { kind: 'coin', kernel: first!.kernel, agentId: first!.agentId } });
+    expect(mockOwn.revoke(first!.kernel, { all: true })).toMatchObject({ ok: true, data: { clients: [], waiting: [] } });
+    expect(mockOwn.token(again.deviceCode)).toEqual({ ok: false, error: 'grant_not_found' });
   });
 
   it('binds a client to a launch draft', () => {

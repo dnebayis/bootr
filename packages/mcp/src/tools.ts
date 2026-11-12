@@ -1,6 +1,7 @@
 import {
   BootrApiError,
   claimsByAsset,
+  clean,
   coinTerms,
   KEY_REFUSAL,
   knownAsset,
@@ -64,22 +65,11 @@ const READ_ONLY: ToolAnnotations = {
 };
 const MAX_READ_CHARS = 50_000;
 
-// Zero-width and bidirectional controls can hide text from a person reading the same output as the model.
-const INVISIBLE = new RegExp(
-  '[' +
-    '\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\ufeff' +
-    ']',
-  'g',
-);
-
-/** A copy with invisible and control characters removed from every string, keys included. */
-export function clean<T>(value: T): T {
-  if (typeof value === 'string') return value.replace(INVISIBLE, '') as T;
-  if (Array.isArray(value)) return value.map(clean) as T;
-  if (value && typeof value === 'object')
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [clean(k), clean(v)])) as T;
-  return value;
-}
+// Characters that take no room on the screen, or change the order the others are read in, can hide text from a person
+// reading the same output as the model. `clean` (the SDK's, shared with the CLI) removes them from every string of
+// every result and error of every tool, keys included: the format characters, the tag block, the bidirectional
+// controls and isolates, the variation selectors, the fillers. See `packages/sdk/src/clean.ts` for the whole list.
+export { clean };
 
 function jsonBlock(value: unknown, maxChars?: number): string {
   const text = JSON.stringify(clean(value), null, 1);

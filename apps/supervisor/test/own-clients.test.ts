@@ -9,10 +9,10 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { CREDENTIAL_RE, DEVICE_CODE_TTL_S, OWN_ERRORS, USER_CODE_RE, type AgentStatus, type ClientsResponse, type ConnectApproveResponse, type ConnectCoinsResponse, type ConnectGrantView, type ConnectStartResponse, type ConnectTokenResponse, type DraftClientsResponse, type DueView, type OwnErrorBody } from '@bootr/shared/own-agent';
 import { actions, agentClients, agentGrants, agents } from '../src/db/schema.js';
-import { adoptDraftClients, cleanText, hashSecret, newUserCode } from '../src/own/clients.js';
+import { GRANT_MISSES_PER_MINUTE, MAX_PENDING_GRANTS, adoptDraftClients, cleanText, hashSecret, newUserCode } from '../src/own/clients.js';
 import { ownHooks } from '../src/own/registry.js';
 import { AGENT_ID, CREATOR, KERNEL, TOKEN } from './helpers.js';
-import { OTHER_AGENT_ID, OTHER_CREATOR, OTHER_KERNEL, connectClient, openSocial, ownWorld, seedOther, seedOwn, turnOf, type OwnWorld } from './own-helpers.js';
+import { OTHER_AGENT_ID, OTHER_CREATOR, OTHER_KERNEL, connectClient, credentialHash, newCredential, openSocial, ownWorld, seedOther, seedOwn, turnOf, type OwnWorld } from './own-helpers.js';
 
 const DAY = 86_400_000;
 const DRAFT = '11111111-2222-4333-8444-555555555555';
@@ -27,7 +27,18 @@ async function start(world: OwnWorld, body: Record<string, unknown> = {}) {
 const approveCoin = (world: OwnWorld, userCode: string, over: Record<string, unknown> = {}) =>
   world.call<ConnectApproveResponse & OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode, creator: CREATOR, target: { kind: 'coin', kernel: KERNEL, agentId: AGENT_ID }, ...over });
 
-const token = (world: OwnWorld, deviceCode: string) => world.call<ConnectTokenResponse & OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode });
+/**
+ * The token call as the web makes it: the web makes the credential and sends only its SHA-256. The supervisor's answer
+ * never carries a credential; the one this helper made is put on the body afterwards, as the web does for its caller.
+ */
+async function token(world: OwnWorld, deviceCode: string) {
+  const credential = newCredential();
+  const res = await world.call<ConnectTokenResponse & OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode, credentialHash: credentialHash(credential) });
+  expect(res.body).not.toHaveProperty('credential');
+  expect(JSON.stringify(res.body)).not.toContain('bootr_agt_');
+  if (res.body.status === 'approved') (res.body as { credential: string }).credential = credential;
+  return res;
+}
 
 describe('own agent: connecting a client', () => {
   it('a grant goes from pending to approved to redeemed, hands the credential out once, and stores hashes only', async () => {
@@ -109,6 +120,61 @@ describe('own agent: connecting a client', () => {
     }
   });
 
+  it('a request that names one coin is for that coin alone: no other coin and no launch draft can be approved for it (security review M2)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      // A second coin of the same creator, and a third with the same symbol as the second (symbols are not unique).
+      const address = (lead: string, n: string) => `0x${lead}${n.padStart(39, '0')}`;
+      const SECOND = { agentId: '9', kernel: address('2', '9'), token: address('3', '9') };
+      const twin = (n: string, creator: string) => ({ config: { runner: 'own', agentId: n, token: { address: address('3', n), symbol: 'TWIN', name: `Twin ${n}`, chainId: 84532 }, kernel: { address: address('2', n) } }, agent: { agentId: n, token: address('3', n), kernel: address('2', n), creator }, runtime: { agentId: n } });
+      await seedOwn(w, { config: { agentId: SECOND.agentId, token: { address: SECOND.token, symbol: 'SECOND', name: 'Second Coin', chainId: 84532 }, kernel: { address: SECOND.kernel } }, agent: { ...SECOND }, runtime: { agentId: SECOND.agentId } });
+      await seedOwn(w, twin('11', CREATOR));
+      await seedOwn(w, twin('12', STRANGER));
+      const mine = { agentId: AGENT_ID, kernel: KERNEL, token: TOKEN, symbol: 'TEST', name: 'Test Coin' };
+      const toSecond = { target: { kind: 'coin', kernel: SECOND.kernel, agentId: SECOND.agentId } };
+
+      // Named by its symbol (with or without the $, in any case), its kernel or its token: the start answer says which coin.
+      for (const named of ['$TEST', 'test', KERNEL, KERNEL.toLowerCase(), TOKEN]) {
+        const grant = await start(w, { coin: named });
+        expect([named, grant.coin]).toEqual([named, mine]);
+        const view = await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${grant.userCode}`);
+        expect(view.body.coin).toEqual(mine);
+        // The creator signs for another of their own coins, or for the draft of their next launch: refused, and nothing is used up.
+        const other = await approveCoin(w, grant.userCode, toSecond);
+        expect([other.status, other.body.error, other.body.message]).toEqual([409, 'wrong_coin', OWN_ERRORS.wrong_coin.message]);
+        expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode: grant.userCode, creator: CREATOR, target: { kind: 'draft', draftId: DRAFT } })).body.error).toBe('wrong_coin');
+        expect((await token(w, grant.deviceCode)).body).toEqual({ status: 'pending' });
+      }
+      expect(await w.db.select().from(agentClients)).toHaveLength(0);
+      // For the coin it names it is approved as ever, and the credential is that coin's.
+      const grant = await start(w, { coin: '$TEST' });
+      expect((await approveCoin(w, grant.userCode)).status).toBe(200);
+      expect((await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${grant.userCode}`)).body.coin ?? null).toBeNull();
+      const got = await token(w, grant.deviceCode);
+      expect(got.body.status === 'approved' && got.body.target).toEqual({ kind: 'coin', coin: mine });
+
+      // A name that fits no coin, or two, binds nothing: it stays a hint and the creator chooses.
+      for (const named of ['$TWIN', '$NOPE', '0x00000000000000000000000000000000000000aa', 'two words', undefined]) {
+        const loose = await start(w, named === undefined ? {} : { coin: named });
+        expect([named, loose.coin]).toEqual([named, undefined]);
+        expect((await w.call<ConnectGrantView>('GET', `/internal/own/connect/grant?code=${loose.userCode}`)).body.coin).toBeNull();
+        expect((await w.db.select().from(agentGrants)).find((g) => g.userCode === loose.userCode)?.agentId).toBeNull();
+      }
+      const loose = await start(w, { coin: '$TWIN' });
+      expect((await approveCoin(w, loose.userCode, toSecond)).status).toBe(200);
+      // A request started for this coin and not yet approved goes with "disconnect all" too.
+      const bound = await start(w, { coin: KERNEL });
+      await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      expect((await token(w, bound.deviceCode)).body.error).toBe('grant_not_found');
+      // A revoked coin is no coin to name.
+      await w.db.update(agents).set({ status: 'revoked' }).where(eq(agents.agentId, AGENT_ID));
+      expect((await start(w, { coin: KERNEL })).coin).toBeUndefined();
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a grant runs out after ten minutes, approved or not', async () => {
     const w = await ownWorld();
     try {
@@ -139,6 +205,69 @@ describe('own agent: connecting a client', () => {
     }
   });
 
+  it('holds the requests waiting for an approval to five hundred over all callers, and frees a place when one is approved or runs out (security review M4)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      const t0 = w.ctx.now();
+      const first = await start(w);
+      // Starting needs no credential: a flood of them from anywhere stops at the cap, whoever sends them.
+      const row = (n: number) => ({ deviceHash: hashSecret(`flood-${n}`), userCode: `flood-${n}`, clientName: 'AI client', status: 'pending' as const, createdAt: new Date(t0), expiresAt: new Date(t0 + (n === 0 ? 120_000 : DEVICE_CODE_TTL_S * 1000)) });
+      await w.db.insert(agentGrants).values(Array.from({ length: MAX_PENDING_GRANTS - 1 }, (_, n) => row(n)));
+      const refused = await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' });
+      expect([refused.status, refused.body.error]).toEqual([429, 'rate_limited']);
+      // It says when the oldest waiting request runs out, which is when a place is free again.
+      expect(refused.body.retryAt).toBe(new Date(t0 + 120_000).toISOString());
+      expect(await w.db.select({ n: agentGrants.userCode }).from(agentGrants)).toHaveLength(MAX_PENDING_GRANTS);
+      // A request that was approved no longer waits: its place is free.
+      expect((await approveCoin(w, first.userCode)).status).toBe(200);
+      const next = await start(w);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' })).body.error).toBe('rate_limited');
+      // So is one that ran out.
+      w.setNow(t0 + 120_000);
+      await start(w);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' })).body.error).toBe('rate_limited');
+      // None of it touched a request that was already waiting.
+      expect((await approveCoin(w, next.userCode)).status).toBe(200);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('stops looking codes up for the rest of the minute once a hundred and twenty lookups found nothing, over all callers (security review M4)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      const t0 = w.ctx.now();
+      const real = await start(w);
+      const letters = 'BCDFGHJKLMNPQRSTVWXZ';
+      const guess = (n: number) => `${letters[n % 20]}${letters[Math.floor(n / 20) % 20]}${letters[Math.floor(n / 400) % 20]}Z-ZZZZ`;
+      const view = (code: string) => w.call<ConnectGrantView & OwnErrorBody>('GET', `/internal/own/connect/grant?code=${code}`);
+      // Guesses, through the page's read and through an approval alike.
+      for (let n = 0; n < GRANT_MISSES_PER_MINUTE; n++) {
+        const miss = n % 2 ? await view(guess(n)) : await approveCoin(w, guess(n));
+        expect([n, miss.body.error]).toEqual([n, 'grant_not_found']);
+      }
+      // Now nothing is looked up, a guess or the real code: a guesser learns nothing more this minute.
+      for (const code of [guess(999), real.userCode]) {
+        const closed = await view(code);
+        expect([closed.status, closed.body.error, closed.body.retryAt]).toEqual([429, 'rate_limited', new Date(t0 + 60_000).toISOString()]);
+      }
+      expect((await approveCoin(w, real.userCode)).body.error).toBe('rate_limited');
+      // A code of another shape was never a lookup, and the client's own poll goes by its device code, not by this.
+      expect((await view('nope')).body.error).toBe('grant_not_found');
+      expect((await token(w, real.deviceCode)).body).toEqual({ status: 'pending' });
+      // The next minute it is open again, and the real request was not harmed.
+      w.setNow(t0 + 60_000);
+      expect((await view(real.userCode)).body.status).toBe('pending');
+      expect((await approveCoin(w, real.userCode)).status).toBe(200);
+      // Lookups that find their request never count.
+      for (let n = 0; n < GRANT_MISSES_PER_MINUTE + 5; n++) expect((await view(real.userCode)).status).toBe(200);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a coin has at most three clients, counting approvals not yet collected; disconnecting one frees a place', async () => {
     const w = await ownWorld();
     try {
@@ -163,6 +292,32 @@ describe('own agent: connecting a client', () => {
       expect(revoked.status).toBe(200);
       expect(revoked.body.clients).toHaveLength(2);
       expect((await approveCoin(w, fourth.userCode)).status).toBe(200);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('approvals of different codes that arrive together cannot take more places than the coin has', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      // Eight requests, approved at the same moment: each used to count the places before any of them took one.
+      const grants = [];
+      for (let i = 0; i < 8; i++) grants.push(await start(w));
+      const answers = await Promise.all(grants.map((g) => approveCoin(w, g.userCode)));
+      expect(answers.map((a) => a.status).sort()).toEqual([200, 200, 200, 409, 409, 409, 409, 409]);
+      for (const refused of answers.filter((a) => a.status === 409)) expect(refused.body.error).toBe('too_many_clients');
+      expect((await w.db.select().from(agentGrants)).filter((g) => g.status === 'approved')).toHaveLength(3);
+      // The same for a launch draft, per approving wallet.
+      const drafts = [];
+      for (let i = 0; i < 6; i++) drafts.push(await start(w));
+      const forDraft = await Promise.all(drafts.map((g) => w.call<OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode: g.userCode, creator: STRANGER, target: { kind: 'draft', draftId: DRAFT } })));
+      expect(forDraft.map((a) => a.status).sort()).toEqual([200, 200, 200, 409, 409, 409]);
+      // One code approved twice at the same moment is still approved once.
+      const twice = await start(w);
+      await w.call('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      const both = await Promise.all([approveCoin(w, twice.userCode), approveCoin(w, twice.userCode)]);
+      expect(both.map((a) => a.status).sort()).toEqual([200, 410]);
     } finally {
       await w.close();
     }
@@ -233,15 +388,42 @@ describe('own agent: what a credential opens', () => {
       await seedOwn(w);
       const { credential } = await connectClient(w);
       const flipped = credential.slice(0, -1) + (credential.endsWith('A') ? 'B' : 'A');
-      for (const bad of [undefined, '', 'bootr_agt_short', credential.toUpperCase(), ` ${credential}`, `${credential}x`, flipped, { $ne: null }, ['bootr_agt_'], 12345]) {
+      const hash = credentialHash(credential);
+      // What arrives is the SHA-256 of a credential. None of these is the hash of a live one; the credential itself is not one either.
+      for (const bad of [undefined, '', 'abc', hash.toUpperCase(), ` ${hash}`, `${hash}0`, hash.slice(1), credentialHash(flipped), credential, { $ne: null }, [hash], 12345]) {
         for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect']) {
-          const res = await w.call<OwnErrorBody>('POST', `/internal/own/run/${op}`, { credential: bad, role: 'social' });
+          const res = await w.call<OwnErrorBody>('POST', `/internal/own/run/${op}`, { credentialHash: bad, role: 'social' });
           expect([op, res.status]).toEqual([op, 401]);
           expect(res.body).toEqual({ error: 'unauthorized', message: OWN_ERRORS.unauthorized.message });
         }
       }
-      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/steal', { credential })).body.error).toBe('invalid_request');
+      // The credential in the clear opens nothing, alone or beside a wrong hash: this service only ever compares hashes.
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { credential })).body.error).toBe('unauthorized');
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { credentialHash: credentialHash(flipped), credential })).body.error).toBe('unauthorized');
+      // The hash is read from the head of the body before the rest is parsed: anywhere else it is not looked for,
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/status', { role: 'social', credentialHash: hash })).body.error).toBe('unauthorized');
+      // a body that is not JSON after a live hash is refused as a body, and after a dead one as a credential,
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}",oops`)).body.error).toBe('invalid_request');
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${credentialHash(flipped)}",oops`)).body.error).toBe('unauthorized');
+      // and a second hash further down, which would win the parse, does not stand in for the one that was checked.
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}","credentialHash":"${credentialHash(flipped)}"}`)).body.error).toBe('unauthorized');
+      expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}"}`)).status).toBe(200);
+      // What the web asks before it reads an upload's body: is this credential live on a coin its client runs? Megabytes
+      // behind a hash nobody holds are answered from the head of the body alone, and never parsed.
+      expect((await w.run('verify', credential)).body).toEqual({ ok: true });
+      expect((await w.run<OwnErrorBody>('verify', flipped)).body.error).toBe('unauthorized');
+      const unparsed = await w.raw('POST', '/internal/own/run/upload', `{"credentialHash":"${credentialHash(flipped)}","dataBase64":"${'A'.repeat(2 * 1024 * 1024)}`);
+      expect([unparsed.status, unparsed.body.error]).toEqual([401, 'unauthorized']);
+      expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/steal', { credentialHash: hash })).body.error).toBe('invalid_request');
       expect(await turnOf(w)).toBeNull();
+      // A grant is redeemed for a hash the web made; without one nothing is redeemed and no credential is made here.
+      const grant = await start(w);
+      expect((await approveCoin(w, grant.userCode)).status).toBe(200);
+      for (const missing of [undefined, '', credential, hash.toUpperCase()]) {
+        const refused = await w.call<OwnErrorBody>('POST', '/internal/own/connect/token', { deviceCode: grant.deviceCode, credentialHash: missing });
+        expect([refused.status, refused.body.error, refused.body.field]).toEqual([400, 'invalid_request', 'credentialHash']);
+      }
+      expect((await w.db.select().from(agentGrants)).find((g) => g.userCode === grant.userCode)?.status).toBe('approved');
     } finally {
       await w.close();
     }
@@ -268,7 +450,7 @@ describe('own agent: what a credential opens', () => {
       expect(revoked.body.clients.map((c) => c.clientId)).toEqual([kept.clientId]);
       // The turn the revoked client had open is gone, and its credential opens nothing.
       expect(await turnOf(w)).toBeNull();
-      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect']) {
+      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect', 'verify']) {
         const res = await w.run<OwnErrorBody>(op, lost.credential, { role: 'social', turnId: turn.turnId, tool: 'publish_post', input: { text: 'still here' } });
         expect([op, res.status, res.body.error]).toEqual([op, 401, 'credential_revoked']);
       }
@@ -305,6 +487,85 @@ describe('own agent: what a credential opens', () => {
     }
   });
 
+  it('"disconnect all" leaves no approval a client could still collect, and the creator sees and can cancel one (security review M1)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      await seedOther(w);
+      const kept = await connectClient(w, { label: 'my laptop' });
+      // Approved a moment ago (say, on a link somebody sent) and not collected yet: no client row exists for it.
+      const lure = await start(w, { clientName: 'Their client' });
+      expect((await approveCoin(w, lure.userCode, { label: 'Looks like mine' })).status).toBe(200);
+      const second = await start(w);
+      expect((await approveCoin(w, second.userCode)).status).toBe(200);
+      // Another coin's approval, which none of this may touch.
+      const theirs = await start(w);
+      expect((await approveCoin(w, theirs.userCode, { creator: OTHER_CREATOR, target: { kind: 'coin', kernel: OTHER_KERNEL, agentId: OTHER_AGENT_ID } })).status).toBe(200);
+
+      const list = await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`);
+      expect(list.body.clients.map((c) => c.clientId)).toEqual([kept.clientId]);
+      expect(list.body.waiting).toEqual([
+        { userCode: lure.userCode, label: 'Looks like mine', approvedAt: new Date(w.ctx.now()).toISOString(), expiresAt: new Date(w.ctx.now() + DEVICE_CODE_TTL_S * 1000).toISOString() },
+        { userCode: second.userCode, label: 'Claude Code', approvedAt: expect.any(String), expiresAt: expect.any(String) },
+      ]);
+      // Neither the device code's hash nor who approved is in what the console lists.
+      expect(JSON.stringify(list.body)).not.toContain(hashSecret(lure.deviceCode));
+      expect(JSON.stringify(list.body).toLowerCase()).not.toContain(CREATOR.toLowerCase());
+
+      // One of them, by its code: only the creator, only this coin's.
+      const revoke = (body: Record<string, unknown>, agentId = AGENT_ID) => w.call<ClientsResponse & OwnErrorBody>('POST', `/internal/agents/${agentId}/clients/revoke`, body);
+      expect((await revoke({ by: STRANGER, userCode: second.userCode })).body.error).toBe('not_creator');
+      expect((await revoke({ by: CREATOR, userCode: theirs.userCode })).body.error).toBe('client_not_found');
+      expect((await revoke({ by: CREATOR, userCode: 'not a code' })).body.error).toBe('invalid_request');
+      const cancelled = await revoke({ by: CREATOR, userCode: second.userCode });
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.waiting?.map((x) => x.userCode)).toEqual([lure.userCode]);
+      expect((await token(w, second.deviceCode)).body.error).toBe('grant_not_found');
+      expect((await revoke({ by: CREATOR, userCode: second.userCode })).body.error).toBe('client_not_found');
+
+      // All: the client, the approval waiting to be collected, and a request started for this coin that nobody approved yet.
+      const all = await revoke({ by: CREATOR, all: true });
+      expect(all.body).toEqual({ clients: [], max: 3, waiting: [] });
+      const late = await token(w, lure.deviceCode);
+      expect([late.status, late.body.error]).toEqual([404, 'grant_not_found']);
+      expect((await w.run<OwnErrorBody>('status', kept.credential)).body.error).toBe('credential_revoked');
+      expect((await w.db.select().from(agentClients)).filter((c) => !c.revokedAt)).toHaveLength(0);
+      // The other coin's approval is still there and still collects.
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${OTHER_AGENT_ID}/clients`)).body.waiting?.map((x) => x.userCode)).toEqual([theirs.userCode]);
+      expect((await token(w, theirs.deviceCode)).body.status).toBe('approved');
+      // An approval whose ten minutes passed is not listed.
+      const stale = await start(w);
+      expect((await approveCoin(w, stale.userCode)).status).toBe(200);
+      w.setNow(w.ctx.now() + DEVICE_CODE_TTL_S * 1000);
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.waiting).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('"disconnect all" also ends what was approved for the coin\'s launch draft and not collected or not bound yet', async () => {
+    const w = await ownWorld();
+    try {
+      const approveDraft = (userCode: string) => w.call('POST', '/internal/own/connect/approve', { userCode, creator: CREATOR, target: { kind: 'draft', draftId: DRAFT } });
+      // One client collected before the launch, and one approval still waiting when the coin exists.
+      const early = await start(w);
+      expect((await approveDraft(early.userCode)).status).toBe(200);
+      const collected = await token(w, early.deviceCode);
+      if (collected.body.status !== 'approved') throw new Error('expected an approved grant');
+      const waiting = await start(w);
+      expect((await approveDraft(waiting.userCode)).status).toBe(200);
+      // The launch is registered, and the registration hook has not run.
+      await seedOwn(w, { agent: { draftId: DRAFT } });
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.waiting?.map((x) => x.userCode)).toEqual([waiting.userCode]);
+      const all = await w.call<ClientsResponse>('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      expect(all.body).toEqual({ clients: [], max: 3, waiting: [] });
+      expect((await token(w, waiting.deviceCode)).body.error).toBe('grant_not_found');
+      expect((await w.run<OwnErrorBody>('status', collected.body.credential)).body.error).toBe('credential_revoked');
+    } finally {
+      await w.close();
+    }
+  });
+
   it('stops working the moment the coin has another creator on record, and for a coin that is revoked', async () => {
     const w = await ownWorld();
     try {
@@ -327,7 +588,7 @@ describe('own agent: what a credential opens', () => {
       const status = await w.run<AgentStatus>('status', credential);
       expect(status.status).toBe(200);
       expect(status.body.runner).toBe('hosted');
-      for (const op of ['due', 'turn', 'act', 'finish', 'upload']) {
+      for (const op of ['due', 'turn', 'act', 'finish', 'upload', 'verify']) {
         const res = await w.run<OwnErrorBody>(op, credential, { role: 'social', turnId: `otn_${'a'.repeat(32)}`, tool: 'read_market', input: {}, memory: 'm', agenda: 'a', summary: 's', nextAt: new Date().toISOString(), mime: 'image/png', dataBase64: 'AAAA', alt: 'a', description: 'd' });
         expect([op, res.status, res.body.error]).toEqual([op, 409, 'agent_runs_hosted']);
       }
@@ -345,9 +606,9 @@ describe('own agent: what a credential opens', () => {
 describe('own agent: a client connected before the launch', () => {
   const approveDraft = (w: OwnWorld, userCode: string, creator: string, draftId = DRAFT) => w.call<ConnectApproveResponse & OwnErrorBody>('POST', '/internal/own/connect/approve', { userCode, creator, target: { kind: 'draft', draftId } });
 
-  async function connectDraft(w: OwnWorld, creator: string) {
+  async function connectDraft(w: OwnWorld, creator: string, draftId = DRAFT) {
     const grant = await start(w);
-    expect((await approveDraft(w, grant.userCode, creator)).body.target).toEqual({ kind: 'draft', draftId: DRAFT });
+    expect((await approveDraft(w, grant.userCode, creator, draftId)).body.target).toEqual({ kind: 'draft', draftId });
     const res = await token(w, grant.deviceCode);
     if (res.body.status !== 'approved') throw new Error('expected an approved grant');
     return res.body;
@@ -375,6 +636,114 @@ describe('own agent: a client connected before the launch', () => {
       expect((await w.run<OwnErrorBody>('status', strangers.credential)).body.error).toBe('credential_revoked');
       expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.clients.map((c) => c.clientId)).toEqual([mine.clientId]);
       expect(await adoptDraftClients(w.ctx, agent)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a later launch that copies the draft id decides nothing: the draft belongs to the earliest launch that carries it (security review L3)', async () => {
+    // Whichever row the database happens to answer first, the copy registered before or after the real launch.
+    for (const copyFirst of [true, false]) {
+      const w = await ownWorld();
+      try {
+        const mine = await connectDraft(w, CREATOR);
+        // The creator's launch at block 100; a stranger's at block 200 with the same draft id, read off the chain.
+        const real = () => seedOwn(w, { agent: { draftId: DRAFT, launchBlock: 100 } });
+        const copy = () => seedOther(w, { agent: { draftId: DRAFT, launchBlock: 200, creator: STRANGER }, config: { creator: { address: STRANGER } } });
+        const [realAgent, copyAgent] = copyFirst ? [await copy(), await real()].reverse() : [await real(), await copy()];
+        // The copy's registration neither binds nor revokes the creator's client,
+        expect(await adoptDraftClients(w.ctx, copyAgent!)).toBe(0);
+        expect((await w.db.select().from(agentClients))[0]).toMatchObject({ agentId: null, revokedAt: null });
+        // and the client's own first call finds the real launch, not whichever came back first.
+        const status = await w.run<AgentStatus & OwnErrorBody>('status', mine.credential);
+        expect([copyFirst, status.status, status.body.coin?.agentId]).toEqual([copyFirst, 200, AGENT_ID]);
+        expect(await adoptDraftClients(w.ctx, realAgent!)).toBe(0);
+        // A client the stranger approves for the id afterwards is judged against the real launch too: revoked.
+        const theirs = await connectDraft(w, STRANGER);
+        expect((await w.run<OwnErrorBody>('status', theirs.credential)).body.error).toBe('credential_revoked');
+        expect((await w.call<ClientsResponse>('GET', `/internal/agents/${OTHER_AGENT_ID}/clients`)).body.clients).toEqual([]);
+      } finally {
+        await w.close();
+      }
+    }
+  });
+
+  it('a launch with no block on record counts as the earliest, and the lower agent id breaks a tie', async () => {
+    const w = await ownWorld();
+    try {
+      const mine = await connectDraft(w, CREATOR);
+      await seedOther(w, { agent: { draftId: DRAFT, launchBlock: 100, creator: STRANGER } });
+      await seedOwn(w, { agent: { draftId: DRAFT, launchBlock: 100 } });
+      // Agent 7 and agent 8 in the same block: 7 is the draft's launch.
+      expect((await w.run<AgentStatus>('status', mine.credential)).body.coin.agentId).toBe(AGENT_ID);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the wizard\'s list is the draft\'s own secret: nothing after the launch, and only the launching wallet\'s clients when it is named', async () => {
+    const w = await ownWorld();
+    try {
+      const list = (query = '') => w.call<DraftClientsResponse & OwnErrorBody>('GET', `/internal/own/drafts/${DRAFT}/clients${query}`);
+      const mine = await connectDraft(w, CREATOR);
+      await connectDraft(w, STRANGER);
+      // Before the launch the id is known to the creator's browser alone. Told which wallet will launch, the wizard
+      // is shown that wallet's clients only: another wallet's would be revoked at registration.
+      expect((await list()).body.clients).toHaveLength(2);
+      const own = await list(`?creator=${CREATOR.toLowerCase()}`);
+      expect(own.body).toEqual({ connected: true, clients: [{ clientId: mine.clientId, label: 'Claude Code', createdAt: expect.any(String) }] });
+      expect((await list(`?creator=${OTHER_CREATOR}`)).body).toEqual({ connected: false, clients: [] });
+      expect((await list('?creator=nobody')).body.error).toBe('invalid_request');
+      // The launch puts the id on chain: from then on this route says nothing to anyone, whatever wallet is named.
+      await seedOwn(w, { agent: { draftId: DRAFT } });
+      for (const query of ['', `?creator=${CREATOR}`, `?creator=${STRANGER}`]) expect((await list(query)).body).toEqual({ connected: false, clients: [] });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a client connected for a launch can give its credential up before the launch, and that is all it can do', async () => {
+    const w = await ownWorld();
+    try {
+      const mine = await connectDraft(w, CREATOR);
+      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'verify']) {
+        expect([op, (await w.run<OwnErrorBody>(op, mine.credential, { role: 'social' })).body.error]).toEqual([op, 'coin_not_launched']);
+      }
+      expect((await w.run('disconnect', mine.credential)).body).toEqual({ ok: true });
+      expect((await w.run<OwnErrorBody>('disconnect', mine.credential)).body.error).toBe('credential_revoked');
+      expect((await w.call<DraftClientsResponse>('GET', `/internal/own/drafts/${DRAFT}/clients`)).body).toEqual({ connected: false, clients: [] });
+      // The launch that follows does not bring it back.
+      const agent = await seedOwn(w, { agent: { draftId: DRAFT } });
+      expect(await adoptDraftClients(w.ctx, agent)).toBe(0);
+      expect((await w.run<OwnErrorBody>('status', mine.credential)).body.error).toBe('credential_revoked');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a draft\'s clients whose launch never came are swept a day later, when a new request starts', async () => {
+    const w = await ownWorld();
+    try {
+      const t0 = w.ctx.now();
+      const OTHER_DRAFT = '99999999-2222-4333-8444-555555555555';
+      const orphan = await connectDraft(w, CREATOR);
+      // A second draft whose launch exists by then: its client is the launch's to bind, not the sweep's to delete.
+      const second = await start(w);
+      expect((await approveDraft(w, second.userCode, OTHER_CREATOR, OTHER_DRAFT)).status).toBe(200);
+      const launched = await token(w, second.deviceCode);
+      if (launched.body.status !== 'approved') throw new Error('expected an approved grant');
+      // A day on nothing has changed until somebody starts a request.
+      w.setNow(t0 + DAY - 1000);
+      await start(w);
+      expect(await w.db.select().from(agentClients)).toHaveLength(2);
+      await w.db.insert(agents).values({ ...(await seedOther(w)), agentId: '99', kernel: '0x2000000000000000000000000000000000000099', token: '0x3000000000000000000000000000000000000099', draftId: OTHER_DRAFT });
+      w.setNow(t0 + DAY + 1000);
+      const fresh = await connectDraft(w, CREATOR, '77777777-2222-4333-8444-555555555555');
+      const left = await w.db.select().from(agentClients);
+      expect(left.map((c) => c.id).sort()).toEqual([launched.body.clientId, fresh.clientId].sort());
+      // The swept credential is unknown from then on.
+      expect((await w.run<OwnErrorBody>('disconnect', orphan.credential)).body.error).toBe('unauthorized');
+      expect((await w.run<OwnErrorBody>('status', orphan.credential)).body.error).toBe('unauthorized');
     } finally {
       await w.close();
     }
@@ -442,9 +811,9 @@ describe('own agent: the flag off', () => {
       for (const [method, path, body] of [
         ['POST', '/internal/own/connect/start', { siteUrl: 'https://bootr.fun' }],
         ['POST', '/internal/own/connect/approve', { userCode: pendingGrant.userCode, creator: CREATOR, target: { kind: 'coin', kernel: KERNEL, agentId: AGENT_ID } }],
-        ['POST', '/internal/own/connect/token', { deviceCode: pendingGrant.deviceCode }],
+        ['POST', '/internal/own/connect/token', { deviceCode: pendingGrant.deviceCode, credentialHash: credentialHash(newCredential()) }],
         ['GET', `/internal/own/drafts/${DRAFT}/clients`, undefined],
-        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'].map((op) => ['POST', `/internal/own/run/${op}`, { credential: client.credential, role: 'social' }] as const),
+        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect', 'verify'].map((op) => ['POST', `/internal/own/run/${op}`, { credentialHash: credentialHash(client.credential), role: 'social' }] as const),
       ] as const) {
         const res = await on.call<OwnErrorBody>(method, path, body);
         expect([path, res.status]).toEqual([path, 404]);

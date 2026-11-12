@@ -110,6 +110,14 @@ function requireAddress(value: string, name: string): Address {
   return getAddress(value);
 }
 
+/** An https address, or this machine itself: `localhost`, a name under `.localhost`, 127.0.0.0/8 or `[::1]`. */
+function secureOrLocal(url: URL): boolean {
+  if (url.protocol === 'https:') return true;
+  if (url.protocol !== 'http:') return false;
+  const host = url.hostname.toLowerCase();
+  return host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(host);
+}
+
 /** The path of a catalog URL with its `{name}` parameters kept (`new URL` would encode them). */
 function pathOf(url: string): string {
   return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/i.exec(url)?.[1] ?? '';
@@ -223,6 +231,15 @@ export class Bootr {
     } = {},
   ): Promise<T> {
     const { method, path } = ROUTES[route];
+    // A credential or a device code travels with a `sameSite` call, and a credential comes back with one of them:
+    // over plain http anyone on the path reads it. Only this machine itself (a local test site) is taken without
+    // TLS, and the check comes before anything is asked of the site. (The call then goes to this origin or nowhere.)
+    if (options.sameSite && !secureOrLocal(new URL(this.siteUrl)))
+      throw new BootrApiError(
+        `${new URL(this.siteUrl).origin} is not an https site, so a connection's credential would cross the network in the clear. Use the https address of the site. Nothing was sent.`,
+        'insecure_site',
+        null,
+      );
     const endpoint = await this.endpoint(route);
     const names = pathParams(path);
     let url = endpoint.url;

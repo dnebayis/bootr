@@ -109,7 +109,7 @@ describe('POST /api/agent/[kernel]/clients/revoke', () => {
     expect(body.clients.map((c) => c.label)).toEqual(['Desktop']);
     expect(body.token).toBe(session);
     expect(fake.seen).toEqual([{ method: 'POST', path: `/internal/agents/${COIN.agentId}/clients/revoke`, body: { by: CREATOR, clientId }, authorized: true }]);
-    expect(() => fake.backend.run('status', { credential: laptop })).toThrow('credential_revoked');
+    expect(() => fake.backend.runAs('status', laptop)).toThrow('credential_revoked');
     await error(await call(revoke, 'revoke', { token: session, clientId }), 'client_not_found');
   });
 
@@ -121,6 +121,26 @@ describe('POST /api/agent/[kernel]/clients/revoke', () => {
     const body = (await (await call(revoke, 'revoke', { token: session, all: true })).json()) as Listed;
     expect(body.clients).toEqual([]);
     expect(fake.seen.at(-1)!.body).toEqual({ by: CREATOR, all: true });
+  });
+
+  it('lists an approval no client has collected yet and cancels it by its code (security review M1)', async () => {
+    const grant = fake.backend.connectStart({ clientName: 'Somebody else’s client' });
+    fake.backend.connectApprove({ userCode: grant.userCode, creator: CREATOR, target: { kind: 'coin', kernel: COIN.kernel, agentId: COIN.agentId } });
+    const listed = (await (await call(list, 'list', { token: session })).json()) as Listed;
+    expect(listed.clients).toEqual([]);
+    expect(listed.waiting).toEqual([{ userCode: grant.userCode, label: 'Somebody else’s client', approvedAt: expect.any(String), expiresAt: expect.any(String) }]);
+    // What the console lists never carries the device code or a credential.
+    expect(JSON.stringify(listed)).not.toContain(grant.deviceCode);
+    fake.seen.length = 0;
+    const after = (await (await call(revoke, 'revoke', { token: session, userCode: grant.userCode })).json()) as Listed;
+    expect(after.waiting).toEqual([]);
+    expect(fake.seen).toEqual([{ method: 'POST', path: `/internal/agents/${COIN.agentId}/clients/revoke`, body: { by: CREATOR, userCode: grant.userCode }, authorized: true }]);
+    // The client that held the device code collects nothing.
+    expect(() => fake.backend.connectTokenAsWeb({ deviceCode: grant.deviceCode })).toThrow('grant_not_found');
+    await error(await call(revoke, 'revoke', { token: session, userCode: grant.userCode }), 'client_not_found');
+    fake.seen.length = 0;
+    for (const bad of ['abcd-efgh', 'BCDF-GHJK-LMNP', 5, '../x']) expect((await error(await call(revoke, 'revoke', { token: session, userCode: bad }), 'invalid_request')).field).toBe('userCode');
+    expect(fake.seen).toHaveLength(0);
   });
 
   it('refuses a request that names no client, or a malformed one, without asking', async () => {

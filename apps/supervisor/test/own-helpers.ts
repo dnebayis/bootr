@@ -3,6 +3,7 @@
  * the internal routes called the way the web calls them (HMAC over the service key), an own coin, and a client
  * connected through the real grant routes.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { ActResult, ConnectStartResponse, ConnectTokenResponse, DueRole, DueView, OwnErrorBody, OwnRole, TurnOpen } from '@bootr/shared/own-agent';
 import { createApp } from '../src/api.js';
@@ -26,7 +27,9 @@ export interface Answer<T = Record<string, unknown>> {
 export interface OwnWorld extends TestWorld {
   /** One signed call of an internal route. */
   call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Answer<T>>;
-  /** `POST /internal/own/run/:op` with the credential in the body, as the web forwards it. */
+  /** The same with the body given as its exact text, for what `JSON.stringify` would never write. */
+  raw<T = OwnErrorBody>(method: 'GET' | 'POST', path: string, text: string): Promise<Answer<T>>;
+  /** `POST /internal/own/run/:op` as the web forwards it: the SHA-256 of the credential first in the body, never the credential. */
   run<T = Record<string, unknown>>(op: string, credential: string, body?: Record<string, unknown>): Promise<Answer<T>>;
   /** Every model call the world's fetch was asked for; an own coin must leave it empty. */
   modelCalls(): number;
@@ -36,17 +39,19 @@ export interface OwnWorld extends TestWorld {
  * Mounts the supervisor's app on a world and adds the signed calls of the internal routes, the way the web makes them.
  * The HMAC clock is the world's own, so a test that moves the time still signs a fresh request.
  */
-export function withRoutes<W extends TestWorld>(world: W, modelCalls: () => number = () => 0): W & Pick<OwnWorld, 'call' | 'run' | 'modelCalls'> {
+export function withRoutes<W extends TestWorld>(world: W, modelCalls: () => number = () => 0): W & Pick<OwnWorld, 'call' | 'raw' | 'run' | 'modelCalls'> {
   const nowSec = () => Math.floor(world.ctx.now() / 1000);
   const app = createApp(world.ctx, nowSec);
-  const call = async <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Answer<T>> => {
-    const text = method === 'GET' ? '' : JSON.stringify(body ?? {});
+  const raw = async <T>(method: 'GET' | 'POST', path: string, text: string): Promise<Answer<T>> => {
     const res = await app.request(path, { method, ...(method === 'GET' ? {} : { body: text }), headers: { 'content-type': 'application/json', authorization: signRequest(SUPERVISOR_KEY, method, path, text, nowSec()) } });
     return { status: res.status, body: (await res.json()) as T };
   };
+  const call = <T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Answer<T>> => raw<T>(method, path, method === 'GET' ? '' : JSON.stringify(body ?? {}));
   return Object.assign(world, {
     call,
-    run: <T>(op: string, credential: string, body: Record<string, unknown> = {}) => call<T>('POST', `/internal/own/run/${op}`, { ...body, credential }),
+    raw,
+    // As the web forwards a run call: the SHA-256 of the credential first in the body, never the credential itself.
+    run: <T>(op: string, credential: string, body: Record<string, unknown> = {}) => call<T>('POST', `/internal/own/run/${op}`, { credentialHash: credentialHash(credential), ...body }),
     modelCalls,
   });
 }
@@ -66,6 +71,16 @@ export async function ownWorld(opts: Parameters<typeof makeWorld>[0] & { flag?: 
     return inner(input, init);
   }) as typeof fetch;
   return withRoutes(world, () => modelCalls);
+}
+
+/** What the web sends in place of a credential: its SHA-256, in hex. */
+export function credentialHash(credential: string): string {
+  return createHash('sha256').update(credential, 'utf8').digest('hex');
+}
+
+/** A credential as the web makes one at the token route: `bootr_agt_` and 32 random bytes. */
+export function newCredential(): string {
+  return `bootr_agt_${randomBytes(32).toString('base64url')}`;
 }
 
 /** One active agent whose stored config says `runner: 'own'` (the test agent of helpers.ts, id 7). */
@@ -105,9 +120,11 @@ export async function connectClient(world: OwnWorld, opts: { creator?: string; a
     target: { kind: 'coin', kernel: opts.kernel ?? KERNEL, agentId: opts.agentId ?? AGENT_ID },
   });
   if (approve.status !== 200) throw new Error(`connect approve: ${approve.status} ${JSON.stringify(approve.body)}`);
-  const token = await world.call<ConnectTokenResponse>('POST', '/internal/own/connect/token', { deviceCode: start.body.deviceCode });
+  // The web makes the credential and sends its hash; the supervisor never sees the credential.
+  const credential = newCredential();
+  const token = await world.call<ConnectTokenResponse>('POST', '/internal/own/connect/token', { deviceCode: start.body.deviceCode, credentialHash: credentialHash(credential) });
   if (token.status !== 200 || token.body.status !== 'approved') throw new Error(`connect token: ${token.status} ${JSON.stringify(token.body)}`);
-  return { credential: token.body.credential, clientId: token.body.clientId, userCode: start.body.userCode, deviceCode: start.body.deviceCode };
+  return { credential, clientId: token.body.clientId, userCode: start.body.userCode, deviceCode: start.body.deviceCode };
 }
 
 export async function runtimeOf(world: TestWorld, agentId: string = AGENT_ID) {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { HIDDEN_CHARS, hide, TAG_SENTENCE } from '../../mcp/test/fake-supervisor.mjs';
 
 // Each call starts a real process, which takes a while when the whole workspace runs its tests at once.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -112,8 +113,11 @@ beforeAll(async () => {
           sellTaxBps: 30000,
           antiSnipe: false,
         });
+      // A coin whose name and an error whose words carry every kind of hidden character.
+      if (url.startsWith('/search?q=hidden')) return send(200, [{ symbol: 'HH', [hide('name')]: hide('A fine coin') }]);
       if (url.startsWith('/search')) return send(200, [{ symbol: 'BB' }]);
       if (url.startsWith('/treasury/')) return send(404, { error: 'not_found' });
+      if (url.startsWith('/platform/feed?since=666')) return send(400, { error: 'invalid_request', message: hide('since is too far back.') });
       if (url.startsWith('/platform/feed')) return send(200, { launches: [] });
       if (url.startsWith('/token/')) return send(200, { byKind: {} });
       if (url.startsWith('/api/agents/')) return send(200, { handle: null, items: [] });
@@ -184,6 +188,17 @@ describe('read commands', () => {
       },
     ]);
     expect(JSON.stringify(out)).not.toContain('0x12');
+  });
+
+  it('prints nothing a person cannot see: hidden characters are removed from the JSON and from an error (security review M3)', async () => {
+    const found = await bootr('coin', 'hidden');
+    expect(JSON.parse(found.stdout)).toEqual([{ symbol: 'HH', name: 'A fine coin' }]);
+    const refused = await bootr('feed', '--since', '666');
+    expect(refused).toMatchObject({ code: 1, stdout: '', stderr: 'invalid_request: since is too far back.\n' });
+    for (const printed of [found.stdout, found.stderr, refused.stderr]) {
+      for (const [name, char] of Object.entries(HIDDEN_CHARS)) expect([name, printed.includes(char)]).toEqual([name, false]);
+      for (const char of TAG_SENTENCE) expect(printed).not.toContain(char);
+    }
   });
 
   it('reports a refusal on stderr with exit code 1', async () => {

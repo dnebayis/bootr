@@ -10,8 +10,10 @@ export {
   type OwnCallOptions,
   type RouteParams,
 } from './client.js';
+export { clean, cleanText } from './clean.js';
 export {
   coinKey,
+  coinLine,
   credentialsFile,
   CredentialsError,
   describeCredential,
@@ -20,6 +22,7 @@ export {
   removeCredential,
   saveCredential,
   siteKey,
+  targetMatches,
   type CredentialsOptions,
   type StoredCredential,
 } from './credentials.js';

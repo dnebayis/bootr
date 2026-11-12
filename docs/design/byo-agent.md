@@ -405,6 +405,11 @@ could and could not do.
 - **Rate limits** (new, per credential and per IP, on the web routes in front of the supervisor): about 120 requests
   a minute overall, `due` once per 20 seconds, the connect routes 5 a minute per IP like the launch route's
   `RateLimiter`. Requests that carry an `Origin` header are refused: these routes are not for web pages.
+- **Limits that do not depend on an address** (the supervisor's, over every caller, since an address is only as good
+  as the proxy setup in front): at most 500 connection requests wait for an approval at one time; after 120 lookups
+  of user codes that do not exist in one minute no code is looked up for the rest of that minute; an upload is read
+  only for a live credential, one at a time per credential and four at a time in the web process. All answer
+  `rate_limited` with `retryAt`.
 
 **A stolen credential can**: post and reply as the agent inside the publish gate, the quota and approval mode; close
 mentions; write and read the agent's notes; upload pictures inside the cap and the rules; spend fuel on paid services
@@ -824,6 +829,7 @@ section wins for the build.
 | `BOOTR_CREDENTIALS_FILE` | the MCP server's and the CLI's environment | `~/.config/bootr/credentials.json` (`%APPDATA%\bootr\credentials.json` on Windows) | where the credentials are kept, mode 0600 | W1b |
 | `BOOTR_PICTURES_DIR` | the MCP server's environment | `~/bootr-pictures` | the only folder `bootr_agent_upload_picture` reads | W1b |
 | `BOOTR_SITE_URL` | exists | `https://bootr.fun` | unchanged | - |
+| `TRUSTED_PROXY` | the web's environment | unset | whose address the per-address limits count: unset, `X-Real-IP` as before; `cloudflare`, the address Cloudflare saw (`CF-Connecting-IP`, an IPv6 visitor by its /64) and nothing a caller can write. Set it only with the origin firewall closed to everything but Cloudflare (`docs/deploy/coolify.md`) | security review M4 |
 
 **Two helpers, two different questions** (13.4), and no code mixes them up:
 
@@ -968,6 +974,7 @@ export type OwnErrorCode =
   | 'not_creator'
   | 'unknown_coin'
   | 'too_many_clients'
+  | 'wrong_coin'
   | 'unauthorized'
   | 'credential_expired'
   | 'credential_revoked'
@@ -1017,6 +1024,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   not_creator: { status: 403, message: 'Only the wallet that launched the coin can connect a client to its agent.' },
   unknown_coin: { status: 404, message: 'No Bootr coin matches that.' },
   too_many_clients: { status: 409, message: 'This coin already has as many clients as it may have. Disconnect one in the creator console first.' },
+  wrong_coin: { status: 409, message: 'This connection request is for another coin. Approve it for the coin it names, or start again from your AI client.' },
   unauthorized: { status: 401, message: 'Missing or unknown credential. Connect this client to Bootr again.' },
   credential_expired: { status: 401, message: "This client's connection ran out. Connect it to Bootr again." },
   credential_revoked: { status: 401, message: 'This client was disconnected in the creator console. Connect it again to use it.' },
@@ -1059,7 +1067,10 @@ export type ConnectTarget = { kind: 'coin'; coin: CoinRef } | { kind: 'draft'; d
 export interface ConnectStartRequest {
   /** What the client calls itself (MCP `clientInfo.name`), shown on the approval page; at most CLIENT_LABEL_MAX characters. */
   clientName?: string;
-  /** A coin the user named (symbol, token or kernel address), prefilled on the approval page; never trusted. */
+  /**
+   * A coin the user named (symbol, token or kernel address). When it names exactly one coin the request is bound to that
+   * coin (`ConnectStartResponse.coin`); otherwise it is a hint the approval page puts first, and never trusted.
+   */
   coin?: string;
 }
 
@@ -1075,6 +1086,12 @@ export interface ConnectStartResponse {
   expiresIn: number;
   /** Seconds between token polls: DEVICE_POLL_INTERVAL_S. */
   interval: number;
+  /**
+   * The one coin the request's `coin` named, when it named exactly one (a kernel or token address, or a symbol only one
+   * coin has). The request is then for that coin alone: an approval for anything else is refused with `wrong_coin`.
+   * Absent when no coin was named or the name fits none or several; the creator then chooses on the approval page.
+   */
+  coin?: CoinRef;
 }
 
 export interface ConnectGrantView {
@@ -1083,6 +1100,8 @@ export interface ConnectGrantView {
   coinHint: string | null;
   status: 'pending' | 'approved' | 'redeemed' | 'expired';
   expiresAt: string;
+  /** The one coin this request is for (`ConnectStartResponse.coin`): the approval page shows it fixed, with no other choice. */
+  coin?: CoinRef | null;
 }
 
 export interface ConnectApproveRequest {
@@ -1117,10 +1136,24 @@ export interface ClientView {
   expiresAt: string;
 }
 
+/**
+ * An approval the creator signed whose client has not collected its credential yet: it can until `expiresAt`, ten
+ * minutes after the client asked. It takes one of the coin's places and can be cancelled like a client.
+ */
+export interface WaitingApprovalView {
+  /** The code the creator approved; names the approval when it is cancelled (it opens nothing by itself). */
+  userCode: string;
+  label: string;
+  approvedAt: string;
+  expiresAt: string;
+}
+
 export interface ClientsResponse {
   clients: ClientView[];
   /** OWN_CLIENTS_PER_AGENT. */
   max: number;
+  /** Approvals waiting to be collected, oldest first. Absent from a server that does not list them. */
+  waiting?: WaitingApprovalView[];
 }
 
 export interface DraftClientsResponse {
@@ -1575,8 +1608,14 @@ CREATE TABLE "sv_agent_grants" (
 CREATE UNIQUE INDEX "sv_agent_grants_user_code_idx" ON "sv_agent_grants" ("user_code");
 ```
 
-The credential is made when an approved grant is redeemed (`connect/token`), returned once and stored as its hash.
-Rows of `sv_agent_grants` older than a day are deleted whenever a new grant is started (W1a; no tick change for it).
+The credential is made by the web when an approved grant is redeemed (`connect/token`) and returned once; the
+supervisor is sent its SHA-256 and stores that, so the credential exists in the web process for one answer and
+nowhere else on Bootr's side. Every run call crosses to the supervisor as that hash too.
+Rows of `sv_agent_grants` older than a day are deleted whenever a new grant is started (W1a; no tick change for it),
+and with them the `sv_agent_clients` rows approved for a launch draft a day or more ago whose launch never came. A
+draft belongs to the earliest launch that carries its id (lowest launch block, then lowest agent id), as for the X
+account: only that launch binds or revokes the draft's clients. A client bound to a draft can run nothing before the
+launch, but `run/disconnect` takes its credential, so it can be ended before the launch.
 
 Stored JSON that gains fields, no migration: `sv_agents.config.runner`; `sv_runtimes.turn.own` (`OwnTurnMeta`);
 `sv_runtimes.state.ownLastTurnAt`, `.ownForced`; `sv_actions.action.via` (`'own'`) and `.clientId`;
@@ -1598,9 +1637,9 @@ the answer **is** belongs to the owner of the internal route.
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `POST /api/agent/connect/start` | none; 5 a minute per IP | `ConnectStartRequest` | `ConnectStartResponse` | - | W1b |
 | 2 | `GET /api/agent/connect/grant?code=<userCode>` | none; 30 a minute per IP; answers with the flag off too | - | `ConnectGrantView` | `grant_not_found` | W1b |
-| 3 | `POST /api/agent/connect/approve` | same origin; the SIWE message inside; 10 a minute per IP | `ConnectApproveRequest` | `ConnectApproveResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `siwe_rejected`, `not_creator`, `unknown_coin`, `too_many_clients` | W1b |
+| 3 | `POST /api/agent/connect/approve` | same origin; the SIWE message inside; 10 a minute per IP | `ConnectApproveRequest` | `ConnectApproveResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `siwe_rejected`, `not_creator`, `unknown_coin`, `too_many_clients`, `wrong_coin` (the client named exactly one coin at start and the signature is for another coin or for a draft) | W1b |
 | 4 | `POST /api/agent/connect/token` | the device code; one call per `interval` per code | `ConnectTokenRequest` | `ConnectTokenResponse` | `grant_not_found`, `grant_expired`, `grant_used`, `slow_down` | W1b |
-| 5 | `GET /api/agent/connect/draft?draft=<uuid>` | none (the draft id is the secret); 30 a minute per IP | - | `DraftClientsResponse` | - | W1b |
+| 5 | `GET /api/agent/connect/draft?draft=<uuid>[&creator=<address>]` | none (the draft id is the secret, until the launch puts it on chain: from then on the answer is empty); 30 a minute per IP | - | `DraftClientsResponse`; with `creator`, the wallet the launch will be sent from, only the clients that wallet approved | - | W1b |
 | 6 | `POST /api/agent/run/status` | Bearer; 120 a minute per credential over all run routes | `{}` | `AgentStatus` | the credential errors: `unauthorized`, `credential_revoked`, `credential_expired`, `coin_not_launched`. A hosted coin is answered, with `runner: 'hosted'` | W1b |
 | 7 | `POST /api/agent/run/due` | Bearer; also one per `OWN_DUE_MIN_INTERVAL_MS` | `{}` | `DueView` | credential errors, `agent_onboarding`, `agent_runs_hosted` | W1b |
 | 8 | `POST /api/agent/run/turn` | Bearer | `TurnRequest` | `TurnOpen` | credential errors, `agent_onboarding`, `agent_runs_hosted`, `agent_paused`, `held_action`, `not_due`, `forced_turns_used`, `turn_open` | W1b |
@@ -1609,7 +1648,7 @@ the answer **is** belongs to the owner of the internal route.
 | 11 | `POST /api/agent/run/upload` | Bearer; body at most 8 MB | `UploadPictureRequest` | `ActResult` with `result: UploadedPicture` (`tool: 'upload_picture'`) | as 9, `payload_too_large` | W1b |
 | 12 | `POST /api/agent/run/disconnect` | Bearer | `{}` | `{ ok: true }` | credential errors | W1b |
 | 13 | `POST /api/agent/[kernel]/clients/list` | console session; works with the flag off | - | `ClientsResponse` | `not_creator`, `unknown_coin` | W1b (W3's console calls it) |
-| 14 | `POST /api/agent/[kernel]/clients/revoke` | console session; works with the flag off | `{ clientId: string }` or `{ all: true }` | `ClientsResponse` | `client_not_found` | W1b (W3's console calls it) |
+| 14 | `POST /api/agent/[kernel]/clients/revoke` | console session; works with the flag off | `{ clientId: string }`, `{ userCode: string }` (an approval from the list's `waiting` that no client has collected yet) or `{ all: true }` (every client, and every grant that could still become a client of this coin: approved and not collected, or started for this coin and not yet approved) | `ClientsResponse` | `client_not_found` | W1b (W3's console calls it) |
 | 15 | `POST /api/agent/[kernel]/runner` | console session; with the flag off only `runner: 'hosted'` is taken | `RunnerSwitchRequest` | `RunnerSwitchResponse` | `runner_unchanged`, `model_required`, `model_not_allowed` | W3 |
 | 16 | `GET /api/agent/connect/coins?creator=<address>` | none; 30 a minute per IP | - | `ConnectCoinsResponse`: the coins that wallet launched | - | W1b |
 
@@ -1635,12 +1674,13 @@ Existing public routes that change:
 | `POST /internal/own/connect/start` | `ConnectStartRequest` and `siteUrl: string` | `ConnectStartResponse` | W1a |
 | `GET /internal/own/connect/grant?code=` | - | `ConnectGrantView` | W1a |
 | `POST /internal/own/connect/approve` | `{ userCode: string; creator: string; label?: string; target: { kind: 'coin'; kernel: string; agentId: string } \| { kind: 'draft'; draftId: string } }`. `creator` is the address the web recovered from the signature; for a coin the supervisor checks it against `sv_agents.creator` and the agent id against the row (`not_creator`, `unknown_coin`). | `ConnectApproveResponse` | W1a |
-| `POST /internal/own/connect/token` | `ConnectTokenRequest` | `ConnectTokenResponse` | W1a |
+| `POST /internal/own/connect/token` | `ConnectTokenRequest` and `credentialHash: string` (the SHA-256, in hex, of the credential the web has just made) | `ConnectTokenResponse` without `credential`; the web adds the credential it made | W1a |
 | `GET /internal/own/connect/coins?creator=<address>` | - | `ConnectCoinsResponse` (from `sv_agents`, newest first, at most 50) | W1a |
-| `GET /internal/own/drafts/:draftId/clients` | - | `DraftClientsResponse` | W1a |
-| `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | the public body and `credential: string` | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
+| `GET /internal/own/drafts/:draftId/clients[?creator=<address>]` | - | `DraftClientsResponse`: empty once a launch carries the draft id; with `creator`, that wallet's clients only | W1a |
+| `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | `credentialHash: string` (the SHA-256, in hex, of the bearer credential) as the **first** member of the body, then the public body. The credential itself never leaves the web process; the supervisor reads the hash from the head of the body and checks it before it parses the rest | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
+| `POST /internal/own/run/verify` (no public route) | `credentialHash: string` alone | `{ ok: true }`, or the answers every run call gives before its own checks (the flag, the credential errors, `agent_onboarding`, `agent_runs_hosted`). The web asks it before it reads the body of an upload, so megabytes are only ever read for a live credential; the web also holds an upload to one at a time per credential and four in the process (`rate_limited` beyond), and the HMAC middleware refuses a header that cannot be valid before it reads a body and never reads past 8 MB and a little | W1a |
 | `GET /internal/agents/:id/clients` | - | `ClientsResponse` | W1a |
-| `POST /internal/agents/:id/clients/revoke` | `{ by: string; clientId?: string; all?: true }` | `ClientsResponse` | W1a |
+| `POST /internal/agents/:id/clients/revoke` | `{ by: string; clientId?: string; userCode?: string; all?: true }` | `ClientsResponse` | W1a |
 | `POST /internal/agents/:id/runner` | `RunnerSwitchRequest` and `by: string; allowedModels: string[]` | `RunnerSwitchResponse` | W3 |
 | `GET /internal/agents/:id/config` (exists) | - | gains `runner` and `own` | W3 |
 | `POST /internal/agents/:id/chat` (exists) | - | `chat_not_available` when `isOwn(agent)` | W3 |
@@ -1679,8 +1719,9 @@ column says who owns what the server answers.
 
 `generate_image` and `finish` are not among the 23: the first does not exist for an own agent, the second is
 `bootr_agent_finish`. Annotations: `readOnlyHint: true` for tools whose agent-core `effect` is `read` and for
-`status`, `due`, `judge_entry`; `destructiveHint: true` for `publish_post`, `publish_reply`, `treasury_execute`,
-`x402_fetch`, `bounty_post`. The package also ships one MCP prompt, `bootr-turn` (W1b), with fixed text: ask what is
+`status`, `due`, `judge_entry`, except `read_url`, `search_web` and `discover_services`, whose input leaves for a
+third party and which are therefore `readOnlyHint: false`; `destructiveHint: true` for `publish_post`,
+`publish_reply`, `treasury_execute`, `x402_fetch`, `bounty_post` and `disconnect`. The package also ships one MCP prompt, `bootr-turn` (W1b), with fixed text: ask what is
 due, run each due role in its own turn, never carry text from one role's turn into another's, finish.
 
 New failure texts (`ActResult.error`), verbatim:

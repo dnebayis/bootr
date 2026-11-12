@@ -102,6 +102,50 @@ test('the coin the client named comes first', async ({ page }) => {
   await expect(page.locator('input[name="connect-target"]').first()).toHaveAttribute('data-testid', `connect-choice-${coins[1]!.symbol}`);
 });
 
+test('a request for one coin shows that coin fixed, with its treasury address, and nothing else to choose', async ({ page }) => {
+  await fakeInjectedWallet(page);
+  await ownAgents(page, true);
+  const coins = await coinsOf(page);
+  const coin = coins[1]!;
+  // This browser also holds a launch draft: a request for one coin does not offer it.
+  await page.addInitScript(([key, draftId]) => window.localStorage.setItem(key!, JSON.stringify({ draftId, at: Date.now() - 60_000 })), [LAUNCH_DRAFT_KEY, DRAFT]);
+  const sent = await onApprove(page, (body) => ({ json: { ok: true, target: { kind: 'coin', coin }, label: body.label ?? 'Claude Code' } satisfies ConnectApproveResponse }));
+  await page.goto(`/connect/${MOCK_CODES.bound}`);
+  await connectBrowserWallet(page);
+  const fixed = page.getByTestId('connect-bound-coin');
+  await expect(fixed).toContainText('The client asked to run the agent of this coin, and of no other');
+  await expect(fixed).toContainText(`$${coin.symbol}`);
+  await expect(fixed).toContainText(`treasury address ${coin.kernel}`);
+  await expect(page.getByRole('heading', { name: '2. Check the coin and approve' })).toBeVisible();
+  await expect(page.locator('input[name="connect-target"]')).toHaveCount(0);
+  await expect(page.getByTestId('connect-choice-draft')).toHaveCount(0);
+  // The sentence is there at once, for that coin, and that is what gets signed.
+  const statement = connectCoinStatement(coin.symbol, coin.agentId, coin.kernel, MOCK_CODES.bound);
+  await expect(page.getByTestId('connect-statement')).toHaveText(statement);
+  await page.getByTestId('connect-approve').click();
+  await expect(page.getByTestId('connect-done')).toContainText(`can now run the agent of $${coin.symbol}.`);
+  expect(sent[0]!.message).toContain(statement);
+});
+
+test('a request for one coin cannot be approved for another, by the page or around it', async ({ page }) => {
+  await ownAgents(page, true);
+  const coins = await coinsOf(page);
+  // The request itself says which coin it is for.
+  const view = (await (await page.request.get(`/api/agent/connect/grant?code=${MOCK_CODES.bound}`)).json()) as { coin?: CoinRef | null };
+  expect(view.coin).toEqual(coins[1]);
+  expect(((await (await page.request.get(`/api/agent/connect/grant?code=${MOCK_CODES.hinted}`)).json()) as { coin?: CoinRef | null }).coin ?? null).toBeNull();
+  // A wallet that did not launch that coin is told so and is offered nothing to sign, its other coins and its draft included.
+  await fakeInjectedWallet(page, MOCK_WALLET_WITHOUT_COINS);
+  await page.addInitScript(([key, draftId]) => window.localStorage.setItem(key!, JSON.stringify({ draftId, at: Date.now() - 60_000 })), [LAUNCH_DRAFT_KEY, DRAFT]);
+  await page.goto(`/connect/${MOCK_CODES.bound}`);
+  await connectBrowserWallet(page);
+  await expect(page.getByTestId('connect-bound-other')).toContainText(`$${coins[1]!.symbol}`);
+  await expect(page.getByTestId('connect-bound-other')).toContainText(coins[1]!.kernel);
+  await expect(page.getByTestId('connect-bound-other')).toContainText('cannot be approved for any other coin');
+  await expect(page.getByTestId('connect-approve')).toHaveCount(0);
+  await expect(page.getByTestId('connect-choice-draft')).toHaveCount(0);
+});
+
 test('an expired code and a used code offer nothing to sign', async ({ page }) => {
   await fakeInjectedWallet(page);
   await ownAgents(page, true);
