@@ -18,7 +18,7 @@
  * - Buy with ETH, USDC pool (`buildEthViaPairedBuyTx`): one transaction of two hops, `WRAP_ETH` into the router,
  *   `V3_SWAP_EXACT_IN` WETH → USDC on Uniswap v3's WETH/USDC 0.05% pool (the route the launcher's own USDC dev buy takes)
  *   to the router, then `V4_SWAP` settling the router's whole USDC balance into the coin's pool, swapping all of that
- *   credit and taking the coin to the caller, at least the minimum received. Not fork-tested yet: calldata unit tests only.
+ *   credit and taking the coin to the caller, at least the minimum received. Fork-tested in `swap-v5.fork.test.ts`.
  *
  * Every swap is exact in: Clanker v5 refuses exact-output swaps during its anti-snipe window, and the panel never builds
  * one anyway.

@@ -3,7 +3,7 @@
  * hook and reverts with the result, so its figure is net of the pool's fee and of Clanker's launch fee.
  */
 import type { PublicClient } from 'viem';
-import { idealOut, impactPct, poolIdOf, shortfallPct, SWAP_CONTRACTS, V3_WETH_USDC, wethToPairedEstimate, zeroForOne, type LaunchWindow, type PoolKey, type SwapSide } from './core';
+import { idealOut, impactPct, isErc20Paired, poolIdOf, shortfallPct, SWAP_CONTRACTS, V3_WETH_USDC, wethToPairedEstimate, zeroForOne, type LaunchWindow, type PoolKey, type SwapSide } from './core';
 import { SwapFailure } from './errors';
 
 /** Written as `view`: the quoter is not one on chain, but this only ever runs in `eth_call`. */
@@ -74,10 +74,16 @@ export type SwapQuote = {
   launchWindow: LaunchWindow | null;
 };
 
-/** A tenth of a percent of the amount reads the pool's rate without moving it. */
-function referenceAmount(amountIn: bigint): bigint {
+/**
+ * A tenth of a percent of the amount reads the pool's rate without moving it. Below a floor the amount itself is the
+ * reference (a smaller swap would be all rounding): 1 gwei of an 18-decimal input (ETH, or the coin on a sell), 0.01
+ * USDC on a buy that pays USDC. One floor of 1e9 raw units for both was 1,000 USDC, so every smaller USDC buy was its own
+ * reference: its price impact read as fee (2.1% for 25 USDC at a 1.5% tax, found on a Base fork) and the impact as 0.
+ */
+export function referenceAmount(amountIn: bigint, key: PoolKey, side: SwapSide): bigint {
+  const floor = side === 'buy' && isErc20Paired(key) ? 10_000n : 1_000_000_000n;
   const ref = amountIn / 1000n;
-  return ref < 1_000_000_000n ? amountIn : ref;
+  return ref < floor ? amountIn : ref;
 }
 
 type QuoteClient = Pick<PublicClient, 'multicall'>;
@@ -104,7 +110,7 @@ export async function quoteSwap(
   { key, side, amountIn, now }: { key: PoolKey; side: SwapSide; amountIn: bigint; now?: number },
 ): Promise<SwapQuote> {
   const direction = zeroForOne(key, side);
-  const refIn = referenceAmount(amountIn);
+  const refIn = referenceAmount(amountIn, key, side);
   const quote = (exactAmount: bigint) =>
     ({
       address: SWAP_CONTRACTS.quoter,
