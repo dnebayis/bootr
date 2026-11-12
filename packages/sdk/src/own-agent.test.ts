@@ -118,6 +118,52 @@ describe('the credentials file', () => {
     );
   });
 
+  it('keeps every connection when several programs change the file at the same moment', async () => {
+    const site = 'https://bootr.fun';
+    const letters = 'abcdefghijklmnopqrstuvwx';
+    const coinOf = (i: number) => ({ ...COIN, symbol: `C${i}`, kernel: `0x${String(i).padStart(40, '0')}`, token: `0x${String(i + 100).padStart(40, '0')}`, agentId: String(1000 + i) });
+    // Twenty-four saves at once, as the MCP servers of two clients and the command would make them. Each reads the
+    // file, adds its entry and writes it back: without a lock most of them write the others' entries away.
+    await Promise.all([...letters].map((letter, i) => saveCredential(site, entry(letter, { kind: 'coin', coin: coinOf(i) }), { file })));
+    expect((await listCredentials(site, { file })).map((e) => e.credential).sort()).toEqual([...letters].map(credentialOf).sort());
+    // Removals and saves mixed: each takes effect, none undoes another.
+    await Promise.all([
+      ...[...letters].slice(0, 12).map((letter) => removeCredential(site, { clientId: `cli_${letter.repeat(16)}` }, { file })),
+      ...['y', 'z'].map((letter, i) => saveCredential(site, entry(letter, { kind: 'coin', coin: coinOf(50 + i) }), { file })),
+    ]);
+    expect((await listCredentials(site, { file })).map((e) => e.credential).sort()).toEqual([...[...letters].slice(12), 'y', 'z'].map(credentialOf).sort());
+    // Nothing is left beside the file: no lock, no temporary file.
+    const fs = await import('node:fs/promises');
+    expect(await fs.readdir(path.dirname(file))).toEqual(['credentials.json']);
+  });
+
+  it('waits for a change in progress, and gets past a lock a program left behind when it died', async () => {
+    const site = 'https://bootr.fun';
+    const fs = await import('node:fs/promises');
+    await saveCredential(site, entry('a', { kind: 'coin', coin: COIN }), { file });
+    const lock = `${file}.lock`;
+    // Another program holds the lock for a moment: the save waits for it instead of writing over its change.
+    await writeFile(lock, '');
+    let released = false;
+    setTimeout(() => {
+      released = true;
+      void fs.rm(lock, { force: true });
+    }, 120);
+    await saveCredential(site, entry('b', { kind: 'coin', coin: SECOND_COIN }), { file });
+    expect(released).toBe(true);
+    expect(await listCredentials(site, { file })).toHaveLength(2);
+    // A lock from a minute ago belongs to nobody any more.
+    await writeFile(lock, '');
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lock, old, old);
+    expect(await removeCredential(site, { clientId: `cli_${'a'.repeat(16)}` }, { file })).toBe(true);
+    expect(await fs.readdir(path.dirname(file))).toEqual(['credentials.json']);
+    // Looking for something to forget where there is no file makes no file, no folder and no lock.
+    const nowhere = path.join(path.dirname(file), 'none', 'credentials.json');
+    expect(await removeCredential(site, { clientId: 'cli_none' }, { file: nowhere })).toBe(false);
+    expect(await fs.readdir(path.dirname(file))).toEqual(['credentials.json']);
+  });
+
   it('never puts a credential in an error or a description', async () => {
     const site = 'https://bootr.fun';
     await saveCredential(site, entry('a', { kind: 'coin', coin: COIN }), { file });
