@@ -21,7 +21,7 @@
 import type { AgentConfig } from '@bootr/agent-core';
 import { PICTURE_MAX_BYTES, type PictureMime, type UploadedPicture } from '@bootr/shared/own-agent';
 import { and, eq, gt, ne, sql } from 'drizzle-orm';
-import sharp from 'sharp';
+import type SharpModule from 'sharp';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, images } from '../db/schema.js';
 import { imagePromptRisk, pictureRequested, REQUESTED_MESSAGE } from '../image-rules.js';
@@ -76,12 +76,31 @@ export function decodeBase64(data: unknown): Buffer | null {
   return Buffer.from(data, 'base64');
 }
 
+let sharpLoading: Promise<typeof SharpModule> | null = null;
+
+/**
+ * `sharp` is a native module, so it is loaded on the first upload and not when this file is: a binary that cannot load
+ * then fails that upload (and is tried again on the next one), instead of stopping the supervisor at start and every
+ * hosted agent with it. The image build proves the binary loads (apps/supervisor/Dockerfile).
+ */
+async function loadSharp(): Promise<typeof SharpModule> {
+  sharpLoading ??= import('sharp').then((m) => m.default);
+  try {
+    return await sharpLoading;
+  } catch (err) {
+    sharpLoading = null;
+    throw err;
+  }
+}
+
 /**
  * The width and height the picture's header states, read without unpacking a pixel; null when the bytes have no
  * header `sharp` can read. An animated WebP states the size of one frame: only its first frame is ever unpacked
  * (`animated: false` below), so the number of frames adds no work and is not a reason to refuse it.
  */
 export async function pictureSize(bytes: Buffer): Promise<{ width: number; height: number } | null> {
+  // Outside the `try`: a library that cannot load is an error of ours, not "this is not a picture".
+  const sharp = await loadSharp();
   try {
     const meta = await sharp(bytes, { failOn: 'error', limitInputPixels: false, animated: false }).metadata();
     const width = meta.width ?? 0;
@@ -136,6 +155,7 @@ export async function oneAtATime<T>(work: () => Promise<T>, opts: { waitMs?: num
  * writing it takes longer than `REENCODE_TIMEOUT_SECONDS`.
  */
 export async function reencodePicture(bytes: Buffer, mime: PictureMime): Promise<Buffer> {
+  const sharp = await loadSharp();
   const image = sharp(bytes, { failOn: 'error', limitInputPixels: MAX_UPLOAD_PIXELS, animated: false }).rotate().timeout({ seconds: REENCODE_TIMEOUT_SECONDS });
   if (mime === 'image/png') return image.png({ compressionLevel: 9 }).toBuffer();
   if (mime === 'image/jpeg') return image.jpeg({ quality: 92 }).toBuffer();
