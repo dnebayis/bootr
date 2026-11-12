@@ -343,6 +343,85 @@ describe('own agent: what a credential opens', () => {
     }
   });
 
+  it('"disconnect all" leaves no approval a client could still collect, and the creator sees and can cancel one (security review M1)', async () => {
+    const w = await ownWorld();
+    try {
+      await seedOwn(w);
+      await seedOther(w);
+      const kept = await connectClient(w, { label: 'my laptop' });
+      // Approved a moment ago (say, on a link somebody sent) and not collected yet: no client row exists for it.
+      const lure = await start(w, { clientName: 'Their client' });
+      expect((await approveCoin(w, lure.userCode, { label: 'Looks like mine' })).status).toBe(200);
+      const second = await start(w);
+      expect((await approveCoin(w, second.userCode)).status).toBe(200);
+      // Another coin's approval, which none of this may touch.
+      const theirs = await start(w);
+      expect((await approveCoin(w, theirs.userCode, { creator: OTHER_CREATOR, target: { kind: 'coin', kernel: OTHER_KERNEL, agentId: OTHER_AGENT_ID } })).status).toBe(200);
+
+      const list = await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`);
+      expect(list.body.clients.map((c) => c.clientId)).toEqual([kept.clientId]);
+      expect(list.body.waiting).toEqual([
+        { userCode: lure.userCode, label: 'Looks like mine', approvedAt: new Date(w.ctx.now()).toISOString(), expiresAt: new Date(w.ctx.now() + DEVICE_CODE_TTL_S * 1000).toISOString() },
+        { userCode: second.userCode, label: 'Claude Code', approvedAt: expect.any(String), expiresAt: expect.any(String) },
+      ]);
+      // Neither the device code's hash nor who approved is in what the console lists.
+      expect(JSON.stringify(list.body)).not.toContain(hashSecret(lure.deviceCode));
+      expect(JSON.stringify(list.body).toLowerCase()).not.toContain(CREATOR.toLowerCase());
+
+      // One of them, by its code: only the creator, only this coin's.
+      const revoke = (body: Record<string, unknown>, agentId = AGENT_ID) => w.call<ClientsResponse & OwnErrorBody>('POST', `/internal/agents/${agentId}/clients/revoke`, body);
+      expect((await revoke({ by: STRANGER, userCode: second.userCode })).body.error).toBe('not_creator');
+      expect((await revoke({ by: CREATOR, userCode: theirs.userCode })).body.error).toBe('client_not_found');
+      expect((await revoke({ by: CREATOR, userCode: 'not a code' })).body.error).toBe('invalid_request');
+      const cancelled = await revoke({ by: CREATOR, userCode: second.userCode });
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.waiting?.map((x) => x.userCode)).toEqual([lure.userCode]);
+      expect((await token(w, second.deviceCode)).body.error).toBe('grant_not_found');
+      expect((await revoke({ by: CREATOR, userCode: second.userCode })).body.error).toBe('client_not_found');
+
+      // All: the client, the approval waiting to be collected, and a request started for this coin that nobody approved yet.
+      const all = await revoke({ by: CREATOR, all: true });
+      expect(all.body).toEqual({ clients: [], max: 3, waiting: [] });
+      const late = await token(w, lure.deviceCode);
+      expect([late.status, late.body.error]).toEqual([404, 'grant_not_found']);
+      expect((await w.run<OwnErrorBody>('status', kept.credential)).body.error).toBe('credential_revoked');
+      expect((await w.db.select().from(agentClients)).filter((c) => !c.revokedAt)).toHaveLength(0);
+      // The other coin's approval is still there and still collects.
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${OTHER_AGENT_ID}/clients`)).body.waiting?.map((x) => x.userCode)).toEqual([theirs.userCode]);
+      expect((await token(w, theirs.deviceCode)).body.status).toBe('approved');
+      // An approval whose ten minutes passed is not listed.
+      const stale = await start(w);
+      expect((await approveCoin(w, stale.userCode)).status).toBe(200);
+      w.setNow(w.ctx.now() + DEVICE_CODE_TTL_S * 1000);
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.waiting).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('"disconnect all" also ends what was approved for the coin\'s launch draft and not collected or not bound yet', async () => {
+    const w = await ownWorld();
+    try {
+      const approveDraft = (userCode: string) => w.call('POST', '/internal/own/connect/approve', { userCode, creator: CREATOR, target: { kind: 'draft', draftId: DRAFT } });
+      // One client collected before the launch, and one approval still waiting when the coin exists.
+      const early = await start(w);
+      expect((await approveDraft(early.userCode)).status).toBe(200);
+      const collected = await token(w, early.deviceCode);
+      if (collected.body.status !== 'approved') throw new Error('expected an approved grant');
+      const waiting = await start(w);
+      expect((await approveDraft(waiting.userCode)).status).toBe(200);
+      // The launch is registered, and the registration hook has not run.
+      await seedOwn(w, { agent: { draftId: DRAFT } });
+      expect((await w.call<ClientsResponse>('GET', `/internal/agents/${AGENT_ID}/clients`)).body.waiting?.map((x) => x.userCode)).toEqual([waiting.userCode]);
+      const all = await w.call<ClientsResponse>('POST', `/internal/agents/${AGENT_ID}/clients/revoke`, { by: CREATOR, all: true });
+      expect(all.body).toEqual({ clients: [], max: 3, waiting: [] });
+      expect((await token(w, waiting.deviceCode)).body.error).toBe('grant_not_found');
+      expect((await w.run<OwnErrorBody>('status', collected.body.credential)).body.error).toBe('credential_revoked');
+    } finally {
+      await w.close();
+    }
+  });
+
   it('stops working the moment the coin has another creator on record, and for a coin that is revoked', async () => {
     const w = await ownWorld();
     try {

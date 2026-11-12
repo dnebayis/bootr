@@ -1117,10 +1117,24 @@ export interface ClientView {
   expiresAt: string;
 }
 
+/**
+ * An approval the creator signed whose client has not collected its credential yet: it can until `expiresAt`, ten
+ * minutes after the client asked. It takes one of the coin's places and can be cancelled like a client.
+ */
+export interface WaitingApprovalView {
+  /** The code the creator approved; names the approval when it is cancelled (it opens nothing by itself). */
+  userCode: string;
+  label: string;
+  approvedAt: string;
+  expiresAt: string;
+}
+
 export interface ClientsResponse {
   clients: ClientView[];
   /** OWN_CLIENTS_PER_AGENT. */
   max: number;
+  /** Approvals waiting to be collected, oldest first. Absent from a server that does not list them. */
+  waiting?: WaitingApprovalView[];
 }
 
 export interface DraftClientsResponse {
@@ -1611,7 +1625,7 @@ the answer **is** belongs to the owner of the internal route.
 | 11 | `POST /api/agent/run/upload` | Bearer; body at most 8 MB | `UploadPictureRequest` | `ActResult` with `result: UploadedPicture` (`tool: 'upload_picture'`) | as 9, `payload_too_large` | W1b |
 | 12 | `POST /api/agent/run/disconnect` | Bearer | `{}` | `{ ok: true }` | credential errors | W1b |
 | 13 | `POST /api/agent/[kernel]/clients/list` | console session; works with the flag off | - | `ClientsResponse` | `not_creator`, `unknown_coin` | W1b (W3's console calls it) |
-| 14 | `POST /api/agent/[kernel]/clients/revoke` | console session; works with the flag off | `{ clientId: string }` or `{ all: true }` | `ClientsResponse` | `client_not_found` | W1b (W3's console calls it) |
+| 14 | `POST /api/agent/[kernel]/clients/revoke` | console session; works with the flag off | `{ clientId: string }`, `{ userCode: string }` (an approval from the list's `waiting` that no client has collected yet) or `{ all: true }` (every client, and every grant that could still become a client of this coin: approved and not collected, or started for this coin and not yet approved) | `ClientsResponse` | `client_not_found` | W1b (W3's console calls it) |
 | 15 | `POST /api/agent/[kernel]/runner` | console session; with the flag off only `runner: 'hosted'` is taken | `RunnerSwitchRequest` | `RunnerSwitchResponse` | `runner_unchanged`, `model_required`, `model_not_allowed` | W3 |
 | 16 | `GET /api/agent/connect/coins?creator=<address>` | none; 30 a minute per IP | - | `ConnectCoinsResponse`: the coins that wallet launched | - | W1b |
 
@@ -1643,7 +1657,7 @@ Existing public routes that change:
 | `POST /internal/own/run/:op` with `op` one of `status`, `due`, `turn`, `act`, `finish`, `upload`, `disconnect` | `credentialHash: string` (the SHA-256, in hex, of the bearer credential) as the **first** member of the body, then the public body. The credential itself never leaves the web process; the supervisor reads the hash from the head of the body and checks it before it parses the rest | the public response | W1a (W2 for what the treasury and judge roles and its three special tools answer) |
 | `POST /internal/own/run/verify` (no public route) | `credentialHash: string` alone | `{ ok: true }`, or the answers every run call gives before its own checks (the flag, the credential errors, `agent_onboarding`, `agent_runs_hosted`). The web asks it before it reads the body of an upload, so megabytes are only ever read for a live credential; the web also holds an upload to one at a time per credential and four in the process (`rate_limited` beyond), and the HMAC middleware refuses a header that cannot be valid before it reads a body and never reads past 8 MB and a little | W1a |
 | `GET /internal/agents/:id/clients` | - | `ClientsResponse` | W1a |
-| `POST /internal/agents/:id/clients/revoke` | `{ by: string; clientId?: string; all?: true }` | `ClientsResponse` | W1a |
+| `POST /internal/agents/:id/clients/revoke` | `{ by: string; clientId?: string; userCode?: string; all?: true }` | `ClientsResponse` | W1a |
 | `POST /internal/agents/:id/runner` | `RunnerSwitchRequest` and `by: string; allowedModels: string[]` | `RunnerSwitchResponse` | W3 |
 | `GET /internal/agents/:id/config` (exists) | - | gains `runner` and `own` | W3 |
 | `POST /internal/agents/:id/chat` (exists) | - | `chat_not_available` when `isOwn(agent)` | W3 |

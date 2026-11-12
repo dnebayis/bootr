@@ -250,10 +250,24 @@ export interface ClientView {
   expiresAt: string;
 }
 
+/**
+ * An approval the creator signed whose client has not collected its credential yet: it can until `expiresAt`, ten
+ * minutes after the client asked. It takes one of the coin's places and can be cancelled like a client.
+ */
+export interface WaitingApprovalView {
+  /** The code the creator approved; names the approval when it is cancelled (it opens nothing by itself). */
+  userCode: string;
+  label: string;
+  approvedAt: string;
+  expiresAt: string;
+}
+
 export interface ClientsResponse {
   clients: ClientView[];
   /** OWN_CLIENTS_PER_AGENT. */
   max: number;
+  /** Approvals waiting to be collected, oldest first. Absent from a server that does not list them. */
+  waiting?: WaitingApprovalView[];
 }
 
 export interface DraftClientsResponse {

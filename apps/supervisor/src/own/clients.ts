@@ -33,8 +33,9 @@ import {
   type DraftClientsResponse,
   type OwnErrorBody,
   type OwnErrorCode,
+  type WaitingApprovalView,
 } from '@bootr/shared/own-agent';
-import { and, desc, eq, gt, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { getAddress, isAddress, isAddressEqual, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, agentClients, agentGrants, agents } from '../db/schema.js';
@@ -389,25 +390,67 @@ export async function countClients(ctx: Ctx, agentId: string): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** `GET /internal/agents/:id/clients`. */
-export async function listClients(ctx: Ctx, agentId: string): Promise<ClientsResponse> {
-  return { clients: (await liveClients(ctx, agentId)).map(clientView), max: ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT') };
+/**
+ * The grants that can still become a client of this coin: approved for it, or for the launch draft it was launched
+ * from by the wallet that launched it (`redeemGrant` binds such a client at once). With `pending`, also the ones a
+ * client started for this coin by name that nobody has approved yet.
+ */
+function grantsToward(agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>, opts: { pending: boolean }) {
+  const ofDraft = agent.draftId && DRAFT_ID_RE.test(agent.draftId) ? and(eq(agentGrants.draftId, agent.draftId), sql`lower(${agentGrants.creator}) = ${agent.creator.toLowerCase()}`) : undefined;
+  const bound = ofDraft ? or(eq(agentGrants.agentId, agent.agentId), ofDraft) : eq(agentGrants.agentId, agent.agentId);
+  return and(bound, opts.pending ? inArray(agentGrants.status, ['pending', 'approved']) : eq(agentGrants.status, 'approved'));
+}
+
+/** Approvals the creator signed whose client has not collected its credential yet, oldest first. */
+async function waitingApprovals(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<WaitingApprovalView[]> {
+  const rows = await ctx.db
+    .select()
+    .from(agentGrants)
+    .where(and(grantsToward(agent, { pending: false }), gt(agentGrants.expiresAt, new Date(ctx.now()))))
+    .orderBy(agentGrants.approvedAt);
+  return rows.map((g) => ({ userCode: g.userCode, label: g.label ?? g.clientName, approvedAt: (g.approvedAt ?? g.createdAt).toISOString(), expiresAt: g.expiresAt.toISOString() }));
 }
 
 /**
- * `POST /internal/agents/:id/clients/revoke`: one client or all of them, by the coin's creator (`by` is the address
- * the web took from the console's signed session). Returns the ids that were revoked; the caller closes the turn one
- * of them had open. Never refused because of the flag: a creator can always disconnect a client.
+ * `GET /internal/agents/:id/clients`: the live clients, and the approvals still waiting to be collected. An approval
+ * is as good as a client for the ten minutes it lasts, so the creator sees it and can cancel it.
  */
-export async function revokeClients(ctx: Ctx, agent: AgentRow, input: { by?: unknown; clientId?: unknown; all?: unknown }): Promise<string[]> {
+export async function listClients(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'creator' | 'draftId'>): Promise<ClientsResponse> {
+  return { clients: (await liveClients(ctx, agent.agentId)).map(clientView), max: ownSetting(ctx, 'OWN_CLIENTS_PER_AGENT'), waiting: await waitingApprovals(ctx, agent) };
+}
+
+/**
+ * `POST /internal/agents/:id/clients/revoke`: one client, one approval not yet collected (`userCode`) or all of both,
+ * by the coin's creator (`by` is the address the web took from the console's signed session). Returns the ids of the
+ * clients that were revoked; the caller closes the turn one of them had open. Never refused because of the flag: a
+ * creator can always disconnect a client.
+ *
+ * "All" means nothing in flight survives either: every grant that could still become a client of this coin is deleted
+ * first (approved and not collected, or started for this coin by name and not yet approved), so a credential cannot
+ * be collected a moment after the creator disconnected everything. The grants go before the clients: a redemption
+ * that won the race has its client row in place by then and is revoked with the rest.
+ */
+export async function revokeClients(ctx: Ctx, agent: AgentRow, input: { by?: unknown; clientId?: unknown; userCode?: unknown; all?: unknown }): Promise<string[]> {
   if (typeof input.by !== 'string' || !isAddress(input.by)) throw invalid('by', '`by` must be the creator address.');
   if (!sameAddress(input.by, agent.creator)) throw new OwnError('not_creator');
   const now = new Date(ctx.now());
   if (input.all === true) {
+    // A client of this coin's launch draft that registration did not bind yet would be bound on its next call: it is
+    // bound (or, approved by another wallet, revoked) now, so it is among the clients this disconnects.
+    await adoptDraftClients(ctx, agent);
+    const voided = await ctx.db.delete(agentGrants).where(grantsToward(agent, { pending: true })).returning({ status: agentGrants.status });
     const rows = await ctx.db.update(agentClients).set({ revokedAt: now }).where(and(eq(agentClients.agentId, agent.agentId), isNull(agentClients.revokedAt))).returning({ id: agentClients.id });
     for (const row of rows) await noteOnTape(ctx, agent.agentId, 'clientDisconnected', row.id);
-    if (rows.length) ctx.log.info({ agentId: agent.agentId, clients: rows.map((r) => r.id) }, 'own agent: every client was disconnected by the creator');
+    if (rows.length || voided.length) ctx.log.info({ agentId: agent.agentId, clients: rows.map((r) => r.id), approvals: voided.filter((g) => g.status === 'approved').length, requests: voided.filter((g) => g.status === 'pending').length }, 'own agent: every client was disconnected by the creator');
     return rows.map((r) => r.id);
+  }
+  if (input.userCode !== undefined) {
+    if (typeof input.userCode !== 'string' || !USER_CODE_RE.test(input.userCode)) throw invalid('userCode', 'userCode must be a code like BCDF-GHJK.');
+    // Only an approval for this coin: a code of another coin's approval, or one already collected, is no approval here.
+    const gone = await ctx.db.delete(agentGrants).where(and(eq(agentGrants.userCode, input.userCode), grantsToward(agent, { pending: false }))).returning({ userCode: agentGrants.userCode });
+    if (gone.length === 0) throw new OwnError('client_not_found');
+    ctx.log.info({ agentId: agent.agentId }, 'own agent: an approval not yet collected was cancelled by the creator');
+    return [];
   }
   if (typeof input.clientId !== 'string' || !input.clientId.startsWith(CLIENT_ID_PREFIX)) throw invalid('clientId', 'Name a client, or all of them.');
   const rows = await ctx.db

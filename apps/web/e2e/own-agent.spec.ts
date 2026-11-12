@@ -41,18 +41,23 @@ async function draftClients(page: Page) {
 type Client = { clientId: string; label: string; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 
 /** Routes 13 and 14 (`/clients/list`, `/clients/revoke`), inside the console session: a coin's connected clients. */
-async function coinClients(page: Page, initial: Client[]) {
-  const state = { clients: [...initial], revoked: [] as unknown[] };
-  const answer = () => ({ clients: state.clients, max: 3, token: 'mock-review-token' });
+async function coinClients(page: Page, initial: Client[], waiting: Waiting[] = []) {
+  const state = { clients: [...initial], waiting: [...waiting], revoked: [] as unknown[] };
+  const answer = () => ({ clients: state.clients, max: 3, waiting: state.waiting, token: 'mock-review-token' });
   await page.route('**/api/agent/*/clients/list', (route) => route.fulfill({ json: answer() }));
   await page.route('**/api/agent/*/clients/revoke', (route) => {
-    const body = route.request().postDataJSON() as { clientId?: string; all?: boolean };
-    state.revoked.push(body.all ? 'all' : body.clientId);
+    const body = route.request().postDataJSON() as { clientId?: string; userCode?: string; all?: boolean };
+    state.revoked.push(body.all ? 'all' : (body.userCode ?? body.clientId));
     state.clients = body.all ? [] : state.clients.filter((c) => c.clientId !== body.clientId);
+    state.waiting = body.all ? [] : state.waiting.filter((w) => w.userCode !== body.userCode);
     return route.fulfill({ json: answer() });
   });
   return state;
 }
+
+/** An approval the creator signed that no client has collected yet (`ClientsResponse.waiting`). */
+type Waiting = { userCode: string; label: string; approvedAt: string; expiresAt: string };
+const uncollected = (): Waiting => ({ userCode: 'BCDF-GHJK', label: 'Codex on a new machine', approvedAt: new Date(Date.now() - 2 * 60_000).toISOString(), expiresAt: new Date(Date.now() + 7 * 60_000).toISOString() });
 
 const laptop = (): Client => ({ clientId: 'cli_0123456789abcdef', label: 'Claude Code on my laptop', createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(), lastUsedAt: new Date(Date.now() - 14 * 60_000).toISOString(), expiresAt: new Date(Date.now() + 87 * 86_400_000).toISOString() });
 
@@ -320,7 +325,7 @@ test.describe('own agents switched on', () => {
     const { coinUrl, kernel } = await coinOf(page, 'Moon Clerk');
     await setRunner(request, baseURL, kernel, 'hosted');
     await ownAgentsOn(page);
-    const clients = await coinClients(page, [laptop(), { ...laptop(), clientId: 'cli_fedcba9876543210', label: 'Cursor at work', lastUsedAt: null }]);
+    const clients = await coinClients(page, [laptop(), { ...laptop(), clientId: 'cli_fedcba9876543210', label: 'Cursor at work', lastUsedAt: null }], [uncollected()]);
     await page.goto(`${coinUrl}/console`);
     const console_ = consoleOf(page);
     const card = console_.getByTestId('agent-runner-card');
@@ -359,6 +364,16 @@ test.describe('own agents switched on', () => {
     await card.getByTestId('runner-client').nth(1).getByRole('button', { name: 'Disconnect' }).click();
     await expect(card.getByTestId('runner-client')).toHaveCount(1);
     expect(clients.revoked).toEqual(['cli_fedcba9876543210']);
+    // an approval no client has collected yet is as good as a client for its ten minutes: listed, and cancelled by its code
+    const waiting = card.getByTestId('runner-waiting');
+    await expect(waiting).toContainText('Approved, waiting for the client to collect');
+    await expect(waiting.getByTestId('runner-waiting-approval')).toContainText('Codex on a new machine');
+    await expect(waiting.getByTestId('runner-waiting-approval')).toContainText(/code BCDF-GHJK · approved 2m ago · runs out in [67] min/);
+    await expect(card.getByTestId('runner-disconnect-all')).toBeVisible();
+    await waiting.getByRole('button', { name: 'Cancel' }).click();
+    await expect(card.getByTestId('runner-waiting')).toHaveCount(0);
+    expect(clients.revoked).toEqual(['cli_fedcba9876543210', 'BCDF-GHJK']);
+    await expect(card.getByTestId('runner-disconnect-all')).toHaveCount(0);
     // a client is connected, so the connect steps step back behind "Connect another client"
     await expect(card.getByTestId('runner-needs-client')).toHaveCount(0);
     await expect(card.getByTestId('runner-connect').locator('summary')).toHaveText('Connect another client');

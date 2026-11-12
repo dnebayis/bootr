@@ -40,7 +40,7 @@ export const MOCK_CODES = {
 export const MOCK_WALLET_WITHOUT_COINS = '0x00000000000000000000000000000000000e2e02';
 export const MOCK_CLIENT_NAME = 'Claude Code';
 
-type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null };
+type Grant = { userCode: string; deviceCode: string; clientName: string; coinHint: string | null; status: 'pending' | 'approved' | 'redeemed'; expiresAt: number; target: ConnectTarget | null; label: string | null; approvedAt?: number };
 type Client = ClientView & { kernel: string | null; draftId: string | null; revoked: boolean };
 type State = { grants: Map<string, Grant>; clients: Client[]; seq: number };
 
@@ -80,6 +80,11 @@ function label(input: unknown, fallback: string): string {
   return typeof input === 'string' && input.trim() ? input.trim().slice(0, CLIENT_LABEL_MAX) : fallback;
 }
 
+/** The approvals for a coin that no client has collected yet and that have not run out. */
+function approvedFor(kernel: string, now: number): Grant[] {
+  return [...state.grants.values()].filter((x) => x.status === 'approved' && x.expiresAt > now && x.target?.kind === 'coin' && x.target.coin.kernel.toLowerCase() === kernel);
+}
+
 export type MockOwnResult<T> = { ok: true; data: T } | { ok: false; error: OwnErrorCode };
 const fail = (error: OwnErrorCode) => ({ ok: false as const, error });
 
@@ -114,7 +119,8 @@ export const mockOwn = {
       const coin = mockCoins().find((c) => c.kernel.toLowerCase() === kernel);
       if (!coin || coin.agentId !== input.target.agentId) return fail('unknown_coin');
       if (input.creator.toLowerCase() === MOCK_WALLET_WITHOUT_COINS) return fail('not_creator');
-      if (mockOwn.clients(coin.kernel).clients.length >= OWN_DEFAULTS.OWN_CLIENTS_PER_AGENT) return fail('too_many_clients');
+      const taken = mockOwn.clients(coin.kernel, now);
+      if (taken.clients.length + (taken.waiting?.length ?? 0) >= OWN_DEFAULTS.OWN_CLIENTS_PER_AGENT) return fail('too_many_clients');
       target = { kind: 'coin', coin };
     } else {
       target = { kind: 'draft', draftId: input.target.draftId };
@@ -122,7 +128,7 @@ export const mockOwn = {
     const name = label(input.label, view.data.clientName);
     const grant = state.grants.get(input.userCode);
     // The fixed codes stay as they are: an approval of one answers and changes nothing.
-    if (grant) Object.assign(grant, { status: 'approved', target, label: name });
+    if (grant) Object.assign(grant, { status: 'approved', target, label: name, approvedAt: now });
     return { ok: true, data: { ok: true, target, label: name } };
   },
 
@@ -160,17 +166,25 @@ export const mockOwn = {
     return { connected: clients.length > 0, clients };
   },
 
-  clients(kernel: string): ClientsResponse {
+  clients(kernel: string, now = Date.now()): ClientsResponse {
     const k = kernel.toLowerCase();
     const clients = state.clients.filter((c) => !c.revoked && c.kernel === k).map(({ clientId, label: l, createdAt, lastUsedAt, expiresAt }) => ({ clientId, label: l, createdAt, lastUsedAt, expiresAt }));
-    return { clients, max: OWN_DEFAULTS.OWN_CLIENTS_PER_AGENT };
+    const waiting = approvedFor(k, now).map((x) => ({ userCode: x.userCode, label: x.label ?? x.clientName, approvedAt: iso(x.approvedAt ?? now), expiresAt: iso(x.expiresAt) }));
+    return { clients, max: OWN_DEFAULTS.OWN_CLIENTS_PER_AGENT, waiting };
   },
 
-  revoke(kernel: string, input: { clientId?: string; all?: boolean }): MockOwnResult<ClientsResponse> {
+  revoke(kernel: string, input: { clientId?: string; userCode?: string; all?: boolean }, now = Date.now()): MockOwnResult<ClientsResponse> {
     const k = kernel.toLowerCase();
     const live = state.clients.filter((c) => !c.revoked && c.kernel === k);
-    if (input.all === true) for (const c of live) c.revoked = true;
-    else {
+    if (input.all === true) {
+      for (const x of approvedFor(k, now)) state.grants.delete(x.userCode);
+      for (const c of live) c.revoked = true;
+    } else if (input.userCode !== undefined) {
+      // An approval no client has collected yet: gone, so the client's next poll finds no such request.
+      const one = approvedFor(k, now).find((x) => x.userCode === input.userCode);
+      if (!one) return fail('client_not_found');
+      state.grants.delete(one.userCode);
+    } else {
       const one = live.find((c) => c.clientId === input.clientId);
       if (!one) return fail('client_not_found');
       one.revoked = true;

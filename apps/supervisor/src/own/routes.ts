@@ -189,10 +189,10 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
 
   app.get(
     '/internal/agents/:id/clients',
-    answer(async (c) => listClients(ctx, (await agentOf(c)).agentId)),
+    answer(async (c) => listClients(ctx, await agentOf(c))),
   );
 
-  /** Body `{ by, clientId }` or `{ by, all: true }`; `by` is the address of the console's signed session and must be the coin's creator. */
+  /** Body `{ by, clientId }`, `{ by, userCode }` (an approval not yet collected) or `{ by, all: true }`; `by` is the address of the console's signed session and must be the coin's creator. */
   app.post(
     '/internal/agents/:id/clients/revoke',
     answer(async (c) => {
@@ -200,7 +200,7 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
       const revoked = await revokeClients(ctx, agent, await bodyOf(c));
       // A revoked credential is refused on its next call; the turn it had open is closed now.
       await closeTurnOfClients(ctx, agent, revoked);
-      return listClients(ctx, agent.agentId);
+      return listClients(ctx, agent);
     }),
   );
 }

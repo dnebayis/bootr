@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { ClientsResponse, ClientView, Runner, RunnerSwitchResponse } from '@bootr/shared/own-agent';
+import { USER_CODE_RE, type ClientsResponse, type ClientView, type Runner, type RunnerSwitchResponse, type WaitingApprovalView } from '@bootr/shared/own-agent';
 import type { Address } from 'viem';
 import { ago } from '@/lib/format';
 import { useNow } from '@/lib/hooks';
@@ -35,9 +35,18 @@ async function consolePost<T>(kernel: string, path: string, body: Record<string,
   return (await res.json()) as T;
 }
 
-function sanitizeClients(raw: Partial<ClientsResponse> | null | undefined): ClientsResponse {
+function sanitizeClients(raw: Partial<ClientsResponse> | null | undefined): ClientsResponse & { waiting: WaitingApprovalView[] } {
   const clients = (Array.isArray(raw?.clients) ? raw.clients : []).filter((c): c is ClientView => !!c && typeof c.clientId === 'string' && typeof c.label === 'string');
-  return { clients, max: typeof raw?.max === 'number' && raw.max > 0 ? raw.max : 3 };
+  // Approvals the creator signed that no client has collected yet: absent from a server that does not list them.
+  const waiting = (Array.isArray(raw?.waiting) ? raw.waiting : []).filter((w): w is WaitingApprovalView => !!w && typeof w.userCode === 'string' && USER_CODE_RE.test(w.userCode) && typeof w.label === 'string');
+  return { clients, max: typeof raw?.max === 'number' && raw.max > 0 ? raw.max : 3, waiting };
+}
+
+/** "in 7 min", for an approval that runs out soon (`nowMs` is 0 before the clock has ticked). */
+function minutesLeft(expiresAt: string, nowMs: number): string {
+  const left = Date.parse(expiresAt) - nowMs;
+  if (!nowMs || !Number.isFinite(left)) return 'within 10 min';
+  return left <= 60_000 ? 'in under a minute' : `in ${Math.ceil(left / 60_000)} min`;
 }
 
 function usdcTotal(agent: Agent | null): number | null {
@@ -110,6 +119,8 @@ export function AgentRunnerCard({ token, agent, config, ownOffered }: { token: T
     retry: false,
   });
   const clients = clientsQuery.data ?? null;
+  // Approvals not yet collected, less the ones whose ten minutes have passed since the list was read.
+  const waiting = (clients?.waiting ?? []).filter((w) => !now || Date.parse(w.expiresAt) > now);
   const clientsUnavailable = clientsQuery.isError;
   const setClients = (next: ClientsResponse) => queryClient.setQueryData(clientsKey, next);
 
@@ -127,18 +138,22 @@ export function AgentRunnerCard({ token, agent, config, ownOffered }: { token: T
     }
   };
 
-  const disconnect = async (target: { clientId: string } | { all: true }) => {
+  const disconnect = async (target: { clientId: string } | { userCode: string } | { all: true }) => {
     const auth = await session.auth();
     if (!auth) return;
-    setBusyClient('clientId' in target ? target.clientId : 'all');
+    setBusyClient('clientId' in target ? target.clientId : 'userCode' in target ? target.userCode : 'all');
     try {
       const res = await consolePost<WithToken<ClientsResponse>>(token.kernel, 'clients/revoke', { ...auth, ...target });
       session.keep(res.token);
       setClients(sanitizeClients(res));
       void queryClient.invalidateQueries({ queryKey: qk.agentConfig(token.kernel) });
-      toast.success('all' in target ? 'Every client was disconnected.' : 'Client disconnected. It cannot act for this coin any more.');
+      toast.success('all' in target ? 'Every client was disconnected, and no approval is left to collect.' : 'userCode' in target ? 'Approval cancelled. No client can collect it.' : 'Client disconnected. It cannot act for this coin any more.');
     } catch (err) {
-      if (!expired(err)) toast.error(err instanceof Error ? err.message : 'Could not disconnect that client.');
+      if (expired(err)) return;
+      // An approval that was collected or ran out a moment ago is no longer there to cancel: the list is read again.
+      const gone = 'userCode' in target && err instanceof ReviewError && err.code === 'client_not_found';
+      if (gone) void queryClient.invalidateQueries({ queryKey: clientsKey });
+      toast.error(gone ? 'That approval was already collected or ran out. Check the list of clients.' : err instanceof Error ? err.message : 'Could not disconnect that client.');
     } finally {
       setBusyClient(null);
     }
@@ -257,7 +272,29 @@ export function AgentRunnerCard({ token, agent, config, ownOffered }: { token: T
                 <span className="text-micro text-mute">One wallet signature opens the console.</span>
               </div>
             )}
-            {clients && clients.clients.length > 1 ? (
+            {/* An approval the creator signed is as good as a client until it is collected or runs out: shown, and cancellable. */}
+            {waiting.length > 0 ? (
+              <div className="mt-3" data-testid="runner-waiting">
+                <h4 className="mb-1.5 text-caption font-medium text-ink">Approved, waiting for the client to collect</h4>
+                <ul className="divide-y divide-hairline rounded-sm border border-hairline">
+                  {waiting.map((w) => (
+                    <li key={w.userCode} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2" data-testid="runner-waiting-approval" data-user-code={w.userCode}>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm text-ink">{w.label}</span>
+                        <span className="block text-micro text-mute">
+                          code <span className="font-mono">{w.userCode}</span> · approved {ago(unix(w.approvedAt))} · runs out {minutesLeft(w.expiresAt, now)}
+                        </span>
+                      </span>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => void disconnect({ userCode: w.userCode })} loading={busyClient === w.userCode} loadingLabel="Cancelling…" disabled={busyClient !== null}>
+                        Cancel
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1.5 text-micro text-mute">If you did not approve this for your own client just now, cancel it.</p>
+              </div>
+            ) : null}
+            {clients && clients.clients.length + waiting.length > 1 ? (
               <Button type="button" variant="ghost" size="sm" className="mt-2" onClick={() => void disconnect({ all: true })} loading={busyClient === 'all'} loadingLabel="Disconnecting…" disabled={busyClient !== null} data-testid="runner-disconnect-all">
                 Disconnect all
               </Button>

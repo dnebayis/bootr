@@ -259,7 +259,7 @@ export class FakeOwnBackend {
       throw new OwnError('invalid_request', { field: 'target' });
     }
     const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 40) : grant.clientName;
-    Object.assign(grant, { status: 'approved', target, creator, label });
+    Object.assign(grant, { status: 'approved', target, creator, label, approvedAt: this.now() });
     return { ok: true, target, label };
   }
 
@@ -318,14 +318,26 @@ export class FakeOwnBackend {
     return { clientId: c.clientId, label: c.label, createdAt: iso(c.createdAt), lastUsedAt: c.lastUsedAt ? iso(c.lastUsedAt) : null, expiresAt: iso(c.expiresAt) };
   }
 
+  /** Approvals for the coin that no client has collected yet. */
+  waitingFor(agentId) {
+    return [...this.grants.values()].filter((g) => g.status === 'approved' && g.expiresAt > this.now() && g.target?.kind === 'coin' && g.target.coin.agentId === agentId);
+  }
+
   clientsOf(agentId) {
-    return { clients: this.liveClients(agentId).map((c) => this.clientView(c)), max: this.maxClients };
+    const waiting = this.waitingFor(agentId).map((g) => ({ userCode: g.userCode, label: g.label ?? g.clientName, approvedAt: iso(g.approvedAt ?? this.now()), expiresAt: iso(g.expiresAt) }));
+    return { clients: this.liveClients(agentId).map((c) => this.clientView(c)), max: this.maxClients, waiting };
   }
 
   revokeClients(agentId, body) {
     const live = this.liveClients(agentId);
-    if (body.all === true) for (const c of live) c.revokedAt = this.now();
-    else {
+    if (body.all === true) {
+      for (const g of this.waitingFor(agentId)) this.grants.delete(g.userCode);
+      for (const c of live) c.revokedAt = this.now();
+    } else if (body.userCode !== undefined) {
+      const one = this.waitingFor(agentId).find((g) => g.userCode === body.userCode);
+      if (!one) throw new OwnError('client_not_found');
+      this.grants.delete(one.userCode);
+    } else {
       const one = live.find((c) => c.clientId === body.clientId);
       if (!one) throw new OwnError('client_not_found');
       one.revokedAt = this.now();
