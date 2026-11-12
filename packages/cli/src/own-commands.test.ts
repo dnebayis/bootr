@@ -303,18 +303,35 @@ describe('bootr own watch', () => {
     await connected();
     exitCode = 3;
     let calls = 0;
+    let again = '';
     onSleep = () => {
       calls += 1;
-      if (calls === 1) site.backend.failNext('rate_limited', { retryAt: new Date(clock + 45_000).toISOString() });
+      if (calls === 1) {
+        again = new Date(clock + 45_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+        site.backend.failNext('rate_limited', { retryAt: new Date(clock + 45_000).toISOString() });
+      }
       if (calls === 3) throw new Error('stop the watch');
     };
     await expect(own('watch', '--exec', './run-agent.sh')).rejects.toThrow('stop the watch');
     // Run, wait 20 seconds, be told to wait 45 more, run again.
     expect(ran).toHaveLength(2);
     expect(notices.join('\n')).toContain('exit code 3');
-    expect(notices.join('\n')).toContain('rate_limited: looking again later.');
+    // The line says when it looks again, not just "later".
+    expect(notices).toContain(`rate_limited: looking again in 45 seconds, at ${again}.`);
     expect(sleeps[0]).toBe(20_000);
     expect(sleeps[1]).toBe(45_000);
+  });
+
+  it('says when it looks again after an answer that names no time: in a minute', async () => {
+    await connected();
+    const started = clock;
+    site.backend.failNext('supervisor_unavailable');
+    onSleep = () => {
+      throw new Error('stop the watch');
+    };
+    await expect(own('watch', '--exec', 'true')).rejects.toThrow('stop the watch');
+    expect(notices.at(-1)).toBe(`supervisor_unavailable: looking again in 60 seconds, at ${new Date(started + 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z')}.`);
+    expect(ran).toHaveLength(0);
   });
 
   it('takes up an open turn, needs a command and a connection', async () => {

@@ -187,6 +187,13 @@ function waitUntil(at: unknown, now: number): number {
   return Math.min(Math.max(Number.isFinite(t) ? t - now : MIN_WAIT_MS, MIN_WAIT_MS), MAX_WAIT_MS);
 }
 
+/** "in 45 seconds, at 2026-11-13T10:21:30Z": how long a wait is and when it ends, for a line the person reads. */
+function whenText(waitMs: number, now: number): string {
+  const seconds = Math.round(waitMs / 1000);
+  const at = new Date(now + waitMs).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return `in ${seconds >= 120 ? `${Math.round(seconds / 60)} minutes` : `${seconds} seconds`}, at ${at}`;
+}
+
 async function watch(bootr: Bootr, values: { coin?: string; exec?: string; once?: boolean }, env: Record<string, string | undefined>, io: OwnIo) {
   const command = values.exec?.trim();
   if (!command) throw new OwnUsageError('watch needs --exec "<command>": what to run when something is due.');
@@ -203,8 +210,9 @@ async function watch(bootr: Bootr, values: { coin?: string; exec?: string; once?
       view = await bootr.ownDue({ credential: held.credential });
     } catch (err) {
       if (!(err instanceof BootrApiError) || !['rate_limited', 'runtime_busy', 'unreachable', 'supervisor_unavailable', 'bad_response'].includes(err.code)) throw err;
-      io.notice(`${err.code}: looking again later.`);
-      await io.sleep(err.details.retryAt ? waitUntil(err.details.retryAt, io.now()) : RETRY_WAIT_MS);
+      const wait = err.details.retryAt ? waitUntil(err.details.retryAt, io.now()) : RETRY_WAIT_MS;
+      io.notice(`${err.code}: looking again ${whenText(wait, io.now())}.`);
+      await io.sleep(wait);
       continue;
     }
     const roles = dueRoles(view);
