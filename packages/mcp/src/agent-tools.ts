@@ -200,7 +200,8 @@ export class AgentConnection {
 
   constructor(
     private readonly bootr: Bootr,
-    private readonly log: (line: string) => void = (line) => console.error(line),
+    // stderr is read by a person, and a line can carry words from the site (a label, a coin): cleaned like a result.
+    private readonly log: (line: string) => void = (line) => console.error(clean(line)),
   ) {}
 
   /** The connection a call uses: the one its turn was opened with, else the one for `coin`, else the only one. */
@@ -235,7 +236,8 @@ export class AgentConnection {
       try {
         const answered = await this.bootr.connectToken(p.deviceCode);
         if (answered.status !== 'approved') return;
-        const entry = { credential: answered.credential, clientId: answered.clientId, label: answered.label, target: answered.target, expiresAt: answered.expiresAt };
+        // The label is words from the site: kept as they would be shown, with nothing hidden in them.
+        const entry = { credential: answered.credential, clientId: answered.clientId, label: clean(String(answered.label ?? '')), target: answered.target, expiresAt: answered.expiresAt };
         // The approval must be for the coin that was asked for. One for another coin (the creator chose, or was talked
         // into choosing, a different one on the approval page) is ended at once and never stored.
         if (!targetMatches(p.asked, entry.target, p.bound)) {

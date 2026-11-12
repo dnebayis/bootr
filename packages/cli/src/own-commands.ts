@@ -5,6 +5,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   BootrApiError,
+  cleanText,
   coinLine,
   createBootr,
   CREDENTIAL_PREFIX,
@@ -153,7 +154,8 @@ async function connect(bootr: Bootr, values: { coin?: string; label?: string }, 
       throw err;
     }
     if (answered.status !== 'approved') continue;
-    const entry = { credential: answered.credential, clientId: answered.clientId, label: answered.label, target: answered.target, expiresAt: answered.expiresAt, savedAt: new Date(io.now()).toISOString() };
+    // The label is words from the site: kept as they would be shown, with nothing hidden in them.
+    const entry = { credential: answered.credential, clientId: answered.clientId, label: cleanText(String(answered.label ?? '')), target: answered.target, expiresAt: answered.expiresAt, savedAt: new Date(io.now()).toISOString() };
     // The approval must be for the coin --coin named. One for another coin is ended at once and never stored.
     if (!targetMatches(values.coin, entry.target, bound)) {
       await bootr.ownDisconnect({ credential: entry.credential }).catch(() => undefined);
@@ -233,7 +235,9 @@ export async function runOwn(argv: string[], env: Record<string, string | undefi
   if (rest.length > 0) throw new OwnUsageError(`own ${command} takes no further words. Quote the command of --exec.`);
   const site = values.site ?? env.BOOTR_SITE_URL;
   const bootr = createBootr({ ...(site ? { siteUrl: site } : {}), ...(env.BOOTR_CREDENTIALS_FILE ? { credentialsFile: env.BOOTR_CREDENTIALS_FILE } : {}) });
-  const all: OwnIo = { ...defaultIo, ...io };
+  const given: OwnIo = { ...defaultIo, ...io };
+  // A line for the person can carry words from the site (a coin's name, an error): cleaned like everything printed.
+  const all: OwnIo = { ...given, notice: (text) => given.notice(cleanText(text)) };
   const which = values.coin ? { coin: values.coin } : {};
   switch (command) {
     case 'connect':

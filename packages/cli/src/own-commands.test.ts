@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { listCredentials, saveCredential } from '@bootrfun/sdk';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COIN, SECOND_COIN, startFakeSite, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
+import { COIN, HIDDEN_CHARS, hide, SECOND_COIN, startFakeSite, TAG_SENTENCE, type FakeSite } from '../../mcp/test/fake-supervisor.mjs';
 import { run } from './commands.js';
 import { OWN_USAGE, runOwn, type OwnIo } from './own-commands.js';
 
@@ -165,6 +165,25 @@ describe('bootr own connect', () => {
       if (grant!.status === 'pending') toFox(grant!.userCode);
     };
     expect((await own('connect')).notice).toContain(`Connected to $FOX (treasury address ${SECOND_COIN.kernel}).`);
+  });
+
+  it('keeps and prints the site’s words with nothing hidden in them (security review M3 and L6)', async () => {
+    onSleep = () => {
+      approveAll();
+      // What the creator called this client reaches this machine from the site.
+      for (const grant of site.backend.grants.values()) grant.label = hide('Desk machine');
+    };
+    const out = await own('connect', '--coin', 'OWL');
+    expect((out.data as { label: string }).label).toBe('Desk machine');
+    expect((await stored())[0]!.label).toBe('Desk machine');
+    // A line for the person that carries a word of the site's (here the role of an open turn) is cleaned on its way to stderr.
+    site.backend.due.social = false;
+    site.backend.turn = { turnId: `otn_${'1'.repeat(32)}`, role: hide('social'), clientId: 'x', reasons: [], stepsUsed: 2, stepBudget: 8, expiresAt: Date.now() + 600_000 };
+    await own('watch', '--exec', 'true', '--once');
+    expect(notices.join('\n')).toContain('Due: an open social turn. Running your command.');
+    const printed = JSON.stringify([out, notices]) + notices.join('\n');
+    for (const [name, char] of Object.entries(HIDDEN_CHARS)) expect([name, printed.includes(char)]).toEqual([name, false]);
+    for (const char of TAG_SENTENCE) expect(printed).not.toContain(char);
   });
 
   it('gives up when nobody approves in time, and saves nothing', async () => {

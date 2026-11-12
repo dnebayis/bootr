@@ -10,6 +10,7 @@ export {
   type OwnCallOptions,
   type RouteParams,
 } from './client.js';
+export { clean, cleanText } from './clean.js';
 export {
   coinKey,
   coinLine,
