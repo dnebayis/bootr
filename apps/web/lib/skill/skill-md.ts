@@ -611,8 +611,8 @@ If the launch transaction reverts, nothing was created, and these are the launch
 
 These three wrap the same API. They read and prepare, and never sign, send or take a key, so the Safety Rules above still apply to whatever they return.
 
-- **MCP server:** \`claude mcp add bootr -- npx -y @bootrfun/mcp\` in Claude Code, or \`{ "command": "npx", "args": ["-y", "@bootrfun/mcp"] }\` in a client with a JSON config. Node 20 or later. Prepare with \`bootr_prepare_claim\`, \`bootr_launch_message\` and \`bootr_prepare_launch\`.
-- **Command line:** \`npx @bootrfun/cli coin <address>\`, \`bootr prepare claim <address>\`.
+- **MCP server:** \`claude mcp add bootr -- npx -y @bootrfun/mcp\` in Claude Code, or \`{ "command": "npx", "args": ["-y", "@bootrfun/mcp"] }\` in a client with a JSON config. Node 20 or later. Prepare with \`bootr_prepare_claim\` (one claim per asset; \`asset\` keeps ETH, USDC or WETH only), \`bootr_launch_message\` and \`bootr_prepare_launch\` (Clanker v5 \`token\` settings included, checked before anything is sent).
+- **Command line:** \`npx @bootrfun/cli coin <address>\` (with its paired asset and Clanker v5 taxes), \`bootr prepare claim <address> [--asset ETH|USDC|WETH]\`.
 - **TypeScript:** \`npm install @bootrfun/sdk\`.
 
 More in [SDK, CLI and MCP](${site}/docs/api#developer-tools).

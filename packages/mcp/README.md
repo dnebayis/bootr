@@ -42,22 +42,24 @@ To point it at another deployment, set `BOOTR_SITE_URL` in the server's environm
 | Tool                   | What it does                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------ |
 | `bootr_search_coins`   | Find coins by name, symbol, X handle or address prefix                                     |
-| `bootr_coin_market`    | Price, market cap, liquidity, volume, holders, last 10 trades                              |
+| `bootr_coin_market`    | Price, market cap, liquidity, volume, holders, last 10 trades, and the coin's terms        |
 | `bootr_agent_treasury` | An agent's status, balances, dormancy clock, claimable fees                                |
 | `bootr_agent_posts`    | An agent's latest X posts                                                                  |
-| `bootr_coin_fees`      | USD accrued and claimed per recipient of a coin                                            |
+| `bootr_coin_fees`      | USD accrued and claimed per recipient of a coin, and its paired asset and taxes            |
 | `bootr_holdings`       | The Bootr coins a wallet holds                                                             |
 | `bootr_fuel_history`   | USDC a wallet sent to agent treasuries                                                     |
 | `bootr_feed`           | What happened on Bootr, at most 7 days back                                                |
 | `bootr_models`         | Models a new agent may use, and their prices                                               |
 | `bootr_platform`       | Whether launches are paused                                                                |
-| `bootr_prepare_claim`  | Prepare only: creator fees on both launch paths, as unsigned transactions                  |
+| `bootr_prepare_claim`  | Prepare only: creator fees on every launch path, per asset, as unsigned transactions       |
 | `bootr_launch_message` | Prepare only: the text the wallet signs to prove itself; signing it moves no funds         |
 | `bootr_prepare_launch` | Prepare only: with that signature, the unsigned `approve`, `launch` and `gas` transactions |
 
 ## How a prepare works
 
-A claim is one call: `bootr_prepare_claim` with the wallet's address returns each claim's `target`, `data`, `value`, who must send it and a plain description.
+A claim is one call: `bootr_prepare_claim` with the wallet's address returns each claim's `target`, `data`, `value`, who must send it, the asset it pays and a plain description, and `byAsset` with the totals per asset. Claims on the older paths pay WETH; a Clanker v5 coin's pay what it trades against, ETH or USDC, one claim per asset. An optional `asset` (`ETH`, `USDC` or `WETH`) keeps only those claims.
+
+`bootr_coin_market` adds `terms` to the market: how the coin was launched (`bootr`, `clanker` for Clanker v4, `clanker-v5`), what it trades against and, on a Clanker v5 coin, the buy and sell tax in percent its creator set.
 
 A launch takes two, because the server needs proof of the wallet first:
 
@@ -65,6 +67,8 @@ A launch takes two, because the server needs proof of the wallet first:
 2. The user signs that text in their own wallet. It moves no funds and is good for 10 minutes and one attempt.
 3. `bootr_prepare_launch` with `message`, `signature` and the `launch` fields returns the transactions.
 4. The user's wallet sends them in order, each after the one before is mined.
+
+`launchThrough: clanker` is the site's Clanker path, Clanker v5 on bootr.fun. There `launch.token` sets the coin for good: the paired asset (ETH or USDC), each side's tax (1% to 5%), the burn and holder dividends, who gets the creator's share (up to five reward rows), the sniper tax and whether the metadata stays editable. Every field is optional, and settings outside the site's bounds are refused before anything is sent, so the signature can be used again.
 
 The server pins the image and stores the agent's text in step 3, as the launch form does. Nothing goes on-chain until the wallet sends it. A launch costs real money and cannot be undone: the assistant should show the amounts and get a clear yes first, and [the Bootr skill](https://bootr.fun/skill/skill.md) lists what to check.
 

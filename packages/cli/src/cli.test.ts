@@ -13,14 +13,24 @@ vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const BIN = path.resolve(import.meta.dirname, '../dist/cli.js');
 const OWNER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const KEY = `0x${'ab'.repeat(32)}`;
+const WETH = '0x4200000000000000000000000000000000000006';
+const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const CLAIM = {
   target: OWNER,
   data: '0x12',
   value: '0',
   path: 'clanker',
+  asset: WETH,
   amountWei: '5',
   sendFrom: null,
   description: 'Pays WETH.',
+};
+const USDC_CLAIM = {
+  ...CLAIM,
+  path: 'clanker-v5',
+  asset: USDC,
+  amountWei: '2500000',
+  description: 'Pays 2.5 USDC.',
 };
 
 let server: Server;
@@ -74,10 +84,14 @@ beforeAll(async () => {
       if (url.startsWith('/api/agent/claim/'))
         return send(200, {
           address: OWNER,
-          asset: '0x42',
+          asset: WETH,
           totalWei: '5',
-          coins: { bootr: [], clanker: [] },
-          claims: [CLAIM],
+          coins: {
+            bootr: [],
+            clanker: [],
+            clankerV5: [{ token: OWNER, symbol: 'CC', pairedAsset: 'USDC' }],
+          },
+          claims: [CLAIM, USDC_CLAIM],
           note: 'Nothing was signed or sent.',
         });
       if (url === '/api/agent/nonce')
@@ -88,7 +102,16 @@ beforeAll(async () => {
           chainId: 8453,
           transactions: [{ step: 'approve', to: OWNER, data: '0x', value: '0', note: '' }],
         });
-      if (url.startsWith('/market/')) return send(200, { symbol: 'AA' });
+      if (url.startsWith('/market/'))
+        return send(200, {
+          symbol: 'AA',
+          source: 'clanker-v5',
+          pairedToken: USDC,
+          pairedSymbol: 'USDC',
+          buyTaxBps: 20000,
+          sellTaxBps: 30000,
+          antiSnipe: false,
+        });
       if (url.startsWith('/search')) return send(200, [{ symbol: 'BB' }]);
       if (url.startsWith('/treasury/')) return send(404, { error: 'not_found' });
       if (url.startsWith('/platform/feed')) return send(200, { launches: [] });
@@ -118,8 +141,17 @@ async function bootr(...args: string[]): Promise<{ code: number; stdout: string;
 }
 
 describe('read commands', () => {
-  it('coin takes an address or a search', async () => {
-    expect(JSON.parse((await bootr('coin', OWNER)).stdout)).toEqual({ symbol: 'AA' });
+  it('coin takes an address or a search, and states a coin’s terms', async () => {
+    expect(JSON.parse((await bootr('coin', OWNER)).stdout)).toMatchObject({
+      symbol: 'AA',
+      terms: {
+        source: 'clanker-v5',
+        pairedAsset: 'USDC',
+        buyTaxPct: 2,
+        sellTaxPct: 3,
+        sniperTax: false,
+      },
+    });
     expect(JSON.parse((await bootr('coin', 'quiet', 'engine')).stdout)).toEqual([{ symbol: 'BB' }]);
     expect(seen.at(-1)!.url).toBe('/search?q=quiet+engine');
   });
@@ -133,9 +165,25 @@ describe('read commands', () => {
     expect(seen.at(-1)!.url).toBe(`/token/${OWNER.toLowerCase()}/fees`);
   });
 
-  it('fees shows amounts without calldata', async () => {
-    const out = JSON.parse((await bootr('fees', OWNER)).stdout) as { claims: object[] };
-    expect(out.claims).toEqual([{ path: 'clanker', amountWei: '5', sendFrom: null }]);
+  it('fees shows amounts per asset, without calldata', async () => {
+    const out = JSON.parse((await bootr('fees', OWNER)).stdout) as { byAsset: object[] };
+    expect(out.byAsset).toEqual([
+      {
+        asset: WETH,
+        symbol: 'WETH',
+        amount: '5',
+        amountText: '0.000000000000000005',
+        claims: [{ path: 'clanker', amountWei: '5', sendFrom: null }],
+      },
+      {
+        asset: USDC,
+        symbol: 'USDC',
+        amount: '2500000',
+        amountText: '2.5',
+        claims: [{ path: 'clanker-v5', amountWei: '2500000', sendFrom: null }],
+      },
+    ]);
+    expect(JSON.stringify(out)).not.toContain('0x12');
   });
 
   it('reports a refusal on stderr with exit code 1', async () => {
@@ -151,8 +199,18 @@ describe('prepare commands', () => {
   it('prints the unsigned claim and says nothing was sent', async () => {
     const { code, stdout, stderr } = await bootr('prepare', 'claim', OWNER);
     expect(code).toBe(0);
-    expect((JSON.parse(stdout) as { claims: object[] }).claims).toEqual([CLAIM]);
+    expect((JSON.parse(stdout) as { claims: object[] }).claims).toEqual([CLAIM, USDC_CLAIM]);
     expect(stderr).toContain('Nothing was signed or sent');
+  });
+
+  it('keeps only the claims paying one asset', async () => {
+    const usdc = await bootr('prepare', 'claim', OWNER, '--asset', 'usdc');
+    expect((JSON.parse(usdc.stdout) as { claims: object[] }).claims).toEqual([USDC_CLAIM]);
+    expect(JSON.parse(usdc.stdout)).toMatchObject({ totalWei: '0' });
+    const eth = await bootr('prepare', 'claim', OWNER, '--asset', 'ETH');
+    expect((JSON.parse(eth.stdout) as { claims: object[] }).claims).toEqual([]);
+    expect(eth.stderr).toContain('Nothing is waiting to be claimed in ETH');
+    expect(await bootr('prepare', 'claim', OWNER, '--asset', 'DAI')).toMatchObject({ code: 2 });
   });
 
   it('builds a launch from a spec, a signed message and a local image', async () => {
@@ -196,6 +254,43 @@ describe('prepare commands', () => {
     expect(sent.launch.image.dataUrl).toBe(
       `data:image/png;base64,${Buffer.from('png-bytes').toString('base64')}`,
     );
+  });
+});
+
+describe('Clanker v5 launches', () => {
+  it('checks the token settings before sending, so the signed message stays unused', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'bootr-cli-'));
+    const { stdout } = await bootr('prepare', 'launch-message', OWNER);
+    await writeFile(
+      path.join(dir, 'message.txt'),
+      (JSON.parse(stdout) as { message: string }).message,
+    );
+    await writeFile(
+      path.join(dir, 'launch.json'),
+      JSON.stringify({
+        name: 'A',
+        symbol: 'AA',
+        identity: 'x'.repeat(20),
+        image: { url: 'https://x/a.png' },
+        launchThrough: 'clanker',
+        token: { pairedAsset: 'USDC', buyTaxPct: 6 },
+      }),
+    );
+    const before = seen.length;
+    const out = await bootr(
+      'prepare',
+      'launch',
+      '--spec',
+      path.join(dir, 'launch.json'),
+      '--message',
+      path.join(dir, 'message.txt'),
+      '--signature',
+      '0xabcd',
+    );
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain('invalid_request: Buy tax must be 1% to 5%');
+    expect(out.stderr).toContain('signed message is still unused');
+    expect(seen.length).toBe(before);
   });
 });
 
