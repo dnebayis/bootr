@@ -1,6 +1,7 @@
 import { getAddress, isAddress, isAddressEqual, type Address, type Hex } from 'viem';
 import { createSiweMessage, parseSiweMessage } from 'viem/siwe';
 import { pathParams, ROUTES, type RouteName } from './routes.js';
+import { launchProblem } from './token-settings.js';
 import type {
   AgentPosts,
   Catalog,
@@ -236,7 +237,10 @@ export class Bootr {
     return this.call('search', { q });
   }
 
-  /** USD accrued and claimed per recipient kind for one coin. */
+  /**
+   * USD accrued and claimed per recipient kind for one coin. On Clanker v5 it also names the paired asset the fees are
+   * paid in, each side's tax and the holder dividends.
+   */
   async coinFees(token: string): Promise<CoinFees> {
     return this.call('coinFees', { id: requireAddress(token, 'token') });
   }
@@ -261,7 +265,10 @@ export class Bootr {
 
   // ---------------- Prepare: nothing below signs or sends ----------------
 
-  /** The creator fees waiting for `address` on both launch paths, as unsigned transactions. */
+  /**
+   * The creator fees waiting for `address` on every launch path, as unsigned transactions: one claim per locker and
+   * asset (WETH on the older paths; on Clanker v5 the coins' paired asset, ETH or USDC). `claimsByAsset` groups them.
+   */
   async prepareClaim(address: string): Promise<PreparedClaims> {
     return this.call('claim', { address: requireAddress(address, 'address') });
   }
@@ -295,12 +302,26 @@ export class Bootr {
   /**
    * Step two: with the wallet's signature of that message, the server pins the image, stores the agent's text and
    * answers with the transactions the wallet must send, in order. Refuses an answer that names another wallet or chain.
+   *
+   * The Clanker v5 fields (`launchThrough`, `token`, `devBuySlippagePct`) are checked here first, with the site's own
+   * bounds and messages, so a mistake there sends nothing and leaves the signed message unused.
    */
   async prepareLaunch(input: {
     message: string;
     signature: Hex;
     launch: LaunchInput;
   }): Promise<PreparedLaunch> {
+    const signer = parseSiweMessage(input.message).address;
+    if (signer && input.launch && typeof input.launch === 'object') {
+      const problem = launchProblem(input.launch, signer);
+      if (problem)
+        throw new BootrApiError(
+          `${problem.message} Nothing was sent, so the signed message is still unused.`,
+          'invalid_request',
+          null,
+          { field: problem.field },
+        );
+    }
     const prepared = await this.call<PreparedLaunch>(
       'launch',
       {},

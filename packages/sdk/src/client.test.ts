@@ -181,6 +181,48 @@ describe('launch', () => {
     expect(JSON.parse(String(init!.body))).toEqual({ message, signature, launch });
   });
 
+  it('sends a Clanker v5 launch with its token settings as given', async () => {
+    const { bootr, fetchMock } = client(answer({ launchThrough: 'clanker-v5' }));
+    const { message } = await bootr.launchMessage(account.address);
+    const signature = await account.signMessage({ message });
+    const v5 = {
+      ...launch,
+      launchThrough: 'clanker' as const,
+      token: { pairedAsset: 'USDC', buyTaxPct: 2, sellTaxPct: '3', burnPct: 10 },
+      devBuySlippagePct: 5,
+    };
+    await expect(bootr.prepareLaunch({ message, signature, launch: v5 })).resolves.toMatchObject({
+      launchThrough: 'clanker-v5',
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls.at(-1)![1]!.body))).toEqual({
+      message,
+      signature,
+      launch: v5,
+    });
+  });
+
+  it('refuses token settings out of the site’s bounds before sending, so the nonce is not spent', async () => {
+    const { bootr, fetchMock } = client(answer({}));
+    const { message } = await bootr.launchMessage(account.address);
+    const signature = await account.signMessage({ message });
+    const before = fetchMock.mock.calls.length;
+    const err = (await bootr
+      .prepareLaunch({
+        message,
+        signature,
+        launch: { ...launch, launchThrough: 'clanker-v5', token: { buyTaxPct: 6 } },
+      })
+      .catch((e: unknown) => e)) as BootrApiError;
+    expect(err).toMatchObject({ code: 'invalid_request', details: { field: 'token.buyTaxPct' } });
+    expect(err.message).toBe(
+      'Buy tax must be 1% to 5%, in steps of 0.01%. Nothing was sent, so the signed message is still unused.',
+    );
+    await expect(
+      bootr.prepareLaunch({ message, signature, launch: { ...launch, token: {} } }),
+    ).rejects.toMatchObject({ details: { field: 'token' } });
+    expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
   it('refuses an answer for another wallet or chain', async () => {
     const { bootr } = client(answer({ creator: OWNER }));
     const { message } = await bootr.launchMessage(account.address);

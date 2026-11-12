@@ -1,6 +1,9 @@
 import {
   BootrApiError,
+  claimsByAsset,
+  coinTerms,
   KEY_REFUSAL,
+  knownAsset,
   looksLikeKey,
   pathParams,
   ROUTES,
@@ -8,6 +11,7 @@ import {
   type Catalog,
   type JsonSchema,
   type LaunchInput,
+  type MarketSnapshot,
   type RouteName,
 } from '@bootrfun/sdk';
 
@@ -42,9 +46,9 @@ export const NOT_SIGNED_NOTICE =
 const MOCK_WARNING =
   'WARNING: this answer comes from a test deployment (mock: true). Do not send anything from it.';
 const LAUNCH_CHECKS =
-  'A launch costs real money and cannot be undone. Before the user signs, show them the name, symbol, launch path, fee preset, fuel, dev buy, gas, launch fee, identity text, links and signing wallet, and get a clear yes. Send approve, then launch, then gas, each after the one before is mined, from the wallet that signed the message, and stop on any failure. Check the addresses against https://bootr.fun/skill/skill.md (Launch Flow, step 4).';
+  'A launch costs real money and cannot be undone. Before the user signs, show them the name, symbol, launch path (launchThrough in the answer), fee preset, fuel, dev buy, gas, launch fee, identity text, links and signing wallet, and on a Clanker v5 coin its token settings from the answer’s token (paired asset, buy and sell tax, burn, holder dividends, reward rows, sniper tax, editable metadata), and get a clear yes. These settings are permanent. Send approve, then launch, then gas, each after the one before is mined, from the wallet that signed the message, and stop on any failure. Check the addresses against https://bootr.fun/skill/skill.md (Launch Flow, step 4).';
 const CLAIM_CHECKS =
-  'Each claim states who must send it (sendFrom; null means any wallet) and what it pays. Show the user the description and amount before they sign. Claims read as empty when nothing is waiting.';
+  'Each claim states who must send it (sendFrom; null means any wallet), what it pays and in which asset: WETH, or for Clanker v5 coins ETH or USDC, whatever the coins trade against. amountWei is in that asset’s own units (6 decimals for USDC); byAsset adds them up per asset. Show the user the description and amount before they sign. Claims read as empty when nothing is waiting.';
 const MESSAGE_STEPS =
   'Nothing was signed or sent. The user signs this exact text with their own wallet: it proves the wallet and moves no funds. It lasts 10 minutes and the first attempt spends it, so get a new one for each try. Then call bootr_prepare_launch with message, signature and launch. Never ask for a private key or seed phrase.';
 
@@ -159,7 +163,32 @@ function launchSchema(catalog: Catalog | null): JsonSchema {
   );
 }
 
-const READS: { name: string; route: RouteName; title: string; description: string }[] = [
+const CLAIM_ASSETS = ['ETH', 'USDC', 'WETH'];
+
+/** The claim route's schema from the catalog, plus the optional asset filter this tool applies to the answer. */
+function claimSchema(catalog: Catalog | null): JsonSchema {
+  const base = routeSchema('claim', catalog) as { properties?: JsonSchema };
+  return {
+    ...base,
+    properties: {
+      ...base.properties,
+      asset: {
+        type: 'string',
+        enum: CLAIM_ASSETS,
+        description: 'Only the claims paying this asset. Leave out for all of them.',
+      },
+    },
+  };
+}
+
+const READS: {
+  name: string;
+  route: RouteName;
+  title: string;
+  description: string;
+  /** Plain-unit fields added to the answer, computed here from the answer itself. */
+  extend?: (data: unknown) => unknown;
+}[] = [
   {
     name: 'bootr_search_coins',
     route: 'search',
@@ -172,14 +201,18 @@ const READS: { name: string; route: RouteName; title: string; description: strin
     route: 'market',
     title: 'Coin market',
     description:
-      'A coin’s price, market cap, liquidity, volume, holders and last 10 trades, by coin or treasury address.',
+      'A coin’s price, market cap, liquidity, volume, holders and last 10 trades, by coin or treasury address. terms says how it was launched (bootr, clanker for Clanker v4, clanker-v5), what it trades against (WETH, or ETH or USDC on Clanker v5) and, on Clanker v5 coins, the buy and sell tax in percent the creator set.',
+    extend: (data) => {
+      const market = data as MarketSnapshot;
+      return market && typeof market === 'object' ? { ...market, terms: coinTerms(market) } : data;
+    },
   },
   {
     name: 'bootr_agent_treasury',
     route: 'treasury',
     title: 'Agent treasury',
     description:
-      'An agent’s status, balances, dormancy clock and claimable fees, by coin or treasury address.',
+      'An agent’s status, balances, dormancy clock and claimable fees, by coin or treasury address. On a Clanker v5 coin the fees are in its paired asset, ETH or USDC.',
   },
   {
     name: 'bootr_agent_posts',
@@ -193,7 +226,7 @@ const READS: { name: string; route: RouteName; title: string; description: strin
     route: 'coinFees',
     title: 'Coin fees',
     description:
-      'USD accrued and claimed per recipient kind (agent, creator, burn, platform) for one coin. A kind answers null when its share cannot be told apart from another held by the same wallet.',
+      'USD accrued and claimed per recipient kind (agent, creator, burn, platform, and recipient for a Clanker v5 coin’s extra reward rows) for one coin. A kind answers null when its share cannot be told apart from another held by the same wallet. On Clanker v5 it also names the paired asset the fees are paid in (pairedSymbol), each side’s tax in millionths of the trade (15000 = 1.5%) and the holder dividends, which holders withdraw themselves.',
   },
   {
     name: 'bootr_holdings',
@@ -230,7 +263,7 @@ const READS: { name: string; route: RouteName; title: string; description: strin
 ];
 
 export function buildTools(catalog: Catalog | null): BootrTool[] {
-  const reads: BootrTool[] = READS.map(({ name, route, title, description }) => ({
+  const reads: BootrTool[] = READS.map(({ name, route, title, description, extend }) => ({
     name,
     title,
     description,
@@ -240,11 +273,8 @@ export function buildTools(catalog: Catalog | null): BootrTool[] {
       if (holdsKey(args))
         return failure(new BootrApiError(KEY_REFUSAL, 'key_refused', null), false);
       try {
-        return answer(
-          DATA_NOTICE,
-          await bootr.call(route, args as Record<string, string | number>),
-          MAX_READ_CHARS,
-        );
+        const data = await bootr.call(route, args as Record<string, string | number>);
+        return answer(DATA_NOTICE, extend ? extend(data) : data, MAX_READ_CHARS);
       } catch (err) {
         return failure(err, false);
       }
@@ -256,19 +286,48 @@ export function buildTools(catalog: Catalog | null): BootrTool[] {
       name: 'bootr_prepare_claim',
       title: 'Prepare a fee claim',
       description:
-        'The creator fees waiting for a wallet on both launch paths, as unsigned transactions: target, data, value and a plain description. It signs and sends nothing.',
-      inputSchema: routeSchema('claim', catalog),
+        'The creator fees waiting for a wallet on every launch path, as unsigned transactions: target, data, value and a plain description, one per asset paid (WETH, and for Clanker v5 coins ETH or USDC). asset keeps only the claims paying ETH, USDC or WETH. It signs and sends nothing.',
+      inputSchema: claimSchema(catalog),
       annotations: READ_ONLY,
       run: async (bootr, args) => {
         if (holdsKey(args))
           return failure(new BootrApiError(KEY_REFUSAL, 'key_refused', null), true);
+        const wanted = typeof args.asset === 'string' ? args.asset.trim().toUpperCase() : null;
+        if (wanted !== null && !CLAIM_ASSETS.includes(wanted))
+          return failure(
+            new BootrApiError('asset must be ETH, USDC or WETH.', 'invalid_request', null, {
+              field: 'asset',
+            }),
+            true,
+          );
         try {
-          const prepared = await bootr.prepareClaim(String(args.address));
+          const all = await bootr.prepareClaim(String(args.address));
+          const kept = all.claims.filter((c) => !wanted || knownAsset(c.asset)?.symbol === wanted);
+          // totalWei stays what the site means by it: the ETH and WETH claims, of those kept.
+          const prepared = wanted
+            ? {
+                ...all,
+                claims: kept,
+                totalWei: kept
+                  .filter((c) => ['ETH', 'WETH'].includes(knownAsset(c.asset)?.symbol ?? ''))
+                  .reduce((sum, c) => sum + BigInt(c.amountWei), 0n)
+                  .toString(),
+              }
+            : all;
+          const byAsset = claimsByAsset(prepared).map(
+            ({ asset, symbol, amount, amountText, claims }) => ({
+              asset,
+              symbol,
+              amount,
+              amountText,
+              claims: claims.length,
+            }),
+          );
           return answer(
             [NOT_SIGNED_NOTICE, CLAIM_CHECKS, prepared.mock ? MOCK_WARNING : '', DATA_NOTICE]
               .filter(Boolean)
               .join(' '),
-            { signed: false, sent: false, ...prepared },
+            { signed: false, sent: false, ...prepared, byAsset },
           );
         } catch (err) {
           return failure(err, true);
@@ -311,7 +370,7 @@ export function buildTools(catalog: Catalog | null): BootrTool[] {
       name: 'bootr_prepare_launch',
       title: 'Prepare a launch',
       description:
-        'Step 2 of preparing a launch: with the message from bootr_launch_message and the user’s wallet signature of it, returns the unsigned transactions (approve, launch, gas) for that wallet to send. The server pins the image and stores the agent’s text; nothing goes on-chain and no funds move. Defaults move money: leaving out fuelUsdc still means 20 USDC, leaving out gasEth 0.001 ETH.',
+        'Step 2 of preparing a launch: with the message from bootr_launch_message and the user’s wallet signature of it, returns the unsigned transactions (approve, launch, gas) for that wallet to send. The server pins the image and stores the agent’s text; nothing goes on-chain and no funds move. Defaults move money: leaving out fuelUsdc still means 20 USDC, leaving out gasEth 0.001 ETH. launchThrough clanker is the site’s Clanker path, Clanker v5 on bootr.fun (the answer’s launchThrough says which). On Clanker v5, launch.token sets the coin for good: pairedAsset (ETH, the default, or USDC: what it trades against and what every fee is paid in), buyTaxPct and sellTaxPct (1 to 5, default 1.5), burnPct and dividendsPct (percent of the tax pool, together at most 65), minDividendHolding, rewards (who gets the creator’s share: up to 5 rows of recipient, admin and pct adding up to 100, the user’s wallet first), sniperTax and editableMetadata (both default true). Every field is optional. Ask the user for each choice rather than picking one; out-of-bounds settings are refused before anything is sent, so the signature can be used again.',
       inputSchema: {
         type: 'object',
         properties: {

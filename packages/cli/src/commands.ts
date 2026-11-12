@@ -3,11 +3,15 @@ import { extname } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   BootrApiError,
+  claimsByAsset,
+  coinTerms,
   createBootr,
   KEY_REFUSAL,
+  knownAsset,
   looksLikeKey,
   type Bootr,
   type LaunchInput,
+  type PreparedClaims,
 } from '@bootrfun/sdk';
 
 /**
@@ -19,20 +23,26 @@ import {
 export const USAGE = `bootr: read Bootr and print unsigned transactions. It never asks for a private key.
 
 Read
-  bootr coin <address|name|symbol>     A coin's market, or the coins matching a search
+  bootr coin <address|name|symbol>     A coin's market with its terms (launch path, paired asset, and on
+                                       Clanker v5 coins the buy and sell tax), or the coins matching a search
   bootr agent <address>                An agent's treasury, by coin or treasury address
   bootr agent --posts <agentId>        An agent's latest posts [--limit 1..10]
   bootr feed [--since <unix seconds>]  What happened on Bootr, at most 7 days back
-  bootr fees <address>                 Creator fees waiting for a wallet
+  bootr fees <address>                 Creator fees waiting for a wallet, per asset (WETH, ETH, USDC)
   bootr fees --coin <address>          USD accrued and claimed per recipient of one coin
 
 Prepare (prints unsigned transactions: nothing is signed or sent)
-  bootr prepare claim <address>        The fee claims for a wallet, on both launch paths
+  bootr prepare claim <address> [--asset ETH|USDC|WETH]
+                                       The fee claims for a wallet on every launch path, one per asset;
+                                       --asset keeps only the claims paying that asset
   bootr prepare launch-message <address>
                                        The message your wallet signs before a launch; signing it moves nothing
   bootr prepare launch --spec <launch.json> --message <file> --signature <0x...> [--image <file>]
                                        The launch transactions. --message is a file holding the signed text,
-                                       --image a local file used in place of the spec's image
+                                       --image a local file used in place of the spec's image. For a Clanker v5
+                                       coin, the spec sets "launchThrough": "clanker" and its "token" settings
+                                       (paired asset, taxes, burn, dividends, reward rows); they are checked
+                                       before anything is sent
 
 Options
   --site <url>   The site to talk to (or BOOTR_SITE_URL). Default https://bootr.fun
@@ -51,6 +61,7 @@ const OPTIONS = {
   message: { type: 'string' },
   signature: { type: 'string' },
   image: { type: 'string' },
+  asset: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
 } as const;
 
@@ -76,6 +87,10 @@ function isAddressLike(value: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
+function knownSymbol(value: string): boolean {
+  return ['ETH', 'USDC', 'WETH'].includes(value.trim().toUpperCase());
+}
+
 function integer(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(value)) throw new UsageError(`--${name} must be a whole number.`);
@@ -86,6 +101,23 @@ async function imageAsDataUrl(file: string): Promise<{ dataUrl: string }> {
   const type = IMAGE_TYPES[extname(file).toLowerCase()];
   if (!type) throw new UsageError(`--image must be a ${Object.keys(IMAGE_TYPES).join(', ')} file.`);
   return { dataUrl: `data:${type};base64,${(await readFile(file)).toString('base64')}` };
+}
+
+/** The claims paying one asset, by symbol (ETH, USDC, WETH) or address; all of them without `asset`. */
+function onlyAsset(prepared: PreparedClaims, asset: string | undefined): PreparedClaims {
+  if (asset === undefined) return prepared;
+  const wanted = asset.trim().toUpperCase();
+  const claims = prepared.claims.filter((c) =>
+    isAddressLike(asset)
+      ? c.asset.toLowerCase() === asset.toLowerCase()
+      : knownAsset(c.asset)?.symbol === wanted,
+  );
+  // totalWei stays what the site means by it: the ETH and WETH claims, now of those kept.
+  const totalWei = claims
+    .filter((c) => ['ETH', 'WETH'].includes(knownAsset(c.asset)?.symbol ?? ''))
+    .reduce((sum, c) => sum + BigInt(c.amountWei), 0n)
+    .toString();
+  return { ...prepared, totalWei, claims };
 }
 
 async function prepareLaunch(
@@ -123,7 +155,7 @@ export async function run(
     strict: true,
   });
   if (values.help || positionals.length === 0) return { text: USAGE };
-  for (const value of [...positionals, values.signature]) {
+  for (const value of [...positionals, values.signature, values.asset]) {
     if (looksLikeKey(value)) throw new UsageError(KEY_REFUSAL);
   }
   const bootr = createBootr(
@@ -135,7 +167,9 @@ export async function run(
     case 'coin': {
       const query = positionals.slice(1).join(' ');
       if (!query) throw new UsageError('Missing a coin address, name or symbol.');
-      return { data: isAddressLike(query) ? await bootr.market(query) : await bootr.search(query) };
+      if (!isAddressLike(query)) return { data: await bootr.search(query) };
+      const market = await bootr.market(query);
+      return { data: { ...market, terms: coinTerms(market) } };
     }
     case 'agent':
       if (values.posts)
@@ -150,27 +184,49 @@ export async function run(
     case 'fees':
       if (values.coin) return { data: await bootr.coinFees(need(subject, 'a coin address')) };
       {
-        const { address, totalWei, asset, coins, claims } = await bootr.prepareClaim(
-          need(subject, 'a wallet address'),
-        );
+        const prepared = await bootr.prepareClaim(need(subject, 'a wallet address'));
         return {
           data: {
-            address,
-            asset,
-            totalWei,
-            coins,
-            claims: claims.map(({ path, amountWei, sendFrom }) => ({ path, amountWei, sendFrom })),
+            address: prepared.address,
+            coins: prepared.coins,
+            byAsset: claimsByAsset(prepared).map(
+              ({ asset, symbol, amount, amountText, claims }) => ({
+                asset,
+                symbol,
+                amount,
+                amountText,
+                claims: claims.map(({ path, amountWei, sendFrom }) => ({
+                  path,
+                  amountWei,
+                  sendFrom,
+                })),
+              }),
+            ),
           },
-          notice: 'To claim, run: bootr prepare claim <address>',
+          notice: 'To claim, run: bootr prepare claim <address> [--asset ETH|USDC|WETH]',
         };
       }
     case 'prepare':
       switch (subject) {
-        case 'claim':
+        case 'claim': {
+          if (
+            values.asset !== undefined &&
+            !isAddressLike(values.asset) &&
+            !knownSymbol(values.asset)
+          )
+            throw new UsageError('--asset must be ETH, USDC, WETH or a 0x address.');
+          const prepared = onlyAsset(
+            await bootr.prepareClaim(need(extra, 'a wallet address')),
+            values.asset,
+          );
           return {
-            data: await bootr.prepareClaim(need(extra, 'a wallet address')),
-            notice: NOT_SENT,
+            data: prepared,
+            notice:
+              prepared.claims.length === 0
+                ? `Nothing is waiting to be claimed${values.asset ? ` in ${values.asset}` : ''} right now. ${NOT_SENT}`
+                : `${NOT_SENT} Each claim pays one asset: amountWei is in that asset's own units (6 decimals for USDC).`,
           };
+        }
         case 'launch-message':
           return {
             data: await bootr.launchMessage(need(extra, 'a wallet address')),
