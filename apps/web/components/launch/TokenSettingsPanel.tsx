@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { isAddress, type Address } from 'viem';
 import type { MarketDetails } from '@/lib/server/quote-market';
@@ -223,7 +224,9 @@ export function TokenSettingsPanel({
   const maxRows = bounds.maxRewardRows;
   const assets = pairedAssetsFor('agent').filter((a) => !allowedAssets || allowedAssets.has(a.symbol));
   const asset = pairedAssetBySymbol(draft.pairedAsset);
-  const walletLabel = creator ? `Your wallet (${shortAddr(creator)})` : 'Your wallet';
+  // Like Clanker's form: the creator's row shows the connected wallet as admin and recipient; "Custom address" opens
+  // the recipient for typing (the admin stays the creator's wallet).
+  const [customOwn, setCustomOwn] = useState(() => (draft.rewards[0]?.recipient ?? '') !== '');
   const setRow = (i: number, patch: Partial<RewardRowDraft>) => set({ rewards: draft.rewards.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
 
   return (
@@ -346,40 +349,75 @@ export function TokenSettingsPanel({
             {draft.rewards.map((r, i) => {
               const own = i === 0;
               return (
-                <div key={i} className="grid gap-2 rounded-sm border border-hairline p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_120px_auto] sm:items-end" data-testid={`reward-row-${i}`}>
-                  <div className="min-w-0">
-                    <Label htmlFor={`reward-admin-${i}`}>{own ? 'Admin (you)' : 'Admin'}</Label>
-                    <Input
-                      id={`reward-admin-${i}`}
-                      mono
-                      placeholder={own ? walletLabel : '0x…'}
-                      value={r.admin}
-                      onChange={(e) => setRow(i, { admin: e.target.value.trim() })}
-                      aria-invalid={bad(`rewards.${i}.admin`) || (r.admin !== '' && !isAddress(r.admin))}
-                    />
+                <div key={i} className="flex flex-col gap-3 rounded-sm border border-hairline p-3" data-testid={`reward-row-${i}`}>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {own ? (
+                      <div className="min-w-0">
+                        <Label>Admin address</Label>
+                        <WalletBox creator={creator} testId="reward-admin-0" />
+                      </div>
+                    ) : (
+                      <div className="min-w-0">
+                        <Label htmlFor={`reward-admin-${i}`} hint="empty = the recipient">
+                          Admin address
+                        </Label>
+                        <Input
+                          id={`reward-admin-${i}`}
+                          mono
+                          placeholder="0x…"
+                          value={r.admin}
+                          onChange={(e) => setRow(i, { admin: e.target.value.trim() })}
+                          aria-invalid={bad(`rewards.${i}.admin`) || (r.admin !== '' && !isAddress(r.admin))}
+                        />
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <Label
+                        htmlFor={own && !customOwn ? undefined : `reward-recipient-${i}`}
+                        hint={
+                          own ? (
+                            <span className="flex items-center gap-2">
+                              <span>Custom address</span>
+                              <Switch
+                                id="reward-custom-0"
+                                checked={customOwn}
+                                label="Custom address"
+                                onChange={(v) => {
+                                  setCustomOwn(v);
+                                  if (!v) setRow(0, { recipient: '' });
+                                }}
+                              />
+                            </span>
+                          ) : undefined
+                        }
+                      >
+                        Recipient address
+                      </Label>
+                      {own && !customOwn ? (
+                        <WalletBox creator={creator} testId="reward-recipient-wallet-0" />
+                      ) : (
+                        <Input
+                          id={`reward-recipient-${i}`}
+                          mono
+                          placeholder="0x…"
+                          value={r.recipient}
+                          onChange={(e) => setRow(i, { recipient: e.target.value.trim() })}
+                          aria-invalid={bad(`rewards.${i}.recipient`) || (r.recipient !== '' && !isAddress(r.recipient))}
+                        />
+                      )}
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <Label htmlFor={`reward-recipient-${i}`}>Recipient</Label>
-                    <Input
-                      id={`reward-recipient-${i}`}
-                      mono
-                      placeholder={own ? walletLabel : '0x…'}
-                      value={r.recipient}
-                      onChange={(e) => setRow(i, { recipient: e.target.value.trim() })}
-                      aria-invalid={bad(`rewards.${i}.recipient`) || (r.recipient !== '' && !isAddress(r.recipient))}
-                    />
+                  <div className="flex items-end gap-2">
+                    <div className="min-w-0 flex-1">
+                      <Label htmlFor={`reward-pct-${i}`}>Reward %</Label>
+                      <PctInput id={`reward-pct-${i}`} value={r.pct} onChange={(v) => setRow(i, { pct: v })} invalid={bad(`rewards.${i}.pct`)} />
+                    </div>
+                    {own ? null : (
+                      <Button type="button" variant="ghost" size="sm" aria-label={`Remove recipient ${i + 1}`} onClick={() => set({ rewards: draft.rewards.filter((_, j) => j !== i) })}>
+                        Remove
+                      </Button>
+                    )}
                   </div>
-                  <div>
-                    <Label htmlFor={`reward-pct-${i}`}>Reward</Label>
-                    <PctInput id={`reward-pct-${i}`} value={r.pct} onChange={(v) => setRow(i, { pct: v })} invalid={bad(`rewards.${i}.pct`)} />
-                  </div>
-                  {own ? (
-                    <span className="hidden sm:block sm:w-16" />
-                  ) : (
-                    <Button type="button" variant="ghost" size="sm" aria-label={`Remove recipient ${i + 1}`} onClick={() => set({ rewards: draft.rewards.filter((_, j) => j !== i) })}>
-                      Remove
-                    </Button>
-                  )}
                 </div>
               );
             })}
@@ -425,6 +463,16 @@ export function TokenSettingsPanel({
           ))}
         </ul>
       ) : null}
+    </div>
+  );
+}
+
+/** The connected wallet shown in place of an address field, the way Clanker's form shows the creator's own row. */
+function WalletBox({ creator, testId }: { creator: Address | undefined; testId: string }) {
+  return (
+    <div className="flex h-8 min-w-0 items-center gap-2 rounded-sm border border-hairline bg-canvas-sub px-3 text-sm" data-testid={testId}>
+      {creator ? <span className="font-mono tabular text-ink">{shortAddr(creator)}</span> : null}
+      <span className="truncate text-mute">Your wallet</span>
     </div>
   );
 }

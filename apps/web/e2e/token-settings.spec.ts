@@ -93,14 +93,25 @@ test('token settings: the creator’s row plus up to four more, adding up to 100
   await stubMarket(page, 'ok');
   await openV5Form(page);
   const rewards = page.getByTestId('settings-rewards');
-  await expect(rewards.getByTestId('reward-row-0')).toContainText('Admin (you)');
-  await expect(page.getByLabel('Admin (you)')).toHaveAttribute('placeholder', 'Your wallet');
+  // Like Clanker's form: the creator's row shows the wallet as admin and recipient, no address fields to fill.
+  await expect(rewards.getByTestId('reward-admin-0')).toContainText('Your wallet');
+  await expect(rewards.getByTestId('reward-recipient-wallet-0')).toContainText('Your wallet');
+  await expect(page.locator('#reward-admin-0')).toHaveCount(0);
+  await expect(page.locator('#reward-recipient-0')).toHaveCount(0);
   // No wallet yet: the empty creator row is the Connect button's job, not a problem.
   await expect(page.getByTestId('settings-problems')).toHaveCount(0);
   await expect(rewards.getByTestId('rewards-allocated')).toHaveText('Allocated: 100/100%');
   // A custom address on the creator's own row is allowed.
+  await rewards.getByRole('switch', { name: 'Custom address' }).click();
+  await expect(rewards.getByTestId('reward-recipient-wallet-0')).toHaveCount(0);
   await page.locator('#reward-recipient-0').fill(OTHER);
   await expect(page.getByTestId('settings-problems')).toHaveCount(0);
+  // Switching it off goes back to the wallet and forgets the typed address.
+  await rewards.getByRole('switch', { name: 'Custom address' }).click();
+  await expect(rewards.getByTestId('reward-recipient-wallet-0')).toContainText('Your wallet');
+  await rewards.getByRole('switch', { name: 'Custom address' }).click();
+  await expect(page.locator('#reward-recipient-0')).toHaveValue('');
+  await page.locator('#reward-recipient-0').fill(OTHER);
 
   for (let i = 1; i <= 4; i++) await rewards.getByRole('button', { name: '+ Add recipient' }).click();
   await expect(rewards.getByRole('button', { name: '+ Add recipient' })).toHaveCount(0);
