@@ -1,7 +1,7 @@
 {
   "name": "@bootrfun/mcp",
-  "version": "0.1.0",
-  "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions. Nothing is signed or sent.",
+  "version": "0.2.0",
+  "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions, and run your own coin's agent from your AI client. It holds no wallet key.",
   "license": "MIT",
   "keywords": [
     "bootr",
@@ -40,7 +40,8 @@
     "test": "vitest run",
     "prepare": "tsc -p tsconfig.build.json",
     "prepublishOnly": "tsc -p tsconfig.build.json",
-    "e2e:fork": "node test/fork-e2e.mjs"
+    "e2e:fork": "node test/fork-e2e.mjs",
+    "e2e:own": "node test/own-agent-e2e.mjs"
   },
   "dependencies": {
     "@bootrfun/sdk": "workspace:^",

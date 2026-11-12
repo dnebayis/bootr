@@ -3,6 +3,7 @@ import { TRENDING_MAX_TRADERS, TRENDING_WALLET_TRADES_CAP, TRENDING_WALLET_VOLUM
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, WORKER_TEMPLATES } from '@bootr/shared/workers';
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import type { ModelsResponse } from '@/lib/models';
+import { ownAgentEndpoints } from '@/lib/server/catalog-own';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
 import {
   creatorPoolBps,
@@ -269,6 +270,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       cors: 'none',
       response: { contentType: 'application/xml', shape: 'A sitemap' },
     },
+    ...ownAgentEndpoints(site, chainId),
   ];
 }
 

@@ -17,6 +17,16 @@ export const ROUTES = {
   holdings: { method: 'GET', path: '/holdings/{owner}' },
   fuelHistory: { method: 'GET', path: '/fuel/{from}' },
   feed: { method: 'GET', path: '/platform/feed' },
+  // Own agents (docs/design/byo-agent.md): listed by a deployment only while it offers them (`ownAgent` on `platform`).
+  connectStart: { method: 'POST', path: '/api/agent/connect/start' },
+  connectToken: { method: 'POST', path: '/api/agent/connect/token' },
+  ownStatus: { method: 'POST', path: '/api/agent/run/status' },
+  ownDue: { method: 'POST', path: '/api/agent/run/due' },
+  ownTurn: { method: 'POST', path: '/api/agent/run/turn' },
+  ownAct: { method: 'POST', path: '/api/agent/run/act' },
+  ownFinish: { method: 'POST', path: '/api/agent/run/finish' },
+  ownUpload: { method: 'POST', path: '/api/agent/run/upload' },
+  ownDisconnect: { method: 'POST', path: '/api/agent/run/disconnect' },
 } as const;
 
 export type RouteName = keyof typeof ROUTES;

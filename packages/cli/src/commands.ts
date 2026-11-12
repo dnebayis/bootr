@@ -13,6 +13,7 @@ import {
   type LaunchInput,
   type PreparedClaims,
 } from '@bootrfun/sdk';
+import { OWN_USAGE, runOwn } from './own-commands.js';
 
 /**
  * The `bootr` command: reads and unsigned transactions over `@bootrfun/sdk`. All answers go to stdout as JSON, so they
@@ -147,6 +148,8 @@ export async function run(
   argv: string[],
   env: Record<string, string | undefined> = process.env,
 ): Promise<{ data?: unknown; text?: string; notice?: string }> {
+  // `bootr own …` has flags of its own (--exec, --label, a --coin that takes a value), so it parses its own words.
+  if (argv[0] === 'own') return runOwn(argv.slice(1), env);
   // parseArgs prints nothing itself and refuses any flag not listed above, which is every spelling of a key flag.
   const { values, positionals } = parseArgs({
     args: argv,
@@ -154,7 +157,7 @@ export async function run(
     allowPositionals: true,
     strict: true,
   });
-  if (values.help || positionals.length === 0) return { text: USAGE };
+  if (values.help || positionals.length === 0) return { text: USAGE + OWN_USAGE };
   for (const value of [...positionals, values.signature, values.asset]) {
     if (looksLikeKey(value)) throw new UsageError(KEY_REFUSAL);
   }
@@ -241,6 +244,12 @@ export async function run(
         default:
           throw new UsageError('prepare takes: claim, launch-message or launch.');
       }
+    case 'own':
+      // Reached when a flag came before the word (`bootr --site <url> own status`); the rest is its own to parse.
+      return runOwn(argv.slice(argv.indexOf('own') + 1), {
+        ...env,
+        ...(values.site ? { BOOTR_SITE_URL: values.site } : {}),
+      });
     default:
       throw new UsageError(`Unknown command: ${JSON.stringify(command).slice(0, 40)}.`);
   }
