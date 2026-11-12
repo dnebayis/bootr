@@ -1284,6 +1284,11 @@ function orphanConfig(kernel: Address): AgentConfig {
   };
 }
 
+/** The tape's launch row: the model the Bootr agent was launched with, or that the agent is its creator's own. */
+function launchSummary(t: Token): string {
+  return t.model === OWN_AGENT_MODEL_ID ? 'Launched as an own agent: it thinks in its creator’s own AI client.' : `Launched with the ${t.model} model.`;
+}
+
 /** A deterministic tape for a known token: the same three posts as `postsByAgentId`, treasury ops with tx hashes, sleeps and wakes. */
 function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
   const now = Math.floor(Date.now() / 1000);
@@ -1292,7 +1297,7 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
   const tx = () => hex(r, 32);
   const postUrl = (n: number) => `https://x.com/${t.xHandle}/status/${String(1850000000000000000n + BigInt(parseInt(t.agentId, 10) || 0) * 10n + BigInt(n))}`;
   const items: AgentActivityItem[] = [];
-  if (isFresh(t.kernel)) return [{ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` }];
+  if (isFresh(t.kernel)) return [{ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: launchSummary(t) }];
   if (t.xHandle) {
     items.push(
       { at: at(1800), kind: 'post', summary: 'Posted: Treasury rebalanced: 40 USDC moved to WETH after the 24h volume crossed the weekly median.', url: postUrl(3) },
@@ -1329,7 +1334,7 @@ function buildActivity(t: Token, agent: Agent | null): AgentActivityItem[] {
     if (j.payment?.paidAt) items.push({ at: j.payment.paidAt, kind: 'bounty', summary: `Bounty paid: ${amount} to ${j.payment.payee.slice(0, 6)}…${j.payment.payee.slice(-4)}, by the creator.`, ...(j.payment.txHash ? { txHash: j.payment.txHash } : {}) });
   }
   if (agent?.status === 'paused') items.unshift({ at: at(300), kind: 'pause', summary: 'Paused by the creator.' });
-  items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: `Launched with the ${t.model} model.` });
+  items.push({ at: new Date(t.launchedAt * 1000).toISOString(), kind: 'launch', summary: launchSummary(t) });
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 

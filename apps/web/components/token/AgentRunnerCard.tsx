@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { ClientsResponse, ClientView, Runner, RunnerSwitchResponse } from '@bootr/shared/own-agent';
+import type { Address } from 'viem';
 import { ago } from '@/lib/format';
 import { useNow } from '@/lib/hooks';
 import { qk, ReviewError, type ReviewAuth } from '@/lib/indexer';
@@ -19,6 +20,7 @@ import { ClientSetupSteps } from '@/components/launch/ConnectClientStep';
 import { KeepRunning } from '@/components/launch/KeepRunning';
 import { RUNNER_LABEL } from '@/components/launch/RunnerChoice';
 import { ownPresence } from './AgentStatusLine';
+import { FuelForm } from './FuelForm';
 import { useConsoleSession } from './console-session';
 
 type WithToken<T> = T & { token?: string };
@@ -67,7 +69,7 @@ const unix = (iso: string | null | undefined): number | null => {
  * coin while own agents are switched off: the short form, which says the agent is silent and still lets the creator
  * disconnect a client and hand the agent back to Bootr.
  */
-export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }: { token: Token; agent: Agent | null; config: AgentConfig; ownOffered: boolean; onOpenFuel: () => void }) {
+export function AgentRunnerCard({ token, agent, config, ownOffered }: { token: Token; agent: Agent | null; config: AgentConfig; ownOffered: boolean }) {
   const session = useConsoleSession(token);
   const queryClient = useQueryClient();
   const own = config.runner === 'own';
@@ -164,6 +166,8 @@ export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }
 
   const presence = own ? ownPresence(config.own?.lastTurnAt, config.worker.postIntervalMs, now) : null;
   const connectedCount = clients ? clients.clients.length : (config.own?.clients ?? 0);
+  // Until a client is connected nothing can start a turn, so the agent is silent: connecting one comes first.
+  const needsClient = own && ownOffered && connectedCount === 0;
 
   return (
     <section aria-labelledby="agent-runner-title" className="rounded-md border border-hairline p-4" data-testid="agent-runner-card" data-runner={config.runner} data-form={own ? (ownOffered ? 'own' : 'own-off') : 'hosted'}>
@@ -199,6 +203,16 @@ export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }
         </ul>
       ) : null}
 
+      {needsClient ? (
+        <div className="mt-4 rounded-sm border border-warning bg-canvas-soft p-4" data-testid="runner-needs-client">
+          <p className="text-sm font-medium text-ink">No AI client is connected yet, so this agent is silent.</p>
+          <p className="mt-1 text-caption text-body">Connect the client you want it to think in. It takes a minute, and nothing else works until it is done.</p>
+          <div className="mt-4">
+            <ClientSetupSteps client={client} onClient={setClient} approveWith={`the wallet that launched $${token.symbol}, and pick $${token.symbol}`} />
+          </div>
+        </div>
+      ) : null}
+
       {own ? (
         <div className="mt-4 flex flex-col gap-4 border-t border-hairline pt-4">
           <div data-testid="runner-clients">
@@ -228,7 +242,7 @@ export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }
                 </ul>
               ) : (
                 <p className="text-caption text-mute" data-testid="runner-no-clients">
-                  No client is connected, so the agent is silent.{ownOffered ? ' Connect one below.' : ''}
+                  No client is connected, so the agent is silent.{ownOffered ? ' Connect one with the steps above.' : ''}
                 </p>
               )
             ) : clientsUnavailable ? (
@@ -252,12 +266,14 @@ export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }
 
           {ownOffered ? (
             <>
-              <details className="group" data-testid="runner-connect" open={clients !== null && clients.clients.length === 0 ? true : undefined}>
-                <summary className="cursor-pointer text-caption font-medium text-ink underline-offset-4 hover:underline">Connect a client</summary>
-                <div className="mt-4">
-                  <ClientSetupSteps client={client} onClient={setClient} approveWith={`the wallet that launched $${token.symbol}, and pick $${token.symbol}`} />
-                </div>
-              </details>
+              {needsClient ? null : (
+                <details className="group" data-testid="runner-connect">
+                  <summary className="cursor-pointer text-caption font-medium text-ink underline-offset-4 hover:underline">Connect another client</summary>
+                  <div className="mt-4">
+                    <ClientSetupSteps client={client} onClient={setClient} approveWith={`the wallet that launched $${token.symbol}, and pick $${token.symbol}`} />
+                  </div>
+                </details>
+              )}
               <details className="group" data-testid="runner-keep-running">
                 <summary className="cursor-pointer text-caption font-medium text-ink underline-offset-4 hover:underline">Keep it running</summary>
                 <KeepRunning symbol={token.symbol} client={client} onClient={setClient} className="mt-3" bare />
@@ -308,18 +324,10 @@ export function AgentRunnerCard({ token, agent, config, ownOffered, onOpenFuel }
       >
         <div className="flex flex-col gap-3" data-testid="runner-dialog-hosted">
           <p data-testid="runner-fuel-line">
-            The Bootr agent pays for its thinking from fuel. {fuel !== null ? `This coin holds ${usdcText(fuel)} USDC; under 1 USDC it stays silent.` : 'Under 1 USDC of fuel it stays silent.'} No amount is required to switch.{' '}
-            <button
-              type="button"
-              className="text-link underline-offset-4 hover:underline"
-              onClick={() => {
-                setDialog(null);
-                onOpenFuel();
-              }}
-            >
-              Add fuel
-            </button>
+            The Bootr agent pays for its thinking from fuel. {fuel !== null ? `This coin holds ${usdcText(fuel)} USDC; under 1 USDC it stays silent.` : 'Under 1 USDC of fuel it stays silent.'} No amount is required to switch.
           </p>
+          {/* The Fuel form beside the figure: add some now, or later from the Fuel section. */}
+          <FuelForm kernel={token.kernel as Address} symbol={token.symbol} disabled={agent?.status === 'claimed'} />
           <div>
             <Label htmlFor="runner-model" hint={storedOffered ? 'The one it used before' : 'Choose one'}>
               Model it thinks with

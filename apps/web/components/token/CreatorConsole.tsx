@@ -452,7 +452,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
 
         <TabPanel value="mind" className="flex flex-col gap-4">
           {/* Who runs the agent, its connected AI clients and the switch; outside the settings form, which it is not part of. */}
-          {own || ownOffered ? <AgentRunnerCard token={token} agent={agent} config={cfg} ownOffered={ownOffered} onOpenFuel={() => onSectionChange('fuel')} /> : null}
+          {own || ownOffered ? <AgentRunnerCard token={token} agent={agent} config={cfg} ownOffered={ownOffered} /> : null}
           {settingsForm(
             'mind',
             <>

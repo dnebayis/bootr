@@ -399,6 +399,7 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
   const status = BOUNTY_STATUSES.includes(o.status as BountyStatus) ? (o.status as BountyStatus) : null;
   const deliverable = o.deliverable === 'image' || o.deliverable === 'link' ? o.deliverable : null;
   if (!id || !createdAt || !closesAt || !task || !amountMicroUsdc || !status || !deliverable) return null;
+  const ownJudge = ownJudgeOf(o.ownJudge);
   const shortId = typeof o.shortId === 'string' && SHORT_ID_RE.test(o.shortId) && id.startsWith(o.shortId.toLowerCase()) ? o.shortId.toLowerCase() : id.slice(0, 18);
   const amountUsdc = typeof o.amountUsdc === 'string' && USDC_RE.test(o.amountUsdc) ? o.amountUsdc : String(Number(amountMicroUsdc) / 1_000_000);
   const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, BOUNTIES_BOUNDS.maxCriterionChars)).filter((c): c is string => !!c).slice(0, BOUNTIES_BOUNDS.maxCriteria);
@@ -469,7 +470,19 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
     payment,
     closedAt: iso(o.closedAt),
     closeReplyUrl: xUrlOrNull(o.closeReplyUrl),
+    ...(ownJudge ? { ownJudge } : {}),
   };
+}
+
+/**
+ * `ownJudge` on a bounty job of an own coin that waits for its creator's agent to rule: `{ruleBy}`, the ISO time by
+ * which it must (after that the job closes with no winner). Null for anything else, and the field is then left out.
+ */
+function ownJudgeOf(raw: unknown): { ruleBy: string } | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const ruleBy = (raw as { ruleBy?: unknown }).ruleBy;
+  const at = typeof ruleBy === 'string' ? iso(ruleBy) : null;
+  return at ? { ruleBy: at } : null;
 }
 
 /** The job list as the page shows it: jobs in motion first, then newest first; rows that are not jobs are dropped. */

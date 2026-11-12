@@ -501,6 +501,11 @@ export interface BountyJob {
   pageText: string;
   /** Replies seen, those that could be judged, those actually judged (the first 12), and why the rest were not, by reason. */
   entries: { received: number; eligible: number; considered: number; ineligible: Record<string, number> };
+  /**
+   * Only on a job of an own-agent coin that waits for its creator's agent to judge: `ruleBy` is the ISO time by which
+   * it must rule; after that the job closes with no winner. Absent on every other job.
+   */
+  ownJudge?: { ruleBy: string };
   verdict: {
     /** 1-based number of the winning entry among those considered; null when nothing met the job. */
     winner: number | null;

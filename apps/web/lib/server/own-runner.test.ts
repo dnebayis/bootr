@@ -11,7 +11,7 @@ import { OWN_AGENT_MODEL_ID, OWN_ERRORS } from '@bootr/shared/own-agent';
 import { mock, mockLaunch, mockStore } from '@/lib/mock';
 import { FALLBACK_MODELS } from '@/lib/models';
 import { normalizeRunner, readLaunchDraft, saveDraftIdentity, updateLaunchDraftLinks } from './launch-drafts';
-import { parseRunnerSwitch, sanitizeConfig, sanitizeOwn, SupervisorError, SupervisorUnavailable, switchAgentRunner } from './supervisor';
+import { parseRunnerSwitch, sanitizeBountyJob, sanitizeConfig, sanitizeOwn, SupervisorError, SupervisorUnavailable, switchAgentRunner } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -30,6 +30,16 @@ describe('the config view: runner and own', () => {
     expect(sanitizeOwn({ runner: 'own', own: { lastTurnAt: 'yesterday', clients: -1 } })).toEqual({ lastTurnAt: null, clients: 0 });
     expect(sanitizeOwn({ runner: 'own', own: { lastTurnAt: null, clients: 1.5 } })).toEqual({ lastTurnAt: null, clients: 0 });
     expect(sanitizeOwn(null)).toBeNull();
+  });
+});
+
+describe('a bounty job that waits for the creator’s agent to judge', () => {
+  const job = { id: `0x${'5'.repeat(64)}`, status: 'judging', task: 'Draw the coin', criteria: ['Shows the coin'], deliverable: 'image', amountMicroUsdc: '500000', createdAt: '2026-11-12T08:00:00.000Z', closesAt: '2026-11-12T10:00:00.000Z' };
+
+  it('keeps ownJudge when it names a time, and leaves the field out for every other job', () => {
+    expect(sanitizeBountyJob({ ...job, ownJudge: { ruleBy: '2026-11-14T10:00:00.000Z', extra: 1 } })!.ownJudge).toEqual({ ruleBy: '2026-11-14T10:00:00.000Z' });
+    expect('ownJudge' in sanitizeBountyJob(job)!).toBe(false);
+    for (const bad of [null, 'soon', [], {}, { ruleBy: 7 }, { ruleBy: 'whenever' }]) expect('ownJudge' in sanitizeBountyJob({ ...job, ownJudge: bad })!, JSON.stringify(bad)).toBe(false);
   });
 });
 
@@ -165,6 +175,8 @@ describe('mock mode: the store stands in for the agent service', () => {
     const cfg = mock.agentConfig(token.kernel);
     expect(cfg).toMatchObject({ runner: 'own', own: { lastTurnAt: null, clients: 0 } });
     expect(FALLBACK_MODELS.some((m) => m.id === cfg.model)).toBe(true);
+    // the reserved id is never shown as a model's name
+    expect(mock.agentActivity(token.kernel, { limit: 50 }).items.map((i) => i.summary).join(' ')).not.toContain('own-agent');
     expect(mock.switchRunner(token.kernel, { runner: 'hosted' }, BY)).toMatchObject({ ok: true });
   });
 });

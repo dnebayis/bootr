@@ -359,6 +359,9 @@ test.describe('own agents switched on', () => {
     await card.getByTestId('runner-client').nth(1).getByRole('button', { name: 'Disconnect' }).click();
     await expect(card.getByTestId('runner-client')).toHaveCount(1);
     expect(clients.revoked).toEqual(['cli_fedcba9876543210']);
+    // a client is connected, so the connect steps step back behind "Connect another client"
+    await expect(card.getByTestId('runner-needs-client')).toHaveCount(0);
+    await expect(card.getByTestId('runner-connect').locator('summary')).toHaveText('Connect another client');
     await card.getByTestId('runner-connect').locator('summary').click();
     await expect(card.getByTestId('client-setup')).toContainText('Connect to Bootr and show me the link.');
     await expect(card.getByTestId('client-setup')).toContainText('the wallet that launched $CLERK, and pick $CLERK');
@@ -396,6 +399,8 @@ test.describe('own agents switched on', () => {
     const toHosted = page.getByRole('dialog');
     await expect(toHosted).toContainText('Hand this agent to Bootr?');
     await expect(toHosted.getByTestId('runner-fuel-line')).toContainText(/The Bootr agent pays for its thinking from fuel\. This coin holds [\d.]+ USDC; under 1 USDC it stays silent\. No amount is required to switch\./);
+    // the Fuel form sits beside the figure; no amount is required
+    await expect(toHosted.getByRole('button', { name: 'Fuel the agent' })).toBeVisible();
     await expect(toHosted.getByLabel('Model it thinks with')).toBeVisible();
     await expect(toHosted).toContainText('Pictures are made by Bootr again and paid from fuel.');
     await expect(toHosted).toContainText('The chat here is back, with its history.');
@@ -442,7 +447,14 @@ test.describe('own agents switched on', () => {
     await expect(firstSteps.locator('[data-key="fuel"]')).toHaveCount(0);
     await firstSteps.locator('[data-key="client"]').getByRole('button', { name: 'Connect' }).click();
     await expect(page).toHaveURL(new RegExp(`${coinUrl}/console\\?section=mind$`));
-    await expect(consoleOf(page).getByTestId('agent-runner-card')).toHaveAttribute('data-form', 'own');
+    const card = consoleOf(page).getByTestId('agent-runner-card');
+    await expect(card).toHaveAttribute('data-form', 'own');
+    // with no client connected the agent is silent, and the card leads with how to connect one
+    const needs = card.getByTestId('runner-needs-client');
+    await expect(needs).toContainText('No AI client is connected yet, so this agent is silent.');
+    await expect(needs.getByTestId('client-install')).toContainText('claude mcp add bootr -- npx -y @bootrfun/mcp');
+    await expect(needs).toContainText('Connect to Bootr and show me the link.');
+    await expect(card.getByTestId('runner-connect')).toHaveCount(0);
 
     own.lastTurnAt = new Date(Date.now() - 14 * 60_000).toISOString();
     own.clients = 1;
