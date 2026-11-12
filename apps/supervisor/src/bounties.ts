@@ -1035,10 +1035,13 @@ async function judgedRefs(ctx: Pick<SupervisorContext, 'db'>, jobId: string): Pr
  * yet), so a second ruling, or one that arrives after the wait ran out, finds nothing to claim and changes nothing;
  * then the same proposal step as the hosted judge's runs. A crash between the two is finished by the sweep
  * (`resumeOwnRuling`). `verdict` has already been through `parseVerdict` (own/judge.ts): this function checks nothing
- * about the ruling itself.
+ * about the ruling itself. It takes a ruling for an own coin's job only, and only for one whose entries were collected:
+ * a hosted coin's job is ruled by its bought thought and by nothing else.
  */
 export async function settleOwnRuling(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, jobId: string, verdict: JudgeVerdict): Promise<{ ok: true; job: BountyJobRow } | { ok: false }> {
+  if (!isOwn(agent)) return { ok: false };
   const considered = await judgedRefs(ctx, jobId);
+  if (!considered.length || considered.some((entry) => !entry.sha256)) return { ok: false };
   const stored = storedVerdict(ctx, verdict, considered);
   const [claimed] = await ctx.db
     .update(bountyJobs)

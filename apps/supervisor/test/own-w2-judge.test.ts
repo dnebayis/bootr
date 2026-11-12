@@ -472,6 +472,12 @@ describe('the judge turn of an own agent', () => {
       // the same check below the tools: the claim is conditional, so it holds whoever calls
       const direct = await settleOwnRuling(w.ctx, agent, parseAgentConfig(agent.config), job.id, { jobId: job.id, winner: 1, perCriterion: { '1': ['pass', 'pass'], '2': ['fail', 'fail'] }, reason: 'the other one', thought: { key: 'k', model: 'own-agent', outcome: 'none', replayed: false, chargedMicroUsdc: null } });
       expect(direct).toEqual({ ok: false });
+      // and a hosted coin's job is never taken from a client, whatever state it is in
+      await w.db.update(bountyJobs).set({ status: 'judging', verdict: null, payee: null, approvalId: null }).where(eq(bountyJobs.id, job.id));
+      const hostedAgent = { ...agent, config: withBounties({ own: false }) };
+      expect(await settleOwnRuling(w.ctx, hostedAgent, parseAgentConfig(hostedAgent.config), job.id, { jobId: job.id, winner: 1, perCriterion: { '1': ['pass', 'pass'], '2': ['fail', 'fail'] }, reason: 'a client ruling for a hosted coin', thought: { key: 'k', model: 'own-agent', outcome: 'none', replayed: false, chargedMicroUsdc: null } })).toEqual({ ok: false });
+      expect(await jobOf(w)).toMatchObject({ status: 'judging', verdict: null, payee: null });
+      await w.db.update(bountyJobs).set({ status: first.status, verdict: first.verdict, payee: first.payee, approvalId: first.approvalId }).where(eq(bountyJobs.id, job.id));
       const after = await jobOf(w);
       expect(after).toMatchObject({ status: 'proposed', payee: ADDR_A });
       expect(after.verdict).toEqual(first.verdict);
