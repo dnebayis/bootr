@@ -264,6 +264,12 @@ describe('own agent: what a credential opens', () => {
       // and a second hash further down, which would win the parse, does not stand in for the one that was checked.
       expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}","credentialHash":"${credentialHash(flipped)}"}`)).body.error).toBe('unauthorized');
       expect((await w.raw('POST', '/internal/own/run/status', `{"credentialHash":"${hash}"}`)).status).toBe(200);
+      // What the web asks before it reads an upload's body: is this credential live on a coin its client runs? Megabytes
+      // behind a hash nobody holds are answered from the head of the body alone, and never parsed.
+      expect((await w.run('verify', credential)).body).toEqual({ ok: true });
+      expect((await w.run<OwnErrorBody>('verify', flipped)).body.error).toBe('unauthorized');
+      const unparsed = await w.raw('POST', '/internal/own/run/upload', `{"credentialHash":"${credentialHash(flipped)}","dataBase64":"${'A'.repeat(2 * 1024 * 1024)}`);
+      expect([unparsed.status, unparsed.body.error]).toEqual([401, 'unauthorized']);
       expect((await w.call<OwnErrorBody>('POST', '/internal/own/run/steal', { credentialHash: hash })).body.error).toBe('invalid_request');
       expect(await turnOf(w)).toBeNull();
       // A grant is redeemed for a hash the web made; without one nothing is redeemed and no credential is made here.
@@ -300,7 +306,7 @@ describe('own agent: what a credential opens', () => {
       expect(revoked.body.clients.map((c) => c.clientId)).toEqual([kept.clientId]);
       // The turn the revoked client had open is gone, and its credential opens nothing.
       expect(await turnOf(w)).toBeNull();
-      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect']) {
+      for (const op of ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect', 'verify']) {
         const res = await w.run<OwnErrorBody>(op, lost.credential, { role: 'social', turnId: turn.turnId, tool: 'publish_post', input: { text: 'still here' } });
         expect([op, res.status, res.body.error]).toEqual([op, 401, 'credential_revoked']);
       }
@@ -359,7 +365,7 @@ describe('own agent: what a credential opens', () => {
       const status = await w.run<AgentStatus>('status', credential);
       expect(status.status).toBe(200);
       expect(status.body.runner).toBe('hosted');
-      for (const op of ['due', 'turn', 'act', 'finish', 'upload']) {
+      for (const op of ['due', 'turn', 'act', 'finish', 'upload', 'verify']) {
         const res = await w.run<OwnErrorBody>(op, credential, { role: 'social', turnId: `otn_${'a'.repeat(32)}`, tool: 'read_market', input: {}, memory: 'm', agenda: 'a', summary: 's', nextAt: new Date().toISOString(), mime: 'image/png', dataBase64: 'AAAA', alt: 'a', description: 'd' });
         expect([op, res.status, res.body.error]).toEqual([op, 409, 'agent_runs_hosted']);
       }
@@ -476,7 +482,7 @@ describe('own agent: the flag off', () => {
         ['POST', '/internal/own/connect/approve', { userCode: pendingGrant.userCode, creator: CREATOR, target: { kind: 'coin', kernel: KERNEL, agentId: AGENT_ID } }],
         ['POST', '/internal/own/connect/token', { deviceCode: pendingGrant.deviceCode, credentialHash: credentialHash(newCredential()) }],
         ['GET', `/internal/own/drafts/${DRAFT}/clients`, undefined],
-        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'].map((op) => ['POST', `/internal/own/run/${op}`, { credentialHash: credentialHash(client.credential), role: 'social' }] as const),
+        ...['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect', 'verify'].map((op) => ['POST', `/internal/own/run/${op}`, { credentialHash: credentialHash(client.credential), role: 'social' }] as const),
       ] as const) {
         const res = await on.call<OwnErrorBody>(method, path, body);
         expect([path, res.status]).toEqual([path, 404]);

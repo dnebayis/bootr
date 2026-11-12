@@ -27,6 +27,15 @@ export const TOKEN_PER_MINUTE_PER_IP = 60;
 export const SMALL_BODY_BYTES = 16_384;
 export const ACT_BODY_BYTES = 65_536;
 export const UPLOAD_BODY_BYTES = 8 * 1024 * 1024;
+/**
+ * Uploads this process reads and forwards at one time, over all clients. One holds its body about four times over
+ * while it is parsed and written again (some 30 MB), so four are well inside a container of 1 GB.
+ */
+export const UPLOADS_IN_FLIGHT = 4;
+/** How long an upload's body may take to arrive before the read gives up and frees its place. */
+export const UPLOAD_READ_MS = 30_000;
+/** What a client refused for want of a place is told to wait, in seconds. */
+const UPLOAD_RETRY_S = 2;
 /** A step can wait for X or the chain; a read should not. */
 const MAX_DUE_KEYS = 10_000;
 const QUICK_TIMEOUT_MS = 10_000;
@@ -39,7 +48,16 @@ export function dueIntervalMs(): number {
 }
 
 // One copy per server process, whichever route bundle asks first (the reason `server-state.ts` uses globalThis).
-type Limits = { runByCredential: RateLimiter; runByIp: RateLimiter; dueNext: Map<string, number>; dueWindowMs: number; tokenByIp: RateLimiter; tokenByCode: RateLimiter };
+type Limits = {
+  runByCredential: RateLimiter;
+  runByIp: RateLimiter;
+  dueNext: Map<string, number>;
+  dueWindowMs: number;
+  tokenByIp: RateLimiter;
+  tokenByCode: RateLimiter;
+  /** The uploads in flight, by the digest of their credential: at most one each and `UPLOADS_IN_FLIGHT` together. */
+  uploads: Set<string>;
+};
 const KEY = Symbol.for('bootr.web.own-agent-limits');
 const g = globalThis as unknown as Record<symbol, Limits | undefined>;
 
@@ -54,6 +72,8 @@ function limits(): Limits {
     dueWindowMs,
     tokenByIp: new RateLimiter(TOKEN_PER_MINUTE_PER_IP, 60_000),
     tokenByCode: new RateLimiter(1, DEVICE_POLL_INTERVAL_S * 1000),
+    // Carried over when the interval changes: an upload in flight still holds its place.
+    uploads: existing?.uploads ?? new Set(),
   });
 }
 
@@ -98,23 +118,35 @@ async function sha256Hex(text: string): Promise<string> {
 
 /**
  * The JSON object of a request, read with a hard cap: the declared length is checked first and the stream is cut at
- * the cap whatever was declared. A body that is not a JSON object is `invalid_request`; an empty one is `{}`.
+ * the cap whatever was declared. A body that is not a JSON object is `invalid_request`; an empty one is `{}`. With
+ * `deadlineMs`, a body that has not wholly arrived by then is `invalid_request` too and the rest is not waited for.
  */
-export async function readOwnBody(req: NextRequest, maxBytes: number): Promise<Record<string, unknown> | NextResponse> {
+export async function readOwnBody(req: NextRequest, maxBytes: number, deadlineMs?: number): Promise<Record<string, unknown> | NextResponse> {
   if (Number(req.headers.get('content-length') ?? 0) > maxBytes) return ownError('payload_too_large');
   const chunks: Uint8Array[] = [];
   let size = 0;
   const reader = req.body?.getReader();
   if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return ownError('payload_too_large');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = deadlineMs === undefined ? null : new Promise<'late'>((resolve) => (timer = setTimeout(() => resolve('late'), deadlineMs)));
+    try {
+      for (;;) {
+        const next = await (late ? Promise.race([reader.read(), late]) : reader.read());
+        if (next === 'late') {
+          await reader.cancel().catch(() => undefined);
+          return ownError('invalid_request', { detail: 'The body did not arrive in time.' });
+        }
+        const { done, value } = next;
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          return ownError('payload_too_large');
+        }
+        chunks.push(value);
       }
-      chunks.push(value);
+    } finally {
+      clearTimeout(timer);
     }
   }
   if (size === 0) return {};
@@ -224,6 +256,7 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
   const who = await sha256Hex(credential);
   const byCredential = ownLimited(l.runByCredential, who);
   if (byCredential) return byCredential;
+  if (op === 'upload') return uploadRoute(req, l, who);
   const body = await readOwnBody(req, RUN_BODY_BYTES[op]);
   if (body instanceof NextResponse) return body;
   if (op === 'due') {
@@ -242,6 +275,34 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
   // A look that found the agent busy was not a look: the client is told to come back at `retryAt` and may.
   if (op === 'due' && answer.code === 'runtime_busy') l.dueNext.delete(who);
   return answer.response;
+}
+
+/**
+ * The upload, the one run route whose body is megabytes. Nothing of the body is read until three things hold: the
+ * declared length fits; the agent service, asked with the hash alone, says the credential is live on a coin its
+ * client runs (any other answer is relayed: the credential errors, `agent_onboarding`, `agent_runs_hosted`); and there
+ * is a place, one upload at a time per credential and `UPLOADS_IN_FLIGHT` in this process (`rate_limited` beyond
+ * either). So a flood of uploads under made-up credentials costs one small question each and no memory, and what real
+ * clients can hold at once is bounded however many arrive. The read itself gives up after `UPLOAD_READ_MS`.
+ */
+async function uploadRoute(req: NextRequest, l: Limits, who: string): Promise<NextResponse> {
+  if (Number(req.headers.get('content-length') ?? 0) > UPLOAD_BODY_BYTES) return ownError('payload_too_large');
+  const live = await askOwn('POST', '/internal/own/run/verify', { credentialHash: who });
+  if (!live.ok) return live.response;
+  if (l.uploads.has(who) || l.uploads.size >= UPLOADS_IN_FLIGHT) return ownError('rate_limited', { retryAt: new Date(Date.now() + UPLOAD_RETRY_S * 1000).toISOString(), retryAfter: UPLOAD_RETRY_S });
+  l.uploads.add(who);
+  try {
+    const body = await readOwnBody(req, UPLOAD_BODY_BYTES, UPLOAD_READ_MS);
+    if (body instanceof NextResponse) return body;
+    return await forwardOwn('POST', '/internal/own/run/upload', withCredentialHash(who, body), RUN_TIMEOUT_MS.upload);
+  } finally {
+    l.uploads.delete(who);
+  }
+}
+
+/** Uploads being read or forwarded right now, for tests. */
+export function uploadsInFlight(): number {
+  return limits().uploads.size;
 }
 
 /** The token poll, per IP: counted before the body is read. */

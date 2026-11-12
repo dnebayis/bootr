@@ -199,8 +199,11 @@ function gate(v: VerifiedClient): AgentConfig {
   return config;
 }
 
+/** `gate`, for the route that only asks whether a call would get past it (own/routes.ts `run/verify`). */
+export const ownGate: (v: VerifiedClient) => unknown = gate;
+
 const iso = (ms: number) => new Date(ms).toISOString();
-const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const utcDay =(ms: number) => new Date(ms).toISOString().slice(0, 10);
 const nextUtcMidnight = (ms: number) => {
   const d = new Date(ms);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);

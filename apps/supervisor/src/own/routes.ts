@@ -24,12 +24,17 @@ import { OwnError, adoptDraftClients, approveGrant, coinsOf, countClients, disco
 import { applyRunnerQuota } from './quota.js';
 import { ownEnabled, registerOwnRole, setOwnHooks } from './registry.js';
 import { ownSocialRole } from './social.js';
-import { actTurn, closeOwnTurn, closeTurnOfClients, finishTurn, openTurn, ownDue, ownStatus, uploadPicture } from './turns.js';
+import { actTurn, closeOwnTurn, closeTurnOfClients, finishTurn, openTurn, ownDue, ownGate, ownStatus, uploadPicture } from './turns.js';
 
 type C = Context<AuthEnv>;
 
 export const RUN_OPS = ['status', 'due', 'turn', 'act', 'finish', 'upload', 'disconnect'] as const;
 export type RunOp = (typeof RUN_OPS)[number];
+/**
+ * Not a public route: the web asks `run/verify` with the hash alone before it reads the body of an upload, so a body
+ * of megabytes is only ever read for a credential that is live on a coin its client runs. Nothing happens on it.
+ */
+export const VERIFY_OP = 'verify';
 /** An upload is a picture of at most 5 MB as base64 with its words; the web caps the public body at 8 MB. */
 export const RUN_BODY_MAX_CHARS = 12 * 1024 * 1024;
 /** Every other body of these routes is a few fields. */
@@ -143,9 +148,14 @@ export function mountOwnRoutes(app: Hono<AuthEnv>, ctx: SupervisorContext): void
     answer(async (c) => {
       // The order of 13.6: the flag, the credential, the coin, then the route's own checks (in own/turns.ts).
       flagOn();
-      const op = c.req.param('op') as RunOp;
-      if (!(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
+      const op = c.req.param('op') as RunOp | typeof VERIFY_OP;
+      if (op !== VERIFY_OP && !(RUN_OPS as readonly string[]).includes(op)) throw new OwnError('invalid_request', { detail: 'No such operation.' });
       const verified = await verifyCredential(ctx, credentialHashOf(c));
+      if (op === VERIFY_OP) {
+        // What the web asks before it reads an upload's megabytes: the answers every run call gives before its own checks.
+        ownGate(verified);
+        return { ok: true as const };
+      }
       const { credentialHash, ...request } = await bodyOf(c, op === 'upload' ? RUN_BODY_MAX_CHARS : SMALL_BODY_MAX_CHARS);
       // The same member a second time further down the body would win the parse: it must be the one that was checked.
       if (credentialHash !== verified.client.tokenHash) throw new OwnError('unauthorized');

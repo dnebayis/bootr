@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { OWN_ERRORS, type ActResult, type OwnErrorBody, type OwnErrorCode, type TurnOpen } from '@bootr/shared/own-agent';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ACT_BODY_BYTES, resetOwnLimits, RUN_PER_MINUTE, UPLOAD_BODY_BYTES } from '@/lib/server/own-agent';
+import { ACT_BODY_BYTES, readOwnBody, resetOwnLimits, RUN_PER_MINUTE, UPLOAD_BODY_BYTES, UPLOADS_IN_FLIGHT, uploadsInFlight } from '@/lib/server/own-agent';
 import { COIN, startFakeSupervisor, TINY_PNG_BASE64, type FakeSupervisor } from '../../../../../../packages/mcp/test/fake-supervisor.mjs';
 import { POST as act } from './act/route';
 import { POST as disconnect } from './disconnect/route';
@@ -299,6 +299,11 @@ describe('the limits and the body caps', () => {
     await error(await call('upload', { turnId: opened.turnId, mime: 'image/png', dataBase64: 'A'.repeat(UPLOAD_BODY_BYTES), alt: 'a', description: 'd' }), 'payload_too_large');
     // A declared length that lies is not believed: the stream is cut at the cap.
     await error(await call('status', { pad: 'x'.repeat(20_000) }, { 'content-length': '10' }), 'payload_too_large');
+    // Nothing was forwarded; the upload only asked, with the hash alone, whether its credential is live.
+    expect(fake.seen.map((s) => s.path)).toEqual(['/internal/own/run/verify']);
+    // An upload that declares more than the cap is refused before even that.
+    fake.seen.length = 0;
+    await error(await call('upload', { turnId: opened.turnId }, { 'content-length': String(UPLOAD_BODY_BYTES + 1) }), 'payload_too_large');
     expect(fake.seen).toHaveLength(0);
     await error(await call('act', '{"turnId":'), 'invalid_request');
     await error(await call('act', '"text"'), 'invalid_request');
@@ -312,6 +317,129 @@ describe('the limits and the body caps', () => {
     const refused = await call('upload', { turnId: opened.turnId, mime: 'image/png', dataBase64: Buffer.from('MZ this is a program').toString('base64'), alt: 'a', description: 'd' });
     expect(refused.status).toBe(200);
     expect(await refused.json()).toMatchObject({ status: 'failed', error: expect.stringContaining('image_type_refused') });
+  });
+});
+
+/**
+ * An upload whose body is a stream that makes its bytes only when they are asked for and counts them: `pulled()` is
+ * how much of the body this server read. The bytes are a well-formed `UploadPictureRequest` of `bytes` bytes.
+ */
+function streamedUpload(bytes: number, bearer: string, turnId = 'otn_none', opts: { stall?: boolean } = {}) {
+  const head = new TextEncoder().encode(`{"turnId":"${turnId}","mime":"image/png","alt":"An owl","description":"An owl on a branch.","dataBase64":"${TINY_PNG_BASE64}`);
+  const tail = new TextEncoder().encode('"}');
+  const fill = new Uint8Array(64 * 1024).fill(0x41);
+  let left = Math.max(0, bytes - head.length - tail.length);
+  let pulled = 0;
+  let stage: 'head' | 'fill' | 'done' = 'head';
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        const send = (chunk: Uint8Array) => {
+          pulled += chunk.length;
+          controller.enqueue(chunk);
+        };
+        if (stage === 'head') {
+          stage = 'fill';
+          return send(head);
+        }
+        if (stage === 'fill' && left > 0) {
+          // A body that stalls keeps its connection and sends nothing more.
+          if (opts.stall) return new Promise<void>(() => {});
+          const chunk = fill.subarray(0, Math.min(fill.length, left));
+          left -= chunk.length;
+          return send(chunk);
+        }
+        if (stage !== 'done') {
+          stage = 'done';
+          send(tail);
+        }
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const req = new NextRequest(`${SITE}/api/agent/run/upload`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-real-ip': nextIp(), authorization: `Bearer ${bearer}` }, body, duplex: 'half' } as ConstructorParameters<typeof NextRequest>[1]);
+  return { req, pulled: () => pulled };
+}
+
+describe('uploads under load (security review H1)', () => {
+  const MB = 1024 * 1024;
+
+  it('reads nothing of a hundred concurrent uploads whose credentials nobody holds', async () => {
+    const junk = Array.from({ length: 100 }, (_, i) => streamedUpload(8 * MB - 1024, `bootr_agt_${String(i).padStart(3, '0')}${'j'.repeat(40)}`));
+    const answers = await Promise.all(junk.map((u) => upload(u.req)));
+    for (const res of answers) await error(res, 'unauthorized');
+    // Not one byte of the 800 MB on offer was read, and the agent service was asked a hundred small questions.
+    expect(junk.reduce((sum, u) => sum + u.pulled(), 0)).toBe(0);
+    expect(fake.seen).toHaveLength(100);
+    for (const seen of fake.seen) {
+      expect(seen.path).toBe('/internal/own/run/verify');
+      expect(seen.raw.length).toBeLessThan(100);
+    }
+    expect(uploadsInFlight()).toBe(0);
+  });
+
+  it('reads nothing for a revoked credential, a hosted coin or a coin still being set up', async () => {
+    const revoked = fake.backend.issueCredential();
+    fake.backend.runAs('disconnect', revoked);
+    const a = streamedUpload(MB, revoked);
+    await error(await upload(a.req), 'credential_revoked');
+    fake.backend.runner = 'hosted';
+    const b = streamedUpload(MB, credential);
+    await error(await upload(b.req), 'agent_runs_hosted');
+    fake.backend.runner = 'own';
+    fake.backend.failNext('agent_onboarding');
+    const c = streamedUpload(MB, credential);
+    await error(await upload(c.req), 'agent_onboarding');
+    expect(a.pulled() + b.pulled() + c.pulled()).toBe(0);
+    expect(fake.seen.every((s) => s.path === '/internal/own/run/verify')).toBe(true);
+  });
+
+  it('holds four uploads at a time over all clients: the rest are told to come back and are not read', async () => {
+    const opened = await openTurn();
+    fake.control.delayMs = 150;
+    const clients = Array.from({ length: 10 }, () => streamedUpload(2 * MB, fake.backend.issueCredential(), opened.turnId));
+    const answers = await Promise.all(clients.map((u) => upload(u.req)));
+    const taken = answers.map((r, i) => ({ status: r.status, pulled: clients[i]!.pulled() }));
+    expect(taken.filter((t) => t.status === 200)).toHaveLength(UPLOADS_IN_FLIGHT);
+    expect(taken.filter((t) => t.status === 429)).toHaveLength(10 - UPLOADS_IN_FLIGHT);
+    for (const t of taken) expect(t.pulled).toBe(t.status === 200 ? 2 * MB : 0);
+    for (const res of answers.filter((r) => r.status === 429)) {
+      const body = await error(res, 'rate_limited');
+      expect(Date.parse(body.retryAt!)).toBeGreaterThan(Date.now());
+      expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    }
+    expect(fake.seen.filter((s) => s.path === '/internal/own/run/upload')).toHaveLength(UPLOADS_IN_FLIGHT);
+    // Every place is free again afterwards.
+    expect(uploadsInFlight()).toBe(0);
+    fake.control.delayMs = 0;
+    expect((await upload(streamedUpload(MB, credential, opened.turnId).req)).status).toBe(200);
+  });
+
+  it('takes one upload at a time from one client', async () => {
+    const opened = await openTurn();
+    fake.control.delayMs = 100;
+    const [first, second] = [streamedUpload(MB, credential, opened.turnId), streamedUpload(MB, credential, opened.turnId)];
+    const answers = await Promise.all([upload(first.req), upload(second.req)]);
+    expect(answers.map((r) => r.status).sort()).toEqual([200, 429]);
+    expect([first.pulled(), second.pulled()].sort((x, y) => x - y)).toEqual([0, MB]);
+    expect(uploadsInFlight()).toBe(0);
+  });
+
+  it('frees the place of an upload that fails, is too large or never finishes arriving', async () => {
+    const opened = await openTurn();
+    await error(await upload(streamedUpload(UPLOAD_BODY_BYTES + MB, credential, opened.turnId).req), 'payload_too_large');
+    expect(uploadsInFlight()).toBe(0);
+    fake.backend.failNext('turn_closed');
+    // The scripted refusal answers the question before the read; the next upload is refused by the upload itself.
+    await error(await upload(streamedUpload(MB, credential, opened.turnId).req), 'turn_closed');
+    await error(await upload(streamedUpload(MB, credential, 'otn_other').req), 'turn_not_found');
+    expect(uploadsInFlight()).toBe(0);
+    // A body that stops arriving is given up on after the deadline and the rest is not waited for.
+    const stalled = streamedUpload(MB, credential, opened.turnId, { stall: true });
+    const late = await readOwnBody(stalled.req, UPLOAD_BODY_BYTES, 40);
+    expect(late).toBeInstanceOf(Response);
+    expect((await error(late as Response, 'invalid_request')).message).toContain('did not arrive in time');
   });
 });
 

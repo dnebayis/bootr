@@ -511,6 +511,9 @@ export class FakeOwnBackend {
     this.takeScripted();
     const client = this.authorize(body.credentialHash, op);
     switch (op) {
+      // Internal only: the web asks it with the hash alone before it reads an upload's body.
+      case 'verify':
+        return { ok: true };
       case 'status':
         return this.status(client);
       case 'due':
