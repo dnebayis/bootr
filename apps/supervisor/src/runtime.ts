@@ -136,6 +136,8 @@ export interface AgentState {
    */
   ownLastTurnAt?: number | null;
   ownForced?: { day: string; count: number } | null;
+  /** Own agent: turns opened and tool calls made, one bucket per hour, for the rolling 24-hour budgets (own/budget.ts). */
+  ownUsage?: { turns?: [number, number][]; steps?: [number, number][] } | null;
   ownClosed?: { turnId: string; why: string; at: number; last?: OwnCallRecord | null } | null;
 }
 

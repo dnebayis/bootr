@@ -57,6 +57,20 @@ export const OWN_DEFAULTS = {
   OWN_JUDGE_WAIT_MS: 172_800_000,
   OWN_STALE_MENTION_MS: 86_400_000,
   OWN_OBSERVATION_BYTES: 60_000,
+  /** Turns one coin's clients may open per rolling 24 hours (a real agent needs a turn per mention and 48 posts at most). */
+  OWN_TURNS_PER_DAY: 300,
+  /** Tool calls of every kind, a refused `finish` included, per rolling 24 hours. */
+  OWN_STEPS_PER_DAY: 2_000,
+  /** `remember` calls per rolling 24 hours. */
+  OWN_REMEMBER_PER_DAY: 200,
+  /** `treasury_prepare` calls per rolling 24 hours. */
+  OWN_TREASURY_PREPARE_PER_DAY: 100,
+  /** `treasury_execute` calls per rolling 24 hours. */
+  OWN_TREASURY_EXECUTE_PER_DAY: 30,
+  /** `x402_fetch` and `discover_services` calls together per rolling 24 hours. */
+  OWN_SERVICE_CALLS_PER_DAY: 100,
+  /** Picture uploads tried per rolling 24 hours, kept or refused. */
+  OWN_UPLOAD_ATTEMPTS_PER_DAY: 24,
 } as const;
 
 export const PICTURE_MIMES = ['image/png', 'image/jpeg', 'image/webp'] as const;
@@ -110,6 +124,7 @@ export type OwnErrorCode =
   | 'agent_paused'
   | 'not_due'
   | 'forced_turns_used'
+  | 'daily_budget_used'
   | 'turn_open'
   | 'turn_not_found'
   | 'turn_closed'
@@ -129,7 +144,7 @@ export interface OwnErrorBody {
   error: OwnErrorCode;
   /** Plain words for the person or the model reading it: `OWN_ERRORS[error].message`, with a detail appended after a space for `invalid_request` and `invalid_tool_call`. */
   message: string;
-  /** When trying again can work (`rate_limited`, `slow_down`, `not_due`, `forced_turns_used`, `turn_open`, `runtime_busy`, `held_action`). */
+  /** When trying again can work (`rate_limited`, `slow_down`, `not_due`, `forced_turns_used`, `daily_budget_used`, `turn_open`, `runtime_busy`, `held_action`). */
   retryAt?: string;
   /** The offending field of an `invalid_request` or `invalid_tool_call`. */
   field?: string;
@@ -159,6 +174,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   agent_paused: { status: 409, message: 'The agent is paused. Nothing runs until it is resumed.' },
   not_due: { status: 409, message: 'Nothing is due for this role now. Look again at retryAt.' },
   forced_turns_used: { status: 429, message: "Today's turns outside the schedule are used up. The next turn is due at retryAt." },
+  daily_budget_used: { status: 429, message: "This coin's agent has used the turns or the tool calls it may make in 24 hours. Nothing was done; look again at retryAt." },
   turn_open: { status: 409, message: 'Another turn is open. Finish it, or wait until it runs out at retryAt.' },
   turn_not_found: { status: 404, message: 'No such turn. Open one first.' },
   turn_closed: { status: 410, message: 'That turn has ended. Open a new one if something is due.' },

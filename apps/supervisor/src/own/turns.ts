@@ -9,7 +9,10 @@
  *   - every call holds the runtime lease, so a call never overlaps the tick, another call or a runner switch;
  *   - one open turn per coin, with an id only the server makes; a turn idle for `OWN_TURN_IDLE_MS` or open for
  *     `OWN_TURN_MAX_MS` is closed the way a cut-short hosted turn ends (a continuation note, no checkpoint);
- *   - the step cap (`MAX_TOOL_STEPS`) on everything but `finish`;
+ *   - the step cap (`MAX_TOOL_STEPS`) on everything but `finish`, and a `finish` the role refuses once the cap is
+ *     reached closes the turn, as the hosted loop ends a turn that ran out of steps;
+ *   - a budget of turns and of steps per coin over 24 hours (own/budget.ts): fuel bounded a hosted agent, and an own
+ *     coin buys no thought;
  *   - an acting call that completed is never carried out twice in a turn: the same tool with the same input is
  *     answered from the row of the first one, so a retry after a lost answer, or a replayed request, repeats nothing.
  *     A read is simply run again; a call that failed did nothing and may be made again;
@@ -76,6 +79,7 @@ import { creditsHold, forbiddenHold, quotaHold } from '../rhythm.js';
 import { LEASE_MS, acquireLease, releaseLease, saveRuntime, scheduleFor, trimState, type AgentState, type OwnCallRecord, type Turn } from '../runtime.js';
 import type { SenderInboxItem } from '../sender-client.js';
 import { readTreasuryOnChain } from '../treasury.js';
+import { budgetOpensAt, countUse, usedInWindow } from './budget.js';
 import { OwnError, clientView, coinRef, type VerifiedClient } from './clients.js';
 import { storeUpload } from './pictures.js';
 import { applyRunnerQuota, runnerReadsPerDay } from './quota.js';
@@ -97,11 +101,13 @@ export const MAX_STALE_CLOSE_PER_TURN = 50;
 export const STALE_MENTION_REASON = 'stale_after_downtime';
 /** What an action whose outcome was still unknown is recorded as once its turn is gone: nobody is left to repeat the call. */
 export const TURN_ENDED_ERROR = 'turn_ended: the turn closed before this call was repeated; its outcome was not confirmed';
+/** Added to the error of a refused `finish` that closed its turn: the steps were used up and the checkpoint was not taken. */
+export const FINISH_PAST_STEP_CAP = 'The turn had used all its steps, so it was closed without a checkpoint; the next turn continues from the agenda.';
 export const UPLOAD_TOOL = 'upload_picture';
 export const FINISH_TOOL = 'finish';
 
 /** Why the engine closed a turn without a `finish`. */
-export type CloseWhy = 'expired' | 'client_revoked' | 'runner_switched' | 'held' | 'hosted_turn_dropped';
+export type CloseWhy = 'expired' | 'client_revoked' | 'runner_switched' | 'held' | 'hosted_turn_dropped' | 'step_cap';
 
 // ---------------------------------------------------------------------------
 // Notes a role leaves for the engine while it answers `due` (the registry's `DueRole` has no room for them)
@@ -694,6 +700,14 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
       await persist(s, idle);
       throw new OwnError('not_due');
     }
+    // The coin's turns of the last 24 hours (`OWN_TURNS_PER_DAY`), before the role is asked anything: asking the social
+    // role reads mentions at the sender.
+    const turnLimit = Math.floor(ownSetting(ctx, 'OWN_TURNS_PER_DAY'));
+    if (usedInWindow(s.state, 'turns', now) >= turnLimit) {
+      await persist(s, idle);
+      ctx.log.info({ agentId: v.agent.agentId, limit: turnLimit }, 'own agent: the turns of the last 24 hours are used up; no turn was opened');
+      throw new OwnError('daily_budget_used', { retryAt: budgetOpensAt(s.state, 'turns', turnLimit, now) });
+    }
     const call = callOf(s);
     const due = await handler.due(call);
     let forced = false;
@@ -728,6 +742,7 @@ export async function openTurn(ctx: SupervisorContext, v: VerifiedClient, req: P
     }
     if (forced) s.state.ownForced = { day, count: forcedUsed + 1 };
     const opensAt = ctx.now();
+    countUse(s.state, 'turns', opensAt);
     // The job a judge turn rules on: what the role resolved (it may have picked the oldest waiting one, or completed a
     // short id), before what the request named.
     const pickedJob = (opened.turn as { judgeJobId?: unknown }).judgeJobId;
@@ -777,11 +792,31 @@ async function busy(s: Session, pending: PendingAction): Promise<never> {
   throw new OwnError('runtime_busy', { retryAt: pending.nextAt ?? s.ctx.now() + PENDING_RETRY_MS });
 }
 
-/** The step cap (`MAX_TOOL_STEPS`), on every call but `finish`: a guard, not model handling, so it stays on the server. */
+/**
+ * The step cap (`MAX_TOOL_STEPS`), on every call but `finish`: a guard, not model handling, so it stays on the server.
+ * And the coin's steps of the last 24 hours (`OWN_STEPS_PER_DAY`), across all its turns and clients.
+ */
 async function requireStep(s: Session, turn: Turn): Promise<void> {
-  if (turn.steps < stepBudget(s.ctx, turn)) return;
+  if (turn.steps >= stepBudget(s.ctx, turn)) {
+    await persist(s);
+    throw new OwnError('step_cap');
+  }
+  await requireDailySteps(s);
+}
+
+async function requireDailySteps(s: Session): Promise<void> {
+  const limit = Math.floor(ownSetting(s.ctx, 'OWN_STEPS_PER_DAY'));
+  const now = s.ctx.now();
+  if (usedInWindow(s.state, 'steps', now) < limit) return;
   await persist(s);
-  throw new OwnError('step_cap');
+  s.ctx.log.info({ agentId: s.agent.agentId, limit }, 'own agent: the steps of the last 24 hours are used up; the call was refused');
+  throw new OwnError('daily_budget_used', { retryAt: budgetOpensAt(s.state, 'steps', limit, now) });
+}
+
+/** One more step of this turn, counted against the turn's cap and the coin's day. */
+function takeStep(s: Session, turn: Turn): void {
+  turn.steps += 1;
+  countUse(s.state, 'steps', s.ctx.now());
 }
 
 /** `run/act`: one tool call of an open turn. Tool outcomes are results (HTTP 200, `failed` included); only a call that could not be taken throws. */
@@ -810,7 +845,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
       if (!special.roles.includes(role) || !offered(special, turn, config)) throw new OwnError('tool_unavailable');
       const parsed = special.input.safeParse(input);
       if (!parsed.success) throw invalidCall(parsed.error);
-      turn.steps += 1;
+      takeStep(s, turn);
       let res: Awaited<ReturnType<typeof special.run>>;
       try {
         res = await special.run(callOf(s), turn, parsed.data);
@@ -882,7 +917,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
       }
     } else {
       pending = beginAction(s.broker, action, s.broker.cycle, ctx.now());
-      turn.steps += 1;
+      takeStep(s, turn);
       await ctx.db
         .insert(actions)
         // Who thought is on the record: `via` and the client (activity.ts marks the tape row); a treasury or judge turn's rows carry their role as hosted ones do.
@@ -973,11 +1008,14 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
     // An action whose outcome is unknown settles first; `finish` itself is never refused for the step cap.
     const unsettled = await leftoverInTurn(s);
     if (unsettled) await busy(s, unsettled);
+    // A judge turn has no finish, so one sent there is held to the day's steps like any other call; a social or
+    // treasury turn can always be closed properly, and its finish is counted without being refused.
+    if (role === 'judge') await requireDailySteps(s);
 
     const now = ctx.now();
     let pending = beginAction(s.broker, action, s.broker.cycle, now, true);
     s.broker.pending = pending;
-    turn.steps += 1;
+    takeStep(s, turn);
     turn.own!.lastCallAt = now;
     await ctx.db
       .insert(actions)
@@ -995,6 +1033,16 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
       // a finish sent by mistake is refused by the role and must not cost the turn its ruling.
       if (role === 'judge') turn.steps -= 1;
       turn.recentSteps.push({ tool: FINISH_TOOL, status: 'failed', summary: error.slice(0, 200) });
+      // A refused finish is a step like any other. Once the turn is past its steps, a finish the role refuses ends it
+      // the way the hosted loop ends a turn that ran out of steps (a continuation note, no checkpoint): without this a
+      // client could send refused checkpoints to an open turn without end.
+      if (role !== 'judge' && turn.steps > stepBudget(ctx, turn)) {
+        const answer = actResult(s, turn, { tool: FINISH_TOOL, actionId: pending.id, status: 'failed', error: `${error} ${FINISH_PAST_STEP_CAP}` }, true);
+        const patch = await abandon(s, 'step_cap');
+        await persist(s, patch);
+        log.info({ steps: turn.steps }, 'own agent: a refused finish past the step cap closed the turn');
+        return answer;
+      }
       await persist(s);
       return actResult(s, turn, { tool: FINISH_TOOL, actionId: pending.id, status: 'failed', error }, false);
     }
@@ -1047,7 +1095,7 @@ export async function uploadPicture(ctx: SupervisorContext, v: VerifiedClient, r
     const now = ctx.now();
     const key2 = cycleKey(v.agent.agentId, s.broker.cycle);
     const actionId = 'act_' + digest({ cycleKey: key2, action: { tool: UPLOAD_TOOL, input } }).slice(0, 32);
-    turn.steps += 1;
+    takeStep(s, turn);
     turn.own!.lastCallAt = now;
     await ctx.db
       .insert(actions)

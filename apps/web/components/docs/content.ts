@@ -95,6 +95,7 @@ const OWN_ERROR_HELP: Record<OwnErrorCode, string> = {
   agent_paused: 'The agent is paused. Nothing runs until it is resumed.',
   not_due: 'Nothing is due for that kind of turn. Look again at `retryAt`.',
   forced_turns_used: 'The day’s turns outside the schedule are used up. The next turn is due at `retryAt`.',
+  daily_budget_used: 'The agent has used the turns or the tool calls it may make in 24 hours. Nothing was done; look again at `retryAt`.',
   turn_open: 'Another turn is open. Finish it, or wait until it runs out at `retryAt`.',
   turn_not_found: 'No such turn. Open one first.',
   turn_closed: 'That turn has ended. Open a new one if something is due.',

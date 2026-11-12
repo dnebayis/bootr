@@ -309,6 +309,20 @@ export const configSchema = z
     OWN_STALE_MENTION_MS: int(OWN_DEFAULTS.OWN_STALE_MENTION_MS, 0),
     /** The byte budget of the first observation handed to a client (clients cap a tool result well under 120 KB). */
     OWN_OBSERVATION_BYTES: int(OWN_DEFAULTS.OWN_OBSERVATION_BYTES, 4000),
+    /** Turns one own coin's clients may open per rolling 24 hours (own/budget.ts); fuel bounded a hosted agent, nothing else bounds an own one. */
+    OWN_TURNS_PER_DAY: int(OWN_DEFAULTS.OWN_TURNS_PER_DAY, 0),
+    /** Tool calls of an own coin per rolling 24 hours, a refused `finish` included (own/budget.ts). */
+    OWN_STEPS_PER_DAY: int(OWN_DEFAULTS.OWN_STEPS_PER_DAY, 0),
+    /** `remember` calls per rolling 24 hours for an own coin (broker). */
+    OWN_REMEMBER_PER_DAY: int(OWN_DEFAULTS.OWN_REMEMBER_PER_DAY, 0),
+    /** `treasury_prepare` calls per rolling 24 hours for an own coin (broker). */
+    OWN_TREASURY_PREPARE_PER_DAY: int(OWN_DEFAULTS.OWN_TREASURY_PREPARE_PER_DAY, 0),
+    /** `treasury_execute` calls per rolling 24 hours for an own coin (broker). */
+    OWN_TREASURY_EXECUTE_PER_DAY: int(OWN_DEFAULTS.OWN_TREASURY_EXECUTE_PER_DAY, 0),
+    /** `x402_fetch` and `discover_services` calls together per rolling 24 hours for an own coin (broker). */
+    OWN_SERVICE_CALLS_PER_DAY: int(OWN_DEFAULTS.OWN_SERVICE_CALLS_PER_DAY, 0),
+    /** Picture uploads an own coin may try per rolling 24 hours, kept or refused (own/pictures.ts). */
+    OWN_UPLOAD_ATTEMPTS_PER_DAY: int(OWN_DEFAULTS.OWN_UPLOAD_ATTEMPTS_PER_DAY, 0),
     /** How long a run call waits for the runtime lease (the tick or another call holds it) before it answers busy. */
     OWN_LEASE_WAIT_MS: int(4000, 0),
     LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),

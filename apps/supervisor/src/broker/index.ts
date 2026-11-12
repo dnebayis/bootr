@@ -111,6 +111,16 @@ export function readUrlDailyCap(limit: number): string {
   return `read_url_daily_cap: at most ${limit} page reads per 24 hours; this one was not run. Go on with what you already have.`;
 }
 
+export function rememberDailyCap(limit: number): string {
+  return `remember_daily_cap: at most ${limit} notes per 24 hours; this one was not kept. Put what matters in the memory of your finish.`;
+}
+export function treasuryPrepareDailyCap(limit: number): string {
+  return `treasury_prepare_daily_cap: at most ${limit} prepared operations per 24 hours; nothing was prepared.`;
+}
+export function treasuryExecuteDailyCap(limit: number): string {
+  return `treasury_execute_daily_cap: at most ${limit} treasury operations per 24 hours; nothing was signed or sent.`;
+}
+
 /** An own coin's calls of `tool` in the last 24 hours, whatever became of them, the action being decided left out. */
 async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string, tool: ToolName, exceptActionId: string): Promise<number> {
   const since = new Date(ctx.now() - OWN_DAILY_WINDOW_MS);
@@ -127,7 +137,8 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
  *   - `publish_post` needs a due slot of this turn, an open creator request, the digest or the numbers post, a turn
  *     carries one original post at most, and in approval mode one queued original per slot is all the queue holds;
  *   - a picture attached to a publish must have been stored in this turn;
- *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them).
+ *   - `search_web` and `read_url` are counted per coin over 24 hours (Bootr's search key and compute, with no fuel to bound them),
+ *     and so are `remember`, `treasury_prepare` and `treasury_execute`.
  * Null when the action may go on. `executeAction` calls it for an own coin; the engine calls it itself before a publish
  * is queued for review, which never reaches `executeAction`. A turn that is not on record allows no original post.
  */
@@ -157,6 +168,19 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
   if (action.tool === 'read_url') {
     const limit = ownSetting(ctx, 'OWN_READ_URL_PER_DAY');
     if ((await ownCallsInWindow(ctx, agent.agentId, 'read_url', pending.id)) >= limit) return failed(readUrlDailyCap(limit));
+  }
+  // Rows and signatures nothing else bounds without fuel: notes, prepared operations, executed ones.
+  if (action.tool === 'remember') {
+    const limit = ownSetting(ctx, 'OWN_REMEMBER_PER_DAY');
+    if ((await ownCallsInWindow(ctx, agent.agentId, 'remember', pending.id)) >= limit) return failed(rememberDailyCap(limit));
+  }
+  if (action.tool === 'treasury_prepare') {
+    const limit = ownSetting(ctx, 'OWN_TREASURY_PREPARE_PER_DAY');
+    if ((await ownCallsInWindow(ctx, agent.agentId, 'treasury_prepare', pending.id)) >= limit) return failed(treasuryPrepareDailyCap(limit));
+  }
+  if (action.tool === 'treasury_execute') {
+    const limit = ownSetting(ctx, 'OWN_TREASURY_EXECUTE_PER_DAY');
+    if ((await ownCallsInWindow(ctx, agent.agentId, 'treasury_execute', pending.id)) >= limit) return failed(treasuryExecuteDailyCap(limit));
   }
   return null;
 }
