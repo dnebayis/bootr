@@ -791,9 +791,9 @@ const api: DocBody = {
     table(
       ['Package', 'What it is'],
       [
-        ['`@bootrfun/sdk`', 'A typed client for Node and browsers, with `market`, `treasury`, `search`, `feed`, `prepareClaim`, `launchMessage`, `prepareLaunch` and the rest.'],
-        ['`@bootrfun/cli`', 'The `bootr` command: `coin`, `agent`, `feed`, `fees`, and `prepare claim`, `prepare launch-message`, `prepare launch`. It prints JSON.'],
-        ['`@bootrfun/mcp`', 'A stdio MCP server, so an assistant can read coins and agents and prepare launches and claims. Every prepare result states that nothing was signed or sent.'],
+        ['`@bootrfun/sdk`', 'A typed client for Node and browsers, with `market`, `treasury`, `search`, `feed`, `prepareClaim`, `launchMessage`, `prepareLaunch` and the rest, plus `coinTerms` (a coin’s paired asset and Clanker v5 taxes in percent) and `claimsByAsset`.'],
+        ['`@bootrfun/cli`', 'The `bootr` command: `coin`, `agent`, `feed`, `fees`, and `prepare claim` (with `--asset ETH|USDC|WETH`), `prepare launch-message`, `prepare launch`. It prints JSON.'],
+        ['`@bootrfun/mcp`', 'A stdio MCP server, so an assistant can read coins and agents and prepare launches (Clanker v5 token settings included) and claims. Every prepare result states that nothing was signed or sent.'],
       ],
     ),
     h3('connect-mcp', 'Connect the MCP server'),
@@ -815,9 +815,10 @@ for (const claim of claims) {
   await wallet.sendTransaction(toTransaction(claim));
 }`, 'with the SDK', 'ts'),
     code('bootr prepare claim 0xYourWallet', 'with the CLI', 'sh'),
-    p('A claim on the RWAGMI path must be sent from the creator’s wallet (`sendFrom`). A claim on the Clanker paths can come from any wallet and still pays the creator; a Clanker v5 claim (`path: clanker-v5`) is `claimFor(creator, asset)` on Clanker’s fee escrow and pays the coin’s paired asset: ETH (`asset` is the zero address) or USDC, whose amount is in USDC’s 6-decimal units and is not counted in `totalWei`. A Clanker v4 coin’s new fees reach the balance after `collectRewards(coin)` on Clanker’s LP locker, which anyone may call; a Clanker v5 coin’s reach it on every trade.'),
+    p('There is one claim per locker and asset: `claimsByAsset` (SDK), `bootr fees` (CLI) and the MCP answer’s `byAsset` group them, and `--asset` or the tool’s `asset` keeps only one. A claim on the RWAGMI path must be sent from the creator’s wallet (`sendFrom`). A claim on the Clanker paths can come from any wallet and still pays the creator; a Clanker v5 claim (`path: clanker-v5`) is `claimFor(creator, asset)` on Clanker’s fee escrow and pays the coin’s paired asset: ETH (`asset` is the zero address) or USDC, whose amount is in USDC’s 6-decimal units and is not counted in `totalWei`. A Clanker v4 coin’s new fees reach the balance after `collectRewards(coin)` on Clanker’s LP locker, which anyone may call; a Clanker v5 coin’s reach it on every trade.'),
     h3('prepare-launch', 'Prepare a launch'),
     p('The server needs proof of your wallet first, so a launch takes two steps. `launchMessage` (`bootr_launch_message`, `bootr prepare launch-message`) returns the text to sign, which moves no funds. `prepareLaunch` (`bootr_prepare_launch`, `bootr prepare launch`) takes that signature and returns the transactions to send, in order. See [the flow](/docs/for-agents#launching) and what to check first in the [skill](/skill/skill.md). A launch costs real money and cannot be undone.'),
+    p('A Clanker v5 launch (`launchThrough: clanker`) carries its `token` settings in the `launch` object. All three packages check them with the site’s own bounds and messages before anything is sent, so a mistake there leaves the signed message unused; the SDK exports the same check as `checkTokenSettings`.'),
     note('From a page on another site, only `/api/catalog` and `/api/agent/claim/:address` can be read. For the rest, run the SDK on a server or pass your own `fetch`.'),
     h2('cards', 'Agent cards and token metadata'),
     p('Each launch has a launch id (a UUID) that names two public JSON documents. Find it in a coin’s `agentUri` (indexer) or in the `LaunchContext` event.'),

@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 import { describe, expect, it, vi } from 'vitest';
 import { GET as models } from '@/app/api/models/route';
 import { buildCatalog, publicIndexerUrl, PUBLIC_INDEXER_URL, type Catalog, type SiweAuth } from '@/lib/server/catalog';
+import { defaultTokenSettings } from '@/lib/token-settings';
 import { GET } from './route';
 
 // `connection()` needs a request scope, which a direct handler call does not have.
@@ -177,6 +178,16 @@ describe('matches the routes', () => {
     expect(src).toContain("l.fuelUsdc === undefined ? '20'");
     const launch = JSON.stringify(web.find((e) => e.url.endsWith('/api/agent/launch'))?.parameters?.body);
     for (const s of ['default 0.001', 'at least 0.0001', 'default 20']) expect(launch).toContain(s);
+  });
+
+  it('describes the Clanker v5 fields the launch route reads', () => {
+    const src = source(`${SITE}/api/agent/launch`);
+    const launch = (web.find((e) => e.url.endsWith('/api/agent/launch'))?.parameters?.body as { properties: { launch: { properties: Record<string, { properties?: Record<string, unknown> }> } } }).properties.launch.properties;
+    for (const field of ['token', 'devBuySlippagePct']) expect(src, field).toContain(`l.${field}`);
+    // Every field of the settings, and none the route does not read (lib/token-settings.ts `parseTokenSettings`).
+    expect(Object.keys(launch.token!.properties!).sort()).toEqual(Object.keys(defaultTokenSettings(`0x${'1'.repeat(40)}`)).sort());
+    expect(JSON.stringify(launch.token)).toContain('"maximum":5');
+    expect(JSON.stringify(launch.devBuySlippagePct)).toContain('default 3');
   });
 
   it('lists every route the SDK calls, by method and path', () => {

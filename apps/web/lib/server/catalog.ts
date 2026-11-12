@@ -4,6 +4,17 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, WORKER_BOUNDS, WORKER_TEMPLATE
 import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import type { ModelsResponse } from '@/lib/models';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
+import {
+  creatorPoolBps,
+  DEFAULT_DEV_BUY_SLIPPAGE_PCT,
+  DEFAULT_PAIRED_ASSET,
+  DEFAULT_TAX_PCT,
+  FALLBACK_V5_BOUNDS,
+  MAX_DEV_BUY_SLIPPAGE_PCT,
+  MIN_DIVIDEND_HOLDING,
+  pairedAssetsFor,
+  V5_SUPPLY,
+} from '@/lib/token-settings';
 
 /**
  * `GET /api/catalog`: what Bootr offers, for programs. Everything here is checked against the code it describes:
@@ -203,7 +214,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       parameters: { body: launchBody() },
       response: {
         contentType: JSON_TYPE,
-        shape: '{launchId, chainId, creator, launcher, launchThrough, predictedKernel, agentURI, metadata, image: {url, ipfsUri}, model, worker, workerHash, workerPreset?, buyback, launchFeeWei, transactions: [{step: approve|launch|gas, to, data, value, note}], next: {status, xConnect, docs}}; errors {error, message} with 400, 401, 413, 429, 500, 502, 503',
+        shape: '{launchId, chainId, creator, launcher, launchThrough: bootr|clanker|clanker-v5, predictedKernel, salt, predictedToken?, saltTries?, agentURI, metadata, image: {url, ipfsUri}, model, worker, workerHash, workerPreset?, buyback, token?, tokenSettings?, devBuy?: {quotedOut, minOut, slippagePct}, launchFeeWei, transactions: [{step: approve|launch|gas, to, data, value, note}], next: {status, xConnect, docs}}; on clanker-v5, token is the checked settings, tokenSettings the launcher struct in the calldata and predictedToken the coin address (ends in cccc); errors {error, message, field?} with 400, 401, 409, 413, 429, 500, 502, 503',
       },
     },
     {
@@ -221,14 +232,14 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       service: 'web',
       method: 'GET',
       url: `${site}/api/agent/claim/{address}`,
-      description: 'The fee claims waiting for a creator on both launch paths, as unsigned transactions for their own wallet to send. No key and no signature, and nothing is sent.',
+      description: 'The fee claims waiting for a creator on every launch path, as unsigned transactions for their own wallet to send, one per locker and asset. No key and no signature, and nothing is sent.',
       auth: NONE,
       cors: 'any-origin',
       rateLimit: { limit: 20, windowSeconds: 60, per: 'ip' },
       parameters: { path: pathParam('address', ADDRESS) },
       response: {
         contentType: JSON_TYPE,
-        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}], clankerV5: [{token, symbol}]}, claims: [{path: bootr|clanker|clanker-v5, target, data, value, asset, amountWei, sendFrom: address|null, description}], note}; a claim’s asset is WETH (bootr, clanker) or the zero address, native ETH (clanker-v5); totalWei sums them all, one to one; errors {error, message} with 400, 429, 502',
+        shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}], clankerV5: [{token, symbol, pairedAsset: ETH|USDC}]}, claims: [{path: bootr|clanker|clanker-v5, target, data, value, asset, amountWei, sendFrom: address|null, description}], note}; a claim’s asset is WETH (bootr, clanker) or, on clanker-v5, the coins’ paired asset: the zero address for native ETH, or USDC with amountWei in its 6-decimal units; totalWei sums the ETH and WETH claims one to one and leaves USDC out; errors {error, message} with 400, 429, 502',
       },
     },
     {
@@ -298,7 +309,7 @@ function launchBody(): JsonSchema {
               },
             ],
           },
-          buyback: { type: 'boolean', default: false },
+          buyback: { type: 'boolean', default: false, description: 'Bootr and Clanker v4 only; ignored on Clanker v5, where the burn is token.burnPct.' },
           launchThrough: {
             type: 'string',
             enum: ['bootr', 'clanker', 'clanker-v5'],
@@ -307,6 +318,8 @@ function launchBody(): JsonSchema {
           },
           fuelUsdc: decimal('Decimal USDC, default 20, at least the preset’s minimum.'),
           devBuyEth: decimal('Decimal ETH, default 0.'),
+          devBuySlippagePct: decimal(`Clanker v5 only: the dev buy’s minimum is the quote less this percent, 0.1 to ${MAX_DEV_BUY_SLIPPAGE_PCT}, default ${DEFAULT_DEV_BUY_SLIPPAGE_PCT}.`),
+          token: tokenSettingsSchema(),
           gasEth: decimal('Decimal ETH, default 0.001; 0 or at least 0.0001.'),
           xHandle: { type: 'string', pattern: '^@?[A-Za-z0-9_]{1,15}$' },
           links: {
@@ -323,6 +336,42 @@ function launchBody(): JsonSchema {
       },
     },
     required: ['message', 'signature', 'launch'],
+  };
+}
+
+/** `launch.token`, the Clanker v5 token settings, with the bounds the route checks first (lib/token-settings.ts). */
+function tokenSettingsSchema(): JsonSchema {
+  const b = FALLBACK_V5_BOUNDS;
+  const pool = creatorPoolBps(b) / 100;
+  const pct = (min: number, max: number, description: string): JsonSchema => ({ type: ['number', 'string'], minimum: min, maximum: max, description });
+  return {
+    type: 'object',
+    description: `Clanker v5 only (launchThrough clanker where v5 is live, or clanker-v5); refused on the other paths. Permanent for the coin. Every field is optional and takes its default; a field present but unreadable is refused. Percents take at most two decimals.`,
+    properties: {
+      pairedAsset: { type: 'string', enum: pairedAssetsFor('agent').map((a) => a.symbol), default: DEFAULT_PAIRED_ASSET, description: 'What the coin trades against, and the asset every fee, reward and dividend is paid in.' },
+      buyTaxPct: pct(b.minTaxBps / 10_000, b.maxTaxBps / 10_000, `Percent of each buy, default ${DEFAULT_TAX_PCT}. Clanker keeps 10% of the tax, at least 0.5% and at most 1% of the trade; the rest is the tax pool.`),
+      sellTaxPct: pct(b.minTaxBps / 10_000, b.maxTaxBps / 10_000, `Percent of each sell, default ${DEFAULT_TAX_PCT}.`),
+      burnPct: pct(0, pool, `Percent of the tax pool, default 0. The agent keeps ${b.agentShareBps / 100}% and the platform ${b.platformShareBps / 100}%; burn and dividends together take at most ${pool}%, and creator funds get the rest.`),
+      dividendsPct: pct(0, pool, 'Percent of the tax pool paid to holders, default 0; holders claim them themselves.'),
+      minDividendHolding: { type: ['integer', 'string'], minimum: MIN_DIVIDEND_HOLDING, maximum: V5_SUPPLY, default: MIN_DIVIDEND_HOLDING, description: 'Whole coins a wallet must hold to earn dividends. Used only with dividends.' },
+      rewards: {
+        type: 'array',
+        minItems: 1,
+        maxItems: b.maxRewardRows,
+        description: 'Who receives the creator funds: the creator’s row first, then more; pct of creator funds, adding up to exactly 100. Default: the signing wallet, 100. Dropped when burn and dividends take all of creator funds.',
+        items: {
+          type: 'object',
+          properties: {
+            recipient: ADDRESS,
+            admin: { ...ADDRESS, description: 'Can later change this row’s recipient. Default: the recipient.' },
+            pct: { type: ['number', 'string'], exclusiveMinimum: 0, maximum: 100 },
+          },
+          required: ['recipient', 'pct'],
+        },
+      },
+      sniperTax: { type: 'boolean', default: true, description: 'For the first 20 seconds the tax falls from 99% to the normal tax; the surcharge goes to Clanker.' },
+      editableMetadata: { type: 'boolean', default: true, description: 'The launching wallet can change the image and metadata later, and lock them for good. Name and ticker never change.' },
+    },
   };
 }
 
@@ -366,13 +415,13 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     get(
       '/market/{token}',
       'Market snapshot of one coin, by coin or treasury address, with its last 10 trades.',
-      `{token, kernel, symbol, name, source, poolId, priceUsd, priceWeth, marketCapUsd, liquidityUsd, volume24hUsd, volume7dUsd, fees24hUsd, change24hPct, trades24h, holders, graduated, lpFeeBps, agentBps, creatorBps, burnBps, platformBps, protocolBps, ethPriceUsd, updatedAt, trades: [{side, trader, amountToken, amountPaired, priceUsd, valueUsd, timestamp, txHash}]}; ${addressErrors}`,
+      `{token, kernel, symbol, name, source: bootr|clanker|clanker-v5, poolId, priceUsd, priceWeth, marketCapUsd, liquidityUsd, volume24hUsd, volume7dUsd, fees24hUsd, change24hPct, trades24h, holders, graduated, lpFeeBps, agentBps, creatorBps, burnBps, platformBps, protocolBps, pairedToken, pairedSymbol, pairedDecimals, priceQuote, buyTaxBps, sellTaxBps, rewardsBps, dividendBps, antiSnipe, ethPriceUsd, updatedAt, trades: [{side, trader, amountToken, amountPaired, priceUsd, valueUsd, timestamp, txHash}]}; buyTaxBps and sellTaxBps are millionths of the trade (15000 = 1.5%), on clanker-v5 only (null elsewhere), and pairedSymbol is ETH or USDC there; ${addressErrors}`,
       { path: pathParam('token', ADDRESS) },
     ),
     get(
       '/treasury/{kernel}',
       'An agent’s treasury, by treasury or coin address: status, dormancy clock, balances and claimable fees. Reads the chain on each request, so please cache.',
-      `{kernel, token, symbol, source, lpFeeBps, agentId, status, paused, lastActivityAt, dormancyPeriod, dormantSince, balances: {usdc, weth, eth, ownToken}, balancesSource: live|indexed, spender, spenderUsdc, treasuryUsd, fuelReceivedUsdc, feesClaimedUsd, claimable: [{recipient, recipientKind, alsoKinds?, asset, symbol, amount, amountUsd, pending, settled}] (one row per wallet; alsoKinds: its other slots, paid by the same balance), claimableAgentUsd, ethPriceUsd}; ${addressErrors}`,
+      `{kernel, token, symbol, source, lpFeeBps, pairedToken, pairedSymbol, agentId, status, paused, lastActivityAt, dormancyPeriod, dormantSince, balances: {usdc, weth, eth, ownToken}, balancesSource: live|indexed, spender, spenderUsdc, treasuryUsd, fuelReceivedUsdc, feesClaimedUsd, claimable: [{recipient, recipientKind, alsoKinds?, asset, symbol, amount, amountUsd, pending, settled}] (one row per wallet; alsoKinds: its other slots, paid by the same balance; on clanker-v5 the asset is the paired asset, 0x0 for ETH or USDC), claimableAgentUsd, ethPriceUsd}; ${addressErrors}`,
       { path: pathParam('kernel', ADDRESS) },
     ),
     {
@@ -427,7 +476,7 @@ function indexerEndpoints(indexer: string): CatalogEndpoint[] {
     get(
       '/token/{id}/fees',
       'USD accrued and claimed per recipient kind for one coin. A wallet holding two kinds has its claims told apart; a kind is null when that cannot be done exactly.',
-      '{token, source, lpFeeBps, protocolBps, byKind: {agent|creator|burn|platform: {accruedUsd, claimedUsd|null}}, sharedWallets: [{recipient, kinds, claimedUsd, toldApart}]}; 400 malformed address',
+      '{token, source, lpFeeBps, protocolBps, pairedToken, pairedSymbol, buyTaxBps, sellTaxBps, rewardsBps, dividendBps, byKind: {agent|creator|burn|platform|recipient: {accruedUsd, claimedUsd|null}}, dividends: {contract, minHolding, accruedUsd, redirectedUsd}, sharedWallets: [{recipient, kinds, claimedUsd, toldApart}]}; recipient is a Clanker v5 coin’s extra reward rows together, dividends its holder dividends; 400 malformed address',
       { path: pathParam('id', ADDRESS) },
     ),
     get(
