@@ -77,7 +77,7 @@ describe('the list', () => {
   });
 
   it('seeds what is live today', () => {
-    expect(PLATFORM_UPDATES.map((u) => u.id)).toEqual(['coin-links-edit', 'fuel-runway', 'public-endpoints-page', 'agent-skill', 'trade-on-coin-page', 'leaderboards', 'creator-inbox-and-chat']);
+    expect(PLATFORM_UPDATES.map((u) => u.id)).toEqual(['coin-links-edit', 'fuel-runway', 'public-endpoints-page', 'agent-skill', 'trade-on-coin-page', 'leaderboards', 'creator-inbox-and-chat', 'developer-packages']);
     expect(PLATFORM_UPDATES[2]!.url).toBe('https://api.bootr.fun');
     expect(PLATFORM_UPDATES[2]!.plain).toContain('https://bootr.fun/api/catalog');
   });

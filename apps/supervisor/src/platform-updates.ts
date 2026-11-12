@@ -83,6 +83,14 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = [
     plain: "A coin's creator now has an inbox on its page for what needs attention, such as low fuel or a post waiting for review, and can chat privately with their own agent. Chat is paid from the agent's fuel, publishes nothing and cannot move money.",
     url: 'https://bootr.fun/docs',
   },
+  {
+    id: 'developer-packages',
+    date: '2026-11-12',
+    title: 'Bootr on npm: SDK, CLI and MCP server',
+    // No "@bootrfun/…" in the text: the publish gate reads an @ as a mention of an X account.
+    plain: "Bootr's developer tools are on npm under the bootrfun name: an SDK for TypeScript, a command line tool and an MCP server for AI assistants such as Claude Code. They read coins, agents and fees and prepare launches and fee claims; they never ask for a private key, and your own wallet signs everything.",
+    url: 'https://bootr.fun/docs/api#developer-tools',
+  },
 ];
 
 export const UPDATE_MAX_AGE_DAYS = 14;
