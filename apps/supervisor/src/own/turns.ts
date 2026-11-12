@@ -579,8 +579,9 @@ export async function ownDue(ctx: SupervisorContext, v: VerifiedClient): Promise
     for (const role of OWN_ROLES) {
       const handler = ownRole(role);
       if (!handler) roles[role] = ROLE_OFF;
+      // Paused, or waiting on a held action: nothing is due and no role is asked (the social role would read mentions).
+      else if (paused || held) roles[role] = { on: role === 'social' || openRole === role, due: false, reasons: [], nextAt: null };
       else if (openRole === role) roles[role] = { on: true, due: true, reasons: ['continuation'], nextAt: null };
-      else if (paused || held) roles[role] = { on: role === 'social', due: false, reasons: [], nextAt: null };
       else {
         try {
           roles[role] = await handler.due(call);
