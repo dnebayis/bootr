@@ -118,6 +118,9 @@ function secureOrLocal(url: URL): boolean {
   return host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(host);
 }
 
+/** The routes of own agents: connecting a client and running the agent. */
+const OWN_AGENT_PATH = /^\/api\/agent\/(connect|run)\//;
+
 /** The path of a catalog URL with its `{name}` parameters kept (`new URL` would encode them). */
 function pathOf(url: string): string {
   return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/i.exec(url)?.[1] ?? '';
@@ -206,7 +209,10 @@ export class Bootr {
     );
     if (!found)
       throw new BootrApiError(
-        `${this.siteUrl} does not list ${method} ${path} in its catalog: this deployment does not offer it yet.`,
+        // A site lists the connect and run routes only while own agents are on, so for those the plain reason is said.
+        OWN_AGENT_PATH.test(path)
+          ? `Own agents are switched off on ${this.siteUrl} for now. Nothing was done, and nothing is wrong with your setup.`
+          : `${this.siteUrl} does not list ${method} ${path} in its catalog: this deployment does not offer it yet.`,
         'not_listed',
         null,
       );

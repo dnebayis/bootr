@@ -65,6 +65,13 @@ describe('routes come from the catalog', () => {
     const { bootr } = client(() => json({}));
     await expect(bootr.prepareClaim(OWNER)).rejects.toMatchObject({ code: 'not_listed' });
   });
+
+  it('says own agents are switched off when a deployment lists no own-agent route', async () => {
+    const { bootr } = client(() => json({}));
+    const said = `Own agents are switched off on ${bootr.siteUrl} for now. Nothing was done, and nothing is wrong with your setup.`;
+    await expect(bootr.connectStart()).rejects.toMatchObject({ code: 'not_listed', status: null, message: said });
+    await expect(bootr.ownDue({ credential: `bootr_agt_${'a'.repeat(43)}` })).rejects.toMatchObject({ code: 'not_listed', message: said });
+  });
 });
 
 describe('errors', () => {

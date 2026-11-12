@@ -149,7 +149,8 @@ function failure(err: unknown, opts: { repeatable?: boolean } = {}): ToolResult 
   if (err instanceof BootrApiError) {
     const details = [err.details.retryAt ? `retryAt: ${err.details.retryAt}` : '', err.details.field ? `field: ${err.details.field}` : ''].filter(Boolean).join(', ');
     const unknownOutcome = opts.repeatable && ['unreachable', 'bad_response', 'supervisor_unavailable', 'http_error'].includes(err.code);
-    const hint = err.code === 'not_connected' ? CONNECT_FIRST : err.code === 'not_listed' ? ' This site does not offer own agents right now.' : '';
+    // `not_listed` needs no hint: for an own-agent route the SDK's message already says own agents are switched off.
+    const hint = err.code === 'not_connected' ? CONNECT_FIRST : '';
     const line = clean(`${err.code}: ${err.message}${details ? ` (${details})` : ''}`).slice(0, MAX_ERROR_CHARS);
     return { isError: true, content: [text(`${line}${hint}${unknownOutcome ? REPEAT_ADVICE : ''}`)] };
   }

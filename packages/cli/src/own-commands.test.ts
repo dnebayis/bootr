@@ -249,6 +249,27 @@ describe('bootr own status and due', () => {
   });
 });
 
+describe('on a site where own agents are switched off', () => {
+  it('says so in plain words, for a machine that is connected and for one that asks to connect', async () => {
+    const off = await startFakeSite({ ownAgent: false });
+    try {
+      const offEnv = { ...env, BOOTR_SITE_URL: off.url };
+      const said = `Own agents are switched off on ${off.url} for now. Nothing was done, and nothing is wrong with your setup.`;
+      await expect(runOwn(['connect'], offEnv, io())).rejects.toMatchObject({ code: 'not_listed', message: said });
+      await saveCredential(off.url, { credential: off.backend.issueCredential(COIN, 'Test'), clientId: 'cli_0000000000000000', label: 'Test', target: { kind: 'coin', coin: COIN }, expiresAt: '2027-01-01T00:00:00.000Z' }, { file: env.BOOTR_CREDENTIALS_FILE! });
+      for (const command of ['status', 'due']) {
+        const err = (await runOwn([command], offEnv, io()).catch((e: unknown) => e)) as Error;
+        expect(err.message, command).toBe(said);
+        // Nothing about a catalog or a route: those words are of no use to the person at the terminal.
+        expect(err.message, command).not.toMatch(/catalog|POST|\/api\//);
+      }
+      expect(off.seen.some((s) => s.path.startsWith('/api/agent/'))).toBe(false);
+    } finally {
+      await off.close();
+    }
+  });
+});
+
 describe('bootr own watch', () => {
   it('runs the creator’s command when something is due, with the roles and without the credential', async () => {
     const credential = await connected();
