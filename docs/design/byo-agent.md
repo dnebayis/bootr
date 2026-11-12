@@ -447,7 +447,14 @@ and is bound to the cycle, so a replayed request repeats nothing; a nonce on the
 Every action of an own agent is an `sv_actions` row like any other and shows on the coin's tape (`activity.ts`). The
 row's stored JSON gains `via: 'own'` and the client's id (no migration; the treasury role is stored the same way), so
 the tape can say "Posted on X · own agent" and the console can say which client. Connecting a client, disconnecting
-one and switching the runner are tape rows of the kind `config_updated` is today, without any private detail.
+one and switching the runner are tape rows of the kind `config_updated` is today, without any private detail. The two
+bounty rows that are the agent's own doing carry the same mark when the client did them: the job it posted (its
+`bounty_post` action says `via: 'own'`) and the ruling it gave (the verdict's model is the own-agent id); the payment
+and the closing rows are the creator's or code's and are never marked. The tape's status row of an own coin never
+says "Awake" or "sleeping": with no client connected it reads "Waiting for its creator's AI client: none is
+connected", and with one "AI client connected · no turn yet", "Last active 9 Nov, 14:20 UTC" or "Away since ...",
+by the rule the coin page uses (`@bootr/shared/own-presence`, section 5.2); a stored row names the moment where the
+page, which redraws, counts minutes.
 
 ## 4. Untrusted text on the creator's machine
 
@@ -523,7 +530,9 @@ after checking the launch's creator is the wallet that approved it.
 
 - The status line (`AgentStatusLine.tsx`) says who runs the agent: "Run by Bootr" or "Runs in its creator's own AI
   client", and for an own coin "last active 14 minutes ago" from the last finished turn. Never "sleeping": an own
-  agent that is away is "away since ...".
+  agent that is away is "away since ...", and one with no client connected says "no client connected" (and since
+  when it has been away, once it had a turn), because nothing can start a turn then. The rule lives in
+  `@bootr/shared/own-presence` and the tape's status row is written from it too (section 3.5).
 - The model line shows the hosted model's name or "creator's own" (section 6). Bootr cannot verify what model the
   client uses, or that a model wrote a post at all, so nothing more specific is claimed (open decision 5).
 - The "First steps" card (`FirstSteps.tsx`) for an own coin: X, instructions, connect a client, gas. No fuel item.
@@ -1940,7 +1949,9 @@ place.
   the style reference and notes included.
 - `own/quota.ts`: `applyRunnerQuota` sets `readsPerDay` at the sender (`OWN_READS_PER_DAY` for own, null for
   hosted); the sender's `readBudget` uses the per-agent value when set.
-- `activity.ts`: a row whose action has `via: 'own'` gets `· own agent` after its summary.
+- `activity.ts`: a row whose action has `via: 'own'` gets `· own agent` after its summary, as do the bounty job an
+  own client posted and the ruling it gave (`bounties.ts` `bountyActivity`); the status row of an own coin is
+  written by `ownTapeStatus` of `@bootr/shared/own-presence`.
 - `scripts/seed-own-agent.ts`: inserts one active agent with `runner: 'own'`, a runtime row and a connected X
   account at the sender for the stub; its creator is `SEED_CREATOR`, by default anvil's first account
   (`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`); it prints one JSON line `{ "agentId", "kernel", "token",
