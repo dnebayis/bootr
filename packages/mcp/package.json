@@ -40,7 +40,8 @@
     "test": "vitest run",
     "prepare": "tsc -p tsconfig.build.json",
     "prepublishOnly": "tsc -p tsconfig.build.json",
-    "e2e:fork": "node test/fork-e2e.mjs"
+    "e2e:fork": "node test/fork-e2e.mjs",
+    "e2e:own": "node test/own-agent-e2e.mjs"
   },
   "dependencies": {
     "@bootrfun/sdk": "workspace:^",
