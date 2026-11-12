@@ -30,8 +30,8 @@ export async function ensurePicturesDir(dir = picturesDir()): Promise<boolean> {
   }
 }
 
-export const outsideFolder = (dir: string) => `picture_outside_folder: only files inside ${dir} can be uploaded. Nothing was sent.`;
-export const NOT_AN_IMAGE = 'picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent.';
+export const outsideFolder = (dir: string) => `picture_outside_folder: only files inside ${dir} can be uploaded. Nothing was sent. Use a file from that folder, or publish your post without a picture.`;
+export const NOT_AN_IMAGE = 'picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent. Use a file of one of those kinds, or publish your post without a picture.';
 export const tooLarge = (bytes: number) => `image_too_large: ${bytes} bytes; a picture is at most 5 MB. Publish your post without a picture.`;
 
 /** The picture type by the file's first bytes, never by its name. */

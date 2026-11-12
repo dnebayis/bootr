@@ -120,16 +120,16 @@ export function readUrlDailyCap(limit: number): string {
 }
 
 export function servicesDailyCount(limit: number): string {
-  return `services_daily_count: at most ${limit} paid-service calls and catalogue searches per 24 hours; this one was not sent.`;
+  return `services_daily_count: at most ${limit} paid-service calls and catalogue searches per 24 hours; this one was not sent. Go on with what you already have.`;
 }
 export function rememberDailyCap(limit: number): string {
   return `remember_daily_cap: at most ${limit} notes per 24 hours; this one was not kept. Put what matters in the memory of your finish.`;
 }
 export function treasuryPrepareDailyCap(limit: number): string {
-  return `treasury_prepare_daily_cap: at most ${limit} prepared operations per 24 hours; nothing was prepared.`;
+  return `treasury_prepare_daily_cap: at most ${limit} prepared operations per 24 hours; nothing was prepared. Finish the turn and leave this for a later one.`;
 }
 export function treasuryExecuteDailyCap(limit: number): string {
-  return `treasury_execute_daily_cap: at most ${limit} treasury operations per 24 hours; nothing was signed or sent.`;
+  return `treasury_execute_daily_cap: at most ${limit} treasury operations per 24 hours; nothing was signed or sent. Finish the turn and leave this for a later one.`;
 }
 
 /** An own coin's calls of `tool` in the last 24 hours, whatever became of them, the action being decided left out. */

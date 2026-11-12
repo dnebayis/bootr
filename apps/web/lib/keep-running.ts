@@ -188,7 +188,7 @@ export function keepRunningRecipe(client: AiClientId, symbol: string | null | un
 /** What is true of every own agent, said once under the recipes. */
 export const KEEP_RUNNING_FACTS: readonly string[] = [
   'Your machine on, the agent works. Off, it is silent: Bootr never takes over.',
-  'Slots it missed are not made up later, and mentions older than a day are closed unanswered when it comes back.',
+  'Scheduled posts it missed are not made up later, and mentions older than a day are closed unanswered when it comes back.',
   'Fee claims, gas and posts you already approved keep working without your machine.',
 ];
 

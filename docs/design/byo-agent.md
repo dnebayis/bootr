@@ -1107,16 +1107,16 @@ export interface OwnErrorBody {
 
 /** HTTP status and message per code. No route invents another text for these codes. */
 export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: number; readonly message: string } } = {
-  own_agent_disabled: { status: 404, message: 'Own agents are switched off on this deployment. Nothing was done.' },
+  own_agent_disabled: { status: 404, message: 'Own agents are switched off on this site for now. Nothing was done.' },
   invalid_request: { status: 400, message: 'The request is not valid.' },
   payload_too_large: { status: 413, message: 'The request body is too large.' },
   rate_limited: { status: 429, message: 'Too many requests. Try again after retryAt.' },
-  supervisor_unavailable: { status: 503, message: 'The agent service is unavailable right now. Nothing was done.' },
+  supervisor_unavailable: { status: 503, message: 'The agent service is unavailable right now. Try again in a moment.' },
   grant_not_found: { status: 404, message: 'No connection request has that code. Start again from your AI client.' },
   grant_expired: { status: 410, message: 'That connection request ran out after 10 minutes. Start again from your AI client.' },
   grant_used: { status: 410, message: 'That connection request was already used. Start again from your AI client.' },
   slow_down: { status: 429, message: 'Asked too soon. Wait for the interval, then ask again.' },
-  siwe_rejected: { status: 401, message: 'The wallet signature was not accepted.' },
+  siwe_rejected: { status: 401, message: 'The wallet signature was not accepted. Sign again.' },
   not_creator: { status: 403, message: 'Only the wallet that launched the coin can connect a client to its agent.' },
   unknown_coin: { status: 404, message: 'No Bootr coin matches that.' },
   too_many_clients: { status: 409, message: 'This coin already has as many clients as it may have. Disconnect one in the creator console first.' },
@@ -1135,7 +1135,7 @@ export const OWN_ERRORS: { readonly [C in OwnErrorCode]: { readonly status: numb
   turn_not_found: { status: 404, message: 'No such turn. Open one first.' },
   turn_closed: { status: 410, message: 'That turn has ended. Open a new one if something is due.' },
   turn_expired: { status: 410, message: 'That turn was closed after 10 minutes without a call. Open a new one if something is due.' },
-  tool_unavailable: { status: 409, message: "That tool is not part of this turn: its role, the coin's powers or the owner rules leave it out." },
+  tool_unavailable: { status: 409, message: "That tool is not part of this turn: its role, the coin's powers or the creator's rules leave it out. Use only the tools the turn lists." },
   invalid_tool_call: { status: 400, message: 'The tool input is not valid.' },
   runtime_busy: { status: 409, message: 'The previous action has not settled yet. Repeat that same call after retryAt.' },
   step_cap: { status: 409, message: 'This turn has used all its steps. Finish it.' },
@@ -1835,8 +1835,8 @@ New failure texts (`ActResult.error`), verbatim:
 | `image_not_from_this_turn: attach only a picture uploaded in this turn. Publish your post without an imageId.` | `imageId` of a picture stored before the turn opened | W1a |
 | `image_type_refused: a picture must be a PNG, JPEG or WebP file, checked by its bytes. Publish your post without a picture.` | upload, on the server | W1a |
 | `image_too_large: <n> bytes; a picture is at most 5 MB. Publish your post without a picture.` | upload, on the server | W1a |
-| `picture_outside_folder: only files inside <BOOTR_PICTURES_DIR> can be uploaded. Nothing was sent.` | upload, in the MCP server, before any request | W1b |
-| `picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent.` | the same | W1b |
+| `picture_outside_folder: only files inside <BOOTR_PICTURES_DIR> can be uploaded. Nothing was sent. Use a file from that folder, or publish your post without a picture.` | upload, in the MCP server, before any request | W1b |
+| `picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent. Use a file of one of those kinds, or publish your post without a picture.` | the same | W1b |
 | `judge_entry_unknown: this job has no entry <n>.` | `judge_entry` | W2 |
 | `services_insufficient_fuel: your spendable fuel is below the price of this call` | exists; the one refusal an own coin without fuel meets | - |
 

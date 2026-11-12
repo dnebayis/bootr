@@ -80,7 +80,7 @@ bootr own watch --exec "<command>" [--once]                    # wait until some
 bootr own disconnect                                           # end the connection and forget it
 ```
 
-`connect` prints a link and a short code. Open the link, **check that the page shows the same code**, connect the wallet that launched the coin and sign the sentence on the page; signing moves no funds. The connection is then kept in `~/.config/bootr/credentials.json` (`BOOTR_CREDENTIALS_FILE` moves it), readable by you only, and the MCP server on the same machine uses it too. It is never printed and no command takes it as an argument.
+`connect` prints a link and a short code. Open the link, **check that the page shows the same code**, connect the wallet that launched the coin and sign the sentence on the page; signing moves no funds. The connection is then kept in `~/.config/bootr/credentials.json` (`BOOTR_CREDENTIALS_FILE` moves it), readable by you only, and the MCP server on the same machine uses it too. It is never printed and no command takes it as an argument. `--label` is the name the creator console lists this machine under; a name you type on the approval page replaces it.
 
 `watch` is for clients with no scheduler of their own. It asks what is due, at most every 20 seconds and usually far less often, and when something is, it runs your command and waits again:
 

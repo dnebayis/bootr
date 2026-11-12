@@ -253,9 +253,9 @@ async function w1(env, mcp) {
   await writeFile(path.join(env.outsideDir, 'secret.png'), png);
   const media0 = received.media.length;
   const outside = (await call('bootr_agent_upload_picture', { turnId: turn.turnId, path: path.join(env.outsideDir, 'secret.png'), alt: 'x', description: 'x' })).json();
-  assert.equal(outside.error, `picture_outside_folder: only files inside ${env.picturesDir} can be uploaded. Nothing was sent.`);
+  assert.equal(outside.error, `picture_outside_folder: only files inside ${env.picturesDir} can be uploaded. Nothing was sent. Use a file from that folder, or publish your post without a picture.`);
   const text = (await call('bootr_agent_upload_picture', { turnId: turn.turnId, path: 'notes.png', alt: 'x', description: 'x' })).json();
-  assert.equal(text.error, 'picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent.');
+  assert.equal(text.error, 'picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent. Use a file of one of those kinds, or publish your post without a picture.');
   assert.equal((await call('bootr_agent_status')).json().picturesLeftToday, status.picturesLeftToday, 'a refused file used no picture of the day');
   const uploaded = (await call('bootr_agent_upload_picture', { turnId: turn.turnId, path: 'owl.png', alt: 'A single dot', description: 'A plain one-pixel test picture.' })).json();
   assert.equal(uploaded.status, 'completed', JSON.stringify(uploaded));

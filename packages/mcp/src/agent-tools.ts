@@ -154,7 +154,7 @@ function failure(err: unknown, opts: { repeatable?: boolean } = {}): ToolResult 
     const line = clean(`${err.code}: ${err.message}${details ? ` (${details})` : ''}`).slice(0, MAX_ERROR_CHARS);
     return { isError: true, content: [text(`${line}${hint}${unknownOutcome ? REPEAT_ADVICE : ''}`)] };
   }
-  return { isError: true, content: [text(`The call failed.${opts.repeatable ? REPEAT_ADVICE : ''}`)] };
+  return { isError: true, content: [text(`The call failed.${opts.repeatable ? REPEAT_ADVICE : ' Try it once more; if it fails again, tell the user.'}`)] };
 }
 
 /** True when any value a caller passed looks like a client credential: those never travel through a tool call. */

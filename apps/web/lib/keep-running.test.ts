@@ -109,6 +109,35 @@ describe('first steps of an own agent', () => {
   });
 });
 
+describe('the words of a refusal', () => {
+  // "treasury address", never "kernel"; "who runs the agent", never "runner"; and no service, key or clock of Bootr's own.
+  const INTERNAL = /\b(runner|kernel|session key|relay|lease|tick|supervisor|HMAC)\b/i;
+
+  it('name nothing of how Bootr is built, in the server’s own sentence and in the docs’ advice', () => {
+    for (const [code, { message }] of Object.entries(OWN_ERRORS)) expect(message, code).not.toMatch(INTERNAL);
+    const { blocks } = DOC_CONTENT.api;
+    const table = blocks.slice(blocks.findIndex((b) => b.t === 'h3' && b.id === 'errors-own')).find((b) => b.t === 'table') as { rows: string[][] };
+    for (const [code, , help] of table.rows) expect(help, code).not.toMatch(INTERNAL);
+  });
+
+  it('say what to do next where a person or a model can do something', () => {
+    expect(OWN_ERRORS.own_agent_disabled.message).toBe('Own agents are switched off on this site for now. Nothing was done.');
+    // The call may have reached the agent service, so the text does not claim that nothing happened.
+    expect(OWN_ERRORS.supervisor_unavailable.message).toBe('The agent service is unavailable right now. Try again in a moment.');
+    expect(OWN_ERRORS.siwe_rejected.message).toBe('The wallet signature was not accepted. Sign again.');
+    expect(OWN_ERRORS.tool_unavailable.message).toMatch(/the creator's rules leave it out\. Use only the tools the turn lists\.$/);
+    for (const code of ['grant_not_found', 'grant_expired', 'grant_used', 'too_many_clients', 'unauthorized', 'credential_expired', 'credential_revoked', 'agent_runs_hosted', 'turn_not_found', 'turn_closed', 'turn_expired', 'step_cap', 'settings_changed'] as const) {
+      expect(OWN_ERRORS[code].message, code).toMatch(/\b(Start again|Disconnect|Connect|Switch|Open|Finish|read them again)\b/);
+    }
+  });
+
+  it('the packages’ READMEs say it in the same plain words', () => {
+    for (const name of ['mcp', 'cli', 'sdk']) expect(readFileSync(path.resolve(import.meta.dirname, `../../../packages/${name}/README.md`), 'utf8'), name).not.toMatch(INTERNAL);
+    // "Bootr's hosted agent" is the agent Bootr runs, to a creator.
+    expect(README).not.toMatch(/\bhosted\b/i);
+  });
+});
+
 describe('the docs on own agents', () => {
   it('list every own-agent error code with its status, and say own agents are behind `ownAgent`', () => {
     const { blocks } = DOC_CONTENT.api;

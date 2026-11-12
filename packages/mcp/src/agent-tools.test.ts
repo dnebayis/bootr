@@ -171,6 +171,29 @@ describe('the tool list', () => {
   });
 });
 
+describe('the words a creator or their model reads', () => {
+  it('name nothing of how Bootr is built: every agent tool, the prompt and the server’s instructions', async () => {
+    // "treasury address", never "kernel"; "who runs the agent", never "runner"; and no service, key or clock of Bootr's own.
+    const internal = /\b(runner|kernel|session key|relay|lease|tick|supervisor|HMAC)\b/i;
+    const { tools } = await client.listTools();
+    const mine = tools.filter((t) => AGENT_TOOL_NAMES.includes(t.name));
+    expect(mine).toHaveLength(AGENT_TOOL_NAMES.length);
+    for (const t of mine) {
+      expect(`${t.title} ${t.description}`, t.name).not.toMatch(internal);
+      for (const [key, value] of Object.entries((t.inputSchema.properties ?? {}) as Record<string, { description?: string }>)) expect(value.description ?? '', `${t.name}.${key}`).not.toMatch(internal);
+    }
+    const prompt = (await client.getPrompt({ name: 'bootr-turn', arguments: {} })) as { messages: { content: { text: string } }[] };
+    expect(prompt.messages[0]!.content.text).not.toMatch(internal);
+    expect(client.getInstructions() ?? '').not.toMatch(internal);
+    expect(`${AGENT_DATA_NOTICE} ${BRIEF_NOTICE}`).not.toMatch(internal);
+  });
+
+  it('a refusal made on this machine says what to do next', () => {
+    expect(outsideFolder('/home/me/bootr-pictures')).toBe('picture_outside_folder: only files inside /home/me/bootr-pictures can be uploaded. Nothing was sent. Use a file from that folder, or publish your post without a picture.');
+    expect(NOT_AN_IMAGE).toMatch(/Nothing was sent\. Use a file of one of those kinds, or publish your post without a picture\.$/);
+  });
+});
+
 describe('before a connection', () => {
   it('answers not_connected from every tool that needs one, and sends nothing', async () => {
     site.seen.length = 0;
@@ -388,7 +411,7 @@ describe('a social turn', () => {
         expect(r.isError, file).toBeFalsy();
         expect(json(r), file).toEqual({ turnId, tool: 'upload_picture', actionId: null, status: 'failed', error, turnEnded: false });
       };
-      const out = `picture_outside_folder: only files inside ${pictures} can be uploaded. Nothing was sent.`;
+      const out = `picture_outside_folder: only files inside ${pictures} can be uploaded. Nothing was sent. Use a file from that folder, or publish your post without a picture.`;
       expect(outsideFolder(pictures)).toBe(out);
       for (const file of [path.join(outside, 'secret.png'), '../elsewhere/secret.png', 'sub/../../elsewhere/secret.png', 'link.png', 'linked-folder/secret.png', 'key.png', '/etc/hosts', path.join(outside, 'id_rsa'), 'missing.png', '.', '..', '', `owl.png\0.txt`]) {
         await refuse(file, out);
@@ -398,7 +421,7 @@ describe('a social turn', () => {
       await refuse('big.png', `image_too_large: ${PNG.length + 5 * 1024 * 1024} bytes; a picture is at most 5 MB. Publish your post without a picture.`);
       // Not one request left this machine for any of them.
       expect(site.seen).toHaveLength(0);
-      expect(NOT_AN_IMAGE).toBe('picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent.');
+      expect(NOT_AN_IMAGE).toBe('picture_not_an_image: that file is not a PNG, JPEG or WebP picture. Nothing was sent. Use a file of one of those kinds, or publish your post without a picture.');
     });
 
     it('goes up from the folder with its type read from its bytes, and is attached to a post of the same turn', async () => {
