@@ -100,14 +100,9 @@ export async function run(env = {}) {
   assert.ok(LOCAL.test(new URL(site).hostname), 'the site must be the local web app.');
 
   const done = [];
-  const skipped = [];
   const ok = (label, detail = '') => {
     done.push(label);
     console.log(`ok  w2: ${label}${detail ? `: ${detail}` : ''}`);
-  };
-  const skip = (label, why) => {
-    skipped.push(label);
-    console.log(`skip w2: ${label}: ${why}`);
   };
 
   // ---------------- the local database ----------------
@@ -326,7 +321,7 @@ export async function run(env = {}) {
     const bought = await one('select count(*)::int as n from sv_inference where agent_id = $1 and created_at >= $2', [agent.agent_id, startedAt]);
     assert.equal(bought.n, 0, 'a thought was bought for an own coin');
     ok('no thought bought');
-    return { ok: done, skipped };
+    return { ok: done };
   } finally {
     if (original) await db.query('update sv_agents set config = $2, updated_at = now() where agent_id = $1', [String(seed.agentId), JSON.stringify(original)]).catch(() => undefined);
     await db.end().catch(() => undefined);
@@ -337,7 +332,7 @@ export async function run(env = {}) {
 // Run alone: `node packages/mcp/test/own-agent-e2e.w2.mjs` with the environment named at the top.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   run({})
-    .then((r) => console.log(`\nw2: ${r.ok.length} checks passed${r.skipped.length ? `, ${r.skipped.length} skipped` : ''}`))
+    .then((r) => console.log(`\nw2: ${r.ok.length} checks passed`))
     .catch((err) => {
       console.error(err);
       process.exit(1);
