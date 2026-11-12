@@ -341,6 +341,36 @@ describe('where a credential may travel', () => {
     }
   });
 
+  it('never over plain http, except to this machine itself (security review L6)', async () => {
+    const at = (siteUrl: string) => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, _init: RequestInit = {}) =>
+        String(input).endsWith('/api/catalog') ? json(catalogWith(new URL(siteUrl).origin)) : json({ ok: true }),
+      );
+      return { bootr: createBootr({ siteUrl, fetch: fetchMock as typeof fetch, credential: credentialOf('a') }), fetchMock };
+    };
+    for (const plain of ['http://bootr.fun', 'http://site.example:8080', 'http://192.168.1.10:3000', 'http://10.0.0.5', 'http://localhost.evil.example', 'http://127.0.0.1.evil.example', 'http://0.0.0.0:3000', 'http://[::ffff:8.8.8.8]']) {
+      const { bootr, fetchMock } = at(plain);
+      // The credential of a run call, the device code of a poll (its answer carries the credential) and the start.
+      for (const call of [() => bootr.ownStatus(), () => bootr.ownDisconnect(), () => bootr.connectToken('device-code-secret'), () => bootr.connectStart({})]) {
+        const err = (await call().catch((e: unknown) => e)) as BootrApiError;
+        expect([plain, err.code]).toEqual([plain, 'insecure_site']);
+        expect(err.message).toContain('Nothing was sent.');
+        expect(`${err.message} ${JSON.stringify(err.details)}`).not.toContain(credentialOf('a'));
+      }
+      // Nothing at all was asked of that site.
+      expect([plain, fetchMock.mock.calls.length]).toEqual([plain, 0]);
+    }
+    // This machine itself, as a local test site is reached, and any https site.
+    for (const fine of ['http://localhost:3000', 'http://127.0.0.1:3210', 'http://127.8.9.10', 'http://[::1]:3000', 'http://app.localhost:3000', 'https://bootr.fun', 'https://staging.example:8443']) {
+      const { bootr, fetchMock } = at(fine);
+      await bootr.ownStatus();
+      expect([fine, String(fetchMock.mock.calls.at(-1)![0])]).toEqual([fine, `${new URL(fine).origin}/api/agent/run/status`]);
+    }
+    // A read needs no secret and goes wherever the site is.
+    const reads = vi.fn(async (input: RequestInfo | URL) => (String(input).endsWith('/api/catalog') ? json({ endpoints: [{ method: 'GET', url: 'http://bootr.fun/api/platform', auth: { type: 'none' } }] }) : json({ launchesPaused: false, allowedModels: [] })));
+    expect(await createBootr({ siteUrl: 'http://bootr.fun', fetch: reads as typeof fetch }).platform()).toMatchObject({ launchesPaused: false });
+  });
+
   it('with no redirect followed, as a header, in a POST', async () => {
     const { bootr, fetchMock } = client(SITE);
     await bootr.ownStatus();
