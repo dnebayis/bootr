@@ -32,7 +32,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
-import { buildTreasuryObservation, roleTools, treasuryTurnSection, treasuryWakeCapMs, type TreasuryTurnInputs } from './roles.js';
+import { buildTreasuryObservation, roleTools, treasuryFinish, treasuryTurnSection, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText, type Logger } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
@@ -150,8 +150,8 @@ export interface OwnCallRecord {
   stepsUsed: number;
 }
 
-/** What a treasury checkpoint may keep of a `finish` (the state has 12 KB for everything): the rest is cut, not refused. */
-export const TREASURY_CHECKPOINT_CHARS = { memory: 2000, agenda: 1000, summary: 500 } as const;
+/** What a treasury checkpoint may keep of a `finish`: defined beside the function that applies it (roles.ts `treasuryFinish`) and still exported from here. */
+export { TREASURY_CHECKPOINT_CHARS } from './roles.js';
 
 export function initialState(): AgentState {
   return { phase: 'boot', memory: '', agenda: '', summary: '', continuation: null, inferenceKey: null, lastPostAt: null };
@@ -911,11 +911,14 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     await persist();
 
     if (action.tool === 'finish' && role === 'treasury') {
-      // The treasury's own checkpoint: its slot in the state, cut to size; the social memory, agenda, summary, post slot
-      // and wake are not touched. The model's wake request is honoured only beyond the interval (and within a day).
-      let cp;
+      // The treasury's own checkpoint (roles.ts `treasuryFinish`, the same function an own agent's treasury turn closes
+      // with): its slot in the state, cut to size; the social memory, agenda, summary, post slot and wake are not
+      // touched. The model's wake request is honoured only beyond the interval (and within a day), and while the
+      // Bounties power is on it may not push the next turn past a few intervals (roles.ts `treasuryWakeCapMs`): the
+      // agent kept asking for 4 to 6 hours and so looked at a job 6 times in 31 hours.
+      let done;
       try {
-        cp = checkpoint(action.input as unknown as Record<string, unknown>, now, { floorMs: ctx.config.TREASURY_TURN_INTERVAL_MS });
+        done = treasuryFinish(ctx, agent, config, state, action.input as unknown as Record<string, unknown>, now);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         broker.pending = recordOutcome(pending, { kind: 'failed', error }, now);
@@ -925,15 +928,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         await persist();
         continue;
       }
-      state.treasuryCheckpoint = { memory: cp.memory.slice(0, TREASURY_CHECKPOINT_CHARS.memory), agenda: cp.agenda.slice(0, TREASURY_CHECKPOINT_CHARS.agenda), summary: cp.summary.slice(0, TREASURY_CHECKPOINT_CHARS.summary), at: now };
-      // While the Bounties power is on, the turn's own wake may not push the next one past a few intervals (roles.ts
-      // `treasuryWakeCapMs`): the agent kept asking for 4 to 6 hours and so looked at a job 6 times in 31 hours.
-      const cap = treasuryWakeCapMs(ctx.config, config);
-      const nextAtMs = cap !== null ? Math.min(cp.nextAtMs, now + cap) : cp.nextAtMs;
-      state.treasuryNextAt = nextAtMs;
-      if (nextAtMs < cp.nextAtMs) log.info({ requestedAt: cp.nextAt, nextAt: new Date(nextAtMs).toISOString() }, 'treasury wake brought forward to the bounties cap');
       broker.pending = markSent(pending);
-      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: { checkpointed: true, nextTreasuryTurnAt: new Date(nextAtMs).toISOString(), ...(nextAtMs < cp.nextAtMs ? { note: 'with bounties on, your next treasury turn is never more than two intervals away' } : {}) } }, now);
+      broker.pending = recordOutcome(broker.pending, { kind: 'completed', result: done.result }, now);
       await settle();
       return endTurn('finished', { status: 'waiting', failures: 0, lastError: null });
     }

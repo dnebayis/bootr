@@ -40,7 +40,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { memories } from './db/schema.js';
 import { fuelSection } from './fuel.js';
 import type { MemoryRecord } from './memories.js';
-import { TREASURY_CHECKPOINT_CHARS, type AgentState } from './runtime.js';
+import type { AgentState } from './runtime.js';
 import { budgetView, servicesBudget, servicesPolicyOf } from './services.js';
 import { treasuryTurnOn } from './treasury-switch.js';
 import { fundingBudget, openOps, opView, recentOps, type TreasurySnapshot } from './treasury.js';
@@ -255,6 +255,13 @@ export async function buildTreasuryObservation(ctx: SupervisorContext, agent: Ag
 // How the treasury turn finishes
 // ---------------------------------------------------------------------------
 
+/**
+ * What a treasury checkpoint may keep of a `finish` (the state has 12 KB for everything): the rest is cut, not refused.
+ * It lives here, beside the one function that applies it, so this file takes only types from runtime.ts and the two
+ * files do not load each other in a circle (runtime.ts re-exports it under the same name).
+ */
+export const TREASURY_CHECKPOINT_CHARS = { memory: 2000, agenda: 1000, summary: 500 } as const;
+
 export interface TreasuryFinish {
   /** What the `finish` call is answered with. */
   result: Record<string, unknown>;
@@ -265,15 +272,17 @@ export interface TreasuryFinish {
 }
 
 /**
- * The treasury turn's `finish` (docs/design/byo-agent.md section 13.9): a faithful copy of the treasury branch of
- * runtime.ts `runLoop`, for the turn an own agent's client closes. The checkpoint is checked with the interval as its
+ * The treasury turn's `finish` (docs/design/byo-agent.md sections 13.9 and 13.11): the one implementation, called by
+ * the hosted loop (runtime.ts `runLoop`) and by an own agent's treasury turn (own/treasury.ts). It was written as a
+ * faithful copy of the hosted branch and proven equal to it by test/own-w2-treasury.test.ts before the hosted branch
+ * was folded onto it; test/roles.test.ts pins the hosted values. The checkpoint is checked with the interval as its
  * floor (a bad one throws, as `checkpoint` does, and nothing is written), cut to `TREASURY_CHECKPOINT_CHARS` and kept
  * in the treasury's own slot of `state`; the wake the model asked for is brought forward to `treasuryWakeCapMs` while
  * the Bounties power is on and becomes `state.treasuryNextAt`. The social memory, agenda, summary, post slot and wake
  * are not touched. Mutates `state`; the caller persists it and ends the turn (the hosted loop's `treasuryEnd` then holds
  * the clock at least one interval from that moment, which this value already is whenever the interval fits in the
- * checkpoint's own ceiling). Until the integration step folds the hosted branch onto this function, the two are kept
- * equal by test/own-treasury.test.ts.
+ * checkpoint's own ceiling). `ctx.log` is the service's logger, not a child of it: the one line written here names the
+ * agent and the role itself.
  */
 export function treasuryFinish(ctx: Pick<SupervisorContext, 'config' | 'log'>, agent: Pick<AgentRow, 'agentId'>, config: Pick<AgentConfig, 'capabilities'>, state: AgentState, input: Record<string, unknown>, now: number): TreasuryFinish {
   // The treasury's own checkpoint: its slot in the state, cut to size. The model's wake request is honoured only beyond the interval (and within a day).

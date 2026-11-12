@@ -11,13 +11,14 @@
  */
 import { parseAgentConfig, TOOL_LIST, type ToolName } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
 import { actions, memories, runtimes, treasuryOps } from '../src/db/schema.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { ownRole, ownTool, ownTools } from '../src/own/registry.js';
-import { roleTools, treasuryFinish, treasuryTurnDue } from '../src/roles.js';
-import { initialState, type AgentState } from '../src/runtime.js';
+import { TREASURY_CHECKPOINT_CHARS, roleTools, treasuryFinish, treasuryTurnDue } from '../src/roles.js';
+import { TREASURY_CHECKPOINT_CHARS as RUNTIME_TREASURY_CHECKPOINT_CHARS, initialState, type AgentState } from '../src/runtime.js';
 import type { SenderInboxItem } from '../src/sender-client.js';
 import { processAgent } from '../src/tick.js';
 import { AGENT_ID, agentConfig, finishResponse, makeWorld, seedAgent, testConfig, toolCallResponse, type TestWorld } from './helpers.js';
@@ -368,6 +369,21 @@ describe('treasuryFinish is the hosted finish branch', () => {
       }
     });
   }
+
+  it('the hosted loop and the own turn call the one function, and roles.ts takes only types from runtime.ts', () => {
+    const roles = readFileSync(new URL('../src/roles.ts', import.meta.url), 'utf8');
+    const runtime = readFileSync(new URL('../src/runtime.ts', import.meta.url), 'utf8');
+    // no value import from runtime.ts: the two files must not load each other in a circle
+    const fromRuntime = roles.split('\n').filter((line) => /from '\.\/runtime\.js'/.test(line));
+    expect(fromRuntime).toEqual(["import type { AgentState } from './runtime.js';"]);
+    // the hosted finish branch is the shared function, with no second copy of the checkpoint arithmetic beside it
+    expect(runtime).toContain('done = treasuryFinish(ctx, agent, config, state, action.input as unknown as Record<string, unknown>, now);');
+    expect(runtime).not.toMatch(/state\.treasuryCheckpoint\s*=/);
+    expect(runtime).not.toContain('treasuryWakeCapMs(');
+    // the constant keeps its name on both files
+    expect(TREASURY_CHECKPOINT_CHARS).toBe(RUNTIME_TREASURY_CHECKPOINT_CHARS);
+    expect(TREASURY_CHECKPOINT_CHARS).toEqual({ memory: 2000, agenda: 1000, summary: 500 });
+  });
 
   it('a checkpoint agent-core refuses is refused by both, the turn goes on, and nothing is written', async () => {
     const bad = { memory: long(17_000), agenda: 'a', summary: 's', nextAt: new Date(T0 + 2 * H).toISOString() };
