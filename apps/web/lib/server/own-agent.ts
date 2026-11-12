@@ -10,7 +10,7 @@
 import { CREDENTIAL_PREFIX, CREDENTIAL_RE, DEVICE_POLL_INTERVAL_S, OWN_DEFAULTS, OWN_ERRORS, type OwnErrorBody, type OwnErrorCode } from '@bootr/shared/own-agent';
 import { NextResponse, type NextRequest } from 'next/server';
 import { ownAgentEnabled, supervisorEnv } from './env';
-import { clientIp, RateLimiter } from './ipfs';
+import { clientIp, evictOldest, RateLimiter } from './ipfs';
 import { signSenderRequest } from './sender';
 
 if (typeof window !== 'undefined') throw new Error('lib/server/own-agent must not be imported in the browser');
@@ -75,6 +75,27 @@ function limits(): Limits {
     // Carried over when the interval changes: an upload in flight still holds its place.
     uploads: existing?.uploads ?? new Set(),
   });
+}
+
+/**
+ * Notes when a client may look again. A full map loses the entries whose moment has passed, then the ones it has held
+ * longest, a tenth of its room; never all of it, which would let every client look again at once whenever a flood of
+ * made-up credentials filled it.
+ */
+export function rememberDue(next: Map<string, number>, who: string, at: number, now: number, maxKeys = MAX_DUE_KEYS): void {
+  // Put at the end, so the map's order is the order of the last looks.
+  next.delete(who);
+  if (next.size >= maxKeys) {
+    for (const [k, t] of next) if (t <= now) next.delete(k);
+    evictOldest(next, maxKeys);
+  }
+  next.set(who, at);
+}
+
+/** How many keys each own-agent limiter holds right now, for tests. */
+export function ownLimitSizes(): { runByCredential: number; runByIp: number; dueNext: number; tokenByCode: number } {
+  const l = limits();
+  return { runByCredential: l.runByCredential.size, runByIp: l.runByIp.size, dueNext: l.dueNext.size, tokenByCode: l.tokenByCode.size };
 }
 
 /** For tests: forget every count. */
@@ -264,11 +285,7 @@ export async function runRoute(req: NextRequest, op: RunOp): Promise<NextRespons
     const now = Date.now();
     const next = l.dueNext.get(who) ?? 0;
     if (next > now) return ownError('rate_limited', { retryAt: new Date(next).toISOString(), retryAfter: Math.max(1, Math.ceil((next - now) / 1000)) });
-    if (l.dueNext.size >= MAX_DUE_KEYS) {
-      for (const [k, at] of l.dueNext) if (at <= now) l.dueNext.delete(k);
-      if (l.dueNext.size >= MAX_DUE_KEYS) l.dueNext.clear();
-    }
-    l.dueNext.set(who, now + l.dueWindowMs);
+    rememberDue(l.dueNext, who, now + l.dueWindowMs, now);
   }
   const answer = await askOwn('POST', `/internal/own/run/${op}`, withCredentialHash(who, body), RUN_TIMEOUT_MS[op]);
   if (answer.ok) return ownJson(answer.data, answer.status);

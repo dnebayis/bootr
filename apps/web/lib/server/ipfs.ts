@@ -191,19 +191,39 @@ export class RateLimiter {
   /** Records one hit. Returns 0 when allowed, else the seconds until the window resets. */
   hit(key: string, now = Date.now()): number {
     let e = this.hits.get(key);
+    // Every hit puts its key at the end, so the map's order is the order of the last hits: when the table is full
+    // the callers that have been quiet longest are forgotten first, and one that keeps asking is not.
+    this.hits.delete(key);
     if (!e || e.reset <= now) {
       if (this.hits.size >= this.maxKeys) this.prune(now);
       e = { count: 0, reset: now + this.windowMs };
-      this.hits.set(key, e);
     }
+    this.hits.set(key, e);
     e.count += 1;
     return e.count > this.limit ? Math.max(1, Math.ceil((e.reset - now) / 1000)) : 0;
   }
 
+  /** How many keys are counted right now, for tests. */
+  get size(): number {
+    return this.hits.size;
+  }
+
   private prune(now: number) {
     for (const [k, v] of this.hits) if (v.reset <= now) this.hits.delete(k);
-    // Still full (a flood of distinct keys): start over rather than grow without bound.
-    if (this.hits.size >= this.maxKeys) this.hits.clear();
+    // Still full (a flood of distinct keys): the tenth that has been quiet longest goes, never the whole table.
+    // Forgetting every count at once would lift the limit for everybody, the callers already over theirs included,
+    // each time the flood filled it.
+    evictOldest(this.hits, this.maxKeys);
+  }
+}
+
+/** Drops the entries at the front of a full map (a `Map` keeps the order its keys were put in): a tenth of its room. */
+export function evictOldest(map: Map<string, unknown>, maxKeys: number): void {
+  if (map.size < maxKeys) return;
+  let drop = map.size - maxKeys + Math.max(1, Math.ceil(maxKeys / 10));
+  for (const key of map.keys()) {
+    if (drop-- <= 0) break;
+    map.delete(key);
   }
 }
 

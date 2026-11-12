@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { OWN_ERRORS, type ActResult, type OwnErrorBody, type OwnErrorCode, type TurnOpen } from '@bootr/shared/own-agent';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ACT_BODY_BYTES, readOwnBody, resetOwnLimits, RUN_PER_MINUTE, UPLOAD_BODY_BYTES, UPLOADS_IN_FLIGHT, uploadsInFlight } from '@/lib/server/own-agent';
+import { ACT_BODY_BYTES, ownLimitSizes, readOwnBody, resetOwnLimits, RUN_PER_MINUTE, UPLOAD_BODY_BYTES, UPLOADS_IN_FLIGHT, uploadsInFlight } from '@/lib/server/own-agent';
 import { COIN, startFakeSupervisor, TINY_PNG_BASE64, type FakeSupervisor } from '../../../../../../packages/mcp/test/fake-supervisor.mjs';
 import { POST as act } from './act/route';
 import { POST as disconnect } from './disconnect/route';
@@ -114,6 +114,11 @@ describe('the bearer credential', () => {
       await error(await call('status', {}, {}, bad), 'unauthorized');
     }
     for (const scheme of ['Basic', 'bearer', 'HMAC', 'Token']) await error(await call('status', {}, { authorization: `${scheme} ${credential}` }), 'unauthorized');
+    expect(fake.seen).toHaveLength(0);
+    // Nor is anything counted under it: text that is not a credential gets no count of its own to fill the table
+    // with (security review L7). The same on the route that also keeps a moment per client.
+    for (let i = 0; i < 50; i++) await error(await call(i % 2 ? 'due' : 'upload', {}, {}, `not-a-credential-${i}`), 'unauthorized');
+    expect(ownLimitSizes()).toMatchObject({ runByCredential: 0, dueNext: 0 });
     expect(fake.seen).toHaveLength(0);
     // Well formed and unknown: the agent service is the one that knows.
     await error(await call('status', {}, {}, `bootr_agt_${'a'.repeat(43)}`), 'unauthorized');

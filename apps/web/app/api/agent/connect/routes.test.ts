@@ -5,7 +5,7 @@ import { SiweMessage } from 'siwe';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET as platform } from '@/app/api/platform/route';
-import { resetOwnLimits } from '@/lib/server/own-agent';
+import { ownLimitSizes, resetOwnLimits } from '@/lib/server/own-agent';
 import { issueNonce } from '@/lib/server/siwe-verify';
 import { COIN, DRAFT_ID, OWN_ERRORS as FAKE_ERRORS, SECOND_COIN, startFakeSupervisor, type FakeSupervisor } from '../../../../../../packages/mcp/test/fake-supervisor.mjs';
 import { POST as approve } from './approve/route';
@@ -387,6 +387,8 @@ describe('POST /api/agent/connect/token', () => {
       expect((await error(await token(post('/api/agent/connect/token', { deviceCode })), 'invalid_request')).field).toBe('deviceCode');
     }
     expect(fake.seen).toHaveLength(0);
+    // And nothing is counted under text that cannot be a device code.
+    expect(ownLimitSizes().tokenByCode).toBe(0);
     await error(await token(post('/api/agent/connect/token', { deviceCode: 'A'.repeat(43) })), 'grant_not_found');
   });
 
