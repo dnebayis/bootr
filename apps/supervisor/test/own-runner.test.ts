@@ -389,6 +389,63 @@ describe('switching never lands inside a step', () => {
   });
 });
 
+describe('switching: a lease that is lost mid-switch writes nothing', () => {
+  it('to the Bootr agent: when the lease is gone after the own turn was closed, the runner is not written', async () => {
+    await withWorld(async (world) => {
+      setFlag(world, true);
+      const agent = await seedAgent(world, { config: { runner: 'own' } });
+      setOwnHooks({
+        closeTurn: async (ctx, agentId) => {
+          // something else took the agent meanwhile (the lease ran out, or a hook gave it away)
+          await ctx.db.update(runtimes).set({ leaseToken: 'someone-else', leaseUntil: new Date(ctx.now() + 60_000) }).where(eq(runtimes.agentId, agentId));
+          return true;
+        },
+      });
+      expect(await switchTo(world, agent, 'hosted')).toMatchObject({ ok: false, status: 503, body: { error: 'supervisor_unavailable' } });
+      expect((await agentRow(world)).config).toEqual(agent.config);
+      expect(await world.db.select().from(actions)).toEqual([]);
+      // and the other holder's lease is left alone
+      expect((await runtimeRow(world)).leaseToken).toBe('someone-else');
+    });
+  });
+
+  it('to my own agent: when the lease is gone after the wait on the relay, the stored hosted turn is not touched', async () => {
+    await withWorld(async (world) => {
+      setFlag(world, true);
+      const key = 'inf:7:3:slow';
+      const hostedTurn = { role: 'social', startedAt: world.ctx.now(), steps: 1, nudged: false, reasons: ['pending_mention'], messages: [{ role: 'system', content: 'rules' }], inbox: {}, recentSteps: [] };
+      const agent = await seedAgent(world, { runtime: { state: { ...initialState(), inferenceKey: key } as unknown as Record<string, unknown>, turn: hostedTurn as unknown as Record<string, unknown> } });
+      await world.db.insert(inference).values({ idempotencyKey: key, agentId: AGENT_ID, cycle: 3, requestHash: '0x1', request: { model: MODEL, messages: [] }, status: 'unknown', receipt: { payment: { x402Version: 2, payload: { signature: '0xsig' } } } });
+      // the relay answers only after the lease has passed to someone else
+      world.inference.state.requests = (async () => {
+        await world.db.update(runtimes).set({ leaseToken: 'tick-lease', leaseUntil: new Date(world.ctx.now() + 60_000) }).where(eq(runtimes.agentId, AGENT_ID));
+        return new Response(JSON.stringify({ status: 'unknown' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as unknown as () => Response;
+      const result = await switchTo(world, agent, 'own');
+      expect(result).toMatchObject({ ok: false, status: 503, body: { error: 'supervisor_unavailable' } });
+      const runtime = await runtimeRow(world);
+      expect(runtime.turn).toEqual(hostedTurn);
+      expect((runtime.state as unknown as AgentState).inferenceKey).toBe(key);
+      expect(runnerOf((await agentRow(world)).config)).toBe('hosted');
+    });
+  });
+
+  it('holds the lease for longer than a thought can take, so a slow relay cannot let a turn start under the switch', async () => {
+    await withWorld(async (world) => {
+      setFlag(world, true);
+      const agent = await seedAgent(world);
+      let until: Date | null = null;
+      setOwnHooks({
+        applyRunnerQuota: async () => {
+          until = (await runtimeRow(world)).leaseUntil;
+        },
+      });
+      expect(await switchTo(world, agent, 'own')).toMatchObject({ ok: true });
+      expect(until!.getTime() - world.ctx.now()).toBeGreaterThanOrEqual(world.ctx.config.INFERENCE_TIMEOUT_MS + 60_000);
+    });
+  });
+});
+
 describe('own agent to Bootr agent: what is in flight', () => {
   it('an open own turn is closed by the engine hook, under the lease, before the runner is written', async () => {
     await withWorld(async (world) => {

@@ -25,7 +25,7 @@ import { actions, agents, runtimes } from '../db/schema.js';
 import { SLEEP_USDC } from '../fuel.js';
 import { reconcileInference } from '../inference.js';
 import { settlePlatformNumbers } from '../platform-numbers.js';
-import { acquireLease, releaseLease, saveRuntime, trimState, type AgentState, type Turn } from '../runtime.js';
+import { acquireLease, LEASE_MS, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from '../runtime.js';
 import { settleWeeklyDigest } from '../weekly-digest.js';
 import { ownEnabled, ownHooks } from './registry.js';
 
@@ -58,11 +58,19 @@ function sameModel(a: string, b: string): boolean {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * How long the switch holds the lease at most. Reconciling a paid thought may wait for the relay as long as a thought
+ * takes, so the lease must outlast that: a lease that ran out mid-switch would let the tick start a turn under it.
+ */
+function switchLeaseMs(ctx: SupervisorContext): number {
+  return Math.max(LEASE_MS, ctx.config.INFERENCE_TIMEOUT_MS + 60_000);
+}
+
 /** The runtime lease, tried again until `waitMs` of real time has passed; null when the step in progress outlasted it. */
 async function leaseWithin(ctx: SupervisorContext, agentId: string, token: string, waitMs: number, pollMs: number): Promise<RuntimeRow | null> {
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const row = await acquireLease(ctx, agentId, token);
+    const row = await acquireLease(ctx, agentId, token, switchLeaseMs(ctx));
     if (row) return row;
     if (Date.now() >= deadline) return null;
     await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
@@ -170,6 +178,7 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
     if (runner === 'hosted') {
       // The open own turn ends like a cut-short turn. Its sent or held action stays pending and settles from its receipt.
       const closed = await ownHooks.closeTurn(ctx, agent.agentId, 'runner_switched');
+      if (!(await renewLease(ctx, agent.agentId, lease, switchLeaseMs(ctx)))) return refuse('supervisor_unavailable');
       const runtime = (await ctx.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, agent.agentId) })) ?? leased;
       const turn = runtime.turn as unknown as Turn | null;
       if (turn && (turn as { own?: unknown }).own) {
@@ -196,6 +205,8 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
       }
       const turn = runtime.turn as unknown as Turn | null;
       if (turn) dropTurn(state, turn, "the agent was switched to its creator's own AI client");
+      // Still ours after the wait on the relay? If not, something else may be working on the agent: write nothing.
+      if (!(await renewLease(ctx, agent.agentId, lease, switchLeaseMs(ctx)))) return refuse('supervisor_unavailable');
       // An own coin never sleeps for fuel; a pause or a held action stays what it is.
       const status = restingStatus(runtime);
       await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: null, status, ...(status === 'paused' ? {} : { nextAt: new Date(ctx.now()) }) });
