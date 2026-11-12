@@ -9,11 +9,11 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { parseUnits } from 'viem';
 import { type OwnErrorBody } from '@bootr/shared/own-agent';
-import { actions, inference, runtimes, treasuryOps } from '../src/db/schema.js';
+import { actions, agents, inference, runtimes, treasuryOps } from '../src/db/schema.js';
 import { processAgent, tick } from '../src/tick.js';
-import type { Turn } from '../src/runtime.js';
+import { acquireLease, releaseLease, type Turn } from '../src/runtime.js';
 import { AGENT_ID, seedAgent } from './helpers.js';
-import { act, connectClient, mention, openSocial, ownWorld, patchState, runtimeOf, seedOwn, stateOf, turnOf, type OwnWorld } from './own-helpers.js';
+import { OTHER_AGENT_ID, OTHER_KERNEL, act, connectClient, mention, openSocial, ownWorld, patchState, runtimeOf, seedOther, seedOwn, stateOf, turnOf, type OwnWorld } from './own-helpers.js';
 
 const MIN = 60_000;
 /** No fuel at all, fees waiting to be claimed (0.01 WETH at $3000), a mention waiting and an original post due. */
@@ -242,6 +242,164 @@ describe('own agent: the tick', () => {
       } finally {
         await w.close();
       }
+    }
+  });
+});
+
+/**
+ * The runner switch as it lands on the agent's row (own/runner-switch.ts): `runner` written and the revision bumped,
+ * under the runtime lease, which is released before this returns. Nothing else of the switch touches that row.
+ */
+async function switchRunnerUnderLease(w: OwnWorld, runner: 'own' | 'hosted', agentId: string = AGENT_ID): Promise<void> {
+  const token = `runner-switch:${agentId}:${runner}`;
+  expect(await acquireLease(w.ctx, agentId, token)).not.toBeNull();
+  try {
+    const row = (await w.db.query.agents.findFirst({ where: eq(agents.agentId, agentId) }))!;
+    await w.db.update(agents).set({ config: { ...row.config, runner, revision: Number((row.config as { revision?: number }).revision ?? 1) + 1 } }).where(eq(agents.agentId, agentId));
+  } finally {
+    await releaseLease(w.ctx, agentId, token);
+  }
+}
+
+describe('own agent: a runner switch between the tick\'s read of the agent row and its lease', () => {
+  it('hosted to own: the tick holds a hosted row for a coin that is own by now, and buys it no turn', async () => {
+    // The control: the same coin, no switch. The hosted path asks the model (which throws here), so the row alone decides.
+    const control = await ownWorld();
+    try {
+      const row = await seedAgent(control);
+      control.sender.items = [mention('1001')];
+      await processAgent(control.ctx, row, await runtimeOf(control));
+      expect(control.modelCalls()).toBeGreaterThan(0);
+    } finally {
+      await control.close();
+    }
+
+    const w = await ownWorld();
+    try {
+      // What the tick selected: a hosted coin with fuel, a mention waiting and a post due.
+      const stale = await seedAgent(w);
+      const selected = await runtimeOf(w);
+      w.sender.items = [mention('1001')];
+      const mentionReads = countMentionReads(w);
+      // The switch runs to its end before the tick reaches this agent.
+      await switchRunnerUnderLease(w, 'own');
+      const result = await processAgent(w.ctx, stale, selected);
+      expect(result).toEqual({ ran: false, reasons: ['agent_row_changed'], skipped: 'agent_row_changed' });
+      // Nothing was done on the stale row: no thought, no mention read, no turn, no sleep, no line on the coin page.
+      expect(w.modelCalls()).toBe(0);
+      expect(await w.db.select().from(inference)).toHaveLength(0);
+      expect(mentionReads()).toBe(0);
+      let runtime = await runtimeOf(w);
+      expect(runtime.turn).toBeNull();
+      expect(runtime.status).toBe('waiting');
+      expect(runtime.leaseToken).toBeNull();
+      expect(runtime.lastDecisionAt?.getTime()).toBe(selected.lastDecisionAt?.getTime());
+      expect((await w.db.select().from(actions)).filter((r) => 'tool' in r.action)).toHaveLength(0);
+      expect(w.indexer.posted).toHaveLength(0);
+      // The next tick reads the row as it is and takes the own path.
+      const report = await tick(w.ctx);
+      expect(report.errors).toEqual([]);
+      expect(report.ran).toEqual([]);
+      runtime = await runtimeOf(w);
+      expect(runtime.turn).toBeNull();
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'awake', model: 'own-agent' });
+      expect(w.modelCalls()).toBe(0);
+      expect(mentionReads()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('...and inside one tick: the switch of a later agent lands while an earlier one is being processed', async () => {
+    const w = await ownWorld();
+    try {
+      // Two coins due in the same tick: an own one first, then a hosted one with fuel, a mention waiting and a post due
+      // (the mock chain holds fuel for the test agent's kernel alone, so that one is the hosted coin).
+      await seedOther(w, { runtime: { nextAt: new Date(w.ctx.now() - 10 * MIN) } });
+      await seedAgent(w, { runtime: { nextAt: new Date(w.ctx.now() - MIN) } });
+      w.sender.items = [mention('1001')];
+      // While the first is processed (its line for the coin page is the last thing a tick does for an agent), the
+      // creator of the second switches it to their own agent.
+      const postSocial = w.ctx.indexer.postSocial.bind(w.ctx.indexer);
+      let switched = false;
+      w.ctx.indexer.postSocial = (async (...args: Parameters<typeof postSocial>) => {
+        if (!switched && args[0] === OTHER_KERNEL) {
+          switched = true;
+          await switchRunnerUnderLease(w, 'own');
+        }
+        return postSocial(...args);
+      }) as typeof postSocial;
+      const report = await tick(w.ctx);
+      expect(switched).toBe(true);
+      expect(report.errors).toEqual([]);
+      expect(report.processed).toEqual([OTHER_AGENT_ID, AGENT_ID]);
+      expect(report.ran).toEqual([]);
+      expect(w.modelCalls()).toBe(0);
+      expect((await runtimeOf(w)).turn).toBeNull();
+      expect((await runtimeOf(w)).leaseToken).toBeNull();
+      expect(await w.db.select().from(inference)).toHaveLength(0);
+      expect((await w.db.select().from(actions)).filter((r) => 'tool' in r.action)).toHaveLength(0);
+      // One tick later both are handled as own coins.
+      w.setNow(w.ctx.now() + MIN);
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect(w.indexer.posted.at(-1)).toMatchObject({ model: 'own-agent' });
+      expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('own to hosted: the tick holds an own row for a coin that is hosted by now, and does nothing of the own path to it', async () => {
+    const w = await ownWorld({ chain: { usdc: 0n, spenderUsdc: 0n } });
+    try {
+      // What the tick selected: an own coin. By the time the lease is taken the creator has switched it to the Bootr
+      // agent, whose first hosted turn was stored by the switch's own wake (a turn the own path would drop).
+      const stale = await seedOwn(w);
+      const selected = await runtimeOf(w);
+      await switchRunnerUnderLease(w, 'hosted');
+      const hostedTurn: Turn = { role: 'social', startedAt: w.ctx.now(), steps: 1, nudged: false, reasons: ['scheduled'], messages: [{ role: 'system', content: 'prompt' }, { role: 'user', content: '{}' }], inbox: {}, recentSteps: [] };
+      await w.db.update(runtimes).set({ turn: hostedTurn as unknown as Record<string, unknown>, status: 'sleeping' }).where(eq(runtimes.agentId, AGENT_ID));
+      const result = await processAgent(w.ctx, stale, selected);
+      expect(result).toEqual({ ran: false, reasons: ['agent_row_changed'], skipped: 'agent_row_changed' });
+      // The own path would have woken the row, dropped the stored hosted turn and told the coin page `own-agent`.
+      const runtime = await runtimeOf(w);
+      expect(runtime.status).toBe('sleeping');
+      expect((runtime.turn as unknown as Turn | null)?.steps).toBe(1);
+      expect((await stateOf(w)).continuation ?? null).toBeNull();
+      expect(runtime.leaseToken).toBeNull();
+      expect(w.indexer.posted).toHaveLength(0);
+      expect(w.modelCalls()).toBe(0);
+      // The next tick takes the hosted path from the row as it is: without fuel the coin stays asleep, and says so as a hosted one.
+      await w.db.update(runtimes).set({ turn: null }).where(eq(runtimes.agentId, AGENT_ID));
+      const report = await tick(w.ctx);
+      expect(report.errors).toEqual([]);
+      expect((await runtimeOf(w)).status).toBe('sleeping');
+      expect(w.indexer.posted.at(-1)).toMatchObject({ status: 'sleeping', model: 'openai/gpt-4.1-mini' });
+      expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a row that is what the tick read goes on as before, for both runners, and a config edit in the gap waits one tick', async () => {
+    const w = await ownWorld({ chain: { usdc: 0n, spenderUsdc: 0n } });
+    try {
+      const row = await seedAgent(w);
+      // unchanged: the hosted path (the sleep rule) is reached
+      expect(await processAgent(w.ctx, row, await runtimeOf(w))).toMatchObject({ ran: false, skipped: 'sleeping' });
+      // the creator saved a setting in the gap (the revision moved, the runner did not): this tick stands back
+      await w.db.update(agents).set({ config: { ...row.config, revision: 2 } }).where(eq(agents.agentId, AGENT_ID));
+      expect(await processAgent(w.ctx, row, await runtimeOf(w))).toMatchObject({ ran: false, skipped: 'agent_row_changed' });
+      // read again, it goes on
+      const fresh = (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect(await processAgent(w.ctx, fresh, await runtimeOf(w))).toMatchObject({ ran: false, skipped: 'sleeping' });
+      // an own row that is what was read takes the own path
+      await switchRunnerUnderLease(w, 'own');
+      const own = (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      expect(await processAgent(w.ctx, own, await runtimeOf(w))).toMatchObject({ ran: false, skipped: 'own_agent' });
+      expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
     }
   });
 });

@@ -10,7 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { interruptionPlan, pendingReplyDue, reconcile, wakeDecision, type AgentConfig, type AgentRole, type PendingAction, type RuntimeStatus } from '@bootr/agent-core';
-import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
+import { OWN_AGENT_MODEL_ID, runnerOf } from '@bootr/shared/own-agent';
 import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { kernelAbi } from './abi.js';
@@ -141,6 +141,11 @@ export interface ProcessResult {
   role?: AgentRole;
 }
 
+/** The revision of a stored config as written (`null` when it has none): compared, never interpreted. */
+function revisionOf(config: Record<string, unknown>): unknown {
+  return config.revision ?? null;
+}
+
 /** `_runtimeRow` is the row the caller selected; the leased copy is re-read so a concurrent writer cannot be stomped. */
 export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _runtimeRow: RuntimeRow): Promise<ProcessResult | null> {
   const lease = randomUUID();
@@ -149,6 +154,18 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
   const log = ctx.log.child({ agentId: agent.agentId });
   try {
     let runtime = leased;
+    // The agent row was read by the caller before this lease was taken, and in a tick that can be many seconds earlier
+    // (the agents before this one ran their turns in between). A runner switch writes `runner` and bumps the revision
+    // under this same lease (own/runner-switch.ts), so one that completed in that gap left the caller's row stale: a
+    // coin that is own by now would be given one more hosted turn, bought from its fuel, and a coin that is hosted by
+    // now would be handled as an own one. The stored config is read again under the lease; when who runs the coin or
+    // its revision is no longer what the caller read, nothing is done this tick and the next one starts from the row
+    // as it is.
+    const stored = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agent.agentId), columns: { config: true } });
+    if (!stored || runnerOf(stored.config) !== runnerOf(agent.config) || revisionOf(stored.config) !== revisionOf(agent.config)) {
+      log.info({ runner: stored ? runnerOf(stored.config) : null, was: runnerOf(agent.config) }, 'the agent row changed between its read and the lease; nothing done this tick');
+      return { ran: false, reasons: ['agent_row_changed'], skipped: 'agent_row_changed' };
+    }
     const config = agentConfigOf(agent);
     if (!config) return { ran: false, reasons: ['config_incomplete'], skipped: 'config_incomplete' };
 
