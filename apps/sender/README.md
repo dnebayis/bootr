@@ -390,16 +390,27 @@ X is not called and `throttled: true` comes back with the current eligible items
   "agentId": "a1",
   "month": "2026-10",
   "posts": 12,
+  "postsPlain": 7,
+  "postsWithLink": 1,
+  "replies": 4,
   "heldPosts": 0,
-  "reads": { "mentions": 40, "thread": 6, "account": 1, "timeline": 0, "users_me": 1 },
-  "readsTotal": 48,
-  "unitPriceUsd": { "post": 0.01, "read": 0.005 },
-  "estimatedUsd": { "posts": 0.12, "reads": 0.24, "total": 0.36 }
+  "reads": { "mentions": 40, "thread": 6, "account": 1, "timeline": 0, "users_me": 1, "metrics": 12 },
+  "readsTotal": 60,
+  "userReads": 2,
+  "unitPriceUsd": { "post": 0.015, "postWithLink": 0.2, "reply": 0.01, "read": 0.005, "userRead": 0.01 },
+  "estimatedUsd": { "posts": 0.345, "reads": 0.31, "total": 0.655 }
 }
 ```
 
-Only counts are stored. `posts` counts `sent` actions by `sentAt`. Each read counts the posts or
-users X returned. Reconciliation timeline reads are metered as `timeline`.
+Only counts are stored. `posts` counts `sent` actions by `sentAt`: posts, every part of a thread and replies.
+The same rows are split by what X charges for them (`src/metering.ts`, prices read on X's pricing page on
+2026-11-13): anything whose text carries a link is a post with a link (`postsWithLink`, $0.20, a reply
+included), else a reply (`replies`, $0.01), else a post (`postsPlain`, $0.015). A part of a thread after the
+first is stored as a post and priced as one; whether X prices a reply to one's own post lower is not known,
+so the estimate errs high. Each read counts the posts or users X returned: a post read is $0.005, a user
+read (`account`, `users_me`; `userReads`) $0.01. The metrics read (`POST /internal/read/metrics`) is metered
+by the posts X returned, one unit each, where it used to count one unit whatever it returned.
+Reconciliation timeline reads are metered as `timeline`.
 
 ### Rate budget
 
@@ -410,6 +421,29 @@ overshot by concurrent requests. X's own 429s are honoured through `x-rate-limit
 endpoint is cooled down until the reset, and reads retry once if the wait is 5 s or less. A 429
 on publish is a definite rejection. The creator's posts-per-day slider in the console (2 to 48, `POSTS_PER_DAY` in
 `@bootr/shared/workers`) is written here by the supervisor through `POST /internal/quota/:agentId`.
+
+**Threads.** A publish may carry `thread: { head, n, of }`: part `n` of `of` of the thread whose first part has
+the action id `head` (part `n` from 2 on has the id `<head>.t<n>`). The first part asks the budget for room for
+all `of` parts and is refused whole when there is none (`quota_exceeded`, nothing recorded); a thread with more
+parts than the agent may post in a day at all is recorded as rejected (`policy:thread_exceeds_quota`). A later
+part names no `replyTo`: the sender looks up the part before it by its id, requires that row to be this
+agent's and `sent`, and replies to its post, so a continuation can only hang under the agent's own post of the
+same thread. Every part is gated as an original post and held to `THREAD_PART_MAX_CHARS` (280) for every
+account; `THREAD_MAX_PARTS` (4) bounds `of`. The rows carry `thread_head` and `thread_n` (migration
+`0004_thread_and_links`), the answer to a publish says which part of which thread was stored (`thread: { head,
+n }`, which a caller reads before it hands over the next part), and `GET /internal/receipt/:actionId` of a first
+part lists every part the sender has a row for. `public-posts` leaves the later parts out.
+
+**Posts with a link.** At most `LINK_POSTS_PER_DAY` (3; `LINK_POSTS_PER_DAY_PLATFORM`, 8, for the platform's
+own account) posts or replies whose text carries a link per rolling 24 hours, counted next to the budget in the
+same lock; `POST /internal/quota/:agentId {linkPostsPerDay}` overrides it per agent and 0 switches the count
+off. Past it a publish with a link is refused with `link_quota` (429, with `limit` and `retryAt`), nothing is
+recorded, and the same post may be sent again without the link. A bounty job's own post (action ids that start
+with `bounty:`) counts and is never refused. `GET /internal/quota/:agentId` reports the count in use
+(`linkPostsUsed24h`) and the defaults.
+
+**A comment's author.** A publish may carry `aboutAuthorId`: the author of the post an original comments on.
+An author who told this agent to stop is refused (`policy:about_opted_out`), as a reply to them would be.
 
 ## Reconciliation (`src/reconcile.ts`)
 

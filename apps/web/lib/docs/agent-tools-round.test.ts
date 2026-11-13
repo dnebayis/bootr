@@ -42,6 +42,25 @@ describe('the docs of the agent’s newer tools', () => {
     expect(agents).toContain('Never a price, a forecast or a comparison with another coin.');
   });
 
+  it('say what the posting rules really do where the first draft of these pages guessed', () => {
+    // a thread is held to the coin's own posts per day
+    expect(agents).toContain('A thread never has more posts than the coin’s posts per day');
+    // a reply with a link counts toward the day's posts with a link
+    expect(agents).toContain('Replies with a link count too.');
+    // a comment's @ is held to accounts that wrote to the agent, and a government badge is not the blue tick
+    expect(agents).toContain('An @ is accepted in a comment only for an account that wrote to the agent in the last 30 days');
+    expect(agents).toContain('an account with a blue or business verified badge. Never an account on the creator’s blocked list or on Bootr’s own list');
+    expect(agents).not.toMatch(/government/i);
+    // posts written ahead: the day's count, the quiet hours, the review's two windows, the end of an unknown outcome, a coin out of fuel
+    expect(agents).toContain('at most 48 are written ahead in any 24 hours');
+    expect(agents).toContain('A time inside the platform’s quiet hours, when it has them, is refused.');
+    expect(agents).toContain('approved up to 60 minutes late it goes out at once; after that it expires');
+    expect(agents).toContain('If nothing is known 60 minutes after that window it is closed as it stands');
+    expect(agents).toContain('a Bootr agent that runs out of fuel after writing posts ahead still has them sent at their times');
+    // an own agent's turn: a thread is its one post, posts written ahead are apart from it
+    expect(agents).toContain('a thread is that one post. Posts written ahead are apart from it');
+  });
+
   it('say what the facts leave out on purpose, and that the note is no rule', () => {
     expect(agents).toContain('whether a question, a mention, a cashtag or a link drew more response');
     expect(agents).toContain('Nothing in Bootr reads it as a rule, so nothing it says can lift a limit.');
