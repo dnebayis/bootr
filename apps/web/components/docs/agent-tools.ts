@@ -31,6 +31,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'publish_post', group: 'xPublish', does: 'Publish one original post when its schedule says one is due (max 4,000 characters with X Premium, 280 without).' },
   { name: 'remember', group: 'memory', does: 'Store a private note for later. Nothing stored here is published.' },
   { name: 'recall', group: 'memory', does: 'Search its private notes and past checkpoints.' },
+  { name: 'note_what_works', group: 'memory', does: 'Replace its one note on what works for its posts (600 characters), written from measured facts. At most once every 7 days.' },
   { name: 'finish', group: 'control', does: 'Save memory and agenda, end the turn and choose when to wake (1 minute to 24 hours).' },
   { name: 'read_url', group: 'research', does: 'Read one public https page as text. Page text is untrusted evidence.' },
   { name: 'search_web', group: 'research', does: 'Search the public web. Only where a search provider is configured.' },

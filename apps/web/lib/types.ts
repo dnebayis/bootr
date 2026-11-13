@@ -353,6 +353,12 @@ export interface AgentConfig {
   services: AgentServicesPolicy;
   /** The bounds of the Bounties power, whether or not it is on. */
   bounties: AgentBountiesPolicy;
+  /** Whether the agent may comment on a post it read, as a post of its own. On unless the creator switched it off. */
+  comments: boolean;
+  /** Who gets a reply: verified accounts and other Bootr agents, or also anyone who replies under the agent's own posts. */
+  replyAudience: ReplyAudience;
+  /** The X accounts the creator asked the agent to follow: handles without the `@`, at most `WATCHLIST_MAX`. */
+  watchlist: string[];
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -377,6 +383,14 @@ export interface AgentConfig {
 }
 
 export type { Runner, RunnerView };
+
+/** Who gets a reply (`REPLY_AUDIENCES` in packages/agent-core). */
+export type ReplyAudience = 'verified' | 'own_threads';
+export const REPLY_AUDIENCES: readonly ReplyAudience[] = ['verified', 'own_threads'];
+/** The most X accounts a creator may ask the agent to follow (`MAX_WATCHLIST_HANDLES` in packages/agent-core). */
+export const WATCHLIST_MAX = 5;
+/** An X handle without the `@`, as the watched accounts are stored. */
+export const X_HANDLE_RE = /^[a-z0-9_]{1,15}$/;
 
 export type AgentXConnection = 'connected' | 'revoked' | 'none';
 
@@ -462,6 +476,59 @@ export interface AgentConfigChanges {
   services?: Partial<AgentServicesPolicy>;
   /** Partial: a missing field keeps its stored value. */
   bounties?: Partial<AgentBountiesPolicy>;
+  comments?: boolean;
+  replyAudience?: ReplyAudience;
+  /** The whole list each time: at most `WATCHLIST_MAX` X handles, without the `@`. */
+  watchlist?: string[];
+}
+
+// ---------------------------------------------------------------- what works, scheduled posts (console, signed session)
+
+/** One kept version of the agent's note on what works (the agent service's `WhatWorksItem`). */
+export interface WhatWorksItem {
+  id: string;
+  /** '' on a row the creator's clear wrote. */
+  text: string;
+  /** ISO 8601. */
+  at: string;
+  by: 'agent' | 'creator';
+  /** The measured facts the agent had in front of it when it wrote this version. */
+  facts: string[];
+}
+
+/** `POST /api/agent/[kernel]/what-works/list` and `/clear`: the agent's note on what works for its coin, newest first. */
+export interface AgentWhatWorks {
+  /** False when the note is switched off on this deployment. */
+  enabled: boolean;
+  maxChars: number;
+  /** The id of the note in force; null when there is none yet or the creator cleared it. */
+  current: string | null;
+  /** When the agent may next revise its note (ISO); null when that is not known yet. */
+  nextRevisionAt: string | null;
+  items: WhatWorksItem[];
+  token?: string;
+}
+
+/** A post the agent wrote ahead and set a time for (the agent service's scheduled list). */
+export interface ScheduledPost {
+  id: string;
+  /** ISO 8601: when it goes out. */
+  sendAt: string;
+  /** `waiting`, or `waiting_review` while it waits for the creator's review. */
+  status: string;
+  /** The first part's text. */
+  text: string;
+  /** Posts in all: 1 for a single post, more for a thread. */
+  parts: number;
+  picture: boolean;
+}
+
+/** `POST /api/agent/[kernel]/scheduled/list` and `/cancel`. */
+export interface AgentScheduledPosts {
+  items: ScheduledPost[];
+  /** How many more posts may wait; null when the service did not say. */
+  mayQueue: number | null;
+  token?: string;
 }
 
 // ---------------------------------------------------------------- bounties (supervisor, via /api/agent/[kernel]/bounties)
