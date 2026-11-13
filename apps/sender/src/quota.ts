@@ -1,4 +1,5 @@
-import { and, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { carriesLink } from '@bootr/agent-core';
 import type { SenderContext } from './context.js';
 import type { Db } from './db/client.js';
 import { actions, quotas } from './db/schema.js';
@@ -14,6 +15,11 @@ export interface EffectiveQuota {
    * (`sender_quotas.reads_per_day`), else the sender's default; 0 = no budget.
    */
   readsPerDay: number;
+  /**
+   * The agent's own count of posts with a link per rolling 24 h (`sender_quotas.link_posts_per_day`); null = the
+   * sender's default for its kind (`linkLimitFor`), 0 = no count.
+   */
+  linkPostsPerDay: number | null;
   lastMentionsReadAt: Date | null;
   mentionsSinceId: string | null;
 }
@@ -32,6 +38,7 @@ export async function getQuota(
     postsPerDay: q?.postsPerDay ?? ctx.defaults.postsPerDay,
     mentionReadIntervalSec: q?.mentionReadIntervalSec ?? ctx.defaults.mentionReadIntervalSec,
     readsPerDay: q?.readsPerDay ?? ctx.defaults.readsPerDay,
+    linkPostsPerDay: q?.linkPostsPerDay ?? null,
     lastMentionsReadAt: q?.lastMentionsReadAt ?? null,
     mentionsSinceId: q?.mentionsSinceId ?? null,
   };
@@ -44,6 +51,7 @@ export async function setQuota(
     postsPerDay?: number | null;
     mentionReadIntervalSec?: number | null;
     readsPerDay?: number | null;
+    linkPostsPerDay?: number | null;
   },
 ): Promise<EffectiveQuota> {
   const set: Partial<typeof quotas.$inferInsert> = { updatedAt: ctx.now() };
@@ -51,6 +59,7 @@ export async function setQuota(
   if (patch.mentionReadIntervalSec !== undefined)
     set.mentionReadIntervalSec = patch.mentionReadIntervalSec;
   if (patch.readsPerDay !== undefined) set.readsPerDay = patch.readsPerDay;
+  if (patch.linkPostsPerDay !== undefined) set.linkPostsPerDay = patch.linkPostsPerDay;
   await ctx.db
     .insert(quotas)
     .values({ agentId, ...set })
@@ -78,6 +87,73 @@ export async function postsInWindow(
       ),
     );
   return { count: Number(row?.n ?? 0), oldest: row?.oldest ? new Date(row.oldest) : null };
+}
+
+/**
+ * When the budget has room for `need` more posts: the moment the row that must leave the window first has left it.
+ * `limit - need` rows may stay, so the row that counts is the one `count + need - limit` from the oldest. Null when
+ * there is room now. Used for a thread, whose first part asks for room for all of its parts.
+ */
+export async function roomFreeAt(
+  db: Db | Tx,
+  agentId: string,
+  since: Date,
+  limit: number,
+  need: number,
+): Promise<Date | null> {
+  const rows = await db
+    .select({ createdAt: actions.createdAt })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.agentId, agentId),
+        inArray(actions.status, ['pending', 'sent', 'held']),
+        gt(actions.createdAt, since),
+      ),
+    )
+    .orderBy(asc(actions.createdAt));
+  const mustLeave = rows.length + need - limit;
+  if (mustLeave <= 0) return null;
+  const row = rows[Math.min(mustLeave, rows.length) - 1];
+  return row ? new Date(row.createdAt.getTime() + POST_WINDOW_MS) : null;
+}
+
+/**
+ * The count of posts with a link in force for one publish: the agent's own value when it has one, else the sender's
+ * default for its kind (the platform's own account has its own). 0 = no count.
+ */
+export function linkLimitFor(
+  ctx: SenderContext,
+  quota: Pick<EffectiveQuota, 'linkPostsPerDay'>,
+  platform: boolean,
+): number {
+  if (quota.linkPostsPerDay !== null) return quota.linkPostsPerDay;
+  return (platform ? ctx.defaults.linkPostsPerDayPlatform : ctx.defaults.linkPostsPerDay) ?? 0;
+}
+
+/**
+ * Posts and replies with a link that count against the link budget: everything that may have reached X in the window
+ * (as `postsInWindow` counts), whose text carries a link as X would make one (agent-core `carriesLink`). The texts are
+ * read and counted here: the window holds at most a day's posts.
+ */
+export async function linkPostsInWindow(
+  db: Db | Tx,
+  agentId: string,
+  since: Date,
+): Promise<{ count: number; oldest: Date | null }> {
+  const rows = await db
+    .select({ text: actions.text, createdAt: actions.createdAt })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.agentId, agentId),
+        inArray(actions.status, ['pending', 'sent', 'held']),
+        gt(actions.createdAt, since),
+      ),
+    )
+    .orderBy(asc(actions.createdAt));
+  const linked = rows.filter((r) => carriesLink(r.text));
+  return { count: linked.length, oldest: linked[0]?.createdAt ?? null };
 }
 
 /**

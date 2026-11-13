@@ -9,16 +9,25 @@
  *   - rejects: the row is marked and the note reaches the agent as a short observation on its next turn
  *     (`takeFeedback`); a pending row older than `APPROVAL_TTL_MS` is rejected by the system with the note "expired".
  * A queued item raises the creator's notification at once (`notifyPending`, notifications.ts); sending is the notifier's job.
+ *
+ * A thread is one item (docs/design/agent-tools-2.md section 3.5): its later parts wait in `meta.thread`, the
+ * duplicate check is over all parts, approving sends all of them through the one send of an original
+ * (`postHooks.sendOriginal`, post-send.ts) and rejecting rejects all. A comment keeps the post it is about in
+ * `meta.about`. The rules that are new with threads and comments are applied when the item is queued, as the broker
+ * applies them to a post sent at once (broker `originalRules`).
  */
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
-import { PolicyError, validatePost } from '@bootr/agent-core';
+import { PolicyError, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
 import { MentionError, publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import { agentDirectory, conversationGuard } from './agent-directory.js';
 import { bountyApprovalView, decideBountyApproval } from './bounties.js';
-import { inboxViews, publicAddressesOf, type BrokerEnv } from './broker/index.js';
+import { inboxViews, openReplyEligibility, originalRules, publicAddressesOf, type BrokerEnv } from './broker/index.js';
+import type { CommentAbout } from './comment-posts.js';
+import { postHooks, type OriginalResult } from './post-send.js';
+import { SCHEDULED_ID_RE, retryableSend, threadLimits, type CommentedOriginal } from './thread-send.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, approvals, type ApprovalDecision, type ApprovalKind, type ApprovalStatus } from './db/schema.js';
 import { loadImage, mediaFor, WITHOUT_PICTURE } from './images.js';
@@ -70,6 +79,18 @@ export interface ApprovalView {
    * paying transaction hash in the body). Null for a post or reply.
    */
   bounty: Record<string, unknown> | null;
+  /** A thread: the texts of the parts after `text`, in order, so the creator reads all of what approving sends. Absent for a single post. */
+  thread?: string[];
+  /** A scheduled post (`meta.scheduled`): the time it goes out when approved by then, ISO. Absent for a post that goes out on approval. */
+  scheduledFor?: string;
+}
+
+/** The parts after the first of a queued thread, and the time a queued scheduled post is for, as the item's meta keeps them. */
+function reviewExtras(meta: unknown): Pick<ApprovalView, 'thread' | 'scheduledFor'> {
+  const m = (meta ?? {}) as { thread?: unknown; scheduled?: { sendAt?: unknown } };
+  const thread = Array.isArray(m.thread) ? m.thread.map((p) => (p as { text?: unknown } | null)?.text).filter((t): t is string => typeof t === 'string') : [];
+  const sendAt = typeof m.scheduled?.sendAt === 'string' && Number.isFinite(Date.parse(m.scheduled.sendAt)) ? new Date(Date.parse(m.scheduled.sendAt)).toISOString() : null;
+  return { ...(thread.length ? { thread } : {}), ...(sendAt ? { scheduledFor: sendAt } : {}) };
 }
 
 function postUrl(agent: AgentRow, postId: string | null): string | null {
@@ -100,6 +121,7 @@ async function viewOf(ctx: SupervisorContext, agent: AgentRow, row: ApprovalRow,
     decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
     expiresAt: new Date(row.createdAt.getTime() + APPROVAL_TTL_MS).toISOString(),
     bounty: bountyApprovalView(row.meta),
+    ...reviewExtras(row.meta),
   };
 }
 
@@ -108,10 +130,13 @@ async function viewOf(ctx: SupervisorContext, agent: AgentRow, row: ApprovalRow,
  * A reply's `replyAuthorId` / `conversationId` ride along so the agent-to-agent caps (agent-directory.ts) count it.
  */
 function queuedResult(row: Pick<ApprovalRow, 'id' | 'kind' | 'createdAt' | 'meta'>): Record<string, unknown> {
-  const meta = (row.meta ?? {}) as { replyAuthorId?: string; conversationId?: string };
+  const meta = (row.meta ?? {}) as { replyAuthorId?: string; conversationId?: string; openReply?: boolean; about?: CommentAbout };
   return {
     ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}),
     ...(meta.conversationId ? { conversationId: meta.conversationId } : {}),
+    // What the day's counts read from a queued row as from a sent one: a reply outside the verified audience, a comment's author.
+    ...(meta.openReply ? { openReply: true } : {}),
+    ...(meta.about ? { about: meta.about } : {}),
     queued: true,
     approvalId: row.id,
     status: 'pending_approval',
@@ -140,7 +165,9 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   const existing = await ctx.db.query.approvals.findFirst({ where: eq(approvals.id, pending.id) });
   if (existing) return { kind: 'completed', result: queuedResult(existing) };
 
-  const hash = textHash(action.input.text);
+  // The duplicate check is over all parts of a thread; a single post hashes as it always did.
+  const parts = action.tool === 'publish_post' ? threadParts(action.input) : [action.input.text];
+  const hash = textHash(parts.join('\n'));
   const dup = await ctx.db.query.approvals.findFirst({
     where: and(eq(approvals.agentId, agent.agentId), eq(approvals.textHash, hash), gt(approvals.createdAt, new Date(now - APPROVAL_DEDUPE_MS))),
     orderBy: desc(approvals.createdAt),
@@ -156,6 +183,14 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     // The alt text is public text: the same gates as the post, before the creator sees the item (image-rules.ts).
     const alt = altTextRisk(image.alt, { platform: agent.config.platform === true });
     if (alt) return { kind: 'failed', error: `${alt.message}. ${WITHOUT_PICTURE}` };
+  }
+  // A scheduled post (its id says so) is queued for a time of its own: the scheduler asked what that time allows.
+  const scheduled = SCHEDULED_ID_RE.test(pending.id);
+  // An original queued now stands for the slot of this moment: a scheduled post that is due within one post interval
+  // holds that slot already (post-send.ts `beforeOriginalNow`), as it does for a post sent at once.
+  if (action.tool === 'publish_post' && !scheduled) {
+    const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent, now);
+    if (scheduledSoon) return { kind: 'failed', error: scheduledSoon };
   }
   // The agent-to-agent caps apply to a reviewed post too: the creator's approval does not undo a loop.
   const capped = await conversationGuard(ctx, agent, { platform: agent.config.platform === true }, pending, env);
@@ -177,23 +212,50 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
       meta.replyAuthorId = item.authorId;
       meta.conversationId = item.conversationId;
     }
-    meta.replyEligibility = eligibility;
+    // A reply outside the verified audience is held to the day's count when it is queued, as one sent at once is.
+    const open = config ? await openReplyEligibility(ctx, config, item, eligibility, pending.id) : { eligibility, openReply: false };
+    meta.replyEligibility = open.eligibility;
+    if (open.openReply) meta.openReply = true;
   }
   // What the sender will check on approval, checked now: credits that name nobody in the text are dropped, and a
   // text the publish gate refuses comes back to the agent as a tool error instead of failing after the creator's approval.
   let attributions: { username: string; sourceUrl: string }[];
+  const threaded = action.tool === 'publish_post' && parts.length > 1;
   try {
-    attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions);
+    if (action.tool === 'publish_post' && threaded && scheduled) {
+      // A scheduled thread: the gate over every part, as the send will run it again; the day's count and the turn's
+      // own posts are questions about the time it goes out, which the scheduler asked and asks again at the send.
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, { original: true });
+      const refused = threadRefusal(parts, attributions, { limits: threadLimits(ctx, agent), hasMedia: !!action.input.imageId, platform: agent.config.platform === true });
+      if (refused) return { kind: 'failed', error: refused };
+      meta.thread = action.input.thread;
+    } else if (action.tool === 'publish_post' && (threaded || action.input.about)) {
+      // A thread or a comment: the rules the broker applies before a send apply before the creator sees the item.
+      const config = agentConfigOf(agent);
+      if (!config) return { kind: 'failed', error: 'agent_not_ready: the agent has no X account yet; nothing was queued' };
+      const checked = await originalRules(ctx, agent, config, pending.id, action.input, env.inbox, !!action.input.imageId);
+      if ('refusal' in checked) return { kind: 'failed', error: checked.refusal };
+      attributions = checked.attributions;
+      if (threaded) meta.thread = action.input.thread;
+      if (checked.about) meta.about = checked.about;
+    } else {
+      // An original post names with an `@` only who the mention audience allows; a reply is not touched (attributions.ts).
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, kind === 'post' ? { original: true } : {});
+    }
   } catch (err) {
     if (err instanceof MentionError) return { kind: 'failed', error: err.message };
     throw err;
   }
   if (attributions.length) meta.attributions = attributions;
-  try {
-    validatePost(action.input.text, attributions, kind === 'post' ? 'original' : 'short', !!action.input.imageId, { platform: agent.config.platform === true });
-  } catch (err) {
-    const code = err instanceof PolicyError ? err.code : 'invalid_post';
-    return { kind: 'failed', error: `${code}: the post does not pass the publish gate; rewrite it` };
+  if (action.tool === 'publish_post' && action.input.topic) meta.topic = action.input.topic;
+  // A thread passed its own gate over every part above (`validateThread`); a single post passes the common one here.
+  if (!threaded) {
+    try {
+      validatePost(action.input.text, attributions, kind === 'post' ? 'original' : 'short', !!action.input.imageId, { platform: agent.config.platform === true });
+    } catch (err) {
+      const code = err instanceof PolicyError ? err.code : 'invalid_post';
+      return { kind: 'failed', error: `${code}: the post does not pass the publish gate; rewrite it` };
+    }
   }
 
   const [row] = await ctx.db
@@ -355,40 +417,77 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     }
     media = mediaFor(image);
   }
-  const meta = row.meta as { replyAuthorId?: string; conversationId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[] };
-  let res;
-  try {
-    res = await ctx.sender.publish({
-      agentId: agent.agentId,
+  const meta = row.meta as { replyAuthorId?: string; conversationId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[]; openReply?: boolean; thread?: { text: string }[]; about?: CommentAbout; topic?: string };
+  /** What became of the send: the sender's word for it, the post on X when it is known, and what the action row keeps. */
+  let sent: { senderStatus: string; postId: string | null; result: Record<string, unknown> };
+  if (row.kind === 'post') {
+    // An original post, one or a thread, goes out through the one send of an original (post-send.ts): every part
+    // through the publish gate, the quota and the opt-outs, nothing ever twice, a broken thread cut where it broke.
+    const post: CommentedOriginal = {
       actionId: row.id,
       text: row.text,
-      ...(row.kind === 'reply' && row.inReplyTo ? { replyTo: row.inReplyTo, replyEligibility: meta.replyEligibility ?? { eligible: false, reason: 'not_in_inbox' }, ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}) } : {}),
+      ...(meta.thread?.length ? { thread: meta.thread } : {}),
+      ...(row.imageId ? { imageId: row.imageId } : {}),
       ...(meta.attributions ? { attributions: meta.attributions } : {}),
-      ...(media ? { media } : {}),
-      publicAddresses: publicAddressesOf(config),
-      xUserId: config.xUserId,
-    });
-  } catch (err) {
-    if (err instanceof SenderError && (err.retryable || err.code === 'storage_unavailable_after_send')) {
-      ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, code: err.code }, 'approved post could not be sent right now');
-      return reject(503, 'sender_unavailable', `the post could not be sent right now (${err.code}); try again`);
+      ...(meta.about?.authorId ? { aboutAuthorId: meta.about.authorId } : {}),
+    };
+    const outcome = await postHooks.sendOriginal(ctx, agent, post);
+    if (outcome.kind === 'failed') {
+      if (retryableSend(outcome)) {
+        // Nothing was recorded at the sender (its quota, a consent lookup, an account that is not connected): the item stays pending.
+        ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, code: outcome.error.split(/\s/)[0] }, 'approved post could not be sent right now');
+        return reject(503, 'sender_unavailable', `the post could not be sent right now (${outcome.error.replace(/^sender:/, '')}); try again`);
+      }
+      await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: outcome.error.slice(0, MAX_NOTE_CHARS), decidedAt: now }).where(eq(approvals.id, row.id));
+      ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error: outcome.error.split(/\s/)[0] }, 'approved post failed at the sender');
+      return reject(409, 'publish_failed', `the sender refused the post: ${outcome.error.replace(/^sender_rejected:/, '')}`);
     }
-    const error = err instanceof SenderError ? `sender:${err.code}` : err instanceof Error ? err.message.split('\n')[0]! : String(err);
-    const transport = err instanceof Error && /abort|timeout|fetch failed|ECONN|network/i.test(error);
-    if (transport) return reject(503, 'sender_unavailable', `the sender did not answer (${error}); try again`);
-    await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: error.slice(0, MAX_NOTE_CHARS), decidedAt: now }).where(eq(approvals.id, row.id));
-    ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error }, 'approved post failed at the sender');
-    return reject(409, 'publish_failed', `the sender refused the post: ${error}`);
+    if (outcome.kind === 'unknown' && !/^sender_(held|pending)$/.test(outcome.error)) {
+      // The sender did not answer: nothing is known sent, and approving again repeats the same ids (never a second post).
+      ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error: outcome.error }, 'approved post could not be sent right now');
+      return reject(503, 'sender_unavailable', outcome.error === 'storage_unavailable_after_send' ? `the post could not be sent right now (${outcome.error}); try again` : `the sender did not answer (${outcome.error}); try again`);
+    }
+    // completed, or held/pending at the sender: maybe published, never resent; the sender receipt keeps the truth.
+    const result = (outcome.kind === 'completed' ? (outcome.result as OriginalResult & Record<string, unknown>) : {}) ?? {};
+    sent = { senderStatus: outcome.kind === 'completed' ? 'sent' : outcome.error.replace(/^sender_/, ''), postId: typeof result.postId === 'string' ? result.postId : null, result: { ...result, ...(meta.about ? { about: meta.about } : {}) } };
+  } else {
+    let res;
+    try {
+      res = await ctx.sender.publish({
+        agentId: agent.agentId,
+        actionId: row.id,
+        text: row.text,
+        ...(row.kind === 'reply' && row.inReplyTo ? { replyTo: row.inReplyTo, replyEligibility: meta.replyEligibility ?? { eligible: false, reason: 'not_in_inbox' }, ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}) } : {}),
+        ...(meta.attributions ? { attributions: meta.attributions } : {}),
+        ...(media ? { media } : {}),
+        publicAddresses: publicAddressesOf(config),
+        xUserId: config.xUserId,
+      });
+    } catch (err) {
+      if (err instanceof SenderError && (err.retryable || err.code === 'storage_unavailable_after_send')) {
+        ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, code: err.code }, 'approved post could not be sent right now');
+        return reject(503, 'sender_unavailable', `the post could not be sent right now (${err.code}); try again`);
+      }
+      const error = err instanceof SenderError ? `sender:${err.code}` : err instanceof Error ? err.message.split('\n')[0]! : String(err);
+      const transport = err instanceof Error && /abort|timeout|fetch failed|ECONN|network/i.test(error);
+      if (transport) return reject(503, 'sender_unavailable', `the sender did not answer (${error}); try again`);
+      await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: error.slice(0, MAX_NOTE_CHARS), decidedAt: now }).where(eq(approvals.id, row.id));
+      ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error }, 'approved post failed at the sender');
+      return reject(409, 'publish_failed', `the sender refused the post: ${error}`);
+    }
+
+    if (res.status === 'rejected') {
+      const error = `sender_rejected:${res.receipt.error ?? 'rejected'}`;
+      await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: error, decidedAt: now }).where(eq(approvals.id, row.id));
+      ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error }, 'approved post rejected by the sender');
+      return reject(409, 'publish_failed', `the sender refused the post: ${res.receipt.error ?? 'rejected'}`);
+    }
+    // sent (or held/pending: maybe published, never resent; the sender receipt keeps the truth).
+    const replyPostId = res.status === 'sent' ? (res.providerPostId ?? null) : null;
+    sent = { senderStatus: res.status, postId: replyPostId, result: { ...(replyPostId ? { postId: replyPostId } : {}), ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}), ...(meta.conversationId ? { conversationId: meta.conversationId } : {}), ...(meta.openReply ? { openReply: true } : {}) } };
   }
 
-  if (res.status === 'rejected') {
-    const error = `sender_rejected:${res.receipt.error ?? 'rejected'}`;
-    await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: error, decidedAt: now }).where(eq(approvals.id, row.id));
-    ctx.log.warn({ agentId: agent.agentId, approvalId: row.id, error }, 'approved post rejected by the sender');
-    return reject(409, 'publish_failed', `the sender refused the post: ${res.receipt.error ?? 'rejected'}`);
-  }
-  // sent (or held/pending: maybe published, never resent; the sender receipt keeps the truth).
-  const postId = res.status === 'sent' ? (res.providerPostId ?? null) : null;
+  const postId = sent.postId;
   const tool = row.kind === 'reply' ? 'publish_reply' : 'publish_post';
   await ctx.db
     .insert(actions)
@@ -396,9 +495,10 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
       actionId: `${row.id}-approved`,
       agentId: agent.agentId,
       cycleKey: `approval:${row.id}`,
-      action: { tool, input: { text: row.text, ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.inReplyTo ? { postId: row.inReplyTo } : {}) }, approval: { id: row.id, by, note } },
-      status: res.status === 'sent' ? 'completed' : 'held',
-      result: { ...(postId ? { postId } : {}), ...(meta.replyAuthorId ? { replyAuthorId: meta.replyAuthorId } : {}), ...(meta.conversationId ? { conversationId: meta.conversationId } : {}), approvalId: row.id, senderStatus: res.status },
+      // The input as the agent gave it (section 17.4): a thread's later parts, the post a comment is about, its topic.
+      action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}), ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.inReplyTo ? { postId: row.inReplyTo } : {}), ...(meta.about ? { about: { postId: meta.about.postId } } : {}), ...(meta.topic ? { topic: meta.topic } : {}) }, approval: { id: row.id, by, note } },
+      status: sent.senderStatus === 'sent' ? 'completed' : 'held',
+      result: { ...sent.result, approvalId: row.id, senderStatus: sent.senderStatus },
       receipt: postId ? { postId } : null,
       createdAt: now,
       updatedAt: now,
@@ -406,10 +506,10 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     .onConflictDoNothing();
   const [updated] = await ctx.db
     .update(approvals)
-    .set({ status: 'approved', decision: 'approve', decidedBy: by, note: res.status === 'sent' ? note : `${note ? `${note} · ` : ''}sender ${res.status}`, postId, decidedAt: now })
+    .set({ status: 'approved', decision: 'approve', decidedBy: by, note: sent.senderStatus === 'sent' ? note : `${note ? `${note} · ` : ''}sender ${sent.senderStatus}`, postId, decidedAt: now })
     .where(eq(approvals.id, row.id))
     .returning();
-  ctx.log.info({ agentId: agent.agentId, approvalId: row.id, by, postId, senderStatus: res.status }, 'post approved by the creator and sent');
+  ctx.log.info({ agentId: agent.agentId, approvalId: row.id, by, postId, senderStatus: sent.senderStatus }, 'post approved by the creator and sent');
   return { ok: true, approval: await viewOf(ctx, agent, updated!, false) };
 }
 

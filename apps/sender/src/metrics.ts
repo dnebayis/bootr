@@ -11,7 +11,7 @@ import type { XPartialError, XTweet } from './x-client.js';
  * supervisor measures each post once, about a day after it went out, and feeds a short note back to
  * the agent (apps/supervisor/src/post-performance.ts).
  *
- * One `GET /2/tweets?ids=` call per request (at most MAX_METRICS_IDS ids). When X refuses the
+ * One `GET /2/tweets?ids=` call per request (at most MAX_METRICS_IDS ids), metered as one read per post X returned. When X refuses the
  * author-only field (a post from an earlier account, a reply X attributes elsewhere), the read is
  * repeated once with public fields only, so the caller still gets likes, replies, reposts, quotes and
  * (since X publishes them) impressions. Deleted or invisible posts are listed in `missing`.
@@ -95,6 +95,7 @@ export async function readMetrics(
   const items = tweets.map(toPostMetrics);
   const seen = new Set(items.map((i) => i.postId));
   const missing = ids.filter((id) => !seen.has(id));
-  await meterRead(ctx, input.agentId, 'metrics', 1);
+  // X charges a read per post returned (and once per post per UTC day), not per request: the meter counts the posts.
+  await meterRead(ctx, input.agentId, 'metrics', tweets.length);
   return { ok: true, items, missing, nonPublic: nonPublic && items.some((i) => i.nonPublic !== null) };
 }

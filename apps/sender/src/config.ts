@@ -48,6 +48,17 @@ export const configSchema = z.object({
    * (src/read-budget.ts); past it the read routes answer 429 `read_budget_exhausted` until midnight UTC. 0 = no budget.
    */
   SENDER_DEFAULT_READS_PER_DAY: num(z.coerce.number().int().nonnegative(), 400),
+  /**
+   * Posts with a link one agent may send per rolling 24 hours (src/quota.ts): X charges a post that carries a link
+   * about thirteen times a plain one. Past it a publish with a link answers 429 `link_quota` and nothing is recorded.
+   * `LINK_POSTS_PER_DAY_PLATFORM` is the same count for the platform's own account. An agent's own value
+   * (`sender_quotas.link_posts_per_day`) wins over both. 0 = no count.
+   */
+  LINK_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 3),
+  LINK_POSTS_PER_DAY_PLATFORM: num(z.coerce.number().int().nonnegative(), 8),
+  /** Posts in one thread, the first included, and the length of each part (src/publish.ts); the supervisor holds the same limits. */
+  THREAD_MAX_PARTS: num(z.coerce.number().int().nonnegative(), 4),
+  THREAD_PART_MAX_CHARS: num(z.coerce.number().int().positive(), 280),
   /** Requests per minute per client IP on the public read API (`GET /public/posts/:agentId`); 0 = off. */
   SENDER_PUBLIC_RATE_LIMIT_PER_MIN: num(z.coerce.number().int().nonnegative(), 120),
   /** `1`/`true`: rate-limit by the right-most X-Forwarded-For entry (one trusted proxy in front). */

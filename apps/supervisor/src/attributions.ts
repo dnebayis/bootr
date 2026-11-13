@@ -6,10 +6,21 @@
  *    coin's page, so the host can welcome @newcoinagent without inventing a "source";
  *  - a mention of @bootrfun, Bootr's official account, is credited with the site.
  * A mention of anyone else still needs the model's own credit; otherwise the gate refuses the post, as designed.
+ *
+ * The mention audience (docs/design/agent-tools-2.md section 4.4; `MENTION_AUDIENCE`, `engaged` by default): X's rule
+ * for automated accounts is "no unsolicited @mentions", and every agent posts through one X app. So an `@` in an
+ * ORIGINAL post is accepted only for another Bootr agent, for @bootrfun, for an account that wrote to the agent within
+ * `ENGAGED_WINDOW_MS` (the sender's inbox says so, with the account lookup the mention check makes anyway:
+ * `addressedAt`) and for an account on the creator's reply list. Anybody else is named without the `@`, which notifies
+ * nobody: `mention_not_engaged`. `anyone` is the rule as it was. A comment (`publish_post {about}`) is held to the
+ * engaged audience whatever the setting: it must never be a way to notify a stranger. Replies are not touched: a reply
+ * goes to somebody who addressed the agent already.
  */
 import { creditedAttributions, mentionedHandles } from '@bootr/agent-core';
+import { eq } from 'drizzle-orm';
 import { agentDirectory } from './agent-directory.js';
 import type { SupervisorContext } from './context.js';
+import { agents } from './db/schema.js';
 import { cachedPlatformFeedData } from './platform-feed.js';
 
 export interface Attribution {
@@ -23,14 +34,28 @@ export const BOOTR_OFFICIAL_HANDLE = 'bootrfun';
 // Our own indexer's addresses (tests use short hex ids); the page path is what matters to the gate.
 const ADDRESS = /^0x[0-9a-f]{1,40}$/;
 
-/** Thrown by `publishAttributions` when a mentioned account is unknown on X or has not posted in half a year. */
+/** The refusal an original post gets for an `@` of an account that did not write to the agent. */
+export const mentionNotEngaged = (handle: string): string => `mention_not_engaged: @${handle} has not written to you; name them without the @. Nothing was posted.`;
+
+/**
+ * Thrown by `publishAttributions` when a mentioned account is unknown on X or has not posted in half a year, or
+ * (`mention_not_engaged`) when an original post names with an `@` somebody who did not write to the agent.
+ */
 export class MentionError extends Error {
   constructor(
-    readonly code: 'mention_unknown_account' | 'mention_inactive_account',
+    readonly code: 'mention_unknown_account' | 'mention_inactive_account' | 'mention_not_engaged',
     readonly handle: string,
   ) {
-    super(`${code}: @${handle} ${code === 'mention_unknown_account' ? 'is not an account on X' : 'has not posted in months'}; name the source by its name and link instead of a mention`);
+    super(code === 'mention_not_engaged' ? mentionNotEngaged(handle) : `${code}: @${handle} ${code === 'mention_unknown_account' ? 'is not an account on X' : 'has not posted in months'}; name the source by its name and link instead of a mention`);
   }
+}
+
+/** What kind of publish the credits are for; absent = a reply or a template post, to which the mention audience does not apply. */
+export interface MentionAudienceOptions {
+  /** An original post: held to `MENTION_AUDIENCE`. */
+  original?: boolean;
+  /** A comment (`publish_post {about}`): held to the engaged audience whatever `MENTION_AUDIENCE` says. */
+  comment?: boolean;
 }
 
 /** Account checks of this process: handle -> {ok, until}; one X lookup per handle per day. */
@@ -69,7 +94,35 @@ export async function verifyMentions(ctx: Pick<SupervisorContext, 'sender' | 'no
   }
 }
 
-export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'now' | 'indexer' | 'log' | 'config' | 'sender'>, agentId: string, text: string, given: readonly Attribution[] | undefined): Promise<Attribution[]> {
+/**
+ * Every mentioned account outside Bootr must have written to the agent within `ENGAGED_WINDOW_MS`, or be on the
+ * creator's reply list (stable ids). One account lookup through the sender per handle: it answers the account's id and
+ * when it last wrote to the agent. An account X does not know is `mention_unknown_account` as before; a lookup that
+ * fails for another reason cannot show that the mention is welcome, so it is refused too.
+ */
+export async function requireEngaged(ctx: Pick<SupervisorContext, 'db' | 'sender' | 'now' | 'log' | 'config'>, agentId: string, handles: readonly string[]): Promise<void> {
+  if (handles.length === 0) return;
+  const row = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agentId), columns: { config: true } });
+  const listed = (row?.config as { replyAuthorIds?: unknown } | undefined)?.replyAuthorIds;
+  const replyAuthorIds = new Set(Array.isArray(listed) ? listed.filter((id): id is string => typeof id === 'string') : []);
+  for (const handle of handles) {
+    let engaged = false;
+    try {
+      const res = await ctx.sender.readAccount(agentId, handle);
+      const id = (res.user as { id?: unknown } | null)?.id;
+      const at = typeof res.addressedAt === 'string' ? Date.parse(res.addressedAt) : Number.NaN;
+      engaged = (typeof id === 'string' && replyAuthorIds.has(id)) || (Number.isFinite(at) && ctx.now() - at <= ctx.config.ENGAGED_WINDOW_MS);
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const message = err instanceof Error ? err.message : String(err);
+      if (status === 404 || /x_not_found|not found/i.test(message)) throw new MentionError('mention_unknown_account', handle);
+      ctx.log.warn({ agentId, handle, err }, 'mention refused: the account could not be looked up, so it is not known to have written to the agent');
+    }
+    if (!engaged) throw new MentionError('mention_not_engaged', handle);
+  }
+}
+
+export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'now' | 'indexer' | 'log' | 'config' | 'sender'>, agentId: string, text: string, given: readonly Attribution[] | undefined, audience: MentionAudienceOptions = {}): Promise<Attribution[]> {
   const out = creditedAttributions(text, given);
   const mentions = [...new Set(mentionedHandles(text))];
   if (mentions.length === 0) return out;
@@ -99,7 +152,10 @@ export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'n
     const url = coinPages.get(h);
     if (url && !credited.has(h)) out.push({ username: h, sourceUrl: url });
   }
+  const outside = mentions.filter((h) => !coinPages.has(h));
+  // An original post names with an `@` only who wrote to the agent first (the mention audience); a comment always.
+  if (audience.comment === true || (audience.original === true && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside);
   // Mentions of accounts outside Bootr (the model's own credits) must be real, recently active X accounts.
-  await verifyMentions(ctx, agentId, mentions.filter((h) => !coinPages.has(h)));
+  else await verifyMentions(ctx, agentId, outside);
   return out;
 }

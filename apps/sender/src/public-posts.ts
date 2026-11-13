@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context } from 'hono';
 import { getAccount } from './accounts.js';
@@ -8,7 +8,7 @@ import { AGENT_ID_RE } from './rebind.js';
 
 /**
  * Public, read-only view of what an agent has published on X: `GET /public/posts/:agentId?limit=3`.
- * Only rows with status `sent` and a provider post id. Never exposes tokens, X user ids, reply
+ * Only rows with status `sent` and a provider post id; of a thread, only its first part. Never exposes tokens, X user ids, reply
  * targets, errors or anything about held / rejected actions.
  */
 
@@ -66,6 +66,8 @@ export async function publicPosts(
           eq(actions.agentId, agentId),
           eq(actions.status, 'sent'),
           isNotNull(actions.providerPostId),
+          // A thread shows as its first part: the parts after it are left out.
+          or(isNull(actions.threadN), lte(actions.threadN, 1)),
         ),
       )
       .orderBy(desc(actions.createdAt))

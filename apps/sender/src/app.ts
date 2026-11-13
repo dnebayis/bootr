@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { getAccount, premiumOf, refreshVerifiedType, revokeAccount, saveAccount, verifiedTypeOf } from './accounts.js';
 import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
@@ -20,6 +21,7 @@ import {
   threadSchema,
   timelineSchema,
 } from './inbox.js';
+import { inbox } from './db/schema.js';
 import { log } from './log.js';
 import { getMetering, meterRead } from './metering.js';
 import { metricsSchema, readMetrics } from './metrics.js';
@@ -45,9 +47,9 @@ import {
   RateLimiter,
 } from './public-posts.js';
 import { AGENT_ID_RE, rebindAccount, rebindSchema } from './rebind.js';
-import { POST_WINDOW_MS, getQuota, postsInWindow, setQuota } from './quota.js';
+import { POST_WINDOW_MS, getQuota, linkLimitFor, linkPostsInWindow, postsInWindow, setQuota } from './quota.js';
 import { readsToday } from './read-budget.js';
-import { getAction, toReceipt } from './receipt.js';
+import { getAction, threadOf, toReceipt } from './receipt.js';
 
 export const PUBLIC_BODY_LIMIT = 8 * 1024;
 export const INTERNAL_BODY_LIMIT = 256 * 1024;
@@ -60,8 +62,26 @@ const quotaSchema = z
     mentionReadIntervalSec: z.number().int().min(0).max(86_400).nullable().optional(),
     /** X read units per UTC day for this agent (read-budget.ts); null returns it to the sender's default. */
     readsPerDay: z.number().int().min(1).max(100_000).nullable().optional(),
+    /** Posts with a link per rolling 24 h for this agent (quota.ts `linkLimitFor`); null returns it to the sender's default, 0 = no count. */
+    linkPostsPerDay: z.number().int().min(0).max(2400).nullable().optional(),
   })
   .strict();
+
+/**
+ * When `authorId` last addressed the agent: the time its newest mention or reply was taken into the agent's inbox,
+ * or null when it never wrote to it. The supervisor's mention check asks this with every account read, so an original
+ * post can be held to accounts that wrote to the agent first (X: no unsolicited @mentions). The agent's own posts in
+ * its inbox do not count.
+ */
+export async function addressedAt(ctx: SenderContext, agentId: string, authorId: string): Promise<string | null> {
+  const [row] = await ctx.db
+    .select({ observedAt: inbox.observedAt, reason: inbox.reason })
+    .from(inbox)
+    .where(and(eq(inbox.agentId, agentId), eq(inbox.authorId, authorId)))
+    .orderBy(desc(inbox.observedAt))
+    .limit(1);
+  return row && row.reason !== 'own_post' ? row.observedAt.toISOString() : null;
+}
 
 type Fail = { ok: false; status: number; error: string; message: string; retryAt?: number };
 
@@ -308,10 +328,13 @@ export function createApp(ctx: SenderContext): Hono {
   internal.get('/receipt/:actionId', async (c) => {
     const row = await getAction(ctx, c.req.param('actionId'));
     if (!row) return c.json({ error: 'not_found' }, 404);
+    // The first part of a thread also says what became of the parts after it: `thread: {n, of, parts[{n, status, providerPostId}]}`.
+    const thread = await threadOf(ctx, row);
     return c.json({
       status: row.status,
       ...(row.providerPostId ? { providerPostId: row.providerPostId } : {}),
       receipt: toReceipt(ctx, row),
+      ...(thread ? { thread } : {}),
     });
   });
 
@@ -369,7 +392,9 @@ export function createApp(ctx: SenderContext): Hono {
     if (!body.ok) return body.res;
     const res = await readAccount(ctx, body.data);
     if (!res.ok) return fail(c, res);
-    return c.json({ user: res.user, latestPostAt: res.latestPostAt ?? null, activity: res.activity });
+    // `addressedAt`: when this account last wrote to the agent (its inbox), or null; a read that fails says nothing.
+    const addressed = await addressedAt(ctx, body.data.agentId, res.user.id).catch(() => undefined);
+    return c.json({ user: res.user, latestPostAt: res.latestPostAt ?? null, activity: res.activity, ...(addressed !== undefined ? { addressedAt: addressed } : {}) });
   });
 
   /**
@@ -458,11 +483,14 @@ export function createApp(ctx: SenderContext): Hono {
   internal.get('/quota/:agentId', async (c) => {
     const q = await getQuota(ctx, c.req.param('agentId'));
     // What is used of both budgets right now, so the caller can say what is left (the supervisor's agent status).
-    const [posts, readsUsedToday] = await Promise.all([
-      postsInWindow(ctx.db, q.agentId, new Date(ctx.now().getTime() - POST_WINDOW_MS)),
+    const since = new Date(ctx.now().getTime() - POST_WINDOW_MS);
+    const [posts, readsUsedToday, linked] = await Promise.all([
+      postsInWindow(ctx.db, q.agentId, since),
       readsToday(ctx, q.agentId),
+      linkPostsInWindow(ctx.db, q.agentId, since),
     ]);
-    return c.json({ ...quotaView(q), postsUsed24h: posts.count, readsUsedToday });
+    // The link budget as it stands, so the supervisor can refuse a thread whose later part carries a link before the first part is sent.
+    return c.json({ ...quotaView(q), postsUsed24h: posts.count, readsUsedToday, linkPostsUsed24h: linked.count, linkPostsDefault: linkLimitFor(ctx, { linkPostsPerDay: null }, false), linkPostsDefaultPlatform: linkLimitFor(ctx, { linkPostsPerDay: null }, true) });
   });
 
   internal.post('/quota/:agentId', async (c) => {
@@ -488,6 +516,7 @@ function quotaView(q: Awaited<ReturnType<typeof getQuota>>) {
     postsPerDay: q.postsPerDay,
     mentionReadIntervalSec: q.mentionReadIntervalSec,
     readsPerDay: q.readsPerDay,
+    linkPostsPerDay: q.linkPostsPerDay,
     lastMentionsReadAt: q.lastMentionsReadAt?.toISOString() ?? null,
   };
 }

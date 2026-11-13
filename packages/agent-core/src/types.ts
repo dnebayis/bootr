@@ -357,8 +357,14 @@ export const toolInputSchemas = {
   publish_post: z
     .object({
       text: text(4000),
+      /** More posts connected under this one, in order: a thread. With it, `text` is the first part and is 280 at most. */
+      thread: z.array(z.object({ text: text(280) }).strict()).min(1).max(3).optional(),
       attributions: z.array(attributionSchema).max(3).optional(),
       imageId: z.string().max(128).optional(),
+      /** The post this one comments on: a post the agent read in this turn (apps/supervisor/src/comment-posts.ts). */
+      about: z.object({ postId: xIdSchema }).strict().optional(),
+      /** The agent's own word for what the post is about; code only keeps it. */
+      topic: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
     })
     .strict(),
   remember: z

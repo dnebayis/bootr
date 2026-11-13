@@ -11,7 +11,17 @@ export interface SenderContext {
   serviceKey: string;
   now: () => Date;
   /** `readsPerDay`: X read units per agent per UTC day (src/read-budget.ts); 0 = no budget. */
-  defaults: { postsPerDay: number; mentionReadIntervalSec: number; readsPerDay: number };
+  defaults: {
+    postsPerDay: number;
+    mentionReadIntervalSec: number;
+    readsPerDay: number;
+    /** Posts with a link per agent per rolling 24 h, for a coin's agent and for the platform's own account; absent or 0 = no count. */
+    linkPostsPerDay?: number;
+    linkPostsPerDayPlatform?: number;
+    /** Posts in one thread and the length of each part; absent = agent-core's `THREAD_MAX_PARTS` and `THREAD_PART_MAX_CHARS`. */
+    threadMaxParts?: number;
+    threadPartMaxChars?: number;
+  };
   /** Where /oauth/callback redirects the browser; unset = JSON. */
   oauthReturnUrl?: string;
   /** X request timeout; used to decide when a `pending` row is stale. */

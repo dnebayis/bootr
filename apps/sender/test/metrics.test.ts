@@ -55,7 +55,8 @@ describe('POST /internal/read/metrics', () => {
     const auth = env.fake.calls[0]!;
     expect(auth.path).toBe('/2/tweets');
     const [metered] = await env.db.select().from(reads).where(eq(reads.agentId, AGENT));
-    expect(metered).toMatchObject({ kind: 'metrics', count: 1 });
+    // X charges per post returned, not per request: two posts came back
+    expect(metered).toMatchObject({ kind: 'metrics', count: 2 });
     expect(JSON.stringify(res.body)).not.toContain('access-token-secret');
   });
 

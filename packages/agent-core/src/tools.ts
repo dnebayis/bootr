@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from './social/thread.js';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
 import { POST_LIMITS, postLimitsFor } from './social/post-validation.js';
 import { DRAFT_INTENT_TOOL_NAME, MAX_RESOLVE_BATCH, WHAT_WORKS_NOTE_MAX_CHARS, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
@@ -39,12 +40,48 @@ function define<N extends ToolName>(
 }
 
 /**
- * The `publish_post` description for an account whose original posts may run to `limit` characters: 4000 with X
- * Premium, 280 without (X refuses a longer one with a bare 403, so the model must know the real number).
+ * Which of the optional fields of `publish_post` are offered (docs/design/agent-tools-2.md sections 3, 4 and 6). A
+ * piece that is switched off loses its sentence in the description and its field in the schema the model is shown;
+ * with all three off the tool reads exactly as it did before the fields existed. Absent = offered.
  */
-export function publishPostDescription(limit: number): string {
+export interface PublishPostOptions {
+  /** Posts a thread may add after the first (the thread limit minus one); 0 = no threads. */
+  threadMore?: number;
+  /** Whether `about` (a comment on a post the agent read) is offered. */
+  comments?: boolean;
+  /** Whether `topic` (the agent's own word for the post) is offered. */
+  topic?: boolean;
+}
+
+/** The options with their defaults filled in. */
+function postOptions(opts: PublishPostOptions = {}): Required<PublishPostOptions> {
+  const more = opts.threadMore ?? THREAD_MAX_PARTS - 1;
+  return { threadMore: Number.isFinite(more) ? Math.max(0, Math.min(THREAD_MAX_PARTS - 1, Math.floor(more))) : 0, comments: opts.comments ?? true, topic: opts.topic ?? true };
+}
+
+const sameOptions = (a: Required<PublishPostOptions>, b: Required<PublishPostOptions>): boolean => a.threadMore === b.threadMore && a.comments === b.comments && a.topic === b.topic;
+
+/**
+ * The `publish_post` description for an account whose original posts may run to `limit` characters: 4000 with X
+ * Premium, 280 without (X refuses a longer one with a bare 403, so the model must know the real number). `opts` says
+ * which optional fields are offered; each has its own sentence.
+ */
+export function publishPostDescription(limit: number, opts: PublishPostOptions = {}): string {
   const cap = limit < POST_LIMITS.original ? `up to ${limit} characters (this X account has no Premium; X refuses longer posts)` : `up to ${limit} characters`;
-  return `Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, ${cap}, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.`;
+  const { threadMore, comments, topic } = postOptions(opts);
+  const thread = threadMore > 0 ? ` thread (optional) adds up to ${threadMore} more connected post${threadMore === 1 ? '' : 's'} of at most ${THREAD_PART_MAX_CHARS} characters each when one post cannot carry the thought; most posts need none.` : '';
+  const about = 'about (optional) is {postId} of a post you read in this turn, when this post is your own comment on it: your thought in your own words, with no link to that post and no @ for its author';
+  const word = 'topic (optional) is your own one word for what the post is about';
+  const more = comments && topic ? ` ${about}; ${word}.` : comments ? ` ${about}.` : topic ? ` ${word}.` : '';
+  return `Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, ${cap}, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.${thread}${more}`;
+}
+
+/** The `publish_post` schema as the model is shown it: the catalog's, without the fields of the pieces that are off. */
+export function publishPostInput(opts: PublishPostOptions = {}): (typeof toolInputSchemas)['publish_post'] {
+  const { threadMore, comments, topic } = postOptions(opts);
+  if (threadMore > 0 && comments && topic) return toolInputSchemas.publish_post;
+  const off = { ...(threadMore > 0 ? {} : { thread: true as const }), ...(comments ? {} : { about: true as const }), ...(topic ? {} : { topic: true as const }) };
+  return toolInputSchemas.publish_post.omit(off) as unknown as (typeof toolInputSchemas)['publish_post'];
 }
 
 export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
@@ -287,15 +324,20 @@ export function toolEnabled(config: Pick<AgentConfig, 'capabilities' | 'ownerRul
 /** What the account may send, for the tools that say so: `premium` from the sender's account row (null = unknown, the defaults). */
 export interface ToolAccountOptions {
   premium?: boolean | null;
+  /** Which optional fields of `publish_post` this deployment and this coin offer; absent = all of them. */
+  post?: PublishPostOptions;
 }
 
 /**
  * The tools the model sees, with the account's own limits in their descriptions: `publish_post` names 280 characters
- * for an account without X Premium (`postLimitsFor`). Without `opts` (or with `premium` unknown) the catalog as is.
+ * for an account without X Premium (`postLimitsFor`) and offers the optional fields `opts.post` allows. Without `opts`
+ * (or with `premium` unknown and every field offered) the catalog as is.
  */
 export function toolsFor(config: Pick<AgentConfig, 'capabilities' | 'ownerRules'>, opts: ToolAccountOptions = {}): ToolDefinition[] {
   const limit = postLimitsFor(opts.premium).original;
-  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name)).map((tool) => (tool.name === 'publish_post' && limit !== POST_LIMITS.original ? { ...tool, description: publishPostDescription(limit) } : tool));
+  const post = postOptions(opts.post);
+  const asCatalog = limit === POST_LIMITS.original && sameOptions(post, postOptions());
+  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name)).map((tool) => (tool.name === 'publish_post' && !asCatalog ? { ...tool, description: publishPostDescription(limit, post), input: publishPostInput(post) } : tool));
 }
 
 export function toolByName(name: string): ToolDefinition | undefined {

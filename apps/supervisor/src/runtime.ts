@@ -55,6 +55,8 @@ import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
+import { noteSeen, seenInResult, type SeenPost } from './comment-posts.js';
+import { POST_SCHEDULED_SOON_RE } from './thread-send.js';
 import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
 import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
@@ -220,6 +222,12 @@ export interface Turn {
   ownCalls?: OwnCallRecord[];
   /** Own agent: the posts this turn already answered or closed; a second reply to one is refused (broker `ownGuard`). */
   ownHandled?: string[];
+  /**
+   * The posts the read tools showed in this turn (`read_x_thread`, `read_mentions`), newest last, 60 at most, with
+   * author id, handle, badge and date: a comment (`publish_post {about}`) may only be about a post the turn read
+   * (comment-posts.ts, which also counts the inbox and the watchlist section of the first observation).
+   */
+  seen?: SeenPost[];
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
@@ -1045,6 +1053,16 @@ export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: T
  */
 export async function afterSettledAction(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, state: AgentState, turn: Turn, action: Action, pending: Pick<PendingAction, 'id' | 'nextAt'>, result: ActionResult, log: Logger): Promise<void> {
   const publish = action.tool === 'publish_post' || action.tool === 'publish_reply';
+  // What a read showed is kept on the turn: a comment may only be about a post the agent read in it (comment-posts.ts).
+  if (result.status === 'completed' && (action.tool === 'read_x_thread' || action.tool === 'read_x_account' || action.tool === 'read_mentions')) noteSeen(turn, seenInResult(action.tool, result.result));
+  // A scheduled post of the coin's own holds the next interval (post-send.ts `beforeOriginalNow`), so this original was
+  // refused. A digest or a numbers post the turn carried is then neither posted nor closed: the turn forgets it, so
+  // its `finish` (or the runtime ending it) does not mark the week or the day done, and it is due again at the next free slot.
+  if (action.tool === 'publish_post' && result.status === 'failed' && POST_SCHEDULED_SOON_RE.test(result.error ?? '') && (turn.digestWeek || turn.numbersDay)) {
+    log.info({ actionId: pending.id, digestWeek: turn.digestWeek ?? null, numbersDay: turn.numbersDay ?? null }, 'a scheduled post holds this interval; the digest or numbers post stays open');
+    turn.digestWeek = null;
+    turn.numbersDay = null;
+  }
   // Every refused publish is on the record at info, by its code alone (never the text): until now a refusal
   // showed only in sv_actions, and three 403s in six minutes went unnoticed.
   if (publish && result.status === 'failed') log.info({ tool: action.tool, actionId: pending.id, code: errorCodeOf(result.error) }, 'publish refused');

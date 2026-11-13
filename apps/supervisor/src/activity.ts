@@ -14,16 +14,24 @@
  *   - `sv_bounty_jobs`: one row per job event (posted, judged, paid, no winner, cancelled, expired), in plain words
  *     with no address (bounties.ts `bountyActivity`). The job an own agent's client posted and the ruling it gave
  *     carry the same mark as its other rows.
+ * A thread is one `post` row that says how many of its posts went out ("Posted a thread on X (4 posts)", "(2 of 4 posts)"
+ * for one that was cut) and links the first; a comment says whose post it is about ("Commented on a post by @handle")
+ * and carries that post's link in `about` beside the link to the agent's own post.
+ * - `sv_scheduled_posts` (the scheduler's table): a scheduled post that did not go out, in plain words with no text
+ *   and no reason: refused for good when its time came, missed its time, or cancelled by the creator. The one that
+ *   did go out is an ordinary `post` row (its `sv_actions` row `<id>-sent`). An item the review queue already shows
+ *   (a scheduled post that was under review) is left to the review queue's own rows.
  * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer` | `service` | `bounty`;
  * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
 import { ownPresenceOf, ownTapeStatus } from '@bootr/shared/own-presence';
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { jsonb, pgTable, text as textColumn, timestamp } from 'drizzle-orm/pg-core';
 import { postIntervalMsOf } from './agent-config.js';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { approvalActivity } from './approvals.js';
 import { bountyActivity } from './bounties.js';
-import { actions, images, treasuryOps } from './db/schema.js';
+import { actions, agents, approvals, images, treasuryOps } from './db/schema.js';
 import { isOwn, OWN_AGENT_MARK, ownHooks } from './own/registry.js';
 import { tapeServiceCalls, type ServiceCallRow } from './services.js';
 import { formatUnits } from 'viem';
@@ -46,6 +54,13 @@ export interface ActivityItem {
    * place to serve bytes if a thumbnail is ever wanted. `alt` is null when the stored picture is gone (retention).
    */
   image?: { id: string; alt: string | null };
+  /** A comment (`publish_post {about}`): the post it is about, by handle, id and link. `url` stays the agent's own post. */
+  about?: { handle: string; postId: string; url: string };
+}
+
+/** The tape line of a thread: how many posts, and for a cut one how many of how many went out. */
+export function threadSummary(sent: number, of: number): string {
+  return sent >= of ? `Posted a thread on X (${of} posts)` : `Posted a thread on X (${sent} of ${of} posts)`;
 }
 
 export const ACTIVITY_DEFAULT_LIMIT = 50;
@@ -101,7 +116,13 @@ function plainActionItem(row: typeof actions.$inferSelect, xHandle: string | nul
   if (res.result?.queued === true) return null;
   const postId = res.postId ?? res.result?.postId;
   const url = typeof postId === 'string' && xHandle ? `https://x.com/${xHandle}/status/${postId}` : undefined;
-  return { at: row.createdAt.toISOString(), kind: a.tool === 'publish_post' ? 'post' : 'reply', summary: a.tool === 'publish_post' ? 'Posted on X' : 'Replied on X', ...(url ? { url } : {}) };
+  if (a.tool === 'publish_reply') return { at: row.createdAt.toISOString(), kind: 'reply', summary: 'Replied on X', ...(url ? { url } : {}) };
+  // An original post: a plain one, a thread (its first part is the link) or a comment on somebody's post.
+  const done = ((res.result ?? res) ?? {}) as { sent?: unknown; of?: unknown; about?: { handle?: unknown; postId?: unknown } };
+  const about = typeof done.about?.handle === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(done.about.handle) && typeof done.about.postId === 'string' && /^[0-9]{1,25}$/.test(done.about.postId) ? { handle: done.about.handle, postId: done.about.postId, url: `https://x.com/${done.about.handle}/status/${done.about.postId}` } : null;
+  const thread = typeof done.sent === 'number' && typeof done.of === 'number' && done.of > 1 ? threadSummary(done.sent, done.of) : null;
+  const summary = about ? `Commented on a post by @${about.handle}` : (thread ?? 'Posted on X');
+  return { at: row.createdAt.toISOString(), kind: 'post', summary, ...(url ? { url } : {}), ...(about ? { about } : {}) };
 }
 
 /** The op's amounts come from its stored description (treasury.ts writes them; the calls are raw calldata). */
@@ -176,6 +197,70 @@ export function statusItem(agent: AgentRow, runtime: RuntimeRow | null, own?: Ow
   return { at, kind: 'status', summary };
 }
 
+/**
+ * The scheduler's table as the tape reads it (docs/design/agent-tools-2.md section 17.6): the few columns it needs.
+ * The table and its migration are the time workstream's (`scheduledPosts` in db/schema.ts once that is merged; this
+ * read-only view can then give way to it). A database that has no such table yet has no such rows.
+ */
+const scheduledPostsView = pgTable('sv_scheduled_posts', {
+  id: textColumn('id').primaryKey(),
+  agentId: textColumn('agent_id').notNull(),
+  status: textColumn('status').notNull(),
+  error: textColumn('error'),
+  thread: jsonb('thread'),
+  via: textColumn('via'),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
+/** Whether the scheduler's table exists, asked once per database handle (and again while the answer is no). */
+const scheduledTableSeen = new WeakSet<object>();
+async function hasScheduledPosts(ctx: Pick<SupervisorContext, 'db'>): Promise<boolean> {
+  const key = ctx.db as unknown as object;
+  if (scheduledTableSeen.has(key)) return true;
+  const [row] = await ctx.db.select({ name: sql<string | null>`to_regclass('sv_scheduled_posts')::text` }).from(agents).limit(1);
+  if (!row?.name) return false;
+  scheduledTableSeen.add(key);
+  return true;
+}
+
+/** The tape line of a scheduled post that did not go out, or null for one the tape does not show (the agent's own cancel, a rejected review). */
+export function scheduledSummary(row: { status: string; error: string | null; thread: unknown }): string | null {
+  const what = Array.isArray(row.thread) && row.thread.length ? 'A scheduled thread' : 'A scheduled post';
+  if (row.status === 'failed') return `${what} could not be sent when its time came`;
+  if (row.status === 'missed') return `${what} missed its time and was not sent`;
+  if (row.status === 'cancelled' && row.error === 'cancelled by the creator') return `${what} was cancelled by the creator`;
+  return null;
+}
+
+/**
+ * Tape items for the scheduled posts of an agent that did not go out: failed, missed or cancelled by the creator.
+ * Never the text and never the reason (a public read). Never throws: a table that is not there, or a read that
+ * fails, is an empty list.
+ */
+export async function scheduledActivity(ctx: Pick<SupervisorContext, 'db' | 'log'>, agent: Pick<AgentRow, 'agentId'>, limit: number, before?: Date): Promise<ActivityItem[]> {
+  try {
+    if (!(await hasScheduledPosts(ctx))) return [];
+    const rows = await ctx.db
+      .select()
+      .from(scheduledPostsView)
+      .where(and(eq(scheduledPostsView.agentId, agent.agentId), inArray(scheduledPostsView.status, ['failed', 'missed', 'cancelled']), ...(before ? [lt(scheduledPostsView.updatedAt, before)] : [])))
+      .orderBy(desc(scheduledPostsView.updatedAt))
+      .limit(limit);
+    if (rows.length === 0) return [];
+    // A scheduled post that was under the creator's review has its row in the review queue (same id): shown there.
+    const reviewed = new Set((await ctx.db.select({ id: approvals.id }).from(approvals).where(inArray(approvals.id, rows.map((r) => r.id)))).map((r) => r.id));
+    const items: ActivityItem[] = [];
+    for (const row of rows) {
+      const summary = reviewed.has(row.id) ? null : scheduledSummary(row);
+      if (summary) items.push({ at: row.updatedAt.toISOString(), kind: 'post', summary: row.via === 'own' ? `${summary}${OWN_AGENT_MARK}` : summary });
+    }
+    return items;
+  } catch (err) {
+    ctx.log.warn({ agentId: agent.agentId, err: err instanceof Error ? err.message : String(err) }, 'scheduled posts could not be read for the tape');
+    return [];
+  }
+}
+
 /** The alt texts of the pictures the listed posts carry, in one read (none when no post carries one). */
 async function imageAlts(ctx: Pick<SupervisorContext, 'db'>, rows: (typeof actions.$inferSelect)[]): Promise<Map<string, string>> {
   const ids = [...new Set(rows.map((r) => (r.action as { input?: { imageId?: unknown } }).input?.imageId).filter((id): id is string => typeof id === 'string' && id.length > 0))];
@@ -196,7 +281,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
   // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
   const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image', 'upload_picture') or ${actions.action}->>'kind' = 'config_updated')`;
-  const [actionRows, opRows, approvalItems, serviceRows, bountyItems] = await Promise.all([
+  const [actionRows, opRows, approvalItems, serviceRows, bountyItems, scheduledItems] = await Promise.all([
     ctx.db
       .select()
       .from(actions)
@@ -212,6 +297,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
     approvalActivity(ctx, agent, limit, before),
     tapeServiceCalls(ctx, agent.agentId, limit, before),
     bountyActivity(ctx, agent, limit, before),
+    scheduledActivity(ctx, agent, limit, before),
   ]);
   const items: ActivityItem[] = [];
   const alts = await imageAlts(ctx, actionRows);
@@ -229,6 +315,7 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   for (const item of approvalItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
   for (const row of serviceRows) items.push(serviceItem(ctx.chain.chainId, row));
   for (const item of bountyItems) items.push(item);
+  for (const item of scheduledItems) items.push(item);
   // An own coin's row needs the clients connected now. A count that cannot be read is taken as one, so a database
   // hiccup never makes the public tape say that nothing is connected.
   const status = statusItem(agent, runtime, isOwn(agent) ? { clients: await ownHooks.countClients(ctx, agent.agentId).catch(() => 1), now: ctx.now() } : undefined);

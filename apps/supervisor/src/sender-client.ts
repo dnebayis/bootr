@@ -33,6 +33,32 @@ export interface SenderReceipt {
   createdAt?: string;
   sentAt?: string | null;
   signature?: string;
+  /** Present when the action is the first part of a thread: what became of every part the sender has a row for. */
+  thread?: SenderThreadReceipt;
+}
+
+/** `GET /internal/receipt/:actionId` of a thread's first part (apps/sender/src/receipt.ts `threadOf`). */
+export interface SenderThreadReceipt {
+  n: number;
+  /** The highest part the sender has a row for, not the length the thread was meant to have. */
+  of: number;
+  parts: { n: number; status: 'pending' | 'sent' | 'held' | 'rejected'; providerPostId?: string | null; error?: string | null }[];
+}
+
+/** A part of a thread on the publish body: the first part's action id, which part this is, how many there are. */
+export interface SenderThreadPart {
+  head: string;
+  n: number;
+  of: number;
+}
+
+/** `POST /internal/read/account` answer. */
+export interface SenderAccountRead {
+  user: Record<string, unknown>;
+  latestPostAt?: string | null;
+  activity?: 'recent' | 'stale' | 'unknown';
+  /** When this account last wrote to the agent (its newest inbox row), or null; absent on an older sender. */
+  addressedAt?: string | null;
 }
 
 export interface SenderPublishResponse {
@@ -40,6 +66,12 @@ export interface SenderPublishResponse {
   providerPostId?: string | null;
   receipt: SenderReceipt;
   duplicate?: boolean;
+  /**
+   * Present when the sender stored the publish as a part of a thread. A sender from before threads ignores the
+   * `thread` field of the body and would post a later part as a post of its own, so the supervisor sends the next part
+   * only after the first came back with this (thread-send.ts).
+   */
+  thread?: { head: string; n: number };
 }
 
 export interface SenderAccount {
@@ -135,6 +167,12 @@ export interface SenderQuota {
   postsUsed24h?: number;
   /** `GET` only: read units metered today (UTC). */
   readsUsedToday?: number;
+  /** The agent's own count of posts with a link per rolling 24 h; null = the sender's default for its kind. Absent on an older sender. */
+  linkPostsPerDay?: number | null;
+  /** `GET` only: posts with a link that count against that budget in the last 24 hours, and the sender's defaults (0 = no count). */
+  linkPostsUsed24h?: number;
+  linkPostsDefault?: number;
+  linkPostsDefaultPlatform?: number;
 }
 
 export class SenderError extends Error {
@@ -205,14 +243,21 @@ export class SenderClient {
     publicAddresses?: string[];
     /** The X user the agent config expects; the sender refuses to post as any other account (409 account_mismatch). */
     xUserId?: string;
+    /**
+     * A part of a thread (thread-send.ts): the sender chains part n under part n-1 by its own lookup and asks the
+     * daily quota for room for all parts at the first.
+     */
+    thread?: SenderThreadPart;
+    /** A comment: the author of the post it is about; the sender refuses one who opted out (`policy:about_opted_out`). */
+    aboutAuthorId?: string;
   }) {
     // A publish with media is three X calls (upload, alt text, post) of up to X_TIMEOUT_MS each.
     return this.call<SenderPublishResponse>('POST', '/internal/publish', body, body.media ? PUBLISH_MEDIA_TIMEOUT_MS : undefined);
   }
 
   receipt(actionId: string) {
-    return this.call<{ receipt: SenderReceipt } | SenderReceipt>('GET', `/internal/receipt/${encodeURIComponent(actionId)}`).then((r) =>
-      'receipt' in r && r.receipt ? r.receipt : (r as SenderReceipt),
+    return this.call<{ receipt: SenderReceipt; thread?: SenderThreadReceipt } | SenderReceipt>('GET', `/internal/receipt/${encodeURIComponent(actionId)}`).then((r) =>
+      'receipt' in r && r.receipt ? { ...r.receipt, ...(r.thread ? { thread: r.thread } : {}) } : (r as SenderReceipt),
     );
   }
 
@@ -246,7 +291,7 @@ export class SenderClient {
   }
 
   readAccount(agentId: string, username: string) {
-    return this.call<{ user: Record<string, unknown>; latestPostAt?: string | null; activity?: 'recent' | 'stale' | 'unknown' }>('POST', '/internal/read/account', { agentId, username });
+    return this.call<SenderAccountRead>('POST', '/internal/read/account', { agentId, username });
   }
 
   resolve(body: { agentId: string; postId: string; outcome: 'skip' | 'opt_out' | 'defer'; reason: string; reviewAt?: string }) {
@@ -278,7 +323,7 @@ export class SenderClient {
    * mention-read interval, and the agent's own X read budget (`readsPerDay`, own/quota.ts); `null` returns a field to the
    * sender's default. The sender's `setQuota` does the write.
    */
-  setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null; readsPerDay?: number | null }) {
+  setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null; readsPerDay?: number | null; linkPostsPerDay?: number | null }) {
     return this.call<SenderQuota>('POST', `/internal/quota/${encodeURIComponent(agentId)}`, patch);
   }
 

@@ -21,6 +21,7 @@
 import type { AgentConfig, RuntimeStatus, WakeDecision } from '@bootr/agent-core';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { cachedPlatformFeedData, clean, handleOf, iso, milestoneWords, selectWindow, type PlatformFeedData, WEEK_MS } from './platform-feed.js';
+import { postHooks } from './post-send.js';
 import type { RhythmSchedule } from './rhythm.js';
 import { originalPostGate } from './rhythm.js';
 import { saveRuntime, type AgentState } from './runtime.js';
@@ -160,6 +161,11 @@ export const WEEKLY_DIGEST_INSTRUCTION =
   'This digest is separate from your regular slot: it does not count as your regular post, and your regular post is still due or not as the schedule says. ' +
   'If the facts are too thin for a post worth reading, do not post it: call finish and say so; the week is then closed without a digest and you will not be asked again.';
 
+/** The sentence of the instruction that says the digest is a single post, as it reads while `publish_post` offers no thread. */
+const DIGEST_ONE_POST = 'One post only (publish_post makes one post; there are no threads). ';
+/** The same instruction for an agent whose `publish_post` offers `thread`: the digest is still one post. */
+export const WEEKLY_DIGEST_INSTRUCTION_NO_THREAD = WEEKLY_DIGEST_INSTRUCTION.replace(DIGEST_ONE_POST, 'One post only (one post, no thread). ');
+
 export const WEEKLY_DIGEST_PICTURE =
   'You may make one picture for it with generate_image (your coin\'s style reference applies; a scene or an idea, no charts, logos, people or numbers) and attach it as imageId on publish_post; a picture is optional, the post must read well without it, and when generate_image fails you publish without an imageId.';
 
@@ -167,9 +173,12 @@ export const WEEKLY_DIGEST_PICTURE =
  * The `weeklyDigest` section of the platform agent's first observation (empty when no digest is due this turn).
  * `picture` is `optional` when the images capability is on and `generate_image` is among the tools, else `off`.
  */
-export function weeklyDigestSection(config: Pick<AgentConfig, 'platform' | 'capabilities'>, plan: WeeklyDigestPlan | null, tools: readonly { name: string }[]): Record<string, unknown> {
+export function weeklyDigestSection(config: Pick<AgentConfig, 'platform' | 'capabilities'>, plan: WeeklyDigestPlan | null, tools: readonly { name: string; description?: string }[]): Record<string, unknown> {
   if (!plan || config.platform !== true) return {};
   const picture = config.capabilities.images && tools.some((t) => t.name === 'generate_image') ? 'optional' : 'off';
+  // "There are no threads" is true only while the tool offers none (docs/design/agent-tools-2.md section 12).
+  const threads = tools.some((t) => t.name === 'publish_post' && typeof t.description === 'string' && t.description.includes(' thread (optional) '));
+  const instruction = threads ? WEEKLY_DIGEST_INSTRUCTION_NO_THREAD : WEEKLY_DIGEST_INSTRUCTION;
   return {
     weeklyDigest: {
       due: true,
@@ -178,7 +187,7 @@ export function weeklyDigestSection(config: Pick<AgentConfig, 'platform' | 'capa
       to: new Date(plan.to).toISOString(),
       facts: plan.facts,
       picture,
-      instruction: picture === 'optional' ? `${WEEKLY_DIGEST_INSTRUCTION} ${WEEKLY_DIGEST_PICTURE}` : WEEKLY_DIGEST_INSTRUCTION,
+      instruction: picture === 'optional' ? `${instruction} ${WEEKLY_DIGEST_PICTURE}` : instruction,
     },
   };
 }
@@ -218,6 +227,13 @@ export async function weeklyDigestWake(
       log.debug({ reason: gate.hold.reason, until: gate.hold.until }, 'weekly digest waits for the rhythm');
       return null;
     }
+  }
+  // A scheduled post of the agent's own is due within one post interval (post-send.ts): the digest waits for the next
+  // free slot, and no thought is bought only to be told so by the broker.
+  const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent as AgentRow, now).catch(() => null);
+  if (scheduledSoon) {
+    log.debug('weekly digest waits for a scheduled post');
+    return null;
   }
   const data = await cachedPlatformFeedData(ctx);
   if (!data) {

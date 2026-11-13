@@ -97,10 +97,11 @@ export interface QuestionBudget {
   mayAskNow: boolean;
 }
 
-/** The question quota from the agent's last sent original posts (completed `publish_post` actions, newest first). */
+/** The question quota from the agent's last sent original posts (completed `publish_post` actions, newest first); a thread asks when any of its parts does. */
 export async function questionBudget(ctx: Pick<SupervisorContext, 'db'>, agentId: string, opts: { excludeActionId?: string } = {}): Promise<QuestionBudget> {
   const rows = await ctx.db
-    .select({ id: actions.actionId, text: sql<string>`${actions.action}->'input'->>'text'` })
+    // The text of every part: the first, then the thread's (one per line), so a question in a later part counts too.
+    .select({ id: actions.actionId, text: sql<string>`concat_ws(E'\n', ${actions.action}->'input'->>'text', case when jsonb_typeof(${actions.action}->'input'->'thread') = 'array' then (select string_agg(part->>'text', E'\n') from jsonb_array_elements(${actions.action}->'input'->'thread') as part) end)` })
     .from(actions)
     .where(and(eq(actions.agentId, agentId), eq(actions.status, 'completed'), sql`${actions.action}->>'tool' = 'publish_post'`))
     .orderBy(desc(actions.createdAt))

@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { agentActivity } from './activity.js';
+import { mountPosting } from './thread-send.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { mountScheduled } from './scheduled.js';
 import { bountyJobViews } from './bounties.js';
@@ -121,6 +122,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
 
   app.use('/internal/*', hmacAuth(ctx.config.SUPERVISOR_SERVICE_KEY, nowSec));
   mountOwnRoutes(app, ctx);
+  mountPosting();
 
   app.get('/internal/agents', async (c) => {
     const rows = await ctx.db.select({ agent: agents, runtime: runtimes }).from(agents).leftJoin(runtimes, eq(runtimes.agentId, agents.agentId));
