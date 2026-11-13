@@ -40,6 +40,7 @@ import { erc20Abi } from 'viem';
 import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
 import { bountyJobs } from '../db/schema.js';
 import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
+import { scheduledCancel, scheduledList, schedulePost } from '../scheduled.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -502,6 +503,12 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const cp = checkpoint(action.input as unknown as Record<string, unknown>, ctx.now());
       return { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } };
     }
+    case 'schedule_post':
+      return schedulePost(ctx, agent, config, pending, action.input, env);
+    case 'scheduled_list':
+      return scheduledList(ctx, agent, config);
+    case 'scheduled_cancel':
+      return scheduledCancel(ctx, agent, action.input);
     case 'read_url': {
       const res = await readUrl(action.input.url, { fetch: ctx.fetch, resolve: ctx.resolveHost });
       return { kind: 'completed', result: res };

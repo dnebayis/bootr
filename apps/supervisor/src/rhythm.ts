@@ -57,7 +57,8 @@ export function jitterMs(kernel: string, intervalMs: number): number {
   return Math.floor((word / 0x1_0000_0000) * MAX_JITTER_FRACTION * intervalMs);
 }
 
-export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota' | 'x_credits' | 'x_forbidden';
+/** `scheduled`: the slot is covered by a post the agent scheduled (scheduled.ts `applyScheduled`). */
+export type HoldReason = 'quiet_hours' | 'no_slot' | 'x_quota' | 'x_credits' | 'x_forbidden' | 'scheduled';
 
 export interface Hold {
   reason: HoldReason;

@@ -42,6 +42,7 @@ import { clankerV5CoinOf } from './launch-source.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
 import { postBudgetSection } from './post-budget.js';
+import { scheduledSection } from './scheduled.js';
 import { MODEL_MISSING } from './blockrun.js';
 import { raiseNotification, resolveNotification } from './notifications.js';
 import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
@@ -452,6 +453,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...(await bootrPromotionSection(ctx, agent.agentId, config)),
       // What is left of the creator's daily budget of posts and replies, so the model paces itself: post-budget.ts.
       ...(await postBudgetSection(ctx, agent.agentId, config)),
+      ...(await scheduledSection(ctx, agent.agentId)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.

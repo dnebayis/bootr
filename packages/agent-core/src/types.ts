@@ -354,6 +354,20 @@ export const toolInputSchemas = {
       nextAt: isoDateSchema,
     })
     .strict(),
+  // A post decided now and sent later by the supervisor's clock. It names nobody: no credits, and an `@` in it is refused.
+  schedule_post: z
+    .object({
+      text: text(4000),
+      /** More posts connected under this one, in order: a thread. With it, `text` is the first part and is 280 at most. */
+      thread: z.array(z.object({ text: text(280) }).strict()).min(1).max(3).optional(),
+      imageId: z.string().max(128).optional(),
+      /** The agent's own word for what the post is about. */
+      topic: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
+      sendAt: isoDateSchema,
+    })
+    .strict(),
+  scheduled_list: z.object({}).strict(),
+  scheduled_cancel: z.object({ id: z.string().regex(/^sch_[0-9a-f]{16}$/) }).strict(),
   read_url: z.object({ url: httpsUrlSchema, render: z.boolean().optional() }).strict(),
   search_web: z.object({ query: text(400) }).strict(),
   read_market: z.object({ tokenAddress: evmAddressSchema.optional(), pairId: z.string().max(80).optional() }).strict(),

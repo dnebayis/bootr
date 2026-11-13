@@ -41,6 +41,7 @@ import { memories } from './db/schema.js';
 import { fuelSection } from './fuel.js';
 import type { MemoryRecord } from './memories.js';
 import type { AgentState } from './runtime.js';
+import { scheduleToolOffered } from './scheduled.js';
 import { budgetView, servicesBudget, servicesPolicyOf } from './services.js';
 import { treasuryTurnOn } from './treasury-switch.js';
 import { fundingBudget, openOps, opView, recentOps, type TreasurySnapshot } from './treasury.js';
@@ -81,7 +82,7 @@ export function roleTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentC
   if (role === 'judge') return [];
   const catalog = availableTools(ctx, config, account);
   if (role === 'treasury') return catalog.filter((t) => (TREASURY_TURN_TOOLS as readonly string[]).includes(t.name));
-  const social = catalog.filter((t) => !SOCIAL_WITHHELD_BOUNTY_TOOLS.includes(t.name));
+  const social = catalog.filter((t) => !SOCIAL_WITHHELD_BOUNTY_TOOLS.includes(t.name) && scheduleToolOffered(ctx, raw, t.name));
   return treasuryTurnOn(raw) ? social.filter((t) => !SOCIAL_WITHHELD_WHEN_TREASURY_ON.includes(t.name)) : social;
 }
 

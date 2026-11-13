@@ -10,7 +10,7 @@ const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> =>
 describe('tool catalog', () => {
   it('defines every tool with a capability, effect and schema', () => {
     expect(TOOL_LIST.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(TOOL_LIST).toHaveLength(25);
+    expect(TOOL_LIST).toHaveLength(28);
     expect(TOOLS.x402_fetch).toMatchObject({ capability: 'services', effect: 'money', idempotent: false });
     expect(TOOLS.bounty_post).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: false });
     expect(TOOLS.bounty_cancel).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: true });

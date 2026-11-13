@@ -287,6 +287,48 @@ export const approvals = pgTable(
   (t) => [index('sv_approvals_agent_status_idx').on(t.agentId, t.status), index('sv_approvals_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
+export const scheduledPostStatuses = ['waiting_review', 'waiting', 'sending', 'sent', 'failed', 'missed', 'cancelled'] as const;
+export type ScheduledPostStatus = (typeof scheduledPostStatuses)[number];
+
+/**
+ * Scheduled posts (scheduled.ts; docs/design/agent-tools-2.md section 5): an original the agent decided with
+ * `schedule_post` and the tick sends at `send_at`. `waiting_review` while the creator has it in the review queue
+ * (approval mode), `waiting` until its time, `sending` from the moment before the sender is called until its outcome is
+ * known, then `sent`, `failed` (refused for good, with the reason), `missed` (not sent within the grace) or `cancelled`
+ * (by the agent, the creator, or a rejected review). The rows are the coin's: a switch between the Bootr agent and an
+ * own agent changes nothing here.
+ */
+export const scheduledPosts = pgTable(
+  'sv_scheduled_posts',
+  {
+    /** `sch_` and 16 hex characters from the id of the `schedule_post` action; also the sender's action id of the first part. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    /** The `schedule_post` action that made it (`sv_actions.action_id`). */
+    actionId: text('action_id').notNull(),
+    text: text('text').notNull(),
+    /** approvals.ts `textHash` over all parts. */
+    textHash: text('text_hash').notNull(),
+    /** `[{ text }]`: the parts after the first; null for a single post. */
+    thread: jsonb('thread').$type<{ text: string }[] | null>(),
+    imageId: text('image_id'),
+    topic: text('topic'),
+    /** `own` when an own agent's client scheduled it. */
+    via: text('via'),
+    clientId: text('client_id'),
+    sendAt: ts('send_at').notNull(),
+    status: text('status', { enum: scheduledPostStatuses }).notNull().default('waiting'),
+    error: text('error'),
+    postId: text('post_id'),
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: ts('created_at').notNull(),
+    updatedAt: ts('updated_at').notNull(),
+    /** When a failure was told to the agent; null = still to tell. */
+    feedbackAt: ts('feedback_at'),
+  },
+  (t) => [index('sv_scheduled_posts_due_idx').on(t.status, t.sendAt), index('sv_scheduled_posts_agent_idx').on(t.agentId, t.sendAt)],
+);
+
 export const postMetricKinds = ['post', 'reply'] as const;
 export type PostMetricKind = (typeof postMetricKinds)[number];
 

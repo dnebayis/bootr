@@ -6,7 +6,7 @@
  */
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
-import { actions, approvals } from './db/schema.js';
+import { actions, approvals, scheduledPosts } from './db/schema.js';
 
 export const RECENT_POSTS_WINDOW_MS = 48 * 60 * 60 * 1000;
 export const RECENT_POSTS_MAX = 16;
@@ -15,8 +15,8 @@ const EXCERPT = 140;
 export interface RecentPost {
   at: string;
   kind: 'post' | 'reply';
-  /** `sent` (on X), or the review queue state: `pending_review`, `approved`, `rejected`, `failed`. */
-  status: 'sent' | 'pending_review' | 'approved' | 'rejected' | 'failed';
+  /** `sent` (on X), the review queue state (`pending_review`, `approved`, `rejected`, `failed`), or `scheduled`: it waits for its time, which is `at`. */
+  status: 'sent' | 'pending_review' | 'approved' | 'rejected' | 'failed' | 'scheduled';
   text: string;
   /** The creator's note on a rejection, when there is one. */
   note?: string;
@@ -26,7 +26,7 @@ const clip = (s: unknown, max: number): string => (typeof s === 'string' ? s.rep
 
 export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<RecentPost[]> {
   const since = new Date(ctx.now() - RECENT_POSTS_WINDOW_MS);
-  const [sent, reviewed] = await Promise.all([
+  const [sent, reviewed, scheduled] = await Promise.all([
     ctx.db
       .select({ at: actions.createdAt, tool: sql<string>`${actions.action}->>'tool'`, text: sql<string>`${actions.action}->'input'->>'text'` })
       .from(actions)
@@ -39,9 +39,22 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'>, ag
       .where(and(eq(approvals.agentId, agentId), gte(approvals.createdAt, since), inArray(approvals.status, ['pending_approval', 'approved', 'rejected', 'failed'])))
       .orderBy(desc(approvals.createdAt))
       .limit(RECENT_POSTS_MAX),
+    // Posts the agent scheduled that have not gone out (scheduled.ts): said already, so nothing is said twice.
+    ctx.db
+      .select({ at: scheduledPosts.sendAt, text: scheduledPosts.text })
+      .from(scheduledPosts)
+      .where(and(eq(scheduledPosts.agentId, agentId), gte(scheduledPosts.sendAt, since), inArray(scheduledPosts.status, ['waiting_review', 'waiting', 'sending'])))
+      .orderBy(desc(scheduledPosts.sendAt))
+      .limit(RECENT_POSTS_MAX),
   ]);
   const out: RecentPost[] = [];
   const seen = new Set<string>();
+  for (const r of scheduled) {
+    const text = clip(r.text, EXCERPT);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push({ at: r.at.toISOString(), kind: 'post', status: 'scheduled', text });
+  }
   for (const r of reviewed) {
     const text = clip(r.text, EXCERPT);
     if (!text || seen.has(text)) continue;

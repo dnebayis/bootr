@@ -37,8 +37,8 @@ export interface RoutingState {
   steps: { decide: number; write: number };
 }
 
-/** Tools only the writer gets: the publishing tools and the picture that goes with a post. */
-const WRITER_ONLY: readonly string[] = [...PUBLISHING_TOOLS, 'generate_image'];
+/** Tools only the writer gets: the publishing tools, the picture that goes with a post, and a post written now to go out later. */
+const WRITER_ONLY: readonly string[] = [...PUBLISHING_TOOLS, 'generate_image', 'schedule_post'];
 
 /** The decide model in force, or null when economy mode is off (unset, null, or the same model as the writer). */
 export function decideModelOf(config: Pick<AgentConfig, 'model' | 'routing'>): string | null {
