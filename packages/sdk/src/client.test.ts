@@ -244,6 +244,82 @@ describe('launch', () => {
   });
 });
 
+describe('preparing a swap', () => {
+  const COIN = '0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c';
+  const ROUTER = '0x6fF5693b99212Da76ad316178A184AB56D299b43';
+  const swapCatalog = { ...catalog, endpoints: [...catalog.endpoints, { method: 'POST', url: `${SITE}/api/agent/swap`, auth: { type: 'none' } }] } as unknown as Catalog;
+  const prepared = (over: object = {}) => ({
+    chainId: 8453,
+    token: COIN,
+    symbol: 'BOOTR',
+    side: 'buy',
+    path: 'clanker',
+    pairedAsset: 'ETH',
+    amountIn: { raw: '10000000000000000', formatted: '0.01', asset: 'ETH' },
+    quote: { amountOut: { raw: '5', formatted: '0.000000000000000005', asset: 'BOOTR' }, feePct: 2.4, impactPct: 0.1, quotedAt: 1 },
+    minReceived: { raw: '4', formatted: '0.000000000000000004', asset: 'BOOTR' },
+    slippagePct: 1,
+    deadline: 1201,
+    steps: [{ kind: 'swap', to: ROUTER, data: '0x3593564c', value: '10000000000000000', sendFrom: OWNER, description: 'Buys BOOTR with 0.01 ETH.' }],
+    warnings: [],
+    note: 'Nothing was signed or sent.',
+    ...over,
+  });
+  function swapClient(answer: (url: string, init: RequestInit) => Response) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => (String(input).endsWith('/api/catalog') ? json(swapCatalog) : answer(String(input), init)));
+    return { bootr: createBootr({ siteUrl: SITE, fetch: fetchMock as typeof fetch }), fetchMock };
+  }
+
+  it('posts the six fields to the route the catalog names, checksummed, and keeps the answer', async () => {
+    const { bootr, fetchMock } = swapClient(() => json(prepared()));
+    const answer = await bootr.prepareSwap({ token: COIN.toLowerCase(), side: 'buy', amount: 0.01, wallet: OWNER.toLowerCase(), payWith: 'ETH', slippagePct: 2 });
+    expect(answer.steps[0]).toMatchObject({ kind: 'swap', to: ROUTER, sendFrom: OWNER });
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe(`${SITE}/api/agent/swap`);
+    expect(init!.method).toBe('POST');
+    expect(JSON.parse(String(init!.body))).toEqual({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER, payWith: 'ETH', slippagePct: 2 });
+    // the fields left out are left out, and a step is what a wallet library sends
+    await bootr.prepareSwap({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER });
+    expect(JSON.parse(String(fetchMock.mock.calls.at(-1)![1]!.body))).toEqual({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER });
+    expect(toTransaction(answer.steps[0]!)).toEqual({ to: ROUTER, data: '0x3593564c', value: 10_000_000_000_000_000n });
+  });
+
+  it('refuses a key, a malformed address, side or amount before any request', async () => {
+    const { bootr, fetchMock } = swapClient(() => json(prepared()));
+    const base = { token: COIN, side: 'buy' as const, amount: '0.01', wallet: OWNER };
+    await expect(bootr.prepareSwap({ ...base, wallet: `0x${'ab'.repeat(32)}` })).rejects.toMatchObject({ code: 'key_refused' });
+    await expect(bootr.prepareSwap({ ...base, amount: `0x${'ab'.repeat(32)}` })).rejects.toMatchObject({ code: 'key_refused' });
+    await expect(bootr.prepareSwap({ ...base, token: 'BOOTR' })).rejects.toMatchObject({ code: 'invalid_request', details: { field: 'token' } });
+    await expect(bootr.prepareSwap({ ...base, side: 'swap' as 'buy' })).rejects.toMatchObject({ code: 'invalid_request', details: { field: 'side' } });
+    for (const amount of ['', '-1', '1e5', 'all', '1,5']) await expect(bootr.prepareSwap({ ...base, amount }), amount).rejects.toMatchObject({ code: 'invalid_request', details: { field: 'amount' } });
+    expect(fetchMock.mock.calls).toHaveLength(0);
+  });
+
+  it('passes the site’s refusal on with its code, its field and when to come back', async () => {
+    const closed = swapClient(() => json({ error: 'trading_not_open', message: 'This coin launched moments ago. Trading opens in 12 seconds.' }, 409, { 'retry-after': '12' }));
+    await expect(closed.bootr.prepareSwap({ token: COIN, side: 'buy', amount: '1', wallet: OWNER })).rejects.toMatchObject({ code: 'trading_not_open', status: 409, details: { retryAfter: 12 } });
+    const unknown = swapClient(() => json({ error: 'unknown_coin', message: 'No Bootr coin has that address.' }, 404));
+    await expect(unknown.bootr.prepareSwap({ token: OWNER, side: 'sell', amount: '1', wallet: OWNER })).rejects.toMatchObject({ code: 'unknown_coin', message: 'No Bootr coin has that address.' });
+    const field = swapClient(() => json({ error: 'invalid_request', message: 'slippagePct must be a number from 0.01 to 20.', field: 'slippagePct' }, 400));
+    await expect(field.bootr.prepareSwap({ token: COIN, side: 'buy', amount: '1', wallet: OWNER, slippagePct: 50 })).rejects.toMatchObject({ code: 'invalid_request', details: { field: 'slippagePct' } });
+  });
+
+  it('refuses an answer for another coin, side, chain or wallet, or one without a swap', async () => {
+    const ask = (over: object) => swapClient(() => json(prepared(over))).bootr.prepareSwap({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER });
+    const step = prepared().steps[0]!;
+    const other = '0x90F79bf6EB2c4f870365E785982E1f101E93b906';
+    for (const over of [{ token: other }, { side: 'sell' }, { chainId: 1 }, { steps: [] }, { steps: undefined }, { steps: [{ ...step, sendFrom: other }] }, { steps: [{ ...step, kind: 'approve_token' }] }, { steps: [{ ...step, to: 'router' }] }]) {
+      await expect(ask(over), JSON.stringify(over)).rejects.toMatchObject({ code: 'mismatch' });
+    }
+    await expect(ask({})).resolves.toMatchObject({ token: COIN });
+  });
+
+  it('says so when the site does not offer it', async () => {
+    const { bootr } = client(() => json(prepared()));
+    await expect(bootr.prepareSwap({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER })).rejects.toMatchObject({ code: 'not_listed' });
+  });
+});
+
 describe('toTransaction', () => {
   it('takes a claim and a launch step alike', () => {
     expect(toTransaction({ target: OWNER, data: '0x12', value: '0' })).toEqual({

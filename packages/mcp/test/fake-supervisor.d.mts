@@ -24,6 +24,8 @@ export declare const TAG_SENTENCE: string;
 export declare function hide(text: string): string;
 export declare const BRIEF: string;
 export declare const ACTION_TOOLS: string[];
+export declare const ROUND_TWO_TOOLS: string[];
+export declare const SCHEDULED_MAX_WAITING: number;
 export declare const TINY_PNG_BASE64: string;
 export declare const SEARCH_CAP_TEXT: string;
 
@@ -74,6 +76,8 @@ export declare class FakeOwnBackend {
   closedTurns: Set<string>;
   uploads: { imageId: string; mime: string; bytes: number; alt: string; description: string; sha256: string }[];
   posts: { tool: string; text: string; imageId: string | null }[];
+  scheduled: { id: string; sendAt: string; status: string; text: string; parts: number; picture: boolean }[];
+  whatWorks: { text: string; nextRevisionAt: number } | null;
   failNext(code: string, extra?: Record<string, unknown>): void;
   connectStart(body: Record<string, unknown>): { deviceCode: string; userCode: string; verificationUri: string; verificationUriComplete: string; expiresIn: number; interval: number };
   grantView(code: string): { userCode: string; clientName: string; coinHint: string | null; status: string; expiresAt: string };
@@ -104,7 +108,7 @@ export interface FakeSite {
   url: string;
   backend: FakeOwnBackend;
   seen: { method: string; path: string; headers: Record<string, string | string[] | undefined>; body: Record<string, unknown>; raw: string }[];
-  state: { ownAgent: boolean };
+  state: { ownAgent: boolean; roundTwoTools: boolean };
   close(): Promise<void>;
 }
-export declare function startFakeSite(options?: { port?: number; backend?: FakeOwnBackend; ownAgent?: boolean }): Promise<FakeSite>;
+export declare function startFakeSite(options?: { port?: number; backend?: FakeOwnBackend; ownAgent?: boolean; roundTwoTools?: boolean }): Promise<FakeSite>;

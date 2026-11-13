@@ -3,7 +3,7 @@
   "name": "fun.bootr/mcp",
   "title": "Bootr",
   "description": "Read Bootr coins and AI agents on Base; prepare launches and fee claims as unsigned transactions.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "websiteUrl": "https://bootr.fun/docs/api#developer-tools",
   "repository": {
     "url": "https://github.com/dnebayis/bootr",
@@ -27,7 +27,7 @@
     {
       "registryType": "npm",
       "identifier": "@bootrfun/mcp",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

@@ -16,6 +16,8 @@ const OWNER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const KEY = `0x${'ab'.repeat(32)}`;
 const WETH = '0x4200000000000000000000000000000000000006';
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const COIN = '0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c';
+const ROUTER = '0x6fF5693b99212Da76ad316178A184AB56D299b43';
 const CLAIM = {
   target: OWNER,
   data: '0x12',
@@ -53,6 +55,7 @@ beforeAll(async () => {
         const web = [
           ['GET', '/api/agent/claim/{address}'],
           ['POST', '/api/agent/nonce'],
+          ['POST', '/api/agent/swap'],
           ['GET', '/market/{token}'],
           ['GET', '/search'],
           ['GET', '/treasury/{kernel}'],
@@ -61,6 +64,7 @@ beforeAll(async () => {
           ['GET', '/api/agents/{id}/posts'],
         ];
         return send(200, {
+          chainId: 8453,
           endpoints: [
             ...web.map(([method, p]) => ({
               service: p!.startsWith('/api/') ? 'web' : 'indexer',
@@ -97,6 +101,28 @@ beforeAll(async () => {
         });
       if (url === '/api/agent/nonce')
         return send(200, { nonce: 'abcdef0123456789', expiresIn: 600 });
+      if (url === '/api/agent/swap') {
+        const asked = JSON.parse(body) as { token: string; side: string; amount: string; wallet: string; payWith?: string; slippagePct?: number };
+        if (asked.amount === '777') return send(409, { error: 'trading_not_open', message: hide('This coin launched moments ago. Trading opens in 12 seconds.') });
+        const swap = { kind: 'swap', to: ROUTER, data: '0x3593564c', value: asked.side === 'buy' ? '10000000000000000' : '0', sendFrom: asked.wallet, description: 'The swap.' };
+        const approve = { kind: 'approve_token', to: asked.token, data: '0x095ea7b3', value: '0', sendFrom: asked.wallet, description: 'An exact approval.' };
+        return send(200, {
+          chainId: 8453,
+          token: asked.token,
+          symbol: hide('OWL'),
+          side: asked.side,
+          path: 'clanker-v5',
+          pairedAsset: 'ETH',
+          amountIn: { raw: '1', formatted: asked.amount, asset: asked.side === 'buy' ? (asked.payWith ?? 'ETH') : 'OWL' },
+          quote: { amountOut: { raw: '5', formatted: '5', asset: 'OWL' }, feePct: 1.5, impactPct: 0.1, quotedAt: 1 },
+          minReceived: { raw: '4', formatted: '4', asset: 'OWL' },
+          slippagePct: asked.slippagePct ?? 1,
+          deadline: 1201,
+          steps: asked.side === 'sell' ? [approve, swap] : [swap],
+          warnings: [],
+          note: 'Nothing was signed or sent.',
+        });
+      }
       if (url === '/api/agent/launch')
         return send(200, {
           creator: OWNER,
@@ -272,6 +298,76 @@ describe('prepare commands', () => {
   });
 });
 
+describe('preparing a swap', () => {
+  const sent = () => JSON.parse(seen.filter((s) => s.url === '/api/agent/swap').at(-1)!.body) as Record<string, unknown>;
+
+  it('prints a buy as unsigned steps for the wallet named, and says nothing was sent', async () => {
+    const { code, stdout, stderr } = await bootr('prepare', 'swap', '--coin', COIN, '--buy', '0.01', '--wallet', OWNER);
+    expect(code).toBe(0);
+    expect(sent()).toEqual({ token: COIN, side: 'buy', amount: '0.01', wallet: OWNER });
+    const answer = JSON.parse(stdout) as { symbol: string; steps: { kind: string; to: string; sendFrom: string }[]; minReceived: { raw: string } };
+    expect(answer.steps).toEqual([{ kind: 'swap', to: ROUTER, data: '0x3593564c', value: '10000000000000000', sendFrom: OWNER, description: 'The swap.' }]);
+    expect(answer.minReceived.raw).toBe('4');
+    // words from the site are printed without what a person cannot see
+    expect(answer.symbol).toBe('OWL');
+    expect(stderr).toContain('Nothing was signed or sent');
+    expect(stderr).toContain('reverts if it would give less than minReceived');
+    expect(stderr).toContain('A trade cannot be undone');
+  });
+
+  it('takes a sell, the asset to pay with and the slippage, with the coin before or after its switch', async () => {
+    const sell = await bootr('prepare', 'swap', COIN, '--sell', '1000', '--wallet', OWNER.toLowerCase(), '--slippage', '2.5');
+    expect(sell.code).toBe(0);
+    expect(sent()).toEqual({ token: COIN, side: 'sell', amount: '1000', wallet: OWNER, slippagePct: 2.5 });
+    expect((JSON.parse(sell.stdout) as { steps: { kind: string }[] }).steps.map((s) => s.kind)).toEqual(['approve_token', 'swap']);
+    await bootr('prepare', 'swap', '--buy', '25', '--pay-with', 'usdc', '--wallet', OWNER, '--coin', COIN);
+    expect(sent()).toEqual({ token: COIN, side: 'buy', amount: '25', wallet: OWNER, payWith: 'USDC' });
+  });
+
+  it('refuses a command it cannot read before any request, and says what is missing', async () => {
+    const before = seen.length;
+    const cases: [string[], string][] = [
+      [['--buy', '1', '--wallet', OWNER], 'the coin: --coin <address>'],
+      [['--coin', 'OWL', '--buy', '1', '--wallet', OWNER], '--coin must be the coin’s 0x address'],
+      [['--coin', COIN, '--wallet', OWNER], 'Give one of --buy'],
+      [['--coin', COIN, '--buy', '1', '--sell', '1', '--wallet', OWNER], 'Give one of --buy'],
+      [['--coin', COIN, '--buy', '1'], '--wallet'],
+      [['--coin', COIN, '--buy', '1', '--wallet', OWNER, '--pay-with', 'DAI'], '--pay-with must be ETH or USDC'],
+      [['--coin', COIN, '--buy', '1', '--wallet', OWNER, '--slippage', 'low'], '--slippage must be a percent'],
+    ];
+    for (const [args, words] of cases) {
+      const { code, stderr, stdout } = await bootr('prepare', 'swap', ...args);
+      expect(code, args.join(' ')).toBe(2);
+      expect(stderr, args.join(' ')).toContain(words);
+      expect(stdout).toBe('');
+    }
+    // the SDK's own checks answer with a code, as every refusal does
+    expect(await bootr('prepare', 'swap', '--coin', COIN, '--buy', 'all', '--wallet', OWNER)).toMatchObject({ code: 1, stderr: expect.stringContaining('invalid_request: amount must be a positive decimal') });
+    expect(seen.length).toBe(before);
+  });
+
+  it('has no flag for a recipient or a key, and refuses a key where an address goes', async () => {
+    const before = seen.filter((s) => s.url === '/api/agent/swap').length;
+    for (const flag of ['--recipient', '--to', '--private-key']) {
+      const { code, stderr } = await bootr('prepare', 'swap', '--coin', COIN, '--buy', '1', '--wallet', OWNER, flag, OWNER);
+      expect(code, flag).toBe(2);
+      expect(stderr).toContain('Unknown option');
+    }
+    const { code, stderr, stdout } = await bootr('prepare', 'swap', '--coin', COIN, '--buy', '1', '--wallet', KEY);
+    expect(code).toBe(2);
+    expect(stderr).toContain('private key');
+    expect(`${stderr}${stdout}`).not.toContain(KEY);
+    expect(seen.filter((s) => s.url === '/api/agent/swap').length).toBe(before);
+  });
+
+  it('passes the site’s refusal on, on stderr with exit code 1 and nothing hidden in it', async () => {
+    const { code, stderr, stdout } = await bootr('prepare', 'swap', '--coin', COIN, '--buy', '777', '--wallet', OWNER);
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr.trim()).toBe('trading_not_open: This coin launched moments ago. Trading opens in 12 seconds.');
+  });
+});
+
 describe('Clanker v5 launches', () => {
   it('checks the token settings before sending, so the signed message stays unused', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'bootr-cli-'));
@@ -339,6 +435,7 @@ describe('help', () => {
       'fees',
       'prepare claim',
       'prepare launch',
+      'prepare swap --coin <address> (--buy <amount> | --sell <amount>) --wallet <address>',
       'never asks for a private key',
     ])
       expect(stdout).toContain(s);

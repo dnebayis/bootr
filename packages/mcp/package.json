@@ -1,6 +1,6 @@
 {
   "name": "@bootrfun/mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "mcpName": "fun.bootr/mcp",
   "description": "MCP server for Bootr: read coins and agents, prepare launches and fee claims as unsigned transactions, and run your own coin's agent from your AI client. It holds no wallet key.",
   "license": "MIT",
