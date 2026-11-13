@@ -1,6 +1,6 @@
 # @bootrfun/mcp
 
-An MCP server for [Bootr](https://bootr.fun), a launchpad on Base where every coin comes with an AI agent. It lets an assistant read coins and agents, and prepare launches and fee claims as **unsigned transactions**. If you launched a coin with your own agent, it also lets your AI client [run that agent](#run-your-coins-agent-from-your-own-ai-client).
+An MCP server for [Bootr](https://bootr.fun), a launchpad on Base where every coin comes with an AI agent. It lets an assistant read coins and agents, and prepare launches, fee claims and buys or sells of a coin as **unsigned transactions**. If you launched a coin with your own agent, it also lets your AI client [run that agent](#run-your-coins-agent-from-your-own-ai-client).
 
 **The read and prepare tools never sign or send anything, and no tool ever takes a key.** Every prepare result says so. Your own wallet signs, if you decide to. The agent tools act for one coin's agent, only after you approve the client with your wallet, and only inside the limits Bootr's server enforces; they hold no wallet key either.
 
@@ -56,6 +56,7 @@ To point it at another deployment, set `BOOTR_SITE_URL` in the server's environm
 | `bootr_prepare_claim`  | Prepare only: creator fees on every launch path, per asset, as unsigned transactions       |
 | `bootr_launch_message` | Prepare only: the text the wallet signs to prove itself; signing it moves no funds         |
 | `bootr_prepare_launch` | Prepare only: with that signature, the unsigned `approve`, `launch` and `gas` transactions |
+| `bootr_prepare_swap`   | Prepare only: a buy or a sell of one Bootr coin, with exact approvals and a minimum received |
 
 ## How a prepare works
 
@@ -73,6 +74,16 @@ A launch takes two, because the server needs proof of the wallet first:
 `launchThrough: clanker` is the site's Clanker path, Clanker v5 on bootr.fun. There `launch.token` sets the coin for good: the paired asset (ETH or USDC), each side's tax (1% to 5%), the burn and holder dividends, who gets the creator's share (up to five reward rows), the sniper tax and whether the metadata stays editable. Every field is optional, and settings outside the site's bounds are refused before anything is sent, so the signature can be used again.
 
 The server pins the image and stores the agent's text in step 3, as the launch form does. Nothing goes on-chain until the wallet sends it. A launch costs real money and cannot be undone: the assistant should show the amounts and get a clear yes first, and [the Bootr skill](https://bootr.fun/skill/skill.md) lists what to check.
+
+### A buy or a sell
+
+`bootr_prepare_swap` takes the coin's address (`token`), `side` (`buy` or `sell`), `amount` (what goes in: ETH on a buy, the coin on a sell), the `wallet` that will send the steps and, if you like, `slippagePct` (0.01 to 20, 1 when left out). A coin paired with USDC is bought with USDC, or with ETH when `payWith` is `ETH`. It answers with:
+
+- `steps`, in order: `approve_token` and `approve_permit2` when the trade spends a token (each for the exact amount, the second for 30 minutes, and neither moves anything), then `swap`. A buy with ETH is one step;
+- `quote` (what the pool gives right now, the fee and the price impact) and `minReceived`, the least the swap may deliver: below it the transaction reverts. It also reverts after `deadline`, 20 minutes from the quote;
+- `warnings`, such as a large price impact or little ETH left for the network fee.
+
+What the swap pays goes to the wallet that sends it; there is no field to name another. Nothing is prepared for a coin that is not a Bootr coin, for a Clanker v5 coin in its first 20 seconds (when buyers pay up to 99%), or while a trade's fee is far above the coin's normal one. The quote is a moment's reading: prepare again rather than send an old answer. A trade costs real money and cannot be undone, so the assistant should show the amounts and get a clear yes first. This tool is for you; an agent's turn does not have it.
 
 ## Run your coin's agent from your own AI client
 
@@ -108,9 +119,11 @@ The server ships one prompt, `bootr-turn`, that says exactly this: ask what is d
 | `bootr_agent_due` | What is due now, per role, and when to look again |
 | `bootr_agent_turn` | Open or take up a turn in one role |
 | `bootr_agent_read_mentions`, `_read_x_thread`, `_read_x_account`, `_recall_conversation` | Read X for the agent |
-| `bootr_agent_publish_reply`, `_publish_post` | Reply and post on X as the agent (marked as acting, so your client can ask you first) |
+| `bootr_agent_publish_reply`, `_publish_post` | Reply and post on X as the agent (marked as acting, so your client can ask you first). A post can carry a short `thread`, say which post it comments on (`about`) and name its own `topic` |
+| `bootr_agent_schedule_post`, `_scheduled_list`, `_scheduled_cancel` | Queue a post for a later time (marked as acting), see what is waiting, cancel one |
 | `bootr_agent_resolve_mention`, `_resolve_mentions` | Close mentions without replying |
 | `bootr_agent_remember`, `_recall` | The agent's notes, kept on Bootr |
+| `bootr_agent_note_what_works` | The agent's one short note on what works for its coin, from the facts Bootr shows it about its own posts |
 | `bootr_agent_read_url`, `_search_web`, `_read_market`, `_read_coin`, `_read_chain` | Research |
 | `bootr_agent_treasury_read`, `_treasury_prepare`, `_treasury_execute` | The agent's treasury, inside limits enforced on chain |
 | `bootr_agent_discover_services`, `_x402_fetch` | Paid web services, paid from the agent's fuel inside your caps: the only thing fuel is needed for |
@@ -119,6 +132,8 @@ The server ships one prompt, `bootr-turn`, that says exactly this: ask what is d
 | `bootr_agent_answer_request` | Close a request you gave the agent |
 | `bootr_agent_judge_entry`, `bootr_agent_judge` | Read a bounty entry and give the ruling |
 | `bootr_agent_finish` | Save the checkpoint and end the turn |
+
+A scheduled post is sent by Bootr at its time, also while your machine is off, after the same checks a post sent now gets; with review on it waits for you first. Scheduling never adds posts: they stay as far apart as the agent's posting interval, sent now or later. The newer tools and fields (the schedule tools, the note on what works, `thread`, `about` and `topic`) work on a site that offers them; on one that does not, the turn does not list them and a call is refused.
 
 A refusal from the server (a post outside its slot, a reply to someone who did not ask, a call past a cap) comes back as a result with `status: "failed"` and the reason. A call that timed out can be repeated as it was: the server returns the same action and never posts or pays twice.
 
@@ -146,6 +161,7 @@ Flags differ per client and change: check your client's own docs. Whatever you u
 
 ## Safety
 
+- **Nothing is sent for you.** A prepared launch, claim or trade is a list of unsigned transactions. A trade's steps go to the token being spent, to Permit2 and to Uniswap's Universal Router and nowhere else, and they pay the wallet that sends them.
 - **No keys.** No tool has a key parameter. An argument shaped like a private key or seed phrase is refused before any request, and is not repeated. If you paste one anywhere, treat it as exposed and move the funds.
 - **API text is data.** Each read result is marked as data from other people, with invisible and bidirectional characters removed. Tool descriptions are fixed text in this package. Input schemas come from the catalog of the site you point it at.
 - **Test deployments are flagged.** An answer carrying `mock: true` comes with a warning not to send anything.

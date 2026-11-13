@@ -41,23 +41,41 @@ describe('the SDK’s copy of the own-agent types', () => {
 /**
  * The MCP server names the agent's tools itself (its descriptions are fixed text, nothing from the network), so its
  * list is a copy of agent-core's: this fails when a tool is added, renamed or changes from a read to a write there.
+ *
+ * The four tools of docs/design/agent-tools-2.md (section 17.3) were named in the packages by one builder while three
+ * others added them to agent-core, so the check holds on both sides of that merge: the packages always list the four,
+ * and whichever of them agent-core has must be the same names. Once agent-core has all four the two lists are
+ * compared whole, order included, as before.
  */
+const ROUND_TWO = ['note_what_works', 'schedule_post', 'scheduled_list', 'scheduled_cancel'];
+const offered = (names: readonly string[]) => names.filter((n) => n !== 'generate_image' && n !== 'finish');
+const core = offered(TOOL_LIST.map((t) => t.name));
+const coreHasRoundTwo = ROUND_TWO.every((n) => core.includes(n));
+
 describe('the MCP server’s list of agent tools', () => {
   const src = readFileSync(path.join(REPO, 'packages/mcp/src/agent-tools.ts'), 'utf8');
   const listed = [...src.matchAll(/\{ name: '(\w+)', title: '[^']+', annotations: (READ|SENDS|WRITE|ACTS),/g)].map((m) => ({ name: m[1]!, kind: m[2]! }));
 
   it('is agent-core’s catalog without generate_image and finish, in its order', () => {
-    expect(listed).toHaveLength(23);
-    expect(listed.map((t) => t.name)).toEqual(TOOL_LIST.map((t) => t.name).filter((n) => n !== 'generate_image' && n !== 'finish'));
+    expect(listed).toHaveLength(27);
+    const names = listed.map((t) => t.name);
+    expect(names.filter((n) => ROUND_TWO.includes(n)).sort()).toEqual([...ROUND_TWO].sort());
+    // agent-core names no tool the packages lack, and the tools both have stand in the same order
+    for (const n of core) expect(names, n).toContain(n);
+    expect(names.filter((n) => !ROUND_TWO.includes(n))).toEqual(core.filter((n) => !ROUND_TWO.includes(n)));
+    if (coreHasRoundTwo) expect(names).toEqual(core);
     expect(MCP_TOOL_PREFIX).toBe('bootr_agent_');
   });
 
   it('marks as read-only the tools whose effect is a read, less the three whose input leaves for a third party, and as acting the five the contract names', () => {
     const effect = new Map<string, string>(TOOL_LIST.map((t) => [t.name, t.effect]));
     // A read is READ, or SENDS when what the model puts in goes out to the web, a search service or a directory.
-    for (const t of listed) expect(t.kind === 'READ' || t.kind === 'SENDS', t.name).toBe(effect.get(t.name) === 'read');
+    for (const t of listed) if (effect.has(t.name)) expect(t.kind === 'READ' || t.kind === 'SENDS', t.name).toBe(effect.get(t.name) === 'read');
     expect(listed.filter((t) => t.kind === 'SENDS').map((t) => t.name).sort()).toEqual(['discover_services', 'read_url', 'search_web']);
-    expect(listed.filter((t) => t.kind === 'ACTS').map((t) => t.name).sort()).toEqual(['bounty_post', 'publish_post', 'publish_reply', 'treasury_execute', 'x402_fetch']);
+    // A scheduled post goes out in public later with nobody asked again, so it is marked as a post sent now is.
+    expect(listed.filter((t) => t.kind === 'ACTS').map((t) => t.name).sort()).toEqual(['bounty_post', 'publish_post', 'publish_reply', 'schedule_post', 'treasury_execute', 'x402_fetch']);
+    // The four of the second round, as the contract fixes them: one read, one acting, two plain writes.
+    expect(Object.fromEntries(listed.filter((t) => ROUND_TWO.includes(t.name)).map((t) => [t.name, t.kind]))).toEqual({ note_what_works: 'WRITE', schedule_post: 'ACTS', scheduled_list: 'READ', scheduled_cancel: 'WRITE' });
     // Everything that moves money is among them.
     for (const t of TOOL_LIST.filter((x) => x.effect === 'money')) expect(listed.find((l) => l.name === t.name)?.kind, t.name).toBe('ACTS');
   });
@@ -70,6 +88,9 @@ describe('the fake supervisor of the packages’ tests', () => {
     expect(fake.DEVICE_CODE_TTL_S).toBe(DEVICE_CODE_TTL_S);
     expect(fake.DEVICE_POLL_INTERVAL_S).toBe(DEVICE_POLL_INTERVAL_S);
     expect(fake.PICTURE_MAX_BYTES).toBe(PICTURE_MAX_BYTES);
-    expect(fake.ACTION_TOOLS).toEqual(TOOL_LIST.map((t) => t.name).filter((n) => n !== 'generate_image' && n !== 'finish'));
+    expect(fake.ROUND_TWO_TOOLS).toEqual(ROUND_TWO);
+    expect(fake.ACTION_TOOLS.filter((n) => !ROUND_TWO.includes(n))).toEqual(core.filter((n) => !ROUND_TWO.includes(n)));
+    expect(fake.ACTION_TOOLS.filter((n) => ROUND_TWO.includes(n)).sort()).toEqual([...ROUND_TWO].sort());
+    if (coreHasRoundTwo) expect(fake.ACTION_TOOLS).toEqual(core);
   });
 });

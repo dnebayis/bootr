@@ -5,6 +5,8 @@ import { UPLOAD_MAX_BYTES } from '@/lib/ipfs';
 import type { ModelsResponse } from '@/lib/models';
 import { ownAgentEndpoints } from '@/lib/server/catalog-own';
 import { MAX_IDENTITY_CHARS, MIN_IDENTITY_CHARS } from '@/lib/server/launch-drafts';
+import { DEFAULT_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS } from '@/lib/swap/core';
+import { SWAP_PREPARE_PER_MIN, swapPrepareLimits } from '@/lib/swap/prepare';
 import {
   creatorPoolBps,
   DEFAULT_DEV_BUY_SLIPPAGE_PCT,
@@ -243,6 +245,7 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
         shape: '{address, chainId, asset, totalWei, coins: {bootr: [{token, symbol, poolId, unsettledWei}], clanker: [{token, symbol}], clankerV5: [{token, symbol, pairedAsset: ETH|USDC}]}, claims: [{path: bootr|clanker|clanker-v5, target, data, value, asset, amountWei, sendFrom: address|null, description}], note}; a claim’s asset is WETH (bootr, clanker) or, on clanker-v5, the coins’ paired asset: the zero address for native ETH, or USDC with amountWei in its 6-decimal units; totalWei sums the ETH and WETH claims one to one and leaves USDC out; errors {error, message} with 400, 429, 502',
       },
     },
+    ...swapEndpoint(site),
     {
       service: 'web',
       method: 'GET',
@@ -271,6 +274,45 @@ function webEndpoints(site: string, chainId: number): CatalogEndpoint[] {
       response: { contentType: 'application/xml', shape: 'A sitemap' },
     },
     ...ownAgentEndpoints(site, chainId),
+  ];
+}
+
+/**
+ * `POST /api/agent/swap` (docs/design/agent-tools-2.md section 8), listed while the route is on: a limit of 0 over all
+ * callers switches it off and takes it out of the catalog (`swapPrepareLimits`).
+ */
+function swapEndpoint(site: string): CatalogEndpoint[] {
+  const limits = swapPrepareLimits();
+  if (!limits.enabled) return [];
+  return [
+    {
+      service: 'web',
+      method: 'POST',
+      url: `${site}/api/agent/swap`,
+      description: `A buy or a sell of one Bootr coin, prepared for a person as unsigned transactions for their own wallet to send, in order: the approvals as steps of their own for the exact amount, then the swap with its minimum received and a deadline 20 minutes ahead. No key and no signature, and nothing is sent. What the swap pays goes to the wallet that sends it; a request cannot name another. Also at most ${limits.perMinuteAll} calls a minute over all callers.`,
+      auth: NONE,
+      cors: 'any-origin',
+      rateLimit: { limit: SWAP_PREPARE_PER_MIN, windowSeconds: 60, per: 'ip' },
+      parameters: {
+        body: {
+          type: 'object',
+          properties: {
+            token: { ...ADDRESS, description: 'The coin’s address.' },
+            side: { type: 'string', enum: ['buy', 'sell'] },
+            amount: { type: 'string', pattern: '^(\\d+\\.?\\d*|\\.\\d+)$', description: 'What goes in, as a decimal: ETH (or USDC) on a buy, the coin on a sell.' },
+            wallet: { ...ADDRESS, description: 'The wallet that will send the steps. It is read for its balance and its allowances, and it is what receives.' },
+            payWith: { type: 'string', enum: ['ETH', 'USDC'], description: 'A buy of a coin paired with USDC: USDC by default, or ETH in one transaction of two hops. Leave it out for every other coin.' },
+            slippagePct: { type: 'number', minimum: 0.01, maximum: MAX_SLIPPAGE_BPS / 100, default: DEFAULT_SLIPPAGE_BPS / 100, description: 'How far below the quote the swap may fill, in percent, with at most two decimals.' },
+          },
+          required: ['token', 'side', 'amount', 'wallet'],
+          additionalProperties: false,
+        },
+      },
+      response: {
+        contentType: JSON_TYPE,
+        shape: `{chainId: 8453, token, symbol, side, path: bootr|clanker|clanker-v5, pairedAsset: ETH|USDC, amountIn: {raw, formatted, asset}, quote: {amountOut: {raw, formatted, asset}, feePct|null, impactPct|null, quotedAt}, minReceived: {raw, formatted, asset}, slippagePct, deadline, steps: [{kind: approve_token|approve_permit2|swap, to, data, value, sendFrom, description}], warnings: [string], note}; raw is in the asset’s own units (6 decimals for USDC), value is decimal wei, quotedAt and deadline are unix seconds, and the swap reverts below minReceived or after the deadline; errors {error, message, field?}: 400 invalid_request, 404 unknown_coin (not a Bootr coin), 409 not_tradable, trading_not_open (a Clanker v5 coin’s first 20 seconds, with Retry-After), fee_too_high (a measured fee above ${limits.maxFeePct}%), no_balance, no_liquidity, no_pool, launch_window and no_quote, 413, 429 rate_limited, 502 network and indexer_unavailable`,
+      },
+    },
   ];
 }
 

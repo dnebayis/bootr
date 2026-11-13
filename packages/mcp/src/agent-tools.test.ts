@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACTION_TOOLS as FAKE_ACTION_TOOLS,
   BRIEF,
+  ROUND_TWO_TOOLS,
   COIN,
   HIDDEN_CHARS,
   hide,
@@ -89,8 +90,9 @@ describe('with own agents switched off', () => {
     try {
       const names = (await c.listTools()).tools.map((t) => t.name);
       expect(names.filter((n) => AGENT_TOOL_NAMES.includes(n))).toEqual([]);
-      expect(names).toHaveLength(13);
+      expect(names).toHaveLength(14);
       expect(names).toContain('bootr_agent_treasury');
+      expect(names).toContain('bootr_prepare_swap');
       const prompts = await c.listPrompts().catch(() => ({ prompts: [] }));
       expect(prompts.prompts).toEqual([]);
       const refused = (await c.callTool({ name: 'bootr_agent_due', arguments: {} }).catch((e: unknown) => ({ isError: true, content: [{ type: 'text', text: String(e) }] }))) as Result;
@@ -115,39 +117,72 @@ describe('with own agents switched off', () => {
   });
 });
 
+describe('against a site from before the second round of tools', () => {
+  it('lists the four new tools with a loose schema, keeps the old post schema, and lets the site answer', async () => {
+    const old = await startFakeSite({ roundTwoTools: false });
+    const c = await start(old.url, { BOOTR_CREDENTIALS_FILE: path.join(dir, 'old-site.json'), BOOTR_PICTURES_DIR: pictures });
+    try {
+      const { tools } = await c.listTools();
+      const by = (n: string) => tools.find((t) => t.name === n)!;
+      for (const n of ROUND_TWO_TOOLS) {
+        expect(by(`bootr_agent_${n}`), n).toBeTruthy();
+        expect(by(`bootr_agent_${n}`).inputSchema).toMatchObject({ properties: { turnId: { type: 'string' } }, required: ['turnId'] });
+        expect(by(`bootr_agent_${n}`).description, n).not.toContain('NETWORK DESCRIPTION');
+      }
+      expect(Object.keys(by('bootr_agent_publish_post').inputSchema.properties ?? {}).sort()).toEqual(['coin', 'imageId', 'postId', 'text', 'turnId']);
+    } finally {
+      await c.close();
+      await old.close();
+    }
+  });
+});
+
 describe('the tool list', () => {
-  it('has every tool of the contract next to the 13 that were there', async () => {
+  it('has every tool of the contract next to the 14 that read and prepare', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toHaveLength(13 + AGENT_TOOL_NAMES.length);
-    expect(AGENT_TOOL_NAMES).toHaveLength(33);
+    expect(names).toHaveLength(14 + AGENT_TOOL_NAMES.length);
+    expect(AGENT_TOOL_NAMES).toHaveLength(37);
+    // the four of the second round, by the names the contract fixes
+    for (const n of ['bootr_agent_schedule_post', 'bootr_agent_scheduled_list', 'bootr_agent_scheduled_cancel', 'bootr_agent_note_what_works']) expect(names, n).toContain(n);
+    expect(ACTION_TOOLS.map((t) => t.name).filter((n) => ROUND_TWO_TOOLS.includes(n)).sort()).toEqual([...ROUND_TWO_TOOLS].sort());
+    // preparing a swap is for a person: it is not among the tools of an agent's turn
+    expect(AGENT_TOOL_NAMES.some((n) => /swap/.test(n))).toBe(false);
     for (const n of AGENT_TOOL_NAMES) expect(names, n).toContain(n);
     for (const n of ['connect', 'disconnect', 'status', 'due', 'turn', 'upload_picture', 'answer_request', 'judge_entry', 'judge', 'finish']) expect(names).toContain(`bootr_agent_${n}`);
-    // The 23 are the contract's 23, and the fake offers the same ones.
+    // The 27 are the two contracts' own, and the fake offers the same ones.
     expect(ACTION_TOOLS.map((t) => t.name)).toEqual(FAKE_ACTION_TOOLS);
     expect(names).not.toContain('bootr_agent_generate_image');
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it('marks reads as read-only and the five acting tools as acting, so a client can ask before a post', async () => {
+  it('marks reads as read-only and the six acting tools as acting, so a client can ask before a post', async () => {
     const { tools } = await client.listTools();
     const hint = (n: string) => tools.find((t) => t.name === `bootr_agent_${n}`)!.annotations!;
-    for (const n of ['read_mentions', 'read_x_thread', 'read_x_account', 'recall_conversation', 'recall', 'read_market', 'read_coin', 'read_chain', 'treasury_read', 'bounty_list', 'status', 'due', 'judge_entry']) {
+    for (const n of ['read_mentions', 'read_x_thread', 'read_x_account', 'recall_conversation', 'recall', 'read_market', 'read_coin', 'read_chain', 'treasury_read', 'bounty_list', 'scheduled_list', 'status', 'due', 'judge_entry']) {
       expect(hint(n), n).toMatchObject({ readOnlyHint: true, destructiveHint: false });
     }
     // Three reads whose input leaves for a third party (a page's address, a search's words, a need): not read-only,
     // so a client that asks before anything but a read asks before these (security review L4).
     for (const n of ['read_url', 'search_web', 'discover_services']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
-    for (const n of ['publish_post', 'publish_reply', 'treasury_execute', 'x402_fetch', 'bounty_post']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    // A scheduled post goes out in public later, with nobody asked again: it is marked like a post sent now.
+    for (const n of ['publish_post', 'publish_reply', 'schedule_post', 'treasury_execute', 'x402_fetch', 'bounty_post']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     // Disconnecting cannot be undone from the client: connecting again takes the creator's wallet.
     expect(hint('disconnect')).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-    for (const n of ['connect', 'turn', 'remember', 'resolve_mention', 'resolve_mentions', 'treasury_prepare', 'bounty_cancel', 'upload_picture', 'answer_request', 'judge', 'finish']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    for (const n of ['connect', 'turn', 'remember', 'note_what_works', 'scheduled_cancel', 'resolve_mention', 'resolve_mentions', 'treasury_prepare', 'bounty_cancel', 'upload_picture', 'answer_request', 'judge', 'finish']) expect(hint(n), n).toMatchObject({ readOnlyHint: false, destructiveHint: false });
   });
 
   it('takes the agent tools’ schemas from the catalog, adds turnId, and keeps its own words for every description', async () => {
     const { tools } = await client.listTools();
     const by = (n: string) => tools.find((t) => t.name === n)!;
     expect(by('bootr_agent_publish_post').inputSchema).toMatchObject({ properties: { turnId: { type: 'string' }, coin: { type: 'string' }, text: { type: 'string', maxLength: 280 } }, required: ['turnId', 'text'], additionalProperties: false });
+    // the fields a post gained and the new tools' inputs arrive the same way: nothing about them is written in this package
+    expect(by('bootr_agent_publish_post').inputSchema.properties).toMatchObject({ thread: { type: 'array', maxItems: 3 }, about: { type: 'object', required: ['postId'] }, topic: { type: 'string', pattern: '^[a-z0-9-]{1,24}$' } });
+    expect(by('bootr_agent_schedule_post').inputSchema).toMatchObject({ properties: { turnId: { type: 'string' }, text: { type: 'string', maxLength: 4000 }, sendAt: { type: 'string', format: 'date-time' }, thread: { type: 'array' } }, required: ['turnId', 'text', 'sendAt'], additionalProperties: false });
+    expect(Object.keys(by('bootr_agent_schedule_post').inputSchema.properties ?? {})).not.toContain('about');
+    expect(by('bootr_agent_scheduled_cancel').inputSchema).toMatchObject({ properties: { id: { type: 'string', pattern: '^sch_[0-9a-f]{16}$' } }, required: ['turnId', 'id'], additionalProperties: false });
+    expect(by('bootr_agent_scheduled_list').inputSchema).toMatchObject({ required: ['turnId'], additionalProperties: false });
+    expect(by('bootr_agent_note_what_works').inputSchema).toMatchObject({ properties: { text: { type: 'string', maxLength: 600 } }, required: ['turnId', 'text'], additionalProperties: false });
     for (const t of tools.filter((x) => AGENT_TOOL_NAMES.includes(x.name))) {
       expect(t.description, t.name).not.toContain('NETWORK DESCRIPTION');
       expect(t.description!.length, t.name).toBeGreaterThan(20);
@@ -323,8 +358,15 @@ describe('a social turn', () => {
     turnId = rest.turnId;
   });
 
-  it('sends each of the 23 tools as its own action, without the turn or the coin in its input', async () => {
-    const args: Record<string, object> = { publish_post: { text: 'first post' }, publish_reply: { postId: '1', text: 'thanks' } };
+  it('sends each of the 27 tools as its own action, without the turn or the coin in its input', async () => {
+    const args: Record<string, object> = {
+      publish_post: { text: 'first post' },
+      publish_reply: { postId: '1', text: 'thanks' },
+      note_what_works: { text: 'Short posts with a picture.' },
+      schedule_post: { text: 'later', sendAt: '2099-01-01T09:00:00.000Z' },
+      scheduled_list: {},
+      scheduled_cancel: { id: 'sch_0123456789abcdef' },
+    };
     for (const { name } of ACTION_TOOLS.filter((t) => t.name !== 'x402_fetch')) {
       site.seen.length = 0;
       const input = args[name] ?? { note: name };
@@ -366,6 +408,101 @@ describe('a social turn', () => {
     const invalid = await call('bootr_agent_remember', { turnId, text: 'x' });
     expect(invalid.isError).toBe(true);
     expect(invalid.content[0]!.text).toBe('invalid_tool_call: The tool input is not valid. text is required. (field: text)');
+  });
+
+  it('a thread and a comment are a post with one more field, and the result says what went out', async () => {
+    site.backend.turn!.stepsUsed = 0;
+    const thread = [{ text: 'second part' }, { text: 'third part' }];
+    const posted = await call('bootr_agent_publish_post', { turnId, text: 'a thought that needs room', thread, topic: 'night-shift' });
+    expect(posted.isError).toBeFalsy();
+    expect(runs('act').at(-1)!.body).toEqual({ turnId, tool: 'publish_post', input: { text: 'a thought that needs room', thread, topic: 'night-shift' } });
+    const result = json<{ status: string; result: { postId: string; parts: { n: number; postId: string }[]; sent: number; of: number } }>(posted);
+    expect(result).toMatchObject({ status: 'completed', result: { sent: 3, of: 3 } });
+    expect(result.result.parts.map((p) => p.n)).toEqual([1, 2, 3]);
+    expect(result.result.parts[0]!.postId).toBe(result.result.postId);
+
+    const comment = await call('bootr_agent_publish_post', { turnId, text: 'what I think of that post', about: { postId: '1900000000000000777' } });
+    expect(runs('act').at(-1)!.body).toEqual({ turnId, tool: 'publish_post', input: { text: 'what I think of that post', about: { postId: '1900000000000000777' } } });
+    expect(json(comment)).toMatchObject({ status: 'completed', result: { about: { postId: '1900000000000000777', authorId: '4242', handle: 'stranger' } } });
+
+    // what the schema refuses never leaves this machine: a fourth more part, a part past 280, a topic that is not a plain word
+    site.seen.length = 0;
+    for (const bad of [
+      { turnId, text: 'x', thread: [{ text: 'a' }, { text: 'b' }, { text: 'c' }, { text: 'd' }] },
+      { turnId, text: 'x', thread: [{ text: 'y'.repeat(281) }] },
+      { turnId, text: 'x', thread: [] },
+      { turnId, text: 'x', about: { postId: '1', url: 'https://x.com/a/status/1' } },
+      { turnId, text: 'x', topic: 'Buy Now!' },
+    ]) {
+      const r = (await client.callTool({ name: 'bootr_agent_publish_post', arguments: bad }).catch((e: unknown) => ({ isError: true, content: [{ type: 'text', text: String(e) }] }))) as Result;
+      expect(r.isError, JSON.stringify(bad)).toBe(true);
+    }
+    expect(site.seen).toHaveLength(0);
+  });
+
+  it('schedules a post, lists it, never queues the same call twice, and cancels it', async () => {
+    site.backend.turn!.stepsUsed = 0;
+    const sendAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    const queued = await call('bootr_agent_schedule_post', { turnId, coin: 'OWL', text: 'gm, three hours from now', sendAt, topic: 'morning' });
+    expect(queued.isError).toBeFalsy();
+    expect(queued.content[0]!.text).toBe(AGENT_DATA_NOTICE);
+    expect(runs('act').at(-1)!.body).toEqual({ turnId, tool: 'schedule_post', input: { text: 'gm, three hours from now', sendAt, topic: 'morning' } });
+    const first = json<{ status: string; actionId: string; stepsUsed: number; result: { scheduledId: string; sendAt: string; status: string; waiting: number; mayQueue: number } }>(queued);
+    expect(first).toMatchObject({ status: 'completed', tool: 'schedule_post', turnEnded: false, result: { sendAt, status: 'waiting', waiting: 1, mayQueue: 5 } });
+    expect(first.result.scheduledId).toMatch(/^sch_[0-9a-f]{16}$/);
+    // the same call again, say after a timeout: the same action, the same row, one post waiting
+    const again = json<typeof first>(await call('bootr_agent_schedule_post', { turnId, text: 'gm, three hours from now', sendAt, topic: 'morning' }));
+    expect(again.actionId).toBe(first.actionId);
+    expect(again.result.scheduledId).toBe(first.result.scheduledId);
+    expect(again.stepsUsed).toBe(first.stepsUsed);
+    expect(site.backend.scheduled).toHaveLength(1);
+
+    const listed = json<{ result: { items: { id: string; sendAt: string; status: string; text: string; parts: number; picture: boolean }[]; mayQueue: number; nextFreeAt: string } }>(await call('bootr_agent_scheduled_list', { turnId }));
+    expect(listed.result.items).toEqual([{ id: first.result.scheduledId, sendAt, status: 'waiting', text: 'gm, three hours from now', parts: 1, picture: false }]);
+    expect(listed.result.mayQueue).toBe(5);
+
+    // a refusal of the server is a result with its own words, for the model to act on
+    const named = await call('bootr_agent_schedule_post', { turnId, text: 'gm @someone', sendAt });
+    expect(named.isError).toBeFalsy();
+    expect(json(named)).toMatchObject({ status: 'failed', error: 'scheduled_mention_forbidden: a scheduled post names nobody; nothing was scheduled. Remove the @.' });
+    const soon = json<{ status: string; error: string }>(await call('bootr_agent_schedule_post', { turnId, text: 'too soon', sendAt: new Date(Date.now() + 60_000).toISOString() }));
+    expect(soon.status).toBe('failed');
+    expect(soon.error).toMatch(/^schedule_time: .*; the nearest time you can take is \d{4}-\d\d-\d\dT[\d:.]+Z\. Nothing was scheduled\.$/);
+    const unknown = json(await call('bootr_agent_scheduled_cancel', { turnId, id: 'sch_ffffffffffffffff' }));
+    expect(unknown).toMatchObject({ status: 'failed', error: 'scheduled_not_found: you have no waiting post sch_ffffffffffffffff.' });
+
+    const cancelled = json(await call('bootr_agent_scheduled_cancel', { turnId, id: first.result.scheduledId }));
+    expect(cancelled).toMatchObject({ status: 'completed', tool: 'scheduled_cancel', result: { id: first.result.scheduledId, cancelled: true } });
+    expect(site.backend.scheduled).toHaveLength(0);
+
+    // an id that is not one, a time that is not one, a post to comment on: refused here, nothing sent
+    site.seen.length = 0;
+    for (const [name, bad] of [
+      ['bootr_agent_scheduled_cancel', { turnId, id: '../../etc/passwd' }],
+      ['bootr_agent_schedule_post', { turnId, text: 'x' }],
+      ['bootr_agent_schedule_post', { turnId, text: 'x', sendAt, about: { postId: '1' } }],
+      ['bootr_agent_schedule_post', { turnId, text: 'x', sendAt, attributions: [{ username: 'a', sourceUrl: 'https://x.com/a' }] }],
+    ] as const) {
+      const r = (await client.callTool({ name, arguments: bad }).catch((e: unknown) => ({ isError: true, content: [{ type: 'text', text: String(e) }] }))) as Result;
+      expect(r.isError, JSON.stringify(bad)).toBe(true);
+    }
+    expect(site.seen).toHaveLength(0);
+  });
+
+  it('keeps the note on what works, and passes on the server’s word when it is not due', async () => {
+    site.backend.turn!.stepsUsed = 0;
+    const kept = json<{ status: string; result: { kept: boolean; nextRevisionAt: string } }>(await call('bootr_agent_note_what_works', { turnId, text: 'Short posts in the morning, one picture.' }));
+    expect(kept).toMatchObject({ status: 'completed', tool: 'note_what_works', result: { kept: true } });
+    expect(runs('act').at(-1)!.body).toEqual({ turnId, tool: 'note_what_works', input: { text: 'Short posts in the morning, one picture.' } });
+    expect(site.backend.whatWorks!.text).toBe('Short posts in the morning, one picture.');
+    const early = await call('bootr_agent_note_what_works', { turnId, text: 'Another note already.' });
+    expect(early.isError).toBeFalsy();
+    expect(json(early)).toMatchObject({ status: 'failed', error: `what_works_not_due: your note can be revised again at ${kept.result.nextRevisionAt}; nothing was changed.` });
+    expect(site.backend.whatWorks!.text).toBe('Short posts in the morning, one picture.');
+    site.seen.length = 0;
+    const long = (await client.callTool({ name: 'bootr_agent_note_what_works', arguments: { turnId, text: 'x'.repeat(601) } }).catch(() => ({ isError: true, content: [] }))) as Result;
+    expect(long.isError).toBe(true);
+    expect(site.seen).toHaveLength(0);
   });
 
   it('closes a creator request and refuses a malformed input before it is sent', async () => {

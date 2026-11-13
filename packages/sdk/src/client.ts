@@ -31,6 +31,8 @@ import type {
   PlatformSwitches,
   PreparedClaims,
   PreparedLaunch,
+  PreparedSwap,
+  PrepareSwapInput,
   SearchRow,
   SiweAuth,
   Treasury,
@@ -411,6 +413,50 @@ export class Bootr {
     ) {
       throw new BootrApiError(
         'The answer names another wallet or chain than the signed message. Do not send anything from it.',
+        'mismatch',
+        null,
+      );
+    }
+    return prepared;
+  }
+
+  /**
+   * A buy or a sell of one Bootr coin as unsigned transactions for `wallet` to send, in order: the approvals as steps
+   * of their own for the exact amount, then the swap with its minimum received and a deadline 20 minutes ahead. The
+   * site refuses a coin that is not a Bootr coin, a Clanker v5 coin in its first 20 seconds and a trade whose fee is
+   * far above normal (`unknown_coin`, `trading_not_open`, `fee_too_high`). Refuses an answer for another coin, side,
+   * chain or wallet than the one asked for.
+   */
+  async prepareSwap(input: PrepareSwapInput): Promise<PreparedSwap> {
+    const token = requireAddress(String(input.token ?? ''), 'token');
+    const wallet = requireAddress(String(input.wallet ?? ''), 'wallet');
+    if (input.side !== 'buy' && input.side !== 'sell')
+      throw new BootrApiError('side must be "buy" or "sell". Nothing was sent.', 'invalid_request', null, { field: 'side' });
+    if (looksLikeKey(input.amount)) throw new BootrApiError(KEY_REFUSAL, 'key_refused', null);
+    const amount = typeof input.amount === 'number' ? String(input.amount) : String(input.amount ?? '').trim();
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(amount) || amount.length > 60)
+      throw new BootrApiError('amount must be a positive decimal such as "0.01". Nothing was sent.', 'invalid_request', null, { field: 'amount' });
+    const body = {
+      token,
+      side: input.side,
+      amount,
+      wallet,
+      ...(input.payWith === undefined ? {} : { payWith: input.payWith }),
+      ...(input.slippagePct === undefined ? {} : { slippagePct: input.slippagePct }),
+    };
+    const [prepared, catalog] = await Promise.all([this.call<PreparedSwap>('swap', {}, { body }), this.catalog()]);
+    const steps = Array.isArray(prepared.steps) ? prepared.steps : [];
+    const same = (a: unknown, b: Address) => typeof a === 'string' && isAddress(a, { strict: false }) && isAddressEqual(a, b);
+    if (
+      !same(prepared.token, token) ||
+      prepared.side !== input.side ||
+      prepared.chainId !== catalog.chainId ||
+      steps.length === 0 ||
+      steps.at(-1)!.kind !== 'swap' ||
+      steps.some((s) => !same(s.sendFrom, wallet) || !isAddress(String(s.to), { strict: false }))
+    ) {
+      throw new BootrApiError(
+        'The answer names another coin, side, chain or wallet than the one asked for. Do not send anything from it.',
         'mismatch',
         null,
       );

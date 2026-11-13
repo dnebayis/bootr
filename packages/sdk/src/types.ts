@@ -409,6 +409,68 @@ export interface ContractTokenSettings {
   expectedPlatformShareBps: number;
 }
 
+/** What `prepareSwap` takes: one buy or one sell of a Bootr coin, for the wallet that will send it. */
+export interface PrepareSwapInput {
+  /** The coin's address. */
+  token: string;
+  side: 'buy' | 'sell';
+  /** What goes in, as a decimal: ETH (or USDC) on a buy, the coin on a sell. A string keeps every digit. */
+  amount: string | number;
+  /** The wallet that will send the steps. It is read for its balance and its allowances, and it is what receives. */
+  wallet: string;
+  /** A buy of a coin paired with USDC: `USDC` (the default there) or `ETH`, in one transaction of two hops. */
+  payWith?: 'ETH' | 'USDC';
+  /** How far below the quote the swap may fill, in percent: 0.01 to 20, default 1. */
+  slippagePct?: number;
+}
+
+/** An amount in an asset's own units (`raw`, 6 decimals for USDC), as a decimal (`formatted`), and the asset's symbol. */
+export interface SwapAmount {
+  raw: string;
+  formatted: string;
+  asset: string;
+}
+
+/** One transaction of a prepared swap. `toTransaction` turns it into what a wallet library sends. */
+export interface UnsignedSwapStep {
+  /** `approve_token` and `approve_permit2` are for the exact amount and move nothing; `swap` is the trade. */
+  kind: 'approve_token' | 'approve_permit2' | 'swap';
+  to: Address;
+  data: Hex;
+  /** Decimal wei. */
+  value: string;
+  /** The wallet that must send it: the one the swap was prepared for. */
+  sendFrom: Address;
+  description: string;
+}
+
+/**
+ * A buy or a sell as unsigned transactions (`POST /api/agent/swap`): send `steps` in order, each after the one before
+ * is mined. The swap reverts if it would give less than `minReceived` or is mined after `deadline`, and what it pays
+ * goes to the wallet that sends it.
+ */
+export interface PreparedSwap {
+  chainId: number;
+  token: Address;
+  symbol: string;
+  side: 'buy' | 'sell';
+  path: LaunchSource;
+  pairedAsset: 'ETH' | 'USDC';
+  amountIn: SwapAmount;
+  /** As read when the answer was built. `feePct` and `impactPct` are null when they could not be measured. */
+  quote: { amountOut: SwapAmount; feePct: number | null; impactPct: number | null; quotedAt: number };
+  /** The floor written into the swap. */
+  minReceived: SwapAmount;
+  slippagePct: number;
+  /** Unix seconds. */
+  deadline: number;
+  steps: UnsignedSwapStep[];
+  warnings: string[];
+  note: string;
+  /** True from a test deployment: do not send anything from it. */
+  mock?: boolean;
+}
+
 /**
  * The `launch` object of `POST /api/agent/launch`. The catalog holds the full schema with its limits
  * (`endpoints[...].parameters.body`), and the route refuses what it cannot read.

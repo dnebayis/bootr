@@ -46,6 +46,13 @@ Prepare (prints unsigned transactions: nothing is signed or sent)
                                        coin, the spec sets "launchThrough": "clanker" and its "token" settings
                                        (paired asset, taxes, burn, dividends, reward rows); they are checked
                                        before anything is sent
+  bootr prepare swap --coin <address> (--buy <amount> | --sell <amount>) --wallet <address>
+                     [--pay-with ETH|USDC] [--slippage <percent>]
+                                       A buy or a sell of one Bootr coin, for the wallet that will send it:
+                                       the approvals as steps of their own for the exact amount, then the swap
+                                       with its minimum received. --buy is in ETH (USDC for a coin paired with
+                                       USDC, unless --pay-with ETH), --sell in the coin. --slippage is 0.01 to
+                                       20, default 1. What the swap pays goes to the wallet that sends it
 `;
 
 const USAGE_END = `
@@ -70,6 +77,11 @@ const OPTIONS = {
   signature: { type: 'string' },
   image: { type: 'string' },
   asset: { type: 'string' },
+  buy: { type: 'string' },
+  sell: { type: 'string' },
+  wallet: { type: 'string' },
+  'pay-with': { type: 'string' },
+  slippage: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
 } as const;
 
@@ -165,7 +177,7 @@ export async function run(
     strict: true,
   });
   if (values.help || positionals.length === 0) return { text: USAGE };
-  for (const value of [...positionals, values.signature, values.asset]) {
+  for (const value of [...positionals, values.signature, values.asset, values.wallet, values.buy, values.sell]) {
     if (looksLikeKey(value)) throw new UsageError(KEY_REFUSAL);
   }
   const bootr = createBootr(
@@ -256,8 +268,31 @@ export async function run(
             }`,
           };
         }
+        case 'swap': {
+          // `--coin` is a plain switch on this command line (`bootr fees --coin <address>`), so the address after it
+          // arrives as the next word.
+          const token = need(extra, 'the coin: --coin <address>');
+          if (!isAddressLike(token)) throw new UsageError('--coin must be the coin’s 0x address. Find it with: bootr coin <name or symbol>');
+          if ((values.buy === undefined) === (values.sell === undefined))
+            throw new UsageError('Give one of --buy <amount> (what you pay) or --sell <amount> (how much of the coin).');
+          const payWith = values['pay-with']?.trim().toUpperCase();
+          if (payWith !== undefined && payWith !== 'ETH' && payWith !== 'USDC') throw new UsageError('--pay-with must be ETH or USDC.');
+          if (values.slippage !== undefined && !/^(\d+\.?\d*|\.\d+)$/.test(values.slippage)) throw new UsageError('--slippage must be a percent from 0.01 to 20, such as 1.');
+          const data = await bootr.prepareSwap({
+            token,
+            side: values.buy !== undefined ? 'buy' : 'sell',
+            amount: (values.buy ?? values.sell)!,
+            wallet: need(values.wallet, '--wallet <the address that will send the steps>'),
+            ...(payWith ? { payWith } : {}),
+            ...(values.slippage !== undefined ? { slippagePct: Number(values.slippage) } : {}),
+          });
+          return {
+            data,
+            notice: `${NOT_SENT} Send each step after the one before is mined. The swap reverts if it would give less than minReceived or is mined after the deadline, 20 minutes from now. A trade cannot be undone: check the amounts first.${data.mock ? ' This answer comes from a test deployment: do not send anything from it.' : ''}`,
+          };
+        }
         default:
-          throw new UsageError('prepare takes: claim, launch-message or launch.');
+          throw new UsageError('prepare takes: claim, launch-message, launch or swap.');
       }
     case 'own':
       // Reached when a flag came before the word (`bootr --site <url> own status`); the rest is its own to parse.

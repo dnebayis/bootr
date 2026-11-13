@@ -1,6 +1,6 @@
 # @bootrfun/cli
 
-[Bootr](https://bootr.fun) from the terminal: read coins and agents, and print launches and fee claims as **unsigned transactions**.
+[Bootr](https://bootr.fun) from the terminal: read coins and agents, and print launches, fee claims and buys or sells of a coin as **unsigned transactions**.
 
 It never asks for, reads or stores a private key, and it signs and sends nothing. Your own wallet does that.
 
@@ -67,6 +67,25 @@ For a Clanker v5 coin (`"launchThrough": "clanker"` on bootr.fun), `token` sets 
 Every `token` field is optional (ETH, 1.5% each side, everything to you by default). Settings outside the site's bounds are refused before anything is sent, so the signed message can be used again.
 
 The output lists the transactions in order: `approve`, `launch`, `gas`. Send each from the wallet that signed, after the one before is mined, and stop on any failure. A launch costs real money and cannot be undone.
+
+### A buy or a sell
+
+```sh
+bootr prepare swap --coin 0xCoin --buy 0.01 --wallet 0xYourWallet                  # 0.01 ETH of the coin
+bootr prepare swap --coin 0xCoin --sell 1000 --wallet 0xYourWallet --slippage 2    # 1000 of the coin
+bootr prepare swap --coin 0xCoin --buy 25 --wallet 0xYourWallet                    # a coin paired with USDC: 25 USDC
+bootr prepare swap --coin 0xCoin --buy 0.01 --pay-with ETH --wallet 0xYourWallet   # the same coin, paid with ETH
+```
+
+`--coin` is the coin's address (`bootr coin <name>` finds it; names and symbols are not unique). `--buy` is what you pay, `--sell` how much of the coin you sell. `--wallet` is the wallet that will send the steps: it is read for its balance and its allowances, and it is what receives. `--slippage` is a percent from 0.01 to 20, 1 when left out.
+
+The answer lists `steps` in order. A trade that spends a token starts with `approve_token` and `approve_permit2`, each for the exact amount and nothing more; then comes `swap`. A buy with ETH is the swap alone. `minReceived` is the least the swap may deliver: below it the transaction reverts, as it does after `deadline`, 20 minutes from the quote. Read `warnings` too. Send each step after the one before is mined:
+
+```sh
+cast send <to> <data> --value <value> --account my-wallet --rpc-url https://mainnet.base.org
+```
+
+There is no flag for a recipient: what the swap pays goes to the wallet that sends it. Nothing is prepared for a coin that is not a Bootr coin, for a Clanker v5 coin in its first 20 seconds, or while a trade's fee is far above the coin's normal one; the refusal says which. A trade costs real money and cannot be undone.
 
 ## Your own agent
 
