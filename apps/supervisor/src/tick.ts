@@ -36,6 +36,7 @@ import { SenderError, type SenderInboxItem } from './sender-client.js';
 import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, type AgentChainState } from './treasury.js';
 import { openServiceCalls, reconcileServiceCall } from './services.js';
 import { bountyConversationIds, sweepBounties } from './bounties.js';
+import { applyScheduled, sweepScheduled } from './scheduled.js';
 import type { Logger } from './log.js';
 import { isOwn } from './own/registry.js';
 import { expireOwnTurn } from './own/turns.js';
@@ -88,6 +89,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await sweepBounties(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'bounty sweep failed');
+  }
+  // Scheduled posts: the ones whose time has come are sent, each under its coin's lease; late ones are missed (scheduled.ts).
+  try {
+    await sweepScheduled(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'scheduled posts sweep failed');
   }
 
   // Awake runtimes by `nextAt`. Sleeping ones are not among them: a sleeping agent never moves its `nextAt`, so ten
@@ -360,7 +367,8 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // the next turn's first observation says so once (runtime.ts `trackHoldEnd`, rhythm.ts `holdEndedMessage`). The
     // one-tick credits hold of a 402 mention read is not on the state and never reaches the model, so it is not tracked.
     if (trackHoldEnd(state, stateHold, now)) await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
-    const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
+    // A slot that a scheduled post covers is not due either (scheduled.ts `applyScheduled`): no thought is bought for it.
+    const schedule = applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
     // A turn the runtime just ended: only something it has not seen may wake the agent before its `nextAt`.
     const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
     const pending = runtime.pending as unknown as PendingAction | null;

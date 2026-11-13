@@ -25,6 +25,7 @@ import { loadImage, mediaFor, WITHOUT_PICTURE } from './images.js';
 import { altTextRisk } from './image-rules.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
+import { decideScheduled, isScheduledApproval } from './scheduled.js';
 import { SenderError, type ReplyEligibility } from './sender-client.js';
 
 /** A pending item the creator never looked at is rejected ("expired") after this long. */
@@ -336,6 +337,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     return { ok: true, approval: await viewOf(ctx, agent, updated!, false) };
   }
 
+  if (isScheduledApproval(row)) return decideScheduled(ctx, agent, row, decision, by, note);
   if (decision === 'reject') {
     const [updated] = await ctx.db.update(approvals).set({ status: 'rejected', decision: 'reject', decidedBy: by, note, decidedAt: now }).where(eq(approvals.id, row.id)).returning();
     ctx.log.info({ agentId: agent.agentId, approvalId: row.id, by, note }, 'post rejected by the creator');

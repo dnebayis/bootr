@@ -24,6 +24,7 @@ import { offerPlatformUpdate, settlePlatformUpdate } from '../platform-updates.j
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold, type RhythmSchedule } from '../rhythm.js';
 import { roleTools } from '../roles.js';
 import { accountPremium, afterSettledAction, buildFirstObservation, scheduleFor, socialCheckpoint, trackHoldEnd, type Turn, type TurnInputs } from '../runtime.js';
+import { applyScheduled } from '../scheduled.js';
 import { SenderError, type SenderInboxItem } from '../sender-client.js';
 import { readTreasuryOnChain } from '../treasury.js';
 import { settleWeeklyDigest, weeklyDigestWake, type WeeklyDigestPlan } from '../weekly-digest.js';
@@ -85,7 +86,8 @@ async function socialWake(call: OwnCall): Promise<SocialWake> {
   const quota = readOutOfCredits ? (quotaHold(state.postQuotaUntil, now) ?? creditsHold(now + ctx.config.SUPERVISOR_TICK_MS, now)) : stateHold;
   // A hold the model was told about that is no longer on the state is marked ended; the engine writes the state back.
   trackHoldEnd(state, stateHold, now);
-  const schedule = applyQuotaHold(await applyRhythm(ctx, scheduleFor(config, state, now), now), quota);
+  // A slot that a scheduled post covers is not due: the client is not told a post is due (scheduled.ts `applyScheduled`).
+  const schedule = applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
   // A turn the server just closed: only something it has not seen makes the role due before its `nextAt`.
   const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
   const pending = runtime.pending as unknown as PendingAction | null;

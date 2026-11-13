@@ -221,6 +221,22 @@ export const configSchema = z
      */
     PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'bootrfun,base,jessepollak,clanker_world' : v), z.string().max(2000)),
     MAX_TOOL_STEPS: int(8, 1),
+    /**
+     * Scheduled posts (scheduled.ts; docs/design/agent-tools-2.md sections 5 and 13): the agent decides a post now and
+     * the tick sends it at its time. Each value is a limit; `SCHEDULED_MAX_WAITING=0` (or a furthest time of 0) switches
+     * the whole piece off: the tools are not offered, nothing is asked of the queue and the tick's sweep does nothing.
+     * `SCHEDULED_POSTS_HOSTED=false` keeps the tools from the Bootr agent and leaves them to own agents.
+     */
+    SCHEDULED_POSTS_HOSTED: bool('true'),
+    /** Posts that may wait per coin, the ones in the creator's review included. */
+    SCHEDULED_MAX_WAITING: int(6, 0),
+    /** The nearest and the furthest time a post may be scheduled for, from now. */
+    SCHEDULE_MIN_AHEAD_MS: int(600_000, 0),
+    SCHEDULE_MAX_AHEAD_MS: int(129_600_000, 0),
+    /** How late a scheduled post may still go out; past it the post is missed, never sent late. */
+    SCHEDULE_GRACE_MS: int(3_600_000, 0),
+    /** Scheduled posts one tick sends, over all coins; 0 sends none. */
+    SCHEDULED_SENDS_PER_TICK: int(5, 0),
     /** Closes mentions the sender would refuse for lack of a verified badge before a turn's first step (mention-close.ts). */
     MENTION_AUTO_CLOSE_ENABLED: bool('true'),
     SUPERVISOR_PORT: int(3004, 1),
