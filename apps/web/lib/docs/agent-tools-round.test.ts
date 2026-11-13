@@ -33,7 +33,6 @@ describe('the docs of the agent’s newer tools', () => {
     expect(agents).toContain('at least 8 posts');
     expect(agents).toContain('at most 600 characters');
     expect(agents).toContain('at most once every 7 days and only after 10 more posts were measured');
-    expect(agents).toContain('name up to 5 X accounts');
     expect(agents).toContain('Never a price, a forecast or a comparison with another coin.');
   });
 
@@ -62,6 +61,12 @@ describe('the docs of the agent’s newer tools', () => {
     expect(agents).toContain('Reply under, or quote, a post whose author did not write to it.');
     expect(everything).not.toMatch(/quote[- ]post/i);
     expect(everything).not.toMatch(/\bcan quote\b|\bmay quote\b|\bquotes? (?:a|the|other) posts?\b/i);
+  });
+
+  it('name no list of accounts for a coin\u2019s agent to follow, which was taken out of the release', () => {
+    expect(everything).not.toMatch(/accounts? to follow|name up to \d+ X accounts|watched accounts?|watchlist/i);
+    // a comment's source is a post the agent read itself in the same turn
+    expect(agents).toContain('only a post the agent read through Bootr in the same turn');
   });
 
   it('say nothing of what was cut from the release', () => {

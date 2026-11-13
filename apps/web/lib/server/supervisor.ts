@@ -10,7 +10,7 @@ import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/ag
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHLIST_MAX, X_HANDLE_RE, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { aboutHref } from '@/lib/posting-views';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
@@ -230,10 +230,9 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     imageStyle: imageStyle(o.imageStyle),
     services: servicesPolicy(o.services),
     bounties: bountiesPolicy(o.bounties),
-    // This round's three fields; an older agent service sends none, which reads as the defaults.
+    // This round's two fields; an older agent service sends neither, which reads as the defaults.
     comments: o.comments !== false,
     replyAudience: (REPLY_AUDIENCES as readonly unknown[]).includes(o.replyAudience) ? (o.replyAudience as ReplyAudience) : 'verified',
-    watchlist: (Array.isArray(o.watchlist) ? o.watchlist : []).filter((h): h is string => typeof h === 'string' && X_HANDLE_RE.test(h)).slice(0, WATCHLIST_MAX),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
     xHold: sanitizeXHold(o.xHold),
@@ -840,12 +839,12 @@ function cleanText(v: unknown): string | null {
  * The `changes` a creator may send: instructions (20–600 plain chars), a model id, worker fields inside
  * WORKER_BOUNDS, the post review switch, an image model id and the image style (an https reference or null, notes
  * of at most IMAGE_NOTES_MAX plain characters), the paid services caps and the bounties bounds (each inside
- * BOUNTIES_BOUNDS), the comments switch, who gets a reply and the watched accounts (at most WATCHLIST_MAX handles,
- * stored lower-case without the `@`). Unknown keys are dropped, always-on powers cannot be switched off. Returns the error to show.
+ * BOUNTIES_BOUNDS), the comments switch and who gets a reply. Unknown keys are dropped (a list of accounts to follow,
+ * which an older page may still send, is one of them), always-on powers cannot be switched off. Returns the error to show.
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown; watchlist?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown };
   const changes: AgentConfigChanges = {};
   if (o.comments !== undefined) {
     if (typeof o.comments !== 'boolean') return { ok: false, field: 'comments', message: 'comments must be true or false' };
@@ -854,16 +853,6 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
   if (o.replyAudience !== undefined) {
     if (!(REPLY_AUDIENCES as readonly unknown[]).includes(o.replyAudience)) return { ok: false, field: 'replyAudience', message: `replyAudience must be one of ${REPLY_AUDIENCES.join(', ')}.` };
     changes.replyAudience = o.replyAudience as ReplyAudience;
-  }
-  if (o.watchlist !== undefined) {
-    if (!Array.isArray(o.watchlist) || o.watchlist.length > WATCHLIST_MAX) return { ok: false, field: 'watchlist', message: `watchlist is a list of at most ${WATCHLIST_MAX} X handles.` };
-    const handles: string[] = [];
-    for (const raw of o.watchlist) {
-      const handle = typeof raw === 'string' ? raw.trim().replace(/^@/, '').toLowerCase() : '';
-      if (!X_HANDLE_RE.test(handle)) return { ok: false, field: 'watchlist', message: 'Each watched account is an X handle: letters, digits and underscores, at most 15 characters.' };
-      if (!handles.includes(handle)) handles.push(handle);
-    }
-    changes.watchlist = handles;
   }
   if (o.bounties !== undefined) {
     if (!o.bounties || typeof o.bounties !== 'object' || Array.isArray(o.bounties)) return { ok: false, field: 'bounties', message: 'bounties must be an object' };

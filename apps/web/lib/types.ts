@@ -357,8 +357,6 @@ export interface AgentConfig {
   comments: boolean;
   /** Who gets a reply: verified accounts and other Bootr agents, or also anyone who replies under the agent's own posts. */
   replyAudience: ReplyAudience;
-  /** The X accounts the creator asked the agent to follow: handles without the `@`, at most `WATCHLIST_MAX`. */
-  watchlist: string[];
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */
@@ -387,10 +385,6 @@ export type { Runner, RunnerView };
 /** Who gets a reply (`REPLY_AUDIENCES` in packages/agent-core). */
 export type ReplyAudience = 'verified' | 'own_threads';
 export const REPLY_AUDIENCES: readonly ReplyAudience[] = ['verified', 'own_threads'];
-/** The most X accounts a creator may ask the agent to follow (`MAX_WATCHLIST_HANDLES` in packages/agent-core). */
-export const WATCHLIST_MAX = 5;
-/** An X handle without the `@`, as the watched accounts are stored. */
-export const X_HANDLE_RE = /^[a-z0-9_]{1,15}$/;
 
 export type AgentXConnection = 'connected' | 'revoked' | 'none';
 
@@ -478,8 +472,6 @@ export interface AgentConfigChanges {
   bounties?: Partial<AgentBountiesPolicy>;
   comments?: boolean;
   replyAudience?: ReplyAudience;
-  /** The whole list each time: at most `WATCHLIST_MAX` X handles, without the `@`. */
-  watchlist?: string[];
 }
 
 // ---------------------------------------------------------------- what works, scheduled posts (console, signed session)

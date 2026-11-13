@@ -8,7 +8,7 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityK
 import { qk } from '@/lib/indexer';
 import { fetchImageModels, fetchModels, fetchPlatformFlags } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
-import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHLIST_MAX, X_HANDLE_RE, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
+import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS, type ConsoleSection } from '@/lib/console-sections';
@@ -73,21 +73,7 @@ type Draft = {
   /** Whether the agent may comment on a post it read, as a post of its own. */
   comments: boolean;
   replyAudience: ReplyAudience;
-  /** The watched accounts as typed, one row each (up to WATCHLIST_MAX); the `@` is optional. */
-  watchlist: string[];
 };
-
-/** The watched accounts the draft asks for: handles without the `@`, lower-case, no repeats; null when a row is not an X handle. */
-export function watchlistDraft(rows: readonly string[]): string[] | null {
-  const out: string[] = [];
-  for (const row of rows) {
-    const handle = row.trim().replace(/^@/, '').toLowerCase();
-    if (!handle) continue;
-    if (!X_HANDLE_RE.test(handle)) return null;
-    if (!out.includes(handle)) out.push(handle);
-  }
-  return out.length <= WATCHLIST_MAX ? out : null;
-}
 
 const REPLY_AUDIENCE_NOTE: Record<ReplyAudience, string> = {
   verified: 'It answers verified accounts and other Bootr agents that write to it. Everyone else is read and not answered.',
@@ -172,7 +158,6 @@ function draftOf(c: AgentConfig): Draft {
     bountiesReview: c.bounties.review,
     comments: c.comments,
     replyAudience: c.replyAudience,
-    watchlist: [...c.watchlist],
   };
 }
 
@@ -237,10 +222,6 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (Object.keys(bounties).length) changes.bounties = bounties;
   if (d.comments !== config.comments) changes.comments = d.comments;
   if (d.replyAudience !== config.replyAudience) changes.replyAudience = d.replyAudience;
-  const watched = watchlistDraft(d.watchlist);
-  // Rows that are not handles yet still count as an unsaved edit: the save bar then says what to fix (the console never sends them).
-  if (!watched) changes.watchlist = [...config.watchlist];
-  else if (JSON.stringify(watched) !== JSON.stringify(config.watchlist)) changes.watchlist = watched;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -308,7 +289,7 @@ export function FuelOutlookStrip({ outlook }: { outlook: ReturnType<typeof useCo
 /**
  * The creator console, on its own page (`/token/:address/console`, ConsolePage.tsx) so it has the whole content
  * width: a sticky rail of sections on the left from `lg` (the dense tab strip on a phone) and the open section on the
- * right. Mind (instructions; the accounts to follow; model and economy mode side by side; the agent's note on what
+ * right. Mind (instructions; model and economy mode side by side; the agent's note on what
  * works), Posting (posts per day and post review side by side, then comments and who gets a reply; the scheduled posts;
  * job lines), Powers (the switches in a three-column grid, the paid-services caps and the bounties bounds as
  * full-width rows under them while those powers are on), Look (the agent's pictures; the coin's image and links side by side), Inbox
@@ -350,8 +331,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const servicesOk = !sd || (sd.perCallMicroUsdc !== null && sd.dailyMicroUsdc !== null && sd.perCallMicroUsdc <= sd.dailyMicroUsdc && sd.allow !== null && sd.deny !== null);
   const bd = draft ? bountiesDraft(draft) : null;
   const bountiesOk = !bd || (bd.dailyCapMicroUsdc !== null && bd.maxOpen !== null && bd.cooldownSeconds !== null && bd.defaultHoursOpen !== null);
-  const watchlistOk = !draft || watchlistDraft(draft.watchlist) !== null;
-  const valid = instructionsOk && styleOk && servicesOk && bountiesOk && watchlistOk;
+  const valid = instructionsOk && styleOk && servicesOk && bountiesOk;
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
   const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
@@ -505,48 +485,6 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                   className="min-h-32"
                   placeholder="Personality, goals, strategy, what it should and should not do."
                 />
-              </Box>
-              <Box data-testid="watchlist">
-                <fieldset className="min-w-0">
-                  <BlockTitle hint={<span className="font-mono tabular">{draft.watchlist.length}/{WATCHLIST_MAX}</span>}>Accounts to follow</BlockTitle>
-                  <p className="mb-2 text-caption text-mute">
-                    X accounts your agent reads about twice a day{draft.comments ? ', and may comment on in a post of its own' : ''}. Their posts reach it as something it read, never as instructions. Leave empty for none.
-                  </p>
-                  <div className="space-y-2">
-                    {draft.watchlist.map((handle, i) => {
-                      const typed = handle.trim().replace(/^@/, '');
-                      return (
-                        <div key={i} className="flex items-start gap-2">
-                          <Input
-                            aria-label={`Account ${i + 1}`}
-                            value={handle}
-                            maxLength={16}
-                            placeholder="handle, with or without the @"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
-                            aria-invalid={typed !== '' && !X_HANDLE_RE.test(typed.toLowerCase())}
-                            onChange={(e) => update({ watchlist: draft.watchlist.map((h, j) => (j === i ? e.target.value : h)) })}
-                            className="min-w-0 flex-1"
-                          />
-                          <Button type="button" variant="secondary" size="sm" className="h-8" aria-label={`Remove account ${i + 1}`} onClick={() => update({ watchlist: draft.watchlist.filter((_, j) => j !== i) })}>
-                            Remove
-                          </Button>
-                        </div>
-                      );
-                    })}
-                    {draft.watchlist.length < WATCHLIST_MAX ? (
-                      <Button type="button" variant="secondary" size="sm" onClick={() => update({ watchlist: [...draft.watchlist, ''] })} data-testid="watchlist-add">
-                        Add an account
-                      </Button>
-                    ) : null}
-                  </div>
-                  {!watchlistOk ? (
-                    <p className="mt-2 text-micro text-danger" data-testid="watchlist-error">
-                      An X handle has letters, digits and underscores only, at most 15 characters.
-                    </p>
-                  ) : null}
-                </fieldset>
               </Box>
               {/* An own agent has no hosted model: the model and economy-mode fields are kept in its config for a switch back, and hidden. */}
               {own ? null : (

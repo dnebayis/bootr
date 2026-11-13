@@ -3,7 +3,7 @@ import { fakeInjectedWallet } from './fake-wallet';
 
 /**
  * The console's controls for the agent's newer tools (docs/design/agent-tools-2.md): comments and who gets a reply
- * and the posts written ahead (Posting), the accounts to follow and the agent's note on what works (Mind). Mock
+ * and the posts written ahead (Posting), and the agent's note on what works (Mind). Mock
  * mode, where everyone is the creator and nothing is signed. The scheduled-posts routes belong to another part of the
  * release, so this spec answers them itself.
  *
@@ -86,9 +86,6 @@ test('posting: comments can be switched off and replies widened, and both are sa
   await page.reload();
   await expect(console_.getByRole('switch', { name: 'Comment on posts it read' })).toHaveAttribute('aria-checked', 'false');
   await expect(console_.locator('#console-reply-audience')).toContainText('Also anyone who replies under its own posts');
-  // with comments off, the accounts to follow no longer promise a comment
-  await console_.getByRole('tab', { name: 'Mind' }).click();
-  await expect(console_.getByTestId('watchlist')).not.toContainText('may comment on');
 });
 
 test('posting: the posts written ahead are listed with their time, and one can be cancelled', async ({ page }) => {
@@ -145,43 +142,13 @@ test('posting: an empty schedule and an unreachable one each say so in a sentenc
   await expect(again.getByTestId('scheduled-post')).toHaveCount(0);
 });
 
-test('mind: up to five accounts to follow, typed with or without the @, saved as plain handles', async ({ page }) => {
+test('mind: a coin has no list of accounts to follow', async ({ page }) => {
   const console_ = await openConsole(page, 'mind', 2);
-  const box = console_.getByTestId('watchlist');
-  await expect(box).toContainText('0/5');
-  await expect(box).toContainText('never as instructions');
-  await expect(box).not.toContainText(JARGON);
-
-  await box.getByTestId('watchlist-add').click();
-  await box.getByRole('textbox', { name: 'Account 1' }).fill('@JessePollak');
-  await box.getByTestId('watchlist-add').click();
-  await box.getByRole('textbox', { name: 'Account 2' }).fill('not a handle!');
-  // a row that is not an X handle is marked, explained, and blocks the save
-  await expect(box.getByRole('textbox', { name: 'Account 2' })).toHaveAttribute('aria-invalid', 'true');
-  await expect(box.getByTestId('watchlist-error')).toContainText('letters, digits and underscores only');
-  await expect(console_.getByTestId('console-save-state')).toHaveText('Fix the marked fields to save');
-  await expect(console_.getByRole('button', { name: 'Save changes' })).toBeDisabled();
-
-  await box.getByRole('textbox', { name: 'Account 2' }).fill('base');
-  await expect(box.getByTestId('watchlist-error')).toHaveCount(0);
-  await expect(console_.getByTestId('console-save-state')).toHaveText('Unsaved changes in Mind');
-  await save(console_, page);
-  await expect(box.getByRole('textbox', { name: 'Account 1' })).toHaveValue('jessepollak');
-  await expect(box.getByRole('textbox', { name: 'Account 2' })).toHaveValue('base');
-  await expect(box).toContainText('2/5');
-
-  // five is the most: the add button goes once the list is full, and a removed row frees a place
-  for (const handle of ['a_1', 'b_2', 'c_3']) {
-    await box.getByTestId('watchlist-add').click();
-    await box.getByRole('textbox').last().fill(handle);
-  }
-  await expect(box).toContainText('5/5');
-  await expect(box.getByTestId('watchlist-add')).toHaveCount(0);
-  await box.getByRole('button', { name: 'Remove account 5' }).click();
-  await expect(box.getByTestId('watchlist-add')).toBeVisible();
-  await save(console_, page);
-  await page.reload();
-  await expect(console_.getByTestId('watchlist').getByRole('textbox')).toHaveCount(4);
+  await expect(console_.locator('#console-instructions')).toBeVisible();
+  await expect(console_.getByTestId('what-works-card')).toBeVisible();
+  await expect(console_.getByTestId('watchlist')).toHaveCount(0);
+  await expect(console_.getByText('Accounts to follow')).toHaveCount(0);
+  await expect(console_.getByRole('button', { name: 'Add an account' })).toHaveCount(0);
 });
 
 test('mind: the agent’s note on what works shows with its numbers and earlier versions, and can be cleared', async ({ page }) => {
@@ -225,9 +192,6 @@ test('on a phone every new control fits the screen', async ({ page }) => {
   await fits();
 
   await console_.getByRole('tab', { name: 'Mind' }).click();
-  const box = console_.getByTestId('watchlist');
-  await box.getByTestId('watchlist-add').click();
-  await box.getByRole('textbox', { name: 'Account 1' }).fill('a_handle_of_15c');
   // the console session is open since the scheduled list asked for it, so the note loads without another signature
   await expect(console_.getByTestId('what-works-card').getByTestId('what-works-open')).toHaveCount(0);
   await expect(console_.getByTestId('what-works-current')).toBeVisible();

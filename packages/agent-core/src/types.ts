@@ -161,8 +161,6 @@ export type ImageStyle = z.infer<typeof imageStyleSchema>;
 /** Who gets a reply (`agentConfigSchema.replyAudience`). */
 export const REPLY_AUDIENCES = ['verified', 'own_threads'] as const;
 export type ReplyAudience = (typeof REPLY_AUDIENCES)[number];
-/** The most X accounts a creator may ask a coin's agent to follow (`agentConfigSchema.watchlist`). */
-export const MAX_WATCHLIST_HANDLES = 5;
 
 export const agentConfigSchema = z
   .object({
@@ -230,12 +228,6 @@ export const agentConfigSchema = z
      * Absent = the deployment's default (`REPLY_AUDIENCE_DEFAULT`).
      */
     replyAudience: z.enum(REPLY_AUDIENCES).optional(),
-    /**
-     * X accounts the creator asked the agent to follow: handles without the `@`, lower-case, at most
-     * `MAX_WATCHLIST_HANDLES`. Their latest posts reach the agent as the `watchlist` observation section
-     * (apps/supervisor/src/watchlist.ts). Absent or empty = none.
-     */
-    watchlist: z.array(z.string().regex(/^[a-z0-9_]{1,15}$/, 'expected a lower-case X handle without @')).max(MAX_WATCHLIST_HANDLES).optional(),
     /** Bumped by the control plane whenever anything above changes. */
     revision: z.number().int().min(0).default(0),
   })

@@ -987,10 +987,6 @@ export const mock = {
       cfg.replyAudience = changes.replyAudience;
       fields.push('reply audience');
     }
-    if (changes.watchlist !== undefined && JSON.stringify(changes.watchlist) !== JSON.stringify(cfg.watchlist)) {
-      cfg.watchlist = [...changes.watchlist];
-      fields.push('watched accounts');
-    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -1280,7 +1276,6 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     bounties: { ...BOUNTIES_DEFAULTS },
     comments: true,
     replyAudience: 'verified',
-    watchlist: [],
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
@@ -1310,7 +1305,6 @@ function orphanConfig(kernel: Address): AgentConfig {
     bounties: { ...BOUNTIES_DEFAULTS },
     comments: true,
     replyAudience: 'verified',
-    watchlist: [],
     revision: 0,
     updatedAt: new Date().toISOString(),
     xHold: null,

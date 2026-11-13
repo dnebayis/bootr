@@ -12,7 +12,7 @@ import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
 import { queueForApproval } from '../src/approvals.js';
 import { executeAction } from '../src/broker/index.js';
-import { COMMENT_AUTHOR_BLOCKED, COMMENT_AUTHOR_NOT_PUBLIC, COMMENT_LINK_FORBIDDEN, COMMENT_SOURCE_UNREAD, SEEN_MAX, linksPost, neverComment, noteSeen, postTimeMs, seenInResult, type SeenPost } from '../src/comment-posts.js';
+import { COMMENT_AUTHOR_BLOCKED, COMMENT_AUTHOR_NOT_PUBLIC, COMMENT_AUTHOR_NOT_PUBLIC_COIN, COMMENT_LINK_FORBIDDEN, COMMENT_SOURCE_UNREAD, SEEN_MAX, linksPost, neverComment, noteSeen, postTimeMs, seenInResult, type SeenPost } from '../src/comment-posts.js';
 import { actions, approvals, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
@@ -134,13 +134,15 @@ describe('each rule of a comment and its refusal', () => {
     const { w, refusal, comment } = await world();
     try {
       expect(COMMENT_AUTHOR_NOT_PUBLIC).toBe('comment_author_not_public: you can comment only on posts by accounts you follow, other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.');
+      // a coin's agent follows nobody, so its refusal names no such list
+      expect(COMMENT_AUTHOR_NOT_PUBLIC_COIN).toBe('comment_author_not_public: you can comment only on posts by other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.');
       for (const author of [{ verified: false, verifiedType: 'none' }, { verified: undefined, verifiedType: undefined }, { verified: true, verifiedType: 'none' }, { verified: false, verifiedType: 'blue' }, { verified: true, verifiedType: 'government' }]) {
         await storeTurn(w, { seen: [seen(author as Partial<SeenPost>)] });
-        expect([author, await refusal()]).toEqual([author, COMMENT_AUTHOR_NOT_PUBLIC]);
+        expect([author, await refusal()]).toEqual([author, COMMENT_AUTHOR_NOT_PUBLIC_COIN]);
       }
       // a post whose author the read did not name: nobody to call public
       await storeTurn(w, { seen: [seen({ handle: null, verified: undefined, verifiedType: undefined })] });
-      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC);
+      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC_COIN);
       expect(w.sender.published).toEqual([]);
       // a business badge is a badge
       await storeTurn(w, { seen: [seen({ verifiedType: 'business' })] });
@@ -171,9 +173,9 @@ describe('each rule of a comment and its refusal', () => {
       // 31 days ago is no longer "wrote to you", and a handle that now belongs to somebody else proves nothing
       await storeTurn(w, { seen: [seen({ authorId: '4500', handle: 'erin', ...plain })] });
       w.sender.accountReads.erin = { user: { id: '4500', username: 'erin' }, activity: 'recent', latestPostAt: null, addressedAt: new Date(T0 - 31 * DAY).toISOString() } as never;
-      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC);
+      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC_COIN);
       w.sender.accountReads.erin = { user: { id: '9999', username: 'erin' }, activity: 'recent', latestPostAt: null, addressedAt: new Date(T0 - DAY).toISOString() } as never;
-      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC);
+      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC_COIN);
     } finally {
       await w.close();
     }
@@ -349,8 +351,8 @@ describe('each rule of a comment and its refusal', () => {
 describe('the watchlist as a source, and the author lookup it needs', () => {
   const watchlist = (posts: { postId: string; at?: string | null }[]) => ({ watchlist: { instructionAuthority: false, source: 'x', accounts: [{ handle: 'jessepollak', latestPosts: posts.map((p) => ({ postId: p.postId, at: p.at ?? new Date(T0 - 2 * HOUR).toISOString(), text: 'Base is for builders.', link: `https://x.com/jessepollak/status/${p.postId}` })) }] } });
 
-  it('a post the watchlist section showed may be commented on; its author is a followed account, and the id comes from one lookup', async () => {
-    const { w, comment, refusal } = await world();
+  it('a post the platform account\'s watchlist section showed may be commented on; its author is a followed account, and the id comes from one lookup', async () => {
+    const { w, comment, refusal } = await world({ agent: { platform: true } });
     try {
       await storeTurn(w, observed(watchlist([{ postId: POST }])));
       // the lookup cannot say who it is: no comment without the author's stable id (the caps and a stop request hang on it)
@@ -362,6 +364,25 @@ describe('the watchlist as a source, and the author lookup it needs', () => {
       await storeTurn(w, { messages: [], ownOpen: { brief: 'b', observation: watchlist([{ postId: xIdAt(T0 - HOUR, 7) }]), tools: ['publish_post'] } } as Partial<Turn>);
       expect(await comment({ about: { postId: xIdAt(T0 - HOUR, 7) } })).toMatchObject({ kind: 'completed', result: { about: { handle: 'jessepollak' } } });
       expect(await refusal({ about: { postId: xIdAt(T0 - HOUR, 8) } })).toBe(COMMENT_SOURCE_UNREAD);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a coin\'s agent follows nobody: a watchlist section in its turn makes no author public, and a stored list is not read', async () => {
+    const { w, agent, refusal, comment } = await world({ agent: { watchlist: ['jessepollak'] } });
+    try {
+      expect(agent.config.watchlist).toEqual(['jessepollak']);
+      w.sender.accountReads.jessepollak = { user: { id: '18876842', username: 'jessepollak' }, activity: 'recent', latestPostAt: null };
+      // the post was shown to the turn, so it is read; its author has no badge on record and never wrote to the agent
+      await storeTurn(w, observed(watchlist([{ postId: POST }])));
+      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC_COIN);
+      await storeTurn(w, { messages: [], ownOpen: { brief: 'b', observation: watchlist([{ postId: POST }]), tools: ['publish_post'] } } as Partial<Turn>);
+      expect(await refusal()).toBe(COMMENT_AUTHOR_NOT_PUBLIC_COIN);
+      expect(w.sender.published).toEqual([]);
+      // the same author read through a tool with a verified badge is public like anybody with one
+      await storeTurn(w, { seen: [seen({ authorId: '18876842', handle: 'jessepollak', verified: true, verifiedType: 'blue' })] });
+      expect(await comment()).toMatchObject({ kind: 'completed', result: { about: { authorId: '18876842', handle: 'jessepollak' } } });
     } finally {
       await w.close();
     }

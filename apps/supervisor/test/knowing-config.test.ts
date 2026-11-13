@@ -1,13 +1,14 @@
 /**
- * The three config fields of this round (docs/design/agent-tools-2.md section 17.4: `comments`, `replyAudience`,
- * `watchlist`) in the schema, the view and the update, and the proof that every limit of the knowing workstream at 0
- * leaves a Bootr agent's turn as it was before the round.
+ * The two config fields of this round (docs/design/agent-tools-2.md section 17.4: `comments` and `replyAudience`) in
+ * the schema, the view and the update; the third the round first carried, a coin's own `watchlist`, was taken out
+ * again by the owner, and a stored config that still has it is read with the field ignored. And the proof that every
+ * limit of the knowing workstream at 0 leaves a Bootr agent's turn as it was before the round.
  */
-import { MAX_WATCHLIST_HANDLES, REPLY_AUDIENCES, agentConfigSchema, parseAgentConfig } from '@bootr/agent-core';
+import { REPLY_AUDIENCES, agentConfigSchema, parseAgentConfig } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentActivity } from '../src/activity.js';
-import { commentsOf, replyAudienceOf, watchlistOf } from '../src/agent-config.js';
+import { commentsOf, replyAudienceOf } from '../src/agent-config.js';
 import { createApp } from '../src/api.js';
 import { agents, memories, postMetrics, runtimes, whatWorks } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
@@ -33,35 +34,42 @@ function api(world: TestWorld) {
 }
 
 const PATH = `/internal/agents/${AGENT_ID}/config`;
-type View = { comments: boolean; replyAudience: string; watchlist: string[]; revision: number };
+type View = { comments: boolean; replyAudience: string; revision: number };
 
-describe('the three config fields in the schema', () => {
+describe('the two config fields in the schema', () => {
   it('are optional, and a stored config with them parses', () => {
     const now = Date.parse('2026-10-24T12:00:00Z');
     const bare = parseAgentConfig(agentConfig(now));
     expect(bare.comments).toBeUndefined();
     expect(bare.replyAudience).toBeUndefined();
-    expect(bare.watchlist).toBeUndefined();
-    const set = parseAgentConfig(agentConfig(now, { comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] }));
-    expect(set).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] });
+    const set = parseAgentConfig(agentConfig(now, { comments: false, replyAudience: 'own_threads' }));
+    expect(set).toMatchObject({ comments: false, replyAudience: 'own_threads' });
     expect(REPLY_AUDIENCES).toEqual(['verified', 'own_threads']);
-    expect(MAX_WATCHLIST_HANDLES).toBe(5);
-    for (const bad of [{ replyAudience: 'everyone' }, { comments: 'yes' }, { watchlist: ['@alice'] }, { watchlist: ['Alice'] }, { watchlist: ['a', 'b', 'c', 'd', 'e', 'f'] }, { watchlist: 'alice' }]) {
+    for (const bad of [{ replyAudience: 'everyone' }, { comments: 'yes' }]) {
       expect(agentConfigSchema.safeParse(agentConfig(now, bad)).success, JSON.stringify(bad)).toBe(false);
     }
   });
 
-  it('are read from a stored config with safe defaults: comments on, replies to verified accounts, nobody watched', () => {
-    expect([commentsOf({}), replyAudienceOf({}), watchlistOf({})]).toEqual([true, 'verified', []]);
+  it('a stored config that still carries a coin\'s watched accounts parses, and the field is dropped whatever it holds', () => {
+    const now = Date.parse('2026-10-24T12:00:00Z');
+    for (const stored of [['alice', 'bob_1'], [], ['@Alice', 'not a handle'], ['a', 'b', 'c', 'd', 'e', 'f', 'g'], 'alice', 42, null, { handles: ['alice'] }]) {
+      const parsed = agentConfigSchema.safeParse(agentConfig(now, { watchlist: stored, comments: false }));
+      expect(parsed.success, JSON.stringify(stored)).toBe(true);
+      expect(parsed.success && parsed.data, JSON.stringify(stored)).not.toHaveProperty('watchlist');
+      expect(parsed.success && parsed.data.comments).toBe(false);
+    }
+  });
+
+  it('are read from a stored config with safe defaults: comments on, replies to verified accounts', () => {
+    expect([commentsOf({}), replyAudienceOf({})]).toEqual([true, 'verified']);
     expect(commentsOf({ comments: false })).toBe(false);
     expect(commentsOf({ comments: 'no' })).toBe(true);
     expect(replyAudienceOf({ replyAudience: 'own_threads' })).toBe('own_threads');
     expect(replyAudienceOf({ replyAudience: 'anyone' })).toBe('verified');
-    expect(watchlistOf({ watchlist: ['Alice', 'alice', 'not a handle', 7, 'b', 'c', 'd', 'e', 'f'] })).toEqual(['alice', 'b', 'c', 'd', 'e']);
   });
 });
 
-describe('PUT /internal/agents/:id/config for comments, the reply audience and the watched accounts', () => {
+describe('PUT /internal/agents/:id/config for comments and the reply audience', () => {
   let world: TestWorld | null = null;
   afterEach(async () => {
     await world?.close();
@@ -72,45 +80,39 @@ describe('PUT /internal/agents/:id/config for comments, the reply audience and t
     world = await makeWorld();
     await seedAgent(world);
     const before = (await (await api(world).get(PATH)).json()) as View;
-    expect(before).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: [] });
+    expect(before).toMatchObject({ comments: true, replyAudience: 'verified' });
+    expect(before).not.toHaveProperty('watchlist');
 
-    const res = await api(world).put(PATH, { by: CREATOR, comments: false, replyAudience: 'own_threads', watchlist: ['@Alice', 'bob_1', 'ALICE'] });
+    const res = await api(world).put(PATH, { by: CREATOR, comments: false, replyAudience: 'own_threads' });
     expect(res.status).toBe(200);
     const after = (await res.json()) as View;
-    expect(after).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'], revision: before.revision + 1 });
+    expect(after).toMatchObject({ comments: false, replyAudience: 'own_threads', revision: before.revision + 1 });
 
-    // what the next turn parses carries all three, and the posting rules read the first two from the same stored record
+    // what the next turn parses carries both, and the posting rules read them from the same stored record
     const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
-    expect(agent.config).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] });
-    expect(agentConfigOf(agent)).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] });
+    expect(agent.config).toMatchObject({ comments: false, replyAudience: 'own_threads' });
+    expect(agentConfigOf(agent)).toMatchObject({ comments: false, replyAudience: 'own_threads' });
 
     const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
     const tape = await agentActivity(world.ctx, agent, runtime);
-    expect(tape.find((i) => i.kind === 'config')?.summary).toBe('Config updated: comments, reply audience, watched accounts');
+    expect(tape.find((i) => i.kind === 'config')?.summary).toBe('Config updated: comments, reply audience');
 
-    // switching back, and emptying the list
-    const back = await api(world).put(PATH, { by: CREATOR, comments: true, replyAudience: 'verified', watchlist: [] });
-    expect(await back.json()).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: [] });
+    // switching back
+    const back = await api(world).put(PATH, { by: CREATOR, comments: true, replyAudience: 'verified' });
+    expect(await back.json()).toMatchObject({ comments: true, replyAudience: 'verified' });
     const stored = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!.config;
     expect(stored.comments).toBe(true);
-    expect(stored).not.toHaveProperty('watchlist');
     // the same values again change nothing
-    expect((await api(world).put(PATH, { by: CREATOR, comments: true, replyAudience: 'verified', watchlist: [] })).status).toBe(409);
+    expect((await api(world).put(PATH, { by: CREATOR, comments: true, replyAudience: 'verified' })).status).toBe(409);
   });
 
-  it('refuses what is not a switch, an audience or a list of at most 5 handles, and anyone but the creator', async () => {
+  it('refuses what is not a switch or an audience, and anyone but the creator', async () => {
     world = await makeWorld();
     await seedAgent(world);
     const refused: [Record<string, unknown>, string][] = [
       [{ comments: 'off' }, 'invalid_comments'],
       [{ replyAudience: 'everyone' }, 'invalid_reply_audience'],
       [{ replyAudience: null }, 'invalid_reply_audience'],
-      [{ watchlist: 'alice' }, 'invalid_watchlist'],
-      [{ watchlist: ['a', 'b', 'c', 'd', 'e', 'f'] }, 'invalid_watchlist'],
-      [{ watchlist: ['alice', 'not a handle'] }, 'invalid_watchlist'],
-      [{ watchlist: ['alice', 'x'.repeat(16)] }, 'invalid_watchlist'],
-      [{ watchlist: ['https://x.com/alice'] }, 'invalid_watchlist'],
-      [{ watchlist: [42] }, 'invalid_watchlist'],
     ];
     for (const [body, error] of refused) {
       const res = await api(world).put(PATH, { by: CREATOR, ...body });
@@ -118,12 +120,44 @@ describe('PUT /internal/agents/:id/config for comments, the reply audience and t
       expect(((await res.json()) as { error: string }).error).toBe(error);
     }
     expect((await api(world).put(PATH, { by: '0x9999999999999999999999999999999999999999', comments: false })).status).toBe(403);
-    expect((await (await api(world).get(PATH)).json()) as View).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: [] });
+    expect((await (await api(world).get(PATH)).json()) as View).toMatchObject({ comments: true, replyAudience: 'verified' });
+  });
+
+  it('a coin whose stored config still carries watched accounts: the view leaves the field out, an update of another field goes through, and a list sent now changes nothing', async () => {
+    for (const stored of [['alice', 'bob_1'], 'not a list']) {
+      world = await makeWorld();
+      const seeded = await seedAgent(world, { config: { watchlist: stored } });
+      expect(seeded.config.watchlist).toEqual(stored);
+      // the turn's parse and the creator's view both read it without the field
+      expect(agentConfigOf(seeded)).not.toBeNull();
+      expect(agentConfigOf(seeded)).not.toHaveProperty('watchlist');
+      const view = await api(world).get(PATH);
+      expect(view.status).toBe(200);
+      const shown = (await view.json()) as View;
+      expect(shown).toMatchObject({ comments: true, replyAudience: 'verified' });
+      expect(shown).not.toHaveProperty('watchlist');
+
+      // a list sent by an old page is not a change: alone it is "nothing changed", beside a real change it is passed over
+      expect((await api(world).put(PATH, { by: CREATOR, watchlist: ['carol'] })).status).toBe(409);
+      const res = await api(world).put(PATH, { by: CREATOR, comments: false, watchlist: ['carol'] });
+      expect(res.status).toBe(200);
+      const after = (await res.json()) as View;
+      expect(after).toMatchObject({ comments: false, revision: shown.revision + 1 });
+      expect(after).not.toHaveProperty('watchlist');
+      const agent = (await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+      // what was stored stays as it was and is read by nothing; the tape names the one field that changed
+      expect(agent.config.watchlist).toEqual(stored);
+      expect(agentConfigOf(agent)).toMatchObject({ comments: false });
+      const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+      expect((await agentActivity(world.ctx, agent, runtime)).find((i) => i.kind === 'config')?.summary).toBe('Config updated: comments');
+      await world.close();
+      world = null;
+    }
   });
 });
 
 describe('every limit of the knowing workstream at 0', () => {
-  const OFF = { LEARN_WINDOW_DAYS: '0', WHAT_WORKS_MAX_CHARS: '0', COIN_BRIEF_MAX_CHARS: '0', COIN_WATCHLIST_MAX: '0' };
+  const OFF = { LEARN_WINDOW_DAYS: '0', WHAT_WORKS_MAX_CHARS: '0', COIN_BRIEF_MAX_CHARS: '0' };
   const MARKET = { priceUsd: 0.01, marketCapUsd: 1000, holders: 132, trades24h: 37, volume24hUsd: 1234.5, fees24hUsd: 12.4 };
 
   beforeEach(() => {
@@ -131,7 +165,7 @@ describe('every limit of the knowing workstream at 0', () => {
     resetMetricsBackoff();
   });
 
-  /** One turn of a coin agent that has measured posts, a market with holders and a creator's watched account. */
+  /** One turn of a coin agent that has measured posts, a market with holders and, in its stored config, watched accounts from before they were removed. */
   async function turn(config: Record<string, string>) {
     const start = Date.parse('2026-10-24T12:00:00Z');
     const world = await makeWorld({ script: [finishResponse(start + 3 * H)], config });
@@ -163,16 +197,19 @@ describe('every limit of the knowing workstream at 0', () => {
     try {
       // with the defaults the round's pieces are there...
       expect(on.tools).toContain('note_what_works');
-      expect(Object.keys(on.observation)).toEqual(expect.arrayContaining(['whatWorks', 'coinToday', 'watchlist']));
+      expect(Object.keys(on.observation)).toEqual(expect.arrayContaining(['whatWorks', 'coinToday']));
+      // a coin's stored watched accounts are read by nothing, with the defaults as with every limit at 0
+      expect(on.observation).not.toHaveProperty('watchlist');
+      expect(on.world.sender.timelineReads).toEqual([]);
       expect(on.observation.postPerformance).toBeUndefined();
       // ...and with every limit at 0 none of them is: the tools are the same list without the note
       expect(off.tools).toEqual(on.tools.filter((t) => t !== 'note_what_works'));
       for (const key of ['whatWorks', 'coinToday', 'watchlist']) expect(off.observation, key).not.toHaveProperty(key);
       // what is left of the observation is, key for key and value for value, what the same turn shows without the
-      // three sections of the round (the list of tools aside, which is compared above)
+      // two sections of the round (the list of tools aside, which is compared above)
       const without = (o: Record<string, unknown>, keys: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
       const postPerformance = off.observation.postPerformance;
-      expect(without(off.observation, ['postPerformance', 'tools'])).toEqual(without(on.observation, ['whatWorks', 'coinToday', 'watchlist', 'tools']));
+      expect(without(off.observation, ['postPerformance', 'tools'])).toEqual(without(on.observation, ['whatWorks', 'coinToday', 'tools']));
       expect(postPerformance).toMatchObject({ instructionAuthority: false, meaning: POST_PERFORMANCE_MEANING, source: 'x', measured: 24, posts: 24, replies: 0 });
       expect(Object.keys(postPerformance as object).sort()).toEqual(['digest', 'instructionAuthority', 'meaning', 'measured', 'posts', 'replies', 'source', 'window']);
       // the pinned prompt is the same text either way
@@ -182,7 +219,6 @@ describe('every limit of the knowing workstream at 0', () => {
       expect(off.feedReads()).toBe(0);
       expect(off.state).not.toHaveProperty('briefAt');
       expect(await off.world.db.select().from(whatWorks)).toHaveLength(0);
-      expect(on.world.sender.timelineReads).toEqual(['alice']);
       expect(on.state).toHaveProperty('briefAt');
       // neither turn wrote a note into memory on its own
       expect(await off.world.db.select().from(memories)).toHaveLength(0);

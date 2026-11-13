@@ -8,8 +8,9 @@
  *   - the agent read the post through Bootr's tools in this turn: `read_x_thread`, `read_mentions`, its inbox, or the
  *     watchlist section of the turn's first observation (the turn keeps what it was shown, `Turn.seen`, at most
  *     `SEEN_MAX`); a post id it never read is refused;
- *   - the author is public: one of the coin's watched accounts, another Bootr agent, somebody who wrote to the agent
- *     within `ENGAGED_WINDOW_MS`, or a verified account (the badge rule replies use, agent-core `eligibleBadge`);
+ *   - the author is public: another Bootr agent, somebody who wrote to the agent within `ENGAGED_WINDOW_MS`, a
+ *     verified account (the badge rule replies use, agent-core `eligibleBadge`), or, for the platform's own agent
+ *     alone, one of the accounts it follows (`PLATFORM_WATCHLIST`; a coin's agent follows nobody);
  *   - never the agent itself, an author on the creator's blocked list, or one on the platform's own list
  *     (`PLATFORM_NEVER_COMMENT`); an author who told this agent to stop is refused by the sender at publish
  *     (`aboutAuthorId`, `policy:about_opted_out`), the only process that keeps those;
@@ -57,6 +58,9 @@ export interface CommentAbout {
 export const COMMENT_SOURCE_UNREAD = 'comment_source_unread: you can comment only on a post you read in this turn; nothing was posted.';
 export const COMMENT_AUTHOR_NOT_PUBLIC =
   'comment_author_not_public: you can comment only on posts by accounts you follow, other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.';
+/** The same refusal for a coin's agent, which follows no accounts: it is not told of a list it does not have. */
+export const COMMENT_AUTHOR_NOT_PUBLIC_COIN =
+  'comment_author_not_public: you can comment only on posts by other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.';
 export const COMMENT_AUTHOR_BLOCKED = 'comment_author_blocked: this account is not to be commented on; nothing was posted.';
 export const commentDailyCap = (max: number): string => `comment_daily_cap: at most ${max} comments per 24 hours; nothing was posted.`;
 export const commentAuthorCap = (count: number, span: 'day' | 'week'): string => `comment_author_cap: you already commented on this account's posts ${count} times this ${span}; nothing was posted.`;
@@ -292,13 +296,16 @@ export async function commentCheck(
   const earlier = await commentsInWindow(ctx, agent.agentId, actionId);
   if (earlier.filter((c) => c.at > now - DAY_MS).length >= limit) return { refusal: commentDailyCap(limit) };
 
+  // The accounts an agent follows are the platform account's alone; a coin's agent has no such list.
+  const platform = (agent.config as Record<string, unknown>).platform === true;
+  const notPublic = platform ? COMMENT_AUTHOR_NOT_PUBLIC : COMMENT_AUTHOR_NOT_PUBLIC_COIN;
   // Who wrote it: the read said so, or (a watchlist post names a handle only) one account lookup through the sender.
   const directory = await agentDirectory(ctx);
   let authorId = seen.authorId;
   let handle = seen.handle ?? (authorId ? (directory.byUserId.get(authorId)?.handle ?? null) : null);
   let account: AuthorLookup | null | undefined;
   if (!authorId) {
-    if (!handle) return { refusal: COMMENT_AUTHOR_NOT_PUBLIC };
+    if (!handle) return { refusal: notPublic };
     account = await lookUpAuthor(ctx, agent.agentId, handle);
     if (!account?.id) return { refusal: commentAuthorUnknown(handle) };
     authorId = account.id;
@@ -311,14 +318,14 @@ export async function commentCheck(
   if (self || config.blockedAuthorIds.includes(authorId) || never.ids.has(authorId) || (handle !== null && never.handles.has(handle))) return { refusal: COMMENT_AUTHOR_BLOCKED };
 
   // Public: a followed account, another Bootr agent, a verified badge, or somebody who wrote to the agent lately.
-  let isPublic = seen.via === 'watchlist' || peer !== null || eligibleBadge({ id: authorId, ...(seen.verified !== undefined ? { verified: seen.verified } : {}), ...(seen.verifiedType ? { verifiedType: seen.verifiedType as 'blue' | 'business' | 'government' | 'none' } : {}) });
+  let isPublic = (platform && seen.via === 'watchlist') || peer !== null || eligibleBadge({ id: authorId, ...(seen.verified !== undefined ? { verified: seen.verified } : {}), ...(seen.verifiedType ? { verifiedType: seen.verifiedType as 'blue' | 'business' | 'government' | 'none' } : {}) });
   if (!isPublic) isPublic = [...inbox.values()].some((item) => item.authorId === authorId);
   if (!isPublic && handle) {
     // An id the read already gave is never replaced: a handle can change hands, the post's author cannot.
     account = account === undefined ? await lookUpAuthor(ctx, agent.agentId, handle) : account;
     isPublic = !!account && account.id === authorId && account.addressedAt !== null && now - account.addressedAt <= ctx.config.ENGAGED_WINDOW_MS;
   }
-  if (!isPublic || !handle) return { refusal: COMMENT_AUTHOR_NOT_PUBLIC };
+  if (!isPublic || !handle) return { refusal: notPublic };
 
   // One author is not followed around: a comment on a post of theirs counts, whichever post it was. A row whose
   // outcome is not known yet carries no author: it counts when it is about this very post.

@@ -36,7 +36,7 @@ export function consoleHref(tokenId: string, section?: ConsoleSection): string {
 export function changedSections(changes: AgentConfigChanges | null): ConsoleSection[] {
   if (!changes) return [];
   const out = new Set<ConsoleSection>();
-  if (changes.instructions !== undefined || changes.model !== undefined || changes.routing !== undefined || changes.watchlist !== undefined) out.add('mind');
+  if (changes.instructions !== undefined || changes.model !== undefined || changes.routing !== undefined) out.add('mind');
   if (changes.postsPerDay !== undefined || changes.requireApproval !== undefined || changes.worker?.jobLines !== undefined || changes.comments !== undefined || changes.replyAudience !== undefined) out.add('posting');
   if (changes.worker?.capabilities !== undefined || changes.services !== undefined || changes.bounties !== undefined) out.add('powers');
   if (changes.imageModel !== undefined || changes.imageStyle !== undefined) out.add('look');

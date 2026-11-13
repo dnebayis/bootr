@@ -304,7 +304,7 @@ export const configSchema = z
      * What the agent learns and is told (docs/design/agent-tools-2.md sections 6, 7 and 13). A limit of 0 switches its
      * piece off: `LEARN_WINDOW_DAYS` 0 leaves the `postPerformance` section and the per-batch memory note as they were
      * before the facts existed; `WHAT_WORKS_MAX_CHARS` 0 takes `note_what_works` away; `COIN_BRIEF_MAX_CHARS` 0 drops
-     * `coinToday`; `COIN_WATCHLIST_MAX` 0 reads no coin's watched accounts.
+     * `coinToday`.
      */
     /** The facts look this many days back over the agent's measured posts (post-performance.ts). */
     LEARN_WINDOW_DAYS: int(28, 0),
@@ -326,10 +326,6 @@ export const configSchema = z
     WHAT_WORKS_KEEP: int(5, 1),
     /** The most characters of the `coinToday` brief (coin-today.ts). */
     COIN_BRIEF_MAX_CHARS: int(900, 0),
-    /** The most watched accounts read for a coin's agent (watchlist.ts); a longer stored list is cut to this. */
-    COIN_WATCHLIST_MAX: int(5, 0),
-    /** One watched account of a coin's agent is read again no sooner than this. */
-    COIN_WATCHLIST_READ_INTERVAL_MS: int(12 * 3_600_000, 60_000),
     /** Session key policy knobs. */
     SESSION_KEY_VALIDITY_DAYS: int(30, 1),
     /**

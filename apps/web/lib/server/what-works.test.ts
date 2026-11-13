@@ -64,31 +64,23 @@ describe('the agent’s note on what works, as the console renders it', () => {
   });
 });
 
-describe('comments, who gets a reply and the watched accounts in the config', () => {
-  it('reads the three fields from the agent service, with the defaults for a service that sends none', () => {
-    expect(sanitizeConfig(CONFIG)).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: [] });
-    expect(sanitizeConfig({ ...CONFIG, comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] })).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice', 'bob_1'] });
-    expect(sanitizeConfig({ ...CONFIG, comments: 'no', replyAudience: 'everyone', watchlist: ['alice', '@bob', 'Not A Handle', 7, 'c', 'd', 'e', 'f', 'g'] })).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: ['alice', 'c', 'd', 'e', 'f'] });
+describe('comments and who gets a reply in the config', () => {
+  it('reads the two fields from the agent service, with the defaults for a service that sends none', () => {
+    expect(sanitizeConfig(CONFIG)).toMatchObject({ comments: true, replyAudience: 'verified' });
+    expect(sanitizeConfig({ ...CONFIG, comments: false, replyAudience: 'own_threads' })).toMatchObject({ comments: false, replyAudience: 'own_threads' });
+    expect(sanitizeConfig({ ...CONFIG, comments: 'no', replyAudience: 'everyone' })).toMatchObject({ comments: true, replyAudience: 'verified' });
   });
 
-  it('accepts a change of each, and stores the handles lower-case without the @', () => {
+  it('accepts a change of each', () => {
     expect(validateChanges({ comments: false })).toEqual({ ok: true, changes: { comments: false } });
     expect(validateChanges({ replyAudience: 'own_threads' })).toEqual({ ok: true, changes: { replyAudience: 'own_threads' } });
-    expect(validateChanges({ watchlist: ['@Alice', ' bob_1 ', 'ALICE'] })).toEqual({ ok: true, changes: { watchlist: ['alice', 'bob_1'] } });
-    expect(validateChanges({ watchlist: [] })).toEqual({ ok: true, changes: { watchlist: [] } });
   });
 
-  it('refuses what is not a switch, one of the two audiences or at most 5 handles, and names the field', () => {
+  it('refuses what is not a switch or one of the two audiences, and names the field', () => {
     const refused: [unknown, string][] = [
       [{ comments: 'off' }, 'comments'],
       [{ replyAudience: 'everyone' }, 'replyAudience'],
       [{ replyAudience: null }, 'replyAudience'],
-      [{ watchlist: 'alice' }, 'watchlist'],
-      [{ watchlist: ['a', 'b', 'c', 'd', 'e', 'f'] }, 'watchlist'],
-      [{ watchlist: ['alice', 'not a handle'] }, 'watchlist'],
-      [{ watchlist: ['https://x.com/alice'] }, 'watchlist'],
-      [{ watchlist: ['x'.repeat(16)] }, 'watchlist'],
-      [{ watchlist: [42] }, 'watchlist'],
     ];
     for (const [changes, field] of refused) expect(validateChanges(changes), JSON.stringify(changes)).toMatchObject({ ok: false, field });
   });
@@ -96,15 +88,39 @@ describe('comments, who gets a reply and the watched accounts in the config', ()
   it('puts an unsaved change on the tab that holds its control', () => {
     expect(changedSections({ comments: false })).toEqual(['posting']);
     expect(changedSections({ replyAudience: 'own_threads' })).toEqual(['posting']);
-    expect(changedSections({ watchlist: ['alice'] })).toEqual(['mind']);
-    expect(changedSections({ watchlist: [], comments: true })).toEqual(['mind', 'posting']);
   });
 
-  it('mock mode applies the three fields and says so on the tape in plain words', () => {
+  it('mock mode applies the two fields and says so on the tape in plain words', () => {
     const kernel = '0x2000000000000000000000000000000000000abc';
-    expect(mock.agentConfig(kernel)).toMatchObject({ comments: true, replyAudience: 'verified', watchlist: [] });
-    const r = mock.updateAgentConfig(kernel, { comments: false, replyAudience: 'own_threads', watchlist: ['alice'] }, '0x00000000000000000000000000000000000e2e01');
-    expect(r.ok && r.config).toMatchObject({ comments: false, replyAudience: 'own_threads', watchlist: ['alice'] });
-    expect(mock.updateAgentConfig(kernel, { comments: false, watchlist: ['alice'] }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
+    expect(mock.agentConfig(kernel)).toMatchObject({ comments: true, replyAudience: 'verified' });
+    const r = mock.updateAgentConfig(kernel, { comments: false, replyAudience: 'own_threads' }, '0x00000000000000000000000000000000000e2e01');
+    expect(r.ok && r.config).toMatchObject({ comments: false, replyAudience: 'own_threads' });
+    expect(mock.updateAgentConfig(kernel, { comments: false }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe('a coin has no accounts to follow', () => {
+  it('a list an agent service still sends is not passed on to the page, whatever it holds', () => {
+    for (const stored of [['alice', 'bob_1'], [], 'alice', 42, null, ['@x', 'Not A Handle']]) {
+      const config = sanitizeConfig({ ...CONFIG, watchlist: stored, comments: false });
+      expect(config, JSON.stringify(stored)).not.toBeNull();
+      expect(config, JSON.stringify(stored)).not.toHaveProperty('watchlist');
+      expect(config).toMatchObject({ comments: false, replyAudience: 'verified' });
+    }
+  });
+
+  it('a list a page still sends is dropped from the changes, well formed or not, and the other changes stand', () => {
+    for (const sent of [['alice'], [], 'alice', ['a', 'b', 'c', 'd', 'e', 'f'], [42]]) {
+      expect(validateChanges({ watchlist: sent, comments: false }), JSON.stringify(sent)).toEqual({ ok: true, changes: { comments: false } });
+      // alone it is no change at all
+      expect(validateChanges({ watchlist: sent }), JSON.stringify(sent)).toEqual({ ok: false, field: 'changes', message: 'Nothing to change.' });
+    }
+    expect(changedSections({ watchlist: ['alice'] } as never)).toEqual([]);
+  });
+
+  it('mock mode keeps no list and takes none', () => {
+    const kernel = '0x2000000000000000000000000000000000000abc';
+    expect(mock.agentConfig(kernel)).not.toHaveProperty('watchlist');
+    expect(mock.updateAgentConfig(kernel, { watchlist: ['alice'] } as never, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
   });
 });

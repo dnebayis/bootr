@@ -68,10 +68,9 @@ describe('GET /internal/agents/:id/config', () => {
         // the treasury turn is off for every agent today (roles.ts), and the judge runs on the agent's own model
         treasuryTurn: { override: false, active: false },
         judgeModel: null,
-        // this round's three fields (docs/design/agent-tools-2.md): comments on, replies to verified accounts, nobody watched
+        // this round's two fields (docs/design/agent-tools-2.md): comments on, replies to verified accounts
         comments: true,
         replyAudience: 'verified',
-        watchlist: [],
         // no policy stored on the seeded row: nothing is installed to compare, the wanted set is today's always-on rules
         sessionRules: { current: [], wanted: ['claims.settleAndClaim', 'claims.claimQuote', 'swap.approveWeth', 'swap.swapWethToUsdc', 'treasury.fundSpender', 'treasury.withdrawWethForGas'], reinstallNeeded: false },
         revision: 1,
