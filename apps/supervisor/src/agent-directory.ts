@@ -68,19 +68,27 @@ export interface AgentDirectory {
   byUserId: Map<string, BootrAgentEntry>;
   byHandle: Map<string, BootrAgentEntry>;
   /**
-   * The reply audience `own_threads`, by agent id (docs/design/agent-tools-2.md section 4.5): for a coin that answers
-   * direct replies under its own posts from anybody, its own recent post ids and how many such replies the day still
-   * has room for. A coin on the verified audience has no entry; with `OPEN_REPLIES_PER_DAY` at 0 nobody has one.
+   * Replies outside the verified audience, by agent id (docs/design/agent-tools-2.md section 4.5): for a coin that
+   * answers questions from anyone (`REPLY_QUESTIONS_FROM_ANYONE`, every coin while it is on) or direct replies under
+   * its own posts from anybody (the reply audience `own_threads`), what `inboxViews` needs and how many such replies
+   * the day still has room for. A coin that answers neither has no entry; with `OPEN_REPLIES_PER_DAY` at 0 nobody
+   * has one.
    */
   openReplies: Map<string, OpenReplies>;
 }
 
 /** What `inboxViews` needs to answer replies outside the verified audience for one coin. */
 export interface OpenReplies {
+  /** The agent's own recent post ids; empty unless the coin's reply audience is `own_threads`. */
   ownPostIds: ReadonlySet<string>;
-  /** Replies outside the verified audience still allowed in the rolling 24 hours. */
+  /** Whether an unverified author who asks the agent a question is answered (`REPLY_QUESTIONS_FROM_ANYONE`). */
+  questions: boolean;
+  /** Replies outside the verified audience still allowed in the rolling 24 hours: one count for both ways in. */
   left: number;
 }
+
+/** Why a mention from outside the verified audience is left out of the wake decision once the day's turns for such mentions are used. */
+export const OPEN_WAKE_CAP_REASON = 'open_reply_wake_cap';
 
 /** How far back a reply under one of the agent's own posts is still answered, and how many of its posts are kept in view. */
 export const OPEN_REPLY_POSTS_WINDOW_MS = 7 * 86_400_000;
@@ -158,26 +166,50 @@ export async function openRepliesInWindow(ctx: Pick<SupervisorContext, 'db'>, ag
   return rows.length;
 }
 
+/** `openRepliesInWindow` for every coin at once (one read): agent id -> replies outside the verified audience in the last 24 hours. */
+async function openRepliesByAgent(ctx: Pick<SupervisorContext, 'db'>, now: number): Promise<Map<string, number>> {
+  const rows = await ctx.db
+    .select({ agentId: actions.agentId, n: sql<number>`count(*)::int` })
+    .from(actions)
+    .where(
+      and(
+        gt(actions.createdAt, new Date(now - CAP_WINDOW_MS)),
+        inArray(actions.status, ['sent', 'held', 'completed']),
+        sql`${actions.action}->>'tool' = 'publish_reply'`,
+        sql`coalesce(${actions.result}->'result'->>'openReply', ${actions.result}->>'openReply') = 'true'`,
+      ),
+    )
+    .groupBy(actions.agentId);
+  return new Map(rows.map((r) => [r.agentId, Number(r.n)]));
+}
+
 /**
- * The `openReplies` of the directory: one entry per coin whose reply audience is `own_threads`, none for the rest, so
- * a deployment where no coin widened its audience reads nothing here. The limits come from the supervisor's config
- * when the caller's context carries it (every real caller's does).
+ * The `openReplies` of the directory: one entry per coin that answers somebody outside the verified audience. While
+ * questions from anyone are answered (`REPLY_QUESTIONS_FROM_ANYONE`) that is every coin, at the cost of one counting
+ * read for all of them; a coin whose reply audience is `own_threads` also gets its own recent post ids. With the
+ * setting off and no coin on `own_threads` nothing is read here, and with `OPEN_REPLIES_PER_DAY` at 0 nobody has an
+ * entry. The limits come from the supervisor's config when the caller's context carries it (every real caller's does).
  */
 async function loadOpenReplies(ctx: Pick<SupervisorContext, 'db'>, rows: readonly Pick<AgentRow, 'agentId' | 'config' | 'status'>[], now: number): Promise<Map<string, OpenReplies>> {
   const out = new Map<string, OpenReplies>();
-  const config = ((ctx as { config?: unknown }).config ?? {}) as { OPEN_REPLIES_PER_DAY?: unknown; REPLY_AUDIENCE_DEFAULT?: unknown };
+  const config = ((ctx as { config?: unknown }).config ?? {}) as { OPEN_REPLIES_PER_DAY?: unknown; REPLY_AUDIENCE_DEFAULT?: unknown; REPLY_QUESTIONS_FROM_ANYONE?: unknown };
   const limit = typeof config.OPEN_REPLIES_PER_DAY === 'number' ? config.OPEN_REPLIES_PER_DAY : 0;
   if (limit <= 0) return out;
-  for (const row of rows) {
-    if (row.status === 'revoked' || replyAudienceOf(row.config, config.REPLY_AUDIENCE_DEFAULT) !== 'own_threads') continue;
+  const questions = config.REPLY_QUESTIONS_FROM_ANYONE === true;
+  const live = rows.filter((row) => row.status !== 'revoked');
+  const ownThreads = live.filter((row) => replyAudienceOf(row.config, config.REPLY_AUDIENCE_DEFAULT) === 'own_threads');
+  if (!questions && ownThreads.length === 0) return out;
+  const used = await openRepliesByAgent(ctx, now);
+  const left = (agentId: string) => Math.max(0, limit - (used.get(agentId) ?? 0));
+  if (questions) for (const row of live) out.set(row.agentId, { ownPostIds: new Set(), questions: true, left: left(row.agentId) });
+  for (const row of ownThreads) {
     const posts = await ctx.db
       .select({ result: actions.result })
       .from(actions)
       .where(and(eq(actions.agentId, row.agentId), eq(actions.status, 'completed'), gt(actions.createdAt, new Date(now - OPEN_REPLY_POSTS_WINDOW_MS)), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`))
       .orderBy(desc(actions.createdAt))
       .limit(OPEN_REPLY_POSTS_MAX);
-    const used = await openRepliesInWindow(ctx, row.agentId, now);
-    out.set(row.agentId, { ownPostIds: new Set(posts.flatMap((p) => postIdsOf(p.result))), left: Math.max(0, limit - used) });
+    out.set(row.agentId, { ownPostIds: new Set(posts.flatMap((p) => postIdsOf(p.result))), questions, left: left(row.agentId) });
   }
   return out;
 }
@@ -376,12 +408,48 @@ function peerWakesInWindow(wakes: PeerWakes | null | undefined, peerAgentId: str
  * `PEER_WAKE_CAP` times in the last 24 hours is marked not eligible (`PEER_WAKE_CAP_REASON`), so it buys no turn; it
  * stays in the inbox and a turn that runs for another reason still sees it as it is. Everything else passes untouched.
  */
-export function wakeViews<V extends { authorId: string; eligible: boolean; reason?: string }>(views: readonly V[], directory: AgentDirectory, selfAgentId: string, wakes: PeerWakes | null | undefined, now: number): V[] {
+export function wakeViews<V extends { authorId: string; eligible: boolean; reason?: string; openReply?: boolean }>(views: readonly V[], directory: AgentDirectory, selfAgentId: string, wakes: PeerWakes | null | undefined, now: number, open?: OpenWakeBound | null): V[] {
+  // Mentions from outside the verified audience (a question from anyone, a reply under the agent's own post) buy at
+  // most `open.limit` turns a day between them; past that they wait like a capped peer's.
+  const openCapped = !!open && openWakesInWindow(open.wakes, now) >= open.limit;
   return views.map((view) => {
     if (!view.eligible) return view;
+    if (view.openReply && openCapped) return { ...view, eligible: false, reason: OPEN_WAKE_CAP_REASON };
     const peer = bootrAgentOf(directory, view.authorId, selfAgentId);
     return peer && peerWakesInWindow(wakes, peer.agentId, now) >= PEER_WAKE_CAP ? { ...view, eligible: false, reason: PEER_WAKE_CAP_REASON } : view;
   });
+}
+
+/**
+ * The wake side of the day's count of replies outside the verified audience: the turns of the last 24 hours such a
+ * mention woke the agent for (`AgentState.openWakes`), and how many a day may (`OPEN_REPLIES_PER_DAY`, the same number
+ * that bounds the replies). Answered or not, a stranger's mentions buy no more turns than this.
+ */
+export interface OpenWakeBound {
+  wakes: readonly number[] | null | undefined;
+  limit: number;
+}
+
+/** The bound for one agent from its state and the deployment's count. */
+export function openWakeBound(ctx: Pick<SupervisorContext, 'config'>, state: { openWakes?: readonly number[] | null }): OpenWakeBound {
+  return { wakes: state.openWakes, limit: ctx.config.OPEN_REPLIES_PER_DAY };
+}
+
+function openWakesInWindow(at: readonly number[] | null | undefined, now: number): number {
+  return Array.isArray(at) ? at.filter((t) => typeof t === 'number' && t > now - CAP_WINDOW_MS && t <= now).length : 0;
+}
+
+/**
+ * A turn is starting because a mention waits: when every mention that woke it (`views`, already through `wakeViews`)
+ * is from outside the verified audience, the turn is one such mentions bought, and it is counted once against the
+ * day's. A turn a verified account's mention would have started anyway is not counted. Returns the wakes to keep on
+ * the state, pruned to the window, and whether this turn was counted.
+ */
+export function recordOpenWake(views: readonly { eligible: boolean; openReply?: boolean }[], wakes: readonly number[] | null | undefined, now: number): { wakes: number[]; counted: boolean } {
+  const live = Array.isArray(wakes) ? wakes.filter((t) => typeof t === 'number' && t > now - CAP_WINDOW_MS && t <= now) : [];
+  const waking = views.filter((v) => v.eligible);
+  const counted = waking.length > 0 && waking.every((v) => v.openReply === true);
+  return { wakes: counted ? [...live, now] : live, counted };
 }
 
 /**

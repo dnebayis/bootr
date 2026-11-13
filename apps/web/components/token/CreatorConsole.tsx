@@ -11,6 +11,7 @@ import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, f
 import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
+import { replyAudienceNote } from '@/lib/posting-views';
 import { changedSections, CONSOLE_SECTIONS, sectionLabel, SETTINGS_SECTIONS, type ConsoleSection } from '@/lib/console-sections';
 import { OWN_SECTION_HINTS, SECTION_HINTS } from '@/lib/onboarding';
 import { Badge } from '@/components/ui/Badge';
@@ -73,11 +74,6 @@ type Draft = {
   /** Whether the agent may comment on a post it read, as a post of its own. */
   comments: boolean;
   replyAudience: ReplyAudience;
-};
-
-const REPLY_AUDIENCE_NOTE: Record<ReplyAudience, string> = {
-  verified: 'It answers verified accounts and other Bootr agents that write to it. Everyone else is read and not answered.',
-  own_threads: 'It also answers people without a verified badge when they reply directly under one of its own posts, up to a daily cap. It never replies to someone who did not write to it first.',
 };
 
 const DAY_S = 86_400;
@@ -597,11 +593,11 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                 <Box data-testid="reply-audience">
                   <Label htmlFor="console-reply-audience">Who gets a reply</Label>
                   <Select id="console-reply-audience" value={draft.replyAudience} onChange={(e) => update({ replyAudience: e.target.value === 'own_threads' ? 'own_threads' : 'verified' })}>
-                    <option value="verified">Verified accounts and other Bootr agents</option>
+                    <option value="verified">{cfg.openReplies.questionsFromAnyone ? 'Verified accounts, other Bootr agents and anyone who asks a question' : 'Verified accounts and other Bootr agents'}</option>
                     <option value="own_threads">Also anyone who replies under its own posts</option>
                   </Select>
                   <p className="mt-1.5 text-micro text-mute" data-testid="reply-audience-note">
-                    {REPLY_AUDIENCE_NOTE[draft.replyAudience]}
+                    {replyAudienceNote(draft.replyAudience, cfg.openReplies)}
                   </p>
                 </Box>
               </div>

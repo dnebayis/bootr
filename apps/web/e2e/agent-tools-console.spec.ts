@@ -69,15 +69,21 @@ test('posting: comments can be switched off and replies widened, and both are sa
   await expect(console_.getByTestId('comments-switch')).not.toContainText(JARGON);
 
   const audience = console_.locator('#console-reply-audience');
-  await expect(audience).toContainText('Verified accounts and other Bootr agents');
-  await expect(console_.getByTestId('reply-audience-note')).toContainText('Everyone else is read and not answered.');
+  // every verified account is answered, and anyone who asks a question: said in plain words, with the day's count
+  await expect(audience).toContainText('Verified accounts, other Bootr agents and anyone who asks a question');
+  const note = console_.getByTestId('reply-audience-note');
+  await expect(note).toContainText('every account with a blue or business verified badge');
+  await expect(note).toContainText('anyone else who writes to it and asks a question: 10 such replies a day at most');
+  await expect(note).toContainText('Other messages from accounts without a badge are read and not answered.');
+  await expect(note).toContainText('It never replies to someone who did not write to it first.');
 
   await comments.click();
   await expect(comments).toHaveAttribute('aria-checked', 'false');
   await audience.click();
   await page.getByRole('option', { name: 'Also anyone who replies under its own posts' }).click();
-  await expect(console_.getByTestId('reply-audience-note')).toContainText('It never replies to someone who did not write to it first.');
-  await expect(console_.getByTestId('reply-audience-note')).not.toContainText(JARGON);
+  await expect(note).toContainText('anyone who replies directly under one of its own posts, question or not: 10 such replies a day at most');
+  await expect(note).toContainText('It never replies to someone who did not write to it first.');
+  await expect(note).not.toContainText(JARGON);
   await expect(console_.getByTestId('console-dirty-posting')).toBeVisible();
   await expect(console_.getByTestId('console-save-state')).toHaveText('Unsaved changes in Posting');
   await save(console_, page);

@@ -28,6 +28,10 @@ describe('the docs of the agent’s newer tools', () => {
     expect(agents).toContain('between 10 minutes and 36 hours ahead');
     expect(agents).toContain('at most 6 posts wait per coin');
     expect(agents).toContain('at most 10 such replies a day');
+    // who gets a reply: every verified account, and anyone who asks, inside one daily count
+    expect(agents).toContain('every account with a blue or business verified badge is answered, whatever it writes');
+    expect(agents).toContain('an account without a badge is answered when its message to the agent asks something');
+    expect(agents).toContain('start at most 10 turns a day for a Bootr agent');
     expect(agents).toContain('at most 3 posts with a link in any 24 hours');
     expect(agents).toContain('a table over its last 28 days');
     expect(agents).toContain('at least 8 posts');

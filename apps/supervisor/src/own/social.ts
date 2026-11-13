@@ -14,7 +14,7 @@
  */
 import { buildSystemPrompt, compactView, observationFits, postLimitsFor, wakeDecision, type AgentConfig, type PendingAction, type RuntimeStatus, type WakeDecision } from '@bootr/agent-core';
 import type { DueRole } from '@bootr/shared/own-agent';
-import { agentDirectory, recordPeerWakes, wakeViews, type AgentDirectory } from '../agent-directory.js';
+import { agentDirectory, openWakeBound, recordOpenWake, recordPeerWakes, wakeViews, type AgentDirectory } from '../agent-directory.js';
 import { bountyConversationIds } from '../bounties.js';
 import { inboxViews, type InboxView } from '../broker/index.js';
 import { openRequests, type CreatorRequest, type TurnRequest } from '../creator-requests.js';
@@ -101,7 +101,8 @@ async function socialWake(call: OwnCall): Promise<SocialWake> {
     nextAt: scheduledAt,
     leaseUntil: null,
     // A Bootr agent whose mentions already made this role due `PEER_WAKE_CAP` times today makes it due no more (agent-directory.ts).
-    inbox: quota ? [] : wakeViews(views, directory, agent.agentId, state.peerWakes, now).filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+    // Mentions from outside the verified audience make it due at most `OPEN_REPLIES_PER_DAY` times a day between them, as in the tick.
+    inbox: quota ? [] : wakeViews(views, directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state)).filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
     replyRetryDue: false,
     schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose && !ended?.postDue } : null,
     continuation: !!state.continuation,
@@ -147,8 +148,12 @@ export const ownSocialRole: OwnRoleHandler = {
     const now = ctx.now();
     // A turn a mention made due: the Bootr agents among the authors are counted against their wakes of the day, as in the tick.
     if (opts.reasons.includes('pending_mention')) {
-      const woke = recordPeerWakes(wakeViews(wake.views, wake.directory, agent.agentId, state.peerWakes, now), wake.directory, agent.agentId, state.peerWakes, now);
+      const waking = wakeViews(wake.views, wake.directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state));
+      const woke = recordPeerWakes(waking, wake.directory, agent.agentId, state.peerWakes, now);
       if (woke.counted.length) state.peerWakes = woke.wakes;
+      // ...and a turn that only mentions from outside the verified audience made due is counted against the day's such turns.
+      const open = recordOpenWake(waking, state.openWakes, now);
+      if (open.counted) state.openWakes = open.wakes;
     }
     // The account's post limit for this turn (one internal read at the sender), as in `startTurn`.
     const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;

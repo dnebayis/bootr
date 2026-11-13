@@ -9,7 +9,7 @@ import { decideApproval, listApprovals, type DecisionBody } from './approvals.js
 import { mountScheduled } from './scheduled.js';
 import { bountyJobViews } from './bounties.js';
 import { mountWhatWorks } from './what-works.js';
-import { configView, ownViewOf, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
+import { configView, ownViewOf, replyDefaults, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
 import { mountRunnerRoutes } from './own/runner-routes.js';
 import { chatView, sendChatMessage } from './chat.js';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -195,7 +195,8 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     // The coin page shows the creator the way out of either (CreatorXBanner).
     // `own`: for an own coin, when its client last finished a turn and how many clients are connected (agent-config.ts).
     const [xHold, xConnection, own] = await Promise.all([xHoldOf(ctx, agent.agentId), xConnectionOf(ctx, agent.agentId), ownViewOf(ctx, agent)]);
-    return c.json(configView(agent, xHold, xConnection, own));
+    // The reply audience shown is the one in force: the coin's own choice, else the deployment's default.
+    return c.json(configView(agent, xHold, xConnection, own, replyDefaults(ctx)));
   });
 
   /**

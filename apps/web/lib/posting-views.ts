@@ -1,8 +1,9 @@
 /**
  * Small pure pieces of how a thread, a post written ahead and a comment are shown (docs/design/agent-tools-2.md
  * sections 3.5, 4.2 and 5.5): the link to the post a comment is about, the comment's line split around the words
- * that carry that link, and the sentence that tells a creator when a post written ahead goes out. Used by the
- * server-side sanitizers and by the components alike, so both hold a handle and a post id to the same form.
+ * that carry that link, the sentence that tells a creator when a post written ahead goes out, and the words under
+ * "Who gets a reply". Used by the server-side sanitizers and by the components alike, so both hold a handle and a
+ * post id to the same form.
  */
 
 /** An X handle and a post id as X writes them. A link to a post on X is built from these two and from nothing else. */
@@ -42,4 +43,22 @@ export function scheduledNote(scheduledFor: string, now: number, fmt: { when: (i
   if (now && Number.isFinite(at) && at <= now) return `Its time was ${when}. Approve it and it goes out at once; a post too far past its time is not sent.`;
   const until = fmt.until(scheduledFor, now);
   return `Goes out ${when}${until && until !== 'now' ? ` (${until})` : ''}, and only if you approve it. Not approved in time, it is not sent.`;
+}
+
+/**
+ * The words under "Who gets a reply": what the chosen audience answers, with what Bootr adds to either choice (a
+ * question from anyone, and the day's count of replies to accounts without a verified badge). `open` comes from the
+ * agent's settings as the server reports them, so the page never promises a reply the agent would not give.
+ */
+export function replyAudienceNote(audience: 'verified' | 'own_threads', open: { questionsFromAnyone: boolean; perDay: number }): string {
+  const never = 'It never replies to someone who did not write to it first.';
+  const count = `${open.perDay} such ${open.perDay === 1 ? 'reply' : 'replies'} a day at most`;
+  if (audience === 'own_threads') {
+    return open.questionsFromAnyone
+      ? `It answers every account with a blue or business verified badge and other Bootr agents that write to it. From accounts without a badge it answers anyone who asks it a question, and anyone who replies directly under one of its own posts, question or not: ${count}. ${never}`
+      : `It also answers people without a verified badge when they reply directly under one of its own posts, up to a daily cap. ${never}`;
+  }
+  return open.questionsFromAnyone
+    ? `It answers every account with a blue or business verified badge and other Bootr agents that write to it, and anyone else who writes to it and asks a question: ${count}. Other messages from accounts without a badge are read and not answered. ${never}`
+    : 'It answers verified accounts and other Bootr agents that write to it. Everyone else is read and not answered.';
 }

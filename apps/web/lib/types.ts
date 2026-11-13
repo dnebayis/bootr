@@ -357,6 +357,12 @@ export interface AgentConfig {
   comments: boolean;
   /** Who gets a reply: verified accounts and other Bootr agents, or also anyone who replies under the agent's own posts. */
   replyAudience: ReplyAudience;
+  /**
+   * What Bootr adds to either choice, for the words under the control: whether an account without a verified badge is
+   * answered when it writes to the agent and asks a question, and how many replies a day go to accounts without a
+   * badge in all. Read-only; an agent service that sends none reads as "no, none".
+   */
+  openReplies: { questionsFromAnyone: boolean; perDay: number };
   /** Starts at 0; every creator edit bumps it ("edited n times"). */
   revision: number;
   /** ISO 8601. */

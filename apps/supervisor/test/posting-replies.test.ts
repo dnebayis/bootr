@@ -1,7 +1,11 @@
 /**
- * The reply audience (docs/design/agent-tools-2.md section 4.5): `verified` (the default, as before) answers verified
- * accounts, the creator's list and other Bootr agents; `own_threads` also answers a direct reply under one of the
- * agent's own posts from anybody, at most `OPEN_REPLIES_PER_DAY` a day. Both ways, and the daily count.
+ * The reply audience (docs/design/agent-tools-2.md section 4.5): `verified` (the default) answers verified accounts,
+ * the creator's list and other Bootr agents; `own_threads` also answers a direct reply under one of the agent's own
+ * posts from anybody, at most `OPEN_REPLIES_PER_DAY` a day. Both ways, and the daily count.
+ *
+ * The replies here state something and ask nothing, so what is proven is this audience alone: since the owner's
+ * decision of 2026-11-13 a question from anyone is answered on either audience (`REPLY_QUESTIONS_FROM_ANYONE`,
+ * posting-questions.test.ts), and a reply that asked would be answered for that reason.
  */
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
@@ -28,7 +32,7 @@ function under(postId: string, authorId: string, over: Partial<SenderInboxItem['
     observedAt: new Date(T0 - 60_000).toISOString(),
     seenAt: null,
     deferredUntil: null,
-    post: { id: postId, authorId, text: '@bootr_agent how does the fee split work?', createdAt: new Date(T0 - 2 * 60_000).toISOString(), conversationId: OWN_POST, inReplyToUserId: '1000', referencedPosts: [{ type: 'replied_to', id: OWN_POST }], author: { id: authorId, username: `user${authorId}`, verified: false }, ...over },
+    post: { id: postId, authorId, text: '@bootr_agent thanks, the fee split is clear now.', createdAt: new Date(T0 - 2 * 60_000).toISOString(), conversationId: OWN_POST, inReplyToUserId: '1000', referencedPosts: [{ type: 'replied_to', id: OWN_POST }], author: { id: authorId, username: `user${authorId}`, verified: false }, ...over },
   };
 }
 
@@ -46,7 +50,7 @@ async function world(opts: { config?: Record<string, string>; agent?: Record<str
   return { w, agent, config, views };
 }
 
-describe('replyAudience: verified (the default, as before)', () => {
+describe('replyAudience: verified (the default)', () => {
   it('an unverified reply under the agent\'s own post is not answered, and is closed unanswered like any other', async () => {
     const { w, config, views } = await world();
     try {
@@ -55,7 +59,8 @@ describe('replyAudience: verified (the default, as before)', () => {
       const [view] = await views([item]);
       expect(view).toMatchObject({ eligible: false, reason: 'verified_audience_required' });
       expect(view).not.toHaveProperty('openReply');
-      expect((await agentDirectory(w.ctx)).openReplies.size).toBe(0);
+      // the coin keeps none of its own posts in view for this: its entry is there for questions alone
+      expect((await agentDirectory(w.ctx)).openReplies.get(AGENT_ID)).toEqual({ ownPostIds: new Set(), questions: true, left: 10 });
       expect(autoClosable(config, item, view!)).toBe(true);
       expect(replyAudienceOf({}, 'verified')).toBe('verified');
       expect(replyAudienceOf({ replyAudience: 'everyone' }, undefined)).toBe('verified');

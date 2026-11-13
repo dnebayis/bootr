@@ -23,8 +23,8 @@ describe('the reply audience own_threads (openReplyTo)', () => {
   });
 
   it('with it a direct reply to one of the agent\'s own posts is answered, and marked as outside the verified audience', () => {
-    expect(replyEligibility(under(), { ...self, now, openReplyTo: ['900'] })).toEqual({ eligible: true, open: true });
-    expect(replyEligibility(under(), { ...self, now, openReplyTo: new Set(['900', '800']) })).toEqual({ eligible: true, open: true });
+    expect(replyEligibility(under(), { ...self, now, openReplyTo: ['900'] })).toEqual({ eligible: true, open: true, openAs: 'own_thread' });
+    expect(replyEligibility(under(), { ...self, now, openReplyTo: new Set(['900', '800']) })).toEqual({ eligible: true, open: true, openAs: 'own_thread' });
     // a verified author needs no such way in and is not counted as one
     expect(replyEligibility(under({ author: { id: '200', username: 'alice', verified: true, verifiedType: 'blue' } }), { ...self, now, openReplyTo: ['900'] })).toEqual({ eligible: true });
     // the creator's list likewise

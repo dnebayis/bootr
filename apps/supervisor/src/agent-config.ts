@@ -82,10 +82,17 @@ export interface AgentConfigView {
   comments: boolean;
   /**
    * Who gets a reply: `verified` (verified accounts, the creator's list and other Bootr agents) or `own_threads`, which
-   * also answers anyone who replies directly under one of the agent's own posts. The stored choice; `verified` while
-   * the creator made none.
+   * also answers anyone who replies directly under one of the agent's own posts. The audience in force: the creator's
+   * stored choice, else the deployment's default (`REPLY_AUDIENCE_DEFAULT`).
    */
   replyAudience: ReplyAudience;
+  /**
+   * What the deployment adds to either audience, for the console's words: `questionsFromAnyone` says an account
+   * without a verified badge is answered when it writes to the agent and asks a question
+   * (`REPLY_QUESTIONS_FROM_ANYONE`, and the day's count above 0), and `perDay` is how many replies a day go to
+   * accounts outside the verified audience in all (`OPEN_REPLIES_PER_DAY`). Read-only.
+   */
+  openReplies: { questionsFromAnyone: boolean; perDay: number };
   /**
    * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
    * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
@@ -168,9 +175,31 @@ export function commentsOf(config: Record<string, unknown>): boolean {
   return config.comments !== false;
 }
 
-/** The stored `replyAudience`, or `verified` (as before the field existed) when it is missing or not one of the two. */
-export function replyAudienceOf(config: Record<string, unknown>): ReplyAudience {
-  return (REPLY_AUDIENCES as readonly unknown[]).includes(config.replyAudience) ? (config.replyAudience as ReplyAudience) : 'verified';
+/**
+ * The reply audience in force for a stored config: its own `replyAudience` when that is one of the two, else the
+ * deployment's default (`fallback`, `REPLY_AUDIENCE_DEFAULT`), else `verified` as before the field existed. The same
+ * answer the broker's side reads (agent-directory.ts `replyAudienceOf`), so the console shows what really applies.
+ */
+export function replyAudienceOf(config: Record<string, unknown>, fallback?: unknown): ReplyAudience {
+  if ((REPLY_AUDIENCES as readonly unknown[]).includes(config.replyAudience)) return config.replyAudience as ReplyAudience;
+  return (REPLY_AUDIENCES as readonly unknown[]).includes(fallback) ? (fallback as ReplyAudience) : 'verified';
+}
+
+/** What the deployment decides about replies, as the config view needs it. */
+export interface ReplyDefaults {
+  /** `REPLY_AUDIENCE_DEFAULT`: the audience of a coin that chose none. */
+  audience: ReplyAudience;
+  /** `REPLY_QUESTIONS_FROM_ANYONE`, and the day's count above 0. */
+  questionsFromAnyone: boolean;
+  /** `OPEN_REPLIES_PER_DAY`. */
+  perDay: number;
+}
+
+/** The deployment's reply settings from the supervisor's config; a context without one (a test's) gets the settings as they were before this round. */
+export function replyDefaults(ctx: { config?: Partial<Pick<SupervisorContext['config'], 'REPLY_AUDIENCE_DEFAULT' | 'REPLY_QUESTIONS_FROM_ANYONE' | 'OPEN_REPLIES_PER_DAY'>> } | null | undefined): ReplyDefaults {
+  const c = ctx?.config ?? {};
+  const perDay = typeof c.OPEN_REPLIES_PER_DAY === 'number' && c.OPEN_REPLIES_PER_DAY > 0 ? c.OPEN_REPLIES_PER_DAY : 0;
+  return { audience: replyAudienceOf({}, c.REPLY_AUDIENCE_DEFAULT), questionsFromAnyone: c.REPLY_QUESTIONS_FROM_ANYONE === true && perDay > 0, perDay };
 }
 
 /** The stored `services` block, or the defaults when it is missing or malformed. */
@@ -203,7 +232,7 @@ function workerKind(config: Record<string, unknown>): ResolvedWorker['id'] {
   return t === 'trader' || t === 'researcher' || t === 'community' || t === CUSTOM_WORKER_ID ? t : 'community';
 }
 
-export function configView(agent: AgentRow, xHold: XHoldView | null = null, xConnection: XConnectionView | null = null, own: RunnerView['own'] = null): AgentConfigView {
+export function configView(agent: AgentRow, xHold: XHoldView | null = null, xConnection: XConnectionView | null = null, own: RunnerView['own'] = null, replies: ReplyDefaults = replyDefaults(null)): AgentConfigView {
   const config = agent.config;
   const preset = currentPreset(config);
   const runner = runnerOf(config);
@@ -225,7 +254,8 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     treasuryTurn: { override: config.treasuryTurn === true, active: treasuryTurnOn(config) },
     judgeModel: typeof config.judgeModel === 'string' && config.judgeModel ? config.judgeModel : null,
     comments: commentsOf(config),
-    replyAudience: replyAudienceOf(config),
+    replyAudience: replyAudienceOf(config, replies.audience),
+    openReplies: { questionsFromAnyone: replies.questionsFromAnyone, perDay: replies.perDay },
     sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
@@ -500,7 +530,9 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
   // Who gets a reply: one of the two audiences.
   if (body.replyAudience !== undefined) {
     if (!(REPLY_AUDIENCES as readonly unknown[]).includes(body.replyAudience)) return reject(400, 'invalid_reply_audience', `replyAudience must be one of ${REPLY_AUDIENCES.join(', ')}`);
-    if (body.replyAudience !== replyAudienceOf(before)) {
+    // Compared with the audience in force, the deployment's default included: a creator who picks the other one than
+    // the console showed gets it stored, whatever the default is.
+    if (body.replyAudience !== replyAudienceOf(before, ctx.config.REPLY_AUDIENCE_DEFAULT)) {
       config.replyAudience = body.replyAudience;
       fields.push('reply audience');
     }
@@ -561,5 +593,5 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     })
     .onConflictDoNothing();
   ctx.log.info({ agentId: agent.agentId, by, revision, fields }, 'agent config updated by the creator');
-  return { ok: true, config: configView(row, null, null, await ownViewOf(ctx, row)), fields };
+  return { ok: true, config: configView(row, null, null, await ownViewOf(ctx, row), replyDefaults(ctx)), fields };
 }

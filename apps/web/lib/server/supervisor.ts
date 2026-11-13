@@ -233,6 +233,7 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     // This round's two fields; an older agent service sends neither, which reads as the defaults.
     comments: o.comments !== false,
     replyAudience: (REPLY_AUDIENCES as readonly unknown[]).includes(o.replyAudience) ? (o.replyAudience as ReplyAudience) : 'verified',
+    openReplies: openRepliesOf(o.openReplies),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
     xHold: sanitizeXHold(o.xHold),
@@ -263,6 +264,16 @@ export function sanitizeAbout(raw: unknown): NonNullable<AgentActivityItem['abou
   if (!url) return null;
   const a = raw as { handle: string; postId: string };
   return { handle: a.handle, postId: a.postId, url };
+}
+
+/**
+ * What the deployment adds to the reply audience (`openReplies` of the config view): a switch and a small whole number.
+ * Anything else, or an agent service from before the field, reads as "no questions from anyone, no such replies".
+ */
+export function openRepliesOf(raw: unknown): AgentConfig['openReplies'] {
+  const o = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as { questionsFromAnyone?: unknown; perDay?: unknown };
+  const perDay = Number.isInteger(o.perDay) && (o.perDay as number) > 0 && (o.perDay as number) <= 1000 ? (o.perDay as number) : 0;
+  return { questionsFromAnyone: o.questionsFromAnyone === true && perDay > 0, perDay };
 }
 
 /** Keeps only the fields the tape renders: time, kind, one line of text, a tx hash, an https link and a comment's source. */

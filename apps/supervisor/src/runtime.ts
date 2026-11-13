@@ -31,7 +31,7 @@ import {
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
-import { executeAction, inboxViews, jsonSafe, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
+import { executeAction, inboxViews, jsonSafe, openRepliesNote, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
 import { buildTreasuryObservation, roleTools, treasuryFinish, treasuryTurnSection, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText, type Logger } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
@@ -142,6 +142,8 @@ export interface AgentState {
   ownForced?: { day: string; count: number } | null;
   /** Turns of the last 24 hours that another Bootr agent's mention woke this agent for, per peer agent id (agent-directory.ts `PEER_WAKE_CAP`). */
   peerWakes?: Record<string, number[]> | null;
+  /** Turns of the last 24 hours that only mentions from outside the verified audience woke this agent for (agent-directory.ts `recordOpenWake`; at most `OPEN_REPLIES_PER_DAY`). */
+  openWakes?: number[] | null;
   /** Own agent: turns opened and tool calls made, one bucket per hour, for the rolling 24-hour budgets (own/budget.ts). */
   ownUsage?: { turns?: [number, number][]; steps?: [number, number][] } | null;
   ownClosed?: { turnId: string; why: string; at: number; last?: OwnCallRecord | null } | null;
@@ -423,7 +425,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
     market: inputs.market ? { snapshot: inputs.market } : null,
     treasury: inputs.treasury ? { balances: { ...inputs.treasury.balances, claimable: inputs.treasury.claimable, usd: inputs.treasury.usd, gas: inputs.treasury.gas } } : null,
     social: {
-      messages: verifiedFirst(eligible).map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, verified: isVerifiedAuthor(v.post), post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}) })),
+      messages: verifiedFirst(eligible).map((v) => ({ postId: v.postId, authorId: v.authorId, conversationId: v.conversationId, verified: isVerifiedAuthor(v.post), post: v.post, observedAt: v.observedAt, ...(v.bootrAgent ? { bootrAgent: v.bootrAgent } : {}), ...(v.eligibleBecause ? { eligibleBecause: v.eligibleBecause } : {}) })),
       threadContexts: [],
       repliesAvailable: eligible.length > 0,
       // `maxChars`: what this X account may send in one original post (280 without Premium; the tool and the prompt say the same).
@@ -437,6 +439,8 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...ownRequestsWording(agent, creatorRequestsSection('social', requests)),
       ...(holdEnded ? { holdEnded: holdEndedMessage(holdEnded) } : {}),
       ineligibleMentions: views.length - eligible.length,
+      // Mentions from outside the verified audience that may be answered (a question from anyone): why, and how many a day.
+      ...openRepliesNote(ctx, config, eligible, directory),
       checkpoint: { memory: state.memory, agenda: state.agenda, summary: state.summary, at: state.lastCheckpointAt ? new Date(state.lastCheckpointAt).toISOString() : null },
       recentNotes: memories,
       tools: tools.map((t) => t.name),

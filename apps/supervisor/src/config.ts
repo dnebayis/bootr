@@ -215,12 +215,24 @@ export const configSchema = z
     /** How long "wrote to the agent" lasts. */
     ENGAGED_WINDOW_MS: int(30 * 24 * 3_600_000, 0),
     /**
-     * The reply audience of a coin that set none (`config.replyAudience`): `verified` = verified accounts, the
-     * creator's list and other Bootr agents, as before; `own_threads` = also a direct reply to one of the agent's own
-     * posts from anybody, at most `OPEN_REPLIES_PER_DAY` a day. X asks for its approval before AI-written replies are
-     * widened, so the default stays `verified` until that is on file.
+     * The reply audience of a coin that set none (`config.replyAudience`): `verified` = verified accounts (a blue or a
+     * business badge), the creator's list and other Bootr agents, plus questions from anyone while
+     * `REPLY_QUESTIONS_FROM_ANYONE` is on; `own_threads` = also a direct reply to one of the agent's own posts from
+     * anybody, question or not. X asks for its approval before AI-written replies are widened, so the default stays
+     * `verified` until that is on file.
      */
     REPLY_AUDIENCE_DEFAULT: z.preprocess((v) => (v === '' || v === undefined ? 'verified' : v), z.enum(['verified', 'own_threads'])),
+    /**
+     * Questions from anyone (the owner's decision of 2026-11-13): an account without a verified badge that wrote to
+     * the agent (mentioned it, or replied to it) and asks a question in that post is answered, on every coin and
+     * whatever its reply audience. `false` = the verified audience alone, as before. Bounded by `OPEN_REPLIES_PER_DAY`.
+     */
+    REPLY_QUESTIONS_FROM_ANYONE: bool('true'),
+    /**
+     * Replies per coin per rolling 24 hours to accounts outside the verified audience: one count for questions from
+     * anyone and for the replies of `own_threads`. Past it such a mention is closed unanswered. The same number bounds
+     * the turns a day such mentions may wake an agent for (agent-directory.ts `wakeViews`). 0 switches both off.
+     */
     OPEN_REPLIES_PER_DAY: int(10, 0),
     /**
      * Quiet hours in UTC as `HH-HH` (`02-06`: from 02:00 up to 06:00; `22-06` wraps midnight). Original posts wait

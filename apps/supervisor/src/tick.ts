@@ -16,7 +16,7 @@ import { OWN_AGENT_MODEL_ID, runnerOf } from '@bootr/shared/own-agent';
 import { and, asc, eq, gt, inArray, notInArray, sql } from 'drizzle-orm';
 import { zeroAddress, type Address, type Hex } from 'viem';
 import { kernelAbi } from './abi.js';
-import { agentDirectory, recordPeerWakes, wakeViews } from './agent-directory.js';
+import { agentDirectory, openWakeBound, recordOpenWake, recordPeerWakes, wakeViews } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { backfillBuilderCodes } from './builder-codes.js';
@@ -356,7 +356,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const views = inboxViews(config, inbox, now, directory, bountyConversations);
     // What may wake the agent: a Bootr agent whose mentions already woke it `PEER_WAKE_CAP` times today buys no more
     // turns here (agent-directory.ts); its mentions wait in the inbox for a turn that runs for another reason.
-    const wakeable = wakeViews(views, directory, agent.agentId, state.peerWakes, now).filter((v) => !ended0(state, now)?.postIds.includes(v.postId));
+    // Mentions from outside the verified audience (a question from anyone) are bounded the same way: together they buy
+    // at most `OPEN_REPLIES_PER_DAY` turns a day, answered or not.
+    const wakeable = wakeViews(views, directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state)).filter((v) => !ended0(state, now)?.postIds.includes(v.postId));
     // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
     // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
@@ -432,8 +434,11 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // A new turn that a mention woke: the Bootr agents among its authors are counted against their wakes of the day.
     if (!runtime.turn && !quota && decision.reasons.includes('pending_mention')) {
       const woke = recordPeerWakes(wakeable, directory, agent.agentId, state.peerWakes, now);
-      if (woke.counted.length) {
-        state.peerWakes = woke.wakes;
+      // ...and a turn that only mentions from outside the verified audience woke is counted against the day's such turns.
+      const open = recordOpenWake(wakeable, state.openWakes, now);
+      if (woke.counted.length || open.counted) {
+        if (woke.counted.length) state.peerWakes = woke.wakes;
+        if (open.counted) state.openWakes = open.wakes;
         await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
       }
     }

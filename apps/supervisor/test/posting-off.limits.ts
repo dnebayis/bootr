@@ -14,6 +14,7 @@ export const POSTING_OFF: Record<string, string> = {
   MENTION_AUDIENCE: 'anyone',
   ENGAGED_WINDOW_MS: '0',
   REPLY_AUDIENCE_DEFAULT: 'verified',
+  REPLY_QUESTIONS_FROM_ANYONE: 'false',
   OPEN_REPLIES_PER_DAY: '0',
 };
 
@@ -29,5 +30,6 @@ export const POSTING_DEFAULTS: Record<string, string> = {
   MENTION_AUDIENCE: 'engaged',
   ENGAGED_WINDOW_MS: String(30 * 24 * 3_600_000),
   REPLY_AUDIENCE_DEFAULT: 'verified',
+  REPLY_QUESTIONS_FROM_ANYONE: 'true',
   OPEN_REPLIES_PER_DAY: '10',
 };

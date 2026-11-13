@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { changedSections } from '@/lib/console-sections';
 import { mock } from '@/lib/mock';
+import { replyAudienceNote } from '@/lib/posting-views';
 import { sanitizeConfig, validateChanges } from './supervisor';
 import { EMPTY_WHAT_WORKS, sanitizeWhatWorks, WHAT_WORKS_MAX_CHARS } from './what-works';
 
@@ -96,6 +97,33 @@ describe('comments and who gets a reply in the config', () => {
     const r = mock.updateAgentConfig(kernel, { comments: false, replyAudience: 'own_threads' }, '0x00000000000000000000000000000000000e2e01');
     expect(r.ok && r.config).toMatchObject({ comments: false, replyAudience: 'own_threads' });
     expect(mock.updateAgentConfig(kernel, { comments: false }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe('what Bootr adds to who gets a reply', () => {
+  it('reads the switch and the day\u2019s count from the agent service, and "no, none" from one that sends neither or sends nonsense', () => {
+    expect(sanitizeConfig(CONFIG)).toMatchObject({ openReplies: { questionsFromAnyone: false, perDay: 0 } });
+    expect(sanitizeConfig({ ...CONFIG, openReplies: { questionsFromAnyone: true, perDay: 10 } })).toMatchObject({ openReplies: { questionsFromAnyone: true, perDay: 10 } });
+    // a count of 0 means nobody without a badge is answered, whatever the switch says
+    expect(sanitizeConfig({ ...CONFIG, openReplies: { questionsFromAnyone: true, perDay: 0 } })).toMatchObject({ openReplies: { questionsFromAnyone: false, perDay: 0 } });
+    for (const bad of ['yes', 7, null, [], { questionsFromAnyone: 'true', perDay: '10' }, { questionsFromAnyone: true, perDay: -3 }, { questionsFromAnyone: true, perDay: 1.5 }, { questionsFromAnyone: true, perDay: 1e9 }]) {
+      expect(sanitizeConfig({ ...CONFIG, openReplies: bad }), JSON.stringify(bad)).toMatchObject({ openReplies: { questionsFromAnyone: false, perDay: 0 } });
+    }
+  });
+
+  it('is not something a creator can send: the field is dropped from the changes', () => {
+    expect(validateChanges({ openReplies: { questionsFromAnyone: false, perDay: 0 }, comments: false })).toEqual({ ok: true, changes: { comments: false } });
+  });
+
+  it('the words under the control say what is answered, with the count, and never promise a reply to someone who did not write first', () => {
+    const on = { questionsFromAnyone: true, perDay: 10 };
+    const off = { questionsFromAnyone: false, perDay: 0 };
+    expect(replyAudienceNote('verified', on)).toBe('It answers every account with a blue or business verified badge and other Bootr agents that write to it, and anyone else who writes to it and asks a question: 10 such replies a day at most. Other messages from accounts without a badge are read and not answered. It never replies to someone who did not write to it first.');
+    expect(replyAudienceNote('verified', off)).toBe('It answers verified accounts and other Bootr agents that write to it. Everyone else is read and not answered.');
+    expect(replyAudienceNote('own_threads', on)).toContain('anyone who replies directly under one of its own posts, question or not: 10 such replies a day at most');
+    expect(replyAudienceNote('own_threads', { questionsFromAnyone: true, perDay: 1 })).toContain('1 such reply a day at most');
+    expect(replyAudienceNote('own_threads', off)).toBe('It also answers people without a verified badge when they reply directly under one of its own posts, up to a daily cap. It never replies to someone who did not write to it first.');
+    for (const audience of ['verified', 'own_threads'] as const) for (const open of [on, off]) expect(replyAudienceNote(audience, open)).not.toMatch(/runner|kernel|session key|relay|lease|tick|supervisor/i);
   });
 });
 
