@@ -44,7 +44,8 @@ describe('on the site’s fixtures', () => {
       expect(buy.headers.get('access-control-allow-origin')).toBe('*');
       expect(buy.headers.get('cache-control')).toBe('no-store');
       const b = (await buy.json()) as PreparedSwap;
-      expect(b, source).toMatchObject({ chainId: 8453, token: getAddress(coin.id), symbol: coin.symbol, side: 'buy', path: source, pairedAsset: 'ETH', mock: true, slippagePct: 1, amountIn: { formatted: '0.01', asset: 'ETH' } });
+      // a test answer names the chain the site itself runs on (Base Sepolia here), as the site's catalog does
+      expect(b, source).toMatchObject({ chainId: 84532, token: getAddress(coin.id), symbol: coin.symbol, side: 'buy', path: source, pairedAsset: 'ETH', mock: true, slippagePct: 1, amountIn: { formatted: '0.01', asset: 'ETH' } });
       expect(b.steps.map((s) => [s.kind, s.to, s.sendFrom, s.value])).toEqual([['swap', ROUTER, WALLET, parseEther('0.01').toString()]]);
       expect(BigInt(b.minReceived.raw)).toBe(minReceived(BigInt(b.quote.amountOut.raw), 100));
       expect(b.note).toMatch(/^Nothing was signed or sent\./);

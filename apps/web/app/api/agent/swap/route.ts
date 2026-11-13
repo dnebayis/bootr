@@ -129,7 +129,8 @@ export async function POST(req: NextRequest) {
       ? { eth: MOCK_ETH_BALANCE, spent: request.side === 'sell' ? MOCK_COIN_BALANCE : MOCK_PAIRED_BALANCE, allowances: { token: 0n, permit2Amount: 0n, permit2Expiration: 0 } }
       : { eth: MOCK_ETH_BALANCE, spent: null, allowances: null };
     const answer = prepareSwap({ coin: token, request, plan, quote, wallet, now, maxFeePct: limits.maxFeePct, dataSuffix: builderDataSuffix });
-    return answer.ok ? NextResponse.json({ ...answer.prepared, mock: true }, { headers: HEADERS }) : refuse(answer.refusal);
+    // A test answer names the chain this site runs on, as its catalog does, so a client that compares the two takes it and sees `mock`.
+    return answer.ok ? NextResponse.json({ ...answer.prepared, chainId: env.chainId, mock: true }, { headers: HEADERS }) : refuse(answer.refusal);
   }
 
   // The steps are for Base's router and pools: a site on another chain prepares none.
