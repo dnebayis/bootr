@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { usdcLabel } from '@/lib/bounties';
 import { explorer } from '@/lib/chains';
 import { ago } from '@/lib/format';
+import { useNow } from '@/lib/hooks';
+import { scheduledNote } from '@/lib/posting-views';
 import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
 import type { AgentApproval, AgentApprovals, ApprovalDecision, BountyApprovalInfo, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
@@ -14,6 +16,7 @@ import { CopyButton } from '@/components/ui/CopyButton';
 import { ExternalLink } from '@/components/ui/ExternalLink';
 import { Input } from '@/components/ui/Field';
 import { cn } from '@/components/ui/cn';
+import { untilLabel, whenLabel } from './console-call';
 import { useConsoleSession } from './console-session';
 
 /** "expires in 2 h" / "expires in 35 min" / "expired". */
@@ -30,23 +33,53 @@ const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 export type Decision = { note?: string; txHash?: string };
 
 function Stamp({ item }: { item: AgentApproval }) {
+  // A post the agent wrote ahead runs out at its own time, which the line under it says; the queue's own limit is not its deadline.
   return (
     <span className="ml-auto font-mono text-micro text-mute tabular" title={new Date(item.createdAt).toLocaleString()}>
-      {ago(Math.floor(Date.parse(item.createdAt) / 1000))} · {expiresLabel(item.expiresAt)}
+      {ago(Math.floor(Date.parse(item.createdAt) / 1000))}
+      {item.scheduledFor ? null : ` · ${expiresLabel(item.expiresAt)}`}
     </span>
   );
 }
 
-function Item({ item, busy, onDecide }: { item: AgentApproval; busy: boolean; onDecide: (decision: ApprovalDecision, extra: Decision) => void }) {
+function Item({ item, now, busy, onDecide }: { item: AgentApproval; now: number; busy: boolean; onDecide: (decision: ApprovalDecision, extra: Decision) => void }) {
   const [note, setNote] = useState('');
+  const more = item.kind === 'post' ? (item.thread ?? []) : [];
+  const total = 1 + more.length;
+  const part = (n: number) => (
+    <span className="mr-2 font-mono text-micro text-mute tabular" aria-label={`Post ${n} of ${total}`}>
+      {n}/{total}
+    </span>
+  );
   return (
-    <li data-testid="approval-item" data-approval-id={item.id} data-kind={item.kind} className="flex flex-col gap-2 py-3">
-      <div className="flex items-center gap-2">
-        <Badge tone="mono">{item.kind === 'reply' ? 'Reply' : 'Post'}</Badge>
+    <li data-testid="approval-item" data-approval-id={item.id} data-kind={item.kind} data-parts={total} className="flex flex-col gap-2 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="mono">{item.kind === 'reply' ? 'Reply' : more.length ? `Thread of ${total}` : 'Post'}</Badge>
+        {item.scheduledFor ? <Badge tone="graduated">Written ahead</Badge> : null}
         {item.inReplyTo ? <span className="font-mono text-micro text-mute">to {item.inReplyTo}</span> : null}
         <Stamp item={item} />
       </div>
-      <p className="whitespace-pre-line break-words text-sm text-ink">{item.text}</p>
+      {item.scheduledFor ? (
+        <p className="text-caption text-body" data-testid="approval-scheduled" title={new Date(item.scheduledFor).toISOString()}>
+          {scheduledNote(item.scheduledFor, now, { when: whenLabel, until: untilLabel })}
+        </p>
+      ) : null}
+      <p className="whitespace-pre-line break-words text-sm text-ink" data-testid="approval-text">
+        {more.length ? part(1) : null}
+        {item.text}
+      </p>
+      {more.length ? (
+        // Every post of the thread, open: approving sends them all, so none is folded away.
+        <ol className="flex flex-col gap-2 border-l border-hairline pl-3" data-testid="approval-thread">
+          {more.map((text, i) => (
+            <li key={i} className="whitespace-pre-line break-words text-sm text-ink" data-testid="approval-thread-part">
+              {part(i + 2)}
+              {text}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {more.length ? <p className="text-micro text-mute">Approving sends all {total} posts, connected as one thread.</p> : null}
       {item.image?.dataUrl ? (
         // eslint-disable-next-line @next/next/no-img-element -- a base64 preview from the supervisor, never a remote URL
         <img src={item.image.dataUrl} alt={item.image.alt} className="max-h-48 w-auto max-w-full rounded-sm border border-hairline" data-testid="approval-image" />
@@ -184,7 +217,12 @@ function PayoutItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bou
 function toastFor(item: AgentApproval, decided: AgentApproval): string {
   if (item.kind === 'bounty_payout') return decided.status === 'approved' ? 'Recorded. The payment is on the coin page.' : 'Declined. The job closes unpaid.';
   if (item.kind === 'bounty_job') return decided.status === 'approved' ? 'Approved: the job goes out on X.' : 'Cancelled. The job is closed.';
-  return decided.status === 'approved' ? (decided.url ? 'Approved and posted on X.' : 'Approved: the agent is sending it.') : 'Rejected. The agent will see your note on its next turn.';
+  if (decided.status !== 'approved') return item.scheduledFor ? 'Rejected. The post will not go out, and the agent will see your note on its next turn.' : 'Rejected. The agent will see your note on its next turn.';
+  if (decided.url) return 'Approved and posted on X.';
+  // A post written ahead waits for its own time; the item as listed says when (the decision's answer may not).
+  const at = item.scheduledFor ?? decided.scheduledFor;
+  if (at && Date.parse(at) > Date.now()) return `Approved: it goes out ${whenLabel(at)}.`;
+  return 'Approved: the agent is sending it.';
 }
 
 /**
@@ -201,6 +239,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
   const [list, setList] = useState<AgentApprovals | null>(null);
   const [opening, setOpening] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const now = useNow();
 
   const pending = list ? list.pending : (count.data?.pending ?? 0);
   if (!reviewing && pending === 0 && !list) return null;
@@ -284,7 +323,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
             const decide_ = (d: ApprovalDecision, extra: Decision) => void decide(item, d, extra);
             if (item.kind === 'bounty_payout' && item.bounty?.payee) return <PayoutItem key={item.id} item={item} bounty={{ ...item.bounty, payee: item.bounty.payee }} busy={busy === item.id} onDecide={decide_} />;
             if (item.kind === 'bounty_job' && item.bounty) return <JobItem key={item.id} item={item} bounty={item.bounty} busy={busy === item.id} onDecide={decide_} />;
-            return <Item key={item.id} item={item} busy={busy === item.id} onDecide={decide_} />;
+            return <Item key={item.id} item={item} now={now} busy={busy === item.id} onDecide={decide_} />;
           })}
         </ul>
       )}

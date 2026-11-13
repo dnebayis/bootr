@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalDecisionBody, BOUNTY_JOB_ID_RE, sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeBounties, sanitizeBountyJob, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, sortBounties, txHashOf, validateChanges } from './supervisor';
+import { approvalDecisionBody, BOUNTY_JOB_ID_RE, sanitizeAbout, sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeBounties, sanitizeBountyJob, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, sortBounties, txHashOf, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -258,6 +258,92 @@ describe('sanitizeApprovals', () => {
     expect(a.items[1]!.expiresAt).toBe('2026-11-05T09:00:00.000Z');
     expect(sanitizeApproval(null)).toBeNull();
     expect(sanitizeApprovals(null)).toEqual({ items: [], pending: 0 });
+  });
+
+  // What the agent service sends for a queued post (apps/supervisor/src/approvals.ts `viewOf`): `thread` is the texts
+  // of the posts after the first, `scheduledFor` the time a post written ahead goes out.
+  const post = { id: 'sch_00000000000000a1', agentId: '7', kind: 'post', text: 'First: how the fee split works.', inReplyTo: null, image: null, status: 'pending_approval', decision: null, decidedBy: null, note: null, postId: null, url: null, createdAt: '2026-11-13T10:00:00.000Z', decidedAt: null, expiresAt: '2026-11-15T10:00:00.000Z', bounty: null };
+
+  it('keeps every post of a thread and the time a post written ahead goes out', () => {
+    const thread = ['Second: the agent’s share pays for its thinking.', 'Third: the split is locked at launch.', 'Fourth: nothing here is a promise.'];
+    const item = sanitizeApproval({ ...post, thread, scheduledFor: '2026-11-14T10:00:00Z' })!;
+    expect(item.thread).toEqual(thread);
+    expect(item.scheduledFor).toBe('2026-11-14T10:00:00.000Z');
+    expect(item.text).toBe(post.text);
+    // a single post that goes out on approval carries neither field
+    const plain = sanitizeApproval(post)!;
+    expect(plain).not.toHaveProperty('thread');
+    expect(plain).not.toHaveProperty('scheduledFor');
+    expect(sanitizeApproval({ ...post, thread: [], scheduledFor: null })).toEqual(plain);
+    // a part as long as a part may be
+    expect(sanitizeApproval({ ...post, thread: ['x'.repeat(280)] })!.thread).toEqual(['x'.repeat(280)]);
+    // the text is kept as text: nothing in it is read as markup or as a link
+    expect(sanitizeApproval({ ...post, thread: ['<img src=x onerror=alert(1)> javascript:alert(1)'] })!.thread).toEqual(['<img src=x onerror=alert(1)> javascript:alert(1)']);
+  });
+
+  it('drops a post whose thread it could not show in full, so the creator never approves posts they did not read', () => {
+    for (const thread of [
+      'second post', // not a list
+      { 0: 'second post', length: 1 }, // not a list
+      Array.from({ length: 50 }, (_, i) => `post ${i + 2}`), // 50 posts
+      ['a', 'b', 'c', 'd'], // one more than a thread takes
+      ['x'.repeat(100_000)], // a 100 KB post
+      ['x'.repeat(281)], // one character too long
+      ['second', 7], // not text
+      ['second', { text: 'third' }], // the stored shape, not the view's
+      ['second', null],
+      ['second', ''], // an empty post
+    ]) {
+      expect(sanitizeApproval({ ...post, thread }), JSON.stringify(thread).slice(0, 60)).toBeNull();
+    }
+    // the rest of the queue is still listed
+    expect(sanitizeApprovals({ items: [{ ...post, thread: ['x'.repeat(281)] }, { ...post, id: 'act_ok' }], pending: 2 }).items.map((i) => i.id)).toEqual(['act_ok']);
+  });
+
+  it('drops a post whose time is there and is not a time, and reads neither field on anything but a post', () => {
+    for (const scheduledFor of ['tomorrow', '', 1_794_000_000_000, {}, ['2026-11-14T10:00:00Z']]) expect(sanitizeApproval({ ...post, scheduledFor }), String(scheduledFor)).toBeNull();
+    const reply = sanitizeApproval({ ...post, id: 'act_r', kind: 'reply', inReplyTo: '1001', thread: ['x'.repeat(100_000)], scheduledFor: 'tomorrow' })!;
+    expect(reply.kind).toBe('reply');
+    expect(reply).not.toHaveProperty('thread');
+    expect(reply).not.toHaveProperty('scheduledFor');
+  });
+});
+
+describe('sanitizeActivity: a comment’s source', () => {
+  const row = { at: '2026-11-13T10:00:00.000Z', kind: 'post', summary: 'Commented on a post by @base', url: 'https://x.com/coinagent/status/1850000000000000009' };
+  const about = { handle: 'base', postId: '1850000000000000001', url: 'https://x.com/base/status/1850000000000000001' };
+
+  it('keeps the post a comment is about, with the link built from the handle and the post id', () => {
+    expect(sanitizeActivity({ items: [{ ...row, about }] }).items).toEqual([{ ...row, about }]);
+    // the link that came with it is never the one shown
+    expect(sanitizeActivity({ items: [{ ...row, about: { ...about, url: 'https://evil.example/x.com/base/status/1' } }] }).items[0]!.about).toEqual(about);
+    expect(sanitizeAbout({ handle: 'base', postId: '12', url: 'javascript:alert(1)' })).toEqual({ handle: 'base', postId: '12', url: 'https://x.com/base/status/12' });
+  });
+
+  it('shows the row without a source when the handle or the post id is not in X’s own form', () => {
+    for (const bad of [
+      { ...about, handle: '<script>alert(1)</script>' },
+      { ...about, handle: 'base/../../i/flow/login' },
+      { ...about, handle: 'base?x=1' },
+      { ...about, handle: 'abcdefghijklmnop' }, // 16 characters
+      { ...about, handle: 7 },
+      { ...about, postId: '12a' },
+      { ...about, postId: '12/photo/1' },
+      { ...about, postId: 1850000000000000001 },
+      { ...about, postId: '1'.repeat(26) },
+      { url: about.url },
+      'https://x.com/base/status/12',
+      [about],
+      null,
+    ]) {
+      const items = sanitizeActivity({ items: [{ ...row, about: bad }] }).items;
+      expect(items, JSON.stringify(bad)).toEqual([row]);
+    }
+  });
+
+  it('reads a source on a post only', () => {
+    expect(sanitizeActivity({ items: [{ ...row, kind: 'reply', about }] }).items[0]).not.toHaveProperty('about');
+    expect(sanitizeActivity({ items: [{ ...row, kind: 'fee_claim', about }] }).items[0]).not.toHaveProperty('about');
   });
 });
 

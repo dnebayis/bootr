@@ -681,6 +681,10 @@ export interface AgentApproval {
   createdAt: string;
   decidedAt: string | null;
   expiresAt: string;
+  /** A thread: the posts after `text`, in order, so the creator reads everything that approving sends. Absent for a single post. */
+  thread?: string[];
+  /** A post the agent wrote ahead: the time it goes out when approved by then (ISO 8601). Absent for a post that goes out on approval. */
+  scheduledFor?: string;
 }
 
 /** `POST /api/agent/[kernel]/approvals/list` (creator only); `token` keeps the session without a new signature. */
@@ -759,6 +763,11 @@ export interface AgentActivityItem {
   summary: string;
   txHash?: Hex;
   url?: string;
+  /**
+   * A comment: the post on X it is about. `url` stays the agent's own post; this one is built by Bootr from the
+   * handle and the post id, never taken as sent.
+   */
+  about?: { handle: string; postId: string; url: string };
 }
 
 export interface AgentActivity {

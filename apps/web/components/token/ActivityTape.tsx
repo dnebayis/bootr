@@ -5,6 +5,7 @@ import { useAgentActivity, useAgentPosts } from '@/lib/indexer';
 import type { AgentActivityItem, Token } from '@/lib/types';
 import { ago } from '@/lib/format';
 import { explorer } from '@/lib/chains';
+import { aboutHref, aboutParts } from '@/lib/posting-views';
 import { Panel } from '@/components/ui/Panel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
@@ -46,7 +47,40 @@ export function mergeActivity(tape: AgentActivityItem[], posts: { kind: 'post' |
   return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
+/**
+ * A comment: the agent's own post about a post it read. The line names whose post it was and those words link to that
+ * post on X; the arrow at the end leads to the agent's own post. Two links, so the row itself is not one.
+ */
+function CommentRow({ item, source, now }: { item: AgentActivityItem & { about: NonNullable<AgentActivityItem['about']> }; source: string; now: number }) {
+  const unix = Math.floor(Date.parse(item.at) / 1000);
+  const text = aboutParts(item.summary, item.about.handle);
+  return (
+    <li data-kind={item.kind} data-comment="true" className="border-b border-hairline last:border-b-0">
+      <div className="flex items-baseline gap-3 py-2">
+        <span className="shrink-0 font-mono text-micro text-mute tabular" title={new Date(item.at).toLocaleString()}>
+          {ago(unix, now)}
+        </span>
+        <span className="min-w-0 flex-1 whitespace-pre-line break-words text-sm text-body">
+          {text.before}
+          <a href={source} target="_blank" rel="noopener noreferrer" className="text-link hover:underline" data-testid="activity-about">
+            {text.link}
+          </a>
+          {text.after}
+        </span>
+        {item.url ? (
+          <a href={item.url} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 text-micro text-mute transition-colors duration-150 hover:text-ink" aria-label="View the agent’s post on X" data-testid="activity-own-post">
+            <XLogoIcon size={11} />
+            <ArrowUpRightIcon size={12} />
+          </a>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
 function Row({ item, now }: { item: AgentActivityItem; now: number }) {
+  const source = aboutHref(item.about);
+  if (source && item.about) return <CommentRow item={{ ...item, about: item.about }} source={source} now={now} />;
   const href = item.url ?? (item.txHash ? explorer.tx(item.txHash) : null);
   const isX = !!item.url && /^https:\/\/(x|twitter)\.com\//.test(item.url);
   const unix = Math.floor(Date.parse(item.at) / 1000);

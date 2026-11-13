@@ -6,11 +6,12 @@
  *
  * Web Crypto only (route handlers). Shapes are the contract in docs/design/agent-launch-v2.md.
  */
-import { isImageModel } from '@bootr/agent-core';
+import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/agent-core';
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
 import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHLIST_MAX, X_HANDLE_RE, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { aboutHref } from '@/lib/posting-views';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
 
@@ -253,7 +254,19 @@ export function sanitizeOwn(raw: unknown): RunnerView['own'] {
   return { lastTurnAt: iso(own.lastTurnAt), clients: Number.isInteger(clients) && clients > 0 ? clients : 0 };
 }
 
-/** Keeps only the fields the tape renders: time, kind, one line of text, a tx hash and an https link. */
+/**
+ * The post a comment is about (`about` on a `post` row of the tape): the handle and the post id, each held to X's own
+ * form, and the link built here from the two (`aboutHref`). A link the service sends is never used, so nothing but
+ * `https://x.com/<handle>/status/<id>` can come out. Null for anything else: the row is then shown without it.
+ */
+export function sanitizeAbout(raw: unknown): NonNullable<AgentActivityItem['about']> | null {
+  const url = aboutHref(raw);
+  if (!url) return null;
+  const a = raw as { handle: string; postId: string };
+  return { handle: a.handle, postId: a.postId, url };
+}
+
+/** Keeps only the fields the tape renders: time, kind, one line of text, a tx hash, an https link and a comment's source. */
 export function sanitizeActivity(raw: unknown): AgentActivity {
   const o = (raw ?? {}) as { items?: unknown };
   const items: AgentActivityItem[] = [];
@@ -266,6 +279,8 @@ export function sanitizeActivity(raw: unknown): AgentActivity {
     const item: AgentActivityItem = { at, kind, summary };
     if (typeof r.txHash === 'string' && HASH_RE.test(r.txHash)) item.txHash = r.txHash as Hex;
     if (typeof r.url === 'string' && /^https:\/\/[^\s]{1,300}$/.test(r.url)) item.url = r.url;
+    const about = kind === 'post' ? sanitizeAbout(r.about) : null;
+    if (about) item.about = about;
     items.push(item);
   }
   return { items };
@@ -315,9 +330,33 @@ function bountyInfo(kind: ApprovalKind, o: Record<string, unknown>): BountyAppro
   };
 }
 
+/** The posts of a thread after its first: `THREAD_MAX_PARTS` counts the first one too. */
+const THREAD_MORE_MAX = THREAD_MAX_PARTS - 1;
+
+/**
+ * The posts after the first of a queued thread: a list of at most `THREAD_MORE_MAX` texts of at most
+ * `THREAD_PART_MAX_CHARS` characters each, as the agent's tools take them. `undefined` when the item has none; `null`
+ * when the field is there and is anything else (not a list, too many posts, a post that is empty, too long or not
+ * text), so the caller drops the item: approving sends every post of a thread, and the creator must never approve a
+ * thread the console could not show in full.
+ */
+export function threadOf(raw: unknown): string[] | null | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw) || raw.length > THREAD_MORE_MAX) return null;
+  if (raw.length === 0) return undefined;
+  const parts: string[] = [];
+  for (const part of raw) {
+    if (typeof part !== 'string' || part.length === 0 || part.length > THREAD_PART_MAX_CHARS) return null;
+    parts.push(part);
+  }
+  return parts;
+}
+
 /**
  * One queue item as the console renders it; null when it is not an approval. Image bytes become a data URL. A
- * `bounty_job` or `bounty_payout` item carries its job in `bounty` and is dropped when that block is malformed.
+ * `bounty_job` or `bounty_payout` item carries its job in `bounty` and is dropped when that block is malformed. A post
+ * keeps the rest of its thread (`thread`) and, when the agent wrote it ahead, the time it goes out (`scheduledFor`);
+ * a post whose thread or time is there but malformed is dropped, like a payment that cannot be described.
  */
 export function sanitizeApproval(raw: unknown): AgentApproval | null {
   const o = (raw ?? {}) as Record<string, unknown>;
@@ -338,10 +377,17 @@ export function sanitizeApproval(raw: unknown): AgentApproval | null {
     image = { alt, ...(mime && IMAGE_MIME_RE.test(mime) && data ? { dataUrl: `data:${mime};base64,${data}` } : {}) };
   }
   const decision = o.decision === 'approve' || o.decision === 'reject' ? (o.decision as ApprovalDecision) : null;
+  // Only an original post is a thread or has a time of its own; on any other kind the two fields are not read.
+  const thread = kind === 'post' ? threadOf(o.thread) : undefined;
+  const hasTime = kind === 'post' && o.scheduledFor !== undefined && o.scheduledFor !== null;
+  const scheduledFor = hasTime && typeof o.scheduledFor === 'string' && Number.isFinite(Date.parse(o.scheduledFor)) ? new Date(Date.parse(o.scheduledFor)).toISOString() : null;
+  if (thread === null || (hasTime && !scheduledFor)) return null;
   return {
     id,
     kind,
     text,
+    ...(thread ? { thread } : {}),
+    ...(scheduledFor ? { scheduledFor } : {}),
     bounty,
     inReplyTo: str(o.inReplyTo, 40),
     image,
