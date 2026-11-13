@@ -80,7 +80,8 @@ describe('rate budget', () => {
       posts: 1,
       readsTotal: 2,
       reads: { mentions: 2 },
-      estimatedUsd: { posts: 0.01, reads: 0.01, total: 0.02 },
+      // X's prices as of 2026-11: a post $0.015, a post read $0.005 (src/metering.ts `PRICE_USD`)
+      estimatedUsd: { posts: 0.015, reads: 0.01, total: 0.025 },
     });
     const other = await env.call('GET', `/internal/metering/${AGENT}?month=2026-09`);
     expect(other.body).toMatchObject({ posts: 0, readsTotal: 0 });

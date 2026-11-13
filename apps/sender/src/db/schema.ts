@@ -71,6 +71,13 @@ export const actions = pgTable(
     /** Reconciliation bookkeeping for `held` rows. */
     checks: integer('checks').notNull().default(0),
     nextCheckAt: ts('next_check_at'),
+    /**
+     * A part of a thread (src/publish.ts): the action id of the thread's first part, and which part this row is (1 =
+     * the first). Null on every other row. Part n hangs under part n-1 on X: `replyTo` holds that post's id and
+     * `replyAuthorId` the agent's own X user, so the reconciler reads it back like any reply; the kind stays `post`.
+     */
+    threadHead: text('thread_head'),
+    threadN: integer('thread_n'),
   },
   (t) => [
     index('sender_actions_agent_created_idx').on(t.agentId, t.createdAt),
@@ -142,6 +149,8 @@ export const quotas = pgTable('sender_quotas', {
   mentionReadIntervalSec: integer('mention_read_interval_sec'),
   /** X read units per UTC day for this agent (read-budget.ts); null = the sender's default (`SENDER_DEFAULT_READS_PER_DAY`). */
   readsPerDay: integer('reads_per_day'),
+  /** Posts with a link per rolling 24 h for this agent (src/quota.ts `linkLimitFor`); null = the sender's default for its kind, 0 = no count. */
+  linkPostsPerDay: integer('link_posts_per_day'),
   lastMentionsReadAt: ts('last_mentions_read_at'),
   mentionsSinceId: text('mentions_since_id'),
   updatedAt: ts('updated_at').notNull().defaultNow(),

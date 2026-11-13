@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { postLength, postLimitsFor } from '@bootr/agent-core';
+import { THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS, carriesLink, postLength, postLimitsFor } from '@bootr/agent-core';
 import { getAccessToken, premiumOf } from './accounts.js';
 import { MEDIA_SCOPE } from './oauth.js';
 import type { SenderContext } from './context.js';
@@ -9,11 +9,21 @@ import { isOptedOut, mentionsOptedOut, resolveReplyTarget } from './consent-gate
 import { actions, inbox, type ActionRow } from './db/schema.js';
 import { log } from './log.js';
 import { checkOutgoing, mentionedHandles } from './policy-shim.js';
-import { POST_WINDOW_MS, getQuota, postsInWindow } from './quota.js';
+import { POST_WINDOW_MS, getQuota, linkLimitFor, linkPostsInWindow, postsInWindow, roomFreeAt } from './quota.js';
 import { getAction, toReceipt, type Receipt } from './receipt.js';
 import type { XError } from './x-client.js';
 
 const xId = z.string().regex(/^\d{1,25}$/, 'must be a numeric X id');
+
+/** No thread is longer than this whatever the configured limit says (the body is refused before anything is read). */
+export const THREAD_HARD_MAX_PARTS = 10;
+/** Action ids with this prefix are the bounty job's own template posts (apps/supervisor/src/bounties.ts): counted against the link budget, never refused by it. */
+export const LINK_QUOTA_EXEMPT_PREFIX = 'bounty:';
+
+/** The action id of part `n` of the thread whose first part is `head`: the head itself, then `<head>.t<n>`. */
+export function threadPartId(head: string, n: number): string {
+  return n <= 1 ? head : `${head}.t${n}`;
+}
 
 /** X accepts photos up to 5 MB. */
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
@@ -91,8 +101,49 @@ export const publishSchema = z.object({
    * a reconnect to another account must be acknowledged in the agent config before it may publish.
    */
   xUserId: xId.optional(),
+  /**
+   * A part of a thread (docs/design/agent-tools-2.md section 3.3): `head` is the action id of the first part, `n` which
+   * part this is (from 1), `of` how many the thread has. The first part is an ordinary original whose claim asks the
+   * daily quota for room for all `of` parts. A later part names no `replyTo`: the sender looks up the part before it by
+   * its id (`head`, then `<head>.t<n-1>`), requires that row to be this agent's, part of this thread and `sent`, and
+   * replies to its post, so a continuation can only ever hang under the agent's own earlier part. Every part is gated
+   * as an original and capped at the thread's part length for every account. Part of the body hash.
+   */
+  thread: z
+    .object({
+      head: z
+        .string()
+        .min(8)
+        .max(120)
+        .regex(/^[A-Za-z0-9:_.-]+$/),
+      n: z.number().int().min(1).max(THREAD_HARD_MAX_PARTS),
+      of: z.number().int().min(2).max(THREAD_HARD_MAX_PARTS),
+    })
+    .strict()
+    .optional(),
+  /**
+   * The author of the post this one comments on (a post of its own about a post the agent read; never a reply). An
+   * author who told this agent to stop is never commented on: `policy:about_opted_out`. Not part of the body hash (a
+   * policy input, not content).
+   */
+  aboutAuthorId: xId.optional(),
 });
 export type PublishInput = z.infer<typeof publishSchema>;
+
+/**
+ * What is wrong with a body that says it is a part of a thread, or null: the action id is not the one its place in
+ * the thread gives it, the part number is past the thread's length, it names a reply target (a thread is an original
+ * and its chain is the sender's to build), or a later part carries what only the first may (a picture, source credits).
+ */
+export function invalidThreadBody(input: PublishInput): string | null {
+  const thread = input.thread;
+  if (!thread) return null;
+  if (thread.n > thread.of) return 'thread.n is past thread.of';
+  if (input.actionId !== threadPartId(thread.head, thread.n)) return 'actionId does not match the part of the thread it says it is';
+  if (input.replyTo || input.replyAuthorId || input.replyEligibility) return 'a part of a thread names no reply target';
+  if (thread.n > 1 && (input.media || input.attributions?.length)) return 'only the first part of a thread carries a picture or source credits';
+  return null;
+}
 
 /** First reconciliation check after an ambiguous outcome. */
 export const FIRST_CHECK_DELAY_MS = 15 * 60 * 1000;
@@ -128,6 +179,9 @@ export type PublishResult =
     }
   | { http: 400 | 409 | 429 | 503; body: Record<string, unknown> };
 
+/** How long a link refusal asks the caller to wait when no post with a link is on record to say when one leaves the window. */
+const LINK_RETRY_FALLBACK_MS = 60 * 60 * 1000;
+
 export function bodyHash(input: PublishInput): string {
   return sha256Hex(
     canonicalJson({
@@ -137,6 +191,8 @@ export function bodyHash(input: PublishInput): string {
       replyTo: input.replyTo ?? null,
       replyAuthorId: input.replyAuthorId ?? null,
       attributions: input.attributions ?? [],
+      // a part of a thread by its place in it (rows that are no part of a thread keep their hash)
+      ...(input.thread ? { thread: { head: input.thread.head, n: input.thread.n, of: input.thread.of } } : {}),
       // the picture by content, not by its base64 text (rows without media keep their pre-media hash)
       ...(input.media
         ? { media: { sha256: sha256Hex(Buffer.from(input.media.data, 'base64')), mime: input.media.mime, alt: input.media.alt } }
@@ -193,6 +249,9 @@ function existing(
 export async function publish(ctx: SenderContext, input: PublishInput): Promise<PublishResult> {
   const hash = bodyHash(input);
   const kind = input.replyTo ? 'reply' : 'post';
+  const thread = input.thread ?? null;
+  const malformed = invalidThreadBody(input);
+  if (malformed) return { http: 400, body: { error: 'invalid_thread', message: `${malformed}; nothing was sent` } };
 
   const prior = await getAction(ctx, input.actionId);
   if (prior) return existing(ctx, prior, input, hash);
@@ -255,10 +314,34 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
       replyReasons.push('reply_target_unavailable');
     }
   }
+  // A later part of a thread hangs under the part before it, and under nothing else: that row is looked up by its id,
+  // never taken from the caller, and must be this agent's, of this thread, sent, and from the account bound now.
+  let parent: ActionRow | null = null;
+  if (thread && thread.n > 1) {
+    const before = await getAction(ctx, threadPartId(thread.head, thread.n - 1));
+    if (
+      before &&
+      before.agentId === input.agentId &&
+      before.status === 'sent' &&
+      before.providerPostId &&
+      before.threadHead === thread.head &&
+      before.threadN === thread.n - 1 &&
+      before.xUserId === tok.account.xUserId
+    ) {
+      parent = before;
+    } else {
+      reasons.push('thread_previous_not_sent');
+    }
+  }
+  if (thread) {
+    if (thread.of > (ctx.defaults.threadMaxParts ?? THREAD_MAX_PARTS)) reasons.push('thread_too_long');
+    if (postLength(input.text) > (ctx.defaults.threadPartMaxChars ?? THREAD_PART_MAX_CHARS)) reasons.push('thread_part_too_long');
+  }
   const decision = checkOutgoing({
     kind,
     text: input.text,
-    attributions: input.attributions,
+    // Mentions belong to the first part: a later one is checked with no credits, so an `@` in it fails the gate.
+    attributions: thread && thread.n > 1 ? [] : input.attributions,
     recipient,
     ownHandle: tok.account.xHandle,
     publicAddresses: input.publicAddresses,
@@ -267,6 +350,10 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
   if (!decision.allowed) reasons.push(decision.code);
   if (replyAuthorId && (await isOptedOut(ctx, input.agentId, [replyAuthorId]))) {
     reasons.push('consent_opted_out');
+  }
+  // A comment names the author of the post it is about: one who told this agent to stop is not commented on either.
+  if (input.aboutAuthorId && (await isOptedOut(ctx, input.agentId, [input.aboutAuthorId]))) {
+    reasons.push('about_opted_out');
   }
   if (reasons.length === 0 && replyReasons.length === 0) {
     // Every @mention (originals and replies) must not target an opted-out author.
@@ -285,11 +372,14 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     agentId: input.agentId,
     kind,
     text: input.text,
-    replyTo: input.replyTo ?? null,
-    replyAuthorId: replyAuthorId ?? input.replyAuthorId ?? null,
+    // A later part of a thread is stored as what it is on X, a reply to the agent's own earlier part, so the
+    // reconciler can read it back; its kind stays `post`.
+    replyTo: parent ? parent.providerPostId : (input.replyTo ?? null),
+    replyAuthorId: parent ? tok.account.xUserId : (replyAuthorId ?? input.replyAuthorId ?? null),
     xUserId: tok.account.xUserId,
     bodyHash: hash,
     createdAt: ctx.now(),
+    ...(thread ? { threadHead: thread.head, threadN: thread.n } : {}),
   } as const;
 
   if (reasons.length > 0 || tooLong) {
@@ -305,7 +395,11 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
   type Claim =
     | { kind: 'claimed'; row: ActionRow }
     | { kind: 'exists' }
-    | { kind: 'quota'; limit: number; retryAt: Date };
+    | { kind: 'quota'; limit: number; retryAt: Date }
+    | { kind: 'thread_exceeds_quota'; limit: number }
+    | { kind: 'link_quota'; limit: number; retryAt: Date };
+  // The first part of a thread asks for room for all of its parts: a thread that does not fit is refused whole.
+  const need = thread && thread.n === 1 ? thread.of : 1;
   let claim: Claim;
   try {
     claim = await ctx.db.transaction(async (tx): Promise<Claim> => {
@@ -313,14 +407,23 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
         sql`select pg_advisory_xact_lock(hashtext(${'sender_publish:' + input.agentId}))`,
       );
       const quota = await getQuota(ctx, input.agentId, tx);
-      const used = await postsInWindow(
-        tx,
-        input.agentId,
-        new Date(ctx.now().getTime() - POST_WINDOW_MS),
-      );
-      if (used.count >= quota.postsPerDay) {
-        const retryAt = new Date((used.oldest ?? ctx.now()).getTime() + POST_WINDOW_MS);
+      const since = new Date(ctx.now().getTime() - POST_WINDOW_MS);
+      const used = await postsInWindow(tx, input.agentId, since);
+      // A thread longer than the whole day's budget never fits: no wait would help, so it is not a quota hold.
+      if (need > 1 && need > quota.postsPerDay) return { kind: 'thread_exceeds_quota', limit: quota.postsPerDay };
+      if (used.count + need > quota.postsPerDay) {
+        const freeAt = need > 1 ? await roomFreeAt(tx, input.agentId, since, quota.postsPerDay, need) : null;
+        const retryAt = freeAt ?? new Date((used.oldest ?? ctx.now()).getTime() + POST_WINDOW_MS);
         return { kind: 'quota', limit: quota.postsPerDay, retryAt };
+      }
+      // Posts with a link have a count of their own, next to the quota: a link makes a post cost many times a plain one.
+      const linkLimit = linkLimitFor(ctx, quota, input.platform === true);
+      if (linkLimit > 0 && carriesLink(input.text) && !input.actionId.startsWith(LINK_QUOTA_EXEMPT_PREFIX)) {
+        const linked = await linkPostsInWindow(tx, input.agentId, since);
+        if (linked.count >= linkLimit) {
+          const retryAt = new Date((linked.oldest?.getTime() ?? ctx.now().getTime() - POST_WINDOW_MS + LINK_RETRY_FALLBACK_MS) + POST_WINDOW_MS);
+          return { kind: 'link_quota', limit: linkLimit, retryAt };
+        }
       }
       const inserted = await tx
         .insert(actions)
@@ -352,6 +455,26 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
       },
     };
   }
+  if (claim.kind === 'link_quota') {
+    // Nothing is recorded: the same decision is not worth keeping, and the agent posts again without the link.
+    return {
+      http: 429,
+      body: {
+        error: 'link_quota',
+        limit: claim.limit,
+        window: '24h',
+        retryAt: claim.retryAt.toISOString(),
+      },
+    };
+  }
+  if (claim.kind === 'thread_exceeds_quota') {
+    await ctx.db
+      .insert(actions)
+      .values({ ...base, status: 'rejected', error: `policy:thread_exceeds_quota: the thread has more parts than the ${claim.limit} posts this agent may send in a day`, attempts: 0 })
+      .onConflictDoNothing();
+    const row = await getAction(ctx, input.actionId);
+    return row!.bodyHash === hash ? ok(ctx, row!) : existing(ctx, row!, input, hash);
+  }
   if (claim.kind === 'exists') {
     const row = await getAction(ctx, input.actionId);
     return existing(ctx, row!, input, hash);
@@ -374,7 +497,7 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     if (!alt.ok) log.warn('media alt text not set', { actionId: input.actionId, code: alt.error.code });
     mediaIds = [mediaId];
   }
-  const post = { text: input.text, replyTo: input.replyTo, ...(mediaIds ? { mediaIds } : {}) };
+  const post = { text: input.text, replyTo: parent ? parent.providerPostId : input.replyTo, ...(mediaIds ? { mediaIds } : {}) };
   let res = await ctx.x.createPost(tok.token, post);
   if (!res.ok && res.error.status === 401) {
     // 401 is a definite non-creation; refresh and make exactly one more attempt, recorded first.
