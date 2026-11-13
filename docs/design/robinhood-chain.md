@@ -300,3 +300,110 @@ The honest argument for the other order, the owner's leaning: Clanker brings no 
 coin launched through it pays Clanker a third of its tax for good. If the owner would rather have every Robinhood
 Chain coin on Bootr's own terms from the first day, the price is opening about four to six weeks later. Section 10
 gives both orders.
+
+## 5. Every Base-only assumption in the code
+
+Read at `d8927cb`. **Kind**: C = a value that needs an entry per chain; L = logic that must change; W = words only.
+Paths are from the repository root.
+
+### 5.1 Contracts (`packages/contracts`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `src/*.sol` | Nothing about a chain: every outside address is a constructor immutable; no `block.number`; time is `block.timestamp` everywhere (dormancy, policy windows, price age) | none | Redeploy with the chain's addresses. Same source, so the same review holds for the logic |
+| `src/BootrClankerLauncherV5.sol` (`usdc`, `fuelUsdc`, line 501) | The launch pulls `fuelUsdc` of "USDC" from the creator into the kernel as thinking fuel | L | On RH the immutable would be USDG, which pays for no thought (section 6.5). The form must send `fuelUsdc = 0` there, and the docs must not call it fuel |
+| `src/BootrSwapHelper.sol` (`MAX_PRICE_AGE = 1 hours`, the `1e20` divisor) | A Chainlink ETH/USD feed that updates within the hour; a 6-decimal dollar; a Uniswap v3 WETH/dollar pool at an immutable fee tier | C, L | USDG has 6 decimals, the pools exist. The feed's heartbeat is 24 h (U, 2026-11-10 note): a stale price makes the helper revert on calm days, so the age limit must become a constructor argument, or the helper there reads a second source |
+| `src/BootrLauncher.sol`, `src/BuybackBurner.sol` | RWAGMI v3 and the Base B20 precompile `0xB20f…0000` | L | Not deployed on RH: neither exists there (section 3.3) |
+| `src/BootrClankerLauncher.sol` (v4) | Clanker v4 with the MEV modules of Base | none | Not deployed on RH (paused on Base too) |
+| `script/Deploy.s.sol`, `DeploySwapHelper.s.sol` (`chainConfig()`), `DeployClankerLauncherV5.s.sol` (`require(block.chainid == 8453)`, constants `FACTORY`, `HOOK`, `FEE_ESCROW`, `WETH`, `USDC`, `UNISWAP_V3_FACTORY`, `WETH_USDC_500`), `DeployClankerLauncher.s.sol`, `DeployCallPolicy.s.sol` | Base and Base Sepolia only; Base addresses as constants | L | A deploy script for 4663 with the addresses of section 3: guardian, gate, call policy, swap helper, v5 launcher. No RWAGMI launcher, no burner |
+| `foundry.toml` (`[rpc_endpoints]`, `[etherscan]`) | `base`, `base_sepolia`, Basescan keys | C | A `robinhood` endpoint; verification through Sourcify and Blockscout, no Etherscan key |
+| `test/fork/*.t.sol`, `test/security/*.t.sol` (`vm.createSelectFork(vm.envOr("BASE_RPC_URL", "https://mainnet.base.org"))`) | A Base fork; Base addresses in the test constants | L | Fork tests on a 4663 fork (`ROBINHOOD_RPC_URL`): the v5 launcher's launch, dev buy over the USDG route, claim, the session-key and guardian suites. A fork of an Arbitrum chain reports its own block number where the live chain reports Ethereum's; Bootr's contracts do not read it, and whether Clanker's or Uniswap's paths do on a fork is U until the tests run |
+| `evm_version = "cancun"`, solc 0.8.26 | Cancun opcodes | none | Clanker's own contracts there are 0.8.26 too (V, Sourcify); Bootr's bytecode was not tried on 4663 (U) |
+
+### 5.2 Shared (`packages/shared`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `src/addresses.ts` (`SupportedChainId = 8453 \| 84532`, `getAddresses` throws otherwise) | Two chains | L | A 4663 entry and a wider type |
+| same (`ChainAddresses`: `rwagmi*: Address \| null`, `clanker` required, `usdc`, `uniswap.swapRouter02`) | Every chain has Clanker v4 and "Circle USDC" | L | `clanker` nullable; a neutral name for the dollar (`dollar: {address, symbol, decimals}`) next to `usdc`, since half the code means "the fuel asset" and half means "the chain's dollar"; the v4 Quoter and StateView in the book (they sit in `apps/web/lib/swap/core.ts` today); the ETH/USD feed in the book (it sits in two apps today); chain facts: name, explorer, block time, native symbol |
+| `src/config.ts` (`chainIdSchema` refuses anything but 8453 / 84532) | Two chains | C | Admit 4663 |
+| `src/fuel.ts`, `src/workers.ts` | USDC, 6 decimals, as the unit of fuel and caps | none | Holds: fuel stays Base USDC (section 6.5) |
+
+### 5.3 Indexer (`apps/indexer`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `ponder.config.ts` (`chains: { [chain]: … }`, types `base` / `baseSepolia`; "Single-chain config selected by CHAIN_ID") | One chain per process | L | A second process with `CHAIN_ID=4663`, or two chains in one config (section 6.1 says why not) |
+| `src/lib/env.ts` (`chainId: 8453 \| 84532`, `chainName`, an unknown `CHAIN_ID` falls back to 84532 with a warning; `CHAINLINK_ETH_USD`, `PUBLIC_RPC`, `RWAGMI_V3`, `CLANKER_V4`, `CLANKER_V5`, `BOOTR_DEPLOY_BLOCK` keyed by chain; `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`) | Base's two ids and their tables | C, L | 4663 rows (feed `0x78F3…d3A9`, the v5 stack of section 3.1, RWAGMI and v4 null), an RPC variable that is not named after Base, and no silent fallback to Sepolia |
+| `src/lib/blocks.ts` (`BLOCK_SEC = 0.2`, `DENIM_FIRST_BLOCK`, `DEFAULT_SNAPSHOT_INTERVAL = 300`) | Base's block time and its Denim fork | L | Block time per chain: 0.1 s on RH, so one snapshot a minute is every 600 blocks |
+| `rpc-budget.ts` (`CDP_BU_PER_SECOND`, the billing-unit table) | Coinbase CDP as the RPC, priced in billing units | L | A budget in the unit of the provider chosen for RH, or none; the file sits outside `src/`, so it needs no schema bump |
+| `ponder.config.ts` (`PoolManager` source with no filter) | Reading every Uniswap v4 swap on the chain is affordable | L | Not on RH: about 7 v4 swaps a second there (section 2). The hook-based read must come first (section 6.9) |
+| `ponder.schema.ts` (`token.id` = address, `agent.id` = kernel address, `agent_identity.id` = the ERC-8004 number, `platform_stats`, `daily_stat`, `price_feed` as single rows) | One chain per schema: no key carries a chain id (only `token.chainId` is a column) | L | One schema per chain keeps this true. In one shared schema the ERC-8004 number, the platform rows and possibly a kernel address would collide |
+| `src/snapshot.ts`, `src/lib/balances.ts`, `src/lib/status.ts` (`MIN_FUNDED_USDC`) | The agent's fuel is USDC **on the indexed chain**: the kernel's and the spender's balance are read in the same multicall, and under 1 USDC the agent shows as sleeping | L | On RH the spender's fuel is on Base. The status must take fuel from a Base read (a second client in the snapshot, or the supervisor's figure) or every RH agent shows as sleeping |
+| `src/launcher.ts` (`frameTick = quote.symbol === 'USDC' ? -400_600 : -201_000`; the fuel transfer replay keyed on `env.addresses.usdc`), `src/lib/quote.ts` (`QuoteSymbol = 'WETH' \| 'ETH' \| 'USDC' \| '?'`), `src/lib/price.ts` | ETH and USDC are the only paired assets; Clanker's Base start ticks | C, L | USDG as a 6-decimal dollar quote; RH's ETH start tick is −200,400; better, read the tick from the factory at the launch block |
+| `src/lib/store.ts` (Chainlink read at the event's block), `src/launcher.ts` (`readContract` at launch blocks) | The RPC serves state at past blocks during a backfill | L | The public RH RPC does not (section 2). The RH indexer needs an archive endpoint for any backfill older than what the node keeps |
+| `src/api/*` | One chain per API host; rows carry no chain except `token.chainId` | L | Each API answers for its chain and says which (`chainId` on every list); the web merges (section 6.2) |
+
+### 5.4 Supervisor (`apps/supervisor`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `src/config.ts` (`CHAIN_ID` 8453 / 84532; `BASE_RPC_URL`; one `BUNDLER_URL`, `PAYMASTER_URL`; one `LAUNCHER_START_BLOCK`; one set of launcher, guardian, locker addresses) | One chain per process | L | Per-chain blocks of settings (RPC, bundler, launchers, guardian, start block) |
+| `src/chain.ts` (`ChainContext.chainId: 8453 \| 84532`, `chainFor` returns `base` or `baseSepolia`, `CHAINLINK_ETH_USD` map, `rwagmi` and `clanker` required) | One `ChainContext`, on Base | L | One context per chain; `rwagmi` and `clanker` nullable |
+| `src/context.ts` (`SupervisorContext.chain`, `.indexer`), about 90 uses in `onboarding.ts`, `treasury.ts`, `services.ts`, `blockrun.ts`, `broker/index.ts`, `bounties.ts`, `api.ts`, `tick.ts`, others | "The chain" is one thing: where the coin lives and where the agent pays | L | Two notions: the agent's **home chain** (coin, kernel, fees, gas) and the **pay chain** (Base, where the spender holds USDC). A context derived per agent keeps most call sites as they are (section 6.1) |
+| `src/db/schema.ts` (`sv_agents.agent_id` primary key = the ERC-8004 number as text; some twenty tables keyed by it; `sv_cursors` with one launch cursor) | An ERC-8004 number names one agent | L | The number is per chain: RH's registry is at 25,717 and counts on its own. RH agents get the id `4663:<number>`; Base ids stay bare (section 6.2). A launch cursor per chain |
+| `src/spender.ts` (`keccak256(master, agentId)`) | The id is unique | L | Holds once ids are namespaced. Base ids must not change: the spender's address is derived from the id string |
+| `src/blockrun.ts`, `src/inference.ts`, `src/services.ts`, `src/fuel.ts`, `src/images.ts` (`eip155:${ctx.chain.chainId}`, `ctx.chain.addresses.usdc`, the spender's balance on `ctx.chain.publicClient`) | Payment happens on the agent's own chain | L | These read the pay chain (Base) for every agent |
+| `src/kernel.ts` (`bundlerUrl`), `src/entrypoint.ts` (`SELF_BUNDLE_GAS`), `ENABLE_MODE_SELF_BUNDLE` | A CDP bundler for ordinary ops; the admin key self-bundles enable-mode ops | C, L | A bundler account on RH (ZeroDev, Pimlico or Alchemy), or self-bundling of every op there by a key with no other power (section 6.6) |
+| `src/gas.ts` (`GAS_MIN_WEI` 0.0002 ETH, `GAS_TARGET_WEI` 0.001 ETH) | Base's gas price | C | Per chain. At RH's 0.02 gwei floor the same thresholds are generous; keep them until measured |
+| `src/treasury.ts` (`BLOCKS_PER_SECOND = 5n`, `LANDED_SCAN_BLOCKS`), `LAUNCH_LOG_CHUNK_BLOCKS` default 2000 | Base's 200 ms blocks | C | 10 blocks a second on RH; a larger log chunk |
+| `src/session-rules.ts`, `src/session-key.ts` (targets from the address book: escrow, WETH, swap helper, USDC, call policy) | The Base contracts | C | The RH addresses; the same layout 5 for a v5 coin. The funding rule (`USDC.transfer(spender, …)`) has no use on RH until the fuel bridge exists |
+| `src/coin-fees.ts` (`USDC_ADDRESSES` from 8453 and 84532), `src/coin-reader.ts`, `src/launch-source.ts` | Fees are ETH, WETH or USDC | C | USDG as a fee asset |
+| `src/builder-codes.ts`, `BUILDER_CODES_URL` (`api.base.dev`) | Base builder codes on every session op | L | Off for RH agents: a Base programme |
+| `src/activity.ts:55`, `src/bounties.ts:195` (`basescan.org/tx/…`) | Basescan links | C | The explorer per chain |
+| `X402_DISCOVERY_URL` (CDP), `src/services.ts` (`network === eip155:<chainId>`, asset = USDC) | Sellers on the agent's chain | L | Sellers on the pay chain (Base), for every agent |
+| `apps/supervisor/src/indexer-client.ts`, `platform-feed.ts`, `platform-numbers.ts` | One indexer | L | An indexer per chain; the platform agent's digest reads both |
+
+### 5.5 Sender and inference relay
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `apps/sender/src/db/schema.ts` (`sender_accounts.agent_id` primary key, quotas, inbox by `agent_id`) | The id is unique | none | Nothing once the supervisor sends namespaced ids: the sender never touches a chain (no chain id anywhere in `apps/sender/src`) |
+| `apps/inference/src/config.ts` (`X402_NETWORK` is `eip155:84532` or `eip155:8453`; CDP facilitator), `src/client/x402-payer.ts` | Payment on Base through CDP | none | Stays as it is: the relay (pictures) keeps being paid on Base |
+
+### 5.6 Web (`apps/web`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `lib/env.ts` (`NEXT_PUBLIC_CHAIN_ID` → `chainId: 8453 \| 84532`, one `indexerUrl`, one `rpcUrl`), `AppChainId` | One chain per build | L | A list of live chains, an indexer URL and an RPC per chain |
+| `lib/chains.ts` (`appChain`, `isMainnet`, `chainLabel`, `explorerBase`, `dexscreenerUrl` → `/base/`, `swapLink` → `?chain=base`, `clankerWorldUrl`) | Base names and links | C | Per chain: label, Blockscout links, DexScreener slug, clanker.world path (U for RH) |
+| `lib/wagmi.ts` (`chains: [primary, secondary]` of Base and Base Sepolia; Base Account connector first) | Wallets on Base | L | `robinhood` in the chain list with its transport; the Base Account entry hidden or marked where it cannot sign (U) |
+| 112 uses of `env.chainId`, `appChain`, `isMainnet`, `chainAddresses()` in 29 files, most in `components/launch/LaunchForm.tsx` (19), `components/console/ConsoleView.tsx` (14), `PlatformFees.tsx`, `use-clanker-fees.ts`, `ConnectButton.tsx`, `CreatorFees.tsx`, `use-gas.ts`, `V5MetadataForm.tsx`, `FuelForm.tsx`, `GasForm.tsx` | The deployment's one chain | L | The chain of the coin on screen, or the one chosen in the launch form |
+| `lib/swap/core.ts` (`const A = addresses[8453]`, `SWAP_CONTRACTS = { chainId: 8453, quoter, stateView, … }`), `lib/swap/quote.ts`, `use-swap.ts` | The trade panel's contracts are Base's | L | The four addresses per chain (section 3.2), the pool key from the coin's chain |
+| `lib/token-settings.ts` (paired assets: ETH with `fallbackStartTick: -201_000`, USDC at `addresses[8453].usdc`), `lib/v5-launch.ts`, `lib/clanker-v5.ts` | Base's two paired assets and start ticks | C | Per chain: ETH (−200,400) and USDG on RH |
+| `lib/server/quote-market.ts` (`…/api/tax/quote-market?chainId=8453`) | Clanker's Base market data | C | `chainId=4663` (U that the endpoint answers for it) |
+| `lib/contracts.ts` (`clankerFeeLocker` only when `env.chainId === 8453`), `components/launch/LaunchForm.tsx:567` and `app/api/agent/launch/route.ts:241` (fallback `addresses[8453].clankerV5`) | Base | C | The chain's own entries |
+| `lib/server/chain.ts` (`ServerChainId = 8453 \| 84532`, `BASE_RPC_URL`), `lib/server/siwe-verify.ts` (`msg.chainId !== env.chainId`), `app/api/siwe/verify/route.ts:65` (8453 or 84532) | Sign-in messages name Base | L | Accept the live chains; a creator's signature is checked on the chain of the coin it is about |
+| `app/api/agent/launch/route.ts`, `app/api/agent/claim/[id]/route.ts`, `app/api/catalog/route.ts`, `app/api/agent/[kernel]/*` | One chain behind every route; a kernel address or a coin address names an agent | L | A `chainId` in the launch body and in the answers; lookups by address ask the right indexer (section 6.2) |
+| `lib/server/supervisor.ts:446` (a `txUrl` is kept only if it matches `basescan.org/tx/…`) | Basescan | L | The explorer of each live chain |
+| `components/token/FuelForm.tsx`, the launch form's fuel step | Fuel is USDC sent to the kernel on the coin's chain | L | For an RH coin: USDC on Base to the agent's spender (section 6.5) |
+| `components/docs/content.ts` (10 places: "Base mainnet (chain id 8453)", Basescan links, `RPC=https://mainnet.base.org`), `lib/skill/skill-md.ts` (7 places, `import { base } from 'viem/chains'`), `lib/docs/markdown.ts`, `components/docs/pages.ts`, `agent-tools.ts`, `lib/agent-card.ts:97`, `components/shell/ConnectButton.tsx` (Base mark) | "On Base" | W | "On Base and Robinhood Chain", with the per-chain tables |
+
+### 5.7 Packages (`packages/sdk`, `cli`, `mcp`, `agent-core`)
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `packages/agent-core/src/types.ts:168` (`token.chainId` is 8453 or 84532) | Two chains | C | Admit 4663 |
+| `packages/agent-core/src/prompt/system-prompt.ts` (lines 60, 226, 231: "Your treasury lives on Base at …", "keeper of the treasury of … on Base"; line 164 "another agent project on Base") | The agent is told it lives on Base | L | The chain's name from the config. The social prompt is pinned byte for byte by a test (`docs/STATUS.md` section 3 item 2), so Base agents' text must come out unchanged |
+| `packages/agent-core/src/social/post-validation.ts:56` (`PLATFORM_LINK_HOSTS` has `basescan.org`, `clanker.world`, `dexscreener…`), `social/disclosure-policy.ts:96` (`EXPLORER_TX_LINK` matches Basescan) | Links an agent may post | C | Add `robinhoodchain.blockscout.com` |
+| `packages/agent-core/src/models/catalog.ts`, `inference/request.ts` | Prices in micro-USDC | none | Holds |
+| `packages/sdk/src/terms.ts` (`KNOWN_ASSETS`: ETH, Base WETH, Base USDC, "on Base (8453)"), `src/types.ts` (five `chainId: number` fields already), `src/client.ts` | One API base URL, Base's assets | C, L | Assets per chain (RH WETH, USDG); the catalog names the chains; calls that take a coin take its chain |
+| `packages/mcp/src/index.ts:17` (instructions open "Bootr is a launchpad on Base"), `src/tools.ts` (9 places), `packages/cli/src/commands.ts` (7 places) | Base in tool descriptions and output | W, L | The words; a `chain` argument on `bootr_prepare_launch`, `bootr_search_coins`, `bootr_coin_market`, `bootr_prepare_claim` and the swap tool of `agent-tools-2.md` |
+
+### 5.8 Deploy and docs
+
+| File | What it assumes | Kind | What a second chain needs |
+| --- | --- | --- | --- |
+| `docker-compose.coolify.yml` (one `indexer`, `CHAIN_ID: ${CHAIN_ID:-8453}`, `BASE_RPC_URL`, `DATABASE_SCHEMA`; `mem_limit`s summing to 5.5 GB) | One chain; a 7.6 GB server | L | A second indexer service with its own schema variable and memory; new variables per chain (section 10) |
+| `docs/STATUS.md`, `docs/deploy/coolify.md`, `docs/deploy/mainnet.md`, `docs/data-contract.md`, `docs/agent-identity.md`, `docs/gas-model.md`, the design notes | Base throughout; one schema-bump rule; one deploy record | W | A deploy record for 4663, the bump rule said once per indexer, the runbooks' commands per chain |
+| Hermes (the Telegram watchdog, `docs/deploy/coolify.md`) | Watches one indexer and one chain | L | A second `/ready` to watch (U how it is configured: not read) |
