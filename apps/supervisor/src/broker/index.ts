@@ -40,6 +40,7 @@ import { erc20Abi } from 'viem';
 import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
 import { bountyJobs } from '../db/schema.js';
 import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
+import { noteWhatWorks, whatWorksOffered } from '../what-works.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -58,6 +59,8 @@ async function attributionsFor(ctx: SupervisorContext, agentId: string, text: st
 export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig, account: ToolAccountOptions = {}): ToolDefinition[] {
   return toolsFor(config, account).filter((t) => {
     if (t.name === 'search_web') return !!(ctx.config.SEARCH_API_URL && ctx.config.SEARCH_API_KEY);
+    // The note on what works is off at a limit of 0 (what-works.ts): the tool is then not offered at all.
+    if (t.name === 'note_what_works') return whatWorksOffered(ctx);
     return true;
   });
 }
@@ -498,6 +501,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const res = await ctx.memories.recall(agentId, action.input);
       return { kind: 'completed', result: res };
     }
+    case 'note_what_works':
+      return noteWhatWorks(ctx, agent, config, pending);
     case 'finish': {
       const cp = checkpoint(action.input as unknown as Record<string, unknown>, ctx.now());
       return { kind: 'completed', result: { checkpointed: true, nextAt: cp.nextAt } };

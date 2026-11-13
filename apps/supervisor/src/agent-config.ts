@@ -6,7 +6,7 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ServicesPolicy } from '@bootr/agent-core';
+import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, MAX_WATCHLIST_HANDLES, normalizeCreatorIdentity, relayModelId, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ReplyAudience, type ServicesPolicy } from '@bootr/agent-core';
 import { runnerOf, type Runner, type RunnerView } from '@bootr/shared/own-agent';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { and, eq, sql } from 'drizzle-orm';
@@ -75,6 +75,19 @@ export interface AgentConfigView {
   treasuryTurn: { override: boolean; active: boolean };
   /** The model the judge rules with (judge.ts); null = the agent's own `model` (design decision 10). */
   judgeModel: string | null;
+  /**
+   * Whether the agent may comment on a post it read, as a post of its own (docs/design/agent-tools-2.md section 4).
+   * On unless the creator switched it off (`comments: false` in the stored config).
+   */
+  comments: boolean;
+  /**
+   * Who gets a reply: `verified` (verified accounts, the creator's list and other Bootr agents) or `own_threads`, which
+   * also answers anyone who replies directly under one of the agent's own posts. The stored choice; `verified` while
+   * the creator made none.
+   */
+  replyAudience: ReplyAudience;
+  /** The X accounts the creator asked the agent to follow: handles without the `@`, lower-case, at most `MAX_WATCHLIST_HANDLES`. */
+  watchlist: string[];
   /**
    * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
    * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
@@ -150,7 +163,30 @@ export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentI
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel' | 'comments' | 'reply audience' | 'watched accounts';
+
+const WATCH_HANDLE = /^[a-z0-9_]{1,15}$/;
+
+/** The stored `comments` switch: on unless it is exactly false. */
+export function commentsOf(config: Record<string, unknown>): boolean {
+  return config.comments !== false;
+}
+
+/** The stored `replyAudience`, or `verified` (as before the field existed) when it is missing or not one of the two. */
+export function replyAudienceOf(config: Record<string, unknown>): ReplyAudience {
+  return (REPLY_AUDIENCES as readonly unknown[]).includes(config.replyAudience) ? (config.replyAudience as ReplyAudience) : 'verified';
+}
+
+/** The stored `watchlist`: well-formed handles only, lower-case, no repeats, at most `MAX_WATCHLIST_HANDLES`. */
+export function watchlistOf(config: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const raw of Array.isArray(config.watchlist) ? config.watchlist : []) {
+    const handle = typeof raw === 'string' ? raw.toLowerCase() : '';
+    if (WATCH_HANDLE.test(handle) && !out.includes(handle)) out.push(handle);
+    if (out.length >= MAX_WATCHLIST_HANDLES) break;
+  }
+  return out;
+}
 
 /** The stored `services` block, or the defaults when it is missing or malformed. */
 export function servicesOf(config: Record<string, unknown>): ServicesPolicy {
@@ -203,6 +239,9 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     bounties: bountiesOf(config),
     treasuryTurn: { override: config.treasuryTurn === true, active: treasuryTurnOn(config) },
     judgeModel: typeof config.judgeModel === 'string' && config.judgeModel ? config.judgeModel : null,
+    comments: commentsOf(config),
+    replyAudience: replyAudienceOf(config),
+    watchlist: watchlistOf(config),
     sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
@@ -239,6 +278,12 @@ export interface ConfigUpdateBody {
   treasuryTurn?: unknown;
   /** The judge's model: a string validated like `model` (inside `allowedModels` when given), or null for the agent's own. */
   judgeModel?: unknown;
+  /** Comments on posts the agent read, on or off (boolean). */
+  comments?: unknown;
+  /** Who gets a reply: `verified` or `own_threads`. */
+  replyAudience?: unknown;
+  /** The watched accounts, all of them each time: at most `MAX_WATCHLIST_HANDLES` X handles, with or without the `@`. */
+  watchlist?: unknown;
 }
 
 /** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
@@ -458,6 +503,41 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
       if (judgeModel) config.judgeModel = judgeModel;
       else delete config.judgeModel;
       fields.push('judgeModel');
+    }
+  }
+
+  // Comments on posts the agent read: a plain boolean. Off is stored as false; on again as true (absent also means on).
+  if (body.comments !== undefined) {
+    if (typeof body.comments !== 'boolean') return reject(400, 'invalid_comments', 'comments must be true or false');
+    if (body.comments !== commentsOf(before)) {
+      config.comments = body.comments;
+      fields.push('comments');
+    }
+  }
+
+  // Who gets a reply: one of the two audiences.
+  if (body.replyAudience !== undefined) {
+    if (!(REPLY_AUDIENCES as readonly unknown[]).includes(body.replyAudience)) return reject(400, 'invalid_reply_audience', `replyAudience must be one of ${REPLY_AUDIENCES.join(', ')}`);
+    if (body.replyAudience !== replyAudienceOf(before)) {
+      config.replyAudience = body.replyAudience;
+      fields.push('reply audience');
+    }
+  }
+
+  // Watched accounts: the whole list each time. Handles are taken with or without the `@`, stored lower-case without it;
+  // one that is not an X handle refuses the update, so a typo is seen and not silently dropped.
+  if (body.watchlist !== undefined) {
+    if (!Array.isArray(body.watchlist) || body.watchlist.length > MAX_WATCHLIST_HANDLES) return reject(400, 'invalid_watchlist', `watchlist must be a list of at most ${MAX_WATCHLIST_HANDLES} X handles`);
+    const handles: string[] = [];
+    for (const raw of body.watchlist) {
+      const handle = typeof raw === 'string' ? raw.trim().replace(/^@/, '').toLowerCase() : '';
+      if (!WATCH_HANDLE.test(handle)) return reject(400, 'invalid_watchlist', 'each watched account is an X handle: letters, digits and underscores, at most 15 characters');
+      if (!handles.includes(handle)) handles.push(handle);
+    }
+    if (JSON.stringify(handles) !== JSON.stringify(watchlistOf(before))) {
+      if (handles.length) config.watchlist = handles;
+      else delete config.watchlist;
+      fields.push('watched accounts');
     }
   }
 
