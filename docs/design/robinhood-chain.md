@@ -187,3 +187,116 @@ code, Uniswap v4 and v3, WETH, a deep dollar, a price feed, Kernel, the EntryPoi
 not exist: (1) Circle USDC, (2) a seller of thinking and a known x402 facilitator, (3) Coinbase CDP as bundler and
 RPC, (4) Base builder codes, (5) RWAGMI and the B20 precompile, (6) a free archive RPC. None of them stops a launch,
 a trade or a fee claim. (1) and (2) together decide how an agent there pays for its thoughts, which is section 6.5.
+
+## 4. Launch through Clanker v5 there, or through Bootr's own launcher
+
+The owner leans towards an own launcher: like Clanker's, built to be extended for agent features, with a launched
+coin's economics fixed for good and only the agent modules open to extension. This section compares the two honestly
+and ends in a recommendation; the choice is decision 1 in section 11.
+
+### 4.1 What "through Clanker v5" means on Robinhood Chain
+
+`BootrClankerLauncherV5` (`packages/contracts/src/BootrClankerLauncherV5.sol`) deployed again with Robinhood Chain's
+addresses as constructor arguments. Nothing in the contract names a chain: the factory, hook, escrow, WETH, Uniswap v3
+factory, the dollar token, the identity registry, the Kernel factory, the guardian and the gate are all immutables
+set at deploy, and no Bootr contract reads `block.number` (V, a search of `packages/contracts/src`). The Clanker
+contracts it calls are the same source on both chains (section 3.1). The work is a deploy script, the allow-list of
+paired assets (ETH and USDG), the dev-buy route (the WETH/USDG 0.01% or 0.05% Uniswap v3 pool) and fork tests.
+
+What the coin's creator, the agent and Bootr get per $100 of trading at Bootr's default tax of 1.5%
+(`docs/design/clanker-v5-token-settings.md` section 2.3; Clanker's floor of 0.5% of the trade binds at any tax up to
+5%):
+
+| Who | Share | Per $100 traded |
+| --- | --- | --- |
+| Clanker | 0.5% of the trade, a third of the tax | $0.50 |
+| Creator and their reward rows | 65% of the rest | $0.65 |
+| Bootr (platform slot) | 30% of the rest | $0.30 |
+| The agent | 5% of the rest | $0.05 |
+
+Clanker earns more from a Bootr coin than Bootr does, and ten times what the agent does. On Robinhood Chain so far the
+real split was harsher: of all quote-side fees Clanker v5 pools took in ETH there since 2026-11-05, 0.0291 ETH went to
+creators' slots, 0.0091 ETH to Clanker as its share and 0.0989 ETH to Clanker as sniper surcharge (V, the hook's
+`CreatorTaxCredited`, `ProtocolFeeCredited` and `AntiSnipeFeeCredited` logs).
+
+### 4.2 What an own launcher would be
+
+Three contracts that replace Clanker's three, behind the launch gate Bootr already has:
+
+| Contract | Job | Changeable after a coin's launch |
+| --- | --- | --- |
+| Factory | One call: creates the coin (fixed supply, no owner), opens the Uniswap v4 pool on the hook at an opening price, seeds the whole supply as locked one-sided liquidity, writes the coin's terms, then does what today's wrapper does (Kernel, identity, guardian through `BootrLaunchGate`) | Nothing for that coin. The owner can change defaults and the paired-asset list for **later** launches only, each change bumping a config version, the way Clanker's `configVersion` works |
+| Hook | Holds every coin's liquidity for good. On each swap takes the coin's buy or sell tax in the paired asset and credits the coin's fee slots; a falling surcharge in the first seconds against snipers | Nothing: tax, slots' weights, surcharge and paired asset are read from the coin's stored terms, and no function writes them |
+| Fee escrow | One balance per recipient and asset; `claimFor(recipient, asset)` callable by anyone, paying only the recipient | Nothing |
+
+**Where "extensible for agents" lives: not in the pool.** A coin's terms hold no address that can be swapped later. The
+agent's abilities are on the account side, where Bootr already put them: the Kernel treasury, `AgentGuardian`,
+`BootrCallPolicy` and the helper contracts a session key may call (`BootrSwapHelper` today; the Trade helper, Bounties
+and the fuel bridge of section 6.5 next, each behind a UUPS proxy as decided on 2026-11-08,
+`docs/design/agent-capabilities.md` section 4). A new agent feature is a new module plus a new rule in the agent's
+session key, installed by a key rotation. It never touches the coin, its pool or its fees. So the owner's two
+conditions hold by construction: the economics are frozen in the hook, the agent grows through modules. The only tie
+between the two halves is one fee slot whose recipient is the agent's treasury, fixed at launch.
+
+What it would add over Clanker:
+
+1. **The third of the tax that goes to Clanker stays in Bootr's economy.** At the same 1.5% to the trader, the agent's
+   share could be $0.55 per $100 instead of $0.05, or the tax could drop to 1%, or the platform could take it. A
+   launch-time choice, then frozen.
+2. **The opening price is Bootr's.** Clanker sets one start tick per paired asset per chain (about $3,800 on Robinhood
+   Chain today); Bootr's RWAGMI path opens near $6,000 by choice.
+3. **One launcher on every chain**, including chains Clanker is not on, and no dependence on Clanker keeping launches
+   switched on (`launchCreationEnabled`) or its policy.
+4. **Events written for Bootr's indexer** (amounts and price in the hook's own event), so the indexer never needs the
+   PoolManager's stream (section 6.9).
+5. **Room for agent coins that pay their fees in the fuel asset**: on Robinhood Chain, USDG; Clanker v5 already allows
+   USDG, so this is not exclusive to an own launcher.
+
+What it would cost:
+
+1. **It becomes the riskiest contract Bootr owns.** The hook custodies the liquidity of every coin launched through
+   it. A bug there is a loss for every coin at once, and the design promises nobody can fix a coin's pool afterwards.
+   Today that risk is Clanker's and RWAGMI's.
+2. **Time.** A fork of Clanker's tax suite is the realistic start: its own files (hook, fee math, token, escrow) are
+   MIT-licensed (V, SPDX lines of the verified sources); two Uniswap v4-core library files in the verified set are
+   BUSL-1.1 (V), which needs a check before copying. Estimate: 3 weeks to write and test on both chains, then an
+   outside review before any coin with real money, which Bootr does not control the calendar of. No quote was
+   obtained (U).
+3. **No listing on clanker.world**, no `cccc` address, and whatever trading tools recognise Clanker pools by their
+   hook will not recognise Bootr's (U which do on Robinhood Chain).
+4. **A second kind of coin forever.** Coins already launched through Clanker keep their terms. The indexer, the
+   supervisor's claim path and the trade panel carry one more `LaunchSource` (`apps/supervisor/src/chain.ts`), which
+   they are built for.
+
+### 4.3 Side by side
+
+| | Clanker v5 wrapper | Own launcher |
+| --- | --- | --- |
+| New contract code | A deploy script | Factory, hook, escrow, token: new, custody of all liquidity |
+| Ready to deploy on Robinhood Chain | About a week with fork tests | About 3 weeks plus an outside review |
+| Who can stop new launches | Clanker's owner, or Bootr's (pause) | Bootr's owner |
+| Who takes the protocol share | Clanker: at least 0.5% of every trade | Bootr decides at design time |
+| Opening price | Clanker's, per asset per chain | Bootr's |
+| Coin's economics after launch | Frozen (Clanker's design) | Frozen (Bootr's design) |
+| Agent features | In the account layer, same as below | In the account layer |
+| Audience it brings on Robinhood Chain | Almost none: 93 coins and 267 trades in 8 days (section 9.3) | None by itself |
+| Same on Base | Live since 2026-11-11 | Would be new there too |
+
+### 4.4 Recommendation
+
+**Build both, in this order: open Robinhood Chain on the Clanker v5 wrapper, and start the own launcher at once as its
+own track for both chains.** The reasons:
+
+- The wrapper is reviewed code calling contracts that are byte for byte the reviewed ones. It lets Robinhood Chain
+  open as soon as the plumbing is done.
+- Nine tenths of the work in this note is that plumbing (address book, indexer, supervisor, web, fuel), and it is
+  the same whichever launcher sits on top. Doing it first loses nothing.
+- The own launcher deserves its own design note, its own fork tests on two chains and an outside review. Tying the
+  opening of a chain to that calendar puts pressure on the one contract that must not be rushed.
+- When it is reviewed, it becomes one more launcher on `BootrLaunchGate`, the default on the launch page, on both
+  chains; the Clanker path can stay as a choice or be paused, as the v4 wrapper was.
+
+The honest argument for the other order, the owner's leaning: Clanker brings no audience on Robinhood Chain, and every
+coin launched through it pays Clanker a third of its tax for good. If the owner would rather have every Robinhood
+Chain coin on Bootr's own terms from the first day, the price is opening about four to six weeks later. Section 10
+gives both orders.
