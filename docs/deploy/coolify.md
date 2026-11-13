@@ -184,9 +184,17 @@ When Cloudflare proxies `bootr.fun`, do both, in this order:
    anywhere. Check from a machine outside Cloudflare: `curl -m 5 -sk -o /dev/null -w '%{http_code}\n' --resolve
    bootr.fun:443:<server address> https://bootr.fun/` must time out. `api.bootr.fun` and `indexer.bootr.fun` sit on
    the same ports: proxy them through Cloudflare as well before the rule goes in, or they stop answering.
-2. **Set `TRUSTED_PROXY=cloudflare`** in Coolify and redeploy (the compose file passes it to `web` only). `clientIp`
+2. **Check that Cloudflare's header reaches the web**, before the variable is set:
+   `curl -s https://bootr.fun/api/health/client-address` must say `"cloudflare": true` (it names which headers arrived
+   and which one the limits count by, never an address). If it says `false`, stop: Cloudflare is removing the header
+   (Rules → Settings → Managed Transforms → "Remove visitor IP headers" must be off) or something between Cloudflare
+   and the web drops it. On 2026-11-13 the variable was set while the header did not arrive: every visitor then shared
+   the one count `unknown` (a request from another network was refused right after one machine used the limit up), and
+   the variable was taken back.
+3. **Set `TRUSTED_PROXY=cloudflare`** in Coolify and redeploy (the compose file passes it to `web` only). `clientIp`
    then takes `CF-Connecting-IP`, the address Cloudflare saw, and nothing else; an IPv6 visitor is counted by its
-   /64. A request without that header shares one count with every other such request.
+   /64. A request without that header shares one count with every other such request. Afterwards the same check
+   must say `"countedBy": "cloudflare"`.
 
 The order matters: `CF-Connecting-IP` is a header like any other to a caller who reaches the origin directly, so
 setting the variable while the origin is still open lets that caller choose the address he is counted under. With the

@@ -295,3 +295,17 @@ export function clientIp(headers: Headers): string {
   const last = xff?.split(',').map((s) => s.trim()).filter(Boolean).pop();
   return last || 'unknown';
 }
+
+/**
+ * Which headers a request carries that can name its visitor, and which of them `clientIp` counts by. No address is
+ * returned: this is for checking from outside that Cloudflare's header reaches the web before `TRUSTED_PROXY` is set
+ * (with it set and the header missing, every visitor shares the one key `unknown` and the limits bite for all at once).
+ */
+export function clientIpSource(headers: Headers): { trustedProxy: 'cloudflare' | null; cloudflare: boolean; realIp: boolean; forwardedFor: boolean; countedBy: 'cloudflare' | 'real-ip' | 'forwarded-for' | 'unknown' } {
+  const cloudflare = ipKey(headers.get('cf-connecting-ip')) !== null;
+  const realIp = !!headers.get('x-real-ip')?.trim();
+  const forwardedFor = !!headers.get('x-forwarded-for')?.split(',').some((s) => s.trim());
+  const proxy = trustedProxy();
+  const countedBy = proxy === 'cloudflare' ? (cloudflare ? 'cloudflare' : 'unknown') : realIp ? 'real-ip' : forwardedFor ? 'forwarded-for' : 'unknown';
+  return { trustedProxy: proxy, cloudflare, realIp, forwardedFor, countedBy };
+}
