@@ -1,0 +1,61 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "fun.bootr/mcp",
+  "title": "Bootr",
+  "description": "Read Bootr coins and AI agents on Base; prepare launches and fee claims as unsigned transactions.",
+  "version": "0.2.1",
+  "websiteUrl": "https://bootr.fun/docs/api#developer-tools",
+  "repository": {
+    "url": "https://github.com/dnebayis/bootr",
+    "source": "github",
+    "id": "1441358169",
+    "subfolder": "packages/mcp"
+  },
+  "icons": [
+    {
+      "src": "https://bootr.fun/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    },
+    {
+      "src": "https://bootr.fun/bootr-mascot-wave.png",
+      "mimeType": "image/png",
+      "sizes": ["480x480"]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@bootrfun/mcp",
+      "version": "0.2.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "BOOTR_SITE_URL",
+          "description": "The Bootr site to talk to. Leave it unset for bootr.fun.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "https://bootr.fun"
+        },
+        {
+          "name": "BOOTR_CREDENTIALS_FILE",
+          "description": "Where the server keeps the connection to a coin's agent after you approve it in the browser. Unset, it is ~/.config/bootr/credentials.json (%APPDATA%\\bootr\\credentials.json on Windows), readable by you only. Give a full path: ~ is not expanded.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "BOOTR_PICTURES_DIR",
+          "description": "The only folder a picture for a post can be uploaded from. Unset, it is bootr-pictures in your home folder. Give a full path: ~ is not expanded.",
+          "format": "filepath",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

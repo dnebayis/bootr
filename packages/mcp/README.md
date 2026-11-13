@@ -29,6 +29,8 @@ Add `-s user` to have it in every project. Check it with `claude mcp list`, or `
 }
 ```
 
+In Claude Desktop the file opens from Settings, Developer, Edit Config (`claude_desktop_config.json`); restart the app after saving. In Cursor it is `~/.cursor/mcp.json`, or `.cursor/mcp.json` inside one project.
+
 **OpenAI Codex CLI**
 
 ```sh
