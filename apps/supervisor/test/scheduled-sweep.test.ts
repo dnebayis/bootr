@@ -7,7 +7,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
-import { actions, approvals, notifications, runtimes, scheduledPosts } from '../src/db/schema.js';
+import { actions, approvals, notifications, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { postHooks } from '../src/post-send.js';
 import { slotsUsed } from '../src/rhythm.js';

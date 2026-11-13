@@ -234,7 +234,7 @@ describe('a scheduled post in approval mode', () => {
   });
 
   it('approved and then refused for good at its time: the item shows it was not sent and the agent is told once', async () => {
-    const { w, fake, id, decide, item, notSent } = await setup();
+    const { w, fake, decide, item, notSent } = await setup();
     try {
       await decide('approve');
       fake.next = { error: 'sender_rejected:policy:x_post_requires_at_most_one_cashtag' };

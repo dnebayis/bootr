@@ -11,6 +11,12 @@ describe('tool catalog', () => {
   it('defines every tool with a capability, effect and schema', () => {
     expect(TOOL_LIST.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
     expect(TOOL_LIST).toHaveLength(28);
+    // The schedule tools sit directly after finish, in this order (docs/design/agent-tools-2.md section 17.3): the MCP server lists them the same way.
+    const names = TOOL_LIST.map((t) => t.name);
+    expect(names.slice(names.indexOf('finish') + 1, names.indexOf('finish') + 4)).toEqual(['schedule_post', 'scheduled_list', 'scheduled_cancel']);
+    expect(TOOLS.schedule_post).toMatchObject({ capability: 'xPublish', effect: 'write', idempotent: true });
+    expect(TOOLS.scheduled_list).toMatchObject({ capability: 'xPublish', effect: 'read', idempotent: true });
+    expect(TOOLS.scheduled_cancel).toMatchObject({ capability: 'xPublish', effect: 'write', idempotent: true });
     expect(TOOLS.x402_fetch).toMatchObject({ capability: 'services', effect: 'money', idempotent: false });
     expect(TOOLS.bounty_post).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: false });
     expect(TOOLS.bounty_cancel).toMatchObject({ capability: 'bounties', effect: 'write', idempotent: true });
