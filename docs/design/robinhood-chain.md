@@ -407,3 +407,226 @@ Paths are from the repository root.
 | `docker-compose.coolify.yml` (one `indexer`, `CHAIN_ID: ${CHAIN_ID:-8453}`, `BASE_RPC_URL`, `DATABASE_SCHEMA`; `mem_limit`s summing to 5.5 GB) | One chain; a 7.6 GB server | L | A second indexer service with its own schema variable and memory; new variables per chain (section 10) |
 | `docs/STATUS.md`, `docs/deploy/coolify.md`, `docs/deploy/mainnet.md`, `docs/data-contract.md`, `docs/agent-identity.md`, `docs/gas-model.md`, the design notes | Base throughout; one schema-bump rule; one deploy record | W | A deploy record for 4663, the bump rule said once per indexer, the runbooks' commands per chain |
 | Hermes (the Telegram watchdog, `docs/deploy/coolify.md`) | Watches one indexer and one chain | L | A second `/ready` to watch (U how it is configured: not read) |
+
+## 6. The design for two chains live at once
+
+### 6.1 One deployment for both, with one indexer per chain
+
+| Service | One for both chains | One per chain | Choice |
+| --- | --- | --- | --- |
+| Web | One site, one build, a chain on every coin. `lib/chains.ts` helpers already take an optional chain id | Two sites split the audience, the profile pages and the search | **One** |
+| Sender | It only talks to X and knows no chain (section 5.5) | Nothing gained | **One** |
+| Inference relay | Paid on Base for every agent (section 6.5) | Nothing gained | **One** |
+| Supervisor | One process, one database, one tick, one admin API, one connection to the sender. About 90 call sites read `ctx.chain`; a context derived per agent (`chain` = the agent's home chain, plus a new `pay` = Base) leaves most of them untouched. The launch poll runs once per chain | A second process needs a second database (ids collide in `sv_agents`, section 5.4) or the same id change anyway, a second set of leases, a second admin API, a second 1 GB of memory, and the sender would see two callers | **One**, chain-aware |
+| Postgres | One server, the supervisor's and sender's tables as today, one Ponder schema per indexer | — | **One** |
+| Indexer | Ponder can take two chains in one config (`ordering: 'multichain'` is already set). But the build id covers both, so any change re-reads both chains; a crash loop on one chain takes the other chain's API down; the keys of `ponder.schema.ts` carry no chain (section 5.3); and one RPC budget would have to model two providers | A second process from the same image with `CHAIN_ID=4663` and its own schema. The handlers and the schema stay as they are | **One per chain** |
+
+**The supervisor's tick.** Each agent row gains `chain_id` (a migration; every existing row is 8453). At the top of an
+agent's turn the tick builds that agent's context from the chain's entry. Leases are per agent id and do not change.
+One rule is new: a chain whose RPC fails repeatedly is held for a few minutes, the way a provider hold works today
+(`provider-hold.ts`), and the tick skips that chain's launch poll and its agents' chain steps, so a Robinhood Chain
+outage cannot use up the tick that Base agents share.
+
+**The indexer's schema-bump rule, said once more for two.** Both indexers run the same image. A change under
+`apps/indexer/src` (outside `src/api`), `ponder.schema.ts` or the config's contracts changes both build ids, so a
+release sets **two** variables first: `DATABASE_SCHEMA` (Base, `bootr_vN`) and a new `DATABASE_SCHEMA_RH`
+(`bootr_rh_vN`), with one backup before. The check command of `docs/STATUS.md` section 2 stays the same; a line
+printed means both.
+
+**Memory.** The server has 7.6 GB usable and the containers' limits sum to 5.5 GB (`docker-compose.coolify.yml`). A
+second indexer at 1 GB brings it to 6.5 GB, leaving about 1 GB for Coolify, Hermes and the system. That is too thin
+for a machine that also runs a 40-minute backfill now and then. **Move to the next server size before the second
+indexer goes live** (price not looked up, U).
+
+**RPC cost.** Robinhood Chain makes about 10 blocks a second. Ponder follows a chain block by block; on Base at 5
+blocks a second that alone costs about 750 CDP billing units a second (`apps/indexer/rpc-budget.ts`). The same job on
+RH is twice the requests, on a provider Bootr has no account with yet. The public RPC is rate-limited without a
+published figure and is not an archive, so the RH indexer needs a paid endpoint with archive reads; which one and at
+what price is decision 6. The supervisor and the web need far less (reads per agent turn and per page) and could
+start on the public RPC with a paid fallback.
+
+### 6.2 How a coin, an agent and a treasury are named across chains
+
+| Thing | Name | Notes |
+| --- | --- | --- |
+| A coin | chain id + token address | A Clanker v5 coin's address comes from that chain's token deployer, so the same address on both chains does not happen in practice; the code must still never rely on that |
+| A treasury | chain id + kernel address | The Kernel factory is at the same address on both chains, so one creator could get the same kernel address twice; again, never rely on the address alone |
+| An agent, on chain | chain id + ERC-8004 number | The two registries count separately (Base past 1,150,000, RH at 25,717) |
+| An agent, inside Bootr (`sv_agents.agent_id`, the sender's `agent_id`, the spender derivation) | Base: the bare number, as today. RH: `4663:<number>` | Base ids must stay exactly as they are: the spender's address is `keccak256(master, agentId)` (`apps/supervisor/src/spender.ts`), so renaming an id would move its wallet. The prefixed form gives every RH agent its own spender for free |
+| URLs | Base: `/token/<address>` and everything under it, unchanged. RH: `/robinhood/token/<address>`, `/robinhood/token/<address>/console` | An address opened on the wrong path redirects to the right one if the other indexer knows it. No existing link breaks |
+| API and catalog | Every coin, agent and trade row carries `chainId` (the indexer's `token.chainId` column exists). `GET /api/catalog` lists the live chains with their contracts. Routes that take a kernel or a coin (`/api/agent/<kernel>/…`, `/api/agent/claim/<id>`) accept `?chain=`; without it they look on Base first, so every published client keeps working | |
+| MCP tools, SDK, CLI | A `chain` argument (`base`, `robinhood`), default `base`; search answers across both and names the chain on each row. Packages go up one minor version | The server's opening sentence stops saying "on Base" |
+| The tape (a coin's activity) and the platform feed | A coin's tape is its chain's. The home page, the leaderboards and the platform agent's digest merge the two indexers' answers by time, each row marked with its chain | Two requests instead of one in `lib/indexer.ts` and `platform-feed.ts` |
+| The agent's identity file | The ERC-8004 registration JSON served by the web names the registry with its chain | The file's fields were not re-read for this note (U) |
+
+### 6.3 The launch form
+
+The first choice on the page becomes the chain: **Base** or **Robinhood Chain**. Then what exists there:
+
+| | Base | Robinhood Chain |
+| --- | --- | --- |
+| Launch paths | Bootr (RWAGMI v3, about $6k opening) and Clanker v5 | Clanker v5 only at the opening; the own launcher when it is reviewed (section 4) |
+| Paired assets for an agent coin | ETH, USDC | ETH, USDG. Stock tokens are not offered (section 9.1) |
+| Opening value | Clanker's: about $4k | Clanker's: about $3.8k for ETH, about 4,000 USDG |
+| Tax, shares, sniper tax, editable metadata | As today (`clanker-v5-token-settings.md`) | The same: Clanker's bounds are identical there |
+| Launch fee | `launchFeeWei` of the Base launcher | Its own `launchFeeWei`, set by the owner on the RH launcher |
+| Creator's first buy | One hop in ETH; two hops for USDC over the WETH/USDC 0.05% pool | One hop in ETH; two hops for USDG over the WETH/USDG 0.01% pool `0x52e6…71Ca` (the launcher's `devBuyRoute`, fee tier at most 0.3%) |
+| Gas for the launch | As today (not re-measured) | About $0.25 (I, section 2) |
+| The agent's gas tank | ETH to `EntryPoint.depositTo(kernel)` on Base | The same call on RH, in RH ETH. The form links a bridge for a creator who has none there |
+| Fuel | USDC on Base into the treasury, in the launch transaction | **A separate step on Base**: USDC to the agent's fuel address (section 6.5). The launch transaction sends `fuelUsdc = 0`. "My own agent" skips it |
+| Wallets offered | Base Account, Coinbase Wallet, injected, WalletConnect | Injected and WalletConnect for certain; the other two only if they can sign on 4663 (U) |
+| The `cccc` address | Mined against Base's token deployer | Mined against RH's (`0xE76c…3287`) |
+| Sign-in message | Names chain 8453 | Names chain 4663 |
+
+A creator's own agent (`byo-agent.md`) needs nothing else per chain: the client's approval is a wallet signature, the
+turns run through the supervisor, and thinking costs no fuel.
+
+### 6.4 The trade panel and the swap-preparing tool
+
+`apps/web/lib/swap/core.ts` builds a Universal Router call for the coin's own pool. The pool key has the same shape on
+both chains (native ETH as currency 0, fee 0, tick spacing 200, Clanker's hook). What changes is four addresses
+(Quoter, StateView, Universal Router, Permit2 the same) and the dollar: USDG in through Permit2 where Base has USDC,
+and ETH → USDG → coin as the two-hop route. Real traders on RH's Clanker pools went through the Universal Router at
+`0x8876…0904` (section 3.2); the panel uses that one unless a fork run shows the newer `0x204F…0498` behaving the
+same. `POST /api/agent/swap` and `bootr_prepare_swap` (`agent-tools-2.md` section 8) take the coin's chain and return
+it in the prepared transaction, so a wallet is never asked to sign for the wrong chain.
+
+### 6.5 How an agent on Robinhood Chain pays for its thinking
+
+The fact that makes this tractable: **the agent's spender is a plain key-derived address** (`spender.ts`), and such
+an address is the same on every chain. An RH agent's spender can hold USDC on Base and pay BlockRun there exactly as
+a Base agent's does. Nothing about buying thoughts, pictures or paid services changes; only the way the money gets
+to that address does.
+
+A second fact keeps expectations level: on Base today an ETH-paired Clanker v5 coin's fees are not fuel either. They
+arrive as ETH, which is gas; turning ETH into USDC waits for `BootrCallPolicy` v2
+(`clanker-v5-token-settings.md` section 3). Fuel there is the creator's USDC. So for an ETH-paired coin, Robinhood
+Chain opens no gap that Base does not have.
+
+| Option | How it works | Security | Cost | Verdict |
+| --- | --- | --- | --- | --- |
+| **A. Fuel held on Base at the spender, sent by the creator** | The coin page's "Add fuel" asks the wallet to switch to Base and send USDC to the agent's fuel address. The supervisor reads that balance on Base and pays as today | No new contract. But the on-chain daily cap that guards a Base agent (the treasury may send the spender at most `SESSION_USDC_TRANSFER_CAP` a day) is absent: everything sent sits under a key derived from the server's master secret. The form caps a top-up (20 USDC, today's `SPENDER_TARGET_USDC`) and says why | One Base transaction, under a cent. A creator who lives on RH must first bring USDC to Base (Relay: about 0.5%) | **Yes, at the opening** |
+| B. A fuel tank contract on Base | A small contract holds deposits per agent and releases at most a daily amount to the spender; the creator can take the rest back | Restores the cap. A new contract to review; someone must tell it which spender belongs to which agent, and that someone is Bootr | 2 to 3 days and a review | Only if option C slips and floats grow |
+| **C. A fuel bridge from the Robinhood Chain treasury** | A helper on RH that the session key may call: `bridgeFuel(spender, amount)`. It takes USDG from the treasury and deposits it into Across's SpokePool with the recipient (the agent's spender), the destination (Base, USDC) and a floor on the amount received fixed by the helper. The call policy pins the spender and caps the amount per day, as it does for `USDC.transfer` on Base. If no relayer fills, Across returns the deposit to the treasury | The cap is on chain again. New trust: Across's relayers and contracts; a new helper to review; the helper must refuse any recipient but the one the policy pins | Across quoted 0.13% on 5 USDG today, minimum deposit about 0.50 USDG; a cent of gas | **Yes, the stage after opening.** Works at once for USDG-paired coins, whose fees arrive in USDG; for ETH-paired coins it needs the ETH → dollar step that waits for call policy v2 on both chains |
+| D. Bootr's relay pays, the coin repays | Bootr buys the thoughts from its own float and the coin's treasury pays Bootr in USDG on RH | Bootr gives credit or holds prepaid balances, and is paid in a token it must convert. It makes Bootr the counterparty of every thought, which the move to direct BlockRun payments on 2026-11-08 ended | A float, conversions, bookkeeping | **No** |
+| E. A seller on Robinhood Chain | None exists. Bootr's own relay could sell there through a facilitator Bootr runs (USDG has EIP-3009) | A new hot key that submits transfers; Bootr again ends up holding USDG to convert | About a week, plus running it | **Not now.** Look again if BlockRun or a known facilitator opens on 4663 |
+| F. A second treasury on Base for each RH agent | A Kernel on Base under the same guardian rules | Two treasuries per agent to guard; Base's gate and guardian would register agents that were never launched on Base | Large | **No** |
+
+**Recommendation: A at the opening, C as the next stage.** With A an RH agent thinks from its first minute, on money
+its creator put there, and the page says plainly that its trading fees pay its gas and not yet its thoughts. With C
+the sentence "it earns its own thinking" becomes true on RH for USDG-paired coins, which is a reason to make USDG the
+suggested pair there once C is live (decision 4).
+
+What the supervisor shows the agent: `fuel.spendableUsdc` is the Base balance of its spender; `fuel.reserveUsdc` is
+zero until C exists, then the treasury's USDG that the bridge may move. The sleep rule (`SLEEP_USDC`, under 1 USDC in
+all) reads the same two numbers. The indexer's "sleeping" badge must use the same Base read (section 5.3).
+
+### 6.6 Session key, call policy, guardian on Robinhood Chain
+
+**What is deployed there.** `AgentGuardian`, `BootrLaunchGate`, `BootrCallPolicy`, `BootrClankerLauncherV5`: the same
+source as on Base with RH's addresses as constructor arguments. `BootrSwapHelper` only when something needs it
+(the fuel bridge for ETH-paired coins); `BootrLauncher` and `BuybackBurner` never (no RWAGMI). The Kernel, its
+validators and the EntryPoint are already there at Base's addresses (section 3.3), so a treasury on RH is the same
+account, installed the same way.
+
+**The session key's rules at the opening.** A v5 coin on Base has five rules (layout 5: claim, WETH approve, swap,
+USDC funding, WETH withdraw; `apps/supervisor/src/session-rules.ts`). On RH the swap and funding rules have nothing
+to act on yet, so the opening layout is two rules: `FeeEscrow.claimFor(kernel, *)` and `WETH.withdraw` for gas. It
+is a new layout number with its own pinned fixture; the fuel bridge later adds two (approve the helper, call it).
+Fewer rules is the safer start: a leaked session key on RH can claim fees to the treasury and unwrap WETH, nothing
+else.
+
+**Who owns and upgrades.** None of these contracts is upgradeable; the owner role (pause, the gate's launcher list,
+the paired-asset list, the launch fee) is the platform admin wallet on Base. Use **the same admin address on RH**:
+one key to guard, not two, and the same address reads as the same owner on both explorers. That key is the one the
+key-removal plan wants off the server (`docs/STATUS.md`, parked list, step 3); it should be off before it gains a
+second chain to rule. The upgradeable modules of later rounds (Trade, Bounties, the fuel bridge) follow the
+2026-11-08 decision on each chain: UUPS, the admin wallet upgrades, no timelock.
+
+**The bundler.** Ordinary session ops on Base go to CDP's bundler; enable-mode ops are sent straight to the EntryPoint
+by the admin signer (`ENABLE_MODE_SELF_BUNDLE`, `kernel.ts`). On RH there is no CDP. Two ways: an account with
+ZeroDev, Pimlico or Alchemy and a second `BUNDLER_URL`; or sending every RH op straight to the EntryPoint from a key
+that has no other power and holds a little ETH (gas there is about a cent per op, repaid to it as the op's
+beneficiary). The second removes a provider and reuses code that already runs; it must not be the admin key.
+Recommendation in decision 7: a provider's bundler first, because it is the path already proven on Base, with the
+plain key as the fallback.
+
+**What the security review must cover again.** The logic was reviewed on Base; the review of the RH deployment is
+about what is different:
+
+1. Every constructor argument against section 3, read back from the deployed contracts before the launcher goes on
+   the gate.
+2. Arbitrum's gas: a userOp's `preVerificationGas` must cover the cost of posting data to Ethereum, which is zero
+   today (`ArbGasInfo.getL1BaseFeeEstimate()` = 0) and will not always be; the fixed `SELF_BUNDLE_GAS` budget
+   (`entrypoint.ts`) was sized for Base.
+3. `BootrCallPolicy`'s windows read time during validation; Base's bundler accepts how it does so
+   (`BootrCallPolicy.sol`, the note at line 35). RH's bundler must be shown to accept the same op, on a fork and
+   then live with a Bootr-owned coin.
+4. First come, first served ordering: no priority fee buys a place, so nothing in the supervisor may count on
+   outbidding (it does not today; say so in the review).
+5. USDG can be frozen by its issuer and sits behind a proxy. `AgentGuardian`'s dormant sweep sends the dollar token
+   and WETH in one batch (`AgentGuardian.sol`, lines 259 to 315): does a frozen or paused USDG make the whole sweep
+   revert and strand the WETH and ETH? Read and test before deploy.
+6. Sequencer screening: what the supervisor does when an op is never included because an address in it is blocked
+   (today an op that does not land is closed as failed after 80 minutes, `treasury.ts`; that is the right outcome,
+   confirm it).
+7. The new rule layout and its fixture; the fuel bridge helper when it comes, as a contract of its own.
+
+### 6.7 Fee claims and the treasury role there
+
+A Clanker v5 coin's slots are paid into the escrow in the paired asset; `claimFor(kernel, asset)` sends the agent's
+share to its treasury (`session-rules.ts`, layout 5; `treasury.ts`). On RH that is ETH for an ETH pair, which is gas
+at once, and USDG for a USDG pair, which waits for the fuel bridge. The treasury turn (`roles.ts`) works unchanged:
+it sees balances, caps and operations of the agent's own chain, with the dollar named USDG. `BootrSwapHelper` is not
+part of the opening: nothing on RH needs WETH turned into dollars until the bridge exists, and its one-hour price
+age does not fit a feed with a 24-hour heartbeat (section 5.1). When it is needed, its age limit becomes a
+constructor argument checked against the feed's real update pattern.
+
+### 6.8 Bounties, paid services, pictures, own agents
+
+| Feature | On a Robinhood Chain coin | Why |
+| --- | --- | --- |
+| Posting, replies, threads, scheduled posts, X reads, watched accounts, memory, research, the three roles, the judge, creator requests | Unchanged | They live in the supervisor and the sender and never touch a chain |
+| Own agents (the creator's AI client over the MCP server) | Unchanged | Thinking is the client's; the connect approval is a wallet signature, checked on the coin's chain |
+| Pictures | Unchanged | Bought from Bootr's relay on Base by the spender on Base |
+| Paid services (`discover_services`, `x402_fetch`) | Unchanged once the supervisor pays on the pay chain | The sellers and the facilitator are on Base |
+| Bounties stage A (no contract; the creator pays by hand and gives the transaction) | Works; the creator may pay on either chain, and the web must accept an RH explorer link as well as Basescan (section 5.6) | The ruling and the approval are off chain |
+| Fuel from fees | Not at the opening; with the fuel bridge after it | Section 6.5 |
+| Builder codes | Off | A Base programme |
+| Buyback and burn through `BuybackBurner` | Does not exist | RWAGMI path only. A v5 coin's burn share works there as on Base (it is the hook's) |
+| Trade power (`BootrTradeHelper`, designed for WETH, USDC and the own coin) | A second deployment for WETH, USDG and the own coin, with its own fork tests | Planned contracts are per chain |
+| Bounties stage B (`BootrBounties`, designed to pay 0.1 to 1 USDC) | Open: pay in USDG on RH from the treasury, or stay on Base. Recommended: decide when stage B is built on Base, not now | A payee on X is easier to pay in the chain's own dollar; nothing is built yet on either chain |
+
+### 6.9 The indexer on Robinhood Chain
+
+- **A second Ponder process**, same image, `CHAIN_ID=4663`, its own schema `bootr_rh_v1`, its own host
+  (`indexer-rh.bootr.fun`) or a path on the existing one.
+- **The swap read must be filtered from the first day.** On Base the `PoolManager` source has no filter and a full
+  re-read walks every Uniswap v4 swap on the chain (`docs/STATUS.md`, parked list). On RH that stream is about 7 swaps
+  a second, more than 600,000 a day, for the sake of a handful of Bootr pools; Clanker's own hook there emitted 267
+  `Trade` events in 8 days. **So the planned hook-based read (`bootr_v10`) lands before the RH indexer**, not after.
+  If the hook's events cannot give price and volume exactly (the open check noted in STATUS), the fallback already
+  has a pattern in the code: `src/snapshot.ts` scans USDC transfers for a changing set of addresses with a plain
+  `eth_getLogs`, and the same can be done for `Swap` filtered by the known pool ids (the pool id is an indexed
+  topic).
+- **Backfill.** From the block of Bootr's first contract on RH. With the filtered read it is minutes at the start
+  and grows slowly: the block-interval snapshot is 1,440 blocks a day, the logs are Bootr's own.
+- **History reads.** Handlers read contract state at the event's block (`launcher.ts`, `lib/store.ts`). A later
+  re-read (every schema bump) therefore needs an archive endpoint; the public RPC is not one (section 2).
+- **Fuel and status.** The snapshot needs the spender's USDC on Base: a second read-only client in the RH indexer, to
+  a public Base endpoint, once per snapshot for the RH agents.
+- **Per-chain constants.** Block time 0.1 s (one snapshot a minute = every 600 blocks), the ETH/USD feed, the v5
+  stack, RH's start ticks, USDG as a dollar quote.
+
+## 7. What Robinhood Agents changes for the design
+
+Nothing in the architecture. The two articles describe a brokerage product with no on-chain part (section 1), so no
+address, interface, fee or stage in this note depends on it. Two small things follow from what the articles do say:
+
+1. **One line in the own-agent docs.** External agents on Robinhood trade with approvals off by default. A creator who
+   keeps Robinhood's Trading MCP and Bootr's MCP in the same AI client has strangers' posts and a server that can
+   place orders in one session. The connect page and `apps/web/lib/keep-running.ts` should say: run the coin's agent
+   in a client or profile that holds no server able to move your own money.
+2. **No public claim of a link.** Bootr's copy for the opening says "on Robinhood Chain" and never "with Robinhood
+   Agents" or "for Robinhood's agents": there is no integration, and the chain's terms restrict the use of its name
+   in a token offering (section 9.1).
