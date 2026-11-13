@@ -102,7 +102,7 @@ describe('MENTION_AUDIENCE = engaged (the default)', () => {
     }
   });
 
-  it('holds the first part of a thread and a post queued for review the same way, and leaves replies alone', async () => {
+  it('holds the first part of a thread, a post queued for review and a reply the same way', async () => {
     const { w, agent, config, post, published } = await world();
     try {
       expect(await post({ text: 'Opening with @stranger.', thread: [{ text: 'And a second part.' }], attributions: credit('stranger') })).toEqual({ kind: 'failed', error: mentionNotEngaged('stranger') });
@@ -110,11 +110,19 @@ describe('MENTION_AUDIENCE = engaged (the default)', () => {
       expect(queued).toEqual({ kind: 'failed', error: mentionNotEngaged('stranger') });
       expect(published()).toEqual([]);
 
-      // a reply goes to somebody who wrote to the agent; an @ in it is held to the credit rule as before, not to this audience
+      // a reply goes to somebody who wrote to the agent, and whoever else it names with an @ must have written to the agent too:
+      // a stranger's question starts a reply now, and "tag them for me" would otherwise notify people who never asked
       const item: SenderInboxItem = { postId: '801', authorId: '42', conversationId: '801', status: 'pending', observedAt: '2026-10-24T11:59:00Z', seenAt: null, deferredUntil: null, post: { id: '801', authorId: '42', text: '@bootr_agent who wrote about this?', createdAt: '2026-10-24T11:58:00Z', conversationId: '801', author: { id: '42', username: 'asker', verified: true, verifiedType: 'blue' } } };
       const reply = await executeAction(w.ctx, agent, config, pendingOf(nextId(), 'publish_reply', { postId: '801', text: 'That was @stranger, a while back.', attributions: credit('stranger') }), brokerEnv([item]));
-      expect(reply.kind).toBe('completed');
-      expect(published()).toEqual(['That was @stranger, a while back.']);
+      expect(reply).toEqual({ kind: 'failed', error: mentionNotEngaged('stranger') });
+      expect(published()).toEqual([]);
+      // the full-width sign X also reads as a mention is held to the same rule
+      expect(await executeAction(w.ctx, agent, config, pendingOf(nextId(), 'publish_reply', { postId: '801', text: 'That was \uFF20stranger, a while back.', attributions: credit('stranger') }), brokerEnv([item]))).toEqual({ kind: 'failed', error: mentionNotEngaged('stranger') });
+      // naming the person answered passes: they wrote to the agent
+      w.sender.accountReads.asker = account('42', 'asker', new Date(w.ctx.now() - HOUR).toISOString());
+      const named = await executeAction(w.ctx, agent, config, pendingOf(nextId(), 'publish_reply', { postId: '801', text: 'Good question @asker, it was a while back.', attributions: credit('asker') }), brokerEnv([item]));
+      expect(named.kind).toBe('completed');
+      expect(published()).toEqual(['Good question @asker, it was a while back.']);
     } finally {
       await w.close();
     }

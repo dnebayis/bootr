@@ -83,6 +83,8 @@ describe('reply consent (sender contract)', () => {
       w.sender.items = [mention('1001', '42', '@bootr_agent hello')];
       const e = env();
       await executeAction(w.ctx, agent, config, pending('a1', 'read_mentions', {}), e);
+      // somebody who wrote to the agent once (so a reply may name them) and later asked not to be named: the sender refuses
+      w.sender.accountReads.quietperson = { user: { id: '77', username: 'quietperson' }, activity: 'recent', latestPostAt: null, addressedAt: new Date(w.ctx.now() - 3_600_000).toISOString() } as never;
       w.sender.optedOutHandles.add('quietperson');
       const out = await executeAction(w.ctx, agent, config, pending('a2', 'publish_reply', { postId: '1001', text: 'cc @quietperson' }), e);
       expect(out).toEqual({ kind: 'failed', error: 'sender_rejected:policy:mention_opted_out' });

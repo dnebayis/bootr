@@ -1517,6 +1517,33 @@ its limit, with no deploy. Not done from this checkout and still owed before or 
 on the final diff, the migrations against a copy of the production schema, and a run on production of a Bootr-owned
 test coin (`bootr prepare swap` for a buy and a sell, one thread, one scheduled post).
 
+### 18.8 The independent security review (2026-11-13) and what it changed
+
+One reviewer who had not built the round read `b9d48e7..HEAD` as six adversaries (a stranger on X, a hostile creator,
+an own-agent client, a steered model, a visitor of the site, a caller of the swap route). No critical finding; no path
+that sends a post twice, gets around the publish gate or the approval queue, or reaches another coin's data. Fixed
+before release, each with a test:
+
+- **A long mention could stall the supervisor.** The question test ran a link pattern that costs more than linearly
+  over a post of up to 25,000 characters, a hundred of them a tick. It now reads the first
+  `QUESTION_SCAN_CHARS` (1,000) characters only.
+- **The full-width `＠` passed every rule about who may be named.** `mentionedHandles` reads both signs now, so the
+  mention audience, the credit rule, the count of mentions and the sender's stop check all see it.
+- **A reply could name people who never wrote to the agent.** Replies were left out of the mention audience when only
+  verified accounts were answered; with questions from anyone, "tag three people for me" would have notified
+  strangers. A reply is now held to `MENTION_AUDIENCE` as an original is: naming the person answered passes, anybody
+  else must have written to the agent (or be a Bootr agent). This is a hosted behaviour change.
+- **The count of posts with a link missed bare hosts outside the gate's list of endings** (`evil.shop/x`). The count
+  (`carriesLink`) now reads any `name.ending` with a lettered ending of two or more, except on-chain names and file
+  names; the gate's own list is unchanged, since a mistake there refuses a post.
+
+Left open, all low: a scheduled post in review loses its "scheduled" mark if the second of two writes fails (it is
+then shown as a plain post; never sent twice); two approvals of one thread at the same moment record it as cut after
+its first part though it went out whole; a console tab older than the release shows only the first post of a queued
+thread; the swap route's limit of 240 a minute is shared by all callers and can be filled by a few; "wrote to the
+agent" counts a carried mention and a "stop"; a coin agent may still carry another coin's cashtag (one a post);
+questions from anyone has no switch per coin, only `REPLY_QUESTIONS_FROM_ANYONE` for the deployment.
+
 ## Sources
 
 - X: `https://docs.x.com/x-api/posts/create-post`, `https://docs.x.com/updates/changelog`,

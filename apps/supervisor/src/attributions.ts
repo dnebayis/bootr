@@ -56,12 +56,18 @@ export class MentionError extends Error {
   }
 }
 
-/** What kind of publish the credits are for; absent = a reply or a template post, to which the mention audience does not apply. */
+/** What kind of publish the credits are for; absent = a template post, to which the mention audience does not apply. */
 export interface MentionAudienceOptions {
   /** An original post: held to `MENTION_AUDIENCE`. */
   original?: boolean;
   /** A comment (`publish_post {about}`): held to the engaged audience whatever `MENTION_AUDIENCE` says. */
   comment?: boolean;
+  /**
+   * A reply: held to `MENTION_AUDIENCE` as an original is. The person answered wrote to the agent, so naming them
+   * passes; anybody else named in the reply must have written to the agent too, because a stranger's question can now
+   * start a reply and "tag three people for me" would otherwise notify accounts that never asked.
+   */
+  reply?: boolean;
 }
 
 /** Account checks of this process: handle -> {ok, until}; one X lookup per handle per day. */
@@ -167,8 +173,8 @@ export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'n
     if (url && !credited.has(h)) out.push({ username: h, sourceUrl: url });
   }
   const outside = mentions.filter((h) => !coinPages.has(h));
-  // An original post names with an `@` only who wrote to the agent first (the mention audience); a comment always.
-  if (audience.comment === true || (audience.original === true && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside, { comment: audience.comment === true });
+  // An original post and a reply name with an `@` only who wrote to the agent first (the mention audience); a comment always.
+  if (audience.comment === true || ((audience.original === true || audience.reply === true) && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside, { comment: audience.comment === true });
   // Mentions of accounts outside Bootr (the model's own credits) must be real, recently active X accounts.
   else await verifyMentions(ctx, agentId, outside);
   return out;

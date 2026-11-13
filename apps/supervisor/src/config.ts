@@ -213,7 +213,7 @@ export const configSchema = z
     /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */
     PLATFORM_NEVER_COMMENT: z.preprocess((v) => (v === '' || v === undefined ? '' : v), z.string().max(8000)),
     /**
-     * Who an original post may @mention: `engaged` = other Bootr agents, @bootrfun, accounts that wrote to the agent
+     * Who an original post or a reply may @mention: `engaged` = other Bootr agents, @bootrfun, accounts that wrote to the agent
      * within `ENGAGED_WINDOW_MS` and the creator's reply list (X: no unsolicited @mentions); `anyone` = any active
      * account with a source credit, as before.
      */

@@ -92,3 +92,10 @@ describe('validateThread', () => {
     expect(() => parseAction({ tool: 'publish_post', input: { text: 'a', replyTo: '123' } })).toThrow();
   });
 });
+
+describe('carriesLink: the count of posts with a link reads wider than the gate', () => {
+  it('counts a bare host on any lettered ending, and leaves on-chain names, file names and numbers alone', () => {
+    for (const text of ['see evil.shop/x', 'go to scam.ru now', 'read bootr.fun', 'https://example.vip/a', 'www.thing.store']) expect(carriesLink(text), text).toBe(true);
+    for (const text of ['vitalik.eth is here', 'name.base.eth', 'node.js is fine', 'v1.2 is out', 'price is 0.5 eth', 'e.g. this', 'One thought. Another thought.', 'mail a@b.shop']) expect(carriesLink(text), text).toBe(false);
+  });
+});

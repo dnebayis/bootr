@@ -71,6 +71,11 @@ const INVISIBLE = /[\p{Cf}\p{Mn}\p{Me}]|(?![\t\n\v\f\r])\p{Cc}|\u115F|\u1160|\u3
 const LINK = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:\/\S*|\?\S+)/gi;
 /** The letters and digits a question needs around its mark so that the mark alone, or a mark behind filler, is not one. */
 export const QUESTION_MIN_WORD_CHARS = 2;
+/**
+ * How much of a post the question test reads. A post on X can run to 25,000 characters and the link pattern above costs
+ * more than linearly on text built for it, in the one process that runs every agent; a question is asked near the start.
+ */
+export const QUESTION_SCAN_CHARS = 1000;
 
 /**
  * Whether a post somebody wrote to the agent asks it something: a question mark that a reader sees, outside links,
@@ -85,6 +90,7 @@ export const QUESTION_MIN_WORD_CHARS = 2;
 export function mentionAsksQuestion(text: string | null | undefined): boolean {
   if (typeof text !== 'string' || !text) return false;
   const seen = text
+    .slice(0, QUESTION_SCAN_CHARS)
     .normalize('NFKC')
     .replace(INVISIBLE, '')
     .replace(LINK, ' ')

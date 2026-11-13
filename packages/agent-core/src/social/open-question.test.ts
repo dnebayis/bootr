@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mentionAsksQuestion, replyEligibility } from './eligibility.js';
+import { QUESTION_SCAN_CHARS, mentionAsksQuestion, replyEligibility } from './eligibility.js';
 import type { XPost } from '../types.js';
 
 const self = { ownUserId: '100', ownHandle: 'bootragent' };
@@ -64,6 +64,17 @@ describe('mentionAsksQuestion: a question a reader sees', () => {
     }
     // filler inside a real question changes nothing
     expect(mentionAsksQuestion('@bootragent wh​at is th​is?')).toBe(true);
+  });
+});
+
+describe('mentionAsksQuestion: a long post cannot stall the process', () => {
+  it('reads the first part of a post only, and answers at once on text built to slow the link pattern', () => {
+    const hostile = `@bootragent ${'a-'.repeat(12_000)} ?`;
+    const started = Date.now();
+    for (let i = 0; i < 20; i++) expect(mentionAsksQuestion(hostile)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(mentionAsksQuestion(`@bootragent is it live? ${'x '.repeat(5000)}`)).toBe(true);
+    expect(mentionAsksQuestion(`${'x '.repeat(QUESTION_SCAN_CHARS)}is it live?`)).toBe(false);
   });
 });
 

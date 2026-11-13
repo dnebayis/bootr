@@ -559,7 +559,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         replyTo: action.input.postId,
         ...(item ? { replyAuthorId: item.authorId } : {}),
         replyEligibility: eligibility,
-        ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions)),
+        ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions, { reply: true })),
         ...(media.media ? { media: media.media } : {}),
         publicAddresses: publicAddressesOf(config),
         xUserId: config.xUserId,

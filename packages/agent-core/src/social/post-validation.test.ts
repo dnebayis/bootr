@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PolicyError } from '../errors.js';
-import { countCashtags, linkedHosts, NON_PREMIUM_POST_LIMIT, PLATFORM_LINK_HOSTS, POST_LIMITS, platformPostRisk, postLength, postLimitsFor, postValidation, validatePost } from './post-validation.js';
+import { countCashtags, linkedHosts, mentionedHandles, NON_PREMIUM_POST_LIMIT, PLATFORM_LINK_HOSTS, POST_LIMITS, platformPostRisk, postLength, postLimitsFor, postValidation, validatePost } from './post-validation.js';
 
 const code = (fn: () => void) => {
   try {
@@ -260,5 +260,14 @@ describe('links in platform posts', () => {
     expect(postValidation('Claim at https://bootr-claim.fun/airdrop', [], 'original', false, { platform: true })).toEqual({ ok: false, code: 'platform_link_forbidden' });
     expect(postValidation('Claim at https://bootr-claim.fun/airdrop', [], 'original')).toEqual({ ok: true });
     expect(postValidation('Our site: www.some-coin.xyz/about', [], 'short')).toEqual({ ok: true });
+  });
+});
+
+describe('mentionedHandles', () => {
+  it('reads the full-width sign X also turns into a mention, so no rule about who may be named is skipped by it', () => {
+    expect(mentionedHandles('\uFF20victim look at this')).toEqual(['victim']);
+    expect(mentionedHandles('thanks @Bob and \uFF20carol')).toEqual(['bob', 'carol']);
+    expect(mentionedHandles('mail me at a@b.co')).toEqual([]);
+    expect(() => validatePost('\uFF20victim look at this', [], 'original')).toThrow(/mentions_require_source_credit/);
   });
 });

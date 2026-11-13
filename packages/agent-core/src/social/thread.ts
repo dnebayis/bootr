@@ -48,8 +48,19 @@ const sameText = (text: string): string => text.replace(/\s+/g, ' ').trim().toLo
 
 /** Whether a text carries a link as X would make one (explicit or bare; `linkedHosts`). */
 export function carriesLink(text: string): boolean {
-  return linkedHosts(text).length > 0;
+  if (linkedHosts(text).length > 0) return true;
+  for (const m of text.matchAll(ANY_BARE_HOST)) if (!NOT_A_LINK_ENDING.has(m[1]!.toLowerCase())) return true;
+  return false;
 }
+
+/**
+ * Any `name.ending` with a lettered ending of two or more: the count of posts with a link reads wider than the gate's
+ * list of endings (`linkedHosts`), because X links hundreds of endings and a post counted as a link by mistake costs
+ * only a place in the day's count, while a link not counted goes out past the count and at a link's price.
+ */
+const ANY_BARE_HOST = /(?<![\w@/.-])(?:[a-z0-9-]+\.)+([a-z]{2,})(?![a-z0-9-]|\.[a-z0-9])/gi;
+/** Endings people write that X does not link: names on chain and file names. */
+const NOT_A_LINK_ENDING: ReadonlySet<string> = new Set(['eth', 'sol', 'js', 'ts', 'json', 'py', 'txt', 'pdf', 'png', 'jpg']);
 
 /**
  * The gate of a thread, over all of its parts. Throws `PolicyError` whose message is the refusal the agent reads:

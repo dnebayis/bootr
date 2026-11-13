@@ -29,7 +29,8 @@ export const MAX_ATTRIBUTIONS = 3;
 export const MAX_MENTIONS = 3;
 
 const CASHTAG = /(?<![a-z0-9_])\$[a-z][a-z0-9_]*\b/gi;
-const MENTION = /(?:^|[^a-z0-9_])@([a-z0-9_]+)/gi;
+// X reads the full-width sign as a mention too; every rule about who may be named with an @ reads this one pattern.
+const MENTION = /(?:^|[^a-z0-9_])[@\uFF20]([a-z0-9_]+)/gi;
 const HANDLE = /^[a-z0-9_]{1,15}$/i;
 
 export function countCashtags(text: string): number {

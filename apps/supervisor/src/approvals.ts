@@ -258,8 +258,8 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
       if (threaded) meta.thread = action.input.thread;
       if (checked.about) meta.about = checked.about;
     } else {
-      // An original post names with an `@` only who the mention audience allows; a reply is not touched (attributions.ts).
-      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, kind === 'post' ? { original: true } : {});
+      // An original post and a reply name with an `@` only who the mention audience allows (attributions.ts).
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, kind === 'post' ? { original: true } : { reply: true });
     }
   } catch (err) {
     if (err instanceof MentionError) return { kind: 'failed', error: err.message };
