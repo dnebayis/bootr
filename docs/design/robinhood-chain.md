@@ -18,6 +18,32 @@ services (web, indexer, supervisor, sender, inference relay) on the one Hetzner 
 **Fuel** = the USDC an agent's spender wallet pays for thinking with. **Hosted / own** as in
 [`byo-agent.md`](./byo-agent.md).
 
+## In short
+
+1. **Robinhood Agents is not part of this.** The two articles describe an AI assistant inside Robinhood's brokerage
+   that trades stocks, options and listed crypto in a customer's own account. It has no on-chain part and no tie to
+   Robinhood Chain (section 1).
+2. **The launchpad can open on Robinhood Chain.** Clanker v5 is live there with the same source as on Base; Uniswap
+   v4 and v3, a deep dollar (USDG, 6 decimals), a Chainlink ETH/USD feed, Kernel v3.1, the EntryPoint and the
+   ERC-8004 registries are all there, the last three at Base's own addresses. A launch costs about 15 cents of gas, a swap about one
+   (sections 2 and 3).
+3. **What is missing**: Circle USDC, any seller of thinking, Coinbase CDP (bundler, RPC, x402 facilitator), Base
+   builder codes, RWAGMI, a free archive RPC. None stops a launch, a trade or a claim.
+4. **Thinking stays paid on Base.** An agent's spender is a key-derived address, the same on every chain, so a
+   Robinhood Chain agent holds its fuel on Base and buys thoughts exactly as today. At the opening the creator sends
+   that fuel; a bridge from the agent's treasury comes next (section 6.5).
+5. **One deployment serves both chains**: one web, sender, relay, supervisor and database, and one indexer per
+   chain. Agent ids must gain a chain prefix on the new chain, because the identity registries count separately
+   (section 6).
+6. **Clanker or an own launcher**: open on the existing Clanker v5 wrapper, and start Bootr's own launcher now as a
+   separate track for both chains. Clanker takes a third of the tax at Bootr's default rate; an own launcher keeps
+   it, at the price of owning the contract that holds every coin's liquidity (section 4).
+7. **Almost nobody trades Clanker coins there yet**: 93 launches and 267 trades in 8 days, a few thousand dollars
+   of volume, on a chain that moves hundreds of millions a day in stock tokens and dollars (section 9.3).
+8. **About three weeks on the calendar** to the opening with four builders, after six prerequisites, the first of
+   which are the agent tools round and the admin key off the server (section 10). Sixteen decisions wait for the
+   owner (section 11).
+
 ## 1. Robinhood Agents: what it is, and what it has to do with Bootr
 
 The owner sent two Robinhood help articles with the decision. Both were read in full on 2026-11-13, with the four
@@ -737,3 +763,186 @@ Bootr-owned coin first, and a look at these same numbers again before the public
 | Robinhood blocks a Bootr address or contract | RH side only, technically | Nothing technical. Reputation carries to Base |
 | The admin key is lost | **Both chains** | The one shared risk by design (section 9.2) |
 | A coin on RH turns into a scandal | Bootr's name on both | The same moderation and pause tools as on Base |
+
+## 10. Staged plan
+
+Sizes are working days for one builder and are estimates. Each stage leaves something that works by itself. The
+order below is the recommended one (the Clanker v5 wrapper first, section 4.4); 10.4 says what moves if the owner
+chooses the own launcher first.
+
+### 10.1 Before any stage
+
+| Prerequisite | Whose | Why |
+| --- | --- | --- |
+| Agent tools round two shipped (`agent-tools-2.md`) | builders | The owner's order of work; it also takes supervisor migrations 0012 and 0013, so this work starts at 0014 |
+| The admin key off the server (key removal step 3) | owner | It is about to own contracts on a second chain (section 9.2) |
+| The indexer's hook-based swap read, `bootr_v10`, live on Base | builders, about 3 days (I: it is parked without a size) | The RH indexer cannot read every v4 swap (section 6.9) |
+| A larger server | owner | Memory for a second indexer (section 6.1) |
+| An RPC account for 4663 with archive reads; a bundler account | owner, decisions 6 and 7 | No CDP there |
+| The lawyer's answers to section 9.1, at least questions 2 and 3 | owner | They can change the launch page and who may use it |
+
+### 10.2 Stages
+
+| Stage | Ships | Size | Needs |
+| --- | --- | --- | --- |
+| **R1. Chain model** | `packages/shared`: a 4663 entry in the address book with the addresses of section 3, chain facts (name, slug, explorer, block time, the dollar, the pay chain), wider id types in `shared/config.ts` and `agent-core/types.ts`, assets per chain in the SDK. No behaviour changes on Base; every test at the base passes unchanged | 2 | nothing |
+| **R2. Contracts on Robinhood Chain** | A deploy script for 4663 (guardian, gate, call policy, v5 launcher; paired assets ETH and USDG; the USDG dev-buy route), fork tests on a 4663 fork, the review list of section 6.6, the owner's deploy, verification on Sourcify and Blockscout, a deploy record `docs/deploy/robinhood.md`. **Usable result:** a Bootr-owned coin launched there by script (`script/Launch.s.sol`), tradable on any Uniswap v4 front end | 5, plus the owner's deploy | R1 |
+| **R3. Indexer for Robinhood Chain** | The second Ponder process (`CHAIN_ID=4663`, `DATABASE_SCHEMA_RH=bootr_rh_v1`), per-chain constants, USDG as a dollar quote, fuel read from Base, `chainId` on every API row, a Coolify service and host. **Usable result:** the test coin's price, trades, holders and fees at `indexer-rh.bootr.fun` | 4 | R1, R2's addresses and deploy block, `bootr_v10`, the server, the RPC account |
+| **R4. Supervisor, chain-aware** | Migration `0014_chain_id`, a context per chain and the pay chain, RH agent ids as `4663:<n>`, a launch poll and cursor per chain, the chain hold, the two-rule session layout for RH with its fixture, the RH bundler, explorer links, the chain's name in the prompts with Base's text unchanged. **Usable result:** the test coin's hosted agent wakes, thinks on Base fuel, posts, and claims its fees on RH | 7 | R1, R2, R3's API, the bundler account |
+| **R5. Web and packages** | Live chains in `lib/env.ts` and wagmi, `/robinhood/token/<address>` pages and console, the chain choice on the launch form with what section 6.3 lists, the fuel step on Base, the gas tank on RH, the trade panel per chain, merged lists and feeds, docs and skill wording, SDK, CLI and MCP with a `chain` argument (one minor version up). Behind `ROBINHOOD_ENABLED`: with it off, the site is today's site. **Usable result:** the public can browse and trade RH coins; launching is still off | 7 | R1, R3's API, R4's routes |
+| **R6. End to end, then open** | On production with the flag on for Bootr's wallets only: a hosted coin and an own-agent coin launched through the web on RH; first buy, a buy and a sell through the panel, a claim, a session-key rotation, pause and unpause, a fuel top-up on Base, a post on X, a switch between hosted and own. The usage numbers of section 9.3 read again. Then the flag on for everyone | 3 | R2 to R5 |
+| **R7. Fuel bridge** | `BootrFuelBridge` on RH (behind a UUPS proxy), fork tests against Across's SpokePool, two more session rules, the fee policy on RH moving USDG to the spender on Base under a daily cap. **Usable result:** a USDG-paired coin pays for its own thinking | 5, plus a review | R6; for ETH-paired coins, call policy v2 |
+| **Track O. Own launcher** (beside R1 to R7) | Its own design note (3 days), the factory, hook and escrow with fork tests on both chains (about 15 days), an outside review, then one more launcher on each chain's gate and a new `LaunchSource` in the indexer, supervisor and web (about 5 days) | about 23, plus the review | the owner's decision 1; independent of R1 to R7 until its last step |
+
+To the opening (R1 to R6): 28 builder days in a row. With the four workstreams of 10.5 in parallel: R1's 2 days,
+then about 7 working days of building side by side, then 3 for integration and the end-to-end stage, so **about
+three weeks on the calendar** once the prerequisites are met.
+
+### 10.3 The owner's transactions
+
+All on Robinhood Chain unless said. Gas there is about 0.02 gwei: a 5 million gas deployment costs about 0.0001 ETH.
+The roles are those of `docs/deploy/mainnet.md` section 1.
+
+| Step | Wallet | ETH to have on RH | What it sends |
+| --- | --- | --- | --- |
+| Bring ETH over | each wallet below | — | From Base through Relay or Across (about 0.25% on small amounts, seconds), or from Ethereum over the canonical bridge (10 minutes) |
+| Deploy | DEPLOYER | 0.005 (the four deployments need well under 0.001) | `AgentGuardian`, `BootrLaunchGate`, `BootrCallPolicy`, `BootrClankerLauncherV5`, and the wiring the script does (guardian's launcher = the gate, ownership offered to PLATFORM_ADMIN) |
+| Take ownership and configure | PLATFORM_ADMIN | 0.01 | `acceptOwnership` on each owned contract; add the launcher to the gate; allow ETH and USDG for agent coins; set the USDG dev-buy route (pool `0x52e65B17…71Ca` or the 0.05% one, decided by the fork test); set the launch fee; later, per agent, the session-key approvals and the enable ops it sends itself |
+| Read back | anyone | — | Every immutable and setting against section 3, before the launcher is announced anywhere |
+| The test coin | PLATFORM_TREASURY | 0.02 | The launch with a small first buy, the gas tank (`EntryPoint.depositTo(kernel)`) |
+| The test coin's fuel | PLATFORM_TREASURY, **on Base** | — | A few USDC to the test agent's fuel address |
+| Platform income | PLATFORM_RECIPIENT (address only) | none | Receives the platform slot in ETH or USDG; claimed with `claimFor`, callable by anyone |
+
+### 10.4 If the own launcher goes first
+
+R1, R3, R4 and R5 are unchanged and can still be built first: they do not care which launcher emits `AgentLaunched`.
+R2 shrinks to the guardian, the gate and the call policy. R6 waits for Track O's review. The opening moves from
+about three weeks to about seven to nine, set by the review's calendar, and Base gains the same launcher at the same
+time.
+
+### 10.5 Workstreams for parallel builders (first cut)
+
+Four builders from the commit that carries the final contract; this is the split and the seams, not yet the
+contract itself (`agent-tools-2.md` section 17 is the model for that).
+
+| Workstream | Owns | Delivers | Size |
+| --- | --- | --- | --- |
+| **A. Chain model and indexer** | `packages/shared/src/addresses.ts`, a new `packages/shared/src/chains.ts`, `packages/shared/src/config.ts`, `apps/indexer/**` | R1 first, alone, merged before the others branch; then R3 | 2 + 4 |
+| **B. Contracts** | `packages/contracts/**`, `docs/deploy/robinhood.md` | R2: the script, the fork tests, the review list worked through, the deploy record | 5 |
+| **C. Supervisor** | `apps/supervisor/**`, `packages/agent-core/**`, the sender only if an id format test needs it | R4 | 7 |
+| **D. Web and packages** | `apps/web/**`, `packages/sdk/**`, `packages/cli/**`, `packages/mcp/**` | R5 | 7 |
+| Integration | — | The merges (A, B, C, D), the deployed addresses written into the book, R6 | 3 |
+
+The seams the contract must fix before anyone branches:
+
+1. **`packages/shared/src/chains.ts`, given in full.** One record per live chain: id, slug (`base`, `robinhood`),
+   display name, native symbol, block time in milliseconds, explorer base and its transaction path, the dollar
+   (address, symbol, decimals), the pay chain id, and whether the chain has builder codes, RWAGMI, a Clanker v4.
+   Everyone imports it; only A changes it.
+2. **The address book entry for 4663** with the outside addresses of section 3 filled in and Bootr's own as `null`
+   until B's deploy. B hands over four addresses and one block number; the integrator writes them in.
+3. **The agent id.** Base: the bare ERC-8004 number. RH: `4663:<number>`. One function in `chains.ts` builds and
+   parses it; C uses it for rows, the spender and the sender's calls; D for links and API calls. The sender stores
+   what it is given.
+4. **The indexer's API.** Unchanged in shape; every coin, agent, trade and fee row carries `chainId`; a new
+   `GET /chain` names the chain the process serves. C and D each talk to a list of indexers from the environment.
+5. **The supervisor's routes that the web calls** (`/internal/agents…`, the own-agent routes): the id in the path
+   is the id of seam 3, URL-encoded. The fuel fields name Base as the chain they are on, and carry the fuel
+   address.
+6. **Environment names**, fixed so compose and code agree: `CHAINS_LIVE` (ids), `ROBINHOOD_RPC_URL`,
+   `ROBINHOOD_BUNDLER_URL`, `ROBINHOOD_LAUNCHER_START_BLOCK`, `ROBINHOOD_GUARDIAN_ADDRESS`,
+   `ROBINHOOD_CLANKER_V5_LAUNCHER_ADDRESS`, `ROBINHOOD_INDEXER_URL`, `DATABASE_SCHEMA_RH`,
+   `NEXT_PUBLIC_ROBINHOOD_INDEXER_URL`, `NEXT_PUBLIC_ROBINHOOD_RPC_URL`, `ROBINHOOD_ENABLED`. Base's names stay.
+7. **The session-rule layout for RH** (its number, its two rules, its fixture bytes): C owns it; B's fork test
+   installs exactly it.
+8. **Ground rules**: with `CHAINS_LIVE=8453` and the flag off, every test that passes at the base passes unchanged;
+   the pinned social prompt stays byte for byte for a Base agent; no builder edits another's files; every open
+   decision of section 11 is built as recommended.
+
+### 10.6 Tests, deploy and environment
+
+- **Fork tests on 4663** (B): launch with ETH and with USDG, the first buy over the USDG route, a buy and a sell,
+  `claimFor`, the session key's enable op and one claim through the EntryPoint, the guardian's pause and its dormant
+  sweep with USDG frozen in a mock, `block.number` not relied on.
+- **The web's swap calldata** on a 4663 fork (D), as `swap-v5.fork.test.ts` does on Base.
+- **Unit**: the id parser, the per-agent context, the chain hold, the layout fixture, the per-chain constants of the
+  indexer, the explorer-link checks.
+- **End to end**: stage R6, on production, Bootr-owned coins only.
+- **Release**: one backup; `DATABASE_SCHEMA` and `DATABASE_SCHEMA_RH` set first; the supervisor's migration 0014 runs
+  at start; the new environment of seam 6 in Coolify; the second indexer's memory limit; Hermes told about the
+  second `/ready`. Rollback is the image tag as today; the migration and the schemas are not undone by it.
+
+## 11. Open decisions for the owner
+
+| # | Decision | Recommendation | Why, in one line |
+| --- | --- | --- | --- |
+| 1 | Which launcher on Robinhood Chain first: the Clanker v5 wrapper, or Bootr's own | **The wrapper first, the own launcher started now as its own track for both chains** | The wrapper is reviewed code and opens the chain in weeks; the own launcher holds every coin's liquidity and should not be built against a date |
+| 2 | Open on Robinhood Chain at all, given that almost nobody trades Clanker coins there | **Yes, staged and behind a flag, with a go or no-go after the test coin (R6)** | The money and the stock tokens are there and small coins are not yet; being early is cheap if the plumbing is shared |
+| 3 | How an agent there pays for thinking at the opening | **Fuel on Base at the agent's fuel address, sent by the creator (option A)** | It needs no new contract and no seller on the new chain |
+| 4 | Paired assets there | **ETH and USDG; ETH suggested until the fuel bridge is live, USDG after; no stock tokens** | USDG fees can become fuel through the bridge; stock tokens are barred to US persons |
+| 5 | One supervisor for both chains, or one each | **One, chain-aware** | One database, one tick, one sender connection, less memory |
+| 6 | The RPC provider for 4663 | **One account with archive reads, chosen after pricing three (Alchemy, Chainstack, dRPC) against 10 blocks a second** | The public RPC is rate-limited and not an archive; prices were not read for this note |
+| 7 | The bundler there | **A provider's bundler (the same account as the RPC if it is Alchemy; else Pimlico or ZeroDev), with direct sending from a powerless key as the fallback** | It is the path proven on Base; the fallback removes the dependency if a provider refuses Bootr's policy ops |
+| 8 | Who owns the contracts there | **The same admin address as on Base, after that key is off the server** | One key to guard instead of two |
+| 9 | Web addresses for RH coins | **`/robinhood/token/<address>`; Base stays `/token/<address>`** | No existing link breaks and the chain is readable in the address |
+| 10 | The server | **Move up a size before the second indexer** | 6.5 of 7.6 GB committed is too thin |
+| 11 | Launch fee and platform share there | **The same as on Base** | One price list to explain |
+| 12 | Test on Robinhood's testnet first | **No: fork tests and a Bootr-owned coin on mainnet** | It is how Base was done; a launch there costs cents; Clanker on the testnet is unconfirmed |
+| 13 | The name and logo of the chain in Bootr's pages and posts | **The plain words "Robinhood Chain", no logo, until a lawyer or the brand guidelines say more** | The terms restrict the marks in a token offering |
+| 14 | The `bootr_v10` hook-based swap read as a prerequisite | **Yes** | The unfiltered read is not affordable on a chain with 7 swaps a second |
+| 15 | Trade and Bounties contracts on RH | **Decide when each is built on Base** | Nothing exists yet on either chain |
+| 16 | What the own launcher does with the share Clanker takes today (the agent, the platform, a lower tax) | **Decide in the own launcher's note; lean to the agent** | It is the one number that makes "the agent earns its thinking" true at small volume |
+
+## 12. Not verified
+
+- The public mainnet date (2026-07-01), the Chainlink feed's heartbeat and deviation, Alchemy's free-tier
+  `eth_getLogs` limit: carried from the 2026-11-10 note.
+- Who operates the sequencer. The public RPC's rate limit. Whether it serves WebSocket. How much history its nodes
+  keep.
+- Prices of any RPC or bundler plan for 4663, and of a larger server.
+- Whether a provider's bundler on 4663 accepts Bootr's enable-mode and call-policy ops; whether the fixed
+  self-bundle gas budget fits Arbitrum's accounting.
+- Whether Bootr's bytecode deploys and runs on 4663 as on Base: no fork was run (this note's rules were read and
+  public calls only).
+- Whether a forked 4663 behaves like the live chain for Clanker's and Uniswap's paths, given `block.number`.
+- The ZeroDev policy contracts there, byte for byte against Base's.
+- The Chainlink USDG/USD feed's full address; the full list of Clanker's registered paired assets (only those seen
+  in launches were read).
+- The community x402 facilitators and sellers on 4663: found by search, not tested.
+- DefiLlama's figures for the chain; Bankr's and Doppler's volumes there; who registered the 25,717 ERC-8004 agents.
+- Clanker v4.1's trade counts on RH; whether clanker.world lists RH coins and under which address form; whether
+  its quote-market API answers for 4663.
+- Whether the Base Account and Coinbase Wallet connectors can sign on 4663.
+- A faucet for the testnet; Clanker v5 on the testnet.
+- The chain's brand guidelines, the Robinhood Agents disclosures and agreements, the token usage billing article:
+  not read. The terms of service and the help articles were read through a tool that returns a page as text and
+  answers questions about it, not as the legal text line by line.
+- The licence question of the two BUSL-1.1 library files in Clanker's verified sources, for a fork.
+- Hermes's configuration; the fields of the ERC-8004 registration file the web serves.
+- Every size in section 10.
+
+## Sources
+
+All read 2026-11-13.
+
+- Robinhood Agents: the seven pages listed in section 1.4.
+- Robinhood Chain docs: https://docs.robinhood.com/chain and its pages `/connecting`, `/add-network-to-wallet`,
+  `/bridging`, `/stock-tokens`, `/differences-from-ethereum`, `/gas-and-fees`, `/transaction-finality`, `/contracts`,
+  `/protocol-contracts`, `/deploy-smart-contracts`, `/account-abstraction`, `/governance`, `/notices-and-upgrades`,
+  `/terms-of-service`.
+- The chain: `https://rpc.mainnet.chain.robinhood.com` with `cast` 1.5.1 (`chain-id`, `block`, `code`, `call`,
+  `receipt`) and `eth_getLogs`, between blocks 113,560,353 and about 113,570,000.
+- Clanker: https://clanker.gitbook.io/documentation/references/deployed-contracts ; Sourcify
+  `https://sourcify.dev/server/v2/contract/4663/<address>` and `/8453/<address>` for the factory, hook and escrow;
+  `https://sourcify.dev/server/chains`.
+- Uniswap: https://developers.uniswap.org/docs/protocols/v4/deployments ;
+  https://raw.githubusercontent.com/Uniswap/contracts/main/deployments/json/4663.json
+- Bridges: `https://api.relay.link/chains`, `https://api.relay.link/quote`,
+  `https://app.across.to/api/available-routes`, `https://app.across.to/api/suggested-fees`.
+- Payments: https://blockrun.ai/x402 , https://blockrun.ai/docs/x402/how-it-works ,
+  https://docs.cdp.coinbase.com/x402/network-support
+- Accounts: https://docs.pimlico.io/guides/supported-chains , https://docs.zerodev.app/api-and-toolings/faqs/chains
+- Bankr: https://docs.bankr.bot/token-launching/overview
+- DefiLlama: `https://api.llama.fi/v2/chains`, `https://api.llama.fi/overview/dexs/Robinhood%20Chain`,
+  `https://stablecoins.llama.fi/stablecoins`
+- This repository at `d8927cb`: the files named in each section.
