@@ -15,6 +15,12 @@
  * nobody: `mention_not_engaged`. `anyone` is the rule as it was. A comment (`publish_post {about}`) is held to the
  * engaged audience whatever the setting: it must never be a way to notify a stranger. Replies are not touched: a reply
  * goes to somebody who addressed the agent already.
+ *
+ * A sender from before this rule (the two services restart together, and for some minutes one may be new and the other
+ * old) answers an account read with no `addressedAt` at all: null means "never wrote to the agent", absent means "this
+ * sender cannot say". Then the audience is unknown, and an original post is held to the rule as it was before (the
+ * account exists and posts these days), so a mention that was allowed yesterday is not refused because of a deploy. A
+ * comment did not exist before, so for a comment "cannot say" stays a refusal.
  */
 import { creditedAttributions, mentionedHandles } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
@@ -100,7 +106,7 @@ export async function verifyMentions(ctx: Pick<SupervisorContext, 'sender' | 'no
  * when it last wrote to the agent. An account X does not know is `mention_unknown_account` as before; a lookup that
  * fails for another reason cannot show that the mention is welcome, so it is refused too.
  */
-export async function requireEngaged(ctx: Pick<SupervisorContext, 'db' | 'sender' | 'now' | 'log' | 'config'>, agentId: string, handles: readonly string[]): Promise<void> {
+export async function requireEngaged(ctx: Pick<SupervisorContext, 'db' | 'sender' | 'now' | 'log' | 'config'>, agentId: string, handles: readonly string[], opts: { comment?: boolean } = {}): Promise<void> {
   if (handles.length === 0) return;
   const row = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, agentId), columns: { config: true } });
   const listed = (row?.config as { replyAuthorIds?: unknown } | undefined)?.replyAuthorIds;
@@ -112,7 +118,15 @@ export async function requireEngaged(ctx: Pick<SupervisorContext, 'db' | 'sender
       const id = (res.user as { id?: unknown } | null)?.id;
       const at = typeof res.addressedAt === 'string' ? Date.parse(res.addressedAt) : Number.NaN;
       engaged = (typeof id === 'string' && replyAuthorIds.has(id)) || (Number.isFinite(at) && ctx.now() - at <= ctx.config.ENGAGED_WINDOW_MS);
+      // A sender from before this rule does not say who wrote to the agent: the audience is unknown. An original post
+      // is then held to the rule of before (a real account that posts these days); a comment stays refused.
+      if (!engaged && res.addressedAt === undefined && opts.comment !== true) {
+        if (res.activity === 'stale') throw new MentionError('mention_inactive_account', handle);
+        ctx.log.warn({ agentId, handle }, 'mention audience unknown: the sender does not say who wrote to the agent (it is older than this supervisor); the mention is held to the rule of before');
+        engaged = true;
+      }
     } catch (err) {
+      if (err instanceof MentionError) throw err;
       const status = (err as { status?: number }).status;
       const message = err instanceof Error ? err.message : String(err);
       if (status === 404 || /x_not_found|not found/i.test(message)) throw new MentionError('mention_unknown_account', handle);
@@ -154,7 +168,7 @@ export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'n
   }
   const outside = mentions.filter((h) => !coinPages.has(h));
   // An original post names with an `@` only who wrote to the agent first (the mention audience); a comment always.
-  if (audience.comment === true || (audience.original === true && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside);
+  if (audience.comment === true || (audience.original === true && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside, { comment: audience.comment === true });
   // Mentions of accounts outside Bootr (the model's own credits) must be real, recently active X accounts.
   else await verifyMentions(ctx, agentId, outside);
   return out;

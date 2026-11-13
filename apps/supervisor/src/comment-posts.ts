@@ -67,6 +67,12 @@ export const commentAuthorCap = (count: number, span: 'day' | 'week'): string =>
 export const COMMENT_LINK_FORBIDDEN = 'comment_link_forbidden: do not link the post you comment on; nothing was posted. Say whose post it is in words.';
 /** The post is older than `COMMENT_SOURCE_MAX_AGE_MS` (the design names the rule and no text for it). */
 export const commentSourceTooOld = (hours: number): string => `comment_source_too_old: you can comment only on a post of the last ${hours} hours; nothing was posted.`;
+/**
+ * The sender in front of X is older than this supervisor (the two restart together, and for some minutes one may be new
+ * and the other old): it would drop `aboutAuthorId` and so not refuse an author who told this agent to stop. Until it
+ * is the new one no comment goes out.
+ */
+export const COMMENT_NOT_NOW = 'comment_not_now: comments cannot be checked for a moment while Bootr restarts; nothing was posted. Say your own thought without naming the author, or comment in a later turn.';
 /** The author's stable id could not be read from X right now: without it neither the caps nor a stop request can be checked. */
 export const commentAuthorUnknown = (handle: string): string => `comment_author_unknown: @${handle} could not be looked up on X right now; nothing was posted. Say your own thought without naming the author, or try again in a later turn.`;
 
@@ -334,5 +340,23 @@ export async function commentCheck(
   if (today >= ctx.config.COMMENT_PER_AUTHOR_PER_DAY) return { refusal: commentAuthorCap(today, 'day') };
   if (onAuthor.length >= ctx.config.COMMENT_PER_AUTHOR_PER_WEEK) return { refusal: commentAuthorCap(onAuthor.length, 'week') };
 
+  // Only a sender that knows the round checks the author's stop request (`aboutAuthorId`). The same release of the
+  // sender reports its count of posts with a link on the quota read, which costs nothing at X: one that does not is
+  // from before, and the comment waits. A sender that cannot be asked is not known to be new either.
+  if (!(await senderKnowsComments(ctx, agent.agentId))) return { refusal: COMMENT_NOT_NOW };
+
   return { about: { postId, authorId, handle } };
+}
+
+/** Whether the sender is one that refuses a comment on an author who said stop: it reports `linkPostsDefault`, added in the same release (migration 0004). */
+export async function senderKnowsComments(ctx: Pick<SupervisorContext, 'sender' | 'log'>, agentId: string): Promise<boolean> {
+  try {
+    const quota = await ctx.sender.quota(agentId);
+    if (typeof quota.linkPostsDefault === 'number') return true;
+    ctx.log.warn({ agentId }, 'comment held back: the sender is older than this supervisor and would not check the author\'s stop request');
+    return false;
+  } catch (err) {
+    ctx.log.warn({ agentId, err: err instanceof Error ? err.message : String(err) }, 'comment held back: the sender could not be asked whether it checks the author\'s stop request');
+    return false;
+  }
 }

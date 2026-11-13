@@ -341,6 +341,8 @@ export interface MockSender {
   consentLookupFails: string | null;
   /** When set, `publish` answers 429 `quota_exceeded` (the agent's 24 h post quota is used up) with this retryAt. */
   quotaExceeded: string | null;
+  /** The sender is one from before the round's posting rules: its account read says no `addressedAt`, its quota read no link count, and a publish is not answered as a part of a thread. */
+  oldSender?: boolean;
   /** When set, a publish the sender would send is rejected with this receipt error (e.g. X's `http_402(402): credits depleted`). */
   publishError: string | null;
   /** When set, `readMentions` throws this. */
@@ -407,7 +409,11 @@ export function mockSender(): MockSender {
         err.status = 404;
         throw err;
       }
-      return hit ?? { user: { username: h }, activity: 'recent' as const, latestPostAt: new Date().toISOString() };
+      // `addressedAt` (when the account last wrote to the agent) is null unless a test's record says otherwise: the
+      // answer of today's sender. `oldSender` leaves the field out, as a sender from before the mention audience does.
+      const answer = hit ?? { user: { username: h }, activity: 'recent' as const, latestPostAt: new Date().toISOString() };
+      if (m.oldSender) return Object.fromEntries(Object.entries(answer).filter(([k]) => k !== 'addressedAt'));
+      return { addressedAt: null, ...answer };
     },
     /** Mirrors apps/sender/src/inbox.ts `readTimeline`: 404 for an unknown account, else the posts newest first, at most `max`. */
     async readTimeline(_agentId: string, username: string, max = 5) {
@@ -472,7 +478,8 @@ export function mockSender(): MockSender {
     },
     async quota(agentId: string) {
       const last = m.quotaWrites.filter((q) => q.agentId === agentId).reduce<{ postsPerDay?: number | null }>((acc, q) => ({ ...acc, ...q.patch }), {});
-      return { agentId, postsPerDay: last.postsPerDay ?? 24, mentionReadIntervalSec: 900, lastMentionsReadAt: null };
+      // Today's sender reports its count of posts with a link; one from before (`oldSender`) knows none.
+      return { agentId, postsPerDay: last.postsPerDay ?? 24, mentionReadIntervalSec: 900, lastMentionsReadAt: null, ...(m.oldSender ? {} : { linkPostsPerDay: null, linkPostsUsed24h: 0, linkPostsDefault: 3, linkPostsDefaultPlatform: 8 }) };
     },
   } as unknown as SenderClient;
   return m;
