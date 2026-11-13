@@ -60,6 +60,7 @@ import { isOwn, ownEnabled } from './own/registry.js';
 import { postHooks, setPostHooks, type OriginalPost, type OriginalResult } from './post-send.js';
 import { QUESTION_LOOKBACK, asksQuestion } from './recent-posts.js';
 import { creditsHold, forbiddenHold, formatQuietHours, isXCreditsError, isXForbiddenError, originalPostGate, parseQuietHours, quietUntil, quotaHold, type Hold, type QuietHours, type RhythmSchedule } from './rhythm.js';
+import { addressRefusal } from './your-coin.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
 export type ScheduledRow = typeof scheduledPosts.$inferSelect;
@@ -525,6 +526,9 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
     const threads = await threadCountProblem(ctx, agent.agentId, sendAt, waiting);
     if (threads) return failed(threads);
   }
+  // The coin's contract address: counted at the time this post is due, with what was sent and what else waits (your-coin.ts).
+  const addressed = await addressRefusal(ctx, agent, pending.id, parts, { at: sendAt, scheduledId: id, done: 'scheduled' });
+  if (addressed) return failed(addressed);
 
   // Who thought is on the record with the row, as it is on the action that made it (own/turns.ts).
   const made0 = await ctx.db.query.actions.findFirst({ where: eq(actions.actionId, pending.id), columns: { action: true } });
@@ -919,6 +923,12 @@ export async function sendScheduled(ctx: SupervisorContext, id: string): Promise
         await closeFailed(ctx, agent, lease, row, threadDailyCap(threadLimit, 'sent'), 'waiting', { settle: false });
         return 'failed';
       }
+    }
+    // The coin's contract address: the day's count as it stands now that the post goes out (your-coin.ts).
+    const addressed = await addressRefusal(ctx, agent, row.id, parts, { sending: true, scheduledId: row.id });
+    if (addressed) {
+      await closeFailed(ctx, agent, lease, row, addressed, 'waiting', { settle: false });
+      return 'failed';
     }
 
     // Marked before the sender is called: from here on only a receipt decides what became of it.

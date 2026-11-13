@@ -176,6 +176,12 @@ export const configSchema = z
     /** The same ceiling for read tools (web, X, chain, indexer reads), which have nothing to reconcile. */
     TOOL_READ_TIMEOUT_MS: int(60_000, 1000),
     /**
+     * An agent's own coin in its posts (your-coin.ts): a social turn is told its cashtag and its contract address, and
+     * at most this many posts or replies per coin per rolling 24 hours may carry the address (a reply to somebody who
+     * asked where to find the coin is not counted). 0 switches the piece off: no section in the turn, no count.
+     */
+    ADDRESS_POSTS_PER_DAY: int(3, 0),
+    /**
      * Platform posting rhythm (rhythm.ts): at most this many original posts across every Bootr agent per 10-minute
      * window. An agent whose post is due but finds the window full waits for a later tick; its slot is not lost.
      */

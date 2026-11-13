@@ -4,6 +4,8 @@
  * audience alone. The count of posts with a link is the sender's and is off there when no limit is set.
  */
 export const POSTING_OFF: Record<string, string> = {
+  // The agent's own cashtag and address (your-coin.ts): no section in the turn and no count of posts that carry the address.
+  ADDRESS_POSTS_PER_DAY: '0',
   THREAD_MAX_PARTS: '0',
   THREADS_PER_DAY: '0',
   THREAD_MAX_LINK_PARTS: '0',
@@ -20,6 +22,7 @@ export const POSTING_OFF: Record<string, string> = {
 
 /** The same limits at their defaults, for a test that needs the pieces on whichever run it is part of. */
 export const POSTING_DEFAULTS: Record<string, string> = {
+  ADDRESS_POSTS_PER_DAY: '3',
   THREAD_MAX_PARTS: '4',
   THREADS_PER_DAY: '2',
   THREAD_MAX_LINK_PARTS: '1',

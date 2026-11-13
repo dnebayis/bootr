@@ -50,6 +50,7 @@ import { bountyJobs } from '../db/schema.js';
 import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
 import { scheduledCancel, scheduledList, schedulePost } from '../scheduled.js';
 import { noteWhatWorks, whatWorksOffered } from '../what-works.js';
+import { addressRefusal } from '../your-coin.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -544,6 +545,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const capped = await conversationGuard(ctx, agent, config, pending, env);
       if (capped) return capped;
       const item = env.inbox.get(action.input.postId);
+      // The coin's contract address in a reply is held to the day's count, but for an answer to somebody who asked where to find it (your-coin.ts).
+      const addressed = await addressRefusal(ctx, agent, pending.id, [action.input.text], { replyTo: item?.post });
+      if (addressed) return failed(addressed);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
       const decided: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
       // A reply outside the verified audience (a direct reply under the agent's own post) is held to the day's count.
@@ -579,6 +583,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const parts = threadParts(action.input);
       const asked = questionQuotaRefusal(parts.join('\n'), await questionBudget(ctx, agentId, { excludeActionId: pending.id }));
       if (asked) return failed(asked);
+      // The coin's contract address: at most so many posts a day carry it, each part of a thread counted by itself (your-coin.ts).
+      const addressed = await addressRefusal(ctx, agent, pending.id, parts);
+      if (addressed) return failed(addressed);
       const checked = await originalRules(ctx, agent, config, pending.id, action.input, env.inbox, !!media.media);
       if ('refusal' in checked) return failed(checked.refusal);
       const outcome = await sendParts(ctx, agent, config, { actionId: pending.id, text: action.input.text, ...(action.input.thread ? { thread: action.input.thread } : {}), ...(checked.attributions.length ? { attributions: checked.attributions } : {}), ...(checked.about ? { aboutAuthorId: checked.about.authorId } : {}) }, media.media);

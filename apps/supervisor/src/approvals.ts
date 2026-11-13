@@ -36,6 +36,7 @@ import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { decideScheduled, isScheduledApproval } from './scheduled.js';
 import { SenderError, type ReplyEligibility } from './sender-client.js';
+import { addressRefusal } from './your-coin.js';
 
 /** A pending item the creator never looked at is rejected ("expired") after this long. */
 export const APPROVAL_TTL_MS = 48 * 3_600_000;
@@ -186,6 +187,11 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   }
   // A scheduled post (its id says so) is queued for a time of its own: the scheduler asked what that time allows.
   const scheduled = SCHEDULED_ID_RE.test(pending.id);
+  // The coin's contract address is held to the day's count when a post is queued, as when one is sent at once (your-coin.ts).
+  if (!scheduled) {
+    const addressed = await addressRefusal(ctx, agent, pending.id, parts, action.tool === 'publish_reply' ? { replyTo: env.inbox.get(action.input.postId)?.post } : {});
+    if (addressed) return { kind: 'failed', error: addressed };
+  }
   // An original queued now stands for the slot of this moment: a scheduled post that is due within one post interval
   // holds that slot already (post-send.ts `beforeOriginalNow`), as it does for a post sent at once.
   if (action.tool === 'publish_post' && !scheduled) {

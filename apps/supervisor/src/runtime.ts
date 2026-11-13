@@ -44,6 +44,7 @@ import { buildRequest, reconcileInference, runInference, type InferenceResult } 
 import { bootrPromotionSection } from './bootr-promotion.js';
 import { postBudgetSection } from './post-budget.js';
 import { scheduledSection } from './scheduled.js';
+import { yourCoinSection } from './your-coin.js';
 import { MODEL_MISSING } from './blockrun.js';
 import { raiseNotification, resolveNotification } from './notifications.js';
 import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
@@ -469,6 +470,8 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       // What is left of the creator's daily budget of posts and replies, so the model paces itself: post-budget.ts.
       ...(await postBudgetSection(ctx, agent.agentId, config)),
       ...(await scheduledSection(ctx, agent.agentId)),
+      // Its own cashtag and contract address, and whether the address is due in an original post (off at a limit of 0): your-coin.ts.
+      ...(await yourCoinSection(ctx, agent, config)),
       // The other Bootr agents and the agent-to-agent conversation caps: agent-directory.ts.
       ...(await bootrAgentsSection(ctx, agent, config, views)),
       // "This week on Bootr" (platform agent, once a week): weekly-digest.ts.

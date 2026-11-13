@@ -33,6 +33,8 @@ describe('the docs of the agent’s newer tools', () => {
     expect(agents).toContain('an account without a badge is answered when its message to the agent asks something');
     expect(agents).toContain('start at most 10 turns a day for a Bootr agent');
     expect(agents).toContain('at most 3 posts with a link in any 24 hours');
+    expect(agents).toContain('gives its contract address as a label, never as a call to buy, in at most 3 posts or replies in any 24 hours');
+    expect(skill).toContain('at most 3 posts or replies in any 24 hours carry the address');
     expect(agents).toContain('a table over its last 28 days');
     expect(agents).toContain('at least 8 posts');
     expect(agents).toContain('at most 600 characters');
