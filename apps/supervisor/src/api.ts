@@ -7,6 +7,7 @@ import { agentActivity } from './activity.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { mountScheduled } from './scheduled.js';
 import { bountyJobViews } from './bounties.js';
+import { mountWhatWorks } from './what-works.js';
 import { configView, ownViewOf, updateAgentConfig, xConnectionOf, xHoldOf, type ConfigUpdateBody } from './agent-config.js';
 import { mountRunnerRoutes } from './own/runner-routes.js';
 import { chatView, sendChatMessage } from './chat.js';
@@ -452,6 +453,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     });
   });
 
+  mountWhatWorks(app, ctx);
   registerW2();
   return app;
 }

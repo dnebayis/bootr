@@ -258,6 +258,36 @@ export const configSchema = z
     /** Optional web search API (Exa or Brave). Without it `search_web` is hidden from the model. */
     SEARCH_API_URL: optionalUrl,
     SEARCH_API_KEY: optionalString,
+    /**
+     * What the agent learns and is told (docs/design/agent-tools-2.md sections 6, 7 and 13). A limit of 0 switches its
+     * piece off: `LEARN_WINDOW_DAYS` 0 leaves the `postPerformance` section and the per-batch memory note as they were
+     * before the facts existed; `WHAT_WORKS_MAX_CHARS` 0 takes `note_what_works` away; `COIN_BRIEF_MAX_CHARS` 0 drops
+     * `coinToday`; `COIN_WATCHLIST_MAX` 0 reads no coin's watched accounts.
+     */
+    /** The facts look this many days back over the agent's measured posts (post-performance.ts). */
+    LEARN_WINDOW_DAYS: int(28, 0),
+    /** Under this many measured originals in the window the facts say only that there are too few. */
+    LEARN_MIN_POSTS: int(20, 1),
+    /** A line of the facts needs at least this many posts on both of its sides. */
+    LEARN_MIN_SAMPLE: int(8, 1),
+    /** One side's median must be at least this many times the other's, or the line says "no clear difference". */
+    LEARN_MIN_RATIO: num(1.5, 1),
+    /** The most lines the facts carry. */
+    LEARN_MAX_FACTS: int(8, 0),
+    /** The most characters of the agent's note on what works (what-works.ts); never above the tool's own 600. */
+    WHAT_WORKS_MAX_CHARS: int(600, 0),
+    /** The note is revised no sooner than this after it was last written... */
+    WHAT_WORKS_MIN_INTERVAL_MS: int(7 * 24 * 3_600_000, 0),
+    /** ...and only once this many more posts were measured. */
+    WHAT_WORKS_MIN_NEW_POSTS: int(10, 0),
+    /** Versions of the note kept per agent; older ones are deleted. */
+    WHAT_WORKS_KEEP: int(5, 1),
+    /** The most characters of the `coinToday` brief (coin-today.ts). */
+    COIN_BRIEF_MAX_CHARS: int(900, 0),
+    /** The most watched accounts read for a coin's agent (watchlist.ts); a longer stored list is cut to this. */
+    COIN_WATCHLIST_MAX: int(5, 0),
+    /** One watched account of a coin's agent is read again no sooner than this. */
+    COIN_WATCHLIST_READ_INTERVAL_MS: int(12 * 3_600_000, 60_000),
     /** Session key policy knobs. */
     SESSION_KEY_VALIDITY_DAYS: int(30, 1),
     /**

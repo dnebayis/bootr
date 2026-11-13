@@ -20,6 +20,12 @@ import { tick } from '../src/tick.js';
 import { AGENT_ID, finishResponse, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 
 const H = 3_600_000;
+/**
+ * The facts switched off (docs/design/agent-tools-2.md section 13: a limit of 0 switches its piece off). With it the
+ * section and the per-batch note are what they were before the facts existed, and the tests below that carry this
+ * config assert exactly what they asserted then. The facts themselves are tested in what-works.test.ts.
+ */
+const FACTS_OFF = { LEARN_WINDOW_DAYS: '0' };
 
 /** A completed publish in `sv_actions`, `ageMs` before now, as the broker records it. */
 async function published(world: TestWorld, postId: string, text: string, ageMs: number, opts: { tool?: 'publish_post' | 'publish_reply'; agentId?: string; status?: 'completed' | 'failed' } = {}) {
@@ -83,7 +89,7 @@ describe('post performance: measuring and the memory note', () => {
   });
 
   it('stores one row per post, marks deleted posts unavailable and writes one note with the best and the weakest', async () => {
-    world = await makeWorld();
+    world = await makeWorld({ config: FACTS_OFF });
     await seedAgent(world);
     await published(world, '201', 'Three holders asked the same question today, so here is the plain answer.', 48 * H);
     await published(world, '202', 'Quiet day on the pond.', 40 * H);
@@ -186,7 +192,7 @@ describe('post performance: the sweep in the tick', () => {
 
   it('runs from the tick and the next turn sees the section', async () => {
     const start = Date.parse('2026-10-24T12:00:00Z');
-    world = await makeWorld({ script: [finishResponse(start + 3 * H)] });
+    world = await makeWorld({ script: [finishResponse(start + 3 * H)], config: FACTS_OFF });
     await seedAgent(world);
     await published(world, '601', 'A short story about the first holder who asked a good question.', 30 * H);
     await published(world, '602', 'Nothing much.', 29 * H);
@@ -221,7 +227,7 @@ describe('post performance: the observation section', () => {
   });
 
   it('is empty without measurements, ignores unavailable and older rows, and stays within 600 characters', async () => {
-    world = await makeWorld();
+    world = await makeWorld({ config: FACTS_OFF });
     await seedAgent(world);
     expect(await postPerformanceSection(world.ctx, AGENT_ID)).toEqual({});
     const now = world.ctx.now();

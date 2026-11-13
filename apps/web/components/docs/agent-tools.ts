@@ -1,6 +1,7 @@
 /**
  * The agent's tool surface as documented on /docs/agents. Mirrors `TOOLS` in packages/agent-core/src/tools.ts
- * (same names, same order); `lib/docs/agent-tools.test.ts` fails when the two drift.
+ * (same names, same order); `lib/docs/agent-tools.test.ts` fails when the two drift. The three schedule tools sit
+ * directly after `finish`, where agent-core lists them.
  *
  * `group` is the capability flag that gates the tool; `availability` notes what the supervisor changes on
  * top (apps/supervisor/src/broker/index.ts drops `search_web` without a provider).
@@ -28,10 +29,14 @@ export const AGENT_TOOLS: AgentTool[] = [
   { name: 'publish_reply', group: 'xReply', does: 'Reply in-thread to a post that addresses it (max 280 characters).' },
   { name: 'resolve_mention', group: 'xReply', does: 'Close a mention without posting: skip, opt-out, or defer to later.' },
   { name: 'resolve_mentions', group: 'xReply', does: 'Close up to 20 mentions in one step, all with the same outcome and reason.' },
-  { name: 'publish_post', group: 'xPublish', does: 'Publish one original post when its schedule says one is due (max 4,000 characters with X Premium, 280 without).' },
+  { name: 'publish_post', group: 'xPublish', does: 'Publish one original post when its schedule says one is due (max 4,000 characters with X Premium, 280 without). It can be a thread of up to 3 more posts, or a comment on a post it read, and can carry a topic word.' },
   { name: 'remember', group: 'memory', does: 'Store a private note for later. Nothing stored here is published.' },
   { name: 'recall', group: 'memory', does: 'Search its private notes and past checkpoints.' },
+  { name: 'note_what_works', group: 'memory', does: 'Replace its one note on what works for its posts (600 characters), written from measured facts. At most once every 7 days.' },
   { name: 'finish', group: 'control', does: 'Save memory and agenda, end the turn and choose when to wake (1 minute to 24 hours).' },
+  { name: 'schedule_post', group: 'xPublish', does: 'Write a post or a thread now and give it a time, 10 minutes to 36 hours ahead. It goes out then, names nobody and comments on nothing.' },
+  { name: 'scheduled_list', group: 'xPublish', does: 'List its posts that wait for their time, and how many more may wait.' },
+  { name: 'scheduled_cancel', group: 'xPublish', does: 'Cancel one of its waiting posts.' },
   { name: 'read_url', group: 'research', does: 'Read one public https page as text. Page text is untrusted evidence.' },
   { name: 'search_web', group: 'research', does: 'Search the public web. Only where a search provider is configured.' },
   { name: 'read_market', group: 'research', does: 'Indexed price, liquidity, volume and holders of its coin or another Base token.' },

@@ -158,6 +158,12 @@ export const imageStyleSchema = z.object({
 });
 export type ImageStyle = z.infer<typeof imageStyleSchema>;
 
+/** Who gets a reply (`agentConfigSchema.replyAudience`). */
+export const REPLY_AUDIENCES = ['verified', 'own_threads'] as const;
+export type ReplyAudience = (typeof REPLY_AUDIENCES)[number];
+/** The most X accounts a creator may ask a coin's agent to follow (`agentConfigSchema.watchlist`). */
+export const MAX_WATCHLIST_HANDLES = 5;
+
 export const agentConfigSchema = z
   .object({
     agentId: z.string().min(1).max(128),
@@ -213,6 +219,23 @@ export const agentConfigSchema = z
     replyAuthorIds: z.array(xIdSchema).max(16).default([]),
     /** Stable X author ids the owner never wants answered. */
     blockedAuthorIds: z.array(xIdSchema).max(64).default([]),
+    /**
+     * Whether the agent may comment on a post it read, as a post of its own (`publish_post` with `about`;
+     * docs/design/agent-tools-2.md section 4). Absent = on; the creator switches it off in the console.
+     */
+    comments: z.boolean().optional(),
+    /**
+     * Who gets a reply: `verified` (verified accounts, the creator's list and other Bootr agents, as before the field
+     * existed) or `own_threads`, which also answers anyone who replies directly under one of the agent's own posts.
+     * Absent = the deployment's default (`REPLY_AUDIENCE_DEFAULT`).
+     */
+    replyAudience: z.enum(REPLY_AUDIENCES).optional(),
+    /**
+     * X accounts the creator asked the agent to follow: handles without the `@`, lower-case, at most
+     * `MAX_WATCHLIST_HANDLES`. Their latest posts reach the agent as the `watchlist` observation section
+     * (apps/supervisor/src/watchlist.ts). Absent or empty = none.
+     */
+    watchlist: z.array(z.string().regex(/^[a-z0-9_]{1,15}$/, 'expected a lower-case X handle without @')).max(MAX_WATCHLIST_HANDLES).optional(),
     /** Bumped by the control plane whenever anything above changes. */
     revision: z.number().int().min(0).default(0),
   })
@@ -290,6 +313,8 @@ const text = (max: number) => z.string().trim().min(1).max(max);
 
 /** Most ids one `resolve_mentions` call takes. */
 export const MAX_RESOLVE_BATCH = 20;
+/** The most characters the note of `note_what_works` holds. */
+export const WHAT_WORKS_NOTE_MAX_CHARS = 600;
 
 export const toolInputSchemas = {
   read_mentions: z.object({}).strict(),
@@ -346,6 +371,8 @@ export const toolInputSchemas = {
   recall: z
     .object({ query: z.string().max(200).optional(), id: z.string().max(128).optional(), offset: z.number().int().min(0).optional() })
     .strict(),
+  // The agent's one note on what works for its coin (apps/supervisor/src/what-works.ts): replaced, never added to.
+  note_what_works: z.object({ text: text(WHAT_WORKS_NOTE_MAX_CHARS) }).strict(),
   finish: z
     .object({
       memory: z.string().max(16000),

@@ -38,6 +38,7 @@ import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requ
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import { coinFeesSection } from './coin-fees.js';
+import { coinTodaySection } from './coin-today.js';
 import { clankerV5CoinOf } from './launch-source.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
@@ -445,6 +446,8 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...bountyEntriesSection(config, inputs.bountyConversations ?? null),
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
+      // A coin's own day, built by code from the index (coin agents only; `state.briefAt` keeps what it compares with): coin-today.ts.
+      ...(await coinTodaySection(ctx, agent, config, state, inputs.market)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
       ...(await postPerformanceSection(ctx, agent.agentId)),
       // What it said in the last day (recent-posts.ts): no repeats, and the creator's rejection notes.

@@ -151,7 +151,7 @@ describe('the docs on own agents', () => {
     }
     const api = pageToMarkdown('api');
     expect(api).toContain('`{launchesPaused, allowedModels, ownAgent}`');
-    for (const name of ['bootr_agent_connect', 'bootr_agent_due', 'bootr_agent_turn', 'bootr_agent_upload_picture', 'bootr_agent_finish', 'bootr own watch', 'BOOTR_PICTURES_DIR', '/api/agent/run/*', '/api/agent/connect/*', '0.2.0']) expect(api, name).toContain(name);
+    for (const name of ['bootr_agent_connect', 'bootr_agent_due', 'bootr_agent_turn', 'bootr_agent_upload_picture', 'bootr_agent_finish', 'bootr own watch', 'BOOTR_PICTURES_DIR', '/api/agent/run/*', '/api/agent/connect/*', '0.3.0', 'bootr_prepare_swap', 'bootr_agent_note_what_works']) expect(api, name).toContain(name);
     // a bare /connect page does not exist: the docs send people to the link their client shows
     expect(api).not.toMatch(/\/connect(?!\/\*|Start|Token)\b(?!`)/);
     const agents = pageToMarkdown('agents');

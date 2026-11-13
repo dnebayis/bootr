@@ -355,8 +355,48 @@ export const postMetrics = pgTable(
     quotes: integer('quotes').notNull().default(0),
     impressions: integer('impressions'),
     unavailable: boolean('unavailable').notNull().default(false),
+    /** Read with the other counts since the facts exist (null on older rows and when X did not say). */
+    bookmarks: integer('bookmarks'),
+    /** Author-only counts, present when X returned them for the agent's own token. Stored, shown to nobody yet. */
+    profileClicks: integer('profile_clicks'),
+    linkClicks: integer('link_clicks'),
+    /** What the post was, from Bootr's own rows at measure time (post-performance.ts `PostFeatures`); null on older rows. */
+    features: jsonb('features').$type<PostFeatures>(),
   },
   (t) => [index('sv_post_metrics_agent_posted_idx').on(t.agentId, t.postedAt)],
+);
+
+/** What a measured post was (docs/design/agent-tools-2.md section 6.2): the facts are computed over these. */
+export interface PostFeatures {
+  form: 'post' | 'thread' | 'comment' | 'reply';
+  picture: boolean;
+  chars: 'short' | 'medium' | 'long';
+  /** UTC hour the post went out, 0..23. */
+  hour: number;
+  /** Sent by the schedule (`sv_actions.action.scheduled`), not by the turn that wrote it. */
+  scheduled: boolean;
+  /** The agent's own word for what the post was about; absent when it gave none. */
+  topic?: string;
+}
+
+/**
+ * The agent's note on what works for its coin (what-works.ts): one row per version, newest first, the last
+ * `WHAT_WORKS_KEEP` kept. `text` is the note as it passed the checks ('' on a row the creator's clear wrote), `facts`
+ * the lines of the facts table the agent had in front of it, `action_id` the `note_what_works` action that wrote it,
+ * `via` who did: null for the Bootr agent, 'own' for an own agent's client, 'creator' for a clear from the console.
+ */
+export const whatWorks = pgTable(
+  'sv_what_works',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    text: text('text').notNull(),
+    facts: jsonb('facts').$type<Record<string, unknown>>().notNull(),
+    actionId: text('action_id'),
+    via: text('via'),
+    createdAt: ts('created_at').notNull(),
+  },
+  (t) => [index('sv_what_works_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
 /** Small key/value store for pollers (launch event block cursor). */

@@ -25,6 +25,8 @@ import type {
   AgentNotifications,
   AgentConfig,
   AgentConfigChanges,
+  AgentWhatWorks,
+  WhatWorksItem,
   AgentFuel,
   AgentPost,
   AgentStatus,
@@ -129,6 +131,8 @@ interface Store {
   bounties: Map<string, BountyJob[]>;
   /** The creator's inbox per kernel, built lazily like the config. */
   inboxes: Map<string, MockInbox>;
+  /** The agent's note on what works per kernel, built lazily like the config. */
+  whatWorks: Map<string, AgentWhatWorks>;
   /** The creator's chat per kernel. */
   chats: Map<string, AgentChatMessage[]>;
   /** The coin's own links (what the hosted contract URI would carry), keyed by the token's `metadata` URL. */
@@ -502,7 +506,7 @@ function init(): Store {
     updatedAt: now,
   };
 
-  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), chats: new Map(), approvals: new Map(), bounties: new Map(), links, images: new Map(), fresh };
+  return { now, tokens, agents, trades, daily, platform, seq: 0, configs: new Map(), activity: new Map(), inboxes: new Map(), whatWorks: new Map(), chats: new Map(), approvals: new Map(), bounties: new Map(), links, images: new Map(), fresh };
 }
 
 export function mockStore(): Store {
@@ -975,6 +979,18 @@ export const mock = {
         fields.push('bounty caps');
       }
     }
+    if (changes.comments !== undefined && changes.comments !== cfg.comments) {
+      cfg.comments = changes.comments;
+      fields.push('comments');
+    }
+    if (changes.replyAudience !== undefined && changes.replyAudience !== cfg.replyAudience) {
+      cfg.replyAudience = changes.replyAudience;
+      fields.push('reply audience');
+    }
+    if (changes.watchlist !== undefined && JSON.stringify(changes.watchlist) !== JSON.stringify(cfg.watchlist)) {
+      cfg.watchlist = [...changes.watchlist];
+      fields.push('watched accounts');
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -1013,6 +1029,20 @@ export const mock = {
     if (token) token.model = change.runner === 'own' ? OWN_AGENT_MODEL_ID : cfg.model;
     activityFor(kernel).unshift({ at: cfg.updatedAt, kind: 'config_updated', summary: `Creator ${by.slice(0, 6)}…${by.slice(-4)} changed who runs the agent: ${change.runner === 'own' ? 'their own AI client' : 'Bootr'} (revision ${cfg.revision}).` });
     return { ok: true, response: { runner: change.runner, revision: cfg.revision, notes } };
+  },
+  /** The agent's note on what works and its earlier versions (lib/types AgentWhatWorks). */
+  whatWorks(kernel: string): AgentWhatWorks {
+    return clone(whatWorksFor(kernel));
+  },
+  /** The creator clears the note in force, as the agent service would: a row of its own, the earlier versions kept. */
+  clearWhatWorks(kernel: string): AgentWhatWorks {
+    const view = whatWorksFor(kernel);
+    if (view.current) {
+      view.items.unshift({ id: `ww_clear_${view.items.length}`, text: '', at: new Date().toISOString(), by: 'creator', facts: [] });
+      view.items.splice(5);
+      view.current = null;
+    }
+    return clone(view);
   },
   /** The creator's inbox (lib/types AgentNotifications). */
   agentNotifications(kernel: string): AgentNotifications {
@@ -1248,6 +1278,9 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     imageStyle: { reference: /^https:\/\//i.test(t.image) ? t.image : null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     bounties: { ...BOUNTIES_DEFAULTS },
+    comments: true,
+    replyAudience: 'verified',
+    watchlist: [],
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
     xHold: null,
@@ -1275,6 +1308,9 @@ function orphanConfig(kernel: Address): AgentConfig {
     imageStyle: { reference: null, notes: '' },
     services: { ...SERVICES_DEFAULTS, allow: [], deny: [] },
     bounties: { ...BOUNTIES_DEFAULTS },
+    comments: true,
+    replyAudience: 'verified',
+    watchlist: [],
     revision: 0,
     updatedAt: new Date().toISOString(),
     xHold: null,
@@ -1510,6 +1546,32 @@ const MOCK_EVENTS: readonly { key: string; label: string }[] = [
   { key: 'model_changed', label: 'Model changed by the platform' },
   { key: 'model_unavailable', label: 'Model not available' },
 ];
+
+/** Mock mode has one note per coin: a current one and the version before it, each with the facts it was written from. */
+function whatWorksFor(kernel: string): AgentWhatWorks {
+  const s = mockStore();
+  const key = kernel.toLowerCase();
+  let view = s.whatWorks.get(key);
+  if (!view) {
+    const at = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    const items: WhatWorksItem[] = isFresh(key)
+      ? []
+      : [
+          {
+            id: 'ww_mock_2',
+            text: 'Posts with a picture draw about twice the responses of plain ones. Short posts in the afternoon do better than long ones in the morning. Threads are not worth it yet: no clear difference.',
+            // half days, so "3d ago" does not flip to "2d ago" with the page's clock a moment behind the store's
+            at: at(3.5),
+            by: 'agent',
+            facts: ['with a picture: 14 posts, median 9 responses; without: 31 posts, median 4', 'short (up to 100 characters): 18 posts, median 7 responses; long (over 200): 12 posts, median 3', 'as a thread or as one post: no clear difference (8 and 37 posts, medians 5 and 5)'],
+          },
+          { id: 'ww_mock_1', text: 'Posts with a picture seem to do better. Too early to say more.', at: at(10.5), by: 'agent', facts: ['with a picture: 9 posts, median 8 responses; without: 14 posts, median 4'] },
+        ];
+    view = { enabled: true, maxChars: 600, current: items[0]?.id ?? null, nextRevisionAt: items.length ? at(-3.5) : null, items };
+    s.whatWorks.set(key, view);
+  }
+  return view;
+}
 
 type MockInbox = { items: AgentNotification[]; optOut: string[]; telegram: AgentNotifications['telegram']; available: boolean };
 

@@ -33,8 +33,16 @@ const X_CONNECT = read('app/api/agent/x-connect/route.ts');
 const LINKS = read('app/api/agent/[kernel]/links/route.ts');
 const CLAIM = read('app/api/agent/claim/[id]/route.ts');
 
+/**
+ * The swap route's own refusals (the Trade panel's `lib/swap/errors.ts` codes it passes on, and the ones of
+ * `lib/swap/prepare.ts`, which arrives with the route from another branch). The skill's error table lists them; the
+ * test below checks each against the source that answers it, as far as that source is here yet.
+ */
+const SWAP_PANEL_CODES = ['no_balance', 'no_liquidity', 'no_pool', 'launch_window'];
+const SWAP_ROUTE_CODES = ['not_available', 'not_tradable', 'trading_not_open', 'fee_too_high', 'no_quote'];
+
 /** Being merged from other branches; the skill links to them on purpose. Everything else must exist today. */
-const PENDING = new Set(['/api/catalog', ...DOC_PAGES.filter((p) => p.slug).map((p) => `/docs/${p.slug}.md`)]);
+const PENDING = new Set(['/api/catalog', '/api/agent/swap', ...DOC_PAGES.filter((p) => p.slug).map((p) => `/docs/${p.slug}.md`)]);
 
 /** Every page and route handler under app/, as a regular expression over the URL path. */
 function appRoutes(dir = APP, prefix = ''): RegExp[] {
@@ -177,12 +185,22 @@ describe('matches the agent API', () => {
 
   it('lists every error code the four routes return, and none they do not', () => {
     const codes = (src: string) => [...src.matchAll(/(?:fail|refuse)\(\s*\d+,\s*'([a-z_]+)'/g)].map((m) => m[1]!);
-    const real = new Set([...codes(LAUNCH), ...codes(X_CONNECT), ...codes(LINKS), ...codes(CLAIM), 'siwe_rejected']);
+    const real = new Set([...codes(LAUNCH), ...codes(X_CONNECT), ...codes(LINKS), ...codes(CLAIM), 'siwe_rejected', ...SWAP_PANEL_CODES, ...SWAP_ROUTE_CODES]);
     expect(real.size).toBeGreaterThan(15);
     for (const code of real) expect(errors, code).toContain(`\`${code}\``);
     const table = errors.split('\n').filter((l) => /^\| \d/.test(l));
     const listed = table.flatMap((l) => [...l.split('|')[2]!.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]!));
     expect(listed.filter((c) => !real.has(c))).toEqual([]);
+  });
+
+  it('names only swap refusals the swap route answers', () => {
+    const panel = read('lib/swap/errors.ts');
+    for (const code of SWAP_PANEL_CODES) expect(panel, code).toContain(`'${code}'`);
+    // The route's own file arrives with the route; until then its codes are the build contract's.
+    const prepare = path.join(WEB, 'lib/swap/prepare.ts');
+    if (existsSync(prepare)) for (const code of SWAP_ROUTE_CODES) expect(readFileSync(prepare, 'utf8'), code).toContain(`error: '${code}'`);
+    const swap = section('Post-Launch Operations');
+    for (const code of [...SWAP_PANEL_CODES, ...SWAP_ROUTE_CODES]) expect(swap, code).toContain(`\`${code}\``);
   });
 
   it('puts each signature reason under its status, and leaves nothing it no longer does', () => {
