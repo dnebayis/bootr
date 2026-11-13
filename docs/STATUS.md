@@ -268,6 +268,10 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 - npm publish of `@bootrfun/sdk`, `cli`, `mcp`: the account was suspended on 2026-11-06 and every publish answered
   404; the live docs still say `npx @bootr/mcp`. Check the suspension, regenerate the recovery codes, publish sdk,
   cli, mcp in that order.
+- MCP directories (prepared 2026-11-13, nothing submitted): `packages/mcp/server.json` and `mcpName` (`fun.bootr/mcp`)
+  are in the repository and the three packages are at 0.2.1, unpublished. The owner's steps, in order (npm 0.2.1, a
+  TXT record on `bootr.fun`, the official registry, Glama, the awesome list, mcp.so), the listing copy and what each
+  directory needs are in [`dev/mcp-listings.md`](./dev/mcp-listings.md).
 - X quota hold redesign: a launch-day agent fills its 24 posts and goes silent, mention reads included, until the
   window rolls. Options: a launch-day quota, or reading mentions during the hold and queueing replies.
 - Chainstack ($49 a month) for the indexer's `eth_getLogs` if 429s persist on the CDP key.
