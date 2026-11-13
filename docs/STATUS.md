@@ -211,10 +211,33 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    `BOOTR_CLANKER_V5_LAUNCHER_ADDRESS` and `NEXT_PUBLIC_CLANKER_V5_LAUNCHER_ADDRESS`. The v4 `BootrClankerLauncher` was
    paused 2026-11-12 (block 56350801); `pause()` gates `launch()` only, so v4 coins keep trading and their fees stay
    claimable. Remains: a Bootr-owned v5 test coin and a fork run of a buy and a sell through the web's calldata on it.
-10. **Clanker on Robinhood Chain** (research only, nothing built; design note section 11): Clanker v5 is live there
-   (chain 4663, an Arbitrum Nitro rollup), but Bootr's stack is Base-only today (address book, contracts, indexer,
-   supervisor, web), there is no Circle USDC (USDG instead), no Coinbase CDP and no x402 inference seller, so the
-   launchpad can close there but the agent economy needs a bridge step. The staged plan and sizes are in section 11.
+10. **Robinhood Chain, next to Base** (decided 2026-11-13 as the next work after item 12; designed, nothing built;
+   [`design/robinhood-chain.md`](./design/robinhood-chain.md) replaces section 11 of the v5 migration note): Bootr
+   opens on Robinhood Chain (chain 4663, an Arbitrum Nitro rollup, 10 blocks a second) as well as Base, both live.
+   - **What was checked on the chain (2026-11-13).** Clanker v5 is live there with the same verified source as on
+     Base; Uniswap v4 and v3, USDG (6 decimals, deep WETH pools), a Chainlink ETH/USD feed, Kernel v3.1, the
+     EntryPoint and the ERC-8004 registries exist, the last three at Base's addresses. Missing: Circle USDC, any
+     seller of thinking, Coinbase CDP, builder codes, RWAGMI, a free archive RPC. A launch costs about 15 cents.
+   - **The design.** One web, sender, relay, supervisor and database for both chains, one indexer per chain
+     (`DATABASE_SCHEMA_RH` beside `DATABASE_SCHEMA`; a change to the indexer bumps both). An agent there keeps its
+     fuel on Base, at its spender's address, which is the same on every chain: the creator sends it at the
+     opening, a bridge from the treasury (Across, recipient pinned by the call policy) follows. Agent ids on the
+     new chain are `4663:<number>`; Base ids stay as they are. Launch paths there: Clanker v5 only (ETH or USDG),
+     no RWAGMI. Web addresses: `/robinhood/token/<address>`.
+   - **Robinhood Agents** (the two help articles the owner sent) is a brokerage product with no on-chain part;
+     nothing in the design depends on it.
+   - **Clanker or an own launcher.** Recommended: open on the existing `BootrClankerLauncherV5`, and start Bootr's
+     own launcher (factory, hook, escrow; a coin's terms frozen, agent features only in the account's modules) now
+     as a separate track for both chains with an outside review. Clanker takes a third of the tax at the default
+     1.5%. The owner decides (note section 11, decision 1).
+   - **Honest numbers.** Clanker v5 on Robinhood Chain: 93 launches and 267 trades in its first 8 days, a few
+     thousand dollars of volume. The chain itself moves hundreds of millions a day in stock tokens and dollars.
+   - **Before any stage**: item 12 shipped, the admin key off the server, the hook-based swap read (`bootr_v10`,
+     parked list) live, a larger server, an RPC account with archive reads and a bundler account for 4663, a
+     lawyer's answer on the chain's name in a launch page and on who may use it.
+   - **Stages** (note section 10): R1 chain model 2 days, R2 contracts 5 plus the owner's deploy, R3 indexer 4, R4
+     supervisor 7 (migration `0014_chain_id`), R5 web and packages 7, R6 end to end and opening 3, R7 fuel bridge
+     5 plus a review; about three weeks on the calendar with four builders. Sixteen decisions wait for the owner.
 11. **Bring your own agent** (built and merged 2026-11-13, not deployed, dark behind `OWN_AGENT_ENABLED`;
    [`design/byo-agent.md`](./design/byo-agent.md)): a coin's creator runs the coin's agent in their own AI client
    (Claude Code, Cursor, Codex, Claude Desktop) through the Bootr MCP server. Only the thinking moves to the client:
@@ -307,7 +330,9 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 - Indexer reads every Uniswap v4 swap on Base (noted 2026-11-11): the `PoolManager` source has no filter, because Ponder
   cannot filter by pool ids unknown before each launch, so a full re-read (the `bootr_v9` backfill took ~40 min) walks
   all of Base's v4 swaps. Fix: listen to the RWAGMI, Clanker v4 and Clanker v5 hooks instead, after checking that price
-  and volume come out the same as from `Swap`; ships as `bootr_v10` with the next indexer change.
+  and volume come out the same as from `Swap`; ships as `bootr_v10` with the next indexer change. Since 2026-11-13
+  it is a prerequisite of item 10: Robinhood Chain has about 7 Uniswap v4 swaps a second, so its indexer cannot use
+  the unfiltered read at all.
 
 - Roadmap page: where it lives and how open it is (the direction of 2026-11-08 says agents trade, run their treasury
   and use x402 services, and later a bring-your-own agent).

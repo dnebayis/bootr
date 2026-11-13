@@ -436,6 +436,9 @@ minutes of backfill (`docs/deploy/coolify.md` section 2, step 4). Check it yours
 
 ## 11. Robinhood Chain
 
+**Superseded on 2026-11-13 by [`robinhood-chain.md`](./robinhood-chain.md)**, which re-checked every fact below on
+the chain and says in its section 8 what changed. Kept as the record of what was known on 2026-11-10.
+
 The owner's next step after v5: launch through Clanker on Robinhood Chain as well as Base. Research only; nothing is
 built. Marks as above; the research was done on 2026-11-10 from Robinhood's docs (`docs.robinhood.com/chain/*`),
 Clanker's deployed-contracts page and SDK, chain explorers and the RPC, and the providers' own docs.
