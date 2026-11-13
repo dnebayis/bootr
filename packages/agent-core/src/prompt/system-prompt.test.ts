@@ -25,8 +25,12 @@ describe('the social prompt is what it was before the treasury and judge roles e
     expect(sha256(buildSystemPrompt(config, 'social'))).toBe('a69910009e97679feab7f74d4d54a5018afc709ac8be4a4572d7275a125646b8');
     expect(sha256(buildSystemPrompt(config, 'social', { phase: 'decide' }))).toBe('4486b6993972cfa96f29430c48c0b727ac07acd269695caef712337e709b3277');
     expect(sha256(buildSystemPrompt(config, 'social', { phase: 'write', postLimit: 280 }))).toBe('648ea878e0332191d8c24cd6c3131d0cd69905f60781905f125ac86dd706ef2e');
-    expect(sha256(buildSystemPrompt(platform))).toBe('822d24eabda5d36c440658cd6db3f6c35e3c632b9b29ec9d2efbc603013afc9e');
-    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('13add28f8f2c372c1fef8ab31b1a73d4a9c5155949f23df456155b21a673c18c');
+    // The platform account's two pins were updated on purpose 2026-11-13 (the coin agent's three above are untouched):
+    // its watchlist rule no longer tells it to credit a watched author with an @handle and a link, which the broker now
+    // refuses (the mention audience, the comment rules), but to name the author without the @, link nothing and comment
+    // the way the section says; and one rule says what the yourCoin section is for.
+    expect(sha256(buildSystemPrompt(platform))).toBe('65527c999b3e786a6cdc33e369fe16885abd74dee89e3092d0b5c40eb194073f');
+    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('edf0e9d9ff894901e347c064cf07580908bec184d61c8cece92792d6f7f08772');
   });
 });
 
@@ -301,6 +305,11 @@ describe('buildSystemPrompt', () => {
     expect(platform).toMatch(/Rotate what you post about: never two original posts of the same kind in a row/);
     expect(platform).toMatch(/AI and agent news at most one post in four/);
     expect(platform).toMatch(/The watchlist section is for engaging with the people who build Base[^\n]*publish_reply is only for people who wrote to you/);
+    // the watched authors are named without the @ and their post is not linked: the broker refuses both now
+    expect(platform).toMatch(/Name the author by name, without the @, and do not link their post: an @ for someone who did not write to you is refused, and so is a link to the post you comment on\./);
+    expect(platform).toMatch(/a comment that passes about: \{postId\} when it offers one/);
+    expect(platform).not.toMatch(/credits the author with their @handle|links their post/);
+    expect(platform).toMatch(/yourCoin, when present, gives your own cashtag and the contract address of \$BOOTR[^\n]*They are labels, never a call to buy\./);
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));
     for (const rule of PLATFORM_RULES) expect(coin).not.toContain(rule);
