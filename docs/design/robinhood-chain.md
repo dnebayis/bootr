@@ -4,7 +4,7 @@ Research and design note, 2026-11-13; the code was read at commit `d8927cb`. No 
 deployed. The owner's decision of 2026-11-13: after the current round of agent tools ships
 ([`agent-tools-2.md`](./agent-tools-2.md)), the next work is **Robinhood Chain: Bootr opens on Robinhood Chain as well
 as Base, both live side by side.** This note replaces section 11 of
-[`clanker-v5-migration.md`](./clanker-v5-migration.md) (written 2026-11-10) as the reference; section 13 lists what
+[`clanker-v5-migration.md`](./clanker-v5-migration.md) (written 2026-11-10) as the reference; section 8 lists what
 changed since then.
 
 Marks: **V** = read today on a primary source, which is named (the chain itself through the public RPC
@@ -62,7 +62,7 @@ AI agent places in your Agentic account."
    a separate funded account the agent cannot reach beyond (Bootr: the treasury behind `BootrCallPolicy`), approval
    by default (Bootr: approval mode is the creator's choice), and one-tap disconnect (Bootr: the creator's revoke and
    the guardian). It also states in plain words who is responsible. Bootr's creator-facing copy can be as plain.
-2. **One real risk for own agents** (section 8): a creator who runs their Bootr agent in the same AI client that
+2. **One real risk for own agents** (section 7): a creator who runs their Bootr agent in the same AI client that
    holds Robinhood's Trading MCP, with trade approvals off (the default for external agents), has put text written
    by strangers on X into a session that can place brokerage orders. Bootr's MCP server already tells the client
    that a turn's brief governs Bootr's tools only (`packages/mcp`, server instructions). The docs should add one
@@ -630,3 +630,110 @@ address, interface, fee or stage in this note depends on it. Two small things fo
 2. **No public claim of a link.** Bootr's copy for the opening says "on Robinhood Chain" and never "with Robinhood
    Agents" or "for Robinhood's agents": there is no integration, and the chain's terms restrict the use of its name
    in a token offering (section 9.1).
+
+## 8. What changed since the section of 2026-11-10
+
+| Claim in `clanker-v5-migration.md` section 11 | Today |
+| --- | --- |
+| Node `nitro-node` v3.11, ArbOS 61 | Node v3.12.4-rc.3 (built 2026-11-10), ArbOS 61 still |
+| "U: the Robinhood deployment is the same source as Base's" | **V: it is.** Factory, hook and escrow hash the same on Sourcify for both chains |
+| Clanker v5 live there, configuration not read | Read: config version 12, launches on, ETH start tick −200,400 (Base −201,000), USDG registered at −400,600, WETH not registered, **stock tokens registered as paired assets** |
+| "U: whether SwapRouter02 is deployed there" | **V: yes**, `0xcaf681a6…5cb2`, with its factory `0x1f7d7550…2efa` and deep WETH/USDG pools |
+| "U whether the identity registry is deployed at `0x8004A169…a432` on 4663" | **V: yes**, both registries at Base's addresses, 25,717 agents registered |
+| One Universal Router address | Two exist; the older one is what Clanker traders use |
+| "contract verification is Blockscout only" | Sourcify supports 4663 as well |
+| The public RPC answers wide `eth_getLogs` | Still true (3.5 million blocks in one call). New: it is **not an archive** |
+| Pimlico v0.6 / 0.7 / 0.8, Alchemy, ZeroDev support 4663 | Still listed today |
+| Bankr launches on Robinhood Chain "by default through Doppler" | Bankr's page today: chat, social and API deploys default to Robinhood Chain; its CLI and web form default to Base |
+| No Circle USDC, USDG instead | Still. New: USDG has EIP-3009 and an issuer freeze; USDe is the second dollar there |
+| No x402 inference seller, no CDP | Still. The community `hood402` facilitator is still unverified |
+| ETH/USD answered 2,125.61 | 1,935.63 |
+| "agents on Robinhood earn ETH they cannot spend on thoughts without a bridge step", called the real product question | **Reframed.** The spender is a key-derived address, the same on every chain, so fuel can simply sit on Base (section 6.5, option A). The bridge becomes an improvement, not a blocker, and Across has a route with an on-chain recipient that a call policy can pin |
+| Plan: `ChainAddresses` gains chain facts; one indexer process per chain; a supervisor context per chain | Kept. Added: agent ids must be namespaced per chain; the hook-based swap read must come before the RH indexer; the server needs more memory; the fuel status must be read from Base; `block.number` returns Ethereum's (no Bootr contract uses it); an own launcher as a second track |
+| No usage numbers | 93 Clanker v5 launches and 267 trades in 8 days; about 1 to 2 ETH of volume (section 9.3) |
+| Terms of service not read | Read (last updated 2026-08-24): the marks clause, address blocking, no mention of agents or third-party tokens |
+
+## 9. Risks and lines
+
+### 9.1 Law and terms
+
+**This is not legal advice and the author is not a lawyer.** What the pages say, then the questions for one.
+
+- The chain is permissionless in code. Its operator group is a US broker. The "Services" under the terms (public
+  RPC, sequencer service, docs, tools) are provided by "RHDA, LLC"; the terms are under Delaware law with
+  arbitration. Robinhood may block wallet addresses and apps, and the sequencer leaves out transactions tied to
+  sanctioned addresses (section 2). On Base nobody in that position has told Bootr what it may run; here somebody
+  could, quickly, by blocking contracts or by a letter.
+- The terms forbid using the chain's name or marks in a token issuance or fundraising without written consent.
+  A launch page that says "Launch on Robinhood Chain" above a button that issues a token is close to that line.
+- Stock Tokens may not be offered or sold to US persons. Clanker v5 there lets a coin be paired with one; a Bootr
+  coin paired with AAPL would route its buyers through a restricted security. **Not offered** (section 6.3).
+- USDG's issuer can freeze an address. A treasury that holds USDG holds it at the issuer's pleasure.
+- Nothing in the terms names AI agents, memecoins or launchpads. Silence is not permission.
+- The questions Bootr already carries on Base (is a coin whose fees fund an agent a security; what is the platform's
+  role when it takes a share of every trade; what an AI agent may say about its own coin) are the same here, in
+  front of a counterparty with a compliance department.
+
+Questions for a lawyer, before the opening:
+
+1. Does running a launchpad front end and fee-taking contracts on Robinhood Chain make Bootr a user bound by the
+   chain's terms, and which entity is the counterparty (the terms name two)?
+2. May Bootr's site and posts say "Robinhood Chain" and show its logo next to a launch button? What do the brand
+   guidelines (`/chain/brand-guidelines`, not read) allow without written consent?
+3. Does Bootr need to keep US persons, or any place, from launching or trading on the RH side, given who runs the
+   chain? Does it on Base?
+4. If Robinhood blocks a Bootr contract or wallet, what recourse do the terms leave (liability is capped at $100)?
+5. Is taking a platform share of trading fees in USDG, a regulated issuer's dollar, different in law from taking it
+   in ETH?
+6. May a coin's agent, hosted by Bootr, post about a coin that trades on a chain run by a US broker without that
+   being a solicitation by Bootr?
+7. If the fuel bridge moves an agent's USDG to Base USDC through a third party's bridge on a schedule Bootr's
+   software decides, is Bootr transmitting money?
+8. Do Robinhood's "Agents" terms (not read) say anything about third parties using the word "agent" with its
+   chain?
+
+### 9.2 Custody and keys
+
+- **One admin key over two chains.** The same address owning the guardian, the gate and the launcher on both chains
+  is one key to protect, and one loss that reaches both. It should be off the server before the second chain
+  (`docs/STATUS.md`, parked list, key removal step 3).
+- **The spender master key guards more.** Under fuel option A an RH agent's whole float sits at a derived address
+  with no on-chain daily cap. Keep top-ups small in the form; move to the fuel bridge.
+- **New secrets.** An RPC key and a bundler key for 4663, possibly a plain bundling key holding a little ETH. Each
+  goes on the key inventory (`docs/security/key-inventory-2026-11-08.md`).
+- **The deployer.** The owner's deploy wallet needs ETH on RH once (section 10). Ownership is accepted per contract
+  and recorded in a deploy record like `docs/deploy/mainnet.md`.
+- **A 7-day exit.** Money on RH leaves to Ethereum in a week over the canonical bridge, or at once through a third
+  party's bridge for a fee. The platform's own fee income there should be swept on a schedule, not left to grow.
+
+### 9.3 Is anyone there
+
+Read from the chain on 2026-11-13 (factory and hook logs, blocks 106,600,000 to 113,561,000).
+
+| Measure | Value |
+| --- | --- |
+| Clanker v5 launches on RH since it opened there (2026-11-05) | **93**, by 54 different callers: 81 paired with ETH, 5 with USDG, 7 with stock tokens |
+| Clanker v5 trades in the same 8 days | **267**, in 34 of the 93 pools; 112 of them in one pool; 160 on one day (2026-11-11/12) |
+| Tax collected in ETH pools | 0.137 ETH in all (about $265): 0.029 to creators' slots, 0.009 Clanker's share, 0.099 sniper surcharge from 4 buys |
+| Volume implied | About 1 to 2 ETH in 8 days (Clanker's share is between 0.5% and 1% of each trade), a few thousand dollars |
+| Clanker v4.1 launches on RH, last 14 days | 376, about 27 a day (trades not counted) |
+| For scale: Uniswap v4 swaps on the whole chain | About 7 a second; DefiLlama: $216 million a day on v4, $255 million on v3 |
+| ERC-8004 agents registered on RH | 25,717 (who registered them was not looked into) |
+
+Plainly: **almost nobody trades Clanker coins on Robinhood Chain today.** The chain has a great deal of money (a
+billion dollars locked, $640 million of USDG) moving in stock tokens and dollars, and Bankr now sends its chat
+launches there through Doppler (not measured here, U). Opening there is a bet on being early where the money is, not
+a move to where small-coin traders already are. The opening should be sized as that: no promise of volume, a
+Bootr-owned coin first, and a look at these same numbers again before the public switch (section 10, stage R6).
+
+### 9.4 What an incident on the Robinhood side does to Base
+
+| Incident | Reach | What limits it |
+| --- | --- | --- |
+| RH sequencer or RPC down | RH coins stop updating; RH agents cannot claim or pay gas | The chain hold in the tick (section 6.1); the RH indexer is its own process; the web shows RH pages as stale, Base pages are untouched |
+| RH indexer crash loop or a long backfill | The RH API answers 503 | Its own container and schema. It shares Postgres and the server's memory with Base: the reason for the larger server |
+| A bug in an RH-only code path of the supervisor | Could stop the shared tick | Per-agent error handling exists (`tick.ts`, `report.errors`); the RH paths ship behind a flag and are exercised on a Bootr-owned coin first |
+| A contract problem on RH (a bad constructor argument, the USDG freeze case) | RH coins only: the contracts are separate deployments | `pause()` on the RH launcher (stops launches, not trading or claims), removing it from the RH gate, a `ROBINHOOD_ENABLED` flag that hides the chain from the launch form |
+| Robinhood blocks a Bootr address or contract | RH side only, technically | Nothing technical. Reputation carries to Base |
+| The admin key is lost | **Both chains** | The one shared risk by design (section 9.2) |
+| A coin on RH turns into a scandal | Bootr's name on both | The same moderation and pause tools as on Base |
