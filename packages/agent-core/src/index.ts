@@ -5,6 +5,7 @@ export * from './tools.js';
 export * from './json-schema.js';
 export * from './social/addressing.js';
 export * from './social/post-validation.js';
+export * from './social/thread.js';
 export * from './social/communication-policy.js';
 export * from './social/disclosure-policy.js';
 export * from './social/schedule.js';
