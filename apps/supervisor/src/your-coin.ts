@@ -225,7 +225,7 @@ export interface YourCoinView {
 export function yourCoinMeaning(limit: number, cashtag: boolean): string {
   return [
     `Your own coin's labels.${cashtag ? ' Use the cashtag when a post is about your coin, and never more than one cashtag in a post.' : ''}`,
-    'Give the contract address when someone asks where your coin is or how to find it, and put it in an original post when addressDue is true (none of your original posts of the last 24 hours carried it).',
+    'Give the contract address when someone asks where your coin is or how to find it, and put it in an original post when addressDue is true (none of your original posts of the last 24 hours carried it). Word each such post or reply anew: X refuses the same text twice.',
     "Never another coin's cashtag or address.",
     'A cashtag or an address is a label, not a call to buy: the rules against price talk and against telling anyone to buy or sell are unchanged.',
     `At most ${limit} posts or replies per 24 hours may carry the address, and addressLeftToday says how many are left; a reply to someone who asked where to find your coin does not use one up. Past that, say it without the address.`,

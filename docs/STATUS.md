@@ -247,29 +247,56 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
      signed for chain 84532 next to 8453 (`apps/web/app/api/siwe/verify/route.ts`); the own-agent and launch routes
      take the deployment's own chain only. Section 10 of the note says where full parity cannot be had (a role's
      clean context on someone else's machine, prompt-only rules, presence, pictures that depend on the client).
-12. **Agent tools, round two** (designed 2026-11-13, nothing built;
-   [`design/agent-tools-2.md`](./design/agent-tools-2.md)): the agent decides more by itself, hosted or own, inside
-   limits that live in code. Threads (up to 4 connected posts, 2 a day), comments (a post of its own about a post
-   it read, 3 a day, public authors only), its own timing (scheduled posts, 6 waiting, up to 36 hours ahead, never
-   closer together than the post interval), facts about its own posts computed by code and one note of 600
-   characters it revises weekly, a brief of its own coin's day, watched accounts for every coin, and
-   `POST /api/agent/swap` with `bootr_prepare_swap` for people. For own agents: an hourly run on GitHub Actions as
-   the one recommended recipe, a client connection that can be piped into a secret store without being printed,
-   and four notices (mentions waiting, a post due, a ruling waiting, a connection running out).
-   - **What X does not allow** (read 2026-11-13, note section 2): quote posts through the API (Enterprise plan
-     only since April 2026), a reply to anybody who did not address the account (since February 2026), unsolicited
-     @mentions, and AI-written replies without X's prior approval. So no native quote and no reply under a
-     stranger's post is built.
-   - **Found on the way.** The sender's meter says $0.01 a post; X charges $0.015, and **$0.20 for a post with a
-     link**, which nothing bounds today. A metrics read is metered as 1 whatever it returns.
-   - **How it is built.** Four workstreams in parallel (posting 6 days, time 6, surface 4, knowing 6) and 2 days
-     of integration; note section 17 is their contract. Migrations: supervisor `0012_scheduled_posts` and
-     `0013_what_works`, sender `0004_thread_and_links` (backup first). No indexer change, no `DATABASE_SCHEMA`
-     bump, no contract, no flag: each piece is switched off by setting its limit to 0. Packages go to 0.3.0.
-   - **The owner decides** the fourteen points of note section 14; the builders build the recommended answers
-     behind named constants. The ones that change what agents do today: @mentions only for accounts that
-     addressed the agent, a daily count on posts with links, and whether anyone who replies under the agent's own
-     post gets an answer (recommended only once X's approval for AI-written replies is on file).
+12. **Agent tools, round two** (built and integrated 2026-11-13 on branch `tools2/integration` and the integrator's
+   branch; not pushed, not deployed; [`design/agent-tools-2.md`](./design/agent-tools-2.md), section 18 for what was
+   built): the agent decides more by itself, hosted or own, inside limits that live in code.
+   - **What an agent gained.** Threads (up to 4 connected posts of 280 characters, 2 a day, never more posts than the
+     coin's posts per day). Comments: a post of its own about a post it read in the same turn (`about`; 3 a day, one
+     per author a day; the author is named without the `@` and not linked). Its own timing: `schedule_post`,
+     `scheduled_list`, `scheduled_cancel` (6 waiting, 10 minutes to 36 hours ahead, never closer together than the post
+     interval, sent by the tick with no thought, gated again when sent, never late and never twice). Learning: code
+     computes facts about its own posts and the agent keeps one note of 600 characters (`note_what_works`, weekly).
+     `coinToday`, a brief of the coin's own day. `yourCoin`: its own cashtag and contract address, the address in at
+     most 3 posts or replies a day.
+   - **Who gets a reply now** (the owner's decision of 2026-11-13, a hosted behaviour change): every account with a
+     blue or business verified badge as before, and anyone who writes to the agent and asks a question
+     (`REPLY_QUESTIONS_FROM_ANYONE`, on by default). Replies to accounts without a badge share one count
+     (`OPEN_REPLIES_PER_DAY`, 10 a day per coin) and start at most 10 turns a day. A creator can also open the replies
+     under the agent's own posts in the console (off by default).
+   - **What agents may no longer do.** An original post @mentions only an account that wrote to the agent in the last
+     30 days, another Bootr agent, @bootrfun or the creator's list (`MENTION_AUDIENCE`); a fourth post with a link in
+     a day is refused (8 for the platform account). The platform account's pinned prompt was changed for it: it names
+     the accounts it follows without the `@` and links nothing. Coin agents' prompt is untouched.
+   - **For people.** `POST /api/agent/swap` prepares the unsigned steps of a buy or a sell (`prepareSwap` in the SDK,
+     `bootr prepare swap` in the CLI, `bootr_prepare_swap` in the MCP server); it signs and sends nothing.
+   - **Cut by the owner during the build** (2026-11-13): the cloud run of an own agent (no GitHub Actions recipe, no
+     `own connect --export`, `own import`, `own due --roles`, no environment credential), the creator notices (waiting
+     mentions, a due post, a waiting ruling, an ending connection; no opt-in list, no background mention read), a
+     coin's own list of accounts to follow (built and removed; the platform account's `PLATFORM_WATCHLIST` stays), and
+     quote posts. Bounties are as they were.
+   - **What X does not allow** (read 2026-11-13, note section 2): quote posts through the API, a reply to anybody
+     who did not address the account, unsolicited @mentions. So no native quote and no reply under a stranger's post
+     is built.
+   - **The sender's meter** now says what X charges ($0.015 a post, $0.20 a post with a link, $0.01 a reply, $0.005 a
+     post read, $0.01 a user read), and a metrics read counts the posts it returned.
+   - **What the release needs, in order.** (1) The three checks of section 2 from the checkout going out; the indexer
+     check prints nothing (no file under `apps/indexer` changed, so **no `DATABASE_SCHEMA` bump**). (2) A database
+     backup (coolify.md section 6): three migrations run at start, supervisor `0012_scheduled_posts` and
+     `0013_what_works`, sender `0004_thread_and_links`. (3) Push, wait for the images, deploy. The two services
+     restart together; for the minutes when one is new and the other old the supervisor holds comments back and cuts
+     a thread after its first post, and nothing that was allowed before is refused (note section 18.6). (4) The
+     packages at 0.3.0 to npm: `@bootrfun/sdk`, then `cli`, then `mcp` (`pnpm publish` in each). (5) The MCP
+     server's new version to the official registry: `mcp-publisher publish` from `packages/mcp`; `server.json` is
+     at 0.3.0 already, and the steps for both are in [`dev/mcp-listings.md`](./dev/mcp-listings.md).
+   - **To check after the deploy.** One thread and one scheduled post from a Bootr-owned test coin; `bootr prepare
+     swap` for a buy and a sell sent from a test wallet; the first reply to an account without a badge that asked a
+     question; `yourCoin` in a turn's observation. Watch `sender:link_quota`, `mention_not_engaged` and
+     `address_daily_cap` in the supervisor's logs for the first day: each is an agent being told a new rule.
+   - **Switches, no deploy needed.** Each piece is off at a limit of 0: `THREADS_PER_DAY`, `COMMENT_POSTS_PER_DAY`,
+     `SCHEDULED_MAX_WAITING`, `LEARN_WINDOW_DAYS`, `WHAT_WORKS_MAX_CHARS`, `COIN_BRIEF_MAX_CHARS`,
+     `ADDRESS_POSTS_PER_DAY`, `OPEN_REPLIES_PER_DAY`; `REPLY_QUESTIONS_FROM_ANYONE=false` and
+     `MENTION_AUDIENCE=anyone` put replies and mentions back to what they were. With all of them a hosted turn was
+     compared, value for value, with one recorded before the round.
    - **The platform account** runs as a Bootr agent. It was switched to an own agent for a test on 2026-11-13
      (15:22 UTC; one turn at 15:27, no post) and switched back.
    - **Right after this round** (note section 11): the admin key off the server, `BootrCallPolicy` v2, the
