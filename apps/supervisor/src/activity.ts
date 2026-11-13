@@ -14,6 +14,9 @@
  *   - `sv_bounty_jobs`: one row per job event (posted, judged, paid, no winner, cancelled, expired), in plain words
  *     with no address (bounties.ts `bountyActivity`). The job an own agent's client posted and the ruling it gave
  *     carry the same mark as its other rows.
+ * A thread is one `post` row that says how many of its posts went out ("Posted a thread on X (4 posts)", "(2 of 4 posts)"
+ * for one that was cut) and links the first; a comment says whose post it is about ("Commented on a post by @handle")
+ * and carries that post's link in `about` beside the link to the agent's own post.
  * `kind` groups the web's filters: Posts = `post` | `reply`; Treasury = `claim` | `swap` | `gas` | `fuel` | `transfer` | `service` | `bounty`;
  * `image` (a picture made with `generate_image`) and `approval_*` show under All.
  */
@@ -46,6 +49,13 @@ export interface ActivityItem {
    * place to serve bytes if a thumbnail is ever wanted. `alt` is null when the stored picture is gone (retention).
    */
   image?: { id: string; alt: string | null };
+  /** A comment (`publish_post {about}`): the post it is about, by handle, id and link. `url` stays the agent's own post. */
+  about?: { handle: string; postId: string; url: string };
+}
+
+/** The tape line of a thread: how many posts, and for a cut one how many of how many went out. */
+export function threadSummary(sent: number, of: number): string {
+  return sent >= of ? `Posted a thread on X (${of} posts)` : `Posted a thread on X (${sent} of ${of} posts)`;
 }
 
 export const ACTIVITY_DEFAULT_LIMIT = 50;
@@ -101,7 +111,13 @@ function plainActionItem(row: typeof actions.$inferSelect, xHandle: string | nul
   if (res.result?.queued === true) return null;
   const postId = res.postId ?? res.result?.postId;
   const url = typeof postId === 'string' && xHandle ? `https://x.com/${xHandle}/status/${postId}` : undefined;
-  return { at: row.createdAt.toISOString(), kind: a.tool === 'publish_post' ? 'post' : 'reply', summary: a.tool === 'publish_post' ? 'Posted on X' : 'Replied on X', ...(url ? { url } : {}) };
+  if (a.tool === 'publish_reply') return { at: row.createdAt.toISOString(), kind: 'reply', summary: 'Replied on X', ...(url ? { url } : {}) };
+  // An original post: a plain one, a thread (its first part is the link) or a comment on somebody's post.
+  const done = ((res.result ?? res) ?? {}) as { sent?: unknown; of?: unknown; about?: { handle?: unknown; postId?: unknown } };
+  const about = typeof done.about?.handle === 'string' && /^[A-Za-z0-9_]{1,15}$/.test(done.about.handle) && typeof done.about.postId === 'string' && /^[0-9]{1,25}$/.test(done.about.postId) ? { handle: done.about.handle, postId: done.about.postId, url: `https://x.com/${done.about.handle}/status/${done.about.postId}` } : null;
+  const thread = typeof done.sent === 'number' && typeof done.of === 'number' && done.of > 1 ? threadSummary(done.sent, done.of) : null;
+  const summary = about ? `Commented on a post by @${about.handle}` : (thread ?? 'Posted on X');
+  return { at: row.createdAt.toISOString(), kind: 'post', summary, ...(url ? { url } : {}), ...(about ? { about } : {}) };
 }
 
 /** The op's amounts come from its stored description (treasury.ts writes them; the calls are raw calldata). */

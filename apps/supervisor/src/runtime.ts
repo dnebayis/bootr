@@ -53,6 +53,7 @@ import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
+import { noteSeen, seenInResult, type SeenPost } from './comment-posts.js';
 import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
 import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
@@ -218,6 +219,12 @@ export interface Turn {
   ownCalls?: OwnCallRecord[];
   /** Own agent: the posts this turn already answered or closed; a second reply to one is refused (broker `ownGuard`). */
   ownHandled?: string[];
+  /**
+   * The posts the read tools showed in this turn (`read_x_thread`, `read_mentions`), newest last, 60 at most, with
+   * author id, handle, badge and date: a comment (`publish_post {about}`) may only be about a post the turn read
+   * (comment-posts.ts, which also counts the inbox and the watchlist section of the first observation).
+   */
+  seen?: SeenPost[];
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
@@ -1040,6 +1047,8 @@ export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: T
  */
 export async function afterSettledAction(ctx: SupervisorContext, agent: Pick<AgentRow, 'agentId'>, state: AgentState, turn: Turn, action: Action, pending: Pick<PendingAction, 'id' | 'nextAt'>, result: ActionResult, log: Logger): Promise<void> {
   const publish = action.tool === 'publish_post' || action.tool === 'publish_reply';
+  // What a read showed is kept on the turn: a comment may only be about a post the agent read in it (comment-posts.ts).
+  if (result.status === 'completed' && (action.tool === 'read_x_thread' || action.tool === 'read_x_account' || action.tool === 'read_mentions')) noteSeen(turn, seenInResult(action.tool, result.result));
   // Every refused publish is on the record at info, by its code alone (never the text): until now a refusal
   // showed only in sv_actions, and three 403s in six minutes went unnoticed.
   if (publish && result.status === 'failed') log.info({ tool: action.tool, actionId: pending.id, code: errorCodeOf(result.error) }, 'publish refused');

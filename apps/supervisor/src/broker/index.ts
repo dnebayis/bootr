@@ -1,5 +1,8 @@
 import { questionBudget, questionQuotaRefusal } from '../recent-posts.js';
-import { publishAttributions } from '../attributions.js';
+import { MentionError, publishAttributions, type MentionAudienceOptions } from '../attributions.js';
+import { commentCheck, commentLimit, storedTurn, type CommentAbout } from '../comment-posts.js';
+import { postHooks } from '../post-send.js';
+import { linkQuota, sendParts, threadResultFromReceipt, threadRulesRefusal, threadsOffered, THREAD_CUT_NOTE } from '../thread-send.js';
 /**
  * Action broker: maps every agent-core tool to an executor and turns what happened into an
  * `ActionOutcome` for the agent-core broker state machine. Idempotency keys are the deterministic
@@ -11,18 +14,22 @@ import {
   checkpoint,
   isPolicyError,
   replyEligibility,
+  threadParts,
   toolsFor,
+  THREAD_MAX_PARTS,
+  THREAD_NOT_HERE,
   type Action,
   type ActionOutcome,
   type AgentConfig,
   type PendingAction,
+  type PublishPostOptions,
   type ToolAccountOptions,
   type ToolDefinition,
   type ToolName,
 } from '@bootr/agent-core';
 import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import { formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from 'viem';
-import { agentDirectory, bootrAgentOf, conversationGuard, markOf, replyNamingGuard, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
+import { agentDirectory, bootrAgentOf, conversationGuard, markOf, openRepliesInWindow, replyNamingGuard, type AgentDirectory, type BootrAgentMark } from '../agent-directory.js';
 import type { AgentRow, SupervisorContext } from '../context.js';
 import { actions, approvals, treasuryOps } from '../db/schema.js';
 import { originalPostGate } from '../rhythm.js';
@@ -46,9 +53,25 @@ import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
 
 
 /** The `attributions` field of a publish (attributions.ts): the model's credits for mentioned handles, plus coin pages for mentioned Bootr agents. */
-async function attributionsFor(ctx: SupervisorContext, agentId: string, text: string, attributions: { username: string; sourceUrl: string }[] | undefined): Promise<{ attributions?: { username: string; sourceUrl: string }[] }> {
-  const credited = await publishAttributions(ctx, agentId, text, attributions);
+async function attributionsFor(ctx: SupervisorContext, agentId: string, text: string, attributions: { username: string; sourceUrl: string }[] | undefined, audience: MentionAudienceOptions = {}): Promise<{ attributions?: { username: string; sourceUrl: string }[] }> {
+  const credited = await publishAttributions(ctx, agentId, text, attributions, audience);
   return credited.length ? { attributions: credited } : {};
+}
+
+/**
+ * Which optional fields of `publish_post` this deployment and this coin offer (docs/design/agent-tools-2.md section
+ * 13: a limit of 0 switches its piece off and its sentence leaves the description). `thread`: the thread limits;
+ * `about`: the comment limit and the creator's switch (`comments`, read loosely: it is another workstream's field);
+ * `topic`: offered unless the facts it feeds are switched off (`LEARN_MAX_FACTS`, another workstream's limit, read
+ * loosely: absent = on).
+ */
+export function publishPostOptions(ctx: Pick<SupervisorContext, 'config'>, config: object): PublishPostOptions {
+  const loose = ctx.config as unknown as Record<string, unknown>;
+  return {
+    threadMore: threadsOffered(ctx) ? (ctx.config.THREAD_MAX_PARTS ?? THREAD_MAX_PARTS) - 1 : 0,
+    comments: commentLimit(ctx, { config: config as Record<string, unknown> }) > 0,
+    topic: loose.LEARN_MAX_FACTS !== 0,
+  };
 }
 
 /**
@@ -56,7 +79,7 @@ async function attributionsFor(ctx: SupervisorContext, agentId: string, text: st
  * own post limit in `publish_post`'s description) minus the tools this deployment cannot serve.
  */
 export function availableTools(ctx: Pick<SupervisorContext, 'config'>, config: AgentConfig, account: ToolAccountOptions = {}): ToolDefinition[] {
-  return toolsFor(config, account).filter((t) => {
+  return toolsFor(config, { ...account, post: account.post ?? publishPostOptions(ctx, config) }).filter((t) => {
     if (t.name === 'search_web') return !!(ctx.config.SEARCH_API_URL && ctx.config.SEARCH_API_KEY);
     return true;
   });
@@ -231,6 +254,11 @@ export interface InboxView {
   observedAt: string | number;
   /** Set when the author is another Bootr agent (agent-directory.ts). */
   bootrAgent?: BootrAgentMark;
+  /**
+   * Eligible only because it is a direct reply to one of the agent's own posts and the coin answers those (the reply
+   * audience `own_threads`, agent-directory.ts `openReplies`): counted against `OPEN_REPLIES_PER_DAY` when answered.
+   */
+  openReply?: boolean;
 }
 
 /** Addresses the agent may name in public: its own token and its own treasury. */
@@ -248,6 +276,9 @@ export function publicAddressesOf(config: AgentConfig): string[] {
 export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[], now: number, directory?: AgentDirectory | null, bountyConversations?: ReadonlySet<string> | null): InboxView[] {
   const peers = directory ? directory.entries.filter((e) => e.agentId !== config.agentId && e.xUserId !== config.xUserId) : [];
   const replyAuthorIds = peers.length ? [...new Set([...config.replyAuthorIds, ...peers.map((e) => e.xUserId)])] : config.replyAuthorIds;
+  // The reply audience `own_threads`: direct replies under the agent's own posts, as many as the day still has room for.
+  const open = directory?.openReplies?.get(config.agentId) ?? null;
+  let openLeft = open?.left ?? 0;
   return items.map((item) => {
     if (bountyConversations?.has(item.conversationId)) {
       return { postId: item.postId, authorId: item.authorId, conversationId: item.conversationId, eligible: false, reason: BOUNTY_ENTRY_REASON, post: item.post, observedAt: item.observedAt };
@@ -260,7 +291,9 @@ export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[
       seenAt: typeof item.seenAt === 'number' ? item.seenAt : item.seenAt ? Date.parse(item.seenAt) : null,
       deferredUntil: typeof item.deferredUntil === 'number' ? item.deferredUntil : item.deferredUntil ? Date.parse(item.deferredUntil) : null,
       now,
+      ...(open && openLeft > 0 ? { openReplyTo: open.ownPostIds } : {}),
     });
+    if (e.open) openLeft -= 1;
     const peer = directory ? bootrAgentOf(directory, item.authorId, config.agentId) : null;
     return {
       postId: item.postId,
@@ -271,8 +304,27 @@ export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[
       post: item.post,
       observedAt: item.observedAt,
       ...(peer ? { bootrAgent: markOf(peer) } : {}),
+      ...(e.open ? { openReply: true } : {}),
     };
   });
+}
+
+/**
+ * The eligibility a reply is sent with, held to the reply audience as it is now. A mention that is eligible only as a
+ * direct reply under the agent's own post (`own_threads`) is answered while the coin still answers those and the
+ * day's count has room; else it is what it was before that audience existed: `verified_audience_required`. Every
+ * other decision passes untouched, and a coin on the verified audience never reaches the count.
+ */
+export async function openReplyEligibility(ctx: Pick<SupervisorContext, 'db' | 'now' | 'config'>, config: AgentConfig, item: SenderInboxItem | undefined, decided: ReplyEligibility, exceptActionId: string): Promise<{ eligibility: ReplyEligibility; openReply: boolean }> {
+  if (!item || !decided.eligible) return { eligibility: decided, openReply: false };
+  const directory = await agentDirectory(ctx);
+  if (!directory.openReplies.has(config.agentId)) return { eligibility: decided, openReply: false };
+  const strict = inboxViews(config, [item], ctx.now(), { ...directory, openReplies: new Map() })[0]!;
+  if (strict.eligible || strict.reason !== 'verified_audience_required') return { eligibility: decided, openReply: false };
+  const now = inboxViews(config, [item], ctx.now(), directory)[0]!;
+  const limit = ctx.config.OPEN_REPLIES_PER_DAY;
+  if (now.eligible && now.openReply && limit > 0 && (await openRepliesInWindow(ctx, config.agentId, ctx.now(), exceptActionId)) < limit) return { eligibility: decided, openReply: true };
+  return { eligibility: { eligible: false, reason: 'verified_audience_required' }, openReply: false };
 }
 
 function failed(error: string, retryAt?: number): ActionOutcome {
@@ -374,26 +426,43 @@ export async function executeAction(ctx: SupervisorContext, agent: AgentRow, con
     }
     return await withToolTimeout(dispatch(ctx, agent, config, pending, action, env), action.tool, toolTimeoutMs(ctx.config, action.tool));
   } catch (err) {
-    if (err instanceof ToolTimeoutError) {
-      ctx.log.warn({ agentId: agent.agentId, actionId: pending.id, tool: action.tool, timeoutMs: err.timeoutMs }, 'tool call timed out');
-      return TOOLS[action.tool].effect === 'read' ? failed(err.message) : { kind: 'unknown', error: err.message };
-    }
-    if (err instanceof SenderError) {
-      if (err.code === 'storage_unavailable_after_send') return { kind: 'unknown', error: err.code };
-      // The consent check could not reach X: nothing was recorded or sent; retry the same action later.
-      if (err.code === 'consent_lookup_failed') return failed('sender:consent_lookup_failed', err.retryAt ?? ctx.now() + CONSENT_RETRY_MS);
-      // The connected X account was authorized without the right to upload pictures (`media.write`); the creator must reconnect it.
-      if (err.code === 'media_not_authorized') {
-        ctx.log.warn({ agentId: agent.agentId, actionId: pending.id }, 'picture not sent: the X account was connected without the media.write scope; the creator must reconnect it from the console');
-        return failed(`image_not_authorized: your X account was connected without permission to upload pictures; nothing was posted. ${WITHOUT_PICTURE} Your creator can reconnect the account from the console to allow pictures.`);
-      }
-      return failed(`sender:${err.code}`, err.retryAt);
-    }
-    if (isPolicyError(err)) return failed(err.message, err.retryAt);
-    const text = errorText(err);
-    if (isTransportError(err) && TOOLS[action.tool].effect !== 'read') return { kind: 'unknown', error: text };
-    return failed(text);
+    return outcomeOfError(ctx, agent, pending.id, action.tool, err);
   }
+}
+
+/**
+ * What a thrown error of a tool call becomes: every failure is an outcome. Shared with the send of an original that
+ * no turn's step carries (thread-send.ts `sendOriginal`: the review queue, the scheduler's sweep), so a post sent
+ * there fails, or stays unknown, by the same rules as one the broker sent.
+ */
+export function outcomeOfError(ctx: Pick<SupervisorContext, 'log' | 'now'>, agent: Pick<AgentRow, 'agentId'>, actionId: string, tool: ToolName, err: unknown): ActionOutcome {
+  if (err instanceof ToolTimeoutError) {
+    ctx.log.warn({ agentId: agent.agentId, actionId, tool, timeoutMs: err.timeoutMs }, 'tool call timed out');
+    return TOOLS[tool].effect === 'read' ? failed(err.message) : { kind: 'unknown', error: err.message };
+  }
+  if (err instanceof SenderError) {
+    if (err.code === 'storage_unavailable_after_send') return { kind: 'unknown', error: err.code };
+    // The consent check could not reach X: nothing was recorded or sent; retry the same action later.
+    if (err.code === 'consent_lookup_failed') return failed('sender:consent_lookup_failed', err.retryAt ?? ctx.now() + CONSENT_RETRY_MS);
+    // The connected X account was authorized without the right to upload pictures (`media.write`); the creator must reconnect it.
+    if (err.code === 'media_not_authorized') {
+      ctx.log.warn({ agentId: agent.agentId, actionId }, 'picture not sent: the X account was connected without the media.write scope; the creator must reconnect it from the console');
+      return failed(`image_not_authorized: your X account was connected without permission to upload pictures; nothing was posted. ${WITHOUT_PICTURE} Your creator can reconnect the account from the console to allow pictures.`);
+    }
+    // The day's count of posts with a link is used up (the sender, next to the quota): nothing was recorded there, and
+    // it is no hold: the same thought goes out without the link.
+    if (err.code === 'link_quota') {
+      const limit = (err.body as { limit?: unknown } | null)?.limit;
+      return failed(linkQuota(typeof limit === 'number' ? limit : 0));
+    }
+    return failed(`sender:${err.code}`, err.retryAt);
+  }
+  // An `@` for somebody who did not write to the agent: the refusal says how to name them instead (attributions.ts).
+  if (err instanceof MentionError && err.code === 'mention_not_engaged') return failed(err.message);
+  if (isPolicyError(err)) return failed(err.message, err.retryAt);
+  const text = errorText(err);
+  if (isTransportError(err) && TOOLS[tool].effect !== 'read') return { kind: 'unknown', error: text };
+  return failed(text);
 }
 
 async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentConfig, pending: PendingAction, action: Action, env: BrokerEnv): Promise<ActionOutcome> {
@@ -441,7 +510,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       if (capped) return capped;
       const item = env.inbox.get(action.input.postId);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
-      const eligibility: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
+      const decided: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
+      // A reply outside the verified audience (a direct reply under the agent's own post) is held to the day's count.
+      const { eligibility, openReply } = await openReplyEligibility(ctx, config, item, decided, pending.id);
       const res = await ctx.sender.publish({
         agentId,
         actionId: pending.id,
@@ -455,7 +526,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         xUserId: config.xUserId,
         ...(config.platform ? { platform: true } : {}),
       });
-      return publishOutcome(res, item?.authorId, item?.conversationId);
+      return publishOutcome(res, item?.authorId, item?.conversationId, openReply);
     }
     case 'publish_post': {
       const media = await mediaForAction(ctx, agentId, action.input.imageId, config);
@@ -463,14 +534,21 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // Platform rhythm: quiet hours and the platform-wide slot window (rhythm.ts); this action's own row is not a used slot.
       const gate = await originalPostGate(ctx, ctx.now(), { excludeActionId: pending.id });
       if (!gate.open) return failed(gate.hold.message);
+      // A scheduled post of the coin's own is due within one post interval: the one it would crowd is the one that waits (post-send.ts).
+      const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent, ctx.now());
+      if (scheduledSoon) return failed(scheduledSoon);
       // Agent-to-agent cap: one new thread with another Bootr agent per day (agent-directory.ts).
       const capped = await conversationGuard(ctx, agent, config, pending, env);
       if (capped) return capped;
-      // The question quota (recent-posts.ts): at most one original post in five may ask something.
-      const asked = questionQuotaRefusal(action.input.text, await questionBudget(ctx, agentId, { excludeActionId: pending.id }));
+      // The question quota (recent-posts.ts): at most one original post in five may ask something; a thread asks when any part does.
+      const parts = threadParts(action.input);
+      const asked = questionQuotaRefusal(parts.join('\n'), await questionBudget(ctx, agentId, { excludeActionId: pending.id }));
       if (asked) return failed(asked);
-      const res = await ctx.sender.publish({ agentId, actionId: pending.id, text: action.input.text, ...(config.platform ? { platform: true } : {}), ...(await attributionsFor(ctx, agentId, action.input.text, action.input.attributions)), ...(media.media ? { media: media.media } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId });
-      return publishOutcome(res);
+      const checked = await originalRules(ctx, agent, config, pending.id, action.input, env.inbox, !!media.media);
+      if ('refusal' in checked) return failed(checked.refusal);
+      const outcome = await sendParts(ctx, agent, config, { actionId: pending.id, text: action.input.text, ...(action.input.thread ? { thread: action.input.thread } : {}), ...(checked.attributions.length ? { attributions: checked.attributions } : {}), ...(checked.about ? { aboutAuthorId: checked.about.authorId } : {}) }, media.media);
+      // A comment's result says whose post it is about (the per-author count and the tape read it).
+      return checked.about && outcome.kind === 'completed' ? { ...outcome, result: { ...(outcome.result as Record<string, unknown>), about: checked.about } } : outcome;
     }
     case 'resolve_mention': {
       const res = await ctx.sender.resolve({ agentId, postId: action.input.postId, outcome: action.input.outcome, reason: action.input.reason, ...(action.input.reviewAt ? { reviewAt: action.input.reviewAt } : {}) });
@@ -586,8 +664,47 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
   }
 }
 
+/**
+ * The rules of an original post that are new with threads and comments, for the broker and the review queue alike
+ * (a queued post never reaches `dispatch`): the thread rules, then the comment rules, and with them the credits of the
+ * post's mentions held to the mention audience. A plain post passes through with its credits and nothing else read.
+ * Throws `MentionError` as `publishAttributions` does.
+ */
+export async function originalRules(
+  ctx: SupervisorContext,
+  agent: AgentRow,
+  config: AgentConfig,
+  actionId: string,
+  input: Extract<Action, { tool: 'publish_post' }>['input'],
+  inbox: ReadonlyMap<string, SenderInboxItem>,
+  hasMedia: boolean,
+): Promise<{ refusal: string } | { attributions: { username: string; sourceUrl: string }[]; about: CommentAbout | null }> {
+  const parts = threadParts(input);
+  const isThread = parts.length > 1;
+  const isComment = !!input.about;
+  // What the turn carries (the digest, the numbers post) and what it was shown: read once, and only for a thread or a comment.
+  const turn = isThread || isComment ? await storedTurn(ctx, agent.agentId) : null;
+  // Mentions belong to the first part; a comment's are held to accounts that wrote to the agent whatever the audience is set to.
+  const audience: MentionAudienceOptions = { original: true, ...(isComment ? { comment: true } : {}) };
+  let attributions: { username: string; sourceUrl: string }[] | null = null;
+  if (isThread) {
+    if (turn?.digestWeek || turn?.numbersDay) return { refusal: THREAD_NOT_HERE };
+    attributions = await publishAttributions(ctx, agent.agentId, parts[0]!, input.attributions, audience);
+    const refused = await threadRulesRefusal(ctx, agent, config, actionId, parts, attributions, { hasMedia, singlePostTurn: false });
+    if (refused) return { refusal: refused };
+  }
+  let about: CommentAbout | null = null;
+  if (isComment) {
+    const decision = await commentCheck(ctx, agent, config, actionId, input, inbox, turn);
+    if ('refusal' in decision) return decision;
+    about = decision.about;
+  }
+  attributions = attributions ?? (await publishAttributions(ctx, agent.agentId, parts[0]!, input.attributions, audience));
+  return { attributions, about };
+}
+
 /** The sender `media` for a post's optional `imageId`: the agent's own stored image, else a failure the model can act on. */
-async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: string | undefined, config: Pick<AgentConfig, 'platform'>): Promise<{ media?: ReturnType<typeof mediaFor>; error?: string }> {
+export async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: string | undefined, config: Pick<AgentConfig, 'platform'>): Promise<{ media?: ReturnType<typeof mediaFor>; error?: string }> {
   if (!imageId) return {};
   const image = await loadImage(ctx, agentId, imageId);
   if (!image) return { error: `image_not_found: ${imageId} (a picture you made this turn with generate_image, else none). ${WITHOUT_PICTURE}` };
@@ -597,11 +714,11 @@ async function mediaForAction(ctx: SupervisorContext, agentId: string, imageId: 
   return { media: mediaFor(image) };
 }
 
-function publishOutcome(res: { status: string; providerPostId?: string | null; receipt: { error?: string | null; status: string } }, replyAuthorId?: string, conversationId?: string): ActionOutcome {
+export function publishOutcome(res: { status: string; providerPostId?: string | null; receipt: { error?: string | null; status: string } }, replyAuthorId?: string, conversationId?: string, openReply = false): ActionOutcome {
   if (res.status === 'sent') {
     const postId = res.providerPostId ?? undefined;
-    // `replyAuthorId` + `conversationId` are what the agent-to-agent caps count (agent-directory.ts).
-    return { kind: 'completed', result: { postId, ...(replyAuthorId ? { replyAuthorId } : {}), ...(conversationId ? { conversationId } : {}) }, receipt: { ...(postId ? { postId } : {}) } };
+    // `replyAuthorId` + `conversationId` are what the agent-to-agent caps count (agent-directory.ts); `openReply` what the day's count of replies outside the verified audience does.
+    return { kind: 'completed', result: { postId, ...(replyAuthorId ? { replyAuthorId } : {}), ...(conversationId ? { conversationId } : {}), ...(openReply ? { openReply: true } : {}) }, receipt: { ...(postId ? { postId } : {}) } };
   }
   if (res.status === 'rejected') return failed(`sender_rejected:${res.receipt.error ?? 'rejected'}`);
   // held or pending: maybe published; never resend. The runtime holds until the receipt settles.
@@ -703,6 +820,13 @@ export async function resolvePending(ctx: SupervisorContext, agent: AgentRow, pe
       const receipt = await ctx.sender.receipt(pending.id);
       if (receipt.status === 'sent') {
         const postId = receipt.providerPostId ?? undefined;
+        // A thread whose first part settled here is closed as the sender holds it, cut where it stopped: nothing more
+        // is sent, also when the first part only now proves sent (docs/design/agent-tools-2.md section 3.4).
+        const thread = pending.action.tool === 'publish_post' ? pending.action.input.thread : undefined;
+        if (thread?.length) {
+          const result = threadResultFromReceipt(receipt, 1 + thread.length);
+          return { resolved: true, outcome: { kind: 'completed', result: { ...result, ...(result.cut ? { note: THREAD_CUT_NOTE } : {}) }, ...(postId ? { receipt: { postId } } : {}) }, ...(postId ? { receipt: { postId } } : {}) };
+        }
         return { resolved: true, outcome: { kind: 'completed', result: { postId }, ...(postId ? { receipt: { postId } } : {}) }, ...(postId ? { receipt: { postId } } : {}) };
       }
       if (receipt.status === 'rejected') return { resolved: true, outcome: { kind: 'failed', error: `sender_rejected:${receipt.error ?? 'rejected'}` } };

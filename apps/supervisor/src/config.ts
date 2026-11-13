@@ -181,6 +181,48 @@ export const configSchema = z
      */
     PLATFORM_POST_SLOTS_PER_10M: int(3, 1),
     /**
+     * Posting, round two (docs/design/agent-tools-2.md section 13). A piece is switched off by its limit: with
+     * `THREAD_MAX_PARTS` under 2 or `THREADS_PER_DAY` at 0 there are no threads, with `COMMENT_POSTS_PER_DAY` at 0 no
+     * comments (the field's sentence leaves `publish_post`), with `OPEN_REPLIES_PER_DAY` at 0 no reply outside the
+     * verified audience, and `MENTION_AUDIENCE=anyone` is the mention rule as it was. The count of posts with a link
+     * (`LINK_POSTS_PER_DAY`) is the sender's.
+     */
+    /** Posts in a thread, the first included; 4 at most (the tool takes no more). */
+    THREAD_MAX_PARTS: z.preprocess((v) => (v === '' || v === undefined ? 4 : v), z.coerce.number().int().min(0).max(4)),
+    /** Characters of every part of a thread, for every account; 280 at most (the tool takes no more). */
+    THREAD_PART_MAX_CHARS: z.preprocess((v) => (v === '' || v === undefined ? 280 : v), z.coerce.number().int().min(1).max(280)),
+    /** Threads per coin per rolling 24 hours. */
+    THREADS_PER_DAY: int(2, 0),
+    /** Parts of one thread that may carry a link. */
+    THREAD_MAX_LINK_PARTS: int(1, 0),
+    /** Comments (an original post about a post the agent read, `publish_post {about}`) per coin per rolling 24 hours. */
+    COMMENT_POSTS_PER_DAY: int(3, 0),
+    /** Comments on one author's posts, per rolling 24 hours and per rolling 7 days. */
+    COMMENT_PER_AUTHOR_PER_DAY: int(1, 0),
+    COMMENT_PER_AUTHOR_PER_WEEK: int(3, 0),
+    /** How old the post commented on may be. */
+    COMMENT_SOURCE_MAX_AGE_MS: int(72 * 3_600_000, 0),
+    /** Whether a comment may link the post it is about (a link is priced many times a plain post, and may count as a quote). */
+    COMMENT_LINK: bool('false'),
+    /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */
+    PLATFORM_NEVER_COMMENT: z.preprocess((v) => (v === '' || v === undefined ? '' : v), z.string().max(8000)),
+    /**
+     * Who an original post may @mention: `engaged` = other Bootr agents, @bootrfun, accounts that wrote to the agent
+     * within `ENGAGED_WINDOW_MS` and the creator's reply list (X: no unsolicited @mentions); `anyone` = any active
+     * account with a source credit, as before.
+     */
+    MENTION_AUDIENCE: z.preprocess((v) => (v === '' || v === undefined ? 'engaged' : v), z.enum(['engaged', 'anyone'])),
+    /** How long "wrote to the agent" lasts. */
+    ENGAGED_WINDOW_MS: int(30 * 24 * 3_600_000, 0),
+    /**
+     * The reply audience of a coin that set none (`config.replyAudience`): `verified` = verified accounts, the
+     * creator's list and other Bootr agents, as before; `own_threads` = also a direct reply to one of the agent's own
+     * posts from anybody, at most `OPEN_REPLIES_PER_DAY` a day. X asks for its approval before AI-written replies are
+     * widened, so the default stays `verified` until that is on file.
+     */
+    REPLY_AUDIENCE_DEFAULT: z.preprocess((v) => (v === '' || v === undefined ? 'verified' : v), z.enum(['verified', 'own_threads'])),
+    OPEN_REPLIES_PER_DAY: int(10, 0),
+    /**
      * Quiet hours in UTC as `HH-HH` (`02-06`: from 02:00 up to 06:00; `22-06` wraps midnight). Original posts wait
      * until the window ends; replies still go out. Unset (the default) = no quiet hours.
      */

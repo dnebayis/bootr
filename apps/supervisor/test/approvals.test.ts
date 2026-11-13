@@ -216,7 +216,8 @@ describe('decisions', () => {
   });
 
   it('a sender that cannot take the post keeps the item pending (503); a sender rejection marks it failed and tells the agent', async () => {
-    const w = await makeWorld();
+    // The post names an account that never wrote to the agent: the mention audience as it was (anyone), so the sender's own refusal is what is tested.
+    const w = await makeWorld({ config: { MENTION_AUDIENCE: 'anyone' } });
     try {
       const agent = await seedAgent(w, { config: REVIEWED });
       await queueForApproval(w.ctx, agent, pending('act_p1', 'publish_post', { text: 'Soon.' }), env());
@@ -307,7 +308,8 @@ describe('decisions', () => {
 
 describe('queueForApproval checks what the sender will check', () => {
   it('drops credits that name nobody in the text and refuses a text the publish gate rejects', async () => {
-    const w = await makeWorld();
+    // Accounts outside Bootr are named here: the mention audience as it was (anyone), so the account checks are what is tested.
+    const w = await makeWorld({ config: { MENTION_AUDIENCE: 'anyone' } });
     try {
       const agent = await seedAgent(w, { config: REVIEWED });
       // credited what it read (a bootrfun tweet) without naming it: queued without the credit

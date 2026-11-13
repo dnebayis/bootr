@@ -18,8 +18,8 @@
  *
  * The directory is read once per tick (`AGENT_DIRECTORY_TTL_MS`) and shared by every agent processed in it.
  */
-import { mentionedHandles, type ActionOutcome, type AgentConfig, type PendingAction } from '@bootr/agent-core';
-import { and, eq, gt, inArray, ne, sql } from 'drizzle-orm';
+import { mentionedHandles, threadParts, type ActionOutcome, type AgentConfig, type PendingAction } from '@bootr/agent-core';
+import { and, desc, eq, gt, inArray, ne, sql } from 'drizzle-orm';
 import type { BrokerEnv, InboxView } from './broker/index.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents } from './db/schema.js';
@@ -67,7 +67,24 @@ export interface AgentDirectory {
   entries: BootrAgentEntry[];
   byUserId: Map<string, BootrAgentEntry>;
   byHandle: Map<string, BootrAgentEntry>;
+  /**
+   * The reply audience `own_threads`, by agent id (docs/design/agent-tools-2.md section 4.5): for a coin that answers
+   * direct replies under its own posts from anybody, its own recent post ids and how many such replies the day still
+   * has room for. A coin on the verified audience has no entry; with `OPEN_REPLIES_PER_DAY` at 0 nobody has one.
+   */
+  openReplies: Map<string, OpenReplies>;
 }
+
+/** What `inboxViews` needs to answer replies outside the verified audience for one coin. */
+export interface OpenReplies {
+  ownPostIds: ReadonlySet<string>;
+  /** Replies outside the verified audience still allowed in the rolling 24 hours. */
+  left: number;
+}
+
+/** How far back a reply under one of the agent's own posts is still answered, and how many of its posts are kept in view. */
+export const OPEN_REPLY_POSTS_WINDOW_MS = 7 * 86_400_000;
+export const OPEN_REPLY_POSTS_MAX = 400;
 
 /** What an inbox view / observation message carries for a message from another Bootr agent. */
 export interface BootrAgentMark {
@@ -101,7 +118,68 @@ export function buildAgentDirectory(rows: readonly Pick<AgentRow, 'agentId' | 'k
     });
   }
   entries.sort((a, b) => b.launchedAt - a.launchedAt);
-  return { at: now, entries, byUserId: new Map(entries.map((e) => [e.xUserId, e])), byHandle: new Map(entries.map((e) => [e.handle, e])) };
+  return { at: now, entries, byUserId: new Map(entries.map((e) => [e.xUserId, e])), byHandle: new Map(entries.map((e) => [e.handle, e])), openReplies: new Map() };
+}
+
+/** The reply audience a stored config asks for (`replyAudience`, read loosely: the schema is another workstream's), else the deployment's default. */
+export function replyAudienceOf(config: Record<string, unknown>, fallback: unknown): 'verified' | 'own_threads' {
+  const own = config.replyAudience;
+  if (own === 'own_threads' || own === 'verified') return own;
+  return fallback === 'own_threads' ? 'own_threads' : 'verified';
+}
+
+/** The post ids a completed publish put on X: the post, and for a thread every part. */
+function postIdsOf(result: unknown): string[] {
+  const r = (result ?? {}) as { postId?: unknown; parts?: unknown; result?: { postId?: unknown; parts?: unknown } };
+  const inner = r.result ?? r;
+  const ids = [inner.postId, ...(Array.isArray(inner.parts) ? inner.parts.map((p) => (p as { postId?: unknown } | null)?.postId) : [])];
+  return ids.filter((id): id is string => typeof id === 'string' && /^[1-9][0-9]{0,18}$/.test(id));
+}
+
+/**
+ * Replies this agent gave outside the verified audience in the last 24 hours (sent, held or queued for review): the
+ * rows whose result says `openReply`. A brokered row stores the agent-core `ActionResult` wrapper, an approved one the
+ * flat result; both are read.
+ */
+export async function openRepliesInWindow(ctx: Pick<SupervisorContext, 'db'>, agentId: string, now: number, exceptActionId?: string): Promise<number> {
+  const rows = await ctx.db
+    .select({ actionId: actions.actionId })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.agentId, agentId),
+        gt(actions.createdAt, new Date(now - CAP_WINDOW_MS)),
+        inArray(actions.status, ['sent', 'held', 'completed']),
+        sql`${actions.action}->>'tool' = 'publish_reply'`,
+        sql`coalesce(${actions.result}->'result'->>'openReply', ${actions.result}->>'openReply') = 'true'`,
+        ...(exceptActionId ? [ne(actions.actionId, exceptActionId)] : []),
+      ),
+    );
+  return rows.length;
+}
+
+/**
+ * The `openReplies` of the directory: one entry per coin whose reply audience is `own_threads`, none for the rest, so
+ * a deployment where no coin widened its audience reads nothing here. The limits come from the supervisor's config
+ * when the caller's context carries it (every real caller's does).
+ */
+async function loadOpenReplies(ctx: Pick<SupervisorContext, 'db'>, rows: readonly Pick<AgentRow, 'agentId' | 'config' | 'status'>[], now: number): Promise<Map<string, OpenReplies>> {
+  const out = new Map<string, OpenReplies>();
+  const config = ((ctx as { config?: unknown }).config ?? {}) as { OPEN_REPLIES_PER_DAY?: unknown; REPLY_AUDIENCE_DEFAULT?: unknown };
+  const limit = typeof config.OPEN_REPLIES_PER_DAY === 'number' ? config.OPEN_REPLIES_PER_DAY : 0;
+  if (limit <= 0) return out;
+  for (const row of rows) {
+    if (row.status === 'revoked' || replyAudienceOf(row.config, config.REPLY_AUDIENCE_DEFAULT) !== 'own_threads') continue;
+    const posts = await ctx.db
+      .select({ result: actions.result })
+      .from(actions)
+      .where(and(eq(actions.agentId, row.agentId), eq(actions.status, 'completed'), gt(actions.createdAt, new Date(now - OPEN_REPLY_POSTS_WINDOW_MS)), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`))
+      .orderBy(desc(actions.createdAt))
+      .limit(OPEN_REPLY_POSTS_MAX);
+    const used = await openRepliesInWindow(ctx, row.agentId, now);
+    out.set(row.agentId, { ownPostIds: new Set(posts.flatMap((p) => postIdsOf(p.result))), left: Math.max(0, limit - used) });
+  }
+  return out;
 }
 
 const cache = new WeakMap<object, Promise<AgentDirectory>>();
@@ -119,7 +197,7 @@ export async function agentDirectory(ctx: Pick<SupervisorContext, 'db' | 'now'>,
     .select({ agentId: agents.agentId, kernel: agents.kernel, token: agents.token, config: agents.config, status: agents.status, createdAt: agents.createdAt })
     .from(agents)
     .where(ne(agents.status, 'revoked'))
-    .then((rows) => buildAgentDirectory(rows, now));
+    .then(async (rows) => ({ ...buildAgentDirectory(rows, now), openReplies: await loadOpenReplies(ctx, rows, now) }));
   cache.set(key, next);
   return next;
 }
@@ -190,8 +268,11 @@ export async function threadsStartedWith(ctx: Pick<SupervisorContext, 'db'>, age
     );
   const wanted = handle.toLowerCase();
   return rows.filter((r) => {
-    const text = ((r.action as { input?: { text?: unknown } }).input?.text ?? '') as unknown;
-    return typeof text === 'string' && mentionedHandles(text).includes(wanted);
+    const input = (r.action as { input?: { text?: unknown; thread?: unknown } }).input;
+    if (typeof input?.text !== 'string') return false;
+    // A thread names whom any of its parts names (the gate keeps mentions to the first part; this does not rely on it).
+    const more = Array.isArray(input.thread) ? input.thread.map((p) => (p as { text?: unknown } | null)?.text).filter((t): t is string => typeof t === 'string') : [];
+    return mentionedHandles([input.text, ...more].join('\n')).includes(wanted);
   }).length;
 }
 
@@ -231,7 +312,7 @@ export async function conversationGuard(ctx: Pick<SupervisorContext, 'db' | 'now
   }
   if (action.tool === 'publish_post') {
     const directory = await agentDirectory(ctx);
-    const peers = mentionedBootrAgents(directory, action.input.text, agent.agentId);
+    const peers = mentionedBootrAgents(directory, threadParts(action.input).join('\n'), agent.agentId);
     for (const peer of peers) {
       const started = await threadsStartedWith(ctx, agent.agentId, peer.handle, now, { excludeActionId: pending.id });
       if (started >= NEW_THREAD_CAP) {

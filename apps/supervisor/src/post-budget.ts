@@ -2,7 +2,8 @@
  * `postBudget`: how much of the creator's daily budget of posts and replies (the sender's rolling 24 h quota,
  * `config.postsPerDay`, agent-config.ts) the agent has left, so the model paces itself instead of running into the
  * sender's refusal and the quota hold (rhythm.ts `quotaHold`, which keeps working underneath). Counted from the agent's
- * own publishes of the last day in sv_actions (in flight or sent), which is what the sender counts too; a small
+ * own publishes of the last day in sv_actions (in flight or sent; a thread counts once per part, as the sender counts
+ * it: the parts that went out, or all of them while it is in flight), which is what the sender counts too; a small
  * difference (a publish the sender refused, a review the creator has not approved) is fine for pacing. One indexed read,
  * omitted when it fails.
  */
@@ -49,7 +50,11 @@ export function postBudgetView(postsPerDay: number, used: { count: number; oldes
 export async function publishesLast24h(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<{ count: number; oldest: number | null }> {
   const since = new Date(ctx.now() - POST_BUDGET_WINDOW_MS);
   const [row] = await ctx.db
-    .select({ n: sql<number>`count(*)::int`, oldest: sql<string | null>`min(${actions.createdAt})` })
+    .select({
+      // One per publish, and for a thread one per part: the parts that went out once it settled (`result.sent`), all of them before.
+      n: sql<number>`coalesce(sum(coalesce((${actions.result}->'result'->>'sent')::int, (${actions.result}->>'sent')::int, 1 + case when jsonb_typeof(${actions.action}->'input'->'thread') = 'array' then jsonb_array_length(${actions.action}->'input'->'thread') else 0 end)), 0)::int`,
+      oldest: sql<string | null>`min(${actions.createdAt})`,
+    })
     .from(actions)
     .where(and(eq(actions.agentId, agentId), inArray(actions.status, ['sending', 'sent', 'completed']), gt(actions.createdAt, since), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`));
   return { count: Number(row?.n ?? 0), oldest: row?.oldest ? new Date(row.oldest).getTime() : null };
