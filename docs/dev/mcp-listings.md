@@ -261,6 +261,10 @@ list of MCP servers, you can browse published servers on the MCP Registry". Noth
 
 ## 4. The owner's checklist
 
+**Done on 2026-11-13:** A (0.2.1 on npm with `mcpName`) and B (the official registry lists `fun.bootr/mcp` 0.2.1,
+active; the TXT record is on `bootr.fun`; the key is at `~/.ssh/bootr_mcp_registry.pem` on the owner's machine and
+is needed again for every later version). C to F are open; C waits for the license decision.
+
 In this order. B needs A, and the directories in F copy from B. C, D and E read the repository and can be done at
 any time, but an install from them gives 0.2.0 until A is done.
 
@@ -309,12 +313,14 @@ any time, but an install from them gives 0.2.0 until A is done.
    ```
 
 4. Log in, from the package's folder. The login lasts about five minutes, so go on to the next step at once.
+   The key goes in the `--private-key` flag: `mcp-publisher` 1.8.9 does not read it from the environment (on
+   2026-11-13 the `MCP_PRIVATE_KEY=` form answered "ed25519 private key (hex) is required").
 
    ```sh
    cd packages/mcp
    OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl
-   MCP_PRIVATE_KEY="$($OPENSSL pkey -in ~/.ssh/bootr_mcp_registry.pem -noout -text | sed -n '/priv:/,/pub:/p' | sed '1d;$d' | tr -d ' :\n')" \
-     mcp-publisher login dns --domain bootr.fun
+   mcp-publisher login dns --domain bootr.fun \
+     --private-key "$($OPENSSL pkey -in ~/.ssh/bootr_mcp_registry.pem -noout -text | sed -n '/priv:/,/pub:/p' | sed '1d;$d' | tr -d ' :\n')"
    ```
 
 5. Check and publish, in the same folder:
