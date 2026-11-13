@@ -66,6 +66,12 @@ export interface SenderPublishResponse {
   providerPostId?: string | null;
   receipt: SenderReceipt;
   duplicate?: boolean;
+  /**
+   * Present when the sender stored the publish as a part of a thread. A sender from before threads ignores the
+   * `thread` field of the body and would post a later part as a post of its own, so the supervisor sends the next part
+   * only after the first came back with this (thread-send.ts).
+   */
+  thread?: { head: string; n: number };
 }
 
 export interface SenderAccount {

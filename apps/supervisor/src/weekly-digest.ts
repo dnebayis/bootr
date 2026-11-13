@@ -21,6 +21,7 @@
 import type { AgentConfig, RuntimeStatus, WakeDecision } from '@bootr/agent-core';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { cachedPlatformFeedData, clean, handleOf, iso, milestoneWords, selectWindow, type PlatformFeedData, WEEK_MS } from './platform-feed.js';
+import { postHooks } from './post-send.js';
 import type { RhythmSchedule } from './rhythm.js';
 import { originalPostGate } from './rhythm.js';
 import { saveRuntime, type AgentState } from './runtime.js';
@@ -226,6 +227,13 @@ export async function weeklyDigestWake(
       log.debug({ reason: gate.hold.reason, until: gate.hold.until }, 'weekly digest waits for the rhythm');
       return null;
     }
+  }
+  // A scheduled post of the agent's own is due within one post interval (post-send.ts): the digest waits for the next
+  // free slot, and no thought is bought only to be told so by the broker.
+  const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent as AgentRow, now).catch(() => null);
+  if (scheduledSoon) {
+    log.debug('weekly digest waits for a scheduled post');
+    return null;
   }
   const data = await cachedPlatformFeedData(ctx);
   if (!data) {

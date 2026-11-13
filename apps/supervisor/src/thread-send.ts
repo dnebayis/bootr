@@ -12,7 +12,9 @@
  *     already out stay, that part is not sent again and the ones after it are never sent. The same holds when the
  *     first part's outcome was unknown and later proves sent, and when the process died between two parts: the action
  *     closes from the sender's receipt (`threadResultFromReceipt`), cut where it stopped;
- *   - a repeated send of a first part the sender already holds continues nothing: it closes from the receipt.
+ *   - a repeated send of a first part the sender already holds continues nothing: it closes from the receipt;
+ *   - a sender that does not answer the first part as the first part of this thread (one deployed before threads) is
+ *     handed nothing more: the first part stays as the post it is.
  *
  * `sendOriginal` is what the review queue (approvals.ts) and the scheduler's sweep call through `postHooks`; the
  * broker calls `sendParts` itself after its own checks. Neither sets a hold: the caller does (`afterSettledAction`).
@@ -33,6 +35,15 @@ export interface CommentedOriginal extends OriginalPost {
   aboutAuthorId?: string;
 }
 
+/**
+ * The id of a scheduled post (section 17.6: `sch_` and 16 hex characters; the review item of one and the sender's
+ * action of its first part carry it). The review queue reads it to tell a post that goes out at a time of its own
+ * from one that stands for the slot of this moment.
+ */
+export const SCHEDULED_ID_RE = /^sch_[0-9a-f]{16}$/;
+/** The head of the refusal an original sent now gets while a scheduled post is due within one post interval (section 17.6). */
+export const POST_SCHEDULED_SOON_RE = /^post_scheduled_soon\b/;
+
 /** What the agent is told with a cut thread. */
 export const THREAD_CUT_NOTE = 'A thread that is cut stays cut: do not post the rest.';
 /** The window of the day's thread count. */
@@ -41,6 +52,8 @@ export const THREAD_WINDOW_MS = 24 * 3_600_000;
 export const PART_NOT_SENT = 'not_sent: the thread stopped before this part';
 /** A part that was not sent because the first part's send was a repeat: a thread is sent in one go or cut. */
 export const THREAD_NOT_CONTINUED = 'not_sent: the thread was not continued after an interrupted send';
+/** The sender answered the first part without saying it is one: it does not know threads, and would post a later part unchained. */
+export const SENDER_WITHOUT_THREADS = 'not_sent: the sender does not chain threads; the rest was not sent';
 /** A part that was not started because the tool's time was nearly used up. */
 export const THREAD_OUT_OF_TIME = 'not_sent: the thread ran out of time';
 
@@ -181,6 +194,12 @@ export async function sendParts(ctx: Pick<SupervisorContext, 'sender' | 'config'
   });
   if (of === 1) return publishOutcome(first);
   if (first.status !== 'sent' || !first.providerPostId) return publishOutcome(first);
+  // A sender from before threads drops the `thread` field and would post every later part as an original of its own:
+  // nothing more is handed to one that did not store this part as the first of this thread.
+  if (first.thread?.head !== head || first.thread.n !== 1) {
+    ctx.log.error({ agentId: agent.agentId, actionId: head, of }, 'thread cut after its first part: the sender does not know threads (deploy the sender first)');
+    return threadOutcome({ postId: first.providerPostId, parts: [{ n: 1, postId: first.providerPostId }], sent: 1, of, cut: { n: 2, error: SENDER_WITHOUT_THREADS } });
+  }
   // The sender already held this first part: this is a repeat of an interrupted send, and a thread is never continued.
   if (first.duplicate) {
     const receipt = await ctx.sender.receipt(head).catch(() => null);

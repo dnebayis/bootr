@@ -20,7 +20,7 @@ export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 export const T0 = Date.parse('2026-10-24T12:00:00Z');
 
-export { POSTING_OFF } from './posting-off.limits.js';
+export { POSTING_DEFAULTS, POSTING_OFF } from './posting-off.limits.js';
 
 export type SenderEnv = Awaited<ReturnType<typeof senderSetup>>;
 

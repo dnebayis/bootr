@@ -54,6 +54,7 @@ import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { noteSeen, seenInResult, type SeenPost } from './comment-posts.js';
+import { POST_SCHEDULED_SOON_RE } from './thread-send.js';
 import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
 import { offerPlatformUpdate, platformUpdateSection, settlePlatformUpdate, type PlatformUpdate } from './platform-updates.js';
@@ -1049,6 +1050,14 @@ export async function afterSettledAction(ctx: SupervisorContext, agent: Pick<Age
   const publish = action.tool === 'publish_post' || action.tool === 'publish_reply';
   // What a read showed is kept on the turn: a comment may only be about a post the agent read in it (comment-posts.ts).
   if (result.status === 'completed' && (action.tool === 'read_x_thread' || action.tool === 'read_x_account' || action.tool === 'read_mentions')) noteSeen(turn, seenInResult(action.tool, result.result));
+  // A scheduled post of the coin's own holds the next interval (post-send.ts `beforeOriginalNow`), so this original was
+  // refused. A digest or a numbers post the turn carried is then neither posted nor closed: the turn forgets it, so
+  // its `finish` (or the runtime ending it) does not mark the week or the day done, and it is due again at the next free slot.
+  if (action.tool === 'publish_post' && result.status === 'failed' && POST_SCHEDULED_SOON_RE.test(result.error ?? '') && (turn.digestWeek || turn.numbersDay)) {
+    log.info({ actionId: pending.id, digestWeek: turn.digestWeek ?? null, numbersDay: turn.numbersDay ?? null }, 'a scheduled post holds this interval; the digest or numbers post stays open');
+    turn.digestWeek = null;
+    turn.numbersDay = null;
+  }
   // Every refused publish is on the record at info, by its code alone (never the text): until now a refusal
   // showed only in sv_actions, and three 403s in six minutes went unnoticed.
   if (publish && result.status === 'failed') log.info({ tool: action.tool, actionId: pending.id, code: errorCodeOf(result.error) }, 'publish refused');

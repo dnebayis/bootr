@@ -21,6 +21,7 @@ import type { AgentConfig, RuntimeStatus, WakeDecision } from '@bootr/agent-core
 import { erc20Abi, formatUnits, getAddress, type Address } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { cachedPlatformFeedData, clean, DAY_MS } from './platform-feed.js';
+import { postHooks } from './post-send.js';
 import type { RhythmSchedule } from './rhythm.js';
 import { originalPostGate } from './rhythm.js';
 import type { AgentState } from './runtime.js';
@@ -250,6 +251,13 @@ export async function platformNumbersWake(
       log.debug({ reason: gate.hold.reason, until: gate.hold.until }, 'numbers post waits for the rhythm');
       return null;
     }
+  }
+  // A scheduled post of the agent's own is due within one post interval (post-send.ts): the numbers post waits for the
+  // next free slot, and no thought is bought only to be told so by the broker.
+  const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent as AgentRow, now).catch(() => null);
+  if (scheduledSoon) {
+    log.debug('numbers post waits for a scheduled post');
+    return null;
   }
   const numbers = await cachedPlatformNumbers(ctx, config);
   if (!numbers) {

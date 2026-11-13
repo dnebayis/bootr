@@ -18,7 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
-import { PolicyError, threadParts, validatePost } from '@bootr/agent-core';
+import { PolicyError, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
 import { MentionError, publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -27,7 +27,7 @@ import { bountyApprovalView, decideBountyApproval } from './bounties.js';
 import { inboxViews, openReplyEligibility, originalRules, publicAddressesOf, type BrokerEnv } from './broker/index.js';
 import type { CommentAbout } from './comment-posts.js';
 import { postHooks, type OriginalResult } from './post-send.js';
-import { retryableSend, type CommentedOriginal } from './thread-send.js';
+import { SCHEDULED_ID_RE, retryableSend, threadLimits, type CommentedOriginal } from './thread-send.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, approvals, type ApprovalDecision, type ApprovalKind, type ApprovalStatus } from './db/schema.js';
 import { loadImage, mediaFor, WITHOUT_PICTURE } from './images.js';
@@ -78,6 +78,18 @@ export interface ApprovalView {
    * paying transaction hash in the body). Null for a post or reply.
    */
   bounty: Record<string, unknown> | null;
+  /** A thread: the texts of the parts after `text`, in order, so the creator reads all of what approving sends. Absent for a single post. */
+  thread?: string[];
+  /** A scheduled post (`meta.scheduled`): the time it goes out when approved by then, ISO. Absent for a post that goes out on approval. */
+  scheduledFor?: string;
+}
+
+/** The parts after the first of a queued thread, and the time a queued scheduled post is for, as the item's meta keeps them. */
+function reviewExtras(meta: unknown): Pick<ApprovalView, 'thread' | 'scheduledFor'> {
+  const m = (meta ?? {}) as { thread?: unknown; scheduled?: { sendAt?: unknown } };
+  const thread = Array.isArray(m.thread) ? m.thread.map((p) => (p as { text?: unknown } | null)?.text).filter((t): t is string => typeof t === 'string') : [];
+  const sendAt = typeof m.scheduled?.sendAt === 'string' && Number.isFinite(Date.parse(m.scheduled.sendAt)) ? new Date(Date.parse(m.scheduled.sendAt)).toISOString() : null;
+  return { ...(thread.length ? { thread } : {}), ...(sendAt ? { scheduledFor: sendAt } : {}) };
 }
 
 function postUrl(agent: AgentRow, postId: string | null): string | null {
@@ -108,6 +120,7 @@ async function viewOf(ctx: SupervisorContext, agent: AgentRow, row: ApprovalRow,
     decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
     expiresAt: new Date(row.createdAt.getTime() + APPROVAL_TTL_MS).toISOString(),
     bounty: bountyApprovalView(row.meta),
+    ...reviewExtras(row.meta),
   };
 }
 
@@ -170,6 +183,14 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     const alt = altTextRisk(image.alt, { platform: agent.config.platform === true });
     if (alt) return { kind: 'failed', error: `${alt.message}. ${WITHOUT_PICTURE}` };
   }
+  // A scheduled post (its id says so) is queued for a time of its own: the scheduler asked what that time allows.
+  const scheduled = SCHEDULED_ID_RE.test(pending.id);
+  // An original queued now stands for the slot of this moment: a scheduled post that is due within one post interval
+  // holds that slot already (post-send.ts `beforeOriginalNow`), as it does for a post sent at once.
+  if (action.tool === 'publish_post' && !scheduled) {
+    const scheduledSoon = await postHooks.beforeOriginalNow(ctx, agent, now);
+    if (scheduledSoon) return { kind: 'failed', error: scheduledSoon };
+  }
   // The agent-to-agent caps apply to a reviewed post too: the creator's approval does not undo a loop.
   const capped = await conversationGuard(ctx, agent, { platform: agent.config.platform === true }, pending, env);
   if (capped) return capped;
@@ -200,7 +221,14 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   let attributions: { username: string; sourceUrl: string }[];
   const threaded = action.tool === 'publish_post' && parts.length > 1;
   try {
-    if (action.tool === 'publish_post' && (threaded || action.input.about)) {
+    if (action.tool === 'publish_post' && threaded && scheduled) {
+      // A scheduled thread: the gate over every part, as the send will run it again; the day's count and the turn's
+      // own posts are questions about the time it goes out, which the scheduler asked and asks again at the send.
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, { original: true });
+      const refused = threadRefusal(parts, attributions, { limits: threadLimits(ctx, agent), hasMedia: !!action.input.imageId, platform: agent.config.platform === true });
+      if (refused) return { kind: 'failed', error: refused };
+      meta.thread = action.input.thread;
+    } else if (action.tool === 'publish_post' && (threaded || action.input.about)) {
       // A thread or a comment: the rules the broker applies before a send apply before the creator sees the item.
       const config = agentConfigOf(agent);
       if (!config) return { kind: 'failed', error: 'agent_not_ready: the agent has no X account yet; nothing was queued' };

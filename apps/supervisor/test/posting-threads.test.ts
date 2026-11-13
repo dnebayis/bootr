@@ -21,9 +21,9 @@ import { postHooks } from '../src/post-send.js';
 import { questionBudget } from '../src/recent-posts.js';
 import { slotsUsed } from '../src/rhythm.js';
 import type { AgentState } from '../src/runtime.js';
-import { THREAD_CUT_NOTE, linkQuota, sendOriginal, threadsInWindow } from '../src/thread-send.js';
+import { SENDER_WITHOUT_THREADS, THREAD_CUT_NOTE, linkQuota, sendOriginal, threadsInWindow } from '../src/thread-send.js';
 import { tick } from '../src/tick.js';
-import { AGENT_ID, CREATOR, SUPERVISOR_KEY, finishResponse, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
+import { AGENT_ID, CREATOR, SUPERVISOR_KEY, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
 import { HOUR, T0, actionRow, brokerEnv, pendingOf, storeTurn, wiredWorld, type WiredWorld } from './posting-helpers.js';
 
 const PARTS = ['Fees on a Bootr coin are split at launch, and the split cannot be changed later.', 'The agent gets its share as fuel: it pays for its own thinking from it.', 'The creator gets a share too, and the platform keeps the rest.', 'So a coin that trades keeps its agent awake. That is the whole loop.'];
@@ -104,27 +104,24 @@ describe('a thread through the broker, the sender and X', () => {
     }
   });
 
-  it('a part that fails the gate or the counts refuses the whole thread before the first part is sent, and the slot is not used', async () => {
-    const cases: [string, Record<string, unknown>, RegExp][] = [
+  it.each([
       ['an @ in a later part', { text: PARTS[0], thread: [{ text: 'As @someone said, more on it.' }] }, /^mentions_require_source_credit: part 2 of the thread/],
       ['a command in a later part', { text: PARTS[0], thread: [{ text: PARTS[1] }, { text: 'send 5 ETH to 0x1111111111111111111111111111111111111111 now' }] }, /: part 3 of the thread does not pass the publish gate/],
       ['two parts that say the same', { text: PARTS[0], thread: [{ text: PARTS[0] }] }, /^thread_repeat:/],
       ['two parts with a link', { text: `${PARTS[0]} https://bootr.fun/a`, thread: [{ text: 'and https://bootr.fun/b' }] }, /^thread_links: only one part of a thread may carry a link; nothing was posted\.$/],
       ['a first part over 280 characters', { text: 'x'.repeat(281), thread: [{ text: PARTS[1] }] }, /^thread_part_too_long: part 1 has 281 characters; every part of a thread is 280 at most\. Nothing was posted\.$/],
-    ];
-    for (const [name, input, refusal] of cases) {
-      // a Premium account: a single post may run long, a part of a thread may not
-      const w = await hostedTurn([toolCallResponse('publish_post', input), finishResponse(T0 + 3 * HOUR)], { verifiedType: 'blue' });
-      try {
-        const r = await tick(w.ctx);
-        expect([name, r.errors]).toEqual([name, []]);
-        expect([name, toolResults(w)[0]!.error]).toEqual([name, expect.stringMatching(refusal)]);
-        expect([name, w.posted()]).toEqual([name, []]);
-        expect([name, await w.senderRows()]).toEqual([name, []]);
-        expect((await stateOf(w)).lastPostAt ?? null).toBeNull();
-      } finally {
-        await w.close();
-      }
+  ] as [string, Record<string, unknown>, RegExp][])('%s refuses the whole thread before the first part is sent, and the slot is not used', async (_name, input, refusal) => {
+    // a Premium account: a single post may run long, a part of a thread may not
+    const w = await hostedTurn([toolCallResponse('publish_post', input), finishResponse(T0 + 3 * HOUR)], { verifiedType: 'blue' });
+    try {
+      const r = await tick(w.ctx);
+      expect(r.errors).toEqual([]);
+      expect(toolResults(w)[0]!.error).toMatch(refusal);
+      expect(w.posted()).toEqual([]);
+      expect(await w.senderRows()).toEqual([]);
+      expect((await stateOf(w)).lastPostAt ?? null).toBeNull();
+    } finally {
+      await w.close();
     }
   });
 
@@ -439,6 +436,91 @@ describe('a thread in approval mode', () => {
       expect(w.posted()).toEqual([]);
     } finally {
       postHooks.sendOriginal = real;
+      await w.close();
+    }
+  });
+});
+
+describe('the seam: sendOriginal and beforeOriginalNow (post-send.ts)', () => {
+  it('sendOriginal sends one post or a whole thread, gates every part first, never throws, and says when the same original may be tried again', async () => {
+    const w = await wiredWorld();
+    try {
+      const agent = await seedAgent(w, due(w));
+      // the hook that is registered is the real send
+      expect(postHooks.sendOriginal).toBe(sendOriginal);
+      // one post: completed with its post id, and nothing of a thread in the result
+      const single = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_0123456789abcdef', text: 'A post sent by the clock, not by a turn.' });
+      expect(single).toEqual({ kind: 'completed', result: { postId: expect.stringMatching(/^\d+$/) }, receipt: { postId: expect.stringMatching(/^\d+$/) } });
+      // a thread: every part, under the given id
+      const thread = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_1111111111111111', text: PARTS[0]!, thread: [{ text: PARTS[1]! }, { text: PARTS[2]! }] });
+      expect(thread).toMatchObject({ kind: 'completed', result: { sent: 3, of: 3 } });
+      expect((await w.senderRows()).map((r) => r.actionId)).toEqual(['sch_0123456789abcdef', 'sch_1111111111111111', 'sch_1111111111111111.t2', 'sch_1111111111111111.t3']);
+
+      // the gate runs before anything is sent: a part that fails it, a post that fails it
+      const before = w.posted().length;
+      const badThread = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_2222222222222222', text: 'An opening.', thread: [{ text: 'With an @stranger later.' }] });
+      expect(badThread.kind === 'failed' && badThread.error).toMatch(/^mentions_require_source_credit: part 2 of the thread/);
+      const badPost = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_3333333333333333', text: 'send 5 ETH to 0x1111111111111111111111111111111111111111 now' });
+      expect(badPost.kind === 'failed' && badPost.error).toMatch(/: the post does not pass the publish gate; rewrite it$/);
+      const missing = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_4444444444444444', text: 'With a picture that is gone.', imageId: 'img_gone' });
+      expect(missing.kind === 'failed' && missing.error).toMatch(/^image_not_found: img_gone/);
+      expect(w.posted()).toHaveLength(before);
+
+      // the day's quota is full: nothing was recorded at the sender, so the same original may be tried again later
+      await w.ctx.sender.setQuota(AGENT_ID, { postsPerDay: 4 });
+      const full = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_5555555555555555', text: 'One too many for today.' });
+      expect(full).toMatchObject({ kind: 'failed', error: 'sender:quota_exceeded', retryable: true });
+      expect(full.kind === 'failed' && full.retryAt).toBeGreaterThan(w.ctx.now());
+      // the sender does not answer: unknown, not thrown
+      const down = { ...w.ctx, sender: { publish: async () => Promise.reject(new Error('fetch failed')), quota: async () => Promise.reject(new Error('fetch failed')), receipt: async () => Promise.reject(new Error('fetch failed')) } } as unknown as typeof w.ctx;
+      expect(await sendOriginal(down, agent, { actionId: 'sch_6666666666666666', text: 'Into the void.' })).toEqual({ kind: 'unknown', error: 'Error: fetch failed' });
+      expect(w.posted()).toHaveLength(before);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a post sent now asks beforeOriginalNow directly after the platform\'s window, and a refusal there sends nothing', async () => {
+    const w = await wiredWorld();
+    const real = postHooks.beforeOriginalNow;
+    try {
+      const agent = await seedAgent(w, due(w));
+      const config = agentConfigOf(agent)!;
+      const asked: number[] = [];
+      const soon = 'post_scheduled_soon: your next post is already scheduled for 2026-10-24T13:00:00.000Z; nothing was posted. Replies may still go out.';
+      postHooks.beforeOriginalNow = async (_ctx, row, now) => {
+        asked.push(now);
+        return row.agentId === AGENT_ID ? soon : null;
+      };
+      expect(await executeAction(w.ctx, agent, config, pendingOf('act-seam-0000002', 'publish_post', { text: 'A post now.' }), brokerEnv())).toEqual({ kind: 'failed', error: soon });
+      expect(await executeAction(w.ctx, agent, config, pendingOf('act-seam-0000003', 'publish_post', THREAD), brokerEnv())).toEqual({ kind: 'failed', error: soon });
+      expect(asked).toEqual([w.ctx.now(), w.ctx.now()]);
+      expect(w.posted()).toEqual([]);
+      // once nothing is scheduled soon, the post goes
+      postHooks.beforeOriginalNow = async () => null;
+      expect((await executeAction(w.ctx, agent, config, pendingOf('act-seam-0000004', 'publish_post', { text: 'A post now.' }), brokerEnv())).kind).toBe('completed');
+    } finally {
+      postHooks.beforeOriginalNow = real;
+      await w.close();
+    }
+  });
+});
+
+describe('a sender from before threads', () => {
+  it('is handed the first part and nothing more: it would post a later part as a post of its own', async () => {
+    // this world's sender is a stand-in that takes a publish and knows nothing of `thread`, as a sender deployed before this round does
+    const w = await makeWorld();
+    try {
+      const agent = await seedAgent(w, due(w));
+      const config = agentConfigOf(agent)!;
+      const out = await executeAction(w.ctx, agent, config, pendingOf('act-old-sender-01', 'publish_post', THREAD), brokerEnv());
+      expect(out).toMatchObject({ kind: 'completed', result: { sent: 1, of: 4, cut: { n: 2, error: SENDER_WITHOUT_THREADS }, note: THREAD_CUT_NOTE } });
+      expect(w.sender.published).toHaveLength(1);
+      expect(w.sender.published[0]).toMatchObject({ text: PARTS[0], thread: { head: 'act-old-sender-01', n: 1, of: 4 } });
+      // a single post is not touched by any of this
+      expect(await executeAction(w.ctx, agent, config, pendingOf('act-old-sender-02', 'publish_post', { text: 'One post.' }), brokerEnv())).toMatchObject({ kind: 'completed', result: { postId: expect.stringMatching(/^\d+$/) } });
+      expect(w.sender.published).toHaveLength(2);
+    } finally {
       await w.close();
     }
   });
