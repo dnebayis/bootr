@@ -24,8 +24,10 @@ export interface RecentPost {
 
 const clip = (s: unknown, max: number): string => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, max) : '');
 
-export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<RecentPost[]> {
+export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'> & Partial<Pick<SupervisorContext, 'config'>>, agentId: string): Promise<RecentPost[]> {
   const since = new Date(ctx.now() - RECENT_POSTS_WINDOW_MS);
+  // With scheduling switched off by its limit nothing in the queue goes out, so nothing in it counts as said.
+  const queue = ctx.config?.SCHEDULED_MAX_WAITING !== 0 && ctx.config?.SCHEDULE_MAX_AHEAD_MS !== 0;
   const [sent, reviewed, scheduled] = await Promise.all([
     ctx.db
       .select({ at: actions.createdAt, tool: sql<string>`${actions.action}->>'tool'`, text: sql<string>`${actions.action}->'input'->>'text'` })
@@ -40,12 +42,14 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'>, ag
       .orderBy(desc(approvals.createdAt))
       .limit(RECENT_POSTS_MAX),
     // Posts the agent scheduled that have not gone out (scheduled.ts): said already, so nothing is said twice.
-    ctx.db
-      .select({ at: scheduledPosts.sendAt, text: scheduledPosts.text })
-      .from(scheduledPosts)
-      .where(and(eq(scheduledPosts.agentId, agentId), gte(scheduledPosts.sendAt, since), inArray(scheduledPosts.status, ['waiting_review', 'waiting', 'sending'])))
-      .orderBy(desc(scheduledPosts.sendAt))
-      .limit(RECENT_POSTS_MAX),
+    queue
+      ? ctx.db
+          .select({ at: scheduledPosts.sendAt, text: scheduledPosts.text })
+          .from(scheduledPosts)
+          .where(and(eq(scheduledPosts.agentId, agentId), gte(scheduledPosts.sendAt, since), inArray(scheduledPosts.status, ['waiting_review', 'waiting', 'sending'])))
+          .orderBy(desc(scheduledPosts.sendAt))
+          .limit(RECENT_POSTS_MAX)
+      : [],
   ]);
   const out: RecentPost[] = [];
   const seen = new Set<string>();
