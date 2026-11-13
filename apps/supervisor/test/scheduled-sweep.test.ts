@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
 import { actions, approvals, notifications, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
-import { postHooks } from '../src/post-send.js';
+import { postHooks, setPostHooks } from '../src/post-send.js';
 import { slotsUsed } from '../src/rhythm.js';
 import { acquireLease, releaseLease } from '../src/runtime.js';
 import { postScheduledSoon, scheduledSection, sendPasses, sendScheduled, sweepScheduled } from '../src/scheduled.js';
@@ -523,6 +523,31 @@ describe('at send time a scheduled post passes what a post sent now passes', () 
       w.setNow(Date.parse('2026-10-24T15:00:30Z'));
       expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, missed: 1 });
       expect(fake.calls).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a send that outlasts its lease still moves the cadence and writes nothing else of the state', async () => {
+    const { w, fake, id } = await dueWorld();
+    try {
+      // while the sender works, the lease runs out and a client's call takes it and writes the state
+      const inner = postHooks.sendOriginal;
+      setPostHooks({
+        sendOriginal: async (ctx, agent, post) => {
+          await w.db.update(runtimes).set({ leaseToken: 'a-clients-call', state: { ...(await stateOf(w)), memory: 'written by the call that took the lease' } as unknown as Record<string, unknown> }).where(eq(runtimes.agentId, AGENT_ID));
+          return inner(ctx, agent, post);
+        },
+      });
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 1 });
+      expect(fake.written).toEqual([id]);
+      expect((await rowOf(w, id)).status).toBe('sent');
+      const state = await stateOf(w);
+      // the anchor moved, so no original follows inside the interval; what the other holder wrote is still there
+      expect(state.lastPostAt).toBe(AT + 1000);
+      expect(state.memory).toBe('written by the call that took the lease');
+      // and the lease of the other holder was not released from under it
+      expect((await w.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!.leaseToken).toBe('a-clients-call');
     } finally {
       await w.close();
     }
