@@ -118,24 +118,28 @@ async function store(ctx: Pick<SupervisorContext, 'db' | 'now'>, key: string, en
     .onConflictDoUpdate({ target: cursors.name, set: { value, updatedAt: new Date(ctx.now()) } });
 }
 
-/** One account's latest posts as the agent sees them: clipped, cleaned, newest first, at most WATCHLIST_POSTS_PER_ACCOUNT. */
-export function toWatchPosts(handle: string, posts: readonly { id: string; text: string; createdAt: string | null }[]): WatchPost[] {
+/**
+ * One account's latest posts as the agent sees them: clipped, cleaned, newest first, at most WATCHLIST_POSTS_PER_ACCOUNT.
+ * `invisible` also takes out the characters nobody sees (zero-width, direction marks, tag characters): a coin's list is
+ * whatever accounts its creator typed, so its posts are cleaned as hard as any stranger's text.
+ */
+export function toWatchPosts(handle: string, posts: readonly { id: string; text: string; createdAt: string | null }[], opts: { invisible?: boolean } = {}): WatchPost[] {
   return posts
     .filter((p) => /^\d{1,25}$/.test(String(p.id)))
     .slice(0, WATCHLIST_POSTS_PER_ACCOUNT)
     .map((p) => ({
       postId: String(p.id),
       at: typeof p.createdAt === 'string' && Number.isFinite(Date.parse(p.createdAt)) ? new Date(Date.parse(p.createdAt)).toISOString() : null,
-      text: clean(p.text, WATCHLIST_TEXT_CHARS),
+      text: clean(opts.invisible ? String(p.text ?? '').replace(/\p{Default_Ignorable_Code_Point}/gu, '') : p.text, WATCHLIST_TEXT_CHARS),
       link: `https://x.com/${handle}/status/${p.id}`,
     }));
 }
 
-async function readHandle(ctx: Pick<SupervisorContext, 'sender' | 'now' | 'log'>, agentId: string, handle: string): Promise<WatchEntry> {
+async function readHandle(ctx: Pick<SupervisorContext, 'sender' | 'now' | 'log'>, agentId: string, handle: string, opts: { invisible?: boolean } = {}): Promise<WatchEntry> {
   try {
     const res = await ctx.sender.readTimeline(agentId, handle, WATCHLIST_POSTS_PER_ACCOUNT);
     const username = typeof res.user?.username === 'string' && HANDLE.test(res.user.username) ? res.user.username.toLowerCase() : handle;
-    return { at: ctx.now(), posts: toWatchPosts(username, res.posts ?? []) };
+    return { at: ctx.now(), posts: toWatchPosts(username, res.posts ?? [], opts) };
   } catch (err) {
     const code = err instanceof SenderError ? err.code : (err as { status?: number }).status === 404 ? 'x_not_found' : 'read_failed';
     ctx.log.warn({ agentId, handle, err }, 'watchlist read failed');
@@ -163,7 +167,7 @@ export async function watchlistAccounts(ctx: Pick<SupervisorContext, 'db' | 'sen
     const fresh = !!entry && now - entry.at < interval && now >= entry.at;
     if (!fresh && reads < WATCHLIST_READS_PER_TURN) {
       reads += 1;
-      entry = await readHandle(ctx, agentId, handle);
+      entry = await readHandle(ctx, agentId, handle, { invisible: !!opts.scope });
       memory.set(key, entry);
       await store(ctx, key, entry).catch((err: unknown) => ctx.log.warn({ err, handle }, 'watchlist entry not stored'));
     }

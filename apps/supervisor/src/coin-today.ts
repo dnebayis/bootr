@@ -10,8 +10,8 @@
  * record of the turn before the last post becomes the number to compare against).
  *
  * Dated, at most COIN_BRIEF_MAX_CHARS characters, never a price, a market cap, a change in percent, a forecast or
- * another coin's name: none of those fields is read. Every figure is a number code formatted; the only words that come
- * from outside are a milestone's kind, mapped to fixed words. The section is marked as data
+ * another coin's name: none of those fields is read. Every figure is a number code formatted, and no word comes from
+ * outside: a milestone is named in fixed words by its kind, and a kind without them is left out. The section is marked as data
  * (`instructionAuthority: false`). The platform's own agent has `bootrToday` instead and gets none. With
  * COIN_BRIEF_MAX_CHARS at 0 the piece is off.
  */
@@ -28,6 +28,8 @@ export const COIN_TODAY_MEANING =
 
 /** Milestones of the coin's last 24 hours named in the brief at most. */
 export const COIN_BRIEF_MAX_MILESTONES = 3;
+/** The milestone kinds the brief has fixed words for; any other kind is left out, so no word from outside is repeated. */
+export const COIN_BRIEF_MILESTONE_KINDS: readonly string[] = ['first_swap', 'holders', 'volume24h'];
 
 /** What the state keeps for the brief: what the last turn was shown, and what the agent was shown when it last posted. */
 export interface BriefMark {
@@ -103,7 +105,7 @@ export function renderCoinBrief(input: CoinBriefInput): { text: string; holders:
   const nowSec = input.now / 1000;
   const own = (m: { token?: unknown; kernel?: unknown }) => (typeof m.token === 'string' && m.token.toLowerCase() === input.token.toLowerCase()) || (typeof m.kernel === 'string' && m.kernel.toLowerCase() === input.kernel.toLowerCase());
   const milestones = (Array.isArray(input.feed?.milestones) ? input.feed!.milestones! : [])
-    .filter((m) => m && own(m) && typeof m.at === 'number' && Number.isFinite(m.at) && m.at > nowSec - DAY_MS / 1000 && m.at <= nowSec + 60)
+    .filter((m) => m && own(m) && COIN_BRIEF_MILESTONE_KINDS.includes(String(m.kind)) && typeof m.at === 'number' && Number.isFinite(m.at) && m.at > nowSec - DAY_MS / 1000 && m.at <= nowSec + 60)
     .sort((a, b) => b.at - a.at)
     .slice(0, COIN_BRIEF_MAX_MILESTONES);
   if (holders === null && !trades && !milestones.length) return null;
