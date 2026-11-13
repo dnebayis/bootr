@@ -1,7 +1,7 @@
 import type { z } from 'zod';
+import { THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from './social/thread.js';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
 import { POST_LIMITS, postLimitsFor } from './social/post-validation.js';
-import { THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from './social/thread.js';
 import { DRAFT_INTENT_TOOL_NAME, MAX_RESOLVE_BATCH, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
 
 export type ToolEffect = 'read' | 'write' | 'money';

@@ -62,15 +62,15 @@ async function attributionsFor(ctx: SupervisorContext, agentId: string, text: st
  * Which optional fields of `publish_post` this deployment and this coin offer (docs/design/agent-tools-2.md section
  * 13: a limit of 0 switches its piece off and its sentence leaves the description). `thread`: the thread limits;
  * `about`: the comment limit and the creator's switch (`comments`, read loosely: it is another workstream's field);
- * `topic`: offered unless the facts it feeds are switched off (`LEARN_MAX_FACTS`, another workstream's limit, read
- * loosely: absent = on).
+ * `topic`: offered unless the facts it feeds are switched off (`LEARN_WINDOW_DAYS` at 0, another workstream's limit,
+ * read loosely: absent = on).
  */
 export function publishPostOptions(ctx: Pick<SupervisorContext, 'config'>, config: object): PublishPostOptions {
   const loose = ctx.config as unknown as Record<string, unknown>;
   return {
     threadMore: threadsOffered(ctx) ? (ctx.config.THREAD_MAX_PARTS ?? THREAD_MAX_PARTS) - 1 : 0,
     comments: commentLimit(ctx, { config: config as Record<string, unknown> }) > 0,
-    topic: loose.LEARN_MAX_FACTS !== 0,
+    topic: loose.LEARN_WINDOW_DAYS !== 0,
   };
 }
 
@@ -318,7 +318,7 @@ export function inboxViews(config: AgentConfig, items: readonly SenderInboxItem[
 export async function openReplyEligibility(ctx: Pick<SupervisorContext, 'db' | 'now' | 'config'>, config: AgentConfig, item: SenderInboxItem | undefined, decided: ReplyEligibility, exceptActionId: string): Promise<{ eligibility: ReplyEligibility; openReply: boolean }> {
   if (!item || !decided.eligible) return { eligibility: decided, openReply: false };
   const directory = await agentDirectory(ctx);
-  if (!directory.openReplies.has(config.agentId)) return { eligibility: decided, openReply: false };
+  if (!directory.openReplies?.has(config.agentId)) return { eligibility: decided, openReply: false };
   const strict = inboxViews(config, [item], ctx.now(), { ...directory, openReplies: new Map() })[0]!;
   if (strict.eligible || strict.reason !== 'verified_audience_required') return { eligibility: decided, openReply: false };
   const now = inboxViews(config, [item], ctx.now(), directory)[0]!;

@@ -35,7 +35,7 @@ describe('every posting limit at off', () => {
       expect(Object.keys(shown!.function.parameters.properties)).toEqual([...BEFORE_KEYS, 'topic']);
 
       // `topic` feeds the facts of another workstream: with that piece off as well, nothing of this round is left in the tool
-      const allOff = { config: { ...w.ctx.config, LEARN_MAX_FACTS: 0 } } as unknown as typeof w.ctx;
+      const allOff = { config: { ...w.ctx.config, LEARN_WINDOW_DAYS: 0 } } as unknown as typeof w.ctx;
       const before = availableTools(allOff, config).find((t) => t.name === 'publish_post')!;
       expect(before.description).toBe(BEFORE);
       expect(Object.keys((toFunctionDefinitions([before]) as unknown as Fn[])[0]!.function.parameters.properties)).toEqual(BEFORE_KEYS);
