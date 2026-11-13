@@ -500,7 +500,7 @@ describe('a social turn', () => {
     expect(json(early)).toMatchObject({ status: 'failed', error: `what_works_not_due: your note can be revised again at ${kept.result.nextRevisionAt}; nothing was changed.` });
     expect(site.backend.whatWorks!.text).toBe('Short posts in the morning, one picture.');
     site.seen.length = 0;
-    const long = (await client.callTool({ name: 'bootr_agent_note_what_works', arguments: { turnId, text: 'x'.repeat(601) } }).catch((e: unknown) => ({ isError: true, content: [] }))) as Result;
+    const long = (await client.callTool({ name: 'bootr_agent_note_what_works', arguments: { turnId, text: 'x'.repeat(601) } }).catch(() => ({ isError: true, content: [] }))) as Result;
     expect(long.isError).toBe(true);
     expect(site.seen).toHaveLength(0);
   });
