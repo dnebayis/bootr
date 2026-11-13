@@ -24,7 +24,7 @@ import { OUTCOME_UNKNOWN_ERROR, postScheduledSoon, scheduledSection, sweepSchedu
 import { SenderError } from '../src/sender-client.js';
 import { sendOriginal } from '../src/thread-send.js';
 import { AGENT_ID, seedAgent, type TestWorld } from './helpers.js';
-import { DAY, HOUR, T0, wiredWorld, type WiredWorld } from './posting-helpers.js';
+import { DAY, HOUR, POSTING_DEFAULTS, T0, wiredWorld, type WiredWorld } from './posting-helpers.js';
 import { MIN, agentRow, patchConfig, rowOf, schedule, stateOf } from './scheduled-helpers.js';
 
 const AT = T0 + 30 * MIN;
@@ -32,7 +32,8 @@ const TEXT = 'The half past twelve thought.';
 
 /** A coin with one post scheduled for `AT` (or what `make` schedules), the routes mounted so both hooks are the real ones, and both clocks a second past `AT`. */
 async function dueWorld(make?: (w: WiredWorld) => Promise<string>): Promise<{ w: WiredWorld; id: string }> {
-  const w = await wiredWorld();
+  // every limit of the posting rules at its default, whichever run this file is part of (the suite also runs with them switched off)
+  const w = await wiredWorld({ config: POSTING_DEFAULTS });
   await seedAgent(w, { runtime: { nextAt: new Date(T0 + 12 * HOUR) } });
   createApp(w.ctx);
   expect(postHooks.sendOriginal).toBe(sendOriginal);

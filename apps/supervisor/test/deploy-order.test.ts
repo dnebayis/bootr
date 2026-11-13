@@ -19,7 +19,7 @@ import { agentConfigOf } from '../src/onboarding.js';
 import { SenderError } from '../src/sender-client.js';
 import { SENDER_WITHOUT_THREADS, sendOriginal } from '../src/thread-send.js';
 import { AGENT_ID, makeWorld, seedAgent } from './helpers.js';
-import { HOUR, T0, brokerEnv, pendingOf, storeTurn, wiredWorld, xIdAt } from './posting-helpers.js';
+import { HOUR, POSTING_DEFAULTS, T0, brokerEnv, pendingOf, storeTurn, wiredWorld, xIdAt } from './posting-helpers.js';
 
 let n = 0;
 const nextId = () => `act-deploy-${String(++n).padStart(6, '0')}`;
@@ -29,7 +29,8 @@ const seen = () => ({ postId: POST, authorId: '4201', handle: 'alice', verified:
 
 async function oldSenderWorld() {
   resetAccountChecks();
-  const w = await makeWorld();
+  // the posting rules at their defaults, whichever run this file is part of
+  const w = await makeWorld({ config: POSTING_DEFAULTS });
   w.sender.oldSender = true;
   const agent = await seedAgent(w, { config: { socialStartedAt: new Date(w.ctx.now() - 10 * HOUR).toISOString() } });
   const config = agentConfigOf(agent)!;
@@ -124,7 +125,7 @@ describe('a new supervisor in front of a sender from before the round', () => {
 
 describe('an old supervisor in front of the sender of this round', () => {
   it('a publish, its receipt, the quota read and a repeat, asked the way the old supervisor asks, are answered as before', async () => {
-    const w = await wiredWorld();
+    const w = await wiredWorld({ config: POSTING_DEFAULTS });
     try {
       await seedAgent(w);
       // what the supervisor of before sends: no `thread`, no `aboutAuthorId`, nothing of the round
@@ -145,7 +146,7 @@ describe('an old supervisor in front of the sender of this round', () => {
   });
 
   it('the one new refusal it can meet is the count of posts with a link: a 429 that leaves nothing behind, which it reads as a failed post it may retry', async () => {
-    const w = await wiredWorld();
+    const w = await wiredWorld({ config: POSTING_DEFAULTS });
     try {
       await seedAgent(w);
       w.x.ctx.defaults.linkPostsPerDay = 1;
