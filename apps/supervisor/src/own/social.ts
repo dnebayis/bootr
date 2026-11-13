@@ -24,7 +24,7 @@ import { offerPlatformUpdate, settlePlatformUpdate } from '../platform-updates.j
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold, type RhythmSchedule } from '../rhythm.js';
 import { roleTools } from '../roles.js';
 import { accountPremium, afterSettledAction, buildFirstObservation, scheduleFor, socialCheckpoint, trackHoldEnd, type Turn, type TurnInputs } from '../runtime.js';
-import { applyScheduled } from '../scheduled.js';
+import { applyScheduled, scheduledTimes } from '../scheduled.js';
 import { SenderError, type SenderInboxItem } from '../sender-client.js';
 import { readTreasuryOnChain } from '../treasury.js';
 import { settleWeeklyDigest, weeklyDigestWake, type WeeklyDigestPlan } from '../weekly-digest.js';
@@ -215,7 +215,7 @@ export const ownSocialRole: OwnRoleHandler = {
 
   async finish(call, turn, input): Promise<{ result: Record<string, unknown>; nextAt?: number }> {
     const { ctx, agent, config, state } = call;
-    const done = socialCheckpoint(config, state, turn, { memory: input.memory, agenda: input.agenda, summary: input.summary, nextAt: input.nextAt }, ctx.now(), ctx.log.child({ agentId: agent.agentId }));
+    const done = socialCheckpoint(config, state, turn, { memory: input.memory, agenda: input.agenda, summary: input.summary, nextAt: input.nextAt }, ctx.now(), ctx.log.child({ agentId: agent.agentId }), await scheduledTimes(ctx, agent));
     return { result: done.result, nextAt: done.nextAtMs };
   },
 

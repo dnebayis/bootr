@@ -30,10 +30,10 @@
 import {
   PolicyError,
   boundedState,
-  linkedHosts,
   postLength,
   postLimitsFor,
   sha256Hex,
+  threadRefusal,
   toolEnabled,
   validatePost,
   type Action,
@@ -47,8 +47,8 @@ import {
 import { and, asc, desc, eq, gt, inArray, isNull, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { getAddress, isAddressEqual, type Address } from 'viem';
-import { APPROVAL_TTL_MS, queueForApproval, requiresApproval, textHash, type ApprovalRow, type ApprovalView, type DecisionResult } from './approvals.js';
-import type { BrokerEnv } from './broker/index.js';
+import { approvalExpiresAtMs, queueForApproval, requiresApproval, textHash, type ApprovalRow, type ApprovalView, type DecisionResult } from './approvals.js';
+import { publicAddressesOf, type BrokerEnv } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { actions, agents, approvals, runtimes, scheduledPosts, type ScheduledPostStatus } from './db/schema.js';
 import type { AuthEnv } from './hmac.js';
@@ -61,6 +61,7 @@ import { postHooks, setPostHooks, type OriginalPost, type OriginalResult } from 
 import { QUESTION_LOOKBACK, asksQuestion } from './recent-posts.js';
 import { creditsHold, forbiddenHold, formatQuietHours, isXCreditsError, isXForbiddenError, originalPostGate, parseQuietHours, quietUntil, quotaHold, type Hold, type QuietHours, type RhythmSchedule } from './rhythm.js';
 import { addressRefusal } from './your-coin.js';
+import { threadLimits } from './thread-send.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
 export type ScheduledRow = typeof scheduledPosts.$inferSelect;
@@ -81,6 +82,20 @@ export const SCHEDULED_SCAN_PER_SEND = 10;
 export const SCHEDULED_RECONCILE_PER_TICK = 20;
 /** The sweep starts no new send once it has run this long: the tick has agents to get to. */
 export const SCHEDULED_SWEEP_BUDGET_MS = 30_000;
+/**
+ * How long past its grace a post may stay handed to the sender with no known outcome (`sending`). While it does it
+ * holds the coin's originals back, since it may be on X. Past this it is closed as failed with `OUTCOME_UNKNOWN`: it is
+ * never sent again, the agent and the tape are told, and the coin posts again. By then the sender's own reconciler has
+ * looked for the post on X at least twice (after 15 minutes, then hourly).
+ */
+export const SCHEDULED_UNKNOWN_BOUND_MS = 60 * 60_000;
+/** The head of the error of a post closed with no known outcome. */
+export const OUTCOME_UNKNOWN = 'outcome_unknown';
+export const OUTCOME_UNKNOWN_ERROR = `${OUTCOME_UNKNOWN}: it was handed to X at its time and X never confirmed or refused it; it may be on X. It is not sent again`;
+/** A post closed with no known outcome is still asked for at the sender for this long: a late receipt puts the truth on the record. Nothing is sent. */
+export const SCHEDULED_LATE_SETTLE_MS = 7 * 24 * 3_600_000;
+/** Such late questions per tick. */
+export const SCHEDULED_LATE_SETTLE_PER_TICK = 5;
 /** Closed rows (sent, failed, missed, cancelled) are deleted after this long. */
 export const SCHEDULED_KEEP_MS = 30 * 24 * 3_600_000;
 const PRUNE_EVERY_MS = 3_600_000;
@@ -187,6 +202,22 @@ export async function waitingScheduled(ctx: Pick<SupervisorContext, 'db'>, agent
     .from(scheduledPosts)
     .where(and(eq(scheduledPosts.agentId, agentId), inArray(scheduledPosts.status, [...OPEN_STATUSES])))
     .orderBy(asc(scheduledPosts.sendAt));
+}
+
+/**
+ * When the coin's waiting posts are due (epoch ms, soonest first), for the wake floor of a `finish` (runtime.ts
+ * `coinWakeFloor`): the agent is not woken for a slot one of them covers. Posts still in the creator's review count
+ * too: they hold their time until it passes. Empty for an agent that does not hold the schedule tools, and when the
+ * read fails (the floor is then the plain cadence, as before).
+ */
+export async function scheduledTimes(ctx: Pick<SupervisorContext, 'db' | 'config' | 'log'>, agent: Pick<AgentRow, 'agentId' | 'config'>): Promise<number[]> {
+  if (!scheduleToolsOffered(ctx, agent.config)) return [];
+  try {
+    return (await waitingScheduled(ctx, agent.agentId)).map((r) => r.sendAt.getTime());
+  } catch (err) {
+    ctx.log.warn({ agentId: agent.agentId, err: rpcErrorText(err) }, 'scheduled posts read failed; the wake floor is the plain cadence');
+    return [];
+  }
 }
 
 const partsOf = (row: Pick<ScheduledRow, 'text' | 'thread'>): string[] => [row.text, ...(Array.isArray(row.thread) ? row.thread.map((p) => p.text) : [])];
@@ -307,43 +338,34 @@ async function timeContext(ctx: Pick<SupervisorContext, 'db' | 'now' | 'config'>
 /** An `@` that X would read as naming somebody, in the plain or the full-width form. */
 const MENTION_SIGN = /[@＠][A-Za-z0-9_]/;
 
-/** The publish gate over a post as it is scheduled: every part, with no credits, since a scheduled post names nobody. Null when it passes. */
-export function scheduleGateProblem(ctx: Pick<SupervisorContext, 'config'>, parts: readonly string[], opts: { hasImage: boolean; platform: boolean; accountLimit: number }): string | null {
-  const gate = (text: string, format: 'short' | 'original', hasMedia: boolean): string | null => {
-    try {
-      validatePost(text, [], format, hasMedia, { platform: opts.platform });
-      return null;
-    } catch (err) {
-      return err instanceof PolicyError ? err.code : 'invalid_post';
-    }
-  };
+/** A refusal of the posting rules in the words of a post that was to be scheduled: nothing was posted there, nothing is scheduled here. */
+const asScheduled = (refusal: string): string => refusal.replace(/nothing was posted/g, 'nothing was scheduled').replace(/Nothing was posted/g, 'Nothing was scheduled');
+
+/**
+ * The publish gate over a post as it is scheduled: every part, with no credits, since a scheduled post names nobody.
+ * Null when it passes. A single post is the common gate (`validatePost`) and the account's length limit. A thread is
+ * the posting rules' own gate (agent-core `validateThread`, through `threadRefusal`), the very one a thread sent now
+ * and the send at its time pass, so the two checks cannot drift apart; only the ending of the refusal differs
+ * ("nothing was scheduled"). `publicAddresses` are the addresses the agent may name (its own coin and treasury): with
+ * them the gate refuses any other address now, while the agent can still rewrite, and not first when the post is due.
+ */
+export function scheduleGateProblem(ctx: Pick<SupervisorContext, 'config'>, parts: readonly string[], opts: { hasImage: boolean; platform: boolean; accountLimit: number; publicAddresses?: readonly string[]; agent?: Pick<AgentRow, 'config'> | null }): string | null {
+  const risk = { platform: opts.platform, ...(opts.publicAddresses ? { publicAddresses: opts.publicAddresses } : {}) };
   if (parts.length === 1) {
-    const code = gate(parts[0]!, 'original', opts.hasImage);
-    if (code) return `${code}: the post does not pass the publish gate; rewrite it. Nothing was scheduled.`;
+    try {
+      validatePost(parts[0]!, [], 'original', opts.hasImage, risk);
+    } catch (err) {
+      return `${err instanceof PolicyError ? err.code : 'invalid_post'}: the post does not pass the publish gate; rewrite it. Nothing was scheduled.`;
+    }
     const length = postLength(parts[0]!);
     if (length > opts.accountLimit) return `post_too_long_for_account: this X account has no Premium: posts are limited to ${opts.accountLimit} characters (this one is ${length}). Shorten it. Nothing was scheduled.`;
     return null;
   }
-  const maxParts = looseLimit(ctx, 'THREAD_MAX_PARTS', 4);
-  const partMax = looseLimit(ctx, 'THREAD_PART_MAX_CHARS', 280);
-  if (maxParts <= 1) return 'thread_not_available: threads are switched off; nothing was scheduled. Schedule it as one post.';
-  if (parts.length > maxParts) return `thread_too_long: a thread has at most ${maxParts} posts; nothing was scheduled. Say it in fewer.`;
-  for (const [i, part] of parts.entries()) {
-    const length = postLength(part);
-    if (length > partMax) return `thread_part_too_long: part ${i + 1} has ${length} characters; every part of a thread is ${partMax} at most. Nothing was scheduled.`;
-  }
-  const said = new Set<string>();
-  for (const part of parts) {
-    const key = clip(part, 4000).toLowerCase();
-    if (said.has(key)) return 'thread_repeat: two parts of the thread say the same; nothing was scheduled.';
-    said.add(key);
-  }
-  if (parts.filter((part) => linkedHosts(part).length > 0).length > looseLimit(ctx, 'THREAD_MAX_LINK_PARTS', 1)) return 'thread_links: only one part of a thread may carry a link; nothing was scheduled.';
-  for (const [i, part] of parts.entries()) {
-    const code = gate(part, 'short', i === 0 && opts.hasImage);
-    if (code) return `${code}: part ${i + 1} does not pass the publish gate; rewrite it. Nothing was scheduled.`;
-  }
-  return null;
+  // The limits in force for this coin: the deployment's, and never more parts than the coin may post in a day (thread-send.ts).
+  const limits = threadLimits(ctx, opts.agent ?? null);
+  if (limits.maxParts <= 1) return 'thread_not_available: threads are switched off; nothing was scheduled. Schedule it as one post.';
+  const refused = threadRefusal(parts, [], { ...risk, hasMedia: opts.hasImage, limits });
+  return refused ? asScheduled(refused) : null;
 }
 
 /** The texts of one stored `publish_post` action, all its parts (section 17.4: `input.thread` is `[{ text }]`). */
@@ -515,7 +537,7 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
     }
   }
   const accountLimit = parts.length === 1 && postLength(input.text) > postLimitsFor(false).original ? postLimitsFor(await accountPremium(ctx, agent.agentId)).original : postLimitsFor(null).original;
-  const gate = scheduleGateProblem(ctx, parts, { hasImage: !!input.imageId, platform, accountLimit });
+  const gate = scheduleGateProblem(ctx, parts, { hasImage: !!input.imageId, platform, accountLimit, publicAddresses: publicAddressesOf(config), agent });
   if (gate) return failed(gate);
   const asked = await questionProblem(ctx, agent.agentId, parts, sendAt, waiting);
   if (asked) return failed(asked);
@@ -629,7 +651,10 @@ export async function takeScheduledFeedback(ctx: Pick<SupervisorContext, 'db' | 
       sendAt: r.sendAt.toISOString(),
       text: clip(r.text, EXCERPT),
       status: r.status,
-      message: `your scheduled post ${r.id} was not sent: ${r.status === 'missed' ? 'its time passed before it could go out' : r.status === 'cancelled' ? 'your creator cancelled it' : (r.error ?? 'refused')}`,
+      message:
+        r.status === 'failed' && (r.error ?? '').startsWith(OUTCOME_UNKNOWN)
+          ? `your scheduled post ${r.id} has no known outcome: it was handed to X at its time and X never confirmed or refused it, so it may be on X. It is not sent again; do not post the same text again.`
+          : `your scheduled post ${r.id} was not sent: ${r.status === 'missed' ? 'its time passed before it could go out' : r.status === 'cancelled' ? 'your creator cancelled it' : (r.error ?? 'refused')}`,
     }));
 }
 
@@ -768,16 +793,56 @@ export function sendBlocked(ctx: Pick<SupervisorContext, 'config'>, agent: Agent
   return null;
 }
 
+/**
+ * What a send that did not complete means for a scheduled post (post-send.ts `sendOriginal`, thread-send.ts). Three
+ * buckets, and every answer of the posting rules and of the sender lands in exactly one:
+ *
+ *   - `waits`: nothing was left at the sender and the cause passes by itself (the day's quota, a consent lookup that
+ *     could not reach X, an account that is not connected or whose token could not be refreshed, the sender's own rate
+ *     limit, its database away before anything was recorded). The post waits and is tried again until its grace ends.
+ *   - `unknown`: the post may have reached X, or nothing can be said about where the send stopped (the sender holds
+ *     it or still works on it, its answer was lost, it answered with an error of its own or through something in
+ *     between that is not its own answer, or the send threw). Never tried again: only the sender's receipt decides,
+ *     and no receipt at all means nothing was sent.
+ *   - `final`: a refusal for good (X or the publish gate refused it, the thread rules, the day's count of posts with a
+ *     link, a picture that is gone, an account that is not this agent's). The post fails with the reason and is never
+ *     rewritten by code.
+ *
+ * `retryable` on a failed outcome says only that nothing was left at the sender. It does not decide the bucket: the
+ * count of posts with a link leaves nothing there and is still final for this post, which must be written anew.
+ */
+export type SendBucket = 'waits' | 'unknown' | 'final';
+
 /** A refused send that passes by itself: nothing was recorded at the sender, so the same post may be tried again. */
 export function sendPasses(error: string): boolean {
   const e = error.trim();
   if (/^original_sender_not_mounted\b/.test(e)) return true;
   if (/^(no_slot|quiet_hours)\b/.test(e)) return true;
-  return /^sender:(quota_exceeded|consent_lookup_failed|not_connected|revoked|refresh_failed|rate_limited|storage_unavailable|internal_error|http_(429|5\d\d))(?![A-Za-z0-9_])/.test(e);
+  return /^sender:(quota_exceeded|consent_lookup_failed|not_connected|revoked|refresh_failed|rate_limited|storage_unavailable)(?![A-Za-z0-9_])/.test(e);
 }
 
 /** A "failure" that says X was already contacted: the outcome is not known, whatever the word. */
-const MAYBE_SENT = /after_send|sender_(held|pending)\b|outcome_unknown/;
+const MAYBE_SENT = /after_send|sender_(held|pending)\b|outcome_unknown|^tool_timeout\b/;
+/** The sender's own error (`internal_error`), a clash over the action id, or an answer that is not the sender's (`http_502` from what stands in front of it): where the send stopped is not known. */
+const SENDER_UNSURE = /^sender:(internal_error|action_id_conflict|http_\d{3})(?![A-Za-z0-9_])/;
+
+/** The head of a refusal somebody chose: `sender:<code>`, or a code in snake case (`sender_rejected`, `thread_too_long`, `image_not_found`, `social_...`). */
+const REFUSAL_CODE = /^(?:sender:|[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_]))/;
+
+/**
+ * A failed send after which nothing is known about the post. Every refusal of the posting rules and of the sender
+ * starts with a code; a text that does not is an exception's own (`TypeError: ...`), thrown at a place nobody chose.
+ */
+export function sendUnsure(error: string): boolean {
+  const e = error.trim();
+  return MAYBE_SENT.test(e) || SENDER_UNSURE.test(e) || !REFUSAL_CODE.test(e);
+}
+
+/** The bucket of a send that did not complete. */
+export function sendBucket(outcome: Exclude<ActionOutcome, { kind: 'completed' }>): SendBucket {
+  if (outcome.kind === 'unknown' || sendUnsure(outcome.error)) return 'unknown';
+  return sendPasses(outcome.error) ? 'waits' : 'final';
+}
 
 const emptyTurn = (now: number): Turn => ({ startedAt: now, steps: 0, nudged: false, reasons: [], messages: [], inbox: {}, recentSteps: [] });
 
@@ -946,18 +1011,18 @@ export async function sendScheduled(ctx: SupervisorContext, id: string): Promise
       // The hook does not throw; should it, nothing is known about the post.
       outcome = { kind: 'unknown', error: rpcErrorText(err) };
     }
-    if (outcome.kind === 'failed' && MAYBE_SENT.test(outcome.error)) outcome = { kind: 'unknown', error: outcome.error };
-
     if (outcome.kind === 'completed') {
       await closeSent(ctx, agent, lease, claimed, (outcome.result ?? {}) as OriginalResult);
       return 'sent';
     }
-    if (outcome.kind === 'unknown') {
+    const bucket = sendBucket(outcome);
+    if (bucket === 'unknown') {
       await ctx.db.update(scheduledPosts).set({ error: outcome.error.slice(0, MAX_ERROR_CHARS), updatedAt: new Date(ctx.now()) }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
       log.warn({ reason: outcome.error.slice(0, 120) }, 'scheduled post handed to the sender with no known outcome; it is settled from its receipt');
       return 'unknown';
     }
-    if (sendPasses(outcome.error)) {
+    if (outcome.kind !== 'failed') return 'unknown';
+    if (bucket === 'waits') {
       // Nothing was recorded at the sender: the post waits again. A quota refusal sets its hold, as for a post sent now.
       await ctx.db.update(scheduledPosts).set({ status: 'waiting', error: outcome.error.slice(0, MAX_ERROR_CHARS), updatedAt: new Date(ctx.now()) }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
       if (outcome.error === 'sender:quota_exceeded') await settleOnState(ctx, agent, lease, claimed, { actionId: `${row.id}-sent`, tool: 'publish_post', status: 'failed', error: outcome.error }, outcome.retryAt);
@@ -974,6 +1039,23 @@ export async function sendScheduled(ctx: SupervisorContext, id: string): Promise
   }
 }
 
+/** Whether a post that is still `sending` has waited for its receipt long enough: past its grace by `SCHEDULED_UNKNOWN_BOUND_MS`. */
+function unknownTooLong(ctx: Pick<SupervisorContext, 'config'>, row: Pick<ScheduledRow, 'sendAt'>, now: number): boolean {
+  return now > row.sendAt.getTime() + scheduleLimits(ctx).graceMs + SCHEDULED_UNKNOWN_BOUND_MS;
+}
+
+/**
+ * The end of a post whose outcome stayed unknown: failed with `OUTCOME_UNKNOWN`, never sent again. The agent is told
+ * on its next turn (in words that say it may be on X), the tape says so, a review item it had closes, and the coin's
+ * originals are no longer held back. No hold is set and the cadence is not moved: nothing is known to have gone out.
+ */
+async function closeUnknown(ctx: SupervisorContext, agent: AgentRow, row: ScheduledRow): Promise<void> {
+  const now = new Date(ctx.now());
+  await ctx.db.update(scheduledPosts).set({ status: 'failed', error: OUTCOME_UNKNOWN_ERROR, updatedAt: now, feedbackAt: null }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
+  await ctx.db.update(approvals).set({ status: 'failed', note: OUTCOME_UNKNOWN_ERROR, feedbackAt: now }).where(and(eq(approvals.id, row.id), eq(approvals.status, 'approved'), isNull(approvals.postId)));
+  ctx.log.warn({ agentId: agent.agentId, scheduledId: row.id, sendAt: row.sendAt.toISOString() }, 'scheduled post closed with no known outcome: the sender never settled it; it is not sent again');
+}
+
 /** A row left `sending` (a crash, a lost answer, an unknown outcome): the sender's receipt says what became of it. */
 async function reconcileSending(ctx: SupervisorContext, id: string): Promise<SendResult> {
   const first = await ctx.db.query.scheduledPosts.findFirst({ where: eq(scheduledPosts.id, id) });
@@ -983,7 +1065,7 @@ async function reconcileSending(ctx: SupervisorContext, id: string): Promise<Sen
   try {
     const [agent, row] = await Promise.all([ctx.db.query.agents.findFirst({ where: eq(agents.agentId, first.agentId) }), ctx.db.query.scheduledPosts.findFirst({ where: eq(scheduledPosts.id, id) })]);
     if (!agent || !row || row.status !== 'sending') return 'waits';
-    let receipt: Awaited<ReturnType<SupervisorContext['sender']['receipt']>>;
+    let receipt: Awaited<ReturnType<SupervisorContext['sender']['receipt']>> | null = null;
     try {
       receipt = await ctx.sender.receipt(row.id);
     } catch (err) {
@@ -992,18 +1074,23 @@ async function reconcileSending(ctx: SupervisorContext, id: string): Promise<Sen
         await ctx.db.update(scheduledPosts).set({ status: 'waiting', updatedAt: new Date(ctx.now()) }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
         return 'waits';
       }
-      return 'unknown';
+      // The sender could not be asked: nothing is learnt this tick.
     }
-    if (receipt.status === 'sent') {
+    if (receipt?.status === 'sent') {
       await closeSent(ctx, agent, lease, row, resultFromReceipt(row, receipt));
       return 'sent';
     }
-    if (receipt.status === 'rejected') {
+    if (receipt?.status === 'rejected') {
       const error = `sender_rejected:${receipt.error ?? 'rejected'}`;
       await closeFailed(ctx, agent, lease, row, error, 'sending', { settle: isXForbiddenError(error) || isXCreditsError(error) });
       return 'failed';
     }
-    // pending or held: the sender's own reconciler settles it; asked again on a later tick, never sent again.
+    // pending or held, or no answer from the sender: its own reconciler settles it; asked again on a later tick, never
+    // sent again. Not for ever: past the bound the post is closed with no known outcome, so the coin can post again.
+    if (unknownTooLong(ctx, row, ctx.now())) {
+      await closeUnknown(ctx, agent, row);
+      return 'failed';
+    }
     await ctx.db.update(scheduledPosts).set({ updatedAt: new Date(ctx.now()) }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
     return 'unknown';
   } catch (err) {
@@ -1012,6 +1099,52 @@ async function reconcileSending(ctx: SupervisorContext, id: string): Promise<Sen
   } finally {
     await releaseLease(ctx, first.agentId, lease);
   }
+}
+
+/**
+ * A post that was closed with no known outcome is still asked for at the sender for `SCHEDULED_LATE_SETTLE_MS`: its
+ * reconciler may yet find the post on X, or learn that X refused it. A receipt that says sent puts the post on the
+ * record as the post it is (the `sv_actions` row, at the time it went out, so the tape, the counts and "what you
+ * already said" are true); one that says refused replaces the reason and is told to the agent once more. Nothing is
+ * sent here, no hold is set and the state is not touched. Returns whether the row changed.
+ */
+async function settleLate(ctx: SupervisorContext, row: ScheduledRow): Promise<boolean> {
+  await ctx.db.update(scheduledPosts).set({ attempts: row.attempts + 1 }).where(eq(scheduledPosts.id, row.id));
+  let receipt: Awaited<ReturnType<SupervisorContext['sender']['receipt']>>;
+  try {
+    receipt = await ctx.sender.receipt(row.id);
+  } catch {
+    return false;
+  }
+  const still = and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'failed'), sql`${scheduledPosts.error} like ${`${OUTCOME_UNKNOWN}%`}`);
+  if (receipt.status === 'rejected') {
+    const [changed] = await ctx.db.update(scheduledPosts).set({ error: `sender_rejected:${receipt.error ?? 'rejected'}`.slice(0, MAX_ERROR_CHARS), feedbackAt: null }).where(still).returning({ id: scheduledPosts.id });
+    return !!changed;
+  }
+  if (receipt.status !== 'sent') return false;
+  const sent = resultFromReceipt(row, receipt);
+  const postId = typeof sent.postId === 'string' && sent.postId ? sent.postId : null;
+  const [changed] = await ctx.db.update(scheduledPosts).set({ status: 'sent', postId, error: null }).where(still).returning({ id: scheduledPosts.id });
+  if (!changed) return false;
+  const stated = typeof receipt.sentAt === 'string' ? Date.parse(receipt.sentAt) : Number.NaN;
+  const at = new Date(Number.isFinite(stated) ? stated : row.sendAt.getTime());
+  const actionId = `${row.id}-sent`;
+  await ctx.db
+    .insert(actions)
+    .values({
+      actionId,
+      agentId: row.agentId,
+      cycleKey: `scheduled:${row.id}`,
+      action: { ...(publishActionOf(row) as unknown as Record<string, unknown>), scheduled: { id: row.id }, ...(row.via === 'own' ? { via: 'own', ...(row.clientId ? { clientId: row.clientId } : {}) } : {}) },
+      status: 'completed',
+      result: { ...sent, scheduledId: row.id },
+      receipt: postId ? { postId } : null,
+      createdAt: at,
+      updatedAt: new Date(ctx.now()),
+    })
+    .onConflictDoNothing();
+  ctx.log.info({ agentId: row.agentId, scheduledId: row.id, postId }, 'scheduled post of unknown outcome proved sent: put on the record from its receipt');
+  return true;
 }
 
 /** Posts past their grace are missed, never sent late; one that was still in the creator's review leaves the queue with it. */
@@ -1065,6 +1198,14 @@ export async function sweepScheduled(ctx: SupervisorContext): Promise<ScheduledS
   try {
     const sending = await ctx.db.select({ id: scheduledPosts.id }).from(scheduledPosts).where(eq(scheduledPosts.status, 'sending')).orderBy(asc(scheduledPosts.updatedAt)).limit(SCHEDULED_RECONCILE_PER_TICK);
     for (const { id } of sending) count(await reconcileSending(ctx, id));
+    // Posts closed with no known outcome: the least asked first, a few a tick, for as long as the sender may still settle them.
+    const late = await ctx.db
+      .select()
+      .from(scheduledPosts)
+      .where(and(eq(scheduledPosts.status, 'failed'), sql`${scheduledPosts.error} like ${`${OUTCOME_UNKNOWN}%`}`, gt(scheduledPosts.updatedAt, new Date(now - SCHEDULED_LATE_SETTLE_MS))))
+      .orderBy(asc(scheduledPosts.attempts), asc(scheduledPosts.updatedAt))
+      .limit(SCHEDULED_LATE_SETTLE_PER_TICK);
+    for (const row of late) await settleLate(ctx, row).catch((err: unknown) => ctx.log.warn({ scheduledId: row.id, err: rpcErrorText(err) }, 'scheduled post: the late receipt step failed'));
     report.missed = await expireScheduled(ctx, now);
 
     if (limits.sendsPerTick > 0) {
@@ -1142,8 +1283,11 @@ async function approvalViewOf(ctx: SupervisorContext, agent: AgentRow, row: Appr
     url: row.postId && typeof handle === 'string' && handle ? `https://x.com/${handle}/status/${row.postId}` : null,
     createdAt: row.createdAt.toISOString(),
     decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
-    expiresAt: new Date(row.createdAt.getTime() + APPROVAL_TTL_MS).toISOString(),
+    expiresAt: new Date(approvalExpiresAtMs(row, scheduleLimits(ctx).graceMs)).toISOString(),
     bounty: null,
+    // Every part and the time, as the review queue's own list shows them (approvals.ts `reviewExtras`).
+    ...(Array.isArray((row.meta as { thread?: unknown } | null)?.thread) && ((row.meta as { thread: { text?: unknown }[] }).thread.length > 0) ? { thread: (row.meta as { thread: { text?: unknown }[] }).thread.map((part) => part?.text).filter((t): t is string => typeof t === 'string') } : {}),
+    ...(typeof (row.meta as { scheduled?: { sendAt?: unknown } } | null)?.scheduled?.sendAt === 'string' ? { scheduledFor: new Date(Date.parse((row.meta as { scheduled: { sendAt: string } }).scheduled.sendAt)).toISOString() } : {}),
   };
 }
 

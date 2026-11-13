@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { actions, approvals } from '../src/db/schema.js';
-import { asksQuestion, questionBudget, questionQuotaRefusal, recentPosts, recentPostsSection } from '../src/recent-posts.js';
+import { THREAD_PART_EXCERPT, asksQuestion, questionBudget, questionQuotaRefusal, recentPosts, recentPostsSection } from '../src/recent-posts.js';
 import { AGENT_ID, makeWorld, seedAgent } from './helpers.js';
 
 describe('recentPosts', () => {
@@ -29,6 +29,65 @@ describe('recentPosts', () => {
       const section = await recentPostsSection(w.ctx, AGENT_ID);
       expect(section.recentPosts).toMatchObject({ items: expect.any(Array) });
       expect(await recentPostsSection(w.ctx, 'nobody')).toEqual({});
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('recentPosts and a thread', () => {
+  const THREAD = [{ text: 'The second post of the thread goes on about the split of the fees between the agent, the creator and the platform, at some length.' }, { text: 'The third closes it.' }, { text: 'A fourth that never went out.' }];
+  const row = (id: string, minutesAgo: number, now: number, input: Record<string, unknown>, result: Record<string, unknown> = { postId: '9001' }) => ({ actionId: id, agentId: AGENT_ID, cycleKey: id, action: { tool: 'publish_post', input }, status: 'completed', attempts: 1, result: { actionId: id, tool: 'publish_post', status: 'completed', result }, createdAt: new Date(now - minutesAgo * 60_000), updatedAt: new Date(now - minutesAgo * 60_000) });
+
+  it('is one item: the first post in text, the start of each later post in more, and for a cut one only the posts that went out', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      const now = w.ctx.now();
+      await w.db.insert(actions).values([
+        row('act_t1', 30, now, { text: 'A whole thread, first post.', thread: THREAD.slice(0, 2) }, { postId: '9001', parts: [{ n: 1, postId: '9001' }, { n: 2, postId: '9002' }, { n: 3, postId: '9003' }], sent: 3, of: 3 }),
+        row('act_t2', 60, now, { text: 'A thread that was cut, first post.', thread: THREAD }, { postId: '9010', parts: [{ n: 1, postId: '9010' }, { n: 2, postId: '9011' }], sent: 2, of: 4, cut: { n: 3, error: 'sender_held' } }),
+        row('act_t3', 90, now, { text: 'A thread cut after its first post.', thread: THREAD.slice(0, 1) }, { postId: '9020', parts: [{ n: 1, postId: '9020' }], sent: 1, of: 2, cut: { n: 2, error: 'x' } }),
+        row('act_p1', 120, now, { text: 'A single post.' }),
+      ] as never);
+      await w.db.insert(approvals).values([{ id: 'act_q1', agentId: AGENT_ID, kind: 'post', text: 'A thread in the review queue, first post.', textHash: 'hq', status: 'pending_approval', meta: { thread: THREAD.slice(1, 2) }, createdAt: new Date(now - 10 * 60_000) }]);
+      const items = await recentPosts(w.ctx, AGENT_ID);
+      expect(items.map((i) => ({ text: i.text, more: i.more, of: i.of }))).toEqual([
+        { text: 'A thread in the review queue, first post.', more: ['The third closes it.'], of: undefined },
+        { text: 'A whole thread, first post.', more: [THREAD[0]!.text.slice(0, 80), 'The third closes it.'], of: undefined },
+        { text: 'A thread that was cut, first post.', more: [THREAD[0]!.text.slice(0, 80)], of: 4 },
+        { text: 'A thread cut after its first post.', more: undefined, of: 2 },
+        { text: 'A single post.', more: undefined, of: undefined },
+      ]);
+      expect(THREAD_PART_EXCERPT).toBe(80);
+      expect(items[1]!.more![0]).toHaveLength(80);
+      // the words say what more and of are only while a thread is listed
+      const section = (await recentPostsSection(w.ctx, AGENT_ID)) as { recentPosts: { meaning: string } };
+      expect(section.recentPosts.meaning).toBe("what you already said in the last two days, newest first; never repeat a fact or a phrasing from here, and a rejected item carries the creator's note. A thread is one item: text is its first post and more holds the start of each post after it (with of, the thread was cut and only these went out)");
+      // a whole day of the most a coin may thread stays small: two threads of four posts are 2 x (140 + 3 x 80) characters of text
+      expect(JSON.stringify(items.slice(0, 2)).length).toBeLessThan(900);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a coin that never wrote a thread reads the section as it always was', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      await w.db.insert(actions).values([row('act_p1', 20, w.ctx.now(), { text: 'A single post.' })] as never);
+      expect((await recentPostsSection(w.ctx, AGENT_ID)).recentPosts).toEqual({ meaning: "what you already said in the last two days, newest first; never repeat a fact or a phrasing from here, and a rejected item carries the creator's note", items: [{ at: new Date(w.ctx.now() - 20 * 60_000).toISOString(), kind: 'post', status: 'sent', text: 'A single post.' }] });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the question quota already reads every post of a thread: a question in a later one counts', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      await w.db.insert(actions).values([row('act_t1', 20, w.ctx.now(), { text: 'A statement first.', thread: [{ text: 'And then, what do you think?' }] }, { postId: '9001', sent: 2, of: 2 })] as never);
+      expect(await questionBudget(w.ctx, AGENT_ID)).toMatchObject({ recentWithQuestion: 1, mayAskNow: false });
     } finally {
       await w.close();
     }

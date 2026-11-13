@@ -67,6 +67,28 @@ describe('coinWakeFloor', () => {
     expect(coinWakeFloor({ ...config, platform: true }, { ...initialState(), lastPostAt: T0 }, {}, T0)).toBeNull();
   });
 
+  it('moves past a slot a scheduled post covers, to the slot after that post, and past each further one in turn', () => {
+    const posted = { ...initialState(), lastPostAt: T0 };
+    const slot = T0 + 2 * H + JITTER;
+    const after = (at: number) => at + 2 * H + JITTER;
+    // nothing scheduled, or only posts that are already past: the floor of before
+    expect(coinWakeFloor(config, posted, {}, T0, [])).toEqual({ at: slot, reason: 'next_slot' });
+    expect(coinWakeFloor(config, posted, {}, T0, [T0 - H, T0])).toEqual({ at: slot, reason: 'next_slot' });
+    // a post scheduled for the slot, a little before it or within one interval after it holds that slot: the wake is the slot after the post
+    for (const at of [slot, slot - 20 * MIN, T0 + 2 * H, slot + 90 * MIN, slot + 2 * H]) expect([at, coinWakeFloor(config, posted, {}, T0, [at])]).toEqual([at, { at: after(at), reason: 'after_scheduled' }]);
+    // one further away than an interval after the slot leaves the slot to the agent
+    expect(coinWakeFloor(config, posted, {}, T0, [slot + 2 * H + MIN])).toEqual({ at: slot, reason: 'next_slot' });
+    // a queue of posts one interval apart: the wake is the slot after the last of them, whatever order they are given in
+    const queue = [T0 + 2 * H, T0 + 4 * H, T0 + 6 * H];
+    expect(coinWakeFloor(config, posted, {}, T0, queue)).toEqual({ at: after(T0 + 6 * H), reason: 'after_scheduled' });
+    expect(coinWakeFloor(config, posted, {}, T0, [...queue].reverse())).toEqual({ at: after(T0 + 6 * H), reason: 'after_scheduled' });
+    // a gap in the queue of more than an interval stops it there: the slot in the gap is the agent's
+    expect(coinWakeFloor(config, posted, {}, T0, [T0 + 2 * H, T0 + 9 * H])).toEqual({ at: after(T0 + 2 * H), reason: 'after_scheduled' });
+    // a deferred mention is still the one reason to come back sooner, and the platform agent keeps its own choice
+    expect(coinWakeFloor(config, posted, { reviewAt: new Date(T0 + 30 * MIN).toISOString() }, T0, queue)).toEqual({ at: T0 + 30 * MIN, reason: 'review_at' });
+    expect(coinWakeFloor({ ...config, platform: true }, posted, {}, T0, queue)).toBeNull();
+  });
+
   it('errorCodeOf keeps the code at the head of a tool error and drops the explanation', () => {
     expect(errorCodeOf('sender_rejected:forbidden(403): You are not permitted to perform this action.')).toBe('sender_rejected:forbidden(403)');
     expect(errorCodeOf('sender_rejected:policy:social_execution_command_forbidden')).toBe('sender_rejected:policy:social_execution_command_forbidden');

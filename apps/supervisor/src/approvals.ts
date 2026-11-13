@@ -94,6 +94,19 @@ function reviewExtras(meta: unknown): Pick<ApprovalView, 'thread' | 'scheduledFo
   return { ...(thread.length ? { thread } : {}), ...(sendAt ? { scheduledFor: sendAt } : {}) };
 }
 
+/**
+ * When a pending item runs out (epoch ms): `APPROVAL_TTL_MS` after it was queued, and for a scheduled post the end of
+ * its grace when that comes first (`meta.scheduled.sendAt` plus `graceMs`, scheduled.ts): a post written ahead is not
+ * sent late, so the creator has until then and not the queue's 48 hours. The view's `expiresAt` and the notice that a
+ * review is about to expire (notify-health.ts) both read this, so the creator is told in time.
+ */
+export function approvalExpiresAtMs(row: Pick<ApprovalRow, 'createdAt' | 'meta'>, graceMs: number): number {
+  const ttl = row.createdAt.getTime() + APPROVAL_TTL_MS;
+  const sendAt = (row.meta as { scheduled?: { sendAt?: unknown } } | null)?.scheduled?.sendAt;
+  const at = typeof sendAt === 'string' ? Date.parse(sendAt) : Number.NaN;
+  return Number.isFinite(at) ? Math.min(ttl, at + Math.max(0, graceMs)) : ttl;
+}
+
 function postUrl(agent: AgentRow, postId: string | null): string | null {
   const handle = (agent.config as { xHandle?: unknown }).xHandle;
   return postId && typeof handle === 'string' && handle ? `https://x.com/${handle}/status/${postId}` : null;
@@ -120,7 +133,7 @@ async function viewOf(ctx: SupervisorContext, agent: AgentRow, row: ApprovalRow,
     url: postUrl(agent, row.postId),
     createdAt: row.createdAt.toISOString(),
     decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
-    expiresAt: new Date(row.createdAt.getTime() + APPROVAL_TTL_MS).toISOString(),
+    expiresAt: new Date(approvalExpiresAtMs(row, ctx.config.SCHEDULE_GRACE_MS)).toISOString(),
     bounty: bountyApprovalView(row.meta),
     ...reviewExtras(row.meta),
   };

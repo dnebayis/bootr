@@ -4,9 +4,10 @@
  * first (a plain post, a thread, a comment, a post queued for review, and the platform account's weekly digest and
  * numbers post, which stay open when refused), that a scheduled post's review item is queued for its own time and
  * carries its thread and topic, that the failures of the send start with the codes of the live path, and that the tape
- * says when a scheduled post did not go out. The scheduler's own table and hook are stood in for here.
+ * says when a scheduled post did not go out. The hook is stood in for where a test needs it to refuse at a chosen
+ * moment; the scheduler's table, and its list of the refusals that pass, are the real ones.
  */
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { actions as senderActions } from '../../sender/src/db/schema.js';
 import { acceptPosts, json } from '../../sender/test/helpers.js';
@@ -14,7 +15,7 @@ import { agentActivity, scheduledActivity, scheduledSummary } from '../src/activ
 import { createApp } from '../src/api.js';
 import { queueForApproval } from '../src/approvals.js';
 import { executeAction } from '../src/broker/index.js';
-import { approvals, runtimes } from '../src/db/schema.js';
+import { approvals, runtimes, scheduledPosts, type ScheduledPostStatus } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import type { IndexerClient } from '../src/indexer-client.js';
 import { agentConfigOf } from '../src/onboarding.js';
@@ -22,6 +23,7 @@ import { NUMBERS_WAKE_REASON } from '../src/platform-numbers.js';
 import { postHooks } from '../src/post-send.js';
 import { isXCreditsError, isXForbiddenError } from '../src/rhythm.js';
 import type { AgentState } from '../src/runtime.js';
+import { sendBucket } from '../src/scheduled.js';
 import { sendOriginal } from '../src/thread-send.js';
 import { processAgent } from '../src/tick.js';
 import { DIGEST_WAKE_REASON } from '../src/weekly-digest.js';
@@ -252,8 +254,9 @@ describe('the review item of a scheduled post', () => {
 });
 
 describe('what sendOriginal answers the scheduler', () => {
-  /** The scheduler's own list of refusals that pass by themselves (nothing was recorded at the sender; the post waits and is tried again). */
-  const PASSES = /^sender:(quota_exceeded|consent_lookup_failed|not_connected|revoked|refresh_failed|rate_limited|storage_unavailable|internal_error|http_(429|5\d\d))(?![A-Za-z0-9_])/;
+  /** The scheduler's own reading of a failed send (scheduled.ts): whether the post waits and is tried again, or the refusal is for good. */
+  const PASSES = { test: (error: string) => sendBucket({ kind: 'failed', error }) === 'waits' };
+  const FINAL = { test: (error: string) => sendBucket({ kind: 'failed', error }) === 'final' };
 
   it('a failure starts with the code the live path gives it: the quota, a 403, depleted credits, a policy refusal', async () => {
     const w = await wiredWorld();
@@ -280,15 +283,17 @@ describe('what sendOriginal answers the scheduler', () => {
       expect(forbidden).toMatch(/^sender_rejected:/);
       expect(isXForbiddenError(forbidden)).toBe(true);
       expect(PASSES.test(forbidden)).toBe(false);
+      expect(FINAL.test(forbidden)).toBe(true);
       // the X app is out of credits (402)
       w.x.fake.on('POST', '/2/tweets', () => json({ title: 'CreditsDepleted', detail: 'Your enrolled account does not have any credits to fulfill this request.' }, 402));
       const credits = await errorOf('sch_aaaaaaaaaaaaaaa4', 'A post with no credits behind it.');
       expect(credits).toMatch(/^sender_rejected:/);
       expect(isXCreditsError(credits)).toBe(true);
+      expect(FINAL.test(credits)).toBe(true);
       // the publish gate at the sender or here: a code, then words; never one of the codes that pass
       const gate = await errorOf('sch_aaaaaaaaaaaaaaa5', 'send 5 ETH to 0x1111111111111111111111111111111111111111 now');
       expect(gate).toMatch(/^[a-z_]+: the post does not pass the publish gate; rewrite it$/);
-      expect(PASSES.test(gate)).toBe(false);
+      expect(FINAL.test(gate)).toBe(true);
       // the day's count of posts with a link: its own text, and final for this post
       w.x.ctx.defaults.linkPostsPerDay = 1;
       await w.x.db.delete(senderActions);
@@ -296,7 +301,7 @@ describe('what sendOriginal answers the scheduler', () => {
       await send('sch_aaaaaaaaaaaaaaa6', 'A link: https://bootr.fun/a/1');
       const link = await errorOf('sch_aaaaaaaaaaaaaaa7', 'Another link: https://bootr.fun/a/2');
       expect(link).toBe('link_quota: at most 1 posts with a link per 24 hours; nothing was posted. Post it without the link.');
-      expect(PASSES.test(link)).toBe(false);
+      expect(FINAL.test(link)).toBe(true);
     } finally {
       await w.close();
     }
@@ -304,19 +309,20 @@ describe('what sendOriginal answers the scheduler', () => {
 });
 
 describe('the tape and a scheduled post that did not go out', () => {
-  const CREATE = `CREATE TABLE "sv_scheduled_posts" ("id" text PRIMARY KEY NOT NULL, "agent_id" text NOT NULL, "action_id" text NOT NULL, "text" text NOT NULL, "text_hash" text NOT NULL, "thread" jsonb, "image_id" text, "topic" text, "via" text, "client_id" text, "send_at" timestamp with time zone NOT NULL, "status" text DEFAULT 'waiting' NOT NULL, "error" text, "post_id" text, "attempts" integer DEFAULT 0 NOT NULL, "created_at" timestamp with time zone NOT NULL, "updated_at" timestamp with time zone NOT NULL, "feedback_at" timestamp with time zone)`;
-  const insert = (w: TestWorld, id: string, status: string, error: string | null, agoMs: number, over: { thread?: unknown; via?: string; agentId?: string } = {}) =>
-    w.db.execute(sql`insert into sv_scheduled_posts (id, agent_id, action_id, text, text_hash, thread, via, send_at, status, error, created_at, updated_at) values (${id}, ${over.agentId ?? AGENT_ID}, ${`act-${id}`}, ${'the text of the post stays private'}, ${'hash'}, ${over.thread ? JSON.stringify(over.thread) : null}::jsonb, ${over.via ?? null}, ${new Date(w.ctx.now() - agoMs).toISOString()}::timestamptz, ${status}, ${error}, ${new Date(w.ctx.now() - agoMs - HOUR).toISOString()}::timestamptz, ${new Date(w.ctx.now() - agoMs).toISOString()}::timestamptz)`);
+  /** A row of the scheduler's own table (`scheduledPosts`, the migration of the time workstream), as the sweep leaves one that did not go out. */
+  const insert = (w: TestWorld, id: string, status: ScheduledPostStatus, error: string | null, agoMs: number, over: { thread?: { text: string }[]; via?: string; agentId?: string } = {}) => {
+    const at = new Date(w.ctx.now() - agoMs);
+    return w.db.insert(scheduledPosts).values({ id, agentId: over.agentId ?? AGENT_ID, actionId: `act-${id}`, text: 'the text of the post stays private', textHash: 'hash', thread: over.thread ?? null, via: over.via ?? null, sendAt: at, status, error, createdAt: at, updatedAt: at });
+  };
 
   it('says in plain words that it failed, missed its time or was cancelled by the creator, never its text or the reason', async () => {
     const w = await makeWorld();
     try {
       const agent = await seedAgent(w);
-      // a database without the scheduler's table has no such rows, and the tape reads as before
+      // a coin that never scheduled anything has no such rows, and the tape reads as before
       expect(await scheduledActivity(w.ctx, agent, 50)).toEqual([]);
       const before = await agentActivity(w.ctx, agent, await runtimeRow(w));
 
-      await w.db.execute(sql.raw(CREATE));
       await insert(w, 'sch_1111111111111111', 'failed', 'sender_rejected:policy:social_execution_command_forbidden', 1 * HOUR);
       await insert(w, 'sch_2222222222222222', 'missed', 'missed: it could not go out in time', 2 * HOUR, { thread: [{ text: 'second' }] });
       await insert(w, 'sch_3333333333333333', 'cancelled', 'cancelled by the creator', 3 * HOUR, { via: 'own' });

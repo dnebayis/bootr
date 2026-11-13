@@ -26,12 +26,11 @@
  */
 import { ownPresenceOf, ownTapeStatus } from '@bootr/shared/own-presence';
 import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
-import { jsonb, pgTable, text as textColumn, timestamp } from 'drizzle-orm/pg-core';
 import { postIntervalMsOf } from './agent-config.js';
 import type { AgentRow, RuntimeRow, SupervisorContext, TreasuryOpRow } from './context.js';
 import { approvalActivity } from './approvals.js';
 import { bountyActivity } from './bounties.js';
-import { actions, agents, approvals, images, treasuryOps } from './db/schema.js';
+import { actions, approvals, images, scheduledPosts, treasuryOps } from './db/schema.js';
 import { isOwn, OWN_AGENT_MARK, ownHooks } from './own/registry.js';
 import { tapeServiceCalls, type ServiceCallRow } from './services.js';
 import { formatUnits } from 'viem';
@@ -197,35 +196,11 @@ export function statusItem(agent: AgentRow, runtime: RuntimeRow | null, own?: Ow
   return { at, kind: 'status', summary };
 }
 
-/**
- * The scheduler's table as the tape reads it (docs/design/agent-tools-2.md section 17.6): the few columns it needs.
- * The table and its migration are the time workstream's (`scheduledPosts` in db/schema.ts once that is merged; this
- * read-only view can then give way to it). A database that has no such table yet has no such rows.
- */
-const scheduledPostsView = pgTable('sv_scheduled_posts', {
-  id: textColumn('id').primaryKey(),
-  agentId: textColumn('agent_id').notNull(),
-  status: textColumn('status').notNull(),
-  error: textColumn('error'),
-  thread: jsonb('thread'),
-  via: textColumn('via'),
-  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
-});
-
-/** Whether the scheduler's table exists, asked once per database handle (and again while the answer is no). */
-const scheduledTableSeen = new WeakSet<object>();
-async function hasScheduledPosts(ctx: Pick<SupervisorContext, 'db'>): Promise<boolean> {
-  const key = ctx.db as unknown as object;
-  if (scheduledTableSeen.has(key)) return true;
-  const [row] = await ctx.db.select({ name: sql<string | null>`to_regclass('sv_scheduled_posts')::text` }).from(agents).limit(1);
-  if (!row?.name) return false;
-  scheduledTableSeen.add(key);
-  return true;
-}
-
 /** The tape line of a scheduled post that did not go out, or null for one the tape does not show (the agent's own cancel, a rejected review). */
 export function scheduledSummary(row: { status: string; error: string | null; thread: unknown }): string | null {
   const what = Array.isArray(row.thread) && row.thread.length ? 'A scheduled thread' : 'A scheduled post';
+  // Handed to X and never confirmed or refused (scheduled.ts `OUTCOME_UNKNOWN`): it may be out, and the tape does not say it is not.
+  if (row.status === 'failed' && (row.error ?? '').startsWith('outcome_unknown')) return `${what} went to X at its time and X never confirmed it; it is not sent again`;
   if (row.status === 'failed') return `${what} could not be sent when its time came`;
   if (row.status === 'missed') return `${what} missed its time and was not sent`;
   if (row.status === 'cancelled' && row.error === 'cancelled by the creator') return `${what} was cancelled by the creator`;
@@ -233,18 +208,18 @@ export function scheduledSummary(row: { status: string; error: string | null; th
 }
 
 /**
- * Tape items for the scheduled posts of an agent that did not go out: failed, missed or cancelled by the creator.
- * Never the text and never the reason (a public read). Never throws: a table that is not there, or a read that
- * fails, is an empty list.
+ * Tape items for the scheduled posts of an agent that did not go out: failed, missed or cancelled by the creator, read
+ * from the scheduler's own table (`scheduledPosts`, db/schema.ts). Only the columns a line is written from are read:
+ * never the text, and the reason only to tell the creator's cancel from the agent's own (a public read). Never throws:
+ * a read that fails is an empty list.
  */
 export async function scheduledActivity(ctx: Pick<SupervisorContext, 'db' | 'log'>, agent: Pick<AgentRow, 'agentId'>, limit: number, before?: Date): Promise<ActivityItem[]> {
   try {
-    if (!(await hasScheduledPosts(ctx))) return [];
     const rows = await ctx.db
-      .select()
-      .from(scheduledPostsView)
-      .where(and(eq(scheduledPostsView.agentId, agent.agentId), inArray(scheduledPostsView.status, ['failed', 'missed', 'cancelled']), ...(before ? [lt(scheduledPostsView.updatedAt, before)] : [])))
-      .orderBy(desc(scheduledPostsView.updatedAt))
+      .select({ id: scheduledPosts.id, status: scheduledPosts.status, error: scheduledPosts.error, thread: scheduledPosts.thread, via: scheduledPosts.via, updatedAt: scheduledPosts.updatedAt })
+      .from(scheduledPosts)
+      .where(and(eq(scheduledPosts.agentId, agent.agentId), inArray(scheduledPosts.status, ['failed', 'missed', 'cancelled']), ...(before ? [lt(scheduledPosts.updatedAt, before)] : [])))
+      .orderBy(desc(scheduledPosts.updatedAt))
       .limit(limit);
     if (rows.length === 0) return [];
     // A scheduled post that was under the creator's review has its row in the review queue (same id): shown there.

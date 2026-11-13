@@ -12,7 +12,9 @@ import { signRequest } from '../src/hmac.js';
 import { postHooks, setPostHooks } from '../src/post-send.js';
 import { slotsUsed } from '../src/rhythm.js';
 import { acquireLease, releaseLease } from '../src/runtime.js';
-import { postScheduledSoon, scheduledSection, sendPasses, sendScheduled, sweepScheduled } from '../src/scheduled.js';
+import { scheduledActivity } from '../src/activity.js';
+import { recentPosts } from '../src/recent-posts.js';
+import { OUTCOME_UNKNOWN_ERROR, SCHEDULED_LATE_SETTLE_MS, SCHEDULED_UNKNOWN_BOUND_MS, postScheduledSoon, scheduledSection, sendBucket, sendPasses, sendScheduled, sendUnsure, sweepScheduled } from '../src/scheduled.js';
 import { postsLast24h, tick } from '../src/tick.js';
 import { AGENT_ID, CREATOR, SUPERVISOR_KEY, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 import { HOUR, INTERVAL, MIN, agentRow, callTool, fakeSend, iso, patchConfig, patchState, resetHooks, rowOf, rowsOf, schedule, seedCoin, seedPost, seedRow, stateOf, type FakeSend } from './scheduled-helpers.js';
@@ -203,11 +205,12 @@ describe('a post found `sending` after a crash, in each of its three states', ()
       fake.next = 'unknown';
       expect(await sweepScheduled(w.ctx)).toMatchObject({ unknown: 1 });
       fake.next = 'sent';
-      for (const later of [2, 30, 90, 600]) {
+      for (const later of [2, 30, 90, 120]) {
         w.setNow(AT + later * MIN);
-        expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, missed: 0 });
+        expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, missed: 0, failed: 0 });
       }
-      // ten hours on it is still not sent again and not missed: only a receipt decides
+      // two hours on (its grace and the bound for an unknown outcome) it is still not sent again and not missed: only a receipt decides
+      expect(SCHEDULED_UNKNOWN_BOUND_MS).toBe(60 * MIN);
       expect(fake.calls).toHaveLength(1);
       expect((await rowOf(w, id)).status).toBe('sending');
       // a post sent now would land on top of one that may be out: refused; a second scheduled post waits behind it
@@ -227,6 +230,115 @@ describe('a post found `sending` after a crash, in each of its three states', ()
       expect(await sentRows(w)).toHaveLength(1);
     } finally {
       await w.close();
+    }
+  });
+
+  it('an unknown outcome has an end: past its grace and one hour more the post is closed, never sent again, and the coin posts again', async () => {
+    const { w, fake, id } = await dueWorld();
+    try {
+      createApp(w.ctx);
+      fake.next = 'unknown';
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ unknown: 1 });
+      fake.next = 'sent';
+      // one minute before the bound it still holds the coin's originals back
+      w.setNow(AT + 120 * MIN);
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, failed: 0 });
+      expect(await postHooks.beforeOriginalNow(w.ctx, await agentRow(w), w.ctx.now())).toBe(postScheduledSoon(AT));
+      // past it: closed with no known outcome
+      w.setNow(AT + 121 * MIN);
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, failed: 1, missed: 0 });
+      const closed = await rowOf(w, id);
+      expect(closed).toMatchObject({ status: 'failed', error: OUTCOME_UNKNOWN_ERROR, postId: null });
+      expect(OUTCOME_UNKNOWN_ERROR).toBe('outcome_unknown: it was handed to X at its time and X never confirmed or refused it; it may be on X. It is not sent again');
+      // never a second send, whatever the sender would answer now
+      expect(fake.calls).toHaveLength(1);
+      expect(fake.written).toEqual([]);
+      // nothing is on the record as posted, no hold stands, and the cadence was not moved
+      expect(await sentRows(w)).toEqual([]);
+      const state = await stateOf(w);
+      expect(state.lastPostAt ?? null).toBeNull();
+      expect([state.postForbiddenUntil ?? null, state.postQuotaUntil ?? null, state.postCreditsUntil ?? null]).toEqual([null, null, null]);
+      // the coin's originals are free again: a post sent now, and the next scheduled one
+      expect(await postHooks.beforeOriginalNow(w.ctx, await agentRow(w), w.ctx.now())).toBeNull();
+      const next = await seedRow(w, AGENT_ID, w.ctx.now() - MIN);
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 1 });
+      expect((await rowOf(w, next)).status).toBe('sent');
+      expect(fake.written).toEqual([next]);
+      // the agent is told once, in words that do not say it was not sent; the tape says the same and never the text
+      expect(await notSent(w)).toEqual([{ id, sendAt: iso(AT), text: 'The half past twelve thought.', message: `your scheduled post ${id} has no known outcome: it was handed to X at its time and X never confirmed or refused it, so it may be on X. It is not sent again; do not post the same text again.` }]);
+      expect(await notSent(w)).toEqual([]);
+      const tape = await scheduledActivity(w.ctx, await agentRow(w), 10);
+      expect(tape.map((t) => t.summary)).toEqual(['A scheduled post went to X at its time and X never confirmed it; it is not sent again']);
+      expect(JSON.stringify(tape)).not.toContain('half past twelve');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a post closed with no known outcome is still asked for: a late receipt puts the truth on the record, and nothing is sent', async () => {
+    const { w, fake, id } = await dueWorld();
+    try {
+      fake.next = 'unknown';
+      await sweepScheduled(w.ctx);
+      w.setNow(AT + 121 * MIN);
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ failed: 1 });
+      await notSent(w);
+      // hours later the sender's reconciler finds the post on X
+      w.setNow(AT + 5 * HOUR);
+      await sweepScheduled(w.ctx);
+      expect((await rowOf(w, id)).status).toBe('failed');
+      w.sender.receipts[id] = { status: 'sent', providerPostId: '8888', error: null };
+      await sweepScheduled(w.ctx);
+      expect(await rowOf(w, id)).toMatchObject({ status: 'sent', postId: '8888', error: null });
+      const [row] = await sentRows(w);
+      expect(row).toMatchObject({ actionId: `${id}-sent`, status: 'completed', result: { postId: '8888', scheduledId: id } });
+      // at the time it went out, not at the time it was learnt: the cadence of today is not moved by it
+      expect(row!.createdAt.getTime()).toBe(AT);
+      expect((await stateOf(w)).lastPostAt ?? null).toBeNull();
+      expect(fake.calls).toHaveLength(1);
+      expect(fake.written).toEqual([]);
+      // it is on "what you already said" as a sent post, and off the list of posts that did not go out
+      expect((await recentPosts(w.ctx, AGENT_ID)).map((p) => [p.status, p.text])).toEqual([['sent', 'The half past twelve thought.']]);
+      expect(await scheduledActivity(w.ctx, await agentRow(w), 10)).toEqual([]);
+      // settled: it is asked for no more
+      const asked = (await rowOf(w, id)).attempts;
+      await sweepScheduled(w.ctx);
+      expect((await rowOf(w, id)).attempts).toBe(asked);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a late receipt that says refused replaces the reason and is told to the agent once more; after a week nobody asks', async () => {
+    const { w, fake, id } = await dueWorld();
+    try {
+      fake.next = 'unknown';
+      await sweepScheduled(w.ctx);
+      w.setNow(AT + 121 * MIN);
+      await sweepScheduled(w.ctx);
+      expect((await notSent(w)).map((f) => f.message)).toEqual([expect.stringContaining('has no known outcome')]);
+      w.sender.receipts[id] = { status: 'rejected', providerPostId: null, error: 'duplicate_content' };
+      w.setNow(AT + 4 * HOUR);
+      await sweepScheduled(w.ctx);
+      expect(await rowOf(w, id)).toMatchObject({ status: 'failed', error: 'sender_rejected:duplicate_content' });
+      expect((await notSent(w)).map((f) => f.message)).toEqual([`your scheduled post ${id} was not sent: sender_rejected:duplicate_content`]);
+      expect(await sentRows(w)).toEqual([]);
+    } finally {
+      await w.close();
+    }
+    const old = await dueWorld();
+    try {
+      old.fake.next = 'unknown';
+      await sweepScheduled(old.w.ctx);
+      old.w.setNow(AT + 121 * MIN);
+      await sweepScheduled(old.w.ctx);
+      old.w.setNow(AT + 121 * MIN + SCHEDULED_LATE_SETTLE_MS + MIN);
+      const before = (await rowOf(old.w, old.id)).attempts;
+      old.w.sender.receipts[old.id] = { status: 'sent', providerPostId: '8889', error: null };
+      await sweepScheduled(old.w.ctx);
+      expect(await rowOf(old.w, old.id)).toMatchObject({ status: 'failed', attempts: before });
+    } finally {
+      await old.w.close();
     }
   });
 
@@ -289,8 +401,26 @@ describe('the grace: late is missed, never sent late', () => {
   });
 
   it('knows which refusals pass by themselves and which are for good', () => {
-    for (const error of ['original_sender_not_mounted: nothing was sent', 'sender:not_connected', 'sender:revoked', 'sender:quota_exceeded', 'sender:consent_lookup_failed', 'sender:rate_limited', 'sender:http_503', 'sender:storage_unavailable', 'no_slot: the window is full']) expect(sendPasses(error), error).toBe(true);
-    for (const error of ['sender_rejected:forbidden(403): not permitted', 'sender_rejected:policy:social_execution_command_forbidden', 'sender:action_id_conflict', 'sender:account_mismatch', 'sender:storage_unavailable_after_send', 'image_not_found: img_1', 'invalid_original_post: the post does not pass the publish gate', 'link_quota: at most 3 posts with a link per 24 hours']) expect(sendPasses(error), error).toBe(false);
+    const failed = (error: string) => sendBucket({ kind: 'failed', error });
+    // nothing was left at the sender and the cause passes by itself: the post waits and is tried again
+    for (const error of ['original_sender_not_mounted: nothing was sent', 'sender:not_connected', 'sender:revoked', 'sender:refresh_failed', 'sender:quota_exceeded', 'sender:consent_lookup_failed', 'sender:rate_limited', 'sender:storage_unavailable', 'no_slot: the window is full', 'quiet_hours: Bootr is quiet until 06:00']) {
+      expect(sendPasses(error), error).toBe(true);
+      expect(failed(error), error).toBe('waits');
+    }
+    // a refusal for good: the post fails with the reason
+    for (const error of ['sender_rejected:forbidden(403): not permitted', 'sender_rejected:policy:social_execution_command_forbidden', 'sender_rejected:policy:thread_exceeds_quota: the thread has more parts than the 2 posts this agent may send in a day', 'sender:account_mismatch', 'sender:invalid_thread', 'sender:invalid_media', 'sender:unauthorized', 'image_not_found: img_1', 'image_not_authorized: your X account was connected without permission to upload pictures', 'agent_not_ready: the agent has no X account yet; nothing was posted', 'invalid_original_post: the post does not pass the publish gate; rewrite it', 'thread_too_long: a thread has at most 4 posts; nothing was posted. Say it in fewer.', 'thread_links: only one part of a thread may carry a link; nothing was posted.', 'link_quota: at most 3 posts with a link per 24 hours; nothing was posted. Post it without the link.', 'social_private_address_forbidden']) {
+      expect(sendPasses(error), error).toBe(false);
+      expect(failed(error), error).toBe('final');
+    }
+    // nothing is known about the post: never tried again, only the sender's receipt decides
+    for (const error of ['sender:storage_unavailable_after_send', 'sender:internal_error', 'sender:action_id_conflict', 'sender:http_502', 'sender:http_503', 'sender:http_429', 'sender:http_404', 'sender_held', 'sender_pending', 'tool_timeout: publish_post gave no answer within 120 s', 'TypeError: fetch failed', 'Error: Connection terminated unexpectedly', 'boom']) {
+      expect(sendPasses(error), error).toBe(false);
+      expect(sendUnsure(error), error).toBe(true);
+      expect(failed(error), error).toBe('unknown');
+    }
+    expect(sendBucket({ kind: 'unknown', error: 'sender_held' })).toBe('unknown');
+    // `retryable` says only that nothing was left at the sender: the count of posts with a link is still final for this post
+    expect(sendBucket({ kind: 'failed', error: 'link_quota: at most 3 posts with a link per 24 hours; nothing was posted. Post it without the link.', retryable: true } as never)).toBe('final');
   });
 });
 
@@ -422,6 +552,25 @@ describe('at send time a scheduled post passes what a post sent now passes', () 
       expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 0, missed: 1 });
       expect((await rowOf(w, second)).status).toBe('missed');
       expect(fake.calls).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a coin asleep for fuel still sends what it wrote ahead: sending needs no thought, and no thought is bought for it', async () => {
+    const { w, fake, id } = await dueWorld();
+    try {
+      // the coin ran out of fuel after it scheduled the post: the tick put it to sleep
+      await w.db.update(runtimes).set({ status: 'sleeping' }).where(eq(runtimes.agentId, AGENT_ID));
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ sent: 1 });
+      expect(fake.written).toEqual([id]);
+      expect(await rowOf(w, id)).toMatchObject({ status: 'sent' });
+      // it is still asleep, and nobody thought: the post was decided, and passed the gate, while it was awake
+      expect((await w.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!.status).toBe('sleeping');
+      expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(0);
+      // what a sleeping coin can still send is what waited already: at most the six of the queue, none of them later than 36 hours after it was written
+      expect(w.ctx.config.SCHEDULED_MAX_WAITING).toBe(6);
+      expect(w.ctx.config.SCHEDULE_MAX_AHEAD_MS).toBe(36 * HOUR);
     } finally {
       await w.close();
     }

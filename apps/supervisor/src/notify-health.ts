@@ -13,7 +13,7 @@ import { averageThoughtCost, fuelIsLow, runwayDays, thoughtsLeft } from '@bootr/
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { erc20Abi, type Abi, type Address } from 'viem';
 import { entryPoint07Abi, entryPoint07Address } from 'viem/account-abstraction';
-import { APPROVAL_TTL_MS, expireApprovals } from './approvals.js';
+import { approvalExpiresAtMs, expireApprovals } from './approvals.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { agents, approvals, notificationSettings, runtimes } from './db/schema.js';
 import { agentHasGasRule, gasReading, gasSelfFunded, MULTICALL3_ADDRESS, multicall3BalanceAbi, type GasStatus } from './gas.js';
@@ -147,13 +147,14 @@ export function keyOutdated(agent: Pick<AgentRow, 'sessionPolicy' | 'permissionI
   }
 }
 
-async function reviewFacts(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<ReviewFacts> {
+async function reviewFacts(ctx: Pick<SupervisorContext, 'db' | 'now' | 'config'>, agentId: string): Promise<ReviewFacts> {
   const now = ctx.now();
   const rows = await ctx.db
-    .select({ createdAt: approvals.createdAt })
+    .select({ createdAt: approvals.createdAt, meta: approvals.meta })
     .from(approvals)
     .where(and(eq(approvals.agentId, agentId), eq(approvals.status, 'pending_approval')));
-  const expiries = rows.map((r) => r.createdAt.getTime() + APPROVAL_TTL_MS);
+  // A scheduled post in review runs out at the end of its own grace, long before the queue's 48 hours (approvals.ts).
+  const expiries = rows.map((r) => approvalExpiresAtMs(r, ctx.config.SCHEDULE_GRACE_MS));
   const expiring = expiries.filter((e) => e - now <= REVIEW_EXPIRING_MS);
   return { pending: rows.length, expiring: expiring.length, soonestExpiry: expiring.length ? Math.min(...expiring) : null };
 }

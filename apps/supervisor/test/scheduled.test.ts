@@ -2,7 +2,7 @@
  * Scheduled posts (docs/design/agent-tools-2.md section 5): the three tools and every check a post passes when it is
  * scheduled, with the refusal texts of section 17.6, and the one rule on the side of a post sent now.
  */
-import { parseAction, parseAgentConfig } from '@bootr/agent-core';
+import { parseAction, parseAgentConfig, threadRefusal } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api.js';
@@ -352,9 +352,21 @@ describe('schedule_post: the gate when it is scheduled', () => {
       expect(() => parseAction({ tool: 'schedule_post', input: { text: 'a', thread: [{ text: 'b'.repeat(281) }], sendAt: iso(T0 + HOUR) } })).toThrow();
       const at = iso(T0 + 4 * HOUR);
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'x'.repeat(300), thread: [{ text: 'A short second part.' }], sendAt: at }))).toBe('thread_part_too_long: part 1 has 300 characters; every part of a thread is 280 at most. Nothing was scheduled.');
-      expect(errorOf(await callTool(w, 'schedule_post', { text: 'The same words twice.', thread: [{ text: 'the same words  twice.' }], sendAt: at }))).toBe('thread_repeat: two parts of the thread say the same; nothing was scheduled.');
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'The same words twice.', thread: [{ text: 'the same words  twice.' }], sendAt: at }))).toBe('thread_repeat: two parts of the thread say the same; nothing was scheduled. Say each thing once.');
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'Read it at https://bootr.fun/docs today.', thread: [{ text: 'And the rest at bootr.fun/token later.' }], sendAt: at }))).toBe('thread_links: only one part of a thread may carry a link; nothing was scheduled.');
-      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Tickers $TEST and $OTHER in part two.' }], sendAt: at }))).toBe('x_post_requires_at_most_one_cashtag: part 2 does not pass the publish gate; rewrite it. Nothing was scheduled.');
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Tickers $TEST and $OTHER in part two.' }], sendAt: at }))).toBe('x_post_requires_at_most_one_cashtag: part 2 of the thread does not pass the publish gate; nothing was scheduled. Rewrite it.');
+      // the refusals are the posting rules' own (agent-core `validateThread`), word for word but for what did not happen
+      expect(threadRefusal(['A fine first part.', 'Tickers $TEST and $OTHER in part two.'])).toBe('x_post_requires_at_most_one_cashtag: part 2 of the thread does not pass the publish gate; nothing was posted. Rewrite it.');
+      expect(threadRefusal(['The same words twice.', 'the same words  twice.'])).toBe('thread_repeat: two parts of the thread say the same; nothing was posted. Say each thing once.');
+      // an `@` in a later part is refused by the scheduler's own rule first: a scheduled post names nobody
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'And @someone in part two.' }], sendAt: at }))).toBe(SCHEDULED_MENTION_FORBIDDEN);
+      // an address that is not the coin's own is refused now, while the agent can still rewrite, and not first at its time
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'Another coin lives at 0x9999999999999999999999999999999999999999.', sendAt: at }))).toBe('social_private_address_forbidden: the post does not pass the publish gate; rewrite it. Nothing was scheduled.');
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Another coin lives at 0x9999999999999999999999999999999999999999.' }], sendAt: at }))).toBe('social_private_address_forbidden: part 2 of the thread does not pass the publish gate; nothing was scheduled. Rewrite it.');
+      // a thread never has more parts than the coin may post in a day: the limit a thread sent now is held to
+      await patchConfig(w, { postsPerDay: 2 });
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'One.', thread: [{ text: 'Two.' }, { text: 'Three.' }], sendAt: at }))).toBe('thread_too_long: a thread has at most 2 posts; nothing was scheduled. Say it in fewer.');
+      await patchConfig(w, { postsPerDay: 24 });
       // two threads a day: one waits, one went out; a third is refused, a single post is not
       await seedPost(w, T0 - 4 * HOUR, 'A thread from this morning.', { thread: ['Its second part.'] });
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'A third thread today.', thread: [{ text: 'With a second part.' }], sendAt: at }))).toBe('thread_daily_cap: at most 2 threads per 24 hours; nothing was scheduled. Schedule it as one post.');

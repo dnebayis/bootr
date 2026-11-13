@@ -5,7 +5,9 @@
  */
 import { and, eq, isNull } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
-import { listApprovals, takeFeedback, textHash } from '../src/approvals.js';
+import { approvalExpiresAtMs, listApprovals, takeFeedback, textHash } from '../src/approvals.js';
+import { notificationsView } from '../src/notifications.js';
+import { refreshReviewNotifications } from '../src/notify-health.js';
 import { actions, approvals, notifications } from '../src/db/schema.js';
 import { scheduledSection, sweepScheduled } from '../src/scheduled.js';
 import { AGENT_ID, CREATOR, makeWorld, seedAgent } from './helpers.js';
@@ -172,6 +174,39 @@ describe('a scheduled post in approval mode', () => {
       expect(await notSent()).toEqual([]);
       // its time is free again
       expect((await callTool(w, 'schedule_post', { text: 'A better thought for the same hour.', sendAt: iso(AT + 2 * HOUR) })).kind).toBe('completed');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('runs out at the end of its own grace, not after the queue\'s 48 hours: the list says so, and the creator is warned in time', async () => {
+    const { w, id } = await setup();
+    try {
+      const agent = await agentRow(w);
+      const expiring = async () => (await notificationsView(w.ctx, agent)).items.find((i) => i.event === 'review_expiring' && i.state === 'active') ?? null;
+      // scheduled two hours ahead: it runs out three hours from now (its time and the hour of grace), which is inside the six hours the warning looks ahead
+      const [listed] = (await listApprovals(w.ctx, agent)).items;
+      expect(listed).toMatchObject({ id, scheduledFor: iso(AT), expiresAt: iso(AT + HOUR) });
+      expect(approvalExpiresAtMs(await (async () => (await w.db.query.approvals.findFirst({ where: eq(approvals.id, id) }))!)(), HOUR)).toBe(AT + HOUR);
+      await refreshReviewNotifications(w.ctx, agent);
+      expect((await expiring())!.body).toBe('1 waiting post expires in about 3 hours. Unreviewed posts are dropped.');
+      // one that is for tomorrow is not about to expire yet; a post queued the ordinary way keeps the queue's 48 hours
+      const later = await schedule(w, 'A second thought, for tomorrow.', T0 + 20 * HOUR);
+      await w.db.insert(approvals).values({ id: 'act-plain-000001', agentId: AGENT_ID, kind: 'post', text: 'An ordinary post in review.', textHash: textHash('An ordinary post in review.'), createdAt: new Date(T0) });
+      const all = (await listApprovals(w.ctx, agent)).items;
+      expect(all.find((i) => i.id === later)).toMatchObject({ expiresAt: iso(T0 + 21 * HOUR) });
+      expect(all.find((i) => i.id === 'act-plain-000001')).toMatchObject({ expiresAt: iso(T0 + 48 * HOUR) });
+      await refreshReviewNotifications(w.ctx, agent);
+      expect((await expiring())!.body).toBe('1 waiting post expires in about 3 hours. Unreviewed posts are dropped.');
+      // the first one's time and grace pass unreviewed: it leaves the queue, and the warning with it
+      w.setNow(AT + HOUR + MIN);
+      expect(await sweepScheduled(w.ctx)).toMatchObject({ missed: 1 });
+      await refreshReviewNotifications(w.ctx, agent);
+      expect(await expiring()).toBeNull();
+      // ...and comes back for the second one six hours before its own end
+      w.setNow(T0 + 16 * HOUR);
+      await refreshReviewNotifications(w.ctx, agent);
+      expect((await expiring())!.body).toBe('1 waiting post expires in about 5 hours. Unreviewed posts are dropped.');
     } finally {
       await w.close();
     }

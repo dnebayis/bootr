@@ -43,7 +43,7 @@ import { clankerV5CoinOf } from './launch-source.js';
 import { buildRequest, reconcileInference, runInference, type InferenceResult } from './inference.js';
 import { bootrPromotionSection } from './bootr-promotion.js';
 import { postBudgetSection } from './post-budget.js';
-import { scheduledSection } from './scheduled.js';
+import { scheduledSection, scheduledTimes } from './scheduled.js';
 import { yourCoinSection } from './your-coin.js';
 import { MODEL_MISSING } from './blockrun.js';
 import { raiseNotification, resolveNotification } from './notifications.js';
@@ -376,7 +376,7 @@ export function scheduleFor(config: AgentConfig, state: AgentState, now: number)
 /** The earliest wake a coin agent's `finish` may choose, and why (runtime.ts `coinWakeFloor`). */
 export interface WakeFloor {
   at: number;
-  reason: 'next_slot' | 'cadence' | 'review_at';
+  reason: 'next_slot' | 'cadence' | 'review_at' | 'after_scheduled';
 }
 
 /**
@@ -386,11 +386,22 @@ export interface WakeFloor {
  * (jittered, from the state as it is after this turn), or one cadence from now when no slot lies ahead (publishing
  * off, or the slot is due but held). The one concrete reason to come back sooner is a mention the turn deferred to a
  * `reviewAt`: the floor drops to it. The platform agent keeps its own choice (null): its rhythm is its own.
+ *
+ * `scheduledAt` are the times of the posts the agent scheduled that have not gone out (scheduled.ts). A slot one of
+ * them covers is not the agent's to wake for: the post goes out by itself and moves the cadence, and a wake at the
+ * old slot time would buy a thought that may not post. So the floor moves past every such post in turn, to the slot
+ * that follows it (its time plus one interval and the agent's jitter).
  */
-export function coinWakeFloor(config: AgentConfig, state: AgentState, turn: Pick<Turn, 'reviewAt'>, now: number): WakeFloor | null {
+export function coinWakeFloor(config: AgentConfig, state: AgentState, turn: Pick<Turn, 'reviewAt'>, now: number, scheduledAt: readonly number[] = []): WakeFloor | null {
   if (config.platform) return null;
   const schedule = scheduleFor(config, state, now);
   let floor: WakeFloor = schedule && schedule.nextAt > now ? { at: schedule.nextAt, reason: 'next_slot' } : { at: now + config.postIntervalMs, reason: 'cadence' };
+  for (const at of [...scheduledAt].filter((t) => Number.isFinite(t) && t > now).sort((a, b) => a - b)) {
+    // Covered: the post is due before the slot, or within one interval after it (scheduled.ts `coveringPost`).
+    if (at > floor.at + config.postIntervalMs) break;
+    const after = scheduleFor(config, { ...state, lastPostAt: at, lastSlotSkippedAt: null }, at);
+    floor = { at: Math.max(floor.at, after ? after.nextAt : at + config.postIntervalMs), reason: 'after_scheduled' };
+  }
   const review = turn.reviewAt ? Date.parse(turn.reviewAt) : Number.NaN;
   if (Number.isFinite(review) && review > now && review < floor.at) floor = { at: review, reason: 'review_at' };
   return floor;
@@ -975,7 +986,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     if (action.tool === 'finish') {
       let done;
       try {
-        done = socialCheckpoint(config, state, turn, action.input as unknown as Record<string, unknown>, now, log);
+        // The posts that wait for their time move the floor past the slots they cover (one read, none with scheduling off).
+        done = socialCheckpoint(config, state, turn, action.input as unknown as Record<string, unknown>, now, log, await scheduledTimes(ctx, agent));
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         broker.pending = recordOutcome(pending, { kind: 'failed', error }, now);
@@ -1026,11 +1038,11 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
  * bad checkpoint, before anything is written. Mutates `state` and `turn`; returns the tool result the model reads and
  * the wake time the runtime moves to.
  */
-export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: Turn, input: Record<string, unknown>, now: number, log: Logger): { result: Record<string, unknown>; nextAtMs: number } {
+export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: Turn, input: Record<string, unknown>, now: number, log: Logger, scheduledAt: readonly number[] = []): { result: Record<string, unknown>; nextAtMs: number } {
   // The state the floor reads is the one after this turn: a post or a passed slot moves the anchor first. A slot
   // whose post X held (quota, credits, forbidden) is kept: the schedule wakes the agent again when the hold ends.
   const skippedSlot = !!turn.postDue && !turn.posted && !turn.postHeld;
-  const floor = coinWakeFloor(config, skippedSlot ? { ...state, lastSlotSkippedAt: now } : state, turn, now);
+  const floor = coinWakeFloor(config, skippedSlot ? { ...state, lastSlotSkippedAt: now } : state, turn, now, scheduledAt);
   const cp = checkpoint(input, now, floor ? { floorMs: floor.at - now } : {});
   state.memory = cp.memory;
   state.agenda = cp.agenda;
@@ -1047,7 +1059,7 @@ export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: T
   // A wake asked for before the cadence floor was lifted to it (coinWakeFloor); said once here, with no post text.
   if (floor && cp.nextAtMs > Math.max(cp.requestedMs, now + 60_000)) log.info({ requestedAt: new Date(cp.requestedMs).toISOString(), nextAt: cp.nextAt, floor: floor.reason }, 'wake moved to the cadence floor');
   return {
-    result: { checkpointed: true, nextAt: cp.nextAt, ...(floor && cp.nextAtMs > cp.requestedMs ? { note: `your wake was moved to ${cp.nextAt} (${floor.reason === 'review_at' ? 'the mention you deferred' : 'your next original-post slot'}); mentions and a due post wake you on their own` } : {}) },
+    result: { checkpointed: true, nextAt: cp.nextAt, ...(floor && cp.nextAtMs > cp.requestedMs ? { note: `your wake was moved to ${cp.nextAt} (${floor.reason === 'review_at' ? 'the mention you deferred' : floor.reason === 'after_scheduled' ? 'the slot after your scheduled post, which goes out by itself' : 'your next original-post slot'}); mentions and a due post wake you on their own` } : {}) },
     nextAtMs: cp.nextAtMs,
   };
 }
