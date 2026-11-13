@@ -167,10 +167,10 @@ test('coin page shows the agent status line, the activity tape and the creator c
   const instructions = console_.getByLabel('Instructions');
   await expect(instructions).not.toHaveValue('');
   await expect(console_.getByLabel('Model')).toBeVisible();
-  // Economy mode on Mind, post review on Posting, the seven powers on Powers: nine switches in all.
+  // Economy mode on Mind, post review and comments on Posting, the seven powers on Powers: ten switches in all.
   expect(await console_.getByRole('switch').count()).toBe(1);
   await tab('Posting').click();
-  expect(await console_.getByRole('switch').count()).toBe(1);
+  expect(await console_.getByRole('switch').count()).toBe(2);
   // Post approval mode: on by default in mock mode, with the pending count on the console title.
   const review = console_.getByRole('switch', { name: 'Review posts before they go out' });
   await expect(review).toHaveAttribute('aria-checked', 'true');

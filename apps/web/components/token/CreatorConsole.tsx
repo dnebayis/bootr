@@ -238,7 +238,9 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (d.comments !== config.comments) changes.comments = d.comments;
   if (d.replyAudience !== config.replyAudience) changes.replyAudience = d.replyAudience;
   const watched = watchlistDraft(d.watchlist);
-  if (watched && JSON.stringify(watched) !== JSON.stringify(config.watchlist)) changes.watchlist = watched;
+  // Rows that are not handles yet still count as an unsaved edit: the save bar then says what to fix (the console never sends them).
+  if (!watched) changes.watchlist = [...config.watchlist];
+  else if (JSON.stringify(watched) !== JSON.stringify(config.watchlist)) changes.watchlist = watched;
   return Object.keys(changes).length ? changes : null;
 }
 

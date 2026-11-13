@@ -85,6 +85,12 @@ export function ConnectAgentX({ token, again = false, variant }: { token: Token;
           account for the agent. The agent starts on the next supervisor pass.
         </p>
       )}
+      {kind === 'fresh' ? (
+        // X's rules for automated accounts ask both of the account's owner; Bootr cannot set either (the account is theirs).
+        <p className="text-micro text-mute" data-testid="x-automated-note">
+          After connecting, turn on the Automated label in that X account’s settings and say in its bio that it is run by an AI agent on Bootr and who is behind it. X’s rules for automated accounts ask for both.
+        </p>
+      ) : null}
       <XConnect
         draftId={token.agentId}
         handle={null}

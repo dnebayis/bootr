@@ -29,7 +29,8 @@ const STATUS: Record<string, { label: string; waiting: boolean }> = {
 
 /**
  * The list as the console renders it, from what the agent service answers: rows that name a post and a time, soonest
- * first. `parts` is taken as a count or as the list of parts, `picture` as anything set, `mayQueue` as a count.
+ * first. `parts` is taken as a count or as the list of parts, `picture` as anything set, `mayQueue` as a count, and
+ * `thread` (the posts after the first) as a short list of strings.
  */
 export function sanitizeScheduled(raw: unknown): AgentScheduledPosts {
   const o = (raw ?? {}) as { items?: unknown; mayQueue?: unknown; token?: unknown };
@@ -37,14 +38,16 @@ export function sanitizeScheduled(raw: unknown): AgentScheduledPosts {
   for (const it of Array.isArray(o.items) ? o.items : []) {
     const r = (it ?? {}) as Record<string, unknown>;
     if (typeof r.id !== 'string' || !ID_RE.test(r.id) || typeof r.sendAt !== 'string' || !Number.isFinite(Date.parse(r.sendAt)) || typeof r.text !== 'string') continue;
+    const thread = (Array.isArray(r.thread) ? r.thread : []).filter((p): p is string => typeof p === 'string').slice(0, 8).map((p) => p.slice(0, TEXT_MAX_CHARS));
     const parts = Array.isArray(r.parts) ? r.parts.length : Number(r.parts);
     items.push({
       id: r.id,
       sendAt: r.sendAt,
       status: typeof r.status === 'string' && r.status.length <= 40 ? r.status : 'waiting',
       text: r.text.slice(0, TEXT_MAX_CHARS),
-      parts: Number.isInteger(parts) && parts >= 1 && parts <= 25 ? parts : 1,
+      parts: Number.isInteger(parts) && parts >= 1 && parts <= 25 ? parts : 1 + thread.length,
       picture: !!r.picture,
+      thread,
     });
     if (items.length >= MAX_ITEMS) break;
   }
@@ -67,7 +70,19 @@ function Row({ post, now, busy, onCancel }: { post: ScheduledPost; now: number; 
         {until ? <span className="font-mono text-micro text-mute tabular">{until}</span> : null}
         <Badge tone={post.status === 'waiting_review' ? 'graduated' : 'default'}>{status.label}</Badge>
       </div>
-      <p className="line-clamp-4 whitespace-pre-line break-words text-sm text-body">{post.text}</p>
+      <p className="whitespace-pre-line break-words text-sm text-body">{post.text}</p>
+      {post.thread.length > 0 ? (
+        <details data-testid="scheduled-thread">
+          <summary className="cursor-pointer text-micro text-mute hover:text-ink">The rest of the thread</summary>
+          <ol className="mt-1.5 flex flex-col gap-1.5 border-l border-hairline pl-3">
+            {post.thread.map((part, i) => (
+              <li key={i} className="whitespace-pre-line break-words text-caption text-body">
+                {part}
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-micro text-mute">{extras}</span>
         {status.waiting ? (

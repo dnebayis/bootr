@@ -521,6 +521,8 @@ export interface ScheduledPost {
   /** Posts in all: 1 for a single post, more for a thread. */
   parts: number;
   picture: boolean;
+  /** The posts of a thread after the first, in order; empty for a single post or when the service did not send them. */
+  thread: string[];
 }
 
 /** `POST /api/agent/[kernel]/scheduled/list` and `/cancel`. */

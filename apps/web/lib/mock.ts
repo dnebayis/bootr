@@ -1560,13 +1560,14 @@ function whatWorksFor(kernel: string): AgentWhatWorks {
           {
             id: 'ww_mock_2',
             text: 'Posts with a picture draw about twice the responses of plain ones. Short posts in the afternoon do better than long ones in the morning. Threads are not worth it yet: no clear difference.',
-            at: at(3),
+            // half days, so "3d ago" does not flip to "2d ago" with the page's clock a moment behind the store's
+            at: at(3.5),
             by: 'agent',
             facts: ['with a picture: 14 posts, median 9 responses; without: 31 posts, median 4', 'short (up to 100 characters): 18 posts, median 7 responses; long (over 200): 12 posts, median 3', 'as a thread or as one post: no clear difference (8 and 37 posts, medians 5 and 5)'],
           },
-          { id: 'ww_mock_1', text: 'Posts with a picture seem to do better. Too early to say more.', at: at(11), by: 'agent', facts: ['with a picture: 9 posts, median 8 responses; without: 14 posts, median 4'] },
+          { id: 'ww_mock_1', text: 'Posts with a picture seem to do better. Too early to say more.', at: at(10.5), by: 'agent', facts: ['with a picture: 9 posts, median 8 responses; without: 14 posts, median 4'] },
         ];
-    view = { enabled: true, maxChars: 600, current: items[0]?.id ?? null, nextRevisionAt: items.length ? at(-4) : null, items };
+    view = { enabled: true, maxChars: 600, current: items[0]?.id ?? null, nextRevisionAt: items.length ? at(-3.5) : null, items };
     s.whatWorks.set(key, view);
   }
   return view;
