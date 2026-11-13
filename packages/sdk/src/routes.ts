@@ -10,6 +10,7 @@ export const ROUTES = {
   claim: { method: 'GET', path: '/api/agent/claim/{address}' },
   nonce: { method: 'POST', path: '/api/agent/nonce' },
   launch: { method: 'POST', path: '/api/agent/launch' },
+  swap: { method: 'POST', path: '/api/agent/swap' },
   market: { method: 'GET', path: '/market/{token}' },
   treasury: { method: 'GET', path: '/treasury/{kernel}' },
   search: { method: 'GET', path: '/search' },

@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 import { describe, expect, it, vi } from 'vitest';
 import { GET as models } from '@/app/api/models/route';
 import { buildCatalog, publicIndexerUrl, PUBLIC_INDEXER_URL, type Catalog, type SiweAuth } from '@/lib/server/catalog';
+import { SWAP_PREPARE_MAX_FEE_PCT, SWAP_PREPARE_PER_MIN, SWAP_PREPARE_PER_MIN_ALL } from '@/lib/swap/prepare';
 import { defaultTokenSettings } from '@/lib/token-settings';
 import { GET } from './route';
 
@@ -148,7 +149,7 @@ describe('matches the routes', () => {
       if (m) expect(e.rateLimit, e.url).toEqual({ limit: Number(m[1]), windowSeconds: Number(m[2]), per: 'ip' });
       else expect(e.rateLimit, e.url).toBeUndefined();
     }
-    expect(web.filter((e) => e.rateLimit).length).toBe(3);
+    expect(web.filter((e) => e.rateLimit).length).toBe(4);
   });
 
   it('claims any-origin only where the route sends the header', () => {
@@ -199,6 +200,35 @@ describe('matches the routes', () => {
     const listed = catalog().endpoints.map((e) => `${e.method} ${e.url.replace(e.service === 'web' ? SITE : INDEXER, '')}`);
     vi.unstubAllEnvs();
     for (const r of routes) expect(listed, r).toContain(r);
+  });
+
+  it('lists the route that prepares a buy or a sell, with the fields and the limits it enforces, while it is on', () => {
+    const swap = web.find((e) => e.url === `${SITE}/api/agent/swap`)!;
+    expect(swap).toMatchObject({ method: 'POST', auth: { type: 'none' }, cors: 'any-origin', rateLimit: { limit: SWAP_PREPARE_PER_MIN, windowSeconds: 60, per: 'ip' } });
+    // directly after the claim route
+    expect(web[web.indexOf(swap) - 1]!.url).toBe(`${SITE}/api/agent/claim/{address}`);
+    const body = swap.parameters!.body as { properties: Record<string, { minimum?: number; maximum?: number; default?: number; enum?: string[] }>; required: string[]; additionalProperties: boolean };
+    // every field the route reads and no other: its parser refuses anything else by name
+    const src = readFileSync(path.join(REPO, 'apps/web/lib/swap/prepare.ts'), 'utf8');
+    const fields = /const FIELDS = \[([^\]]+)\]/.exec(src)![1]!.replace(/['\s]/g, '').split(',');
+    expect(Object.keys(body.properties)).toEqual(fields);
+    expect(body).toMatchObject({ required: ['token', 'side', 'amount', 'wallet'], additionalProperties: false });
+    expect(body.properties.slippagePct).toMatchObject({ minimum: 0.01, maximum: 20, default: 1 });
+    expect(body.properties.payWith!.enum).toEqual(['ETH', 'USDC']);
+    // what it says of itself: it prepares, the sender receives, the second limit and the ceiling are the route's
+    expect(swap.description).toContain('nothing is sent');
+    expect(swap.description).toContain('goes to the wallet that sends it');
+    expect(swap.description).toContain(`${SWAP_PREPARE_PER_MIN_ALL} calls a minute over all callers`);
+    expect(swap.response.shape).toContain(`a measured fee above ${SWAP_PREPARE_MAX_FEE_PCT}%`);
+    for (const code of ['unknown_coin', 'not_tradable', 'trading_not_open', 'fee_too_high', 'invalid_request', 'rate_limited', 'no_balance', 'no_liquidity', 'no_pool', 'launch_window']) expect(swap.response.shape, code).toContain(code);
+    // every refusal the code can give is named there
+    for (const m of src.matchAll(/error: '(\w+)'/g)) if (m[1] !== 'not_available' && m[1] !== 'payload_too_large') expect(swap.response.shape, m[1]).toContain(m[1]!);
+    // switched off by its limit, it leaves the catalog and every other entry stays
+    vi.stubEnv('SWAP_PREPARE_PER_MIN_ALL', '0');
+    const off = catalog().endpoints;
+    vi.unstubAllEnvs();
+    expect(off.some((e) => e.url.endsWith('/api/agent/swap'))).toBe(false);
+    expect(off.length).toBe(catalog().endpoints.length - 1);
   });
 
   it('is linked from the docs', () => {
