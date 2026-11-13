@@ -175,6 +175,8 @@ export type PublishResult =
         providerPostId?: string;
         receipt: Receipt;
         duplicate?: boolean;
+        /** Present when the row is a part of a thread: the caller sends the next part only to a sender that says so. */
+        thread?: { head: string; n: number };
       };
     }
   | { http: 400 | 409 | 429 | 503; body: Record<string, unknown> };
@@ -209,6 +211,7 @@ function ok(ctx: SenderContext, row: ActionRow, duplicate = false): PublishResul
       ...(row.providerPostId ? { providerPostId: row.providerPostId } : {}),
       receipt: toReceipt(ctx, row),
       ...(duplicate ? { duplicate: true } : {}),
+      ...(row.threadHead && row.threadN ? { thread: { head: row.threadHead, n: row.threadN } } : {}),
     },
   };
 }

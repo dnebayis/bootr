@@ -33,6 +33,8 @@ describe('threads', () => {
     for (let n = 1; n <= 4; n++) {
       const res = await publish(part(n));
       expect([n, res.status, res.body.status]).toEqual([n, 200, 'sent']);
+      // the answer says which part of which thread was stored: a caller sends the next part only to a sender that says so
+      expect(res.body.thread).toEqual({ head: HEAD, n });
       ids.push(res.body.providerPostId);
     }
     // on X: the first is an original, each later one a reply to the post before it
@@ -54,10 +56,12 @@ describe('threads', () => {
     const receipt = await env.call('GET', `/internal/receipt/${HEAD}`);
     expect(receipt.body.thread).toEqual({ n: 1, of: 4, parts: ids.map((id, i) => ({ n: i + 1, status: 'sent', providerPostId: id, error: null })) });
     expect((await env.call('GET', `/internal/receipt/${HEAD}.t2`)).body.thread).toBeUndefined();
+    // a post that is no part of a thread says nothing of one
+    expect((await publish({ agentId: AGENT, actionId: 'act-plain-0042', text: 'a plain post' })).body.thread).toBeUndefined();
 
-    // the coin page's last posts show the first part only
+    // the coin page's last posts show the first part only, beside the plain post
     const shown = await (await env.app.request(`/public/posts/${AGENT}?limit=10`)).json();
-    expect((shown as { items: { id: string }[] }).items.map((p) => p.id)).toEqual([HEAD]);
+    expect((shown as { items: { id: string }[] }).items.map((p) => p.id).sort()).toEqual(['act-plain-0042', HEAD]);
   });
 
   it('a quota with room for three refuses a thread of four before anything is sent, and takes one of three', async () => {
