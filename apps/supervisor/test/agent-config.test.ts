@@ -9,6 +9,7 @@ import { DEFAULT_COIN_IMAGE_MODEL } from '../src/images.js';
 import { agentConfigOf, defaultIdentity, PLATFORM_CAPABILITIES, PLATFORM_POST_INTERVAL_MS } from '../src/onboarding.js';
 import { DEFAULT_BOUNTIES_POLICY, DEFAULT_SERVICES_POLICY } from '@bootr/agent-core';
 import { AGENT_ID, CREATOR, KERNEL, makeWorld, seedAgent, SUPERVISOR_KEY, type TestWorld } from './helpers.js';
+import { POSTING_DEFAULTS } from './posting-off.limits.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
 const INSTRUCTIONS = 'A patient onchain analyst for small Base coins. Short, plain, no hype.';
@@ -43,7 +44,7 @@ const presetConfig = (over: Record<string, unknown> = {}) => ({
 
 describe('GET /internal/agents/:id/config', () => {
   it('reports the configuration in force: instructions, model, worker kind, powers, cadence, job lines, revision', async () => {
-    const world = await makeWorld();
+    const world = await makeWorld({ config: POSTING_DEFAULTS });
     try {
       await seedAgent(world, { config: presetConfig() });
       const res = await api(world).get(`/internal/agents/${AGENT_ID}/config`);

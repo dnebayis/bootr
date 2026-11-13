@@ -17,6 +17,7 @@ import {
   watchlistSection,
 } from '../src/watchlist.js';
 import { AGENT_ID, finishResponse, makeWorld, seedAgent, type TestWorld } from './helpers.js';
+import { POSTING_DEFAULTS } from './posting-off.limits.js';
 
 const H = 3_600_000;
 const NOW = Date.parse('2026-10-24T12:00:00Z');
@@ -120,7 +121,7 @@ describe('watchlistAccounts', () => {
 
 describe('the watchlist section', () => {
   it('is empty for a coin agent and for an empty list, and carries the accounts for the platform agent', async () => {
-    const w = await makeWorld({ config: { PLATFORM_WATCHLIST: '@jessepollak, base' } });
+    const w = await makeWorld({ config: { ...POSTING_DEFAULTS, PLATFORM_WATCHLIST: '@jessepollak, base' } });
     try {
       w.setNow(NOW);
       w.sender.timelines = { base: tl('base', 1), jessepollak: tl('jessepollak', 2) };
@@ -200,7 +201,7 @@ describe('what the section tells the platform agent to do with a watched post', 
   });
 
   it('follows the posting rules of the deployment, and keeps its interval of six hours and its shared rows', async () => {
-    const w = await makeWorld({ config: { PLATFORM_WATCHLIST: 'alice' } });
+    const w = await makeWorld({ config: { ...POSTING_DEFAULTS, PLATFORM_WATCHLIST: 'alice' } });
     try {
       w.setNow(NOW);
       w.sender.timelines = { alice: tl('alice', 3) };

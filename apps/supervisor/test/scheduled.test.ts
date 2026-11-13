@@ -31,6 +31,7 @@ import {
 import { tick } from '../src/tick.js';
 import { AGENT_ID, agentConfig, finishResponse, makeWorld, seedAgent, testConfig, type TestWorld } from './helpers.js';
 import { HOUR, INTERVAL, MIN, agentRow, callTool, errorOf, iso, patchConfig, resetHooks, resultOf, rowOf, rowsOf, schedule, seedCoin, seedPost, seedRow } from './scheduled-helpers.js';
+import { POSTING_DEFAULTS } from './posting-off.limits.js';
 
 const T0 = Date.parse('2026-10-24T12:00:00Z');
 
@@ -42,7 +43,8 @@ function nearestOf(error: string): number {
 }
 
 async function world(config: Record<string, string> = {}, agent: Record<string, unknown> = {}): Promise<TestWorld> {
-  const w = await makeWorld({ config });
+  // The posting rules at their defaults (threads on), whichever run this file is part of: the suite also runs with them switched off.
+  const w = await makeWorld({ config: { ...POSTING_DEFAULTS, ...config } });
   await seedAgent(w, { config: agent, runtime: { nextAt: new Date(T0 + 6 * HOUR) } });
   return w;
 }
