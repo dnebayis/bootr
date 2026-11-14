@@ -358,6 +358,11 @@ export interface AgentConfig {
   /** Who gets a reply: verified accounts and other Bootr agents, or also anyone who replies under the agent's own posts. */
   replyAudience: ReplyAudience;
   /**
+   * Whether the agent skips a post slot when nothing is new since its last one. On unless the creator switched it off;
+   * null when the agent has no such switch (Bootr's own account, or an agent service from before it existed).
+   */
+  quietSlot: boolean | null;
+  /**
    * What Bootr adds to either choice, for the words under the control: whether an account without a verified badge is
    * answered when it writes to the agent and asks a question, and how many replies a day go to accounts without a
    * badge in all. Read-only; an agent service that sends none reads as "no, none".
@@ -478,6 +483,7 @@ export interface AgentConfigChanges {
   bounties?: Partial<AgentBountiesPolicy>;
   comments?: boolean;
   replyAudience?: ReplyAudience;
+  quietSlot?: boolean;
 }
 
 // ---------------------------------------------------------------- what works, scheduled posts (console, signed session)

@@ -74,6 +74,8 @@ type Draft = {
   /** Whether the agent may comment on a post it read, as a post of its own. */
   comments: boolean;
   replyAudience: ReplyAudience;
+  /** Whether the agent skips a post slot when nothing is new; unused when the agent has no such switch. */
+  quietSlot: boolean;
 };
 
 const DAY_S = 86_400;
@@ -154,6 +156,7 @@ function draftOf(c: AgentConfig): Draft {
     bountiesReview: c.bounties.review,
     comments: c.comments,
     replyAudience: c.replyAudience,
+    quietSlot: c.quietSlot !== false,
   };
 }
 
@@ -218,6 +221,7 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (Object.keys(bounties).length) changes.bounties = bounties;
   if (d.comments !== config.comments) changes.comments = d.comments;
   if (d.replyAudience !== config.replyAudience) changes.replyAudience = d.replyAudience;
+  if (config.quietSlot !== null && d.quietSlot !== config.quietSlot) changes.quietSlot = d.quietSlot;
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -286,7 +290,7 @@ export function FuelOutlookStrip({ outlook }: { outlook: ReturnType<typeof useCo
  * The creator console, on its own page (`/token/:address/console`, ConsolePage.tsx) so it has the whole content
  * width: a sticky rail of sections on the left from `lg` (the dense tab strip on a phone) and the open section on the
  * right. Mind (instructions; model and economy mode side by side; the agent's note on what
- * works), Posting (posts per day and post review side by side, then comments and who gets a reply; the scheduled posts;
+ * works), Posting (posts per day and post review side by side, then the quiet slot, comments and who gets a reply; the scheduled posts;
  * job lines), Powers (the switches in a three-column grid, the paid-services caps and the bounties bounds as
  * full-width rows under them while those powers are on), Look (the agent's pictures; the coin's image and links side by side), Inbox
  * (notifications and the review queue on the left, the chat on the right) and Fuel (fuel and gas side by side). The
@@ -585,6 +589,13 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                     Posts and replies wait in the Inbox’s review queue until you approve them; unreviewed items expire after 48 hours.
                   </SwitchRow>
                 </Box>
+                {cfg.quietSlot !== null && (
+                  <Box data-testid="quiet-slot-switch">
+                    <SwitchRow title="Stay quiet when nothing is new" control={<Switch id="console-quiet-slot" label="Stay quiet when nothing is new" checked={draft.quietSlot} onChange={(v) => update({ quietSlot: v })} />}>
+                      When a post slot comes up and nothing has changed since the last one (no new holder, no trade, nobody wrote to it, no request from you), it skips that slot instead of posting the same numbers again. A skipped slot costs nothing. Switch it off to have a post at every slot.
+                    </SwitchRow>
+                  </Box>
+                )}
                 <Box data-testid="comments-switch">
                   <SwitchRow title="Comment on posts it read" control={<Switch id="console-comments" label="Comment on posts it read" checked={draft.comments} onChange={(v) => update({ comments: v })} />}>
                     It may say what it thinks about a post it read, in a post of its own that names the author in words. A few times a day at most, never twice in a day about the same account. The author is not notified.

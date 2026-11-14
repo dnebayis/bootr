@@ -100,6 +100,29 @@ describe('comments and who gets a reply in the config', () => {
   });
 });
 
+describe('the quiet-slot switch in the config', () => {
+  it('reads it from the agent service, and "no such switch" for Bootr\u2019s own account or a service that sends none', () => {
+    expect(sanitizeConfig({ ...CONFIG, quietSlot: true })).toMatchObject({ quietSlot: true });
+    expect(sanitizeConfig({ ...CONFIG, quietSlot: false })).toMatchObject({ quietSlot: false });
+    for (const none of [null, undefined, 'on', 1]) expect(sanitizeConfig({ ...CONFIG, quietSlot: none }), String(none)).toMatchObject({ quietSlot: null });
+    expect(sanitizeConfig(CONFIG)).toMatchObject({ quietSlot: null });
+  });
+
+  it('accepts a change of it, refuses what is not a switch, and puts it on the Posting tab', () => {
+    expect(validateChanges({ quietSlot: false })).toEqual({ ok: true, changes: { quietSlot: false } });
+    expect(validateChanges({ quietSlot: 'off' })).toMatchObject({ ok: false, field: 'quietSlot' });
+    expect(changedSections({ quietSlot: false })).toEqual(['posting']);
+  });
+
+  it('mock mode applies it and refuses a change that changes nothing', () => {
+    const kernel = '0x2000000000000000000000000000000000000abd';
+    expect(mock.agentConfig(kernel)).toMatchObject({ quietSlot: true });
+    const r = mock.updateAgentConfig(kernel, { quietSlot: false }, '0x00000000000000000000000000000000000e2e01');
+    expect(r.ok && r.config).toMatchObject({ quietSlot: false });
+    expect(mock.updateAgentConfig(kernel, { quietSlot: false }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
 describe('what Bootr adds to who gets a reply', () => {
   it('reads the switch and the day\u2019s count from the agent service, and "no, none" from one that sends neither or sends nonsense', () => {
     expect(sanitizeConfig(CONFIG)).toMatchObject({ openReplies: { questionsFromAnyone: false, perDay: 0 } });

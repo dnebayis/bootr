@@ -233,6 +233,8 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     // This round's two fields; an older agent service sends neither, which reads as the defaults.
     comments: o.comments !== false,
     replyAudience: (REPLY_AUDIENCES as readonly unknown[]).includes(o.replyAudience) ? (o.replyAudience as ReplyAudience) : 'verified',
+    // Anything but a plain true or false means the agent has no such switch: Bootr's own account, or an older agent service.
+    quietSlot: typeof o.quietSlot === 'boolean' ? o.quietSlot : null,
     openReplies: openRepliesOf(o.openReplies),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
@@ -850,13 +852,17 @@ function cleanText(v: unknown): string | null {
  * The `changes` a creator may send: instructions (20–600 plain chars), a model id, worker fields inside
  * WORKER_BOUNDS, the post review switch, an image model id and the image style (an https reference or null, notes
  * of at most IMAGE_NOTES_MAX plain characters), the paid services caps and the bounties bounds (each inside
- * BOUNTIES_BOUNDS), the comments switch and who gets a reply. Unknown keys are dropped (a list of accounts to follow,
+ * BOUNTIES_BOUNDS), the comments switch, who gets a reply and the quiet-slot switch. Unknown keys are dropped (a list of accounts to follow,
  * which an older page may still send, is one of them), always-on powers cannot be switched off. Returns the error to show.
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown; quietSlot?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.quietSlot !== undefined) {
+    if (typeof o.quietSlot !== 'boolean') return { ok: false, field: 'quietSlot', message: 'quietSlot must be true or false' };
+    changes.quietSlot = o.quietSlot;
+  }
   if (o.comments !== undefined) {
     if (typeof o.comments !== 'boolean') return { ok: false, field: 'comments', message: 'comments must be true or false' };
     changes.comments = o.comments;
