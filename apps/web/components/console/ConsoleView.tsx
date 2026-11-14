@@ -28,6 +28,7 @@ import { ConnectButton } from '@/components/shell/ConnectButton';
 import { cn } from '@/components/ui/cn';
 import { GasChip, GasForm } from '@/components/token/GasForm';
 import { PlatformFeesPanel } from './PlatformFees';
+import { DatasetPanel } from './DatasetPanel';
 
 const th = 'px-4 py-2 text-left text-caption font-normal text-mute';
 const td = 'px-4 py-2.5 align-middle';
@@ -558,6 +559,7 @@ export function ConsoleView({ admin, initialConfig }: { admin: string; initialCo
       <AgentsPanel agents={list} loading={agents.isPending} />
       <DormantPanel agents={list} loading={agents.isPending} />
       <PlatformFeesPanel agents={list} loading={agents.isPending} />
+      <DatasetPanel />
     </div>
   );
 }
