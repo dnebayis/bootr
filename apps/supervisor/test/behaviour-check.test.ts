@@ -255,6 +255,8 @@ describe('the database read', () => {
     const w = await makeWorld();
     try {
       await seedWeek(w);
+      // A database from before the gates' migration (0015): the check must answer there too.
+      await w.db.execute(sql`drop table sv_gate_shadow`);
       await w.db.insert(turns).values([
         { id: 't1', agentId: AGENT_ID, role: 'social', wakeReasons: ['original_post_due'], startedAt: new Date('2026-11-08T10:00:00Z'), endedAt: new Date('2026-11-08T10:01:00Z'), thoughts: 3, outcome: 'finished', posted: 1, replied: 0, chargedMicroUsdc: '20000' },
         { id: 't2', agentId: AGENT_ID, role: 'social', wakeReasons: ['scheduled'], startedAt: new Date('2026-11-11T09:00:00Z'), endedAt: new Date('2026-11-11T09:02:00Z'), thoughts: 3, outcome: 'finished', posted: 0, replied: 0, chargedMicroUsdc: '10000' },
@@ -314,11 +316,10 @@ describe('the database read', () => {
     const w = await makeWorld();
     try {
       await seedWeek(w);
-      // The table as the gates' builder creates it.
-      await w.db.execute(sql`create table sv_gate_shadow (id text primary key, agent_id text not null, gate text not null, code text not null, action_id text, text_hash text, detail jsonb, enforced boolean not null default false, created_at timestamptz not null default now())`);
-      await w.db.execute(sql`insert into sv_gate_shadow (id, agent_id, gate, code, enforced, created_at) values
-        ('g1', ${AGENT_ID}, 'G1', 'repeat_fact', false, '2026-11-09T10:00:00Z'), ('g2', ${AGENT_ID}, 'G1', 'repeat_fact', false, '2026-11-10T10:00:00Z'),
-        ('g3', ${AGENT_ID}, 'G3', 'fee_claim', true, '2026-11-10T10:00:00Z'), ('g4', ${AGENT_ID}, 'G1', 'repeat_fact', false, '2026-11-20T10:00:00Z'), ('g5', '8', 'G1', 'repeat_fact', false, '2026-11-10T10:00:00Z')`);
+      // The table as the gates' migration creates it (0015).
+      await w.db.execute(sql`insert into sv_gate_shadow (id, agent_id, gate, code, text_hash, enforced, created_at) values
+        ('g1', ${AGENT_ID}, 'G1', 'repeat_fact', 'h', false, '2026-11-09T10:00:00Z'), ('g2', ${AGENT_ID}, 'G1', 'repeat_fact', 'h', false, '2026-11-10T10:00:00Z'),
+        ('g3', ${AGENT_ID}, 'G3', 'fee_claim', 'h', true, '2026-11-10T10:00:00Z'), ('g4', ${AGENT_ID}, 'G1', 'repeat_fact', 'h', false, '2026-11-20T10:00:00Z'), ('g5', '8', 'G1', 'repeat_fact', 'h', false, '2026-11-10T10:00:00Z')`);
       const window = { agent: AGENT_ID, from: FROM, to: TO };
       const withShadow = toInput(await runQueries(connection(w).client, window), window, TO);
       const m10 = measure(withShadow).find((l) => l.id === 'M10')!;
