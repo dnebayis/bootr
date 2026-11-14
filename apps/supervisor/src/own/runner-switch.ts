@@ -27,6 +27,7 @@ import { reconcileInference } from '../inference.js';
 import { settlePlatformNumbers } from '../platform-numbers.js';
 import { acquireLease, LEASE_MS, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from '../runtime.js';
 import { settleWeeklyDigest } from '../weekly-digest.js';
+import { recordTurn } from '../turns.js';
 import { ownEnabled, ownHooks } from './registry.js';
 
 /** How long a switch waits for the step in progress to finish before it answers `supervisor_unavailable`. */
@@ -199,6 +200,7 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
         dropTurn(state, turn, 'the agent was switched to the Bootr agent');
         const status = restingStatus(runtime);
         await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: null, status, ...(status === 'paused' ? {} : { nextAt: new Date(ctx.now()) }) });
+        await recordTurn(ctx, agent.agentId, turn, 'runner_switched');
         log.warn({ closedByEngine: closed }, 'runner switch: an own turn was still stored and was cut short');
       } else if (runtime.status !== 'paused') {
         // The tick looks at the coin on its next pass: the sleep rule, a held action's receipt, then a turn.
@@ -221,6 +223,8 @@ export async function switchRunner(ctx: SupervisorContext, agent: AgentRow, inpu
       // An own coin never sleeps for fuel; a pause or a held action stays what it is.
       const status = restingStatus(runtime);
       await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: null, status, ...(status === 'paused' ? {} : { nextAt: new Date(ctx.now()) }) });
+      // The hosted turn the switch cut short is a finished turn like any other: its row goes to sv_turns (turns.ts).
+      await recordTurn(ctx, agent.agentId, turn, 'runner_switched');
     }
 
     // The config route takes no lease, so a setting the creator saved while this switch waited (on the relay, on the
