@@ -45,6 +45,14 @@ describe('imagePromptRisk: the hard rules, decided before any money moves', () =
     expect(imagePromptRisk({ prompt: 'the Base logo on a workshop door', altText: 'A door' }, platform)).toMatchObject({ code: 'image_other_logo' });
   });
 
+  it('the platform account never draws a boot, a shoe or any footwear; a coin agent may', () => {
+    for (const prompt of ['a blue boot standing on a pier at night', 'a pair of sneakers on a workbench', 'a robot pulling itself up by its bootstraps'])
+      expect(imagePromptRisk({ prompt, altText: 'A quiet scene' }, platform), prompt).toMatchObject({ code: 'image_subject_forbidden' });
+    expect(imagePromptRisk({ prompt: 'a pier at night with small lanterns', altText: 'A blue boot on a pier' }, platform)).toMatchObject({ code: 'image_subject_forbidden' });
+    expect(imagePromptRisk({ prompt: 'a pier at night with small lanterns', altText: 'A pier with lanterns' }, platform)).toBeNull();
+    expect(imagePromptRisk({ prompt: 'a blue boot standing on a pier at night', altText: 'A boot' }, coin)).toBeNull();
+  });
+
   it('refuses charts, prices, percentages and anything that reads as gains', () => {
     for (const prompt of ['a green candlestick chart going up', 'a rocket to the moon', 'our fox counting $1,000 bills', 'a fox with a +40% badge', 'a line going up and to the right', 'number go up', 'the price of TEST in neon', 'a 100x sign']) {
       expect(imagePromptRisk({ prompt, altText: 'A fox' }, coin), prompt).toMatchObject({ code: 'image_market_numbers' });

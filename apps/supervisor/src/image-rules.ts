@@ -44,6 +44,8 @@ export const THIRD_PARTY_BRANDS: readonly string[] = [
   'microsoft', 'amazon', 'meta', 'facebook', 'instagram', 'tiktok', 'aerodrome', 'virtuals', 'pump.fun', 'pumpfun', 'dexscreener', 'basescan', 'metamask', 'phantom', 'rainbow wallet', 'opensea', 'polymarket', 'hyperliquid', 'doge', 'dogecoin', 'pepe', 'shiba', 'disney', 'marvel', 'pokemon', 'nintendo', 'mcdonald', 'starbucks', 'coca-cola', 'pepsi', 'ferrari', 'lamborghini',
 ];
 
+/** The platform account never draws footwear: the owner does not want the name read as a boot (2026-11-15). */
+const FOOTWEAR = /\b(boots?|bootstraps?|shoes?|sneakers?|footwear|sandals?|slippers?|heels|loafers?|clogs?|trainers)\b/i;
 const LOGO_WORDS = /\b(logos?|logotype|wordmark|brand ?marks?|trademarks?|emblem|insignia|mascot of|official mark)\b/i;
 const REAL_PERSON = /\b(photo(graph)?s?|portraits?|selfies?|likeness|faces?|headshots?|caricatures?|deepfakes?|pictures?|images?|paintings?|drawings?|renderings?) of (a |an |the )?(real |actual |famous |well[- ]known |specific )?(person|people|man|woman|guy|girl|celebrit(y|ies)|politicians?|founders?|ceos?|influencers?|presidents?|billionaires?|streamers?|developers? named|builder named)\b/i;
 const REAL_PERSON_WORDS = /\b(celebrit(y|ies)|politicians?|deepfakes?|real (person|people|human|face)|actual person|famous person|public figure|look(s|ing)? (exactly )?like [A-Z][a-z]+ [A-Z][a-z]+|in the likeness of|photorealistic (face|portrait|person|man|woman))\b/;
@@ -78,6 +80,8 @@ export function imagePromptRisk(input: { prompt: string; altText: string }, ctx:
   }
   const foreignCashtag = both.match(/\$[A-Za-z][A-Za-z0-9]{1,15}\b/g)?.find((tag) => !(ctx.ownNames ?? []).some((n) => n.toLowerCase() === tag.slice(1).toLowerCase()) && tag.toLowerCase() !== '$bootr');
   if (foreignCashtag) return { code: 'image_other_logo', message: `image_other_logo: a picture never shows another coin (${foreignCashtag}); draw your own` };
+  const footwear = ctx.platform ? FOOTWEAR.exec(both) : null;
+  if (footwear) return { code: 'image_subject_forbidden', message: `image_subject_forbidden: never draw a boot, a shoe or any footwear ("${footwear[0]}"): bootr is a name, not a boot; draw a scene or an idea from the post, or publish without a picture` };
   const market = MARKET.exec(both);
   if (market) return { code: 'image_market_numbers', message: `image_market_numbers: no charts, prices, percentages or anything that reads as gains in a picture ("${market[0]}"); draw a scene, a character or an idea instead` };
   return altTextRisk(input.altText, ctx);

@@ -30,8 +30,10 @@ describe('the social prompt is what it was before the treasury and judge roles e
     // launched on Bootr, it tags the author of a watched post and links the post again, and it may not open two posts
     // the same way, and it leads a post with what happened (the fact, its number, its source) instead of with itself, a
     // shape learned from aixbt's posts. The pins of 2026-11-13 (no @, no link) are gone with the rule they pinned.
-    expect(sha256(buildSystemPrompt(platform))).toBe('a032b3333b2fa150d786956054eef73664339cf6973910dc4705c034728e892b');
-    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('41326bf84ac441fad965f7e0a614e7475f78074cee1d129e0f5efad11a1c12c7');
+    // Moved again 2026-11-15: the contract address rides on a post about something else (never a post of its own), and
+    // pictures are rare and never show a boot or any footwear.
+    expect(sha256(buildSystemPrompt(platform))).toBe('092f1e8327222e82e3655b97ecd93a4c638d5c34ad8fe5b0314432b6a6c26f37');
+    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('077d95c1e2ea42fb9b78247c12739269ec76a407016a43f3962d261b585a563c');
   });
 });
 
