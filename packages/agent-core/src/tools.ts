@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from './social/thread.js';
 import { zodToJsonSchema, type JsonSchema } from './json-schema.js';
+import { MAX_NOTES_PER_REMEMBER } from './notes.js';
 import { POST_LIMITS, postLimitsFor } from './social/post-validation.js';
 import { DRAFT_INTENT_TOOL_NAME, MAX_RESOLVE_BATCH, WHAT_WORKS_NOTE_MAX_CHARS, draftIntentInputSchema, toolInputSchemas, type AgentConfig, type Capability, type OwnerRule, type ToolName } from './types.js';
 
@@ -143,7 +144,7 @@ export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
   ),
   remember: define(
     'remember',
-    'Store a private note with sources, dates and uncertainty for later recall. Nothing stored here is published.',
+    `Store private notes for later recall, with their sources, dates and uncertainty. Nothing stored here is published. One call takes up to ${MAX_NOTES_PER_REMEMBER} notes: the first in text, the others in more. Put everything a turn wants to keep into one call: a turn may call remember twice at most. kind (optional) says what a note is: person (someone you spoke with), promise (something you said you would do; dueAt is when, a day from now if left out), lesson (what you learned about your own posting) or coin (a fact about your own coin). subject (optional) names who or what the note is about: the same kind and subject again updates that note instead of adding one, so keep one note per person or topic. Close a promise by remembering it again with its subject and done: true.`,
     'memory',
     'write',
     true,

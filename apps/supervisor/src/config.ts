@@ -441,7 +441,7 @@ export const configSchema = z
     OWN_TURNS_PER_DAY: int(OWN_DEFAULTS.OWN_TURNS_PER_DAY, 0),
     /** Tool calls of an own coin per rolling 24 hours, a refused `finish` included (own/budget.ts). */
     OWN_STEPS_PER_DAY: int(OWN_DEFAULTS.OWN_STEPS_PER_DAY, 0),
-    /** `remember` calls per rolling 24 hours for an own coin (broker). */
+    /** Notes an own coin's `remember` calls may store per rolling 24 hours (broker; one call stores up to five). */
     OWN_REMEMBER_PER_DAY: int(OWN_DEFAULTS.OWN_REMEMBER_PER_DAY, 0),
     /** `treasury_prepare` calls per rolling 24 hours for an own coin (broker). */
     OWN_TREASURY_PREPARE_PER_DAY: int(OWN_DEFAULTS.OWN_TREASURY_PREPARE_PER_DAY, 0),

@@ -9,6 +9,7 @@ import { linkQuota, sendParts, threadResultFromReceipt, threadRulesRefusal, thre
  * `PendingAction.id` (sender publishes) and `sv_treasury_ops.op_id` (money).
  */
 import {
+  notesOf,
   PolicyError,
   TOOLS,
   checkpoint,
@@ -47,7 +48,7 @@ import { altTextRisk } from '../image-rules.js';
 import { erc20Abi } from 'viem';
 import { BOUNTY_ENTRY_REASON, bountyCancel, bountyList, bountyPost, outcomeOfJob } from '../bounties.js';
 import { bountyJobs } from '../db/schema.js';
-import { RESERVED_REQUEST_TAGS } from '../creator-requests.js';
+import { rememberNotes, untrusted } from '../notes.js';
 import { scheduledCancel, scheduledList, schedulePost } from '../scheduled.js';
 import { noteWhatWorks, whatWorksOffered } from '../what-works.js';
 import { addressRefusal } from '../your-coin.js';
@@ -101,6 +102,8 @@ export interface BrokerEnv {
   cycle?: number;
   /** The own agent's turn the action belongs to (own/turns.ts); the guards of `ownGuard` read it. Absent on a hosted turn. */
   own?: OwnBrokerTurn;
+  /** A hosted turn: how many `remember` calls it already stored (notes.ts holds a turn to two). Absent on an own agent's turn. */
+  rememberCalls?: number;
 }
 
 /** What the broker needs to know of an own agent's turn for the guards the hosted prompt alone carries (`ownGuard`). */
@@ -152,7 +155,9 @@ export function readUrlDailyCap(limit: number): string {
 export function servicesDailyCount(limit: number): string {
   return `services_daily_count: at most ${limit} paid-service calls and catalogue searches per 24 hours; this one was not sent. Go on with what you already have.`;
 }
-export function rememberDailyCap(limit: number): string {
+/** `left` is given when the day still has room, but not for every note of this call: none of them was kept. */
+export function rememberDailyCap(limit: number, left = 0): string {
+  if (left > 0) return `remember_daily_cap: at most ${limit} notes per 24 hours and ${left} of them ${left === 1 ? 'is' : 'are'} left; this call held more, so none of its notes was kept. Send at most ${left}, or put what matters in the memory of your finish.`;
   return `remember_daily_cap: at most ${limit} notes per 24 hours; this one was not kept. Put what matters in the memory of your finish.`;
 }
 export function treasuryPrepareDailyCap(limit: number): string {
@@ -169,6 +174,20 @@ async function ownCallsInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agen
     .select({ n: sql<number>`count(*)::int` })
     .from(actions)
     .where(and(eq(actions.agentId, agentId), gt(actions.createdAt, since), ne(actions.actionId, exceptActionId), sql`${actions.action}->>'tool' = ${tool}`));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * The notes an own coin's `remember` calls of the last 24 hours stored (each call's own note and its `more`), the action
+ * being decided left out. A refused call stored nothing and counts for nothing: the bound is on rows, and one call that
+ * asked for more than the day had left must not use the day up.
+ */
+async function ownNotesInWindow(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string, exceptActionId: string): Promise<number> {
+  const since = new Date(ctx.now() - OWN_DAILY_WINDOW_MS);
+  const [row] = await ctx.db
+    .select({ n: sql<number>`coalesce(sum(1 + case when jsonb_typeof(${actions.action}->'input'->'more') = 'array' then jsonb_array_length(${actions.action}->'input'->'more') else 0 end), 0)::int` })
+    .from(actions)
+    .where(and(eq(actions.agentId, agentId), gt(actions.createdAt, since), ne(actions.actionId, exceptActionId), ne(actions.status, 'failed'), sql`${actions.action}->>'tool' = 'remember'`));
   return Number(row?.n ?? 0);
 }
 
@@ -229,8 +248,10 @@ export async function ownGuard(ctx: SupervisorContext, agent: AgentRow, pending:
   }
   // Rows and signatures nothing else bounds without fuel: notes, prepared operations, executed ones.
   if (action.tool === 'remember') {
+    // The day's count is of notes, not calls: one call stores up to five rows (agent-core notes.ts).
     const limit = ownSetting(ctx, 'OWN_REMEMBER_PER_DAY');
-    if ((await ownCallsInWindow(ctx, agent.agentId, 'remember', pending.id)) >= limit) return failed(rememberDailyCap(limit));
+    const used = await ownNotesInWindow(ctx, agent.agentId, pending.id);
+    if (used + notesOf(action.input).length > limit) return failed(rememberDailyCap(limit, Math.max(0, limit - used)));
   }
   if (action.tool === 'treasury_prepare') {
     const limit = ownSetting(ctx, 'OWN_TREASURY_PREPARE_PER_DAY');
@@ -537,7 +558,7 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
         .slice(0, 20)
         .map((r) => ({ actionId: r.actionId, at: r.createdAt.toISOString(), input: (r.action as unknown as Action).input, result: r.result }));
       const notes = await ctx.memories.recall(agentId, { query: `${action.input.authorId} ${action.input.query ?? ''}` });
-      return { kind: 'completed', result: { authorId: action.input.authorId, replies: mine, notes: notes.items, nextBeforePostId: null } };
+      return { kind: 'completed', result: { authorId: action.input.authorId, replies: mine, notes: notes.items.map(untrusted), nextBeforePostId: null } };
     }
     case 'publish_reply': {
       const media = await mediaForAction(ctx, agentId, action.input.imageId, config);
@@ -615,15 +636,13 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       }
       return { kind: 'completed', result: { outcome, resolved, failed: errors.map(({ postId, error }) => ({ postId, error })) } };
     }
-    case 'remember': {
-      // A creator request is filed by the chat alone (creator-requests.ts): its tags are dropped from a model's own note.
-      const tags = action.input.tags?.filter((tag) => !RESERVED_REQUEST_TAGS.includes(tag));
-      const rec = await ctx.memories.remember(agentId, { text: action.input.text, ...(action.input.sources ? { sources: action.input.sources } : {}), ...(tags?.length ? { tags } : {}) });
-      return { kind: 'completed', result: { id: rec.id, createdAt: rec.createdAt } };
-    }
+    case 'remember':
+      // Up to five notes a call, typed notes updated in place, two calls a hosted turn (notes.ts).
+      return rememberNotes(ctx, agentId, action.input, env.rememberCalls);
     case 'recall': {
       const res = await ctx.memories.recall(agentId, action.input);
-      return { kind: 'completed', result: res };
+      // A note may hold what the agent once read on a page or in a mention: evidence, never an instruction (notes.ts).
+      return { kind: 'completed', result: { ...res, items: res.items.map(untrusted), instructionAuthority: false } };
     }
     case 'note_what_works':
       return noteWhatWorks(ctx, agent, config, pending);

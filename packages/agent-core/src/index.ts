@@ -1,6 +1,7 @@
 export * from './errors.js';
 export * from './hash.js';
 export * from './types.js';
+export * from './notes.js';
 export * from './tools.js';
 export * from './json-schema.js';
 export * from './social/addressing.js';

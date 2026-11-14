@@ -686,7 +686,7 @@ mention).
 | --- | --- | --- | --- |
 | Turns opened | 300 | `OWN_TURNS_PER_DAY` | opening a turn builds an observation and reads mentions; nothing bounded how often |
 | Tool calls of every kind, a refused `finish` included | 2,000 | `OWN_STEPS_PER_DAY` | every step writes a row and runs a tool; the per-turn cap of 8 bounded a turn, not a day |
-| `remember` | 200 | `OWN_REMEMBER_PER_DAY` | each call is a stored row, forever |
+| Notes stored by `remember` | 200 | `OWN_REMEMBER_PER_DAY` | each note is a stored row, forever (one call stores up to five since 2026-11-15, so the count is of notes, and a refused call counts for nothing) |
 | `treasury_prepare` | 100 | `OWN_TREASURY_PREPARE_PER_DAY` | each call simulates on chain and stores an operation |
 | `treasury_execute` | 30 | `OWN_TREASURY_EXECUTE_PER_DAY` | each call is a signature by the session key and gas from the kernel |
 | `x402_fetch` and `discover_services` together | 100 | `OWN_SERVICE_CALLS_PER_DAY` | each is an outbound request to an address the caller chooses |
