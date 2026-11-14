@@ -28,6 +28,12 @@
  * where it was, so what was new for it is still new when the slot is tried again. When the turn posts, "since its
  * last slot" and "since its last post" are the same.
  *
+ * The ceiling on quiet (`QUIET_SLOT_MAX_QUIET_MS`, a day unless set otherwise; 0 = none): a slot is not skipped once
+ * the agent's last original post and the last slot a turn of its used are both older than that. A coin where nothing
+ * changes then still gets a turn about once a day, and its creator does not take it for dead. That turn is told
+ * nothing special: the repeat rules still hold, so it finds something else to say or finishes without a post, and
+ * either way the day starts again.
+ *
  * A skipped slot is spent the way a slot is that the agent passed on (`lastSlotSkippedAt`): the next slot is the next
  * chance, and nothing is asked again in between. No model is called and nothing is written but the runtime's state.
  *
@@ -64,6 +70,21 @@ export type QuietState = Pick<AgentState, 'lastSlotSkippedAt' | 'lastPostAt'> & 
 };
 
 type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config' | 'indexer'>;
+
+/** The ceiling on quiet in ms; 0 = none. A caller that holds only a part of the config has none. */
+export function quietCeilingMs(ctx: { config?: { QUIET_SLOT_MAX_QUIET_MS?: unknown } | null }): number {
+  const n = ctx.config?.QUIET_SLOT_MAX_QUIET_MS;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Whether the agent has been quiet for the ceiling or longer at `now`: its last original post and the last slot a
+ * turn of its used (`mark`) both lie that far back. Without a mark it is the agent's first slot, which runs anyway. Pure.
+ */
+export function quietTooLong(state: Pick<QuietState, 'lastPostAt'>, mark: QuietMark | null, now: number, ceilingMs: number): boolean {
+  if (!(ceilingMs > 0) || !mark) return false;
+  return now - Math.max(state.lastPostAt ?? 0, mark.at) >= ceilingMs;
+}
 
 /** The creator's switch in a stored config: on unless it is exactly false. */
 export function quietSlotOf(config: Record<string, unknown>): boolean {
@@ -123,7 +144,7 @@ export function lastMilestoneAt(feed: PlatformFeedData | null | undefined, agent
   return times.length ? Math.max(...times) : null;
 }
 
-export type QuietReason = 'mention' | 'creator_request' | 'config_changed' | 'hold_ended' | 'platform_update' | 'first_slot' | 'coin_unknown' | 'holders_changed' | 'new_trade' | 'new_milestone';
+export type QuietReason = 'mention' | 'creator_request' | 'config_changed' | 'hold_ended' | 'platform_update' | 'quiet_ceiling' | 'first_slot' | 'coin_unknown' | 'holders_changed' | 'new_trade' | 'new_milestone';
 
 export interface QuietInput {
   /** The mark of the agent's last slot; null when it never had one. */
@@ -204,6 +225,8 @@ export async function quietSlot(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'tok
     const creatorRequest = signals.creatorRequest ?? (await openRequests(ctx, agent.agentId, 'social')).length > 0;
     if (creatorRequest) return { skipped: false, reasons: ['creator_request'] };
     const mark = settledMark(state);
+    // Quiet for a day (the ceiling): the slot is the agent's whatever the coin did, and nothing more is read for it.
+    if (quietTooLong(state, mark, now, quietCeilingMs(ctx))) return { skipped: false, reasons: ['quiet_ceiling'] };
     // A read that throws is left to the caller's own read of the snapshot (the catch below): this check only declines to skip.
     const market = (await ctx.indexer.market(agent.token)) as Record<string, unknown> | null;
     const coin = ownCoinNow(market);

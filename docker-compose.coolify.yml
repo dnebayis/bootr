@@ -256,6 +256,8 @@ services:
       # The quiet slot (apps/supervisor/src/quiet-slot.ts): empty = on (a coin agent's due post slot buys no turn when
       # nothing is new since its last one), false = off for every coin. A creator switches it off for one coin in the console.
       QUIET_SLOT: ${QUIET_SLOT:-}
+      # The ceiling on quiet, in ms: empty = 24 hours (a coin where nothing changes still gets a turn about once a day), 0 = none.
+      QUIET_SLOT_MAX_QUIET_MS: ${QUIET_SLOT_MAX_QUIET_MS:-}
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}

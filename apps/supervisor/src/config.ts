@@ -265,6 +265,12 @@ export const configSchema = z
      * for their own (`quietSlot: false` in the stored config). The platform account is never given it.
      */
     QUIET_SLOT: bool('true'),
+    /**
+     * The ceiling on quiet: a due slot is not skipped once the agent's last original post, and the last turn it was
+     * given for a slot, are both older than this. A coin where nothing changes then still gets a turn about once a
+     * day instead of going silent for good. 0 = no ceiling.
+     */
+    QUIET_SLOT_MAX_QUIET_MS: int(24 * 3_600_000, 0),
     /** The platform account's text is lowercased and its emoji removed before it is sent (agent-core `plainVoice`). */
     PLATFORM_PLAIN_VOICE: bool('true'),
     /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */

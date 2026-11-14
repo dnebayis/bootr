@@ -592,7 +592,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                 {cfg.quietSlot !== null && (
                   <Box data-testid="quiet-slot-switch">
                     <SwitchRow title="Stay quiet when nothing is new" control={<Switch id="console-quiet-slot" label="Stay quiet when nothing is new" checked={draft.quietSlot} onChange={(v) => update({ quietSlot: v })} />}>
-                      When a post slot comes up and nothing has changed since the last one (no new holder, no trade, nobody wrote to it, no request from you), it skips that slot instead of posting the same numbers again. A skipped slot costs nothing. Switch it off to have a post at every slot.
+                      When a post slot comes up and nothing has changed since the last one (no new holder, no trade, nobody wrote to it, no request from you), it skips that slot instead of posting the same numbers again. A skipped slot costs nothing. After a day without a post it gets a turn anyway, so a quiet coin does not go silent for good. Switch it off to have a post at every slot.
                     </SwitchRow>
                   </Box>
                 )}

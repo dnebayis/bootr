@@ -11,7 +11,7 @@ import { fileRequest } from '../src/creator-requests.js';
 import { agents, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
-import { QUIET_HOLDERS_SHARE, lastMilestoneAt, markQuietSlot, ownCoinNow, quietSlot, quietSlotOf, quietSlotOn, settledMark, whatIsNew, type QuietState } from '../src/quiet-slot.js';
+import { QUIET_HOLDERS_SHARE, lastMilestoneAt, markQuietSlot, ownCoinNow, quietCeilingMs, quietSlot, quietSlotOf, quietSlotOn, quietTooLong, settledMark, whatIsNew, type QuietState } from '../src/quiet-slot.js';
 import { scheduleFor, type AgentState } from '../src/runtime.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, CREATOR, KERNEL, SUPERVISOR_KEY, TOKEN, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
@@ -134,6 +134,23 @@ describe('what the rule reads', () => {
     expect(settledMark(passed)).toEqual({ at: T0, holders: 6 });
   });
 
+  it('quietTooLong: the last original post and the last slot a turn used are both a ceiling back', () => {
+    const DAY = 24 * HOUR;
+    const mark = { at: T0, holders: 112 };
+    expect(quietTooLong({ lastPostAt: T0 }, mark, T0 + DAY - 1, DAY)).toBe(false);
+    expect(quietTooLong({ lastPostAt: T0 }, mark, T0 + DAY, DAY)).toBe(true);
+    // A turn that finished without a post still used its slot: the day starts again from it.
+    expect(quietTooLong({ lastPostAt: T0 - 5 * DAY }, mark, T0 + DAY - 1, DAY)).toBe(false);
+    // ...and so does a post that went out by itself (a scheduled one) since.
+    expect(quietTooLong({ lastPostAt: T0 + HOUR }, mark, T0 + DAY, DAY)).toBe(false);
+    // No ceiling, and no mark (the first slot runs anyway).
+    expect(quietTooLong({ lastPostAt: T0 }, mark, T0 + 30 * DAY, 0)).toBe(false);
+    expect(quietTooLong({ lastPostAt: null }, null, T0 + 30 * DAY, DAY)).toBe(false);
+    expect(quietCeilingMs({ config: { QUIET_SLOT_MAX_QUIET_MS: DAY } })).toBe(DAY);
+    expect(quietCeilingMs({ config: { QUIET_SLOT_MAX_QUIET_MS: 0 } })).toBe(0);
+    expect(quietCeilingMs({})).toBe(0);
+  });
+
   it('markQuietSlot keeps the last known count when a snapshot does not say, and keeps no record for a coin the rule is off for', () => {
     const on = { config: { QUIET_SLOT: true } };
     const state: QuietState = { quietMark: { at: T0 - HOUR, holders: 112 } };
@@ -187,6 +204,70 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
       // Five slots: two thoughts instead of ten, one post instead of five.
       expect(thoughts(w)).toBe(2);
       expect(w.sender.published).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the ceiling: a coin where nothing changes is quiet for a day, then gets one turn, then is quiet again', async () => {
+    const DAY = 24 * HOUR;
+    const { w, atNextSlot } = await quietWorld();
+    try {
+      expect(w.ctx.config.QUIET_SLOT_MAX_QUIET_MS).toBe(DAY);
+      expect(await atNextSlot()).toEqual({ ran: true, thoughts: 2, posts: 1 });
+      const posted = (await stateOf(w)).lastPostAt!;
+      // Every slot inside the day is skipped.
+      let skipped = 0;
+      for (;;) {
+        const slot = await atNextSlot();
+        if (slot.ran) break;
+        expect(w.ctx.now() - posted).toBeLessThan(DAY);
+        skipped += 1;
+        expect(skipped).toBeLessThan(20);
+      }
+      // The first slot a day or more after the last post is the agent's, though nothing changed: one turn, told nothing special.
+      expect(skipped).toBeGreaterThanOrEqual(10);
+      expect(w.ctx.now() - posted).toBeGreaterThanOrEqual(DAY);
+      expect(thoughts(w)).toBe(4);
+      expect(w.sender.published).toHaveLength(2);
+      // Then the day starts again.
+      const again = (await stateOf(w)).lastPostAt!;
+      expect(again).toBeGreaterThan(posted);
+      for (let i = 0; i < 5; i++) expect(await atNextSlot(), `slot ${i + 1} after the ceiling`).toEqual({ ran: false, thoughts: 0, posts: 0 });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the turn the ceiling gives may finish without a post: the day starts again all the same', async () => {
+    const DAY = 24 * HOUR;
+    const { w, script, atNextSlot } = await quietWorld();
+    try {
+      expect((await atNextSlot()).ran).toBe(true);
+      const posted = (await stateOf(w)).lastPostAt!;
+      // The next turn that is bought, the ceiling's, finds nothing to say and only finishes.
+      script.unshift(() => finishResponse(w.ctx.now() + MINUTE));
+      let slot = await atNextSlot();
+      for (let i = 0; !slot.ran && i < 20; i++) slot = await atNextSlot();
+      expect(slot).toEqual({ ran: true, thoughts: 1, posts: 0 });
+      expect(w.ctx.now() - posted).toBeGreaterThanOrEqual(DAY);
+      expect((await stateOf(w)).lastPostAt).toBe(posted);
+      // The slot was used: the next ones are skipped again, although the last post is now more than a day old.
+      for (let i = 0; i < 3; i++) expect(await atNextSlot(), `slot ${i + 1} after the ceiling`).toEqual({ ran: false, thoughts: 0, posts: 0 });
+      expect(w.ctx.now() - posted).toBeGreaterThan(DAY);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('QUIET_SLOT_MAX_QUIET_MS=0 is no ceiling: the coin stays quiet for as long as nothing is new', async () => {
+    const { w, atNextSlot } = await quietWorld({ QUIET_SLOT_MAX_QUIET_MS: '0' });
+    try {
+      expect((await atNextSlot()).ran).toBe(true);
+      const posted = (await stateOf(w)).lastPostAt!;
+      for (let i = 0; i < 16; i++) expect((await atNextSlot()).ran, `slot ${i + 2}`).toBe(false);
+      expect(w.ctx.now() - posted).toBeGreaterThan(24 * HOUR);
+      expect(thoughts(w)).toBe(2);
     } finally {
       await w.close();
     }
@@ -383,6 +464,24 @@ describe('an own agent: `due` says a post slot is not due when nothing is new', 
       expect(await stateOf(w)).toMatchObject({ quietSeen: { holders: 7 }, quietMark: { holders: 6 } });
       expect(w.sender.published).toHaveLength(2);
       expect(w.modelCalls()).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the ceiling holds for an own agent too: a day after its last post the slot is due though nothing changed', async () => {
+    const { w, toNextSlot, takeSlot, due } = await own();
+    try {
+      await takeSlot();
+      const posted = (await stateOf(w)).lastPostAt!;
+      let told = await due();
+      for (let i = 0; i < 20 && !told.reasons.includes('original_post_due'); i++) {
+        expect(w.ctx.now() - posted).toBeLessThan(24 * HOUR);
+        await toNextSlot();
+        told = await due();
+      }
+      expect(told.reasons).toContain('original_post_due');
+      expect(w.ctx.now() - posted).toBeGreaterThanOrEqual(24 * HOUR);
     } finally {
       await w.close();
     }
