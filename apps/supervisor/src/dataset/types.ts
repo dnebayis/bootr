@@ -77,8 +77,13 @@ export interface RecordSource {
   sourceId: string;
   cluster: string;
   group: string;
-  /** The source is official for one of the record's entities. */
+  /**
+   * The entity itself speaks here about itself: the source is official for an entity the item is about (its own text
+   * names it, or the source is about nothing else) and, on a record that existed already, the record had that entity.
+   */
   official: boolean;
+  /** An open venue (anyone with an account writes there): carried, never counted as an independent group. */
+  open?: boolean;
   /** Canonical https link on a host of the source list, or null. */
   link: string | null;
   /** ISO time Bootr first saw this source carry the event. */
@@ -121,6 +126,11 @@ export interface Sighting {
   /** Link keys (clean.ts `linkKey`) of the pages the item itself points at, on hosts of the source list, its own page left out. */
   refs: string[];
   entities: string[];
+  /**
+   * The entities the item itself is about: the ones its own text names, and the one a single-subject source is about
+   * (sources.ts `subject`). A source is official for an item only through these, never through what it merely carries.
+   */
+  named: string[];
   /** The title's word set (matching.ts `wordSet`). */
   words: string[];
   numbers: RecordNumber[];

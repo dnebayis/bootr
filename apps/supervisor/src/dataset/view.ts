@@ -50,7 +50,7 @@ export interface DatasetDayView {
     eventPrecision: string;
     expiresAt: string;
     numbers: { value: number; unit: string; what: string; asOf: string | null; sourceId: string }[];
-    sources: { sourceId: string; name: string; group: string; official: boolean; link: string | null; seenAt: string }[];
+    sources: { sourceId: string; name: string; group: string; official: boolean; /** An open venue: carried, counted for nothing. */ open: boolean; link: string | null; seenAt: string }[];
     /** For an incident: whether it has the sourcing the note asks for before it is more than a report. */
     incidentSourced: boolean | null;
     posted: number;
@@ -110,7 +110,7 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
         eventPrecision: r.eventPrecision,
         expiresAt: r.expiresAt.toISOString(),
         numbers: r.numbers as unknown as DatasetDayView['records'][number]['numbers'],
-        sources: recordSources.map((s) => ({ sourceId: s.sourceId, name: names.get(s.sourceId) ?? s.sourceId, group: s.group, official: s.official, link: s.link, seenAt: s.seenAt })),
+        sources: recordSources.map((s) => ({ sourceId: s.sourceId, name: names.get(s.sourceId) ?? s.sourceId, group: s.group, official: s.official, open: s.open === true, link: s.link, seenAt: s.seenAt })),
         incidentSourced: r.kind === 'incident' ? incidentSourced(recordSources) : null,
         posted: (r.posted as unknown[]).length,
         sightings: sightings

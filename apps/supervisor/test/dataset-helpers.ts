@@ -17,7 +17,7 @@ export function source(id: string): OpenSource {
 
 export function infoOf(id: string): SourceInfo {
   const s = source(id);
-  return { id: s.id, name: s.name, cluster: s.cluster, group: s.group, officialFor: s.officialFor };
+  return { id: s.id, name: s.name, cluster: s.cluster, group: s.group, officialFor: s.officialFor, open: s.open === true };
 }
 
 /** A sighting of `sourceId` as the readers would build it; throws when the item would have been dropped. */

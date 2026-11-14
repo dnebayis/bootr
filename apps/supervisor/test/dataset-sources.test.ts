@@ -51,6 +51,16 @@ describe('the open sources of section 6.7', () => {
     expect(new Set(ENTITIES.map((e) => e.id)).size).toBe(ENTITIES.length);
   });
 
+  it('a single-subject source is about something it is official for, and an open venue is official for nothing and has no subject', () => {
+    for (const s of OPEN_SOURCES) {
+      for (const e of s.subject ?? []) expect(s.officialFor, `${s.name}: ${e}`).toContain(e);
+      if (s.open) expect([s.officialFor, s.subject ?? []], s.name).toEqual([[], []]);
+    }
+    // releases, status and documentation are about one thing; a blog, a press feed or a desk can write about anything
+    expect(OPEN_SOURCES.filter((s) => s.subject).map((s) => s.n)).toEqual([8, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24, 27, 37, 52, 60, 61, 63]);
+    expect(OPEN_SOURCES.filter((s) => s.open).map((s) => s.n)).toEqual([16, 25, 26, 28, 29, 30, 31, 32, 33, 50, 53, 62]);
+  });
+
   it('the schedule: the home cluster every 15 minutes, the rest hourly, the JSON APIs every 6 hours, about 2,400 requests a day', () => {
     const read = OPEN_SOURCES.filter((s) => s.read);
     expect(read.filter((s) => s.kind === 'json').every((s) => s.everyMin === 360)).toBe(true);

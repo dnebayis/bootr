@@ -157,7 +157,7 @@ export async function runOpenSources(deps: OpenSourceDeps, now: Date): Promise<O
     if (!source || !source.read) continue;
     try {
       const read = await readOpenSource(deps, source, row, now);
-      const info = { id: source.id, name: source.name, cluster: source.cluster, group: source.group, officialFor: source.officialFor };
+      const info = { id: source.id, name: source.name, cluster: source.cluster, group: source.group, officialFor: source.officialFor, open: source.open === true };
       const known = await knownSightings(deps.db, read.sightings.filter((s) => !s.key).map((s) => sightingIdOf(s.sourceId, s.externalId)));
       for (const sighting of read.sightings) {
         if (known.has(sightingIdOf(sighting.sourceId, sighting.externalId))) continue;

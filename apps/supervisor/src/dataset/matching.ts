@@ -7,7 +7,10 @@
  *  2. A stated relation: the source itself says what it is about. In this stage that is a link in the item to a page
  *     that is already a record's link; with layer c it is also X's own relation (a post that quotes or reposts a post
  *     already in a record), which arrives in the same `refs` field. An item that points at two different records (a
- *     weekly round-up) states no single relation and goes on to step 3.
+ *     weekly round-up) states no single relation and goes on to step 3. A link is something its writer chose, so it
+ *     places a sighting only on a record it shares an entity with and inside the window step 3 uses, and a sighting
+ *     that got onto a record by pointing at it is carried there and gives it nothing: no headline, no link, no time,
+ *     no entity, no number, and it is never official (store.ts `attach`).
  *  3. Entities and words: a shared entity, a compatible kind, within MATCH_WINDOW_MS of the record, and a word-set
  *     overlap of OVERLAP_MIN or more (stop words and kind words out, numbers kept as words).
  *  4. NOT in this stage: what step 3 leaves between LEFTOVER_MIN and OVERLAP_MIN goes to the cheapest model as a
@@ -26,7 +29,8 @@
  *
  * When a sighting is tied to one record by its link or a stated relation and to another by its words, the two records
  * were one event seen from two sides (a post-mortem page nobody had linked yet, and the desks' reports): store.ts
- * merges them, on the same evidence that would have joined the sighting to either.
+ * merges them, but only two records that already share an entity and are of kinds that can be one event. One
+ * sighting's link and words are never enough by themselves to fold two stories together.
  */
 import type { RecordKind } from './types.js';
 

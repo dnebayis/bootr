@@ -74,6 +74,7 @@ function RecordRow({ record }: { record: DatasetRecordView }) {
           <div key={i} title={s.group}>
             {s.name}
             {s.official ? <span className="font-mono text-micro text-mute"> official</span> : null}
+            {s.open ? <span className="font-mono text-micro text-mute"> open venue</span> : null}
           </div>
         ))}
       </td>

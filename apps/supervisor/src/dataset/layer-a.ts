@@ -55,8 +55,8 @@ export interface ChainDeps {
   skipWeek?: boolean;
 }
 
-const INDEXER = { id: 'a:indexer', url: 'https://bootr.fun', page: 'https://bootr.fun', entities: ['bootr'] } as const;
-const SUPERVISOR = { id: 'a:supervisor', url: 'https://bootr.fun', page: 'https://bootr.fun', entities: ['bootr'] } as const;
+const INDEXER = { id: 'a:indexer', url: 'https://bootr.fun', page: 'https://bootr.fun', entities: ['bootr'], subject: ['bootr'] } as const;
+const SUPERVISOR = { id: 'a:supervisor', url: 'https://bootr.fun', page: 'https://bootr.fun', entities: ['bootr'], subject: ['bootr'] } as const;
 const infoOf = (id: string): SourceInfo => {
   const s = CHAIN_SOURCES.find((c) => c.id === id)!;
   return { id: s.id, name: s.name, cluster: s.cluster, group: s.group, officialFor: s.officialFor };

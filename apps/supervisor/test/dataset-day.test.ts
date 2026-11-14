@@ -155,6 +155,68 @@ for (const [minute, coins] of [
 ] as const)
   addBuilt('bootr-now', minute, platformNow({ totals: { tokens: coins, agentsTotal: 40, agentsAwake: 19, volume24hUsd: 12_000 + minute } }, at(minute))!, bootrInfo);
 
+/**
+ * The whole day as it ends: grade, independent groups, the sources (`*` official, `~` an open venue, which counts for
+ * nothing) and the headline. Read it the way the owner reads the console: a forum topic is grade 1 however official
+ * the forum looks, a desk never passes 3, and 4 means the entity itself said it about itself.
+ */
+const DAY_TABLE = [
+  '1 1 a16z-crypto | What agents need from stablecoins',
+  '1 1 aave-gov~ | [ARFC] Onboard GHO to the Base instance of Aave v3',
+  '1 1 aave-gov~ | [ARFC] Raise the USDC supply cap on the Base instance of Aav',
+  '1 1 aave-gov~ | [ARFC] Raise the WETH supply cap on the Base instance of Aav',
+  '1 1 arbitrum-gov~ | Proposal: Arbitrum treasury diversification into stablecoins',
+  '1 1 arbitrum-gov~,the-defiant | Arbitrum DAO weighs funding its audit program for 2027',
+  '1 1 arxiv-cs-ai~ | A survey of LLM agents that hold wallets and transact autono',
+  '1 1 coindesk | Ethereum developers lock in a December date for the next har',
+  '1 1 eth-magicians~ | EIP-7702: clarify delegation reset semantics',
+  '1 1 eth-magicians~ | EIP-7928: block-level access lists, open questions',
+  '1 1 ethereum-blog | Fusaka Mainnet Announcement',
+  '1 1 ethresearch~ | FOCIL inclusion lists under attester-proposer separation',
+  '1 1 hugging-face | Introducing smolagents 2.0',
+  '1 1 lido-research~ | Community Staking Module: raise the stake share limit to 5%',
+  '1 1 lido-research~ | Oracle set rotation: replace one member of the oracle commit',
+  '1 1 llama-chains | Base: 5.26B USD of value locked, by DefiLlama\'s count',
+  '1 1 llama-chains | Ethereum: 70.00B USD of value locked, by DefiLlama\'s count',
+  '1 1 morpho-forum~ | Whitelist a new USDC vault curator on Base',
+  '1 1 optimism-gov~ | Maintenance Upgrade Proposal: Soneium Mainnet Proposer Rotat',
+  '1 1 optimism-gov~ | Maintenance Upgrade Proposal: Unichain Fee Vault Config Upda',
+  '1 1 simon-willison | Notes on the Claude Fable system card',
+  '1 1 uniswap-gov~,the-defiant | Uniswap DAO temperature check would activate the protocol fe',
+  '1 1 x-dev-forum~ | Posting endpoint returns 403 for long posts on basic tier',
+  '1 1 x-dev-forum~ | an item from X developer forum',
+  '3 2 coindesk,blockworks | Kraken confidentially submits paperwork for a US IPO',
+  '3 3 coindesk,blockworks,llama-hacks | Beta Bridge exploited for $3 million after private key compr',
+  '3 3 coindesk,the-block,decrypt | Kraken acquires tokenization startup Backed',
+  '3 4 base-blog,coindesk,decrypt,the-defiant | Introducing the x402 Bazaar: a marketplace for agent payment',
+  '3 4 coindesk,the-defiant,rekt,llama-hacks | DeFi lender Acme Lend exploited for $12 million in oracle at',
+  '4 1 agentkit* | AgentKit v0.12.0',
+  '4 1 base-node* | v1.3.0',
+  '4 1 cftc* | CFTC Staff Issues Guidance on Tokenized Collateral and Stabl',
+  '4 1 ecb* | ECB publishes progress report on the digital euro preparatio',
+  '4 1 elizaos* | v2.0.0-beta.4',
+  '4 1 esma* | ESMA publishes final guidelines on MiCA knowledge and compet',
+  '4 1 federal-register* | Safeguarding Client Digital Assets Under the Investment Advi',
+  '4 1 geth* | Squared Division (v1.16.7)',
+  '4 1 indexer* | Bootr now: 43 coins launched, 19 of 40 agents awake, 13.2k U',
+  '4 1 mcp* | 2026-11-10',
+  '4 1 op-stack* | op-node v1.9.1',
+  '4 1 op-stack* | op-node v1.9.2',
+  '4 1 reth* | Reth v1.9.0',
+  '4 1 sec* | SEC Charges Acme Capital Founder With Misleading Crypto Fund',
+  '4 1 sec* | SEC Charges Beta Advisers With Misleading Crypto Fund Client',
+  '4 1 uniswap-v4* | v4.1.0',
+  '4 1 x402-releases* | x402 v2.3.0',
+  '4 2 anthropic*,coindesk | Claude can now pay for tools with x402',
+  '4 2 circle*,the-block | Circle brings native USDC to Robinhood Chain',
+  '4 2 federal-reserve*,dl-news | Federal Reserve Board announces final rule on stablecoin res',
+  '4 2 tether*,cointelegraph | Tether launches USAT, a dollar stablecoin for the United Sta',
+  '5 3 base-status*,coindesk,the-block | Delayed transaction inclusion on Base Mainnet',
+  '5 3 openai*,techcrunch,decrypt | Introducing ChatGPT Wallet',
+  '5 3 sec*,the-block,dl-news | SEC Adopts Final Rule on Custody of Crypto Assets by Investm',
+  '5 3 stripe*,blockworks,coindesk | Stripe launches stablecoin accounts in 100 countries',
+];
+
 describe('a day of sightings', () => {
   let db: Db;
   let close: () => Promise<void>;
@@ -224,15 +286,20 @@ describe('a day of sightings', () => {
   it('grades follow the sourcing of each story', async () => {
     const records = await db.select().from(dsRecords);
     const of = (headline: RegExp) => records.find((r) => headline.test(r.headline))!;
+    expect(records.map((r) => `${r.grade} ${r.groups} ${(r.sources as unknown as RecordSource[]).map((s) => `${s.sourceId.slice(2)}${s.official ? '*' : ''}${s.open ? '~' : ''}`).join(',')} | ${r.headline.slice(0, 60)}`).sort()).toEqual(DAY_TABLE);
     // official and two more groups
     expect(of(/^Delayed transaction inclusion/)).toMatchObject({ grade: 5, groups: 3, observationCount: 4, status: 'corroborated', kind: 'outage' });
-    expect(of(/^Introducing the x402 Bazaar/)).toMatchObject({ grade: 5, groups: 4, link: 'https://blog.base.org/x402-bazaar' });
+    // the Base blog on x402: its title names neither Base nor anything the blog is official for, so it is one group
+    // among four and not the entity speaking about itself
+    expect(of(/^Introducing the x402 Bazaar/)).toMatchObject({ grade: 3, groups: 4, link: 'https://blog.base.org/x402-bazaar' });
     expect(of(/^Stripe launches stablecoin accounts/)).toMatchObject({ grade: 5, groups: 3 });
     // official and one more group
     expect(of(/^Circle brings native USDC/)).toMatchObject({ grade: 4, groups: 2 });
     // three desks, no official source: grade 3 and no further
     expect(of(/^Kraken acquires/)).toMatchObject({ grade: 3, groups: 3 });
     expect(of(/^Kraken confidentially/)).toMatchObject({ grade: 3, groups: 2 });
+    // a forum topic with a desk reporting it: one closed source, grade 1, and the desk's words, not the topic's
+    expect(of(/^Arbitrum DAO weighs funding/)).toMatchObject({ grade: 1, groups: 1, observationCount: 2, link: expect.stringContaining('thedefiant.io') });
     // one unofficial source: grade 1
     expect(of(/^Posting endpoint returns 403/)).toMatchObject({ grade: 1, groups: 1 });
     expect(of(/^Notes on the Claude Fable/)).toMatchObject({ grade: 1 });

@@ -39,7 +39,7 @@ export interface DatasetRecordView {
   eventTime: string | null;
   eventPrecision: string;
   numbers: DatasetNumber[];
-  sources: { name: string; group: string; official: boolean; link: string | null }[];
+  sources: { name: string; group: string; official: boolean; open: boolean; link: string | null }[];
   incidentSourced: boolean | null;
   posted: number;
   sightings: { source: string; title: string; withheld: boolean; matchedBy: string }[];
@@ -129,7 +129,7 @@ function record(raw: unknown): DatasetRecordView | null {
       .map((n) => ({ value: n.value as number, unit: str(n.unit, 12), what: str(n.what, 60) })),
     sources: list(r.sources, 20)
       .map(obj)
-      .map((s) => ({ name: str(s.name, 60), group: word(s.group, 40), official: s.official === true, link: httpsLink(s.link) }))
+      .map((s) => ({ name: str(s.name, 60), group: word(s.group, 40), official: s.official === true, open: s.open === true, link: httpsLink(s.link) }))
       .filter((s) => s.name),
     incidentSourced: typeof r.incidentSourced === 'boolean' ? r.incidentSourced : null,
     posted: whole(r.posted),

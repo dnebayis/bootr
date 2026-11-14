@@ -66,7 +66,9 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
   const ownKey = link ? linkKey(link) : null;
   const refs = [...new Set((item.hrefs ?? []).map((h) => canonicalLink(h, LINK_HOSTS)).filter((l): l is string => !!l && !hosts.has(new URL(l).hostname)).map(linkKey))].filter((k) => k !== ownKey).slice(0, REFS_MAX);
   const id = cleanText(item.id, EXTERNAL_ID_MAX) || link || title;
-  const official = source.officialFor.length > 0;
+  const namedHere = [...new Set([...(source.subject ?? []), ...named])];
+  // The time an item was published is when the event happened only where the entity itself says so about itself.
+  const official = source.officialFor.some((e) => namedHere.includes(e));
   const eventTime = item.eventTime ?? (official ? publishedAt : null);
   return {
     sighting: {
@@ -80,6 +82,7 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
       key: null,
       refs,
       entities: [...new Set([...(source.entities ?? []), ...named])].slice(0, ENTITIES_MAX),
+      named: namedHere.slice(0, ENTITIES_MAX),
       words: withheld ? [] : wordSet(title),
       numbers: withheld ? [] : (item.numbers ?? numbersOf(title, source.id, publishedAt)),
       eventTime,
@@ -95,7 +98,7 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
  * summary are sentences written here from numbers; nothing in them is a string a source wrote, except `label`, which
  * the caller takes from its own fixed table.
  */
-export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 'entities' | 'hosts'>, subject: string, day: string, headline: string, numbers: RecordNumber[], entities: readonly string[], summary: string | null = null): Sighting {
+export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 'entities' | 'hosts' | 'subject'>, subject: string, day: string, headline: string, numbers: RecordNumber[], entities: readonly string[], summary: string | null = null): Sighting {
   const key = `m:${source.id}:${subject}:${day}`;
   const at = new Date(`${day}T00:00:00.000Z`);
   return {
@@ -109,6 +112,8 @@ export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 
     key,
     refs: [],
     entities: [...new Set([...(source.entities ?? []), ...entities])].slice(0, ENTITIES_MAX),
+    // What code itself says the reading is about.
+    named: [...new Set([...(source.subject ?? []), ...entities])].slice(0, ENTITIES_MAX),
     words: [],
     numbers,
     eventTime: at,
