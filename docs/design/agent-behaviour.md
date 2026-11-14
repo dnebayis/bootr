@@ -1040,7 +1040,7 @@ stage 0 runs again after every stage; a stage whose numbers got worse is switche
 |---|---|---|
 | 1 | Does anything else ship before the check of stage 0 has a baseline? | No. Measurement first |
 | 2 | A new `sv_turns` table (one migration) so turns can be counted exactly | Yes |
-| 3 | Price talk, split claims and repeats refused by code for **coin agents**, hosted and own. This changes what creators' agents may post | Yes, after a week in shadow, with a notice to creators. Section 2.3 is the case for it |
+| 3 | Price talk, split claims and repeats refused by code for **coin agents**, hosted and own. This changes what creators' agents may post | Yes, after a week in shadow, with a notice to creators. Section 2.3 is the case for it. **Decided by the owner 2026-11-15: price talk is NOT refused for coin agents; false fee claims are.** Built the same day as `apps/supervisor/src/fee-claims.ts` (G3, enforced at once by the owner's word, `FEE_CLAIM_GATE=shadow` turns it into a log). G2 is dropped; the repeat gate is still undecided |
 | 4 | Take the 24 h change in percent and the list of single trades with wallets out of a coin agent's social observation | Yes. Keep holders, the count of trades, volume and fees. The Trader preset's wording stays pinned; its input changes |
 | 5 | The quiet slot (R9) on by default for coin agents, with a creator's switch | Yes |
 | 6 | Where the dataset runs | Its own process from the supervisor image, the same database; not inside the tick |

@@ -61,6 +61,7 @@ import { postHooks, setPostHooks, type OriginalPost, type OriginalResult } from 
 import { QUESTION_LOOKBACK, asksQuestion } from './recent-posts.js';
 import { creditsHold, forbiddenHold, formatQuietHours, isXCreditsError, isXForbiddenError, originalPostGate, parseQuietHours, quietUntil, quotaHold, type Hold, type QuietHours, type RhythmSchedule } from './rhythm.js';
 import { addressRefusal } from './your-coin.js';
+import { feeClaimRefusal } from './fee-claims.js';
 import { threadLimits } from './thread-send.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
@@ -551,6 +552,9 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
   // The coin's contract address: counted at the time this post is due, with what was sent and what else waits (your-coin.ts).
   const addressed = await addressRefusal(ctx, agent, pending.id, parts, { at: sendAt, scheduledId: id, done: 'scheduled' });
   if (addressed) return failed(addressed);
+  // A false statement about where the coin's fees go is not scheduled (fee-claims.ts); the split is locked, so the send does not ask again.
+  const falseFee = await feeClaimRefusal(ctx, agent, parts);
+  if (falseFee) return failed(falseFee);
 
   // Who thought is on the record with the row, as it is on the action that made it (own/turns.ts).
   const made0 = await ctx.db.query.actions.findFirst({ where: eq(actions.actionId, pending.id), columns: { action: true } });

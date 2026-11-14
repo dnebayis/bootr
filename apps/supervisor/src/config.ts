@@ -229,6 +229,11 @@ export const configSchema = z
     PLATFORM_COMMENT_PER_AUTHOR_PER_WEEK: int(14, 0),
     PLATFORM_COMMENT_LINK: bool('true'),
     PLATFORM_MENTION_AUDIENCE: z.preprocess((v) => (v === '' || v === undefined ? 'anyone' : v), z.enum(['engaged', 'anyone'])),
+    /**
+     * False statements about where a coin's fees go (fee-claims.ts): `enforce` refuses the post, `shadow` only logs
+     * what it would refuse, `off` checks nothing. Coin agents, hosted and own; price talk is not part of it.
+     */
+    FEE_CLAIM_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'enforce' : v), z.enum(['enforce', 'shadow', 'off'])),
     /** The platform account's text is lowercased and its emoji removed before it is sent (agent-core `plainVoice`). */
     PLATFORM_PLAIN_VOICE: bool('true'),
     /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */
