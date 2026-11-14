@@ -99,7 +99,7 @@ describe('ingestSighting: one event, one record', () => {
   });
 
   it('step 2: a desk that points at the official page joins its record, in either order, and the official text wins', async () => {
-    const blog = () => sighting('b:ethereum-blog', { id: 'ef-1', title: 'Fusaka Mainnet Announcement', link: 'https://blog.ethereum.org/2026/11/15/fusaka-mainnet', published: at(-45).toISOString() });
+    const blog = () => sighting('b:ethereum-blog', { id: 'ef-1', title: 'Fusaka Mainnet Announcement', summary: 'The Fusaka upgrade activates on Ethereum mainnet on 3 December.', link: 'https://blog.ethereum.org/2026/11/15/fusaka-mainnet', published: at(-45).toISOString() });
     const desk = () => sighting('b:coindesk', { id: 'cd-2', title: 'Ethereum developers lock in date for next hard fork', link: 'https://www.coindesk.com/tech/fusaka-date', hrefs: ['https://blog.ethereum.org/2026/11/15/fusaka-mainnet?utm_campaign=x'] });
     // official first
     const a = await put(blog());

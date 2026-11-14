@@ -6,8 +6,9 @@
  * words. An item whose title reads like an instruction keeps its place as a sighting and loses its words.
  *
  * What is not a sighting at all: an item with no title, one older than MAX_ITEM_AGE_MS (a feed's back catalogue is not
- * news on the day Bootr first reads it), one outside the scope (matching.ts `outOfScope`), and, for a broad source
- * (`needsTopic`), one that names neither an entity of the list nor the subject (crypto, stablecoins, agents, AI).
+ * news on the day Bootr first reads it), one outside the scope (matching.ts `outOfScope`), a desk's paid content (a
+ * press release or a sponsored piece, by its title or its address), and, for a broad source (`needsTopic`), one that
+ * names neither an entity of the list nor the subject (crypto, stablecoins, agents, AI).
  */
 import { canonicalLink, cleanText, EXCERPT_MAX, EXTERNAL_ID_MAX, instructionShaped, linkKey, numbersOf, parseDate, TITLE_MAX } from './clean.js';
 import { entitiesOf, ENTITIES_MAX } from './entities.js';
@@ -19,6 +20,9 @@ import type { EventPrecision, RecordKind, RecordNumber, Sighting } from './types
 export const MAX_ITEM_AGE_MS = 7 * 86_400_000;
 
 const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|digital (?:euro|dollar|pound|currenc(?:y|ies))|cbdcs?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
+
+const PAID_TITLE = /^\W{0,3}(?:sponsored|press release|partner content|paid post|advertisement|advertorial|promoted)\b/i;
+const PAID_PATH = /\/(?:press-releases?|pressreleases?|sponsored(?:-content)?|partner-content|advertorial|branded|promoted|pr-newswire|chainwire)(?:\/|$)/i;
 
 /** What a reader hands over for one item: raw strings from the source, and what code itself already knows about it. */
 export interface RawItem {
@@ -54,6 +58,9 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
   if (publishedAt && now.getTime() - publishedAt.getTime() > MAX_ITEM_AGE_MS) return { dropped: 'old' };
   if (!publishedAt && !item.undated && !item.eventTime) return { dropped: 'old' };
   if (outOfScope(title)) return { dropped: 'scope' };
+  // What a desk publishes for whoever pays (a press release, a sponsored piece) is not the desk carrying an event: two
+  // desks running one paid release would otherwise be "two independent groups".
+  if (!source.officialFor.length && (PAID_TITLE.test(title) || (typeof item.link === 'string' && PAID_PATH.test(item.link.slice(0, 500))))) return { dropped: 'scope' };
   const rawExcerpt = cleanText(item.summary, EXCERPT_MAX);
   const about = `${title} ${rawExcerpt} ${cleanText(item.about, 300)}`;
   const named = entitiesOf(about);
@@ -66,7 +73,9 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
   const ownKey = link ? linkKey(link) : null;
   const refs = [...new Set((item.hrefs ?? []).map((h) => canonicalLink(h, LINK_HOSTS)).filter((l): l is string => !!l && !hosts.has(new URL(l).hostname)).map(linkKey))].filter((k) => k !== ownKey).slice(0, REFS_MAX);
   const id = cleanText(item.id, EXTERNAL_ID_MAX) || link || title;
-  const official = source.officialFor.length > 0;
+  const namedHere = [...new Set([...(source.subject ?? []), ...named])];
+  // The time an item was published is when the event happened only where the entity itself says so about itself.
+  const official = source.officialFor.some((e) => namedHere.includes(e));
   const eventTime = item.eventTime ?? (official ? publishedAt : null);
   return {
     sighting: {
@@ -80,6 +89,7 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
       key: null,
       refs,
       entities: [...new Set([...(source.entities ?? []), ...named])].slice(0, ENTITIES_MAX),
+      named: namedHere.slice(0, ENTITIES_MAX),
       words: withheld ? [] : wordSet(title),
       numbers: withheld ? [] : (item.numbers ?? numbersOf(title, source.id, publishedAt)),
       eventTime,
@@ -95,7 +105,7 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
  * summary are sentences written here from numbers; nothing in them is a string a source wrote, except `label`, which
  * the caller takes from its own fixed table.
  */
-export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 'entities' | 'hosts'>, subject: string, day: string, headline: string, numbers: RecordNumber[], entities: readonly string[], summary: string | null = null): Sighting {
+export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 'entities' | 'hosts' | 'subject'>, subject: string, day: string, headline: string, numbers: RecordNumber[], entities: readonly string[], summary: string | null = null): Sighting {
   const key = `m:${source.id}:${subject}:${day}`;
   const at = new Date(`${day}T00:00:00.000Z`);
   return {
@@ -109,6 +119,8 @@ export function metricSighting(source: Pick<OpenSource, 'id' | 'page' | 'url' | 
     key,
     refs: [],
     entities: [...new Set([...(source.entities ?? []), ...entities])].slice(0, ENTITIES_MAX),
+    // What code itself says the reading is about.
+    named: [...new Set([...(source.subject ?? []), ...entities])].slice(0, ENTITIES_MAX),
     words: [],
     numbers,
     eventTime: at,

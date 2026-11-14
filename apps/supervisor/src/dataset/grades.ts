@@ -12,6 +12,10 @@
  * page are one voice. One source alone never passes grade 1 unless it is official for an entity of the record, so one
  * account, one feed or one desk cannot lift a record to where every agent would see it (the note's defence against a
  * poisoned record); what lifts it is an official source or a second group, and both lists change only by a commit.
+ *
+ * An open venue (a forum, a preprint server: `open` on the source) is carried on a record and counts for nothing here:
+ * it is never official, never a group, never the second source. Anyone can open a topic on three forums in an
+ * afternoon, so a record that only open venues carry stays at grade 1 however many of them there are.
  */
 import type { EventPrecision, Grade, RecordKind, RecordSource } from './types.js';
 
@@ -22,16 +26,18 @@ export interface Sourcing {
 }
 
 /** `sources` holds one entry per source; `cited` says a sighting pointed at a page of another listed source. */
-export function gradeOf(sources: readonly RecordSource[], cited: boolean): Sourcing {
+export function gradeOf(all: readonly RecordSource[], cited: boolean): Sourcing {
+  const sources = all.filter((s) => !s.open);
   const groups = new Set(sources.map((s) => s.group));
+  const counted = Math.max(1, groups.size);
   const officialGroups = new Set(sources.filter((s) => s.official).map((s) => s.group));
   if (officialGroups.size) {
     const others = [...groups].filter((g) => !officialGroups.has(g)).length;
-    return { grade: others >= 2 ? 5 : 4, groups: groups.size };
+    return { grade: others >= 2 ? 5 : 4, groups: counted };
   }
-  if (groups.size >= 2) return { grade: 3, groups: groups.size };
-  if (sources.length >= 2) return { grade: cited ? 3 : 2, groups: groups.size };
-  return { grade: 1, groups: groups.size };
+  if (groups.size >= 2) return { grade: 3, groups: counted };
+  if (sources.length >= 2) return { grade: cited ? 3 : 2, groups: counted };
+  return { grade: 1, groups: counted };
 }
 
 /** Clusters whose sources count as security sources for an incident. */
@@ -41,7 +47,8 @@ const SECURITY_CLUSTERS: ReadonlySet<string> = new Set(['security']);
  * The note's rule for an incident or a loss of funds (R5): it needs an official source, or a security source and one
  * more independent group. A later stage reads this before an incident record is shown as more than a report.
  */
-export function incidentSourced(sources: readonly RecordSource[]): boolean {
+export function incidentSourced(all: readonly RecordSource[]): boolean {
+  const sources = all.filter((s) => !s.open);
   if (sources.some((s) => s.official)) return true;
   const security = sources.filter((s) => SECURITY_CLUSTERS.has(s.cluster));
   return security.some((s) => sources.some((other) => other.group !== s.group));

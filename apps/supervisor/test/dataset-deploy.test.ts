@@ -50,7 +50,7 @@ describe('the dataset service', () => {
     const mine = new Set(stripped(dataset));
     expect([...everySecret].filter((name) => !mine.has(name))).toEqual([]);
     for (const key of ['SESSION_SIGNER_PRIVATE_KEY', 'SPENDER_MASTER_KEY', 'ADMIN_PRIVATE_KEY', 'SUPERVISOR_SERVICE_KEY', 'SENDER_SERVICE_KEY', 'INDEXER_SERVICE_KEY', 'OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'SEARCH_API_KEY', 'BASE_RPC_URL', 'BUNDLER_URL', 'X_CLIENT_SECRET', 'SESSION_SECRET']) expect(mine.has(key), key).toBe(true);
-    expect(declared(dataset).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SOURCES_PER_PASS', 'INDEXER_URL', 'LOG_LEVEL']);
+    expect(declared(dataset).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SOURCES_PER_PASS', 'DATASET_SOURCE_RECORDS_PER_DAY', 'DATASET_SOURCE_SIGHTINGS_PER_DAY', 'INDEXER_URL', 'LOG_LEVEL']);
     // nothing it declares is something another service strips, so no other `-u` list had to change
     expect(declared(dataset).filter((name) => everySecret.has(name))).toEqual([]);
     expect(dataset).toMatch(/exec env -u /);

@@ -63,8 +63,8 @@ describe('the dataset day, as the console renders it', () => {
       eventPrecision: 'second',
       numbers: [{ value: 12_000_000, unit: 'usd', what: 'reported loss' }],
       sources: [
-        { name: 'Base status', group: 'coinbase', official: true, link: 'https://base-l2.statuspage.io/incidents/9jdt5jc1ylry' },
-        { name: 'CoinDesk', group: 'coindesk', official: false, link: 'https://www.coindesk.com/x' },
+        { name: 'Base status', group: 'coinbase', official: true, open: false, link: 'https://base-l2.statuspage.io/incidents/9jdt5jc1ylry' },
+        { name: 'CoinDesk', group: 'coindesk', official: false, open: false, link: 'https://www.coindesk.com/x' },
       ],
       incidentSourced: null,
       posted: 1,

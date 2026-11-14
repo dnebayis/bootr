@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     running = true;
     const started = Date.now();
     try {
-      const report = await datasetPass({ db, indexer, log, chainEveryMs: config.DATASET_CHAIN_EVERY_MS, sourcesPerPass: config.DATASET_SOURCES_PER_PASS, recordsPerDay: config.DATASET_RECORDS_PER_DAY }, state, new Date());
+      const report = await datasetPass({ db, indexer, log, chainEveryMs: config.DATASET_CHAIN_EVERY_MS, sourcesPerPass: config.DATASET_SOURCES_PER_PASS, recordsPerDay: config.DATASET_RECORDS_PER_DAY, sourceRecordsPerDay: config.DATASET_SOURCE_RECORDS_PER_DAY, sourceSightingsPerDay: config.DATASET_SOURCE_SIGHTINGS_PER_DAY }, state, new Date());
       lastPassAt = Date.now();
       lastError = null;
       if (report.chain || report.open.read || report.open.failed || report.aged) log.info({ ...report, ms: Date.now() - started }, 'dataset pass');

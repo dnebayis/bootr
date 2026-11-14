@@ -8,6 +8,8 @@
 import { decodeEntities } from '../clean.js';
 
 export const FEED_ITEMS_MAX = 60;
+/** Item blocks looked at in one document, kept or not: a feed of a million empty items is not read to its end. */
+export const FEED_BLOCKS_MAX = 600;
 const ITEM_MAX = 64_000;
 const HREFS_MAX = 20;
 
@@ -23,12 +25,19 @@ export interface FeedItem {
   hrefs: string[];
 }
 
-function field(block: string, names: readonly string[]): string {
+const OPENING = new Map<string, RegExp>();
+const opening = (name: string): RegExp => {
+  let re = OPENING.get(name);
+  if (!re) OPENING.set(name, (re = new RegExp(`<${name}(?:\\s[^>]{0,500})?>`, 'i')));
+  return re;
+};
+
+function field(block: string, lower: string, names: readonly string[]): string {
   for (const name of names) {
-    const open = new RegExp(`<${name}(?:\\s[^>]{0,500})?>`, 'i').exec(block);
+    const open = opening(name).exec(block);
     if (!open) continue;
     const start = open.index + open[0].length;
-    const end = block.toLowerCase().indexOf(`</${name.toLowerCase()}`, start);
+    const end = lower.indexOf(`</${name.toLowerCase()}`, start);
     if (end < 0) continue;
     const value = block.slice(start, end).trim();
     if (value) return value;
@@ -63,35 +72,46 @@ function hrefsOf(summary: string): string[] {
   return out;
 }
 
-/** The items of an RSS or Atom document, newest as the feed orders them, at most FEED_ITEMS_MAX. Never throws. */
+/**
+ * The items of an RSS or Atom document, newest as the feed orders them, at most FEED_ITEMS_MAX. Never throws.
+ *
+ * One forward pass. The next `<item` and the next `<entry` are each remembered and searched again only once the scan
+ * has passed them, so a body of `<itemx` or `<entryway` tags (which are not items) is skipped in the time it takes to
+ * read it once: searching both from every skipped tag made a 2 MB body cost minutes. At most FEED_BLOCKS_MAX blocks
+ * are opened, whatever they hold.
+ */
 export function parseFeed(xml: string): FeedItem[] {
   const items: FeedItem[] = [];
   const lower = xml.toLowerCase();
+  let nextItem = lower.indexOf('<item');
+  let nextEntry = lower.indexOf('<entry');
   let at = 0;
-  while (items.length < FEED_ITEMS_MAX) {
-    const item = lower.indexOf('<item', at);
-    const entry = lower.indexOf('<entry', at);
-    const start = item < 0 ? entry : entry < 0 ? item : Math.min(item, entry);
+  for (let looked = 0; items.length < FEED_ITEMS_MAX && looked < FEED_BLOCKS_MAX; ) {
+    if (nextItem >= 0 && nextItem < at) nextItem = lower.indexOf('<item', at);
+    if (nextEntry >= 0 && nextEntry < at) nextEntry = lower.indexOf('<entry', at);
+    const start = nextItem < 0 ? nextEntry : nextEntry < 0 ? nextItem : Math.min(nextItem, nextEntry);
     if (start < 0) break;
-    const tag = start === item ? 'item' : 'entry';
+    const tag = start === nextItem ? 'item' : 'entry';
     // `<items>` or `<entryway>` is not an item.
     const after = lower.charAt(start + tag.length + 1);
     if (after !== '>' && after !== ' ' && after !== '\n' && after !== '\t' && after !== '\r') {
       at = start + tag.length + 1;
       continue;
     }
+    looked++;
     const close = lower.indexOf(`</${tag}>`, start);
-    const end = close < 0 ? xml.length : close;
-    const block = xml.slice(start, Math.min(end, start + ITEM_MAX));
+    const end = Math.min(close < 0 ? xml.length : close, start + ITEM_MAX);
+    const block = xml.slice(start, end);
+    const blockLower = lower.slice(start, end);
     at = close < 0 ? xml.length : close + tag.length + 3;
-    const title = unwrap(field(block, ['title']));
-    const summary = unwrap(field(block, ['description', 'summary', 'content:encoded', 'content']));
-    const rssLink = unwrap(field(block, ['link']));
+    const title = unwrap(field(block, blockLower, ['title']));
+    const summary = unwrap(field(block, blockLower, ['description', 'summary', 'content:encoded', 'content']));
+    const rssLink = unwrap(field(block, blockLower, ['link']));
     // An address in XML has its `&` written as `&amp;`.
     const rawLink = (/^https?:\/\//i.test(rssLink) ? rssLink : null) ?? atomLink(block);
     const link = rawLink === null ? null : decodeEntities(rawLink.slice(0, 2000));
-    const id = unwrap(field(block, ['guid', 'id'])) || link || title;
-    const published = unwrap(field(block, ['pubDate', 'published', 'updated', 'dc:date'])) || null;
+    const id = unwrap(field(block, blockLower, ['guid', 'id'])) || link || title;
+    const published = unwrap(field(block, blockLower, ['pubDate', 'published', 'updated', 'dc:date'])) || null;
     if (!id) continue;
     items.push({ id, title, link, summary, published, hrefs: hrefsOf(summary) });
   }

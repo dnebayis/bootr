@@ -15,6 +15,8 @@ import { GRADE_WORDS, type Grade, type RecordSource } from './types.js';
 
 export const DAY_RECORDS_MAX = 500;
 export const RECORD_SIGHTINGS_SHOWN = 6;
+/** Sighting rows read for one day's view. The counts come from the database; these rows are only what is shown. */
+export const DAY_SIGHTINGS_MAX = 2_000;
 
 export interface DatasetDayView {
   /** Whether the dataset process is switched on (`DATASET_ENABLED`), as this service's own environment says. */
@@ -50,7 +52,7 @@ export interface DatasetDayView {
     eventPrecision: string;
     expiresAt: string;
     numbers: { value: number; unit: string; what: string; asOf: string | null; sourceId: string }[];
-    sources: { sourceId: string; name: string; group: string; official: boolean; link: string | null; seenAt: string }[];
+    sources: { sourceId: string; name: string; group: string; official: boolean; /** An open venue: carried, counted for nothing. */ open: boolean; link: string | null; seenAt: string }[];
     /** For an incident: whether it has the sourcing the note asks for before it is more than a report. */
     incidentSourced: boolean | null;
     posted: number;
@@ -73,7 +75,11 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
     db.select({ value: cursors.value }).from(cursors).where(eq(cursors.name, `dataset:capped:${day}`)).limit(1),
   ]);
   const ids = records.map((r) => r.id);
-  const sightings = ids.length ? await db.select({ recordId: dsSightings.recordId, sourceId: dsSightings.sourceId, title: dsSightings.title, withheld: dsSightings.withheld, matchedBy: dsSightings.matchedBy, seenAt: dsSightings.seenAt }).from(dsSightings).where(inArray(dsSightings.recordId, ids)).orderBy(asc(dsSightings.seenAt)) : [];
+  // This runs inside the supervisor, which serves agents: the rows are bounded in SQL and the totals are counted there.
+  const sightings = ids.length
+    ? await db.select({ recordId: dsSightings.recordId, sourceId: dsSightings.sourceId, title: dsSightings.title, withheld: dsSightings.withheld, matchedBy: dsSightings.matchedBy, seenAt: dsSightings.seenAt }).from(dsSightings).where(inArray(dsSightings.recordId, ids)).orderBy(asc(dsSightings.seenAt)).limit(DAY_SIGHTINGS_MAX)
+    : [];
+  const byMatch = ids.length ? await db.select({ matchedBy: dsSightings.matchedBy, n: sql<number>`count(*)::int` }).from(dsSightings).where(inArray(dsSightings.recordId, ids)).groupBy(dsSightings.matchedBy) : [];
   const [dayTotals] = await db.select({ records: sql<number>`count(*)::int` }).from(dsRecords).where(eq(dsRecords.day, day));
   const names = new Map(sources.map((s) => [s.id, s.name]));
   const tally = (keys: string[]) => keys.reduce<Record<string, number>>((acc, k) => ({ ...acc, [k]: (acc[k] ?? 0) + 1 }), {});
@@ -82,10 +88,10 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
     day,
     totals: {
       records: Number(dayTotals?.records ?? records.length),
-      sightings: sightings.length,
+      sightings: byMatch.reduce((n, m) => n + Number(m.n), 0),
       byGrade: tally(records.map((r) => String(r.grade))),
       byKind: tally(records.map((r) => r.kind)),
-      byMatch: tally(sightings.map((s) => s.matchedBy)),
+      byMatch: Object.fromEntries(byMatch.map((m) => [m.matchedBy, Number(m.n)])),
       capped: Number(capped?.value ?? 0) || 0,
     },
     records: records.map((r) => {
@@ -110,7 +116,7 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
         eventPrecision: r.eventPrecision,
         expiresAt: r.expiresAt.toISOString(),
         numbers: r.numbers as unknown as DatasetDayView['records'][number]['numbers'],
-        sources: recordSources.map((s) => ({ sourceId: s.sourceId, name: names.get(s.sourceId) ?? s.sourceId, group: s.group, official: s.official, link: s.link, seenAt: s.seenAt })),
+        sources: recordSources.map((s) => ({ sourceId: s.sourceId, name: names.get(s.sourceId) ?? s.sourceId, group: s.group, official: s.official, open: s.open === true, link: s.link, seenAt: s.seenAt })),
         incidentSourced: r.kind === 'incident' ? incidentSourced(recordSources) : null,
         posted: (r.posted as unknown[]).length,
         sightings: sightings
