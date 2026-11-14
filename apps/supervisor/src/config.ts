@@ -453,6 +453,13 @@ export const configSchema = z
     OWN_UPLOAD_ATTEMPTS_PER_DAY: int(OWN_DEFAULTS.OWN_UPLOAD_ATTEMPTS_PER_DAY, 0),
     /** How long a run call waits for the runtime lease (the tick or another call holds it) before it answers busy. */
     OWN_LEASE_WAIT_MS: int(4000, 0),
+    /**
+     * Bootr's own dataset (src/dataset/; docs/design/agent-behaviour.md section 6.4). The switch belongs to the dataset
+     * process (dataset/config.ts), which reads nothing unless it is exactly `true`; here it only tells the owner's view
+     * whether that process is on (any other value is off, and never an error: the variable is another process's). No agent
+     * reads the dataset in this stage, whatever the value.
+     */
+    DATASET_ENABLED: z.preprocess((v) => v === 'true', z.boolean()),
     LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),
   })
   .transform((c) => {
