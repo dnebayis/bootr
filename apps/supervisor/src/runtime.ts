@@ -50,7 +50,7 @@ import { raiseNotification, resolveNotification } from './notifications.js';
 import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './provider-hold.js';
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
-import { answerRequest, closeRequest, CREATOR_REQUEST_ANSWER_TAG, CREATOR_REQUEST_TAG, creatorRequestsSection, forgetTurnRequest, openRequests, requestTools, type CreatorRequest, type TurnRequest } from './creator-requests.js';
+import { answerRequest, closeRequest, creatorRequestsSection, forgetTurnRequest, openRequests, requestTools, type CreatorRequest, type TurnRequest } from './creator-requests.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
@@ -68,6 +68,8 @@ import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from '
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 import { isOwn, type OwnTurnMeta } from './own/registry.js';
+import { notesSections, rememberCallsOf } from './notes.js';
+import { recordTurn } from './turns.js';
 
 export const LEASE_MS = 60_000;
 /** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
@@ -427,8 +429,6 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
   const now = ctx.now();
   const views: InboxView[] = inboxViews(config, inputs.inbox, now, directory, inputs.bountyConversations ?? null);
   const eligible = views.filter((v) => v.eligible);
-  // Creator requests have their own section with their own authority; they are kept out of the untrusted notes.
-  const memories = await ctx.memories.recent(agent.agentId, 5, [CREATOR_REQUEST_TAG, CREATOR_REQUEST_ANSWER_TAG]);
   const requests = inputs.creatorRequests ?? [];
   const schedule = inputs.schedule;
   const review = await reviewSection(ctx, agent);
@@ -456,7 +456,8 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       // Mentions from outside the verified audience that may be answered (a question from anyone): why, and how many a day.
       ...openRepliesNote(ctx, config, eligible, directory),
       checkpoint: { memory: state.memory, agenda: state.agenda, summary: state.summary, at: state.lastCheckpointAt ? new Date(state.lastCheckpointAt).toISOString() : null },
-      recentNotes: memories,
+      // The notes written last and the promises still open, each marked untrusted (creator requests are kept out: their section has its own authority): notes.ts.
+      ...(await notesSections(ctx, agent.agentId)),
       tools: tools.map((t) => t.name),
       stepBudget: ctx.config.MAX_TOOL_STEPS,
       ...(review ? { review } : {}),
@@ -473,7 +474,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // A coin's own day, built by code from the index (coin agents only; `state.briefAt` keeps what it compares with): coin-today.ts.
-      ...(await coinTodaySection(ctx, agent, config, state, inputs.market)),
+      ...(await coinTodaySection(ctx, agent, config, state, inputs.market, inputs.treasury)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
       ...(await postPerformanceSection(ctx, agent.agentId)),
       // What it said in the last day (recent-posts.ts): no repeats, and the creator's rejection notes.
@@ -625,6 +626,7 @@ export async function continueTurn(ctx: SupervisorContext, agent: AgentRow, runt
     const state = runtime.state as unknown as AgentState;
     if ((turn.role ?? 'social') === 'social') state.continuation = { progress: 'Turn ended by the runtime (the agent is now run by Bootr). Continue from the agenda.', recentSteps: (turn.recentSteps ?? []).slice(-6) };
     await saveRuntime(ctx, agent.agentId, { turn: null, state: boundedState(trimState(state)) as unknown as Record<string, unknown>, status: 'waiting' });
+    await recordTurn(ctx, agent.agentId, turn, 'runner_switched');
     runtime.turn = null;
     ctx.log.warn({ agentId: agent.agentId, turnId: turn.own.turnId }, 'a stored own turn was found on a hosted coin and dropped; the hosted loop does not resume it');
     return null;
@@ -738,7 +740,10 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   };
 
   const endTurn = async (outcome: TurnOutcome, patch: RuntimePatch): Promise<TurnResult> => {
-    await persist({ turn: null, ...(role === 'treasury' ? treasuryEnd(outcome, patch) : patch) });
+    const ended = role === 'treasury' ? treasuryEnd(outcome, patch) : patch;
+    await persist({ turn: null, ...ended });
+    // A turn that is not kept to be resumed is finished, however it ended: one row in sv_turns (turns.ts).
+    if (ended.turn == null) await recordTurn(ctx, agent.agentId, turn, outcome);
     log.info({ outcome, steps: turn.steps, cycle: broker.cycle }, 'turn ended');
     return { outcome, steps: turn.steps, cycle: broker.cycle };
   };
@@ -954,6 +959,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
 
     const now = ctx.now();
     env.cycle = broker.cycle;
+    env.rememberCalls = rememberCallsOf(turn);
     let pending = beginAction(broker, action, broker.cycle, now, action.tool === 'finish');
     broker.pending = pending;
     await ctx.db

@@ -21,7 +21,7 @@ import {
 import { createX402Payer, paymentProofHeaders, readReceipt, X402PaymentRefusedError, type BootrReceipt } from '@bootr/inference/client';
 import type { PaymentPayload } from '@x402/core/types';
 import type { Address } from 'viem';
-import { and, desc, eq, gte, notLike, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, notLike, or, sql } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { DIRECT_PAID_LOST, DIRECT_ROUTE, DIRECT_UNAVAILABLE, directRequest, directRoute, reconcileDirect } from './blockrun.js';
 import { inference } from './db/schema.js';
@@ -208,6 +208,20 @@ export async function recentThoughtCost(ctx: Pick<SupervisorContext, 'db'>, agen
     .orderBy(desc(inference.createdAt))
     .limit(RECENT_THOUGHTS);
   return { thoughts: rows.length, spentMicroUsdc: rows.reduce((sum, r) => sum + Number(r.charged), 0) };
+}
+
+/**
+ * What an agent's paid model calls between two moments cost, in micro-USDC as a decimal string: its thoughts and the
+ * pictures it made, paid failures included. For the row of a finished turn (turns.ts): one turn runs at a time per
+ * agent, so everything the agent paid for in the turn's window is the turn's, but for a chat message (`chat:` key) and
+ * a judge's ruling (`judge:` key), which are bought outside turns and are left out.
+ */
+export async function chargedBetween(ctx: Pick<SupervisorContext, 'db'>, agentId: string, from: Date, to: Date): Promise<string> {
+  const [row] = await ctx.db
+    .select({ charged: sql<string>`coalesce(sum(${CHARGED_MICRO_USDC}), 0)::text` })
+    .from(inference)
+    .where(and(eq(inference.agentId, agentId), PAID_CALL, gte(inference.createdAt, from), lte(inference.createdAt, to), notLike(inference.idempotencyKey, 'chat:%'), notLike(inference.idempotencyKey, 'judge:%')));
+  return String(row?.charged ?? '0').replace(/\.\d*$/, '');
 }
 
 /**

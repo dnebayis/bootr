@@ -14,7 +14,7 @@ import { agentActivity } from '../src/activity.js';
 import { sendChatMessage } from '../src/chat.js';
 import type { AgentRow, SupervisorContext } from '../src/context.js';
 import { fileRequest, openRequests } from '../src/creator-requests.js';
-import { actions, agents, approvals, bountyJobs, chatMessages, inference, memories, runtimes } from '../src/db/schema.js';
+import { actions, agents, approvals, bountyJobs, chatMessages, inference, memories, runtimes, turns } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { buildLaunchConfig, decodeLaunchLogs, DEFAULT_MODEL, pollLaunches } from '../src/onboarding.js';
 import { isOwn, ownEnabled, setOwnHooks, type OwnHooks } from '../src/own/registry.js';
@@ -483,6 +483,8 @@ describe('own agent to Bootr agent: what is in flight', () => {
       expect(runtime.turn).toBeNull();
       expect(runtime.status).toBe('waiting');
       expect((runtime.state as unknown as AgentState).continuation).toEqual({ progress: 'Turn ended by the runtime (the agent was switched to the Bootr agent). Continue from the agenda.', recentSteps: ownTurn.recentSteps });
+      // the turn the switch cut short is on record like any finished turn (turns.ts)
+      expect(await world.db.select().from(turns)).toEqual([expect.objectContaining({ id: 'otn_2', via: 'own', role: 'social', outcome: 'runner_switched', thoughts: 3, posted: 1 })]);
     });
   });
 
@@ -525,6 +527,7 @@ describe('Bootr agent to own agent: what is in flight', () => {
       expect(runtime.pending).toEqual(pending);
       expect(runtime.status).toBe('waiting');
       expect((runtime.state as unknown as AgentState).continuation).toEqual({ progress: "Turn ended by the runtime (the agent was switched to its creator's own AI client). Continue from the agenda.", recentSteps: hostedTurn.recentSteps });
+      expect(await world.db.select().from(turns)).toEqual([expect.objectContaining({ via: null, role: 'social', outcome: 'runner_switched', thoughts: 2, posted: 0, wakeReasons: ['pending_mention'] })]);
     });
   });
 

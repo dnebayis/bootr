@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_NOTES_PER_REMEMBER, NOTE_SUBJECT_RE, NOTE_KINDS, NOTE_MAX_TAGS, NOTE_TAG_RE, forgivenDate, forgivenFlag, forgivenSubject, forgivenKind, forgivenMore, forgivenTags } from './notes.js';
 
 // ---------------------------------------------------------------------------
 // Primitive formats
@@ -308,6 +309,25 @@ export const MAX_RESOLVE_BATCH = 20;
 /** The most characters the note of `note_what_works` holds. */
 export const WHAT_WORKS_NOTE_MAX_CHARS = 600;
 
+/**
+ * One note of `remember` (notes.ts). `text` and `sources` are held to their shape; `tags`, `kind`, `subject`, `dueAt` and
+ * `done` are put into shape or dropped before they are checked, so none of them can cost the note. The model is shown
+ * the shape behind each (`zodToJsonSchema` reads through the forgiveness).
+ */
+const noteFields = {
+  text: text(8000),
+  sources: z.array(httpsUrlSchema).max(8).optional(),
+  tags: z.preprocess(forgivenTags, z.array(z.string().regex(NOTE_TAG_RE)).max(NOTE_MAX_TAGS).optional()),
+  /** What the note is about; with `subject`, one subject is one note. */
+  kind: z.preprocess(forgivenKind, z.enum(NOTE_KINDS).optional()),
+  /** The subject's name: the same kind and subject again updates that note in place. */
+  subject: z.preprocess(forgivenSubject, z.string().regex(NOTE_SUBJECT_RE).optional()),
+  /** A promise's due time. */
+  dueAt: z.preprocess(forgivenDate, isoDateSchema.optional()),
+  /** Closes the promise with this subject. */
+  done: z.preprocess(forgivenFlag, z.boolean().optional()),
+};
+
 export const toolInputSchemas = {
   read_mentions: z.object({}).strict(),
   read_x_thread: z.object({ postId: xIdSchema }).strict(),
@@ -359,13 +379,8 @@ export const toolInputSchemas = {
       topic: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
     })
     .strict(),
-  remember: z
-    .object({
-      text: text(8000),
-      sources: z.array(httpsUrlSchema).max(8).optional(),
-      tags: z.array(z.string().regex(/^[a-z0-9-]{1,32}$/)).max(8).optional(),
-    })
-    .strict(),
+  // One note in the call's own fields and up to four more in `more` (notes.ts): what labels a note is forgiven, never refused.
+  remember: z.object({ ...noteFields, more: z.preprocess(forgivenMore, z.array(z.object(noteFields).strict()).max(MAX_NOTES_PER_REMEMBER - 1).optional()) }).strict(),
   recall: z
     .object({ query: z.string().max(200).optional(), id: z.string().max(128).optional(), offset: z.number().int().min(0).optional() })
     .strict(),

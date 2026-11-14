@@ -104,7 +104,16 @@ export const actions = pgTable(
   (t) => [index('sv_actions_agent_created_idx').on(t.agentId, t.createdAt)],
 );
 
-/** Private agent notes (`remember` / `recall`). */
+/** What a typed note is about (docs/design/agent-behaviour.md section 6.2); `note` is a keyed note that named no kind. */
+export const memoryKinds = ['person', 'promise', 'lesson', 'coin', 'note'] as const;
+export type MemoryKind = (typeof memoryKinds)[number];
+
+/**
+ * Private agent notes (`remember` / `recall`). A note with a `key` is one subject's one note (memories.ts): the same
+ * kind and key again updates the row in place, `created_at` stays the first time it was noted, `updated_at` is the
+ * last and `count` how many times it was written (null on a row written once, and on every row older than the columns).
+ * A promise carries `due_at` and is open until `closed_at` is set. All six columns are null on a plain note.
+ */
 export const memories = pgTable(
   'sv_memories',
   {
@@ -116,8 +125,47 @@ export const memories = pgTable(
     visibility: text('visibility').notNull().default('private'),
     supersedes: text('supersedes'),
     createdAt: ts('created_at').notNull().defaultNow(),
+    kind: text('kind', { enum: memoryKinds }),
+    key: text('key'),
+    updatedAt: ts('updated_at'),
+    count: integer('count'),
+    dueAt: ts('due_at'),
+    closedAt: ts('closed_at'),
   },
-  (t) => [index('sv_memories_agent_idx').on(t.agentId, t.createdAt)],
+  (t) => [index('sv_memories_agent_idx').on(t.agentId, t.createdAt), uniqueIndex('sv_memories_agent_key_idx').on(t.agentId, t.kind, t.key).where(sql`${t.key} is not null`)],
+);
+
+/**
+ * One row per finished turn (turns.ts; docs/design/agent-behaviour.md section 5): what woke it, how long it ran, how
+ * many thoughts it bought, how it ended, what it published and what it cost. Until this table a turn existed only
+ * while it ran (`sv_runtimes.turn`) and its wake reasons only as a log line, so "turns that end without a post" and
+ * "fuel per post" could only be estimated. Written once, when the turn is dropped from the runtime row; never read by
+ * the runtime itself. `id` is `<agentId>:<role>:<startedAt ms>` for a hosted turn and the turn's own id (`otn_…`) for
+ * an own agent's, whose `thoughts` are its tool calls (its thinking happens in the creator's client and costs no fuel).
+ */
+export const turns = pgTable(
+  'sv_turns',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    /** `social`, `treasury` or `judge` (agent-core `AgentRole`). */
+    role: text('role').notNull(),
+    /** `own` when the creator's own client ran the turn; null for a turn Bootr hosted. */
+    via: text('via'),
+    wakeReasons: jsonb('wake_reasons').$type<string[]>().notNull().default([]),
+    startedAt: ts('started_at').notNull(),
+    endedAt: ts('ended_at').notNull(),
+    thoughts: integer('thoughts').notNull().default(0),
+    /** runtime.ts `TurnOutcome` for a hosted turn; `finished` or own/turns.ts `CloseWhy` for an own one. */
+    outcome: text('outcome').notNull(),
+    /** Original posts of the turn that went out or were queued for the creator's review. */
+    posted: integer('posted').notNull().default(0),
+    /** Replies of the turn that went out or were queued. */
+    replied: integer('replied').notNull().default(0),
+    /** What the turn's paid model calls cost (thoughts and pictures; sv_inference), a decimal string like every micro-USDC column. */
+    chargedMicroUsdc: text('charged_micro_usdc').notNull().default('0'),
+  },
+  (t) => [index('sv_turns_agent_started_idx').on(t.agentId, t.startedAt)],
 );
 
 export const inferenceStatuses = ['pending', 'succeeded', 'failed', 'unknown'] as const;
