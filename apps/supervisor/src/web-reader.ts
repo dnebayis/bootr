@@ -55,7 +55,29 @@ export interface WebReaderOptions {
   timeoutMs?: number;
 }
 
-export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Promise<ReadUrlResult> {
+export interface PublicFetchOptions extends WebReaderOptions {
+  /** Request headers on top of the reader's own (a conditional GET's `if-none-match`, an `accept`). */
+  headers?: Record<string, string>;
+  /** Bytes of the body read at most; MAX_BODY_BYTES when unset. */
+  maxBytes?: number;
+}
+
+export interface PublicResponse {
+  finalUrl: string;
+  status: number;
+  headers: Headers;
+  bytes: Uint8Array;
+  /** The body was longer than the cap: `bytes` is its start. */
+  exceeded: boolean;
+}
+
+/**
+ * One GET of a URL somebody else chose, under every rule of this file: https only, no credentials in the URL, the host
+ * resolved and refused when any address is private, at most MAX_REDIRECTS redirects followed by hand with the same
+ * checks on every hop, a time limit per hop that also covers the body, and the body read as a stream under a byte cap.
+ * `read_url` and the dataset's source readers (dataset/fetch.ts) both go through here: there is no second fetcher.
+ */
+export async function fetchPublic(rawUrl: string, opts: PublicFetchOptions = {}): Promise<PublicResponse> {
   const doFetch = opts.fetch ?? globalThis.fetch;
   let current = new URL(rawUrl);
   let res: Response | null = null;
@@ -64,7 +86,7 @@ export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Prom
     await assertPublicHost(current.hostname, opts.resolve);
     res = await doFetch(current.toString(), {
       redirect: 'manual',
-      headers: { 'user-agent': 'BootrAgent/1.0 (+https://bootr.fun)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5', ...IDENTITY_ENCODING },
+      headers: { 'user-agent': 'BootrAgent/1.0 (+https://bootr.fun)', accept: 'text/html,application/json,text/plain;q=0.9,*/*;q=0.5', ...opts.headers, ...IDENTITY_ENCODING },
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
@@ -75,21 +97,26 @@ export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Prom
     break;
   }
   if (!res) throw new PolicyError('url_unreachable');
-  const contentType = res.headers.get('content-type');
-  // The body is read as a stream and cut at MAX_BODY_BYTES: a page that never ends, or a compressed bomb that fetch
+  // The body is read as a stream and cut at the cap: a page that never ends, or a compressed bomb that fetch
   // inflates, costs at most that much memory.
-  const { bytes, exceeded } = await readBodyCapped(res, MAX_BODY_BYTES);
-  const body = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8');
+  const { bytes, exceeded } = await readBodyCapped(res, opts.maxBytes ?? MAX_BODY_BYTES);
+  return { finalUrl: current.toString(), status: res.status, headers: res.headers, bytes, exceeded };
+}
+
+export async function readUrl(rawUrl: string, opts: WebReaderOptions = {}): Promise<ReadUrlResult> {
+  const res = await fetchPublic(rawUrl, opts);
+  const contentType = res.headers.get('content-type');
+  const body = Buffer.from(res.bytes.buffer, res.bytes.byteOffset, res.bytes.byteLength).toString('utf8');
   const isHtml = !contentType || /html|xml/i.test(contentType);
   const full = isHtml ? htmlToText(body) : body.replace(/\s+/g, ' ').trim();
   return {
     url: rawUrl,
-    finalUrl: current.toString(),
+    finalUrl: res.finalUrl,
     status: res.status,
     contentType,
     fetchedAt: new Date().toISOString(),
     text: full.slice(0, MAX_TEXT_CHARS),
-    truncated: exceeded || full.length > MAX_TEXT_CHARS,
+    truncated: res.exceeded || full.length > MAX_TEXT_CHARS,
     untrusted: true,
   };
 }
