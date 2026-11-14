@@ -726,8 +726,6 @@ export const dsRecords = pgTable(
     headline: text('headline').notNull(),
     summary: text('summary'),
     link: text('link'),
-    /** The headline's word set (`dataset/matching.ts`), kept so matching reads no sighting. */
-    words: jsonb('words').$type<string[]>().notNull().default([]),
     firstSeenAt: ts('first_seen_at').notNull(),
     lastReinforcedAt: ts('last_reinforced_at').notNull(),
     observationCount: integer('observation_count').notNull().default(1),

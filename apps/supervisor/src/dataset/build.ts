@@ -18,7 +18,7 @@ import type { EventPrecision, RecordKind, RecordNumber, Sighting } from './types
 
 export const MAX_ITEM_AGE_MS = 7 * 86_400_000;
 
-const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
+const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|digital (?:euro|dollar|pound|currenc(?:y|ies))|cbdcs?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
 
 /** What a reader hands over for one item: raw strings from the source, and what code itself already knows about it. */
 export interface RawItem {

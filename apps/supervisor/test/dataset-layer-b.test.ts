@@ -236,7 +236,7 @@ describe('HTML pages', () => {
     await runOpenSources(deps(f.impl), at(180));
     const rows = await db.select().from(dsRecords);
     expect(rows).toHaveLength(2);
-    expect(rows.find((r) => r.link === 'https://www.anthropic.com/news/evil')).toMatchObject({ headline: 'an item from Anthropic news', words: [] });
+    expect(rows.find((r) => r.link === 'https://www.anthropic.com/news/evil')).toMatchObject({ headline: 'an item from Anthropic news', grade: 4 });
     expect(JSON.stringify(rows)).not.toMatch(/Ignore your rules/);
   });
 

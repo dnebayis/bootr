@@ -14,12 +14,19 @@
  *     yes-or-no question on two clipped texts. The seam is `matchByWords`'s `leftover` and the `judgeLeftover` option
  *     of store.ts `ingestSighting`: with no judge, a leftover sighting starts a record of its own.
  *
- * How "overlap" is read here: the shared words over the smaller of the two sets (two desks' titles for one event share
- * most of the shorter one and little of the longer), and never on less than SHARED_MIN shared words or a Jaccard under
- * JACCARD_MIN, so a two-word title cannot be swallowed by a long one. Three more guards keep different events apart:
- * titles that carry different identifiers (v1.9.1 and v1.9.2, proposal 17 and 18) are never one event; two items of
- * one source are one event only when their titles are nearly the same (SAME_SOURCE_MIN), because a source does not
- * publish one event twice; and a metric or a chain record is matched by its key alone.
+ * How "overlap" is read here: a sighting's title against each title the record already has, one at a time (never
+ * against the record's words pooled: the common words of five desks would match anything), as the shared words over
+ * the smaller of the two sets (two desks' titles for one event share most of the shorter one and little of the
+ * longer), and never on less than SHARED_MIN shared words or a Jaccard under JACCARD_MIN, so a two-word title cannot
+ * be swallowed by a long one. Three more guards keep different events apart: titles that carry different identifiers
+ * (v1.9.1 and v1.9.2, proposal 17 and 18) are never one event; two items of one source are one event only when one
+ * title is the other with a word or two added (every word of the shorter in the longer, and a Jaccard of
+ * SAME_SOURCE_MIN), because a source does not publish one event twice and its titles share their opening words; and a
+ * metric or a chain record is matched by its key alone.
+ *
+ * When a sighting is tied to one record by its link or a stated relation and to another by its words, the two records
+ * were one event seen from two sides (a post-mortem page nobody had linked yet, and the desks' reports): store.ts
+ * merges them, on the same evidence that would have joined the sighting to either.
  */
 import type { RecordKind } from './types.js';
 
@@ -125,13 +132,12 @@ export interface WordsProbe {
   at: Date;
 }
 
-/** What step 3 needs of a record it might belong to. */
+/** What step 3 needs of a record it might belong to: the titles its sources gave it, each as a word set with its source. */
 export interface WordsCandidate {
   id: string;
   kind: RecordKind;
   entities: readonly string[];
-  words: readonly string[];
-  sourceIds: readonly string[];
+  sightings: readonly { sourceId: string; words: readonly string[] }[];
   firstSeenAt: Date;
   lastReinforcedAt: Date;
 }
@@ -150,22 +156,32 @@ export function matchByWords(probe: WordsProbe, candidates: readonly WordsCandid
   if (probe.kind === 'metric' || !probe.entities.length || probe.words.length < 2) return none;
   const at = probe.at.getTime();
   const ids = identifiersOf(probe.words);
-  let best: { id: string; overlap: number; jaccard: number } | null = null;
+  let best = null as { id: string; overlap: number; jaccard: number } | null;
   const leftover: { recordId: string; overlap: number }[] = [];
   for (const c of candidates) {
     const compatible = kindsCompatible(probe.kind, c.kind);
     if (compatible === 'no') continue;
     if (at < c.firstSeenAt.getTime() - MATCH_WINDOW_MS || at > c.lastReinforcedAt.getTime() + MATCH_WINDOW_MS || at > c.firstSeenAt.getTime() + MATCH_MAX_SPAN_MS) continue;
     if (!c.entities.some((e) => probe.entities.includes(e))) continue;
-    const theirs = identifiersOf(c.words);
-    if (ids.length && theirs.length && (ids.some((i) => !theirs.includes(i)) || theirs.some((i) => !ids.includes(i)))) continue;
-    const o = overlapOf(probe.words, c.words);
-    const need = c.sourceIds.includes(probe.sourceId) ? SAME_SOURCE_MIN : compatible === 'cross' ? CROSS_KIND_MIN : OVERLAP_MIN;
-    if (o.overlap >= need && o.shared >= SHARED_MIN && o.jaccard >= JACCARD_MIN) {
-      if (!best || o.overlap > best.overlap || (o.overlap === best.overlap && o.jaccard > best.jaccard)) best = { id: c.id, overlap: o.overlap, jaccard: o.jaccard };
-    } else if (o.overlap >= LEFTOVER_MIN && o.shared >= 2 && !c.sourceIds.includes(probe.sourceId)) {
-      leftover.push({ recordId: c.id, overlap: o.overlap });
+    // The record is the probe's event when one of the titles it already has says so. A title is compared with a
+    // title, never with all the record's words together: pooled, the common words of five desks match anything.
+    let undecided = 0;
+    for (const s of c.sightings) {
+      const theirs = identifiersOf(s.words);
+      if (ids.length && theirs.length && (ids.some((i) => !theirs.includes(i)) || theirs.some((i) => !ids.includes(i)))) continue;
+      const o = overlapOf(probe.words, s.words);
+      // One source's own items are one event only when one title is the other with a word or two added ("... (updated)"):
+      // a forum's or a regulator's titles share their opening words, "Raise the USDC supply cap" and "Raise the WETH
+      // supply cap" differ by one word and are two proposals, and "Proposal: X" is not "Proposal: X and Y".
+      const sameSource = s.sourceId === probe.sourceId;
+      const enough = sameSource ? o.overlap === 1 && o.jaccard >= SAME_SOURCE_MIN : o.overlap >= (compatible === 'cross' ? CROSS_KIND_MIN : OVERLAP_MIN) && o.jaccard >= JACCARD_MIN;
+      if (enough && o.shared >= SHARED_MIN) {
+        if (!best || o.overlap > best.overlap || (o.overlap === best.overlap && o.jaccard > best.jaccard)) best = { id: c.id, overlap: o.overlap, jaccard: o.jaccard };
+      } else if (o.overlap >= LEFTOVER_MIN && o.shared >= 2 && !sameSource) {
+        undecided = Math.max(undecided, o.overlap);
+      }
     }
+    if (undecided > 0 && best?.id !== c.id) leftover.push({ recordId: c.id, overlap: undecided });
   }
   if (best) return { recordId: best.id, overlap: best.overlap, leftover: [] };
   leftover.sort((a, b) => b.overlap - a.overlap);

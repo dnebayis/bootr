@@ -18,7 +18,7 @@ import { cursors, dsRecords, dsSightings, dsSources } from '../db/schema.js';
 import { clip, HEADLINE_MAX, linkKey, SUMMARY_MAX } from './clean.js';
 import { ENTITIES_MAX } from './entities.js';
 import { expiryOf, gradeOf } from './grades.js';
-import { MATCH_MAX_SPAN_MS, MATCH_WINDOW_MS, matchByWords, type WordsCandidate } from './matching.js';
+import { MATCH_MAX_SPAN_MS, MATCH_WINDOW_MS, matchByWords, wordSet, type WordsCandidate } from './matching.js';
 import { CHAIN_SOURCES, OPEN_SOURCES } from './sources.js';
 import { clusterWeight, type EventPrecision, type RecordChange, type RecordKind, type RecordNumber, type RecordPosted, type RecordSource, type RecordStatus, type Sighting } from './types.js';
 
@@ -31,6 +31,8 @@ export const SOURCES_MAX = 20;
 export const RECORD_NUMBERS_MAX = 12;
 export const CHANGES_MAX = 20;
 export const REFS_MAX = 10;
+/** Records step 3 looks at for one sighting. */
+export const CANDIDATES_MAX = 300;
 
 export type RecordRow = typeof dsRecords.$inferSelect;
 export type SightingRow = typeof dsSightings.$inferSelect;
@@ -105,7 +107,7 @@ export interface IngestOptions {
 export type IngestResult =
   | { outcome: 'duplicate'; recordId: string }
   | { outcome: 'updated'; recordId: string }
-  | { outcome: 'attached'; recordId: string; matchedBy: MatchedBy }
+  | { outcome: 'attached'; recordId: string; matchedBy: MatchedBy; /** A second record of the same event, merged into this one. */ merged?: string }
   | { outcome: 'created'; recordId: string; matchedBy: 'new' }
   | { outcome: 'capped' };
 
@@ -131,7 +133,10 @@ async function recordOfSighting(db: Db, where: SQL): Promise<string[]> {
   return rows.map((r) => r.recordId);
 }
 
-/** Step 3's candidates: records that share an entity with the sighting and are inside the window, never metrics, chain records or withdrawn ones. */
+/**
+ * Step 3's candidates: records that share an entity with the sighting and are inside the window, never metrics, chain
+ * records or withdrawn ones, each with the titles its sources gave it (a withheld title gives no words).
+ */
 async function wordCandidates(db: Db, s: Sighting, at: Date): Promise<(WordsCandidate & { headline: string })[]> {
   if (!s.entities.length) return [];
   const names = sql.join(
@@ -139,7 +144,7 @@ async function wordCandidates(db: Db, s: Sighting, at: Date): Promise<(WordsCand
     sql`, `,
   );
   const rows = await db
-    .select({ id: dsRecords.id, kind: dsRecords.kind, entities: dsRecords.entities, words: dsRecords.words, sources: dsRecords.sources, firstSeenAt: dsRecords.firstSeenAt, lastReinforcedAt: dsRecords.lastReinforcedAt, headline: dsRecords.headline })
+    .select({ id: dsRecords.id, kind: dsRecords.kind, entities: dsRecords.entities, firstSeenAt: dsRecords.firstSeenAt, lastReinforcedAt: dsRecords.lastReinforcedAt, headline: dsRecords.headline })
     .from(dsRecords)
     .where(
       and(
@@ -151,11 +156,36 @@ async function wordCandidates(db: Db, s: Sighting, at: Date): Promise<(WordsCand
         sql`${dsRecords.entities} ?| array[${names}]::text[]`,
       ),
     )
-    .limit(500);
-  return rows.map((r) => ({ ...r, kind: r.kind as RecordKind, sourceIds: (r.sources as unknown as RecordSource[]).map((x) => x.sourceId) }));
+    .limit(CANDIDATES_MAX);
+  if (!rows.length) return [];
+  const titles = await db
+    .select({ recordId: dsSightings.recordId, sourceId: dsSightings.sourceId, title: dsSightings.title })
+    .from(dsSightings)
+    .where(
+      and(
+        inArray(
+          dsSightings.recordId,
+          rows.map((r) => r.id),
+        ),
+        eq(dsSightings.withheld, false),
+        sql`${dsSightings.key} is null`,
+      ),
+    )
+    .limit(CANDIDATES_MAX * 8);
+  const byRecord = new Map<string, { sourceId: string; words: string[] }[]>();
+  for (const t of titles) byRecord.set(t.recordId, [...(byRecord.get(t.recordId) ?? []), { sourceId: t.sourceId, words: wordSet(t.title) }]);
+  return rows.map((r) => ({ ...r, kind: r.kind as RecordKind, sightings: byRecord.get(r.id) ?? [] }));
 }
 
-async function findRecord(db: Db, s: Sighting, at: Date, opts: IngestOptions): Promise<{ recordId: string; matchedBy: MatchedBy; cited: boolean } | null> {
+interface Found {
+  recordId: string;
+  matchedBy: MatchedBy;
+  cited: boolean;
+  /** Another record the sighting's words say it also is: one event that had two records. */
+  also?: string;
+}
+
+async function findRecord(db: Db, s: Sighting, at: Date, opts: IngestOptions): Promise<Found | null> {
   // Step 1: the same identity.
   if (s.key) {
     const [byKey] = await recordOfSighting(db, eq(dsSightings.key, s.key));
@@ -166,18 +196,23 @@ async function findRecord(db: Db, s: Sighting, at: Date, opts: IngestOptions): P
   // A keyed sighting's link is the page of a whole measure (a chart, a list), not of one event: links never lead to it.
   const unkeyed = sql`${dsSightings.key} is null`;
   const ownKey = s.link ? linkKey(s.link) : null;
+  let tied: Found | null = null;
   if (ownKey) {
     const [byLink] = await recordOfSighting(db, and(eq(dsSightings.linkKey, ownKey), unkeyed)!);
-    if (byLink) return { recordId: byLink, matchedBy: 'link', cited: false };
+    if (byLink) tied = { recordId: byLink, matchedBy: 'link', cited: false };
   }
   // Step 2: a stated relation, in either direction, and only when it names one record.
-  const related = new Set<string>();
-  if (s.refs.length) for (const id of await recordOfSighting(db, and(inArray(dsSightings.linkKey, s.refs), unkeyed)!)) related.add(id);
-  if (ownKey) for (const id of await recordOfSighting(db, sql`${dsSightings.refs} @> ${JSON.stringify([ownKey])}::jsonb`)) related.add(id);
-  if (related.size === 1) return { recordId: [...related][0]!, matchedBy: 'relation', cited: true };
-  // Step 3: entities and words.
+  if (!tied) {
+    const related = new Set<string>();
+    if (s.refs.length) for (const id of await recordOfSighting(db, and(inArray(dsSightings.linkKey, s.refs), unkeyed)!)) related.add(id);
+    if (ownKey) for (const id of await recordOfSighting(db, sql`${dsSightings.refs} @> ${JSON.stringify([ownKey])}::jsonb`)) related.add(id);
+    if (related.size === 1) tied = { recordId: [...related][0]!, matchedBy: 'relation', cited: true };
+  }
+  // Step 3: entities and words. Also asked of a sighting its link already placed: when its words name another record,
+  // the two were one event.
   const candidates = await wordCandidates(db, s, at);
   const byWords = matchByWords({ sourceId: s.sourceId, kind: s.kind, entities: s.entities, words: s.words, at }, candidates);
+  if (tied) return byWords.recordId && byWords.recordId !== tied.recordId ? { ...tied, also: byWords.recordId } : tied;
   if (byWords.recordId) return { recordId: byWords.recordId, matchedBy: 'words', cited: false };
   // Step 4's seam.
   if (byWords.leftover.length && opts.judgeLeftover) {
@@ -262,10 +297,8 @@ async function attach(db: Db, record: RecordRow, source: SourceInfo, s: Sighting
   const hadOfficial = sources.some((x) => x.official);
   const takeText = !s.withheld && !!s.title && ((official && !hadOfficial) || record.headline.startsWith('an item from '));
   let headline = record.headline;
-  let words = record.words;
   if (takeText && clip(s.title, HEADLINE_MAX) !== record.headline) {
     headline = clip(s.title, HEADLINE_MAX);
-    words = [...new Set([...record.words, ...s.words])].slice(0, 60);
     changes.push({ at: now.toISOString(), what: 'headline', from: record.headline, to: headline });
   }
   const link = (official && !hadOfficial && s.link) || record.link || s.link;
@@ -287,7 +320,6 @@ async function attach(db: Db, record: RecordRow, source: SourceInfo, s: Sighting
         cited: isCited,
         numbers: json(numbers),
         headline,
-        words,
         link,
         eventTime,
         eventEnd: record.eventEnd ?? s.eventEnd,
@@ -306,6 +338,58 @@ async function attach(db: Db, record: RecordRow, source: SourceInfo, s: Sighting
 }
 
 /**
+ * Two records that turned out to be one event become one: the older stays (its id, its first sighting), takes the
+ * other's sightings, sources, entities, numbers and posted list, and is graded again; the other is deleted. The
+ * official source's title, page and time win. A withdrawn record and a metric are never merged, in either direction.
+ * Returns the id that stays, or null when nothing was merged.
+ */
+export async function mergeRecords(db: Db, aId: string, bId: string, now: Date): Promise<string | null> {
+  if (aId === bId) return null;
+  const [a, b] = await Promise.all([db.query.dsRecords.findFirst({ where: eq(dsRecords.id, aId) }), db.query.dsRecords.findFirst({ where: eq(dsRecords.id, bId) })]);
+  if (!a || !b || a.status === 'withdrawn' || b.status === 'withdrawn' || a.kind === 'metric' || b.kind === 'metric') return null;
+  const [keep, drop] = a.firstSeenAt.getTime() <= b.firstSeenAt.getTime() ? [a, b] : [b, a];
+  const sources = [...asSources(keep), ...asSources(drop).filter((x) => !asSources(keep).some((k) => k.sourceId === x.sourceId))].slice(0, SOURCES_MAX);
+  const cited = keep.cited || drop.cited;
+  const { grade, groups } = gradeOf(sources, cited);
+  const text = !asSources(keep).some((x) => x.official) && asSources(drop).some((x) => x.official) ? drop : keep;
+  const lastReinforcedAt = new Date(Math.max(keep.lastReinforcedAt.getTime(), drop.lastReinforcedAt.getTime()));
+  const status: RecordStatus = keep.status === 'open' && groups >= 2 ? 'corroborated' : (keep.status as RecordStatus);
+  const timed = text.eventTime ? text : keep.eventTime ? keep : drop;
+  const weight = Math.max(keep.weight, drop.weight);
+  await db.transaction(async (tx) => {
+    await tx.update(dsSightings).set({ recordId: keep.id }).where(eq(dsSightings.recordId, drop.id));
+    await tx.delete(dsRecords).where(eq(dsRecords.id, drop.id));
+    await tx
+      .update(dsRecords)
+      .set({
+        entities: [...new Set([...keep.entities, ...drop.entities])].slice(0, ENTITIES_MAX),
+        sources: json(sources),
+        groups,
+        grade,
+        cited,
+        numbers: json([...asNumbers(keep), ...asNumbers(drop).filter((n) => !asNumbers(keep).some((k) => sameNumber(k, n)))].slice(0, RECORD_NUMBERS_MAX)),
+        headline: text.headline.startsWith('an item from ') ? (text === keep ? drop : keep).headline : text.headline,
+        summary: text.summary ?? keep.summary,
+        link: text.link ?? keep.link ?? drop.link,
+        eventTime: timed.eventTime,
+        eventEnd: timed.eventEnd,
+        eventPrecision: timed.eventPrecision,
+        observationCount: keep.observationCount + drop.observationCount,
+        lastReinforcedAt,
+        weight,
+        cluster: drop.weight > keep.weight ? drop.cluster : keep.cluster,
+        status,
+        posted: json([...(keep.posted as unknown[]), ...(drop.posted as unknown[])]),
+        changedAt: now,
+        changes: json([...asChanges(keep), { at: now.toISOString(), what: 'merged', from: drop.id, to: keep.id }, ...(status !== keep.status ? [{ at: now.toISOString(), what: 'status', from: keep.status, to: status }] : [])].slice(-CHANGES_MAX)),
+        expiresAt: expiryOf(keep.kind as RecordKind, keep.firstSeenAt, lastReinforcedAt, timed.eventTime, timed.eventPrecision as EventPrecision),
+      })
+      .where(eq(dsRecords.id, keep.id));
+  });
+  return keep.id;
+}
+
+/**
  * One sighting into the store. A sighting already stored is a duplicate (a keyed one refreshes its record's numbers);
  * one that matches a record attaches to it; one that matches nothing starts a record, unless the day is full.
  */
@@ -321,10 +405,11 @@ export async function ingestSighting(db: Db, source: SourceInfo, s: Sighting, op
   const at = s.publishedAt && s.publishedAt.getTime() < now.getTime() ? s.publishedAt : now;
   const found = await findRecord(db, s, at, opts);
   if (found) {
-    const record = await db.query.dsRecords.findFirst({ where: eq(dsRecords.id, found.recordId) });
+    const kept = found.also ? await mergeRecords(db, found.recordId, found.also, now) : null;
+    const record = await db.query.dsRecords.findFirst({ where: eq(dsRecords.id, kept ?? found.recordId) });
     if (record) {
       await attach(db, record, source, s, id, found.matchedBy, found.cited, now);
-      return { outcome: 'attached', recordId: record.id, matchedBy: found.matchedBy };
+      return { outcome: 'attached', recordId: record.id, matchedBy: found.matchedBy, ...(kept && found.also ? { merged: kept === found.recordId ? found.also : found.recordId } : {}) };
     }
   }
   const weight = clusterWeight(source.cluster);
@@ -349,7 +434,6 @@ export async function ingestSighting(db: Db, source: SourceInfo, s: Sighting, op
       headline: headlineOf(source, s),
       summary: s.summary ? clip(s.summary, SUMMARY_MAX) : null,
       link: s.link,
-      words: s.withheld ? [] : s.words,
       firstSeenAt: now,
       lastReinforcedAt: now,
       observationCount: 1,

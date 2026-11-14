@@ -1,5 +1,5 @@
 {
-  "id": "8869c3ae-4710-4330-8e99-62b842b0f8ce",
+  "id": "c0df3b04-c8d3-4b2a-904d-72d9209c7790",
   "prevId": "f81746cb-cfa1-4aeb-a940-39649faa4c83",
   "version": "7",
   "dialect": "postgresql",
@@ -1223,13 +1223,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "words": {
-          "name": "words",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         },
         "first_seen_at": {
           "name": "first_seen_at",

@@ -8,7 +8,6 @@ CREATE TABLE "sv_ds_records" (
 	"headline" text NOT NULL,
 	"summary" text,
 	"link" text,
-	"words" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"first_seen_at" timestamp with time zone NOT NULL,
 	"last_reinforced_at" timestamp with time zone NOT NULL,
 	"observation_count" integer DEFAULT 1 NOT NULL,

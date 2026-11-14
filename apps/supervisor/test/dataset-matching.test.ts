@@ -10,8 +10,10 @@ import type { RecordKind, RecordSource } from '../src/dataset/types.js';
 const T0 = new Date('2026-11-15T10:00:00Z');
 const H = 3_600_000;
 
-function candidate(title: string, over: Partial<WordsCandidate> = {}): WordsCandidate {
-  return { id: 'r_1', kind: 'launch', entities: ['coinbase', 'x402'], words: wordSet(title), sourceIds: ['b:base-blog'], firstSeenAt: T0, lastReinforcedAt: T0, ...over };
+/** A record with one title from one source (`from`), and more titles from other desks when `also` names them. */
+function candidate(title: string, over: Partial<WordsCandidate> & { from?: string; also?: [string, string][] } = {}): WordsCandidate {
+  const { from = 'b:base-blog', also = [], ...rest } = over;
+  return { id: 'r_1', kind: 'launch', entities: ['coinbase', 'x402'], sightings: [{ sourceId: from, words: wordSet(title) }, ...also.map(([sourceId, t]) => ({ sourceId, words: wordSet(t) }))], firstSeenAt: T0, lastReinforcedAt: T0, ...rest };
 }
 const probe = (title: string, over: Partial<Parameters<typeof matchByWords>[0]> = {}) => ({ sourceId: 'b:coindesk', kind: 'launch' as RecordKind, entities: ['coinbase', 'x402'], words: wordSet(title), at: new Date(T0.getTime() + H), ...over });
 
@@ -60,9 +62,30 @@ describe('matchByWords: the same entities, a compatible kind, 48 hours, half the
   });
 
   it('a source does not publish one event twice: its own items join only when nearly the same', () => {
-    const c = candidate('SEC charges Acme Capital founder with misleading investors', { kind: 'regulation', entities: ['sec'], sourceIds: ['b:sec'] });
+    const c = candidate('SEC charges Acme Capital founder with misleading investors', { kind: 'regulation', entities: ['sec'], from: 'b:sec' });
     expect(matchByWords(probe('SEC charges Acme Capital adviser with misleading clients', { sourceId: 'b:sec', kind: 'regulation', entities: ['sec'] }), [c]).recordId).toBeNull();
     expect(matchByWords(probe('SEC charges Acme Capital founder with misleading investors (updated)', { sourceId: 'b:sec', kind: 'regulation', entities: ['sec'] }), [c]).recordId).toBe('r_1');
+    // a forum's titles share their opening words: the shorter is not swallowed by the longer
+    const forum = candidate('Maintenance Upgrade Proposal: Soneium Mainnet Proposer Rotation and Fee Vault Config Update', { kind: 'governance', entities: ['optimism'], from: 'b:optimism-gov' });
+    expect(matchByWords(probe('Maintenance Upgrade Proposal: Unichain Fee Vault Config Update', { sourceId: 'b:optimism-gov', kind: 'governance', entities: ['optimism'] }), [forum]).recordId).toBeNull();
+  });
+
+  it('a title is held against each title the record has, one at a time, never against them pooled', () => {
+    // a short official title, and the desk that reported it at length
+    const record = candidate('Introducing ChatGPT Wallet', { entities: ['openai'], from: 'b:openai', also: [['b:techcrunch', 'OpenAI introduces ChatGPT Wallet for purchases made by AI agents']] });
+    // a second desk shares little with the two-word title and most of the first desk's
+    expect(matchByWords(probe('OpenAI debuts ChatGPT Wallet so AI agents can make purchases', { sourceId: 'b:decrypt', entities: ['openai'] }), [record]).recordId).toBe('r_1');
+    // without the first desk there is nothing but two words to go on: undecided, for step 4
+    const bare = candidate('Introducing ChatGPT Wallet', { entities: ['openai'], from: 'b:openai' });
+    const m = matchByWords(probe('OpenAI debuts ChatGPT Wallet so AI agents can make purchases', { sourceId: 'b:decrypt', entities: ['openai'] }), [bare]);
+    expect(m.recordId).toBeNull();
+    expect(m.leftover).toEqual([{ recordId: 'r_1', overlap: 1 }]);
+    // the record's titles pooled share four words with a different story; no single title shares three
+    const busy = candidate('Coinbase launches x402 Bazaar for agents', { also: [['b:decrypt', 'Base marketplace lets AI pay for APIs']] });
+    const other = probe('Coinbase earnings: AI agent revenue helps pay down debt', { sourceId: 'b:blockworks' });
+    const pooled = [...new Set(busy.sightings.flatMap((s) => s.words))];
+    expect(overlapOf(other.words, pooled).shared).toBe(4);
+    expect(matchByWords(other, [busy]).recordId).toBeNull();
   });
 
   it('needs a shared entity, a compatible kind and the window', () => {
