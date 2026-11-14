@@ -23,7 +23,9 @@
  * `CROSS_AGENT_WINDOW_MS`. X's developer policy forbids substantially similar content across accounts, and every
  * Bootr agent posts through one X app. Not compared: a short post (under `SIMILAR_MIN_WORDS` words that carry
  * meaning, where two posts agree by chance), and the very post a reply answers or a comment is about (answering
- * somebody in their own words is not copying them).
+ * somebody in their own words is not copying them). The window is a time. One read brings at most
+ * `SAID_OTHERS_MAX_ROWS` posts of it (said.ts): past that the oldest are not compared, which can only let a copy
+ * through, and a warning says so.
  *
  * G6, units (`UNITS_GATE`, rule R12): a currency sign on an amount of a token ("$0.0475 WETH"). Every agent, posts
  * and replies. Left alone: a dollar amount of a dollar stablecoin ("$5 USDC" says five dollars), a dollar figure
@@ -255,6 +257,8 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
   return guarded('G4', async () => {
     const window = ctx.config.CROSS_AGENT_WINDOW_MS;
     if (!ledger || !(window > 0) || !post.parts.some((part) => wordSet(part).length >= SIMILAR_MIN_WORDS)) return null;
-    return similarProblem(post.parts, await saidByOthers(ctx, agent.agentId, ctx.now() - window), ctx.config.CROSS_AGENT_OVERLAP_PCT, { exceptPostIds: [post.aboutPostId], done });
+    const others = await saidByOthers(ctx, agent.agentId, ctx.now() - window);
+    if (others.truncated) ctx.log.warn({ agentId: agent.agentId, compared: others.posts.length }, 'cross-agent gate: more posts in its window than one check reads; the oldest were not compared');
+    return similarProblem(post.parts, others.posts, ctx.config.CROSS_AGENT_OVERLAP_PCT, { exceptPostIds: [post.aboutPostId], done });
   });
 }

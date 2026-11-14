@@ -11,7 +11,9 @@
  * approved post does. Every write is keyed by the action's id, so writing twice changes nothing.
  *
  * The history: publishes of the last `SAID_KEEP_DAYS` days that completed before this code ran are read from
- * `sv_actions` once, `SAID_BACKFILL_PER_TICK` a tick, oldest first (`sweepSaid`). Where it stands is a row of
+ * `sv_actions` once, `SAID_BACKFILL_PER_TICK` a tick, one agent after the other and each agent's oldest first
+ * (`sweepSaid`). Agent by agent because the one index of `sv_actions` is on (agent, creation time): each read is then
+ * a range of that index from where the last one stopped, never a scan of the table. Where it stands is a row of
  * `sv_cursors`, written after every batch, so a restart goes on where the last tick stopped and never starts over.
  * Rows older than `SAID_KEEP_DAYS` are deleted by the same sweep, once an hour, and with them the rows of the gates'
  * shadow log (`sv_gate_shadow`) older than `GATE_SHADOW_KEEP_DAYS`.
@@ -19,9 +21,9 @@
  * Nothing here throws into a publish: a ledger that cannot be written is a warning, and the post is out either way.
  */
 import { factFingerprints, openerOf, postFacts, type PendingAction } from '@bootr/agent-core';
-import { and, desc, eq, gt, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, ne, sql } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
-import { actions, cursors, gateShadow, said, type SaidKind } from './db/schema.js';
+import { actions, agents, cursors, gateShadow, said, type SaidKind } from './db/schema.js';
 
 const DAY_MS = 24 * 3_600_000;
 /** The row of `sv_cursors` that says how far the history has been read. */
@@ -30,6 +32,15 @@ export const SAID_BACKFILL_CURSOR = 'said:backfill';
 export const SAID_PRUNE_EVERY_MS = 3_600_000;
 /** Words of one post kept for the cross-agent check: a post of 280 characters has fewer, a long one is cut here. */
 export const SAID_MAX_WORDS = 80;
+/**
+ * The most posts of other agents one cross-agent check reads. The check's window is a time (`CROSS_AGENT_WINDOW_MS`),
+ * and this is only a ceiling on what one publish may cost: at 24 posts a day it is reached with about 40 agents
+ * posting at their limit for two days. Past it the newest posts are compared and the oldest of the window are not, so
+ * a copy of one of those passes; nothing is ever refused because of the ceiling, and a warning says it was reached.
+ */
+export const SAID_OTHERS_MAX_ROWS = 2000;
+/** Agents the history moves on through in one tick, each for one indexed probe: a bound on the tick, not on the history. */
+export const SAID_BACKFILL_AGENTS_PER_TICK = 50;
 
 type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config'>;
 
@@ -48,6 +59,11 @@ const STOP_WORDS = new Set(
  * kept as words): lowercased, links and handles left out, each word once, sorted. A cashtag is the word of its symbol.
  */
 export function wordSet(text: string): string[] {
+  return wordsOf(text).slice(0, SAID_MAX_WORDS);
+}
+
+/** `wordSet` without its cut: every word of a text, for a text that is not a post (the strings code hands an agent). */
+export function wordsOf(text: string): string[] {
   if (typeof text !== 'string' || !text) return [];
   const words = text
     .toLowerCase()
@@ -56,7 +72,7 @@ export function wordSet(text: string): string[] {
     .split(/[^\p{L}\p{N}.%]+/u)
     .map((w) => w.replace(/^[.%]+|[.]+$/g, ''))
     .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
-  return [...new Set(words)].sort().slice(0, SAID_MAX_WORDS);
+  return [...new Set(words)].sort();
 }
 
 /** The share of words two posts have in common: the words in both over the words in either (0 to 1). */
@@ -184,7 +200,7 @@ export async function lastOriginals(ctx: Pick<SupervisorContext, 'db'>, agentId:
   return [...out.values()];
 }
 
-/** A post of another agent, as the cross-agent gate reads it. */
+/** An original post of another agent, as the cross-agent gate reads it. */
 export interface SaidByOther {
   agentId: string;
   postId: string | null;
@@ -192,25 +208,38 @@ export interface SaidByOther {
   words: string[];
 }
 
-/** What the other agents said since `since` (epoch ms), newest first, at most `limit` posts. One indexed read. */
-export async function saidByOthers(ctx: Pick<SupervisorContext, 'db'>, agentId: string, since: number, limit = 400): Promise<SaidByOther[]> {
+export interface SaidByOthers {
+  posts: SaidByOther[];
+  /** The window held more than `SAID_OTHERS_MAX_ROWS` posts: the oldest of them are not in `posts`. */
+  truncated: boolean;
+}
+
+/**
+ * The original posts (single posts and the posts of threads; no replies) the other agents made since `since` (epoch
+ * ms), newest first. The bound is the time; `maxRows` is the ceiling on what one read may bring back
+ * (`SAID_OTHERS_MAX_ROWS`). One indexed read.
+ */
+export async function saidByOthers(ctx: Pick<SupervisorContext, 'db'>, agentId: string, since: number, maxRows: number = SAID_OTHERS_MAX_ROWS): Promise<SaidByOthers> {
   const rows = await ctx.db
     .select({ agentId: said.agentId, postId: said.postId, postedAt: said.postedAt, words: said.words })
     .from(said)
-    .where(and(gt(said.postedAt, new Date(since)), ne(said.agentId, agentId)))
+    .where(and(gt(said.postedAt, new Date(since)), ne(said.agentId, agentId), ne(said.kind, 'reply')))
     .orderBy(desc(said.postedAt))
-    .limit(limit);
-  return rows.map((r) => ({ agentId: r.agentId, postId: r.postId, postedAt: r.postedAt.getTime(), words: Array.isArray(r.words) ? r.words : [] }));
+    .limit(maxRows + 1);
+  return { posts: rows.slice(0, maxRows).map((r) => ({ agentId: r.agentId, postId: r.postId, postedAt: r.postedAt.getTime(), words: Array.isArray(r.words) ? r.words : [] })), truncated: rows.length > maxRows };
 }
 
 // ---------------------------------------------------------------------------
 // The history and the retention (the tick's sweep)
 // ---------------------------------------------------------------------------
 
-interface BackfillCursor {
-  /** Publishes created up to here (ISO) belong to the history; later ones are written as they complete. */
+export interface BackfillCursor {
+  /** Publishes created from here (ISO) up to `until` belong to the history; later ones are written as they complete. */
+  from: string;
   until: string;
-  /** The last publish read: its `created_at` (ISO, to the millisecond) and its id. */
+  /** The agent whose history is being read; '' before the first. */
+  agentId: string;
+  /** The last publish of that agent that was read: its `created_at` to the microsecond (as Postgres wrote it) and its id. */
   after: string;
   afterId: string;
   done: boolean;
@@ -220,11 +249,37 @@ function cursorOf(value: string | undefined): BackfillCursor | null {
   if (!value) return null;
   try {
     const c = JSON.parse(value) as Partial<BackfillCursor>;
-    if (typeof c.until !== 'string' || typeof c.after !== 'string' || typeof c.afterId !== 'string') return null;
-    return { until: c.until, after: c.after, afterId: c.afterId, done: c.done === true };
+    if (c.done === true && typeof c.until === 'string') return { from: c.from ?? c.until, until: c.until, agentId: c.agentId ?? '', after: c.after ?? c.until, afterId: c.afterId ?? '', done: true };
+    // A cursor that names no agent is one from before the history was read agent by agent: it is begun again (a row written twice changes nothing).
+    if (typeof c.from !== 'string' || typeof c.until !== 'string' || typeof c.agentId !== 'string' || typeof c.after !== 'string' || typeof c.afterId !== 'string') return null;
+    return { from: c.from, until: c.until, agentId: c.agentId, after: c.after, afterId: c.afterId, done: false };
   } catch {
     return null;
   }
+}
+
+/**
+ * One agent's completed publishes from where the last read stopped up to `until`, oldest first, at most `limit`: a
+ * range of the (agent, created_at) index of `sv_actions`, read in its order. The lower bound is said twice: plainly
+ * (`created_at >= after`), which is what makes it an index range, and as the pair the cursor keeps, which leaves out
+ * the publish it stopped at. `at` is the creation time to the microsecond, as the next cursor needs it.
+ */
+export function historyBatch(db: SupervisorContext['db'], cursor: Pick<BackfillCursor, 'agentId' | 'after' | 'afterId' | 'until'>, limit: number) {
+  return db
+    .select({ actionId: actions.actionId, agentId: actions.agentId, action: actions.action, result: actions.result, createdAt: actions.createdAt, at: sql<string>`to_char(${actions.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.agentId, cursor.agentId),
+        sql`${actions.createdAt} >= ${cursor.after}::timestamptz`,
+        sql`(${actions.createdAt}, ${actions.actionId}) > (${cursor.after}::timestamptz, ${cursor.afterId})`,
+        sql`${actions.createdAt} <= ${cursor.until}::timestamptz`,
+        eq(actions.status, 'completed'),
+        sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`,
+      ),
+    )
+    .orderBy(asc(actions.createdAt), asc(actions.actionId))
+    .limit(limit);
 }
 
 export interface SaidSweepReport {
@@ -272,29 +327,40 @@ export async function sweepSaid(ctx: Ctx, opts: { forcePrune?: boolean } = {}): 
   const perTick = ctx.config.SAID_BACKFILL_PER_TICK;
   if (report.done || !(perTick > 0)) return report;
   const stored = await ctx.db.query.cursors.findFirst({ where: eq(cursors.name, SAID_BACKFILL_CURSOR) });
-  const cursor: BackfillCursor = cursorOf(stored?.value) ?? { until: new Date(now).toISOString(), after: new Date(now - keepDays * DAY_MS).toISOString(), afterId: '', done: false };
+  const fresh = (): BackfillCursor => ({ from: new Date(now - keepDays * DAY_MS).toISOString(), until: new Date(now).toISOString(), agentId: '', after: '', afterId: '', done: false });
+  const cursor: BackfillCursor = cursorOf(stored?.value) ?? fresh();
   if (cursor.done) {
     backfilled.add(ctx.config);
     report.done = true;
     return report;
   }
-  // Oldest first, by the creation time to the millisecond and then the id: the pair the cursor keeps.
-  const at = sql`date_trunc('milliseconds', ${actions.createdAt})`;
-  const rows = await ctx.db
-    .select({ actionId: actions.actionId, agentId: actions.agentId, action: actions.action, result: actions.result, createdAt: actions.createdAt })
-    .from(actions)
-    .where(and(eq(actions.status, 'completed'), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`, sql`(${at}, ${actions.actionId}) > (${cursor.after}::timestamptz, ${cursor.afterId})`, sql`${actions.createdAt} <= ${cursor.until}::timestamptz`))
-    .orderBy(at, actions.actionId)
-    .limit(perTick);
-  for (const r of rows) report.written += await recordSaid(ctx, { agentId: r.agentId, actionId: r.actionId, action: r.action, result: r.result, at: r.createdAt });
-  report.read = rows.length;
-  const tail = rows.at(-1);
-  const next: BackfillCursor = { until: cursor.until, after: tail ? tail.createdAt.toISOString() : cursor.after, afterId: tail ? tail.actionId : cursor.afterId, done: rows.length < perTick };
+  let left = perTick;
+  // Whether the agent the cursor names may still have publishes to read: not before the first agent, and not once a read of its came back short.
+  let more = cursor.agentId !== '';
+  for (let hops = 0; left > 0 && !cursor.done; ) {
+    if (!more) {
+      if (hops >= SAID_BACKFILL_AGENTS_PER_TICK) break;
+      hops += 1;
+      const [next] = await ctx.db.select({ agentId: agents.agentId }).from(agents).where(gt(agents.agentId, cursor.agentId)).orderBy(asc(agents.agentId)).limit(1);
+      if (!next) {
+        cursor.done = true;
+        break;
+      }
+      Object.assign(cursor, { agentId: next.agentId, after: cursor.from, afterId: '' });
+    }
+    const rows = await historyBatch(ctx.db, cursor, left);
+    for (const r of rows) report.written += await recordSaid(ctx, { agentId: r.agentId, actionId: r.actionId, action: r.action, result: r.result, at: r.createdAt });
+    report.read += rows.length;
+    const tail = rows.at(-1);
+    if (tail) Object.assign(cursor, { after: tail.at, afterId: tail.actionId });
+    more = rows.length >= left;
+    left -= rows.length;
+  }
   await ctx.db
     .insert(cursors)
-    .values({ name: SAID_BACKFILL_CURSOR, value: JSON.stringify(next), updatedAt: new Date(now) })
-    .onConflictDoUpdate({ target: cursors.name, set: { value: JSON.stringify(next), updatedAt: new Date(now) } });
-  if (next.done) {
+    .values({ name: SAID_BACKFILL_CURSOR, value: JSON.stringify(cursor), updatedAt: new Date(now) })
+    .onConflictDoUpdate({ target: cursors.name, set: { value: JSON.stringify(cursor), updatedAt: new Date(now) } });
+  if (cursor.done) {
     backfilled.add(ctx.config);
     report.done = true;
     ctx.log.info({ until: cursor.until }, 'said-ledger: the stored history is in');

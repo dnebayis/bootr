@@ -4,17 +4,17 @@
  * that survive a restart; old rows deleted. The texts are the posts quoted in section 2.3 of the note.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createApp } from '../src/api.js';
 import { queueForApproval } from '../src/approvals.js';
 import { actions, cursors, gateShadow, said } from '../src/db/schema.js';
 import { logGateHit } from '../src/gate-shadow.js';
 import { signRequest } from '../src/hmac.js';
-import { SAID_BACKFILL_CURSOR, lastOriginals, recordSaid, resetSaidSweep, saidByOthers, saidRowsOf, sweepSaid, wordOverlap, wordSet } from '../src/said.js';
+import { SAID_BACKFILL_CURSOR, SAID_OTHERS_MAX_ROWS, historyBatch, lastOriginals, recordSaid, resetSaidSweep, saidByOthers, saidRowsOf, sweepSaid, wordOverlap, wordSet } from '../src/said.js';
 import { sweepScheduled } from '../src/scheduled.js';
 import { reconcilePending, tick } from '../src/tick.js';
 import { AGENT_ID, CREATOR, SUPERVISOR_KEY, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
-import { act, connectClient, openSocial, ownWorld, seedOwn } from './own-helpers.js';
+import { OTHER_AGENT_ID, act, connectClient, openSocial, ownWorld, seedOther, seedOwn } from './own-helpers.js';
 import { POSTING_DEFAULTS } from './posting-off.limits.js';
 import { postHooks, setPostHooks } from '../src/post-send.js';
 import '../src/thread-send.js';
@@ -270,6 +270,80 @@ describe('the stored history is filled once, in bounded steps, and old rows go',
     }
   });
 
+  it('reads the history agent by agent, each from where it stopped, within the tick\'s bound', async () => {
+    const w = await makeWorld({ config: { SAID_BACKFILL_PER_TICK: '4' } });
+    try {
+      await seedAgent(w);
+      await seedOther(w);
+      await history(w);
+      // The other coin: three publishes, one of them written by the database's own clock to the microsecond.
+      for (let i = 1; i <= 2; i++) await seedAction(w, `act_o${i}`, T0 - i * DAY - HOUR, { tool: 'publish_post', input: { text: `${40 + i} holders on the other coin.` } }, { status: 'completed', result: { postId: `70${i}` } }, { agentId: OTHER_AGENT_ID });
+      await w.db.insert(actions).values({ actionId: 'act_o3', agentId: OTHER_AGENT_ID, cycleKey: 'seed:act_o3', action: { tool: 'publish_post', input: { text: '44 holders on the other coin.' } }, status: 'completed', result: { status: 'completed', result: { postId: '703' } } });
+      w.setNow(Date.now() + 60_000);
+
+      // Agent 7 first (ids in order), four of its seven publishes; then its other three and the first of agent 8; then the rest.
+      expect(await sweepSaid(w.ctx)).toMatchObject({ read: 4, done: false });
+      expect(await ledger(w, OTHER_AGENT_ID)).toEqual([]);
+      const mid = JSON.parse((await w.db.query.cursors.findFirst({ where: eq(cursors.name, SAID_BACKFILL_CURSOR) }))!.value) as { agentId: string; afterId: string };
+      expect(mid).toMatchObject({ agentId: AGENT_ID, afterId: 'act_queued' });
+      // A restart in between changes nothing: the cursor names the agent and the publish it stopped at.
+      resetSaidSweep(w.ctx.config);
+      expect(await sweepSaid(w.ctx)).toMatchObject({ read: 4, done: false });
+      expect((await ledger(w)).map((r) => r.id)).toEqual(['act_h5', 'act_h4', 'act_h3', 'act_h2', 'act_h1', 'act_reply']);
+      expect((await ledger(w, OTHER_AGENT_ID)).map((r) => r.id)).toEqual(['act_o2']);
+      expect(await sweepSaid(w.ctx)).toMatchObject({ read: 2, written: 2, done: true });
+      expect((await ledger(w, OTHER_AGENT_ID)).map((r) => r.id)).toEqual(['act_o2', 'act_o1', 'act_o3']);
+      // Nothing was written twice, and nothing is read again.
+      expect(await w.db.select().from(said)).toHaveLength(9);
+      expect(await sweepSaid(w.ctx)).toMatchObject({ read: 0, done: true });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a batch is a range of the (agent, created_at) index: the planner is given both bounds as index conditions', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      await history(w);
+      const cursor = { agentId: AGENT_ID, after: new Date(T0 - 3 * DAY).toISOString(), afterId: 'act_h3', until: new Date(T0).toISOString() };
+      expect((await historyBatch(w.ctx.db, cursor, 10)).map((r) => r.actionId)).toEqual(['act_queued', 'act_h2', 'act_h1', 'act_reply']);
+      // With so few rows the planner would read the table whole; told not to, it shows what the index can take.
+      await w.db.execute(sql`set enable_seqscan = off`);
+      const plan = (await w.db.execute(sql`explain ${historyBatch(w.ctx.db, cursor, 10).getSQL()}`)) as unknown as { rows: Record<string, string>[] };
+      const text = plan.rows.map((r) => Object.values(r)[0]).join('\n');
+      expect(text).toContain('sv_actions_agent_created_idx');
+      const condition = /Index Cond: (.*)/.exec(text)?.[1] ?? '';
+      expect(condition).toContain('agent_id');
+      expect(condition).toMatch(/created_at >= /);
+      expect(condition).toMatch(/created_at <= /);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a cursor from before the history was read agent by agent begins again; a finished one stays finished', async () => {
+    const w = await makeWorld({ config: { SAID_BACKFILL_PER_TICK: '50' } });
+    try {
+      await seedAgent(w);
+      await history(w);
+      await w.db.insert(cursors).values({ name: SAID_BACKFILL_CURSOR, value: JSON.stringify({ until: new Date(T0).toISOString(), after: new Date(T0 - 2 * DAY).toISOString(), afterId: 'act_h2', done: false }) });
+      expect(await sweepSaid(w.ctx)).toMatchObject({ read: 7, written: 6, done: true });
+      const done = await makeWorld();
+      try {
+        await seedAgent(done);
+        await history(done);
+        await done.db.insert(cursors).values({ name: SAID_BACKFILL_CURSOR, value: JSON.stringify({ until: new Date(T0).toISOString(), after: new Date(T0).toISOString(), afterId: 'x', done: true }) });
+        expect(await sweepSaid(done.ctx)).toMatchObject({ read: 0, done: true });
+        expect(await ledger(done)).toEqual([]);
+      } finally {
+        await done.close();
+      }
+    } finally {
+      await w.close();
+    }
+  });
+
   it('deletes rows past their age, once an hour', async () => {
     const w = await makeWorld({ config: { SAID_BACKFILL_PER_TICK: '0' } });
     try {
@@ -366,9 +440,33 @@ describe('reading the ledger', () => {
       expect((await lastOriginals(w.ctx, AGENT_ID, 20, 'act_2')).map((o) => o.actionId)).toEqual(['act_1']);
 
       const others = await saidByOthers(w.ctx, AGENT_ID, T0 - 48 * HOUR);
-      expect(others.map((o) => [o.agentId, o.postId])).toEqual([['8', 'p_act_o1']]);
-      expect(others[0]!.words).toContain('holders');
-      expect(await saidByOthers(w.ctx, '8', T0 - 48 * HOUR)).toHaveLength(4);
+      expect(others.truncated).toBe(false);
+      expect(others.posts.map((o) => [o.agentId, o.postId])).toEqual([['8', 'p_act_o1']]);
+      expect(others.posts[0]!.words).toContain('holders');
+      // The other way round: the two originals and the second post of the thread, and not the reply.
+      expect((await saidByOthers(w.ctx, '8', T0 - 48 * HOUR)).posts.map((o) => o.postId)).toEqual(['p_act_2', 'p_act_2_2', 'p_act_1']);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('saidByOthers is bounded by its time, however many posts that is, and says so when it meets its ceiling', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      // 450 posts of 45 other agents inside the 48 hours (more than the 400 rows the read once stopped at), and one before them.
+      const rows = Array.from({ length: 450 }, (_, i) => ({ id: `act_m${i}`, agentId: `coin${i % 45}`, actionId: `act_m${i}`, postId: `p_m${i}`, kind: 'original' as const, postedAt: new Date(T0 - (i + 1) * 6 * 60_000), words: ['some', 'words'] }));
+      await w.db.insert(said).values([...rows, { id: 'act_before', agentId: 'coin1', actionId: 'act_before', postId: 'p_before', kind: 'original' as const, postedAt: new Date(T0 - 49 * HOUR), words: [] }]);
+      const all = await saidByOthers(w.ctx, AGENT_ID, T0 - 48 * HOUR);
+      expect(SAID_OTHERS_MAX_ROWS).toBeGreaterThanOrEqual(2000);
+      expect(all.truncated).toBe(false);
+      expect(all.posts).toHaveLength(450);
+      expect(all.posts.at(-1)!.postedAt).toBe(T0 - 45 * HOUR);
+      // At the ceiling the newest are read, the oldest of the window are not, and the caller is told.
+      const cut = await saidByOthers(w.ctx, AGENT_ID, T0 - 48 * HOUR, 100);
+      expect(cut.truncated).toBe(true);
+      expect(cut.posts.map((o) => o.postId)).toEqual(Array.from({ length: 100 }, (_, i) => `p_m${i}`));
+      expect((await saidByOthers(w.ctx, AGENT_ID, T0 - 48 * HOUR, 450)).truncated).toBe(false);
     } finally {
       await w.close();
     }
