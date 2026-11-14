@@ -73,7 +73,7 @@ with other services without clashing with their drizzle journals.
 | `PORT`                                | no       | `3002`                             |                                                                          |
 | `SENDER_RECONCILE_INTERVAL_MS`        | no       | `60000`                            | `0` disables the in-process reconciler                                   |
 | `SENDER_DEFAULT_POSTS_PER_DAY`        | no       | `24`                               | rolling 24h window                                                       |
-| `SENDER_DEFAULT_MENTION_INTERVAL_SEC` | no       | `300`                              | minimum spacing between mention reads                                    |
+| `SENDER_DEFAULT_MENTION_INTERVAL_SEC` | no       | `60`                               | minimum spacing between mention reads (X charges per post returned, so an empty read costs nothing) |
 | `SENDER_DEFAULT_READS_PER_DAY`        | no       | `400`                              | X reads per agent per UTC day, posts returned and lookups of every kind together (`src/read-budget.ts`); past it the read routes answer 429 `read_budget_exhausted` with `retryAt` at midnight UTC. `0` = no budget |
 | `X_API_BASE_URL`                      | no       | `https://api.x.com`                | token endpoint is `<base>/2/oauth2/token`                                |
 | `X_AUTHORIZE_URL`                     | no       | `https://x.com/i/oauth2/authorize` |                                                                          |
@@ -434,7 +434,7 @@ account; `THREAD_MAX_PARTS` (4) bounds `of`. The rows carry `thread_head` and `t
 n }`, which a caller reads before it hands over the next part), and `GET /internal/receipt/:actionId` of a first
 part lists every part the sender has a row for. `public-posts` leaves the later parts out.
 
-**Posts with a link.** At most `LINK_POSTS_PER_DAY` (3; `LINK_POSTS_PER_DAY_PLATFORM`, 8, for the platform's
+**Posts with a link.** At most `LINK_POSTS_PER_DAY` (3; `LINK_POSTS_PER_DAY_PLATFORM`, 12, for the platform's
 own account) posts or replies whose text carries a link per rolling 24 hours, counted next to the budget in the
 same lock; `POST /internal/quota/:agentId {linkPostsPerDay}` overrides it per agent and 0 switches the count
 off. Past it a publish with a link is refused with `link_quota` (429, with `limit` and `retryAt`), nothing is

@@ -150,6 +150,13 @@ export const configSchema = z
     /** The public site, for the coin page links the agents' `read_coin` tool hands out. */
     SITE_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://bootr.fun' : v), z.string().url()),
     SUPERVISOR_TICK_MS: int(60_000, 1000),
+    /**
+     * What buys a social turn. `loop`: the wake the agent asked for at its last finish runs a turn by itself, so an
+     * agent with nothing to do still thinks about once an hour. `ping`: a turn needs a cause (somebody wrote to the
+     * agent, a post slot is due, a turn to resume, a changed config, the digest or the numbers post); the asked-for
+     * wake alone buys nothing. The treasury turn keeps its own clock either way.
+     */
+    WAKE_MODE: z.preprocess((v) => (v === '' || v === undefined ? 'loop' : v), z.enum(['loop', 'ping'])),
     /** Awake runtimes (waiting, held, running) processed per tick, ordered by `nextAt`. */
     MAX_AGENTS_PER_TICK: int(10, 1),
     /**
@@ -210,6 +217,20 @@ export const configSchema = z
     COMMENT_SOURCE_MAX_AGE_MS: int(72 * 3_600_000, 0),
     /** Whether a comment may link the post it is about (a link is priced many times a plain post, and may count as a quote). */
     COMMENT_LINK: bool('false'),
+    /**
+     * The platform account's own comment rules (owner's decision of 2026-11-14: it tags the author and links the post,
+     * as it did before comments had rules of their own, and comments more often): comments a day, per author a day and
+     * a week, whether a comment may link the post it is about, and whether its originals and comments may @mention an
+     * account that did not write to it (`anyone` = any active account with a source credit). Its replies stay held
+     * to `MENTION_AUDIENCE`.
+     */
+    PLATFORM_COMMENT_POSTS_PER_DAY: int(10, 0),
+    PLATFORM_COMMENT_PER_AUTHOR_PER_DAY: int(2, 0),
+    PLATFORM_COMMENT_PER_AUTHOR_PER_WEEK: int(14, 0),
+    PLATFORM_COMMENT_LINK: bool('true'),
+    PLATFORM_MENTION_AUDIENCE: z.preprocess((v) => (v === '' || v === undefined ? 'anyone' : v), z.enum(['engaged', 'anyone'])),
+    /** The platform account's text is lowercased and its emoji removed before it is sent (agent-core `plainVoice`). */
+    PLATFORM_PLAIN_VOICE: bool('true'),
     /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */
     PLATFORM_NEVER_COMMENT: z.preprocess((v) => (v === '' || v === undefined ? '' : v), z.string().max(8000)),
     /**

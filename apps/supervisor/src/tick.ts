@@ -388,12 +388,21 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       configRevision: config.revision,
       lastDecision: runtime.lastDecisionAt ? { at: runtime.lastDecisionAt.getTime(), revision: runtime.lastDecisionRevision ?? -1 } : null,
       heldAction: pending?.status === 'held',
+      loop: ctx.config.WAKE_MODE !== 'ping',
     });
     // The platform agent's weekly digest (weekly-digest.ts) may wake it on its own; it folds itself into `decision`.
     const digest = await weeklyDigestWake(ctx, agent, config, state, schedule, status, now, decision);
     // ...and so may its daily numbers post (platform-numbers.ts).
     const numbers = await platformNumbersWake(ctx, agent, config, state, schedule, status, now, decision);
     if (runtime.configRevision !== config.revision) await saveRuntime(ctx, agent.agentId, { configRevision: config.revision });
+    // Ping mode: a wake that arrived with no cause buys nothing. Its row moves one tick ahead, so the tick's queue
+    // (ordered by `nextAt`) keeps rotating through every awake agent instead of serving the same idle ones first. A
+    // mention, a due post and the other causes pass `nextAt` as before, so nothing waits for the moved time.
+    if (!decision.run && ctx.config.WAKE_MODE === 'ping' && status === 'waiting' && runtime.nextAt.getTime() <= now) {
+      const nextAt = new Date(now + ctx.config.SUPERVISOR_TICK_MS);
+      await saveRuntime(ctx, agent.agentId, { nextAt });
+      runtime = { ...runtime, nextAt };
+    }
     if (!decision.run) {
       // The treasury turn (roles.ts) is asked only once the social wake said no: when both are due in one tick the
       // social turn runs and the treasury waits for the next tick. Same gates as above, its own clock, no post slot,

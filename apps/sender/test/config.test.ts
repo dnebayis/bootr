@@ -22,7 +22,7 @@ describe('config', () => {
       PORT: 3002,
       SENDER_RECONCILE_INTERVAL_MS: 60_000,
       SENDER_DEFAULT_POSTS_PER_DAY: 24,
-      SENDER_DEFAULT_MENTION_INTERVAL_SEC: 300,
+      SENDER_DEFAULT_MENTION_INTERVAL_SEC: 60,
     });
     expect(c.SENDER_OAUTH_RETURN_URL).toBeUndefined();
   });

@@ -25,7 +25,7 @@ import { getAddress, isAddressEqual, type Address } from 'viem';
 import { agentDirectory, conversationGuard } from './agent-directory.js';
 import { bountyApprovalView, decideBountyApproval } from './bounties.js';
 import { inboxViews, openReplyEligibility, originalRules, publicAddressesOf, type BrokerEnv } from './broker/index.js';
-import type { CommentAbout } from './comment-posts.js';
+import { mentionsAnyone, type CommentAbout } from './comment-posts.js';
 import { postHooks, type OriginalResult } from './post-send.js';
 import { SCHEDULED_ID_RE, retryableSend, threadLimits, type CommentedOriginal } from './thread-send.js';
 import type { AgentRow, SupervisorContext } from './context.js';
@@ -244,7 +244,7 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     if (action.tool === 'publish_post' && threaded && scheduled) {
       // A scheduled thread: the gate over every part, as the send will run it again; the day's count and the turn's
       // own posts are questions about the time it goes out, which the scheduler asked and asks again at the send.
-      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, { original: true });
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, { original: true, ...(mentionsAnyone(ctx, agent) ? { anyone: true } : {}) });
       const refused = threadRefusal(parts, attributions, { limits: threadLimits(ctx, agent), hasMedia: !!action.input.imageId, platform: agent.config.platform === true });
       if (refused) return { kind: 'failed', error: refused };
       meta.thread = action.input.thread;
@@ -259,7 +259,7 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
       if (checked.about) meta.about = checked.about;
     } else {
       // An original post and a reply name with an `@` only who the mention audience allows (attributions.ts).
-      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, kind === 'post' ? { original: true } : { reply: true });
+      attributions = await publishAttributions(ctx, agent.agentId, action.input.text, action.input.attributions, kind === 'post' ? { original: true, ...(mentionsAnyone(ctx, agent) ? { anyone: true } : {}) } : { reply: true });
     }
   } catch (err) {
     if (err instanceof MentionError) return { kind: 'failed', error: err.message };

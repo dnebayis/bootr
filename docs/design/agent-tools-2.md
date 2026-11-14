@@ -261,7 +261,7 @@ resumed step finds the same rows.
 - `PRICE_USD` becomes `{ post: 0.015, postWithLink: 0.20, reply: 0.01, read: 0.005, userRead: 0.01 }`, and
   `getMetering` counts sent rows with a link apart (agent-core `linkedHosts`, the function the platform gate uses).
 - `readMetrics` meters the posts X returned, not 1.
-- A count on posts with links: `LINK_POSTS_PER_DAY`, 3 for a coin agent and 8 for the platform account, checked by
+- A count on posts with links: `LINK_POSTS_PER_DAY`, 3 for a coin agent and 8 for the platform account (12 since 2026-11-14, section 18.9), checked by
   the sender next to the quota (`sender_quotas.link_posts_per_day`; refusal `link_quota: … post it without the
   link`). Today nothing bounds it (open decision 2).
 
@@ -1543,6 +1543,30 @@ its first part though it went out whole; a console tab older than the release sh
 thread; the swap route's limit of 240 a minute is shared by all callers and can be filled by a few; "wrote to the
 agent" counts a carried mention and a "stop"; a coin agent may still carry another coin's cashtag (one a post);
 questions from anyone has no switch per coin, only `REPLY_QUESTIONS_FROM_ANYONE` for the deployment.
+
+### 18.9 The owner's changes of 2026-11-14, after a day of the round on production
+
+A day after release the owner judged the platform account's posts worse than before: no tags, a boot emoji in every
+third post, far fewer posts, and the same shapes and facts repeated. The first three came from this round (the
+platform prompt told it to name authors without the @ and link nothing; comments were capped at three a day and one
+an author; 27 of its 35 turns of the day ended without a post). Decided and built:
+
+- **The platform account tags and links again.** Its comments tag the author of the post and link it, and its
+  originals may @mention any active account with a source credit (`PLATFORM_MENTION_AUDIENCE=anyone`,
+  `PLATFORM_COMMENT_LINK=true`). Its replies stay held to accounts that wrote to it. Coin agents are unchanged.
+- **More comments:** 10 a day, 2 an author a day, 14 an author a week (`PLATFORM_COMMENT_*`); the sender's count of
+  posts with a link for the platform account goes from 8 to 12 a day (at most about $2.40 of X credits a day).
+- **Voice:** all lowercase and no emoji, asked for in the prompt and made certain in code (`plainVoice`, applied where
+  a tool call becomes an action; `PLATFORM_PLAIN_VOICE`).
+- **No promotion of coins launched on Bootr:** the launch kind left the rotation, the welcome line left the persona.
+  The weekly digest and the numbers post still name coins; whether they should is not decided.
+- **The shape of a post, learned from aixbt's posts:** one development, the fact with its number, date and source
+  first, then how it works or why it matters, then what is not known; no opener about feelings, no question for
+  replies. A due slot with nothing in hand is a reason to go and read, not to skip.
+- **Ping instead of the loop** (`WAKE_MODE=ping`, set by the deployment for every hosted agent): the wake an agent
+  asked for buys no turn by itself; a mention, a due post slot and the other causes do. Mentions are read once a
+  minute instead of every five (X charges per post returned, so an empty read costs nothing). Known limit: the tick
+  serves `MAX_AGENTS_PER_TICK` awake agents a minute, so with more awake agents than that a ping waits its turn.
 
 ## Sources
 

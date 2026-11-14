@@ -1,6 +1,6 @@
 import { questionBudget, questionQuotaRefusal } from '../recent-posts.js';
 import { MentionError, publishAttributions, type MentionAudienceOptions } from '../attributions.js';
-import { commentCheck, commentLimit, storedTurn, type CommentAbout } from '../comment-posts.js';
+import { commentCheck, commentLimit, mentionsAnyone, storedTurn, type CommentAbout } from '../comment-posts.js';
 import { postHooks } from '../post-send.js';
 import { linkQuota, sendParts, threadResultFromReceipt, threadRulesRefusal, threadsOffered, THREAD_CUT_NOTE } from '../thread-send.js';
 /**
@@ -735,7 +735,7 @@ export async function originalRules(
   // What the turn carries (the digest, the numbers post) and what it was shown: read once, and only for a thread or a comment.
   const turn = isThread || isComment ? await storedTurn(ctx, agent.agentId) : null;
   // Mentions belong to the first part; a comment's are held to accounts that wrote to the agent whatever the audience is set to.
-  const audience: MentionAudienceOptions = { original: true, ...(isComment ? { comment: true } : {}) };
+  const audience: MentionAudienceOptions = { original: true, ...(isComment ? { comment: true } : {}), ...(mentionsAnyone(ctx, agent) ? { anyone: true } : {}) };
   let attributions: { username: string; sourceUrl: string }[] | null = null;
   if (isThread) {
     if (turn?.digestWeek || turn?.numbersDay) return { refusal: THREAD_NOT_HERE };

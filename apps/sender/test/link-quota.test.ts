@@ -104,10 +104,10 @@ describe('the count of posts with a link', () => {
     expect(await env.db.select().from(actions)).toHaveLength(1);
   });
 
-  it('the config reads the limits under their own names, 3 and 8 by default', () => {
+  it('the config reads the limits under their own names, 3 and 12 by default', () => {
     const base = { X_CLIENT_ID: 'id', X_CLIENT_SECRET: 'secret', X_REDIRECT_URI: 'https://sender.test/oauth/callback', SENDER_SERVICE_KEY: 'k'.repeat(32), SENDER_ENCRYPTION_KEY: '11'.repeat(32), DATABASE_URL: 'postgres://test' };
-    expect(configSchema.parse(base)).toMatchObject({ LINK_POSTS_PER_DAY: 3, LINK_POSTS_PER_DAY_PLATFORM: 8, THREAD_MAX_PARTS: 4, THREAD_PART_MAX_CHARS: 280 });
-    expect(configSchema.parse({ ...base, LINK_POSTS_PER_DAY: '0', LINK_POSTS_PER_DAY_PLATFORM: '' })).toMatchObject({ LINK_POSTS_PER_DAY: 0, LINK_POSTS_PER_DAY_PLATFORM: 8 });
+    expect(configSchema.parse(base)).toMatchObject({ LINK_POSTS_PER_DAY: 3, LINK_POSTS_PER_DAY_PLATFORM: 12, THREAD_MAX_PARTS: 4, THREAD_PART_MAX_CHARS: 280 });
+    expect(configSchema.parse({ ...base, LINK_POSTS_PER_DAY: '0', LINK_POSTS_PER_DAY_PLATFORM: '' })).toMatchObject({ LINK_POSTS_PER_DAY: 0, LINK_POSTS_PER_DAY_PLATFORM: 12 });
   });
 });
 

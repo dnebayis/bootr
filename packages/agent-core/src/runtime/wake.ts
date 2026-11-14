@@ -28,6 +28,11 @@ export interface WakeInput {
   lastDecision?: { at: number; revision: number } | null;
   /** A money action with an unknown outcome blocks everything until reconciled. */
   heldAction?: boolean;
+  /**
+   * `false` = ping mode: the scheduled wake alone buys no turn; it runs one only together with a cause (somebody
+   * wrote, a post is due, a reply to retry, a changed config, a turn to resume). Absent or `true` = the loop of before.
+   */
+  loop?: boolean;
 }
 
 export interface WakeDecision {
@@ -95,9 +100,10 @@ export function wakeDecision(input: WakeInput): WakeDecision {
     configRevision: input.configRevision,
     lastDecision: input.lastDecision,
   });
-  const scheduledNow = scheduled <= now;
+  // In ping mode an arrived wake with nothing behind it is not a reason to think: the pulse keeps checking for a cause.
+  const scheduledNow = scheduled <= now && (input.loop !== false || reasons.length > 0);
   if (scheduledNow) reasons.unshift('scheduled');
-  const passesNextAt = reasons.some((r) => r !== 'continuation');
+  const passesNextAt = reasons.some((r) => r !== 'continuation' && r !== 'scheduled');
   const run = scheduledNow || (passesNextAt && input.status === 'waiting');
   return { run, reasons: run ? reasons : [], nextAt: Math.min(scheduled, now + PULSE_MS) };
 }

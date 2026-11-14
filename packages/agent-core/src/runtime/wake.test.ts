@@ -63,3 +63,31 @@ describe('wakeDecision', () => {
     expect(wakeDecision({ ...base, leaseUntil: now - 1, nextAt: now }).run).toBe(true);
   });
 });
+
+describe('wakeDecision in ping mode (loop: false)', () => {
+  const ping: WakeInput = { ...base, loop: false };
+
+  it('an arrived wake with no cause buys no turn, and the pulse goes on', () => {
+    expect(wakeDecision({ ...ping, nextAt: now - 1 })).toEqual({ run: false, reasons: [], nextAt: now - 1 });
+    // the same input in the loop of before runs
+    expect(wakeDecision({ ...base, nextAt: now - 1 }).run).toBe(true);
+  });
+
+  it('somebody writing to the agent wakes it at once, before or after the wake it asked for', () => {
+    expect(wakeDecision({ ...ping, inbox: [mention()] })).toMatchObject({ run: true, reasons: ['pending_mention'] });
+    expect(wakeDecision({ ...ping, nextAt: now - 1, inbox: [mention()] })).toMatchObject({ run: true, reasons: ['scheduled', 'pending_mention'] });
+  });
+
+  it('a due post slot, a turn to resume and a changed config still run', () => {
+    expect(wakeDecision({ ...ping, schedule: { due: true, nextAt: now - 1, mayCompose: true } })).toMatchObject({ run: true, reasons: ['scheduled', 'original_post_due'] });
+    expect(wakeDecision({ ...ping, continuation: true }).run).toBe(false);
+    expect(wakeDecision({ ...ping, nextAt: now - 1, continuation: true })).toMatchObject({ run: true, reasons: ['scheduled', 'continuation'] });
+    expect(wakeDecision({ ...ping, configRevision: 4 })).toMatchObject({ run: true, reasons: ['config_changed'] });
+  });
+
+  it('never runs while paused, held or leased', () => {
+    expect(wakeDecision({ ...ping, status: 'paused', inbox: [mention()] }).run).toBe(false);
+    expect(wakeDecision({ ...ping, heldAction: true, inbox: [mention()] }).run).toBe(false);
+    expect(wakeDecision({ ...ping, leaseUntil: now + 1, inbox: [mention()] }).run).toBe(false);
+  });
+});

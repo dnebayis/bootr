@@ -131,10 +131,11 @@ describe('the watchlist section', () => {
       expect(w.sender.timelineReads).toEqual([]);
       const section = (await watchlistSection(w.ctx, { agentId: AGENT_ID }, { platform: true, capabilities: caps })) as { watchlist: Record<string, unknown> };
       // the words follow the posting rules in force: with comments built, a comment that names the author without the @
-      expect(section.watchlist).toMatchObject({ instructionAuthority: false, meaning: watchlistMeaning({ commentsBuilt: true, commentsOff: false, mentionsOpen: false }), source: 'x' });
+      expect(section.watchlist).toMatchObject({ instructionAuthority: false, meaning: watchlistMeaning({ commentsBuilt: true, commentsOff: false, mentionsOpen: false, tagAndLink: true, perAuthorPerDay: 2 }), source: 'x' });
       expect((section.watchlist.accounts as { handle: string }[]).map((a) => a.handle)).toEqual(['jessepollak', 'base']);
       expect(section.watchlist.meaning).toMatch(/publish_reply does not work for these posts/);
-      expect(section.watchlist.meaning).toMatch(/at most one such post per account per day/);
+      expect(section.watchlist.meaning).toMatch(/Tag the author with their @handle and link the post/);
+      expect(section.watchlist.meaning).toMatch(/at most 2 such posts per account per day/);
     } finally {
       await w.close();
     }
@@ -207,6 +208,11 @@ describe('what the section tells the platform agent to do with a watched post', 
       w.sender.timelines = { alice: tl('alice', 3) };
       const meaningOf = async (config: Parameters<typeof watchlistSection>[2]) => ((await watchlistSection(w.ctx, { agentId: AGENT_ID }, config)) as { watchlist: { meaning: string } }).watchlist.meaning;
       expect(await meaningOf({ platform: true, capabilities: CAPS })).toMatch(/pass about: \{postId\}/);
+      expect(await meaningOf({ platform: true, capabilities: CAPS })).toMatch(/Tag the author with their @handle and link the post/);
+      // the platform account held to a coin agent's rules again: named in words, nothing linked
+      Object.assign(w.ctx.config as unknown as Record<string, unknown>, { PLATFORM_MENTION_AUDIENCE: 'engaged' });
+      expect(await meaningOf({ platform: true, capabilities: CAPS })).toMatch(/Name the author in words, without the @, and do not link their post\./);
+      Object.assign(w.ctx.config as unknown as Record<string, unknown>, { PLATFORM_MENTION_AUDIENCE: 'anyone' });
       expect(await meaningOf({ platform: true, capabilities: CAPS, comments: false })).toMatch(/Your creator switched comments off/);
       // comments at 0 and mentions open again: the words of before, byte for byte
       Object.assign(w.ctx.config as unknown as Record<string, unknown>, { COMMENT_POSTS_PER_DAY: 0, MENTION_AUDIENCE: 'anyone' });

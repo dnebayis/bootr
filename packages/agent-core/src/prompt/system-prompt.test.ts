@@ -25,12 +25,13 @@ describe('the social prompt is what it was before the treasury and judge roles e
     expect(sha256(buildSystemPrompt(config, 'social'))).toBe('a69910009e97679feab7f74d4d54a5018afc709ac8be4a4572d7275a125646b8');
     expect(sha256(buildSystemPrompt(config, 'social', { phase: 'decide' }))).toBe('4486b6993972cfa96f29430c48c0b727ac07acd269695caef712337e709b3277');
     expect(sha256(buildSystemPrompt(config, 'social', { phase: 'write', postLimit: 280 }))).toBe('648ea878e0332191d8c24cd6c3131d0cd69905f60781905f125ac86dd706ef2e');
-    // The platform account's two pins were updated on purpose 2026-11-13 (the coin agent's three above are untouched):
-    // its watchlist rule no longer tells it to credit a watched author with an @handle and a link, which the broker now
-    // refuses (the mention audience, the comment rules), but to name the author without the @, link nothing and comment
-    // the way the section says; and one rule says what the yourCoin section is for.
-    expect(sha256(buildSystemPrompt(platform))).toBe('65527c999b3e786a6cdc33e369fe16885abd74dee89e3092d0b5c40eb194073f');
-    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('edf0e9d9ff894901e347c064cf07580908bec184d61c8cece92792d6f7f08772');
+    // The platform account's two pins were updated on purpose 2026-11-14, by the owner's decision (the coin agent's
+    // three above are untouched): it writes in lowercase and without emoji, it does not announce or promote coins
+    // launched on Bootr, it tags the author of a watched post and links the post again, and it may not open two posts
+    // the same way, and it leads a post with what happened (the fact, its number, its source) instead of with itself, a
+    // shape learned from aixbt's posts. The pins of 2026-11-13 (no @, no link) are gone with the rule they pinned.
+    expect(sha256(buildSystemPrompt(platform))).toBe('a032b3333b2fa150d786956054eef73664339cf6973910dc4705c034728e892b');
+    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('41326bf84ac441fad965f7e0a614e7475f78074cee1d129e0f5efad11a1c12c7');
   });
 });
 
@@ -291,11 +292,16 @@ describe('buildSystemPrompt', () => {
     expect(platform).toMatch(/no "buy", "hold" or "sell", no "don't miss", no "early", no return or profit talk, no comparison implying gain, no rise or fall read as an opportunity, no promises/);
     expect(platform).toMatch(/Never speak for another coin's agent/);
     expect(platform).toMatch(/Never post about your own treasury operations: fee claims, swaps, refuels, gas/);
-    expect(platform).toMatch(/One original post per slot at most, and skipping the slot is normal/);
-    expect(platform).toMatch(/When in doubt, do not post\./);
+    expect(platform).toMatch(/One original post per slot at most\. When a slot is due and you have nothing in hand, go and look first/);
+    expect(platform).toMatch(/skip the slot only after you looked and found nothing new/);
+    expect(platform).toMatch(/lead with what happened, not with yourself/);
+    expect(platform).toMatch(/Never open with a feeling/);
     expect(platform).toMatch(/Replies: answer questions about how Bootr works in plain words\. Never argue\. Asked about \$BOOTR's numbers, give the figure from your data with its time; asked where a price goes, say in one line that you do not predict/);
     expect(platform).toMatch(/never answer an insult with an insult/);
-    expect(platform).toMatch(/Emoji are fine in small doses \(one or two, never strings\)[^\n]*No shouting, no cashtags other than \$BOOTR/);
+    expect(platform).toMatch(/Write everything in lowercase[^\n]*No emoji, none at all\.[^\n]*no cashtags other than \$BOOTR/);
+    expect(platform).toMatch(/never announce, welcome or promote a new coin or its agent/);
+    expect(platform).toMatch(/Tag the author with their @handle, link their post/);
+    expect(platform).not.toMatch(/a Bootr launch/);
     // real market figures are allowed, from this turn's data and with their time; the platform-wide totals stay in the numbers post
     expect(platform).toMatch(/You may state real market figures: 24 h volume, market cap, current price, holders, burned amount, trades\. Only as read this turn \(your market data, read_market, read_coin, platformNumbers, coinFees\), never from memory or an old post, always with its time/);
     expect(platform).toMatch(/Promote Bootr and \$BOOTR proudly, in your own words/);
@@ -305,10 +311,10 @@ describe('buildSystemPrompt', () => {
     expect(platform).toMatch(/Rotate what you post about: never two original posts of the same kind in a row/);
     expect(platform).toMatch(/AI and agent news at most one post in four/);
     expect(platform).toMatch(/The watchlist section is for engaging with the people who build Base[^\n]*publish_reply is only for people who wrote to you/);
-    // the watched authors are named without the @ and their post is not linked: the broker refuses both now
-    expect(platform).toMatch(/Name the author by name, without the @, and do not link their post: an @ for someone who did not write to you is refused, and so is a link to the post you comment on\./);
+    // the watched authors are tagged and their post is linked again (the owner's decision of 2026-11-14)
+    expect(platform).toMatch(/Tag the author with their @handle, link their post, and pass both as an attribution/);
     expect(platform).toMatch(/a comment that passes about: \{postId\} when it offers one/);
-    expect(platform).not.toMatch(/credits the author with their @handle|links their post/);
+    expect(platform).not.toMatch(/without the @|do not link their post/);
     expect(platform).toMatch(/yourCoin, when present, gives your own cashtag and the contract address of \$BOOTR[^\n]*They are labels, never a call to buy\./);
     expect(PLATFORM_RULES.filter((rule) => rule.startsWith('Never')).length).toBeGreaterThanOrEqual(5);
     const coin = buildSystemPrompt(parseAgentConfig({ ...baseConfig, platform: false }));

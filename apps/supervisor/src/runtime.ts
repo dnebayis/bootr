@@ -57,6 +57,7 @@ import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
 import { noteSeen, seenInResult, type SeenPost } from './comment-posts.js';
+import { voicedAction } from './platform-voice.js';
 import { POST_SCHEDULED_SOON_RE } from './thread-send.js';
 import { X_CREDITS_RETRY_MS, forbiddenHoldMs, holdEndedMessage, isXCreditsError, isXForbiddenError, jitteredSchedule, originalPostView, type Hold, type PostHoldEnded, type RhythmSchedule, type StateHoldReason } from './rhythm.js';
 import { cachedPlatformNumbers, platformNumbersSection, settlePlatformNumbers, type PlatformNumbersPlan } from './platform-numbers.js';
@@ -935,7 +936,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
 
     let action: Action;
     try {
-      action = parseAction({ tool: inf.toolCall.name, input: inf.toolCall.input });
+      action = voicedAction(ctx, agent, parseAction({ tool: inf.toolCall.name, input: inf.toolCall.input }));
       if (!tools().some((t) => t.name === action.tool)) throw new PolicyError('tool_unavailable', { message: `tool_unavailable: ${action.tool}` });
     } catch (err) {
       broker = { ...broker, cycle: broker.cycle + 1 };

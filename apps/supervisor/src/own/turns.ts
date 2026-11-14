@@ -76,6 +76,7 @@ import { rpcErrorText } from '../log.js';
 import { agentConfigOf } from '../onboarding.js';
 import { settlePlatformUpdate } from '../platform-updates.js';
 import { creditsHold, forbiddenHold, quotaHold } from '../rhythm.js';
+import { voicedAction } from '../platform-voice.js';
 import { LEASE_MS, acquireLease, releaseLease, saveRuntime, scheduleFor, trimState, type AgentState, type OwnCallRecord, type Turn } from '../runtime.js';
 import type { SenderInboxItem } from '../sender-client.js';
 import { budgetOpensAt, countUse, usedInWindow } from './budget.js';
@@ -895,7 +896,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
     if (!turnTools(s, turn).has(tool)) throw new OwnError('tool_unavailable');
     let action: Action;
     try {
-      action = parseAction({ tool, input });
+      action = voicedAction(ctx, v.agent, parseAction({ tool, input }));
     } catch (err) {
       log.info({ tool, code: 'invalid_tool_call', issues: err instanceof ZodError ? err.issues.map((i) => `${i.path.join('.') || '.'}:${i.code}`) : undefined }, 'own agent: tool call refused before it ran');
       throw invalidCall(err);

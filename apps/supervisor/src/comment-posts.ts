@@ -203,7 +203,28 @@ export function turnSeen(turn: Pick<Turn, 'messages' | 'ownOpen' | 'seen'> | nul
 export function commentLimit(ctx: Pick<SupervisorContext, 'config'>, agent: Pick<AgentRow, 'config'>): number {
   if ((agent.config as Record<string, unknown>).comments === false) return 0;
   // A caller that holds only a part of the config (a test) gets a limit above 0: the piece is on unless it is switched off.
+  // The platform account has its own count; the deployment's limit at 0 still switches comments off for everybody.
+  if (isPlatform(agent) && ctx.config.COMMENT_POSTS_PER_DAY !== 0) return ctx.config.PLATFORM_COMMENT_POSTS_PER_DAY ?? ctx.config.COMMENT_POSTS_PER_DAY ?? 1;
   return ctx.config.COMMENT_POSTS_PER_DAY ?? 1;
+}
+
+const isPlatform = (agent: Pick<AgentRow, 'config'>): boolean => (agent.config as Record<string, unknown>).platform === true;
+
+/** Whether this agent's comment may link the post it is about: the platform account's own setting, else the deployment's. */
+export function commentMayLink(ctx: Pick<SupervisorContext, 'config'>, agent: Pick<AgentRow, 'config'>): boolean {
+  return ctx.config.COMMENT_LINK === true || (isPlatform(agent) && ctx.config.PLATFORM_COMMENT_LINK === true);
+}
+
+/** Comments on one author's posts this agent may make, a day and a week. */
+export function commentAuthorLimits(ctx: Pick<SupervisorContext, 'config'>, agent: Pick<AgentRow, 'config'>): { day: number; week: number } {
+  return isPlatform(agent)
+    ? { day: ctx.config.PLATFORM_COMMENT_PER_AUTHOR_PER_DAY, week: ctx.config.PLATFORM_COMMENT_PER_AUTHOR_PER_WEEK }
+    : { day: ctx.config.COMMENT_PER_AUTHOR_PER_DAY, week: ctx.config.COMMENT_PER_AUTHOR_PER_WEEK };
+}
+
+/** Whether this agent's originals and comments may @mention an account that did not write to it (the platform account's own audience). */
+export function mentionsAnyone(ctx: Pick<SupervisorContext, 'config'>, agent: Pick<AgentRow, 'config'>): boolean {
+  return isPlatform(agent) && ctx.config.PLATFORM_MENTION_AUDIENCE === 'anyone';
 }
 
 /** `PLATFORM_NEVER_COMMENT`: X author ids or handles, comma-separated. */
@@ -295,7 +316,7 @@ export async function commentCheck(
 
   const seen = turnSeen(turn, inbox).get(postId);
   if (!seen) return { refusal: COMMENT_SOURCE_UNREAD };
-  if (!ctx.config.COMMENT_LINK && [input.text, ...(input.thread ?? []).map((p) => p.text)].some((part) => linksPost(part, postId))) return { refusal: COMMENT_LINK_FORBIDDEN };
+  if (!commentMayLink(ctx, agent) && [input.text, ...(input.thread ?? []).map((p) => p.text)].some((part) => linksPost(part, postId))) return { refusal: COMMENT_LINK_FORBIDDEN };
   const postedAt = postTimeMs(seen);
   if (postedAt === null || now - postedAt > ctx.config.COMMENT_SOURCE_MAX_AGE_MS) return { refusal: commentSourceTooOld(Math.round(ctx.config.COMMENT_SOURCE_MAX_AGE_MS / 3_600_000)) };
 
@@ -303,7 +324,7 @@ export async function commentCheck(
   if (earlier.filter((c) => c.at > now - DAY_MS).length >= limit) return { refusal: commentDailyCap(limit) };
 
   // The accounts an agent follows are the platform account's alone; a coin's agent has no such list.
-  const platform = (agent.config as Record<string, unknown>).platform === true;
+  const platform = isPlatform(agent);
   const notPublic = platform ? COMMENT_AUTHOR_NOT_PUBLIC : COMMENT_AUTHOR_NOT_PUBLIC_COIN;
   // Who wrote it: the read said so, or (a watchlist post names a handle only) one account lookup through the sender.
   const directory = await agentDirectory(ctx);
@@ -337,8 +358,9 @@ export async function commentCheck(
   // outcome is not known yet carries no author: it counts when it is about this very post.
   const onAuthor = earlier.filter((c) => (c.authorId ? c.authorId === authorId : c.postId === postId));
   const today = onAuthor.filter((c) => c.at > now - DAY_MS).length;
-  if (today >= ctx.config.COMMENT_PER_AUTHOR_PER_DAY) return { refusal: commentAuthorCap(today, 'day') };
-  if (onAuthor.length >= ctx.config.COMMENT_PER_AUTHOR_PER_WEEK) return { refusal: commentAuthorCap(onAuthor.length, 'week') };
+  const perAuthor = commentAuthorLimits(ctx, agent);
+  if (today >= perAuthor.day) return { refusal: commentAuthorCap(today, 'day') };
+  if (onAuthor.length >= perAuthor.week) return { refusal: commentAuthorCap(onAuthor.length, 'week') };
 
   // Only a sender that knows the round checks the author's stop request (`aboutAuthorId`). The same release of the
   // sender reports its count of posts with a link on the quota read, which costs nothing at X: one that does not is

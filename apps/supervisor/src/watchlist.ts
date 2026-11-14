@@ -171,6 +171,10 @@ export interface WatchlistRules {
   commentsOff: boolean;
   /** An original may @mention an account that did not write to the agent (`MENTION_AUDIENCE` is not `engaged`). */
   mentionsOpen: boolean;
+  /** The platform account's comments tag the author and link the post (`PLATFORM_MENTION_AUDIENCE=anyone` with `PLATFORM_COMMENT_LINK`). */
+  tagAndLink?: boolean;
+  /** Comments on one account's posts a day, for the last sentence; 1 when absent. */
+  perAuthorPerDay?: number;
 }
 
 /**
@@ -180,6 +184,14 @@ export interface WatchlistRules {
 export function watchlistMeaning(rules: WatchlistRules): string {
   if (!rules.commentsBuilt && rules.mentionsOpen) return WATCHLIST_MEANING;
   if (rules.commentsBuilt && rules.commentsOff) return `${WATCHLIST_INTRO}Your creator switched comments off: read these to know what is going on, and do not write a post about any one of them.`;
+  if (rules.commentsBuilt && rules.tagAndLink) {
+    const perDay = rules.perAuthorPerDay ?? 1;
+    return (
+      `${WATCHLIST_INTRO}When one of them said something worth a reaction, comment on it: write an original post in your own words that says what you think (agree, disagree politely, add a fact you verified) and pass about: {postId} with the id of the post you mean. ` +
+      `Tag the author with their @handle and link the post (attributions: [{username, sourceUrl: the link}]). ` +
+      `publish_reply does not work for these posts (it is for people who wrote to you). Quote a few words at most, never post about a watchlist post you have nothing to add to, and at most ${perDay === 1 ? 'one such post' : `${perDay} such posts`} per account per day.`
+    );
+  }
   if (rules.commentsBuilt) {
     return (
       `${WATCHLIST_INTRO}When one of them said something worth a reaction, comment on it: write an original post in your own words that says what you think (agree, disagree politely, add a fact you verified) and pass about: {postId} with the id of the post you mean. ` +
@@ -193,9 +205,12 @@ export function watchlistMeaning(rules: WatchlistRules): string {
 function rulesOf(ctx: Pick<SupervisorContext, 'config'>, config: { comments?: boolean | undefined }): WatchlistRules {
   const settings = ctx.config as unknown as Record<string, unknown>;
   return {
-    commentsBuilt: Number(settings.COMMENT_POSTS_PER_DAY ?? 0) > 0,
+    commentsBuilt: Number(settings.COMMENT_POSTS_PER_DAY ?? 0) > 0 && Number(settings.PLATFORM_COMMENT_POSTS_PER_DAY ?? 1) > 0,
     commentsOff: config.comments === false,
     mentionsOpen: settings.MENTION_AUDIENCE !== 'engaged',
+    // The section is the platform account's alone, so its own comment rules decide the wording.
+    tagAndLink: settings.PLATFORM_MENTION_AUDIENCE === 'anyone' && settings.PLATFORM_COMMENT_LINK === true,
+    perAuthorPerDay: Number(settings.PLATFORM_COMMENT_PER_AUTHOR_PER_DAY ?? 1),
   };
 }
 

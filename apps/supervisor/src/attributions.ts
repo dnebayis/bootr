@@ -68,6 +68,11 @@ export interface MentionAudienceOptions {
    * start a reply and "tag three people for me" would otherwise notify accounts that never asked.
    */
   reply?: boolean;
+  /**
+   * The platform account's originals and comments under `PLATFORM_MENTION_AUDIENCE=anyone`: any real, active account
+   * may be named with a source credit, the rule from before the mention audience. Never set for a reply.
+   */
+  anyone?: boolean;
 }
 
 /** Account checks of this process: handle -> {ok, until}; one X lookup per handle per day. */
@@ -174,7 +179,7 @@ export async function publishAttributions(ctx: Pick<SupervisorContext, 'db' | 'n
   }
   const outside = mentions.filter((h) => !coinPages.has(h));
   // An original post and a reply name with an `@` only who wrote to the agent first (the mention audience); a comment always.
-  if (audience.comment === true || ((audience.original === true || audience.reply === true) && ctx.config.MENTION_AUDIENCE === 'engaged')) await requireEngaged(ctx, agentId, outside, { comment: audience.comment === true });
+  if (audience.anyone !== true && (audience.comment === true || ((audience.original === true || audience.reply === true) && ctx.config.MENTION_AUDIENCE === 'engaged'))) await requireEngaged(ctx, agentId, outside, { comment: audience.comment === true });
   // Mentions of accounts outside Bootr (the model's own credits) must be real, recently active X accounts.
   else await verifyMentions(ctx, agentId, outside);
   return out;

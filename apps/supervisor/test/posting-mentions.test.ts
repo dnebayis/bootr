@@ -90,15 +90,24 @@ describe('MENTION_AUDIENCE = engaged (the default)', () => {
     }
   });
 
-  it('the platform account names its watched accounts without the @ too', async () => {
-    const { w, post, published } = await world({ agent: { platform: true, requireApproval: false, identityText: 'You are the launchpad\'s own voice.' } });
+  it('the platform account tags an account that never wrote to it, with a credit (its own audience), and is held like a coin agent when that is switched back', async () => {
+    const tagged = { text: 'A clear note from @jessepollak on what Base is for.', attributions: [{ username: 'jessepollak', sourceUrl: 'https://x.com/jessepollak/status/1' }] };
+    const open = await world({ agent: { platform: true, requireApproval: false, identityText: 'You are the launchpad\'s own voice.' } });
     try {
-      w.sender.accountReads.jessepollak = account('18876842', 'jessepollak', null);
-      expect(await post({ text: 'A clear note from @jessepollak on what Base is for.', attributions: [{ username: 'jessepollak', sourceUrl: 'https://x.com/jessepollak/status/1' }] })).toEqual({ kind: 'failed', error: mentionNotEngaged('jessepollak') });
-      expect((await post({ text: 'A clear note from Jesse Pollak on what Base is for.' })).kind).toBe('completed');
-      expect(published()).toEqual(['A clear note from Jesse Pollak on what Base is for.']);
+      expect(open.w.ctx.config.PLATFORM_MENTION_AUDIENCE).toBe('anyone');
+      open.w.sender.accountReads.jessepollak = account('18876842', 'jessepollak', null);
+      expect((await open.post(tagged)).kind).toBe('completed');
+      expect(open.published()).toEqual([tagged.text]);
     } finally {
-      await w.close();
+      await open.w.close();
+    }
+    const held = await world({ config: { PLATFORM_MENTION_AUDIENCE: 'engaged' }, agent: { platform: true, requireApproval: false, identityText: 'You are the launchpad\'s own voice.' } });
+    try {
+      held.w.sender.accountReads.jessepollak = account('18876842', 'jessepollak', null);
+      expect(await held.post(tagged)).toEqual({ kind: 'failed', error: mentionNotEngaged('jessepollak') });
+      expect(held.published()).toEqual([]);
+    } finally {
+      await held.w.close();
     }
   });
 

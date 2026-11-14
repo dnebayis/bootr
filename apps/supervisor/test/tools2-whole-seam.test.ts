@@ -127,31 +127,35 @@ describe('a hosted turn comments on a post of an account the platform account fo
   const jesse = { id: '18876842', username: 'jessepollak', name: 'Jesse Pollak', verified: true, verified_type: 'blue' };
   const COMMENT = 'Jesse Pollak makes a fair point: a holder should see where every fee went. On Bootr the coin page shows it.';
 
-  async function platform(script: Response[]) {
-    const w = await seam({ script, config: { PLATFORM_WATCHLIST: 'jessepollak' }, agent: { platform: true, requireApproval: false, token: { address: '0x3000000000000000000000000000000000000003', symbol: 'BOOTR', name: 'Bootr', chainId: 84532 } } });
+  const LINK = `https://x.com/jessepollak/status/${SOURCE}`;
+  // what the model writes (capitals, an emoji) and what goes out: the platform account's voice is lowercase without emoji
+  const TAGGED = `A fair point from @jessepollak 🥾: a holder should see where every fee went. On Bootr the coin page shows it. ${LINK}`;
+  const TAGGED_SENT = `a fair point from @jessepollak: a holder should see where every fee went. on bootr the coin page shows it. ${LINK}`;
+
+  async function platform(script: Response[], config: Record<string, string> = {}) {
+    const w = await seam({ script, config: { PLATFORM_WATCHLIST: 'jessepollak', ...config }, agent: { platform: true, requireApproval: false, token: { address: '0x3000000000000000000000000000000000000003', symbol: 'BOOTR', name: 'Bootr', chainId: 84532 } } });
     w.x.fake.on('GET', '/2/users/by/username/jessepollak', () => json({ data: jesse }));
     w.x.fake.on('GET', `/2/users/${jesse.id}/tweets`, () => json({ data: [{ id: SOURCE, text: 'A holder should be able to see where every fee went.', author_id: jesse.id, created_at: iso(T0 - 2 * HOUR) }], meta: { result_count: 1 } }));
     return w;
   }
 
-  it('the post is its own original with `about`: the author named in words, no @ and no link, and it counts once for that author', async () => {
-    const w = (world = await platform([toolCallResponse('publish_post', { text: COMMENT, about: { postId: SOURCE }, topic: 'fees' }), finishResponse(T0 + 3 * HOUR)]));
+  it('the post is its own original with `about`: the author tagged, the post linked, the text in the platform voice, and it counts for that author', async () => {
+    const w = (world = await platform([toolCallResponse('publish_post', { text: TAGGED, about: { postId: SOURCE }, topic: 'fees', attributions: [{ username: 'jessepollak', sourceUrl: LINK }] }), finishResponse(T0 + 3 * HOUR)], { PLATFORM_COMMENT_PER_AUTHOR_PER_DAY: '1' }));
     expect((await tickClean(w)).ran).toEqual([AGENT_ID]);
 
     // the turn was shown the watched account's post, with words that match what the broker now takes
     const watchlist = observationOf(w).watchlist as { meaning: string; accounts: { handle: string; latestPosts: { postId: string }[] }[] };
     expect(watchlist.accounts).toMatchObject([{ handle: 'jessepollak', latestPosts: [{ postId: SOURCE }] }]);
     expect(watchlist.meaning).toContain('pass about: {postId}');
-    expect(watchlist.meaning).toContain('Name the author in words, without the @, and do not link their post.');
-    // ...and its pinned prompt no longer tells it to credit the author with an @handle and a link
+    expect(watchlist.meaning).toContain('Tag the author with their @handle and link the post');
+    // ...and its pinned prompt says the same (the owner's decision of 2026-11-14)
     const system = requestOf(w, 0).messages.find((m) => m.role === 'system')!.content;
-    expect(system).toContain('Name the author by name, without the @, and do not link their post');
-    expect(system).not.toContain('credits the author with their @handle');
+    expect(system).toContain('Tag the author with their @handle, link their post');
+    expect(system).not.toContain('without the @');
 
-    // X: one original post, nothing that makes it a reply, a quote or a mention
+    // X: one original post that tags the author and links the post, lowercased and without the emoji; never a reply
     const sent = w.x.fake.calls.filter((c) => c.method === 'POST' && c.path === '/2/tweets').map((c) => c.body as Record<string, unknown>);
-    expect(sent).toEqual([{ text: COMMENT }]);
-    expect(COMMENT).not.toMatch(/@|https?:\/\//);
+    expect(sent).toEqual([{ text: TAGGED_SENT }]);
     const [row] = await publishRows(w);
     expect(resultOf(row!)).toMatchObject({ postId: expect.stringMatching(/^\d+$/), about: { postId: SOURCE, authorId: jesse.id, handle: 'jessepollak' } });
     // the tape says whose post it was about, with the link to it for the coin page (the link is not on X)
@@ -166,8 +170,8 @@ describe('a hosted turn comments on a post of an account the platform account fo
     expect(w.posted()).toHaveLength(1);
   });
 
-  it('with an @ for the author, or a link to the post, the comment is refused in words that say what to do, and nothing is posted', async () => {
-    const w = (world = await platform([]));
+  it('with the platform account held to the rules of a coin agent again (its two settings switched back), an @ for the author or a link to the post is refused', async () => {
+    const w = (world = await platform([], { PLATFORM_MENTION_AUDIENCE: 'engaged', PLATFORM_COMMENT_LINK: 'false' }));
     const agent = await agentRow(w);
     const config = agentConfigOf(agent)!;
     await storeTurn(w, observed({ watchlist: { accounts: [{ handle: 'jessepollak', latestPosts: [{ postId: SOURCE, at: iso(T0 - 2 * HOUR) }] }] } }));

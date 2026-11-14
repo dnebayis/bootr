@@ -42,7 +42,7 @@ export const configSchema = z.object({
   ),
   X_TIMEOUT_MS: num(z.coerce.number().int().positive(), 15_000),
   SENDER_DEFAULT_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 24),
-  SENDER_DEFAULT_MENTION_INTERVAL_SEC: num(z.coerce.number().int().nonnegative(), 300),
+  SENDER_DEFAULT_MENTION_INTERVAL_SEC: num(z.coerce.number().int().nonnegative(), 60),
   /**
    * X reads one agent may make per UTC day, posts returned and account lookups of every kind together
    * (src/read-budget.ts); past it the read routes answer 429 `read_budget_exhausted` until midnight UTC. 0 = no budget.
@@ -55,7 +55,7 @@ export const configSchema = z.object({
    * (`sender_quotas.link_posts_per_day`) wins over both. 0 = no count.
    */
   LINK_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 3),
-  LINK_POSTS_PER_DAY_PLATFORM: num(z.coerce.number().int().nonnegative(), 8),
+  LINK_POSTS_PER_DAY_PLATFORM: num(z.coerce.number().int().nonnegative(), 12),
   /** Posts in one thread, the first included, and the length of each part (src/publish.ts); the supervisor holds the same limits. */
   THREAD_MAX_PARTS: num(z.coerce.number().int().nonnegative(), 4),
   THREAD_PART_MAX_CHARS: num(z.coerce.number().int().positive(), 280),

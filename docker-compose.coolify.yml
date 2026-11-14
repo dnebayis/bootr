@@ -240,6 +240,9 @@ services:
       # Bring your own agent: the same flag as the web's (empty = off). The limits (`OWN_*` in src/config.ts) keep their
       # defaults unless a line is added here for one.
       OWN_AGENT_ENABLED: ${OWN_AGENT_ENABLED:-}
+      # What buys a social turn (src/config.ts): ping = only a cause (somebody wrote, a post slot is due), loop = also
+      # the wake the agent asked for, as before 2026-11-14. Not a secret.
+      WAKE_MODE: ${WAKE_MODE:-ping}
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}
