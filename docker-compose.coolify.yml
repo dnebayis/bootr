@@ -246,6 +246,16 @@ services:
       # Awake hosted agents checked per tick (one a minute each when they fit; 10 when empty). In ping mode a check is how
       # a mention is noticed, so raise it when more agents than this are awake at once.
       MAX_AGENTS_PER_TICK: ${MAX_AGENTS_PER_TICK:-}
+      # The publish gates of docs/design/agent-behaviour.md (apps/supervisor/src/post-gates.ts, fee-claims.ts). Empty =
+      # shadow for the first three (what a gate would refuse is written to sv_gate_shadow and the post goes out) and
+      # enforce for FEE_CLAIM_GATE; enforce = the post is refused; off = nothing is checked. Not secrets.
+      REPEAT_GATE: ${REPEAT_GATE:-}
+      CROSS_AGENT_GATE: ${CROSS_AGENT_GATE:-}
+      UNITS_GATE: ${UNITS_GATE:-}
+      FEE_CLAIM_GATE: ${FEE_CLAIM_GATE:-}
+      # The quiet slot (apps/supervisor/src/quiet-slot.ts): empty = on (a coin agent's due post slot buys no turn when
+      # nothing is new since its last one), false = off for every coin. A creator switches it off for one coin in the console.
+      QUIET_SLOT: ${QUIET_SLOT:-}
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}
