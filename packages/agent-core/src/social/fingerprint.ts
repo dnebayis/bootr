@@ -6,7 +6,9 @@
  * `factFingerprints`: one string per number in the text, `subject:value[unit]`, where the value is rounded to two
  * significant figures, the unit is what is written on the number (`%`, `$`, or the token or word right after it) and
  * the subject is the nearest word of a fixed list in the same sentence (`none` when there is none). Dates, clock times,
- * years and "24h" windows are not facts and give no fingerprint; neither does a contract address.
+ * years and "24h" windows are not facts and give no fingerprint; neither does a contract address. A small number
+ * written as a word right before a subject word ("six holders") is the number it names: one coin agent's week of
+ * 8 to 14 November 2026 said "six holders" in 18 originals and "five holders" in 13, and not one of them in digits.
  * `openerOf`: the first three words, lowercased, numbers as `#`, handles as `@`.
  * Both are pure and need no model. The said-ledger, the repeat gate and the weekly check all read these two functions,
  * so a change here changes all three together.
@@ -27,6 +29,12 @@ const SUBJECTS: readonly [string, RegExp][] = [
   ['users', /\b(?:users?|wallets?|accounts?|followers?|developers?|builders?)\b/i],
   ['payments', /\b(?:payments?|transactions?|transfers?|revenue|earned)\b/i],
 ];
+/**
+ * Two to twelve in words, read as a number only when a subject word follows at once ("six holders", "three wallets").
+ * "one" is left out: it is an article more often than a count ("one agent wrote", "no one").
+ */
+const NUMBER_WORDS = ['two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve'];
+const WORDED_NUMBER = new RegExp(`\\b(${NUMBER_WORDS.join('|')})(?=\\s+(?:${SUBJECTS.map(([, re]) => re.source.replace(/^\\b|\\b$/g, '')).join('|')})\\b)`, 'gi');
 const ADDRESS = /0x[0-9a-fA-F]{6,}/g;
 const LINK = /https?:\/\/\S+/g;
 /** A number as written: an optional `$`, digits with separators, an optional decimal part, an optional k/m/b, an optional `%`. */
@@ -50,7 +58,7 @@ export function factFingerprints(text: string): string[] {
   if (typeof text !== 'string' || !text) return [];
   const out = new Set<string>();
   for (const raw of text.split(/(?<=[.!?])\s+|\n+/)) {
-    const sentence = raw.replace(ADDRESS, ' ').replace(LINK, ' ');
+    const sentence = raw.replace(ADDRESS, ' ').replace(LINK, ' ').replace(WORDED_NUMBER, (word) => String(NUMBER_WORDS.indexOf(word.toLowerCase()) + 2));
     for (const m of sentence.matchAll(NUMBER)) {
       const at = m.index;
       const before = sentence.slice(Math.max(0, at - 12), at);

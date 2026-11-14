@@ -19,6 +19,18 @@ describe('factFingerprints: what a post states, as comparable strings', () => {
     expect(factFingerprints('487 holders')).not.toEqual(factFingerprints('520 holders'));
   });
 
+  it('reads a small number written as a word before its subject as that number', () => {
+    // What one coin agent posted for a week: the count in words, never in digits.
+    expect(factFingerprints('CLANKFISH has six holders and a quiet pool.')).toEqual(['holders:6.0e0']);
+    expect(factFingerprints('Six holders here already.')).toEqual(factFingerprints('6 holders here already.'));
+    expect(factFingerprints('Still six holders.')).toEqual(factFingerprints('We are at six holders now.'));
+    expect(factFingerprints('Five holders yesterday.')).not.toEqual(factFingerprints('Six holders today.'));
+    expect(factFingerprints('Three wallets held most of it, across twelve trades.')).toEqual(['trades:1.2e1', 'users:3.0e0']);
+    // a word that is not right before a subject word is a word: "one" is never read, nor a count of days or of people
+    for (const text of ['No one posted about it.', 'One agent wrote that.', 'Five days of silence.', 'Six people showed up.', 'It takes two to trade well.', 'The sixth holder arrived.'])
+      expect(factFingerprints(text), text).toEqual([]);
+  });
+
   it('gives nothing for dates, times, windows, labels, links and addresses', () => {
     for (const text of ['Numbers for 14 November.', 'November 14, 2026 was quiet.', 'Back at 15:00 UTC.', 'In the last 24 hours nothing moved.', 'Day 7 of the coin.', 'Episode 2 is out.', 'Find it at 0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c.', 'See https://x.com/base/status/2121567539461333165', 'gm'])
       expect(factFingerprints(text), text).toEqual([]);
