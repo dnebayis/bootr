@@ -252,6 +252,8 @@ export const configSchema = z
     CROSS_AGENT_WINDOW_MS: int(48 * 3_600_000, 0),
     /** The share of words two posts must have in common to count as substantially similar, in percent. */
     CROSS_AGENT_OVERLAP_PCT: z.preprocess((v) => (v === '' || v === undefined ? 60 : v), z.coerce.number().int().min(1).max(100)),
+    /** How many days a row of the gates' shadow log (`sv_gate_shadow`) is kept; 0 keeps every row. */
+    GATE_SHADOW_KEEP_DAYS: int(90, 0),
     /** The units gate (rule R12): a currency sign on a token amount ("$0.0475 WETH"). */
     UNITS_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
     /**

@@ -13,14 +13,15 @@
  * The history: publishes of the last `SAID_KEEP_DAYS` days that completed before this code ran are read from
  * `sv_actions` once, `SAID_BACKFILL_PER_TICK` a tick, oldest first (`sweepSaid`). Where it stands is a row of
  * `sv_cursors`, written after every batch, so a restart goes on where the last tick stopped and never starts over.
- * Rows older than `SAID_KEEP_DAYS` are deleted by the same sweep, once an hour.
+ * Rows older than `SAID_KEEP_DAYS` are deleted by the same sweep, once an hour, and with them the rows of the gates'
+ * shadow log (`sv_gate_shadow`) older than `GATE_SHADOW_KEEP_DAYS`.
  *
  * Nothing here throws into a publish: a ledger that cannot be written is a warning, and the post is out either way.
  */
 import { factFingerprints, openerOf, postFacts, type PendingAction } from '@bootr/agent-core';
 import { and, desc, eq, gt, lt, ne, sql } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
-import { actions, cursors, said, type SaidKind } from './db/schema.js';
+import { actions, cursors, gateShadow, said, type SaidKind } from './db/schema.js';
 
 const DAY_MS = 24 * 3_600_000;
 /** The row of `sv_cursors` that says how far the history has been read. */
@@ -232,8 +233,10 @@ export interface SaidSweepReport {
   written: number;
   /** The history is in: nothing more is read. */
   done: boolean;
-  /** Rows deleted for their age. */
+  /** Ledger rows deleted for their age. */
   pruned: number;
+  /** Rows of the gates' shadow log deleted for their age. */
+  shadowPruned: number;
 }
 
 /** Per supervisor config (one per process; tests get their own): the history is in, and when old rows were last deleted. */
@@ -247,21 +250,24 @@ export function resetSaidSweep(config: object): void {
 }
 
 /**
- * The tick's sweep: one bounded batch of the history, and the delete of rows past their age once an hour. With the
- * ledger off (`SAID_KEEP_DAYS` at 0) it does nothing. One read of the cursor per tick while the history is not in,
- * none after that.
+ * The tick's sweep: one bounded batch of the history, and once an hour the delete of ledger rows past their age and of
+ * shadow-log rows past theirs (`GATE_SHADOW_KEEP_DAYS`; 0 keeps them all). With the ledger off (`SAID_KEEP_DAYS` at 0)
+ * only the shadow log is trimmed. One read of the cursor per tick while the history is not in, none after that.
  */
 export async function sweepSaid(ctx: Ctx, opts: { forcePrune?: boolean } = {}): Promise<SaidSweepReport> {
-  const report: SaidSweepReport = { read: 0, written: 0, done: backfilled.has(ctx.config), pruned: 0 };
+  const report: SaidSweepReport = { read: 0, written: 0, done: backfilled.has(ctx.config), pruned: 0, shadowPruned: 0 };
   const keepDays = saidKeepDays(ctx);
-  if (keepDays <= 0) return report;
   const now = ctx.now();
 
   const last = lastPrune.get(ctx.config);
   if (opts.forcePrune || last === undefined || now - last >= SAID_PRUNE_EVERY_MS) {
     lastPrune.set(ctx.config, now);
-    report.pruned = (await ctx.db.delete(said).where(lt(said.postedAt, new Date(now - keepDays * DAY_MS))).returning({ id: said.id })).length;
+    if (keepDays > 0) report.pruned = (await ctx.db.delete(said).where(lt(said.postedAt, new Date(now - keepDays * DAY_MS))).returning({ id: said.id })).length;
+    const shadowDays = ctx.config.GATE_SHADOW_KEEP_DAYS;
+    if (shadowDays > 0) report.shadowPruned = (await ctx.db.delete(gateShadow).where(lt(gateShadow.createdAt, new Date(now - shadowDays * DAY_MS))).returning({ id: gateShadow.id })).length;
+    if (report.shadowPruned) ctx.log.info({ shadowPruned: report.shadowPruned }, 'gate shadow log: old rows deleted');
   }
+  if (keepDays <= 0) return report;
 
   const perTick = ctx.config.SAID_BACKFILL_PER_TICK;
   if (report.done || !(perTick > 0)) return report;

@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createApp } from '../src/api.js';
 import { queueForApproval } from '../src/approvals.js';
-import { actions, cursors, said } from '../src/db/schema.js';
+import { actions, cursors, gateShadow, said } from '../src/db/schema.js';
+import { logGateHit } from '../src/gate-shadow.js';
 import { signRequest } from '../src/hmac.js';
 import { SAID_BACKFILL_CURSOR, lastOriginals, recordSaid, resetSaidSweep, saidByOthers, saidRowsOf, sweepSaid, wordOverlap, wordSet } from '../src/said.js';
 import { sweepScheduled } from '../src/scheduled.js';
@@ -239,7 +240,7 @@ describe('the stored history is filled once, in bounded steps, and old rows go',
       expect((await ledger(w)).map((r) => [r.id, r.kind])).toEqual([['act_h5', 'original'], ['act_h4', 'original'], ['act_h3', 'original'], ['act_h2', 'original'], ['act_h1', 'original'], ['act_reply', 'reply']]);
       expect((await ledger(w))[0]).toMatchObject({ postedAt: new Date(T0 - 5 * DAY), postId: '805', fingerprints: ['holders:1.1e2'], facts: [{ s: 'holders', u: '', v: 105 }] });
       // Done: later ticks read nothing, not even the cursor.
-      expect(await sweepSaid(w.ctx)).toEqual({ read: 0, written: 0, done: true, pruned: 0 });
+      expect(await sweepSaid(w.ctx)).toEqual({ read: 0, written: 0, done: true, pruned: 0, shadowPruned: 0 });
     } finally {
       await w.close();
     }
@@ -284,6 +285,61 @@ describe('the stored history is filled once, in bounded steps, and old rows go',
       expect(await ledger(w)).toEqual([]);
     } finally {
       await w.close();
+    }
+  });
+});
+
+describe("the gates' shadow log is trimmed by the same hourly sweep", () => {
+  const hit = (text: string) => ({ agentId: AGENT_ID, gate: 'G1' as const, code: 'repeat_fact', actionId: 'act_1', text, enforced: false });
+  const left = async (w: TestWorld) => (await w.db.select().from(gateShadow)).map((r) => r.createdAt.getTime()).sort((a, b) => a - b);
+
+  it('deletes rows older than GATE_SHADOW_KEEP_DAYS (90 by default), once an hour, and leaves the rest', async () => {
+    const w = await makeWorld({ config: { SAID_BACKFILL_PER_TICK: '0' } });
+    try {
+      await seedAgent(w);
+      expect(w.ctx.config.GATE_SHADOW_KEEP_DAYS).toBe(90);
+      for (const [text, age] of [['a post of 91 days ago', 91 * DAY], ['a post of 89 days ago', 89 * DAY], ['a post of today', 0]] as const) {
+        w.setNow(T0 - age);
+        await logGateHit(w.ctx, hit(text));
+      }
+      w.setNow(T0);
+      expect(await sweepSaid(w.ctx)).toMatchObject({ shadowPruned: 1, pruned: 0 });
+      expect(await left(w)).toEqual([T0 - 89 * DAY, T0]);
+      // Inside the hour nothing is asked again; two days on, the row that is now too old goes.
+      w.setNow(T0 + 30 * 60_000);
+      await logGateHit({ ...w.ctx, now: () => T0 - 200 * DAY }, hit('a row written late for an old time'));
+      expect(await sweepSaid(w.ctx)).toMatchObject({ shadowPruned: 0 });
+      expect(await left(w)).toHaveLength(3);
+      w.setNow(T0 + 2 * DAY);
+      expect(await sweepSaid(w.ctx)).toMatchObject({ shadowPruned: 2 });
+      expect(await left(w)).toEqual([T0]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('GATE_SHADOW_KEEP_DAYS=0 keeps every row, and the log is trimmed with the ledger switched off', async () => {
+    const keep = await makeWorld({ config: { GATE_SHADOW_KEEP_DAYS: '0' } });
+    try {
+      await seedAgent(keep);
+      keep.setNow(T0 - 400 * DAY);
+      await logGateHit(keep.ctx, hit('a very old post'));
+      keep.setNow(T0);
+      expect(await sweepSaid(keep.ctx)).toMatchObject({ shadowPruned: 0 });
+      expect(await left(keep)).toHaveLength(1);
+    } finally {
+      await keep.close();
+    }
+    const off = await makeWorld({ config: { SAID_KEEP_DAYS: '0', GATE_SHADOW_KEEP_DAYS: '30' } });
+    try {
+      await seedAgent(off);
+      off.setNow(T0 - 31 * DAY);
+      await logGateHit(off.ctx, hit('a post of 31 days ago'));
+      off.setNow(T0);
+      expect(await sweepSaid(off.ctx)).toEqual({ read: 0, written: 0, done: false, pruned: 0, shadowPruned: 1 });
+      expect(await left(off)).toEqual([]);
+    } finally {
+      await off.close();
     }
   });
 });

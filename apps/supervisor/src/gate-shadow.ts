@@ -7,6 +7,7 @@
  * One helper, `logGateHit`, which every gate calls. It never throws and never slows a publish by more than one
  * insert: a row that cannot be written is a warning in the log and nothing else. A post found twice by the same gate
  * (a scheduled post is asked when it is scheduled and again when it is sent; a resumed step asks again) is one row.
+ * Rows older than `GATE_SHADOW_KEEP_DAYS` are deleted by the said-ledger's hourly sweep (said.ts `sweepSaid`).
  */
 import { createHash } from 'node:crypto';
 import type { SupervisorContext } from './context.js';
