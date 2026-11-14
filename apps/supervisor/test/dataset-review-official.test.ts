@@ -12,7 +12,8 @@ import { gradeOf, incidentSourced } from '../src/dataset/grades.js';
 import { OPEN_SOURCES } from '../src/dataset/sources.js';
 import { ingestSighting, mergeRecords, type IngestResult } from '../src/dataset/store.js';
 import type { RecordSource, Sighting } from '../src/dataset/types.js';
-import { D, infoOf, NOW, sighting } from './dataset-helpers.js';
+import { buildSighting } from '../src/dataset/build.js';
+import { D, infoOf, NOW, sighting, source } from './dataset-helpers.js';
 import { testDb } from './helpers.js';
 
 let db: Db;
@@ -57,6 +58,20 @@ describe('a forum is a venue, not the entity', () => {
     }
     // a feed that carries guests is nobody's voice either
     expect(OPEN_SOURCES.find((s) => s.id === 'b:hugging-face')!.officialFor).toEqual([]);
+  });
+
+  it("what a desk publishes for whoever pays is not the desk's voice: a press release or a sponsored piece is no sighting", () => {
+    const dropped = (sourceId: string, title: string, link: string) => {
+      const built = buildSighting(source(sourceId), { id: link, title, link, published: NOW.toISOString() }, NOW);
+      return 'dropped' in built ? built.dropped : 'kept';
+    };
+    expect(dropped('b:cointelegraph', 'Acme Chain launches a stablecoin for agents', 'https://cointelegraph.com/press-releases/acme-chain-launches')).toBe('scope');
+    expect(dropped('b:decrypt', 'Acme Chain launches a stablecoin for agents', 'https://decrypt.co/sponsored/acme-chain')).toBe('scope');
+    expect(dropped('b:the-block', 'Sponsored: Acme Chain launches a stablecoin for agents', 'https://www.theblock.co/post/9/acme')).toBe('scope');
+    expect(dropped('b:coindesk', 'Press release: Acme Chain launches a stablecoin for agents', 'https://www.coindesk.com/business/acme')).toBe('scope');
+    expect(dropped('b:coindesk', 'Acme Chain launches a stablecoin for agents', 'https://www.coindesk.com/business/acme')).toBe('kept');
+    // a regulator's own press release is the regulator speaking
+    expect(dropped('b:sec', 'SEC Adopts Final Rule on Custody of Crypto Assets', 'https://www.sec.gov/newsroom/press-releases/2026-117')).toBe('kept');
   });
 
   it("the reviewer's case: a topic alone on the Aave forum is grade 1, not 4", async () => {

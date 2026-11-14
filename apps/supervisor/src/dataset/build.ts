@@ -6,8 +6,9 @@
  * words. An item whose title reads like an instruction keeps its place as a sighting and loses its words.
  *
  * What is not a sighting at all: an item with no title, one older than MAX_ITEM_AGE_MS (a feed's back catalogue is not
- * news on the day Bootr first reads it), one outside the scope (matching.ts `outOfScope`), and, for a broad source
- * (`needsTopic`), one that names neither an entity of the list nor the subject (crypto, stablecoins, agents, AI).
+ * news on the day Bootr first reads it), one outside the scope (matching.ts `outOfScope`), a desk's paid content (a
+ * press release or a sponsored piece, by its title or its address), and, for a broad source (`needsTopic`), one that
+ * names neither an entity of the list nor the subject (crypto, stablecoins, agents, AI).
  */
 import { canonicalLink, cleanText, EXCERPT_MAX, EXTERNAL_ID_MAX, instructionShaped, linkKey, numbersOf, parseDate, TITLE_MAX } from './clean.js';
 import { entitiesOf, ENTITIES_MAX } from './entities.js';
@@ -19,6 +20,9 @@ import type { EventPrecision, RecordKind, RecordNumber, Sighting } from './types
 export const MAX_ITEM_AGE_MS = 7 * 86_400_000;
 
 const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|digital (?:euro|dollar|pound|currenc(?:y|ies))|cbdcs?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
+
+const PAID_TITLE = /^\W{0,3}(?:sponsored|press release|partner content|paid post|advertisement|advertorial|promoted)\b/i;
+const PAID_PATH = /\/(?:press-releases?|pressreleases?|sponsored(?:-content)?|partner-content|advertorial|branded|promoted|pr-newswire|chainwire)(?:\/|$)/i;
 
 /** What a reader hands over for one item: raw strings from the source, and what code itself already knows about it. */
 export interface RawItem {
@@ -54,6 +58,9 @@ export function buildSighting(source: OpenSource, item: RawItem, now: Date): Bui
   if (publishedAt && now.getTime() - publishedAt.getTime() > MAX_ITEM_AGE_MS) return { dropped: 'old' };
   if (!publishedAt && !item.undated && !item.eventTime) return { dropped: 'old' };
   if (outOfScope(title)) return { dropped: 'scope' };
+  // What a desk publishes for whoever pays (a press release, a sponsored piece) is not the desk carrying an event: two
+  // desks running one paid release would otherwise be "two independent groups".
+  if (!source.officialFor.length && (PAID_TITLE.test(title) || (typeof item.link === 'string' && PAID_PATH.test(item.link.slice(0, 500))))) return { dropped: 'scope' };
   const rawExcerpt = cleanText(item.summary, EXCERPT_MAX);
   const about = `${title} ${rawExcerpt} ${cleanText(item.about, 300)}`;
   const named = entitiesOf(about);
