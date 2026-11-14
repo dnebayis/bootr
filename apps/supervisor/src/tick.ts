@@ -37,6 +37,7 @@ import { readAgentChainState, readTreasuryOnChain, reconcileOps, runFeePolicy, t
 import { openServiceCalls, reconcileServiceCall } from './services.js';
 import { bountyConversationIds, sweepBounties } from './bounties.js';
 import { applyScheduled, sweepScheduled } from './scheduled.js';
+import { recordSaidOfPending, sweepSaid } from './said.js';
 import type { Logger } from './log.js';
 import { isOwn } from './own/registry.js';
 import { expireOwnTurn } from './own/turns.js';
@@ -95,6 +96,12 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await sweepScheduled(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'scheduled posts sweep failed');
+  }
+  // The said-ledger: one batch of the stored history until it is in, and old rows deleted once an hour (said.ts).
+  try {
+    await sweepSaid(ctx);
+  } catch (err) {
+    ctx.log.error({ err }, 'said-ledger sweep failed');
   }
 
   // Awake runtimes by `nextAt`. Sleeping ones are not among them: a sleeping agent never moves its `nextAt`, so ten
@@ -531,6 +538,8 @@ export async function reconcilePending(ctx: SupervisorContext, agent: AgentRow, 
     .update(actions)
     .set({ status: settled.status, result: (settled.result as unknown as Record<string, unknown>) ?? null, receipt: (resolution.receipt as Record<string, unknown> | undefined) ?? null, updatedAt: new Date(ctx.now()) })
     .where(eq(actions.actionId, pending.id));
+  // A publish whose outcome was unknown and proved sent is on the said-ledger from here on (said.ts).
+  await recordSaidOfPending(ctx, agent.agentId, settled);
   const status = runtime.status === 'held' ? 'waiting' : runtime.status;
   ctx.log.info({ agentId: agent.agentId, actionId: pending.id, status: settled.status }, 'pending action reconciled');
   await saveRuntime(ctx, agent.agentId, { pending: settled as unknown as Record<string, unknown>, status, nextAt: new Date(ctx.now()) });

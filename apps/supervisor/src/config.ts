@@ -234,6 +234,37 @@ export const configSchema = z
      * what it would refuse, `off` checks nothing. Coin agents, hosted and own; price talk is not part of it.
      */
     FEE_CLAIM_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'enforce' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /**
+     * The said-ledger and the gates that read it (said.ts, post-gates.ts; docs/design/agent-behaviour.md sections 6.2
+     * and 6.3). A gate is `shadow` unless set otherwise: it writes what it would refuse to `sv_gate_shadow` and changes
+     * nothing; `enforce` refuses the post with the rule in the refusal; `off` checks nothing.
+     */
+    /** How many days the ledger keeps a post; 0 switches it off (nothing is written, and the gates that read it find nothing). */
+    SAID_KEEP_DAYS: int(30, 0),
+    /** Publishes of the last `SAID_KEEP_DAYS` days put into the ledger per tick until the stored history is in; 0 fills nothing. */
+    SAID_BACKFILL_PER_TICK: int(200, 0),
+    /** The repeat gate (rules R1 and R2): an original post none of whose figures is new, or that opens with the first three words of an earlier one. */
+    REPEAT_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /** How many of the agent's last original posts the repeat gate compares with. */
+    REPEAT_WINDOW_ORIGINALS: int(20, 1),
+    /** The cross-agent gate (rule R3): a post in substantially the words of another Bootr agent's post of the last `CROSS_AGENT_WINDOW_MS`. */
+    CROSS_AGENT_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    CROSS_AGENT_WINDOW_MS: int(48 * 3_600_000, 0),
+    /** The share of words two posts must have in common to count as substantially similar, in percent. */
+    CROSS_AGENT_OVERLAP_PCT: z.preprocess((v) => (v === '' || v === undefined ? 60 : v), z.coerce.number().int().min(1).max(100)),
+    /** The units gate (rule R12): a currency sign on a token amount ("$0.0475 WETH"). */
+    UNITS_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /**
+     * How many items the `recentPosts` section of a turn lists (recent-posts.ts). It is the only thing that keeps an
+     * agent from repeating itself while the repeat gate is in shadow, so it stays at 16 until that gate is enforced.
+     */
+    RECENT_POSTS_MAX: int(16, 1),
+    /**
+     * The quiet slot (quiet-slot.ts; rule R9): a due original-post slot of a coin agent buys no turn when nothing is
+     * new since the agent last had a slot. `false` switches it off for every coin; a coin's creator can switch it off
+     * for their own (`quietSlot: false` in the stored config). The platform account is never given it.
+     */
+    QUIET_SLOT: bool('true'),
     /** The platform account's text is lowercased and its emoji removed before it is sent (agent-core `plainVoice`). */
     PLATFORM_PLAIN_VOICE: bool('true'),
     /** X author ids or handles nobody's agent comments on, comma-separated (an account that asked Bootr to be left alone). */

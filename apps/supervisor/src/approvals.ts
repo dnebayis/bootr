@@ -38,6 +38,7 @@ import { decideScheduled, isScheduledApproval } from './scheduled.js';
 import { SenderError, type ReplyEligibility } from './sender-client.js';
 import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
+import { recordSaid } from './said.js';
 
 /** A pending item the creator never looked at is rejected ("expired") after this long. */
 export const APPROVAL_TTL_MS = 48 * 3_600_000;
@@ -527,6 +528,8 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
       updatedAt: now,
     })
     .onConflictDoNothing();
+  // An approved post that is on X is on the said-ledger from here on (said.ts); one the sender still holds is not known sent.
+  if (sent.senderStatus === 'sent') await recordSaid(ctx, { agentId: agent.agentId, actionId: `${row.id}-approved`, action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}) } }, result: sent.result, at: now });
   const [updated] = await ctx.db
     .update(approvals)
     .set({ status: 'approved', decision: 'approve', decidedBy: by, note: sent.senderStatus === 'sent' ? note : `${note ? `${note} · ` : ''}sender ${sent.senderStatus}`, postId, decidedAt: now })

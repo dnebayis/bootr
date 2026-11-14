@@ -62,6 +62,7 @@ import { QUESTION_LOOKBACK, asksQuestion } from './recent-posts.js';
 import { creditsHold, forbiddenHold, formatQuietHours, isXCreditsError, isXForbiddenError, originalPostGate, parseQuietHours, quietUntil, quotaHold, type Hold, type QuietHours, type RhythmSchedule } from './rhythm.js';
 import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
+import { recordSaid } from './said.js';
 import { threadLimits } from './thread-send.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
@@ -896,6 +897,8 @@ async function closeSent(ctx: SupervisorContext, agent: AgentRow, lease: string,
       updatedAt: now,
     })
     .onConflictDoNothing();
+  // A scheduled post that went out is on the said-ledger from here on (said.ts).
+  await recordSaid(ctx, { agentId: agent.agentId, actionId, action: publishActionOf(row), result, at: now });
   await ctx.db.update(scheduledPosts).set({ status: 'sent', postId, error: null, updatedAt: now }).where(and(eq(scheduledPosts.id, row.id), eq(scheduledPosts.status, 'sending')));
   if (postId) await ctx.db.update(approvals).set({ postId }).where(and(eq(approvals.id, row.id), eq(approvals.status, 'approved')));
   await settleOnState(ctx, agent, lease, row, { actionId, tool: 'publish_post', status: 'completed', result });
@@ -1147,6 +1150,7 @@ async function settleLate(ctx: SupervisorContext, row: ScheduledRow): Promise<bo
       updatedAt: new Date(ctx.now()),
     })
     .onConflictDoNothing();
+  await recordSaid(ctx, { agentId: row.agentId, actionId, action: publishActionOf(row), result: sent, at });
   ctx.log.info({ agentId: row.agentId, scheduledId: row.id, postId }, 'scheduled post of unknown outcome proved sent: put on the record from its receipt');
   return true;
 }

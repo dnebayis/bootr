@@ -656,3 +656,65 @@ export const agentGrants = pgTable(
   },
   (t) => [uniqueIndex('sv_agent_grants_user_code_idx').on(t.userCode)],
 );
+
+/** What a row of the said-ledger is: a single post or the first post of a thread, a later post of a thread, or a reply. */
+export const saidKinds = ['original', 'thread_part', 'reply'] as const;
+export type SaidKind = (typeof saidKinds)[number];
+
+/**
+ * The said-ledger (said.ts; docs/design/agent-behaviour.md section 6.2): one row per post that reached X, written by
+ * code when its publish completes, whichever way it went out (sent at once, approved from the review queue, sent by
+ * the scheduler) and whoever thought (a hosted or an own agent). It holds what the post said as code compares it, not
+ * its text: the fact fingerprints, the numbers behind them as written, the first three words, and the word set the
+ * cross-agent check reads. The repeat gate, the cross-agent gate and the weekly check read it. Rows older than
+ * `SAID_KEEP_DAYS` are deleted.
+ */
+export const said = pgTable(
+  'sv_said',
+  {
+    /** The `sv_actions` row of the publish for a single post, a reply or the first post of a thread; `<that id>.t<n>` for post n of a thread. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    /** The `sv_actions` row the post is recorded under; all posts of a thread share it. */
+    actionId: text('action_id').notNull(),
+    /** The post on X; null when the sender did not say. */
+    postId: text('post_id'),
+    kind: text('kind', { enum: saidKinds }).notNull(),
+    postedAt: ts('posted_at').notNull(),
+    /** agent-core `factFingerprints` of the post's text. */
+    fingerprints: jsonb('fingerprints').$type<string[]>().notNull().default([]),
+    /** agent-core `postFacts`: every number with its subject, its unit and the value as written (`s`, `u`, `v`). */
+    facts: jsonb('facts').$type<{ s: string; u: string; v: number }[]>().notNull().default([]),
+    /** agent-core `openerOf`: the first three words. */
+    opener: text('opener').notNull().default(''),
+    /** The post's words without the common ones, sorted (said.ts `wordSet`): what another agent's post is compared with. */
+    words: jsonb('words').$type<string[]>().notNull().default([]),
+    /** The dataset records the post cited; empty until records exist. */
+    recordIds: jsonb('record_ids').$type<string[]>().notNull().default([]),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('sv_said_agent_posted_idx').on(t.agentId, t.postedAt), index('sv_said_posted_idx').on(t.postedAt)],
+);
+
+/**
+ * What a publish gate found (gate-shadow.ts; docs/design/agent-behaviour.md section 6.3 and measure M10): one row per
+ * post a gate refused (`enforced`) or, in shadow, would have refused. `gate` is the gate's id in the design note
+ * (`G1` repeat, `G3` fee claims, `G4` cross-agent, `G6` units), `code` the head of its refusal, `action_id` the
+ * `sv_actions` row of the publish, `text_hash` approvals.ts `textHash` of the post, `detail` what the gate matched.
+ * The same post found twice by the same gate (at scheduling and again at the send, or a repeated call) is one row.
+ */
+export const gateShadow = pgTable(
+  'sv_gate_shadow',
+  {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    gate: text('gate').notNull(),
+    code: text('code').notNull(),
+    actionId: text('action_id'),
+    textHash: text('text_hash').notNull(),
+    detail: jsonb('detail').$type<Record<string, unknown>>().notNull().default({}),
+    enforced: boolean('enforced').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('sv_gate_shadow_agent_created_idx').on(t.agentId, t.createdAt), index('sv_gate_shadow_gate_created_idx').on(t.gate, t.createdAt)],
+);

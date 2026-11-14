@@ -78,6 +78,7 @@ import { settlePlatformUpdate } from '../platform-updates.js';
 import { creditsHold, forbiddenHold, quotaHold } from '../rhythm.js';
 import { voicedAction } from '../platform-voice.js';
 import { LEASE_MS, acquireLease, releaseLease, saveRuntime, scheduleFor, trimState, type AgentState, type OwnCallRecord, type Turn } from '../runtime.js';
+import { recordSaidOfPending } from '../said.js';
 import type { SenderInboxItem } from '../sender-client.js';
 import { budgetOpensAt, countUse, usedInWindow } from './budget.js';
 import { forgetStatusReads, statusReads } from './status-cache.js';
@@ -278,6 +279,8 @@ async function settlePending(s: Session): Promise<ActionResult | null> {
       .update(actions)
       .set({ status: pending.status, result: (pending.result as unknown as Record<string, unknown>) ?? null, receipt: (pending.result?.receipt as Record<string, unknown> | undefined) ?? null, updatedAt: new Date(s.ctx.now()) })
       .where(eq(actions.actionId, pending.id));
+    // A post or a reply that went out is on the said-ledger from here on (said.ts), as a hosted agent's is.
+    await recordSaidOfPending(s.ctx, s.agent.agentId, pending);
   }
   const settled = settleCycle(s.broker);
   s.broker = settled.runtime;

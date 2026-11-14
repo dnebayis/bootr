@@ -56,6 +56,7 @@ import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
 import { postPerformanceSection } from './post-performance.js';
 import { recentPostsSection } from './recent-posts.js';
+import { recordSaidOfPending } from './said.js';
 import { noteSeen, seenInResult, type SeenPost } from './comment-posts.js';
 import { voicedAction } from './platform-voice.js';
 import { POST_SCHEDULED_SOON_RE } from './thread-send.js';
@@ -711,6 +712,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
         .update(actions)
         .set({ status: pending.status, result: (pending.result as unknown as Record<string, unknown>) ?? null, receipt: (pending.result?.receipt as Record<string, unknown> | undefined) ?? null, updatedAt: new Date(ctx.now()) })
         .where(eq(actions.actionId, pending.id));
+      // A post or a reply that went out is on the said-ledger from here on (said.ts).
+      await recordSaidOfPending(ctx, agent.agentId, pending);
     }
     const settled = settleCycle(broker);
     broker = settled.runtime;
