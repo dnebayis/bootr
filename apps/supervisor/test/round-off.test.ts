@@ -28,6 +28,13 @@ const without = (o: Record<string, unknown>, keys: readonly string[]) => Object.
 /** The tools the round added to a hosted social turn, and the observation sections it added or renamed. */
 const NEW_TOOLS = ['note_what_works', 'schedule_post', 'scheduled_list', 'scheduled_cancel'];
 const NEW_SECTIONS = ['coinToday', 'scheduled', 'whatWorks', 'yourCoin', 'openReplies'];
+/**
+ * Tools changed on purpose since the recording, by work that has no off switch because it reaches every agent through
+ * the tool itself. `remember` (2026-11-15, docs/design/agent-behaviour.md section 6.2): a new description, and the
+ * fields `kind`, `subject`, `dueAt`, `done` and `more` beside the three it had, whose shapes are the recording's.
+ */
+const CHANGED_SINCE = ['remember'];
+const unchanged = (tools: unknown[]): unknown[] => (tools as { function: { name: string } }[]).filter((t) => !CHANGED_SINCE.includes(t.function.name));
 
 describe('every limit of the round at 0: a hosted turn is the base\'s, value for value', () => {
   for (const scenario of BASE_TURN_SCENARIOS) {
@@ -36,7 +43,12 @@ describe('every limit of the round at 0: a hosted turn is the base\'s, value for
       const now = await recordTurn(scenario, ROUND_OFF);
       expect(now.system).toBe(before.system);
       expect(names(now.tools)).toEqual(names(before.tools));
-      expect(now.tools).toEqual(before.tools);
+      expect(unchanged(now.tools)).toEqual(unchanged(before.tools));
+      // ...and `remember` kept every field it had, as it was: a call that was valid at the base is valid now.
+      const remembered = (tools: unknown[]) => (byName(tools).get('remember') as unknown as { function: { parameters: { properties: Record<string, unknown>; required: string[] } } }).function.parameters;
+      for (const field of ['text', 'sources', 'tags']) expect(remembered(now.tools).properties[field], field).toEqual(remembered(before.tools).properties[field]);
+      expect(remembered(now.tools).required).toEqual(remembered(before.tools).required);
+      expect(Object.keys(remembered(now.tools).properties)).toEqual(['text', 'sources', 'tags', 'kind', 'subject', 'dueAt', 'done', 'more']);
       expect(Object.keys(now.observation).sort()).toEqual(Object.keys(before.observation).sort());
       expect(now.observation).toEqual(before.observation);
     });
@@ -64,7 +76,7 @@ describe('with the defaults the same turns differ by what the round added, and b
     // every tool that existed is the same but publish_post, which gained fields and sentences
     const was = byName(before.tools);
     for (const [name, tool] of byName(now.tools)) {
-      if (NEW_TOOLS.includes(name) || name === 'publish_post') continue;
+      if (NEW_TOOLS.includes(name) || CHANGED_SINCE.includes(name) || name === 'publish_post') continue;
       expect(tool, name).toEqual(was.get(name));
     }
     const publish = byName(now.tools).get('publish_post') as unknown as { function: { description: string; parameters: { properties: Record<string, unknown> } } };
