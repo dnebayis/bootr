@@ -53,6 +53,29 @@ describe('feeClaimProblem', () => {
     for (const text of ['These new ones bailed at the first -9%.', 'Retest hit -18% now. Watch the next 48 hours.', 'Shallow entries that came in at $5.48 are already out.']) expect(kind(text), text).toBeNull();
   });
 
+  it('does not refuse true sentences that only look like a split (found by the security review)', () => {
+    for (const text of [
+      'This agent is 100% autonomous.',
+      'The agent is 100% onchain and pays for its own thoughts.',
+      'Bootr is 100% live on Base.',
+      'Volume is up 35% for the agent this week.',
+      'Trades are up 35% for the agent this week.',
+      'Holders who post the best meme get paid 1 USDC from the bounty.',
+      'Six holders received USDC from the bounty this week.',
+    ])
+      expect(kind(text), text).toBeNull();
+  });
+
+  it('is not talked past by a stray denial, a question mark, a spelled-out percent or a look-alike letter', () => {
+    expect(kind('Not financial advice: holders earn 58.5% of every trade as WETH.')).toBe('holders');
+    expect(kind('Did you know holders earn 58.5% of every trade as WETH?')).toBe('holders');
+    expect(kind('58.5 percent of each trade goes to the creator.')).toBe('of_trade');
+    expect(kind('H\u043elders earn fees on every trade here.')).toBe('holders');
+    // a denial right at the claim still counts as one
+    expect(kind('Holders do not earn fees here, whatever you read elsewhere.')).toBeNull();
+    expect(kind('To be clear, no fee goes to holders.')).toBeNull();
+  });
+
   it('says nothing without a split, and lets holders be paid on a coin with holder dividends', () => {
     expect(kind('Six holders here already collect from the fee engine.', null)).toBeNull();
     const dividends: CoinFeeSplit = { ...split, recipientsPct: { ...split.recipientsPct, holderDividends: 20 } };
