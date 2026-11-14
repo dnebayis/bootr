@@ -19,6 +19,7 @@ import { relayImageModels } from './image-models.js';
 import { imageModelOf, imageStyleOf } from './images.js';
 import { storedWorkerPreset, withCreatorIdentity, withWorkerPreset, type ResolvedWorker } from './onboarding.js';
 import { isOwn, ownHooks } from './own/registry.js';
+import { quietSlotOf } from './quiet-slot.js';
 import { postsPerDayOf } from './post-budget.js';
 import { decideModelOf } from './routing.js';
 import { treasuryTurnOn } from './roles.js';
@@ -94,6 +95,13 @@ export interface AgentConfigView {
    */
   openReplies: { questionsFromAnyone: boolean; perDay: number };
   /**
+   * The quiet slot (quiet-slot.ts): when a post slot comes due and nothing is new since the agent last had one (its
+   * coin stood still, nobody wrote, the creator asked for nothing), no turn is bought and nothing is posted until the
+   * next slot. On unless the creator switched it off (`quietSlot: false` in the stored config). Null for the platform
+   * account, which is never given it.
+   */
+  quietSlot: boolean | null;
+  /**
    * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
    * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
    * rotation scan will rotate the key (at most once a day) so a power switched on here reaches the chain without
@@ -168,7 +176,7 @@ export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentI
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel' | 'comments' | 'reply audience';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel' | 'comments' | 'reply audience' | 'quiet slot';
 
 /** The stored `comments` switch: on unless it is exactly false. */
 export function commentsOf(config: Record<string, unknown>): boolean {
@@ -256,6 +264,7 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     comments: commentsOf(config),
     replyAudience: replyAudienceOf(config, replies.audience),
     openReplies: { questionsFromAnyone: replies.questionsFromAnyone, perDay: replies.perDay },
+    quietSlot: config.platform === true ? null : quietSlotOf(config),
     sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
@@ -296,6 +305,8 @@ export interface ConfigUpdateBody {
   comments?: unknown;
   /** Who gets a reply: `verified` or `own_threads`. */
   replyAudience?: unknown;
+  /** The quiet slot, on or off (boolean): off posts at every slot whether or not anything is new. */
+  quietSlot?: unknown;
 }
 
 /** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
@@ -535,6 +546,16 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (body.replyAudience !== replyAudienceOf(before, ctx.config.REPLY_AUDIENCE_DEFAULT)) {
       config.replyAudience = body.replyAudience;
       fields.push('reply audience');
+    }
+  }
+
+  // The quiet slot: a plain boolean, as comments are. Off is stored as false; on again as true (absent also means on).
+  if (body.quietSlot !== undefined) {
+    if (typeof body.quietSlot !== 'boolean') return reject(400, 'invalid_quiet_slot', 'quietSlot must be true or false');
+    if (before.platform === true) return reject(400, 'quiet_slot_not_offered', 'the platform account has no quiet slot');
+    if (body.quietSlot !== quietSlotOf(before)) {
+      config.quietSlot = body.quietSlot;
+      fields.push('quiet slot');
     }
   }
 

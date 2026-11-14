@@ -38,6 +38,7 @@ import { openServiceCalls, reconcileServiceCall } from './services.js';
 import { bountyConversationIds, sweepBounties } from './bounties.js';
 import { applyScheduled, sweepScheduled } from './scheduled.js';
 import { recordSaidOfPending, sweepSaid } from './said.js';
+import { markQuietSlot, quietSlot } from './quiet-slot.js';
 import type { Logger } from './log.js';
 import { isOwn } from './own/registry.js';
 import { expireOwnTurn } from './own/turns.js';
@@ -377,11 +378,26 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // one-tick credits hold of a 402 mention read is not on the state and never reaches the model, so it is not tracked.
     if (trackHoldEnd(state, stateHold, now)) await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
     // A slot that a scheduled post covers is not due either (scheduled.ts `applyScheduled`): no thought is bought for it.
-    const schedule = applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
+    const slot = async () => applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
+    let schedule = await slot();
     // A turn the runtime just ended: only something it has not seen may wake the agent before its `nextAt`.
     const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
     const pending = runtime.pending as unknown as PendingAction | null;
     const status: RuntimeStatus = runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : runtime.status === 'running' ? 'working' : 'waiting';
+    // The quiet slot (quiet-slot.ts): a coin agent's due slot buys no turn when nothing is new since its last one (its
+    // own coin stood still, nobody wrote, the creator asked for nothing). The slot is then spent like one the agent
+    // passed on, and the wake moves to the next slot, so nothing is asked again before it.
+    const quiet = await quietSlot(ctx, agent, state, {
+      due: status === 'waiting' && !runtime.turn && pending?.status !== 'held' && !!schedule?.due && schedule.mayCompose && !ended?.postDue,
+      mentionWaiting: !quota && wakeable.some((v) => v.eligible),
+      configChanged: !runtime.lastDecisionAt || (runtime.lastDecisionRevision ?? -1) !== config.revision,
+    });
+    if (quiet.skipped) {
+      schedule = await slot();
+      const nextAt = schedule && schedule.nextAt > runtime.nextAt.getTime() ? new Date(schedule.nextAt) : runtime.nextAt;
+      await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown>, nextAt });
+      runtime = { ...runtime, nextAt };
+    }
     const decision = wakeDecision({
       now,
       enabled: agent.status === 'active',
@@ -446,7 +462,9 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // A persisted turn resumes in its own role (runtime.ts `continueTurn`); the line says which when it is not the social one.
     const resumedRole = (runtime.turn as { role?: unknown } | null)?.role;
     log.info({ reasons: decision.reasons, pendingReply: pendingReplyDue(views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })), now), ...(resumedRole === 'treasury' ? { role: 'treasury', resumed: true } : {}) }, 'waking');
-    const market = await ctx.indexer.market(agent.token);
+    const market = quiet.market !== undefined ? quiet.market : await ctx.indexer.market(agent.token);
+    // A new turn that holds a due slot: what it is shown is what the next slot is measured against (quiet-slot.ts).
+    if (!runtime.turn && decision.reasons.includes('original_post_due')) markQuietSlot(ctx, agent, config, state, market, now);
     // A new turn that a mention woke: the Bootr agents among its authors are counted against their wakes of the day.
     if (!runtime.turn && !quota && decision.reasons.includes('pending_mention')) {
       const woke = recordPeerWakes(wakeable, directory, agent.agentId, state.peerWakes, now);

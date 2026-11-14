@@ -25,6 +25,7 @@ import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsErro
 import { roleTools } from '../roles.js';
 import { accountPremium, afterSettledAction, buildFirstObservation, scheduleFor, socialCheckpoint, trackHoldEnd, type Turn, type TurnInputs } from '../runtime.js';
 import { applyScheduled, scheduledTimes } from '../scheduled.js';
+import { markQuietSlot, quietSlot, quietWakeFloor } from '../quiet-slot.js';
 import { SenderError, type SenderInboxItem } from '../sender-client.js';
 import { readTreasuryOnChain } from '../treasury.js';
 import { settleWeeklyDigest, weeklyDigestWake, type WeeklyDigestPlan } from '../weekly-digest.js';
@@ -87,22 +88,38 @@ async function socialWake(call: OwnCall): Promise<SocialWake> {
   // A hold the model was told about that is no longer on the state is marked ended; the engine writes the state back.
   trackHoldEnd(state, stateHold, now);
   // A slot that a scheduled post covers is not due: the client is not told a post is due (scheduled.ts `applyScheduled`).
-  const schedule = applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
+  const slot = async () => applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
+  let schedule = await slot();
   // A turn the server just closed: only something it has not seen makes the role due before its `nextAt`.
   const ended = state.runtimeEnded && state.runtimeEnded.until > now ? state.runtimeEnded : null;
   const pending = runtime.pending as unknown as PendingAction | null;
   const blocked = agent.status !== 'active' || runtime.status === 'paused' || pending?.status === 'held';
   const status: RuntimeStatus = pending?.status === 'held' || runtime.status === 'held' ? 'blocked' : runtime.status === 'paused' ? 'paused' : 'waiting';
-  const scheduledAt = quota ? Math.max(runtime.nextAt.getTime(), quota.until) : runtime.nextAt.getTime();
+  // A Bootr agent whose mentions already made this role due `PEER_WAKE_CAP` times today makes it due no more (agent-directory.ts).
+  // Mentions from outside the verified audience make it due at most `OPEN_REPLIES_PER_DAY` times a day between them, as in the tick.
+  const waking = quota ? [] : wakeViews(views, directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state)).filter((v) => !ended?.postIds.includes(v.postId));
+  // Requests the creator filed in the private chat while the coin was hosted are still there after a switch.
+  const requests = await openRequests(ctx, agent.agentId, 'social').catch(() => [] as CreatorRequest[]);
+  // The quiet slot (quiet-slot.ts), the tick's rule for a hosted coin: with nothing new since the agent last had a
+  // slot, the client is not told a post is due, and the slot is spent (the engine writes the state back).
+  const quiet = await quietSlot(ctx, agent, state, {
+    due: !blocked && !runtime.turn && !!schedule?.due && schedule.mayCompose && !ended?.postDue,
+    mentionWaiting: waking.some((v) => v.eligible),
+    configChanged: !runtime.lastDecisionAt || (runtime.lastDecisionRevision ?? -1) !== config.revision,
+    creatorRequest: requests.length > 0,
+  });
+  if (quiet.skipped) schedule = await slot();
+  // The wake the client asked for at its last finish was that slot (a coin agent's wake never comes before it): spent
+  // with it, so the role is not due for the wake alone, and the next slot is when the client is told to look again.
+  const quietUntil = quietWakeFloor(state, runtime.nextAt.getTime(), schedule?.nextAt);
+  const scheduledAt = Math.max(quota ? Math.max(runtime.nextAt.getTime(), quota.until) : runtime.nextAt.getTime(), quietUntil);
   const decision = wakeDecision({
     now,
     enabled: agent.status === 'active',
     status,
     nextAt: scheduledAt,
     leaseUntil: null,
-    // A Bootr agent whose mentions already made this role due `PEER_WAKE_CAP` times today makes it due no more (agent-directory.ts).
-    // Mentions from outside the verified audience make it due at most `OPEN_REPLIES_PER_DAY` times a day between them, as in the tick.
-    inbox: quota ? [] : wakeViews(views, directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state)).filter((v) => !ended?.postIds.includes(v.postId)).map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
+    inbox: waking.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })),
     replyRetryDue: false,
     schedule: schedule ? { due: schedule.due, nextAt: schedule.nextAt, mayCompose: schedule.mayCompose && !ended?.postDue } : null,
     continuation: !!state.continuation,
@@ -114,8 +131,6 @@ async function socialWake(call: OwnCall): Promise<SocialWake> {
   const digest = await weeklyDigestWake(ctx, agent, config, state, schedule, status, now, decision);
   const numbers = await platformNumbersWake(ctx, agent, config, state, schedule, status, now, decision);
 
-  // Requests the creator filed in the private chat while the coin was hosted are still there after a switch.
-  const requests = await openRequests(ctx, agent.agentId, 'social').catch(() => [] as CreatorRequest[]);
   const shownUntil = runtime.lastDecisionAt ? runtime.lastDecisionAt.getTime() : 0;
   const newRequest = requests.some((r) => Date.parse(r.createdAt) > shownUntil);
   const reasons = decision.run ? [...decision.reasons] : [];
@@ -169,6 +184,8 @@ export const ownSocialRole: OwnRoleHandler = {
     settlePlatformUpdate(config, state, runtime.pending as unknown as PendingAction | null, now);
     const update = offerPlatformUpdate(config, state, now, !!wake.schedule?.due && !wake.digest && !wake.numbers);
     const [treasury, market] = await Promise.all([readTreasuryOnChain(ctx, agent).catch(() => null), ctx.indexer.market(agent.token).catch(() => null)]);
+    // A turn that holds a due slot: what it is shown is what the next slot is measured against (quiet-slot.ts).
+    if (opts.reasons.includes('original_post_due')) markQuietSlot(ctx, agent, config, state, market, now);
     const inputs: TurnInputs = { reasons: opts.reasons, inbox, schedule: wake.schedule, treasury, market, directory: wake.directory, digest: wake.digest, numbers: wake.numbers, bountyConversations: wake.bountyConversations, creatorRequests };
     const full = await buildFirstObservation(ctx, agent, config, state, inputs, catalog, wake.directory, update, premium, catalog);
     // Clients cap a tool result well under what the hosted model is given: the same compaction, to a smaller budget.
