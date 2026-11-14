@@ -23,9 +23,12 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
-import { parseAnswers, printScript, runQueries, toInput, type Window } from '../src/behaviour-check/database.js';
+import { READ_COMPLETE, STATEMENT_TIMEOUT, parseAnswers, printScript, runQueries, toInput, type Window } from '../src/behaviour-check/database.js';
 import { DAY_MS, renderTable } from '../src/behaviour-check/measures.js';
 import { PUBLIC_SOURCES, readPublic, type PublicSources } from '../src/behaviour-check/public.js';
+
+/** What `--answers` says when the script's output has no closing line. */
+export const STOPPED_EARLY = `the read stopped before its end, so no table is printed: the answers hold no "${READ_COMPLETE}" line. Look at what psql wrote: "canceling statement due to statement timeout" means a statement ran past ${STATEMENT_TIMEOUT} and was stopped by the database (take a shorter window, or run it at a quieter hour); any other ERROR line names what failed.`;
 
 export interface Args {
   mode: 'public' | 'database';
@@ -89,12 +92,16 @@ export async function run(args: Args, env: NodeJS.ProcessEnv, deps: { now: () =>
   if (args.printSql) return [printScript(windowOf(args.agents[0]!))];
   if (args.answers) {
     const text = args.answers === '-' ? deps.readStdin() : readFileSync(args.answers, 'utf8');
-    return [renderTable(toInput(parseAnswers(text), windowOf(args.agents[0]!), deps.now()))];
+    const answers = parseAnswers(text);
+    // A script that was stopped part way would otherwise print a table whose missing parts read as zeros.
+    if (!answers[READ_COMPLETE]) throw new Error(STOPPED_EARLY);
+    return [renderTable(toInput(answers, windowOf(args.agents[0]!), deps.now()))];
   }
   const url = env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is required for the database mode (or use --print-sql and --answers; see docs/dev/behaviour-check.md)');
-  // The session refuses writes whatever role the address names; the read's own transaction is read only as well.
-  const client = new pg.Client({ connectionString: url, options: '-c default_transaction_read_only=on -c statement_timeout=120000' });
+  // The session refuses writes whatever role the address names; the read's own transaction is read only as well, and
+  // sets the statement time limit for itself (database.ts `STATEMENT_TIMEOUT`).
+  const client = new pg.Client({ connectionString: url, options: '-c default_transaction_read_only=on' });
   await client.connect();
   try {
     const out: string[] = [];

@@ -7,13 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { describe, expect, it } from 'vitest';
-import { AGENT_RE, parseAnswers, printScript, runQueries, statements, toInput } from '../src/behaviour-check/database.js';
+import { AGENT_RE, READ_COMPLETE, STATEMENT_TIMEOUT, parseAnswers, printScript, runQueries, statements, toInput } from '../src/behaviour-check/database.js';
 import { DAY_MS, NEEDS_DATABASE, asSection22, errorCode, measure, namesSource, percentile, renderTable, repeatRate, sameOpener, shapesOf, turnsFromSteps, type CheckInput, type PostRow } from '../src/behaviour-check/measures.js';
 import { embedToken, findCoin, readPublic, readTape, type PublicDeps } from '../src/behaviour-check/public.js';
 import { actions, approvals, inference, memories, turns } from '../src/db/schema.js';
 import { thoughtsByModel } from '../src/inference.js';
 import { errorCodeOf } from '../src/runtime.js';
-import { USAGE, parseArgs, run } from '../scripts/behaviour-check.js';
+import { STOPPED_EARLY, USAGE, parseArgs, run } from '../scripts/behaviour-check.js';
 import { AGENT_ID, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 
 const FROM = Date.parse('2026-11-08T00:00:00Z');
@@ -384,7 +384,7 @@ describe('the database read', () => {
     expect(script).toContain("agent_id = '1153600'");
     expect(script).toContain("'2026-11-08T00:00:00.000Z'::timestamptz");
     // Nothing but selects, the transaction and psql's own output settings.
-    for (const l of lines) expect(l).toMatch(/^(?:--|\\set ON_ERROR_STOP on$|\\pset (?:tuples_only on|format unaligned)$|begin transaction read only;$|rollback;$|\\if :has_\w+$|\\endif$|select )/);
+    for (const l of lines) expect(l).toMatch(/^(?:--|\\set ON_ERROR_STOP on$|\\pset (?:tuples_only on|format unaligned)$|begin transaction read only;$|set local statement_timeout = '120s';$|rollback;$|\\if :has_\w+$|\\endif$|select )/);
     expect(script).not.toMatch(/\b(?:insert|update|delete|drop|alter|create|truncate|grant|copy)\b/i);
 
     // psql's output: one JSON line per statement, between lines that are not answers.
@@ -567,11 +567,94 @@ describe('the command line', () => {
     expect(tables[0]).toMatch(/^Behaviour check: @playclankfish, agent 1171616, \$CLANKFISH; 2026-11-08 to 2026-11-15/);
     const [script] = await run(parseArgs(['database', '--agent', '1171616', '--from', '2026-11-08', '--to', '2026-11-15', '--print-sql'], NOW), {}, deps());
     expect(script).toBe(printScript({ agent: '1171616', from: FROM, to: TO }));
-    const answers = '{"q": "tables", "rows": [{"sv_turns": true, "sv_gate_shadow": true, "sender_actions": true, "sender_inbox": true}]}\n{"q": "agent", "rows": [{"id": "1171616", "handle": "playclankfish", "symbol": "CLANKFISH", "platform": false}]}\n';
+    const answers = '{"q": "tables", "rows": [{"sv_turns": true, "sv_gate_shadow": true, "sender_actions": true, "sender_inbox": true}]}\n{"q": "agent", "rows": [{"id": "1171616", "handle": "playclankfish", "symbol": "CLANKFISH", "platform": false}]}\n{"q": "complete", "rows": [{"complete": true}]}\n';
     const [table] = await run(parseArgs(['database', '--agent', '1171616', '--from', '2026-11-08', '--to', '2026-11-15', '--answers', '-'], NOW), {}, deps({ readStdin: () => answers }));
     expect(table).toMatch(/^Behaviour check: @playclankfish, agent 1171616, \$CLANKFISH; .* database mode/);
     expect(table).toContain('| M10 | Would-refuse counts | no gate fired |');
+    // Answers without the closing line are a read that was stopped part way (a statement past the time limit, say): no
+    // table, since its missing parts would read as zeros, and the message says what to look for.
+    const cut = answers.split('\n').slice(0, 2).join('\n');
+    await expect(run(parseArgs(['database', '--agent', '1171616', '--from', '2026-11-08', '--to', '2026-11-15', '--answers', '-'], NOW), {}, deps({ readStdin: () => cut }))).rejects.toThrow(STOPPED_EARLY);
+    expect(STOPPED_EARLY).toContain('canceling statement due to statement timeout');
     // Without an address and without answers there is nothing to read from.
     await expect(run(parseArgs(['database', '--agent', '7'], NOW), {}, deps())).rejects.toThrow(/DATABASE_URL is required/);
+  });
+});
+
+describe('the read cannot hold the live database (security review 2026-11-15, L5)', () => {
+  const window = { agent: AGENT_ID, from: FROM, to: TO };
+
+  it('the printed script sets a statement time limit for its own transaction, right after begin', () => {
+    const lines = printScript({ agent: '1153600', from: FROM, to: TO }).trim().split('\n');
+    const begin = lines.indexOf('begin transaction read only;');
+    expect(lines[begin + 1]).toBe("set local statement_timeout = '120s';");
+    expect(STATEMENT_TIMEOUT).toBe('120s');
+    // `set local` lasts as long as the transaction: nothing of it is left on the session the owner's psql shares.
+    expect(lines.filter((l) => /statement_timeout/.test(l))).toHaveLength(1);
+    // The closing line comes after every statement the table needs, and only the heavy one comes after it.
+    const names = lines.map((l) => /^select jsonb_build_object\('q', '(\w+)'/.exec(l)?.[1]).filter(Boolean);
+    expect(names.slice(-2)).toEqual([READ_COMPLETE, 'observation']);
+    expect(lines.at(-1)).toBe('rollback;');
+  });
+
+  it('one statement alone opens the stored requests, and it is the last and the one the table can do without', () => {
+    const all = statements(window);
+    expect(all.filter((s) => /\brequest->/.test(s.sql)).map((s) => s.name)).toEqual(['observation']);
+    expect(all.filter((s) => s.optional).map((s) => s.name)).toEqual(['observation']);
+    expect(all.at(-1)!.name).toBe('observation');
+  });
+
+  it('the direct read sets the same limit inside its transaction, and nothing of it outlives the transaction', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      const { ran, client } = connection(w);
+      const answers = await runQueries(client, window);
+      expect(ran[0]).toBe('begin transaction read only');
+      expect(ran.findIndex((t) => t.includes("set_config('statement_timeout', '120s', true)"))).toBe(2);
+      expect(answers.timeout).toEqual([{ statement_timeout: '2min' }]);
+      expect(answers[READ_COMPLETE]).toEqual([{ complete: true }]);
+      // What `set_config(..., true)` does on this database: in force inside the transaction, gone after it.
+      const setting = async () => ((await w.db.execute(sql`select current_setting('statement_timeout') as v`)) as unknown as { rows: { v: string }[] }).rows[0]!.v;
+      const before = await setting();
+      await w.db.execute(sql`begin transaction read only`);
+      await w.db.execute(sql`select set_config('statement_timeout', '120s', true)`);
+      expect(await setting()).toBe('2min');
+      await w.db.execute(sql`rollback`);
+      expect(await setting()).toBe(before);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('when the limit stops the heavy statement the table is printed without its line; when it stops any other, the read fails', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w);
+      const timeout = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      const stopping = (name: string) => {
+        const { ran, client } = connection(w);
+        const inner = client as unknown as { query: (text: string) => Promise<{ rows: Record<string, unknown>[] }> };
+        return { ran, client: { query: async (text: string) => (text.includes(`'q', '${name}'`) ? Promise.reject(timeout) : inner.query(text)) } as never };
+      };
+      const heavy = stopping('observation');
+      const answers = await runQueries(heavy.client, window);
+      expect(answers.observation).toBeUndefined();
+      expect(answers[READ_COMPLETE]).toEqual([{ complete: true }]);
+      expect(heavy.ran.at(-1)).toBe('rollback');
+      const input = toInput(answers, window, TO);
+      expect(input.observation).toBeNull();
+      expect(input.caveats!.some((c) => c.startsWith('The size of the first observation was not read') && c.includes('120s'))).toBe(true);
+      const table = renderTable(input);
+      expect(table).not.toContain('First observation size');
+      expect(table).toContain('| M1 | Repeat rate |');
+
+      const needed = stopping('posts');
+      await expect(runQueries(needed.client, window)).rejects.toThrow('canceling statement due to statement timeout');
+      // The transaction is rolled back all the same.
+      expect(needed.ran.at(-1)).toBe('rollback');
+    } finally {
+      await w.close();
+    }
   });
 });

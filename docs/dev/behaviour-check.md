@@ -48,8 +48,13 @@ What it cannot do, and says so in the table:
 Reads Bootr's own tables: `sv_agents`, `sv_actions`, `sv_inference`, `sv_approvals`, `sv_memories`, `sv_runtimes`,
 `sv_turns`, `sv_gate_shadow`, and the sender's `sender_actions` and `sender_inbox`. Every statement is a `select`.
 `sv_turns` (migration 0014), `sv_gate_shadow` (the gates' shadow log) and the sender's tables may be missing: the read
-asks first which are there, skips what is not, and the table says what that costs. The read of a week of
-`sv_inference` opens every stored request of the window, so it takes some seconds.
+asks first which are there, skips what is not, and the table says what that costs.
+
+**No statement runs longer than 120 seconds.** The read sets `statement_timeout` for its own transaction and for
+nothing else (`set local` in the printed script, the same setting in the direct mode), so a slow statement is stopped
+by Postgres instead of holding a backend of the live database. One statement is heavy: the size of the first
+observation opens every stored request of the window in `sv_inference`, tens of kilobytes each. It runs last, after a
+line that says the read is complete, and the table does not need it.
 
 ### A database you can reach (local, a staging copy)
 
@@ -60,6 +65,9 @@ DATABASE_URL=postgres://… pnpm --filter supervisor exec tsx scripts/behaviour-
 
 The connection is opened with `default_transaction_read_only=on`, and the read runs inside
 `begin transaction read only` that is rolled back: the database refuses a write whatever role the address names.
+When the time limit stops the observation statement, the table is printed without its "First observation size" line
+and says so below the table. When it stops any other statement, the command ends with
+`behaviour-check: canceling statement due to statement timeout` and prints no table.
 
 ### Production (the owner runs this)
 
@@ -79,9 +87,19 @@ done
 ```
 
 To look before running, write the script to a file and read it: `… --print-sql > read.sql`. It holds comments, psql's
-two output settings, `begin transaction read only`, selects, and `rollback`. `--answers read.out` takes a file instead
-of the pipe. The answers hold the text of the agent's posts and the creator's rejection notes: keep such a file out of
+two output settings, `begin transaction read only`, `set local statement_timeout = '120s'`, selects, and `rollback`.
+`--answers read.out` takes a file instead of the pipe. The answers hold the text of the agent's posts and the creator's rejection notes: keep such a file out of
 the repository.
+
+**What you see when the time limit trips.** psql writes `ERROR:  canceling statement due to statement timeout` to the
+terminal (it comes through `ssh` on stderr) and stops there; the transaction ends with the session and nothing is left
+set on the server.
+
+- If it was the observation statement, the last one: the table is printed as usual, without the "First observation
+  size" line, and a line under the table says that it was not read. Every measure is whole.
+- If it was any other statement: the last step prints `behaviour-check: the read stopped before its end, so no table is
+  printed …` and nothing else. A table with half its answers missing would show the missing half as zeros, so none is
+  made. Take a shorter window (`--from`, `--to`) or run it at a quieter hour.
 
 The psql script has not been run against a real psql yet (no Postgres was started while this was built); the same
 statements run in the test suite on PGlite. To try the whole pipeline on this machine first, start the throwaway
@@ -101,7 +119,7 @@ with `psql -X -q "$DATABASE_URL"`.
 | M7 | Reply latency | From a mention's `observed_at` to its reply's `sent_at`: median and 90th percentile, and the share of eligible mentions answered within 15 minutes. A mention code closed before any turn (`verified_audience_required`, `bounty_entry`, `stale_after_downtime`) is not eligible |
 | M8 | Same opener | Share of originals whose first three words (lowercased, numbers as `#`, handles as `@`) open another original of the window. Read beside M1, never alone |
 | M9 | Banned shapes | Counts over the originals: trading words (floor, dip, entry, exit, conviction, rebound, retest, a move written as −n%), "I like", a closing question, an opener about a feeling, "on Bootr", an emoji, and for the platform account capitals |
-| M10 | Would-refuse counts | Rows of `sv_gate_shadow` in the window by gate and code, in shadow and enforced. Read 30 by hand before a gate is enforced |
+| M10 | Would-refuse counts | Rows of `sv_gate_shadow` in the window by gate and code, in shadow and enforced: G1 `repeat_fact` and `repeat_opener`, G3 `fee_claim_false`, G4 `similar_post`, G6 `unit_on_token_amount`. Read 30 by hand before a gate is enforced |
 
 Below the ten, lines of context: the originals per day; the two figures of the design note's section 2.2 counted the
 way that table counted them (any figure as written, dates and "24h" included), so a run can be held against it; and in
