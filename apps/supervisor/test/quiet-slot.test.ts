@@ -11,7 +11,7 @@ import { fileRequest } from '../src/creator-requests.js';
 import { agents, runtimes } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
-import { QUIET_HOLDERS_SHARE, lastMilestoneAt, markQuietSlot, ownCoinNow, quietSlot, quietSlotOf, quietSlotOn, whatIsNew, type QuietState } from '../src/quiet-slot.js';
+import { QUIET_HOLDERS_SHARE, lastMilestoneAt, markQuietSlot, ownCoinNow, quietSlot, quietSlotOf, quietSlotOn, settledMark, whatIsNew, type QuietState } from '../src/quiet-slot.js';
 import { scheduleFor, type AgentState } from '../src/runtime.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, CREATOR, KERNEL, SUPERVISOR_KEY, TOKEN, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
@@ -52,7 +52,7 @@ async function quietWorld(config: Record<string, string> = {}, agentConfig: Reco
     const report = await tick(w.ctx);
     return { ran: report.ran.includes(AGENT_ID), thoughts: thoughts(w) - before.thoughts, posts: w.sender.published.length - before.posts };
   };
-  return { w, coin, atNextSlot };
+  return { w, coin, script, atNextSlot };
 }
 
 describe('whatIsNew: the rule', () => {
@@ -81,8 +81,9 @@ describe('whatIsNew: the rule', () => {
     expect(whatIsNew({ mark, coin: still, milestoneAt: T0 + MINUTE })).toEqual(['new_milestone']);
   });
 
-  it('somebody writing, the creator asking or changing the settings, and a platform update are new', () => {
-    expect(whatIsNew({ mark, coin: still, mentionWaiting: true, creatorRequest: true, configChanged: true, platformUpdate: true })).toEqual(['mention', 'creator_request', 'config_changed', 'platform_update']);
+  it('somebody writing, the creator asking or changing the settings, an X hold that ended and a platform update are new', () => {
+    expect(whatIsNew({ mark, coin: still, mentionWaiting: true, creatorRequest: true, configChanged: true, holdEnded: true, platformUpdate: true })).toEqual(['mention', 'creator_request', 'config_changed', 'hold_ended', 'platform_update']);
+    expect(whatIsNew({ mark, coin: still, holdEnded: true })).toEqual(['hold_ended']);
   });
 
   it('a first slot, and a coin the index says nothing about, are never known to be unchanged', () => {
@@ -118,17 +119,30 @@ describe('what the rule reads', () => {
     expect(quietSlotOn({}, { config: {} })).toBe(false);
   });
 
-  it('markQuietSlot keeps the last known count when a snapshot does not say, and keeps no mark for a coin the rule is off for', () => {
-    const state: QuietState = { quietSkipped: { count: 3, lastAt: T0 - HOUR } };
+  it('what a turn was shown becomes the mark once its slot was used, and not before', () => {
     const on = { config: { QUIET_SLOT: true } };
-    markQuietSlot(on, { config: {} }, { platform: false }, state, marketOf({ holders: 112, trades: [] }), T0);
-    expect(state).toMatchObject({ quietMark: { at: T0, holders: 112 }, quietSkipped: null });
-    markQuietSlot(on, { config: {} }, { platform: false }, state, null, T0 + HOUR);
-    expect(state.quietMark).toEqual({ at: T0 + HOUR, holders: 112 });
+    const state: QuietState = { lastPostAt: T0 - 2 * HOUR, quietMark: { at: T0 - 2 * HOUR, holders: 112 }, quietSkipped: { count: 3, lastAt: T0 - HOUR } };
+    markQuietSlot(on, { config: {} }, { platform: false }, state, marketOf({ holders: 113, trades: [] }), T0);
+    expect(state).toMatchObject({ quietSeen: { at: T0, holders: 113 }, quietMark: { at: T0 - 2 * HOUR, holders: 112 }, quietSkipped: null });
+    // The turn has not used its slot yet (the model did not answer, the runtime cut it short): the mark stands.
+    expect(settledMark(state)).toEqual({ at: T0 - 2 * HOUR, holders: 112 });
+    // It posted, or finished without a post: from here on "new" is measured against what it was shown.
+    state.lastPostAt = T0 + 1000;
+    expect(settledMark(state)).toEqual({ at: T0, holders: 113 });
+    expect(state.quietSeen).toBeNull();
+    const passed: QuietState = { lastSlotSkippedAt: T0 + 1000, quietSeen: { at: T0, holders: 6 } };
+    expect(settledMark(passed)).toEqual({ at: T0, holders: 6 });
+  });
+
+  it('markQuietSlot keeps the last known count when a snapshot does not say, and keeps no record for a coin the rule is off for', () => {
+    const on = { config: { QUIET_SLOT: true } };
+    const state: QuietState = { quietMark: { at: T0 - HOUR, holders: 112 } };
+    markQuietSlot(on, { config: {} }, { platform: false }, state, null, T0);
+    expect(state.quietSeen).toEqual({ at: T0, holders: 112 });
     const off: QuietState = {};
     markQuietSlot(on, { config: { quietSlot: false } }, { platform: false }, off, marketOf({ holders: 5, trades: [] }), T0);
     markQuietSlot(on, { config: { platform: true } }, { platform: true }, off, marketOf({ holders: 5, trades: [] }), T0);
-    expect(off.quietMark).toBeUndefined();
+    expect(off).toEqual({});
   });
 });
 
@@ -152,7 +166,7 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
     const { w, atNextSlot } = await quietWorld();
     try {
       expect(await atNextSlot()).toEqual({ ran: true, thoughts: 2, posts: 1 });
-      expect((await stateOf(w)).quietMark).toMatchObject({ holders: 112 });
+      expect((await stateOf(w)).quietSeen).toMatchObject({ holders: 112 });
       for (let i = 2; i <= SLOTS; i++) {
         const slotAt = w.ctx.now();
         expect(await atNextSlot(), `slot ${i}`).toEqual({ ran: false, thoughts: 0, posts: 0 });
@@ -160,6 +174,7 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
         // The slot is spent like one the agent passed on, and the wake moved to the next slot.
         expect(state.lastSlotSkippedAt).toBe(w.ctx.now());
         expect(state.quietSkipped).toEqual({ count: i - 1, lastAt: w.ctx.now() });
+        expect(state).toMatchObject({ quietMark: { holders: 112 }, quietSeen: null });
         expect((await runtimeOf(w)).nextAt.getTime()).toBeGreaterThanOrEqual(w.ctx.now() + 2 * HOUR);
         expect(w.ctx.now()).toBeGreaterThan(slotAt);
         // A minute later nothing is asked again: the next slot is the next chance.
@@ -185,7 +200,7 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
 
       coin.holders = 113;
       expect(await atNextSlot()).toEqual({ ran: true, thoughts: 2, posts: 1 });
-      expect((await stateOf(w)).quietMark).toMatchObject({ holders: 113 });
+      expect((await stateOf(w)).quietSeen).toMatchObject({ holders: 113 });
       expect((await stateOf(w)).quietSkipped ?? null).toBeNull();
       expect((await atNextSlot()).ran).toBe(false);
 
@@ -226,6 +241,41 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
     }
   });
 
+  it('a turn that never got to use its slot does not use up what was new', async () => {
+    const { w, coin, script, atNextSlot } = await quietWorld({ MAX_TOOL_STEPS: '2' });
+    try {
+      expect((await atNextSlot()).ran).toBe(true);
+      coin.holders = 113;
+      // The model reads around until the runtime cuts the turn short: no post, no finish, and the slot stays due.
+      script.unshift(() => toolCallResponse('recall', { query: 'holders' }), () => toolCallResponse('recall', { query: 'floor' }));
+      expect(await atNextSlot()).toEqual({ ran: true, thoughts: 2, posts: 0 });
+      const cut = await stateOf(w);
+      expect(cut).toMatchObject({ quietSeen: { holders: 113 }, quietMark: { holders: 112 }, runtimeEnded: { postDue: true } });
+      // When the slot is tried again the new holder is still news: the turn is bought and the count goes out.
+      w.setNow(cut.runtimeEnded!.until + 1000);
+      expect(await atNextSlot()).toEqual({ ran: true, thoughts: 2, posts: 1 });
+      expect((w.sender.published.at(-1) as { text: string }).text).toBe('113 holders. the floor stops proving.');
+      expect((await atNextSlot()).ran).toBe(false);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a slot X held back is the agent\'s to use when the hold ends, whatever the coin did', async () => {
+    const { w, atNextSlot } = await quietWorld();
+    try {
+      expect((await atNextSlot()).ran).toBe(true);
+      expect((await atNextSlot()).ran).toBe(false);
+      // A hold the model was told about has ended and no turn has been told yet (runtime.ts `trackHoldEnd`).
+      const state = await stateOf(w);
+      await w.db.update(runtimes).set({ state: { ...state, postHoldEndedNote: { reason: 'x_quota', until: w.ctx.now() - MINUTE, at: w.ctx.now() - MINUTE, how: 'expired' } } as unknown as Record<string, unknown> }).where(eq(runtimes.agentId, AGENT_ID));
+      expect((await atNextSlot()).ran).toBe(true);
+      expect((await atNextSlot()).ran).toBe(false);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('holds in loop mode too: the wake the agent asked for is moved past the slot it has nothing for', async () => {
     const { w, atNextSlot } = await quietWorld({ WAKE_MODE: 'loop' });
     try {
@@ -243,7 +293,8 @@ describe('a coin whose holder count does not change (section 2.3)', () => {
     try {
       expect((await atNextSlot()).ran).toBe(true);
       expect((await atNextSlot()).ran).toBe(true);
-      expect((await stateOf(w)).quietMark).toBeUndefined();
+      expect(await stateOf(w)).not.toHaveProperty('quietMark');
+      expect(await stateOf(w)).not.toHaveProperty('quietSeen');
     } finally {
       await w.close();
     }
@@ -312,7 +363,7 @@ describe('an own agent: `due` says a post slot is not due when nothing is new', 
     try {
       expect((await due()).reasons).toContain('original_post_due');
       await takeSlot();
-      expect((await stateOf(w)).quietMark).toMatchObject({ holders: 6 });
+      expect((await stateOf(w)).quietSeen).toMatchObject({ holders: 6 });
 
       await toNextSlot();
       const quiet = await due();
@@ -329,7 +380,7 @@ describe('an own agent: `due` says a post slot is not due when nothing is new', 
       // Asking again before the client opens the turn does not spend the slot: the change is still new.
       expect((await due()).reasons).toContain('original_post_due');
       await takeSlot();
-      expect((await stateOf(w)).quietMark).toMatchObject({ holders: 7 });
+      expect(await stateOf(w)).toMatchObject({ quietSeen: { holders: 7 }, quietMark: { holders: 6 } });
       expect(w.sender.published).toHaveLength(2);
       expect(w.modelCalls()).toBe(0);
     } finally {

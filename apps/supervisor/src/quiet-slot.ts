@@ -15,14 +15,18 @@
  *       a milestone of the coin reached after that slot (the kinds `coinToday` names);
  *   - a mention is waiting that may wake the agent;
  *   - the creator asked for something in the private chat that no turn has closed, or changed the agent's settings;
+ *   - an X hold just ended (quota, credits, a refused account): the slot it held back is the agent's to use;
  *   - a platform update is waiting to be announced (the platform account's section; a coin agent is never shown one).
  * A coin the index says nothing about (no holder count and no trade list, or no answer at all) is not known to be
  * unchanged: its slot is never skipped. Neither is the first slot of an agent that has no mark yet.
  *
- * "Since the agent last had a slot", not "since its last post": the mark (`AgentState.quietMark`: when, and the
- * holders shown) is taken whenever a turn starts that holds a due slot. An agent that was shown a change and chose not
- * to post about it has passed on it; the same change does not buy the next slot's turn again. When the turn posts,
- * the two readings are the same.
+ * "Since the agent last had a slot", not "since its last post". A turn that starts with a due slot records what it
+ * was shown (`AgentState.quietSeen`: when, and the holders), and once that slot is used (the turn posted, or finished
+ * without a post) the record becomes the mark the next slot is measured against (`quietMark`). An agent that was
+ * shown a change and chose not to post about it has passed on it; the same change does not buy the next slot's turn
+ * again. A turn that never got to use its slot (the model did not answer, the runtime cut it short) leaves the mark
+ * where it was, so what was new for it is still new when the slot is tried again. When the turn posts, "since its
+ * last slot" and "since its last post" are the same.
  *
  * A skipped slot is spent the way a slot is that the agent passed on (`lastSlotSkippedAt`): the next slot is the next
  * chance, and nothing is asked again in between. No model is called and nothing is written but the runtime's state.
@@ -42,16 +46,21 @@ import type { AgentState } from './runtime.js';
 /** The count must move by this share of itself, and by one holder at least. */
 export const QUIET_HOLDERS_SHARE = 0.01;
 
-/** What the state keeps: when the agent last had a due slot in front of it, and the holders it was shown then. */
+/** What the state keeps: when the agent had a due slot in front of it, and the holders it was shown then. */
 export interface QuietMark {
   at: number;
   holders: number | null;
 }
 
-export type QuietState = Pick<AgentState, 'lastSlotSkippedAt'> & {
+export type QuietState = Pick<AgentState, 'lastSlotSkippedAt' | 'lastPostAt'> & {
+  /** What the agent was shown at the last slot it used: what "new" is measured against. */
   quietMark?: QuietMark | null;
+  /** What the turn that last started with a due slot was shown; it becomes the mark once that slot is used. */
+  quietSeen?: QuietMark | null;
   /** Slots skipped in a row since a turn last held one, and when the last was skipped: for the log and the console. */
   quietSkipped?: { count: number; lastAt: number } | null;
+  /** runtime.ts: a hold X put on the account's posts, with `at` set once it ended and until the next turn was told. */
+  postHoldEndedNote?: { at: number | null } | null;
 };
 
 type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config' | 'indexer'>;
@@ -70,6 +79,19 @@ function markOf(raw: unknown): QuietMark | null {
   const m = raw as QuietMark | null | undefined;
   if (!m || typeof m !== 'object' || typeof m.at !== 'number' || !Number.isFinite(m.at)) return null;
   return { at: m.at, holders: typeof m.holders === 'number' && Number.isFinite(m.holders) ? m.holders : null };
+}
+
+/**
+ * The mark in force. What the last turn with a due slot was shown becomes the mark once its slot was used after it:
+ * an original post went out or the slot was spent (`lastPostAt`, `lastSlotSkippedAt`). Mutates `state`.
+ */
+export function settledMark(state: QuietState): QuietMark | null {
+  const seen = markOf(state.quietSeen);
+  if (seen && Math.max(state.lastPostAt ?? 0, state.lastSlotSkippedAt ?? 0) >= seen.at) {
+    state.quietMark = seen;
+    state.quietSeen = null;
+  }
+  return markOf(state.quietMark);
 }
 
 const whole = (v: unknown): number | null => {
@@ -101,7 +123,7 @@ export function lastMilestoneAt(feed: PlatformFeedData | null | undefined, agent
   return times.length ? Math.max(...times) : null;
 }
 
-export type QuietReason = 'mention' | 'creator_request' | 'config_changed' | 'platform_update' | 'first_slot' | 'coin_unknown' | 'holders_changed' | 'new_trade' | 'new_milestone';
+export type QuietReason = 'mention' | 'creator_request' | 'config_changed' | 'hold_ended' | 'platform_update' | 'first_slot' | 'coin_unknown' | 'holders_changed' | 'new_trade' | 'new_milestone';
 
 export interface QuietInput {
   /** The mark of the agent's last slot; null when it never had one. */
@@ -113,16 +135,25 @@ export interface QuietInput {
   mentionWaiting?: boolean;
   creatorRequest?: boolean;
   configChanged?: boolean;
+  /** An X hold ended and the next turn has not been told yet. */
+  holdEnded?: boolean;
   platformUpdate?: boolean;
 }
 
-/** Everything that is new for a due slot, in the order the rule lists it; empty = nothing is new and the slot buys no turn. Pure. */
-export function whatIsNew(input: QuietInput): QuietReason[] {
+/** What is new whatever the coin did: somebody wrote, the creator asked or changed something, a hold ended, an update waits. Pure. */
+function newBesideTheCoin(input: Pick<QuietInput, 'mentionWaiting' | 'creatorRequest' | 'configChanged' | 'holdEnded' | 'platformUpdate'>): QuietReason[] {
   const reasons: QuietReason[] = [];
   if (input.mentionWaiting) reasons.push('mention');
   if (input.creatorRequest) reasons.push('creator_request');
   if (input.configChanged) reasons.push('config_changed');
+  if (input.holdEnded) reasons.push('hold_ended');
   if (input.platformUpdate) reasons.push('platform_update');
+  return reasons;
+}
+
+/** Everything that is new for a due slot, in the order the rule lists it; empty = nothing is new and the slot buys no turn. Pure. */
+export function whatIsNew(input: QuietInput): QuietReason[] {
+  const reasons = newBesideTheCoin(input);
   const { mark, coin } = input;
   if (!mark) reasons.push('first_slot');
   // No answer, or an answer with neither a holder count nor a trade list: nothing says the coin stood still.
@@ -166,13 +197,13 @@ export interface QuietOutcome {
 export async function quietSlot(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'token' | 'kernel' | 'config'>, state: QuietState, signals: QuietSignals): Promise<QuietOutcome> {
   if (!signals.due || !quietSlotOn(ctx, agent)) return { skipped: false, reasons: [] };
   // What the caller already knows comes first: it costs no read.
-  const known: QuietReason[] = [...(signals.mentionWaiting ? (['mention'] as const) : []), ...(signals.creatorRequest ? (['creator_request'] as const) : []), ...(signals.configChanged ? (['config_changed'] as const) : []), ...(signals.platformUpdate ? (['platform_update'] as const) : [])];
+  const known = newBesideTheCoin({ ...signals, holdEnded: state.postHoldEndedNote?.at != null });
   if (known.length) return { skipped: false, reasons: known };
   const now = ctx.now();
   try {
     const creatorRequest = signals.creatorRequest ?? (await openRequests(ctx, agent.agentId, 'social')).length > 0;
     if (creatorRequest) return { skipped: false, reasons: ['creator_request'] };
-    const mark = markOf(state.quietMark);
+    const mark = settledMark(state);
     // A read that throws is left to the caller's own read of the snapshot (the catch below): this check only declines to skip.
     const market = (await ctx.indexer.market(agent.token)) as Record<string, unknown> | null;
     const coin = ownCoinNow(market);
@@ -181,6 +212,8 @@ export async function quietSlot(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'tok
     if (!reasons.length) reasons = whatIsNew({ mark, coin, milestoneAt: lastMilestoneAt(await cachedPlatformFeedData(ctx).catch(() => null), agent, now) });
     if (reasons.length) return { skipped: false, reasons, market };
     state.lastSlotSkippedAt = now;
+    // A record of a turn that never used its slot is not what the agent was last shown: it goes with the slot.
+    state.quietSeen = null;
     state.quietSkipped = { count: (state.quietSkipped?.count ?? 0) + 1, lastAt: now };
     ctx.log.info({ agentId: agent.agentId, holders: coin?.holders ?? null, since: mark ? new Date(mark.at).toISOString() : null, inARow: state.quietSkipped.count }, 'quiet slot: nothing is new since the last slot; no turn bought');
     return { skipped: true, reasons: [], market };
@@ -201,14 +234,14 @@ export function quietWakeFloor(state: QuietState, wakeAt: number, nextSlotAt: nu
 }
 
 /**
- * Takes the mark when a turn starts that holds a due slot: from here on "new" is measured against what this turn was
- * shown. `market` is the snapshot the turn gets. Mutates `state`; the turn's own write persists it. A coin the rule
- * does not apply to keeps no mark.
+ * Records what a turn that starts with a due slot is shown (`market`: the snapshot the turn gets). Once the turn uses
+ * its slot this is what "new" is measured against (`settledMark`). Mutates `state`; the turn's own write persists it.
+ * A coin the rule does not apply to keeps no record.
  */
 export function markQuietSlot(ctx: { config?: { QUIET_SLOT?: unknown } | null }, agent: Pick<AgentRow, 'config'>, config: Pick<AgentConfig, 'platform'>, state: QuietState, market: Record<string, unknown> | null | undefined, now: number): void {
   if (config.platform === true || !quietSlotOn(ctx, agent)) return;
   const coin = ownCoinNow(market);
   // A snapshot that does not say keeps the count the last one did: one silent read must not make the next count look new.
-  state.quietMark = { at: now, holders: coin?.holders ?? markOf(state.quietMark)?.holders ?? null };
+  state.quietSeen = { at: now, holders: coin?.holders ?? settledMark(state)?.holders ?? null };
   state.quietSkipped = null;
 }
