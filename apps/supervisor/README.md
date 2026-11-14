@@ -100,6 +100,35 @@ docker run --rm --env-file .env -e SUPERVISOR_PORT=3004 -p 3004:3004 bootr-super
 
 After editing `src/db/schema.ts`: `pnpm --filter supervisor db:generate`.
 
+## The dataset process (`src/dataset/`)
+
+Bootr's own dataset of what happened ([`docs/design/agent-behaviour.md`](../../docs/design/agent-behaviour.md) section 6.4,
+stage 4): one record per event, with its sources, a five-step sourcing grade and its numbers. It is built by code,
+with no model call, and **no agent reads it yet**. It runs as its own process from this image, never inside the tick:
+
+```sh
+node dist/dataset.js        # the image's second entry point (scripts/build.mjs); the `dataset` service of docker-compose.coolify.yml
+```
+
+- **The switch.** `DATASET_ENABLED` must be exactly `true`. Unset, empty or anything else: the process starts, answers
+  `GET /health` on `DATASET_PORT` (3005) and reads nothing. To turn it off again, clear the variable and redeploy the
+  service; what was stored stays. The supervisor reads the same variable only to tell the owner's view whether it is on.
+- **What it needs.** `DATABASE_URL` (the supervisor's database; the supervisor's start applies migration `0016_dataset`,
+  this process runs none) and `INDEXER_URL`. No signing key, no admin key, no service key: `dataset/config.ts` asks for
+  none and the compose service strips every one. Knobs: `DATASET_PASS_MS` (60000), `DATASET_CHAIN_EVERY_MS` (600000),
+  `DATASET_SOURCES_PER_PASS` (12), `DATASET_RECORDS_PER_DAY` (400, 0 = no cap).
+- **Layer a** (`layer-a.ts`): Bootr's own numbers from the indexer and three of this service's tables, every ten
+  minutes. The header of the file lists every field it reads. No coin name, symbol or handle is read.
+- **Layer b** (`layer-b.ts`, `readers/`): the open sources of the note's section 6.7, listed in `sources.ts` with their
+  group, kind and schedule (only a commit changes the list). Each is a conditional GET through `web-reader.ts`
+  `fetchPublic`, the agents' `read_url` path. A source that fails backs off (its interval, doubled each time, up to a
+  day) and never stops the others. 2,412 small requests a day, no fee.
+- **What may be stored** is the header of `clean.ts`: everything from outside is cut, stripped of markup and invisible
+  characters, never an instruction; a title that reads like one is counted and its words are not kept.
+- **Matching** (`matching.ts`): the same key or link, a stated relation, then entities and words. Step 4 of the note
+  (a cheap model for what words cannot decide) is not built; its seam is `ingestSighting`'s `judgeLeftover`.
+- **The owner's view**: `GET /internal/dataset/day?day=YYYY-MM-DD` (HMAC), shown in the admin console under "Dataset".
+
 ## Environment variables
 
 Names live in the root `.env.example`. Empty strings are treated as unset.

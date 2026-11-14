@@ -33,6 +33,7 @@ import { checkModelCatalog, lastCatalogCheck } from './model-check.js';
 import { migrateModels } from './model-migration.js';
 import type { AgentState } from './runtime.js';
 import { mountOwnRoutes } from './own/routes.js';
+import { mountDataset } from './dataset/view.js';
 
 export interface PanicRevokeResult {
   /** Kernels whose valid nonce was bumped (`revokeAllSessionKeysBatch`), by batch tx. */
@@ -457,6 +458,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   });
 
   mountWhatWorks(app, ctx);
+  mountDataset(app, ctx);
   registerW2();
   return app;
 }

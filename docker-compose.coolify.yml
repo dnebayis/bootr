@@ -1,4 +1,5 @@
-# Bootr on a single Coolify server (docs/deploy/coolify.md). One Postgres and the five services, pulled as
+# Bootr on a single Coolify server (docs/deploy/coolify.md). One Postgres, the five services and the dataset process
+# (the supervisor's image run a second time, off until DATASET_ENABLED=true), pulled as
 # images that GitHub Actions builds from the Dockerfiles under apps/* (.github/workflows/images.yml; the web
 # bundle's NEXT_PUBLIC_* values are GitHub repository variables, not Coolify ones). Coolify reads this file as a "Docker Compose" application: every `${VAR}`
 # becomes an environment variable in its UI (secrets are filled there, never here), `SERVICE_PASSWORD_*`
@@ -7,7 +8,8 @@
 # indexer.bootr.fun). Services without a `SERVICE_FQDN` stay private on the compose network.
 #
 # Hostnames on the network are the service names below: sender:3002, inference:3003, indexer:42069,
-# supervisor:3004, postgres:5432. Migrations run at container start (the Railway pre-deploy commands).
+# supervisor:3004, postgres:5432 (and dataset:3005, which serves its health check only). Migrations run at container
+# start (the Railway pre-deploy commands).
 #
 # Secrets stay with their service. Coolify writes every variable of the application into one `.env` and
 # adds it as `env_file` to every service, so without help the public web process would hold the
@@ -21,8 +23,9 @@
 x-restart: &restart
   restart: unless-stopped
 
-# Memory ceilings per container (docs/deploy/coolify.md section 7). The CX33 has 7.6 GB usable; the six containers may
-# take 5.5 GB together, which leaves about 2 GB for the OS, Docker, Coolify's proxy and Hermes. A container that passes
+# Memory ceilings per container (docs/deploy/coolify.md section 7). The CX33 has 7.6 GB usable; the seven containers may
+# take 5.9 GB together (the dataset process adds 384 MB to the 5.5 GB of the other six), which leaves about 1.7 GB for
+# the OS, Docker, Coolify's proxy and Hermes. A container that passes
 # its limit is killed and restarted by its `restart` policy instead of taking the box down with it; a hostile response
 # or a leak costs one service a restart, nothing else.
 services:
@@ -283,6 +286,53 @@ services:
       SPENDER_MIN_USDC: ${SPENDER_MIN_USDC:-}
       SPENDER_TARGET_USDC: ${SPENDER_TARGET_USDC:-}
       MENTION_AUTO_CLOSE_ENABLED: ${MENTION_AUTO_CLOSE_ENABLED:-}
+      # Bootr's own dataset: here the flag only tells the owner's view (admin console) whether the dataset process
+      # below is on. No agent reads the dataset yet, whatever the value.
+      DATASET_ENABLED: ${DATASET_ENABLED:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  # Bootr's own dataset (apps/supervisor/src/dataset, docs/design/agent-behaviour.md section 6.4): the supervisor's
+  # image with its second entry point, on the supervisor's database. It reads Bootr's own index and the open sources of
+  # the checked-in list, and writes the `sv_ds_*` tables; it serves no agent, signs nothing and pays nothing, so every
+  # key and every secret of the other services is stripped from its process (it declares none of its own, and adds none
+  # to anyone's `-u` list). It runs no migration: the supervisor's start applies them, and a pass that comes before
+  # that fails and is tried again a minute later.
+  # DATASET_ENABLED: empty or anything but exactly `true` = off (the process starts, answers its health check and
+  # reads nothing: a deploy changes nothing). `true` = on. To turn it off again, clear the variable and redeploy; what
+  # was stored stays. Its own process on purpose: a slow feed must never hold an agent's turn.
+  dataset:
+    <<: *restart
+    mem_limit: 384m
+    # The supervisor's image; IMAGE_TAG pins both to the same commit.
+    image: ghcr.io/dnebayis/bootr-supervisor:${IMAGE_TAG:-main}
+    pull_policy: always
+    command: ["sh", "-c", "exec env -u BASE_RPC_URL -u BASE_RPC_FALLBACK_URL -u BUNDLER_URL -u PAYMASTER_URL -u ENABLE_MODE_BUNDLER_URL -u ENABLE_MODE_PAYMASTER_URL -u INFERENCE_RPC_URL -u ADMIN_CONSOLE_SLUG -u SEARCH_API_KEY -u TELEGRAM_BOT_TOKEN -u ADMIN_PRIVATE_KEY -u DEPLOYER_PRIVATE_KEY -u PLATFORM_TREASURY_PRIVATE_KEY -u BASESCAN_API_KEY -u SPENDER_MASTER_KEY -u SESSION_SIGNER_PRIVATE_KEY -u SUPERVISOR_SERVICE_KEY -u SENDER_SERVICE_KEY -u INDEXER_SERVICE_KEY -u X_CLIENT_SECRET -u SENDER_ENCRYPTION_KEY -u OPENROUTER_API_KEY -u CDP_API_KEY_ID -u CDP_API_KEY_SECRET -u PINATA_JWT -u SESSION_SECRET -u SERVICE_PASSWORD_POSTGRES node dist/dataset.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      supervisor:
+        condition: service_started
+      indexer:
+        condition: service_started
+    # The image's own check asks port 3004, the supervisor's; this process answers on its own.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3005/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    environment:
+      DATASET_ENABLED: ${DATASET_ENABLED:-}
+      DATASET_PORT: "3005"
+      DATABASE_URL: postgres://bootr:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/bootr
+      # The indexer's public reads only (REST and GraphQL); its service key is not given to this process.
+      INDEXER_URL: http://indexer:42069
+      # New records kept per UTC day (400 when empty), open sources read per pass (12), and the two clocks in
+      # milliseconds: a pass (60000) and the chain read (600000). Not secrets.
+      DATASET_RECORDS_PER_DAY: ${DATASET_RECORDS_PER_DAY:-}
+      DATASET_SOURCES_PER_PASS: ${DATASET_SOURCES_PER_PASS:-}
+      DATASET_PASS_MS: ${DATASET_PASS_MS:-}
+      DATASET_CHAIN_EVERY_MS: ${DATASET_CHAIN_EVERY_MS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
 volumes:
