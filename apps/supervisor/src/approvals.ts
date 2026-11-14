@@ -39,6 +39,7 @@ import { SenderError, type ReplyEligibility } from './sender-client.js';
 import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
 import { recordSaid } from './said.js';
+import { postGateRefusal } from './post-gates.js';
 
 /** A pending item the creator never looked at is rejected ("expired") after this long. */
 export const APPROVAL_TTL_MS = 48 * 3_600_000;
@@ -208,8 +209,13 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     if (addressed) return { kind: 'failed', error: addressed };
   }
   // A false statement about where the coin's fees go never reaches the creator's queue either (fee-claims.ts).
-  const falseFee = await feeClaimRefusal(ctx, agent, parts);
+  const falseFee = await feeClaimRefusal(ctx, agent, parts, pending.id);
   if (falseFee) return { kind: 'failed', error: falseFee };
+  // The gates of the behaviour note (post-gates.ts), as for a post sent at once; a scheduled post was asked when it was scheduled.
+  if (!scheduled) {
+    const gated = await postGateRefusal(ctx, agent, action.tool === 'publish_reply' ? { actionId: pending.id, parts, kind: 'reply', aboutPostId: action.input.postId } : { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true });
+    if (gated) return { kind: 'failed', error: gated };
+  }
   // An original queued now stands for the slot of this moment: a scheduled post that is due within one post interval
   // holds that slot already (post-send.ts `beforeOriginalNow`), as it does for a post sent at once.
   if (action.tool === 'publish_post' && !scheduled) {

@@ -16,6 +16,7 @@ import type { SupervisorContext } from './context.js';
 import { actions, approvals, scheduledPosts } from './db/schema.js';
 
 export const RECENT_POSTS_WINDOW_MS = 48 * 60 * 60 * 1000;
+/** How many items the section lists unless the deployment says otherwise (`RECENT_POSTS_MAX`, config.ts). */
 export const RECENT_POSTS_MAX = 16;
 const EXCERPT = 140;
 /** How much of each later post of a thread an item shows. */
@@ -52,8 +53,20 @@ function threadFields(thread: unknown, sent?: unknown): Pick<RecentPost, 'more' 
 
 const clip = (s: unknown, max: number): string => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, max) : '');
 
+/**
+ * The length of the list: the deployment's `RECENT_POSTS_MAX`, or 16 for a caller that holds no config. It is a
+ * setting because the said-ledger and the repeat gate are meant to take over from this section
+ * (docs/design/agent-behaviour.md section 6.2, where it shrinks to 6): while that gate only logs, this list is the one
+ * thing that keeps an agent from repeating itself, so it is not shortened before the gate is enforced.
+ */
+export function recentPostsMax(ctx: { config?: { RECENT_POSTS_MAX?: unknown } | null }): number {
+  const n = ctx.config?.RECENT_POSTS_MAX;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 ? n : RECENT_POSTS_MAX;
+}
+
 export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'> & Partial<Pick<SupervisorContext, 'config'>>, agentId: string): Promise<RecentPost[]> {
   const since = new Date(ctx.now() - RECENT_POSTS_WINDOW_MS);
+  const max = recentPostsMax(ctx);
   // With scheduling switched off by its limit nothing in the queue goes out, so nothing in it counts as said.
   const queue = ctx.config?.SCHEDULED_MAX_WAITING !== 0 && ctx.config?.SCHEDULE_MAX_AHEAD_MS !== 0;
   const [sent, reviewed, scheduled] = await Promise.all([
@@ -62,13 +75,13 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'> & P
       .from(actions)
       .where(and(eq(actions.agentId, agentId), eq(actions.status, 'completed'), gte(actions.createdAt, since), sql`${actions.action}->>'tool' in ('publish_post', 'publish_reply')`))
       .orderBy(desc(actions.createdAt))
-      .limit(RECENT_POSTS_MAX),
+      .limit(max),
     ctx.db
       .select({ at: approvals.createdAt, kind: approvals.kind, text: approvals.text, status: approvals.status, note: approvals.note, thread: sql<unknown>`${approvals.meta}->'thread'` })
       .from(approvals)
       .where(and(eq(approvals.agentId, agentId), gte(approvals.createdAt, since), inArray(approvals.status, ['pending_approval', 'approved', 'rejected', 'failed'])))
       .orderBy(desc(approvals.createdAt))
-      .limit(RECENT_POSTS_MAX),
+      .limit(max),
     // Posts the agent scheduled that have not gone out (scheduled.ts): said already, so nothing is said twice.
     queue
       ? ctx.db
@@ -76,7 +89,7 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'> & P
           .from(scheduledPosts)
           .where(and(eq(scheduledPosts.agentId, agentId), gte(scheduledPosts.sendAt, since), inArray(scheduledPosts.status, ['waiting_review', 'waiting', 'sending'])))
           .orderBy(desc(scheduledPosts.sendAt))
-          .limit(RECENT_POSTS_MAX)
+          .limit(max)
       : [],
   ]);
   const out: RecentPost[] = [];
@@ -101,7 +114,7 @@ export async function recentPosts(ctx: Pick<SupervisorContext, 'db' | 'now'> & P
     out.push({ at: r.at.toISOString(), kind: r.tool === 'publish_reply' ? 'reply' : 'post', status: 'sent', text, ...(r.tool === 'publish_reply' ? {} : threadFields(r.thread, r.sent)) });
   }
   out.sort((a, b) => (a.at < b.at ? 1 : -1));
-  return out.slice(0, RECENT_POSTS_MAX);
+  return out.slice(0, max);
 }
 
 /**
@@ -146,7 +159,7 @@ export function questionQuotaRefusal(text: string, budget: QuestionBudget): stri
 }
 
 /** The observation section, or `{}` when the agent said nothing in the last day. */
-export async function recentPostsSection(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentId: string): Promise<Record<string, unknown>> {
+export async function recentPostsSection(ctx: Pick<SupervisorContext, 'db' | 'now'> & Partial<Pick<SupervisorContext, 'config'>>, agentId: string): Promise<Record<string, unknown>> {
   const [items, budget] = await Promise.all([recentPosts(ctx, agentId), questionBudget(ctx, agentId)]);
   const questions = {
     questions: {

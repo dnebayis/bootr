@@ -16,6 +16,7 @@
  */
 import { clankerV5SplitFromSettings, coinFeeSplit, feeSplitLine, type CoinFeeSplit, type FeeRecipient } from './coin-fees.js';
 import type { AgentRow, SupervisorContext } from './context.js';
+import { logGateHit } from './gate-shadow.js';
 import { clankerV5CoinOf } from './launch-source.js';
 
 export type FeeClaimKind = 'holders' | 'of_trade' | 'share';
@@ -91,13 +92,15 @@ export function feeClaimProblem(text: string, split: CoinFeeSplit | null): FeeCl
   return null;
 }
 
-type Ctx = Pick<SupervisorContext, 'config' | 'indexer' | 'log' | 'chain'>;
+type Ctx = Pick<SupervisorContext, 'config' | 'indexer' | 'log' | 'chain'> & Partial<Pick<SupervisorContext, 'db' | 'now'>>;
 
 /**
  * The refusal for a post, a reply or the parts of a thread of a coin's agent, or null. One indexer read when a part
  * mentions a percentage or holders at all; a read that fails refuses nothing (the gate cannot show the claim is false).
+ * What it finds is also a row of the gates' shadow log (gate-shadow.ts, gate `G3`), refused or not; `actionId` is the
+ * publish it belongs to.
  */
-export async function feeClaimRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'token' | 'config' | 'source'>, parts: readonly string[]): Promise<string | null> {
+export async function feeClaimRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'token' | 'config' | 'source'>, parts: readonly string[], actionId?: string | null): Promise<string | null> {
   const mode = ctx.config.FEE_CLAIM_GATE ?? 'enforce';
   if (mode === 'off' || (agent.config as Record<string, unknown>).platform === true) return null;
   if (!parts.some((part) => /%|holder|co-?owner/i.test(part))) return null;
@@ -113,6 +116,7 @@ export async function feeClaimRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
     const problem = feeClaimProblem(part, split);
     if (!problem) continue;
     ctx.log.info({ agentId: agent.agentId, kind: problem.kind, sentence: problem.sentence.slice(0, 200), enforced: mode === 'enforce' }, 'false fee claim');
+    await logGateHit(ctx, { agentId: agent.agentId, gate: 'G3', code: 'fee_claim_false', actionId: actionId ?? null, text: part, detail: { kind: problem.kind, sentence: problem.sentence.slice(0, 200) }, enforced: mode === 'enforce' });
     return mode === 'enforce' ? problem.message : null;
   }
   return null;

@@ -52,6 +52,7 @@ import { scheduledCancel, scheduledList, schedulePost } from '../scheduled.js';
 import { noteWhatWorks, whatWorksOffered } from '../what-works.js';
 import { addressRefusal } from '../your-coin.js';
 import { feeClaimRefusal } from '../fee-claims.js';
+import { postGateRefusal } from '../post-gates.js';
 
 /** Tools the supervisor can actually execute right now (search needs an API key; images go through the relay). */
 
@@ -550,8 +551,11 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const addressed = await addressRefusal(ctx, agent, pending.id, [action.input.text], { replyTo: item?.post });
       if (addressed) return failed(addressed);
       // A false statement about where the coin's fees go is not published (fee-claims.ts).
-      const falseFee = await feeClaimRefusal(ctx, agent, [action.input.text]);
+      const falseFee = await feeClaimRefusal(ctx, agent, [action.input.text], pending.id);
       if (falseFee) return failed(falseFee);
+      // The gates of the behaviour note (post-gates.ts): units and similarity to another agent's post; in shadow they only log.
+      const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts: [action.input.text], kind: 'reply', aboutPostId: action.input.postId });
+      if (gated) return failed(gated);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
       const decided: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
       // A reply outside the verified audience (a direct reply under the agent's own post) is held to the day's count.
@@ -591,8 +595,11 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       const addressed = await addressRefusal(ctx, agent, pending.id, parts);
       if (addressed) return failed(addressed);
       // A false statement about where the coin's fees go is not published, in any part (fee-claims.ts).
-      const falseFee = await feeClaimRefusal(ctx, agent, parts);
+      const falseFee = await feeClaimRefusal(ctx, agent, parts, pending.id);
       if (falseFee) return failed(falseFee);
+      // The gates of the behaviour note (post-gates.ts): repeats, similarity to another agent's post, units; in shadow they only log.
+      const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true });
+      if (gated) return failed(gated);
       const checked = await originalRules(ctx, agent, config, pending.id, action.input, env.inbox, !!media.media);
       if ('refusal' in checked) return failed(checked.refusal);
       const outcome = await sendParts(ctx, agent, config, { actionId: pending.id, text: action.input.text, ...(action.input.thread ? { thread: action.input.thread } : {}), ...(checked.attributions.length ? { attributions: checked.attributions } : {}), ...(checked.about ? { aboutAuthorId: checked.about.authorId } : {}) }, media.media);

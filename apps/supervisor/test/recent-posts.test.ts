@@ -35,6 +35,28 @@ describe('recentPosts', () => {
   });
 });
 
+describe('the length of recentPosts is a setting', () => {
+  const sent = (n: number, now: number) => ({ actionId: `act_n${n}`, agentId: AGENT_ID, cycleKey: `n${n}`, action: { tool: 'publish_post', input: { text: `Post number ${n} of the day.` } }, status: 'completed', attempts: 1, createdAt: new Date(now - n * 60_000), updatedAt: new Date(now - n * 60_000) });
+
+  it('lists 16 by default (the list is today\'s only guard against repeats), and as many as RECENT_POSTS_MAX says', async () => {
+    for (const [config, length] of [[{}, 16], [{ RECENT_POSTS_MAX: '6' }, 6], [{ RECENT_POSTS_MAX: '20' }, 20]] as const) {
+      const w = await makeWorld({ config });
+      try {
+        await seedAgent(w);
+        await w.db.insert(actions).values(Array.from({ length: 22 }, (_, i) => sent(i + 1, w.ctx.now())) as never);
+        const items = await recentPosts(w.ctx, AGENT_ID);
+        expect(items, JSON.stringify(config)).toHaveLength(length);
+        expect(items[0]!.text).toBe('Post number 1 of the day.');
+        expect(((await recentPostsSection(w.ctx, AGENT_ID)).recentPosts as { items: unknown[] }).items).toHaveLength(length);
+        // A caller without a config gets the default.
+        expect(await recentPosts({ db: w.ctx.db, now: w.ctx.now }, AGENT_ID)).toHaveLength(16);
+      } finally {
+        await w.close();
+      }
+    }
+  });
+});
+
 describe('recentPosts and a thread', () => {
   const THREAD = [{ text: 'The second post of the thread goes on about the split of the fees between the agent, the creator and the platform, at some length.' }, { text: 'The third closes it.' }, { text: 'A fourth that never went out.' }];
   const row = (id: string, minutesAgo: number, now: number, input: Record<string, unknown>, result: Record<string, unknown> = { postId: '9001' }) => ({ actionId: id, agentId: AGENT_ID, cycleKey: id, action: { tool: 'publish_post', input }, status: 'completed', attempts: 1, result: { actionId: id, tool: 'publish_post', status: 'completed', result }, createdAt: new Date(now - minutesAgo * 60_000), updatedAt: new Date(now - minutesAgo * 60_000) });

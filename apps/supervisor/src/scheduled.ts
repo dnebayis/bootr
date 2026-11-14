@@ -63,6 +63,7 @@ import { creditsHold, forbiddenHold, formatQuietHours, isXCreditsError, isXForbi
 import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
 import { recordSaid } from './said.js';
+import { postGateRefusal } from './post-gates.js';
 import { threadLimits } from './thread-send.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
@@ -554,8 +555,11 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
   const addressed = await addressRefusal(ctx, agent, pending.id, parts, { at: sendAt, scheduledId: id, done: 'scheduled' });
   if (addressed) return failed(addressed);
   // A false statement about where the coin's fees go is not scheduled (fee-claims.ts); the split is locked, so the send does not ask again.
-  const falseFee = await feeClaimRefusal(ctx, agent, parts);
+  const falseFee = await feeClaimRefusal(ctx, agent, parts, pending.id);
   if (falseFee) return failed(falseFee);
+  // The gates of the behaviour note (post-gates.ts); the repeat and the cross-agent gate are asked again at the send, against what was said by then.
+  const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', done: 'scheduled' });
+  if (gated) return failed(gated);
 
   // Who thought is on the record with the row, as it is on the action that made it (own/turns.ts).
   const made0 = await ctx.db.query.actions.findFirst({ where: eq(actions.actionId, pending.id), columns: { action: true } });
@@ -1000,6 +1004,12 @@ export async function sendScheduled(ctx: SupervisorContext, id: string): Promise
     const addressed = await addressRefusal(ctx, agent, row.id, parts, { sending: true, scheduledId: row.id });
     if (addressed) {
       await closeFailed(ctx, agent, lease, row, addressed, 'waiting', { settle: false });
+      return 'failed';
+    }
+    // The gates of the behaviour note, against what the agent and the others said since this post was scheduled (post-gates.ts).
+    const gated = await postGateRefusal(ctx, agent, { actionId: row.id, parts, kind: 'original' });
+    if (gated) {
+      await closeFailed(ctx, agent, lease, row, gated, 'waiting', { settle: false });
       return 'failed';
     }
 
