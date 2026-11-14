@@ -292,7 +292,9 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
 - Memory ceilings (since 2026-11-08, `docs/security/fixes-2026-11-08.md` item 3): every container in `docker-compose.coolify.yml` has a `mem_limit`: postgres 1 GB, indexer 1.5 GB
   (Ponder's sync cache and reorg window; a full resync is its hungriest hour), web 1 GB, supervisor 1 GB, sender
   512 MB, inference 512 MB: 5.5 GB together, leaving about 2 GB for the OS, Docker, Coolify's proxy and Hermes
-  (~330 MB). A container that passes its limit is killed by the kernel and comes back through `restart:
+  (~330 MB). The dataset process (the `dataset` service, the supervisor's image run with `node dist/dataset.js`,
+  `apps/supervisor/README.md`) adds 384 MB to that, 5.9 GB in all and about 1.7 GB left; it idles while
+  `DATASET_ENABLED` is not `true`. A container that passes its limit is killed by the kernel and comes back through `restart:
   unless-stopped`; the others are untouched, which is the point: a hostile response, a leak or a runaway query costs
   one service a restart, not the box. `docker stats` shows the use against the limits; an OOM kill shows as
   `OOMKilled: true` in `docker inspect <container>` and as a restart in the Coolify logs. Raise a limit in the compose
