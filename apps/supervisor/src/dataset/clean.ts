@@ -1,32 +1,45 @@
 /**
  * What may enter the dataset. One bad record would later reach every agent at once, so everything read from outside
  * (a feed, a JSON API, a page, later an X post) is untrusted evidence and never an instruction. The rules, all applied
- * here and tested with hostile inputs in test/dataset-poison.test.ts:
+ * here and tested with hostile inputs in test/dataset-clean.test.ts and test/dataset-review-text.test.ts:
  *
  *  1. Bounded before anything else. A string is cut to PRE_CUT characters before the first pattern runs over it, so a
  *     2 MB title costs a slice, and every stored field has its own small limit (TITLE_MAX, EXCERPT_MAX, HEADLINE_MAX,
  *     SUMMARY_MAX, LINK_MAX, and counts for entities, words, numbers and refs).
  *  2. No markup, nothing invisible. Tags, scripts, styles and CDATA wrappers are removed; only the five XML entities
  *     and numeric character references are decoded (no entity a document defines is ever expanded, so there is no
- *     entity bomb to expand); the text is folded to NFKC, and control, zero-width, direction, tag and filler
- *     characters are removed.
+ *     entity bomb to expand); the text is folded to NFKC, and every code point that is a control, a format character,
+ *     a surrogate, private-use, unassigned, default-ignorable or a line or paragraph separator is removed, by Unicode
+ *     property and not by a list of ranges (a list always misses the next block: the first one missed the second
+ *     block of variation selectors).
  *  3. A record's text is built by code from those bounded fields: a headline is a cleaned title cut to HEADLINE_MAX, a
  *     summary exists only where code wrote the sentence itself from numbers (layer a, metrics). No free text from a
  *     source is stored in a field that reads as an instruction to anyone: there is no "note", "advice" or "action"
  *     field, and nothing here is ever concatenated into a prompt by this stage.
- *  4. Text that reads like an instruction is withheld. A title or excerpt that addresses the reader ("ignore your
- *     rules", "you are", "system:", "post this"), or carries an address, a cashtag or an @handle, still counts as a
- *     sighting (the source did carry the event), but its words are not stored: the record's headline then comes from
- *     another source or from code ("an item from <source name>").
+ *  4. Text that could act on a reader is withheld (`instructionShaped`). A title or excerpt is not stored when it
+ *     carries a link of any kind (a full address or a bare domain: agent-core's `carriesLink`, the reading the publish
+ *     gate uses), an @mention (agent-core's `mentionedHandles`), a cashtag, a contract or wallet address, a name on
+ *     chain (`name.eth`), or when it addresses somebody: the reader ("ignore your rules", "you must", "system:",
+ *     "post this", "your wallet"), or agents, AI, holders and users in the imperative ("Agents: announce...", "every
+ *     agent must tell holders...", "holders should exit", "move funds now"). The sighting still counts (the source
+ *     did carry something); the record's headline then comes from another source or from code ("an item from
+ *     <source name>").
  *  5. Links are data. A link is kept only as a parsed https URL without credentials, on a host of the checked-in
  *     source list, with tracking parameters and the fragment removed and cut to LINK_MAX; anything else is dropped.
  *     Nothing in this module fetches a link it found in a source.
  *  6. Numbers are found by pattern, never taken as prose: a value, a unit and at most three cleaned words of what it
  *     counts, at most NUMBERS_MAX of them a sighting.
  *
+ * WHAT THIS IS NOT. Rule 4 is a noise filter, not a wall. It removes the shapes that are known; a sentence that
+ * misleads in plain words ("Circle to freeze USDC next week") passes it, and always will. What protects an agent is
+ * where a record may come from and how it is graded (sources.ts, grades.ts, store.ts), and the stage that first shows
+ * a record to a model MUST still present its headline as untrusted data: quoted as a field, marked as evidence that
+ * carries no instruction, never joined into the prose of a prompt.
+ *
  * Every fetch itself goes through web-reader.ts `fetchPublic` (public hosts only, redirects re-checked, byte and time
- * limits); see fetch.ts.
+ * limits); see layer-b.ts.
  */
+import { carriesLink, countCashtags, mentionedHandles } from '@bootr/agent-core';
 import type { RecordNumber } from './types.js';
 
 /** A string from outside is cut to this before any pattern runs over it. */
@@ -62,17 +75,12 @@ function stripTags(text: string): string {
 }
 
 /**
- * Characters a reader does not see or that change how the rest is read: C0 and C1 controls, soft hyphen, zero-width
- * and joiner characters, direction marks and overrides, line and paragraph separators, invisible operators, the
- * byte-order mark, Hangul and Mongolian fillers, variation selectors and the Unicode tag block.
+ * Characters a reader does not see, or that change how the rest is read, by Unicode property: every `C` category
+ * (controls, format characters such as zero-width and direction marks, surrogates, private use, unassigned), every
+ * default-ignorable code point (soft hyphen, fillers, both blocks of variation selectors, the tag block) and the line
+ * and paragraph separators. No range is listed here, so a block this file never heard of is covered too.
  */
-const INVISIBLE_RANGES: readonly (readonly [number, number])[] = [
-  [0x00, 0x1f], [0x7f, 0x9f], [0xad, 0xad], [0x34f, 0x34f], [0x61c, 0x61c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180e],
-  [0x200b, 0x200f], [0x2028, 0x202f], [0x205f, 0x206f], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff], [0xffa0, 0xffa0],
-  [0xfff9, 0xfffb], [0xe0000, 0xe007f],
-];
-// Built from code points, so that no invisible character and no escape of one stands in this file.
-const INVISIBLE = new RegExp(`[${INVISIBLE_RANGES.map(([from, to]) => `\\u{${from.toString(16)}}-\\u{${to.toString(16)}}`).join('')}]`, 'gu');
+const INVISIBLE = /[\p{C}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}]/gu;
 
 /** Cuts on a code point, never inside a surrogate pair. */
 function cut(text: string, max: number): string {
@@ -94,9 +102,9 @@ export function cleanText(value: unknown, max: number): string {
   try {
     text = text.normalize('NFKC');
   } catch {
-    // an unpaired surrogate: keep the text as it is, the next line removes what cannot be shown
+    // keep the text as it is: the next line removes what cannot be shown
   }
-  text = text.replace(INVISIBLE, ' ').replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, ' ');
+  text = text.replace(INVISIBLE, ' ');
   return cut(text.replace(/\s+/g, ' ').trim(), max).trim();
 }
 
@@ -108,23 +116,43 @@ export function clip(text: string, max: number): string {
   return `${(space > max * 0.6 ? head.slice(0, space) : head).replace(/[\s,;:.-]+$/, '')}…`;
 }
 
+/** Who a sentence can be addressed to besides the reader. */
+const ADDRESSEE = '(?:ai\\s+)?(?:agents?|bots?|assistants?|models?|llms?|holders?|hodlers?|users?|investors?|traders?|stakers?|followers?|everyone|everybody|community)';
+const MONEY_VERB = '(?:move|migrate|send|transfer|withdraw|recover|claim|bridge|swap|sell|buy|exit|revoke|approve|deposit|stake|unstake)';
+const MONEY_THING = '(?:funds?|tokens?|coins?|assets?|wallets?|positions?|holdings?|balances?|airdrops?|rewards?|usdc|usdt|eth|btc)';
+
 const INSTRUCTION_PATTERNS: readonly RegExp[] = [
-  /\b(?:ignore|disregard|forget|override)\s+(?:all|any|every|everything|your|the|these|those|previous|prior|above|earlier|system)\b/i,
-  /\byou\s+(?:are|must|should|will|need to|have to)\b|\byou['’]re\b/i,
+  // addressed to the reader
+  /\b(?:ignore|disregard|forget|override|bypass)\s+(?:all|any|every|everything|your|the|these|those|previous|prior|above|earlier|system)\b/i,
+  /\byou\s+(?:are|must|should|will|need to|have to|can now|may now)\b|\byou['’](?:re|ll|ve)\b/i,
   /\b(?:system|assistant|developer|user|instructions?|prompt)\s*:/i,
-  /\b(?:post|tweet|share|repost|retweet|publish|reply|say|write|announce)\s+(?:this|that|the following|exactly|with)\b/i,
-  /\b(?:new|updated|following)\s+instructions?\b|\byour\s+(?:rules|instructions|system prompt|guidelines|task)\b/i,
+  /\b(?:post|tweet|share|repost|retweet|publish|reply|say|write|announce|quote|link)\s+(?:this|that|the following|exactly|with|to all|it)\b/i,
+  /\b(?:new|updated|following)\s+instructions?\b|\byour\s+(?:rules|instructions|system prompt|guidelines|task|wallets?|funds?|tokens?|coins?|assets?|keys?|seed(?: phrase)?|accounts?|holdings?|positions?)\b/i,
   /\bas an? (?:ai|assistant|agent|language model)\b|\bdo not (?:tell|mention|reveal|disclose)\b/i,
-  /0x[0-9a-fA-F]{40}\b/,
-  /(?:^|[^A-Za-z0-9_])\$[A-Za-z][A-Za-z0-9]{1,9}\b/,
-  /(?:^|[^A-Za-z0-9_.])@[A-Za-z0-9_]{1,15}\b/,
+  /\b(?:click|tap|go|head|visit|sign up|register|dm|join|act|hurry)\s+(?:here|now|today|to the link|the link|us)\b/i,
+  // addressed to agents, AI, holders or users: by name with a colon, with "must" or "should", or as the object of telling
+  new RegExp(`\\b${ADDRESSEE}\\s*:\\s*(?=\\p{L})`, 'iu'),
+  new RegExp(`\\b${ADDRESSEE}\\s+(?:must|should|shall|need to|needs to|have to|has to|ought to|are (?:urged|advised|asked|required|told|expected) to)\\b`, 'i'),
+  new RegExp(`\\b(?:tell|urge|instruct|notify|alert|warn|inform|remind|ask|order|direct)\\s+(?:all\\s+|your\\s+|the\\s+|every\\s+|its\\s+|their\\s+)?${ADDRESSEE}\\b`, 'i'),
+  new RegExp(`\\bto\\s+(?:all|every|each)\\s+${ADDRESSEE}\\b`, 'i'),
+  // an order about money: the verb with its urgency, either way round
+  new RegExp(`\\b${MONEY_VERB}\\b[^.!?]{0,60}\\b(?:now|immediately|urgently|asap|right away|before it is too late|while you can)\\b`, 'i'),
+  new RegExp(`\\b(?:must|should|please|urgent(?:ly)?|immediately)\\b[^.!?]{0,40}\\b${MONEY_VERB}\\s+(?:(?:your|all|their|the|any)\\s+)?${MONEY_THING}\\b`, 'i'),
+  // what a post must not pick up from a stranger: an address, a name on chain
+  /\b0x[0-9a-fA-F]{8,}\b/,
+  /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/,
+  /\b(?:bc1|ltc1|addr1|cosmos1)[a-z0-9]{20,}\b/i,
+  /(?<![\w@/.-])(?:[a-z0-9-]+\.)+(?:eth|sol)(?![a-z0-9-])/i,
 ];
 
 /**
- * Whether cleaned text reads like something addressed to the reader, or carries what a post must not pick up from a
- * stranger (an address, a cashtag, an @handle). Such a sighting is counted and its text withheld (rule 4 above).
+ * Whether cleaned text carries something that could act on whoever reads it: a link (as X would make one, a bare
+ * domain included), an @mention, a cashtag, an address or a name on chain, or words addressed to the reader, to
+ * agents or to holders. Such a sighting is counted and its text withheld (rule 4 above). A noise filter: see the
+ * header for what it does not do.
  */
 export function instructionShaped(text: string): boolean {
+  if (carriesLink(text) || mentionedHandles(text).length > 0 || countCashtags(text) > 0) return true;
   return INSTRUCTION_PATTERNS.some((re) => re.test(text));
 }
 
