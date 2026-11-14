@@ -473,7 +473,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       // "Bootr today" (platform agents only; empty for everyone else): context.ts / platform-feed.ts.
       ...(await bootrTodaySection(ctx, agent, config)),
       // A coin's own day, built by code from the index (coin agents only; `state.briefAt` keeps what it compares with): coin-today.ts.
-      ...(await coinTodaySection(ctx, agent, config, state, inputs.market)),
+      ...(await coinTodaySection(ctx, agent, config, state, inputs.market, inputs.treasury)),
       // How the agent's own posts of the last 7 days did (empty until something was measured): post-performance.ts.
       ...(await postPerformanceSection(ctx, agent.agentId)),
       // What it said in the last day (recent-posts.ts): no repeats, and the creator's rejection notes.
