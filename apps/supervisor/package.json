@@ -12,7 +12,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "blockrun:live-check": "tsx scripts/blockrun-live-check.ts"
+    "blockrun:live-check": "tsx scripts/blockrun-live-check.ts",
+    "behaviour:check": "tsx scripts/behaviour-check.ts"
   },
   "dependencies": {
     "@bootr/agent-core": "workspace:*",
