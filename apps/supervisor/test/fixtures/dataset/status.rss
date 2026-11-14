@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Base Status - Incident History</title>
+    <link>http://status.base.org</link>
+    <description>Statuspage</description>
+    <pubDate>Sun, 15 Nov 2026 10:08:50 +0000</pubDate>
+    <item>
+      <title>Delayed transaction inclusion on Base Mainnet</title>
+      <description>
+&lt;p&gt;&lt;small&gt;Nov &lt;var data-var=&apos;date&apos;&gt;15&lt;/var&gt;, &lt;var data-var=&apos;time&apos;&gt;10:08&lt;/var&gt; UTC&lt;/small&gt;&lt;br&gt;&lt;strong&gt;Resolved&lt;/strong&gt; - This incident has been resolved, and transaction inclusion is working as expected.&lt;/p&gt;&lt;p&gt;&lt;small&gt;Nov &lt;var data-var=&apos;date&apos;&gt;15&lt;/var&gt;, &lt;var data-var=&apos;time&apos;&gt;09:36&lt;/var&gt; UTC&lt;/small&gt;&lt;br&gt;&lt;strong&gt;Identified&lt;/strong&gt; - We&apos;ve identified the performance degradation and have deployed optimizations.&lt;/p&gt;      </description>
+      <pubDate>Sun, 15 Nov 2026 10:08:50 +0000</pubDate>
+      <link>https://base-l2.statuspage.io/incidents/9jdt5jc1ylry</link>
+      <guid>https://base-l2.statuspage.io/incidents/9jdt5jc1ylry</guid>
+    </item>
+    <item>
+      <title>Degraded RPC performance on Base Sepolia</title>
+      <description>&lt;p&gt;&lt;strong&gt;Resolved&lt;/strong&gt; - This incident has been resolved.&lt;/p&gt;</description>
+      <pubDate>Mon, 02 Nov 2026 14:55:00 +0000</pubDate>
+      <link>https://base-l2.statuspage.io/incidents/oldoldold</link>
+      <guid>https://base-l2.statuspage.io/incidents/oldoldold</guid>
+    </item>
+  </channel>
+</rss>

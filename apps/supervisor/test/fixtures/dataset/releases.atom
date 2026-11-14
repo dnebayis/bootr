@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/base/node/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/base/node/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/base/node/releases.atom"/>
+  <title>Release notes from node</title>
+  <updated>2026-11-14T18:57:37Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/596115135/v1.3.0</id>
+    <updated>2026-11-14T19:41:37Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/base/node/releases/tag/v1.3.0"/>
+    <title>v1.3.0</title>
+    <content type="html">&lt;h2&gt;What Changed&lt;/h2&gt;&lt;div class=&quot;markdown-alert&quot;&gt;&lt;svg viewBox=&quot;0 0 16 16&quot;&gt;&lt;path d=&quot;M0 1.75C0 .784.784 0 1.75 0h12.5&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;p&gt;&lt;strong&gt;Base Mainnet:&lt;/strong&gt; Required upgrade before the next hard fork. See &lt;a href=&quot;https://docs.base.org/chain/node-upgrade&quot;&gt;the docs&lt;/a&gt;.&lt;/p&gt;&lt;/div&gt;</content>
+    <author><name>base-release-bot</name></author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/1?s=60"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/596115135/v1.2.0</id>
+    <updated>2026-07-22T19:41:37Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/base/node/releases/tag/v1.2.0"/>
+    <title>v1.2.0</title>
+    <content type="html">&lt;p&gt;Older release.&lt;/p&gt;</content>
+  </entry>
+</feed>
