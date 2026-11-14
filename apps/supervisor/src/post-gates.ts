@@ -3,7 +3,8 @@
  * `enforce`; `shadow` unless set otherwise): in shadow a gate writes what it would refuse to `sv_gate_shadow`
  * (gate-shadow.ts) and the post goes out untouched; enforced, the post is refused and the refusal names the rule and
  * what to change, as the question quota does. None of them calls a model, none throws into the publish path, and
- * together they cost two indexed reads of the said-ledger at most (one for a reply).
+ * together they cost two indexed reads of the said-ledger at most (one for a reply), plus one insert for a post a
+ * gate finds.
  *
  * G1, repeat (`REPEAT_GATE`, rules R1 and R2), original posts only:
  *   - `repeat_fact`: the post states figures, and none of them is new. A figure is new when the agent's last
@@ -237,15 +238,17 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
   const ledger = saidKeepDays(ctx) > 0;
   const repeat = await guarded('G1', async () => {
     if (!ledger || post.kind !== 'original') return null;
-    // The platform account's numbers post and digest say the same subjects every time: that is what they are.
-    if (post.ofTurn && agent.config.platform === true) {
-      const turn = await storedTurn(ctx, agent.agentId);
-      if (turn?.numbersDay || turn?.digestWeek) return null;
-    }
     // A post with no figure and no three-word opener has nothing to compare: no read.
     const figures = post.parts.some((part) => postFacts(part).some((f) => f.subject !== 'none'));
     if (!figures && !fullOpener(openerOf(post.parts[0] ?? ''))) return null;
-    return repeatProblem(post.parts, await lastOriginals(ctx, agent.agentId, ctx.config.REPEAT_WINDOW_ORIGINALS, post.actionId), done);
+    const problem = repeatProblem(post.parts, await lastOriginals(ctx, agent.agentId, ctx.config.REPEAT_WINDOW_ORIGINALS, post.actionId), done);
+    // The platform account's numbers post and digest say the same subjects every time: that is what they are. The
+    // turn is read only for a post that would otherwise be found, so a post that passes costs the one read above.
+    if (problem && post.ofTurn && agent.config.platform === true) {
+      const turn = await storedTurn(ctx, agent.agentId);
+      if (turn?.numbersDay || turn?.digestWeek) return null;
+    }
+    return problem;
   });
   if (repeat) return repeat;
 

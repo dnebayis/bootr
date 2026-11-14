@@ -335,6 +335,29 @@ describe('on the publish paths', () => {
     }
   });
 
+  it('costs two reads of the ledger for an original, one for a reply, none for a post with nothing to compare, and never a thought', async () => {
+    const { w } = await world();
+    try {
+      await seedSaid(w, 'act_h1', T0 - 2 * HOUR, HOLDERS);
+      let reads = 0;
+      const counting = { ...w.ctx, db: new Proxy(w.ctx.db, { get: (db, key) => { if (key === 'select' || key === 'query') reads += 1; const v = Reflect.get(db, key) as unknown; return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(db) : v; } }) } as typeof w.ctx;
+      const ask = async (parts: string[], kind: 'original' | 'reply', ofTurn = false) => {
+        reads = 0;
+        await postGateRefusal(counting, { agentId: AGENT_ID, config: { platform: true } }, { actionId: 'act_cost', parts, kind, ofTurn });
+        return reads;
+      };
+      // A long original with a new figure: its own last originals, and what the others said. The platform's turn is not read for a post that passes.
+      expect(await ask([`118 holders this morning, and the pool took its first trades since the weekend from three new wallets.`], 'original', true)).toBe(2);
+      expect(await ask([`118 holders this morning, and the pool took its first trades since the weekend from three new wallets.`], 'reply')).toBe(1);
+      expect(await ask(['gm frens'], 'original', true)).toBe(0);
+      // Found as a repeat: the platform's turn is read to see whether it is the numbers post (one read more), and the row is written.
+      expect(await ask(['Still 112 holders.'], 'original', true)).toBe(2);
+      expect(w.inference.calls).toHaveLength(0);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('the fee-claim gate writes to the shadow log too, refused or not', async () => {
     const ROW = { source: 'bootr', lpFeeBps: 10_000, protocolBps: 1000, agentBps: 450, creatorBps: 5850, burnBps: 0, platformBps: 2700 };
     for (const [mode, refused] of [['enforce', true], ['shadow', false]] as const) {
