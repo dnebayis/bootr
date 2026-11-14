@@ -3,16 +3,18 @@
  * each `off`, `shadow` (the default) or `enforce`, and the shadow log every gate writes (G3, the fee claims, too).
  * The posts are the ones quoted in section 2.3 of the note, or the same posts with a word or a figure changed.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { queueForApproval } from '../src/approvals.js';
 import { executeAction } from '../src/broker/index.js';
-import { gateShadow, scheduledPosts } from '../src/db/schema.js';
+import { coinFeeSplit, feeSplitLine } from '../src/coin-fees.js';
+import { gateShadow, said as saidTable, scheduledPosts } from '../src/db/schema.js';
 import { gateHitId, gateMode, gateTextHash, logGateHit } from '../src/gate-shadow.js';
+import { HANDED_WORDS, ownWords } from '../src/handed-words.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { SIMILAR_MIN_WORDS, postGateRefusal, repeatProblem, similarProblem, unitProblem } from '../src/post-gates.js';
 import { postHooks, setPostHooks } from '../src/post-send.js';
-import { recordSaid, saidFieldsOf, wordSet, type SaidByOther, type SaidOriginal } from '../src/said.js';
+import { SAID_OTHERS_MAX_ROWS, recordSaid, saidFieldsOf, wordSet, type SaidByOther, type SaidOriginal } from '../src/said.js';
 import { sweepScheduled } from '../src/scheduled.js';
 import '../src/thread-send.js';
 import { AGENT_ID, makeWorld, seedAgent, type TestWorld } from './helpers.js';
@@ -152,7 +154,7 @@ describe('G4 cross-agent: the words of another agent\'s post', () => {
   it('finds a post in the words of another agent, changed or not', () => {
     expect(similarProblem([`${JESSE}.`], [other(JESSE)], 60)).toMatchObject({
       code: 'similar_post',
-      message: 'similar_post: 100% of the words of this post are the words of a post another Bootr agent made on 2026-10-24. X does not allow substantially similar posts across accounts. Say it in your own words and about your own subject, or leave it out. Nothing was posted.',
+      message: "similar_post: 100% of the words of this post are the words of a post another Bootr agent made on 2026-10-24 (figures and the standard lines about a coin's fees and day are not counted). X does not allow substantially similar posts across accounts. Say it in your own words and about your own subject, or leave it out. Nothing was posted.",
       detail: { otherAgentId: OTHER, otherPostId: 'p_other', overlapPct: 100 },
     });
     expect(code(similarProblem([GREEN_LIGHT.replace('green light', 'green signal')], [other(GREEN_LIGHT)], 60))).toBe('similar_post');
@@ -161,18 +163,90 @@ describe('G4 cross-agent: the words of another agent\'s post', () => {
     expect(code(similarProblem(['A first post of my own, in my own words, about my own coin today.', WALLETS], [other(WALLETS)], 60))).toBe('similar_post');
   });
 
-  it('lets through a post of its own, a short one, and the answer to the very post it is about', () => {
+  it('lets through a post of its own, a short one, and a comment on the very post it is about', () => {
     // Two coins saying what their own day was: the same kind of post, not the same words.
     expect(similarProblem([HOLDERS], [other(POOL)], 60)).toBeNull();
     expect(similarProblem([WALLETS], [other(GREEN_LIGHT), other(ECO), other(GOOD_REPLY)], 60)).toBeNull();
-    // Under SIMILAR_MIN_WORDS words that carry meaning two posts agree by chance.
-    expect(wordSet('gm to the 112 holders').length).toBeLessThan(SIMILAR_MIN_WORDS);
+    // Under SIMILAR_MIN_WORDS words of its own two posts agree by chance.
+    expect(SIMILAR_MIN_WORDS).toBe(6);
+    expect(ownWords(wordSet('gm to the 112 holders'))).toEqual(['gm']);
     expect(similarProblem(['gm to the 112 holders'], [other('gm to the 112 holders')], 60)).toBeNull();
-    // A reply that takes up the words of the post it answers, or a comment on it.
+    // A comment that takes up the words of the post it is about.
     expect(similarProblem([`${JESSE}? Yes, and here is how.`], [other(JESSE, T0 - HOUR, '555')], 60, { exceptPostIds: ['555'] })).toBeNull();
     // The threshold is the deployment's.
     expect(similarProblem([GREEN_LIGHT.replace('green light', 'green signal')], [other(GREEN_LIGHT)], 100)).toBeNull();
     expect(similarProblem([JESSE], [], 60)).toBeNull();
+  });
+});
+
+describe('G4 and the words code hands every coin', () => {
+  // The default split of a coin launched through RWAGMI: what `feeSplitLine` says of it is the same on every such coin.
+  const LINE = feeSplitLine(coinFeeSplit({ source: 'bootr', lpFeeBps: 10_000, protocolBps: 1000, agentBps: 450, creatorBps: 5850, burnBps: 0, platformBps: 2700 })!);
+  const SPLIT_SAID = 'On this coin the creator gets 65% of the fee, the platform 30% and the agent 5%. No burn.';
+  const brief = (symbol: string, holders: number) => `$${symbol} on 2026-11-14, read from Bootr's index at 2026-11-14T12:00Z: ${holders} holders, the same as when you last posted (2026-11-14T10:00Z). Last 24 hours: 3 trades, $40.00 traded.`;
+
+  it('the set is built from the functions that write the sentences, and holds no instruction to the model', () => {
+    expect(LINE).toMatch(/^Fee split \(locked at launch, this coin's trades only\): a trade pays 1%/);
+    for (const word of ['rwagmi', 'clanker', 'tax', 'dividends', 'locked', 'launch', 'creator', 'platform', 'burn', 'holders', 'trades', 'traded', 'posted', 'milestones', 'contract', 'address', 'cashtag', 'monday', 'yesterday', 'weth']) expect(HANDED_WORDS.has(word), word).toBe(true);
+    for (const word of ['never', 'price', 'forecast', 'instructions', 'jesse', 'floor', 'green']) expect(HANDED_WORDS.has(word), word).toBe(false);
+    // Nothing of the fee split line or of the day's brief is an agent's own, and no figure is.
+    expect(ownWords(wordSet(LINE))).toEqual([]);
+    expect(ownWords(wordSet(brief('CLANKFISH', 6)))).toEqual(['clankfish']);
+    expect(ownWords(wordSet(SPLIT_SAID))).toEqual(['gets']);
+    expect(ownWords(['112', '58.5%', '0.0475', 'floor'])).toEqual(['floor']);
+  });
+
+  it('two coins that state the same split, or the same kind of day, are not similar, whoever was first', () => {
+    // An account that posts Bootr's own sentence first does not make the next coin's statement of its facts a copy...
+    expect(similarProblem([LINE], [other(LINE)], 60)).toBeNull();
+    expect(similarProblem([SPLIT_SAID], [other(LINE), other(SPLIT_SAID)], 60)).toBeNull();
+    expect(similarProblem([`${SPLIT_SAID} That is the whole fee story here.`], [other(LINE), other(SPLIT_SAID)], 60)).toBeNull();
+    expect(similarProblem([brief('BRIAN', 112)], [other(brief('CLANKFISH', 6))], 60)).toBeNull();
+    // ...and neither does a figure two coins share.
+    expect(similarProblem(['112 holders and 3 trades: a calm Tuesday for us here.'], [other('112 holders and 3 trades. Nothing to add from our side.')], 60)).toBeNull();
+  });
+
+  it('a copy is still a copy with handed words or other figures around it', () => {
+    expect(code(similarProblem([`${GREEN_LIGHT} 112 holders, 3 trades.`], [other(`${GREEN_LIGHT} 6 holders, 0 trades.`)], 60))).toBe('similar_post');
+    expect(code(similarProblem([`${LINE} ${WALLETS}`], [other(WALLETS)], 60))).toBe('similar_post');
+  });
+
+  it('enforced on the publish path: posting the handed sentences first blocks nobody', async () => {
+    const { w, post, reply } = await world({ CROSS_AGENT_GATE: 'enforce' });
+    try {
+      // Another account posted the fee split line and a plain statement of the split, as originals, an hour ago.
+      await seedSaid(w, 'act_o1', T0 - HOUR, LINE, OTHER);
+      await seedSaid(w, 'act_o2', T0 - HOUR, SPLIT_SAID, OTHER);
+      expect((await post(SPLIT_SAID)).kind).toBe('completed');
+      expect((await post(LINE)).kind).toBe('completed');
+      expect(gated(await reply('601', SPLIT_SAID))).toBe(false);
+      expect(await shadowRows(w)).toEqual([]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('reads the whole window, and at the ceiling of one read compares the newest and says so', async () => {
+    const { w } = await world({ CROSS_AGENT_GATE: 'enforce' });
+    try {
+      const warn = vi.spyOn(w.ctx.log, 'warn');
+      const ask = (text: string) => postGateRefusal(w.ctx, { agentId: AGENT_ID, config: {} }, { actionId: 'act_w', parts: [text], kind: 'original' });
+      const filler = (i: number, at: number) => ({ id: `act_f${i}`, agentId: `coin${i % 60}`, actionId: `act_f${i}`, postId: `p_f${i}`, kind: 'original' as const, postedAt: new Date(at), words: ['filler', `word${i}`] });
+      // 600 posts of 60 other agents in the last day, and behind them, 47 hours back, the post that is copied: more than the 400 rows the read once stopped at.
+      await w.db.insert(saidTable).values(Array.from({ length: 600 }, (_, i) => filler(i, T0 - (i + 1) * 2 * 60_000)));
+      await seedSaid(w, 'act_old', T0 - 47 * HOUR, JESSE, OTHER);
+      expect(await ask(`${JESSE}.`)).toMatch(/^similar_post: /);
+      expect(warn).not.toHaveBeenCalled();
+      // Past the ceiling of one read the oldest posts of the window are not compared: the copy passes, nothing is refused, and a warning says the ceiling was met.
+      await w.db.insert(saidTable).values(Array.from({ length: SAID_OTHERS_MAX_ROWS }, (_, i) => filler(1000 + i, T0 - 30 * 60_000 - i * 1000)));
+      expect(await ask(`${JESSE}.`)).toBeNull();
+      expect(warn).toHaveBeenCalledWith({ agentId: AGENT_ID, compared: SAID_OTHERS_MAX_ROWS }, expect.stringContaining('cross-agent gate'));
+      // A copy of a post among the newest is found all the same.
+      await seedSaid(w, 'act_new', T0 - 60_000, GREEN_LIGHT, OTHER);
+      expect(await ask(GREEN_LIGHT)).toMatch(/^similar_post: /);
+    } finally {
+      await w.close();
+    }
   });
 });
 
@@ -246,7 +320,7 @@ describe('on the publish paths', () => {
     }
   });
 
-  it('a reply answers with a figure the agent already posted, whatever the repeat gate is set to; units and copies still count for it', async () => {
+  it('a reply is asked by the units gate alone: it may give a figure the agent already posted, and the words another agent used', async () => {
     const { w, reply } = await world({ REPEAT_GATE: 'enforce', UNITS_GATE: 'enforce', CROSS_AGENT_GATE: 'enforce' });
     try {
       await seedSaid(w, 'act_h1', T0 - 2 * HOUR, HOLDERS);
@@ -256,9 +330,14 @@ describe('on the publish paths', () => {
       await seedSaid(w, 'act_r1', T0 - HOUR, 'There are 3 trades today.', AGENT_ID, 'publish_reply');
       expect(await postGateRefusal(w.ctx, { agentId: AGENT_ID, config: {} }, { actionId: 'act_x', parts: ['3 trades today, all small.'], kind: 'original' })).toBeNull();
       expect(await reply('502', 'The pool holds $0.05 WETH.')).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^unit_on_token_amount: /) });
-      expect(await reply('503', `${JESSE}!`)).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^similar_post: /) });
-      // ...but not for the answer to that very post (`p_act_o1` is the other agent's post on X).
-      expect(gated(await reply('p_act_o1', `${JESSE}? It is, since the 12th.`))).toBe(false);
+      // The cross-agent gate does not read replies: two coins asked the same thing answer with the same facts.
+      expect(gated(await reply('503', `${JESSE}!`))).toBe(false);
+      expect(await postGateRefusal(w.ctx, { agentId: AGENT_ID, config: {} }, { actionId: 'act_r', parts: [`${JESSE}!`], kind: 'reply' })).toBeNull();
+      expect(await postGateRefusal(w.ctx, { agentId: AGENT_ID, config: {} }, { actionId: 'act_o', parts: [`${JESSE}!`], kind: 'original' })).toMatch(/^similar_post: /);
+      expect((await shadowRows(w)).map((r) => [r.gate, r.detail.kind])).toEqual([['G4', 'original'], ['G6', 'reply']]);
+      // ...and a reply another agent made is not something an original can be "similar" to.
+      await seedSaid(w, 'act_o2', T0 - HOUR, GREEN_LIGHT, OTHER, 'publish_reply');
+      expect(await postGateRefusal(w.ctx, { agentId: AGENT_ID, config: {} }, { actionId: 'act_o3', parts: [GREEN_LIGHT], kind: 'original' })).toBeNull();
     } finally {
       await w.close();
     }
@@ -335,7 +414,7 @@ describe('on the publish paths', () => {
     }
   });
 
-  it('costs two reads of the ledger for an original, one for a reply, none for a post with nothing to compare, and never a thought', async () => {
+  it('costs two reads of the ledger for an original, none for a reply or a post with nothing to compare, and never a thought', async () => {
     const { w } = await world();
     try {
       await seedSaid(w, 'act_h1', T0 - 2 * HOUR, HOLDERS);
@@ -348,7 +427,7 @@ describe('on the publish paths', () => {
       };
       // A long original with a new figure: its own last originals, and what the others said. The platform's turn is not read for a post that passes.
       expect(await ask([`118 holders this morning, and the pool took its first trades since the weekend from three new wallets.`], 'original', true)).toBe(2);
-      expect(await ask([`118 holders this morning, and the pool took its first trades since the weekend from three new wallets.`], 'reply')).toBe(1);
+      expect(await ask([`118 holders this morning, and the pool took its first trades since the weekend from three new wallets.`], 'reply')).toBe(0);
       expect(await ask(['gm frens'], 'original', true)).toBe(0);
       // Found as a repeat: the platform's turn is read to see whether it is the numbers post (one read more), and the row is written.
       expect(await ask(['Still 112 holders.'], 'original', true)).toBe(2);

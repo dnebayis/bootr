@@ -3,7 +3,7 @@
  * `enforce`; `shadow` unless set otherwise): in shadow a gate writes what it would refuse to `sv_gate_shadow`
  * (gate-shadow.ts) and the post goes out untouched; enforced, the post is refused and the refusal names the rule and
  * what to change, as the question quota does. None of them calls a model, none throws into the publish path, and
- * together they cost two indexed reads of the said-ledger at most (one for a reply), plus one insert for a post a
+ * together they cost two indexed reads of the said-ledger at most (none for a reply), plus one insert for a post a
  * gate finds.
  *
  * G1, repeat (`REPEAT_GATE`, rules R1 and R2), original posts only:
@@ -18,14 +18,20 @@
  *   numbers post and its weekly digest (the same subjects every day is what they are); a figure with no subject the
  *   fingerprint knows; the posts of one thread against each other.
  *
- * G4, cross-agent (`CROSS_AGENT_GATE`, rule R3, the part that needs no records): a post or a reply at least
- * `CROSS_AGENT_OVERLAP_PCT` of whose words are those of a post ANOTHER Bootr agent made in the last
+ * G4, cross-agent (`CROSS_AGENT_GATE`, rule R3, the part that needs no records): an original post at least
+ * `CROSS_AGENT_OVERLAP_PCT` of whose own words are those of an original post ANOTHER Bootr agent made in the last
  * `CROSS_AGENT_WINDOW_MS`. X's developer policy forbids substantially similar content across accounts, and every
- * Bootr agent posts through one X app. Not compared: a short post (under `SIMILAR_MIN_WORDS` words that carry
- * meaning, where two posts agree by chance), and the very post a reply answers or a comment is about (answering
- * somebody in their own words is not copying them). The window is a time. One read brings at most
- * `SAID_OTHERS_MAX_ROWS` posts of it (said.ts): past that the oldest are not compared, which can only let a copy
- * through, and a warning says so.
+ * Bootr agent posts through one X app. What is NOT compared, on purpose:
+ *   - a reply, on either side. A reply answers a person, and two coins asked the same thing ("what is your split?")
+ *     answer with the same facts; a rule that let the first answer block the second would punish the honest one;
+ *   - the words code hands every coin agent, and every figure (handed-words.ts `ownWords`): the fee split line, the
+ *     brief of the coin's day, the dates and amounts written out, the names of its labels. They are Bootr's words, the
+ *     same on every coin with the same facts, so they say nothing about who copied whom, and whoever posted them
+ *     first would otherwise make every other coin's plain statement of its own facts "similar";
+ *   - a short post: under `SIMILAR_MIN_WORDS` words of its own, where two posts agree by chance;
+ *   - the very post a comment is about (taking up somebody's words to answer them is not copying them).
+ * The window is a time. One read brings at most `SAID_OTHERS_MAX_ROWS` posts of it (said.ts): past that the oldest
+ * are not compared, which can only let a copy through, and a warning says so.
  *
  * G6, units (`UNITS_GATE`, rule R12): a currency sign on an amount of a token ("$0.0475 WETH"). Every agent, posts
  * and replies. Left alone: a dollar amount of a dollar stablecoin ("$5 USDC" says five dollars), a dollar figure
@@ -36,6 +42,7 @@ import { postFacts, openerOf } from '@bootr/agent-core';
 import { storedTurn } from './comment-posts.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { gateMode, logGateHit, type GateId } from './gate-shadow.js';
+import { ownWords } from './handed-words.js';
 import { lastOriginals, saidByOthers, saidKeepDays, wordOverlap, wordSet, type SaidByOther, type SaidOriginal } from './said.js';
 
 type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config'>;
@@ -155,22 +162,23 @@ export function repeatProblem(parts: readonly string[], history: readonly SaidOr
 // G4: cross-agent
 // ---------------------------------------------------------------------------
 
-/** Words that carry meaning a post needs before it is compared: under this two posts agree by chance. */
-export const SIMILAR_MIN_WORDS = 8;
+/** Words of its own (`ownWords`) a post needs before it is compared: under this two posts agree by chance. */
+export const SIMILAR_MIN_WORDS = 6;
 
 /**
- * Whether one of `parts` is in substantially the words of a post of another agent (`others`, as `saidByOthers`
- * returns them). `exceptPostIds`: the post a reply answers or a comment is about. Pure.
+ * Whether one of `parts` is in substantially the words of a post of another agent (`others`, the posts `saidByOthers`
+ * returns). Both sides are read without the words code hands every agent and without figures. `exceptPostIds`: the
+ * post a comment is about. Pure.
  */
 export function similarProblem(parts: readonly string[], others: readonly SaidByOther[], minPct: number, opts: { exceptPostIds?: readonly (string | null | undefined)[]; done?: 'posted' | 'scheduled' } = {}): GateProblem | null {
   const except = new Set((opts.exceptPostIds ?? []).filter((id): id is string => typeof id === 'string' && id.length > 0));
   let best: { part: string; other: SaidByOther; overlap: number } | null = null;
+  const theirs = others.filter((other) => !(other.postId && except.has(other.postId))).map((other) => ({ other, words: ownWords(other.words) })).filter((o) => o.words.length >= SIMILAR_MIN_WORDS);
   for (const part of parts) {
-    const words = wordSet(part);
+    const words = ownWords(wordSet(part));
     if (words.length < SIMILAR_MIN_WORDS) continue;
-    for (const other of others) {
-      if (other.words.length < SIMILAR_MIN_WORDS || (other.postId && except.has(other.postId))) continue;
-      const overlap = wordOverlap(words, other.words);
+    for (const { other, words: otherWords } of theirs) {
+      const overlap = wordOverlap(words, otherWords);
       if (overlap * 100 >= minPct && (!best || overlap > best.overlap)) best = { part, other, overlap };
     }
   }
@@ -178,7 +186,7 @@ export function similarProblem(parts: readonly string[], others: readonly SaidBy
   const pct = Math.round(best.overlap * 100);
   return {
     code: 'similar_post',
-    message: `similar_post: ${pct}% of the words of this post are the words of a post another Bootr agent made on ${day(best.other.postedAt)}. X does not allow substantially similar posts across accounts. Say it in your own words and about your own subject, or leave it out. ${nothing(opts.done ?? 'posted')}`,
+    message: `similar_post: ${pct}% of the words of this post are the words of a post another Bootr agent made on ${day(best.other.postedAt)} (figures and the standard lines about a coin's fees and day are not counted). X does not allow substantially similar posts across accounts. Say it in your own words and about your own subject, or leave it out. ${nothing(opts.done ?? 'posted')}`,
     text: best.part,
     detail: { otherAgentId: best.other.agentId, otherPostId: best.other.postId, otherPostedAt: new Date(best.other.postedAt).toISOString(), overlapPct: pct },
   };
@@ -194,7 +202,7 @@ export interface GatedPost {
   /** The texts that go to X: one for a post or a reply, every post of a thread. */
   parts: readonly string[];
   kind: 'original' | 'reply';
-  /** The post a reply answers, or the post a comment is about. */
+  /** The post a comment is about (for a reply, the post it answers): not "another agent's post" to the cross-agent gate. */
   aboutPostId?: string | null;
   /**
    * An original a turn sends or queues now (the broker's `publish_post`, the review queue): the platform account's
@@ -256,7 +264,8 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
 
   return guarded('G4', async () => {
     const window = ctx.config.CROSS_AGENT_WINDOW_MS;
-    if (!ledger || !(window > 0) || !post.parts.some((part) => wordSet(part).length >= SIMILAR_MIN_WORDS)) return null;
+    // Replies are not compared (the head of this file says why), and a post with too few words of its own costs no read.
+    if (!ledger || post.kind !== 'original' || !(window > 0) || !post.parts.some((part) => ownWords(wordSet(part)).length >= SIMILAR_MIN_WORDS)) return null;
     const others = await saidByOthers(ctx, agent.agentId, ctx.now() - window);
     if (others.truncated) ctx.log.warn({ agentId: agent.agentId, compared: others.posts.length }, 'cross-agent gate: more posts in its window than one check reads; the oldest were not compared');
     return similarProblem(post.parts, others.posts, ctx.config.CROSS_AGENT_OVERLAP_PCT, { exceptPostIds: [post.aboutPostId], done });
