@@ -4,6 +4,7 @@
  *   - every statement is a `select` that answers one line of JSON, `{"q": <name>, "rows": [...]}`;
  *   - with a `DATABASE_URL` the statements run inside `begin transaction read only`, which Postgres itself enforces,
  *     and the transaction is rolled back;
+ *   - either way no statement runs longer than `STATEMENT_TIMEOUT`: the limit is set for the read's own transaction;
  *   - or the same statements are printed as one psql script (`printScript`) for the read-only session of
  *     docs/STATUS.md section 2 (`PGOPTIONS=-c default_transaction_read_only=on`), and its output is read back
  *     (`parseAnswers`). That is how the owner runs it against production: no database address or password leaves the
@@ -33,8 +34,18 @@ interface Statement {
   name: string;
   /** A table that must exist for the statement to run. */
   needs?: string;
+  /** Context the table can do without: run after the read is complete, and a failure costs its own line only. */
+  optional?: boolean;
   sql: string;
 }
+
+/**
+ * How long one statement may run. The read goes against the live database, and a statement that outstays this is
+ * stopped by Postgres itself (`canceling statement due to statement timeout`) rather than left to hold a backend.
+ */
+export const STATEMENT_TIMEOUT = '120s';
+/** The answer that says every statement the table needs has answered: without it the output of a script is a read that stopped early. */
+export const READ_COMPLETE = 'complete';
 
 /** The tables the check reads that an older deployment, or a database without the sender, may not have. */
 const OPTIONAL_TABLES = ['sv_turns', 'sv_gate_shadow', 'sender_actions', 'sender_inbox'] as const;
@@ -79,16 +90,11 @@ export function statements(w: Window): Statement[] {
       sql: `select role, thoughts, outcome, posted, replied, charged_micro_usdc as charged from sv_turns where ${mine} and started_at >= ${from} and started_at < ${to}`,
     },
     {
-      // Thoughts and their cost: every paid model call but pictures (their own modality) and the creator's chat.
+      // Thoughts and their cost: every paid model call but the creator's chat, pictures apart (a picture's key says so,
+      // images.ts; the stored request is not opened here).
       name: 'fuel',
-      sql: `select count(*) filter (where request->'modalities' is null)::int as thoughts, coalesce(sum(${CHARGED}) filter (where request->'modalities' is null), 0)::text as charged, coalesce(sum(${CHARGED}) filter (where request->'modalities' is not null), 0)::text as pictures
+      sql: `select count(*) filter (where idempotency_key not like 'image:%')::int as thoughts, coalesce(sum(${CHARGED}) filter (where idempotency_key not like 'image:%'), 0)::text as charged, coalesce(sum(${CHARGED}) filter (where idempotency_key like 'image:%'), 0)::text as pictures
         from sv_inference where ${mine} and ${PAID} and created_at >= ${from} and created_at < ${to} and idempotency_key not like 'chat:%'`,
-    },
-    {
-      // How large the first observation was, per thought (the first user message of each request; a model call, not a picture).
-      name: 'observation',
-      sql: `select count(*)::int as thoughts, coalesce(percentile_disc(0.5) within group (order by length(request->'messages'->1->>'content')), 0)::int as median, coalesce(max(length(request->'messages'->1->>'content')), 0)::int as max
-        from sv_inference where ${mine} and created_at >= ${from} and created_at < ${to} and request->'modalities' is null and idempotency_key not like 'chat:%' and request->'messages'->1->>'role' = 'user'`,
     },
     {
       name: 'approvals',
@@ -122,6 +128,15 @@ export function statements(w: Window): Statement[] {
       needs: 'sv_gate_shadow',
       sql: `select gate, code, enforced, count(*)::int as n from sv_gate_shadow where ${mine} and created_at >= ${from} and created_at < ${to} group by 1, 2, 3 order by 4 desc`,
     },
+    {
+      // How large the first observation was, per thought (the first user message of each request; a model call, not a
+      // picture). The one statement that opens every stored request of the window, each tens of kilobytes: it runs
+      // last and the read is whole without it, so if the time limit stops it, only its line of the table is lost.
+      name: 'observation',
+      optional: true,
+      sql: `select count(*)::int as thoughts, coalesce(percentile_disc(0.5) within group (order by length(request->'messages'->1->>'content')), 0)::int as median, coalesce(max(length(request->'messages'->1->>'content')), 0)::int as max
+        from sv_inference where ${mine} and created_at >= ${from} and created_at < ${to} and idempotency_key not like 'image:%' and idempotency_key not like 'chat:%' and request->'messages'->1->>'role' = 'user'`,
+    },
   ];
 }
 
@@ -129,18 +144,24 @@ export function statements(w: Window): Statement[] {
 const wrap = (s: Statement): string => `select jsonb_build_object('q', '${s.name}', 'rows', coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb))::text from (${s.sql.replace(/\s+/g, ' ')}) t`;
 const TABLES_SQL = `select jsonb_build_object('q', 'tables', 'rows', jsonb_build_array(jsonb_build_object(${OPTIONAL_TABLES.map((t) => `'${t}', to_regclass('public.${t}') is not null`).join(', ')})))::text`;
 
+/** The time limit, for this transaction only, as a statement that answers one line like every other (`set_config(..., true)` is `set local`). */
+const TIMEOUT_SQL = `select jsonb_build_object('q', 'timeout', 'rows', jsonb_build_array(jsonb_build_object('statement_timeout', set_config('statement_timeout', '${STATEMENT_TIMEOUT}', true))))::text`;
+const COMPLETE_SQL = `select jsonb_build_object('q', '${READ_COMPLETE}', 'rows', jsonb_build_array(jsonb_build_object('complete', true)))::text`;
+
 /**
  * The read as one psql script: unaligned, tuples only, one JSON line per statement; a statement whose table is missing
  * is skipped by psql itself (`\if`). Meant for `psql -X` on a session that refuses writes; it changes no setting but
- * the two output ones and holds nothing but selects.
+ * the two output ones and, for its own transaction, the statement time limit, and holds nothing else but selects.
+ * The line `complete` closes the read; the optional statements come after it.
  */
 export function printScript(w: Window): string {
-  const lines = ['-- behaviour check: read only (docs/dev/behaviour-check.md)', '\\set ON_ERROR_STOP on', '\\pset tuples_only on', '\\pset format unaligned', 'begin transaction read only;', `${TABLES_SQL};`];
+  const lines = ['-- behaviour check: read only (docs/dev/behaviour-check.md)', '\\set ON_ERROR_STOP on', '\\pset tuples_only on', '\\pset format unaligned', 'begin transaction read only;', `set local statement_timeout = '${STATEMENT_TIMEOUT}';`, `${TABLES_SQL};`];
   for (const t of OPTIONAL_TABLES) lines.push(`select to_regclass('public.${t}') is not null as has_${t} \\gset`);
-  for (const s of statements(w)) {
-    if (s.needs) lines.push(`\\if :has_${s.needs}`, `${wrap(s)};`, '\\endif');
-    else lines.push(`${wrap(s)};`);
-  }
+  const all = statements(w);
+  const put = (s: Statement) => (s.needs ? lines.push(`\\if :has_${s.needs}`, `${wrap(s)};`, '\\endif') : lines.push(`${wrap(s)};`));
+  for (const s of all.filter((x) => !x.optional)) put(s);
+  lines.push(`${COMPLETE_SQL};`);
+  for (const s of all.filter((x) => x.optional)) put(s);
   lines.push('rollback;');
   return `${lines.join('\n')}\n`;
 }
@@ -165,7 +186,11 @@ export function parseAnswers(text: string): Answers {
   return out;
 }
 
-/** Runs the statements over one connection, inside a read-only transaction that is rolled back whatever happens. */
+/**
+ * Runs the statements over one connection, inside a read-only transaction that is rolled back whatever happens, each
+ * under `STATEMENT_TIMEOUT`. A statement the table needs that fails (the time limit included) fails the read; an
+ * optional one that fails is left out, and `toInput` says so.
+ */
 export async function runQueries(client: Pick<pg.ClientBase, 'query'>, w: Window): Promise<Answers> {
   const all = statements(w);
   const answers: Answers = {};
@@ -177,8 +202,19 @@ export async function runQueries(client: Pick<pg.ClientBase, 'query'>, w: Window
   await client.query('begin transaction read only');
   try {
     await one(TABLES_SQL);
+    await one(TIMEOUT_SQL);
     const present = (answers.tables?.[0] ?? {}) as Record<string, unknown>;
-    for (const s of all) if (!s.needs || present[s.needs] === true) await one(wrap(s));
+    const runs = (s: Statement) => !s.needs || present[s.needs] === true;
+    for (const s of all.filter((x) => !x.optional && runs(x))) await one(wrap(s));
+    answers[READ_COMPLETE] = [{ complete: true }];
+    // Last, since an error ends the transaction: nothing after an optional statement depends on it.
+    for (const s of all.filter((x) => x.optional && runs(x))) {
+      try {
+        await one(wrap(s));
+      } catch {
+        break;
+      }
+    }
   } finally {
     await client.query('rollback');
   }
@@ -218,6 +254,7 @@ export function toInput(answers: Answers, w: Window, readAt: number): CheckInput
   else if (!(answers.turns ?? []).length) caveats.push('sv_turns has no row for this window (it is written from the deploy of migration 0014 on): M5 is an estimate.');
   if (tables.sv_gate_shadow !== true) caveats.push('sv_gate_shadow is not in this database yet: M10 has nothing to read.');
   if (tables.sender_actions !== true || tables.sender_inbox !== true) caveats.push('The sender\'s tables are not in this database: M7 and the sender\'s own refusals are missing.');
+  if (!observation) caveats.push(`The size of the first observation was not read: its statement did not answer (it opens every stored request of the window and is stopped after ${STATEMENT_TIMEOUT}), or the read ended before it.`);
   if (fuel && num(fuel.pictures) > 0) caveats.push(`Pictures cost ${(num(fuel.pictures) / 1_000_000).toFixed(2)} USDC in the window; M6 counts thoughts only.`);
   return {
     mode: 'database',
