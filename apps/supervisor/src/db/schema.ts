@@ -656,3 +656,129 @@ export const agentGrants = pgTable(
   },
   (t) => [uniqueIndex('sv_agent_grants_user_code_idx').on(t.userCode)],
 );
+
+// ---------------------------------------------------------------------------
+// Bootr's own dataset (src/dataset/, docs/design/agent-behaviour.md section 6.4). Written by the dataset process alone,
+// except `sv_ds_records.posted`, which the publish path appends to in a later stage.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the dataset reads, one row per source: the open sources of `dataset/sources.ts` (synced from the file at start,
+ * `retired` when a commit removed one), Bootr's own index, and later X accounts. An X account is held by `x_user_id`,
+ * never by its handle: a handle can be renamed or taken by a stranger, the id cannot (`x_handle` is only what the id
+ * was last seen as). The fetch columns are the conditional GET's memory and the back-off of a source that fails.
+ */
+export const dsSources = pgTable(
+  'sv_ds_sources',
+  {
+    /** `b:<slug>` for an open source, `a:<name>` for Bootr's own data, `x:<user id>` for an X account. */
+    id: text('id').primaryKey(),
+    layer: text('layer').notNull(),
+    kind: text('kind').notNull(),
+    name: text('name').notNull(),
+    url: text('url'),
+    cluster: text('cluster').notNull(),
+    /** The organisation that counts once for independence. */
+    groupId: text('group_id').notNull(),
+    /** Entity ids this source may lift a record to grade 4 for. */
+    officialFor: jsonb('official_for').$type<string[]>().notNull().default([]),
+    xUserId: text('x_user_id'),
+    xHandle: text('x_handle'),
+    /** Read tier of an X account (1 = from day one); null for other sources. */
+    tier: integer('tier'),
+    /** `active`, `suspended` (a person must look: a renamed handle, collapsed followers) or `retired` (left the list). */
+    status: text('status').notNull().default('active'),
+    statusReason: text('status_reason'),
+    etag: text('etag'),
+    lastModified: text('last_modified'),
+    contentHash: text('content_hash'),
+    /** What the reader keeps between reads (an HTML page's known links, later an X `since_id`). */
+    state: jsonb('state').$type<Record<string, unknown>>().notNull().default({}),
+    lastFetchAt: ts('last_fetch_at'),
+    lastOkAt: ts('last_ok_at'),
+    nextFetchAt: ts('next_fetch_at'),
+    lastStatus: integer('last_status'),
+    failures: integer('failures').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: ts('created_at').notNull(),
+    updatedAt: ts('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('sv_ds_sources_x_user_idx').on(t.xUserId), index('sv_ds_sources_due_idx').on(t.layer, t.status, t.nextFetchAt)],
+);
+
+/**
+ * One event, one record, however many sources carried it (`dataset/types.ts`). `first_seen_at`, `last_reinforced_at`
+ * and `observation_count` are about Bootr's sightings; `event_time` is when it happened or will happen and is never
+ * mixed with them. `grade` describes sourcing, not truth (`dataset/grades.ts`). Every text column was built by code from
+ * bounded, cleaned fields (`dataset/clean.ts`).
+ */
+export const dsRecords = pgTable(
+  'sv_ds_records',
+  {
+    /** `r_` and 12 hex characters. */
+    id: text('id').primaryKey(),
+    kind: text('kind').notNull(),
+    entities: jsonb('entities').$type<string[]>().notNull().default([]),
+    cluster: text('cluster').notNull(),
+    weight: integer('weight').notNull().default(1),
+    /** The coin a chain record is about (lowercase address); null for everything else. */
+    coin: text('coin'),
+    headline: text('headline').notNull(),
+    summary: text('summary'),
+    link: text('link'),
+    /** The headline's word set (`dataset/matching.ts`), kept so matching reads no sighting. */
+    words: jsonb('words').$type<string[]>().notNull().default([]),
+    firstSeenAt: ts('first_seen_at').notNull(),
+    lastReinforcedAt: ts('last_reinforced_at').notNull(),
+    observationCount: integer('observation_count').notNull().default(1),
+    eventTime: ts('event_time'),
+    eventEnd: ts('event_end'),
+    eventPrecision: text('event_precision').notNull().default('unknown'),
+    /** `[{sourceId, cluster, group, official, link, seenAt}]`, one entry per source. */
+    sources: jsonb('sources').$type<Record<string, unknown>[]>().notNull().default([]),
+    groups: integer('groups').notNull().default(1),
+    grade: integer('grade').notNull().default(1),
+    /** A sighting pointed at a page of another listed source. */
+    cited: boolean('cited').notNull().default(false),
+    /** `[{value, unit, what, asOf, sourceId}]`: the only numbers an agent may state from the record. */
+    numbers: jsonb('numbers').$type<Record<string, unknown>[]>().notNull().default([]),
+    status: text('status').notNull().default('open'),
+    changedAt: ts('changed_at'),
+    changes: jsonb('changes').$type<Record<string, unknown>[]>().notNull().default([]),
+    /** `[{agentId, postId, at}]`: who already posted about it. Appended by the publish path in a later stage. */
+    posted: jsonb('posted').$type<Record<string, unknown>[]>().notNull().default([]),
+    expiresAt: ts('expires_at').notNull(),
+    /** The UTC day it was first seen, `YYYY-MM-DD`: the day's view and the day's cap count by it. */
+    day: text('day').notNull(),
+  },
+  (t) => [index('sv_ds_records_day_idx').on(t.day, t.grade), index('sv_ds_records_reinforced_idx').on(t.lastReinforcedAt), index('sv_ds_records_coin_idx').on(t.coin)],
+);
+
+/**
+ * One thing one source showed once: the raw material of a record, deleted after 30 days while the record's skeleton
+ * stays. `link_key` and `key` are what matching step 1 looks up; `refs` what step 2 does.
+ */
+export const dsSightings = pgTable(
+  'sv_ds_sightings',
+  {
+    /** sha256 of the source id and the source's own id for the item: the same item read twice is one row. */
+    id: text('id').primaryKey(),
+    sourceId: text('source_id').notNull(),
+    recordId: text('record_id').notNull(),
+    externalId: text('external_id').notNull(),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    excerpt: text('excerpt'),
+    /** The text read like an instruction and was not kept. */
+    withheld: boolean('withheld').notNull().default(false),
+    link: text('link'),
+    linkKey: text('link_key'),
+    key: text('key'),
+    refs: jsonb('refs').$type<string[]>().notNull().default([]),
+    /** How it found its record: `new`, `key`, `link`, `relation`, `words`, or `judge` (step 4, a later stage). */
+    matchedBy: text('matched_by').notNull(),
+    publishedAt: ts('published_at'),
+    seenAt: ts('seen_at').notNull(),
+  },
+  (t) => [index('sv_ds_sightings_record_idx').on(t.recordId), index('sv_ds_sightings_link_idx').on(t.linkKey), index('sv_ds_sightings_key_idx').on(t.key), index('sv_ds_sightings_seen_idx').on(t.seenAt)],
+);
