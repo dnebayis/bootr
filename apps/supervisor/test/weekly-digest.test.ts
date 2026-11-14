@@ -189,10 +189,12 @@ describe('facts and section', () => {
     expect(weeklyDigestSection({ platform: true, capabilities: caps }, null, tools)).toEqual({});
     const off = weeklyDigestSection({ platform: true, capabilities: caps }, plan, tools) as { weeklyDigest: Record<string, unknown> };
     expect(off.weeklyDigest).toMatchObject({ due: true, week: '2026-W45', from: new Date(SUNDAY - 7 * D).toISOString(), to: new Date(SUNDAY).toISOString(), picture: 'off', instruction: WEEKLY_DIGEST_INSTRUCTION });
-    expect(off.weeklyDigest.facts).toEqual(plan.facts);
+    // counts only: the lists that name coins and agents are not handed to the model
+    expect(off.weeklyDigest.facts).toEqual({ source: plan.facts.source, totals: plan.facts.totals, counts: plan.facts.counts });
+    expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/Name no coin and no agent: no name, no symbol, no handle/);
     expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/No prices, no market caps/);
     expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/One post only/);
-    expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/never as a cashtag/);
+    expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/the only cashtag you may write/);
     expect(WEEKLY_DIGEST_INSTRUCTION).toMatch(/call finish and say so/);
     expect(WEEKLY_DIGEST_INSTRUCTION).not.toMatch(/generate_image/);
     // the capability alone is not enough: the tool must be offered this turn
@@ -219,7 +221,8 @@ describe('weekly digest in the tick', () => {
       const obs = firstObservation(w);
       const digest = obs.weeklyDigest as Record<string, unknown>;
       expect(digest).toMatchObject({ due: true, week: '2026-W45', picture: 'off', from: '2026-11-01T16:05:00.000Z', to: '2026-11-08T16:05:00.000Z' });
-      expect((digest.facts as { launches: unknown[] }).launches).toHaveLength(2);
+      expect((digest.facts as { counts: { launches: number } }).counts.launches).toBe(2);
+      expect(digest.facts).not.toHaveProperty('launches');
       expect(JSON.stringify(digest.facts)).not.toMatch(NO_PRICE);
       // the regular slot was not due and still is not: the digest is not the cadence post
       expect((obs.social as { originalPost: { due: boolean } }).originalPost.due).toBe(false);

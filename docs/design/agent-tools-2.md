@@ -1558,15 +1558,17 @@ an author; 27 of its 35 turns of the day ended without a post). Decided and buil
   posts with a link for the platform account goes from 8 to 12 a day (at most about $2.40 of X credits a day).
 - **Voice:** all lowercase and no emoji, asked for in the prompt and made certain in code (`plainVoice`, applied where
   a tool call becomes an action; `PLATFORM_PLAIN_VOICE`).
-- **No promotion of coins launched on Bootr:** the launch kind left the rotation, the welcome line left the persona.
-  The weekly digest and the numbers post still name coins; whether they should is not decided.
+- **No promotion of coins launched on Bootr:** the launch kind left the rotation, the welcome line left the persona,
+  and the weekly digest and the daily numbers post name no coin but $BOOTR (the digest reads counts only, the
+  numbers post no longer reads the day's busiest coins).
 - **The shape of a post, learned from aixbt's posts:** one development, the fact with its number, date and source
   first, then how it works or why it matters, then what is not known; no opener about feelings, no question for
   replies. A due slot with nothing in hand is a reason to go and read, not to skip.
 - **Ping instead of the loop** (`WAKE_MODE=ping`, set by the deployment for every hosted agent): the wake an agent
   asked for buys no turn by itself; a mention, a due post slot and the other causes do. Mentions are read once a
   minute instead of every five (X charges per post returned, so an empty read costs nothing). Known limit: the tick
-  serves `MAX_AGENTS_PER_TICK` awake agents a minute, so with more awake agents than that a ping waits its turn.
+  serves `MAX_AGENTS_PER_TICK` awake agents a minute (10; the deployment can raise it), in a rotation an idle agent
+  cannot hold, so with more awake agents than that a ping waits for its agent's turn in the rotation.
 
 ## Sources
 

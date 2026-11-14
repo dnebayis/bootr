@@ -243,6 +243,9 @@ services:
       # What buys a social turn (src/config.ts): ping = only a cause (somebody wrote, a post slot is due), loop = also
       # the wake the agent asked for, as before 2026-11-14. Not a secret.
       WAKE_MODE: ${WAKE_MODE:-ping}
+      # Awake hosted agents checked per tick (one a minute each when they fit; 10 when empty). In ping mode a check is how
+      # a mention is noticed, so raise it when more agents than this are awake at once.
+      MAX_AGENTS_PER_TICK: ${MAX_AGENTS_PER_TICK:-}
       BLOCKRUN_PROMPT_CACHE: ${BLOCKRUN_PROMPT_CACHE:-}
       BLOCKRUN_TIMEOUT_MS: ${BLOCKRUN_TIMEOUT_MS:-}
       BLOCKRUN_RELAY_FALLBACK: ${BLOCKRUN_RELAY_FALLBACK:-}

@@ -155,8 +155,8 @@ export interface WeeklyDigestPlan {
 }
 
 export const WEEKLY_DIGEST_INSTRUCTION =
-  'Your weekly digest is due: one original post that says what happened on Bootr this week, in plain words, with the coins and agents by name and handle and the dates, from the facts below and nothing else. ' +
-  'Name a coin by its name or symbol as a word, never as a cashtag ($BOOTR is the only cashtag you may write). ' +
+  'Your weekly digest is due: one original post that says what happened on Bootr this week, in plain words and in counts, with the dates, from the facts below and nothing else: how many coins launched, how many agents posted for the first time, how many are awake. ' +
+  'Name no coin and no agent: no name, no symbol, no handle. $BOOTR is the only coin you may name, and the only cashtag you may write. ' +
   'No prices, no market caps, no volumes, no returns, no predictions, no hype. One post only (publish_post makes one post; there are no threads). ' +
   'This digest is separate from your regular slot: it does not count as your regular post, and your regular post is still due or not as the schedule says. ' +
   'If the facts are too thin for a post worth reading, do not post it: call finish and say so; the week is then closed without a digest and you will not be asked again.';
@@ -185,7 +185,9 @@ export function weeklyDigestSection(config: Pick<AgentConfig, 'platform' | 'capa
       week: plan.week,
       from: new Date(plan.from).toISOString(),
       to: new Date(plan.to).toISOString(),
-      facts: plan.facts,
+      // Counts only: the lists that name coins and agents stay out of what the model reads (the owner's decision of
+      // 2026-11-14: the platform account does not promote coins launched on Bootr, so the digest cannot name one).
+      facts: { source: plan.facts.source, totals: plan.facts.totals, counts: plan.facts.counts },
       picture,
       instruction: picture === 'optional' ? `${instruction} ${WEEKLY_DIGEST_PICTURE}` : instruction,
     },

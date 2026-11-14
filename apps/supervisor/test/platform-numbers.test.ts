@@ -182,7 +182,10 @@ describe('the numbers and the section', () => {
     expect(PLATFORM_NUMBERS_MEANING).toMatch(/The platform-wide totals belong in the daily numbers post/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/with the date/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/One post only/);
-    expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/never as a cashtag/);
+    // the platform account names no coin but its own: no busiest coins in the instruction or in what it reads
+    expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/Name no coin other than \$BOOTR: no busiest coin, no ranking/);
+    expect(PLATFORM_NUMBERS_INSTRUCTION).not.toMatch(/busiest coins of the day/);
+    expect(due.platformNumbers).not.toHaveProperty('topCoins24h');
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/never the phrase 'fees earned'/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/call finish and say so/);
     expect(PLATFORM_NUMBERS_INSTRUCTION).toMatch(/\$BOOTR's burn comes from \$BOOTR's own trades: never say every trade on Bootr burns anything/);
