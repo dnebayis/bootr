@@ -198,6 +198,22 @@ describe('runChain and the pass', () => {
     expect(third.aged).not.toBeNull();
     expect(await db.select().from(dsSightings)).toHaveLength(5);
   });
+
+  it("the week counts of the supervisor's tables are read once an hour, not with every chain read", async () => {
+    await seedWeek(NOW);
+    const deps = { db, indexer: indexer(), log: quietLog, fetch: (async () => new Response('nope', { status: 503 })) as typeof fetch, resolve: async () => [{ address: '93.184.216.34' }], chainEveryMs: 600_000, sourcesPerPass: 1, recordsPerDay: 400 };
+    const state = newPassState();
+    const thinking = async () => (await db.select().from(dsRecords)).find((r) => r.headline.startsWith('Agents on Bootr paid'))!.headline;
+    expect((await datasetPass(deps, state, NOW)).chain).toMatchObject({ created: 8 });
+    expect(await thinking()).toMatch(/for 3 thoughts/);
+    // one more thought; ten minutes later the chain is read again and the week is not
+    await db.insert(inference).values({ idempotencyKey: 't-new', agentId: '7', cycle: 2, requestHash: 'h', request: {}, status: 'succeeded', receipt: { relay: { chargedMicroUsdc: '100000' } }, createdAt: NOW, updatedAt: NOW });
+    expect((await datasetPass(deps, state, new Date(NOW.getTime() + 10 * 60_000))).chain).toMatchObject({ indexer: true, updated: 0 });
+    expect(await thinking()).toMatch(/for 3 thoughts/);
+    // past the hour it is
+    expect((await datasetPass(deps, state, new Date(NOW.getTime() + 61 * 60_000))).chain).toMatchObject({ updated: 1 });
+    expect(await thinking()).toMatch(/paid 0\.32 USDC for 4 thoughts/);
+  });
 });
 
 describe('the switch', () => {

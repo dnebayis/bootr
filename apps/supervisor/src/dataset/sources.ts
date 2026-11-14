@@ -16,7 +16,7 @@
  *  - `everyMin`: 15 minutes for the home cluster, an hour for the rest, six hours for the JSON APIs (some are megabytes).
  *  - `read: false` rows are listed and not read, with the reason.
  *
- * The schedule comes to about 2,600 small conditional requests a day, with no fee.
+ * The schedule comes to 2,412 small conditional requests a day, with no fee.
  */
 import type { Cluster, RecordKind } from './types.js';
 

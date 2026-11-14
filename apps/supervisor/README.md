@@ -118,7 +118,7 @@ node dist/dataset.js        # the image's second entry point (scripts/build.mjs)
 - **Layer b** (`layer-b.ts`, `readers/`): the open sources of the note's section 6.7, listed in `sources.ts` with their
   group, kind and schedule (only a commit changes the list). Each is a conditional GET through `web-reader.ts`
   `fetchPublic`, the agents' `read_url` path. A source that fails backs off (its interval, doubled each time, up to a
-  day) and never stops the others. About 2,600 small requests a day, no fee.
+  day) and never stops the others. 2,412 small requests a day, no fee.
 - **What may be stored** is the header of `clean.ts`: everything from outside is cut, stripped of markup and invisible
   characters, never an instruction; a title that reads like one is counted and its words are not kept.
 - **Matching** (`matching.ts`): the same key or link, a stated relation, then entities and words. Step 4 of the note

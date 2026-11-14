@@ -1,8 +1,9 @@
 /**
  * Layer a: the chain and Bootr's own data, which nobody else holds (docs/design/agent-behaviour.md section 6.4). Read
- * every `chainEveryMs` (10 minutes) from the indexer and from three of the supervisor's own tables, at no cost outside
- * the server. Every record here is a number code read and a sentence code wrote: no coin name, no symbol, no handle
- * and no other string a creator chose is read, so nothing a third party wrote can enter by this layer.
+ * every `chainEveryMs` (10 minutes) from the indexer and, once an hour (run.ts `WEEK_READ_EVERY_MS`: they are counts
+ * over a week, and `sv_inference` is the largest table there is), from three of the supervisor's own tables, at no
+ * cost outside the server. Every record here is a number code read and a sentence code wrote: no coin name, no symbol,
+ * no handle and no other string a creator chose is read, so nothing a third party wrote can enter by this layer.
  *
  * Exactly what is read:
  *
@@ -50,6 +51,8 @@ export interface ChainDeps {
   indexer: Pick<IndexerClient, 'platformFeed' | 'graphql'>;
   log: Pick<Logger, 'info' | 'warn'>;
   recordsPerDay?: number;
+  /** Leave the three week counts of the supervisor's tables out of this pass. */
+  skipWeek?: boolean;
 }
 
 const INDEXER = { id: 'a:indexer', url: 'https://bootr.fun', page: 'https://bootr.fun', entities: ['bootr'] } as const;
@@ -180,7 +183,7 @@ export async function runChain(deps: ChainDeps, now: Date): Promise<ChainReport>
   report.indexer = !!feed;
   batches.push([infoOf('a:indexer'), [platformNow(feed, now), platformDay(graph, now), ...coinMilestones(feed)].filter((s): s is Sighting => !!s)]);
   try {
-    batches.push([infoOf('a:supervisor'), await supervisorWeek(deps.db, now)]);
+    if (!deps.skipWeek) batches.push([infoOf('a:supervisor'), await supervisorWeek(deps.db, now)]);
   } catch (err) {
     deps.log.warn({ err }, 'dataset: reading the supervisor tables failed');
   }
