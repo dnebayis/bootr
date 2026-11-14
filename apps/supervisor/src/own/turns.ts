@@ -85,6 +85,7 @@ import { OwnError, clientView, coinRef, type VerifiedClient } from './clients.js
 import { storeUpload } from './pictures.js';
 import { applyRunnerQuota, runnerReadsPerDay } from './quota.js';
 import { isOwn, ownRole, ownSetting, ownTool, ownTools, type OwnCall, type OwnTurnMeta } from './registry.js';
+import { recordTurn } from '../turns.js';
 
 type RuntimePatch = NonNullable<Parameters<typeof saveRuntime>[2]>;
 
@@ -341,6 +342,7 @@ async function abandon(s: Session, why: CloseWhy): Promise<RuntimePatch> {
   s.state.ownLastTurnAt = now;
   s.state.ownClosed = { turnId: turn.own.turnId, why, at: now, last: null };
   s.ctx.log.info({ agentId: s.agent.agentId, turnId: turn.own.turnId, role, why, steps: turn.steps }, 'own agent: turn closed by the server');
+  await recordTurn(s.ctx, s.agent.agentId, turn, why);
   s.turn = null;
   const status = s.runtime.status === 'paused' ? 'paused' : 'waiting';
   // The social turn's wake moves on like a hosted turn the runtime ended; another role's turn leaves the social schedule alone.
@@ -358,6 +360,7 @@ async function closeTurnOf(ctx: SupervisorContext, agent: AgentRow, runtime: Run
   if (!config) {
     // No readable config, so no role can be asked: the turn is dropped plainly.
     await saveRuntime(ctx, agent.agentId, { turn: null, status: runtime.status === 'running' ? 'waiting' : runtime.status });
+    await recordTurn(ctx, agent.agentId, turn, why);
     return true;
   }
   const s = sessionOf(ctx, agent, config, runtime);
@@ -406,6 +409,7 @@ export async function expireOwnTurn(ctx: SupervisorContext, agent: AgentRow, run
     const state = runtime.state as unknown as AgentState;
     if ((turn.role ?? 'social') === 'social') state.continuation = { progress: 'Turn ended by the runtime (the agent is now run by its creator\'s own client). Continue from the agenda.', recentSteps: (turn.recentSteps ?? []).slice(-6) };
     await saveRuntime(ctx, agent.agentId, { turn: null, state: boundedState(trimState(state)) as unknown as Record<string, unknown>, status: runtime.status === 'running' ? 'waiting' : runtime.status });
+    await recordTurn(ctx, agent.agentId, turn, 'runner_switched');
     ctx.log.info({ agentId: agent.agentId }, 'own agent: a stored hosted turn was dropped');
     return true;
   }
@@ -536,11 +540,12 @@ function actResult(s: Session, turn: Turn, fields: Pick<ActResult, 'tool' | 'act
   return { turnId: turn.own!.turnId, ...fields, stepsUsed: turn.steps, stepsLeft: Math.max(0, stepBudget(s.ctx, turn) - turn.steps), turnEnded };
 }
 
-/** Ends a turn that ran to its end (a `finish`, a special tool that ends it): the last-active stamp and the closed-turn record. */
-function closeFinished(s: Session, turn: Turn, last: OwnCallRecord | null): void {
+/** Ends a turn that ran to its end (a `finish`, a special tool that ends it): the last-active stamp, the closed-turn record and its row in sv_turns. */
+async function closeFinished(s: Session, turn: Turn, last: OwnCallRecord | null): Promise<void> {
   const now = s.ctx.now();
   s.state.ownLastTurnAt = now;
   s.state.ownClosed = { turnId: turn.own!.turnId, why: 'finished', at: now, last };
+  await recordTurn(s.ctx, s.agent.agentId, turn, 'finished');
   s.turn = null;
 }
 
@@ -595,6 +600,7 @@ const ROLE_OFF: DueRole = { on: false, due: false, reasons: [], nextAt: null };
 async function tidyTurn(s: Session): Promise<void> {
   if (s.turn && !s.turn.own) {
     if ((s.turn.role ?? 'social') === 'social') s.state.continuation = { progress: 'Turn ended by the runtime (the agent is now run by its creator\'s own client). Continue from the agenda.', recentSteps: (s.turn.recentSteps ?? []).slice(-6) };
+    await recordTurn(s.ctx, s.agent.agentId, s.turn, 'runner_switched');
     s.turn = null;
     await persist(s, { status: s.runtime.status === 'running' ? 'waiting' : s.runtime.status });
     return;
@@ -883,7 +889,7 @@ export async function actTurn(ctx: SupervisorContext, v: VerifiedClient, req: Pa
       turn.recentSteps.push({ tool, status: res.status, summary: summarize(res.status, res.result, res.error) });
       const answer = actResult(s, turn, { tool, actionId: null, status: res.status, ...(res.result !== undefined ? { result: jsonSafe(res.result) } : {}), ...(res.error !== undefined ? { error: res.error } : {}), ...(res.image ? { image: res.image } : {}) }, res.endsTurn === true);
       if (res.endsTurn === true) {
-        closeFinished(s, turn, null);
+        await closeFinished(s, turn, null);
         await persist(s, { status: 'waiting', failures: 0, lastError: null });
         log.info({ tool, steps: turn.steps }, 'own agent: turn ended by a special tool');
       } else {
@@ -1077,7 +1083,7 @@ export async function finishTurn(ctx: SupervisorContext, v: VerifiedClient, req:
     s.broker.pending = recordOutcome(pending, { kind: 'completed', result: done.result }, now);
     await settlePending(s);
     const answer = actResult(s, turn, { tool: FINISH_TOOL, actionId: pending.id, status: 'completed', result: jsonSafe(done.result) }, true);
-    closeFinished(s, turn, { key, actionId: pending.id, tool: FINISH_TOOL, stepsUsed: turn.steps });
+    await closeFinished(s, turn, { key, actionId: pending.id, tool: FINISH_TOOL, stepsUsed: turn.steps });
     await persist(s, { status: 'waiting', ...(typeof done.nextAt === 'number' && Number.isFinite(done.nextAt) ? { nextAt: new Date(done.nextAt) } : {}), failures: 0, lastError: null });
     log.info({ steps: turn.steps, cycle: s.broker.cycle }, 'own agent: turn finished');
     return answer;

@@ -65,6 +65,7 @@ export const PER_AGENT_TABLES = [
   'sv_post_metrics',
   'sv_service_calls',
   'sv_treasury_ops',
+  'sv_turns',
   'sender_actions',
   'sender_inbox',
   'sender_reads',

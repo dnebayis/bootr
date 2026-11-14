@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { parseAgentConfig, TOOL_LIST } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
-import { actions, agents, memories, runtimes, treasuryOps } from '../src/db/schema.js';
+import { actions, agents, memories, runtimes, treasuryOps, turns } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { agentConfigOf } from '../src/onboarding.js';
 import { roleTools, SOCIAL_WITHHELD_WHEN_TREASURY_ON, TREASURY_TURN_TOOLS, treasuryTurnDue, treasuryTurnOn, treasuryTurnSection } from '../src/roles.js';
@@ -383,6 +383,8 @@ describe('the treasury turn', () => {
       expect((held.turn as { role?: string } | null)?.role).toBe('treasury');
       expect((held.pending as { action: { tool: string } }).action.tool).toBe('treasury_execute');
       expect(held.nextAt.getTime()).toBe(before.nextAt.getTime());
+      // a turn that is kept to be resumed is not finished: no row in sv_turns yet (turns.ts)
+      expect(await w.db.select().from(turns)).toHaveLength(0);
       // nothing else runs while held, in either role
       w.kernel.receipt = null;
       w.setNow(T0 + MIN);
@@ -415,6 +417,12 @@ describe('the treasury turn', () => {
       const rows = await w.db.select().from(actions).where(eq(actions.agentId, AGENT_ID));
       expect(rows.map((r) => (r.action as { role?: string }).role)).toEqual(['treasury', 'treasury', 'treasury']);
       expect(w.kernel.submitted).toHaveLength(1);
+      // ...and once it ends it is one row, from its first thought to its last, in its own role
+      const ended = await w.db.select().from(turns);
+      expect(ended).toHaveLength(1);
+      expect(ended[0]).toMatchObject({ role: 'treasury', outcome: 'finished', thoughts: 3, posted: 0, via: null });
+      expect(ended[0]!.startedAt.getTime()).toBe(T0);
+      expect(ended[0]!.endedAt.getTime()).toBe(T0 + 2 * MIN);
     } finally {
       await w.close();
     }

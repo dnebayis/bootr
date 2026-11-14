@@ -67,6 +67,7 @@ import { settleWeeklyDigest, weeklyDigestSection, type WeeklyDigestPlan } from '
 import type { SenderInboxItem, ReplyEligibility } from './sender-client.js';
 import type { TreasurySnapshot } from './treasury.js';
 import { isOwn, type OwnTurnMeta } from './own/registry.js';
+import { recordTurn } from './turns.js';
 
 export const LEASE_MS = 60_000;
 /** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
@@ -624,6 +625,7 @@ export async function continueTurn(ctx: SupervisorContext, agent: AgentRow, runt
     const state = runtime.state as unknown as AgentState;
     if ((turn.role ?? 'social') === 'social') state.continuation = { progress: 'Turn ended by the runtime (the agent is now run by Bootr). Continue from the agenda.', recentSteps: (turn.recentSteps ?? []).slice(-6) };
     await saveRuntime(ctx, agent.agentId, { turn: null, state: boundedState(trimState(state)) as unknown as Record<string, unknown>, status: 'waiting' });
+    await recordTurn(ctx, agent.agentId, turn, 'runner_switched');
     runtime.turn = null;
     ctx.log.warn({ agentId: agent.agentId, turnId: turn.own.turnId }, 'a stored own turn was found on a hosted coin and dropped; the hosted loop does not resume it');
     return null;
@@ -735,7 +737,10 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   };
 
   const endTurn = async (outcome: TurnOutcome, patch: RuntimePatch): Promise<TurnResult> => {
-    await persist({ turn: null, ...(role === 'treasury' ? treasuryEnd(outcome, patch) : patch) });
+    const ended = role === 'treasury' ? treasuryEnd(outcome, patch) : patch;
+    await persist({ turn: null, ...ended });
+    // A turn that is not kept to be resumed is finished, however it ended: one row in sv_turns (turns.ts).
+    if (ended.turn == null) await recordTurn(ctx, agent.agentId, turn, outcome);
     log.info({ outcome, steps: turn.steps, cycle: broker.cycle }, 'turn ended');
     return { outcome, steps: turn.steps, cycle: broker.cycle };
   };
