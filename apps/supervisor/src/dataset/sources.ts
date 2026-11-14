@@ -18,7 +18,7 @@
  *  - `open` marks a venue anyone can write on: never official, never an independent group (grades.ts).
  *  - `needsTopic`: a broad source (a central bank, a general tech desk, arXiv) whose items are kept only when they name
  *    an entity of the list, so that macro, elections and the rest of what lies outside the scope never become records.
- *  - `everyMin`: 15 minutes for the home cluster, an hour for the rest, six hours for the JSON APIs (some are megabytes).
+ *  - `everyMin`: 15 minutes for the home cluster, an hour for the rest, six hours for the JSON APIs.
  *  - `read: false` rows are listed and not read, with the reason.
  *
  * The schedule comes to 2,412 small conditional requests a day, with no fee.
@@ -54,7 +54,12 @@ export interface OpenSource {
   open?: boolean;
   defaultKind: RecordKind;
   everyMin: number;
-  /** Bytes of the body read at most. */
+  /**
+   * Bytes of the body read at most. A JSON body that is parsed whole is never over JSON_PARSED_MAX_BYTES (2 MB): a
+   * parsed document costs many times its size in memory. The two DefiLlama overviews are megabytes and are not parsed:
+   * only their first 64 KB is read, where the totals stand. growthepie is megabytes of flat rows and is scanned row by
+   * row, never built into one tree (readers/json.ts).
+   */
   maxBytes: number;
   /** Hosts its items link to besides the host of `url` and of `page`. */
   hosts?: readonly string[];
@@ -72,6 +77,8 @@ export interface OpenSource {
 
 const KB = 1024;
 const MB = 1024 * KB;
+/** The most a JSON body may be when it is parsed whole. */
+export const JSON_PARSED_MAX_BYTES = 2 * MB;
 const HOME = 15;
 const REST = 60;
 const SIX_HOURS = 360;
@@ -88,13 +95,13 @@ const row = (r: Row): OpenSource => ({
 const github = (repo: string) => `https://github.com/${repo}/releases.atom`;
 
 export const OPEN_SOURCES: readonly OpenSource[] = [
-  row({ n: 1, id: 'b:llama-chains', name: 'DefiLlama chains', url: 'https://api.llama.fi/v2/chains', kind: 'json', reader: 'llama-chains', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/chains', maxBytes: 1 * MB }),
-  row({ n: 2, id: 'b:llama-fees', name: 'DefiLlama fees', url: 'https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true', kind: 'json', reader: 'llama-overview', measures: 'protocol fees', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/fees', maxBytes: 8 * MB }),
-  row({ n: 3, id: 'b:llama-dexs', name: 'DefiLlama DEX volume', url: 'https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true', kind: 'json', reader: 'llama-overview', measures: 'dex volume', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/dexs', maxBytes: 4 * MB }),
+  row({ n: 1, id: 'b:llama-chains', name: 'DefiLlama chains', url: 'https://api.llama.fi/v2/chains', kind: 'json', reader: 'llama-chains', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/chains', maxBytes: 512 * KB }),
+  row({ n: 2, id: 'b:llama-fees', name: 'DefiLlama fees', url: 'https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true', kind: 'json', reader: 'llama-overview', measures: 'protocol fees', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/fees', maxBytes: 64 * KB }),
+  row({ n: 3, id: 'b:llama-dexs', name: 'DefiLlama DEX volume', url: 'https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true', kind: 'json', reader: 'llama-overview', measures: 'dex volume', cluster: 'data', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/dexs', maxBytes: 64 * KB }),
   row({ n: 4, id: 'b:llama-stablecoins', name: 'DefiLlama stablecoins', url: 'https://stablecoins.llama.fi/stablecoins?includePrices=false', kind: 'json', reader: 'llama-stablecoins', cluster: 'stablecoins', group: 'defillama', defaultKind: 'metric', page: 'https://defillama.com/stablecoins' }),
   row({ n: 5, id: 'b:llama-hacks', name: 'DefiLlama hacks', url: 'https://api.llama.fi/hacks', kind: 'json', reader: 'llama-hacks', cluster: 'security', group: 'defillama', entities: ['security'], defaultKind: 'incident', page: 'https://defillama.com/hacks' }),
   row({ n: 6, id: 'b:l2beat-summary', name: 'L2BEAT summary', url: 'https://l2beat.com/api/scaling/summary', kind: 'json', reader: 'l2beat-summary', cluster: 'l2', group: 'l2beat', defaultKind: 'metric', page: 'https://l2beat.com/scaling/summary' }),
-  row({ n: 7, id: 'b:growthepie', name: 'growthepie', url: 'https://api.growthepie.xyz/v1/fundamentals.json', kind: 'json', reader: 'growthepie', cluster: 'l2', group: 'growthepie', defaultKind: 'metric', page: 'https://www.growthepie.xyz/fundamentals', hosts: ['www.growthepie.xyz', 'www.growthepie.com'], maxBytes: 6 * MB }),
+  row({ n: 7, id: 'b:growthepie', name: 'growthepie', url: 'https://api.growthepie.xyz/v1/fundamentals.json', kind: 'json', reader: 'growthepie', cluster: 'l2', group: 'growthepie', defaultKind: 'metric', page: 'https://www.growthepie.xyz/fundamentals', hosts: ['www.growthepie.xyz', 'www.growthepie.com'], maxBytes: 5 * MB }),
   row({ n: 8, id: 'b:x402-catalogue', name: 'CDP x402 catalogue', url: 'https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources?type=http&limit=1', kind: 'json', reader: 'x402-catalogue', cluster: 'x402', group: 'coinbase', officialFor: ['x402'], entities: ['x402'], subject: ['x402'], defaultKind: 'metric', page: 'https://www.x402.org' }),
   row({ n: 9, id: 'b:coingecko', name: 'CoinGecko public API', url: 'https://api.coingecko.com/api/v3/ping', kind: 'json', cluster: 'data', group: 'coingecko', defaultKind: 'metric', read: false, reason: 'a ping carries nothing to record, and market caps of entities are not read in this stage' }),
   row({ n: 10, id: 'b:base-blog', name: 'Base blog', url: 'https://blog.base.org/', kind: 'html', reader: 'links', cluster: 'base', group: 'coinbase', officialFor: ['base'], entities: ['base'], defaultKind: 'statement', hosts: ['blog.base.dev'] }),

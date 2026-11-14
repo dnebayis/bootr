@@ -9,7 +9,11 @@
  *  - at most `recordsPerDay` new records a UTC day. Sources of the home clusters may fill it; near clusters stop at
  *    NEAR_SHARE of it and far ones at FAR_SHARE, so a loud news day cannot push Base's own incident out. A sighting
  *    that would start a record past the cap is not stored and is counted (`sv_cursors`, `dataset:capped:<day>`); a
- *    sighting of a record that exists always attaches.
+ *    sighting of a record that exists always attaches;
+ *  - one source's share of a day: at most `sourceRecordsPerDay` new records and `sourceSightingsPerDay` sightings from
+ *    one source a UTC day, so one forum or one desk, flooded or compromised, cannot take its whole tier's share of the
+ *    day. Past them a sighting of that source is not stored and is counted the same way. Bootr's own data (layer a)
+ *    has no stranger behind it and passes 0 for both.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, gte, inArray, lt, ne, sql, type SQL } from 'drizzle-orm';
@@ -25,6 +29,8 @@ import { clusterWeight, type EventPrecision, type RecordChange, type RecordKind,
 export const SIGHTING_KEEP_MS = 30 * 86_400_000;
 export const RECORD_KEEP_MS = 90 * 86_400_000;
 export const DEFAULT_RECORDS_PER_DAY = 400;
+export const DEFAULT_SOURCE_RECORDS_PER_DAY = 40;
+export const DEFAULT_SOURCE_SIGHTINGS_PER_DAY = 120;
 export const NEAR_SHARE = 0.85;
 export const FAR_SHARE = 0.6;
 export const SOURCES_MAX = 20;
@@ -99,6 +105,10 @@ export interface IngestOptions {
   now: Date;
   /** New records a UTC day; DEFAULT_RECORDS_PER_DAY when unset, 0 for no cap. */
   recordsPerDay?: number;
+  /** New records one source may start a UTC day; DEFAULT_SOURCE_RECORDS_PER_DAY when unset, 0 for no cap. */
+  sourceRecordsPerDay?: number;
+  /** Sightings one source may add a UTC day, new records or not; DEFAULT_SOURCE_SIGHTINGS_PER_DAY when unset, 0 for no cap. */
+  sourceSightingsPerDay?: number;
   /**
    * Matching step 4 (a later stage): asked only about what step 3 left undecided, it answers with the id of one of the
    * `leftover` records or null. With no judge a leftover sighting starts a record of its own.
@@ -111,7 +121,7 @@ export type IngestResult =
   | { outcome: 'updated'; recordId: string }
   | { outcome: 'attached'; recordId: string; matchedBy: MatchedBy; /** A second record of the same event, merged into this one. */ merged?: string }
   | { outcome: 'created'; recordId: string; matchedBy: 'new' }
-  | { outcome: 'capped' };
+  | { outcome: 'capped'; /** Which bound it met: the day's, or its own source's share of the day. */ by: 'day' | 'source' };
 
 /** The ids among `ids` that are already stored: one read for a whole feed, so a re-read of known items costs nothing more. */
 export async function knownSightings(db: Db, ids: readonly string[]): Promise<Set<string>> {
@@ -258,6 +268,15 @@ async function underCap(db: Db, day: string, weight: number, recordsPerDay: numb
   const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(dsRecords).where(eq(dsRecords.day, day));
   const share = weight >= 3 ? 1 : weight === 2 ? NEAR_SHARE : FAR_SHARE;
   return Number(row?.n ?? 0) < Math.floor(recordsPerDay * share);
+}
+
+/** What `sourceId` added on `day` so far: its sightings, and how many of them started a record. */
+async function sourceDay(db: Db, sourceId: string, day: string): Promise<{ sightings: number; records: number }> {
+  const [row] = await db
+    .select({ sightings: sql<number>`count(*)::int`, records: sql<number>`count(*) filter (where ${dsSightings.matchedBy} = 'new')::int` })
+    .from(dsSightings)
+    .where(and(eq(dsSightings.sourceId, sourceId), gte(dsSightings.seenAt, new Date(`${day}T00:00:00.000Z`))));
+  return { sightings: Number(row?.sightings ?? 0), records: Number(row?.records ?? 0) };
 }
 
 async function countCapped(db: Db, day: string, now: Date): Promise<void> {
@@ -453,6 +472,14 @@ export async function ingestSighting(db: Db, source: SourceInfo, s: Sighting, op
     const record = await db.query.dsRecords.findFirst({ where: eq(dsRecords.id, stored.recordId) });
     return record && (await refreshKeyed(db, record, s, now)) ? { outcome: 'updated', recordId: record.id } : { outcome: 'duplicate', recordId: stored.recordId };
   }
+  const day = dayOf(now);
+  const sourceSightings = opts.sourceSightingsPerDay ?? DEFAULT_SOURCE_SIGHTINGS_PER_DAY;
+  const sourceRecords = opts.sourceRecordsPerDay ?? DEFAULT_SOURCE_RECORDS_PER_DAY;
+  const soFar = sourceSightings > 0 || sourceRecords > 0 ? await sourceDay(db, s.sourceId, day) : { sightings: 0, records: 0 };
+  if (sourceSightings > 0 && soFar.sightings >= sourceSightings) {
+    await countCapped(db, day, now);
+    return { outcome: 'capped', by: 'source' };
+  }
   const at = s.publishedAt && s.publishedAt.getTime() < now.getTime() ? s.publishedAt : now;
   const found = await findRecord(db, s, at, opts);
   if (found) {
@@ -464,10 +491,13 @@ export async function ingestSighting(db: Db, source: SourceInfo, s: Sighting, op
     }
   }
   const weight = clusterWeight(source.cluster);
-  const day = dayOf(now);
+  if (sourceRecords > 0 && soFar.records >= sourceRecords) {
+    await countCapped(db, day, now);
+    return { outcome: 'capped', by: 'source' };
+  }
   if (!(await underCap(db, day, weight, opts.recordsPerDay ?? DEFAULT_RECORDS_PER_DAY))) {
     await countCapped(db, day, now);
-    return { outcome: 'capped' };
+    return { outcome: 'capped', by: 'day' };
   }
   const recordId = recordIdOf(id);
   const entities = s.entities.slice(0, ENTITIES_MAX);

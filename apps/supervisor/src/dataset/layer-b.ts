@@ -6,7 +6,10 @@
  * over it is read as far as it came.
  *
  * A source that fails waits twice as long after every failure in a row (its interval, doubled, up to a day) and never
- * stops the others: each read has its own try, and what a pass does is bounded by `sourcesPerPass`.
+ * stops the others: each read has its own try, and what a pass does is bounded by `sourcesPerPass`. The wait is
+ * written BEFORE the read, as if it had already failed: a body that kills the process (out of memory) leaves the
+ * source backed off, so the restarted process does not walk into the same body first and die again. A read that ends
+ * well puts the source back on its interval.
  *
  * An HTML page has no dates, so the first read of one only notes which links it has (`state.seen`); from then on a link
  * the page did not have before is a sighting, at most NEW_LINKS_MAX a read (a redesign must not become forty records).
@@ -20,7 +23,7 @@ import { buildSighting, metricSighting, sourceHosts } from './build.js';
 import { canonicalLink, cleanText, linkKey, TITLE_MAX } from './clean.js';
 import { parseFeed } from './readers/feed.js';
 import { hashOf, pageLinks, visibleText, watchedValue } from './readers/html.js';
-import { readJson } from './readers/json.js';
+import { PARTIAL_BODY_READERS, readJson } from './readers/json.js';
 import { SOURCE_BY_ID, type OpenSource } from './sources.js';
 import { dayOf, ingestSighting, knownSightings, sightingIdOf, type IngestOptions, type SourceRow } from './store.js';
 import type { Sighting } from './types.js';
@@ -43,6 +46,9 @@ export interface OpenSourceDeps {
   fetch?: typeof fetch;
   resolve?: (host: string) => Promise<{ address: string }[]>;
   recordsPerDay?: number;
+  /** One source's share of a day (store.ts): new records and sightings; unset = the store's defaults. */
+  sourceRecordsPerDay?: number;
+  sourceSightingsPerDay?: number;
   sourcesPerPass?: number;
   judgeLeftover?: IngestOptions['judgeLeftover'];
 }
@@ -113,7 +119,7 @@ export async function readOpenSource(deps: Pick<OpenSourceDeps, 'fetch' | 'resol
   const kept = { etag: row.etag, lastModified: row.lastModified, contentHash: row.contentHash, state: row.state ?? {} };
   if (res.status === 304) return { ...kept, notModified: true, sightings: [], dropped: 0, status: 304 };
   if (res.status !== 200) throw new Error(`http_${res.status}`);
-  if (res.exceeded && source.kind === 'json') throw new Error('body_over_cap');
+  if (res.exceeded && source.kind === 'json' && !PARTIAL_BODY_READERS.has(source.reader ?? '')) throw new Error('body_over_cap');
   const body = new TextDecoder('utf-8').decode(res.bytes);
   const contentHash = hashOf(body);
   const fresh = { etag: res.headers.get('etag')?.slice(0, 200) ?? null, lastModified: res.headers.get('last-modified')?.slice(0, 64) ?? null, contentHash, status: 200 };
@@ -155,13 +161,16 @@ export async function runOpenSources(deps: OpenSourceDeps, now: Date): Promise<O
   for (const row of due) {
     const source = SOURCE_BY_ID.get(row.id);
     if (!source || !source.read) continue;
+    const failures = row.failures + 1;
+    const retryAt = new Date(now.getTime() + backoffMs(source.everyMin, failures));
     try {
+      await deps.db.update(dsSources).set({ lastFetchAt: now, failures, lastError: 'a read was started and did not finish', nextFetchAt: retryAt, updatedAt: now }).where(eq(dsSources.id, row.id));
       const read = await readOpenSource(deps, source, row, now);
       const info = { id: source.id, name: source.name, cluster: source.cluster, group: source.group, officialFor: source.officialFor, open: source.open === true };
       const known = await knownSightings(deps.db, read.sightings.filter((s) => !s.key).map((s) => sightingIdOf(s.sourceId, s.externalId)));
       for (const sighting of read.sightings) {
         if (known.has(sightingIdOf(sighting.sourceId, sighting.externalId))) continue;
-        const result = await ingestSighting(deps.db, info, sighting, { now, recordsPerDay: deps.recordsPerDay, judgeLeftover: deps.judgeLeftover });
+        const result = await ingestSighting(deps.db, info, sighting, { now, recordsPerDay: deps.recordsPerDay, sourceRecordsPerDay: deps.sourceRecordsPerDay, sourceSightingsPerDay: deps.sourceSightingsPerDay, judgeLeftover: deps.judgeLeftover });
         if (result.outcome === 'created') report.created++;
         else if (result.outcome === 'attached') report.attached++;
         else if (result.outcome === 'updated') report.updated++;
@@ -176,13 +185,12 @@ export async function runOpenSources(deps: OpenSourceDeps, now: Date): Promise<O
         .where(eq(dsSources.id, row.id));
     } catch (err) {
       report.failed++;
-      const failures = row.failures + 1;
       const error = rpcErrorText(err, 200);
       const status = /^http_(\d{3})$/.exec(error)?.[1];
       deps.log.warn({ source: row.id, failures, error }, 'dataset: source read failed');
       await deps.db
         .update(dsSources)
-        .set({ lastFetchAt: now, lastStatus: status ? Number(status) : null, failures, lastError: error, nextFetchAt: new Date(now.getTime() + backoffMs(source.everyMin, failures)), updatedAt: now })
+        .set({ lastFetchAt: now, lastStatus: status ? Number(status) : null, failures, lastError: error, nextFetchAt: retryAt, updatedAt: now })
         .where(eq(dsSources.id, row.id))
         .catch(() => undefined);
     }

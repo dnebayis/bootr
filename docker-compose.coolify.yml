@@ -318,6 +318,9 @@ services:
       # New records kept per UTC day (400 when empty), open sources read per pass (12), and the two clocks in
       # milliseconds: a pass (60000) and the chain read (600000). Not secrets.
       DATASET_RECORDS_PER_DAY: ${DATASET_RECORDS_PER_DAY:-}
+      # One source's share of a day: new records it may start (40 when empty) and sightings it may add (120).
+      DATASET_SOURCE_RECORDS_PER_DAY: ${DATASET_SOURCE_RECORDS_PER_DAY:-}
+      DATASET_SOURCE_SIGHTINGS_PER_DAY: ${DATASET_SOURCE_SIGHTINGS_PER_DAY:-}
       DATASET_SOURCES_PER_PASS: ${DATASET_SOURCES_PER_PASS:-}
       DATASET_PASS_MS: ${DATASET_PASS_MS:-}
       DATASET_CHAIN_EVERY_MS: ${DATASET_CHAIN_EVERY_MS:-}

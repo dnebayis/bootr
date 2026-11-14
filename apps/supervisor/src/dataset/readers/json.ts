@@ -4,6 +4,13 @@
  * table says so, not because the response did). A measured number becomes a metric record of the day, written by code
  * (build.ts `metricSighting`); a dated list (incidents, rule documents) becomes text sightings through the same
  * cleaning as a feed's items (build.ts `buildSighting`). A response that is not the expected shape gives nothing.
+ *
+ * What a body may cost. A parsed document takes many times its size in memory (8 MB of `[{},{},...]` was 179 MB of
+ * heap in a 384 MB container), so: a body that is parsed whole is at most 2 MB (sources.ts) and is refused before
+ * parsing when it holds more than JSON_ELEMENTS_MAX elements; the DefiLlama overviews, megabytes of protocols of which
+ * only three top-level totals are wanted, are never parsed: the totals are read by pattern from the first 64 KB;
+ * growthepie, megabytes of flat rows, is scanned row by row and only the rows that are wanted are parsed, one small
+ * object at a time.
  */
 import { buildSighting, figure, metricSighting, type Built } from '../build.js';
 import { cleanText } from '../clean.js';
@@ -19,6 +26,12 @@ const number = (source: OpenSource, value: number, unit: string, what: string, a
 
 /** Rows of a dated list read at most, newest first. */
 const LIST_MAX = 40;
+/** Objects, arrays and members a parsed body may hold (the largest real one, DefiLlama's stablecoins, has 27,000). */
+export const JSON_ELEMENTS_MAX = 100_000;
+/** Flat rows of a scanned body looked at, wanted or not. */
+export const SCAN_ROWS_MAX = 200_000;
+/** Readers that work on the start or on the rows of a body and so read one that was cut at its cap. */
+export const PARTIAL_BODY_READERS: ReadonlySet<string> = new Set(['llama-overview', 'growthepie']);
 const INCIDENT_MAX_AGE_MS = 14 * 86_400_000;
 
 export interface Extracted {
@@ -48,6 +61,48 @@ function llamaChains(source: OpenSource, json: unknown, now: Date): Extracted {
     sightings.push(metricSighting(source, `tvl:${chain.entity}`, dayOf(now), `${chain.label}: ${figure(tvl)} USD of value locked, by DefiLlama's count`, [number(source, Math.round(tvl), 'usd', 'value locked', now)], [chain.entity]));
   }
   return { sightings, dropped: 0 };
+}
+
+/**
+ * The three top-level totals of a DefiLlama overview, read from the start of the body without parsing it. They stand
+ * before the `protocols` list (at about byte 3,000 on 2026-11-15); a total that only appears after that list began is
+ * a protocol's own and is not taken, so a response in another order gives nothing rather than a wrong number.
+ */
+export function overviewTotals(head: string): Record<string, number> {
+  const list = head.indexOf('"protocols"');
+  const top = list < 0 ? head : head.slice(0, list);
+  const out: Record<string, number> = {};
+  for (const key of ['total24h', 'total7d', 'total30d']) {
+    const m = new RegExp(`"${key}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)`).exec(top);
+    if (m) out[key] = Number(m[1]);
+  }
+  return out;
+}
+
+/** The flat objects of a body, parsed one at a time, only those `want` says yes to: never the whole document as one tree. */
+export function flatRows(body: string, want: (row: string) => boolean): unknown[] {
+  const out: unknown[] = [];
+  let looked = 0;
+  for (const m of body.matchAll(/\{[^{}]{0,300}\}/g)) {
+    if (++looked > SCAN_ROWS_MAX) break;
+    if (!want(m[0])) continue;
+    try {
+      out.push(JSON.parse(m[0]) as unknown);
+    } catch {
+      // a row that is not JSON is not a row
+    }
+  }
+  return out;
+}
+
+/** How many objects, arrays and members a body holds, counted on its text: what it would cost to parse. */
+function elementsOf(body: string): number {
+  let n = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body.charCodeAt(i);
+    if (c === 123 || c === 91 || c === 44) n++;
+  }
+  return n;
 }
 
 /** `GET api.llama.fi/overview/fees|dexs`: read the top-level `total24h`, `total7d` and `total30d`; the protocol list is not read. */
@@ -232,8 +287,14 @@ export function isJsonReader(name: string | undefined): name is JsonReader {
   return !!name && name in READERS;
 }
 
-/** The sightings of one JSON source's response. Throws only when the body is not JSON. */
+/**
+ * The sightings of one JSON source's response. Throws when a body that is parsed whole is not JSON or holds more than
+ * JSON_ELEMENTS_MAX elements; the two readers that never parse the whole body give nothing instead.
+ */
 export function readJson(source: OpenSource, body: string, now: Date): Extracted {
   if (!isJsonReader(source.reader)) return { sightings: [], dropped: 0 };
+  if (source.reader === 'llama-overview') return llamaOverview(source, overviewTotals(body), now);
+  if (source.reader === 'growthepie') return growthepie(source, flatRows(body, (row) => /"metric_key"\s*:\s*"(?:txcount|daa)"/.test(row)), now);
+  if (elementsOf(body) > JSON_ELEMENTS_MAX) throw new Error('body_too_many_elements');
   return READERS[source.reader](source, JSON.parse(body) as unknown, now);
 }

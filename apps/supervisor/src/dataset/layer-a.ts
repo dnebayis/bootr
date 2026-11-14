@@ -190,7 +190,8 @@ export async function runChain(deps: ChainDeps, now: Date): Promise<ChainReport>
   for (const [info, sightings] of batches) {
     for (const sighting of sightings) {
       try {
-        const result = await ingestSighting(deps.db, info, sighting, { now, recordsPerDay: deps.recordsPerDay });
+        // Bootr's own data: no per-source share (store.ts), only the day's cap.
+        const result = await ingestSighting(deps.db, info, sighting, { now, recordsPerDay: deps.recordsPerDay, sourceRecordsPerDay: 0, sourceSightingsPerDay: 0 });
         if (result.outcome === 'created') report.created++;
         else if (result.outcome === 'updated') report.updated++;
         else if (result.outcome === 'capped') report.capped++;

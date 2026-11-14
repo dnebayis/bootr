@@ -25,6 +25,8 @@ export interface DatasetDeps {
   chainEveryMs: number;
   sourcesPerPass: number;
   recordsPerDay: number;
+  sourceRecordsPerDay?: number;
+  sourceSightingsPerDay?: number;
 }
 
 export interface PassReport {

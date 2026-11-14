@@ -112,15 +112,23 @@ node dist/dataset.js        # the image's second entry point (scripts/build.mjs)
 - **What it needs.** `DATABASE_URL` (the supervisor's database; the supervisor's start applies migration `0016_dataset`,
   this process runs none) and `INDEXER_URL`. No signing key, no admin key, no service key: `dataset/config.ts` asks for
   none and the compose service strips every one. Knobs: `DATASET_PASS_MS` (60000), `DATASET_CHAIN_EVERY_MS` (600000),
-  `DATASET_SOURCES_PER_PASS` (12), `DATASET_RECORDS_PER_DAY` (400, 0 = no cap).
+  `DATASET_SOURCES_PER_PASS` (12), `DATASET_RECORDS_PER_DAY` (400, 0 = no cap), and one source's share of a day,
+  `DATASET_SOURCE_RECORDS_PER_DAY` (40) and `DATASET_SOURCE_SIGHTINGS_PER_DAY` (120).
 - **Layer a** (`layer-a.ts`): Bootr's own numbers from the indexer and three of this service's tables, every ten
   minutes. The header of the file lists every field it reads. No coin name, symbol or handle is read.
 - **Layer b** (`layer-b.ts`, `readers/`): the open sources of the note's section 6.7, listed in `sources.ts` with their
   group, kind and schedule (only a commit changes the list). Each is a conditional GET through `web-reader.ts`
   `fetchPublic`, the agents' `read_url` path. A source that fails backs off (its interval, doubled each time, up to a
-  day) and never stops the others. 2,412 small requests a day, no fee.
+  day) and never stops the others; the wait is written before the read, so a body that kills the process is not read
+  first again after the restart. No JSON body over 2 MB is parsed whole. 2,412 small requests a day, no fee.
+- **Who counts** (`sources.ts`, `grades.ts`): a source is official only where the entity itself publishes and nobody
+  else can, and only for an item that is about that entity. A forum, a preprint server or a page of other people's
+  listings is an open venue (`open`): carried on a record, never official, never an independent group, so any number
+  of forum topics is grade 1.
 - **What may be stored** is the header of `clean.ts`: everything from outside is cut, stripped of markup and invisible
-  characters, never an instruction; a title that reads like one is counted and its words are not kept.
+  characters, never an instruction; a title that carries a link, a mention, a cashtag or an address, or that addresses
+  agents or holders, is counted and its words are not kept. It is a noise filter: whatever first shows a record to a
+  model must still present its headline as untrusted data.
 - **Matching** (`matching.ts`): the same key or link, a stated relation, then entities and words. Step 4 of the note
   (a cheap model for what words cannot decide) is not built; its seam is `ingestSighting`'s `judgeLeftover`.
 - **The owner's view**: `GET /internal/dataset/day?day=YYYY-MM-DD` (HMAC), shown in the admin console under "Dataset".

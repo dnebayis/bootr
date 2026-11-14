@@ -27,6 +27,9 @@ export const datasetConfigSchema = z.object({
   DATASET_SOURCES_PER_PASS: int(12, 1),
   /** New records kept per UTC day (store.ts); 0 = no cap. */
   DATASET_RECORDS_PER_DAY: int(400, 0),
+  /** One open source's share of a day: new records it may start, and sightings it may add (store.ts); 0 = no cap. */
+  DATASET_SOURCE_RECORDS_PER_DAY: int(40, 0),
+  DATASET_SOURCE_SIGHTINGS_PER_DAY: int(120, 0),
   LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),
 });
 
