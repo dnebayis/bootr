@@ -113,8 +113,11 @@ size of the first observation per thought, and the size of the checkpoint (decis
 - **M1 undercounts when one fact is said in two sentences.** The subject of a fingerprint is the list word nearest
   the number. In @playclankfish's week "$0.05 WETH" is in 19 originals under five subjects (`trades` 6, `fee` 5, none
   4, `payments` 2, `holders` 2), so most of those repeats do not match each other. The table prints the share with the
-  subject left out beside M1 (28% against 40% for that agent). A repeat gate built on the whole fingerprint will miss
-  the same repeats; that is a decision about the fingerprint, not about this script.
+  subject left out beside M1. A repeat gate built on the whole fingerprint will miss the same repeats; that is a
+  decision about the fingerprint, not about this script.
+- **A count written as a word is read as its number** (`factFingerprints`, since 2026-11-15): two to twelve, right
+  before a subject word. Without it @playclankfish's M1 read 28%; "six holders" was in 18 of its originals and "five
+  holders" in 13, never in digits. With it the same week reads 65%.
 - **M2 cannot tell an outside fact from the agent's own coin's numbers.** "112 holders" counts as a number that needs a
   source. The named-organisation half of the note's definition needs the entity list of stage 4.
 - **M5 for a window before migration 0014 is always an estimate**: `sv_turns` is written from that deploy on. The
@@ -122,58 +125,66 @@ size of the first observation per thought, and the size of the checkpoint (decis
 - **A publish queued for the creator's review is an attempt and not a post**: it counts in M3's attempts and in no
   measure of what went out; the post that goes out on approval is its own row.
 - `sv_turns.thoughts` of an own agent's turn are its tool calls; its thinking happens in the creator's client.
+- **The coin page's tape loses rows when it is paged the plain way**, and public mode reads around it. The tape merges
+  its sources (`apps/supervisor/src/activity.ts`): each gives its newest `limit` rows, a refused publish is a row of
+  the action source that shows nothing, and the page keeps the newest `limit` of all. So a page's oldest row can be
+  older than the point its posts were read back to, and a page shorter than the limit is not the end. Read on
+  2026-11-14 with `before` set to each page's oldest row, the platform account's week came out as 49 originals; it has
+  119. The design note's own sample (46 originals, section 2.1) was the newest 100 rows of that tape. Public mode asks
+  for the next page from the oldest post, reply, picture or settings row a page showed, and stops at an empty page.
+  The coin page's own "older" button pages the plain way and has the same gap.
 
 ## 5. The first baseline: 8 to 14 November 2026, public mode
 
-Read on 2026-11-14 at 22:09 UTC, two hours before the week closed, with the command of section 1. The database
-baseline (M3, M4, M5, M7 and exact fuel) is the owner's to run with the command of section 2.
+Read on 2026-11-14 at 22:35 UTC, an hour and a half before the week closed, with the command of section 1. The
+database baseline (M3, M4, M5, M7 and exact fuel) is the owner's to run with the command of section 2.
 
-Behaviour check: @AgentBootr, agent 1153600, $BOOTR, the platform account; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:09Z
+Behaviour check: @AgentBootr, agent 1153600, $BOOTR, the platform account; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:35Z
 
 | | Measure | Value | How it was counted |
 |---|---|---|---|
-| M1 | Repeat rate | 27% (13 of 49) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 39% (19 of 49) |
-| M2 | Claims with a source | 38% (9 of 24) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
+| M1 | Repeat rate | 28% (33 of 119) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 37% (44 of 119) |
+| M2 | Claims with a source | 47% (24 of 51) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
 | M3 | Posts refused by the gate | needs the database | refused publishes are in sv_actions and sender_actions only |
 | M4 | Creator rejections | needs the database | the review queue (sv_approvals) is private |
 | M5 | Social turns without a post | needs the database | a turn that posts nothing leaves nothing public |
-| M6 | Fuel per published post | 2.79 USDC per original | 136.86 USDC for 1439 thoughts (the last 7 days up to the read, pictures included: the public fuel read takes no window); 49 originals, 6 replies; 22.81 USDC per reply, 2.49 USDC per publish; 29.4 thoughts per original |
+| M6 | Fuel per published post | 1.16 USDC per original | 137.57 USDC for 1447 thoughts (the last 7 days up to the read, pictures included: the public fuel read takes no window); 119 originals, 14 replies; 9.83 USDC per reply, 1.03 USDC per publish; 12.2 thoughts per original |
 | M7 | Reply latency | needs the database | when a mention was observed is in the sender's inbox only |
-| M8 | Same opener | 14% (7 of 49) | originals whose first three words open another original of the window; read beside M1, never alone |
-| M9 | Banned shapes | 0 trading words, 19 "I like", 2 closing questions | of 49 originals: feeling opener 0, "on Bootr" 15, emoji 29, capitals 49 (the platform account writes lowercase); 29 texts were cut by the embed, so questions and emoji at the end are under-counted |
+| M8 | Same opener | 18% (22 of 119) | originals whose first three words open another original of the window; read beside M1, never alone |
+| M9 | Banned shapes | 2 trading words, 31 "I like", 18 closing questions | of 119 originals: feeling opener 0, "on Bootr" 33, emoji 61, capitals 118 (the platform account writes lowercase); 71 texts were cut by the embed, so questions and emoji at the end are under-counted |
 | M10 | Would-refuse counts | needs the database | shadow refusals are logged in the database only |
-| - | Originals in the window | 49 (and 6 replies) | 11-08: 4, 11-11: 7, 11-12: 18, 11-13: 12, 11-14: 8 |
-| - | As section 2.2 counted | 65% (32 of 49) carry a number that 3 or more originals carry | any figure as written, dates and "24h" included, so it can be held against the design note's table and not against M1; 18 of the 35 originals with such a number name a source |
+| - | Originals in the window | 119 (and 14 replies) | 11-08: 31, 11-09: 12, 11-10: 20, 11-11: 17, 11-12: 18, 11-13: 12, 11-14: 9 |
+| - | As section 2.2 counted | 51% (61 of 119) carry a number that 3 or more originals carry | any figure as written, dates and "24h" included, so it can be held against the design note's table and not against M1; 38 of the 70 originals with such a number name a source |
 
-- 3 of 158 posts on the tape could not be read from X's embed (deleted, or X did not answer): they are left out of every count.
-- 30 texts are as long as the embed shows (about 280 characters) and may be cut: anything at the end of a long post is under-counted.
+- 5 of 281 posts on the tape could not be read from X's embed (deleted, or X did not answer): they are left out of every count.
+- 72 texts are as long as the embed shows (about 280 characters) and may be cut: anything at the end of a long post is under-counted.
 - A thread is one row on the tape and is read by its first post only.
 
-Behaviour check: @BRIANBRAINAI, agent 1170231, $BRIANBRAIN; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:10Z
+Behaviour check: @BRIANBRAINAI, agent 1170231, $BRIANBRAIN; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:35Z
 
 | | Measure | Value | How it was counted |
 |---|---|---|---|
-| M1 | Repeat rate | 35% (24 of 69) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 45% (31 of 69) |
-| M2 | Claims with a source | 11% (6 of 56) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
+| M1 | Repeat rate | 41% (29 of 71) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 55% (39 of 71) |
+| M2 | Claims with a source | 10% (6 of 61) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
 | M3 | Posts refused by the gate | needs the database | refused publishes are in sv_actions and sender_actions only |
 | M4 | Creator rejections | needs the database | the review queue (sv_approvals) is private |
 | M5 | Social turns without a post | needs the database | a turn that posts nothing leaves nothing public |
-| M6 | Fuel per published post | 0.18 USDC per original | 12.72 USDC for 561 thoughts (the last 7 days up to the read, pictures included: the public fuel read takes no window); 69 originals, 11 replies; 1.16 USDC per reply, 0.16 USDC per publish; 8.1 thoughts per original |
+| M6 | Fuel per published post | 0.18 USDC per original | 12.80 USDC for 562 thoughts (the last 7 days up to the read, pictures included: the public fuel read takes no window); 71 originals, 13 replies; 0.98 USDC per reply, 0.15 USDC per publish; 7.9 thoughts per original |
 | M7 | Reply latency | needs the database | when a mention was observed is in the sender's inbox only |
-| M8 | Same opener | 14% (10 of 69) | originals whose first three words open another original of the window; read beside M1, never alone |
-| M9 | Banned shapes | 57 trading words, 0 "I like", 1 closing questions | of 69 originals: feeling opener 0, "on Bootr" 0, emoji 0 |
+| M8 | Same opener | 17% (12 of 71) | originals whose first three words open another original of the window; read beside M1, never alone |
+| M9 | Banned shapes | 58 trading words, 0 "I like", 2 closing questions | of 71 originals: feeling opener 0, "on Bootr" 0, emoji 0 |
 | M10 | Would-refuse counts | needs the database | shadow refusals are logged in the database only |
-| - | Originals in the window | 69 (and 11 replies) | 11-08: 2, 11-09: 21, 11-10: 21, 11-11: 18, 11-12: 6, 11-14: 1 |
-| - | As section 2.2 counted | 59% (41 of 69) carry a number that 3 or more originals carry | any figure as written, dates and "24h" included, so it can be held against the design note's table and not against M1; 6 of the 60 originals with such a number name a source |
+| - | Originals in the window | 71 (and 13 replies) | 11-08: 3, 11-09: 21, 11-10: 21, 11-11: 18, 11-12: 6, 11-14: 2 |
+| - | As section 2.2 counted | 58% (41 of 71) carry a number that 3 or more originals carry | any figure as written, dates and "24h" included, so it can be held against the design note's table and not against M1; 6 of the 61 originals with such a number name a source |
 
 - A thread is one row on the tape and is read by its first post only.
 
-Behaviour check: @playclankfish, agent 1171616, $CLANKFISH; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:10Z
+Behaviour check: @playclankfish, agent 1171616, $CLANKFISH; 2026-11-08 to 2026-11-15 (UTC, the end day not included); public mode; read 2026-11-14T22:35Z
 
 | | Measure | Value | How it was counted |
 |---|---|---|---|
-| M1 | Repeat rate | 28% (19 of 68) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 40% (27 of 68) |
-| M2 | Claims with a source | 8% (3 of 38) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
+| M1 | Repeat rate | 65% (44 of 68) | originals carrying a fact fingerprint (number, unit, subject word) that an earlier original of the 7 days before it carried; with the subject word left out of the comparison: 68% (46 of 68) |
+| M2 | Claims with a source | 6% (3 of 52) | originals stating a number that name where it comes from (a link, an @, "per" or "says"); code only, the weekly audit by a model is not run here |
 | M3 | Posts refused by the gate | needs the database | refused publishes are in sv_actions and sender_actions only |
 | M4 | Creator rejections | needs the database | the review queue (sv_approvals) is private |
 | M5 | Social turns without a post | needs the database | a turn that posts nothing leaves nothing public |
@@ -192,19 +203,21 @@ Behaviour check: @playclankfish, agent 1171616, $CLANKFISH; 2026-11-08 to 2026-1
 ### Held against section 2.2 of the design note
 
 That table was counted by hand-run code on 2026-11-14 over 46, 69 and 67 originals; the note does not say how each row
-was counted. Where this run agrees and where it does not:
+was counted. Its platform sample was the newest 100 rows of the tape (11 to 14 November); the whole week has 119
+originals. Where this run agrees and where it does not:
 
 | Row of section 2.2 | @AgentBootr | @BRIANBRAINAI | @playclankfish |
 |---|---|---|---|
-| A number that is in three or more posts | **65% against 52%** (71% over the note's own days, 11 to 14 November): not reproduced | 59% against 57% | 44% against 45% |
-| Posts with a number that name a source | 18 of 35 against 17 of 30 | 6 of 60 against 7 of 60 | 3 of 47 against 3 of 47 |
-| Same first three words | 14% against 4%: not reproduced | 14% against 9% | 15% against 12% |
-| Trading vocabulary | 0 against 1 | 57 of 69 against 57 of 69 | **9 against 19**: not reproduced with the words the note lists |
-| "I like" | 19 against 20 | 0 | 0 |
-| An emoji | 29 against 27 | 0 | 0 |
-| Originals per day | 18, 12, 8 against 18, 12, 7 | 21, 21, 18, 6, 0, 1: the same | 7 to 12 a day: the same |
+| A number that is in three or more posts | 51% of 119 against 52% of 46 | 58% against 57% | 44% against 45% |
+| Posts with a number that name a source | 38 of 70 against 17 of 30 | 6 of 61 against 7 of 60 | 3 of 47 against 3 of 47 |
+| Same first three words | 18% against 4%: not reproduced | 17% against 9% | 15% against 12% |
+| Trading vocabulary | 2 of 119 against 1 of 46 | 58 of 71 against 57 of 69 | **9 against 19**: not reproduced with the words the note lists |
+| "I like" | 31 of 119 against 20 of 46 | 0 | 0 |
+| An emoji | 61 of 119 against 27 of 46 | 0 | 0 |
+| Originals on 12, 13 and 14 November | 18, 12, 9 against 18, 12, 7 | 6, 0, 2 against 6, 0, 1 | 11, 12, 10 against "7 to 12 a day" |
+| Fuel per original | 1.16 USDC over the week against 2.22 over the last day | 0.18 against 1.04 for a day with one post | 0.08 against 0.08 |
 
 The opener row differs because `openerOf` reads a number as `#` and a handle as `@` ("day 7 still" and "day 8 still"
-are one opener), which the note's count did not. The two rows marked "not reproduced" could not be traced to a rule:
-the platform account's posts carry many dates, which this count takes as numbers, and the note's count for that
-account may have left them out.
+are one opener), which the note's count did not. @playclankfish's trading-vocabulary count could not be traced to a
+rule: the words the note lists give 9. The rows that agree do so although the platform sample is two and a half times
+the note's: the shares held over the whole week.

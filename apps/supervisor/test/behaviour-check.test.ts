@@ -414,8 +414,8 @@ function stubPublic(now: number) {
     { at: '2026-10-20T10:00:00.000Z', kind: 'post', summary: 'Posted on X', url: 'https://x.com/playclankfish/status/2000000000000000000' },
   ];
   const texts: Record<string, string> = {
-    '2000000000000000001': 'Six holders and $0.05 WETH in the fee pool.',
-    '2000000000000000002': 'Day 10: still six holders, $0.05 WETH settled. '.padEnd(280, 'x'),
+    '2000000000000000001': 'The fee pool holds $0.05 WETH.',
+    '2000000000000000002': 'Day 10: nothing traded, $0.05 WETH settled. '.padEnd(280, 'x'),
     '2000000000000000003': '@someone thanks for asking',
   };
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -464,6 +464,59 @@ describe('the public read', () => {
     expect(await readTape(broken, '0xkernel', FROM)).toEqual({ posts: [], complete: false });
   });
 
+  it('loses no post to the tape\'s own paging: a page can reach further back than its posts were read', async () => {
+    // The tape as the supervisor builds it (activity.ts): every source gives its newest `limit` rows older than the
+    // cursor, the page keeps the newest `limit` of them all. Here every other action row is a refused publish, which
+    // is a row of its source and shows nothing, so a page of 100 holds fewer posts than the treasury rows beside them
+    // reach back over.
+    const t0 = at('2026-11-14T00:00:00Z');
+    const actionRows = Array.from({ length: 260 }, (_, i) => ({ at: t0 - i * 600_000, visible: i % 2 === 0, id: String(3000000000000000000n + BigInt(i)) }));
+    const opRows = Array.from({ length: 200 }, (_, i) => ({ at: t0 - i * 1_500_000 - 1 }));
+    const pageOf = (before: number | null, limit: number) => {
+      const older = <T extends { at: number }>(rows: T[]) => rows.filter((r) => before === null || r.at < before).slice(0, limit);
+      const items = [
+        ...older(actionRows).filter((r) => r.visible).map((r) => ({ at: new Date(r.at).toISOString(), kind: 'post', url: `https://x.com/agent/status/${r.id}` })),
+        ...older(opRows).map((r) => ({ at: new Date(r.at).toISOString(), kind: 'claim', url: 'https://basescan.org/tx/0x1' })),
+      ];
+      return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, limit);
+    };
+    const asked: (string | null)[] = [];
+    const deps: PublicDeps = {
+      now: () => NOW,
+      sources: { site: 'https://site.test', indexer: 'https://indexer.test', sender: 'https://sender.test', embed: 'https://embed.test' },
+      fetch: (async (input: string) => {
+        const url = new URL(input);
+        asked.push(url.searchParams.get('before'));
+        const before = url.searchParams.get('before');
+        return new Response(JSON.stringify({ items: pageOf(before ? Date.parse(before) : null, Number(url.searchParams.get('limit'))) }), { status: 200 });
+      }) as unknown as typeof fetch,
+    };
+    const since = t0 - 259 * 600_000;
+    const visible = actionRows.filter((r) => r.visible && r.at >= since).map((r) => r.id).sort();
+    const read = await readTape(deps, '0xkernel', since);
+    expect(read.complete).toBe(true);
+    expect(read.posts.map((p) => p.postId).sort()).toEqual(visible);
+    expect(visible).toHaveLength(130);
+    // Paging from each page's oldest row, as a reader would without knowing the above, loses posts on this very tape.
+    const naive = new Set<string>();
+    for (let before: number | null = null, guard = 0; guard < 50; guard++) {
+      const items = pageOf(before, 100);
+      for (const i of items) if (i.kind === 'post') naive.add(i.url.split('/').pop()!);
+      if (items.length < 100) break;
+      before = Date.parse(items.at(-1)!.at);
+    }
+    expect(naive.size).toBeLessThan(visible.length);
+    expect(asked.length).toBeGreaterThan(2);
+
+    // ...and a page shorter than the limit is not the end of the tape: with few treasury rows the first page holds
+    // 50 posts and 5 claims, 55 rows, and 80 older posts are still to come (@BRIANBRAINAI's tape, 99 rows, 2026-11-14).
+    opRows.length = 5;
+    expect(pageOf(null, 100)).toHaveLength(55);
+    const short = await readTape(deps, '0xkernel', since);
+    expect(short.complete).toBe(true);
+    expect(short.posts.map((p) => p.postId).sort()).toEqual(visible);
+  });
+
   it('measures what is public and says what it could not read', async () => {
     const { deps, seen } = stubPublic(NOW);
     const input = await readPublic(deps, 'playclankfish', FROM, TO);
@@ -478,7 +531,7 @@ describe('the public read', () => {
     expect(seen.find((u) => u.includes('/fuel'))).toContain('days=7');
     const table = renderTable(input);
     // "$0.05 WETH" of 5 November is said again on the 12th. The two sentences put the number beside different subject
-    // words ("fee pool", "holders"), so the fingerprints differ and M1 as defined does not see it; the count that leaves
+    // words ("fee pool", "traded"), so the fingerprints differ and M1 as defined does not see it; the count that leaves
     // the subject out does. Both are printed, and the gap is what the reader should look at.
     expect(table).toContain('| M1 | Repeat rate | 0% (0 of 2) |');
     expect(table).toContain('with the subject word left out of the comparison: 50% (1 of 2)');
