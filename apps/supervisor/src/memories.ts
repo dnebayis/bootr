@@ -22,6 +22,16 @@ export interface MemoryRecord {
   closedAt?: string;
 }
 
+/** A note as `remember` stored it. */
+export type StoredMemory = MemoryRecord & {
+  /** It rewrote the note its subject already had. */
+  updated: boolean;
+  /** A promise whose due time lay further ahead than `PROMISE_MAX_AHEAD_MS` and was cut to it. */
+  dueCut?: boolean;
+  /** A promise the agent had no room for (`OPEN_PROMISES_MAX`): stored as a plain note. */
+  promiseNotKept?: boolean;
+};
+
 /** What `remember` stores for one note (the broker hands over agent-core's parsed note; code-written notes pass text, sources and tags). */
 export interface MemoryInput {
   text: string;
@@ -40,6 +50,14 @@ const PAGE = 10;
 export const PROMISE_DEFAULT_DUE_MS = 24 * 60 * 60 * 1000;
 /** How long past its due time an open promise is still shown (`openPromises`); after that it is only found by `recall`. */
 export const PROMISE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * How far ahead a promise may be due; a later time is cut to this, not refused. With `PROMISE_STALE_MS` it bounds how
+ * long one write keeps a line in front of every later turn (three weeks): a promise is text the model wrote, possibly
+ * steered by a mention it read, and a due time of next year must not keep it listed until then.
+ */
+export const PROMISE_MAX_AHEAD_MS = 14 * 24 * 60 * 60 * 1000;
+/** Open promises one agent holds and is shown at most. One more is kept as a plain note, which no later turn is shown as a promise. */
+export const OPEN_PROMISES_MAX = 5;
 
 function tokens(query: string): string[] {
   return query
@@ -64,27 +82,34 @@ function isUniqueViolation(err: unknown): boolean {
  * called `key`, as the column is): the same kind and subject again rewrites the row in place, keeps when it was first
  * noted, and counts how often it was written. Without a kind such a note is of kind `note`. A promise always has a
  * subject (one is made for it when it names none) and a due time, and is open until a later write with `done` closes
- * it; writing it again without `done` opens it again.
+ * it; writing it again without `done` opens it again. A due time is at most `PROMISE_MAX_AHEAD_MS` ahead and an agent
+ * holds at most `OPEN_PROMISES_MAX` open promises: what a model writes here is shown to every later turn, so one write
+ * steered by a hostile mention must not be able to stay in view for long, or to fill the view.
  */
 export class MemoryStore {
   constructor(private readonly db: Db) {}
 
-  async remember(agentId: string, input: MemoryInput, now: Date = new Date()): Promise<MemoryRecord & { updated: boolean }> {
+  async remember(agentId: string, input: MemoryInput, now: Date = new Date()): Promise<StoredMemory> {
     const id = `mem_${randomUUID()}`;
     const promise = input.kind === 'promise';
     const key = input.subject ?? (promise ? `p-${id.slice(4, 12)}` : undefined);
-    if (!key) {
-      const kind = input.kind ?? null;
+    const plain = async (kind: MemoryKind | null): Promise<StoredMemory> => {
       await this.db.insert(memories).values({ id, agentId, text: input.text, sources: input.sources ?? [], tags: input.tags ?? [], createdAt: now, kind });
       return { id, text: input.text, sources: input.sources ?? [], tags: input.tags ?? [], createdAt: now.toISOString(), ...(kind ? { kind } : {}), updated: false };
-    }
+    };
+    if (!key) return plain(input.kind ?? null);
     const kind: MemoryKind = input.kind ?? 'note';
-    const due = promise ? new Date(input.dueAt && Number.isFinite(Date.parse(input.dueAt)) ? Date.parse(input.dueAt) : now.getTime() + PROMISE_DEFAULT_DUE_MS) : null;
+    const asked = promise && input.dueAt && Number.isFinite(Date.parse(input.dueAt)) ? Date.parse(input.dueAt) : null;
+    const latest = now.getTime() + PROMISE_MAX_AHEAD_MS;
+    const dueCut = asked !== null && asked > latest;
+    const due = promise ? new Date(asked === null ? now.getTime() + PROMISE_DEFAULT_DUE_MS : Math.min(asked, latest)) : null;
     const closed = promise && input.done === true ? now : null;
     const subject = and(eq(memories.agentId, agentId), eq(memories.kind, kind), eq(memories.key, key));
     // Two attempts: a note of the same subject written between the read and the insert (the unique index says so) is updated on the second.
     for (let attempt = 0; ; attempt++) {
       const existing = await this.db.query.memories.findFirst({ where: subject });
+      // A write that would open one more promise than an agent may hold is kept as a plain note instead (`OPEN_PROMISES_MAX`).
+      if (promise && !closed && (!existing || existing.closedAt) && (await this.openPromiseCount(agentId, now)) >= OPEN_PROMISES_MAX) return { ...(await plain(null)), promiseNotKept: true };
       if (existing) {
         const [row] = await this.db
           .update(memories)
@@ -99,11 +124,11 @@ export class MemoryStore {
           })
           .where(eq(memories.id, existing.id))
           .returning();
-        return { ...toRecord(row!), updated: true };
+        return { ...toRecord(row!), updated: true, ...(dueCut ? { dueCut } : {}) };
       }
       try {
         const [row] = await this.db.insert(memories).values({ id, agentId, text: input.text, sources: input.sources ?? [], tags: input.tags ?? [], createdAt: now, kind, key, updatedAt: now, count: 1, dueAt: due, closedAt: closed }).returning();
-        return { ...toRecord(row!), updated: false };
+        return { ...toRecord(row!), updated: false, ...(dueCut ? { dueCut } : {}) };
       } catch (err) {
         if (attempt > 0 || !isUniqueViolation(err)) throw err;
       }
@@ -150,15 +175,25 @@ export class MemoryStore {
     return rows.map(toRecord);
   }
 
-  /** Promises the agent has not closed, soonest due first; one more than `PROMISE_STALE_MS` past its due time is no longer listed. */
-  async openPromises(agentId: string, now: Date, limit = 5): Promise<MemoryRecord[]> {
+  /** Promises the agent has not closed, soonest due first, `OPEN_PROMISES_MAX` at most; one more than `PROMISE_STALE_MS` past its due time is no longer listed. */
+  async openPromises(agentId: string, now: Date, limit = OPEN_PROMISES_MAX): Promise<MemoryRecord[]> {
     const rows = await this.db
       .select()
       .from(memories)
-      .where(and(eq(memories.agentId, agentId), eq(memories.kind, 'promise'), isNull(memories.closedAt), gt(memories.dueAt, new Date(now.getTime() - PROMISE_STALE_MS))))
+      .where(this.openPromise(agentId, now))
       .orderBy(asc(memories.dueAt))
-      .limit(limit);
+      .limit(Math.max(0, Math.min(limit, OPEN_PROMISES_MAX)));
     return rows.map(toRecord);
+  }
+
+  /** The open promises that still count: not closed, and not so long past their time that no turn is shown them. */
+  private openPromise(agentId: string, now: Date) {
+    return and(eq(memories.agentId, agentId), eq(memories.kind, 'promise'), isNull(memories.closedAt), gt(memories.dueAt, new Date(now.getTime() - PROMISE_STALE_MS)));
+  }
+
+  private async openPromiseCount(agentId: string, now: Date): Promise<number> {
+    const [row] = await this.db.select({ n: sql<number>`count(*)` }).from(memories).where(this.openPromise(agentId, now));
+    return Number(row?.n ?? 0);
   }
 
   async count(agentId: string): Promise<number> {
