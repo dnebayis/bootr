@@ -1,12 +1,13 @@
+import { datasetXHandleListed } from '@bootr/agent-core';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { withToken } from './accounts.js';
-import { hmacAuth, type AuthEnv } from './auth.js';
+import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
 import { DATASET_X_HARD_CEILING } from './config.js';
 import { nowSec, type SenderContext } from './context.js';
-import { reads } from './db/schema.js';
+import { datasetUsers, reads } from './db/schema.js';
 import { log } from './log.js';
 import { nextUtcMidnight } from './read-budget.js';
 import type { XResult, XTweet, XUser } from './x-client.js';
@@ -40,6 +41,15 @@ import type { XResult, XTweet, XUser } from './x-client.js';
  * handle: a handle can change hands) for original posts newer than `sinceId`: no replies and no reposts
  * (`exclude=replies,retweets`); a quote is kept and says which post it quotes. No expansion is asked for: X charges per
  * resource returned, and an expanded author or quoted post would be one more. A read that finds nothing costs nothing.
+ *
+ * Which accounts (the security review of 2026-11-15, L4). The door reads the checked-in list of agent-core
+ * `DATASET_X_HANDLES` and no other account, whatever the dataset process asks: `/resolve` takes a listed handle only;
+ * a user id is read (`/user`, `/posts`) only once it is admitted, which a resolve of a listed handle does, or a read
+ * of the id here whose answer is a listed handle (one user read, two units, once per account: the accounts the dataset
+ * pinned before this rule are admitted that way on their next read). An admitted account X now shows under a handle
+ * off the list is let go. `/check` asks only whether posts are still there and returns no words, so it is not held to
+ * the list. Each signed POST is taken once: a request seen again inside the five minutes a signature is fresh
+ * (auth.ts `MAX_SKEW_SEC`) is refused, so a captured request cannot be played again to spend the day's units.
  */
 
 export const DATASET_AGENT_ID = 'dataset';
@@ -62,6 +72,11 @@ export const DATASET_X_CAP_REACHED = 'dataset_x_cap_reached';
 export const DATASET_TWEET_FIELDS = 'created_at,entities,referenced_tweets,note_tweet';
 export const DATASET_USER_FIELDS = 'username,protected,public_metrics';
 export const DATASET_BODY_LIMIT = 8 * 1024;
+export const DATASET_HANDLE_NOT_LISTED = 'dataset_handle_not_listed';
+export const DATASET_USER_NOT_LISTED = 'dataset_user_not_listed';
+export const DATASET_REPLAYED = 'dataset_request_replayed';
+/** Signatures remembered for the replay check at most; the oldest go first. */
+export const DATASET_SEEN_MAX = 10_000;
 
 const xId = z.string().regex(/^\d{1,25}$/);
 export const datasetResolveSchema = z.object({ handle: z.string().regex(/^\w{1,15}$/) }).strict();
@@ -204,12 +219,35 @@ function toDatasetUser(u: XUser | undefined): DatasetUser | null {
   return { id: u.id, username: u.username, followers: typeof followers === 'number' && Number.isFinite(followers) && followers >= 0 ? Math.floor(followers) : null, protected: u.protected === true };
 }
 
+/** Whether the dataset's door may read this user id: it was admitted from a listed handle (see the header). */
+async function isAdmitted(ctx: SenderContext, userId: string): Promise<boolean> {
+  const [row] = await ctx.db.select({ userId: datasetUsers.userId }).from(datasetUsers).where(eq(datasetUsers.userId, userId)).limit(1);
+  return !!row;
+}
+
+/** Admits a user X answered for, when its handle is listed; lets an admitted one go when X now shows it under another. */
+async function noteUser(ctx: SenderContext, user: DatasetUser | null, asked?: string): Promise<void> {
+  if (user && datasetXHandleListed(user.username)) {
+    await ctx.db
+      .insert(datasetUsers)
+      .values({ userId: user.id, handle: user.username, admittedAt: ctx.now() })
+      .onConflictDoUpdate({ target: datasetUsers.userId, set: { handle: user.username } });
+    return;
+  }
+  const id = user?.id ?? asked;
+  if (id) await ctx.db.delete(datasetUsers).where(eq(datasetUsers.userId, id));
+}
+
+const notListed = (what: string): Fail => ({ ok: false, status: 403, error: DATASET_USER_NOT_LISTED, message: `${what} is not one of the accounts the dataset reads.` });
+
 /**
  * A user read, by handle (the first resolution of a listed account) or by id (the look at a pinned one). `user` is
  * null when X has no such account or will not show it (not found, suspended, deactivated): the caller decides what
  * that means. Two units, given back when X returned no user.
  */
 export async function readDatasetUser(ctx: SenderContext, by: { handle: string } | { userId: string }): Promise<{ ok: true; user: DatasetUser | null; budget: DatasetBudget } | Fail> {
+  if ('handle' in by && !datasetXHandleListed(by.handle)) return { ok: false, status: 403, error: DATASET_HANDLE_NOT_LISTED, message: `@${by.handle} is not one of the accounts the dataset reads.` };
+  const known = 'userId' in by ? await isAdmitted(ctx, by.userId) : true;
   const res = await meteredRead(
     ctx,
     'dataset_users',
@@ -219,7 +257,19 @@ export async function readDatasetUser(ctx: SenderContext, by: { handle: string }
   );
   // X answers a lookup of an account it does not have with 404 or with 200 and no `data`: both are "no such account".
   if (!res.ok) return res.status === 404 ? { ok: true, user: null, budget: await datasetBudget(ctx) } : res;
-  return { ok: true, user: toDatasetUser(res.data.data), budget: await datasetBudget(ctx) };
+  const user = toDatasetUser(res.data.data);
+  await noteUser(ctx, user, 'userId' in by ? by.userId : undefined);
+  // An id that was never admitted is answered only when X shows it under a listed handle (which admits it now).
+  if (!known && !(user && datasetXHandleListed(user.username))) return notListed('This account');
+  return { ok: true, user, budget: await datasetBudget(ctx) };
+}
+
+/** Whether a user id may be read for the dataset: admitted, or admitted now by one user read (see the header). */
+async function mayRead(ctx: SenderContext, userId: string): Promise<true | Fail> {
+  if (await isAdmitted(ctx, userId)) return true;
+  const looked = await readDatasetUser(ctx, { userId });
+  if (!looked.ok) return looked;
+  return looked.user ? true : notListed('This account');
 }
 
 const cmpId = (a: string, b: string) => {
@@ -252,6 +302,8 @@ export function toDatasetPost(t: XTweet): DatasetPost {
  * they are not read, the newest win.
  */
 export async function readDatasetPosts(ctx: SenderContext, input: z.infer<typeof datasetPostsSchema>): Promise<{ ok: true; posts: DatasetPost[]; newestId: string | null; more: boolean; budget: DatasetBudget } | Fail> {
+  const allowed = await mayRead(ctx, input.userId);
+  if (allowed !== true) return allowed;
   const res = await meteredRead(
     ctx,
     'dataset_posts',
@@ -327,6 +379,20 @@ export function mountDatasetX(app: Hono, ctx: SenderContext): void {
     '*',
     hmacAuth(key, () => nowSec(ctx)),
   );
+  // A signed POST is taken once inside the window its signature is fresh in (see the header).
+  const seen = new Map<string, number>();
+  routes.use('*', async (c, next) => {
+    if (c.req.method !== 'POST') return next();
+    const now = nowSec(ctx);
+    for (const [sig, until] of seen) {
+      if (until > now && seen.size < DATASET_SEEN_MAX) break;
+      seen.delete(sig);
+    }
+    const sig = (c.req.header('authorization') ?? '').trim().toLowerCase();
+    if (seen.has(sig)) return c.json({ error: DATASET_REPLAYED, message: 'This signed request was already taken; sign a new one.' }, 409);
+    seen.set(sig, now + 2 * MAX_SKEW_SEC);
+    return next();
+  });
   routes.get('/budget', async (c) => c.json(await datasetBudget(ctx)));
   routes.post('/resolve', async (c) => {
     const body = parse(c, datasetResolveSchema);

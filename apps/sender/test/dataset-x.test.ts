@@ -2,8 +2,8 @@ import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { signRequest } from '../src/auth.js';
 import { loadConfig } from '../src/config.js';
-import { claimDatasetUnits, DATASET_AGENT_ID, DATASET_PAGE_MAX, DATASET_PAGE_MIN, DATASET_TWEET_FIELDS, DATASET_UNIT_USD, DATASET_USER_FIELDS, DATASET_X_CAP_REACHED, DATASET_X_HARD_CEILING, DATASET_X_OFF, datasetBudget, datasetLimit } from '../src/dataset-x.js';
-import { reads } from '../src/db/schema.js';
+import { claimDatasetUnits, DATASET_AGENT_ID, DATASET_HANDLE_NOT_LISTED, DATASET_PAGE_MAX, DATASET_PAGE_MIN, DATASET_REPLAYED, DATASET_TWEET_FIELDS, DATASET_UNIT_USD, DATASET_USER_FIELDS, DATASET_USER_NOT_LISTED, DATASET_X_CAP_REACHED, DATASET_X_HARD_CEILING, DATASET_X_OFF, datasetBudget, datasetLimit } from '../src/dataset-x.js';
+import { datasetUsers, reads } from '../src/db/schema.js';
 import { getMetering } from '../src/metering.js';
 import { readsToday } from '../src/read-budget.js';
 import { AGENT, json, SERVICE_KEY, setup, timeoutError } from './helpers.js';
@@ -25,9 +25,11 @@ afterEach(async () => {
   env = undefined;
 });
 
-const start = async (dataset: { postsPerDay: number; key?: string; readerAgentId?: string } = { postsPerDay: 250, key: DATASET_KEY, readerAgentId: AGENT }) => {
+/** A sender with the dataset's door; @base is admitted already (resolved once from the listed handle) unless `admitted: false`. */
+const start = async (dataset: { postsPerDay: number; key?: string; readerAgentId?: string } = { postsPerDay: 250, key: DATASET_KEY, readerAgentId: AGENT }, admitted = true) => {
   const started = await setup({ dataset });
   env = started;
+  if (admitted) await started.db.insert(datasetUsers).values({ userId: BASE.id, handle: 'base', admittedAt: started.clock.now() });
   return started;
 };
 /** The running sender; every test starts one first. */
@@ -209,10 +211,11 @@ describe('POST /dataset/x/posts', () => {
   it('claims before it calls: at the cap the read is refused and X is not asked', async () => {
     await start({ postsPerDay: 12, key: DATASET_KEY, readerAgentId: AGENT });
     flood();
+    // each request is signed once: a second identical one would be a replay, so each asks from its own since_id
     expect((await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 })).status).toBe(200);
-    expect((await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 })).status).toBe(200);
+    expect((await ask('posts', { userId: BASE.id, sinceId: '9001', max: 5 })).status).toBe(200);
     const calls = on().fake.calls.length;
-    const refused = await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 });
+    const refused = await ask('posts', { userId: BASE.id, sinceId: '9002', max: 5 });
     expect(refused.status).toBe(429);
     expect(refused.body.error).toBe(DATASET_X_CAP_REACHED);
     expect(refused.body.retryAt).toBe('2026-10-25T00:00:00.000Z');
@@ -228,7 +231,7 @@ describe('POST /dataset/x/posts', () => {
   it('two reads at once cannot both take the last units', async () => {
     await start({ postsPerDay: 12, key: DATASET_KEY, readerAgentId: AGENT });
     flood();
-    const results = await Promise.all(Array.from({ length: 8 }, () => ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 })));
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => ask('posts', { userId: BASE.id, sinceId: String(9000 + i), max: 5 })));
     expect(results.filter((r) => r.status === 200)).toHaveLength(2);
     expect(results.filter((r) => r.status === 429)).toHaveLength(6);
     expect((await datasetBudget(on().ctx)).units).toBe(10);
@@ -262,10 +265,10 @@ describe('POST /dataset/x/posts', () => {
     expect(timedOut.status).toBe(502);
     expect((await datasetBudget(on().ctx)).units).toBe(10);
     on().fake.on('GET', `/2/users/${BASE.id}/tweets`, () => json({ title: 'Forbidden' }, 403));
-    expect((await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 10 })).status).toBe(502);
+    expect((await ask('posts', { userId: BASE.id, sinceId: '9001', max: 10 })).status).toBe(502);
     expect((await datasetBudget(on().ctx)).units).toBe(10);
     on().fake.on('GET', `/2/users/${BASE.id}/tweets`, () => json({}, 503));
-    await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 10 });
+    await ask('posts', { userId: BASE.id, sinceId: '9002', max: 10 });
     expect((await datasetBudget(on().ctx)).units).toBe(20);
   });
 
@@ -277,7 +280,7 @@ describe('POST /dataset/x/posts', () => {
     await on().close();
     await start({ postsPerDay: 250, key: DATASET_KEY, readerAgentId: 'agent-nobody' });
     flood();
-    const none = await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 });
+    const none = await ask('posts', { userId: BASE.id, sinceId: '9001', max: 5 });
     expect([none.status, none.body.error]).toEqual([409, 'not_connected']);
     expect(on().fake.calls).toHaveLength(0);
     expect((await datasetBudget(on().ctx)).units).toBe(0);
@@ -300,9 +303,9 @@ describe('user reads', () => {
 
   it('says null for an account X does not have, in both of the ways X says it, and charges nothing', async () => {
     await start();
-    on().fake.on('GET', '/2/users/by/username/baseapp', () => json({ errors: [{ title: 'Not Found Error', detail: 'Could not find user with username: [baseapp].' }] }));
-    on().fake.on('GET', '/2/users/by/username/aerodromefi', () => json({ title: 'Not Found' }, 404));
-    for (const handle of ['baseapp', 'aerodromefi']) {
+    on().fake.on('GET', '/2/users/by/username/buildonbase', () => json({ errors: [{ title: 'Not Found Error', detail: 'Could not find user with username: [buildonbase].' }] }));
+    on().fake.on('GET', '/2/users/by/username/coinbase', () => json({ title: 'Not Found' }, 404));
+    for (const handle of ['buildonbase', 'coinbase']) {
       const res = await ask('resolve', { handle });
       expect(res.status).toBe(200);
       expect(res.body.user).toBeNull();
@@ -315,7 +318,8 @@ describe('user reads', () => {
     on().fake.on('GET', `/2/users/${BASE.id}`, () => json({ data: { ...BASE, protected: true, public_metrics: {} } }));
     expect((await ask('user', { userId: BASE.id })).body.user).toEqual({ id: BASE.id, username: 'base', followers: null, protected: true });
     on().fake.on('GET', '/2/users/77', () => json({ data: { id: '77', username: 'a b c <script>' } }));
-    expect((await ask('user', { userId: '77' })).body.user).toBeNull();
+    // an id never admitted is answered only when X shows it under a listed handle: this one is no user, so no answer
+    expect((await ask('user', { userId: '77' })).body.error).toBe(DATASET_USER_NOT_LISTED);
     expect(await metered()).toEqual([['dataset_users', 2]]);
   });
 
@@ -323,6 +327,7 @@ describe('user reads', () => {
     await start({ postsPerDay: 3, key: DATASET_KEY, readerAgentId: AGENT });
     on().fake.on('GET', '/2/users/by/username/base', () => json({ data: BASE }));
     expect((await ask('resolve', { handle: 'base' })).status).toBe(200);
+    on().clock.advance(1_000);
     const refused = await ask('resolve', { handle: 'base' });
     expect([refused.status, refused.body.error]).toEqual([429, DATASET_X_CAP_REACHED]);
     expect(on().fake.count('GET', '/2/users/by/username/')).toBe(1);
@@ -363,12 +368,17 @@ describe('what a day can cost', () => {
     on().fake.on('GET', /\/2\/users\/by\/username\/\w+/, () => json({ data: BASE }));
     on().fake.on('GET', '/2/tweets', ({ url }) => json({ data: url.searchParams.get('ids')!.split(',').map((id) => post(id)) }));
     // far more calls than a day has: full pages, lookups and checks, until everything is refused
+    // (each request signed a second apart: an identical signed request is taken once)
     for (let i = 0; i < 80; i++) {
       await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 20 });
       await ask('resolve', { handle: 'base' });
       await ask('check', { ids: ['1', '2', '3', '4', '5', '6', '7'] });
+      on().clock.advance(1_000);
     }
-    for (let i = 0; i < 12; i++) await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 });
+    for (let i = 0; i < 12; i++) {
+      await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 });
+      on().clock.advance(1_000);
+    }
     await ask('check', { ids: ['1'] });
     const budget = await datasetBudget(on().ctx);
     const limit = Math.min(cap, 700);
@@ -391,5 +401,72 @@ describe('what a day can cost', () => {
     expect(await claimDatasetUnits(on().ctx, 'dataset_checks', 1)).toBe(true);
     expect(await claimDatasetUnits(on().ctx, 'dataset_checks', 1)).toBe(false);
     expect((await datasetBudget(on().ctx)).remaining).toBe(0);
+  });
+});
+
+describe('which accounts the door reads, and once each signed request (the security review of 2026-11-15, L4)', () => {
+  it('resolves only a handle of the checked-in list, and asks X nothing for another', async () => {
+    await start(undefined, false);
+    for (const handle of ['someone_else', 'baseapp']) {
+      const res = await ask('resolve', { handle });
+      expect([res.status, res.body.error]).toEqual([403, DATASET_HANDLE_NOT_LISTED]);
+    }
+    expect(on().fake.calls).toHaveLength(0);
+    expect((await datasetBudget(on().ctx)).units).toBe(0);
+  });
+
+  it('reads a user id only once a listed handle was resolved to it, or a read of it shows a listed handle', async () => {
+    await start(undefined, false);
+    flood();
+    on().fake.on('GET', '/2/users/by/username/base', () => json({ data: BASE }));
+    on().fake.on('GET', `/2/users/${BASE.id}`, () => json({ data: BASE }));
+    on().fake.on('GET', '/2/users/4242', () => json({ data: { id: '4242', username: 'stranger', protected: false, public_metrics: { followers_count: 9 } } }));
+    // a stranger's id: one user read shows it is not listed, and no post of it is read
+    const stranger = await ask('posts', { userId: '4242', sinceId: SINCE, max: 5 });
+    expect([stranger.status, stranger.body.error]).toEqual([403, DATASET_USER_NOT_LISTED]);
+    expect(on().fake.count('GET', '/2/users/4242/tweets')).toBe(0);
+    expect((await ask('user', { userId: '4242' })).body.error).toBe(DATASET_USER_NOT_LISTED);
+    // a listed account resolved by its handle is admitted, and its posts are read with no further user read
+    expect((await ask('resolve', { handle: 'base' })).body.user.id).toBe(BASE.id);
+    const userReads = () => on().fake.calls.filter((c) => c.path === `/2/users/${BASE.id}`).length;
+    expect((await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 })).status).toBe(200);
+    expect(userReads()).toBe(0);
+    expect((await on().db.select().from(datasetUsers)).map((r) => [r.userId, r.handle])).toEqual([[BASE.id, 'base']]);
+  });
+
+  it('admits an account pinned before the rule on its first read, with one user read, and lets go of one X shows under another handle', async () => {
+    await start(undefined, false);
+    flood();
+    on().fake.on('GET', `/2/users/${BASE.id}`, () => json({ data: BASE }));
+    expect((await ask('posts', { userId: BASE.id, sinceId: SINCE, max: 5 })).status).toBe(200);
+    expect(await metered()).toEqual([['dataset_posts', 5], ['dataset_users', 1]]);
+    expect((await ask('posts', { userId: BASE.id, sinceId: '9001', max: 5 })).status).toBe(200);
+    expect(await metered()).toEqual([['dataset_posts', 10], ['dataset_users', 1]]);
+    // the weekly look finds the id under a handle off the list: the dataset is told (it suspends the row) and the id is let go
+    on().fake.on('GET', `/2/users/${BASE.id}`, () => json({ data: { ...BASE, username: 'base_giveaway' } }));
+    expect((await ask('user', { userId: BASE.id })).body.user.username).toBe('base_giveaway');
+    expect(await on().db.select().from(datasetUsers)).toEqual([]);
+    expect((await ask('posts', { userId: BASE.id, sinceId: '9002', max: 5 })).body.error).toBe(DATASET_USER_NOT_LISTED);
+  });
+
+  it('takes a signed request once: the same one played again inside its five minutes is refused and costs nothing', async () => {
+    await start();
+    flood();
+    const path = '/dataset/x/posts';
+    const raw = JSON.stringify({ userId: BASE.id, sinceId: SINCE, max: 5 });
+    const headers = { authorization: signRequest(DATASET_KEY, 'POST', path, raw, Math.floor(on().clock.now().getTime() / 1000)), 'content-type': 'application/json' };
+    expect((await on().app.request(path, { method: 'POST', headers, body: raw })).status).toBe(200);
+    const units = (await datasetBudget(on().ctx)).units;
+    on().clock.advance(60_000);
+    const again = await on().app.request(path, { method: 'POST', headers, body: raw });
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: string }).error).toBe(DATASET_REPLAYED);
+    expect((await datasetBudget(on().ctx)).units).toBe(units);
+    // after the five minutes the signature is stale anyway
+    on().clock.advance(5 * 60_000);
+    expect((await on().app.request(path, { method: 'POST', headers, body: raw })).status).toBe(401);
+    // a GET of the budget may be asked twice in the same second
+    expect((await ask('budget')).status).toBe(200);
+    expect((await ask('budget')).status).toBe(200);
   });
 });

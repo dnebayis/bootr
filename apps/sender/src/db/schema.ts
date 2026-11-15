@@ -172,6 +172,18 @@ export const oauthStates = pgTable(
   (t) => [index('sender_oauth_states_expires_idx').on(t.expiresAt)],
 );
 
+/**
+ * The X accounts the dataset's door may read by id (dataset-x.ts): each was resolved here from a handle of the checked-in
+ * list (agent-core `DATASET_X_HANDLES`), or read by id here and found to be one. A user id not in this table is not
+ * read for the dataset, whatever the dataset process asks.
+ */
+export const datasetUsers = pgTable('sender_dataset_users', {
+  userId: text('user_id').primaryKey(),
+  /** The handle as X spelled it when the account was admitted. */
+  handle: text('handle').notNull(),
+  admittedAt: ts('admitted_at').notNull().defaultNow(),
+});
+
 export type AccountRow = typeof accounts.$inferSelect;
 export type ActionRow = typeof actions.$inferSelect;
 export type InboxRow = typeof inbox.$inferSelect;

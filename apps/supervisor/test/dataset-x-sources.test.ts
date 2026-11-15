@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { DATASET_X_HANDLES } from '@bootr/agent-core';
 import { ENTITIES } from '../src/dataset/entities.js';
 import { OPEN_SOURCES } from '../src/dataset/sources.js';
 import { CLUSTERS } from '../src/dataset/types.js';
@@ -39,6 +40,10 @@ function noteRows(): { handle: string; officialFor: string; group: string; follo
 
 describe('the X source list', () => {
   const tier1 = noteRows().filter((r) => r.tier === '1');
+
+  it("is the same list, handle for handle, as the one the sender's dataset door reads and nothing else (agent-core)", () => {
+    expect(X_SOURCES.map((s) => s.handle)).toEqual([...DATASET_X_HANDLES]);
+  });
 
   it('holds the 41 tier 1 rows of the note and nothing else', () => {
     expect(tier1).toHaveLength(41);

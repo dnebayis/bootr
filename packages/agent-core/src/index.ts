@@ -4,6 +4,7 @@ export * from './types.js';
 export * from './notes.js';
 export * from './tools.js';
 export * from './json-schema.js';
+export * from './dataset-x-handles.js';
 export * from './social/addressing.js';
 export * from './social/gate-words.js';
 export * from './social/post-validation.js';
