@@ -373,6 +373,8 @@ export const scheduledPosts = pgTable(
     updatedAt: ts('updated_at').notNull(),
     /** When a failure was told to the agent; null = still to tell. */
     feedbackAt: ts('feedback_at'),
+    /** The dataset records the post cites (`schedule_post {record}`, post-records.ts): carried to the send, where the said-ledger and the records are told. */
+    recordIds: jsonb('record_ids').$type<string[]>().notNull().default([]),
   },
   (t) => [index('sv_scheduled_posts_due_idx').on(t.status, t.sendAt), index('sv_scheduled_posts_agent_idx').on(t.agentId, t.sendAt)],
 );
@@ -889,4 +891,32 @@ export const dsSightings = pgTable(
     seenAt: ts('seen_at').notNull(),
   },
   (t) => [index('sv_ds_sightings_record_idx').on(t.recordId), index('sv_ds_sightings_link_idx').on(t.linkKey), index('sv_ds_sightings_key_idx').on(t.key), index('sv_ds_sightings_seen_idx').on(t.seenAt)],
+);
+
+/**
+ * Which records of the dataset an agent was handed (dataset/served.ts; docs/design/agent-behaviour.md stage 5): one row
+ * per agent and record, written by the supervisor when a turn's first observation carries the record, never by the
+ * dataset process. It answers four questions without touching `sv_ds_records`: whether an id a post cites is one this
+ * agent was really shown (an id from anywhere else is not a citation), whether the agent already used the record
+ * (`cited_at`: a post that cites it went out, was scheduled or waits for review), how often it was offered with a due
+ * slot and passed over (`offered`: after a few it is not offered again), and whether the dataset handed this agent
+ * anything in the last day (the condition of the platform account's quiet slot). Rows go 30 days after their last use.
+ */
+export const recordsServed = pgTable(
+  'sv_records_served',
+  {
+    /** `<agent id>:<record id>`: one row per pair. */
+    id: text('id').primaryKey(),
+    agentId: text('agent_id').notNull(),
+    recordId: text('record_id').notNull(),
+    firstServedAt: ts('first_served_at').notNull(),
+    lastServedAt: ts('last_served_at').notNull(),
+    /** Turns whose first observation carried the record. */
+    times: integer('times').notNull().default(1),
+    /** Of those, the turns that held a due original-post slot: the agent could have posted about it and did not. */
+    offered: integer('offered').notNull().default(0),
+    /** When a post of this agent that cites the record went out, was scheduled or was queued for review; null until then. */
+    citedAt: ts('cited_at'),
+  },
+  (t) => [index('sv_records_served_agent_idx').on(t.agentId, t.lastServedAt)],
 );
