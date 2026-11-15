@@ -146,10 +146,15 @@ const TRADE_ORDER = '(?:buy|sell)';
  * one"). A generic "coins" or "tokens" is not one: "agents buy tokens through the swap tool" says what a product does.
  */
 const COIN_OBJECT =
-  '(?:\\$[a-z]|bootr\\b|(?:the|this|that|these|those|your|my|our)\\s+(?:coin|coins|token|tokens|dip|dips|bottom|top|news|rumou?r|bags?)\\b|(?:dip|dips|bags?)\\b|this one\\b|it all\\b)';
-/** What may stand between the verb and the coin: an amount or a quantity ("buy 1,000 $BOOTR", "buy a bag of", "sell some"). */
+  '(?:\\$[a-z]|bootr\\b|(?:the|this|that|these|those|your|my|our)\\s+(?:coin|coins|token|tokens|dip|dips|bottom|top|news|rumou?r|bags?)\\b|(?:a|some|more)\\s+bags?\\b|(?:dip|dips|bags?)\\b|this one\\b|it all\\b)';
+/**
+ * What may stand between the verb and the coin, up to three of them: an amount or a quantity ("buy 1,000 $BOOTR",
+ * "buy 0.1 eth of", "buy a bag of", "sell some", "buy up all the"), a particle ("buy into", "buy back into", "sell
+ * off", "sell out of") or a determiner ("sell your", "buy the"). Before 2026-11-15 one of the last two in front of the
+ * coin let a call through ("buy into $BOOTR", "sell your $BOOTR now").
+ */
 const QUANTITY =
-  '(?:(?:some|more|a\\s+(?:bit|little|lot|bag|few)\\s+(?:of\\s+)?|any|all(?:\\s+of)?|half(?:\\s+of)?|\\$?\\d[\\d.,]*\\s*[kmb]?(?:\\s+(?:of|worth of))?)\\s*)';
+  '(?:(?:some|more|a\\s+(?:bit|little|lot|bag|few)\\s+(?:of\\s+)?|any|all(?:\\s+of)?|half(?:\\s+of)?|into|up|back(?:\\s+into)?|off|out\\s+of|the|your|my|our|\\$?\\d[\\d.,]*\\s*[kmb]?(?:\\s*(?:eth|weth|usdc|usdt|sol|dollars?|bucks))?(?:\\s+(?:of|worth of|in))?)\\s*)';
 /** The end of a clause: what follows a bare "buy more" or "bought early" for it to be the whole call. */
 const CLAUSE_END = '(?=\\s*(?:[.!?,;:…)]|$))';
 /** What makes a trade verb a nudge by itself: urgency right after ("buy now", "sell today", "buy it now", "buy more."). */
@@ -173,14 +178,21 @@ const NUDGE = [
  * them "agents that buy services" and "every buy and sell"): with a coin as the object ("buy $BOOTR", "buy the dip",
  * "sell your bags", "buy 1,000 bootr"), with urgency or more after ("buy now", "buy more"), with a nudge before
  * ("time to sell", "you should buy", "don't sell", "keep buying"), or as the order that opens a sentence ("Buy.",
- * "Sell before the news"). Read over the folded text, so a zero-width or a look-alike letter does not hide a word.
+ * "Sell before the news", "just buy,"). A plain "buy" or "sell" with $BOOTR a few words on in its clause is a call, the
+ * coin run into the verb ("buy-$BOOTR") too, and "worth buying" and "at these levels" are (the security review of
+ * 2026-11-15). Read over the folded text, so a zero-width or a look-alike letter does not hide a word.
  */
 const PRICE_TALK = new RegExp(
   [
-    `\\b${TRADE}(?![-'’])\\s+${QUANTITY}?${COIN_OBJECT}`,
+    `\\b${TRADE}(?![-'’])\\s+${QUANTITY}{0,3}${COIN_OBJECT}`,
+    // the coin run into the verb: "buy-$BOOTR", "buy＄BOOTR" (the full-width sign folds to "$"), "sell/bootr"
+    `\\b${TRADE}[\\s\\-–—_:/]*\\$[a-z]|\\b${TRADE}[\\-–—_:/]+bootr\\b`,
+    // the plain verb with $BOOTR a few words on, in its clause: "buy some of that sweet $BOOTR"; not "every buy and sell of $BOOTR"
+    `(?<!\\b(?:every|each|a|an|the|any|per|one|no|this|that)\\s+(?:[a-z]+\\s+(?:and|or|&)\\s+)?)\\b(?:buy|sell)(?:ing)?\\b(?![-'’])[^.!?\\n;:]{0,30}\\$bootr\\b`,
     `\\b${TRADE}(?![-'’])\\s+(?:${URGENCY})`,
     `\\b(?:${NUDGE})(?![-'’])`,
-    `(?:^|[.!?:;\\n"“'‘(]\\s*)${TRADE_ORDER}(?:${CLAUSE_END}|\\s+(?:before|while|and\\s+(?:hold|forget|wait))\\b)`,
+    `(?:^|[.!?:;\\n"“'‘(]\\s*)(?:(?:just|simply)\\s+)?${TRADE_ORDER}(?:${CLAUSE_END}|\\s+(?:before|while|and\\s+(?:hold|forget|wait))\\b)`,
+    '\\bworth\\s+(?:buying|selling|a\\s+buy|grabbing|picking up|stacking|accumulating)\\b|\\bat these (?:levels|prices)\\b|\\bthank me later\\b',
     '\\b(?:load(?:ing)?\\s+up\\s+on|stack(?:ing)?|accumulat(?:e|ing))\\s+(?:some\\s+|more\\s+)?(?:\\$[a-z]|bootr\\b)',
     "\\b(?:pump(?:ed|ing|s)?|dump(?:ed|ing|s)?|moon(?:ed|ing|s)?|mooning|wen|ath|lfg|wagmi|ngmi|bullish|bearish|undervalued|overvalued|cheap|dip|dips|rug|rugged|degen|ape|aped|aping|send it|to the moon|price target|price (?:prediction|call|action))\\b",
     // A prediction: "price will", "$BOOTR to $1m", "will go up", "going to hit $1m", "target $1m".

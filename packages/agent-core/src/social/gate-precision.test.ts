@@ -33,6 +33,12 @@ describe('platform_price_talk_forbidden: "buy" and "sell" are ordinary words', (
       '"Buy" is the word people use most in our mentions.',
       'Bootr does not sell your data.',
       'Tickets sold out in an hour.',
+      // the trade as a noun, and "worth" and "buy into" with no coin
+      'Every buy and sell of $BOOTR pays the fee split.',
+      'A slice of each buy or sell of $BOOTR goes to the burn.',
+      'Clanker v5 is worth a look.',
+      'Agents buy services on Bootr.',
+      'Agents buy into the idea fast.',
     ]) expect(codeOf(text), text).toBeNull();
   });
 
@@ -67,6 +73,21 @@ describe('platform_price_talk_forbidden: "buy" and "sell" are ordinary words', (
       'Easy 10x from here.',
       '$BOOTR is still early.',
       'NFA, but look at this volume.',
+      // the security review of 2026-11-15: a particle, a determiner or an amount before the coin, a "just", the coin
+      // run into the verb, "worth buying"
+      'buy into $BOOTR before the next leg',
+      'sell your $BOOTR now',
+      'buy the $BOOTR',
+      'buy 0.1 eth of $BOOTR',
+      'buy up all the $BOOTR you can',
+      'buy back into bootr',
+      'sell off your bootr bags',
+      'just buy, thank me later',
+      'buy a bag.',
+      'worth buying at these levels',
+      'buy-$BOOTR',
+      'buy＄BOOTR',
+      'buy some of that sweet $BOOTR',
     ]) expect(codeOf(text), text).toBe('platform_price_talk_forbidden');
   });
 
