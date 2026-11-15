@@ -3,13 +3,13 @@ import { eq } from 'drizzle-orm';
 import { concatHex, decodeAbiParameters, encodeFunctionData, erc20Abi, parseAbiParameters, slice, type Hex } from 'viem';
 import * as Attribution from 'ox/erc8021/Attribution';
 import { KERNEL_EXECUTE_SELECTOR, KERNEL_EXECUTE_USER_OP_SELECTOR } from '../src/abi.js';
-import { attributionSuffix, backfillBuilderCodes, ensureBuilderCode, fetchBuilderCode, isValidBuilderCode } from '../src/builder-codes.js';
+import { attributionSuffix, fetchBuilderCode, isValidBuilderCode, platformBuilderCode } from '../src/builder-codes.js';
 import { createApp } from '../src/api.js';
 import { agents } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
 import { createKernelClient, encodeKernelCalls } from '../src/kernel.js';
 import { registerAgent, type LaunchEvent } from '../src/onboarding.js';
-import { ADDR, AGENT_ID, CREATOR, GUARDIAN, KERNEL, LAUNCHER, makeWorld, PAYTO, SUPERVISOR_KEY, SESSION_PK, seedAgent, TOKEN, type TestWorld } from './helpers.js';
+import { ADDR, CREATOR, GUARDIAN, KERNEL, LAUNCHER, makeWorld, PAYTO, SUPERVISOR_KEY, SESSION_PK, TOKEN, type TestWorld } from './helpers.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 const CODE = 'bc_a1b2c3d4';
@@ -109,92 +109,53 @@ describe('builder code registration', () => {
     await expect(fetchBuilderCode(KERNEL, { url: 'http://x.test', fetch: slow, timeoutMs: 20 })).rejects.toThrow(/timeout|aborted/i);
   });
 
-  it('registerAgent registers the kernel and stores the code', async () => {
-    const world = await makeWorld();
+  it('a new agent registers no code of its own: the platform is one builder (the owner\'s decision of 2026-11-15)', async () => {
+    const world = await makeWorld({ config: { BUILDER_CODE: 'bc_platform1' } });
     try {
       const calls = builderCodesFetch(world, ok());
-      const row = await registerAgent(world.ctx, launch(7n));
-      expect(row?.builderCode).toBe(CODE);
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.body).toEqual({ walletAddress: KERNEL });
-      expect(calls[0]!.method).toBe('POST');
-      const stored = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
-      expect(stored!.builderCode).toBe(CODE);
-      expect(stored!.status).toBe('onboarding');
-      // already registered: no second call
-      expect(await ensureBuilderCode(world.ctx, stored!)).toBe(CODE);
-      expect(calls).toHaveLength(1);
-    } finally {
-      await world.close();
-    }
-  });
-
-  it('a failed registration never blocks onboarding and is retried by the backfill on a later tick', async () => {
-    const world = await makeWorld();
-    try {
-      let fail = true;
-      const calls = builderCodesFetch(world, (body) => (fail ? new Response('boom', { status: 503 }) : ok()(body)));
       const row = await registerAgent(world.ctx, launch(7n));
       expect(row).not.toBeNull();
       expect(row!.builderCode).toBeNull();
-      let stored = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
+      expect(calls).toHaveLength(0);
+      const stored = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
       expect(stored!.builderCode).toBeNull();
       expect(stored!.status).toBe('onboarding');
-      // a network error (fetch throws) is a warn too
-      world.ctx.fetch = (async () => {
-        throw new Error('ECONNRESET');
-      }) as typeof fetch;
-      expect(await ensureBuilderCode(world.ctx, stored!)).toBeNull();
-      const later = builderCodesFetch(world, (body) => (fail ? new Response('boom', { status: 503 }) : ok()(body)));
-      // still failing: backfill registers nothing
-      expect(await backfillBuilderCodes(world.ctx)).toBe(0);
-      expect(later).toHaveLength(1);
-      fail = false;
-      expect(await backfillBuilderCodes(world.ctx)).toBe(1);
-      expect(later).toHaveLength(2);
-      stored = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '7') });
-      expect(stored!.builderCode).toBe(CODE);
-      // nothing left to do, no further call
-      expect(await backfillBuilderCodes(world.ctx)).toBe(0);
-      expect(later).toHaveLength(2);
-      expect(calls).toHaveLength(1);
-      // exposed by the admin API
+      // the admin API shows the one code every agent's operations carry
       const nowSec = () => Math.floor(world.ctx.now() / 1000);
       const app = createApp(world.ctx, nowSec);
       const list = (await (await app.request('/internal/agents', { headers: { authorization: signRequest(SUPERVISOR_KEY, 'GET', '/internal/agents', '', nowSec()) } })).json()) as { agents: { agentId: string; builderCode: string | null }[] };
-      expect(list.agents.find((a) => a.agentId === '7')?.builderCode).toBe(CODE);
-      const one = (await (await app.request('/internal/agents/7', { headers: { authorization: signRequest(SUPERVISOR_KEY, 'GET', '/internal/agents/7', '', nowSec()) } })).json()) as { agent: { builderCode: string | null } };
-      expect(one.agent.builderCode).toBe(CODE);
+      expect(list.agents.find((a) => a.agentId === '7')?.builderCode).toBe('bc_platform1');
     } finally {
       await world.close();
     }
   });
 
-  it('BUILDER_CODES_ENABLED=false disables registration, the backfill and the suffix', async () => {
-    const world = await makeWorld({ config: { BUILDER_CODES_ENABLED: 'false' } });
+  it('platformBuilderCode: the platform\'s code, or null when unset, invalid or switched off; an agent\'s old code is never used', () => {
+    expect(platformBuilderCode({ BUILDER_CODE: 'bc_platform1', BUILDER_CODES_ENABLED: true })).toBe('bc_platform1');
+    expect(platformBuilderCode({ BUILDER_CODE: undefined, BUILDER_CODES_ENABLED: true })).toBeNull();
+    expect(platformBuilderCode({ BUILDER_CODE: 'bc_platform1', BUILDER_CODES_ENABLED: false })).toBeNull();
+    expect(platformBuilderCode({ BUILDER_CODE: 'bad,code', BUILDER_CODES_ENABLED: true })).toBeNull();
+  });
+
+  it('the code is read from the deployment, trimmed, and an invalid one is dropped', async () => {
+    for (const [given, read] of [[' bc_x1 ', 'bc_x1'], ['', undefined], ['has space', undefined], ['a,b', undefined]] as const) {
+      const world = await makeWorld({ config: { BUILDER_CODE: given } });
+      try {
+        expect(world.ctx.config.BUILDER_CODE, given).toBe(read);
+      } finally {
+        await world.close();
+      }
+    }
+  });
+
+  it('BUILDER_CODES_ENABLED=false turns the suffix off even with a code set', async () => {
+    const world = await makeWorld({ config: { BUILDER_CODES_ENABLED: 'false', BUILDER_CODE: 'bc_platform1' } });
     try {
       expect(world.ctx.config.BUILDER_CODES_ENABLED).toBe(false);
-      expect(world.ctx.config.BUILDER_CODES_URL).toBe('https://api.base.dev/v1/agents/builder-codes');
+      expect(platformBuilderCode(world.ctx.config)).toBeNull();
       const calls = builderCodesFetch(world, ok());
-      const row = await registerAgent(world.ctx, launch(7n));
-      expect(row!.builderCode).toBeNull();
-      expect(await backfillBuilderCodes(world.ctx)).toBe(0);
+      await registerAgent(world.ctx, launch(7n));
       expect(calls).toHaveLength(0);
-    } finally {
-      await world.close();
-    }
-  });
-
-  it('BUILDER_CODES_URL overrides the endpoint and the active-agent backfill uses it', async () => {
-    const world = await makeWorld({ config: { BUILDER_CODES_URL: 'http://codes.test/register' } });
-    try {
-      expect(world.ctx.config.BUILDER_CODES_URL).toBe('http://codes.test/register');
-      const calls = builderCodesFetch(world, ok('bc_other'));
-      await seedAgent(world); // active agent without a code
-      expect(await backfillBuilderCodes(world.ctx)).toBe(1);
-      expect(calls[0]!.url).toBe('http://codes.test/register');
-      const stored = await world.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) });
-      expect(stored!.builderCode).toBe('bc_other');
     } finally {
       await world.close();
     }

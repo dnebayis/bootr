@@ -434,10 +434,12 @@ export const configSchema = z
     SESSION_ROTATE_BEFORE_DAYS: int(3, 0),
     USER_OP_RECEIPT_TIMEOUT_MS: int(90_000, 1000),
     /**
-     * Base Builder Codes (ERC-8021 attribution). Every agent kernel registers its own code at
-     * `BUILDER_CODES_URL`; the code is appended as a calldata suffix to every session userOp.
-     * `false` disables both the registration and the suffix.
+     * Base Builder Codes (ERC-8021 attribution). The platform has ONE code, the one the site's own transactions carry
+     * (`NEXT_PUBLIC_BUILDER_CODE` of the web build): every agent's session userOp is suffixed with it, so Base counts
+     * the whole platform as one builder (the owner's decision of 2026-11-15; agents no longer register codes of their
+     * own at `BUILDER_CODES_URL`). Unset or invalid: no suffix. `BUILDER_CODES_ENABLED=false` turns the suffix off.
      */
+    BUILDER_CODE: z.preprocess((v) => (typeof v === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(v.trim()) ? v.trim() : undefined), z.string().optional()),
     BUILDER_CODES_ENABLED: bool('true'),
     BUILDER_CODES_URL: z.preprocess((v) => (v === '' || v === undefined ? 'https://api.base.dev/v1/agents/builder-codes' : v), z.string().url()),
     /** Telegram bot for creator notifications (notifications.ts, telegram.ts). Unset: only the console inbox works. Held by the supervisor alone. */

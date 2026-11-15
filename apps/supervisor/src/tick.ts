@@ -19,7 +19,6 @@ import { kernelAbi } from './abi.js';
 import { agentDirectory, openWakeBound, recordOpenWake, recordPeerWakes, wakeViews } from './agent-directory.js';
 import { inboxViews, resolvePending } from './broker/index.js';
 import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
-import { backfillBuilderCodes } from './builder-codes.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { SLEEP_USDC } from './fuel.js';
 import { rpcErrorText } from './log.js';
@@ -69,11 +68,6 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
     await rotateExpiringSessionKeys(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'onboarding pass failed');
-  }
-  try {
-    await backfillBuilderCodes(ctx);
-  } catch (err) {
-    ctx.log.error({ err }, 'builder code backfill failed');
   }
   // Engagement of posts that went out a day ago, a few agents per tick (post-performance.ts).
   try {

@@ -15,7 +15,7 @@ import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual, parseEventLog
 import { agentLaunchedEvent, clankerLaunchedEvent, clankerV5FeeSlotCreatedEvent, clankerV5LaunchedEvent, clankerV5LaunchedEventV1, clankerV5LaunchTaxConfiguredEvent, guardianAbi, kernelAbi, launchContextEvent } from './abi.js';
 import { readGas } from './gas.js';
 import { coinImageFromCard, creatorIdentityFromCard, fetchAgentCard } from './agent-card.js';
-import { ensureBuilderCode } from './builder-codes.js';
+import { platformBuilderCode } from './builder-codes.js';
 import { launchSourceOf, type LaunchSource, type LauncherEntry } from './chain.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { agents, cursors, runtimes } from './db/schema.js';
@@ -699,9 +699,8 @@ export async function registerAgent(ctx: SupervisorContext, launch: LaunchEvent)
   // registration.
   await adoptDraftClients(ctx, row);
   if (runnerOf(config) === 'own') await ownHooks.applyRunnerQuota(ctx, agentId, 'own').catch((err: unknown) => ctx.log.warn({ agentId, err }, 'could not set the X read budget of an own agent'));
-  // Base Builder Code for the kernel: best effort here, retried by `backfillBuilderCodes` on later ticks.
-  const builderCode = await ensureBuilderCode(ctx, row);
-  return builderCode ? { ...row, builderCode } : row;
+  // No builder code of the agent's own: every session userOp carries the platform's one code (config.ts `BUILDER_CODE`).
+  return row;
 }
 
 /**
@@ -903,7 +902,7 @@ export async function installSessionKey(ctx: SupervisorContext, agent: AgentRow,
     bundlerUrl: ctx.config.ENABLE_MODE_BUNDLER_URL ?? ctx.config.BUNDLER_URL,
     ...(paymasterUrl ? { paymasterUrl } : {}),
     ...(selfBundle ? { selfBundle: ctx.adminSigner } : {}),
-    ...(ctx.config.BUILDER_CODES_ENABLED && agent.builderCode ? { builderCode: agent.builderCode } : {}),
+    ...(platformBuilderCode(ctx.config) ? { builderCode: platformBuilderCode(ctx.config)! } : {}),
     now: ctx.now,
   });
   const prepared = await client.prepareUserOp([

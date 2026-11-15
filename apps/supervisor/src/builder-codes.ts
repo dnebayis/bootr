@@ -16,6 +16,17 @@ import { agents } from './db/schema.js';
 
 export const BUILDER_CODES_TIMEOUT_MS = 10_000;
 
+/**
+ * The code every agent's session userOp carries: the platform's one code, or null when it is unset or switched off.
+ * Agents no longer register codes of their own (the owner's decision of 2026-11-15: the platform is one builder);
+ * `fetchBuilderCode`, `ensureBuilderCode` and `backfillBuilderCodes` below are kept unused for the record, and the
+ * `builder_code` column keeps the codes registered before.
+ */
+export function platformBuilderCode(config: { BUILDER_CODE?: string | undefined; BUILDER_CODES_ENABLED: boolean }): string | null {
+  if (!config.BUILDER_CODES_ENABLED || !config.BUILDER_CODE) return null;
+  return isValidBuilderCode(config.BUILDER_CODE) ? config.BUILDER_CODE : null;
+}
+
 /** ASCII, no comma (ERC-8021 separates codes with commas), bounded so the 1-byte length field cannot overflow. */
 const BUILDER_CODE_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 

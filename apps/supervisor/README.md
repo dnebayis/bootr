@@ -289,7 +289,8 @@ a local Base fork with the real Permit2 and `upto` proxy; it needs Foundry's `an
 | `USER_OP_RECEIPT_TIMEOUT_MS` | no | `90000` | after this a sent op is `unknown` and reconciled by hash |
 | `TOOL_TIMEOUT_MS` | no | `180000` | ceiling on one agent tool call (write and money tools); past it the action ends `unknown` and is settled from receipts. Agents run one at a time, so no tool may hold the tick |
 | `TOOL_READ_TIMEOUT_MS` | no | `60000` | the same ceiling for read tools, which simply fail (`tool_timeout`) |
-| `BUILDER_CODES_ENABLED` | no | `true` | Base Builder Codes attribution; `false` disables both the registration and the calldata suffix |
+| `BUILDER_CODE` | no | unset | the platform's one Base builder code (the same value as the web build's `NEXT_PUBLIC_BUILDER_CODE`); every agent's session userOp carries it as an ERC-8021 suffix. Agents register no code of their own (since 2026-11-15) |
+| `BUILDER_CODES_ENABLED` | no | `true` | `false` turns the calldata suffix off |
 | `BUILDER_CODES_URL` | no | `https://api.base.dev/v1/agents/builder-codes` | unauthenticated registration endpoint (`POST {walletAddress}`), 10 s timeout |
 | `LOG_LEVEL` | no | `info` | |
 
@@ -390,6 +391,10 @@ is safe to repeat) and stores the answer in `sv_agents.builder_code`. A failure 
 onboarding: `backfillBuilderCodes` retries every tick for agents (`onboarding` or `active`) that still have no code,
 at most `MAX_AGENTS_PER_TICK` per tick. The code is visible in `GET /internal/agents` and `GET /internal/agents/:id`
 (`builderCode`).
+
+Since 2026-11-15 the code is the platform's one `BUILDER_CODE`, the same for every agent and for the site's own
+transactions: the platform counts as one builder at Base. The `builder_code` column keeps codes agents registered
+before and is no longer read.
 
 With a code, `ctx.kernelFor(agent)` builds the kernel client with `builderCode` and `encodeCalls` returns
 `encodeKernelCalls(calls) ‖ Attribution.toDataSuffix({codes: [code]})` (`ox/erc8021`): an ERC-8021 schema-0 suffix

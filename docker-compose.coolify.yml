@@ -286,6 +286,9 @@ services:
       MAX_SLEEPING_PER_TICK: ${MAX_SLEEPING_PER_TICK:-}
       PLATFORM_TREASURY_ADDRESS: ${PLATFORM_TREASURY_ADDRESS}
       BUILDER_CODES_ENABLED: ${BUILDER_CODES_ENABLED:-}
+      # The platform's one Base builder code, the same value as the web build's NEXT_PUBLIC_BUILDER_CODE (a GitHub
+      # variable): every agent's operations carry it. Unset: agents' operations carry no code.
+      BUILDER_CODE: ${BUILDER_CODE:-}
       BUILDER_CODES_URL: ${BUILDER_CODES_URL:-}
       SWAP_SLIPPAGE_BPS: ${SWAP_SLIPPAGE_BPS:-}
       CHAINLINK_MAX_AGE_SECONDS: ${CHAINLINK_MAX_AGE_SECONDS:-}

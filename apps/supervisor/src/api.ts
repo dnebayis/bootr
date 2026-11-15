@@ -1,4 +1,5 @@
 /** Admin / ops HTTP API (Hono). `/internal/*` requires `Authorization: HMAC <ts>:<hex>` like the sender. */
+import { platformBuilderCode } from './builder-codes.js';
 import { registerW2 } from './own/w2.js';
 import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
@@ -137,7 +138,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
         xHandle: (agent.config as { xHandle?: string | null }).xHandle ?? null,
         permissionId: agent.permissionId,
         sessionValidUntil: agent.sessionValidUntil,
-        builderCode: agent.builderCode,
+        builderCode: platformBuilderCode(ctx.config),
         runtime: runtime ? { status: runtime.status, cycle: runtime.cycle, nextAt: runtime.nextAt, pausedBy: runtime.pausedBy, failures: runtime.failures } : null,
       })),
     });

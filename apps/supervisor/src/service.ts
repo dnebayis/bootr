@@ -1,4 +1,5 @@
 /** Composition root shared by `index.ts` and the tests. */
+import { platformBuilderCode } from './builder-codes.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Hex } from 'viem';
 import { createLocalAdminSigner } from './admin-signer.js';
@@ -43,7 +44,8 @@ export function createContext(config: Config, db: Db, overrides: Partial<Supervi
       overrides.kernelFor ??
       (async (agent: AgentRow) => {
         if (!agent.permissionId) throw new Error(`agent ${agent.agentId} has no session key`);
-        const builderCode = config.BUILDER_CODES_ENABLED ? (agent.builderCode ?? null) : null;
+        // One code for the whole platform (config.ts `BUILDER_CODE`), never a code of the agent's own.
+        const builderCode = platformBuilderCode(config);
         const key = `${agent.kernel}:${agent.permissionId}:${builderCode ?? ''}`;
         let client = kernels.get(key);
         if (!client) {
