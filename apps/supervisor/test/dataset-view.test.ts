@@ -96,8 +96,9 @@ describe('who reads the dataset', () => {
     const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'dataset' ? [] : files(`${dir}${e.name}/`)) : e.name.endsWith('.ts') ? [`${dir}${e.name}`] : []));
     const naming = files(src).filter((f) => /dataset\/|dsRecords|dsSightings|dsSources|sv_ds_/.test(readFileSync(f, 'utf8')));
     // stage 5: the turn's records (records-turn.ts, records-section.ts, runtime.ts), the citations and the number gate
-    // (post-records.ts, number-gate.ts) and the platform account's quiet slot (platform-quiet.ts). A new reader is a
-    // decision, made here on purpose.
-    expect(naming.map((f) => f.slice(src.length)).sort()).toEqual(['api.ts', 'config.ts', 'db/schema.ts', 'number-gate.ts', 'platform-quiet.ts', 'post-records.ts', 'records-section.ts', 'records-turn.ts', 'runtime.ts', 'web-reader.ts']);
+    // (post-records.ts, number-gate.ts) and the platform account's quiet slot (platform-quiet.ts). The three send paths
+    // (approvals.ts, broker/index.ts, thread-send.ts) ask dataset/execution-posts.ts whether a link is an execution
+    // account's post (the security review of 2026-11-15, M4). A new reader is a decision, made here on purpose.
+    expect(naming.map((f) => f.slice(src.length)).sort()).toEqual(['api.ts', 'approvals.ts', 'broker/index.ts', 'config.ts', 'db/schema.ts', 'number-gate.ts', 'platform-quiet.ts', 'post-records.ts', 'records-section.ts', 'records-turn.ts', 'runtime.ts', 'thread-send.ts', 'web-reader.ts']);
   });
 });

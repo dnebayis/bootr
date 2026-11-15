@@ -1,3 +1,4 @@
+import { executionPostRefusal } from '../dataset/execution-posts.js';
 import { questionBudget, questionQuotaRefusal } from '../recent-posts.js';
 import { MentionError, publishAttributions, type MentionAudienceOptions } from '../attributions.js';
 import { commentCheck, commentLimit, mentionsAnyone, storedTurn, type CommentAbout } from '../comment-posts.js';
@@ -577,6 +578,9 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // The gates of the behaviour note (post-gates.ts): units and similarity to another agent's post; in shadow they only log.
       const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts: [action.input.text], kind: 'reply', aboutPostId: action.input.postId });
       if (gated) return failed(gated);
+      // A link to a post the dataset read from an execution account (dataset/execution-posts.ts).
+      const linksBot = await executionPostRefusal(ctx, [action.input.text]);
+      if (linksBot) return failed(linksBot);
       // The decision taken when the mention was observed; a mention this turn never observed is not eligible.
       const decided: ReplyEligibility = env.eligibility.get(action.input.postId) ?? (item ? inboxViews(config, [item], ctx.now(), await agentDirectory(ctx)).map((v) => ({ eligible: v.eligible, ...(v.reason ? { reason: v.reason } : {}) }))[0]! : { eligible: false, reason: 'not_in_inbox' });
       // A reply outside the verified audience (a direct reply under the agent's own post) is held to the day's count.

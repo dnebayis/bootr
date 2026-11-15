@@ -19,6 +19,7 @@
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
 import { PolicyError, recordIdsOf, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
+import { executionPostRefusal } from './dataset/execution-posts.js';
 import { MentionError, publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -487,6 +488,12 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     const result = (outcome.kind === 'completed' ? (outcome.result as OriginalResult & Record<string, unknown>) : {}) ?? {};
     sent = { senderStatus: outcome.kind === 'completed' ? 'sent' : outcome.error.replace(/^sender_/, ''), postId: typeof result.postId === 'string' ? result.postId : null, result: { ...result, ...(meta.about ? { about: meta.about } : {}) } };
   } else {
+    // A link to a post the dataset read from an execution account (dataset/execution-posts.ts): refused as the gate refuses it.
+    const linksBot = await executionPostRefusal(ctx, [row.text]);
+    if (linksBot) {
+      await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: linksBot.slice(0, MAX_NOTE_CHARS), decidedAt: now }).where(eq(approvals.id, row.id));
+      return reject(409, 'publish_failed', `the post does not pass the publish gate: ${linksBot}`);
+    }
     let res;
     try {
       res = await ctx.sender.publish({

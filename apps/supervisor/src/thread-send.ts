@@ -19,6 +19,7 @@
  * `sendOriginal` is what the review queue (approvals.ts) and the scheduler's sweep call through `postHooks`; the
  * broker calls `sendParts` itself after its own checks. Neither sets a hold: the caller does (`afterSettledAction`).
  */
+import { executionPostRefusal } from './dataset/execution-posts.js';
 import { PolicyError, THREAD_MAX_PARTS, carriesLink, threadDailyCap, threadParts, threadRefusal, threadTooLong, validatePost, THREAD_NOT_HERE, type ActionOutcome, type AgentConfig, type ThreadLimits } from '@bootr/agent-core';
 import { and, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { mediaForAction, outcomeOfError, publicAddressesOf, publishOutcome } from './broker/index.js';
@@ -178,8 +179,11 @@ function threadOutcome(result: OriginalResult): ActionOutcome {
  * sender client throws for the FIRST part (the caller maps it as it maps a single post: nothing is known sent then);
  * a later part never throws, it cuts the thread. `media` rides on the first part only.
  */
-export async function sendParts(ctx: Pick<SupervisorContext, 'sender' | 'config' | 'log'>, agent: Pick<AgentRow, 'agentId'>, config: AgentConfig, post: CommentedOriginal, media?: { data: string; mime: string; alt: string }): Promise<ActionOutcome> {
+export async function sendParts(ctx: Pick<SupervisorContext, 'sender' | 'config' | 'log' | 'db'>, agent: Pick<AgentRow, 'agentId'>, config: AgentConfig, post: CommentedOriginal, media?: { data: string; mime: string; alt: string }): Promise<ActionOutcome> {
   const parts = threadParts(post);
+  // A link to a post the dataset read from an execution account is refused before any part goes (dataset/execution-posts.ts).
+  const linksBot = await executionPostRefusal(ctx, parts);
+  if (linksBot) return failed(linksBot);
   const of = parts.length;
   const head = post.actionId;
   const common = { agentId: agent.agentId, ...(config.platform ? { platform: true } : {}), publicAddresses: publicAddressesOf(config), xUserId: config.xUserId, ...(post.aboutAuthorId ? { aboutAuthorId: post.aboutAuthorId } : {}) };

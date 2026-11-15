@@ -110,12 +110,15 @@ describe('the section', () => {
     // all five rule blocks are 3,312 characters of JSON and 908 tokens: 501 for the five items (87 to 130 each), 175
     // for the five blocks (20 to 45 each), 213 for the meaning, the line on what the agent cannot do and the suggested
     // record. One record alone is 372. At about 3.6 characters a token, the bounds below hold the section there.
+    // The meaning grew by 164 characters (about 45 tokens) the same day, when it came to say that a record's link may be
+    // posted only when it is a post on X and that a record from Bankr or Clanker comes without one (the security review,
+    // M4): the whole and the one-record figures moved by that much, nothing else.
     const section = recordsSection(fiveRecords(), NOW);
     const json = JSON.stringify(section);
-    expect(json.length).toBe(3_312);
+    expect(json.length).toBe(3_476);
     expect(JSON.stringify(section.records!.items).length).toBe(1_634);
     expect(JSON.stringify(section.records!.rules).length).toBe(727);
-    expect(JSON.stringify(recordsSection(fiveRecords().slice(4), NOW)).length).toBe(1_388);
+    expect(JSON.stringify(recordsSection(fiveRecords().slice(4), NOW)).length).toBe(1_552);
   });
 });
 

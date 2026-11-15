@@ -340,6 +340,34 @@ export interface RiskContext {
   participants?: readonly (string | null | undefined)[];
   /** Handles that are never treated as execution accounts (for example our own). */
   exemptAccounts?: readonly string[];
+  /**
+   * Ids of X posts known to be an execution account's (the supervisor reads them from the dataset's sightings before a
+   * send: `executionPostIds` there). A link to one is refused however it names the account ("x.com/i/status/<id>").
+   */
+  executionPostIds?: readonly string[];
+}
+
+/**
+ * A link to a post on X, by any path X redirects to the post ("x.com/<anyone>/status/<id>", "x.com/i/status/<id>",
+ * "x.com/i/web/status/<id>", "twitter.com/…", the fx/vx mirrors that embed it): the post's id.
+ */
+const STATUS_LINK = /(?<![a-z0-9-])(?:[a-z0-9-]+\.)?(?:x|twitter|fxtwitter|vxtwitter|fixupx)\.com\/(?:[^\s/?#]+\/){1,3}status(?:es)?\/(\d{1,25})/g;
+
+/** The ids of the X posts the text links, read over the folded text. */
+export function xStatusIds(value: unknown): string[] {
+  return [...new Set([...normalizedCommunication(value).matchAll(STATUS_LINK)].map((m) => m[1]!))];
+}
+
+/**
+ * `social_execution_account_forbidden` (cause `link`) when the text links a post whose id is in `ids`, an execution
+ * account's post: on X a link to a post quotes it and notifies its author, as an @ does, and a link built from the id
+ * alone ("x.com/i/status/…", the dataset's record links) does not show whose post it is.
+ */
+export function executionPostFinding(value: unknown, ids: readonly string[]): RiskFinding | null {
+  if (!ids.length) return null;
+  const known = new Set(ids);
+  const hit = [...normalizedCommunication(value).matchAll(STATUS_LINK)].find((m) => known.has(m[1]!));
+  return hit ? found('social_execution_account_forbidden', hit[0], 'link') : null;
 }
 
 export type RiskCode =
@@ -371,6 +399,8 @@ export function outgoingActionFinding(value: unknown, context: RiskContext = {})
   const bot = named.find((n) => executionAccount(n.handle, exemptAccounts));
   if (bot) return found('social_execution_account_forbidden', bot.match, bot.via);
   if ([recipient, ...participants].some((h) => h && executionAccount(h, exemptAccounts))) return { code: 'social_execution_account_forbidden', excerpt: null, cause: 'recipient' };
+  const post = executionPostFinding(text, context.executionPostIds ?? []);
+  if (post) return post;
   const payload = WALLET_PAYLOAD.exec(text);
   if (payload) return found('social_wallet_payload_forbidden', payload);
   const intent = INTENT_LINK.exec(text);

@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { postFinding, postRefusal, type PostValidationContext } from './post-validation.js';
 import { threadRefusal } from './thread.js';
+import { xStatusIds } from './communication-policy.js';
 
 const PLATFORM: PostValidationContext = { platform: true };
 const codeOf = (text: string, context: PostValidationContext = PLATFORM, attributions: unknown = []) => postFinding(text, attributions, 'original', false, context)?.code ?? null;
@@ -264,6 +265,22 @@ describe('social_execution_account_forbidden: an execution bot is never tagged o
     expect(postFinding('thanks!', [], 'short', false, { reply: true, recipient: 'bankrbot' })?.code).toBe('social_execution_account_forbidden');
     expect(postFinding('thanks!', [], 'short', false, { reply: true, recipient: 'clanker_world' })?.code).toBe('social_execution_account_forbidden');
     expect(codeOf('@clanker_world shipped v5', {}, credit('clanker_world'))).toBe('social_execution_account_forbidden');
+  });
+
+  it("refuses a link to a post known to be an execution account's, however the link names its author", () => {
+    const ids = ['1857000000000000001'];
+    for (const text of [
+      'bankr launched a new tool today, x.com/i/status/1857000000000000001',
+      'bankr launched a new tool today: https://x.com/i/web/status/1857000000000000001',
+      'see https://twitter.com/base/status/1857000000000000001',
+      'see https://fxtwitter.com/anyone/status/1857000000000000001?s=20',
+    ]) {
+      expect(postFinding(text, [], 'original', false, { platform: true, executionPostIds: ids }), text).toMatchObject({ code: 'social_execution_account_forbidden', cause: 'link' });
+      // without the dataset's word on it the link is any post on X
+      expect(postFinding(text, [], 'original', false, {}), text).toBeNull();
+    }
+    expect(xStatusIds('a https://x.com/i/status/12 and x.com/base/status/34 and twitter.com/a/statuses/56')).toEqual(['12', '34', '56']);
+    expect(postFinding('base said so: https://x.com/base/status/1857000000000000002', [], 'original', false, { platform: true, executionPostIds: ids })).toBeNull();
   });
 
   it('tells the model to drop the link as well as the @, and to name the project in words', () => {

@@ -42,6 +42,7 @@ import { and, desc, eq, gt, gte, inArray, isNull, ne, notInArray, or, sql, type 
 import type { Db } from '../db/client.js';
 import { dsRecords, dsSources, recordsServed, said } from '../db/schema.js';
 import { instructionShaped } from './clean.js';
+import { executionSource } from './execution-posts.js';
 import { incidentSourced } from './grades.js';
 import { OFFERS_MAX } from './served.js';
 import type { EventPrecision, Grade, RecordKind, RecordNumber, RecordPosted, RecordSource, RecordStatus } from './types.js';
@@ -202,7 +203,7 @@ export async function recordsFor(ctx: Ctx, req: ServeRequest): Promise<ServedRec
   if (!rows.length) return [];
 
   const sourceIds = [...new Set(rows.flatMap((r) => (r.record.sources as unknown as RecordSource[]).map((s) => s.sourceId)))];
-  const known = sourceIds.length ? await ctx.db.select({ id: dsSources.id, name: dsSources.name, status: dsSources.status }).from(dsSources).where(inArray(dsSources.id, sourceIds)) : [];
+  const known = sourceIds.length ? await ctx.db.select({ id: dsSources.id, name: dsSources.name, status: dsSources.status, xHandle: dsSources.xHandle }).from(dsSources).where(inArray(dsSources.id, sourceIds)) : [];
   const sourceRow = new Map(known.map((s) => [s.id, s]));
 
   const out: ServedRecord[] = [];
@@ -216,6 +217,9 @@ export async function recordsFor(ctx: Ctx, req: ServeRequest): Promise<ServedRec
     const reportOnly = r.kind === 'incident' && !incidentSourced(live);
     const isOwn = coin !== null && r.coin === coin;
     if (reportOnly && req.minGrade >= 3 && !isOwn) continue;
+    // A link an execution account's post gave the record (@bankrbot, @clanker_world) is not served: posted, it would
+    // quote that post and notify the account, and "x.com/i/status/<id>" does not show the gate whose post it is.
+    const botLinks = new Set(all.filter((s) => s.link && sourceRow.has(s.sourceId) && executionSource(sourceRow.get(s.sourceId)!)).map((s) => s.link));
     const others = new Set((r.posted as unknown as RecordPosted[]).map((p) => p?.agentId).filter((id): id is string => typeof id === 'string' && id !== req.agentId)).size;
     const times = Number(offered ?? 0);
     out.push({
@@ -226,7 +230,7 @@ export async function recordsFor(ctx: Ctx, req: ServeRequest): Promise<ServedRec
       cited: r.cited,
       status: r.status as RecordStatus,
       headline: r.headline,
-      link: r.link,
+      link: r.link && !botLinks.has(r.link) ? r.link : null,
       cluster: r.cluster,
       weight: r.weight,
       coin: r.coin,
