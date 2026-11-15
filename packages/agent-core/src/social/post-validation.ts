@@ -108,30 +108,38 @@ export function platformLinkFinding(text: string, attributions: unknown = []): P
 /** The one cashtag the platform account may use: its own coin. */
 export const PLATFORM_CASHTAG = '$BOOTR';
 
-/** The speaker as the one who acts: "I", "we", with their contractions. */
-const FIRST_PERSON_SUBJECT = "(?:i|we)(?:['’](?:ve|m|re|d|ll))?";
+/** The speaker as the one who acts: "I", "we", with their contractions, and with a name set off by commas ("i, the platform agent,"). */
+const FIRST_PERSON_SUBJECT = "(?:i|we)(?:['’](?:ve|m|re|d|ll))?(?:\\s*,[^,.!?\\n]{1,40},)?";
 /** What may stand between the speaker and the verb without changing who acts ("we have just", "i'm now", "i will"). */
 const SUBJECT_FILLER =
-  "(?:just|already|finally|also|then|now|recently|today|again|actually|quietly|successfully|automatically|manually|have|has|had|will|shall|would|did|do|am|are|was|were|been|be|gonna|going to|need to|needed to|want to|plan to|about to|should|must)";
+  "(?:just|already|finally|also|then|now|recently|today|again|actually|quietly|successfully|automatically|manually|have|has|had|will|shall|would|did|do|am|are|was|were|been|be|gonna|going to|need to|needed to|want to|plan to|about to|should|must|went|gone|go|ahead|and|managed to|decided to|tried to|got to)";
 /** The treasury operations themselves. */
 const TREASURY_OPERATION =
   '(?:claim(?:ed|ing|s)?|swap(?:ped|ping|s)?|refuel(?:l?ed|l?ing|s)?|top(?:ped|ping|s)?[ -]?up|collect(?:ed|ing|s)?|harvest(?:ed|ing|s)?|earn(?:ed|ing|s)?|withdr(?:ew|aw|awn|awing|aws)|cash(?:ed|ing)? out)';
-/** The money the speaker would hold: plural fees (the fee, a fee split, is how Bootr works and passes), gas, the rest. */
-const OWN_MONEY = '(?:fees|fee (?:income|earnings|revenue)|gas|treasury|balance|allowance|earnings|funds|wallet balance)';
+/** The money the speaker would hold: plural fees (the fee, a fee split, is how Bootr works and passes), gas, fuel, the wallet, the rest. */
+const OWN_MONEY = '(?:fees|fee (?:income|earnings|revenue)|gas|fuel|treasury|balance|allowance|earnings|funds|wallet balance|wallet)';
+/** A sum of money, or the words for one, as the object of an ordinary verb ("made 0.4 eth", "moved the fees", "got $40"). */
+const MONEY_OBJECT =
+  '(?:(?:the|our|my|some|all|about|around|over|another|nearly|almost|\\$?\\d[\\d.,]*\\s*[kmb]?)\\s*){0,3}(?:eth|weth|usdc|usdt|fees|gas|fuel|treasury|dollars|bucks)\\b(?!\\s+(?:question|questions|split|page|model|structure|rules?|explainer|thread|post|guide)\\b)|\\$\\s?\\d';
 /**
  * The agent's own treasury operations: the speaker as the one who acts ("I claimed", "we have just swapped", "I'm
  * topping up"), the speaker's own money ("my fees", "refuelled my gas", "our treasury holds", "my balance"), and the
- * report of one with no subject at the head of a sentence ("Fees earned so far", "Gas top-up done"). The subject must
- * stand right before the verb: a first-person sentence that only mentions a fee ("something I like: the fee split is
- * locked"), and a third party that earns ("creators earn in ETH"), are this account's own beat and pass. Read over
- * the folded text (`normalizedCommunication`), so a zero-width or a look-alike letter does not hide a word.
+ * report of one with no subject at the head of a sentence ("Fees earned so far", "0.4 eth of fees claimed today", "Gas
+ * top-up done"), and the speaker getting, making, moving or sending a sum ("i made 0.4 eth in fees", "we moved 0.5 eth
+ * of fees to the treasury"; an amount or the money's own word must follow, so "i made a guide" passes). The subject must
+ * stand right before the verb, with at most three fillers between ("i finally went and claimed"; the security review of
+ * 2026-11-15 got that, a name set off by commas and the fuel and the wallet through): a first-person sentence that
+ * only mentions a fee ("something I like: the fee split is locked"), and a third party that earns ("creators earn in
+ * ETH"), are this account's own beat and pass. Read over the folded text (`normalizedCommunication`), so a zero-width
+ * or a look-alike letter does not hide a word.
  */
 const TREASURY_TALK = new RegExp(
   [
     `(?<![a-z0-9])${FIRST_PERSON_SUBJECT}(?:\\s+${SUBJECT_FILLER}){0,3}\\s+${TREASURY_OPERATION}(?![a-z0-9])`,
     `(?<![a-z0-9])${FIRST_PERSON_SUBJECT}(?:\\s+${SUBJECT_FILLER}){0,3}\\s+(?:paid|spent|burn(?:ed|t))\\b(?:[^.!?\\n]|\\.(?=\\d)){0,30}?\\b(?:gas|fees|fuel|eth|usdc)\\b`,
+    `(?<![a-z0-9])${FIRST_PERSON_SUBJECT}(?:\\s+${SUBJECT_FILLER}){0,3}\\s+(?:got|made|received|moved|sent|routed|took|pulled|put)\\s+(?:${MONEY_OBJECT})`,
     `(?<![a-z0-9])(?:my|our)\\s+(?:own\\s+)?${OWN_MONEY}(?![a-z0-9])`,
-    `(?:^|[.!?:;\\n]\\s*)fees?\\s+(?:earned|claimed|collected|harvested|came in|landed)\\b`,
+    `(?:^|[.!?:;\\n]\\s*)(?:(?:\\$?\\d[\\d.,]*\\s*[kmb]?\\s*(?:eth|weth|usdc|usdt)?|about|around|over|some)\\s+(?:of|in)\\s+)?fees?\\s+(?:earned|claimed|collected|harvested|came in|landed)\\b`,
     `\\b(?:gas|treasury)\\s+top[ -]?up\\b`,
   ].join('|'),
   'i',

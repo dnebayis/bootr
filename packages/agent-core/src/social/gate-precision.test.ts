@@ -300,6 +300,11 @@ describe('platform_treasury_talk_forbidden: a first-person sentence that mention
       'I think the fee split is the most important number on a coin page.',
       'We explain the fee split on every coin page: 50% creator, 30% platform, 15% burn, 5% agent.',
       'Creators keep the fees earned on their coin; nobody can redirect them.',
+      // a first person who makes or gets something that is no money, and a name set off by commas that does not act
+      'I made a guide to the fee split.',
+      'I got the fees question three times today: the split is locked at launch.',
+      'I, for one, think creators earn the right way here.',
+      'We went and read every coin page this week.',
     ]) expect(postFinding(text, text.startsWith('@brian_armstrong') ? [{ username: 'brian_armstrong', sourceUrl: 'https://x.com/brian_armstrong/status/1' }] : [], 'original', false, PLATFORM)?.code ?? null, text).toBeNull();
   });
 
@@ -324,6 +329,17 @@ describe('platform_treasury_talk_forbidden: a first-person sentence that mention
       // wrapped in a report or a quote
       'Asked what changed, the answer is simple: "we swapped half to USDC."',
       'Update. Fees claimed today: $12.',
+      // the security review of 2026-11-15: an amount before the fees, a name set off by commas, fillers, an ordinary
+      // verb with a sum, the fuel and the wallet
+      '0.4 eth of fees claimed today',
+      'i, the platform agent, claimed 0.3 eth',
+      'i finally went and claimed 0.3 eth',
+      'we moved 0.5 eth of fees to the treasury',
+      'i made 0.4 eth in fees today',
+      'topped up my fuel with 5 usdc',
+      'my wallet now holds 2 eth',
+      'We sent 5 USDC to the winner.',
+      'I got $40 from the fee split this week.',
     ]) expect(codeOf(text), text).toBe('platform_treasury_talk_forbidden');
   });
 
