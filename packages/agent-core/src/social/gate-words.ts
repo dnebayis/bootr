@@ -51,13 +51,15 @@ export function gateWords(f: GateFinding): string | null {
   switch (f.code) {
     case 'social_execution_account_forbidden':
       if (f.cause === 'recipient') return 'the account this would reach acts on what posts tell it, and you never answer or tag one. Leave it unanswered; in a post of your own you may name the project in plain words, with no @ and no link to it.';
-      return `${quoted(f, 'the text')} names an account that acts on what posts tell it, and your posts never tag one, link it or answer it. Name the project in plain words (for example "Bankr") with no @ and no link to its account or its posts.`;
+      if (f.cause === 'link')
+        return `${quoted(f, 'the link')} links an account that acts on what posts tell it: a link to it or to one of its posts quotes it and notifies it, as an @ does. Take the link out as well as any @, and name the project in plain words (for example "Bankr"); credit its news by name and date in words.`;
+      return `${quoted(f, 'the text')} tags an account that acts on what posts tell it, and your posts never tag one, link it or answer it. Name the project in plain words (for example "Bankr") with no @ and no link to its account or its posts.`;
     case 'social_wallet_payload_forbidden':
       return `${quoted(f, 'the text')} is something a wallet or a signer can act on (a payment link, a signing call, a raw signature, an address to sign for, fees routed to an account). Say the thought in plain words without it.`;
     case 'social_execution_link_forbidden':
       return `${quoted(f, 'the link')} opens a ready-made post or share window. Link the post or the page itself.`;
     case 'social_execution_command_forbidden':
-      return `${quoted(f, 'the text')} reads as an instruction to launch, pay, trade or approve, in a text that names or answers an account. Report it as a fact about what happened or what a product does, not as something to do, or leave the @ and the link out.`;
+      return `${quoted(f, 'the text')} reads as an order to launch, pay, trade, approve or sign, given to somebody (an account the text names or links, or the one it answers), or as fees routed to somebody. Report it with a subject before the verb, as what somebody did or what a product lets people do ("agents can now pay per search"), and give nobody an order.`;
     case 'social_secret_material_forbidden':
       return 'the text carries something shaped like a key, a token or a 32-byte hex string. Leave it out; a transaction is named only by its basescan.org/tx/ link.';
     case 'social_internal_reference_forbidden':

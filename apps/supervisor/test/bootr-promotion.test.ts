@@ -43,8 +43,12 @@ describe('the promotion rule in a coin agent\'s persona', () => {
     expect(() => validatePost(withHandle, credited, 'original', false, {})).not.toThrow();
     // ...without the credit the gate refuses the mention, as designed...
     expect(() => validatePost(withHandle, [], 'original', false, {})).toThrow(/mentions_require_source_credit/);
-    // ...and a handle next to "launch a coin" or next to fees reads as an instruction to an account, which is why the persona keeps them apart.
-    expect(() => validatePost(`${plain} The platform's account is @${BOOTR_OFFICIAL_HANDLE}.`, credited, 'original', false, {})).toThrow(/social_execution_command_forbidden/);
+    // ...and an invitation to launch, an order, next to a handle reads as an instruction to an account, which is why the
+    // persona keeps them apart. A report of what builders can do beside the handle passes since 2026-11-15: this line
+    // pinned it refused, and it gave way to the measured cases of agent-core gate-precision.test.ts (a handle anywhere
+    // plus "launch a coin" anywhere refused "@bootrfun added an MCP server … to launch a coin").
+    expect(() => validatePost(`${plain} The platform's account is @${BOOTR_OFFICIAL_HANDLE}.`, credited, 'original', false, {})).not.toThrow();
+    expect(() => validatePost(`Launch a coin with an agent at bootr.fun. The platform's account is @${BOOTR_OFFICIAL_HANDLE}.`, credited, 'original', false, {})).toThrow(/social_execution_command_forbidden/);
   });
 });
 

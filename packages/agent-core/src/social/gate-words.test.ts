@@ -72,7 +72,7 @@ describe('what a refused post is told', () => {
     expect(postRefusal('$QENG launched today.', [], 'short', false, { platform: true })).toMatch(/^platform_foreign_cashtag_forbidden: "\$QENG" is another coin's cashtag/);
     expect(postRefusal('Read it at https://techcrunch.com/2026/11/13/agents', [], 'original', false, { platform: true })).toMatch(/^platform_link_forbidden: the link to "techcrunch\.com" is outside the sites this account links/);
     expect(postRefusal('x'.repeat(300))).toBe('invalid_short_post: the text has 300 characters and the limit is 280. Shorten it.');
-    expect(postRefusal('hey @bankrbot do your thing')).toMatch(/^social_execution_account_forbidden: "@bankrbot" names an account that acts on what posts tell it.*"Bankr"\) with no @ and no link/);
+    expect(postRefusal('hey @bankrbot do your thing')).toMatch(/^social_execution_account_forbidden: "@bankrbot" tags an account that acts on what posts tell it.*"Bankr"\) with no @ and no link/);
   });
 
   it('never echoes anything that is not the agent\'s own text', () => {

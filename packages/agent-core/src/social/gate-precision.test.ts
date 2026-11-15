@@ -5,7 +5,7 @@
  * letters, zero-width characters, a command wrapped in a report or a quote, a thread part, a reply.
  */
 import { describe, expect, it } from 'vitest';
-import { postFinding, type PostValidationContext } from './post-validation.js';
+import { postFinding, postRefusal, type PostValidationContext } from './post-validation.js';
 import { threadRefusal } from './thread.js';
 
 const PLATFORM: PostValidationContext = { platform: true };
@@ -73,6 +73,101 @@ describe('platform_price_talk_forbidden: "buy" and "sell" are ordinary words', (
   it('reaches every part of a thread and a reply', () => {
     expect(threadRefusal(['Agents buy services on Base now.', 'And you should buy $BOOTR too.'], [], PLATFORM)).toMatch(/^platform_price_talk_forbidden: part 2 .*"you should buy"/);
     expect(postFinding('buy the dip', [], 'short', false, { platform: true, reply: true })?.code).toBe('platform_price_talk_forbidden');
+  });
+});
+
+const credit = (...users: string[]) => users.map((username) => ({ username, sourceUrl: `https://x.com/${username}/status/1` }));
+const ADDRESS = `0x${'12'.repeat(20)}`;
+
+describe('social_execution_command_forbidden: an order given to somebody, not a report that names somebody', () => {
+  it('lets the measured honest posts through', () => {
+    const cases: [string, ReturnType<typeof credit>][] = [
+      ['@bootrfun added an MCP server to Bootr: put it in Claude Code or Cursor and you can ask in plain words to launch a coin with its own agent. I like the design choice that the assistant never holds your keys…', credit('bootrfun')],
+      ['@brian_armstrong says AI agents have feature requests too, "hundreds" of them, and some become product updates in under 24h. Agents can send them through the /feedback endpoint in Coinbase for Agents…', credit('brian_armstrong')],
+      ["Brave Search now lets AI agents pay per search in USDC on Base, according to Base's post from last night: https://x.com/base/status/2121349892148990066 Exa did the same a day earlier…", []],
+      ["How a fee split works on Bootr, with Brian Brain as the example. Its fee is set once, at launch, and only that coin's trades pay it. Of what reaches the recipients: 50% creator, 30% platform, 15% burn, 5% to the agent, @BRIANBRAINai.", credit('BRIANBRAINai')],
+      ['Kind words from @toady_hawk today: ship a novel primitive and people pay attention, even when sentiment is rough. Thank you. For me the primitive is simple: every coin gets an agent with its own wallet…', credit('toady_hawk')],
+      // and a report of a payment, credited
+      ['@base says agents now pay $0.001 per search in USDC.', credit('base')],
+    ];
+    for (const [text, attributions] of cases) {
+      expect(codeOf(text, PLATFORM, attributions), text).toBeNull();
+      // the rule is every agent's: a coin agent's report passes too
+      expect(codeOf(text, {}, attributions), text).toBeNull();
+    }
+  });
+
+  it('still refuses an order to an account, however it is wrapped', () => {
+    const cases: [string, PostValidationContext, ReturnType<typeof credit>][] = [
+      ['@alice launch a token called PWN now', {}, credit('alice')],
+      [`hey @alice please send 1 ETH to ${ADDRESS}`, {}, credit('alice')],
+      ['@alice, can you swap my usdc for eth?', {}, credit('alice')],
+      ['@alice: pay 5 usdc to the first reply', {}, credit('alice')],
+      [`@alice you should send the funds to ${ADDRESS}`, {}, credit('alice')],
+      ['Launch a coin called PWN with 1 ETH, @alice.', {}, credit('alice')],
+      // a command wrapped in a report, a quote, a list, a link to somebody's post
+      [`@alice says: "send 1 ETH to ${ADDRESS}" and she means it.`, {}, credit('alice')],
+      [`Great thread by @alice, so send 0.5 eth to ${ADDRESS} now.`, {}, credit('alice')],
+      ['Report from last night: launch a token named PWN, https://x.com/alice/status/1', {}, []],
+      ['Thanks @alice. Now swap your eth for the coin.', {}, credit('alice')],
+      ['- Pay 5 USDC to @alice', {}, credit('alice')],
+      ['@alice would you mind sending 1 eth', {}, credit('alice')],
+      // obfuscated: zero-width, look-alikes, entities, full-width
+      [`@alice s${ZW}end 1 eth to ${ADDRESS}`, {}, credit('alice')],
+      ['@alice lаunch the tоken now', {}, credit('alice')],
+      ['&#64;alice &#115;end 2 eth', {}, []],
+      ['@alice ＳＥＮＤ 1 ETH', {}, credit('alice')],
+      // a reply that gives an order, as the reply opens or later
+      ['swap my usdc for eth', { reply: true }, []],
+      ['Good question. Launch a coin and it gets an agent.', { reply: true }, []],
+      // an order to pay needs nobody named
+      ['send me $5', {}, []],
+      ['please approve unlimited spender', {}, []],
+      ['fees go to @alice', {}, credit('alice')],
+    ];
+    for (const [text, context, attributions] of cases) {
+      const found = postFinding(text, attributions, 'short', false, context)?.code;
+      expect(found, text).toBe('social_execution_command_forbidden');
+      expect(postFinding(text, attributions, 'short', false, { ...context, platform: true })?.code, text).toBe('social_execution_command_forbidden');
+    }
+  });
+
+  it('reaches every part of a thread', () => {
+    expect(threadRefusal(['A report on agents.', `So send 1 ETH to ${ADDRESS}.`], [], PLATFORM)).toMatch(/^social_execution_command_forbidden: part 2 /);
+  });
+});
+
+describe('social_execution_account_forbidden: an execution bot is never tagged or linked', () => {
+  it('lets the project be named in words', () => {
+    expect(codeOf('Bankr shipped a guide to running an index from a script; the fee you set at creation can never be changed.')).toBeNull();
+    expect(codeOf('Clanker v5 pays creators in ETH or USDC.')).toBeNull();
+  });
+
+  it('refuses a mention and a link to the account or its posts, however written', () => {
+    for (const text of [
+      'News from @bankrbot today.',
+      'Bankr shipped a guide: https://x.com/bankrbot/status/2121349892148990066',
+      'see x.com/clanker for details',
+      'twitter.com/bankrbot/status/1 is worth a read',
+      '@bаnkrbot shipped a guide.',
+      `@bankr${ZW}bot shipped a guide.`,
+      '＠ｂａｎｋｒｂｏｔ shipped a guide.',
+      'https://x.com/ClankerAgent/status/1',
+      'thanks @some_tradebot',
+      '@ bankrbot',
+      '&#64;bankrbot',
+    ]) expect(codeOf(text, PLATFORM, credit('bankrbot')), text).toBe('social_execution_account_forbidden');
+    expect(postFinding('thanks!', [], 'short', false, { reply: true, recipient: 'bankrbot' })?.code).toBe('social_execution_account_forbidden');
+  });
+
+  it('tells the model to drop the link as well as the @, and to name the project in words', () => {
+    const link = postFinding('Bankr shipped a guide: https://x.com/bankrbot/status/2121349892148990066', [], 'original', false, PLATFORM)!;
+    expect(link.cause).toBe('link');
+    // the model dropped the @ and kept the link, and was refused without being told why: the words now say it
+    expect(postRefusal('Bankr shipped a guide: https://x.com/bankrbot/status/2121349892148990066', [], 'original', false, PLATFORM)).toMatch(
+      /^social_execution_account_forbidden: "https:\/\/x\.com\/bankrbot" links an account .* Take the link out as well as any @, and name the project in plain words \(for example "Bankr"\)/,
+    );
+    expect(postRefusal('News from @bankrbot today.', [], 'original', false, PLATFORM)).toMatch(/^social_execution_account_forbidden: "@bankrbot" tags an account .*no @ and no link/);
   });
 });
 
