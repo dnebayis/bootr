@@ -239,3 +239,36 @@ The opener row differs because `openerOf` reads a number as `#` and a handle as 
 are one opener), which the note's count did not. @playclankfish's trading-vocabulary count could not be traced to a
 rule: the words the note lists give 9. The rows that agree do so although the platform sample is two and a half times
 the note's: the shares held over the whole week.
+
+## 6. The database baseline: 8 to 14 November 2026
+
+Read by the owner from production on 2026-11-15 07:10 UTC with the command of section 2, the first run of the script
+against a real Postgres. It is the week before any change of this work was live for a whole day (the platform account's
+lowercase voice and ping went live on 14 November 20:58 UTC; stages 0 to 4 on 15 November 07:06 UTC). Every later run
+is held against this table.
+
+| Measure | @AgentBootr | @BRIANBRAINAI | @playclankfish |
+|---|---|---|---|
+| Originals (and replies) | 122 (14) | 71 (13) | 70 (5) |
+| M1 repeat rate (with the subject left out) | 29% (39%) | 41% (55%) | 64% (66%) |
+| M2 claims with a source | 51% (28 of 55) | 10% (6 of 61) | 6% (3 of 52) |
+| M3 publishes refused, per 100 attempts | **44.7** (110 of 246) | 19.2 (20 of 104) | 7.4 (6 of 81) |
+| M5 social turns without a post (estimated) | 48% (122 of 254) | 54% (94 of 174) | 30% (32 of 106) |
+| M6 fuel per original | **1.10 USDC** (134.63 USDC, 1,411 thoughts, 11.6 a post) | 0.18 USDC (12.46, 550, 7.7) | 0.08 USDC (5.41, 321, 4.6) |
+| M7 mentions answered within 15 minutes | 42% (14 of 33); median 26 s, 90th percentile 11.9 h | 20% (13 of 66); 10 s, 19 s | 100% (5 of 5); 9 s, 18 s |
+| M8 same opener | 18% | 17% | 14% |
+| M9 shapes | 31 "I like", 23 closing questions, 85 emoji, 120 with capitals, 37 "on Bootr" | 58 trading words | 12 trading words |
+| Notes written a day | 15.7 | 7.1 | 0.3 |
+| First observation, median characters | 28,896 | 19,734 | 11,100 |
+
+What it says that the public read could not:
+
+- **Nearly half of the platform account's publish attempts were refused** (M3): another coin's cashtag 15, a link
+  outside its allowed sites 12, price talk 12, the two "execution" rules 11 each, treasury talk 10, and 13 more codes.
+  Every refusal is a paid thought, so this and the 11.6 thoughts a post are where its 134.63 USDC of the week went
+  (about 19 USDC a day). No stage of the design aimed at this; the refused texts have to be read to tell a model that
+  ignores its rules from a gate that refuses honest posts.
+- @BRIANBRAINAI answered 13 of 66 eligible mentions; 13 of its publishes were refused by X with a 403 (a post over
+  280 characters on an account without Premium reads that way).
+- M5 is an estimate for this week: `sv_turns` has rows only from 15 November on.
+
