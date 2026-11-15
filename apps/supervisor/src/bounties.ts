@@ -1436,13 +1436,15 @@ const short = (task: string) => (task.length > 80 ? `${task.slice(0, 77).trimEnd
  * carry: the job it posted (its `bounty_post` action says `via: 'own'`) and the ruling it gave (the verdict's model is
  * the own-agent id). The rest is code or the creator, and is never marked.
  */
-export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, limit: number, before?: Date): Promise<BountyTapeItem[]> {
+export async function bountyActivity(ctx: SupervisorContext, agent: AgentRow, limit: number, before?: Date, onFull?: (ms: number) => void): Promise<BountyTapeItem[]> {
   const rows = await ctx.db
     .select()
     .from(bountyJobs)
     .where(before ? and(eq(bountyJobs.agentId, agent.agentId), lte(bountyJobs.createdAt, before)) : eq(bountyJobs.agentId, agent.agentId))
     .orderBy(desc(bountyJobs.updatedAt))
     .limit(limit);
+  // Every event of a job is at or before its `updatedAt`: a job not read has none newer than the oldest one read.
+  if (rows.length === limit) onFull?.(rows[rows.length - 1]!.updatedAt.getTime());
   const items: BountyTapeItem[] = [];
   const push = (at: Date | null, summary: string, extra: Partial<BountyTapeItem> = {}) => {
     if (!at || (before && at.getTime() >= before.getTime())) return;

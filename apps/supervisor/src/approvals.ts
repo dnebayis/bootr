@@ -21,7 +21,7 @@ import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
 import { PolicyError, recordIdsOf, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
 import { executionPostRefusal } from './dataset/execution-posts.js';
 import { MentionError, publishAttributions } from './attributions.js';
-import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
 import { agentDirectory, conversationGuard } from './agent-directory.js';
 import { bountyApprovalView, decideBountyApproval } from './bounties.js';
@@ -559,13 +559,17 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
 }
 
 /** Activity tape items for the approvals of an agent (activity.ts merges them); texts stay private (public read). */
-export async function approvalActivity(ctx: SupervisorContext, agent: AgentRow, limit: number, before?: Date): Promise<{ at: string; kind: 'approval_pending' | 'approval_approved' | 'approval_rejected'; summary: string; url?: string }[]> {
+export async function approvalActivity(ctx: SupervisorContext, agent: AgentRow, limit: number, before?: Date, onFull?: (ms: number) => void): Promise<{ at: string; kind: 'approval_pending' | 'approval_approved' | 'approval_rejected'; summary: string; url?: string }[]> {
   const pendingWhere = and(eq(approvals.agentId, agent.agentId), eq(approvals.status, 'pending_approval'), ...(before ? [lt(approvals.createdAt, before)] : []));
-  const decidedWhere = and(eq(approvals.agentId, agent.agentId), inArray(approvals.status, ['approved', 'rejected', 'failed']), ...(before ? [lt(approvals.decidedAt, before)] : []));
+  // Bounty items have their own tape rows, so they are left out in the query (a full read then means `limit` tape rows).
+  const decidedWhere = and(eq(approvals.agentId, agent.agentId), inArray(approvals.status, ['approved', 'rejected', 'failed']), inArray(approvals.kind, ['post', 'reply']), isNotNull(approvals.decidedAt), ...(before ? [lt(approvals.decidedAt, before)] : []));
   const [pendingRows, decidedRows] = await Promise.all([
     ctx.db.select().from(approvals).where(pendingWhere).orderBy(desc(approvals.createdAt)).limit(limit),
     ctx.db.select().from(approvals).where(decidedWhere).orderBy(desc(approvals.decidedAt)).limit(limit),
   ]);
+  // A list that came back full may hold more rows at or before its oldest (activity.ts `cutActivityPage`).
+  if (pendingRows.length === limit) onFull?.(pendingRows[pendingRows.length - 1]!.createdAt.getTime());
+  if (decidedRows.length === limit) onFull?.(decidedRows[decidedRows.length - 1]!.decidedAt!.getTime());
   const noun = (r: ApprovalRow) => (r.kind === 'reply' ? 'reply' : r.kind === 'bounty_job' ? 'bounty job' : r.kind === 'bounty_payout' ? 'bounty payout' : 'post');
   const items: { at: string; kind: 'approval_pending' | 'approval_approved' | 'approval_rejected'; summary: string; url?: string }[] = [];
   for (const r of pendingRows) items.push({ at: r.createdAt.toISOString(), kind: 'approval_pending', summary: `A ${noun(r)} is waiting for the creator's review` });

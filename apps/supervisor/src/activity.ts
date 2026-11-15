@@ -213,7 +213,7 @@ export function scheduledSummary(row: { status: string; error: string | null; th
  * never the text, and the reason only to tell the creator's cancel from the agent's own (a public read). Never throws:
  * a read that fails is an empty list.
  */
-export async function scheduledActivity(ctx: Pick<SupervisorContext, 'db' | 'log'>, agent: Pick<AgentRow, 'agentId'>, limit: number, before?: Date): Promise<ActivityItem[]> {
+export async function scheduledActivity(ctx: Pick<SupervisorContext, 'db' | 'log'>, agent: Pick<AgentRow, 'agentId'>, limit: number, before?: Date, onFull?: (ms: number) => void): Promise<ActivityItem[]> {
   try {
     const rows = await ctx.db
       .select({ id: scheduledPosts.id, status: scheduledPosts.status, error: scheduledPosts.error, thread: scheduledPosts.thread, via: scheduledPosts.via, updatedAt: scheduledPosts.updatedAt })
@@ -222,6 +222,7 @@ export async function scheduledActivity(ctx: Pick<SupervisorContext, 'db' | 'log
       .orderBy(desc(scheduledPosts.updatedAt))
       .limit(limit);
     if (rows.length === 0) return [];
+    if (rows.length === limit) onFull?.(rows[rows.length - 1]!.updatedAt.getTime());
     // A scheduled post that was under the creator's review has its row in the review queue (same id): shown there.
     const reviewed = new Set((await ctx.db.select({ id: approvals.id }).from(approvals).where(inArray(approvals.id, rows.map((r) => r.id)))).map((r) => r.id));
     const items: ActivityItem[] = [];
@@ -246,34 +247,87 @@ async function imageAlts(ctx: Pick<SupervisorContext, 'db'>, rows: (typeof actio
 
 export interface ActivityQuery {
   limit?: number | undefined;
-  /** Only items strictly older than this instant. */
+  /** Only items strictly older than this instant: the `next` of the page before (or, as before, the `at` of its last item). */
   before?: Date | undefined;
 }
 
+export interface ActivityPage {
+  items: ActivityItem[];
+  /** What to pass as `before` for the next page (ISO), or null when nothing older is left. */
+  next: string | null;
+}
+
+/**
+ * Cuts a merged page so that the next one skips nothing (docs/dev/behaviour-check.md section 6: a paged read of the
+ * platform account's week showed 46 of 119 originals). Each source read its `limit` newest rows older than the cursor;
+ * a source that came back full (`bounds`: the time of its oldest row read) may hold more rows at or before that time,
+ * so only items newer than the newest of those bounds are certain. The page keeps those (at most `limit`, never
+ * splitting a millisecond) and `next` is the exclusive bound the next page reads below. The one case it cannot serve
+ * exactly is a source with more than `limit` rows inside one millisecond: the rest of that millisecond is skipped.
+ */
+export function cutActivityPage(items: readonly ActivityItem[], bounds: readonly number[], limit: number, before?: Date): ActivityPage {
+  const ms = (i: ActivityItem) => Date.parse(i.at);
+  const sorted = [...items].sort((a, b) => ms(b) - ms(a));
+  const bound = bounds.length ? Math.max(...bounds) : null;
+  let page = bound === null ? sorted : sorted.filter((i) => ms(i) > bound);
+  let next: number | null = bound === null ? null : bound + 1;
+  if (page.length > limit) {
+    const m = ms(page[limit - 1]!);
+    const kept = page.slice(0, limit);
+    if (ms(page[limit]!) === m) {
+      const whole = kept.filter((i) => ms(i) !== m);
+      // A whole page inside one millisecond is shown whole rather than not at all.
+      page = whole.length ? whole : page.filter((i) => ms(i) >= m);
+      next = whole.length ? m + 1 : m;
+    } else {
+      page = kept;
+      next = m;
+    }
+  }
+  if (next !== null && bound !== null && before && next >= before.getTime()) {
+    // No progress is possible below the bound (a full source inside one millisecond): show that millisecond and move on.
+    page = sorted.filter((i) => ms(i) >= bound);
+    next = bound;
+  }
+  return { items: page, next: next === null ? null : new Date(next).toISOString() };
+}
+
 export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow | null, query: ActivityQuery = {}): Promise<ActivityItem[]> {
+  return (await agentActivityPage(ctx, agent, runtime, query)).items;
+}
+
+export async function agentActivityPage(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow | null, query: ActivityQuery = {}): Promise<ActivityPage> {
   const limit = Math.min(ACTIVITY_MAX_LIMIT, Math.max(1, Math.floor(query.limit ?? ACTIVITY_DEFAULT_LIMIT)));
   const before = query.before;
   const xHandle = typeof (agent.config as { xHandle?: unknown }).xHandle === 'string' ? ((agent.config as { xHandle: string }).xHandle) : null;
-  // Each source gives its `limit` newest rows (older than the cursor); the merge keeps the newest `limit` overall.
-  const tapeActions = sql`(${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image', 'upload_picture') or ${actions.action}->>'kind' = 'config_updated')`;
+  // Each source gives its `limit` newest rows older than the cursor, filtered in its query where it can be, and says
+  // when it came back full; `cutActivityPage` keeps only what is certain.
+  const bounds: number[] = [];
+  const full = (ms: number) => void bounds.push(ms);
+  // A failed publish or one queued for review is no tape row (the review queue has its own): left out in the query.
+  const tapeActions = sql`((${actions.action}->>'tool' in ('publish_post', 'publish_reply', 'generate_image', 'upload_picture') and ${actions.status} = 'completed' and coalesce(${actions.result}->'result'->>'queued', '') <> 'true') or ${actions.action}->>'kind' = 'config_updated')`;
+  // An op is on the tape at the time it settled; only settled ops are.
+  const opAt = sql`(case when ${treasuryOps.status} = 'confirmed' then coalesce(${treasuryOps.confirmedAt}, ${treasuryOps.updatedAt}) else ${treasuryOps.updatedAt} end)`;
   const [actionRows, opRows, approvalItems, serviceRows, bountyItems, scheduledItems] = await Promise.all([
     ctx.db
       .select()
       .from(actions)
-      .where(before ? and(eq(actions.agentId, agent.agentId), lt(actions.createdAt, before), tapeActions) : and(eq(actions.agentId, agent.agentId), tapeActions))
+      .where(and(eq(actions.agentId, agent.agentId), tapeActions, ...(before ? [lt(actions.createdAt, before)] : [])))
       .orderBy(desc(actions.createdAt))
       .limit(limit),
     ctx.db
       .select()
       .from(treasuryOps)
-      .where(before ? and(eq(treasuryOps.agentId, agent.agentId), lt(treasuryOps.updatedAt, before)) : eq(treasuryOps.agentId, agent.agentId))
-      .orderBy(desc(treasuryOps.updatedAt))
+      .where(and(eq(treasuryOps.agentId, agent.agentId), inArray(treasuryOps.status, ['confirmed', 'failed']), ...(before ? [sql`${opAt} < ${before}`] : [])))
+      .orderBy(sql`${opAt} desc`)
       .limit(limit),
-    approvalActivity(ctx, agent, limit, before),
+    approvalActivity(ctx, agent, limit, before, full),
     tapeServiceCalls(ctx, agent.agentId, limit, before),
-    bountyActivity(ctx, agent, limit, before),
-    scheduledActivity(ctx, agent, limit, before),
+    bountyActivity(ctx, agent, limit, before, full),
+    scheduledActivity(ctx, agent, limit, before, full),
   ]);
+  if (actionRows.length === limit) full(actionRows[actionRows.length - 1]!.createdAt.getTime());
+  if (serviceRows.length === limit) full(serviceRows[serviceRows.length - 1]!.updatedAt.getTime());
   const items: ActivityItem[] = [];
   const alts = await imageAlts(ctx, actionRows);
   for (const row of actionRows) {
@@ -283,10 +337,9 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
     if ((item.kind === 'post' || item.kind === 'reply') && typeof imageId === 'string' && imageId) item.image = { id: imageId, alt: alts.get(imageId) ?? null };
     items.push(item);
   }
-  for (const op of opRows) {
-    const item = opItem(ctx.chain.chainId, op);
-    if (item && (!before || Date.parse(item.at) < before.getTime())) items.push(item);
-  }
+  const opItems = opRows.map((op) => opItem(ctx.chain.chainId, op)).filter((i): i is ActivityItem => i !== null);
+  if (opRows.length === limit && opItems.length) full(Date.parse(opItems[opItems.length - 1]!.at));
+  for (const item of opItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
   for (const item of approvalItems) if (!before || Date.parse(item.at) < before.getTime()) items.push(item);
   for (const row of serviceRows) items.push(serviceItem(ctx.chain.chainId, row));
   for (const item of bountyItems) items.push(item);
@@ -295,6 +348,5 @@ export async function agentActivity(ctx: SupervisorContext, agent: AgentRow, run
   // hiccup never makes the public tape say that nothing is connected.
   const status = statusItem(agent, runtime, isOwn(agent) ? { clients: await ownHooks.countClients(ctx, agent.agentId).catch(() => 1), now: ctx.now() } : undefined);
   if (!before || Date.parse(status.at) < before.getTime()) items.push(status);
-  items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-  return items.slice(0, limit);
+  return cutActivityPage(items, bounds, limit, before);
 }

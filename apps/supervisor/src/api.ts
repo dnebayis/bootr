@@ -3,7 +3,7 @@ import { registerW2 } from './own/w2.js';
 import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
-import { agentActivity } from './activity.js';
+import { agentActivityPage } from './activity.js';
 import { mountPosting } from './thread-send.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { mountScheduled } from './scheduled.js';
@@ -218,7 +218,10 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   // ---- Own agents (docs/design/byo-agent.md): the creator's switch between "My own agent" and "Bootr agent".
   mountRunnerRoutes(app, ctx);
 
-  /** `?limit=50` (max 200) `&before=<iso>`: newest first; see activity.ts for the kinds and summaries. */
+  /**
+   * `?limit=50` (max 200) `&before=<iso>`: newest first; see activity.ts for the kinds and summaries. `next` is the
+   * `before` of the next page (null at the end): a page may be shorter than `limit` and still have more behind it.
+   */
   app.get('/internal/agents/:id/activity', async (c) => {
     const id = c.req.param('id');
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, id) });
@@ -230,7 +233,7 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const beforeRaw = c.req.query('before');
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
     if (before && Number.isNaN(before.getTime())) return c.json({ error: 'invalid_before', message: 'before must be an ISO timestamp' }, 400);
-    return c.json({ items: await agentActivity(ctx, agent, runtime, { limit, before }) });
+    return c.json(await agentActivityPage(ctx, agent, runtime, { limit, before }));
   });
 
   /** `?days=7` (1..90): paid calls since then, grouped by the model each ran on, and when the first was (inference.ts `fuelReport`), plus what paid web services cost (`services`, by host; services.ts). */
