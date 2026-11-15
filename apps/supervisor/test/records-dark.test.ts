@@ -12,7 +12,8 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { syncSources, ingestSighting } from '../src/dataset/store.js';
 import { RECORD_FIELD_SENTENCE } from '@bootr/agent-core';
-import { RECORDS_BASE_START, recordPlatformTurn, type RecordedPlatformTurn } from './records-base-scenario.js';
+import { POSTING_DEFAULTS } from './posting-off.limits.js';
+import { RECORDS_BASE_START, recordPlatformTurn as recordWith, type RecordedPlatformTurn } from './records-base-scenario.js';
 import { infoOf, sighting } from './dataset-helpers.js';
 import type { TestWorld } from './helpers.js';
 import { resetWatchlistCache } from '../src/watchlist.js';
@@ -30,6 +31,8 @@ const base = JSON.parse(readFileSync(new URL('./fixtures/records-base-turn.json'
 type Tool = { function: { name: string; description: string; parameters: { properties: Record<string, unknown> } } };
 const byName = (tools: unknown[]) => new Map((tools as Tool[]).map((t) => [t.function.name, t]));
 const at = new Date(RECORDS_BASE_START - 2 * 3_600_000);
+/** The recording was made with the posting limits at their defaults: so is every turn here, in whichever run (the posting-off run included). */
+const recordPlatformTurn = (config: Record<string, string> = {}, seed?: (w: TestWorld) => Promise<void>) => recordWith({ ...POSTING_DEFAULTS, ...config }, seed);
 
 /** Three records the seam would serve the platform account: an official release, a desk's story, a metric with numbers. */
 async function seedRecords(w: TestWorld): Promise<void> {

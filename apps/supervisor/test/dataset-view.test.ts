@@ -90,11 +90,14 @@ describe('GET /internal/dataset/day', () => {
   });
 });
 
-describe('no agent reads the dataset in this stage', () => {
-  it('nothing outside the dataset module, the API mount and the schema names it', () => {
+describe('who reads the dataset', () => {
+  it('nothing outside the dataset module, the API mount, the schema and the files of stage 5 (records for the platform account) names it', () => {
     const src = fileURLToPath(new URL('../src/', import.meta.url));
     const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === 'dataset' ? [] : files(`${dir}${e.name}/`)) : e.name.endsWith('.ts') ? [`${dir}${e.name}`] : []));
     const naming = files(src).filter((f) => /dataset\/|dsRecords|dsSightings|dsSources|sv_ds_/.test(readFileSync(f, 'utf8')));
-    expect(naming.map((f) => f.slice(src.length)).sort()).toEqual(['api.ts', 'config.ts', 'db/schema.ts', 'web-reader.ts']);
+    // stage 5: the turn's records (records-turn.ts, records-section.ts, runtime.ts), the citations and the number gate
+    // (post-records.ts, number-gate.ts) and the platform account's quiet slot (platform-quiet.ts). A new reader is a
+    // decision, made here on purpose.
+    expect(naming.map((f) => f.slice(src.length)).sort()).toEqual(['api.ts', 'config.ts', 'db/schema.ts', 'number-gate.ts', 'platform-quiet.ts', 'post-records.ts', 'records-section.ts', 'records-turn.ts', 'runtime.ts', 'web-reader.ts']);
   });
 });
