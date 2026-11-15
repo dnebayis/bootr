@@ -4,7 +4,8 @@
  * the first one is sent, because the sender only ever sees one part at a time. Pure: no clock, no network.
  */
 import { PolicyError } from '../errors.js';
-import { linkedHosts, postLength, validatePost, type PostValidationContext } from './post-validation.js';
+import { gateWords } from './gate-words.js';
+import { linkedHosts, postFinding, postLength, type PostValidationContext } from './post-validation.js';
 
 /** Posts in a thread, the first included. */
 export const THREAD_MAX_PARTS = 4;
@@ -29,8 +30,12 @@ export const THREAD_LINKS = 'thread_links: only one part of a thread may carry a
 export const THREAD_NOT_HERE = 'thread_not_here: the digest and the numbers post are one post each; nothing was posted. Publish it without thread.';
 /** Two parts that say the same: X answers a repeat with a bare 403, so it is refused before anything is sent. */
 export const THREAD_REPEAT = 'thread_repeat: two parts of the thread say the same; nothing was posted. Say each thing once.';
-/** A part the common publish gate refuses: the gate's own code first, as every other refused post carries it. */
-export const threadPartRefused = (code: string, n: number): string => `${code}: part ${n} of the thread does not pass the publish gate; nothing was posted. Rewrite it.`;
+/**
+ * A part the common publish gate refuses: the gate's own code first, as every other refused post carries it, then
+ * which part, then what tripped in it and how to say it (`gateWords`), so the rewrite is not a guess.
+ */
+export const threadPartRefused = (code: string, n: number, words?: string | null): string =>
+  `${code}: part ${n} of the thread does not pass the publish gate; nothing was posted. Rewrite it${words ? `: ${words}` : '.'}`;
 
 /** What `validateThread` is told beside the gate's own context: a picture rides on the first part, and the limits in force. */
 export interface ThreadContext extends PostValidationContext {
@@ -87,12 +92,8 @@ export function validateThread(parts: readonly string[], attributions: unknown =
   }
   if (parts.filter((part) => carriesLink(String(part))).length > max.maxLinkParts) throw new PolicyError('thread_links', { message: THREAD_LINKS });
   parts.forEach((part, i) => {
-    try {
-      validatePost(part, i === 0 ? attributions : [], 'short', i === 0 && hasMedia, risk);
-    } catch (err) {
-      if (err instanceof PolicyError) throw new PolicyError(err.code, { message: threadPartRefused(err.code, i + 1) });
-      throw err;
-    }
+    const finding = postFinding(part, i === 0 ? attributions : [], 'short', i === 0 && hasMedia, risk);
+    if (finding) throw new PolicyError(finding.code, { message: threadPartRefused(finding.code, i + 1, gateWords(finding)) });
   });
 }
 

@@ -358,7 +358,8 @@ export function scheduleGateProblem(ctx: Pick<SupervisorContext, 'config'>, part
     try {
       validatePost(parts[0]!, [], 'original', opts.hasImage, risk);
     } catch (err) {
-      return `${err instanceof PolicyError ? err.code : 'invalid_post'}: the post does not pass the publish gate; rewrite it. Nothing was scheduled.`;
+      // The gate's own refusal: the code, then what tripped and how to say it (agent-core gate-words.ts).
+      return `${err instanceof PolicyError ? err.message : 'invalid_post: the post does not pass the publish gate; rewrite it.'} Nothing was scheduled.`;
     }
     const length = postLength(parts[0]!);
     if (length > opts.accountLimit) return `post_too_long_for_account: this X account has no Premium: posts are limited to ${opts.accountLimit} characters (this one is ${length}). Shorten it. Nothing was scheduled.`;

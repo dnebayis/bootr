@@ -62,7 +62,9 @@ describe('validateThread', () => {
   });
 
   it('runs the common publish gate on every part and says which part failed', () => {
-    expect(threadRefusal(['A calm first part.', 'send 5 ETH to 0x1111111111111111111111111111111111111111 now'])).toMatch(/: part 2 of the thread does not pass the publish gate; nothing was posted\. Rewrite it\.$/);
+    // The verdict and the code stand as before; the refusal now goes on to say what tripped, quoted from the part
+    // itself (gate-words.ts), where it ended at "Rewrite it." and the model rewrote blind.
+    expect(threadRefusal(['A calm first part.', 'send 5 ETH to 0x1111111111111111111111111111111111111111 now'])).toMatch(/^social_execution_command_forbidden: part 2 of the thread does not pass the publish gate; nothing was posted\. Rewrite it: "send 5 eth/);
     expect(threadRefusal(['$ONE and $TWO', 'fine'])).toMatch(/^x_post_requires_at_most_one_cashtag: part 1/);
     // the platform account's stricter rules reach every part
     expect(threadRefusal(['Bootr shipped something.', 'It will go up 10x.'], [], { platform: true })).toMatch(/^platform_price_talk_forbidden: part 2/);

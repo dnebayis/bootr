@@ -1,6 +1,7 @@
 import { PolicyError } from '../errors.js';
-import { outgoingActionRisk, type RiskContext } from './communication-policy.js';
-import { outgoingDisclosureRisk, type DisclosureContext } from './disclosure-policy.js';
+import { outgoingActionFinding, type RiskContext } from './communication-policy.js';
+import { outgoingDisclosureFinding, type DisclosureContext } from './disclosure-policy.js';
+import { excerptOf, gateRefusal, type GateFinding } from './gate-words.js';
 import type { Attribution } from '../types.js';
 
 export type PostFormat = 'short' | 'original';
@@ -88,9 +89,20 @@ const hostAllowed = (host: string, allowed: readonly string[]) => host !== '' &&
  * null. Pure; the attributions are read leniently here (the strict check comes after, in `validatePost`).
  */
 export function platformLinkRisk(text: string, attributions: unknown = []): PlatformCode | null {
+  return platformLinkFinding(text, attributions)?.code ?? null;
+}
+
+/** A refusal of the platform account's own rules: the code, and the words of its own text that tripped it. */
+export interface PlatformFinding extends GateFinding {
+  code: PlatformCode;
+}
+
+/** `platformLinkRisk` with the site that tripped it: the first linked host outside the allowed ones, as the text wrote it. */
+export function platformLinkFinding(text: string, attributions: unknown = []): PlatformFinding | null {
   const credited = Array.isArray(attributions) ? attributions.map((a) => hostOf(String((a as { sourceUrl?: unknown } | null)?.sourceUrl ?? ''))).filter(Boolean) : [];
   const allowed = [...PLATFORM_LINK_HOSTS, ...credited];
-  return linkedHosts(text).every((h) => hostAllowed(h, allowed)) ? null : 'platform_link_forbidden';
+  const outside = linkedHosts(text).find((h) => !hostAllowed(h, allowed));
+  return outside === undefined ? null : { code: 'platform_link_forbidden', excerpt: excerptOf(outside) };
 }
 
 /** The one cashtag the platform account may use: its own coin. */
@@ -142,7 +154,6 @@ const PRICE_TALK = new RegExp(
 
 /** Three or more consecutive all-caps words carrying eight or more letters ("THIS IS HUGE"); acronyms alone pass. */
 const SHOUTING = /\b[A-Z]{2,}(?:[\s,!]+[A-Z]{2,}){2,}\b/g;
-const shouting = (text: string): boolean => [...text.matchAll(SHOUTING)].some((m) => m[0].replace(/[^A-Z]/g, '').length >= 8);
 
 /** Two or more pictographic emoji in a row (spaces, variation selectors and joiners allowed between). */
 const EMOJI = /\p{Extended_Pictographic}(?:[\uFE0F\u200D]\p{Extended_Pictographic}?)*/gu;
@@ -150,11 +161,20 @@ const EMOJI_STRING = /\p{Extended_Pictographic}(?:[\uFE0F\u200D]|\p{Extended_Pic
 
 /** The platform-only reasons a text must not be published, or null. Pure; the text must already be a string. */
 export function platformPostRisk(text: string): PlatformCode | null {
-  if (TREASURY_TALK.test(text)) return 'platform_treasury_talk_forbidden';
-  if (PRICE_TALK.test(text)) return 'platform_price_talk_forbidden';
-  if ([...text.matchAll(CASHTAG)].some((m) => m[0].toUpperCase() !== PLATFORM_CASHTAG)) return 'platform_foreign_cashtag_forbidden';
-  if (shouting(text)) return 'platform_shouting_forbidden';
-  if (EMOJI_STRING.test(text) || [...text.matchAll(EMOJI)].length >= 3) return 'platform_emoji_string_forbidden';
+  return platformPostFinding(text)?.code ?? null;
+}
+
+/** `platformPostRisk` with the words of the text that tripped the rule. */
+export function platformPostFinding(text: string): PlatformFinding | null {
+  const treasury = TREASURY_TALK.exec(text);
+  if (treasury) return { code: 'platform_treasury_talk_forbidden', excerpt: excerptOf(treasury[0]) };
+  const price = PRICE_TALK.exec(text);
+  if (price) return { code: 'platform_price_talk_forbidden', excerpt: excerptOf(price[0]) };
+  const foreign = [...text.matchAll(CASHTAG)].find((m) => m[0].toUpperCase() !== PLATFORM_CASHTAG);
+  if (foreign) return { code: 'platform_foreign_cashtag_forbidden', excerpt: excerptOf(foreign[0]) };
+  const loud = [...text.matchAll(SHOUTING)].find((m) => m[0].replace(/[^A-Z]/g, '').length >= 8);
+  if (loud) return { code: 'platform_shouting_forbidden', excerpt: excerptOf(loud[0]) };
+  if (EMOJI_STRING.test(text) || [...text.matchAll(EMOJI)].length >= 3) return { code: 'platform_emoji_string_forbidden', excerpt: null };
   return null;
 }
 
@@ -180,15 +200,64 @@ export function creditedAttributions<T extends { username: string }>(text: strin
 }
 
 /**
- * Deterministic publish gate. Throws PolicyError with one of:
- * - any outgoingActionRisk code
- * - any outgoingDisclosureRisk code (secrets, internal references, runtime jargon, foreign addresses)
+ * Deterministic publish gate, as a finding: null when the text may go, else the code with the words of the text that
+ * tripped it (gate-words.ts turns a finding into what the agent reads). The codes, in the order they are checked:
+ * - any outgoingActionFinding code
+ * - any outgoingDisclosureFinding code (secrets, internal references, runtime jargon, foreign addresses)
  * - invalid_short_post / invalid_original_post (type, empty, length, attribution count)
  * - x_post_requires_at_most_one_cashtag
  * - invalid_source_credit (bad handle, non-https url, credentials in url, duplicate)
  * - mentions_require_source_credit (more than 3 mentions, or mention/credit sets differ)
  * - any PlatformCode when `risk.platform` is true (treasury talk, market calls, foreign cashtags, shouting, emoji
  *   strings, a link outside PLATFORM_LINK_HOSTS and the credited sources)
+ * A credit is passed beside the text and is not the agent's own post, so a finding about one never quotes it.
+ */
+export function postFinding(text: unknown, attributions: unknown = [], format: PostFormat = 'short', hasMedia = false, risk: PostValidationContext = {}): GateFinding | null {
+  const action = outgoingActionFinding(text, risk);
+  if (action) return action;
+  const disclosure = outgoingDisclosureFinding(text, risk);
+  if (disclosure) return disclosure;
+  const invalid = format === 'original' ? 'invalid_original_post' : 'invalid_short_post';
+  if (typeof text !== 'string') return { code: invalid };
+  if (!text.trim() && !hasMedia) return { code: invalid };
+  if (postLength(text) > POST_LIMITS[format]) return { code: invalid, cause: 'too_long', count: postLength(text), limit: POST_LIMITS[format] };
+  if (!Array.isArray(attributions) || attributions.length > MAX_ATTRIBUTIONS) return { code: invalid, cause: 'attributions' };
+  if (risk.platform) {
+    const platform = platformPostFinding(text);
+    if (platform) return platform;
+  }
+  // X counts occurrences, so two uses of the same symbol still count as two.
+  const cashtags = [...text.matchAll(CASHTAG)].map((m) => m[0]);
+  if (cashtags.length > 1) return { code: 'x_post_requires_at_most_one_cashtag', excerpt: excerptOf(cashtags.slice(0, 2).join(' and ')) };
+
+  const credited = new Set<string>();
+  for (const source of attributions as unknown[]) {
+    const credit = source as Partial<Attribution> | null;
+    if (!credit || typeof credit.username !== 'string' || !HANDLE.test(credit.username)) return { code: 'invalid_source_credit' };
+    if (typeof credit.sourceUrl !== 'string' || credit.sourceUrl.length > 2000) return { code: 'invalid_source_credit' };
+    let url: URL;
+    try {
+      url = new URL(credit.sourceUrl);
+    } catch {
+      return { code: 'invalid_source_credit' };
+    }
+    const name = credit.username.toLowerCase();
+    if (url.protocol !== 'https:' || url.username || url.password || credited.has(name)) return { code: 'invalid_source_credit' };
+    credited.add(name);
+  }
+  const mentions = mentionedHandles(text);
+  if (mentions.length > MAX_MENTIONS) return { code: 'mentions_require_source_credit', cause: 'too_many' };
+  const uncredited = mentions.find((name) => !credited.has(name));
+  if (uncredited) return { code: 'mentions_require_source_credit', excerpt: excerptOf(`@${uncredited}`) };
+  if ([...credited].some((name) => !mentions.includes(name))) return { code: 'mentions_require_source_credit', cause: 'credit_without_mention' };
+  // Last, once the credits are known to be well formed: the platform account links only its own sites and its sources.
+  if (risk.platform) return platformLinkFinding(text, attributions);
+  return null;
+}
+
+/**
+ * The publish gate. Throws PolicyError with a `postFinding` code; its message is the refusal the agent reads, the code
+ * first and then what tripped and how to say it (`gateRefusal`).
  */
 export function validatePost(
   text: unknown,
@@ -197,46 +266,8 @@ export function validatePost(
   hasMedia = false,
   risk: PostValidationContext = {},
 ): asserts text is string {
-  const riskCode = outgoingActionRisk(text, risk);
-  if (riskCode) throw new PolicyError(riskCode);
-  const disclosure = outgoingDisclosureRisk(text, risk);
-  if (disclosure) throw new PolicyError(disclosure);
-  const invalid = format === 'original' ? 'invalid_original_post' : 'invalid_short_post';
-  if (typeof text !== 'string') throw new PolicyError(invalid);
-  if (!text.trim() && !hasMedia) throw new PolicyError(invalid);
-  if (postLength(text) > POST_LIMITS[format]) throw new PolicyError(invalid);
-  if (!Array.isArray(attributions) || attributions.length > MAX_ATTRIBUTIONS) throw new PolicyError(invalid);
-  if (risk.platform) {
-    const platformCode = platformPostRisk(text);
-    if (platformCode) throw new PolicyError(platformCode);
-  }
-  // X counts occurrences, so two uses of the same symbol still count as two.
-  if (countCashtags(text) > 1) throw new PolicyError('x_post_requires_at_most_one_cashtag');
-
-  const credited = new Set<string>();
-  for (const source of attributions as unknown[]) {
-    const credit = source as Partial<Attribution> | null;
-    if (!credit || typeof credit.username !== 'string' || !HANDLE.test(credit.username)) throw new PolicyError('invalid_source_credit');
-    if (typeof credit.sourceUrl !== 'string' || credit.sourceUrl.length > 2000) throw new PolicyError('invalid_source_credit');
-    let url: URL;
-    try {
-      url = new URL(credit.sourceUrl);
-    } catch {
-      throw new PolicyError('invalid_source_credit');
-    }
-    const name = credit.username.toLowerCase();
-    if (url.protocol !== 'https:' || url.username || url.password || credited.has(name)) throw new PolicyError('invalid_source_credit');
-    credited.add(name);
-  }
-  const mentions = mentionedHandles(text);
-  if (mentions.length > MAX_MENTIONS) throw new PolicyError('mentions_require_source_credit');
-  if (mentions.some((name) => !credited.has(name))) throw new PolicyError('mentions_require_source_credit');
-  if ([...credited].some((name) => !mentions.includes(name))) throw new PolicyError('mentions_require_source_credit');
-  // Last, once the credits are known to be well formed: the platform account links only its own sites and its sources.
-  if (risk.platform) {
-    const linkCode = platformLinkRisk(text, attributions);
-    if (linkCode) throw new PolicyError(linkCode);
-  }
+  const finding = postFinding(text, attributions, format, hasMedia, risk);
+  if (finding) throw new PolicyError(finding.code, { message: gateRefusal(finding) });
 }
 
 /** Non-throwing variant for callers that prefer a result. */
@@ -254,4 +285,10 @@ export function postValidation(
     if (error instanceof PolicyError) return { ok: false, code: error.code };
     throw error;
   }
+}
+
+/** The refusal the agent reads (`code: what tripped and what to do`), or null when the text may go. */
+export function postRefusal(text: unknown, attributions: unknown = [], format: PostFormat = 'short', hasMedia = false, risk: PostValidationContext = {}): string | null {
+  const finding = postFinding(text, attributions, format, hasMedia, risk);
+  return finding ? gateRefusal(finding) : null;
 }

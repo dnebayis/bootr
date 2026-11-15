@@ -7,6 +7,7 @@
  * a slip never reaches X.
  */
 import { normalizedCommunication } from './communication-policy.js';
+import { excerptOf, type GateFinding } from './gate-words.js';
 
 export type DisclosureCode =
   | 'social_secret_material_forbidden'
@@ -95,18 +96,37 @@ export interface DisclosureContext {
  */
 const EXPLORER_TX_LINK = /https?:\/\/(?:www\.)?(?:sepolia\.)?basescan\.org\/tx\/0x[a-f0-9]{64}(?![a-z0-9])/gi;
 
-/** Returns a disclosure code when the outgoing text must not be published, otherwise null. */
-export function outgoingDisclosureRisk(value: unknown, context: DisclosureContext = {}): DisclosureCode | null {
+/** A refusal of this file's rules: the code, and the words of the agent's own text that tripped it. */
+export interface DisclosureFinding extends GateFinding {
+  code: DisclosureCode;
+}
+
+/** An address as a refusal names it: enough to tell which one, never the whole of something that might be a key. */
+const shortAddress = (address: string): string => `${address.slice(0, 6)}…${address.slice(-4)}`;
+
+/**
+ * Why the outgoing text must not be published, or null: the code with the matched words of the text itself. Secret
+ * material is never quoted back (a refusal is logged and read by a model), and an address is cut to its two ends.
+ */
+export function outgoingDisclosureFinding(value: unknown, context: DisclosureContext = {}): DisclosureFinding | null {
   const text = normalizedCommunication(value);
-  if (SECRET_MATERIAL.test(text.replace(EXPLORER_TX_LINK, ' '))) return 'social_secret_material_forbidden';
-  if (INTERNAL_REFERENCE.test(text)) return 'social_internal_reference_forbidden';
-  if (RUNTIME_JARGON.test(text)) return 'social_runtime_jargon_forbidden';
-  if (SCIENTIFIC_NOTATION.test(text)) return 'social_unreadable_number_forbidden';
+  if (SECRET_MATERIAL.test(text.replace(EXPLORER_TX_LINK, ' '))) return { code: 'social_secret_material_forbidden', excerpt: null };
+  const internal = INTERNAL_REFERENCE.exec(text);
+  if (internal) return { code: 'social_internal_reference_forbidden', excerpt: excerptOf(internal[0]) };
+  const jargon = RUNTIME_JARGON.exec(text);
+  if (jargon) return { code: 'social_runtime_jargon_forbidden', excerpt: excerptOf(jargon[0]) };
+  const number = SCIENTIFIC_NOTATION.exec(text);
+  if (number) return { code: 'social_unreadable_number_forbidden', excerpt: excerptOf(number[0]) };
   if (context.publicAddresses) {
     const allowed = new Set(context.publicAddresses.map((a) => a.toLowerCase()));
     for (const match of text.matchAll(EVM_ADDRESS)) {
-      if (!allowed.has(match[0])) return 'social_private_address_forbidden';
+      if (!allowed.has(match[0])) return { code: 'social_private_address_forbidden', excerpt: shortAddress(match[0]) };
     }
   }
   return null;
+}
+
+/** Returns a disclosure code when the outgoing text must not be published, otherwise null. */
+export function outgoingDisclosureRisk(value: unknown, context: DisclosureContext = {}): DisclosureCode | null {
+  return outgoingDisclosureFinding(value, context)?.code ?? null;
 }

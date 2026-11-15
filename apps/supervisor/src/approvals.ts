@@ -283,8 +283,8 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     try {
       validatePost(action.input.text, attributions, kind === 'post' ? 'original' : 'short', !!action.input.imageId, { platform: agent.config.platform === true });
     } catch (err) {
-      const code = err instanceof PolicyError ? err.code : 'invalid_post';
-      return { kind: 'failed', error: `${code}: the post does not pass the publish gate; rewrite it` };
+      // The gate's own refusal: the code, then what tripped and how to say it (agent-core gate-words.ts).
+      return { kind: 'failed', error: err instanceof PolicyError ? err.message : 'invalid_post: the post does not pass the publish gate; rewrite it' };
     }
   }
 

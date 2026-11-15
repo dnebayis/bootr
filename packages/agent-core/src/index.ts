@@ -5,6 +5,7 @@ export * from './notes.js';
 export * from './tools.js';
 export * from './json-schema.js';
 export * from './social/addressing.js';
+export * from './social/gate-words.js';
 export * from './social/post-validation.js';
 export * from './social/thread.js';
 export * from './social/plain-voice.js';

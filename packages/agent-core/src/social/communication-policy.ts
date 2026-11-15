@@ -4,6 +4,7 @@
  * hand-off to an execution bot. They complement scoped signers; they do not
  * try to prove arbitrary text safe.
  */
+import { excerptOf, type GateFinding } from './gate-words.js';
 
 /** Decode entities and percent-escapes twice, fold with NFKC, drop default-ignorable code points, lowercase. */
 export function normalizedCommunication(value: unknown): string {
@@ -33,8 +34,15 @@ export function executionAccount(value: unknown, exempt: readonly string[] = [])
 const HANDLE_PATTERN =
   /@\s*[~*`]*\s*([a-z0-9_]{1,64})|(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com|t\.me|telegram\.me)\/([a-z0-9_]{1,64})/g;
 
-function namedHandles(text: string): string[] {
-  return [...text.matchAll(HANDLE_PATTERN)].map((m) => (m[1] ?? m[2])!);
+/** A handle the text names, with the words that name it: an `@` (`mention`) or a link to the account (`link`). */
+interface NamedHandle {
+  handle: string;
+  via: 'mention' | 'link';
+  match: string;
+}
+
+function namedHandles(text: string): NamedHandle[] {
+  return [...text.matchAll(HANDLE_PATTERN)].map((m) => ({ handle: (m[1] ?? m[2])!, via: m[1] ? 'mention' : 'link', match: m[0] }));
 }
 
 const ASSET = '(?:eth|usdc|usdt|btc|sol|coin|token|tokens|funds|money|balance|wallet|treasury|him|her|them)';
@@ -80,24 +88,49 @@ export type RiskCode =
   | 'social_execution_link_forbidden'
   | 'social_execution_command_forbidden';
 
-/** Returns a risk code when the outgoing text must not be published, otherwise null. */
-export function outgoingActionRisk(value: unknown, context: RiskContext = {}): RiskCode | null {
+/** A refusal of this file's rules: the code, and the words of the agent's own text that tripped it. */
+export interface RiskFinding extends GateFinding {
+  code: RiskCode;
+}
+
+const found = (code: RiskCode, match: RegExpExecArray | string | null, cause?: string): RiskFinding => ({
+  code,
+  excerpt: excerptOf(typeof match === 'string' ? match : (match?.[0] ?? null)),
+  ...(cause ? { cause } : {}),
+});
+
+/**
+ * Why the outgoing text must not be published, or null: the code with the matched words of the text itself. An
+ * execution account that came from the conversation (`recipient`, `participants`) is never quoted: it is not the
+ * agent's own text.
+ */
+export function outgoingActionFinding(value: unknown, context: RiskContext = {}): RiskFinding | null {
   const { reply = false, recipient, participants = [], exemptAccounts = [] } = context;
   const text = normalizedCommunication(value);
   const named = namedHandles(text);
-  if ([recipient, ...participants, ...named].some((h) => h && executionAccount(h, exemptAccounts)))
-    return 'social_execution_account_forbidden';
-  if (WALLET_PAYLOAD.test(text)) return 'social_wallet_payload_forbidden';
-  if (INTENT_LINK.test(text)) return 'social_execution_link_forbidden';
+  const bot = named.find((n) => executionAccount(n.handle, exemptAccounts));
+  if (bot) return found('social_execution_account_forbidden', bot.match, bot.via);
+  if ([recipient, ...participants].some((h) => h && executionAccount(h, exemptAccounts))) return { code: 'social_execution_account_forbidden', excerpt: null, cause: 'recipient' };
+  const payload = WALLET_PAYLOAD.exec(text);
+  if (payload) return found('social_wallet_payload_forbidden', payload);
+  const intent = INTENT_LINK.exec(text);
+  if (intent) return found('social_execution_link_forbidden', intent);
 
-  const action = EXECUTION_PATTERN.test(text);
+  const action = EXECUTION_PATTERN.exec(text);
   const addressed = named.length > 0;
   const opening = text.replace(/^[\s\p{P}]+/u, '').replace(/^(?:(?:hey|please|ok(?:ay)?|yes|then|now)[\s,]+)+/u, '');
   const command = COMMAND_OPENING.test(opening);
-  const payment = PAYMENT_PATTERN.test(text);
-  if ((action && (addressed || (reply && command))) || (payment && (addressed || command)))
-    return 'social_execution_command_forbidden';
-  if ((addressed || reply) && SIGN_WITH_ADDRESS.test(text)) return 'social_wallet_payload_forbidden';
-  if (addressed && RAW_SIGNATURE_OR_FEE_ROUTING.test(text)) return 'social_wallet_payload_forbidden';
+  const payment = PAYMENT_PATTERN.exec(text);
+  if (action && (addressed || (reply && command))) return found('social_execution_command_forbidden', action);
+  if (payment && (addressed || command)) return found('social_execution_command_forbidden', payment);
+  const signing = addressed || reply ? SIGN_WITH_ADDRESS.exec(text) : null;
+  if (signing) return found('social_wallet_payload_forbidden', signing);
+  const routing = addressed ? RAW_SIGNATURE_OR_FEE_ROUTING.exec(text) : null;
+  if (routing) return found('social_wallet_payload_forbidden', routing);
   return null;
+}
+
+/** Returns a risk code when the outgoing text must not be published, otherwise null. */
+export function outgoingActionRisk(value: unknown, context: RiskContext = {}): RiskCode | null {
+  return outgoingActionFinding(value, context)?.code ?? null;
 }

@@ -170,7 +170,8 @@ describe('threads', () => {
     const credits = [{ username: 'alice', sourceUrl: 'https://example.com/a' }];
     expect((await publish({ agentId: AGENT, actionId: head, text: 'A point from @alice.', attributions: credits, thread: { head, n: 1, of: 3 } })).body.status).toBe('sent');
     const mention = await publish({ agentId: AGENT, actionId: `${head}.t2`, text: 'And @bob should see this.', thread: { head, n: 2, of: 3 } });
-    expect([mention.body.status, mention.body.receipt.error]).toEqual(['rejected', 'policy:mentions_require_source_credit']);
+    // the code first, then the gate's words about what tripped (the handle the part itself wrote)
+    expect([mention.body.status, String(mention.body.receipt.error).split(' ').slice(0, 2).join(' ')]).toEqual(['rejected', 'policy:mentions_require_source_credit: "@bob"']);
     // the common gate reaches a later part too, and a thread longer than the limit is refused at its first part
     const head2 = 'act-thread-0003';
     expect((await publish({ agentId: AGENT, actionId: head2, text: 'calm', thread: { head: head2, n: 1, of: 2 } })).body.status).toBe('sent');

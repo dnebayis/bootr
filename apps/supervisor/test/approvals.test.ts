@@ -340,7 +340,8 @@ describe('queueForApproval checks what the sender will check', () => {
       // a text the gate refuses never reaches the queue: the agent gets the code back
       const bad = await queueForApproval(w.ctx, agent, pending('act_c3', 'publish_post', { text: 'cc @nobody_credited' }), env());
       expect(bad.kind).toBe('failed');
-      expect((bad as { error: string }).error).toMatch(/publish gate/);
+      // (the gate's own words now, what tripped and how to say it, where it said only "does not pass the publish gate")
+      expect((bad as { error: string }).error).toMatch(/^mentions_require_source_credit: "@nobody_credited" is named with an @ but has no source/);
       expect(await w.db.select().from(approvals)).toHaveLength(3);
     } finally {
       await w.close();

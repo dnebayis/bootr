@@ -97,8 +97,14 @@ describe('idempotent publish', () => {
       });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('rejected');
-      expect(res.body.receipt.error).toBe(error);
+      // The code is the head of the error as before (the log and the weekly check key on it); after it the gate now
+      // says what tripped and how to say it, where the model had the bare code and rewrote blind.
+      expect(String(res.body.receipt.error).split(' ')[0]).toBe(`${error}:`);
+      expect(String(res.body.receipt.error).length).toBeGreaterThan(error.length + 20);
     }
+    // the words quote the agent's own text and nothing else
+    const own = await env.call('POST', '/internal/publish', { ...req, actionId: 'act-policy-words', text: 'gm @alice' });
+    expect(own.body.receipt.error).toBe('policy:mentions_require_source_credit: "@alice" is named with an @ but has no source in attributions. Add its post to attributions, or write the name without the @.');
     expect(env.fake.count('POST', '/2/tweets')).toBe(0);
     expect(env.fake.calls.every((c) => c.method !== 'POST')).toBe(true);
 
@@ -128,7 +134,8 @@ describe('idempotent publish', () => {
     for (const [i, text] of ['buy now', 'price will go up', "don't miss this", 'NFA'].entries()) {
       const res = await send(`act-call-${i}`, text, true);
       expect(res.body.status, text).toBe('rejected');
-      expect(res.body.receipt.error).toBe('policy:platform_price_talk_forbidden');
+      // the code first, then the gate's words about what tripped
+      expect(res.body.receipt.error).toMatch(/^policy:platform_price_talk_forbidden: "/);
     }
     expect((await send('act-coin-agent', 'price will go up')).body.status).toBe('sent');
   });
