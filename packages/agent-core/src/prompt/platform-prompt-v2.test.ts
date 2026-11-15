@@ -14,12 +14,12 @@ const v2 = buildSystemPrompt(platform, 'social', { platformPrompt: 'v2' });
 describe('the platform prompt has two wordings, and v1 is the one in force unless v2 is asked for', () => {
   it('v1 is byte for byte what it was: with no option, with the option absent, null or v1', () => {
     // The same two digests src/prompt/system-prompt.test.ts pins: the owner's own wording is not edited by the rewrite.
-    const pinned = '092f1e8327222e82e3655b97ecd93a4c638d5c34ad8fe5b0314432b6a6c26f37';
+    const pinned = '6543231319fb2f134e71e26162ab39a956d4e8f5aab4e18fd07144cb831af00a';
     expect(sha256(buildSystemPrompt(platform))).toBe(pinned);
     expect(sha256(buildSystemPrompt(platform, 'social', {}))).toBe(pinned);
     expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: null }))).toBe(pinned);
     expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: 'v1' }))).toBe(pinned);
-    expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: 'v1', postLimit: 280 }))).toBe('077d95c1e2ea42fb9b78247c12739269ec76a407016a43f3962d261b585a563c');
+    expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: 'v1', postLimit: 280 }))).toBe('a4e07d7da4a5f2ef7c089d81a200638854492ccbdbb00b53729489e4a467c56c');
     expect(PLATFORM_PROMPT_VERSIONS).toEqual(['v1', 'v2']);
   });
 
@@ -135,9 +135,10 @@ describe('v2 removes the contradictions of v1 and nothing else of substance', ()
   it('is shorter than v1 by about a third, in fewer rules', () => {
     expect(PLATFORM_RULES).toHaveLength(22);
     expect(platformRulesV2(withPictures)).toHaveLength(13);
-    expect(v1.length).toBe(6614);
+    expect(v1.length).toBe(6832);
     expect(all.length).toBe(4851);
-    // the whole prompt, numbering included: 1,799 characters less, about 450 tokens on every thought of every turn
-    expect(buildSystemPrompt(withPictures).length - buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }).length).toBe(1799);
+    // the whole prompt, numbering included: 2,017 characters less, about 500 tokens on every thought of every turn (v1
+    // grew by the sentence on crediting a source off X in words, merged after this test was written)
+    expect(buildSystemPrompt(withPictures).length - buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }).length).toBe(2017);
   });
 });
