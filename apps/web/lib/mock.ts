@@ -12,9 +12,11 @@ import type { CoinPageLinks } from './coin-links';
 import { OWN_AGENT_MODEL_ID, OWN_ERRORS, type RunnerSwitchRequest, type RunnerSwitchResponse } from '@bootr/shared/own-agent';
 import { DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, RECOMMENDED_MODEL } from './models';
 import { BOUNTIES_DEFAULTS, SERVICES_DEFAULTS } from './types';
+import { mockLedger } from './mock-ledger';
 import type {
   Agent,
   AgentActivityItem,
+  AgentLedger,
   AgentApproval,
   AgentApprovals,
   AgentBounties,
@@ -1215,6 +1217,11 @@ export const mock = {
     const cutoff = opts.before ? Date.parse(opts.before) : NaN;
     const list = activityFor(kernel).filter((it) => !Number.isFinite(cutoff) || Date.parse(it.at) < cutoff);
     return clone({ items: list.slice(0, opts.limit) });
+  },
+  /** The money ledger of a mock coin (lib/mock-ledger.ts); an empty one for a kernel the store does not know. */
+  agentLedger(kernel: string, opts: { limit: number; cursor?: string | null }): AgentLedger {
+    const t = mockStore().tokens.find((x) => x.kernel.toLowerCase() === kernel.toLowerCase());
+    return t ? mockLedger(t.kernel, t.creator, opts) : { rows: [], next: null, partial: false, days: [], daysComplete: true };
   },
   /**
    * The jobs the agent posted (lib/types AgentBounties), jobs in motion first then newest first; none for most coins. The

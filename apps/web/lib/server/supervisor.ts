@@ -10,7 +10,7 @@ import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/ag
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentLedger, LEDGER_ASSETS, LEDGER_DIRECTIONS, LEDGER_KINDS, LEDGER_ROLES, LEDGER_STATUSES, type LedgerAmount, type LedgerDay, type LedgerDayLine, type LedgerParty, type LedgerRow, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { aboutHref } from '@/lib/posting-views';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
@@ -280,7 +280,7 @@ export function openRepliesOf(raw: unknown): AgentConfig['openReplies'] {
 
 /** Keeps only the fields the tape renders: time, kind, one line of text, a tx hash, an https link and a comment's source. */
 export function sanitizeActivity(raw: unknown): AgentActivity {
-  const o = (raw ?? {}) as { items?: unknown };
+  const o = (raw ?? {}) as { items?: unknown; next?: unknown };
   const items: AgentActivityItem[] = [];
   for (const it of Array.isArray(o.items) ? o.items : []) {
     const r = (it ?? {}) as Record<string, unknown>;
@@ -295,7 +295,135 @@ export function sanitizeActivity(raw: unknown): AgentActivity {
     if (about) item.about = about;
     items.push(item);
   }
-  return { items };
+  // `next` is an instant the web passes back as `before`; anything else reads as "no newer server" (absent).
+  const next = o.next === null ? null : iso(typeof o.next === 'string' ? o.next : undefined);
+  return { items, ...(o.next === null || next ? { next } : {}) };
+}
+
+// ------------------------------------------------------------------ the money ledger
+
+export const LEDGER_LIMIT_DEFAULT = 50;
+export const LEDGER_LIMIT_MAX = 100;
+/** A ledger cursor as the supervisor writes it (base64url of its own pair); nothing else is passed on. */
+export const LEDGER_CURSOR_RE = /^[A-Za-z0-9_-]{1,400}$/;
+/** The most of the supervisor's answer the web reads: a page of 100 rows and seven days is far below it. */
+const LEDGER_BODY_MAX = 512 * 1024;
+const LEDGER_ID_RE = /^[a-z]+:[A-Za-z0-9_:.-]{1,200}$/;
+const HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+const LEDGER_REASON_MAX = 300;
+
+function oneOf<T extends string>(list: readonly T[], v: unknown): T | null {
+  return typeof v === 'string' && (list as readonly string[]).includes(v) ? (v as T) : null;
+}
+
+/** An amount rebuilt field by field: the decimals follow the asset, never the service. */
+function ledgerAmount(raw: unknown): LedgerAmount | null {
+  const a = (raw ?? {}) as Record<string, unknown>;
+  const asset = oneOf(LEDGER_ASSETS, a.asset);
+  const units = typeof a.raw === 'string' && /^\d{1,40}$/.test(a.raw) ? a.raw : null;
+  if (!asset || units === null) return null;
+  const out: LedgerAmount = { asset, decimals: asset === 'USDC' ? 6 : 18, raw: units.replace(/^0+(?=\d)/, '') };
+  const usd = Number(a.usd);
+  if (typeof a.usd === 'number' && Number.isFinite(usd) && usd >= 0 && usd < 1e12) out.usd = usd;
+  const bound = oneOf(['about', 'at_least', 'at_most'] as const, a.bound);
+  if (bound) out.bound = bound;
+  return out;
+}
+
+function ledgerParty(raw: unknown): LedgerParty | null {
+  const p = (raw ?? {}) as Record<string, unknown>;
+  const role = oneOf(LEDGER_ROLES, p.role);
+  if (!role) return null;
+  const out: LedgerParty = { role };
+  if (typeof p.address === 'string' && ADDRESS_RE.test(p.address)) out.address = p.address.toLowerCase();
+  if (role === 'service' && typeof p.host === 'string' && HOST_RE.test(p.host)) out.host = p.host.toLowerCase();
+  return out;
+}
+
+/** One line of text as the page prints it: control characters out, at most 300 characters. */
+function ledgerReason(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const text = v.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > LEDGER_REASON_MAX ? `${text.slice(0, LEDGER_REASON_MAX - 1).trimEnd()}…` : text;
+}
+
+export function sanitizeLedgerRow(raw: unknown): LedgerRow | null {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const id = typeof r.id === 'string' && LEDGER_ID_RE.test(r.id) ? r.id : null;
+  const at = iso(r.at);
+  const kind = oneOf(LEDGER_KINDS, r.kind);
+  const direction = oneOf(LEDGER_DIRECTIONS, r.direction);
+  const status = oneOf(LEDGER_STATUSES, r.status);
+  const reason = ledgerReason(r.reason);
+  if (!id || !at || !kind || !direction || !status || !reason) return null;
+  const row: LedgerRow = { id, at, kind, direction, status, reason };
+  const amount = r.amount === undefined ? null : ledgerAmount(r.amount);
+  if (amount) row.amount = amount;
+  const received = r.received === undefined ? null : ledgerAmount(r.received);
+  if (received) row.received = received;
+  const party = r.counterparty === undefined ? null : ledgerParty(r.counterparty);
+  if (party) row.counterparty = party;
+  if (typeof r.txHash === 'string' && HASH_RE.test(r.txHash)) row.txHash = r.txHash.toLowerCase() as Hex;
+  // The only link a row carries is a post on X, rebuilt here from its numeric id.
+  const postId = typeof r.url === 'string' ? /^https:\/\/x\.com\/i\/status\/(\d{1,25})$/.exec(r.url)?.[1] : undefined;
+  if (postId) row.url = `https://x.com/i/status/${postId}`;
+  if (r.paidBy === 'creator') row.paidBy = 'creator';
+  return row;
+}
+
+function ledgerDay(raw: unknown): LedgerDay | null {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  if (typeof d.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.day)) return null;
+  const lines: LedgerDayLine[] = [];
+  for (const it of Array.isArray(d.lines) ? d.lines.slice(0, 40) : []) {
+    const l = (it ?? {}) as Record<string, unknown>;
+    const kind = oneOf(LEDGER_KINDS, l.kind);
+    const direction = oneOf(LEDGER_DIRECTIONS, l.direction);
+    const amount = ledgerAmount({ asset: l.asset, raw: l.raw });
+    const count = Number(l.count);
+    if (!kind || !direction || !amount || !Number.isInteger(count) || count < 0) continue;
+    const usd = typeof l.usd === 'number' && Number.isFinite(l.usd) && l.usd >= 0 && l.usd < 1e12 ? l.usd : null;
+    lines.push({ kind, direction, asset: amount.asset, decimals: amount.decimals, raw: amount.raw, usd, count, ...(l.paidBy === 'creator' ? { paidBy: 'creator' as const } : {}) });
+  }
+  const money = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e12 ? v : null);
+  const whole = (v: unknown) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0);
+  return { day: d.day, lines, inUsd: money(d.inUsd), outUsd: money(d.outUsd), unknown: whole(d.unknown), failed: whole(d.failed) };
+}
+
+/** Rebuilds the supervisor's ledger page: every row and day from its known fields only, rows without a field it must have dropped. */
+export function sanitizeLedger(raw: unknown): AgentLedger {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const rows: LedgerRow[] = [];
+  for (const it of Array.isArray(o.rows) ? o.rows.slice(0, 200) : []) {
+    const row = sanitizeLedgerRow(it);
+    if (row) rows.push(row);
+  }
+  const out: AgentLedger = { rows, next: typeof o.next === 'string' && LEDGER_CURSOR_RE.test(o.next) ? o.next : null, partial: o.partial === true };
+  if (Array.isArray(o.days)) {
+    out.days = o.days.slice(0, 31).map(ledgerDay).filter((d): d is LedgerDay => d !== null);
+    out.daysComplete = o.daysComplete === true;
+  }
+  return out;
+}
+
+/** `GET /internal/agents/:id/ledger?limit=&cursor=`; newest first. Unknown agent = an empty ledger. */
+export async function getAgentLedger(agentId: string, opts: { limit?: number; cursor?: string } = {}): Promise<AgentLedger> {
+  const limit = Math.min(LEDGER_LIMIT_MAX, Math.max(1, Math.trunc(opts.limit ?? LEDGER_LIMIT_DEFAULT)));
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (opts.cursor && LEDGER_CURSOR_RE.test(opts.cursor)) q.set('cursor', opts.cursor);
+  const res = await call('GET', `/internal/agents/${encodeURIComponent(agentId)}/ledger?${q.toString()}`, undefined, 20_000);
+  if (res.status === 404) return { rows: [], next: null, partial: false };
+  if (!res.ok) throw await errorOf(res);
+  const text = await res.text();
+  if (text.length > LEDGER_BODY_MAX) throw new SupervisorUnavailable('supervisor ledger answer too large');
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new SupervisorUnavailable('supervisor ledger answer is not JSON');
+  }
+  return sanitizeLedger(json);
 }
 
 const APPROVAL_STATUSES: readonly AgentApproval['status'][] = ['pending_approval', 'approved', 'rejected', 'failed'];

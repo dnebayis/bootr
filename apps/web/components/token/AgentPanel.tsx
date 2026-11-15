@@ -1,6 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo } from 'react';
+import { ledgerHref } from '@/lib/ledger-view';
 import type { Address } from 'viem';
 import { useConnection } from 'wagmi';
 import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
@@ -186,6 +188,11 @@ export function AgentPanel({ token, now }: { token: Token & { agent?: Agent | nu
           </div>
         ) : null}
         <KV label="Fees claimed">{usd(agent?.feesClaimedUsd, { compact: false })}</KV>
+        <KV label="Money in and out" mono={false}>
+          <Link href={ledgerHref(token.id)} className="text-link underline-offset-4 hover:underline" data-testid="agent-ledger-link">
+            See every movement
+          </Link>
+        </KV>
         <KV label="Reputation">
           {agent?.reputationScore != null ? (
             <>

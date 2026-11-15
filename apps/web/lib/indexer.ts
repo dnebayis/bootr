@@ -21,6 +21,7 @@ import { hasFilters, NO_FILTERS, tokenListRequest, type TokenFilters } from './t
 import type {
   Agent,
   AgentActivity,
+  AgentLedger,
   AgentApproval,
   AgentApprovalCount,
   AgentApprovals,
@@ -432,7 +433,26 @@ export async function fetchAgentActivity(kernel: string, before: string | null =
   if (res.status === 404) return { items: [] };
   if (!res.ok) throw new IndexerError(`Agent activity responded ${res.status}`);
   const json = (await res.json()) as Partial<AgentActivity>;
-  return { items: Array.isArray(json.items) ? json.items : [] };
+  return { items: Array.isArray(json.items) ? json.items : [], ...(json.next === null || typeof json.next === 'string' ? { next: json.next } : {}) };
+}
+
+/** Where the next page of the tape starts: the server's `next` when it sends one, else (an older server) the last `at`. */
+export function activityNextPage(last: AgentActivity): string | undefined {
+  if (last.next !== undefined) return last.next ?? undefined;
+  return last.items.length >= ACTIVITY_PAGE ? (last.items[last.items.length - 1]?.at ?? undefined) : undefined;
+}
+
+export const LEDGER_PAGE = 50;
+
+/** One page of the agent's money ledger (`/api/agent/:kernel/ledger`), newest first; `cursor` is the page before's `next`. */
+export async function fetchAgentLedger(kernel: string, cursor: string | null = null): Promise<AgentLedger> {
+  const q = new URLSearchParams({ limit: String(LEDGER_PAGE) });
+  if (cursor) q.set('cursor', cursor);
+  const res = await fetch(`/api/agent/${encodeURIComponent(kernel.toLowerCase())}/ledger?${q.toString()}`, { cache: 'no-store' });
+  if (res.status === 404) return { rows: [], next: null, partial: false };
+  if (!res.ok) throw new IndexerError(`Agent ledger responded ${res.status}`);
+  const json = (await res.json()) as Partial<AgentLedger>;
+  return { rows: Array.isArray(json.rows) ? json.rows : [], next: typeof json.next === 'string' ? json.next : null, partial: json.partial === true, ...(Array.isArray(json.days) ? { days: json.days, daysComplete: json.daysComplete === true } : {}) };
 }
 
 /** The jobs the agent posted with the Bounties power (`/api/agent/:kernel/bounties`, public), jobs in motion first. */
@@ -545,6 +565,7 @@ export const qk = {
   posts: (k: string) => ['posts', k.toLowerCase()] as const,
   agentConfig: (kernel: string) => ['agent', kernel.toLowerCase(), 'config'] as const,
   agentActivity: (kernel: string) => ['agent', kernel.toLowerCase(), 'activity'] as const,
+  agentLedger: (kernel: string) => ['agent', kernel.toLowerCase(), 'ledger'] as const,
   agentBounties: (kernel: string) => ['agent', kernel.toLowerCase(), 'bounties'] as const,
   approvalCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'approvals', 'count'] as const,
   notificationCount: (kernel: string) => ['agent', kernel.toLowerCase(), 'notifications', 'count'] as const,
@@ -665,8 +686,21 @@ export function useAgentActivity(kernel: string | undefined) {
     queryKey: qk.agentActivity(kernel ?? ''),
     queryFn: ({ pageParam }) => fetchAgentActivity(kernel!, pageParam),
     initialPageParam: null as string | null,
-    getNextPageParam: (last) => (last.items.length >= ACTIVITY_PAGE ? (last.items[last.items.length - 1]?.at ?? undefined) : undefined),
+    getNextPageParam: activityNextPage,
     enabled: !!kernel,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/** The money ledger, page by page (the first page carries the last seven days' totals). */
+export function useAgentLedger(kernel: string | undefined, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: qk.agentLedger(kernel ?? ''),
+    queryFn: ({ pageParam }) => fetchAgentLedger(kernel!, pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next ?? undefined,
+    enabled: !!kernel && enabled,
     staleTime: 30_000,
     retry: 1,
   });

@@ -27,6 +27,7 @@ import { AgentRunnerCard } from './AgentRunnerCard';
 import { ApprovalQueue } from './ApprovalQueue';
 import { CoinImageForm } from './CoinImageForm';
 import { CoinLinksForm } from './CoinLinksForm';
+import { ConsoleLedger } from './ConsoleLedger';
 import { V5MetadataForm } from './V5MetadataForm';
 import { metadataWasEditable, v5SettingsOf } from '@/lib/token-settings';
 import { useConsoleStatus } from './console-status';
@@ -849,6 +850,7 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
           <div className="flex flex-col gap-4" data-testid="console-fuel">
             {hint('fuel')}
             {fuelAndGas}
+            <ConsoleLedger token={token} config={cfg ?? null} />
           </div>
         </TabPanel>
 

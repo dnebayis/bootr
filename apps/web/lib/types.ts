@@ -776,4 +776,91 @@ export interface AgentActivityItem {
 
 export interface AgentActivity {
   items: AgentActivityItem[];
+  /**
+   * What to pass as `before` for the next page, or null at the end; absent from a server that predates it (then the
+   * last item's `at` is used). A page can be shorter than the limit and still have more behind it.
+   */
+  next?: string | null;
+}
+
+// ---------------------------------------------------------------- the money ledger (apps/supervisor/src/ledger.ts)
+
+export const LEDGER_KINDS = ['fee_claim', 'fuel_received', 'fuel_topup', 'gas_topup', 'swap', 'transfer', 'thinking', 'service', 'trade', 'bounty_posted', 'bounty_judged', 'bounty_paid', 'bounty_closed'] as const;
+export type LedgerKind = (typeof LEDGER_KINDS)[number];
+/** `move`: between the agent's own wallets or from one of its assets to another, not spent; `none`: no money moved. */
+export const LEDGER_DIRECTIONS = ['in', 'out', 'move', 'none'] as const;
+export type LedgerDirection = (typeof LEDGER_DIRECTIONS)[number];
+export const LEDGER_STATUSES = ['confirmed', 'failed', 'unknown'] as const;
+export type LedgerStatus = (typeof LEDGER_STATUSES)[number];
+export const LEDGER_ASSETS = ['USDC', 'WETH', 'ETH'] as const;
+export type LedgerAsset = (typeof LEDGER_ASSETS)[number];
+export const LEDGER_ROLES = ['fee_locker', 'person', 'creator', 'own_wallet', 'thinking_service', 'blockrun', 'service', 'bounty_winner', 'swap', 'gas', 'unknown'] as const;
+export type LedgerRole = (typeof LEDGER_ROLES)[number];
+
+export interface LedgerAmount {
+  asset: LedgerAsset;
+  decimals: number;
+  /** Base units, decimal digits. */
+  raw: string;
+  /** Dollars at the time, where the site has a value (USDC is dollars; a fee claim at its block). */
+  usd?: number;
+  /** `about`: an estimate written when the move was prepared; `at_least` / `at_most`: a bound. */
+  bound?: 'about' | 'at_least' | 'at_most';
+}
+
+export interface LedgerParty {
+  role: LedgerRole;
+  /** A public address, lower case. */
+  address?: string;
+  /** A paid service's host name. */
+  host?: string;
+}
+
+export interface LedgerRow {
+  id: string;
+  at: string;
+  kind: LedgerKind;
+  direction: LedgerDirection;
+  status: LedgerStatus;
+  amount?: LedgerAmount;
+  /** The other side of a swap or a trade. */
+  received?: LedgerAmount;
+  counterparty?: LedgerParty;
+  reason: string;
+  txHash?: Hex;
+  /** The bounty's post on X. */
+  url?: string;
+  /** A bounty is paid from its creator's wallet, not the agent's. */
+  paidBy?: 'creator';
+}
+
+export interface LedgerDayLine {
+  kind: LedgerKind;
+  direction: LedgerDirection;
+  asset: LedgerAsset;
+  decimals: number;
+  raw: string;
+  usd: number | null;
+  count: number;
+  paidBy?: 'creator';
+}
+
+export interface LedgerDay {
+  /** UTC day, YYYY-MM-DD. */
+  day: string;
+  lines: LedgerDayLine[];
+  inUsd: number | null;
+  outUsd: number | null;
+  unknown: number;
+  failed: number;
+}
+
+/** `GET /api/agent/:kernel/ledger`: one page, newest first; the first page carries the last seven days' totals. */
+export interface AgentLedger {
+  rows: LedgerRow[];
+  next: string | null;
+  /** The chain's rows (fee claims, money sent to it) could not be read for this page. */
+  partial: boolean;
+  days?: LedgerDay[];
+  daysComplete?: boolean;
 }
