@@ -83,6 +83,22 @@ export function amountText(a: LedgerAmount | undefined): string {
   return `${a.bound ? BOUND_WORD[a.bound] : ''}${amountNumber(a.raw, a.decimals, a.asset === 'USDC' ? 4 : 6)} ${a.asset}`;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+const two = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * A row's time as the day totals above it count it: in UTC, in English, the same for every visitor ("15 Nov, 16:19
+ * UTC"). The viewer's own zone would put a row under a different day than its total, and the locale would mix
+ * languages on the page. Null for a time that does not parse.
+ */
+export function utcWhen(at: string): { short: string; full: string } | null {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+  const time = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`;
+  return { short: `${day}, ${time} UTC`, full: `${day} ${d.getUTCFullYear()}, ${time}:${two(d.getUTCSeconds())} UTC` };
+}
+
 /** "≈ $5.10" where the site has a dollar value and the asset is not already dollars; null otherwise. */
 export function usdText(a: LedgerAmount | undefined): string | null {
   if (!a || a.asset === 'USDC' || a.usd === undefined) return null;

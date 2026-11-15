@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { amountText, capUse, ledgerHref, sumDays, usdText } from '@/lib/ledger-view';
+import { amountText, capUse, ledgerHref, sumDays, usdText, utcWhen } from '@/lib/ledger-view';
 import { mockLedger } from '@/lib/mock-ledger';
 import { activityNextPage } from '@/lib/indexer';
 import type { LedgerRow } from '@/lib/types';
@@ -108,3 +108,14 @@ describe('ledger words and paging helpers', () => {
     expect(activityNextPage({ items: full.slice(0, 3) })).toBeUndefined();
   });
 });
+
+describe('utcWhen: a row\'s time is UTC, like the day totals', () => {
+  it('writes the same day and hour for every visitor, in English', () => {
+    expect(utcWhen('2026-11-15T16:19:42.000Z')).toEqual({ short: '15 Nov, 16:19 UTC', full: '15 Nov 2026, 16:19:42 UTC' });
+    // just before midnight UTC stays on the UTC day the totals count it under
+    expect(utcWhen('2026-11-14T23:59:00.000Z')?.short).toBe('14 Nov, 23:59 UTC');
+    expect(utcWhen('2026-01-02T03:04:05Z')?.short).toBe('2 Jan, 03:04 UTC');
+    expect(utcWhen('not a time')).toBeNull();
+  });
+});
+

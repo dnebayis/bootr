@@ -1,16 +1,16 @@
 import { explorer } from '@/lib/chains';
 import { shortAddr } from '@/lib/format';
-import { amountText, DIRECTION_LABEL, DIRECTION_TITLE, KIND_LABEL, partyLabel, STATUS_LABEL, STATUS_TITLE, usdText } from '@/lib/ledger-view';
+import { amountText, utcWhen, DIRECTION_LABEL, DIRECTION_TITLE, KIND_LABEL, partyLabel, STATUS_LABEL, STATUS_TITLE, usdText } from '@/lib/ledger-view';
 import type { LedgerRow } from '@/lib/types';
 import { ArrowUpRightIcon } from '@/components/ui/Icons';
 import { cn } from '@/components/ui/cn';
 
-/** "15 Nov, 10:42" in the viewer's own time zone, with the full instant as the title. */
+/** "15 Nov, 10:42 UTC": UTC like the day totals above the table (ledger-view.ts `utcWhen`), with the full instant as the title. */
 function When({ at }: { at: string }) {
-  const d = new Date(at);
+  const when = utcWhen(at);
   return (
-    <time dateTime={at} title={d.toLocaleString()} className="whitespace-nowrap font-mono text-micro text-mute tabular">
-      {d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+    <time dateTime={at} title={when?.full} className="whitespace-nowrap font-mono text-micro text-mute tabular">
+      {when?.short ?? '—'}
     </time>
   );
 }
