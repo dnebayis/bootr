@@ -22,6 +22,7 @@ import { agentSource, clankerV5QuoteOf, pairedAssetOf } from './launch-source.js
 import { applyOutcomes, flushNotifications, MODEL_CHANGED_VISIBLE_MS, pruneNotifications, resolveNotification, type FlushReport, type HealthOutcomes, type NotificationData } from './notifications.js';
 import { notifications } from './db/schema.js';
 import { isOwn } from './own/registry.js';
+import { checkPlatformSilence } from './post-silence.js';
 import type { SenderAccount } from './sender-client.js';
 
 /** Under this many days of runway at the recent rate fuel counts as low, whatever is left in thoughts. */
@@ -245,6 +246,8 @@ export async function checkAgentHealth(ctx: SupervisorContext, agent: AgentRow, 
     ...(own ? { own: true } : {}),
   });
   await applyOutcomes(ctx, agent.agentId, outcomes);
+  // The platform account's silence alarm (post-silence.ts): database reads only, never throws.
+  await checkPlatformSilence(ctx, agent, runtime);
 }
 
 /** The agents whose last check is oldest, up to `CHECK_BATCH`; one that fails is logged and the rest go on. */

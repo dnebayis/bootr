@@ -54,6 +54,12 @@ export const EVENT_RULES: Readonly<Record<NotificationEvent, EventRule>> = {
   model_changed: { label: 'Model changed by the platform', repeatMs: 365 * 24 * HOUR, sendAfterMs: 0, tone: 'info' },
   /** The stored model is not served by BlockRun (model-check.ts, runtime.ts): the agent cannot think until it changes. */
   model_unavailable: { label: 'Model not available', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'danger' },
+  /**
+   * No original post for longer than the alarm's threshold while the agent was awake and its post slots were due
+   * (post-silence.ts; the platform account only for now). Each silent stretch is a new row whose first send is not
+   * held back by the last stretch's (`raisePostSilence`); one that lasts a day is said again.
+   */
+  post_silence: { label: 'Not posting', repeatMs: 24 * HOUR, sendAfterMs: 0, tone: 'warning' },
 };
 
 /** How long a `model_changed` notice stays open before the notifier closes it. */
@@ -131,7 +137,42 @@ export function notificationText(event: NotificationEvent, data: Record<string, 
           : 'The model this agent thinks with is no longer offered, so it cannot think and nothing is charged. Pick another model in the creator console and it goes on from where it was.',
       };
     }
+    case 'post_silence':
+      return postSilenceText(data);
   }
+}
+
+/** "4 hours 23 minutes", "50 minutes", "1 hour". */
+export function durationWords(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (!h) return plural(rest, 'minute');
+  return rest ? `${plural(h, 'hour')} ${plural(rest, 'minute')}` : plural(h, 'hour');
+}
+
+/** Micro-USDC as "0.09 USDC" (four places under a cent, so a cheap turn does not read as free). */
+export function usdcWords(micro: number): string {
+  const usdc = Math.max(0, micro) / 1_000_000;
+  return `${usdc.toFixed(usdc >= 0.01 || usdc === 0 ? 2 : 4)} USDC`;
+}
+
+/** The `post_silence` notice (post-silence.ts `PostSilenceData`), from its stored numbers alone. */
+function postSilenceText(data: Record<string, unknown>): { title: string; body: string } {
+  const minutes = num(data.silentMinutes);
+  const slots = num(data.slots);
+  const charged = num(data.chargedMicroUsdc);
+  const since = num(data.since);
+  const how = minutes !== null ? durationWords(minutes) : null;
+  const last = since !== null && since > 0 ? ` (the last one went out at ${new Date(since).toISOString().slice(11, 16)} UTC on ${new Date(since).toISOString().slice(0, 10)})` : '';
+  const spent =
+    slots !== null && slots > 0
+      ? ` In that time it woke ${plural(slots, 'time')} when a post was due and each time finished without posting${charged !== null ? `; those turns used ${usdcWords(charged)} of fuel` : ''}.`
+      : '';
+  return {
+    title: how ? `No post for ${how}` : 'Not posting',
+    body: `No original post has gone out for ${how ?? 'a while'}${last}.${spent} It is awake, and no pause, X limit or quiet hours hold its posts back, so something in its turns stops the post. This notice closes by itself when it posts again.`,
+  };
 }
 
 /** The coin as text we can send: `$SYMBOL` when the symbol is plain, otherwise nothing a chat could read as a link or a mention. */

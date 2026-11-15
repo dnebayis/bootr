@@ -447,6 +447,12 @@ export const configSchema = z
     /** How long one agent may go between health checks (each reads its balances and the X account once). */
     NOTIFY_CHECK_MS: int(300_000, 1000),
     /**
+     * The platform account's silence alarm (post-silence.ts): its creator is told once when no original post went out
+     * for this long while it was awake and spent its due post slots without posting. Checked in the notifier's
+     * pass. 0 = off.
+     */
+    PLATFORM_SILENCE_ALERT_MS: int(2 * 3_600_000, 0),
+    /**
      * Own agents (docs/design/byo-agent.md section 13.2). The one flag: `true` offers the feature's surfaces (the connect
      * and run routes) and lets a coin become own. It never decides how a coin is run: a coin whose stored config says
      * `runner: 'own'` is an own coin with the flag on or off (own/registry.ts `isOwn`), silent while the flag is off.
