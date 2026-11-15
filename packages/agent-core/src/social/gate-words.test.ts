@@ -112,6 +112,16 @@ describe('what a refused post is told', () => {
     expect(excerptOf('​⁠')).toBeNull();
     expect(excerptOf('')).toBeNull();
     expect(excerptOf(null)).toBeNull();
+    // a private-use character, and a long hex or base58 run cut to its two ends (the security review of 2026-11-15)
+    expect(excerptOf('buy\uE000 now\u{F0000}')).toBe('buy now');
+    const secret = `0x${'5f3a'.repeat(16)}`;
+    expect(excerptOf(`@alice, launch ${secret} coin`)).toBe('@alice, launch 0x5f3a…5f3a coin');
+    expect(excerptOf(`key 5Kb8kLf9zgWQnogidDA76MzPL6TsZZY36hWXMssSzNydYXYB9KF here`)).toBe('key 5Kb8…B9KF here');
+    expect(excerptOf(`hex ${'ab12'.repeat(10)} end`)).toBe('hex ab12…ab12 end');
+    expect(excerptOf(`the address 0x${'12'.repeat(20)}`)).toBe('the address 0x1212…1212');
+    expect(excerptOf('internationalization-ready words stay')).toBe('internationalization-ready words stay');
+    const refused = postRefusal(`@alice, launch ${secret} coin`, [{ username: 'alice', sourceUrl: 'https://x.com/alice/status/1' }])!;
+    expect(refused).not.toMatch(/[0-9a-f]{12}/);
     const long = excerptOf('a'.repeat(200))!;
     expect([...long].length).toBe(EXCERPT_MAX_CHARS);
     expect(long.endsWith('…')).toBe(true);

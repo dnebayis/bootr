@@ -26,17 +26,27 @@ export interface GateFinding {
 
 export const EXCERPT_MAX_CHARS = 60;
 
+/** A hex string from 20 bytes on ("0x" and 40 or more hex digits): an address, a hash, part of a key. */
+const LONG_HEX = /0x[0-9a-f]{40,}/gi;
+/** A run of 32 or more letters and digits with both in it: a hex or base58 key, a token, a signature. No word is one. */
+const LONG_RUN = /(?<![0-9a-z])(?=[0-9a-z]*[0-9])(?=[0-9a-z]*[a-z])[0-9a-z]{32,}(?![0-9a-z])/gi;
+/** Such a string cut to its two ends, so the refusal names it and carries none of it ("0x1234…cdef"). */
+const ends = (m: string): string => `${m.slice(0, m.startsWith('0x') || m.startsWith('0X') ? 6 : 4)}…${m.slice(-4)}`;
+
 /**
- * A match made fit to quote: one line, no quotation marks of its own, no control or invisible format characters (the
- * platform rules read the raw text, where a zero-width or a direction mark may sit), no brackets, at most `max`
- * characters. Cut at the end, since the start of a match is where the rule's word stands. Brackets are dropped since
+ * A match made fit to quote: one line, no quotation marks of its own, no control, invisible format or private-use
+ * characters (the platform rules read the raw text, where a zero-width or a direction mark may sit), no brackets, no
+ * long hex or base58 run but its two ends (a refusal and the stored error once carried 58 hex digits of a 32-byte
+ * secret the post held), at most `max` characters. Cut at the end, since the start of a match is where the rule's word stands. Brackets are dropped since
  * a supervisor that read a refusal for X's own `forbidden(403)` took the agent's quoted words for X's answer (the
  * security review of 2026-11-15; the classifiers now read the code head only, and this keeps the words from looking
  * like a code at all).
  */
 export function excerptOf(match: string | null | undefined, max: number = EXCERPT_MAX_CHARS): string | null {
   const flat = (match ?? '')
-    .replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
+    .replace(/[\p{Cc}\p{Cf}\p{Co}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
+    .replace(LONG_HEX, ends)
+    .replace(LONG_RUN, ends)
     .replace(/["“”`]/g, "'")
     .replace(/[()]/g, ' ')
     .replace(/\s+/g, ' ')
