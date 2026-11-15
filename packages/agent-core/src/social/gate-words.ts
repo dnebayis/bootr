@@ -28,11 +28,19 @@ export const EXCERPT_MAX_CHARS = 60;
 
 /**
  * A match made fit to quote: one line, no quotation marks of its own, no control or invisible format characters (the
- * platform rules read the raw text, where a zero-width or a direction mark may sit), at most `max` characters. Cut at
- * the end, since the start of a match is where the rule's word stands.
+ * platform rules read the raw text, where a zero-width or a direction mark may sit), no brackets, at most `max`
+ * characters. Cut at the end, since the start of a match is where the rule's word stands. Brackets are dropped since
+ * a supervisor that read a refusal for X's own `forbidden(403)` took the agent's quoted words for X's answer (the
+ * security review of 2026-11-15; the classifiers now read the code head only, and this keeps the words from looking
+ * like a code at all).
  */
 export function excerptOf(match: string | null | undefined, max: number = EXCERPT_MAX_CHARS): string | null {
-  const flat = (match ?? '').replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : '')).replace(/["“”`]/g, "'").replace(/\s+/g, ' ').trim();
+  const flat = (match ?? '')
+    .replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
+    .replace(/["“”`]/g, "'")
+    .replace(/[()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!flat) return null;
   const chars = [...flat];
   return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : flat;

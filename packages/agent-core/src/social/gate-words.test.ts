@@ -106,6 +106,8 @@ describe('what a refused post is told', () => {
   it('cuts an excerpt to one short line with no quotation marks of its own', () => {
     expect(excerptOf('  buy\n  now  ')).toBe('buy now');
     expect(excerptOf('say "this" and `that`')).toBe("say 'this' and 'that'");
+    // no brackets: a quoted "forbidden(403)" must not read as X's own code to whoever reads the refusal
+    expect(excerptOf('@alice launch forbidden(403) coin')).toBe('@alice launch forbidden 403 coin');
     expect(excerptOf('bu​y n‮ow\u0007')).toBe('buy now');
     expect(excerptOf('​⁠')).toBeNull();
     expect(excerptOf('')).toBeNull();

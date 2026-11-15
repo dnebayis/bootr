@@ -358,7 +358,12 @@ describe('x credits', () => {
   it('recognises X 402 errors from a publish receipt and from a mention read', () => {
     expect(isXCreditsError('sender_rejected:http_402(402): credits depleted')).toBe(true);
     expect(isXCreditsError('x_http_402')).toBe(true);
-    expect(isXCreditsError('credits depleted')).toBe(true);
+    // X's words alone are no code: a refusal of the gate that quotes a post saying them is not a 402
+    expect(isXCreditsError('credits depleted')).toBe(false);
+    expect(isXCreditsError('social_execution_command_forbidden: "@alice launch credits depleted coin" reads as an order')).toBe(false);
+    expect(isXCreditsError('sender_rejected:policy:social_execution_command_forbidden: "http_402 coin" reads as an order')).toBe(false);
+    expect(isXCreditsError('sender_rejected:media_upload_failed: http_402(402): credits depleted')).toBe(true);
+    expect(isXCreditsError('HTTP_402')).toBe(true);
     expect(isXCreditsError('sender:quota_exceeded')).toBe(false);
     expect(isXCreditsError('sender_rejected:policy:social_runtime_jargon_forbidden')).toBe(false);
     expect(isXCreditsError('http_4020')).toBe(false);

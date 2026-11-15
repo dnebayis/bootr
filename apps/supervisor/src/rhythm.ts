@@ -243,9 +243,25 @@ export function quotaHold(until: number | null | undefined, now: number): Hold |
 /** How long a 402 `credits depleted` publish holds the agent before one new try (X sends no retry time). */
 export const X_CREDITS_RETRY_MS = 30 * 60_000;
 
-/** X refused for lack of credits (HTTP 402): a publish error (`sender_rejected:http_402...`) or a read (`x_http_402`). */
+/**
+ * The code at the head of a tool error, which is all the X-hold classifiers below read: everything before the first
+ * space (as runtime.ts `errorCodeOf` cuts it), with the sender's picture wrapper unfolded
+ * (`sender_rejected:media_upload_failed: http_402(402): …` carries X's own error after it, never the agent's words).
+ * Since 2026-11-15 a gate refusal quotes up to 60 characters of the agent's own post after its code (agent-core
+ * gate-words.ts), so a steered post that said "forbidden(403)" or "credits depleted" held its account for hours, with
+ * a notice to the creator, through its own refusal (the security review of that day).
+ */
+export function xErrorHead(error: string | null | undefined): string {
+  const e = (error ?? '').trim().replace(/^(sender_rejected:)?media_upload_failed:\s+/, '$1');
+  return e.split(/\s/, 1)[0] ?? '';
+}
+
+/**
+ * X refused for lack of credits (HTTP 402), read in the code head only (`xErrorHead`): a publish receipt
+ * (`sender_rejected:http_402(402): …`, the sender's `describe` of X's answer), or a read (`x_http_402`).
+ */
 export function isXCreditsError(error: string | null | undefined): boolean {
-  return !!error && /(^|[^0-9])http_402(?![0-9])|credits depleted/i.test(error);
+  return /^(?:sender_rejected:)?(?:x_)?http_402(?![0-9])/i.test(xErrorHead(error));
 }
 
 /** The X app is out of credits until `until` (a guess, see `X_CREDITS_RETRY_MS`). Null once that time has passed. */
@@ -271,10 +287,11 @@ export function forbiddenHoldMs(strikes: number): number {
 
 /**
  * X refused the publish because the account may not post (the sender's `forbidden(403)`: "You are not permitted to
- * perform this action"). A duplicate post is also a 403 but comes back as `duplicate_content`, which is not this.
+ * perform this action"), read in the code head only (`xErrorHead`). A duplicate post is also a 403 but comes back as
+ * `duplicate_content`, which is not this.
  */
 export function isXForbiddenError(error: string | null | undefined): boolean {
-  return !!error && /(^|[^a-z_])forbidden\(403\)/i.test(error);
+  return /^(?:sender_rejected:)?forbidden\(403\)(?::|$)/i.test(xErrorHead(error));
 }
 
 /** The X account may not post until `until` (see `forbiddenHoldMs`). Null once that time has passed. */

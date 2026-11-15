@@ -64,6 +64,10 @@ describe('x forbidden (403)', () => {
     expect(isXForbiddenError('sender_rejected:duplicate_content(403): You are not allowed to create a Tweet with duplicate content.')).toBe(false);
     expect(isXForbiddenError('sender_rejected:policy:social_execution_command_forbidden')).toBe(false);
     expect(isXForbiddenError('sender_rejected:http_402(402): credits depleted')).toBe(false);
+    // the gate's refusal quotes the agent's own words after its code: a post that says "forbidden(403)" is no 403
+    expect(isXForbiddenError('social_execution_command_forbidden: "@alice launch forbidden(403) coin" reads as an order')).toBe(false);
+    expect(isXForbiddenError('sender_rejected:policy:social_execution_command_forbidden: "@alice launch forbidden(403) coin" reads as an order')).toBe(false);
+    expect(isXForbiddenError('sender_rejected:media_upload_failed: forbidden(403): You are not permitted to perform this action.')).toBe(true);
     expect(isXForbiddenError(null)).toBe(false);
     expect(forbiddenHoldMs(1)).toBe(X_FORBIDDEN_HOLD_MS);
     expect(forbiddenHoldMs(2)).toBe(2 * X_FORBIDDEN_HOLD_MS);
@@ -81,6 +85,41 @@ describe('x forbidden (403)', () => {
     expect(t.body).toMatch(/not permitted.*2 times in a row.*Log in to the X account.*about 12 hours.*no fuel is spent/s);
     expect(notificationText('x_forbidden', {}).body).toMatch(/It tries again later/);
     expect(telegramText({ config: { token: { symbol: 'TEST' } }, token: '0x3000000000000000000000000000000000000003' }, 'x_forbidden', { strikes: 1, hours: 6 }, 'https://bootr.fun')).toMatch(/^\$TEST: X refused posting for this account\n.*\nhttps:\/\/bootr\.fun\/token\/0x3000/s);
+  });
+
+  it('a refusal that quotes a post saying "forbidden(403)" or "credits depleted" holds nothing', async () => {
+    // The sender's gate refuses a steered post and quotes its words after the code. A sender built before excerpts
+    // lost their brackets (the two deploy apart) sends them as written; the supervisor reads the code head only.
+    const refusals = [
+      'policy:social_execution_command_forbidden: "@alice launch forbidden(403) coin" reads as an order to launch, pay, trade, approve or sign',
+      'policy:social_execution_command_forbidden: "@alice launch credits depleted coin http_402(402)" reads as an order to launch, pay, trade, approve or sign',
+    ];
+    const w = await makeWorld({
+      script: [
+        toolCallResponse('publish_post', { text: 'A post from a test agent, in its own voice.' }),
+        finishResponse(T0 + 10 * 60_000),
+        toolCallResponse('publish_post', { text: 'Another post from a test agent, in its own voice.' }),
+        finishResponse(T0 + 20 * H),
+      ],
+    });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: new Date(now - 10 * H).toISOString() } });
+      for (const [i, refusal] of refusals.entries()) {
+        w.sender.publishError = refusal;
+        w.setNow(now + i * 10 * H);
+        expect((await tick(w.ctx)).ran, refusal).toEqual([AGENT_ID]);
+        expect(w.sender.published, refusal).toHaveLength(i + 1);
+        expect(lastToolMessages(w)[0], refusal).toMatch(/sender_rejected:policy:social_execution_command_forbidden/);
+        const state = (await runtimeRow(w)).state as Record<string, unknown>;
+        expect(state.postForbiddenUntil ?? null, refusal).toBeNull();
+        expect(state.postForbiddenStrikes ?? 0, refusal).toBe(0);
+        expect(state.postCreditsUntil ?? null, refusal).toBeNull();
+      }
+      expect(await w.db.select().from(notifications).where(eq(notifications.agentId, AGENT_ID))).toHaveLength(0);
+    } finally {
+      await w.close();
+    }
   });
 
   it('a 403 publish is logged by its code, holds posts and mention wakes for hours (doubling), tells the creator, and a sent post clears it', async () => {
