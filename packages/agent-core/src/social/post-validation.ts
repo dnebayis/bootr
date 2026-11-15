@@ -1,5 +1,5 @@
 import { PolicyError } from '../errors.js';
-import { outgoingActionFinding, type RiskContext } from './communication-policy.js';
+import { normalizedCommunication, outgoingActionFinding, type RiskContext } from './communication-policy.js';
 import { outgoingDisclosureFinding, type DisclosureContext } from './disclosure-policy.js';
 import { excerptOf, gateRefusal, type GateFinding } from './gate-words.js';
 import type { Attribution } from '../types.js';
@@ -108,31 +108,81 @@ export function platformLinkFinding(text: string, attributions: unknown = []): P
 /** The one cashtag the platform account may use: its own coin. */
 export const PLATFORM_CASHTAG = '$BOOTR';
 
-const FIRST_PERSON = "(?:i|i'?ve|i'?m|i'?d|i have|we|we'?ve|we'?re|we have|my|our|me|us)";
-const TREASURY_VERB =
-  '(?:claim(?:ed|ing|s)?|swap(?:ped|ping|s)?|refuel(?:l?ed|l?ing|s)?|top(?:ped|ping|s)?[ -]?up|topped[ -]up|collect(?:ed|ing|s)?|harvest(?:ed|ing|s)?|earn(?:ed|ing|s)?|gas|fees?|treasury|balance|allowance)';
+/** The speaker as the one who acts: "I", "we", with their contractions. */
+const FIRST_PERSON_SUBJECT = "(?:i|we)(?:['’](?:ve|m|re|d|ll))?";
+/** What may stand between the speaker and the verb without changing who acts ("we have just", "i'm now", "i will"). */
+const SUBJECT_FILLER =
+  "(?:just|already|finally|also|then|now|recently|today|again|actually|quietly|successfully|automatically|manually|have|has|had|will|shall|would|did|do|am|are|was|were|been|be|gonna|going to|need to|needed to|want to|plan to|about to|should|must)";
+/** The treasury operations themselves. */
+const TREASURY_OPERATION =
+  '(?:claim(?:ed|ing|s)?|swap(?:ped|ping|s)?|refuel(?:l?ed|l?ing|s)?|top(?:ped|ping|s)?[ -]?up|collect(?:ed|ing|s)?|harvest(?:ed|ing|s)?|earn(?:ed|ing|s)?|withdr(?:ew|aw|awn|awing|aws)|cash(?:ed|ing)? out)';
+/** The money the speaker would hold: plural fees (the fee, a fee split, is how Bootr works and passes), gas, the rest. */
+const OWN_MONEY = '(?:fees|fee (?:income|earnings|revenue)|gas|treasury|balance|allowance|earnings|funds|wallet balance)';
 /**
- * The agent's own treasury operations in the first person: "I claimed", "we just swapped", "refuelled my gas",
- * "fees earned", "our treasury holds". The subject and the verb must share a sentence.
+ * The agent's own treasury operations: the speaker as the one who acts ("I claimed", "we have just swapped", "I'm
+ * topping up"), the speaker's own money ("my fees", "refuelled my gas", "our treasury holds", "my balance"), and the
+ * report of one with no subject at the head of a sentence ("Fees earned so far", "Gas top-up done"). The subject must
+ * stand right before the verb: a first-person sentence that only mentions a fee ("something I like: the fee split is
+ * locked"), and a third party that earns ("creators earn in ETH"), are this account's own beat and pass. Read over
+ * the folded text (`normalizedCommunication`), so a zero-width or a look-alike letter does not hide a word.
  */
 const TREASURY_TALK = new RegExp(
   [
-    `(?<![a-z0-9])${FIRST_PERSON}\\b[^.!?\\n]{0,60}?\\b${TREASURY_VERB}\\b`,
-    `\\bfees?\\s+(?:earned|claimed|collected|harvested|came in|landed)\\b`,
+    `(?<![a-z0-9])${FIRST_PERSON_SUBJECT}(?:\\s+${SUBJECT_FILLER}){0,3}\\s+${TREASURY_OPERATION}(?![a-z0-9])`,
+    `(?<![a-z0-9])${FIRST_PERSON_SUBJECT}(?:\\s+${SUBJECT_FILLER}){0,3}\\s+(?:paid|spent|burn(?:ed|t))\\b(?:[^.!?\\n]|\\.(?=\\d)){0,30}?\\b(?:gas|fees|fuel|eth|usdc)\\b`,
+    `(?<![a-z0-9])(?:my|our)\\s+(?:own\\s+)?${OWN_MONEY}(?![a-z0-9])`,
+    `(?:^|[.!?:;\\n]\\s*)fees?\\s+(?:earned|claimed|collected|harvested|came in|landed)\\b`,
     `\\b(?:gas|treasury)\\s+top[ -]?up\\b`,
   ].join('|'),
   'i',
 );
 
+/** A trade verb: "buy", "sell" and their forms. Alone it is an ordinary word ("agents buy services", "every buy and sell"). */
+const TRADE = '(?:buy|buying|bought|buys|sell|selling|sold|sells)';
+/** The forms an order takes: "buy", "sell". */
+const TRADE_ORDER = '(?:buy|sell)';
 /**
- * Buy, sell and hype vocabulary, explicit market calls, plus "10x"-style multipliers and "wen". Neutral figures pass:
- * the platform agent may state a price, a market cap, a volume or link a chart ("$BOOTR did $690k in volume today",
- * "market cap is $190k"), so those words alone are not here. What it says about them is: a prediction, a target, a
- * nudge, profit talk, a figure framed as a bargain. The patterns stay narrow because a refusal loses the post.
+ * What makes a trade verb a call: a coin as its object ("$BOOTR", "bootr", "the dip", "bags", "the coin", "this
+ * one"). A generic "coins" or "tokens" is not one: "agents buy tokens through the swap tool" says what a product does.
+ */
+const COIN_OBJECT =
+  '(?:\\$[a-z]|bootr\\b|(?:the|this|that|these|those|your|my|our)\\s+(?:coin|coins|token|tokens|dip|dips|bottom|top|news|rumou?r|bags?)\\b|(?:dip|dips|bags?)\\b|this one\\b|it all\\b)';
+/** What may stand between the verb and the coin: an amount or a quantity ("buy 1,000 $BOOTR", "buy a bag of", "sell some"). */
+const QUANTITY =
+  '(?:(?:some|more|a\\s+(?:bit|little|lot|bag|few)\\s+(?:of\\s+)?|any|all(?:\\s+of)?|half(?:\\s+of)?|\\$?\\d[\\d.,]*\\s*[kmb]?(?:\\s+(?:of|worth of))?)\\s*)';
+/** The end of a clause: what follows a bare "buy more" or "bought early" for it to be the whole call. */
+const CLAUSE_END = '(?=\\s*(?:[.!?,;:…)]|$))';
+/** What makes a trade verb a nudge by itself: urgency right after ("buy now", "sell today", "buy it now", "buy more."). */
+const URGENCY = `(?:(?:it|them|in|some)\\s+)?(?:now|today|tonight|asap|immediately|here|soon|quick(?:ly)?|the news)\\b|(?:more|early|in|back)${CLAUSE_END}`;
+/** A nudge in front of an order: "time to sell", "you should buy", "go buy", "i'd buy", "don't sell.", "keep buying". */
+const NUDGE = [
+  `(?:(?:good|great|best|perfect|right)\\s+)?time\\s+to\\s+${TRADE_ORDER}\\b`,
+  `(?:you|u|y['’]?all|everyone|anyone|we|people)\\s+(?:should|must|need to|have to|gotta|better|ought to)\\s+(?:\\w+\\s+)?${TRADE_ORDER}\\b`,
+  `(?:i['’]?d|i\\s+would|go|please|pls)\\s+${TRADE_ORDER}\\b`,
+  `(?:don['’]?t|do not|dont|never)\\s+sell${CLAUSE_END}`,
+  '(?:keep|start|stop|consider)\\s+(?:buying|selling)\\b',
+  `${TRADE_ORDER}\\s+signals?\\b`,
+].join('|');
+/**
+ * Hype and market calls: predictions, targets, nudges, profit talk, a figure framed as a bargain, "10x"-style
+ * multipliers and "wen". Neutral figures pass: the platform agent may state a price, a market cap, a volume or link a
+ * chart ("$BOOTR did $690k in volume today", "market cap is $190k"), so those words alone are not here. What it says
+ * about them is.
+ *
+ * "Buy" and "sell" are calls only in a call's shape (2026-11-15; before, the bare words refused 1 in 10 posts, among
+ * them "agents that buy services" and "every buy and sell"): with a coin as the object ("buy $BOOTR", "buy the dip",
+ * "sell your bags", "buy 1,000 bootr"), with urgency or more after ("buy now", "buy more"), with a nudge before
+ * ("time to sell", "you should buy", "don't sell", "keep buying"), or as the order that opens a sentence ("Buy.",
+ * "Sell before the news"). Read over the folded text, so a zero-width or a look-alike letter does not hide a word.
  */
 const PRICE_TALK = new RegExp(
   [
-    "\\b(?:buy|buying|bought|sell|selling|sold|pump(?:ed|ing|s)?|dump(?:ed|ing|s)?|moon(?:ed|ing|s)?|mooning|wen|ath|lfg|wagmi|ngmi|bullish|bearish|undervalued|overvalued|cheap|dip|dips|rug|rugged|degen|ape|aped|aping|send it|to the moon|price target|price (?:prediction|call|action))\\b",
+    `\\b${TRADE}(?![-'’])\\s+${QUANTITY}?${COIN_OBJECT}`,
+    `\\b${TRADE}(?![-'’])\\s+(?:${URGENCY})`,
+    `\\b(?:${NUDGE})(?![-'’])`,
+    `(?:^|[.!?:;\\n"“'‘(]\\s*)${TRADE_ORDER}(?:${CLAUSE_END}|\\s+(?:before|while|and\\s+(?:hold|forget|wait))\\b)`,
+    '\\b(?:load(?:ing)?\\s+up\\s+on|stack(?:ing)?|accumulat(?:e|ing))\\s+(?:some\\s+|more\\s+)?(?:\\$[a-z]|bootr\\b)',
+    "\\b(?:pump(?:ed|ing|s)?|dump(?:ed|ing|s)?|moon(?:ed|ing|s)?|mooning|wen|ath|lfg|wagmi|ngmi|bullish|bearish|undervalued|overvalued|cheap|dip|dips|rug|rugged|degen|ape|aped|aping|send it|to the moon|price target|price (?:prediction|call|action))\\b",
     // A prediction: "price will", "$BOOTR to $1m", "will go up", "going to hit $1m", "target $1m".
     "\\b(?:price|market cap|mcap|valuation)\\s+(?:will|won['’]?t|is going to|is gonna|gonna|can only)\\b",
     "\\b(?:will|won['’]?t|could|might|may|should|going to|gonna|about to|set to|bound to)\\s+(?:go up|go down|rise|fall|soar|skyrocket|explode|rally|double|triple|recover|bounce)\\b",
@@ -164,13 +214,20 @@ export function platformPostRisk(text: string): PlatformCode | null {
   return platformPostFinding(text)?.code ?? null;
 }
 
-/** `platformPostRisk` with the words of the text that tripped the rule. */
+/**
+ * `platformPostRisk` with the words of the text that tripped the rule. The word rules read the folded text (entities
+ * and escapes decoded, zero-width characters gone, look-alike letters read as Latin: `normalizedCommunication`), as
+ * the common rules do; shouting and emoji read the text as written, since case and pictographs are what they are about.
+ */
 export function platformPostFinding(text: string): PlatformFinding | null {
-  const treasury = TREASURY_TALK.exec(text);
+  const folded = normalizedCommunication(text);
+  const treasury = TREASURY_TALK.exec(folded);
   if (treasury) return { code: 'platform_treasury_talk_forbidden', excerpt: excerptOf(treasury[0]) };
-  const price = PRICE_TALK.exec(text);
+  const price = PRICE_TALK.exec(folded);
   if (price) return { code: 'platform_price_talk_forbidden', excerpt: excerptOf(price[0]) };
-  const foreign = [...text.matchAll(CASHTAG)].find((m) => m[0].toUpperCase() !== PLATFORM_CASHTAG);
+  // As written first, so the refusal quotes the cashtag as the post has it; folded after, for a full-width one.
+  const isForeign = (m: RegExpMatchArray) => m[0].toUpperCase() !== PLATFORM_CASHTAG;
+  const foreign = [...text.matchAll(CASHTAG)].find(isForeign) ?? [...folded.matchAll(CASHTAG)].find(isForeign);
   if (foreign) return { code: 'platform_foreign_cashtag_forbidden', excerpt: excerptOf(foreign[0]) };
   const loud = [...text.matchAll(SHOUTING)].find((m) => m[0].replace(/[^A-Z]/g, '').length >= 8);
   if (loud) return { code: 'platform_shouting_forbidden', excerpt: excerptOf(loud[0]) };

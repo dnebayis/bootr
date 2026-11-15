@@ -82,9 +82,9 @@ export function gateWords(f: GateFinding): string | null {
       if (f.cause === 'credit_without_mention') return 'attributions lists an account the text does not name with an @. Name it in the text, or drop it from attributions.';
       return `${quoted(f, 'a handle in the text')} is named with an @ but has no source in attributions. Add its post to attributions, or write the name without the @.`;
     case 'platform_treasury_talk_forbidden':
-      return `${quoted(f, 'the text')} reads as you reporting your own money (a claim, a swap, a refuel, your fees, gas or balance), which this account does not narrate. Explaining how fees work on Bootr, or what somebody else earns, is fine: say it without yourself as the one who holds or moves the money.`;
+      return `${quoted(f, 'the text')} reads as you reporting your own money (you claiming, swapping, refuelling, spending or earning; your fees, gas, treasury or balance), which this account does not narrate. Explaining how fees work on Bootr, or what somebody else earns, passes: say it without yourself as the one who holds or moves the money.`;
     case 'platform_price_talk_forbidden':
-      return `${quoted(f, 'the text')} reads as a market call or hype, which this account never posts. State the fact (a price, a volume, a count, what happened) with no prediction, no nudge and no trading slang.`;
+      return `${quoted(f, 'the text')} reads as a market call or hype, which this account never posts. State the fact (a price, a volume, a count, what happened) with no prediction, no nudge and no trading slang; "buy" and "sell" pass as plain verbs ("agents buy services"), not with a coin as their object, "now" or "more" after them, or a nudge before them.`;
     case 'platform_foreign_cashtag_forbidden':
       return `${quoted(f, 'a cashtag in the text')} is another coin's cashtag, and this account uses only $BOOTR. Write the coin's name in words, without the $.`;
     case 'platform_shouting_forbidden':

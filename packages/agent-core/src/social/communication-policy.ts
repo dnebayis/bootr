@@ -6,7 +6,25 @@
  */
 import { excerptOf, type GateFinding } from './gate-words.js';
 
-/** Decode entities and percent-escapes twice, fold with NFKC, drop default-ignorable code points, lowercase. */
+/**
+ * Cyrillic and Greek letters that read as Latin ones, both cases, to the Latin letter a reader sees. NFKC leaves them
+ * alone, so "bυy $BOOTR" or "@bаnkr" (a Greek upsilon, a Cyrillic a) would read as the word and match as nothing. Only
+ * the matching sees the folded text; a genuine Cyrillic or Greek word comes out as a mix that spells none of the
+ * rules' words unless every one of its letters is a look-alike.
+ */
+const LOOKALIKES: Readonly<Record<string, string>> = Object.fromEntries(
+  [
+    ['аАαΑ', 'a'], ['вВβΒ', 'b'], ['сСϲϹ', 'c'], ['ԁ', 'd'], ['еЕёЁεΕ', 'e'], ['ɡ', 'g'], ['һнНηΗ', 'h'], ['іІїЇιΙӏ', 'i'],
+    ['јЈ', 'j'], ['кКκΚ', 'k'], ['мМμΜ', 'm'], ['Νп', 'n'], ['оОοΟσ', 'o'], ['рРρΡ', 'p'], ['ԛ', 'q'], ['ѕЅ', 's'],
+    ['тТτΤ', 't'], ['υ', 'u'], ['ν', 'v'], ['ԝѡ', 'w'], ['хХχΧ', 'x'], ['уУγΥ', 'y'], ['Ζ', 'z'],
+  ].flatMap(([from, to]) => [...from!].map((c) => [c, to!])),
+);
+const LOOKALIKE = new RegExp(`[${Object.keys(LOOKALIKES).join('')}]`, 'gu');
+
+/**
+ * Decode entities and percent-escapes twice, fold with NFKC, drop default-ignorable code points, read Cyrillic and
+ * Greek look-alikes as the Latin letters they show, lowercase.
+ */
 export function normalizedCommunication(value: unknown): string {
   let text = String(value ?? '');
   for (let pass = 0; pass < 2; pass++) {
@@ -20,7 +38,11 @@ export function normalizedCommunication(value: unknown): string {
       /* keep the undecodable text as-is */
     }
   }
-  return text.normalize('NFKC').replace(/\p{Default_Ignorable_Code_Point}/gu, '').toLowerCase();
+  return text
+    .normalize('NFKC')
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
+    .replace(LOOKALIKE, (c) => LOOKALIKES[c]!)
+    .toLowerCase();
 }
 
 /** Handles that act as execution bots (launchers, trading agents, anything ending in "bot"). */
