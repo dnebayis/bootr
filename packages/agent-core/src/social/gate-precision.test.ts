@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { postFinding, postRefusal, type PostValidationContext } from './post-validation.js';
 import { threadRefusal } from './thread.js';
-import { xStatusIds } from './communication-policy.js';
+import { outgoingActionRisk, xStatusIds } from './communication-policy.js';
 
 const PLATFORM: PostValidationContext = { platform: true };
 const codeOf = (text: string, context: PostValidationContext = PLATFORM, attributions: unknown = []) => postFinding(text, attributions, 'original', false, context)?.code ?? null;
@@ -372,3 +372,13 @@ describe('platform_treasury_talk_forbidden: a first-person sentence that mention
     expect(threadRefusal(['How the fee split works on Bootr.', 'I claimed mine this morning.'], [], PLATFORM)).toMatch(/^platform_treasury_talk_forbidden: part 2 .*"i claimed"/);
   });
 });
+
+describe('wallet payloads: a URI, not the word', () => {
+  it('refuses a payment or pairing URI and lets a sentence that opens with the chain name through', () => {
+    for (const text of ['pay here: ethereum:0x52908400098527886E0F7030069857D2E4169EE7@8453?value=1e16', 'ethereum:pay-0x52908400098527886E0F7030069857D2E4169EE7@8453', 'connect with wc:8a5e5bdc-a0e4-47@2?relay-protocol=irn', 'solana:7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU?amount=1'])
+      expect(outgoingActionRisk(text), text).toBe('social_wallet_payload_forbidden');
+    for (const text of ['Ethereum: the next upgrade ships blobs to more rollups.', 'solana: one chain among many, with its own fee market.', 'three chains in one sentence: ethereum, base and solana.'])
+      expect(outgoingActionRisk(text), text).toBeNull();
+  });
+});
+

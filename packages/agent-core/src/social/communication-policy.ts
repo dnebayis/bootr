@@ -314,7 +314,9 @@ const PAYMENT_IN_SENTENCE = inSentence(PAYMENT_PATTERN);
  */
 const WALLET_PAYLOAD = new RegExp(
   [
-    '\\b(?:ethereum|solana|wc):',
+    // A payment or pairing URI runs straight on after its colon (`ethereum:0x…`, `ethereum:pay-0x…`, `wc:…@2`); a
+    // sentence that opens with the word ("Ethereum: the merge…") has a space there and is not one.
+    '\\b(?:ethereum|solana|wc):(?!\\s|$)',
     '\\bbitcoin:(?:bc1|[13])',
     '\\b(?:metamask|cbwallet|trust|rainbow|phantom|okx|imtokenv2|tpoutside|zerion|uniswap)://',
     '\\btg:\\/\\/[^\\s]*(?:start|send|text)=',
