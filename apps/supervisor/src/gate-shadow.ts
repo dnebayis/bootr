@@ -13,12 +13,12 @@ import { createHash } from 'node:crypto';
 import type { SupervisorContext } from './context.js';
 import { gateShadow } from './db/schema.js';
 
-/** The gates by their id in the design note: G1 repeat, G3 fee claims, G4 cross-agent, G6 units. */
-export type GateId = 'G1' | 'G3' | 'G4' | 'G6';
+/** The gates by their id in the design note: G1 repeat, G3 fee claims, G4 cross-agent, G5 number in evidence, G6 units. */
+export type GateId = 'G1' | 'G3' | 'G4' | 'G5' | 'G6';
 export type GateMode = 'enforce' | 'shadow' | 'off';
 
 /** The setting of each gate (config.ts). */
-const GATE_SETTING = { G1: 'REPEAT_GATE', G3: 'FEE_CLAIM_GATE', G4: 'CROSS_AGENT_GATE', G6: 'UNITS_GATE' } as const;
+const GATE_SETTING = { G1: 'REPEAT_GATE', G3: 'FEE_CLAIM_GATE', G4: 'CROSS_AGENT_GATE', G5: 'NUMBER_GATE', G6: 'UNITS_GATE' } as const;
 
 /** The mode a gate runs in. A caller that holds only a part of the config (a test) gets the gate's default: `shadow`, and `enforce` for the fee claims. */
 export function gateMode(ctx: { config?: Partial<Record<(typeof GATE_SETTING)[GateId], unknown>> | null }, gate: GateId): GateMode {
@@ -35,7 +35,7 @@ export function gateTextHash(text: string): string {
 export interface GateHit {
   agentId: string;
   gate: GateId;
-  /** The head of the refusal: `repeat_fact`, `repeat_opener`, `fee_claim_false`, `similar_post`, `unit_on_token_amount`. */
+  /** The head of the refusal: `repeat_fact`, `repeat_opener`, `repeat_record`, `fee_claim_false`, `similar_post`, `number_not_in_evidence`, `record_not_shown`, `unit_on_token_amount`. */
   code: string;
   /** The `sv_actions` row of the publish (for a scheduled post at its send, the id of the scheduled row); null when the caller has none. */
   actionId?: string | null;

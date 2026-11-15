@@ -68,17 +68,26 @@ export async function servedTo(db: Db, agentId: string, recordIds: readonly stri
 
 /**
  * Notes that a post of `agentId` citing `recordIds` went out, was scheduled or was queued for review: from here on the
- * seam does not serve them to this agent. Only rows that exist are marked (an id the agent was never handed is not a
- * citation), and the first time stands. Never throws.
+ * seam does not serve them to this agent. `by` is that post (the id of its publish action, of its scheduled row or of
+ * its review item). Only rows that exist are marked (an id the agent was never handed is not a citation), and the
+ * first citation stands. Never throws.
  */
-export async function markCited(ctx: ServedCtx, agentId: string, recordIds: readonly string[]): Promise<void> {
+export async function markCited(ctx: ServedCtx, agentId: string, recordIds: readonly string[], by: string | null = null): Promise<void> {
   const ids = [...new Set(recordIds)].slice(0, 16);
   if (!ids.length) return;
   try {
-    await ctx.db.update(recordsServed).set({ citedAt: new Date(ctx.now()) }).where(and(inArray(recordsServed.id, ids.map((id) => rowId(agentId, id))), isNull(recordsServed.citedAt)));
+    await ctx.db.update(recordsServed).set({ citedAt: new Date(ctx.now()), citedBy: by }).where(and(inArray(recordsServed.id, ids.map((id) => rowId(agentId, id))), isNull(recordsServed.citedAt)));
   } catch (err) {
     ctx.log.warn({ agentId, err: err instanceof Error ? err.message : String(err) }, 'records served: a citation could not be noted');
   }
+}
+
+/** Of `recordIds`, the ones a post of this agent already cited, each with when and by which post. One indexed read; none for an empty list. */
+export async function citedBefore(db: Db, agentId: string, recordIds: readonly string[]): Promise<{ recordId: string; at: Date; by: string | null }[]> {
+  const ids = [...new Set(recordIds)].slice(0, 16);
+  if (!ids.length) return [];
+  const rows = await db.select({ recordId: recordsServed.recordId, at: recordsServed.citedAt, by: recordsServed.citedBy }).from(recordsServed).where(inArray(recordsServed.id, ids.map((id) => rowId(agentId, id))));
+  return rows.filter((r): r is { recordId: string; at: Date; by: string | null } => r.at !== null);
 }
 
 /** Whether the dataset handed this agent at least one record in a turn since `since` (epoch ms). One indexed read. */

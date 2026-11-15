@@ -6,7 +6,8 @@ CREATE TABLE "sv_records_served" (
 	"last_served_at" timestamp with time zone NOT NULL,
 	"times" integer DEFAULT 1 NOT NULL,
 	"offered" integer DEFAULT 0 NOT NULL,
-	"cited_at" timestamp with time zone
+	"cited_at" timestamp with time zone,
+	"cited_by" text
 );
 --> statement-breakpoint
 ALTER TABLE "sv_scheduled_posts" ADD COLUMN "record_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint

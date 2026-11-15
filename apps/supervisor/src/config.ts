@@ -495,10 +495,28 @@ export const configSchema = z
     /**
      * Bootr's own dataset (src/dataset/; docs/design/agent-behaviour.md section 6.4). The switch belongs to the dataset
      * process (dataset/config.ts), which reads nothing unless it is exactly `true`; here it only tells the owner's view
-     * whether that process is on (any other value is off, and never an error: the variable is another process's). No agent
-     * reads the dataset in this stage, whatever the value.
+     * whether that process is on (any other value is off, and never an error: the variable is another process's). It
+     * is also the one switch of everything an agent sees of the dataset (records-turn.ts): unless it is exactly `true`
+     * no turn is handed a record, no tool offers `record`, and the platform account's quiet slot is off.
      */
     DATASET_ENABLED: z.preprocess((v) => v === 'true', z.boolean()),
+    /**
+     * Records for the platform account (records-turn.ts; docs/design/agent-behaviour.md stage 5): how many records a
+     * turn of its that holds a due post slot is handed at most, and the lowest sourcing grade among them (1 to 5; the
+     * grade is said in words on each). 0 records = none, whatever the dataset holds. Coin agents are handed none yet.
+     */
+    PLATFORM_RECORDS: int(5, 0),
+    PLATFORM_RECORDS_MIN_GRADE: z.preprocess((v) => (v === '' || v === undefined ? 1 : v), z.coerce.number().int().min(1).max(5)),
+    /**
+     * The number gate (number-gate.ts; gate G5, rule R4): every number in a post that cites a record is in that record's
+     * numbers or in the agent's own data of the turn. `shadow` unless set otherwise, like the other gates.
+     */
+    NUMBER_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /**
+     * Which wording of the platform account's prompt is in force (platform-persona.ts, agent-core `platformRulesV2`;
+     * docs/design/platform-prompt-v2.md): `v1` is the owner's own, `v2` the rewrite without its contradictions.
+     */
+    PLATFORM_PROMPT: z.preprocess((v) => (v === '' || v === undefined ? 'v1' : v), z.enum(['v1', 'v2'])),
     LOG_LEVEL: z.preprocess((v) => (v === '' || v === undefined ? 'info' : v), z.string()),
   })
   .transform((c) => {

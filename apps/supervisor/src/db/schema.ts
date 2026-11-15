@@ -917,6 +917,8 @@ export const recordsServed = pgTable(
     offered: integer('offered').notNull().default(0),
     /** When a post of this agent that cites the record went out, was scheduled or was queued for review; null until then. */
     citedAt: ts('cited_at'),
+    /** The post that cited it: the id of its publish action, of its scheduled row or of its review item. The same post asked again is not a repeat. */
+    citedBy: text('cited_by'),
   },
   (t) => [index('sv_records_served_agent_idx').on(t.agentId, t.lastServedAt)],
 );

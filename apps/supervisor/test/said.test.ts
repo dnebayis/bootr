@@ -92,9 +92,9 @@ describe('saidRowsOf: what one completed publish gives the ledger', () => {
     expect(saidRowsOf({ agentId: '7', actionId: 'act_c', action: { kind: 'config_updated' }, result: null, at })).toEqual([]);
   });
 
-  it('keeps the place for the records a post cited', () => {
-    const rows = saidRowsOf({ agentId: '7', actionId: 'act_2', action: { tool: 'publish_post', input: { text: ECO, record: [{ id: 'r_8f3a' }, { id: 'r_11bc' }] } }, result: { postId: '1' }, at });
-    expect(rows[0]).toMatchObject({ recordIds: ['r_8f3a', 'r_11bc'], fingerprints: ['agents:1.0e6', 'agents:1.2e6'] });
+  it('keeps the records a post cited, read the forgiving way (recordSaid then keeps the ones the agent was handed)', () => {
+    const rows = saidRowsOf({ agentId: '7', actionId: 'act_2', action: { tool: 'publish_post', input: { text: ECO, record: [{ id: 'r_00000000008f' }, { id: 'R_0000000011BC' }, { id: 'not a record' }] } }, result: { postId: '1' }, at });
+    expect(rows[0]).toMatchObject({ recordIds: ['r_00000000008f', 'r_0000000011bc'], fingerprints: ['agents:1.0e6', 'agents:1.2e6'] });
   });
 });
 
