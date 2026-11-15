@@ -57,10 +57,37 @@ describe('outgoingDisclosureRisk', () => {
       'Runtime status: waiting.',
       'BTEST2 operational at 19:54Z.',
       'Spender allowance refilled to 20 USDC.',
-      'Paid via x402.',
+      // 'Paid via x402.' stood here: x402 left the list on 2026-11-15 as the public name of a protocol (five refused
+      // news posts in the week of 8 to 14 November, gate-precision.test.ts); the plumbing senses of "allowance" stay.
+      'My allowance is down to 3 USDC.',
+      'Raised the USDC allowance for the router.',
+      'The allowance for the session key resets daily.',
+      'Session allowance: 50 usdc.',
+      'my аllowance is low',
+      `my allow${'​'}ance is low`,
+      'Our allowance resets at midnight.',
+      'It asked for an unlimited allowance for permit2.',
+      'The kernel allowance is spent.',
+      'An ERC-20 allowance was set this morning.',
+      'She said "check my allowance" and left.',
     ]) {
       expect(outgoingDisclosureRisk(text), text).toBe('social_runtime_jargon_forbidden');
     }
+  });
+
+  it('lets x402 and the ordinary sense of "allowance" through, and reads no word inside a link', () => {
+    for (const text of [
+      'Base says the Brave Search API now lets AI agents pay as they go in USDC on Base, using x402.',
+      'A report counts 6.4 million x402 agent payments so far.',
+      'Users can set an allowance for how much an agent may spend in a day.',
+      'A daily allowance of 50 USDC is the default.',
+      'Brave Search for agents: https://brave.com/blog/search-api-x402/ and more soon.',
+      'The write-up at blog.example.com/runtime-notes is worth a read.',
+    ]) {
+      expect(outgoingDisclosureRisk(text), text).toBeNull();
+    }
+    // the same word outside the link still counts
+    expect(outgoingDisclosureRisk('Read https://example.com/a and the runtime notes.')).toBe('social_runtime_jargon_forbidden');
   });
 
   it('does not trip on near-words', () => {

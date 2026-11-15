@@ -47,6 +47,11 @@ const INTERNAL_REFERENCE = new RegExp(
 /**
  * Words from the agent loop that only make sense to the people who built it.
  * A post that contains them is a log line, not a post.
+ *
+ * Not here since 2026-11-15: `x402`, the public name of a payment protocol that Base, Coinbase, Brave and Exa use in
+ * their own announcements (five news posts about it were refused in the week of 8 to 14 November), and the bare word
+ * "allowance", ordinary English for what a user lets an agent spend; the plumbing sense stays (a spender's or a
+ * session's allowance, "my allowance", a token's allowance). The list reads the text with its links taken out.
  */
 const RUNTIME_JARGON = new RegExp(
   [
@@ -61,7 +66,8 @@ const RUNTIME_JARGON = new RegExp(
     '\\bruntime\\b',
     '\\binference\\b',
     '\\b(?:spender|session)[- ](?:key|allowance|signer)s?\\b',
-    '\\ballowance\\b',
+    '\\b(?:my|our|spender|session|signer|kernel|usdc|eth|weth|token|erc-?20|approval|unlimited|infinite|max)\\s+allowances?\\b',
+    '\\ballowances?\\s+(?:for|of|to)\\s+(?:the\\s+|its\\s+|my\\s+|our\\s+)?(?:spender|session|key|signer|kernel|contract|router|permit2)\\b',
     '\\bsystem prompt\\b',
     '\\b(?:owner|bootr) rules?\\b',
     '\\bpending action\\b',
@@ -69,7 +75,6 @@ const RUNTIME_JARGON = new RegExp(
     '\\buser ?ops?\\b',
     '\\bbundler\\b',
     '\\bpaymaster\\b',
-    '\\bx402\\b',
     '\\bpermission id\\b',
     '\\bentry ?point\\b',
     '\\bagent card\\b',
@@ -77,6 +82,9 @@ const RUNTIME_JARGON = new RegExp(
 );
 
 const EVM_ADDRESS = /0x[a-f0-9]{40}(?![a-f0-9])/g;
+
+/** A link, explicit or a bare host with a path, as the jargon rule leaves it out. */
+const LINK = /\bhttps?:\/\/\S+|(?<![\w@/.-])(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*/g;
 
 /** Scientific notation ($2.3e-7, 1e18): a number nobody reads, round it instead. */
 const SCIENTIFIC_NOTATION = /(?<![a-z0-9.])\d+(?:\.\d+)?e[+-]?\d+(?![a-z0-9])/;
@@ -113,7 +121,8 @@ export function outgoingDisclosureFinding(value: unknown, context: DisclosureCon
   if (SECRET_MATERIAL.test(text.replace(EXPLORER_TX_LINK, ' '))) return { code: 'social_secret_material_forbidden', excerpt: null };
   const internal = INTERNAL_REFERENCE.exec(text);
   if (internal) return { code: 'social_internal_reference_forbidden', excerpt: excerptOf(internal[0]) };
-  const jargon = RUNTIME_JARGON.exec(text);
+  // A word inside a link is the address of a page, not a word of the post ("…/x402-payments-on-base").
+  const jargon = RUNTIME_JARGON.exec(text.replace(LINK, ' '));
   if (jargon) return { code: 'social_runtime_jargon_forbidden', excerpt: excerptOf(jargon[0]) };
   const number = SCIENTIFIC_NOTATION.exec(text);
   if (number) return { code: 'social_unreadable_number_forbidden', excerpt: excerptOf(number[0]) };

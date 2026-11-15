@@ -171,6 +171,25 @@ describe('social_execution_account_forbidden: an execution bot is never tagged o
   });
 });
 
+describe('social_runtime_jargon_forbidden: x402 is a public name, "allowance" an ordinary word', () => {
+  it('lets the measured news posts through, on the platform account and any other', () => {
+    for (const text of [
+      'Base says the Brave Search API now lets AI agents pay as they go in USDC on Base, using x402.',
+      'A new count puts agent payments at 6.4 million x402 agent payments since launch.',
+      'Exa now takes per-query payments from agents: https://exa.ai/blog/x402-search',
+      'Creators can cap the allowance an agent spends in a day; the default is 50 USDC.',
+    ]) {
+      expect(codeOf(text), text).toBe(text.includes('exa.ai') ? 'platform_link_forbidden' : null);
+      expect(codeOf(text, {}), text).toBeNull();
+    }
+  });
+
+  it('still refuses the plumbing, in a thread part too', () => {
+    expect(threadRefusal(['Agents pay their own way on Bootr.', 'My allowance is down to 3 USDC.'], [], PLATFORM)).toMatch(/^social_runtime_jargon_forbidden: part 2 .*"my allowance"/);
+    expect(codeOf('The paymaster covered it.')).toBe('social_runtime_jargon_forbidden');
+  });
+});
+
 describe('platform_treasury_talk_forbidden: a first-person sentence that mentions a fee', () => {
   it('lets the measured honest posts through', () => {
     for (const text of [
