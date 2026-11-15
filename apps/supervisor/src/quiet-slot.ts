@@ -39,8 +39,8 @@
  *
  * Who gets it: hosted coin agents, unless the deployment (`QUIET_SLOT=false`) or the coin's creator (`quietSlot:
  * false` in the stored config; on when absent, so existing coins need no migration) switched it off. An own agent is
- * told by `due` that its post slot is not due under the same rule (own/social.ts). The platform account never gets
- * it: it has nothing to be quiet about until the dataset exists.
+ * told by `due` that its post slot is not due under the same rule (own/social.ts). The platform account gets its own
+ * version once the dataset feeds it records (platform-quiet.ts); this file never skips its slot.
  */
 import type { AgentConfig } from '@bootr/agent-core';
 import { COIN_BRIEF_MILESTONE_KINDS } from './coin-today.js';
@@ -144,7 +144,25 @@ export function lastMilestoneAt(feed: PlatformFeedData | null | undefined, agent
   return times.length ? Math.max(...times) : null;
 }
 
-export type QuietReason = 'mention' | 'creator_request' | 'config_changed' | 'hold_ended' | 'platform_update' | 'quiet_ceiling' | 'first_slot' | 'coin_unknown' | 'holders_changed' | 'new_trade' | 'new_milestone';
+export type QuietReason =
+  | 'mention'
+  | 'creator_request'
+  | 'config_changed'
+  | 'hold_ended'
+  | 'platform_update'
+  | 'quiet_ceiling'
+  | 'first_slot'
+  | 'coin_unknown'
+  | 'holders_changed'
+  | 'new_trade'
+  | 'new_milestone'
+  // the platform account's (platform-quiet.ts)
+  | 'numbers_due'
+  | 'digest_due'
+  | 'records_unserved'
+  | 'new_record'
+  | 'watchlist'
+  | 'check_failed';
 
 export interface QuietInput {
   /** The mark of the agent's last slot; null when it never had one. */
