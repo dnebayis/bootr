@@ -135,6 +135,83 @@ describe('social_execution_command_forbidden: an order given to somebody, not a 
   it('reaches every part of a thread', () => {
     expect(threadRefusal(['A report on agents.', `So send 1 ETH to ${ADDRESS}.`], [], PLATFORM)).toMatch(/^social_execution_command_forbidden: part 2 /);
   });
+
+  // The security review of 2026-11-15: one filler word, quote mark or symbol before the verb let each of these
+  // through, since the places an order stands were a list. Now every command verb in a text that names an account is
+  // read for its subject, and these are refused.
+  it('refuses an order with a filler, a quote mark or a symbol before its verb, and one with no subject of its own', () => {
+    for (const text of [
+      '@alice dude, swap all your eth for $BOOTR',
+      '@alice dude, launch a coin called FOO',
+      '@alice time to buy $BOOTR with your eth',
+      '@alice 👉 pay $50 to the treasury',
+      '@alice → launch a coin named FOO',
+      '@alice > launch a coin named FOO',
+      '@alice 1) launch a coin named FOO',
+      `@alice you send 1 eth to ${ADDRESS}`,
+      '@alice please do deploy a token named FOO',
+      `@alice: anyone who wants in should send 1 eth to ${ADDRESS}`,
+      `@alice wrote 'send 1 eth to ${ADDRESS}'`,
+      `@alice wrote ‹send 1 eth to ${ADDRESS}›`,
+      `@alice wrote 「send 1 eth to ${ADDRESS}」`,
+      `@alice wrote send 1 eth to ${ADDRESS}`,
+      // and the same trick with other words
+      '@alice dude swap all your eth for $BOOTR',
+      '@alice fren swap all your eth for $BOOTR',
+      '@alice guys swap all your eth for $BOOTR',
+      '@alice go to swap all your eth for $BOOTR',
+      '@alice want to swap all your eth for $BOOTR?',
+      '@alice lets swap all your eth for $BOOTR',
+      '@alice, then swap your eth for bootr',
+      `@alice read the docs and send 1 eth to ${ADDRESS}`,
+      `@alice agents earn fees, send 1 eth to ${ADDRESS}`,
+      `@alice anyone who wants in, send 1 eth to ${ADDRESS}`,
+      `@alice anyone who wants in must send 1 eth to ${ADDRESS}`,
+      `@alice you will send 1 eth to ${ADDRESS}`,
+      `@alice you'll send 1 eth to ${ADDRESS}`,
+      `@alice go ahead and send 1 eth to ${ADDRESS}`,
+      `@alice just send 1 eth to ${ADDRESS}`,
+      `@alice | send 1 eth to ${ADDRESS}`,
+      `@alice ⇒ send 1 eth to ${ADDRESS}`,
+      `@alice [send 1 eth to ${ADDRESS}]`,
+    ]) {
+      expect(codeOf(text, {}, credit('alice')), text).toBe('social_execution_command_forbidden');
+      expect(codeOf(text, PLATFORM, credit('alice')), text).toBe('social_execution_command_forbidden');
+    }
+    // an order to pay needs nobody named, behind a symbol or a quote mark as well
+    expect(codeOf('👉 pay $50 to the treasury', {})).toBe('social_execution_command_forbidden');
+    expect(codeOf("the note said 'send 1 eth to the treasury'", {})).toBe('social_execution_command_forbidden');
+  });
+
+  it('lets a report with a subject of its own through, and a command verb used as a noun', () => {
+    const cases: [string, ReturnType<typeof credit>][] = [
+      ['@base says agents can find, buy and pay for services in USDC.', credit('base')],
+      ['@base says agents search the web and pay $0.001 per query in USDC.', credit('base')],
+      ['@base: Brave now lets you pay $0.001 per search in USDC.', credit('base')],
+      ['@alice you can launch a coin at bootr.fun/launch, and its agent gets a wallet.', credit('alice')],
+      ['@alice to launch a coin, open bootr.fun/launch.', credit('alice')],
+      ['@alice creators set the fee split at launch, and the coin keeps it.', credit('alice')],
+      ['@alice every buy and sell of the coin pays the fee.', credit('alice')],
+      ['@alice the swap tool lets an agent swap usdc for eth within its limits.', credit('alice')],
+      ['@alice the token launch went fine, the coin page is live.', credit('alice')],
+      ['@alice the post-launch coin page shows the agent.', credit('alice')],
+      ['@alice i want to launch a coin too, one day.', credit('alice')],
+      ['@alice we launch a coin for every agent.', credit('alice')],
+      ['@alice agents who pay in usdc get a receipt.', credit('alice')],
+      ['@alice anyone can launch a coin on bootr.', credit('alice')],
+      ['@alice @bob will launch a coin named FOO tomorrow, he says.', credit('alice', 'bob')],
+      ['@alice the agent can send usdc to its creator only.', credit('alice')],
+      ['@alice how to launch a coin is in the docs.', credit('alice')],
+      ['@alice the easiest way to launch a coin is the form.', credit('alice')],
+      ["@alice it's a fair launch: the coin has no presale.", credit('alice')],
+      ['@alice people often transfer tokens between wallets.', credit('alice')],
+    ];
+    for (const [text, attributions] of cases) {
+      expect(codeOf(text, {}, attributions), text).toBeNull();
+      expect(codeOf(text, PLATFORM, attributions), text).toBeNull();
+    }
+    expect(postFinding('Good question: agents can find, buy and pay for services in USDC.', [], 'short', false, { reply: true })).toBeNull();
+  });
 });
 
 describe('social_execution_account_forbidden: an execution bot is never tagged or linked', () => {
