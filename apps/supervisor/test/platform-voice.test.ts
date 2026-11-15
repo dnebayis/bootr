@@ -35,7 +35,7 @@ describe('voicedAction: a cashtag written twice keeps its $ once, for every agen
     const reply = parseAction({ tool: 'publish_reply', input: { postId: '801', text: '$TEST is the coin; $TEST has an agent.' } });
     expect(voicedAction(ctx(true), coin, reply)).toMatchObject({ input: { text: '$TEST is the coin; TEST has an agent.' } });
     const later = parseAction({ tool: 'schedule_post', input: { text: '$TEST then $TEST', sendAt: '2026-11-15T09:00:00Z' } });
-    expect((voicedAction(ctx(true), coin, later) as typeof later).input.text).toBe('$TEST then TEST');
+    expect((voicedAction(ctx(true), coin, later) as typeof later).input).toMatchObject({ text: '$TEST then TEST' });
   });
 
   it('leaves two different cashtags for the gate to refuse', () => {
