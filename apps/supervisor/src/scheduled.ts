@@ -64,6 +64,7 @@ import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
 import { recordSaid } from './said.js';
 import { postGateRefusal } from './post-gates.js';
+import { noteCitationInLine, servedRecordIds } from './post-records.js';
 import { threadLimits } from './thread-send.js';
 import { LEASE_MS, accountPremium, acquireLease, afterSettledAction, releaseLease, renewLease, saveRuntime, trimState, type AgentState, type Turn } from './runtime.js';
 
@@ -460,8 +461,9 @@ function scheduleResult(row: ScheduledRow, waiting: number, limits: ScheduleLimi
 }
 
 /** The `publish_post` a scheduled row stands for, as the review queue and the sender are handed it. */
-function postInputOf(row: Pick<ScheduledRow, 'text' | 'thread' | 'imageId' | 'topic'>): Record<string, unknown> {
-  return { text: row.text, ...(Array.isArray(row.thread) && row.thread.length ? { thread: row.thread } : {}), ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.topic ? { topic: row.topic } : {}) };
+function postInputOf(row: Pick<ScheduledRow, 'text' | 'thread' | 'imageId' | 'topic' | 'recordIds'>): Record<string, unknown> {
+  const record = Array.isArray(row.recordIds) && row.recordIds.length ? { record: row.recordIds.map((id) => ({ id })) } : {};
+  return { text: row.text, ...(Array.isArray(row.thread) && row.thread.length ? { thread: row.thread } : {}), ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.topic ? { topic: row.topic } : {}), ...record };
 }
 
 /**
@@ -559,8 +561,10 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
   const falseFee = await feeClaimRefusal(ctx, agent, parts, pending.id);
   if (falseFee) return failed(falseFee);
   // The gates of the behaviour note (post-gates.ts); the repeat and the cross-agent gate are asked again at the send, against what was said by then.
-  const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', done: 'scheduled' });
+  const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', done: 'scheduled', record: input.record });
   if (gated) return failed(gated);
+  // The records the post cites, of the ones this agent was handed (post-records.ts): kept with the row for its send.
+  const recordIds = await servedRecordIds(ctx, agent.agentId, input);
 
   // Who thought is on the record with the row, as it is on the action that made it (own/turns.ts).
   const made0 = await ctx.db.query.actions.findFirst({ where: eq(actions.actionId, pending.id), columns: { action: true } });
@@ -576,6 +580,7 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
       thread,
       imageId: input.imageId ?? null,
       topic: input.topic ?? null,
+      ...(recordIds.length ? { recordIds } : {}),
       via: by.via === 'own' ? 'own' : null,
       clientId: by.via === 'own' && typeof by.clientId === 'string' ? by.clientId : null,
       sendAt: new Date(sendAt),
@@ -595,6 +600,8 @@ export async function schedulePost(ctx: SupervisorContext, agent: AgentRow, conf
       return queued;
     }
   }
+  // A scheduled post stands for its records from now on: they are not handed to this agent again, and a second post about them is a repeat.
+  if (recordIds.length) await noteCitationInLine(ctx, agent.agentId, { record: recordIds }, id);
   ctx.log.info({ agentId: agent.agentId, scheduledId: id, sendAt: row.sendAt.toISOString(), parts: parts.length, reviewed }, 'post scheduled');
   return { kind: 'completed', result: scheduleResult(row, waitingCount + 1, limits) };
 }
@@ -1011,7 +1018,7 @@ export async function sendScheduled(ctx: SupervisorContext, id: string): Promise
       return 'failed';
     }
     // The gates of the behaviour note, against what the agent and the others said since this post was scheduled (post-gates.ts).
-    const gated = await postGateRefusal(ctx, agent, { actionId: row.id, parts, kind: 'original' });
+    const gated = await postGateRefusal(ctx, agent, { actionId: row.id, parts, kind: 'original', record: row.recordIds });
     if (gated) {
       await closeFailed(ctx, agent, lease, row, gated, 'waiting', { settle: false });
       return 'failed';

@@ -39,6 +39,7 @@ import { bountyConversationIds, sweepBounties } from './bounties.js';
 import { applyScheduled, sweepScheduled } from './scheduled.js';
 import { recordSaidOfPending, sweepSaid } from './said.js';
 import { markQuietSlot, quietSlot } from './quiet-slot.js';
+import { markPlatformQuietSlot, platformQuietSlot, type PlatformQuietOutcome } from './platform-quiet.js';
 import type { Logger } from './log.js';
 import { isOwn } from './own/registry.js';
 import { expireOwnTurn } from './own/turns.js';
@@ -387,11 +388,13 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     // The quiet slot (quiet-slot.ts): a coin agent's due slot buys no turn when nothing is new since its last one (its
     // own coin stood still, nobody wrote, the creator asked for nothing). The slot is then spent like one the agent
     // passed on, and the wake moves to the next slot, so nothing is asked again before it.
-    const quiet = await quietSlot(ctx, agent, state, {
+    // The platform account's version reads the dataset instead of a coin (platform-quiet.ts), and hands the turn the records it found.
+    const quietSignals = {
       due: status === 'waiting' && !runtime.turn && pending?.status !== 'held' && !!schedule?.due && schedule.mayCompose && !ended?.postDue,
       mentionWaiting: !quota && wakeable.some((v) => v.eligible),
       configChanged: !runtime.lastDecisionAt || (runtime.lastDecisionRevision ?? -1) !== config.revision,
-    });
+    };
+    const quiet: PlatformQuietOutcome = config.platform === true ? await platformQuietSlot(ctx, agent, config, state, quietSignals) : await quietSlot(ctx, agent, state, quietSignals);
     if (quiet.skipped) {
       schedule = await slot();
       const nextAt = schedule && schedule.nextAt > runtime.nextAt.getTime() ? new Date(schedule.nextAt) : runtime.nextAt;
@@ -464,7 +467,10 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     log.info({ reasons: decision.reasons, pendingReply: pendingReplyDue(views.map((v) => ({ postId: v.postId, status: 'pending', eligible: v.eligible, seenAt: null, deferredUntil: null })), now), ...(resumedRole === 'treasury' ? { role: 'treasury', resumed: true } : {}) }, 'waking');
     const market = quiet.market !== undefined ? quiet.market : await ctx.indexer.market(agent.token);
     // A new turn that holds a due slot: what it is shown is what the next slot is measured against (quiet-slot.ts).
-    if (!runtime.turn && decision.reasons.includes('original_post_due')) markQuietSlot(ctx, agent, config, state, market, now);
+    if (!runtime.turn && decision.reasons.includes('original_post_due')) {
+      markQuietSlot(ctx, agent, config, state, market, now);
+      markPlatformQuietSlot(ctx, config, state, now);
+    }
     // A new turn that a mention woke: the Bootr agents among its authors are counted against their wakes of the day.
     if (!runtime.turn && !quota && decision.reasons.includes('pending_mention')) {
       const woke = recordPeerWakes(wakeable, directory, agent.agentId, state.peerWakes, now);
@@ -479,7 +485,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     let turn: TurnResult | null = null;
     try {
       turn = runtime.turn ? await continueTurn(ctx, agent, runtime, config, lease) : null;
-      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest, numbers, bountyConversations }, lease);
+      if (!turn) turn = await startTurn(ctx, agent, runtime, config, { reasons: decision.reasons, inbox, schedule, treasury, market, directory, digest, numbers, bountyConversations, ...(quiet.records ? { records: quiet.records } : {}) }, lease);
     } catch (err) {
       const failures = (runtime.failures ?? 0) + 1;
       const { interruptionPlan } = await import('@bootr/agent-core');

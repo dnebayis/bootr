@@ -1,10 +1,10 @@
 /**
- * Three publish gates of docs/design/agent-behaviour.md section 6.3, each with its own setting (`off`, `shadow`,
+ * Four publish gates of docs/design/agent-behaviour.md section 6.3, each with its own setting (`off`, `shadow`,
  * `enforce`; `shadow` unless set otherwise): in shadow a gate writes what it would refuse to `sv_gate_shadow`
  * (gate-shadow.ts) and the post goes out untouched; enforced, the post is refused and the refusal names the rule and
  * what to change, as the question quota does. None of them calls a model, none throws into the publish path, and
  * together they cost two indexed reads of the said-ledger at most (none for a reply), plus one insert for a post a
- * gate finds.
+ * gate finds. A post that cites a record costs four indexed reads more and one read of the stored turn.
  *
  * G1, repeat (`REPEAT_GATE`, rules R1 and R2), original posts only:
  *   - `repeat_fact`: the post states figures, and none of them is new. A figure is new when the agent's last
@@ -13,6 +13,9 @@
  *     round to one fingerprint and are two facts. One new figure is enough for the whole post: a follow-up that adds a
  *     number to one already given, or says a count moved from one value to another, is not a repeat.
  *   - `repeat_opener`: the post opens with the same three words (numbers and handles folded) as one of those posts.
+ *   - `repeat_record`: the post cites a dataset record (`record`) this agent already posted about, or one a post of its
+ *     own that still waits (scheduled, in review) cites (rule R1, one event, one post; post-records.ts). Asked first,
+ *     and whether the ledger is on or not: the record's own log of who cited it answers too.
  *   What is NOT a repeat, on purpose: a reply (answering somebody with a figure the agent already posted is what a
  *   reply is for, and a figure given in a reply does not use it up for a later post); the platform account's daily
  *   numbers post and its weekly digest (the same subjects every day is what they are); a figure with no subject the
@@ -33,16 +36,22 @@
  * The window is a time. One read brings at most `SAID_OTHERS_MAX_ROWS` posts of it (said.ts): past that the oldest
  * are not compared, which can only let a copy through, and a warning says so.
  *
+ * G5, number in evidence (`NUMBER_GATE`, rule R4; number-gate.ts): an original post that cites a record states only
+ * numbers that record or the agent's own data of the turn holds. Asked while the turn that wrote the post is in front
+ * of the gate (a post sent or queued now, a post being scheduled), never again at a scheduled post's send.
+ *
  * G6, units (`UNITS_GATE`, rule R12): a currency sign on an amount of a token ("$0.0475 WETH"). Every agent, posts
  * and replies. Left alone: a dollar amount of a dollar stablecoin ("$5 USDC" says five dollars), a dollar figure
  * about a token ("$500 ETH volume"), and a figure of a thousand or more or with a k / m / b on it, which next to ETH
  * or BTC is a price or a size in dollars ("$3,400 ETH", "$100k BTC", "$1.2M ETH volume"), not an amount of the token.
  */
-import { postFacts, openerOf } from '@bootr/agent-core';
+import { postFacts, openerOf, recordIdsOf } from '@bootr/agent-core';
 import { storedTurn } from './comment-posts.js';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { gateMode, logGateHit, type GateId } from './gate-shadow.js';
 import { ownWords } from './handed-words.js';
+import { numberProblem, turnEvidence } from './number-gate.js';
+import { citationOf, recordRepeatProblem, recordRepeats } from './post-records.js';
 import { lastOriginals, saidByOthers, saidKeepDays, wordOverlap, wordSet, type SaidByOther, type SaidOriginal } from './said.js';
 
 type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config'>;
@@ -210,6 +219,8 @@ export interface GatedPost {
    */
   ofTurn?: boolean;
   done?: 'posted' | 'scheduled';
+  /** The `record` the post's input carries (`publish_post {record}`, `schedule_post {record}`), as the model sent it. */
+  record?: unknown;
 }
 
 /**
@@ -246,7 +257,13 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
   if (units) return units;
 
   const ledger = saidKeepDays(ctx) > 0;
+  // The records the post cites, read the forgiving way; none for a post without `record`, which then costs what it did.
+  const cites = post.kind === 'original' ? recordIdsOf({ record: post.record }) : [];
   const repeat = await guarded('G1', async () => {
+    if (cites.length) {
+      const again = recordRepeatProblem(await recordRepeats(ctx, agent.agentId, cites, post.actionId), post.parts, done);
+      if (again) return again;
+    }
     if (!ledger || post.kind !== 'original') return null;
     // A post with no figure and no three-word opener has nothing to compare: no read.
     const figures = post.parts.some((part) => postFacts(part).some((f) => f.subject !== 'none'));
@@ -261,6 +278,15 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
     return problem;
   });
   if (repeat) return repeat;
+
+  // G5 reads the turn that wrote the post, so it is asked only while that turn is in front of it.
+  const numbers = await guarded('G5', async () => {
+    if (!cites.length || !(post.ofTurn || done === 'scheduled')) return null;
+    const citation = await citationOf(ctx, agent.agentId, { record: post.record });
+    const turn = citation.records.length ? await storedTurn(ctx, agent.agentId) : null;
+    return numberProblem(post.parts, citation.asked, citation.records, turnEvidence(turn, citation.records), done);
+  });
+  if (numbers) return numbers;
 
   return guarded('G4', async () => {
     const window = ctx.config.CROSS_AGENT_WINDOW_MS;

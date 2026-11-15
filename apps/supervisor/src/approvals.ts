@@ -18,7 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ActionOutcome, PendingAction } from '@bootr/agent-core';
-import { PolicyError, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
+import { PolicyError, recordIdsOf, threadParts, threadRefusal, validatePost } from '@bootr/agent-core';
 import { MentionError, publishAttributions } from './attributions.js';
 import { and, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import { getAddress, isAddressEqual, type Address } from 'viem';
@@ -40,6 +40,7 @@ import { addressRefusal } from './your-coin.js';
 import { feeClaimRefusal } from './fee-claims.js';
 import { recordSaid } from './said.js';
 import { postGateRefusal } from './post-gates.js';
+import { noteCitationInLine } from './post-records.js';
 
 /** A pending item the creator never looked at is rejected ("expired") after this long. */
 export const APPROVAL_TTL_MS = 48 * 3_600_000;
@@ -213,7 +214,7 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   if (falseFee) return { kind: 'failed', error: falseFee };
   // The gates of the behaviour note (post-gates.ts), as for a post sent at once; a scheduled post was asked when it was scheduled.
   if (!scheduled) {
-    const gated = await postGateRefusal(ctx, agent, action.tool === 'publish_reply' ? { actionId: pending.id, parts, kind: 'reply', aboutPostId: action.input.postId } : { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true });
+    const gated = await postGateRefusal(ctx, agent, action.tool === 'publish_reply' ? { actionId: pending.id, parts, kind: 'reply', aboutPostId: action.input.postId } : { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true, record: action.input.record });
     if (gated) return { kind: 'failed', error: gated };
   }
   // An original queued now stands for the slot of this moment: a scheduled post that is due within one post interval
@@ -278,6 +279,9 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
   }
   if (attributions.length) meta.attributions = attributions;
   if (action.tool === 'publish_post' && action.input.topic) meta.topic = action.input.topic;
+  // The records the post cites go with it to the approval, where the said-ledger is told (post-records.ts).
+  const cites = action.tool === 'publish_post' ? recordIdsOf(action.input) : [];
+  if (cites.length) meta.record = cites.map((id) => ({ id }));
   // A thread passed its own gate over every part above (`validateThread`); a single post passes the common one here.
   if (!threaded) {
     try {
@@ -295,6 +299,8 @@ export async function queueForApproval(ctx: SupervisorContext, agent: AgentRow, 
     .returning();
   const stored = row ?? (await ctx.db.query.approvals.findFirst({ where: eq(approvals.id, pending.id) }))!;
   ctx.log.info({ agentId: agent.agentId, approvalId: stored.id, kind }, 'publish queued for the creator\'s review');
+  // A post in review stands for its records: they are not handed to this agent again, and a second post about them is a repeat.
+  if (cites.length) await noteCitationInLine(ctx, agent.agentId, action.input, stored.id);
   await notifyPending(ctx, agent);
   return { kind: 'completed', result: queuedResult(stored) };
 }
@@ -447,7 +453,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     }
     media = mediaFor(image);
   }
-  const meta = row.meta as { replyAuthorId?: string; conversationId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[]; openReply?: boolean; thread?: { text: string }[]; about?: CommentAbout; topic?: string };
+  const meta = row.meta as { replyAuthorId?: string; conversationId?: string; replyEligibility?: ReplyEligibility; attributions?: { username: string; sourceUrl: string }[]; openReply?: boolean; thread?: { text: string }[]; about?: CommentAbout; topic?: string; record?: { id: string }[] };
   /** What became of the send: the sender's word for it, the post on X when it is known, and what the action row keeps. */
   let sent: { senderStatus: string; postId: string | null; result: Record<string, unknown> };
   if (row.kind === 'post') {
@@ -526,7 +532,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
       agentId: agent.agentId,
       cycleKey: `approval:${row.id}`,
       // The input as the agent gave it (section 17.4): a thread's later parts, the post a comment is about, its topic.
-      action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}), ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.inReplyTo ? { postId: row.inReplyTo } : {}), ...(meta.about ? { about: { postId: meta.about.postId } } : {}), ...(meta.topic ? { topic: meta.topic } : {}) }, approval: { id: row.id, by, note } },
+      action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}), ...(row.imageId ? { imageId: row.imageId } : {}), ...(row.inReplyTo ? { postId: row.inReplyTo } : {}), ...(meta.about ? { about: { postId: meta.about.postId } } : {}), ...(meta.topic ? { topic: meta.topic } : {}), ...(meta.record?.length ? { record: meta.record } : {}) }, approval: { id: row.id, by, note } },
       status: sent.senderStatus === 'sent' ? 'completed' : 'held',
       result: { ...sent.result, approvalId: row.id, senderStatus: sent.senderStatus },
       receipt: postId ? { postId } : null,
@@ -535,7 +541,7 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
     })
     .onConflictDoNothing();
   // An approved post that is on X is on the said-ledger from here on (said.ts); one the sender still holds is not known sent.
-  if (sent.senderStatus === 'sent') await recordSaid(ctx, { agentId: agent.agentId, actionId: `${row.id}-approved`, action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}) } }, result: sent.result, at: now });
+  if (sent.senderStatus === 'sent') await recordSaid(ctx, { agentId: agent.agentId, actionId: `${row.id}-approved`, action: { tool, input: { text: row.text, ...(meta.thread?.length ? { thread: meta.thread } : {}), ...(meta.record?.length ? { record: meta.record } : {}) } }, result: sent.result, at: now });
   const [updated] = await ctx.db
     .update(approvals)
     .set({ status: 'approved', decision: 'approve', decidedBy: by, note: sent.senderStatus === 'sent' ? note : `${note ? `${note} · ` : ''}sender ${sent.senderStatus}`, postId, decidedAt: now })

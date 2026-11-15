@@ -83,6 +83,8 @@ export interface RoutedTurn {
   creatorRequests?: TurnRequest[];
   /** The picture section of this turn said `suggested` (picture-hint.ts): the writer of a post is told to make one. */
   pictureSuggested?: boolean;
+  /** The platform account's turn under `PLATFORM_PROMPT=v2` (platform-persona.ts): the writer's prompt keeps that wording. Absent on every other turn. */
+  platformPrompt?: { version: 'v2'; identityText: string };
 }
 
 /**
@@ -126,7 +128,8 @@ export function handleIntent(config: AgentConfig, turn: RoutedTurn, tools: reado
   routing.phase = 'write';
   routing.intent = intent;
   const system = turn.messages[0];
-  if (system && system.role === 'system') system.content = buildSystemPrompt(config, 'social', { phase: 'write', postLimit: postLimitsFor(turn.premium ?? null).original });
+  const v2 = turn.platformPrompt?.version === 'v2' && config.platform === true ? turn.platformPrompt : null;
+  if (system && system.role === 'system') system.content = buildSystemPrompt(v2 ? { ...config, identityText: v2.identityText } : config, 'social', { phase: 'write', postLimit: postLimitsFor(turn.premium ?? null).original, ...(v2 ? { platformPrompt: 'v2' as const } : {}) });
   const tool = intent.kind === 'reply' ? 'publish_reply' : 'publish_post';
   const picture = writerPicture(turn, intent, tools);
   const pictureNote = picture

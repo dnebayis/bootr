@@ -618,8 +618,8 @@ async function dispatch(ctx: SupervisorContext, agent: AgentRow, config: AgentCo
       // A false statement about where the coin's fees go is not published, in any part (fee-claims.ts).
       const falseFee = await feeClaimRefusal(ctx, agent, parts, pending.id);
       if (falseFee) return failed(falseFee);
-      // The gates of the behaviour note (post-gates.ts): repeats, similarity to another agent's post, units; in shadow they only log.
-      const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true });
+      // The gates of the behaviour note (post-gates.ts): repeats, numbers a cited record does not hold, similarity to another agent's post, units; in shadow they only log.
+      const gated = await postGateRefusal(ctx, agent, { actionId: pending.id, parts, kind: 'original', aboutPostId: action.input.about?.postId, ofTurn: true, record: action.input.record });
       if (gated) return failed(gated);
       const checked = await originalRules(ctx, agent, config, pending.id, action.input, env.inbox, !!media.media);
       if ('refusal' in checked) return failed(checked.refusal);

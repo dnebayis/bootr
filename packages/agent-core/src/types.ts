@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_NOTES_PER_REMEMBER, NOTE_SUBJECT_RE, NOTE_KINDS, NOTE_MAX_TAGS, NOTE_TAG_RE, forgivenDate, forgivenFlag, forgivenSubject, forgivenKind, forgivenMore, forgivenTags } from './notes.js';
+import { MAX_RECORDS_PER_POST, RECORD_ID_RE, forgivenRecords } from './social/record-ref.js';
 
 // ---------------------------------------------------------------------------
 // Primitive formats
@@ -314,6 +315,12 @@ export const WHAT_WORKS_NOTE_MAX_CHARS = 600;
  * `done` are put into shape or dropped before they are checked, so none of them can cost the note. The model is shown
  * the shape behind each (`zodToJsonSchema` reads through the forgiveness).
  */
+/**
+ * The dataset records a post rests on (social/record-ref.ts): put into shape or dropped before it is checked, so it can
+ * never cost the post. The model is shown the field only in a turn that was handed records (tools.ts).
+ */
+const recordField = z.preprocess(forgivenRecords, z.array(z.object({ id: z.string().regex(RECORD_ID_RE) }).strict()).max(MAX_RECORDS_PER_POST).optional());
+
 const noteFields = {
   text: text(8000),
   sources: z.array(httpsUrlSchema).max(8).optional(),
@@ -377,6 +384,8 @@ export const toolInputSchemas = {
       about: z.object({ postId: xIdSchema }).strict().optional(),
       /** The agent's own word for what the post is about; code only keeps it. */
       topic: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
+      /** The dataset records the post rests on, two at most (apps/supervisor/src/post-records.ts). */
+      record: recordField,
     })
     .strict(),
   // One note in the call's own fields and up to four more in `more` (notes.ts): what labels a note is forgiven, never refused.
@@ -404,6 +413,8 @@ export const toolInputSchemas = {
       /** The agent's own word for what the post is about. */
       topic: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
       sendAt: isoDateSchema,
+      /** The dataset records the post rests on, two at most. */
+      record: recordField,
     })
     .strict(),
   scheduled_list: z.object({}).strict(),

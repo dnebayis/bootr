@@ -18,12 +18,17 @@
  * Rows older than `SAID_KEEP_DAYS` are deleted by the same sweep, once an hour, and with them the rows of the gates'
  * shadow log (`sv_gate_shadow`) older than `GATE_SHADOW_KEEP_DAYS`.
  *
+ * The records a post cites (`publish_post {record}`) reach the row only when this agent was really handed them, and
+ * once the row is written the records are told that a post about them went out (post-records.ts): the said-ledger is
+ * where rule R1 reads "already posted".
+ *
  * Nothing here throws into a publish: a ledger that cannot be written is a warning, and the post is out either way.
  */
-import { factFingerprints, openerOf, postFacts, type PendingAction } from '@bootr/agent-core';
+import { factFingerprints, openerOf, postFacts, recordIdsOf, type PendingAction } from '@bootr/agent-core';
 import { and, asc, desc, eq, gt, lt, ne, sql } from 'drizzle-orm';
 import type { SupervisorContext } from './context.js';
 import { actions, agents, cursors, gateShadow, said, type SaidKind } from './db/schema.js';
+import { servedCitations, tellRecords } from './post-records.js';
 
 const DAY_MS = 24 * 3_600_000;
 /** The row of `sv_cursors` that says how far the history has been read. */
@@ -104,10 +109,6 @@ export function saidFieldsOf(text: string): Pick<SaidInsert, 'fingerprints' | 'f
   return { fingerprints: factFingerprints(text), facts: postFacts(text).map((f) => ({ s: f.subject, u: f.unit, v: f.value })), opener: openerOf(text), words: wordSet(text) };
 }
 
-function recordIdsOf(record: unknown): string[] {
-  const list = Array.isArray(record) ? record : record ? [record] : [];
-  return list.map((r) => (r as { id?: unknown } | null)?.id).filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 64).slice(0, 4);
-}
 
 /**
  * The ledger rows of one completed publish, or none: for anything that is not a `publish_post` or a `publish_reply`,
@@ -124,7 +125,8 @@ export function saidRowsOf(src: SaidSource): SaidInsert[] {
   const inner = (outer.result !== null && typeof outer.result === 'object' ? outer.result : outer) as { queued?: unknown; postId?: unknown; parts?: unknown; sent?: unknown };
   if (inner.queued === true) return [];
   const postedAt = src.at instanceof Date ? src.at : new Date(src.at);
-  const recordIds = recordIdsOf(input.record);
+  // As the model sent them, read the forgiving way; `recordSaid` keeps only the ones the agent was handed.
+  const recordIds = recordIdsOf(input);
   const row = (id: string, kind: SaidKind, text: string, postId: unknown): SaidInsert => ({ id, agentId: src.agentId, actionId: src.actionId, postId: typeof postId === 'string' && postId ? postId : null, kind, postedAt, ...saidFieldsOf(text), recordIds });
   if (action.tool === 'publish_reply') return [row(src.actionId, 'reply', input.text, inner.postId)];
   const later = Array.isArray(input.thread) ? input.thread.map((p) => (p as { text?: unknown } | null)?.text).filter((t): t is string => typeof t === 'string' && t.trim().length > 0) : [];
@@ -143,7 +145,14 @@ export async function recordSaid(ctx: Ctx, src: SaidSource): Promise<number> {
     if (saidKeepDays(ctx) <= 0) return 0;
     const rows = saidRowsOf(src);
     if (!rows.length) return 0;
-    await ctx.db.insert(said).values(rows).onConflictDoNothing();
+    if (!rows.some((r) => r.recordIds?.length)) {
+      await ctx.db.insert(said).values(rows).onConflictDoNothing();
+      return rows.length;
+    }
+    // A post that cites records: only the ones this agent was handed stay, and the records hear of the rows written now.
+    const cited = await servedCitations(ctx, rows);
+    const written = await ctx.db.insert(said).values(cited).onConflictDoNothing().returning({ id: said.id });
+    await tellRecords(ctx, cited, new Set(written.map((r) => r.id)));
     return rows.length;
   } catch (err) {
     ctx.log.warn({ agentId: src.agentId, actionId: src.actionId, err: err instanceof Error ? err.message : String(err) }, 'said-ledger: the rows of a publish could not be written');

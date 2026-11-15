@@ -70,6 +70,10 @@ import type { TreasurySnapshot } from './treasury.js';
 import { isOwn, type OwnTurnMeta } from './own/registry.js';
 import { notesSections, rememberCallsOf } from './notes.js';
 import { recordTurn } from './turns.js';
+import type { ServedRecord } from './dataset/serve.js';
+import { socialPromptInputs } from './platform-persona.js';
+import { recordsSection } from './records-section.js';
+import { noteTurnRecords, turnRecords } from './records-turn.js';
 
 export const LEASE_MS = 60_000;
 /** Hold after `sender:quota_exceeded` when the sender sent no `retryAt` (an older sender). */
@@ -235,6 +239,10 @@ export interface Turn {
    * (comment-posts.ts, which also counts the inbox and the watchlist section of the first observation).
    */
   seen?: SeenPost[];
+  /** The dataset records the first observation carried (records-turn.ts): while there are some, the post tools offer `record`. Absent on every other turn. */
+  recordIds?: string[];
+  /** The platform account's turn under `PLATFORM_PROMPT=v2` (platform-persona.ts): the economy-mode writer keeps the wording. Absent on every other turn. */
+  platformPrompt?: { version: 'v2'; identityText: string };
 }
 
 /** The account's `premium` flag from the sender, or null when the sender does not answer or has not read it yet. */
@@ -349,6 +357,8 @@ export interface TurnInputs {
   bountyConversations?: ReadonlySet<string>;
   /** The open creator requests for the social turn (creator-requests.ts); read on demand when absent. */
   creatorRequests?: CreatorRequest[];
+  /** The dataset records the tick already found for this turn (records-turn.ts); asked of the seam on demand when absent. */
+  records?: readonly ServedRecord[] | null;
 }
 
 /** The agent's own cadence (anchor + interval) with its deterministic jitter; quiet hours and slots are applied by tick.ts. */
@@ -496,6 +506,8 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...platformUpdateSection(config, update),
       // The people the host follows and their latest posts (platform agent only): watchlist.ts.
       ...(await watchlistSection(ctx, agent, config)),
+      // What happened, from Bootr's own dataset, as untrusted evidence (nothing unless the turn was handed records): records-section.ts.
+      ...recordsSection(inputs.records ?? [], now),
     },
   });
 }
@@ -568,8 +580,11 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   const routing = startRouting(config);
   // The account's post limit for this turn: the sender's `premium` (one internal read; it also keeps the sender's flag fresh).
   const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
+  // The dataset's records for this turn: none unless the dataset is on and this is the platform account with a slot to write from (records-turn.ts).
+  const records = await turnRecords(ctx, agent, config, inputs, inputs.records);
+  inputs = { ...inputs, records };
   // The social role's catalog: everything the agent has, minus the money tools while the treasury turn is on (roles.ts).
-  const catalog = roleTools(ctx, config, agent.config, 'social', { premium });
+  const catalog = roleTools(ctx, config, agent.config, 'social', { premium, ...(records.length ? { records: true } : {}) });
   // The creator's open requests for this turn (creator-requests.ts): shown under their own heading, answered with answer_request.
   const creatorRequests = inputs.creatorRequests ?? (await openRequests(ctx, agent.agentId, 'social').catch(() => []));
   inputs = { ...inputs, creatorRequests };
@@ -589,6 +604,8 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
   if (creatorRequests.length) ctx.log.info({ agentId: agent.agentId, requests: creatorRequests.map((r) => r.id) }, 'creator requests shown');
   // The ended-hold note is delivered in this observation and in no later one: it goes with the same write as the turn.
   if (state.postHoldEndedNote?.at != null) state.postHoldEndedNote = null;
+  // The platform account's prompt in the wording the deployment chose (platform-persona.ts); a coin agent's inputs come back untouched.
+  const prompt = socialPromptInputs(ctx, agent, config, { phase: phaseOf(routing), postLimit: postLimitsFor(premium).original });
   const turn: Turn = {
     role: 'social',
     startedAt: ctx.now(),
@@ -597,7 +614,7 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     reasons: inputs.reasons,
     premium,
     messages: [
-      { role: 'system', content: buildSystemPrompt(config, 'social', { phase: phaseOf(routing), postLimit: postLimitsFor(premium).original }) },
+      { role: 'system', content: buildSystemPrompt(prompt.config, 'social', prompt.options) },
       { role: 'user', content: JSON.stringify(observation) },
     ],
     inbox: Object.fromEntries(inputs.inbox.map((i) => [i.postId, i])),
@@ -609,8 +626,12 @@ export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime
     postDue: inputs.reasons.includes('original_post_due'),
     ...(turnRequests.length ? { creatorRequests: turnRequests } : {}),
     ...(pictureSuggested ? { pictureSuggested } : {}),
+    ...(records.length ? { recordIds: records.map((r) => r.id) } : {}),
+    ...(prompt.options.platformPrompt === 'v2' ? { platformPrompt: { version: 'v2' as const, identityText: prompt.config.identityText } } : {}),
   };
   await saveRuntime(ctx, agent.agentId, { state: boundedState(trimState(state)) as unknown as Record<string, unknown>, turn: turn as unknown as Record<string, unknown>, status: 'running', lastDecisionAt: new Date(ctx.now()), lastDecisionRevision: config.revision });
+  // The records are on record as shown to this agent: only then is citing one of them a citation (dataset/served.ts).
+  await noteTurnRecords(ctx, agent, records);
   return runLoop(ctx, agent, { ...runtime, turn: turn as unknown as Record<string, unknown> }, config, turn, lease);
 }
 
@@ -688,7 +709,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
   const log = ctx.log.child({ agentId: agent.agentId, ...(role !== 'social' ? { role } : {}) });
   const state = runtime.state as unknown as AgentState;
   let broker: BrokerRuntime = { runtimeId: agent.agentId, cycle: runtime.cycle, pending: (runtime.pending as unknown as PendingAction | null) ?? null };
-  const catalog = roleTools(ctx, config, agent.config, role, { premium: turn.premium ?? null });
+  const catalog = roleTools(ctx, config, agent.config, role, { premium: turn.premium ?? null, ...(turn.recordIds?.length ? { records: true } : {}) });
   /**
    * The functions of the current economy-mode phase (routing.ts, the social role only); the role's catalog otherwise;
    * plus `answer_request` while a creator request this turn was shown is still open (creator-requests.ts).
