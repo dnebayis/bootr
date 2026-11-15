@@ -158,9 +158,9 @@ export interface ThoughtTotals {
  */
 const PAID_FAILURE = sql`(${inference.status} = 'failed' and (${inference.error} in ('credit_exhausted', 'relay_failed_refund_due', ${DIRECT_PAID_LOST}) or (${inference.error} = 'upstream_rejected' and ${inference.receipt}->'payment'->'accepted'->>'scheme' = 'exact')))`;
 /** Every call that took money: filtering on `succeeded` alone hid paid failures from the metering. */
-const PAID_CALL = or(eq(inference.status, 'succeeded'), PAID_FAILURE)!;
+export const PAID_CALL = or(eq(inference.status, 'succeeded'), PAID_FAILURE)!;
 /** The receipt when there is one; a paid failure has none, so the amount it signed for (`exact` charges exactly that, for `upto` it is the most it can have cost). */
-const CHARGED_MICRO_USDC = sql`coalesce(${inference.receipt}->'relay'->>'chargedMicroUsdc', case when ${PAID_FAILURE} then ${inference.receipt}->'payment'->'accepted'->>'amount' end)::numeric`;
+export const CHARGED_MICRO_USDC = sql`coalesce(${inference.receipt}->'relay'->>'chargedMicroUsdc', case when ${PAID_FAILURE} then ${inference.receipt}->'payment'->'accepted'->>'amount' end)::numeric`;
 
 /**
  * Metering for the creator: paid relay calls since `since`, grouped by the model each one ran on, most thoughts

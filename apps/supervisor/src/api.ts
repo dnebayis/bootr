@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { erc20Abi, formatUnits, getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { agentActivityPage } from './activity.js';
+import { decodeCursor, ledgerPage, ledgerSummary } from './ledger.js';
 import { mountPosting } from './thread-send.js';
 import { decideApproval, listApprovals, type DecisionBody } from './approvals.js';
 import { mountScheduled } from './scheduled.js';
@@ -234,6 +235,26 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
     const before = beforeRaw ? new Date(beforeRaw) : undefined;
     if (before && Number.isNaN(before.getTime())) return c.json({ error: 'invalid_before', message: 'before must be an ISO timestamp' }, 400);
     return c.json(await agentActivityPage(ctx, agent, runtime, { limit, before }));
+  });
+
+  /**
+   * The public ledger of the agent's money (ledger.ts): `?limit=50` (max 200) `&cursor=<next>`, newest first. The first
+   * page (no cursor) also carries `days`, the totals of the last seven UTC days. `partial` says the chain's rows (fee
+   * claims, money sent to it) could not be read for this page.
+   */
+  app.get('/internal/agents/:id/ledger', async (c) => {
+    const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });
+    if (!agent) return c.json({ error: 'not_found' }, 404);
+    const limitRaw = c.req.query('limit');
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    if (limit !== undefined && !Number.isFinite(limit)) return c.json({ error: 'invalid_limit' }, 400);
+    const cursorRaw = c.req.query('cursor');
+    const cursor = cursorRaw ? decodeCursor(cursorRaw) : null;
+    if (cursorRaw && !cursor) return c.json({ error: 'invalid_cursor', message: 'cursor must be the next of a ledger page' }, 400);
+    const page = await ledgerPage(ctx, agent, { limit, cursor });
+    if (cursor) return c.json(page);
+    const summary = await ledgerSummary(ctx, agent);
+    return c.json({ ...page, days: summary.days, daysComplete: summary.complete });
   });
 
   /** `?days=7` (1..90): paid calls since then, grouped by the model each ran on, and when the first was (inference.ts `fuelReport`), plus what paid web services cost (`services`, by host; services.ts). */
