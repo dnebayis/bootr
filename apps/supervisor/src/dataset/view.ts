@@ -3,6 +3,11 @@
  * source, so a day can be read by hand (the check of stage 4: under 5% duplicates, under 2% wrong merges, every
  * grade-4 record with an official link). Read-only, served on the supervisor's HMAC-signed internal API and shown in
  * the admin console (apps/web, `/api/admin/dataset`). No agent reads it.
+ *
+ * Layer c (the X accounts) has its own block: what the day's X reads cost so far as the dataset process last heard it
+ * from the sender (`sv_cursors`, `dataset:x:<day>`), and every listed account with its status, so a suspended account
+ * and its reason are in front of the owner. The one write here is the owner's "look again" on a suspended account
+ * (`POST /internal/dataset/x/review`), which only marks the row: the dataset process makes the read.
  */
 import { asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -10,7 +15,10 @@ import type { Db } from '../db/client.js';
 import { cursors, dsRecords, dsSightings, dsSources } from '../db/schema.js';
 import type { AuthEnv } from '../hmac.js';
 import { incidentSourced } from './grades.js';
+import { readXDay } from './layer-c.js';
 import { dayOf } from './store.js';
+import { usdOf, worstDayUsd } from './x-budget.js';
+import { askReview, listedOf, stateOf } from './x-pin.js';
 import { GRADE_WORDS, type Grade, type RecordSource } from './types.js';
 
 export const DAY_RECORDS_MAX = 500;
@@ -59,6 +67,12 @@ export interface DatasetDayView {
     sightings: { sourceId: string; title: string; withheld: boolean; matchedBy: string; seenAt: string }[];
   }[];
   sources: { id: string; name: string; layer: string; kind: string; cluster: string; group: string; status: string; statusReason: string | null; lastOkAt: string | null; lastFetchAt: string | null; nextFetchAt: string | null; lastStatus: number | null; failures: number; lastError: string | null }[];
+  /** Layer c: the day's X reads and the listed accounts. */
+  x: {
+    /** The day's note as the dataset process wrote it, or null when it read nothing on X that day (the layer was off). */
+    day: { limit: number; units: number; posts: number; userReads: number; checks: number; usd: number; worstUsd: number; stopped: string | null; error: string | null; at: string | null } | null;
+    accounts: { id: string; handle: string; listedAs: string | null; tier: number | null; cluster: string; status: string; statusReason: string | null; followers: number | null; postsToday: number; lastOkAt: string | null; lastError: string | null }[];
+  };
 }
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
@@ -82,6 +96,7 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
   const byMatch = ids.length ? await db.select({ matchedBy: dsSightings.matchedBy, n: sql<number>`count(*)::int` }).from(dsSightings).where(inArray(dsSightings.recordId, ids)).groupBy(dsSightings.matchedBy) : [];
   const [dayTotals] = await db.select({ records: sql<number>`count(*)::int` }).from(dsRecords).where(eq(dsRecords.day, day));
   const names = new Map(sources.map((s) => [s.id, s.name]));
+  const xDay = await readXDay(db, day);
   const tally = (keys: string[]) => keys.reduce<Record<string, number>>((acc, k) => ({ ...acc, [k]: (acc[k] ?? 0) + 1 }), {});
   return {
     enabled,
@@ -126,10 +141,34 @@ export async function datasetDayView(db: Db, day: string, enabled: boolean): Pro
       };
     }),
     sources: sources.map((s) => ({ id: s.id, name: s.name, layer: s.layer, kind: s.kind, cluster: s.cluster, group: s.groupId, status: s.status, statusReason: s.statusReason, lastOkAt: iso(s.lastOkAt), lastFetchAt: iso(s.lastFetchAt), nextFetchAt: iso(s.nextFetchAt), lastStatus: s.lastStatus, failures: s.failures, lastError: s.lastError })),
+    x: {
+      day: xDay ? { limit: xDay.limit, units: xDay.units, posts: xDay.posts, userReads: xDay.userReads, checks: xDay.checks, usd: usdOf(xDay.units), worstUsd: worstDayUsd(xDay.limit), stopped: xDay.stopped, error: xDay.error, at: xDay.at || null } : null,
+      accounts: sources
+        .filter((s) => s.layer === 'c')
+        .map((s) => {
+          const state = stateOf(s);
+          return { id: s.id, handle: s.xHandle ?? listedOf(s)?.handle ?? state.listed, listedAs: listedOf(s)?.handle ?? null, tier: s.tier, cluster: s.cluster, status: s.status, statusReason: s.statusReason, followers: typeof state.followers === 'number' ? state.followers : null, postsToday: state.days?.[day] ?? 0, lastOkAt: iso(s.lastOkAt), lastError: s.lastError };
+        }),
+    },
   };
 }
 
-/** `GET /internal/dataset/day?day=YYYY-MM-DD` (HMAC, like every internal route): the day's view; today's when no day is given. */
+/**
+ * `GET /internal/dataset/day?day=YYYY-MM-DD` (HMAC, like every internal route): the day's view; today's when no day is
+ * given. `POST /internal/dataset/x/review` `{id}`: the owner's "look again" on a suspended X account (x-pin.ts
+ * `askReview`); 404 when the id is not a suspended X account. A real change of an account is a commit, not this.
+ */
 export function mountDataset(app: Hono<AuthEnv>, ctx: { db: Db; now(): number; config: { DATASET_ENABLED: boolean } }): void {
   app.get('/internal/dataset/day', async (c) => c.json(await datasetDayView(ctx.db, dayParam(c.req.query('day'), new Date(ctx.now())), ctx.config.DATASET_ENABLED)));
+  app.post('/internal/dataset/x/review', async (c) => {
+    let id: unknown;
+    try {
+      id = (JSON.parse(c.get('rawBody') || '{}') as { id?: unknown }).id;
+    } catch {
+      id = null;
+    }
+    if (typeof id !== 'string' || !/^x:(?:@\w{1,15}|\d{1,25})$/.test(id)) return c.json({ error: 'invalid_request', message: 'id must be an X source id' }, 400);
+    const asked = await askReview(ctx.db, id, new Date(ctx.now()));
+    return asked ? c.json({ ok: true, id, status: 'review' }) : c.json({ error: 'not_found', message: 'No suspended X account has this id.' }, 404);
+  });
 }

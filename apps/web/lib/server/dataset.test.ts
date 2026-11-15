@@ -109,9 +109,28 @@ describe('the dataset day, as the console renders it', () => {
     expect(sanitizeDatasetDay({ ...DAY, records: [...many] }, '2026-11-15').records).toHaveLength(DATASET_RECORDS_MAX);
     expect(sanitizeDatasetDay({ ...DAY, records: [{ ...RECORD, id: 'bad id!' }, { ...RECORD, firstSeenAt: 'yesterday' }, { ...RECORD, headline: '' }, null, 'x', 7] }, '2026-11-15').records).toEqual([]);
     for (const raw of [null, undefined, 'text', 42, [], { records: 'x', sources: 7, totals: [] }]) {
-      expect(sanitizeDatasetDay(raw, '2026-11-14')).toEqual({ enabled: false, day: '2026-11-14', totals: { records: 0, sightings: 0, byGrade: {}, byKind: {}, byMatch: {}, capped: 0 }, records: [], sources: [] });
+      expect(sanitizeDatasetDay(raw, '2026-11-14')).toEqual({ enabled: false, day: '2026-11-14', totals: { records: 0, sightings: 0, byGrade: {}, byKind: {}, byMatch: {}, capped: 0 }, records: [], sources: [], x: { day: null, accounts: [] } });
     }
     expect(sanitizeDatasetDay({ ...DAY, day: "2026-11-15' or 1=1" }, '2026-11-14').day).toBe('2026-11-14');
+  });
+
+  it("keeps layer c's day and accounts, an X account's id included, and nothing a hostile answer adds", () => {
+    const x = {
+      day: { limit: 250, units: 120, posts: 90, userReads: 10, checks: 10, usd: 0.6, worstUsd: 1.25, stopped: 'pace', error: null, at: '2026-11-15T10:00:00.000Z', secret: 'no' },
+      accounts: [
+        { id: 'x:@base', handle: 'base', status: 'suspended', statusReason: '7 followers; the note saw 1.5M on 2026-11-14 and the floor is 750,000', followers: null, postsToday: 0, lastOkAt: null, lastError: null },
+        { id: 'x:9000', handle: 'buildonbase', status: 'active', statusReason: null, followers: 610_000, postsToday: 4, lastOkAt: '2026-11-15T10:00:00.000Z', lastError: null },
+        { id: 'x:<script>', handle: 'evil', status: 'active' },
+        { id: 'x:9001', handle: '@not a handle', status: 'active" onclick="x', statusReason: 'r'.repeat(900), followers: -1, postsToday: 'many' },
+      ],
+    };
+    const view = sanitizeDatasetDay({ ...DAY, sources: [...DAY.sources, { ...DAY.sources[0], id: 'x:@base', layer: 'c', kind: 'x' }], x }, '2026-11-15');
+    expect(view.x.day).toEqual({ limit: 250, units: 120, posts: 90, userReads: 10, checks: 10, usd: 0.6, worstUsd: 1.25, stopped: 'pace', error: null, at: '2026-11-15T10:00:00.000Z' });
+    expect(view.x.accounts.map((a) => a.id)).toEqual(['x:@base', 'x:9000', 'x:9001']);
+    expect(view.x.accounts[2]).toMatchObject({ handle: '', status: '', followers: null, postsToday: 0 });
+    expect(view.x.accounts[2]!.statusReason).toHaveLength(300);
+    expect(view.sources.map((s) => s.id)).toContain('x:@base');
+    expect(sanitizeDatasetDay({ ...DAY, x: { day: { usd: 'lots', units: 1e12 } } }, '2026-11-15').x.day).toMatchObject({ usd: 0, units: 100_000 });
   });
 
   it('reads a day only when it is one', () => {
