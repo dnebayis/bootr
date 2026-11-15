@@ -442,7 +442,8 @@ four reads and nothing else, and the internal key does not open them. Without th
   and no expansion (X charges per resource returned), one page, newest first. A quote says which post it quotes
   (`quotedId`). A read that finds nothing costs nothing. `more` says X had older new posts than the page.
 - **`POST /dataset/x/check`** reads `GET /2/tweets?ids=` with X's default fields: an id that does not come back is
-  `gone` (deleted, protected, withheld). The dataset drops the words it kept of such a post.
+  `gone` (deleted, protected, withheld). The dataset checks every post it read once, 20 hours on, and removes a
+  gone post's sighting and everything it gave its record (`apps/supervisor/src/dataset/x-text.ts`).
 
 ### Rate budget
 
