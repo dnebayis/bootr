@@ -37,13 +37,14 @@ function define<N extends ToolName>(
   effect: ToolEffect,
   idempotent: boolean,
 ): ToolDefinition<N> {
-  return { name, description, input: toolInputSchemas[name], capability, effect, idempotent };
+  // The two post tools are shown without `record` unless a turn was handed records (`CATALOG_INPUTS` below).
+  return { name, description, input: (CATALOG_INPUTS[name] ?? toolInputSchemas[name]) as (typeof toolInputSchemas)[N], capability, effect, idempotent };
 }
 
 /**
  * Which of the optional fields of `publish_post` are offered (docs/design/agent-tools-2.md sections 3, 4 and 6). A
  * piece that is switched off loses its sentence in the description and its field in the schema the model is shown;
- * with all three off the tool reads exactly as it did before the fields existed. Absent = offered.
+ * with all three off the tool reads exactly as it did before the fields existed. Absent = offered, but for `record`.
  */
 export interface PublishPostOptions {
   /** Posts a thread may add after the first (the thread limit minus one); 0 = no threads. */
@@ -52,15 +53,24 @@ export interface PublishPostOptions {
   comments?: boolean;
   /** Whether `topic` (the agent's own word for the post) is offered. */
   topic?: boolean;
+  /**
+   * Whether `record` (the dataset records the post rests on, docs/design/agent-behaviour.md section 6.3) is offered.
+   * Absent = NOT offered: only a turn that was handed records is shown the field, so every other turn's tool reads
+   * as it did before the field existed.
+   */
+  record?: boolean;
 }
 
 /** The options with their defaults filled in. */
 function postOptions(opts: PublishPostOptions = {}): Required<PublishPostOptions> {
   const more = opts.threadMore ?? THREAD_MAX_PARTS - 1;
-  return { threadMore: Number.isFinite(more) ? Math.max(0, Math.min(THREAD_MAX_PARTS - 1, Math.floor(more))) : 0, comments: opts.comments ?? true, topic: opts.topic ?? true };
+  return { threadMore: Number.isFinite(more) ? Math.max(0, Math.min(THREAD_MAX_PARTS - 1, Math.floor(more))) : 0, comments: opts.comments ?? true, topic: opts.topic ?? true, record: opts.record === true };
 }
 
-const sameOptions = (a: Required<PublishPostOptions>, b: Required<PublishPostOptions>): boolean => a.threadMore === b.threadMore && a.comments === b.comments && a.topic === b.topic;
+const sameOptions = (a: Required<PublishPostOptions>, b: Required<PublishPostOptions>): boolean => a.threadMore === b.threadMore && a.comments === b.comments && a.topic === b.topic && a.record === b.record;
+
+/** The sentence `publish_post` and `schedule_post` gain in a turn that was handed records. */
+export const RECORD_FIELD_SENTENCE = ' record (optional) is [{id}], one or two records of your records section that this post rests on: pass it whenever the post says something a record gave you.';
 
 /**
  * The `publish_post` description for an account whose original posts may run to `limit` characters: 4000 with X
@@ -69,20 +79,34 @@ const sameOptions = (a: Required<PublishPostOptions>, b: Required<PublishPostOpt
  */
 export function publishPostDescription(limit: number, opts: PublishPostOptions = {}): string {
   const cap = limit < POST_LIMITS.original ? `up to ${limit} characters (this X account has no Premium; X refuses longer posts)` : `up to ${limit} characters`;
-  const { threadMore, comments, topic } = postOptions(opts);
+  const { threadMore, comments, topic, record } = postOptions(opts);
   const thread = threadMore > 0 ? ` thread (optional) adds up to ${threadMore} more connected post${threadMore === 1 ? '' : 's'} of at most ${THREAD_PART_MAX_CHARS} characters each when one post cannot carry the thought; most posts need none.` : '';
   const about = 'about (optional) is {postId} of a post you read in this turn, when this post is your own comment on it: your thought in your own words, with no link to that post and no @ for its author';
   const word = 'topic (optional) is your own one word for what the post is about';
   const more = comments && topic ? ` ${about}; ${word}.` : comments ? ` ${about}.` : topic ? ` ${word}.` : '';
-  return `Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, ${cap}, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.${thread}${more}`;
+  return `Publish one original post when the supplied schedule says it is due. Fresh content in your own voice, ${cap}, no templates and no catch-up bursts. imageId (optional) attaches a picture you made this turn with generate_image.${thread}${more}${record ? RECORD_FIELD_SENTENCE : ''}`;
 }
+
+/**
+ * The schemas the catalog shows: the ones calls are parsed with (`toolInputSchemas`) without `record`, which only a
+ * turn that was handed records is shown. A call that carries `record` anyway still parses; code then keeps only the
+ * ids the agent was really shown.
+ */
+const PUBLISH_POST_CATALOG_INPUT = toolInputSchemas.publish_post.omit({ record: true }) as unknown as (typeof toolInputSchemas)['publish_post'];
+const SCHEDULE_POST_CATALOG_INPUT = toolInputSchemas.schedule_post.omit({ record: true }) as unknown as (typeof toolInputSchemas)['schedule_post'];
+const CATALOG_INPUTS: { readonly [N in ToolName]?: z.ZodTypeAny } = { publish_post: PUBLISH_POST_CATALOG_INPUT, schedule_post: SCHEDULE_POST_CATALOG_INPUT };
 
 /** The `publish_post` schema as the model is shown it: the catalog's, without the fields of the pieces that are off. */
 export function publishPostInput(opts: PublishPostOptions = {}): (typeof toolInputSchemas)['publish_post'] {
-  const { threadMore, comments, topic } = postOptions(opts);
-  if (threadMore > 0 && comments && topic) return toolInputSchemas.publish_post;
-  const off = { ...(threadMore > 0 ? {} : { thread: true as const }), ...(comments ? {} : { about: true as const }), ...(topic ? {} : { topic: true as const }) };
+  const { threadMore, comments, topic, record } = postOptions(opts);
+  if (threadMore > 0 && comments && topic) return record ? toolInputSchemas.publish_post : PUBLISH_POST_CATALOG_INPUT;
+  const off = { ...(threadMore > 0 ? {} : { thread: true as const }), ...(comments ? {} : { about: true as const }), ...(topic ? {} : { topic: true as const }), ...(record ? {} : { record: true as const }) };
   return toolInputSchemas.publish_post.omit(off) as unknown as (typeof toolInputSchemas)['publish_post'];
+}
+
+/** `schedule_post` as a turn that was handed records is shown it: the catalog's description with the `record` sentence, and the field. */
+export function schedulePostWithRecord<T extends { description: string }>(tool: T): T {
+  return { ...tool, description: `${tool.description}${RECORD_FIELD_SENTENCE}`, input: toolInputSchemas.schedule_post };
 }
 
 export const TOOLS: { readonly [N in ToolName]: ToolDefinition<N> } = {
@@ -327,6 +351,8 @@ export interface ToolAccountOptions {
   premium?: boolean | null;
   /** Which optional fields of `publish_post` this deployment and this coin offer; absent = all of them. */
   post?: PublishPostOptions;
+  /** The turn was handed dataset records: `publish_post` and `schedule_post` offer `record`. Absent = not offered. */
+  records?: boolean;
 }
 
 /**
@@ -336,9 +362,13 @@ export interface ToolAccountOptions {
  */
 export function toolsFor(config: Pick<AgentConfig, 'capabilities' | 'ownerRules'>, opts: ToolAccountOptions = {}): ToolDefinition[] {
   const limit = postLimitsFor(opts.premium).original;
-  const post = postOptions(opts.post);
+  const post = postOptions({ ...opts.post, record: opts.records === true || opts.post?.record === true });
   const asCatalog = limit === POST_LIMITS.original && sameOptions(post, postOptions());
-  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name)).map((tool) => (tool.name === 'publish_post' && !asCatalog ? { ...tool, description: publishPostDescription(limit, post), input: publishPostInput(post) } : tool));
+  return TOOL_LIST.filter((tool) => toolEnabled(config, tool.name)).map((tool) => {
+    if (tool.name === 'publish_post' && !asCatalog) return { ...tool, description: publishPostDescription(limit, post), input: publishPostInput(post) };
+    if (tool.name === 'schedule_post' && post.record) return schedulePostWithRecord(tool);
+    return tool;
+  });
 }
 
 export function toolByName(name: string): ToolDefinition | undefined {

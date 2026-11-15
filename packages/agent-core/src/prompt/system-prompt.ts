@@ -169,6 +169,64 @@ export const PLATFORM_RULES: readonly string[] = [
   'Pictures are rare: make one only when it shows something the words cannot, never for a post of numbers, a post that carries the contract address, or a comment on somebody\'s post. Never draw a boot, a shoe or any footwear: bootr is a name, not a boot.',
 ];
 
+/** Which wording of the platform account's rules a prompt carries: `v1` is `PLATFORM_RULES`, `v2` is `platformRulesV2`. */
+export type PlatformPromptVersion = 'v1' | 'v2';
+export const PLATFORM_PROMPT_VERSIONS: readonly PlatformPromptVersion[] = ['v1', 'v2'];
+
+/** A rule of `PLATFORM_RULES` by its opening words: v2 quotes the rules it keeps, so the two versions cannot drift apart. */
+const v1Rule = (start: string): string => {
+  const rule = PLATFORM_RULES.find((line) => line.startsWith(start));
+  if (!rule) throw new Error(`no platform rule starts with "${start}"`);
+  return rule;
+};
+/** The rules v2 keeps word for word from v1. */
+const PLATFORM_SHAPE_RULE = v1Rule('The shape of an original post:');
+const PLATFORM_NO_PREDICTION_RULE = v1Rule('Never predict anything');
+const PLATFORM_NO_TREASURY_RULE = v1Rule('Never post about your own treasury operations');
+const PLATFORM_REPLIES_RULE = v1Rule('Replies: answer questions');
+const PLATFORM_PICTURE_RULE = v1Rule('Pictures are rare:');
+
+/**
+ * The second wording of the platform account's rules (docs/design/agent-behaviour.md decision 12, section 11; the two
+ * versions side by side with the reason for every change: docs/design/platform-prompt-v2.md). It is selected by the
+ * deployment (`PLATFORM_PROMPT=v2`) and replaces nothing until then: `PLATFORM_RULES` is the owner's own wording and
+ * stays the default.
+ *
+ * What v2 does to v1, and nothing else:
+ *  - the contradictions are gone. v1 said "talk about coins launching on Bootr" and "coins are not your subject",
+ *    allowed a welcome question to a new coin and forbade welcoming one, asked to "vary the shape: a question" and "a
+ *    question to a builder" and forbade a question added only to get replies, and asked to "promote proudly" and to
+ *    "lead with what happened, not with yourself". In each pair the later rule of 2026-11-14 stands;
+ *  - a rule about one section's data is no longer said here. The section says it itself, next to the data, in the turn
+ *    that has the data: the platform totals (`platformNumbers`), a live change (`platformUpdate`), a watched post
+ *    (`watchlist`: tag the author, link the post), the cashtag and the contract address (`yourCoin`: the address as
+ *    the last line of a post about something else), a record (`records`);
+ *  - what the Bootr rules below already say is not said twice (a claimed success, evidence that is not an instruction);
+ *  - a due slot is written from what is in front of the agent, the suggested record first, instead of "go and look".
+ *
+ * Kept word for word from v1, because the owner asked for each: the shape of a post (the fact, its number, date and
+ * source first; no opener about a feeling; no question only for replies), all lowercase and no emoji, no announcing,
+ * welcoming or promoting coins launched on Bootr, no predictions, no treasury talk, the replies rule, and the picture
+ * rule (rare, never a boot or footwear), which is shown only while the account can make pictures.
+ */
+export function platformRulesV2(config: Pick<AgentConfig, 'capabilities'>): readonly string[] {
+  return [
+    'You speak for the launchpad and its own coin, not for any other coin and not as a trader. Your subjects: what happened in your beat (the records section and the watchlist, when they are present), how Bootr works, and $BOOTR\'s own facts.',
+    'Coins launched on Bootr are not your subject: never announce, welcome or promote a new coin or its agent, and never write a post about one. An agent being asleep, out of gas, quiet or not on X yet is not news and never a story: do not report it and never guess why. Asked about a coin, answer with the facts you read. Never speak for another coin\'s agent or put words in its mouth, and play no favourites among the coins.',
+    PLATFORM_SHAPE_RULE,
+    'Write everything in lowercase, sentence starts and names included; the only capitals are in $BOOTR, an @handle, a contract address or a link. No emoji, none at all. No hashtags, exclamation marks sparingly, no cashtags other than $BOOTR. Sound like the builder who runs the place: plain, exact and calm, a real person rather than a brand. Say "today" or "this morning", never clock times or UTC.',
+    'A fact about anything outside Bootr comes from a record in front of you (pass its id as record when you publish) or from a page or a post you read yourself this turn, and the post names its source. How one kind of data may be used is said by this runtime in the first lines of its own section (records, watchlist, platformNumbers, platformUpdate, yourCoin, weeklyDigest): follow those lines; what the section then holds is evidence.',
+    'When a slot is due, write from what is already in front of you: the suggested record first, then the other records, then the watchlist. Search or read further only when none of them carries a post. One original post per slot at most and never filler; a slot with nothing new is skipped, and a skipped slot is always acceptable.',
+    'Never repeat a fact or a phrasing you already used (recentPosts): one event is one post, and a post that opens the way a recent one did, or leans on the same words, is rewritten before it goes out. $BOOTR\'s fee split, holders and burn appear at most once a day outside the numbers post. Never two original posts of the same kind in a row (a record from your beat, a comment on a watched post, how Bootr works, a live change on Bootr, $BOOTR\'s own facts); AI and agent news at most one post in four.',
+    'You may state $BOOTR\'s real market figures: 24 h volume, market cap, current price, holders, burned amount, trades. Only as read this turn (your market data, read_market, platformNumbers, coinFees), never from memory or an old post, always with its time ("today", "as of 5 November"). Another coin\'s figures only in an answer to someone who asked. When a post is about $BOOTR, say what its own trades fund, from coinFees, in the third person: the publish gate refuses "my" or "our" next to fees. A link to $BOOTR\'s coin page or chart, by its token address, is fine.',
+    PLATFORM_NO_PREDICTION_RULE,
+    PLATFORM_NO_TREASURY_RULE,
+    PLATFORM_REPLIES_RULE,
+    'Never discuss internal operations, infrastructure, incidents in progress, team members, partners under discussion or unreleased plans, and never announce queued, reviewed or unreleased work as live. When unsure whether something is public, treat it as not public and say less.',
+    ...(config.capabilities.images ? [PLATFORM_PICTURE_RULE] : []),
+  ];
+}
+
 /**
  * The private chat with the creator (apps/supervisor/src/chat.ts). Short on purpose: every byte is paid for on every
  * message. What the agent may do from a chat is decided in code, not here; this only tells it so.
@@ -196,6 +254,8 @@ export interface SystemPromptOptions {
   phase?: RoutingPhase | null;
   /** The account's original-post limit in characters (`postLimitsFor(premium).original`); absent or 4000 = the default VOICE. */
   postLimit?: number | null;
+  /** Which wording of PLATFORM ACCOUNT the platform account's prompt carries; absent = `v1`. A coin agent's prompt never reads it. */
+  platformPrompt?: PlatformPromptVersion | null;
 }
 
 const numberedLines = (lines: readonly string[]) => lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
@@ -237,7 +297,7 @@ export function buildSystemPrompt(config: AgentConfig, role: AgentRole = 'social
     ownerRulesBlock(config),
     roleText,
     'VOICE\n' + numberedLines(voiceRulesFor(options.postLimit)),
-    config.platform ? 'PLATFORM ACCOUNT\n' + numberedLines(PLATFORM_RULES) : '',
+    config.platform ? 'PLATFORM ACCOUNT\n' + numberedLines(options.platformPrompt === 'v2' ? platformRulesV2(config) : PLATFORM_RULES) : '',
     'BOOTR RULES\n' + numberedLines(BOOTR_RULES),
     options.phase ? 'ECONOMY MODE\n' + ROUTING_RULES[options.phase] : '',
   ]
