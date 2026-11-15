@@ -301,8 +301,28 @@ const inSentence = (pattern: RegExp) => new RegExp(pattern.source.replaceAll('[\
 const EXECUTION_IN_SENTENCE = inSentence(EXECUTION_PATTERN);
 const PAYMENT_IN_SENTENCE = inSentence(PAYMENT_PATTERN);
 
-const WALLET_PAYLOAD =
-  /\b(?:ethereum|solana|wc):|\btg:\/\/[^\s]*(?:start|send|text)=|\b(?:eth_sendtransaction|eth_signtypeddata(?:_v4)?|personal_sign|wallet_sendcalls|wallet_signtypeddata)\b/;
+/**
+ * What a wallet or a client acts on: a payment URI (EIP-681 `ethereum:`, Solana Pay, a bitcoin address URI), a
+ * WalletConnect pairing, a Telegram bot start, a signing call, and a wallet's own deep link that opens a send, a
+ * signing dapp or a pairing in the wallet (MetaMask, Coinbase Wallet, Trust, Rainbow, Phantom, OKX, imToken,
+ * TokenPocket, Uniswap; the MetaMask and Coinbase Wallet send links passed before 2026-11-15). A wallet's scheme
+ * counts only with its "://", since "Trust:" or "Rainbow:" open honest sentences.
+ */
+const WALLET_PAYLOAD = new RegExp(
+  [
+    '\\b(?:ethereum|solana|wc):',
+    '\\bbitcoin:(?:bc1|[13])',
+    '\\b(?:metamask|cbwallet|trust|rainbow|phantom|okx|imtokenv2|tpoutside|zerion|uniswap)://',
+    '\\btg:\\/\\/[^\\s]*(?:start|send|text)=',
+    '\\b(?:metamask\\.app\\.link|link\\.metamask\\.io)/(?:send|dapp|wc|buy-crypto|sell-crypto)\\b',
+    '\\bgo\\.cb-w\\.com/',
+    '\\blink\\.trustwallet\\.com/(?:send|open_url|wc|browser)\\b',
+    '\\brnbwapp\\.com/(?:wc|dapp)\\b',
+    '\\bphantom\\.app/ul/',
+    '\\b(?:app\\.)?uniswap\\.org/app/wc\\b',
+    '\\b(?:eth_sendtransaction|eth_signtypeddata(?:_v4)?|personal_sign|wallet_sendcalls|wallet_signtypeddata)\\b',
+  ].join('|'),
+);
 const INTENT_LINK = /(?:x\.com|twitter\.com)\/(?:intent|share)\b[^\s]*(?:text|url)=/;
 const SIGN_WITH_ADDRESS = /\b(?:approve|permit2?|sign|setapprovalforall)\b[\s\S]{0,80}0x[a-f0-9]{40,}/;
 const RAW_SIGNATURE_OR_FEE_ROUTING = /0x[a-f0-9]{130,}|\b(?:fees?|royalties)\b[\s\S]{0,80}@/;

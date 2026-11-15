@@ -53,6 +53,24 @@ describe('outgoingActionRisk', () => {
     expect(outgoingActionRisk('https://x.com/intent/tweet?text=buy+now')).toBe('social_execution_link_forbidden');
     expect(outgoingActionRisk('https://twitter.com/share?url=https://a.b')).toBe('social_execution_link_forbidden');
   });
+  it("rejects a wallet's own deep link to a send, a signing dapp or a pairing (the security review of 2026-11-15)", () => {
+    for (const text of [
+      `https://metamask.app.link/send/${addr}@8453?value=1e16`,
+      `https://link.metamask.io/send/${addr}?value=1`,
+      'https://metamask.app.link/dapp/evil.example/claim',
+      `https://go.cb-w.com/dapp?cb_url=https%3A%2F%2Fevil.example`,
+      `https://link.trustwallet.com/send?coin=60&address=${addr}&amount=1`,
+      'https://rnbwapp.com/wc?uri=wc%3Aabc%402',
+      'https://phantom.app/ul/browse/https%3A%2F%2Fevil.example',
+      'https://app.uniswap.org/app/wc?uri=wc:abc@2',
+      `metamask://send/${addr}`,
+      'trust://browser_enable',
+      'bitcoin:bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh?amount=0.1',
+    ]) expect(outgoingActionRisk(text), text).toBe('social_wallet_payload_forbidden');
+    // the names alone, and a scheme word that opens a sentence, are ordinary words
+    for (const text of ['MetaMask and Coinbase Wallet both support Base.', 'Trust: earned slowly, lost fast.', 'Rainbow: a wallet many people like.', 'Bitcoin: up on the week.', 'The Phantom app added Base.'])
+      expect(outgoingActionRisk(text), text).toBeNull();
+  });
   it('rejects execution commands when addressed or a reply command', () => {
     expect(outgoingActionRisk('@alice please send 0.5 ETH to me')).toBe('social_execution_command_forbidden');
     expect(outgoingActionRisk('@alice launch the token now')).toBe('social_execution_command_forbidden');
