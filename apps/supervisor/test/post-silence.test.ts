@@ -285,3 +285,18 @@ describe('the notifier pass, on the platform account', () => {
     }
   });
 });
+
+describe('the switch for the silence alarm', () => {
+  it('is offered to the platform account\'s creator only', async () => {
+    const { notificationsView } = await import('../src/notifications.js');
+    const w = await makeWorld();
+    try {
+      const view = (platform: boolean) => notificationsView(w.ctx, { agentId: '1', creator: '0x0000000000000000000000000000000000000001', config: platform ? { platform: true } : {} } as never);
+      expect((await view(true)).events.map((e) => e.key)).toContain('post_silence');
+      expect((await view(false)).events.map((e) => e.key)).not.toContain('post_silence');
+    } finally {
+      await w.close();
+    }
+  });
+});
+

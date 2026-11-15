@@ -473,6 +473,8 @@ describe('opt-out', () => {
     expect(view.items.map((i) => i.event)).toEqual(['x_revoked']);
     expect(view.active).toBe(1);
     expect(view.events.find((e) => e.key === 'agent_asleep')!.enabled).toBe(false);
+    // a coin's creator is not offered the platform account's silence alarm, a notice the coin never gets
+    expect(view.events.map((e) => e.key)).not.toContain('post_silence');
     await flushNotifications(w.ctx);
     expect(sends(tg).map((s) => s.body.text as string)).toEqual([expect.stringContaining('X connection lost')]);
 

@@ -254,7 +254,7 @@ export interface NotificationsView {
 }
 
 /** The console's inbox: what is true now, then what closed in the last week. Events turned off are not shown. */
-export async function notificationsView(ctx: Pick<SupervisorContext, 'db' | 'now' | 'telegram'>, agent: Pick<AgentRow, 'agentId' | 'creator'>): Promise<NotificationsView> {
+export async function notificationsView(ctx: Pick<SupervisorContext, 'db' | 'now' | 'telegram'>, agent: Pick<AgentRow, 'agentId' | 'creator'> & Partial<Pick<AgentRow, 'config'>>): Promise<NotificationsView> {
   const now = ctx.now();
   const optOut = await optOutOf(ctx, agent.agentId);
   const rows = await ctx.db
@@ -278,7 +278,11 @@ export async function notificationsView(ctx: Pick<SupervisorContext, 'db' | 'now
   return {
     items,
     active: items.filter((i) => i.state === 'active').length,
-    events: notificationEvents.map((key) => ({ key, label: EVENT_RULES[key].label, enabled: !optOut.includes(key) })),
+    // The silence alarm is raised for the platform account only (post-silence.ts): a coin's creator is not shown a
+    // switch for a notice that never comes.
+    events: notificationEvents
+      .filter((key) => key !== 'post_silence' || (agent.config as Record<string, unknown> | undefined)?.platform === true)
+      .map((key) => ({ key, label: EVENT_RULES[key].label, enabled: !optOut.includes(key) })),
     telegram: await telegramView(ctx, agent),
   };
 }
