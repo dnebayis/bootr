@@ -30,6 +30,12 @@ export interface SenderContext {
   publicApi?: PublicApiOptions;
   /** The page at `GET /`: where the catalogue lives; defaults to DEFAULT_SITE_URL and the global fetch. */
   apiPage?: { siteUrl: string; fetch?: typeof fetch };
+  /**
+   * The X reads of Bootr's own dataset (src/dataset-x.ts): the day's cap in units of one post read (0 or absent = off,
+   * nothing is read), the key that opens `/dataset/x/*` (absent = the routes do not exist) and the agent whose
+   * connected account reads.
+   */
+  dataset?: { postsPerDay: number; key?: string; readerAgentId?: string };
 }
 
 export const nowSec = (ctx: SenderContext): number => Math.floor(ctx.now().getTime() / 1000);

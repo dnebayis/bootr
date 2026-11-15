@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import type { DatasetDay, DatasetRecordView } from '@/lib/server/dataset';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { DatasetDay, DatasetRecordView, DatasetXView } from '@/lib/server/dataset';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Field';
 import { Empty, Panel } from '@/components/ui/Panel';
@@ -88,6 +88,62 @@ function RecordRow({ record }: { record: DatasetRecordView }) {
   );
 }
 
+const usd = (n: number) => `${n.toFixed(2)} USD`;
+
+/**
+ * Layer c: what the day's X reads cost (the owner pays X for each: 0.005 USD a post, 0.01 USD a user) and the listed
+ * accounts, with a suspended one's reason and a "look again" for a false alarm. A real change of an account (a new
+ * handle) is a commit to the source list, not this button.
+ */
+function XAccounts({ x, onReview }: { x: DatasetXView; onReview: (id: string) => Promise<string | null> }) {
+  const [asked, setAsked] = useState<Record<string, string>>({});
+  const count = (status: string) => x.accounts.filter((a) => a.status === status).length;
+  const held = x.accounts.filter((a) => a.status === 'suspended' || a.status === 'review');
+  return (
+    <div className="border-t border-hairline px-4 py-3">
+      <div className="text-caption text-mute">X accounts (layer c)</div>
+      {x.day ? (
+        <p className="mt-1 font-mono text-micro text-body tabular">
+          {x.day.posts} posts read · {x.day.userReads} user reads · {x.day.checks} checks · {x.day.units} of {x.day.limit} units · {usd(x.day.usd)} today (at most {usd(x.day.worstUsd)})
+          {x.day.stopped ? ` · reading stopped: ${x.day.stopped === 'cap' ? 'the cap is reached' : 'paced over the day'}` : ''}
+        </p>
+      ) : (
+        <p className="mt-1 text-caption text-body">Nothing was read on X this day and nothing was spent: the X layer is off until DATASET_X_POSTS_PER_DAY is set on the sender and the dataset service.</p>
+      )}
+      {x.day?.error ? <p className="mt-1 text-caption text-danger">{x.day.error}</p> : null}
+      <p className="mt-1 font-mono text-micro text-mute">
+        {x.accounts.length} listed · {count('active')} read · {count('pending')} waiting for their first lookup · {held.length} suspended
+      </p>
+      {held.length ? (
+        <ul className="mt-2 flex flex-col gap-1">
+          {held.map((a) => (
+            <li key={a.id} className="flex items-start justify-between gap-3 text-caption text-body">
+              <span>
+                <span className="font-mono text-micro text-ink">{a.handle || a.id}</span> · {a.statusReason ?? 'no reason kept'}
+                {asked[a.id] ? <span className="font-mono text-micro text-mute"> · {asked[a.id]}</span> : null}
+              </span>
+              {a.status === 'suspended' ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={async () => {
+                    const failed = await onReview(a.id);
+                    setAsked((m) => ({ ...m, [a.id]: failed ?? 'looked at again at the next pass' }));
+                  }}
+                >
+                  Look again
+                </Button>
+              ) : (
+                <span className="font-mono text-micro text-mute">looked at again at the next pass</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Bootr's own dataset, one UTC day at a time (docs/design/agent-behaviour.md section 6.4): the records with their
  * grade, sources and counts, read from `/api/admin/dataset`. Read-only: a day is read here by hand before any agent is
@@ -95,6 +151,15 @@ function RecordRow({ record }: { record: DatasetRecordView }) {
  */
 export function DatasetPanel() {
   const [day, setDay] = useState(today);
+  const queryClient = useQueryClient();
+  const review = async (id: string): Promise<string | null> => {
+    const res = await fetch('/api/admin/dataset/x-review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }).catch(() => null);
+    if (!res) return 'the request failed';
+    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+    if (!res.ok) return body.message ?? body.error ?? `the request failed (${res.status})`;
+    await queryClient.invalidateQueries({ queryKey: ['admin-dataset'] });
+    return null;
+  };
   const query = useQuery({
     queryKey: ['admin-dataset', day],
     queryFn: async (): Promise<DatasetDay> => {
@@ -178,6 +243,7 @@ export function DatasetPanel() {
               </table>
             </div>
           )}
+          <XAccounts x={data.x} onReview={review} />
           {failing.length ? (
             <details className="border-t border-hairline px-4 py-3">
               <summary className="cursor-pointer text-caption text-mute">{failing.length} sources failing</summary>

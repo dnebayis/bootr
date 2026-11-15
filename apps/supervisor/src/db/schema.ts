@@ -781,7 +781,7 @@ export const gateShadow = pgTable(
 export const dsSources = pgTable(
   'sv_ds_sources',
   {
-    /** `b:<slug>` for an open source, `a:<name>` for Bootr's own data, `x:<user id>` for an X account. */
+    /** `b:<slug>` for an open source, `a:<name>` for Bootr's own data, `x:<user id>` for an X account (`x:@<handle>` until its id is pinned). */
     id: text('id').primaryKey(),
     layer: text('layer').notNull(),
     kind: text('kind').notNull(),
@@ -796,7 +796,10 @@ export const dsSources = pgTable(
     xHandle: text('x_handle'),
     /** Read tier of an X account (1 = from day one); null for other sources. */
     tier: integer('tier'),
-    /** `active`, `suspended` (a person must look: a renamed handle, collapsed followers) or `retired` (left the list). */
+    /**
+     * `active`, `suspended` (a person must look: a renamed handle, collapsed followers) or `retired` (left the list);
+     * for an X account also `pending` (listed, its id not pinned yet) and `review` (the owner asked for another look).
+     */
     status: text('status').notNull().default('active'),
     statusReason: text('status_reason'),
     etag: text('etag'),
@@ -877,7 +880,7 @@ export const dsSightings = pgTable(
     kind: text('kind').notNull(),
     title: text('title').notNull(),
     excerpt: text('excerpt'),
-    /** The text read like an instruction and was not kept. */
+    /** The text read like an instruction and was not kept, or, for an X post, was let go again (`dataset/x-text.ts`). */
     withheld: boolean('withheld').notNull().default(false),
     link: text('link'),
     linkKey: text('link_key'),
@@ -887,6 +890,11 @@ export const dsSightings = pgTable(
     matchedBy: text('matched_by').notNull(),
     publishedAt: ts('published_at'),
     seenAt: ts('seen_at').notNull(),
+    /**
+     * For a sighting of an X post whose words are kept (`title`): when X last confirmed the post is still there
+     * (`dataset/x-text.ts`). Null for every other sighting.
+     */
+    checkedAt: ts('checked_at'),
   },
   (t) => [index('sv_ds_sightings_record_idx').on(t.recordId), index('sv_ds_sightings_link_idx').on(t.linkKey), index('sv_ds_sightings_key_idx').on(t.key), index('sv_ds_sightings_seen_idx').on(t.seenAt)],
 );

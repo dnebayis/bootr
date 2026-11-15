@@ -57,18 +57,29 @@ export interface DatasetSourceView {
   lastError: string | null;
 }
 
+/** Layer c, the X accounts: what the day's reads cost and every listed account with its status. */
+export interface DatasetXView {
+  /** Null when the dataset read nothing on X that day (the layer was off). */
+  day: { limit: number; units: number; posts: number; userReads: number; checks: number; usd: number; worstUsd: number; stopped: string | null; error: string | null; at: string | null } | null;
+  accounts: { id: string; handle: string; status: string; statusReason: string | null; followers: number | null; postsToday: number; lastOkAt: string | null; lastError: string | null }[];
+}
+
 export interface DatasetDay {
   enabled: boolean;
   day: string;
   totals: { records: number; sightings: number; byGrade: Record<string, number>; byKind: Record<string, number>; byMatch: Record<string, number>; capped: number };
   records: DatasetRecordView[];
   sources: DatasetSourceView[];
+  x: DatasetXView;
 }
 
 export const DATASET_RECORDS_MAX = 500;
 export const DATASET_SOURCES_MAX = 400;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ID_RE = /^[a-z0-9:_.-]{1,80}$/i;
+/** An X account's source id: `x:<user id>`, or `x:@<handle>` until its id is pinned. */
+export const X_SOURCE_ID_RE = /^x:(?:@\w{1,15}|\d{1,25})$/;
+export const DATASET_X_ACCOUNTS_MAX = 200;
 
 /** `YYYY-MM-DD` when `raw` is a real day, else null. */
 export function datasetDay(raw: string | null | undefined): string | null {
@@ -141,8 +152,33 @@ function record(raw: unknown): DatasetRecordView | null {
 
 function source(raw: unknown): DatasetSourceView | null {
   const s = obj(raw);
-  if (typeof s.id !== 'string' || !ID_RE.test(s.id)) return null;
+  if (typeof s.id !== 'string' || !(ID_RE.test(s.id) || X_SOURCE_ID_RE.test(s.id))) return null;
   return { id: s.id, name: str(s.name, 60), layer: word(s.layer, 2), kind: word(s.kind, 10), status: word(s.status, 12), lastOkAt: iso(s.lastOkAt), nextFetchAt: iso(s.nextFetchAt), failures: whole(s.failures, 10_000), lastError: str(s.lastError, 200) || null };
+}
+
+const money = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(1_000, Math.round(v * 1000) / 1000) : 0);
+
+function xView(raw: unknown): DatasetXView {
+  const o = obj(raw);
+  const d = o.day === null || o.day === undefined ? null : obj(o.day);
+  return {
+    day: d
+      ? { limit: whole(d.limit, 100_000), units: whole(d.units, 100_000), posts: whole(d.posts, 100_000), userReads: whole(d.userReads, 100_000), checks: whole(d.checks, 100_000), usd: money(d.usd), worstUsd: money(d.worstUsd), stopped: word(d.stopped, 10) || null, error: str(d.error, 300) || null, at: iso(d.at) }
+      : null,
+    accounts: list(o.accounts, DATASET_X_ACCOUNTS_MAX)
+      .map(obj)
+      .filter((a) => typeof a.id === 'string' && X_SOURCE_ID_RE.test(a.id))
+      .map((a) => ({
+        id: a.id as string,
+        handle: typeof a.handle === 'string' && /^\w{1,15}$/.test(a.handle) ? a.handle : '',
+        status: word(a.status, 12),
+        statusReason: str(a.statusReason, 300) || null,
+        followers: typeof a.followers === 'number' && Number.isFinite(a.followers) && a.followers >= 0 ? Math.floor(a.followers) : null,
+        postsToday: whole(a.postsToday, 10_000),
+        lastOkAt: iso(a.lastOkAt),
+        lastError: str(a.lastError, 200) || null,
+      })),
+  };
 }
 
 /** The day as the console renders it. `day` falls back to the day that was asked for. */
@@ -155,6 +191,7 @@ export function sanitizeDatasetDay(raw: unknown, asked: string): DatasetDay {
     totals: { records: whole(t.records), sightings: whole(t.sightings), byGrade: tally(t.byGrade), byKind: tally(t.byKind), byMatch: tally(t.byMatch), capped: whole(t.capped) },
     records: list(o.records, DATASET_RECORDS_MAX).map(record).filter((r): r is DatasetRecordView => !!r),
     sources: list(o.sources, DATASET_SOURCES_MAX).map(source).filter((s): s is DatasetSourceView => !!s),
+    x: xView(o.x),
   };
 }
 
@@ -173,4 +210,25 @@ export async function getDatasetDay(day: string): Promise<DatasetDay> {
   // An agent service from before the dataset has no such route.
   if (!res.ok) throw new SupervisorError(res.status, res.status === 404 ? 'dataset_not_deployed' : `http_${res.status}`, res.status === 404 ? 'The agent service does not have the dataset yet.' : `The agent service answered ${res.status}.`);
   return sanitizeDatasetDay(await res.json(), day);
+}
+
+/**
+ * `POST /internal/dataset/x/review {id}`: the owner's "look again" on a suspended X account. The agent service only
+ * marks the row; the dataset process makes the one user read at its next pass. Throws the supervisor client's errors
+ * (404 when the id is not a suspended X account).
+ */
+export async function askDatasetXReview(id: string): Promise<void> {
+  if (!X_SOURCE_ID_RE.test(id)) throw new SupervisorError(400, 'invalid_request', 'Not an X account of the dataset.');
+  const { serviceKey, url } = supervisorEnv();
+  if (!serviceKey || !url) throw new SupervisorUnavailable('supervisor is not configured');
+  const path = '/internal/dataset/x/review';
+  const body = JSON.stringify({ id });
+  let res: Response;
+  try {
+    res = await fetch(`${url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: await signSenderRequest(serviceKey, 'POST', path, body) }, body, cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+  } catch (err) {
+    throw new SupervisorUnavailable(`supervisor unreachable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (res.status >= 500) throw new SupervisorUnavailable(`supervisor responded ${res.status}`);
+  if (!res.ok) throw new SupervisorError(res.status, res.status === 404 ? 'not_found' : `http_${res.status}`, res.status === 404 ? 'No suspended X account has this id.' : `The agent service answered ${res.status}.`);
 }

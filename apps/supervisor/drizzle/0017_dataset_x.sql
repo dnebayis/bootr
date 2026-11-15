@@ -1,0 +1,1 @@
+ALTER TABLE "sv_ds_sightings" ADD COLUMN "checked_at" timestamp with time zone;

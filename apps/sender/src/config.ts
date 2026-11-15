@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { DEFAULT_SITE_URL } from './api-page.js';
 
+/** Units of X reads a UTC day the dataset may never pass, whatever is set (src/dataset-x.ts re-exports it). */
+export const DATASET_X_HARD_CEILING = 700;
+
 /** Treat `VAR=` (empty) as unset so defaults apply. */
 const blank = (v: unknown) => (v === '' ? undefined : v);
 const optionalUrl = z.preprocess(blank, z.string().url().optional());
@@ -59,6 +62,20 @@ export const configSchema = z.object({
   /** Posts in one thread, the first included, and the length of each part (src/publish.ts); the supervisor holds the same limits. */
   THREAD_MAX_PARTS: num(z.coerce.number().int().nonnegative(), 4),
   THREAD_PART_MAX_CHARS: num(z.coerce.number().int().positive(), 280),
+  /**
+   * The X reads of Bootr's own dataset (src/dataset-x.ts). None of the three can stop the sender from starting: a
+   * value that is not what it should be reads as unset, and unset is off.
+   *
+   * `DATASET_X_POSTS_PER_DAY`: the day's cap in units of one post read (a post returned 1, a user read 2). Unset, empty,
+   * 0 or anything that is not a whole number = OFF: nothing is read and nothing is spent. A value above the hard
+   * ceiling (700) is the ceiling.
+   * `DATASET_SENDER_KEY`: the HMAC key of `/dataset/x/*`, held by the dataset process and by nobody else; at least 32
+   * characters. Unset = the routes do not exist.
+   * `DATASET_X_READER_AGENT_ID`: the agent whose connected X account reads (the platform's own agent).
+   */
+  DATASET_X_POSTS_PER_DAY: z.preprocess((v) => (typeof v === 'string' && /^\d{1,6}$/.test(v.trim()) ? Math.min(Number(v.trim()), DATASET_X_HARD_CEILING) : 0), z.number().int().nonnegative()),
+  DATASET_SENDER_KEY: z.preprocess((v) => (typeof v === 'string' && v.length >= 32 ? v : undefined), z.string().optional()),
+  DATASET_X_READER_AGENT_ID: z.preprocess((v) => (typeof v === 'string' && /^[\w:.-]{1,128}$/.test(v) ? v : undefined), z.string().optional()),
   /** Requests per minute per client IP on the public read API (`GET /public/posts/:agentId`); 0 = off. */
   SENDER_PUBLIC_RATE_LIMIT_PER_MIN: num(z.coerce.number().int().nonnegative(), 120),
   /** `1`/`true`: rate-limit by the right-most X-Forwarded-For entry (one trusted proxy in front). */

@@ -28,6 +28,8 @@ export const CLUSTERS = {
   governance: 2,
   x: 2,
   defi: 1,
+  l1: 1,
+  exchanges: 1,
   data: 1,
   'ai-research': 1,
   research: 1,
@@ -36,7 +38,7 @@ export const CLUSTERS = {
 export type Cluster = keyof typeof CLUSTERS;
 export const clusterWeight = (cluster: string): number => (CLUSTERS as Record<string, number>)[cluster] ?? 1;
 
-/** The layer a source belongs to: `a` the chain and Bootr's own data, `b` open sources read without X, `c` X accounts (a later stage). */
+/** The layer a source belongs to: `a` the chain and Bootr's own data, `b` open sources read without X, `c` X accounts (x-sources.ts, layer-c.ts). */
 export type Layer = 'a' | 'b' | 'c';
 
 /** How a layer-b source is read (readers/): a feed (RSS or Atom, GitHub releases included), a JSON API, an HTML page's list of links. */

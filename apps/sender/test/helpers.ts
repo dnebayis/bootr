@@ -87,7 +87,7 @@ export class Clock {
   }
 }
 
-export async function setup(opts: { connect?: boolean; verifiedType?: string | null } = {}) {
+export async function setup(opts: { connect?: boolean; verifiedType?: string | null; dataset?: SenderContext['dataset'] } = {}) {
   const pg = new PGlite();
   const db = drizzle(pg, { schema }) as unknown as Db;
   await migrate(drizzle(pg), {
@@ -120,6 +120,7 @@ export async function setup(opts: { connect?: boolean; verifiedType?: string | n
     now: clock.now,
     defaults: { postsPerDay: 24, mentionReadIntervalSec: 300, readsPerDay: 400 },
     xTimeoutMs: 15_000,
+    ...(opts.dataset ? { dataset: opts.dataset } : {}),
   };
   if (opts.connect !== false) {
     await saveAccount(

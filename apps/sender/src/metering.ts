@@ -12,9 +12,10 @@ import { actions, reads } from './db/schema.js';
 export const PRICE_USD = { post: 0.015, postWithLink: 0.2, reply: 0.01, read: 0.005, userRead: 0.01 } as const;
 
 /** The read kinds that are lookups of a user, not of posts (`meterRead` callers: the account lookup, `users/me`). */
-export const USER_READ_KINDS: readonly string[] = ['account', 'users_me'];
+export const USER_READ_KINDS: readonly string[] = ['account', 'users_me', 'dataset_users'];
 
-export type ReadKind = 'mentions' | 'thread' | 'account' | 'timeline' | 'users_me' | 'metrics' | 'replies';
+/** The `dataset_*` kinds are written by src/dataset-x.ts under the reserved id `dataset`, never under an agent. */
+export type ReadKind = 'mentions' | 'thread' | 'account' | 'timeline' | 'users_me' | 'metrics' | 'replies' | 'dataset_posts' | 'dataset_users' | 'dataset_checks';
 
 const utcDay = (d: Date) => d.toISOString().slice(0, 10);
 

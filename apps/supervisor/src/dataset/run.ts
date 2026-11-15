@@ -1,6 +1,7 @@
 /**
- * One pass of the dataset: layer a when its interval has passed, the open sources that are due, and once an hour the
- * ageing out of what is past its keeping time. The pass is what main.ts runs on a timer, in its own process: the
+ * One pass of the dataset: layer a when its interval has passed, the open sources that are due, layer c (the X
+ * accounts, off until `DATASET_X_POSTS_PER_DAY` is set: then only the letting go of words is done), and once an hour
+ * the ageing out of what is past its keeping time. The pass is what main.ts runs on a timer, in its own process: the
  * supervisor's tick serves agents one at a time and a slow feed must never hold a turn (the note's decision 6).
  */
 import { eq } from 'drizzle-orm';
@@ -10,7 +11,9 @@ import type { IndexerClient } from '../indexer-client.js';
 import type { Logger } from '../log.js';
 import { runChain, type ChainReport } from './layer-a.js';
 import { runOpenSources, type OpenSourcesReport } from './layer-b.js';
+import { runXAccounts, type XLayerDeps, type XLayerReport } from './layer-c.js';
 import { ageOut, syncSources } from './store.js';
+import { syncXSources } from './x-pin.js';
 
 export const AGE_OUT_EVERY_MS = 3_600_000;
 /** How often the week counts of the supervisor's own tables are read (layer-a.ts `supervisorWeek`). */
@@ -27,11 +30,14 @@ export interface DatasetDeps {
   recordsPerDay: number;
   sourceRecordsPerDay?: number;
   sourceSightingsPerDay?: number;
+  /** Layer c: the door to the sender (null when this process was not given one) and the day's cap (0 = off). */
+  x?: Pick<XLayerDeps, 'x' | 'cap'>;
 }
 
 export interface PassReport {
   chain: ChainReport | null;
   open: OpenSourcesReport;
+  x: XLayerReport;
   aged: { sightings: number; records: number } | null;
 }
 
@@ -48,6 +54,9 @@ export async function datasetPass(deps: DatasetDeps, state: PassState, now: Date
   if (!state.synced) {
     const synced = await syncSources(deps.db, now);
     if (synced.added || synced.retired) deps.log.info(synced, 'dataset: source list synced');
+    // The X accounts are listed (as `pending`) whether the layer is on or not: the owner sees the list before a cent is spent.
+    const xSynced = await syncXSources(deps.db, now);
+    if (xSynced.added || xSynced.retired) deps.log.info(xSynced, 'dataset: X account list synced');
     state.synced = true;
   }
   let chain: ChainReport | null = null;
@@ -62,10 +71,11 @@ export async function datasetPass(deps: DatasetDeps, state: PassState, now: Date
       .where(eq(dsSources.id, 'a:indexer'));
   }
   const open = await runOpenSources(deps, now);
+  const x = await runXAccounts({ db: deps.db, log: deps.log, x: deps.x?.x ?? null, cap: deps.x?.cap ?? 0, recordsPerDay: deps.recordsPerDay }, now);
   let aged: PassReport['aged'] = null;
   if (now.getTime() - state.agedAt >= AGE_OUT_EVERY_MS) {
     aged = await ageOut(deps.db, now);
     state.agedAt = now.getTime();
   }
-  return { chain, open, aged };
+  return { chain, open, x, aged };
 }

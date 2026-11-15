@@ -19,7 +19,8 @@ import type { EventPrecision, RecordKind, RecordNumber, Sighting } from './types
 
 export const MAX_ITEM_AGE_MS = 7 * 86_400_000;
 
-const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|digital (?:euro|dollar|pound|currenc(?:y|ies))|cbdcs?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
+/** The subject a broad source must name for an item of it to be kept (`needsTopic`). */
+export const TOPIC = /\b(?:crypto\w*|digital assets?|virtual assets?|digital (?:euro|dollar|pound|currenc(?:y|ies))|cbdcs?|blockchains?|stablecoins?|token(?:s|i[sz]ed|i[sz]ation)?|defi|on-?chain|web3|smart contracts?|ai agents?|agentic|artificial intelligence|language models?|llms?|ai)\b/i;
 
 const PAID_TITLE = /^\W{0,3}(?:sponsored|press release|partner content|paid post|advertisement|advertorial|promoted)\b/i;
 const PAID_PATH = /\/(?:press-releases?|pressreleases?|sponsored(?:-content)?|partner-content|advertorial|branded|promoted|pr-newswire|chainwire)(?:\/|$)/i;

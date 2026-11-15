@@ -1112,7 +1112,29 @@ Things the build changed in the design, all recorded in the code's headers:
   week of 8 to 14 November has 119 originals, not the 46 of section 2.2, which read the newest 100 rows. Not fixed
   here.
 
-Left for the stages that follow: stage 6 (the X reader, tier 1, the read budget), stage 5 (records and blocks for the
+**Stage 6, layer c (2026-11-15, branch `behaviour/x-reader`).** Off at deploy: nothing is read on X and nothing is
+spent until `DATASET_X_POSTS_PER_DAY` is set on the sender and the dataset service.
+
+| Piece | Where |
+|---|---|
+| The sender's door: `/dataset/x/*` with its own key `DATASET_SENDER_KEY`, reads by user id with `since_id`, no replies, no reposts, no expansion; metered under the reserved id `dataset`; the cap claimed before each call, 0 by default, never above 700 | `apps/sender/src/dataset-x.ts` |
+| The 41 tier 1 rows of 6.6 as data, checked against this note's table by a test | `src/dataset/x-sources.ts` |
+| The first lookup and the weekly look: an id is pinned only when X spells the handle as the table does and the account has half the table's followers; a renamed handle, collapsed followers, a protected or gone account is suspended | `src/dataset/x-pin.ts` |
+| The day's budget: duties first, reading paced over the day, shares by how often an account posts times its cluster's weight | `src/dataset/x-budget.ts`, `src/dataset/layer-c.ts` |
+| Post to sighting (the same cleaning and rules as layer b), and what is kept of a post and for how long | `src/dataset/x-build.ts`, `src/dataset/x-text.ts` |
+| The owner's panel: the day's reads and their cost, the accounts, suspended ones with the reason, "look again" | `src/dataset/view.ts`, the admin console's Dataset panel |
+
+Where the build departed from the design: a person's account (the rows marked "(person)", the researchers, zachxbt,
+samczsun) is official for nothing: what Jesse Pollak says of Base is a report until Base's own account or blog or a
+second group carries it. An account is official only for a post that names its entity or links that entity's own listed
+page; nothing it carries on every post makes it official. A post that quotes a post or links a page already in a record
+joins it as a passenger (counted, changing nothing), which is the security review's rule for every source. Every post
+read is checked once against X 20 hours on (one more unit each), so at a cap of 250 about 125 posts a day are read, not
+250; a post X no longer shows is removed with what it gave its record, and a record nothing else carries is withdrawn.
+The words kept of a post (a code-built headline) are let go within 44 hours, at once when a listed page carries the same
+event, and after 24 hours when the check could not be made. Matching step 4 is not built; its seam is unchanged.
+
+Left for the stages that follow: stage 5 (records and blocks for the
 platform account, G5, its prompt rewritten), stage 7 (coin and own agents), stage 8 (enforcing the gates after a week
 of shadow rows read by hand), matching step 4 (the cheapest model for the leftover), and a database role of its own
 for the dataset process.
