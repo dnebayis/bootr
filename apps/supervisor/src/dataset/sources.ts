@@ -154,7 +154,8 @@ export const OPEN_SOURCES: readonly OpenSource[] = [
   row({ n: 56, id: 'b:stripe', name: 'Stripe blog', url: 'https://stripe.com/blog/feed.rss', kind: 'feed', cluster: 'payments', group: 'stripe', officialFor: ['stripe'], entities: ['stripe'], defaultKind: 'statement', needsTopic: true }),
   row({ n: 57, id: 'b:rekt', name: 'rekt', url: 'https://rekt.news/', kind: 'html', reader: 'links', cluster: 'security', group: 'rekt', entities: ['security'], defaultKind: 'incident' }),
   row({ n: 58, id: 'b:a16z-crypto', name: 'a16z crypto', url: 'https://a16zcrypto.com/feed/', kind: 'feed', cluster: 'research', group: 'a16z', officialFor: ['a16z-crypto'], entities: ['a16z-crypto'], defaultKind: 'research' }),
-  row({ n: 59, id: 'b:vitalik', name: "Vitalik's blog", url: 'https://vitalik.eth.limo/feed.xml', kind: 'feed', cluster: 'ethereum', group: 'vitalik', entities: ['vitalik'], defaultKind: 'research' }),
+  // The group is the one his X account has in the note's section 6.6 (`ef`): his blog, his account and the foundation's own channels are never two independent sources.
+  row({ n: 59, id: 'b:vitalik', name: "Vitalik's blog", url: 'https://vitalik.eth.limo/feed.xml', kind: 'feed', cluster: 'ethereum', group: 'ethereum-foundation', entities: ['vitalik'], defaultKind: 'research' }),
   row({ n: 60, id: 'b:bankr-docs', name: 'Bankr docs', url: 'https://docs.bankr.bot/', kind: 'html', reader: 'links', cluster: 'launchpads', group: 'bankr', officialFor: ['bankr'], entities: ['bankr'], subject: ['bankr'], defaultKind: 'product' }),
   row({ n: 61, id: 'b:clanker-docs', name: 'Clanker docs', url: 'https://clanker.gitbook.io/', kind: 'html', reader: 'links', cluster: 'launchpads', group: 'clanker', officialFor: ['clanker'], entities: ['clanker'], subject: ['clanker'], defaultKind: 'product' }),
   row({ n: 62, id: 'b:clanker-site', name: 'Clanker site', url: 'https://www.clanker.world/', kind: 'html', reader: 'links', cluster: 'launchpads', group: 'clanker', entities: ['clanker'], open: true, defaultKind: 'product', read: false, reason: 'the page is a live list of coins launched through Clanker: its links are coins, which lie outside the scope' }),
@@ -178,7 +179,7 @@ export const CHAIN_SOURCES = [
 
 export const SOURCE_BY_ID: ReadonlyMap<string, OpenSource> = new Map(OPEN_SOURCES.map((s) => [s.id, s]));
 
-/** Whether a source is an open venue. A source that is not in the file (an X account of a later stage) is not one here. */
+/** Whether a source is an open venue. A source that is not in this file (an X account, x-sources.ts) is never one. */
 export const isOpenVenue = (sourceId: string): boolean => SOURCE_BY_ID.get(sourceId)?.open === true;
 
 const hostOf = (url: string): string => new URL(url).hostname.toLowerCase();

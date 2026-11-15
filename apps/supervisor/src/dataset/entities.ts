@@ -38,6 +38,8 @@ export const ENTITIES: readonly Entity[] = [
   { id: 'bootr', aliases: ['bootr', 'bootr.fun'] },
   { id: 'aixbt', aliases: ['aixbt'] },
   { id: 'blockrun', aliases: ['blockrun'] },
+  { id: 'payai', aliases: ['payai', 'payai network'] },
+  { id: 'exa', aliases: ['=Exa', 'exa labs', 'exa search'] },
   { id: 'openrouter', aliases: ['openrouter'] },
   { id: 'eco', aliases: ['=Eco Protocol', 'eco.com'] },
   // Ethereum and the L2s

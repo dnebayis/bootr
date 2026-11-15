@@ -229,8 +229,10 @@ describe('the switch', () => {
 
   it('the dataset process asks for no key: its whole configuration is a database, the indexer and its own knobs', () => {
     // it starts on exactly these two, and a signing key in its environment is neither needed nor read
-    const config = loadDatasetConfig({ DATABASE_URL: 'postgres://x', INDEXER_URL: 'http://indexer:42069', SESSION_SIGNER_PRIVATE_KEY: 'must-not-be-read', ADMIN_PRIVATE_KEY: 'must-not-be-read' });
-    expect(Object.keys(config).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SOURCES_PER_PASS', 'DATASET_SOURCE_RECORDS_PER_DAY', 'DATASET_SOURCE_SIGHTINGS_PER_DAY', 'INDEXER_URL', 'LOG_LEVEL']);
+    const config = loadDatasetConfig({ DATABASE_URL: 'postgres://x', INDEXER_URL: 'http://indexer:42069', SESSION_SIGNER_PRIVATE_KEY: 'must-not-be-read', ADMIN_PRIVATE_KEY: 'must-not-be-read', SENDER_SERVICE_KEY: 'must-not-be-read' });
+    // The one key it may be given, DATASET_SENDER_KEY, opens the sender's dataset reads alone (layer c); unset, the X layer has no door.
+    expect(Object.keys(config).filter((k) => config[k as keyof typeof config] !== undefined).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SOURCES_PER_PASS', 'DATASET_SOURCE_RECORDS_PER_DAY', 'DATASET_SOURCE_SIGHTINGS_PER_DAY', 'DATASET_X_POSTS_PER_DAY', 'INDEXER_URL', 'LOG_LEVEL']);
+    expect(config.DATASET_X_POSTS_PER_DAY).toBe(0);
     expect(() => loadDatasetConfig({ INDEXER_URL: 'http://indexer:42069' })).toThrow();
   });
 });

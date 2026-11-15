@@ -542,11 +542,12 @@ export async function ingestSighting(db: Db, source: SourceInfo, s: Sighting, op
 // Ageing, the posted list, withdrawal
 // ---------------------------------------------------------------------------
 
-/** Deletes what is past its keeping time: sightings after 30 days, records 90 days after their last sighting, old cap counters. */
+/** Deletes what is past its keeping time: sightings after 30 days, records 90 days after their last sighting, old cap counters and X day notes. */
 export async function ageOut(db: Db, now: Date): Promise<{ sightings: number; records: number }> {
   const sightings = await db.delete(dsSightings).where(lt(dsSightings.seenAt, new Date(now.getTime() - SIGHTING_KEEP_MS))).returning({ id: dsSightings.id });
   const records = await db.delete(dsRecords).where(lt(dsRecords.lastReinforcedAt, new Date(now.getTime() - RECORD_KEEP_MS))).returning({ id: dsRecords.id });
-  await db.delete(cursors).where(and(sql`${cursors.name} like 'dataset:capped:%'`, lt(cursors.updatedAt, new Date(now.getTime() - SIGHTING_KEEP_MS))));
+  // The day's cap counters and layer c's day notes (layer-c.ts), as long as a sighting.
+  await db.delete(cursors).where(and(sql`(${cursors.name} like 'dataset:capped:%' or ${cursors.name} like 'dataset:x:%')`, lt(cursors.updatedAt, new Date(now.getTime() - SIGHTING_KEEP_MS))));
   return { sightings: sightings.length, records: records.length };
 }
 
