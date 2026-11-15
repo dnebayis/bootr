@@ -41,18 +41,29 @@ describe('the dataset service', () => {
   it('is off unless the owner sets the flag: the default is empty, in its own block and in the supervisor', () => {
     expect(dataset).toContain('DATASET_ENABLED: ${DATASET_ENABLED:-}');
     expect(service('supervisor')).toContain('DATASET_ENABLED: ${DATASET_ENABLED:-}');
-    for (const other of ['web', 'sender', 'inference', 'indexer']) expect(service(other)).not.toContain('DATASET_');
+    for (const other of ['web', 'inference', 'indexer']) expect(declared(service(other)).filter((name) => name.startsWith('DATASET_'))).toEqual([]);
+    // The sender holds layer c's cap, its key and the account that reads; all three empty by default, so X is off.
+    expect(declared(service('sender')).filter((name) => name.startsWith('DATASET_')).sort()).toEqual(['DATASET_SENDER_KEY', 'DATASET_X_POSTS_PER_DAY', 'DATASET_X_READER_AGENT_ID']);
+    for (const name of ['DATASET_SENDER_KEY', 'DATASET_X_POSTS_PER_DAY', 'DATASET_X_READER_AGENT_ID']) expect(service('sender')).toContain(`${name}: \${${name}:-}`);
+    for (const name of ['DATASET_SENDER_KEY', 'DATASET_X_POSTS_PER_DAY']) expect(dataset).toContain(`${name}: \${${name}:-}`);
   });
 
-  it('holds no secret: it declares none, and every secret any service strips is stripped from it', () => {
+  it("gives the dataset's sender key to the sender and the dataset alone, and strips it from every other service", () => {
+    for (const name of ['sender', 'dataset']) expect(stripped(service(name))).not.toContain('DATASET_SENDER_KEY');
+    for (const name of ['inference', 'indexer', 'web', 'supervisor']) expect(stripped(service(name)), name).toContain('DATASET_SENDER_KEY');
+    expect(dataset).toContain('SENDER_URL: http://sender:3002');
+  });
+
+  it('holds no secret but its sender key: every other secret any service strips is stripped from it', () => {
     const everySecret = new Set(['postgres', 'sender', 'inference', 'indexer', 'web', 'supervisor'].flatMap((name) => stripped(service(name))));
     expect(everySecret.size).toBeGreaterThan(20);
     const mine = new Set(stripped(dataset));
-    expect([...everySecret].filter((name) => !mine.has(name))).toEqual([]);
+    // Its one key opens the sender's dataset reads and nothing else (the case above).
+    expect([...everySecret].filter((name) => !mine.has(name))).toEqual(['DATASET_SENDER_KEY']);
     for (const key of ['SESSION_SIGNER_PRIVATE_KEY', 'SPENDER_MASTER_KEY', 'ADMIN_PRIVATE_KEY', 'SUPERVISOR_SERVICE_KEY', 'SENDER_SERVICE_KEY', 'INDEXER_SERVICE_KEY', 'OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'SEARCH_API_KEY', 'BASE_RPC_URL', 'BUNDLER_URL', 'X_CLIENT_SECRET', 'SESSION_SECRET']) expect(mine.has(key), key).toBe(true);
-    expect(declared(dataset).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SOURCES_PER_PASS', 'DATASET_SOURCE_RECORDS_PER_DAY', 'DATASET_SOURCE_SIGHTINGS_PER_DAY', 'INDEXER_URL', 'LOG_LEVEL']);
-    // nothing it declares is something another service strips, so no other `-u` list had to change
-    expect(declared(dataset).filter((name) => everySecret.has(name))).toEqual([]);
+    expect(declared(dataset).sort()).toEqual(['DATABASE_URL', 'DATASET_CHAIN_EVERY_MS', 'DATASET_ENABLED', 'DATASET_PASS_MS', 'DATASET_PORT', 'DATASET_RECORDS_PER_DAY', 'DATASET_SENDER_KEY', 'DATASET_SOURCES_PER_PASS', 'DATASET_SOURCE_RECORDS_PER_DAY', 'DATASET_SOURCE_SIGHTINGS_PER_DAY', 'DATASET_X_POSTS_PER_DAY', 'INDEXER_URL', 'LOG_LEVEL', 'SENDER_URL']);
+    // nothing else it declares is something another service strips
+    expect(declared(dataset).filter((name) => everySecret.has(name))).toEqual(['DATASET_SENDER_KEY']);
     expect(dataset).toMatch(/exec env -u /);
   });
 });
