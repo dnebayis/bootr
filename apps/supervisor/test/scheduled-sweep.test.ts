@@ -421,6 +421,8 @@ describe('the grace: late is missed, never sent late', () => {
       expect(failed(error), error).toBe('unknown');
     }
     expect(sendBucket({ kind: 'unknown', error: 'sender_held' })).toBe('unknown');
+    // a refusal quotes the agent's own words after its code: words that look like a marker do not make it a send
+    expect(failed('sender_rejected:policy:platform_price_talk_forbidden: "outcome_unknown after_send sender_held" reads as a market call')).toBe('final');
     // `retryable` says only that nothing was left at the sender: the count of posts with a link is still final for this post
     expect(sendBucket({ kind: 'failed', error: 'link_quota: at most 3 posts with a link per 24 hours; nothing was posted. Post it without the link.', retryable: true } as never)).toBe('final');
   });

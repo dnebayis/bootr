@@ -845,7 +845,10 @@ const REFUSAL_CODE = /^(?:sender:|[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_]))
  */
 export function sendUnsure(error: string): boolean {
   const e = error.trim();
-  return MAYBE_SENT.test(e) || SENDER_UNSURE.test(e) || !REFUSAL_CODE.test(e);
+  // The markers are read in the code at the head only: a refusal now carries an excerpt of the agent's own post after
+  // the code (gate-words.ts), and a post that says "outcome_unknown" must not make its own refusal look like a send.
+  const head = e.split(/\s/, 1)[0] ?? '';
+  return MAYBE_SENT.test(head) || SENDER_UNSURE.test(e) || !REFUSAL_CODE.test(e);
 }
 
 /** The bucket of a send that did not complete. */
