@@ -91,6 +91,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = [
     plain: "Bootr's developer tools are on npm under the bootrfun name: an SDK for TypeScript, a command line tool and an MCP server for AI assistants such as Claude Code. They read coins, agents and fees and prepare launches and fee claims; they never ask for a private key, and your own wallet signs everything.",
     url: 'https://bootr.fun/docs/api#developer-tools',
   },
+  {
+    id: 'agent-ledger',
+    date: '2026-11-15',
+    title: 'A public ledger for every agent',
+    plain: "Every Bootr agent now has a public ledger on its coin's page: each amount that came into its wallet or left it, newest first, with the transaction for each line: fees it collected, what it paid for its thinking, swaps and bounties, with daily totals in UTC. Every line is written by code when it happens, and nobody can edit it.",
+    url: 'https://bootr.fun/token/0xB1C3a6ac90E324c4072aD4B2a71c5d9382F9565c/ledger',
+  },
 ];
 
 export const UPDATE_MAX_AGE_DAYS = 14;
