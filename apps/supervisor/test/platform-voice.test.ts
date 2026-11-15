@@ -25,3 +25,21 @@ describe('voicedAction: the platform account publishes in lowercase and without 
     expect(voicedAction(ctx(true), platform, note)).toBe(note);
   });
 });
+
+describe('voicedAction: a cashtag written twice keeps its $ once, for every agent', () => {
+  it('fixes a coin agent, the platform account and the platform with its voice off, each part of a thread by itself', () => {
+    const post = parseAction({ tool: 'publish_post', input: { text: 'A $TEST fact: each $TEST trade pays the agent.', thread: [{ text: 'And $TEST again, and $TEST.' }, { text: 'Just $TEST.' }] } });
+    expect(voicedAction(ctx(true), coin, post)).toMatchObject({ input: { text: 'A $TEST fact: each TEST trade pays the agent.', thread: [{ text: 'And $TEST again, and TEST.' }, { text: 'Just $TEST.' }] } });
+    expect(voicedAction(ctx(false), platform, post)).toMatchObject({ input: { text: 'A $TEST fact: each TEST trade pays the agent.' } });
+    expect(voicedAction(ctx(true), platform, post)).toMatchObject({ input: { text: 'a $TEST fact: each test trade pays the agent.' } });
+    const reply = parseAction({ tool: 'publish_reply', input: { postId: '801', text: '$TEST is the coin; $TEST has an agent.' } });
+    expect(voicedAction(ctx(true), coin, reply)).toMatchObject({ input: { text: '$TEST is the coin; TEST has an agent.' } });
+    const later = parseAction({ tool: 'schedule_post', input: { text: '$TEST then $TEST', sendAt: '2026-11-15T09:00:00Z' } });
+    expect((voicedAction(ctx(true), coin, later) as typeof later).input.text).toBe('$TEST then TEST');
+  });
+
+  it('leaves two different cashtags for the gate to refuse', () => {
+    const post = parseAction({ tool: 'publish_post', input: { text: '$TEST and $OTHER' } });
+    expect(voicedAction(ctx(true), coin, post)).toBe(post);
+  });
+});
