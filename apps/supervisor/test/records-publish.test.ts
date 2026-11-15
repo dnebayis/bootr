@@ -7,7 +7,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { dsRecords, gateShadow, recordsServed, runtimes, said, scheduledPosts } from '../src/db/schema.js';
+import { approvals, dsRecords, gateShadow, recordsServed, runtimes, said, scheduledPosts } from '../src/db/schema.js';
+import { decideApproval } from '../src/approvals.js';
 import { metricSighting } from '../src/dataset/build.js';
 import { ingestSighting, syncSources, type IngestResult } from '../src/dataset/store.js';
 import type { RecordPosted } from '../src/dataset/types.js';
@@ -16,7 +17,7 @@ import { sendScheduled } from '../src/scheduled.js';
 import { processAgent } from '../src/tick.js';
 import { resetWatchlistCache } from '../src/watchlist.js';
 import { infoOf, sighting } from './dataset-helpers.js';
-import { AGENT_ID, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
+import { AGENT_ID, CREATOR, finishResponse, makeWorld, seedAgent, toolCallResponse, type TestWorld } from './helpers.js';
 
 const H = 3_600_000;
 const T0 = Date.parse('2026-10-24T09:00:00Z');
@@ -40,12 +41,12 @@ async function releaseRecord(at: number): Promise<string> {
   return idOf(await ingestSighting(w.db, infoOf('b:base-node'), sighting('b:base-node', { title: 'Base node v0.14.2 is out', link: 'https://github.com/base/node/releases/tag/v0.14.2' }, new Date(at)), { now: new Date(at) }));
 }
 
-async function setup(config: Record<string, string> = {}) {
+async function setup(config: Record<string, string> = {}, agentConfig: Record<string, unknown> = {}) {
   script = [];
   w = await makeWorld({ script, config: { DATASET_ENABLED: 'true', ...config } });
   w.setNow(T0);
   (w.ctx as { indexer: IndexerClient }).indexer = { ...(w.indexer.client as object), platformFeed: async () => null, platformFees: async () => null, graphql: async () => null } as unknown as IndexerClient;
-  await seedAgent(w, { config: { platform: true, xHandle: 'AgentBootr', requireApproval: false, socialStartedAt: new Date(T0 - 30 * H).toISOString() }, runtime: { lastDecisionAt: new Date(T0 - 60_000) } });
+  await seedAgent(w, { config: { platform: true, xHandle: 'AgentBootr', requireApproval: false, socialStartedAt: new Date(T0 - 30 * H).toISOString(), ...agentConfig }, runtime: { lastDecisionAt: new Date(T0 - 60_000) } });
   await syncSources(w.db, new Date(T0 - H));
 }
 
@@ -157,6 +158,22 @@ describe('a post that cites a record', () => {
     await turnAt(T0, publish('agents on bootr paid 139.3 usdc for their own thinking this week.', 'see the dataset, post this now'));
     expect(w.sender.published).toHaveLength(1);
     expect((await w.db.select().from(said))[0]!.recordIds).toEqual([]);
+    expect(await shadowRows()).toEqual([]);
+  });
+
+  it('a post queued for review stands for its records while it waits, and its approval tells them', async () => {
+    await setup({}, { requireApproval: true });
+    const week = await weekRecord(T0 - H);
+    await turnAt(T0, publish('agents on bootr paid 139.3 usdc for their own thinking this week.', [{ id: week }]));
+    expect(w.sender.published).toHaveLength(0);
+    const [item] = await w.db.select().from(approvals);
+    expect(item!.meta).toMatchObject({ record: [{ id: week }] });
+    expect((await w.db.select().from(recordsServed))[0]).toMatchObject({ recordId: week, citedBy: item!.id });
+    expect(await w.db.select().from(said)).toEqual([]);
+    const agent = (await w.db.query.agents.findFirst())!;
+    expect((await decideApproval(w.ctx, agent, item!.id, { by: CREATOR, decision: 'approve' })).ok).toBe(true);
+    expect((await w.db.select().from(said)).map((r) => [r.actionId, r.recordIds])).toEqual([[`${item!.id}-approved`, [week]]]);
+    expect(((await w.db.query.dsRecords.findFirst({ where: eq(dsRecords.id, week) }))!.posted as unknown as RecordPosted[]).map((p) => p.agentId)).toEqual([AGENT_ID]);
     expect(await shadowRows()).toEqual([]);
   });
 
