@@ -26,6 +26,10 @@ describe('executionAccount', () => {
     expect(executionAccount('Bankr_bot')).toBe(true);
     expect(executionAccount('clankeragent')).toBe(true);
     expect(executionAccount('somethingbot')).toBe(true);
+    // @clanker_world deploys a coin for whoever tags it with one (the owner, 2026-11-15)
+    expect(executionAccount('clanker_world')).toBe(true);
+    expect(executionAccount('ClankerWorld')).toBe(true);
+    expect(executionAccount('clanker_worldwide')).toBe(false);
     expect(executionAccount('b​ankr')).toBe(true);
     expect(executionAccount('alice')).toBe(false);
     expect(executionAccount('')).toBe(false);

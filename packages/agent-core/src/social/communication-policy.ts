@@ -67,12 +67,16 @@ export function normalizedCommunication(value: unknown): string {
     .toLowerCase();
 }
 
-/** Handles that act as execution bots (launchers, trading agents, anything ending in "bot"). */
+/**
+ * Handles that act as execution bots (launchers, trading agents, anything ending in "bot"). @clanker_world is one: it
+ * deploys a coin for whoever tags it with one (the owner confirmed it on 2026-11-15), so it is never tagged, linked or
+ * answered either, and Clanker is named in words.
+ */
 export function executionAccount(value: unknown, exempt: readonly string[] = []): boolean {
   const name = normalizedCommunication(value).replace(/[^a-z0-9_]/g, '');
   if (!name) return false;
   if (exempt.some((handle) => handle.toLowerCase() === name)) return false;
-  return /^(?:bankr|clanker)(?:bot|_bot|agent|_agent)?$/.test(name) || /bot$/.test(name);
+  return /^(?:bankr|clanker)(?:bot|_bot|agent|_agent|world|_world)?$/.test(name) || /bot$/.test(name);
 }
 
 const HANDLE_PATTERN =

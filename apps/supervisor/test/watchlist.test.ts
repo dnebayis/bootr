@@ -5,6 +5,7 @@ import { processAgent, tick } from '../src/tick.js';
 import {
   DEFAULT_WATCHLIST,
   WATCHLIST_MAX_HANDLES,
+  WATCHLIST_EXECUTION_NOTE,
   WATCHLIST_MEANING,
   WATCHLIST_POSTS_PER_ACCOUNT,
   WATCHLIST_READ_INTERVAL_MS,
@@ -92,6 +93,32 @@ describe('watchlistAccounts', () => {
       expect(w.sender.timelineReads.slice(3)).toEqual(['base', 'jessepollak']);
       expect(fourth.map((a) => a.latestPosts.length)).toEqual([3, 3, 2]); // clanker_world shown from its last read
       expect(WATCHLIST_READS_PER_TURN).toBe(2);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('marks an account that acts on tags (@clanker_world, @bankrbot) and shows its posts without their link', async () => {
+    const w = await makeWorld();
+    try {
+      w.setNow(NOW);
+      w.sender.timelines = { clanker_world: tl('clanker_world', 1), bankrbot: tl('bankrbot', 1) };
+      const accounts = await watchlistAccounts(w.ctx, AGENT_ID, ['clanker_world', 'bankrbot']);
+      expect(accounts.map((a) => a.executionAccount)).toEqual([true, true]);
+      expect(accounts[0]!.latestPosts[0]).toEqual({ postId: '9000', at: new Date(NOW - H).toISOString(), text: 'clanker_world says 0' });
+      expect(JSON.stringify(accounts)).not.toMatch(/x\.com/);
+      // the section's meaning says how to comment on one: by name in words, with no @ and no link
+      w.sender.timelines = { base: tl('base', 1), clanker_world: tl('clanker_world', 1) };
+      const settings = w.ctx.config as unknown as Record<string, unknown>;
+      settings.PLATFORM_WATCHLIST = 'base,clanker_world';
+      const section = (await watchlistSection(w.ctx, { agentId: AGENT_ID }, { platform: true, capabilities: { xRead: true } } as never)).watchlist as { meaning: string; accounts: { handle: string; executionAccount?: true }[] };
+      expect(section.meaning.endsWith(WATCHLIST_EXECUTION_NOTE)).toBe(true);
+      expect(WATCHLIST_EXECUTION_NOTE).toMatch(/naming the project in words \(for example "Clanker" or "Bankr"\), with no @, no link/);
+      expect(section.accounts.find((a) => a.handle === 'base')!.executionAccount).toBeUndefined();
+      // and a list with no such account reads as before
+      settings.PLATFORM_WATCHLIST = 'base';
+      const plain = (await watchlistSection(w.ctx, { agentId: AGENT_ID }, { platform: true, capabilities: { xRead: true } } as never)).watchlist as { meaning: string };
+      expect(plain.meaning).not.toContain(WATCHLIST_EXECUTION_NOTE);
     } finally {
       await w.close();
     }

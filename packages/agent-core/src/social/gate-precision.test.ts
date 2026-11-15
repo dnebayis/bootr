@@ -239,6 +239,8 @@ describe('social_execution_account_forbidden: an execution bot is never tagged o
   it('lets the project be named in words', () => {
     expect(codeOf('Bankr shipped a guide to running an index from a script; the fee you set at creation can never be changed.')).toBeNull();
     expect(codeOf('Clanker v5 pays creators in ETH or USDC.')).toBeNull();
+    expect(codeOf('Clanker shipped v5')).toBeNull();
+    expect(codeOf('Clanker shipped v5', {})).toBeNull();
   });
 
   it('refuses a mention and a link to the account or its posts, however written', () => {
@@ -251,11 +253,17 @@ describe('social_execution_account_forbidden: an execution bot is never tagged o
       `@bankr${ZW}bot shipped a guide.`,
       '＠ｂａｎｋｒｂｏｔ shipped a guide.',
       'https://x.com/ClankerAgent/status/1',
+      // @clanker_world acts on what it is tagged in (the owner, 2026-11-15)
+      '@clanker_world shipped v5',
+      'x.com/clanker_world/status/1',
+      'Clanker shipped v5: https://x.com/clanker_world/status/1986000000000000000',
       'thanks @some_tradebot',
       '@ bankrbot',
       '&#64;bankrbot',
     ]) expect(codeOf(text, PLATFORM, credit('bankrbot')), text).toBe('social_execution_account_forbidden');
     expect(postFinding('thanks!', [], 'short', false, { reply: true, recipient: 'bankrbot' })?.code).toBe('social_execution_account_forbidden');
+    expect(postFinding('thanks!', [], 'short', false, { reply: true, recipient: 'clanker_world' })?.code).toBe('social_execution_account_forbidden');
+    expect(codeOf('@clanker_world shipped v5', {}, credit('clanker_world'))).toBe('social_execution_account_forbidden');
   });
 
   it('tells the model to drop the link as well as the @, and to name the project in words', () => {
