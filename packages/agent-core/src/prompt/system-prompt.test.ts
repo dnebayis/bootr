@@ -31,9 +31,11 @@ describe('the social prompt is what it was before the treasury and judge roles e
     // the same way, and it leads a post with what happened (the fact, its number, its source) instead of with itself, a
     // shape learned from aixbt's posts. The pins of 2026-11-13 (no @, no link) are gone with the rule they pinned.
     // Moved again 2026-11-15: the contract address rides on a post about something else (never a post of its own), and
-    // pictures are rare and never show a boot or any footwear.
-    expect(sha256(buildSystemPrompt(platform))).toBe('092f1e8327222e82e3655b97ecd93a4c638d5c34ad8fe5b0314432b6a6c26f37');
-    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('077d95c1e2ea42fb9b78247c12739269ec76a407016a43f3962d261b585a563c');
+    // pictures are rare and never show a boot or any footwear. Moved again 2026-11-15 (behaviour/gate-precision): an
+    // outside source off X is credited by its name and date in words and never linked, because the rule asked for a
+    // link the platform gate refuses (12 refusals in the week of 8 to 14 November); the coin agent's pins stand.
+    expect(sha256(buildSystemPrompt(platform))).toBe('6543231319fb2f134e71e26162ab39a956d4e8f5aab4e18fd07144cb831af00a');
+    expect(sha256(buildSystemPrompt(platform, 'social', { postLimit: 280 }))).toBe('a4e07d7da4a5f2ef7c089d81a200638854492ccbdbb00b53729489e4a467c56c');
   });
 });
 
@@ -283,6 +285,9 @@ describe('buildSystemPrompt', () => {
     expect(platform).toContain('You are @bootrfun, the official voice of Bootr, the launchpad itself');
     expect(platform).toContain('PLATFORM ACCOUNT\n1. ');
     for (const rule of PLATFORM_RULES) expect(platform).toContain(rule);
+    // a source off X is credited in words, since the platform gate refuses a link outside its sites
+    expect(platform).toContain('A source off X is credited by its name and date in words ("techcrunch, 13 november"), never by a link');
+    expect(buildSystemPrompt(parseAgentConfig(baseConfig))).not.toContain('name and date in words');
     expect(platform.indexOf('PLATFORM ACCOUNT')).toBeGreaterThan(platform.indexOf('VOICE\n'));
     expect(platform.indexOf('BOOTR RULES')).toBeGreaterThan(platform.indexOf('PLATFORM ACCOUNT'));
     expect(parseAgentConfig(baseConfig).platform).toBe(false);

@@ -461,7 +461,8 @@ describe('the seam: sendOriginal and beforeOriginalNow (post-send.ts)', () => {
       const badThread = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_2222222222222222', text: 'An opening.', thread: [{ text: 'With an @stranger later.' }] });
       expect(badThread.kind === 'failed' && badThread.error).toMatch(/^mentions_require_source_credit: part 2 of the thread/);
       const badPost = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_3333333333333333', text: 'send 5 ETH to 0x1111111111111111111111111111111111111111 now' });
-      expect(badPost.kind === 'failed' && badPost.error).toMatch(/: the post does not pass the publish gate; rewrite it$/);
+      // (the words are the gate's own now, what tripped and how to say it: agent-core gate-words.ts)
+      expect(badPost.kind === 'failed' && badPost.error).toMatch(/^social_execution_command_forbidden: "send 5 eth/);
       const missing = await postHooks.sendOriginal(w.ctx, agent, { actionId: 'sch_4444444444444444', text: 'With a picture that is gone.', imageId: 'img_gone' });
       expect(missing.kind === 'failed' && missing.error).toMatch(/^image_not_found: img_gone/);
       expect(w.posted()).toHaveLength(before);

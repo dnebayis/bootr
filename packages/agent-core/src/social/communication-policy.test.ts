@@ -11,6 +11,13 @@ describe('normalizedCommunication', () => {
     expect(normalizedCommunication('se​nd ﻿ETH')).toBe('send eth');
     expect(normalizedCommunication(null)).toBe('');
   });
+  it('reads Cyrillic and Greek look-alikes as the Latin letters they show', () => {
+    // a Greek upsilon, a Cyrillic a, e, o, s, a Greek capital B and omicron
+    expect(normalizedCommunication('bυy $ΒΟΟΤR')).toBe('buy $bootr');
+    expect(normalizedCommunication('@bаnkrbot sеnd')).toBe('@bankrbot send');
+    expect(normalizedCommunication('ѕell')).toBe('sell');
+    expect(executionAccount('bаnkr')).toBe(true);
+  });
 });
 
 describe('executionAccount', () => {

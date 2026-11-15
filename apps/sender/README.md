@@ -317,6 +317,9 @@ Policy rejections carry `error: "policy:<code>"` with an agent-core code
 (`invalid_short_post`, `invalid_original_post`, `x_post_requires_at_most_one_cashtag`,
 `mentions_require_source_credit`, `invalid_source_credit`, `social_*_forbidden`) or a consent code
 (`consent_opted_out`, `mention_opted_out`, `reply_not_eligible:<reason>`, `reply_target_unavailable`).
+When the publish gate refused, the codes are followed by `: ` and the gate's words (agent-core `gateWords`): what
+tripped, quoted from the agent's own text in a short excerpt, and how to say it. Everything before the first space
+stays the stable code.
 
 #### Post length
 

@@ -14,7 +14,7 @@
  *
  * Word lists are short and conservative on purpose: a false refusal costs one picture, a miss costs the account.
  */
-import { countCashtags, mentionedHandles, outgoingActionRisk, outgoingDisclosureRisk, platformPostRisk, type PostValidationContext } from '@bootr/agent-core';
+import { countCashtags, gateWords, mentionedHandles, outgoingActionFinding, outgoingDisclosureFinding, platformPostFinding, type GateFinding, type PostValidationContext } from '@bootr/agent-core';
 
 export const ALT_MAX_CHARS = 1000;
 
@@ -97,13 +97,18 @@ export function altTextRisk(alt: string, ctx: Pick<ImageRuleContext, 'platform'>
   if (!text) return { code: 'image_alt_invalid', message: 'image_alt_invalid: the alt text must describe the picture in a sentence' };
   if ([...text].length > ALT_MAX_CHARS) return { code: 'image_alt_invalid', message: `image_alt_invalid: the alt text is at most ${ALT_MAX_CHARS} characters` };
   const risk: PostValidationContext = { platform: ctx.platform };
-  const action = outgoingActionRisk(text, risk);
-  if (action) return { code: action, message: `${action}: the alt text is public text and does not pass the publish gate; describe the picture plainly` };
-  const disclosure = outgoingDisclosureRisk(text, risk);
-  if (disclosure) return { code: disclosure, message: `${disclosure}: the alt text is public text and does not pass the publish gate; describe the picture plainly` };
+  // What tripped, in the gate's own words (agent-core gate-words.ts), after the sentence that says it is about the alt text.
+  const said = (f: GateFinding, rules: string): ImageRefusal => {
+    const words = gateWords(f);
+    return { code: f.code, message: `${f.code}: the alt text is public text and does not pass the ${rules}; describe the picture plainly${words ? `: ${words}` : ''}` };
+  };
+  const action = outgoingActionFinding(text, risk);
+  if (action) return said(action, 'publish gate');
+  const disclosure = outgoingDisclosureFinding(text, risk);
+  if (disclosure) return said(disclosure, 'publish gate');
   if (ctx.platform) {
-    const platform = platformPostRisk(text);
-    if (platform) return { code: platform, message: `${platform}: the alt text is public text and does not pass the platform rules; describe the picture plainly` };
+    const platform = platformPostFinding(text);
+    if (platform) return said(platform, 'platform rules');
   }
   if (countCashtags(text) > 1) return { code: 'x_post_requires_at_most_one_cashtag', message: 'x_post_requires_at_most_one_cashtag: the alt text carries at most one cashtag' };
   if (mentionedHandles(text).length) return { code: 'image_alt_mentions', message: 'image_alt_mentions: the alt text names nobody with an @; it describes the picture' };

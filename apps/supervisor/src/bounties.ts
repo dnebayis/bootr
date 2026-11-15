@@ -40,6 +40,8 @@ import {
   bountiesPolicySchema,
   countCashtags,
   DEFAULT_BOUNTIES_POLICY,
+  gateWords,
+  postFinding,
   postLength,
   postLimitsFor,
   postValidation,
@@ -242,8 +244,12 @@ export function jobTextProblem(p: { task: string; criteria: readonly string[]; t
     if (tags.some((t) => t !== own)) return `bounty_cashtag_forbidden: the ${what} names a cashtag other than ${own}`;
   }
   if (countCashtags(p.text) > 1) return 'x_post_requires_at_most_one_cashtag: the job may name your own cashtag once at most';
-  const gate = postValidation(p.text, p.attributions, 'original', false, { platform: p.config.platform === true, publicAddresses: [p.config.token.address, p.config.kernel.address] });
-  if (!gate.ok) return `${gate.code}: the job post does not pass the publish gate; rewrite the task`;
+  const gate = postFinding(p.text, p.attributions, 'original', false, { platform: p.config.platform === true, publicAddresses: [p.config.token.address, p.config.kernel.address] });
+  if (gate) {
+    // What tripped, in the gate's own words (agent-core gate-words.ts): the job post is the agent's task in a frame.
+    const words = gateWords(gate);
+    return `${gate.code}: the job post does not pass the publish gate; rewrite the task${words ? `: ${words}` : ''}`;
+  }
   const limit = postLimitsFor(p.premium).original;
   const length = postLength(p.text);
   if (length > limit) return `bounty_post_too_long: the job post would be ${length} characters and this X account may send ${limit}; shorten the task by about ${length - limit} characters`;

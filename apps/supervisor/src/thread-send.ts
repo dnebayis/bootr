@@ -253,7 +253,8 @@ export async function sendOriginal(ctx: SupervisorContext, agent: AgentRow, post
       try {
         validatePost(parts[0], attributions, 'original', !!media.media, risk);
       } catch (err) {
-        if (err instanceof PolicyError) return failed(`${err.code}: the post does not pass the publish gate; rewrite it`);
+        // The gate's own refusal: the code, then what tripped and how to say it (agent-core gate-words.ts).
+        if (err instanceof PolicyError) return failed(err.message);
         throw err;
       }
     }

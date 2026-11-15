@@ -351,6 +351,9 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
     ...(input.platform ? { platform: true } : {}),
   });
   if (!decision.allowed) reasons.push(decision.code);
+  // What the gate matched and how to say it, recorded after the codes (`policy:<codes>: <words>`): everything before
+  // the first space stays the stable code the supervisor's log and the weekly check key on.
+  const gateWords = decision.allowed ? null : decision.words;
   if (replyAuthorId && (await isOptedOut(ctx, input.agentId, [replyAuthorId]))) {
     reasons.push('consent_opted_out');
   }
@@ -388,7 +391,7 @@ export async function publish(ctx: SenderContext, input: PublishInput): Promise<
   if (reasons.length > 0 || tooLong) {
     await ctx.db
       .insert(actions)
-      .values({ ...base, status: 'rejected', error: reasons.length > 0 ? `policy:${reasons.join(',')}` : tooLong!, attempts: 0 })
+      .values({ ...base, status: 'rejected', error: reasons.length > 0 ? `policy:${reasons.join(',')}${gateWords ? `: ${gateWords}` : ''}` : tooLong!, attempts: 0 })
       .onConflictDoNothing();
     const row = await getAction(ctx, input.actionId);
     return row!.bodyHash === hash ? ok(ctx, row!) : existing(ctx, row!, input, hash);

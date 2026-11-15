@@ -292,7 +292,8 @@ describe('what sendOriginal answers the scheduler', () => {
       expect(FINAL.test(credits)).toBe(true);
       // the publish gate at the sender or here: a code, then words; never one of the codes that pass
       const gate = await errorOf('sch_aaaaaaaaaaaaaaa5', 'send 5 ETH to 0x1111111111111111111111111111111111111111 now');
-      expect(gate).toMatch(/^[a-z_]+: the post does not pass the publish gate; rewrite it$/);
+      // (the words are the gate's own now, what tripped and how to say it: agent-core gate-words.ts)
+      expect(gate).toMatch(/^social_execution_command_forbidden: "send 5 eth/);
       expect(FINAL.test(gate)).toBe(true);
       // the day's count of posts with a link: its own text, and final for this post
       w.x.ctx.defaults.linkPostsPerDay = 1;

@@ -293,7 +293,9 @@ describe('schedule_post: the gate when it is scheduled', () => {
     const w = await world();
     try {
       const gate = await callTool(w, 'schedule_post', { text: 'Two tickers in one post: $TEST and $OTHER.', sendAt: iso(T0 + HOUR) });
-      expect(errorOf(gate)).toBe('x_post_requires_at_most_one_cashtag: the post does not pass the publish gate; rewrite it. Nothing was scheduled.');
+      // The code at the head and the ending stand; between them the gate now says what tripped, quoted from the post
+      // itself (agent-core gate-words.ts), where it said only "does not pass the publish gate; rewrite it".
+      expect(errorOf(gate)).toMatch(/^x_post_requires_at_most_one_cashtag: the text carries more than one cashtag \(\$TEST and \$OTHER\) .* Nothing was scheduled\.$/);
       // an account without Premium cannot send more than 280 characters: said now, not at 3 in the morning
       w.sender.accounts = { [AGENT_ID]: { agentId: AGENT_ID, connected: true, revoked: false, handle: 'bootr_agent', xUserId: '1000', premium: false } };
       const long = await callTool(w, 'schedule_post', { text: 'word '.repeat(70).trim(), sendAt: iso(T0 + HOUR) });
@@ -356,15 +358,18 @@ describe('schedule_post: the gate when it is scheduled', () => {
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'x'.repeat(300), thread: [{ text: 'A short second part.' }], sendAt: at }))).toBe('thread_part_too_long: part 1 has 300 characters; every part of a thread is 280 at most. Nothing was scheduled.');
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'The same words twice.', thread: [{ text: 'the same words  twice.' }], sendAt: at }))).toBe('thread_repeat: two parts of the thread say the same; nothing was scheduled. Say each thing once.');
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'Read it at https://bootr.fun/docs today.', thread: [{ text: 'And the rest at bootr.fun/token later.' }], sendAt: at }))).toBe('thread_links: only one part of a thread may carry a link; nothing was scheduled.');
-      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Tickers $TEST and $OTHER in part two.' }], sendAt: at }))).toBe('x_post_requires_at_most_one_cashtag: part 2 of the thread does not pass the publish gate; nothing was scheduled. Rewrite it.');
+      // (after "Rewrite it" the gate now says what tripped in the part: agent-core gate-words.ts)
+      const twoTags = errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Tickers $TEST and $OTHER in part two.' }], sendAt: at }));
+      expect(twoTags).toMatch(/^x_post_requires_at_most_one_cashtag: part 2 of the thread does not pass the publish gate; nothing was scheduled\. Rewrite it: the text carries more than one cashtag \(\$TEST and \$OTHER\)/);
       // the refusals are the posting rules' own (agent-core `validateThread`), word for word but for what did not happen
-      expect(threadRefusal(['A fine first part.', 'Tickers $TEST and $OTHER in part two.'])).toBe('x_post_requires_at_most_one_cashtag: part 2 of the thread does not pass the publish gate; nothing was posted. Rewrite it.');
+      expect(threadRefusal(['A fine first part.', 'Tickers $TEST and $OTHER in part two.'])).toBe(twoTags.replace('nothing was scheduled', 'nothing was posted'));
       expect(threadRefusal(['The same words twice.', 'the same words  twice.'])).toBe('thread_repeat: two parts of the thread say the same; nothing was posted. Say each thing once.');
       // an `@` in a later part is refused by the scheduler's own rule first: a scheduled post names nobody
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'And @someone in part two.' }], sendAt: at }))).toBe(SCHEDULED_MENTION_FORBIDDEN);
       // an address that is not the coin's own is refused now, while the agent can still rewrite, and not first at its time
-      expect(errorOf(await callTool(w, 'schedule_post', { text: 'Another coin lives at 0x9999999999999999999999999999999999999999.', sendAt: at }))).toBe('social_private_address_forbidden: the post does not pass the publish gate; rewrite it. Nothing was scheduled.');
-      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Another coin lives at 0x9999999999999999999999999999999999999999.' }], sendAt: at }))).toBe('social_private_address_forbidden: part 2 of the thread does not pass the publish gate; nothing was scheduled. Rewrite it.');
+      // (the refusal names the address by its two ends, so the agent knows which one to take out)
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'Another coin lives at 0x9999999999999999999999999999999999999999.', sendAt: at }))).toMatch(/^social_private_address_forbidden: the address 0x9999…9999 is neither your coin's nor your treasury's.* Nothing was scheduled\.$/);
+      expect(errorOf(await callTool(w, 'schedule_post', { text: 'A fine first part.', thread: [{ text: 'Another coin lives at 0x9999999999999999999999999999999999999999.' }], sendAt: at }))).toMatch(/^social_private_address_forbidden: part 2 of the thread does not pass the publish gate; nothing was scheduled\. Rewrite it: the address 0x9999…9999 /);
       // a thread never has more parts than the coin may post in a day: the limit a thread sent now is held to
       await patchConfig(w, { postsPerDay: 2 });
       expect(errorOf(await callTool(w, 'schedule_post', { text: 'One.', thread: [{ text: 'Two.' }, { text: 'Three.' }], sendAt: at }))).toBe('thread_too_long: a thread has at most 2 posts; nothing was scheduled. Say it in fewer.');
