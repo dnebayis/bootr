@@ -269,12 +269,48 @@ export class XClient {
     });
   }
 
-  userByUsername(token: string, username: string): Promise<XResult<{ data?: XUser }>> {
+  userByUsername(token: string, username: string, fields?: string): Promise<XResult<{ data?: XUser }>> {
     return this.request(token, 'GET', `/2/users/by/username/${encodeURIComponent(username)}`, {
       rateKey: 'user',
       query: {
-        'user.fields': `${USER_FIELDS},name,description,created_at,protected,public_metrics`,
+        'user.fields': fields ?? `${USER_FIELDS},name,description,created_at,protected,public_metrics`,
       },
+    });
+  }
+
+  /** One user by id (`GET /2/users/:id`): the dataset's look at an account it holds by id (src/dataset-x.ts). */
+  userById(token: string, userId: string, fields: string): Promise<XResult<{ data?: XUser }>> {
+    return this.request(token, 'GET', `/2/users/${encodeURIComponent(userId)}`, {
+      rateKey: 'user_by_id',
+      query: { 'user.fields': fields },
+    });
+  }
+
+  /**
+   * An account's original posts newer than `sinceId` (`GET /2/users/:id/tweets?since_id=`), newest first, one page:
+   * no replies and no reposts, and no expansion (X charges per resource returned). A read that finds nothing returns
+   * nothing and costs nothing. The dataset's read (src/dataset-x.ts); `maxResults` is X's 5 to 100.
+   */
+  userPostsSince(token: string, userId: string, opts: { sinceId: string; maxResults: number; fields: string }): Promise<XResult<XListResponse>> {
+    return this.request(token, 'GET', `/2/users/${encodeURIComponent(userId)}/tweets`, {
+      rateKey: 'timeline_since',
+      query: {
+        since_id: opts.sinceId,
+        exclude: 'replies,retweets',
+        max_results: Math.max(5, Math.min(100, opts.maxResults)),
+        'tweet.fields': opts.fields,
+      },
+    });
+  }
+
+  /**
+   * Which of `ids` X still shows (`GET /2/tweets?ids=`, at most MAX_POSTS_LOOKUP) with no field asked beyond X's
+   * default: a post that is deleted, protected or withheld is not in `data`.
+   */
+  postsExist(token: string, ids: readonly string[]): Promise<XResult<{ data?: XTweet[]; errors?: XPartialError[] }>> {
+    return this.request(token, 'GET', '/2/tweets', {
+      rateKey: 'tweets_exist',
+      query: { ids: ids.slice(0, MAX_POSTS_LOOKUP).join(',') },
     });
   }
 

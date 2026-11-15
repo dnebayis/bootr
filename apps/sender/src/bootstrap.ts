@@ -43,6 +43,7 @@ export function buildContext(config: Config = loadConfig()): {
       trustProxy: config.SENDER_TRUST_PROXY,
     },
     apiPage: { siteUrl: config.SENDER_SITE_URL },
+    dataset: { postsPerDay: config.DATASET_X_POSTS_PER_DAY, key: config.DATASET_SENDER_KEY, readerAgentId: config.DATASET_X_READER_AGENT_ID },
   };
   return { ctx, config, close };
 }

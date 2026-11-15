@@ -80,6 +80,9 @@ with other services without clashing with their drizzle journals.
 | `X_TIMEOUT_MS`                        | no       | `15000`                            | per X request; a timed-out publish becomes `held`                        |
 | `SENDER_PUBLIC_RATE_LIMIT_PER_MIN`    | no       | `120`                              | requests per minute per client IP on `/public/*`; `0` disables. In production the web app's `/api/agents/:id/posts` proxy is the main caller (one IP, cached 60 s per agent) |
 | `SENDER_TRUST_PROXY`                  | no       | `0`                                | `1`: key the rate limit on the right-most `X-Forwarded-For` entry (exactly one trusted proxy in front). Otherwise the socket address is used and forwarding headers are ignored |
+| `DATASET_X_POSTS_PER_DAY`             | no       | `0` (off)                          | the dataset's X reads a UTC day, in units of one post read (a post returned or checked 1, a user read 2; a unit is 0.005 USD). `0`, empty or anything that is not a whole number = off: nothing is read. Never above 700, whatever is set (see "The dataset's X reads") |
+| `DATASET_SENDER_KEY`                  | no       | unset (no routes)                  | HMAC key of `/dataset/x/*`, held by the dataset process alone; at least 32 chars and not `SENDER_SERVICE_KEY`. It opens those read routes and nothing else |
+| `DATASET_X_READER_AGENT_ID`           | no       | unset                              | the agent whose connected X account reads for the dataset (the platform's own agent) |
 
 ## API page
 
@@ -173,6 +176,10 @@ service (H-1) are the boundary rather than an audience string.
 | POST   | `/internal/account/:agentId/rebind`                  | HMAC                    | `{to, connectedBefore?}`: move a draft-id account to the real agent id  |
 | GET    | `/internal/quota/:agentId`                           | HMAC                    | effective rate budget                                                   |
 | POST   | `/internal/quota/:agentId`                           | HMAC                    | `{postsPerDay?, mentionReadIntervalSec?}`; `null` resets to the default |
+| GET    | `/dataset/x/budget`                                  | HMAC, the dataset's key | the dataset's X reads of the day: `{day, limit, units, remaining, posts, userReads, checks, usd}` |
+| POST   | `/dataset/x/resolve` and `/dataset/x/user`           | HMAC, the dataset's key | one user read, by `{handle}` or by `{userId}`: `{user: {id, username, followers, protected} \| null, budget}` |
+| POST   | `/dataset/x/posts`                                   | HMAC, the dataset's key | `{userId, sinceId, max}`: one account's original posts newer than `sinceId` (5 to 20) |
+| POST   | `/dataset/x/check`                                   | HMAC, the dataset's key | `{ids[1..100]}`: which of these posts X still shows: `{present, gone, budget}` |
 
 ### OAuth (creator connects the agent's X account)
 
@@ -411,6 +418,31 @@ so the estimate errs high. Each read counts the posts or users X returned: a pos
 read (`account`, `users_me`; `userReads`) $0.01. The metrics read (`POST /internal/read/metrics`) is metered
 by the posts X returned, one unit each, where it used to count one unit whatever it returned.
 Reconciliation timeline reads are metered as `timeline`.
+
+### The dataset's X reads
+
+Bootr's own dataset (`apps/supervisor/src/dataset`, `docs/design/agent-behaviour.md` section 6.4) reads a short,
+checked-in list of X accounts once, for every agent. Its process holds no X credential and asks here
+(`src/dataset-x.ts`), through `/dataset/x/*` and with a key of its own, `DATASET_SENDER_KEY`: that key opens these
+four reads and nothing else, and the internal key does not open them. Without the key the routes do not exist.
+
+- **Which token reads.** The sender holds user tokens only, one per connected agent; it has no app-only token. The
+  reads are made with the token of the agent named by `DATASET_X_READER_AGENT_ID` (the platform's own agent), as
+  the watchlist's reads are made with that agent's token today. The caller cannot choose the token.
+- **Metered apart.** Every read is counted under the reserved id `dataset` (`sender_reads`, kinds `dataset_posts`,
+  `dataset_users`, `dataset_checks`), never under the reading agent, so no agent's `SENDER_DEFAULT_READS_PER_DAY`
+  is spent by the dataset or stands in its way. `GET /internal/metering/dataset` prices the month like any agent's.
+- **The cap.** `DATASET_X_POSTS_PER_DAY`, in units of one post read (0.005 USD): a post returned 1, a post checked
+  1, a user read 2. The default is 0: every read answers 409 `dataset_x_off` and X is not called. The cap is never
+  above 700 (3.50 USD a day). Units are claimed before the call to X, for the most the call can return, under an
+  advisory lock, and what X did not return is given back; a call whose outcome is unknown keeps its claim. Past the
+  cap a read answers 429 `dataset_x_cap_reached` with `retryAt` at midnight UTC and X is not called. A day costs at
+  most the cap times 0.005 USD: nothing at the default, 1.25 USD at 250, 3.50 USD at 700 or anything above.
+- **`POST /dataset/x/posts`** reads `GET /2/users/:id/tweets` by user id with `since_id`, `exclude=replies,retweets`
+  and no expansion (X charges per resource returned), one page, newest first. A quote says which post it quotes
+  (`quotedId`). A read that finds nothing costs nothing. `more` says X had older new posts than the page.
+- **`POST /dataset/x/check`** reads `GET /2/tweets?ids=` with X's default fields: an id that does not come back is
+  `gone` (deleted, protected, withheld). The dataset drops the words it kept of such a post.
 
 ### Rate budget
 

@@ -8,6 +8,7 @@ import { hmacAuth, MAX_SKEW_SEC, type AuthEnv } from './auth.js';
 import { DEFAULT_SITE_URL } from './api-page.js';
 import { createApiPageHandler } from './catalog-source.js';
 import { nowSec, type SenderContext } from './context.js';
+import { mountDatasetX } from './dataset-x.js';
 import { safeEqualHex, safeEqualStr } from './crypto.js';
 import {
   accountReadSchema,
@@ -501,6 +502,9 @@ export function createApp(ctx: SenderContext): Hono {
   });
 
   app.route('/internal', internal);
+
+  // The dataset's X reads: their own door and their own key (src/dataset-x.ts); absent unless that key is set.
+  mountDatasetX(app, ctx);
 
   app.onError((err, c) => {
     log.error('unhandled error', { path: new URL(c.req.url).pathname, err: err.message });
