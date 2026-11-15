@@ -25,9 +25,9 @@ describe('the platform prompt has two wordings, and v1 is the one in force unles
 
   it('v2 is pinned too: a change to it is made on purpose', () => {
     // Pinned 2026-11-15, when the second wording was written (docs/design/platform-prompt-v2.md says what it changes and why).
-    expect(sha256(v2)).toBe('9ab7200f086851b13970663a0bef6c937a62ee18c622b12ab8164bd987793e8c');
-    expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: 'v2', postLimit: 280 }))).toBe('14242d5bfde5c199f5c750946191d1a2aa148326b041c339f3970650777f069f');
-    expect(sha256(buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }))).toBe('6115968df5b529abd0fdad838ff85ea07525343dc77d328b1685738da4b4995a');
+    expect(sha256(v2)).toBe('68347388bc5abb94248df6db5a9f5a76969d916101aa5e06990522ad734126a8');
+    expect(sha256(buildSystemPrompt(platform, 'social', { platformPrompt: 'v2', postLimit: 280 }))).toBe('407f68f1af8367cae333c73707a3bdde6e95d94f7947fd5c529d7df9f8b0332d');
+    expect(sha256(buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }))).toBe('b222c762daa2696017951d9b1f3a1fdd2f147f62c72859ab8471c8dbf2ac882a');
   });
 
   it("a coin agent's prompt cannot be reached by the option: its three pins hold under v2", () => {
@@ -70,6 +70,11 @@ describe('v2 keeps everything the owner asked for on 2026-11-14 and 2026-11-15',
       expect(rule, start).toBeTruthy();
       expect(rules, start).toContain(rule);
     }
+  });
+
+  it('an outside source is credited by its name and date in words, and a link goes only to a post on X or the allowed sites', () => {
+    expect(all).toContain('Credit the source by its name and the date in words ("base said on 12 november"); a link only to a post on X or to bootr.fun, basescan, clanker.world or dexscreener, never in place of the name.');
+    expect(all).toContain('Say "today" or "this morning", never clock times or UTC.');
   });
 
   it('pictures are rare and never show a boot or footwear, said while the account can make pictures', () => {
@@ -131,8 +136,8 @@ describe('v2 removes the contradictions of v1 and nothing else of substance', ()
     expect(PLATFORM_RULES).toHaveLength(22);
     expect(platformRulesV2(withPictures)).toHaveLength(13);
     expect(v1.length).toBe(6614);
-    expect(all.length).toBe(4688);
-    // the whole prompt, numbering included: 1,962 characters less, about 490 tokens on every thought of every turn
-    expect(buildSystemPrompt(withPictures).length - buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }).length).toBe(1962);
+    expect(all.length).toBe(4851);
+    // the whole prompt, numbering included: 1,799 characters less, about 450 tokens on every thought of every turn
+    expect(buildSystemPrompt(withPictures).length - buildSystemPrompt(withPictures, 'social', { platformPrompt: 'v2' }).length).toBe(1799);
   });
 });
