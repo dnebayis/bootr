@@ -97,7 +97,7 @@ describe("an execution account's post in the dataset", () => {
       const calls = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'));
       const tools = (calls[calls.length - 1]!.body as { messages: { role: string; content: string }[] }).messages.filter((m) => m.role === 'tool').map((m) => m.content);
       expect(tools[0]).toMatch(/social_execution_account_forbidden/);
-      expect(w.sender.published.map((p) => p.text)).toEqual(['bankr launched a new trading tool for agents today, with limits per wallet.']);
+      expect(w.sender.published.map((p) => (p as { text: string }).text)).toEqual(['bankr launched a new trading tool for agents today, with limits per wallet.']);
     } finally {
       await w.close();
     }
