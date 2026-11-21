@@ -326,7 +326,7 @@ describe('USDC-quoted pools', () => {
 
   it('prices a coin at Clanker’s USDC start tick at about $4,000 of market cap, from either side of the pool', () => {
     const at = (tick: number) => BigInt(Math.floor(Math.sqrt(1.0001 ** tick) * 2 ** 96));
-    const base = { totalSupply: CLANKER_V5_SUPPLY, positionLiquidity: 0n, poolLiquidity: 0n, tickLower: -400_600, tickUpper: 887_200, pairedSymbol: 'USDC', pairedDecimals: 6 };
+    const base = { totalSupply: CLANKER_V5_SUPPLY, deadBalance: 0n, positionLiquidity: 0n, poolLiquidity: 0n, tickLower: -400_600, tickUpper: 887_200, pairedSymbol: 'USDC', pairedDecimals: 6 };
     const token0 = marketFields({ ...base, sqrtPriceX96: at(-400_600), coinIsToken0: true }, 3000);
     const token1 = marketFields({ ...base, sqrtPriceX96: at(400_600), coinIsToken0: false }, 3000);
     for (const m of [token0, token1]) {

@@ -313,13 +313,17 @@ the new `BootrClankerLauncher` wrapper, followed next to the Bootr path.
 Derived:
 * **Prices**: coin/WETH from `sqrtPriceX96`; USD via Chainlink ETH/USD (Base Sepolia feed
   `0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1`, verified `description() = "ETH / USD"`).
-  `marketCapUsd = priceUsd × totalSupply`; `liquidityUsd` from the locked launch position's
+  `marketCapUsd = priceUsd × (totalSupply − deadBalance)`, the coins at 0x…dEaD left out as the aggregators do
+  (`deadBalance` follows every Transfer; a live burn to the zero address lowers `totalSupply`); `liquidityUsd` from the locked launch position's
   liquidity (`LiquidityPlacedV3`) evaluated over the launch position range.
 * **Trade fee**: bootr `trade.feeUsd = valueUsd × (Swap.fee + lpFeeBps) / 1e6` (exact WETH fees come from
   `PoolFeeTakenV3`); clanker `valueUsd × lpFee × 1.2 / 1e6` (`Swap.fee` is the LP fee the hook set, the stored
   `lpFeeBps` when 0); clanker-v5 `valueUsd × tax / 1e6`. Feeds `fees24hUsd`. `lpFeeBps` is the coin's own value, never a platform-wide 1%.
 * **Rolling windows**: hourly buckets (`tokenWindow`) → `volume24hUsd`, `volume7dUsd`,
   `fees24hUsd`, `change24hPct`.
+* **Fee conversion swaps**: a `Swap` whose sender is Clanker's `ClankerLpLockerFeeConversion` (it converts the
+  collected fees in the coin's own pool before a trade) is not a trade: no `trade` row, no count, volume or
+  milestone; price, market cap and its pool fee are booked as on a trade.
 * **Status** (`src/lib/status.ts`): claimed > dormant > paused > sleeping (kernel + spender USDC < 1) > awake
   (activity < 6 h) > sleeping.
 * **Graduation**: sticky once `marketCapUsd >= platformConfig.graduationThresholdUsd`.

@@ -114,8 +114,8 @@ const delay = (ms = 220) => new Promise((r) => setTimeout(r, ms));
 const TOKEN_FIELDS = /* GraphQL */ `
   id chainId name symbol image creator kernel burner platformRecipient agentId poolId pairedToken lpFeeBps source
   agentBps creatorBps burnBps platformBps workerHash model agentUri metadata xHandle launchedAt launchBlock
-  priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd holders graduated graduatedAt lastTradeAt
-  ${V5_FIELDS}
+  priceUsd marketCapUsd liquidityUsd volume24hUsd volume7dUsd fees24hUsd change24hPct holders graduated graduatedAt
+  lastTradeAt ${V5_FIELDS}
   agent { id status }
 `;
 

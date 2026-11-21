@@ -36,6 +36,8 @@ export type MarketInput = {
   sqrtPriceX96: bigint;
   coinIsToken0: boolean;
   totalSupply: bigint;
+  /** Coins at 0x…dEaD (`token.deadBalance`): out of circulation, so not in the market cap. */
+  deadBalance: bigint;
   positionLiquidity: bigint;
   poolLiquidity: bigint;
   tickLower: number;
@@ -45,9 +47,19 @@ export type MarketInput = {
 };
 
 /**
+ * Market cap: price × the supply less the coins at 0x…dEaD, as DEX Screener and the other aggregators count it
+ * ($BOOTR: 3.29B of its 100B sit there). Every launched coin has a fixed supply and every burn path (BuybackBurner,
+ * Clanker's burn slot and v5 burn share, anyone's own transfer) sends coins there rather than burning them.
+ */
+export function marketCapUsd(priceUsd: number, t: Pick<MarketInput, 'totalSupply' | 'deadBalance'>): number {
+  const circulating = t.totalSupply > t.deadBalance ? t.totalSupply - t.deadBalance : 0n;
+  return usd(priceUsd * toUnits(circulating, 18));
+}
+
+/**
  * Price-derived fields of a coin from its pool state, in its paired asset: `priceQuote` (whole quote units per coin),
  * `priceUsd` (at ETH/USD or $1), `priceWeth` (the price in ETH for every coin: equal to `priceQuote` on WETH / ETH
- * pools, `priceUsd / ethUsd` on USDC pools), market cap and the locked position's liquidity in USD.
+ * pools, `priceUsd / ethUsd` on USDC pools), market cap (`marketCapUsd`) and the locked position's liquidity in USD.
  */
 export function marketFields(t: MarketInput, ethUsd: number) {
   const priceQuote = coinPriceInQuote(t.sqrtPriceX96, t.coinIsToken0, t.pairedDecimals);
@@ -59,7 +71,7 @@ export function marketFields(t: MarketInput, ethUsd: number) {
     priceWeth,
     priceQuote,
     priceUsd,
-    marketCapUsd: usd(priceUsd * toUnits(t.totalSupply, 18)),
+    marketCapUsd: marketCapUsd(priceUsd, t),
     liquidityUsd: liquidityUsd({
       // The locked position; active liquidity is 0 while the price sits on the range edge.
       liquidity: t.positionLiquidity > t.poolLiquidity ? t.positionLiquidity : t.poolLiquidity,

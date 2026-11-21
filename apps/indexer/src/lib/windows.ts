@@ -44,6 +44,24 @@ export function addTrade(
   return prune(out, ts);
 }
 
+/**
+ * Returns a new bucket array with a swap that is not a trade (Clanker's fee conversion, lib/market.ts
+ * `isFeeConversionSwap`): its fee and the pool price it leaves count, its volume and the trade count do not.
+ */
+export function addPoolMove(buckets: readonly Bucket[], ts: number, feeUsd: number, priceUsd: number): Bucket[] {
+  const h = hourOf(ts);
+  const out = buckets.map((b) => ({ ...b }));
+  const existing = out.find((b) => b.h === h);
+  if (existing) {
+    existing.f += feeUsd;
+    existing.p = priceUsd;
+  } else {
+    out.push({ h, v: 0, f: feeUsd, n: 0, p: priceUsd });
+    out.sort((a, b) => a.h - b.h);
+  }
+  return prune(out, ts);
+}
+
 export function prune(buckets: Bucket[], nowTs: number): Bucket[] {
   const minH = hourOf(nowTs) - MAX_BUCKETS + 1;
   return buckets.filter((b) => b.h >= minH);

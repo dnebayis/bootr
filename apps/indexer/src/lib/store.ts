@@ -14,7 +14,7 @@ import { chainlinkToUsd, toUnits, usd } from './price';
 import { marketFields } from './quote';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
-import { addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
+import { addPoolMove, addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
 
 export type Ctx = Context;
 export type TokenRow = typeof schema.token.$inferSelect;
@@ -302,7 +302,15 @@ export async function recordTradeBucket(
   feeUsd: number,
   priceUsd: number,
 ): Promise<Bucket[]> {
-  const buckets = addTrade(await getBuckets(context, token), ts, volumeUsd, feeUsd, priceUsd);
+  return saveBuckets(context, token, addTrade(await getBuckets(context, token), ts, volumeUsd, feeUsd, priceUsd));
+}
+
+/** A swap that is not a trade (Clanker's fee conversion): its fee and price go in the hour, no volume, no count. */
+export async function recordPoolMoveBucket(context: Ctx, token: Hex, ts: number, feeUsd: number, priceUsd: number): Promise<Bucket[]> {
+  return saveBuckets(context, token, addPoolMove(await getBuckets(context, token), ts, feeUsd, priceUsd));
+}
+
+async function saveBuckets(context: Ctx, token: Hex, buckets: Bucket[]): Promise<Bucket[]> {
   await context.db
     .insert(schema.tokenWindow)
     .values({ id: token, buckets })
