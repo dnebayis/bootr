@@ -382,6 +382,7 @@ async function insertLaunch(context: Ctx, event: LaunchEvent, r: LaunchRows) {
     volumeTotalUsd: 0,
     feesTotalUsd: 0,
     burnedTotal: 0n,
+    deadBalance: 0n,
     lastTradeAt: null,
     holders: 0,
     graduated: false,

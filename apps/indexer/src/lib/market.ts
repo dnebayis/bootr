@@ -12,7 +12,7 @@ import { indexerEnv } from './env';
 import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordPoolMoveBucket, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
 import { holderMilestones, milestoneId, swapMilestones, type MilestoneEvent } from './milestones';
 import { interpretSwap, usd } from './price';
-import { quoteValueUsd } from './quote';
+import { marketCapUsd, quoteValueUsd } from './quote';
 
 export type SwapArgs = {
   amount0: bigint;
@@ -155,8 +155,22 @@ async function applyFeeConversionSwap(context: Ctx, t: TokenRow, s: SwapArgs, m:
 
 const counts = (holder: string) => holder !== ZERO_ADDRESS && holder !== DEAD_ADDRESS;
 
-/** Update the two balances and the coin's holder count (and the holder milestones it passes). */
-export async function applyTransfer(context: Ctx, token: Hex, from: Address, to: Address, value: bigint, ts: number, txHash: Hex | null = null) {
+/**
+ * Update the two balances and the coin's holder count (and the holder milestones it passes), and the coin's
+ * `deadBalance` and market cap when coins reach or leave 0x…dEaD. With `movesSupply` (a live Transfer, outside the
+ * launch transaction whose mint is in the supply read at launch) a mint from or a burn to the zero address moves
+ * `totalSupply` too: Clanker v4 coins have `burn`, and the market cap must follow the supply on chain.
+ */
+export async function applyTransfer(
+  context: Ctx,
+  token: Hex,
+  from: Address,
+  to: Address,
+  value: bigint,
+  ts: number,
+  txHash: Hex | null = null,
+  movesSupply = false,
+) {
   if (value === 0n || lc(from) === lc(to)) return;
   let holderDelta = 0;
   for (const [holder, delta] of [
@@ -176,14 +190,19 @@ export async function applyTransfer(context: Ctx, token: Hex, from: Address, to:
       if (prev > 0n && amount <= 0n) holderDelta -= 1;
     }
   }
-  if (holderDelta !== 0) {
-    let prevHolders = 0;
-    const updated = await context.db.update(schema.token, { id: token }).set((r) => {
-      prevHolders = r.holders;
-      return { holders: Math.max(0, r.holders + holderDelta) };
-    });
-    if (holderDelta > 0) {
-      await recordMilestones(context, { id: updated.id, kernel: updated.kernel }, holderMilestones(prevHolders, updated.holders), { timestamp: ts, txHash });
-    }
+  const deadDelta = (lc(to) === DEAD_ADDRESS ? value : 0n) - (lc(from) === DEAD_ADDRESS ? value : 0n);
+  const supplyDelta = movesSupply ? (lc(from) === ZERO_ADDRESS ? value : 0n) - (lc(to) === ZERO_ADDRESS ? value : 0n) : 0n;
+  if (holderDelta === 0 && deadDelta === 0n && supplyDelta === 0n) return;
+  let prevHolders = 0;
+  const updated = await context.db.update(schema.token, { id: token }).set((r) => {
+    prevHolders = r.holders;
+    const supply = { totalSupply: r.totalSupply + supplyDelta, deadBalance: r.deadBalance + deadDelta };
+    return {
+      holders: Math.max(0, r.holders + holderDelta),
+      ...(deadDelta !== 0n || supplyDelta !== 0n ? { ...supply, marketCapUsd: marketCapUsd(r.priceUsd, supply) } : {}),
+    };
+  });
+  if (holderDelta > 0) {
+    await recordMilestones(context, { id: updated.id, kernel: updated.kernel }, holderMilestones(prevHolders, updated.holders), { timestamp: ts, txHash });
   }
 }

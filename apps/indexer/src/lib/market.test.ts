@@ -98,6 +98,7 @@ function bootrRow(over: Record<string, unknown> = {}) {
     volumeTotalUsd: 0,
     feesTotalUsd: 0,
     burnedTotal: 0n,
+    deadBalance: 0n,
     lastTradeAt: 1_795_270_000,
     holders: 0,
     graduated: true,
@@ -114,12 +115,12 @@ beforeAll(async () => {
   market = await import('./market');
 });
 
-async function replay(swaps: readonly (typeof SWAPS)[number][]) {
+async function replay(swaps: readonly (typeof SWAPS)[number][], over: Record<string, unknown> = {}) {
   const { db, rows } = fakeDb();
   const context = { db } as unknown as Parameters<typeof market.applySwap>[0];
   // A fresh ETH/USD row at this block: no Chainlink read.
   await db.insert({ name: 'priceFeed' }).values({ id: 'ETH/USD', priceUsd: ETH_USD, oracleUpdatedAt: TS, blockNumber: BLOCK });
-  await db.insert({ name: 'token' }).values(bootrRow());
+  await db.insert({ name: 'token' }).values(bootrRow(over));
   for (const s of swaps) {
     const t = (await db.find({ name: 'token' }, { id: BOOTR })) as unknown as Parameters<typeof market.applySwap>[1];
     await market.applySwap(
@@ -130,7 +131,7 @@ async function replay(swaps: readonly (typeof SWAPS)[number][]) {
     );
   }
   const token = (await db.find({ name: 'token' }, { id: BOOTR }))!;
-  return { token, rows };
+  return { token, rows, db, context };
 }
 
 describe('Clanker fee conversion swaps', () => {
@@ -189,5 +190,50 @@ describe('Clanker fee conversion swaps', () => {
     expect(rows('platformStats')[0]!.feesTotalUsd).toBeCloseTo(fees, 5);
     expect(rows('sourceStats')[0]!.feesTotalUsd).toBeCloseTo(fees, 5);
     expect(rows('trade')[0]!.feeUsd).toBeCloseTo(2.320657, 5);
+  });
+});
+
+// $BOOTR's balance at 0x…dEaD on 2026-11-21 (`balanceOf(0xdEaD)`, equal to its `burnedTotal` then): 3.29B of 100B.
+const DEAD = '0x000000000000000000000000000000000000dEaD' as Address;
+const ZERO = '0x0000000000000000000000000000000000000000' as Address;
+const HOLDER = '0x1111111111111111111111111111111111111111' as Address;
+const AT_DEAD = 3_287_730_686_051_347_959_991_524_366n;
+
+describe('market cap without the coins at the dead address', () => {
+  it('prices the supply less the dead address’s coins, as DEX Screener does', async () => {
+    const { marketCapUsd } = await import('./quote');
+    expect(marketCapUsd(3.41244107734e-7, { totalSupply: 10n ** 29n, deadBalance: 0n })).toBeCloseTo(34_124.41, 2);
+    expect(marketCapUsd(3.41244107734e-7, { totalSupply: 10n ** 29n, deadBalance: AT_DEAD })).toBeCloseTo(33_002.49, 2);
+    expect(marketCapUsd(1, { totalSupply: 5n, deadBalance: 9n })).toBe(0);
+  });
+
+  it('a trade of a coin with burned supply reads the circulating market cap', async () => {
+    const { token } = await replay(SWAPS, { deadBalance: AT_DEAD });
+    expect(token.marketCapUsd).toBeCloseTo((token.priceUsd as number) * (1e11 - 3_287_730_686.051348), 2);
+    expect(token.marketCapUsd).toBeCloseTo(33_000, -2);
+  });
+
+  it('coins sent to the dead address, by a burn slot claim or anyone, leave the market cap at once', async () => {
+    const { token: before, db, context } = await replay(SWAPS);
+    await market.applyTransfer(context, BOOTR, ZERO, HOLDER, 10n ** 27n, TS, TX);
+    await market.applyTransfer(context, BOOTR, HOLDER, DEAD, 10n ** 27n, TS + 1, TX, true);
+    const t = (await db.find({ name: 'token' }, { id: BOOTR }))!;
+    expect(t.deadBalance).toBe(10n ** 27n);
+    expect(t.totalSupply).toBe(10n ** 29n);
+    expect(t.marketCapUsd).toBeCloseTo((before.marketCapUsd as number) * 0.99, 2);
+    expect(t.priceUsd).toBe(before.priceUsd);
+    // The dead address is never a holder.
+    expect(t.holders).toBe(0);
+  });
+
+  it('a live burn to the zero address lowers the supply; the launch replay’s mint does not raise it', async () => {
+    const { db, context } = await replay(SWAPS);
+    await market.applyTransfer(context, BOOTR, ZERO, HOLDER, 2n * 10n ** 27n, TS, TX);
+    await market.applyTransfer(context, BOOTR, HOLDER, ZERO, 10n ** 27n, TS + 1, TX, true);
+    const t = (await db.find({ name: 'token' }, { id: BOOTR }))!;
+    expect(t.totalSupply).toBe(99n * 10n ** 27n);
+    expect(t.deadBalance).toBe(0n);
+    expect(t.holders).toBe(1);
+    expect(t.marketCapUsd).toBeCloseTo((t.priceUsd as number) * 99e9, 2);
   });
 });

@@ -143,6 +143,11 @@ export const token = onchainTable(
     feesTotalUsd: t.doublePrecision().notNull(),
     /** extra: coins burned by the BuybackBurner (bootr) or claimed to the dead address by the burn slot (clanker, clanker-v5), base units. */
     burnedTotal: t.bigint().notNull(),
+    /**
+     * extra: the coin's balance at 0x…dEaD, base units, from every Transfer (Bootr's and Clanker's burns, and anyone
+     * sending coins there). `marketCapUsd` leaves it out, as the aggregators do; `burnedTotal` only counts our burns.
+     */
+    deadBalance: t.bigint().notNull(),
     lastTradeAt: t.integer(),
     holders: t.integer().notNull(),
     graduated: t.boolean().notNull(),
