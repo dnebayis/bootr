@@ -8,7 +8,8 @@ import type { Address, Hex } from 'viem';
 
 import { swapFeeUsd, v5SideTaxPips } from './fees';
 import { bookGrossFee } from './ledger';
-import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
+import { indexerEnv } from './env';
+import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordPoolMoveBucket, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
 import { holderMilestones, milestoneId, swapMilestones, type MilestoneEvent } from './milestones';
 import { interpretSwap, usd } from './price';
 import { quoteValueUsd } from './quote';
@@ -51,6 +52,17 @@ export async function recordMilestones(
   return written;
 }
 
+/**
+ * Whether a PoolManager swap is Clanker v4's fee conversion rather than a trade. On a Clanker v4 coin the hook has
+ * `ClankerLpLockerFeeConversion` collect the pool's LP fees before every swap (anyone may also call it), and the
+ * locker converts each slot's share to its preferred asset by swapping in the same pool, in the same transaction
+ * (tx 0x454d41e8…68110: one $BOOTR buy and two locker swaps before it). `Swap.sender` is then the locker itself,
+ * a router never is.
+ */
+export function isFeeConversionSwap(sender: string, locker: string | null | undefined): boolean {
+  return !!locker && sender.toLowerCase() === locker.toLowerCase();
+}
+
 export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMeta) {
   const id = `${m.txHash}-${m.logIndex}`;
   if (await context.db.find(schema.trade, { id })) return;
@@ -67,6 +79,10 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   const source = sourceOf(t);
   const feePips = source === 'clanker-v5' ? v5SideTaxPips(t, view.side) : t.lpFeeBps;
   const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, feePips));
+  if (isFeeConversionSwap(s.sender, indexerEnv().clanker?.locker)) {
+    await applyFeeConversionSwap(context, t, s, m, market, feeUsd);
+    return;
+  }
 
   await context.db.insert(schema.trade).values({
     id,
@@ -114,6 +130,27 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
   // Bootr path (v5's `Trade` carries the quote side only), so the per-trade figure is the gross fee there; the
   // exact per-slot amounts come at collection (v4) or with the swap's own credits (v5).
   if (source !== 'bootr') await bookGrossFee(context, updated, feeUsd, m.timestamp);
+}
+
+/**
+ * The locker's fee conversion (`isFeeConversionSwap`): no `trade` row, no trade count, volume or milestone, and
+ * `lastTradeAt` stays, but the pool moved, so the coin's pool state, price, market cap, 24 h change and graduation
+ * follow it like after a trade. It pays the pool's fee like any swap (`Swap.fee`, and the hook's protocol share on
+ * top), and that LP fee reaches the slots at the next collection (`ClaimedRewards`), so its gross fee is booked as
+ * on a trade, the coin's fee totals and the hour's fee alike, keeping the gross fee at least the slots' accruals.
+ */
+async function applyFeeConversionSwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMeta, market: ReturnType<typeof marketFields>, feeUsd: number) {
+  const buckets = await recordPoolMoveBucket(context, t.id, m.timestamp, feeUsd, market.priceUsd);
+  const cfg = await getPlatformConfig(context);
+  const updated = await context.db.update(schema.token, { id: t.id }).set((row) => ({
+    sqrtPriceX96: s.sqrtPriceX96,
+    tick: s.tick,
+    poolLiquidity: s.liquidity,
+    ...market,
+    ...windowFields(buckets, m.timestamp, market.priceUsd),
+    ...graduationFields(row, market.marketCapUsd, cfg.graduationThresholdUsd, m.timestamp),
+  }));
+  if (sourceOf(t) !== 'bootr') await bookGrossFee(context, updated, feeUsd, m.timestamp);
 }
 
 const counts = (holder: string) => holder !== ZERO_ADDRESS && holder !== DEAD_ADDRESS;

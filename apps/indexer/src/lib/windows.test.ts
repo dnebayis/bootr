@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { addTrade, change24hPct, DAY, HOUR, MAX_BUCKETS, sumWindow, type Bucket } from './windows';
+import { addPoolMove, addTrade, change24hPct, DAY, HOUR, MAX_BUCKETS, sumWindow, type Bucket } from './windows';
 
 const T0 = 1_800_000_000; // arbitrary unix time
 
@@ -26,6 +26,15 @@ describe('rolling windows', () => {
     const now = T0 + 3 * DAY;
     const b = addTrade(addTrade([], now - 23 * HOUR, 5, 0, 1), now - 25 * HOUR, 7, 0, 1);
     expect(sumWindow(b, now, DAY).volume).toBe(5);
+  });
+
+  it('a pool move (the fee conversion) adds its fee and price to the hour, no volume and no trade', () => {
+    let b = addTrade([], T0, 100, 1, 0.5);
+    b = addPoolMove(b, T0 + 10, 0.25, 0.4);
+    expect(b).toEqual([{ h: Math.floor(T0 / HOUR), v: 100, f: 1.25, n: 1, p: 0.4 }]);
+    b = addPoolMove(b, T0 + HOUR, 0.1, 0.45);
+    expect(b[1]).toEqual({ h: Math.floor(T0 / HOUR) + 1, v: 0, f: 0.1, n: 0, p: 0.45 });
+    expect(sumWindow(b, T0 + HOUR, DAY)).toEqual({ volume: 100, fees: 1.35, trades: 1 });
   });
 
   it('prunes buckets beyond 7 days', () => {
