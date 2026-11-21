@@ -84,6 +84,9 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     INFERENCE_PROVIDER_URL: 'http://inference.test',
     INFERENCE_PAYTO_ADDRESS: PAYTO,
     INDEXER_URL: 'http://indexer.test',
+    // The repeat gate is enforced in production since 2026-11-22; the tests written before that post the same figure
+    // twice to test something else, so they keep it in shadow. A test of the gate itself sets it (post-gates.test.ts).
+    REPEAT_GATE: 'shadow',
     ...overrides,
   });
 }
