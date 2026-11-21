@@ -5,14 +5,15 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { openerOf } from '@bootr/agent-core';
 import { queueForApproval } from '../src/approvals.js';
 import { executeAction } from '../src/broker/index.js';
 import { coinFeeSplit, feeSplitLine } from '../src/coin-fees.js';
 import { gateShadow, said as saidTable, scheduledPosts } from '../src/db/schema.js';
-import { gateHitId, gateMode, gateTextHash, logGateHit } from '../src/gate-shadow.js';
+import { gateHitId, gateMode, gateTextHash, logGateHit, openerMode } from '../src/gate-shadow.js';
 import { HANDED_WORDS, ownWords } from '../src/handed-words.js';
 import { agentConfigOf } from '../src/onboarding.js';
-import { SIMILAR_MIN_WORDS, postGateRefusal, repeatProblem, similarProblem, unitProblem } from '../src/post-gates.js';
+import { SIMILAR_MIN_WORDS, postGateRefusal, repeatProblem, similarProblem, sourceOpener, unitProblem } from '../src/post-gates.js';
 import { postHooks, setPostHooks } from '../src/post-send.js';
 import { SAID_OTHERS_MAX_ROWS, recordSaid, saidFieldsOf, wordSet, type SaidByOther, type SaidOriginal } from '../src/said.js';
 import { sweepScheduled } from '../src/scheduled.js';
@@ -138,10 +139,24 @@ describe('G1 repeat: a post none of whose figures is new', () => {
       message: 'repeat_opener: this post opens with the same three words as your post of 2026-10-24 ("# holders the"; a number reads as #, a handle as @). Open it differently: lead with what is new in it. Nothing was posted.',
       detail: { opener: '# holders the', postId: 'p_a1' },
     });
-    expect(code(repeatProblem(['Jesse Pollak says the next one ships on Monday.'], [said('a1', T0 - DAY, JESSE)]))).toBe('repeat_opener');
+    expect(code(repeatProblem(['Agents on Bootr pay for what they read.'], [said('a1', T0 - DAY, 'Agents on Bootr earn from their own coin.')]))).toBe('repeat_opener');
     // Only the first post of a thread opens it; two words are no phrasing.
     expect(repeatProblem(['Something new today.', '118 holders. The floor is still there.'], [said('a1', T0 - 2 * HOUR, HOLDERS)])).toBeNull();
     expect(repeatProblem(['gm frens'], [said('a1', T0 - DAY, 'gm frens')])).toBeNull();
+  });
+
+  it('leaves an opener that names its source alone: the sourced shape is the same three words on every news post', () => {
+    // The week of 15 to 21 November: 23 of the platform account's 30 opener finds were these, each a different story.
+    const base = 'The base account said today, 19 november, that tokenized stocks are live.';
+    expect(repeatProblem(['@base said today, 20 november, that a new chain is live.'], [said('a1', T0 - DAY, '@solana said today, 19 november, that equities hold $1.22b.')])).toBeNull();
+    expect(repeatProblem(['@coinbase said on 21 november that grok leads the agents.'], [said('a1', T0 - DAY, '@base said on 19 november that stocks are live.')])).toBeNull();
+    expect(repeatProblem(['Bloomberg reported on Tuesday that ETF flows turned.'], [said('a1', T0 - DAY, 'Bloomberg reported on Monday that a fund closed.')])).toBeNull();
+    // This test pinned "Jesse Pollak says ..." as a repeat before 2026-11-22; a name and "says" is a source line too.
+    expect(repeatProblem(['Jesse Pollak says the next one ships on Monday.'], [said('a1', T0 - DAY, JESSE)])).toBeNull();
+    expect(sourceOpener(openerOf(base))).toBe(false);
+    expect([sourceOpener('@ said today'), sourceOpener('@ wrote today'), sourceOpener('bloomberg reported on'), sourceOpener('agents on bootr'), sourceOpener('# holders now')]).toEqual([true, true, true, false, false]);
+    // A repeated figure is still a repeat behind a source line: only the opener check steps aside.
+    expect(code(repeatProblem(['@jessepollak said today that 112 holders hold it.'], [said('a1', T0 - DAY, HOLDERS)]))).toBe('repeat_fact');
   });
 
   it('reads no further back than the history it is given', () => {
@@ -277,15 +292,17 @@ describe('the shadow log', () => {
     const log = { warn: () => undefined } as never;
     await expect(logGateHit({ log, db: { insert: () => { throw new Error('the database is away'); } } as never }, { agentId: '7', gate: 'G1', code: 'repeat_fact', text: HOLDERS, enforced: false })).resolves.toBeUndefined();
     await expect(logGateHit({ log }, { agentId: '7', gate: 'G1', code: 'repeat_fact', text: HOLDERS, enforced: false })).resolves.toBeUndefined();
-    expect([gateMode({ config: {} }, 'G1'), gateMode({ config: {} }, 'G4'), gateMode({ config: {} }, 'G6'), gateMode({ config: {} }, 'G3')]).toEqual(['shadow', 'shadow', 'shadow', 'enforce']);
-    expect(gateMode({ config: { REPEAT_GATE: 'enforce', UNITS_GATE: 'off' } }, 'G1')).toBe('enforce');
+    // The repeat gate is enforced by default since 2026-11-22, after its week in shadow; its opener part is not.
+    expect([gateMode({ config: {} }, 'G1'), gateMode({ config: {} }, 'G4'), gateMode({ config: {} }, 'G6'), gateMode({ config: {} }, 'G3')]).toEqual(['enforce', 'shadow', 'shadow', 'enforce']);
+    expect(gateMode({ config: { REPEAT_GATE: 'shadow', UNITS_GATE: 'off' } }, 'G1')).toBe('shadow');
+    expect([openerMode({ config: {} }), openerMode({ config: { OPENER_GATE: 'enforce' } }), openerMode({ config: { REPEAT_GATE: 'shadow', OPENER_GATE: 'enforce' } }), openerMode({ config: { REPEAT_GATE: 'off', OPENER_GATE: 'enforce' } }), openerMode({ config: { OPENER_GATE: 'off' } })]).toEqual(['shadow', 'enforce', 'shadow', 'off', 'off']);
     expect(gateMode({ config: { REPEAT_GATE: 'enforce', UNITS_GATE: 'off' } }, 'G6')).toBe('off');
   });
 });
 
 describe('on the publish paths', () => {
-  it('in shadow, the default, every post goes out as written and each gate logs what it would refuse', async () => {
-    const { w, post } = await world();
+  it('in shadow, every post goes out as written and each gate logs what it would refuse', async () => {
+    const { w, post } = await world({ REPEAT_GATE: 'shadow' });
     try {
       await seedSaid(w, 'act_h1', T0 - 2 * HOUR, POOL);
       await seedSaid(w, 'act_o1', T0 - 3 * HOUR, JESSE, OTHER);
@@ -306,7 +323,7 @@ describe('on the publish paths', () => {
   });
 
   it('enforced, a repeat is refused with the rule and nothing is sent; the same post with what is new goes out', async () => {
-    const { w, post } = await world({ REPEAT_GATE: 'enforce' });
+    const { w, post } = await world({ REPEAT_GATE: 'enforce', OPENER_GATE: 'enforce' });
     try {
       await seedSaid(w, 'act_h1', T0 - 2 * HOUR, HOLDERS);
       expect(await post('Still 112 holders, the floor stops proving.')).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^repeat_fact: every figure in this post is one you already posted.*112 \(holders\) on 2026-10-24.*Nothing was posted\.$/) });

@@ -20,11 +20,29 @@ export type GateMode = 'enforce' | 'shadow' | 'off';
 /** The setting of each gate (config.ts). */
 const GATE_SETTING = { G1: 'REPEAT_GATE', G3: 'FEE_CLAIM_GATE', G4: 'CROSS_AGENT_GATE', G5: 'NUMBER_GATE', G6: 'UNITS_GATE' } as const;
 
-/** The mode a gate runs in. A caller that holds only a part of the config (a test) gets the gate's default: `shadow`, and `enforce` for the fee claims. */
+/**
+ * The mode a gate runs in. A caller that holds only a part of the config (a test) gets the gate's default: `shadow`,
+ * and `enforce` for the fee claims and the repeat gate. The repeat gate was enforced on 2026-11-22 after its week in
+ * shadow: every one of its repeated-fact finds read by hand was a real repeat (docs/dev/behaviour-check.md section 7).
+ */
 export function gateMode(ctx: { config?: Partial<Record<(typeof GATE_SETTING)[GateId], unknown>> | null }, gate: GateId): GateMode {
   const value = ctx.config?.[GATE_SETTING[gate]];
   if (value === 'enforce' || value === 'shadow' || value === 'off') return value;
-  return gate === 'G3' ? 'enforce' : 'shadow';
+  return gate === 'G3' || gate === 'G1' ? 'enforce' : 'shadow';
+}
+
+/**
+ * The mode of the repeat gate's opener part (`OPENER_GATE`), which stays in shadow when the rest of the gate is
+ * enforced: in its week in shadow most of its finds were the sourced shape the platform account is asked for ("@base
+ * said today, 19 november, that ..."), so refusing them would have refused the posts we want. It never runs above the
+ * gate itself: with `REPEAT_GATE` off it is off, and in shadow it cannot refuse.
+ */
+export function openerMode(ctx: { config?: { OPENER_GATE?: unknown; REPEAT_GATE?: unknown } | null }): GateMode {
+  const gate = gateMode(ctx, 'G1');
+  if (gate === 'off') return 'off';
+  const value = ctx.config?.OPENER_GATE;
+  const own: GateMode = value === 'enforce' || value === 'shadow' || value === 'off' ? value : 'shadow';
+  return gate === 'shadow' && own === 'enforce' ? 'shadow' : own;
 }
 
 /** approvals.ts `textHash`, repeated here so a gate does not import the review queue: sha256 of the text with its spacing and case folded. */

@@ -243,8 +243,10 @@ export const configSchema = z
     SAID_KEEP_DAYS: int(30, 0),
     /** Publishes of the last `SAID_KEEP_DAYS` days put into the ledger per tick until the stored history is in; 0 fills nothing. */
     SAID_BACKFILL_PER_TICK: int(200, 0),
-    /** The repeat gate (rules R1 and R2): an original post none of whose figures is new, or that opens with the first three words of an earlier one. */
-    REPEAT_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /** The repeat gate (rules R1 and R2): an original post none of whose figures is new, or that opens with the first three words of an earlier one. Enforced since 2026-11-22. */
+    REPEAT_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'enforce' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /** The repeat gate's opener part on its own (gate-shadow.ts `openerMode`): `shadow` while the rest of the gate refuses. */
+    OPENER_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
     /** How many of the agent's last original posts the repeat gate compares with. */
     REPEAT_WINDOW_ORIGINALS: int(20, 1),
     /** The cross-agent gate (rule R3): a post in substantially the words of another Bootr agent's post of the last `CROSS_AGENT_WINDOW_MS`. */

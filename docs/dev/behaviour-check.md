@@ -272,3 +272,35 @@ What it says that the public read could not:
   280 characters on an account without Premium reads that way).
 - M5 is an estimate for this week: `sv_turns` has rows only from 15 November on.
 
+
+## 7. The shadow week: 15 to 21 November 2026, and what was enforced
+
+Read in database mode on 2026-11-21 at 21:02 UTC (the 21st is a part day). The three agents against section 6:
+
+| | @AgentBootr | @BRIANBRAINAI | @playclankfish |
+|---|---|---|---|
+| Originals (replies) | 124 (10) | 19 (9) | 12 (7) |
+| M1 repeat rate | 24% | 58% (41% the week before) | 58% (64%) |
+| M2 claims with a source | 77% | 12% | 14% |
+| M3 refused per 100 attempts | 11.3 (44.7 the week before) | 6.7 | 20.8 |
+| M6 fuel per original | 0.97 USDC (1.10) | 0.19 USDC | 0.13 USDC |
+| M7 eligible mentions answered within 15 minutes | 45% | 45% | 70% |
+| M8 same opener | 43% | 16% | 17% |
+| First observation, median | 35,745 characters | 20,702 | 16,551 |
+
+The gate rows of the week (49, `sv_gate_shadow` joined to `sv_said` for the post id) were read by hand with the posts
+they found on X:
+
+- **G1 `repeat_fact`, 12 rows: real repeats.** The nine whose posts could be read were all a figure said again with
+  nothing new: @playclankfish's "six holders" four days running, @BRIANBRAINAI's "one hundred nine holders" and "270
+  trades", the platform account's Opal audit book and Clanker's 0.2% told twice. Enforced from 2026-11-22
+  (`REPEAT_GATE` defaults to `enforce`).
+- **G1 `repeat_opener`, 32 rows: mostly the shape we asked for.** 23 were the platform account's source lines ("@solana
+  said today, 19 november, that ...", "@base said on ..."), each a different story. An opener that names who said it
+  is no longer compared (`post-gates.ts` `sourceOpener`), and the opener part has its own setting, `OPENER_GATE`, left
+  in `shadow`. The rest ("agents on bootr", "every coin on", "# holders now") stay in the shadow count.
+- **G5 `number_not_in_evidence`, 4 rows: all wrong.** Each number was in the source ($1.22b in Solana's post, $1.4b in
+  Circle's blog, a figure the agent itself gave the day before), but the record held no numbers or a different one.
+  G5 stays in shadow until the dataset reads numbers out of what it stores.
+- **G3 `fee_claim_false`, 1 row, enforced:** "All creator fees flow back to holders through the fee pool." on
+  $CLANKFISH, which pays holders nothing. Right.

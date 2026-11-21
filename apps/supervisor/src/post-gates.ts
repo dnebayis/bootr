@@ -13,6 +13,9 @@
  *     round to one fingerprint and are two facts. One new figure is enough for the whole post: a follow-up that adds a
  *     number to one already given, or says a count moved from one value to another, is not a repeat.
  *   - `repeat_opener`: the post opens with the same three words (numbers and handles folded) as one of those posts.
+ *     Its own setting (`OPENER_GATE`, gate-shadow.ts `openerMode`) keeps it in shadow while the rest of G1 refuses. An
+ *     opener that names who said it ("@ said today", "bloomberg reported on", "jesse pollak says") is not compared:
+ *     that is the sourced shape the platform account is asked to lead with, the same three words on every news post.
  *   - `repeat_record`: the post cites a dataset record (`record`) this agent already posted about, or one a post of its
  *     own that still waits (scheduled, in review) cites (rule R1, one event, one post; post-records.ts). Asked first,
  *     and whether the ledger is on or not: the record's own log of who cited it answers too.
@@ -48,7 +51,7 @@
 import { postFacts, openerOf, recordIdsOf } from '@bootr/agent-core';
 import { storedTurn } from './comment-posts.js';
 import type { AgentRow, SupervisorContext } from './context.js';
-import { gateMode, logGateHit, type GateId } from './gate-shadow.js';
+import { gateMode, logGateHit, openerMode, type GateId } from './gate-shadow.js';
 import { ownWords } from './handed-words.js';
 import { numberProblem, turnEvidence } from './number-gate.js';
 import { citationOf, recordRepeatProblem, recordRepeats } from './post-records.js';
@@ -112,6 +115,12 @@ const sameValue = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * M
 /** An opener says something about the phrasing only when it has its three words. */
 const fullOpener = (opener: string): boolean => opener.split(' ').filter(Boolean).length >= 3;
 
+/** Verbs that make an opener a source line ("@ said today", "bloomberg reported on"): the sourced shape, not a phrasing. */
+const REPORTING = new Set(['said', 'says', 'wrote', 'writes', 'reported', 'reports', 'posted', 'announced', 'announces', 'published', 'publishes', 'quoted', 'quotes', 'noted', 'notes', 'told', 'confirmed', 'confirms']);
+
+/** Whether an opener names who said what follows, which the opener check leaves alone (the head of this file says why). */
+export const sourceOpener = (opener: string): boolean => opener.split(' ').some((word) => REPORTING.has(word));
+
 /**
  * Whether an original post (`parts`: its text, or every post of a thread) repeats what the agent's last original
  * posts said (`history`, newest first, as `lastOriginals` returns them). Pure. See the head of this file for the rule.
@@ -153,7 +162,7 @@ export function repeatProblem(parts: readonly string[], history: readonly SaidOr
     }
   }
   const opener = openerOf(parts[0] ?? '');
-  if (fullOpener(opener)) {
+  if (fullOpener(opener) && !sourceOpener(opener)) {
     const same = history.find((o) => o.opener === opener);
     if (same) {
       return {
@@ -230,7 +239,10 @@ export interface GatedPost {
 export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'config'>, post: GatedPost): Promise<string | null> {
   const done = post.done ?? 'posted';
   const hit = async (gate: GateId, problem: GateProblem): Promise<string | null> => {
-    const enforced = gateMode(ctx, gate) === 'enforce';
+    // The opener part of G1 has a setting of its own: in shadow while the rest of the gate refuses.
+    const mode = problem.code === 'repeat_opener' ? openerMode(ctx) : gateMode(ctx, gate);
+    if (mode === 'off') return null;
+    const enforced = mode === 'enforce';
     await logGateHit(ctx, { agentId: agent.agentId, gate, code: problem.code, actionId: post.actionId, text: problem.text, detail: { ...problem.detail, kind: post.kind, ...(post.parts.length > 1 ? { parts: post.parts.length } : {}), ...(done === 'scheduled' ? { scheduled: true } : {}) }, enforced });
     ctx.log.info({ agentId: agent.agentId, gate, code: problem.code, actionId: post.actionId, enforced }, enforced ? 'publish gate: refused' : 'publish gate: would refuse (shadow)');
     return enforced ? problem.message : null;
