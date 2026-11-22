@@ -267,6 +267,17 @@ services:
       CROSS_AGENT_GATE: ${CROSS_AGENT_GATE:-}
       UNITS_GATE: ${UNITS_GATE:-}
       FEE_CLAIM_GATE: ${FEE_CLAIM_GATE:-}
+      # The cap on a coin's own numbers posts (apps/supervisor/src/number-post-cap.ts): at most COIN_NUMBER_POSTS_PER_DAY
+      # original posts per rolling 24 hours state the coin's own market figures (holders, trades, volume, price, fees).
+      # Empty = enforce and 1 a day; shadow = only logged to sv_gate_shadow (gate G7); off = not asked. Coin agents only,
+      # never a reply. Not secrets.
+      NUMBER_POST_GATE: ${NUMBER_POST_GATE:-}
+      COIN_NUMBER_POSTS_PER_DAY: ${COIN_NUMBER_POSTS_PER_DAY:-}
+      # X accounts a coin's agent follows while its creator named none in the console (apps/supervisor/src/watchlist.ts):
+      # agentId:handle|handle|handle, entries comma-separated, at most three handles each, for example
+      # 1170231:brian_armstrong|base,123:foo. A creator's own list always wins. Empty = no agent gets a list from here.
+      # Each handle is two X reads every 6 hours from that coin's own read budget. Not a secret.
+      COIN_WATCHLISTS: ${COIN_WATCHLISTS:-}
       # The quiet slot (apps/supervisor/src/quiet-slot.ts): empty = on (a coin agent's due post slot buys no turn when
       # nothing is new since its last one), false = off for every coin. A creator switches it off for one coin in the console.
       QUIET_SLOT: ${QUIET_SLOT:-}

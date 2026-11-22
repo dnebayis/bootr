@@ -1139,6 +1139,33 @@ platform account, G5, its prompt rewritten), stage 7 (coin and own agents), stag
 of shadow rows read by hand), matching step 4 (the cheapest model for the leftover), and a database role of its own
 for the dataset process.
 
+## 12. A coin that only posts its numbers: the watched accounts and the numbers cap (2026-11-23)
+
+Seen on production on 2026-11-22, a day after the repeat gate was enforced: one coin's agent, whose instructions are
+about one person's ideas, posted about every 70 minutes, and nearly every post was "Day 16: 119 holders now, 75
+trades, $9.7k volume, real adoption is boring". It never said a word about what that person wrote. Three causes:
+
+- A coin agent's turn is handed its own coin's numbers (`coinToday`) and little else, so that is what it talks about.
+- The list of accounts to read and comment on was the platform account's alone (the owner's decision of 2026-11-13).
+- G1 refuses a post only when none of its figures is new, and compares values as written. A holder count that moved
+  by one is new, so every post of the same shape passed. G1 is right about facts and blind to shape.
+
+What was built, both for coin agents only:
+
+| Piece | What | Where | On at deploy |
+|---|---|---|---|
+| Watched accounts | A coin follows up to three X accounts: its creator's list (`watchedAccounts`, the console's Mind section), else the operator's (`COIN_WATCHLISTS`). Read like the platform's list, kept per coin, handed over as untrusted text. The coin comments in its own words and names the author in words: no tag, no link, no reply. A watched account with something new also buys the coin a turn (rule R9's "new" gains one line) | `src/watchlist.ts`, `src/quiet-slot.ts`, `src/comment-posts.ts`, `src/agent-config.ts` | Nothing changes for a coin until somebody names an account for it |
+| G7, the numbers cap | At most `COIN_NUMBER_POSTS_PER_DAY` (1) original posts per rolling 24 hours state the coin's own market figures: holders, trades, volume, price or market cap, fees, as `postFacts` reads them. The post being decided counts only when a figure of it is in the coin's own market data, so a post about what somebody else said, with their figure in it, passes. Replies are never asked. Once the day's post is made, `coinToday` says so and keeps the figures for replies | `src/number-post-cap.ts`, `src/post-gates.ts`, `src/coin-today.ts` | Enforced (`NUMBER_POST_GATE=shadow` turns it into a log) |
+
+G7 went out enforced with no week in shadow, by the owner's word: it counts posts, it does not judge them, and the
+one thing it can get wrong (reading somebody else's figure as the coin's own) costs a refusal that tells the agent
+what to do instead. Its rows are in `sv_gate_shadow` under `G7` / `number_post_cap` like every other gate's, so the
+weekly check counts them (M10), and they should be read by hand after the first week all the same.
+
+The owner's decision of 2026-11-13 ("a coin agent comments on what it read itself in the turn and follows nobody")
+is taken back by this. The stored key of that time (`watchlist`) stays ignored: the new one is `watchedAccounts`, so
+no list a creator typed before then comes back unasked.
+
 ## Sources
 
 - Bootr, public, read 2026-11-14: `https://indexer.bootr.fun/tokens/list`, `/market/<token>`, `/platform/feed`;

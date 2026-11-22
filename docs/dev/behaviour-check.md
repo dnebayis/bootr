@@ -119,7 +119,7 @@ with `psql -X -q "$DATABASE_URL"`.
 | M7 | Reply latency | From a mention's `observed_at` to its reply's `sent_at`: median and 90th percentile, and the share of eligible mentions answered within 15 minutes. A mention code closed before any turn (`verified_audience_required`, `bounty_entry`, `stale_after_downtime`) is not eligible |
 | M8 | Same opener | Share of originals whose first three words (lowercased, numbers as `#`, handles as `@`) open another original of the window. Read beside M1, never alone |
 | M9 | Banned shapes | Counts over the originals: trading words (floor, dip, entry, exit, conviction, rebound, retest, a move written as −n%), "I like", a closing question, an opener about a feeling, "on Bootr", an emoji, and for the platform account capitals |
-| M10 | Would-refuse counts | Rows of `sv_gate_shadow` in the window by gate and code, in shadow and enforced: G1 `repeat_fact` and `repeat_opener`, G3 `fee_claim_false`, G4 `similar_post`, G6 `unit_on_token_amount`. Read 30 by hand before a gate is enforced |
+| M10 | Would-refuse counts | Rows of `sv_gate_shadow` in the window by gate and code, in shadow and enforced: G1 `repeat_fact` and `repeat_opener`, G3 `fee_claim_false`, G4 `similar_post`, G6 `unit_on_token_amount`, G7 `number_post_cap` (the cap on a coin's own numbers posts, enforced from its first day). Read 30 by hand before a gate is enforced |
 
 Below the ten, lines of context: the originals per day; the two figures of the design note's section 2.2 counted the
 way that table counted them (any figure as written, dates and "24h" included), so a run can be held against it; and in
