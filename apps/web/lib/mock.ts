@@ -993,6 +993,10 @@ export const mock = {
       cfg.quietSlot = changes.quietSlot;
       fields.push('quiet slot');
     }
+    if (changes.watchedAccounts !== undefined && cfg.watchedAccounts !== null && JSON.stringify(changes.watchedAccounts) !== JSON.stringify(cfg.watchedAccounts)) {
+      cfg.watchedAccounts = [...changes.watchedAccounts];
+      fields.push('watched accounts');
+    }
     if (fields.length === 0) return { ok: false, status: 409, error: 'unchanged', message: 'Nothing changed.' };
     const workerFields = ['capabilities', 'postIntervalMs', 'cadence', 'jobLines'];
     if (fields.some((f) => workerFields.includes(f)) && cfg.worker.kind !== 'custom') cfg.worker.kind = 'custom';
@@ -1288,6 +1292,7 @@ function buildConfig(t: Token, instructions = DEFAULT_INSTRUCTIONS): AgentConfig
     comments: true,
     replyAudience: 'verified',
     quietSlot: true,
+    watchedAccounts: [],
     openReplies: { questionsFromAnyone: true, perDay: 10 },
     revision: 0,
     updatedAt: new Date(t.launchedAt * 1000).toISOString(),
@@ -1319,6 +1324,7 @@ function orphanConfig(kernel: Address): AgentConfig {
     comments: true,
     replyAudience: 'verified',
     quietSlot: true,
+    watchedAccounts: [],
     openReplies: { questionsFromAnyone: true, perDay: 10 },
     revision: 0,
     updatedAt: new Date().toISOString(),

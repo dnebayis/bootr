@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { changedSections } from '@/lib/console-sections';
 import { mock } from '@/lib/mock';
 import { replyAudienceNote } from '@/lib/posting-views';
+import { WATCHED_ACCOUNTS_MAX } from '@/lib/types';
 import { sanitizeConfig, validateChanges } from './supervisor';
 import { EMPTY_WHAT_WORKS, sanitizeWhatWorks, WHAT_WORKS_MAX_CHARS } from './what-works';
 
@@ -150,7 +151,33 @@ describe('what Bootr adds to who gets a reply', () => {
   });
 });
 
-describe('a coin has no accounts to follow', () => {
+describe('the accounts a coin follows', () => {
+  it('reach the page as plain handles, three at most; an agent service that sends no list means there is none to edit', () => {
+    expect(WATCHED_ACCOUNTS_MAX).toBe(3);
+    expect(sanitizeConfig({ ...CONFIG, watchedAccounts: [] })!.watchedAccounts).toEqual([]);
+    expect(sanitizeConfig({ ...CONFIG, watchedAccounts: ['brian_armstrong', 'Not A Handle', 7, 'base', 'a', 'b'] })!.watchedAccounts).toEqual(['brian_armstrong', 'base', 'a']);
+    // Bootr's own account (null) and an older agent service (absent): the console shows no control
+    for (const none of [null, undefined, 'base']) expect(sanitizeConfig({ ...CONFIG, watchedAccounts: none })!.watchedAccounts).toBeNull();
+  });
+
+  it('are validated before they are sent on: at most three X handles, the @ optional, stored lower-case, repeats dropped', () => {
+    expect(validateChanges({ watchedAccounts: ['@Brian_Armstrong', 'base', 'BASE'] })).toEqual({ ok: true, changes: { watchedAccounts: ['brian_armstrong', 'base'] } });
+    expect(validateChanges({ watchedAccounts: [] })).toEqual({ ok: true, changes: { watchedAccounts: [] } });
+    for (const bad of ['base', ['a', 'b', 'c', 'd'], ['not a handle'], [7], ['way_too_long_for_a_handle']]) expect(validateChanges({ watchedAccounts: bad }), JSON.stringify(bad)).toMatchObject({ ok: false, field: 'watchedAccounts' });
+    expect(changedSections({ watchedAccounts: ['base'] })).toEqual(['mind']);
+  });
+
+  it('the stand-in used without an agent service stores them the same way', () => {
+    const kernel = '0x2000000000000000000000000000000000000abe';
+    expect(mock.agentConfig(kernel)!.watchedAccounts).toEqual([]);
+    const saved = mock.updateAgentConfig(kernel, { watchedAccounts: ['base'] }, '0x00000000000000000000000000000000000e2e01');
+    expect(saved).toMatchObject({ ok: true, config: { watchedAccounts: ['base'] } });
+    expect(mock.updateAgentConfig(kernel, { watchedAccounts: ['base'] }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: false, status: 409 });
+    expect(mock.updateAgentConfig(kernel, { watchedAccounts: [] }, '0x00000000000000000000000000000000000e2e01')).toMatchObject({ ok: true, config: { watchedAccounts: [] } });
+  });
+});
+
+describe('the key a coin could store until 2026-11-13 stays ignored', () => {
   it('a list an agent service still sends is not passed on to the page, whatever it holds', () => {
     for (const stored of [['alice', 'bob_1'], [], 'alice', 42, null, ['@x', 'Not A Handle']]) {
       const config = sanitizeConfig({ ...CONFIG, watchlist: stored, comments: false });

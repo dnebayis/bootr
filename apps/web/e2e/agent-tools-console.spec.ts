@@ -3,7 +3,7 @@ import { fakeInjectedWallet } from './fake-wallet';
 
 /**
  * The console's controls for the agent's newer tools (docs/design/agent-tools-2.md): comments and who gets a reply
- * and the posts written ahead (Posting), and the agent's note on what works (Mind). Mock
+ * and the posts written ahead (Posting), the accounts to follow and the agent's note on what works (Mind). Mock
  * mode, where everyone is the creator and nothing is signed. The scheduled-posts routes belong to another part of the
  * release, so this spec answers them itself.
  *
@@ -148,13 +148,42 @@ test('posting: an empty schedule and an unreachable one each say so in a sentenc
   await expect(again.getByTestId('scheduled-post')).toHaveCount(0);
 });
 
-test('mind: a coin has no list of accounts to follow', async ({ page }) => {
+test('mind: up to three accounts to follow, typed with or without the @, saved as plain handles', async ({ page }) => {
   const console_ = await openConsole(page, 'mind', 2);
-  await expect(console_.locator('#console-instructions')).toBeVisible();
-  await expect(console_.getByTestId('what-works-card')).toBeVisible();
-  await expect(console_.getByTestId('watchlist')).toHaveCount(0);
-  await expect(console_.getByText('Accounts to follow')).toHaveCount(0);
-  await expect(console_.getByRole('button', { name: 'Add an account' })).toHaveCount(0);
+  const box = console_.getByTestId('watched-accounts');
+  await expect(box).toContainText('0/3');
+  await expect(box).toContainText('never as instructions');
+  await expect(box).not.toContainText(JARGON);
+
+  await box.getByTestId('watched-accounts-add').click();
+  await box.getByRole('textbox', { name: 'Account 1' }).fill('@Brian_Armstrong');
+  await box.getByTestId('watched-accounts-add').click();
+  await box.getByRole('textbox', { name: 'Account 2' }).fill('not a handle!');
+  // a row that is not an X handle is marked, explained, and blocks the save
+  await expect(box.getByRole('textbox', { name: 'Account 2' })).toHaveAttribute('aria-invalid', 'true');
+  await expect(box.getByTestId('watched-accounts-error')).toContainText('letters, digits and underscores only');
+  await expect(console_.getByTestId('console-save-state')).toHaveText('Fix the marked fields to save');
+  await expect(console_.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+  await box.getByRole('textbox', { name: 'Account 2' }).fill('base');
+  await expect(box.getByTestId('watched-accounts-error')).toHaveCount(0);
+  await expect(console_.getByTestId('console-save-state')).toHaveText('Unsaved changes in Mind');
+  await save(console_, page);
+  await expect(box.getByRole('textbox', { name: 'Account 1' })).toHaveValue('brian_armstrong');
+  await expect(box.getByRole('textbox', { name: 'Account 2' })).toHaveValue('base');
+  await expect(box).toContainText('2/3');
+
+  // three is the most: the add button goes once the list is full, and a removed row frees a place
+  await box.getByTestId('watched-accounts-add').click();
+  await box.getByRole('textbox').last().fill('a_1');
+  await expect(box).toContainText('3/3');
+  await expect(box.getByTestId('watched-accounts-add')).toHaveCount(0);
+  await box.getByRole('button', { name: 'Remove account 3' }).click();
+  await expect(box.getByTestId('watched-accounts-add')).toBeVisible();
+  await box.getByRole('button', { name: 'Remove account 2' }).click();
+  await save(console_, page);
+  await page.reload();
+  await expect(console_.getByTestId('watched-accounts').getByRole('textbox')).toHaveCount(1);
 });
 
 test('mind: the agent’s note on what works shows with its numbers and earlier versions, and can be cleared', async ({ page }) => {

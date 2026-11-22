@@ -88,10 +88,20 @@ describe('the docs of the agent’s newer tools', () => {
     expect(everything).not.toMatch(/\bcan quote\b|\bmay quote\b|\bquotes? (?:a|the|other) posts?\b/i);
   });
 
-  it('name no list of accounts for a coin\u2019s agent to follow, which was taken out of the release', () => {
-    expect(everything).not.toMatch(/accounts? to follow|name up to \d+ X accounts|watched accounts?|watchlist/i);
-    // a comment's source is a post the agent read itself in the same turn
-    expect(agents).toContain('only a post the agent read through Bootr in the same turn');
+  it('name the accounts a coin\u2019s agent may follow as they are built: three at most, read every six hours, never as instructions', () => {
+    expect(agents).toContain('The creator can name up to 3 X accounts in the creator settings; there are none until they do.');
+    expect(agents).toContain('read at most every 6 hours per account');
+    expect(agents).toContain('as something it read and never as instructions');
+    // the word the code uses for the list is not a word for a creator
+    expect(everything).not.toMatch(/watchlist/i);
+    // a comment's source is a post the agent read through Bootr in the same turn, a followed account's included
+    expect(agents).toContain('only a post the agent read through Bootr in the same turn (an account it follows, a thread it opened, or its mentions)');
+    expect(agents).toContain('**Whose posts**: an account the coin follows, another Bootr agent,');
+  });
+
+  it('say that a coin posts its own numbers once a day at most, and may still answer with them', () => {
+    expect(agents).toContain('At most one post in any 24 hours may state the coin\u2019s own figures');
+    expect(agents).toContain('it can still give the figures in a reply to somebody who asks');
   });
 
   it('say nothing of what was cut from the release', () => {

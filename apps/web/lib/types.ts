@@ -363,6 +363,11 @@ export interface AgentConfig {
    */
   quietSlot: boolean | null;
   /**
+   * The X accounts the creator asked the agent to follow: handles without the `@`, at most `WATCHED_ACCOUNTS_MAX`; empty
+   * for none. Null when the agent has no such list to edit (Bootr's own account, or an agent service from before it existed).
+   */
+  watchedAccounts: string[] | null;
+  /**
    * What Bootr adds to either choice, for the words under the control: whether an account without a verified badge is
    * answered when it writes to the agent and asks a question, and how many replies a day go to accounts without a
    * badge in all. Read-only; an agent service that sends none reads as "no, none".
@@ -396,6 +401,10 @@ export type { Runner, RunnerView };
 /** Who gets a reply (`REPLY_AUDIENCES` in packages/agent-core). */
 export type ReplyAudience = 'verified' | 'own_threads';
 export const REPLY_AUDIENCES: readonly ReplyAudience[] = ['verified', 'own_threads'];
+/** The most X accounts a creator may ask the agent to follow (`MAX_WATCHED_ACCOUNTS` in packages/agent-core). */
+export const WATCHED_ACCOUNTS_MAX = 3;
+/** An X handle without the `@`, as the watched accounts are stored. */
+export const X_HANDLE_RE = /^[a-z0-9_]{1,15}$/;
 
 export type AgentXConnection = 'connected' | 'revoked' | 'none';
 
@@ -484,6 +493,8 @@ export interface AgentConfigChanges {
   comments?: boolean;
   replyAudience?: ReplyAudience;
   quietSlot?: boolean;
+  /** The whole list each time: at most `WATCHED_ACCOUNTS_MAX` X handles, without the `@`; an empty list follows nobody. */
+  watchedAccounts?: string[];
 }
 
 // ---------------------------------------------------------------- what works, scheduled posts (console, signed session)

@@ -10,7 +10,7 @@ import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/ag
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentLedger, LEDGER_ASSETS, LEDGER_DIRECTIONS, LEDGER_KINDS, LEDGER_ROLES, LEDGER_STATUSES, type LedgerAmount, type LedgerDay, type LedgerDayLine, type LedgerParty, type LedgerRow, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHED_ACCOUNTS_MAX, X_HANDLE_RE, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentLedger, LEDGER_ASSETS, LEDGER_DIRECTIONS, LEDGER_KINDS, LEDGER_ROLES, LEDGER_STATUSES, type LedgerAmount, type LedgerDay, type LedgerDayLine, type LedgerParty, type LedgerRow, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { aboutHref } from '@/lib/posting-views';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
@@ -235,6 +235,8 @@ export function sanitizeConfig(raw: unknown): AgentConfig | null {
     replyAudience: (REPLY_AUDIENCES as readonly unknown[]).includes(o.replyAudience) ? (o.replyAudience as ReplyAudience) : 'verified',
     // Anything but a plain true or false means the agent has no such switch: Bootr's own account, or an older agent service.
     quietSlot: typeof o.quietSlot === 'boolean' ? o.quietSlot : null,
+    // Anything but a list means there is no list to edit here: Bootr's own account, or an older agent service.
+    watchedAccounts: Array.isArray(o.watchedAccounts) ? o.watchedAccounts.filter((h): h is string => typeof h === 'string' && X_HANDLE_RE.test(h)).slice(0, WATCHED_ACCOUNTS_MAX) : null,
     openReplies: openRepliesOf(o.openReplies),
     revision: Number.isFinite(revision) && revision >= 0 ? Math.round(revision) : 0,
     updatedAt: iso(o.updatedAt) ?? new Date(0).toISOString(),
@@ -980,13 +982,24 @@ function cleanText(v: unknown): string | null {
  * The `changes` a creator may send: instructions (20–600 plain chars), a model id, worker fields inside
  * WORKER_BOUNDS, the post review switch, an image model id and the image style (an https reference or null, notes
  * of at most IMAGE_NOTES_MAX plain characters), the paid services caps and the bounties bounds (each inside
- * BOUNTIES_BOUNDS), the comments switch, who gets a reply and the quiet-slot switch. Unknown keys are dropped (a list of accounts to follow,
- * which an older page may still send, is one of them), always-on powers cannot be switched off. Returns the error to show.
+ * BOUNTIES_BOUNDS), the comments switch, who gets a reply, the quiet-slot switch and the accounts to follow (at most
+ * WATCHED_ACCOUNTS_MAX handles, sent on lower-case without the `@`). Unknown keys are dropped (`watchlist`, the list of
+ * accounts a page from before 2026-11-13 may still send, is one of them), always-on powers cannot be switched off. Returns the error to show.
  */
 export function validateChanges(input: unknown): { ok: true; changes: AgentConfigChanges } | { ok: false; message: string; field: string } {
   if (!input || typeof input !== 'object') return { ok: false, field: 'changes', message: 'changes must be an object' };
-  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown; quietSlot?: unknown };
+  const o = input as { instructions?: unknown; model?: unknown; worker?: unknown; postsPerDay?: unknown; requireApproval?: unknown; imageModel?: unknown; imageStyle?: unknown; routing?: unknown; services?: unknown; bounties?: unknown; comments?: unknown; replyAudience?: unknown; quietSlot?: unknown; watchedAccounts?: unknown };
   const changes: AgentConfigChanges = {};
+  if (o.watchedAccounts !== undefined) {
+    if (!Array.isArray(o.watchedAccounts) || o.watchedAccounts.length > WATCHED_ACCOUNTS_MAX) return { ok: false, field: 'watchedAccounts', message: `watchedAccounts is a list of at most ${WATCHED_ACCOUNTS_MAX} X handles.` };
+    const handles: string[] = [];
+    for (const raw of o.watchedAccounts) {
+      const handle = typeof raw === 'string' ? raw.trim().replace(/^@/, '').toLowerCase() : '';
+      if (!X_HANDLE_RE.test(handle)) return { ok: false, field: 'watchedAccounts', message: 'Each account to follow is an X handle: letters, digits and underscores, at most 15 characters.' };
+      if (!handles.includes(handle)) handles.push(handle);
+    }
+    changes.watchedAccounts = handles;
+  }
   if (o.quietSlot !== undefined) {
     if (typeof o.quietSlot !== 'boolean') return { ok: false, field: 'quietSlot', message: 'quietSlot must be true or false' };
     changes.quietSlot = o.quietSlot;

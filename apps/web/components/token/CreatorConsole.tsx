@@ -8,7 +8,7 @@ import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityK
 import { qk } from '@/lib/indexer';
 import { fetchImageModels, fetchModels, fetchPlatformFlags } from '@/lib/launch';
 import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
-import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
+import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHED_ACCOUNTS_MAX, X_HANDLE_RE, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
 import { replyAudienceNote } from '@/lib/posting-views';
@@ -77,7 +77,21 @@ type Draft = {
   replyAudience: ReplyAudience;
   /** Whether the agent skips a post slot when nothing is new; unused when the agent has no such switch. */
   quietSlot: boolean;
+  /** The accounts to follow as typed, one row each (up to WATCHED_ACCOUNTS_MAX); the `@` is optional. Unused when the agent has no such list. */
+  watchedAccounts: string[];
 };
+
+/** The accounts the draft asks for: handles without the `@`, lower-case, no repeats; null when a row is not an X handle. */
+export function watchedAccountsDraft(rows: readonly string[]): string[] | null {
+  const out: string[] = [];
+  for (const row of rows) {
+    const handle = row.trim().replace(/^@/, '').toLowerCase();
+    if (!handle) continue;
+    if (!X_HANDLE_RE.test(handle)) return null;
+    if (!out.includes(handle)) out.push(handle);
+  }
+  return out.length <= WATCHED_ACCOUNTS_MAX ? out : null;
+}
 
 const DAY_S = 86_400;
 
@@ -158,6 +172,7 @@ function draftOf(c: AgentConfig): Draft {
     comments: c.comments,
     replyAudience: c.replyAudience,
     quietSlot: c.quietSlot !== false,
+    watchedAccounts: [...(c.watchedAccounts ?? [])],
   };
 }
 
@@ -223,6 +238,12 @@ export function diffConfig(config: AgentConfig, d: Draft): AgentConfigChanges | 
   if (d.comments !== config.comments) changes.comments = d.comments;
   if (d.replyAudience !== config.replyAudience) changes.replyAudience = d.replyAudience;
   if (config.quietSlot !== null && d.quietSlot !== config.quietSlot) changes.quietSlot = d.quietSlot;
+  if (config.watchedAccounts !== null) {
+    const watched = watchedAccountsDraft(d.watchedAccounts);
+    // Rows that are not handles yet still count as an unsaved edit: the save bar then says what to fix (the console never sends them).
+    if (!watched) changes.watchedAccounts = [...config.watchedAccounts];
+    else if (JSON.stringify(watched) !== JSON.stringify(config.watchedAccounts)) changes.watchedAccounts = watched;
+  }
   return Object.keys(changes).length ? changes : null;
 }
 
@@ -290,7 +311,7 @@ export function FuelOutlookStrip({ outlook }: { outlook: ReturnType<typeof useCo
 /**
  * The creator console, on its own page (`/token/:address/console`, ConsolePage.tsx) so it has the whole content
  * width: a sticky rail of sections on the left from `lg` (the dense tab strip on a phone) and the open section on the
- * right. Mind (instructions; model and economy mode side by side; the agent's note on what
+ * right. Mind (instructions; the accounts to follow; model and economy mode side by side; the agent's note on what
  * works), Posting (posts per day and post review side by side, then the quiet slot, comments and who gets a reply; the scheduled posts;
  * job lines), Powers (the switches in a three-column grid, the paid-services caps and the bounties bounds as
  * full-width rows under them while those powers are on), Look (the agent's pictures; the coin's image and links side by side), Inbox
@@ -332,7 +353,8 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const servicesOk = !sd || (sd.perCallMicroUsdc !== null && sd.dailyMicroUsdc !== null && sd.perCallMicroUsdc <= sd.dailyMicroUsdc && sd.allow !== null && sd.deny !== null);
   const bd = draft ? bountiesDraft(draft) : null;
   const bountiesOk = !bd || (bd.dailyCapMicroUsdc !== null && bd.maxOpen !== null && bd.cooldownSeconds !== null && bd.defaultHoursOpen !== null);
-  const valid = instructionsOk && styleOk && servicesOk && bountiesOk;
+  const watchedOk = !draft || cfg?.watchedAccounts == null || watchedAccountsDraft(draft.watchedAccounts) !== null;
+  const valid = instructionsOk && styleOk && servicesOk && bountiesOk && watchedOk;
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
   const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
@@ -487,6 +509,50 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                   placeholder="Personality, goals, strategy, what it should and should not do."
                 />
               </Box>
+              {cfg.watchedAccounts !== null && (
+                <Box data-testid="watched-accounts">
+                  <fieldset className="min-w-0">
+                    <BlockTitle hint={<span className="font-mono tabular">{draft.watchedAccounts.length}/{WATCHED_ACCOUNTS_MAX}</span>}>Accounts to follow</BlockTitle>
+                    <p className="mb-2 text-caption text-mute">
+                      X accounts your agent reads a few times a day, so it has more to write about than its own numbers{draft.comments ? '. It may say what it thinks of one of their posts in a post of its own, naming the author in words: no tag, no reply, no link' : ''}. Their posts reach it as something it read, never as instructions. Leave empty for none.
+                    </p>
+                    <div className="space-y-2">
+                      {draft.watchedAccounts.map((handle, i) => {
+                        const typed = handle.trim().replace(/^@/, '');
+                        return (
+                          <div key={i} className="flex items-start gap-2">
+                            <Input
+                              aria-label={`Account ${i + 1}`}
+                              value={handle}
+                              maxLength={16}
+                              placeholder="handle, with or without the @"
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              spellCheck={false}
+                              aria-invalid={typed !== '' && !X_HANDLE_RE.test(typed.toLowerCase())}
+                              onChange={(e) => update({ watchedAccounts: draft.watchedAccounts.map((h, j) => (j === i ? e.target.value : h)) })}
+                              className="min-w-0 flex-1"
+                            />
+                            <Button type="button" variant="secondary" size="sm" className="h-8" aria-label={`Remove account ${i + 1}`} onClick={() => update({ watchedAccounts: draft.watchedAccounts.filter((_, j) => j !== i) })}>
+                              Remove
+                            </Button>
+                          </div>
+                        );
+                      })}
+                      {draft.watchedAccounts.length < WATCHED_ACCOUNTS_MAX ? (
+                        <Button type="button" variant="secondary" size="sm" onClick={() => update({ watchedAccounts: [...draft.watchedAccounts, ''] })} data-testid="watched-accounts-add">
+                          Add an account
+                        </Button>
+                      ) : null}
+                    </div>
+                    {!watchedOk ? (
+                      <p className="mt-2 text-micro text-danger" data-testid="watched-accounts-error">
+                        An X handle has letters, digits and underscores only, at most 15 characters.
+                      </p>
+                    ) : null}
+                  </fieldset>
+                </Box>
+              )}
               {/* An own agent has no hosted model: the model and economy-mode fields are kept in its config for a switch back, and hidden. */}
               {own ? null : (
               <div className={"grid grid-cols-1 gap-4 @min-[40rem]:grid-cols-2"}>
