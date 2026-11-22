@@ -13,22 +13,27 @@ import { createHash } from 'node:crypto';
 import type { SupervisorContext } from './context.js';
 import { gateShadow } from './db/schema.js';
 
-/** The gates by their id in the design note: G1 repeat, G3 fee claims, G4 cross-agent, G5 number in evidence, G6 units. */
-export type GateId = 'G1' | 'G3' | 'G4' | 'G5' | 'G6';
+/**
+ * The gates by their id in the design note: G1 repeat, G3 fee claims, G4 cross-agent, G5 number in evidence, G6 units.
+ * G7 came after the note: the cap on a coin's own numbers posts (number-post-cap.ts).
+ */
+export type GateId = 'G1' | 'G3' | 'G4' | 'G5' | 'G6' | 'G7';
 export type GateMode = 'enforce' | 'shadow' | 'off';
 
 /** The setting of each gate (config.ts). */
-const GATE_SETTING = { G1: 'REPEAT_GATE', G3: 'FEE_CLAIM_GATE', G4: 'CROSS_AGENT_GATE', G5: 'NUMBER_GATE', G6: 'UNITS_GATE' } as const;
+const GATE_SETTING = { G1: 'REPEAT_GATE', G3: 'FEE_CLAIM_GATE', G4: 'CROSS_AGENT_GATE', G5: 'NUMBER_GATE', G6: 'UNITS_GATE', G7: 'NUMBER_POST_GATE' } as const;
 
 /**
  * The mode a gate runs in. A caller that holds only a part of the config (a test) gets the gate's default: `shadow`,
  * and `enforce` for the fee claims and the repeat gate. The repeat gate was enforced on 2026-11-22 after its week in
  * shadow: every one of its repeated-fact finds read by hand was a real repeat (docs/dev/behaviour-check.md section 7).
+ * The cap on numbers posts (G7) is enforced from its first day, by the owner's word: it is a count of posts, not a
+ * reading of them, and the coin it was built for had been posting nothing else for a week.
  */
 export function gateMode(ctx: { config?: Partial<Record<(typeof GATE_SETTING)[GateId], unknown>> | null }, gate: GateId): GateMode {
   const value = ctx.config?.[GATE_SETTING[gate]];
   if (value === 'enforce' || value === 'shadow' || value === 'off') return value;
-  return gate === 'G3' || gate === 'G1' ? 'enforce' : 'shadow';
+  return gate === 'G3' || gate === 'G1' || gate === 'G7' ? 'enforce' : 'shadow';
 }
 
 /**
@@ -53,7 +58,7 @@ export function gateTextHash(text: string): string {
 export interface GateHit {
   agentId: string;
   gate: GateId;
-  /** The head of the refusal: `repeat_fact`, `repeat_opener`, `repeat_record`, `fee_claim_false`, `similar_post`, `number_not_in_evidence`, `record_not_shown`, `unit_on_token_amount`. */
+  /** The head of the refusal: `repeat_fact`, `repeat_opener`, `repeat_record`, `fee_claim_false`, `similar_post`, `number_not_in_evidence`, `record_not_shown`, `unit_on_token_amount`, `number_post_cap`. */
   code: string;
   /** The `sv_actions` row of the publish (for a scheduled post at its send, the id of the scheduled row); null when the caller has none. */
   actionId?: string | null;

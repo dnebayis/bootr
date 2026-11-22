@@ -87,6 +87,9 @@ export function testConfig(overrides: Record<string, string> = {}): Config {
     // The repeat gate is enforced in production since 2026-11-22; the tests written before that post the same figure
     // twice to test something else, so they keep it in shadow. A test of the gate itself sets it (post-gates.test.ts).
     REPEAT_GATE: 'shadow',
+    // The cap on a coin's numbers posts is enforced in production; the tests written before it give a coin's figures in
+    // post after post to test something else, so they have it off. Its own tests set it (number-post-cap.test.ts).
+    NUMBER_POST_GATE: 'off',
     ...overrides,
   });
 }

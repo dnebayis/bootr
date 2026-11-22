@@ -102,6 +102,21 @@ export interface TurnEvidenceSource {
   ownOpen?: { observation?: Record<string, unknown> } | null;
 }
 
+/** The first observation of a stored turn: an own turn keeps it as it was opened, a hosted turn as its first user message. Null when it cannot be read. Pure. */
+export function observationOf(turn: TurnEvidenceSource | null | undefined): Record<string, unknown> | null {
+  if (!turn) return null;
+  let observation: Record<string, unknown> | null = turn.ownOpen?.observation ?? null;
+  if (!observation) {
+    const first = (Array.isArray(turn.messages) ? turn.messages : []).find((m) => m.role === 'user');
+    try {
+      observation = first?.content ? (JSON.parse(first.content) as Record<string, unknown>) : null;
+    } catch {
+      observation = null;
+    }
+  }
+  return observation && typeof observation === 'object' ? observation : null;
+}
+
 /**
  * The agent's own data of a turn, as numbers: the own-data sections of its first observation, the results of its own
  * read tools, and a `read_url` of a cited record's own link. A turn that cannot be read gives none. Pure.
@@ -110,16 +125,8 @@ export function turnEvidence(turn: TurnEvidenceSource | null | undefined, record
   const out: EvidenceNumber[] = [];
   if (!turn) return out;
   const messages = Array.isArray(turn.messages) ? turn.messages : [];
-  let observation: Record<string, unknown> | null = turn.ownOpen?.observation ?? null;
-  if (!observation) {
-    const first = messages.find((m) => m.role === 'user');
-    try {
-      observation = first?.content ? (JSON.parse(first.content) as Record<string, unknown>) : null;
-    } catch {
-      observation = null;
-    }
-  }
-  if (observation && typeof observation === 'object') for (const key of OWN_DATA_SECTIONS) if (key in observation) numbersIn(observation[key], out);
+  const observation = observationOf(turn);
+  if (observation) for (const key of OWN_DATA_SECTIONS) if (key in observation) numbersIn(observation[key], out);
   const links = new Set(records.map((r) => (r.link ? linkKey(r.link) : null)).filter((k): k is string => !!k));
   // The tool each result answers, and for a page read, the page.
   const calls = new Map<string, { name: string; url: string | null }>();

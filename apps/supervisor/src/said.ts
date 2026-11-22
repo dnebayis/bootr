@@ -209,6 +209,35 @@ export async function lastOriginals(ctx: Pick<SupervisorContext, 'db'>, agentId:
   return [...out.values()];
 }
 
+/**
+ * The agent's original posts since `since` (epoch ms), newest first; a thread is one, with the facts of all its posts.
+ * One indexed read, bounded by `maxRows` ledger rows (a day of posts at the highest budget is well under it).
+ * `exceptActionId` as in `lastOriginals`. For the cap on a coin's numbers posts (number-post-cap.ts), which counts by
+ * time where the repeat gate counts by posts.
+ */
+export async function originalsSince(ctx: Pick<SupervisorContext, 'db'>, agentId: string, since: number, exceptActionId?: string | null, maxRows = 400): Promise<SaidOriginal[]> {
+  const rows = await ctx.db
+    .select({ actionId: said.actionId, postId: said.postId, kind: said.kind, postedAt: said.postedAt, opener: said.opener, facts: said.facts })
+    .from(said)
+    .where(and(eq(said.agentId, agentId), ne(said.kind, 'reply'), gt(said.postedAt, new Date(since)), ...(exceptActionId ? [ne(said.actionId, exceptActionId)] : [])))
+    .orderBy(desc(said.postedAt))
+    .limit(maxRows);
+  const out = new Map<string, SaidOriginal>();
+  for (const r of rows) {
+    let original = out.get(r.actionId);
+    if (!original) {
+      original = { actionId: r.actionId, postId: null, postedAt: r.postedAt.getTime(), opener: '', facts: [] };
+      out.set(r.actionId, original);
+    }
+    if (r.kind === 'original') {
+      original.opener = r.opener;
+      original.postId = r.postId;
+    }
+    original.facts.push(...(Array.isArray(r.facts) ? r.facts : []));
+  }
+  return [...out.values()];
+}
+
 /** An original post of another agent, as the cross-agent gate reads it. */
 export interface SaidByOther {
   agentId: string;

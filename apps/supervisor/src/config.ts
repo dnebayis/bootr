@@ -247,6 +247,15 @@ export const configSchema = z
     REPEAT_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'enforce' : v), z.enum(['enforce', 'shadow', 'off'])),
     /** The repeat gate's opener part on its own (gate-shadow.ts `openerMode`): `shadow` while the rest of the gate refuses. */
     OPENER_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'shadow' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /**
+     * The cap on a coin's own numbers posts (number-post-cap.ts, gate G7): at most `COIN_NUMBER_POSTS_PER_DAY` original
+     * posts per rolling 24 hours state the coin's own market figures (holders, trades, volume, price or market cap,
+     * fees). The repeat gate lets a holder count that moved by one through as news, so a coin could post its numbers
+     * at every slot; this one counts the posts. Coin agents only, never a reply. `enforce` unless set otherwise.
+     */
+    NUMBER_POST_GATE: z.preprocess((v) => (v === '' || v === undefined ? 'enforce' : v), z.enum(['enforce', 'shadow', 'off'])),
+    /** Numbers posts a coin may make per rolling 24 hours; 0 = its figures go out in replies only. */
+    COIN_NUMBER_POSTS_PER_DAY: int(1, 0),
     /** How many of the agent's last original posts the repeat gate compares with. */
     REPEAT_WINDOW_ORIGINALS: int(20, 1),
     /** The cross-agent gate (rule R3): a post in substantially the words of another Bootr agent's post of the last `CROSS_AGENT_WINDOW_MS`. */

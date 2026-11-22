@@ -1,10 +1,11 @@
 /**
- * Four publish gates of docs/design/agent-behaviour.md section 6.3, each with its own setting (`off`, `shadow`,
+ * Four publish gates of docs/design/agent-behaviour.md section 6.3, and a fifth that came after the note (G7), each with its own setting (`off`, `shadow`,
  * `enforce`; `shadow` unless set otherwise): in shadow a gate writes what it would refuse to `sv_gate_shadow`
  * (gate-shadow.ts) and the post goes out untouched; enforced, the post is refused and the refusal names the rule and
  * what to change, as the question quota does. None of them calls a model, none throws into the publish path, and
  * together they cost two indexed reads of the said-ledger at most (none for a reply), plus one insert for a post a
- * gate finds. A post that cites a record costs four indexed reads more and one read of the stored turn.
+ * gate finds. A post that cites a record costs four indexed reads more and one read of the stored turn. A coin's
+ * original that states a market figure costs one indexed read more (G7).
  *
  * G1, repeat (`REPEAT_GATE`, rules R1 and R2), original posts only:
  *   - `repeat_fact`: the post states figures, and none of them is new. A figure is new when the agent's last
@@ -43,6 +44,12 @@
  * numbers that record or the agent's own data of the turn holds. Asked while the turn that wrote the post is in front
  * of the gate (a post sent or queued now, a post being scheduled), never again at a scheduled post's send.
  *
+ * G7, the cap on a coin's numbers posts (`NUMBER_POST_GATE`, `enforce` unless set otherwise; number-post-cap.ts): at
+ * most `COIN_NUMBER_POSTS_PER_DAY` original posts per rolling 24 hours state the coin's own market figures. Coin
+ * agents only, originals only, asked when a post goes out (not when it is scheduled). Asked before G1, so a numbers
+ * post past the day's count is told to write about something else, which is what it needs to hear, and not that one
+ * of its figures is a repeat.
+ *
  * G6, units (`UNITS_GATE`, rule R12): a currency sign on an amount of a token ("$0.0475 WETH"). Every agent, posts
  * and replies. Left alone: a dollar amount of a dollar stablecoin ("$5 USDC" says five dollars), a dollar figure
  * about a token ("$500 ETH volume"), and a figure of a thousand or more or with a k / m / b on it, which next to ETH
@@ -54,10 +61,12 @@ import type { AgentRow, SupervisorContext } from './context.js';
 import { gateMode, logGateHit, openerMode, type GateId } from './gate-shadow.js';
 import { ownWords } from './handed-words.js';
 import { numberProblem, turnEvidence } from './number-gate.js';
+import { NUMBER_POST_WINDOW_MS, marketFigures, numberPostCap, numberPostProblem, numbersPostsSince, ownMarketFiguresNow } from './number-post-cap.js';
 import { citationOf, recordRepeatProblem, recordRepeats } from './post-records.js';
 import { lastOriginals, saidByOthers, saidKeepDays, wordOverlap, wordSet, type SaidByOther, type SaidOriginal } from './said.js';
 
-type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config'>;
+/** `indexer`: the cap on numbers posts asks it for the coin's market data, and only for a post it would otherwise refuse. */
+type Ctx = Pick<SupervisorContext, 'db' | 'now' | 'log' | 'config'> & Partial<Pick<SupervisorContext, 'indexer'>>;
 
 /** What a gate found in one post: the head of the refusal, the refusal the agent reads, and what the shadow row keeps. */
 export interface GateProblem {
@@ -236,7 +245,7 @@ export interface GatedPost {
  * The refusal of the first ENFORCED gate that finds something in the post, or null. A gate in shadow writes its row
  * and the next one is asked; a gate that fails (a read that does not answer) is a warning and refuses nothing.
  */
-export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'config'>, post: GatedPost): Promise<string | null> {
+export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'config'> & Partial<Pick<AgentRow, 'token'>>, post: GatedPost): Promise<string | null> {
   const done = post.done ?? 'posted';
   const hit = async (gate: GateId, problem: GateProblem): Promise<string | null> => {
     // The opener part of G1 has a setting of its own: in shadow while the rest of the gate refuses.
@@ -269,6 +278,21 @@ export async function postGateRefusal(ctx: Ctx, agent: Pick<AgentRow, 'agentId' 
   if (units) return units;
 
   const ledger = saidKeepDays(ctx) > 0;
+
+  // G7: a coin's numbers post past the day's count. A post being scheduled is asked when it is sent: the day that
+  // counts is the one it goes out in.
+  const capped = await guarded('G7', async () => {
+    if (!ledger || post.kind !== 'original' || done === 'scheduled' || agent.config.platform === true) return null;
+    // A post with no market figure costs no read.
+    if (!marketFigures(post.parts).length) return null;
+    const cap = numberPostCap(ctx);
+    const earlier = await numbersPostsSince(ctx, agent.agentId, ctx.now() - NUMBER_POST_WINDOW_MS, post.actionId);
+    if (earlier.length < cap) return null;
+    // Whether the figures are the coin's own is read only now, for a post that would otherwise be refused.
+    const turn = await storedTurn(ctx, agent.agentId).catch(() => null);
+    return numberPostProblem(post.parts, earlier, cap, await ownMarketFiguresNow(ctx, agent.token, turn), done);
+  });
+  if (capped) return capped;
   // The records the post cites, read the forgiving way; none for a post without `record`, which then costs what it did.
   const cites = post.kind === 'original' ? recordIdsOf({ record: post.record }) : [];
   const repeat = await guarded('G1', async () => {
