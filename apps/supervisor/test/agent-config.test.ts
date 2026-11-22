@@ -76,6 +76,8 @@ describe('GET /internal/agents/:id/config', () => {
         openReplies: { questionsFromAnyone: true, perDay: 10 },
         // the quiet slot is on for a coin that never set it (docs/design/agent-behaviour.md rule R9)
         quietSlot: true,
+        // a coin follows nobody until its creator names somebody (watchlist.ts)
+        watchedAccounts: [],
         // no policy stored on the seeded row: nothing is installed to compare, the wanted set is today's always-on rules
         sessionRules: { current: [], wanted: ['claims.settleAndClaim', 'claims.claimQuote', 'swap.approveWeth', 'swap.swapWethToUsdc', 'treasury.fundSpender', 'treasury.withdrawWethForGas'], reinstallNeeded: false },
         revision: 1,

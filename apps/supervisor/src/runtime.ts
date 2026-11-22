@@ -504,7 +504,7 @@ export async function buildFirstObservation(ctx: SupervisorContext, agent: Agent
       ...platformNumbersSection(config, config.platform ? await cachedPlatformNumbers(ctx, config) : null, inputs.numbers ?? null),
       // One change that is live on Bootr, at most one a day (platform agent only): platform-updates.ts.
       ...platformUpdateSection(config, update),
-      // The people the host follows and their latest posts (platform agent only): watchlist.ts.
+      // The accounts the agent follows and their latest posts (the platform agent's list, a coin's own or the operator's for it; nothing for a coin that follows nobody): watchlist.ts.
       ...(await watchlistSection(ctx, agent, config)),
       // What happened, from Bootr's own dataset, as untrusted evidence (nothing unless the turn was handed records): records-section.ts.
       ...recordsSection(inputs.records ?? [], now),

@@ -6,7 +6,7 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, normalizeCreatorIdentity, relayModelId, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ReplyAudience, type ServicesPolicy } from '@bootr/agent-core';
+import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, MAX_WATCHED_ACCOUNTS, normalizeCreatorIdentity, relayModelId, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ReplyAudience, type ServicesPolicy } from '@bootr/agent-core';
 import { runnerOf, type Runner, type RunnerView } from '@bootr/shared/own-agent';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { and, eq, sql } from 'drizzle-orm';
@@ -102,6 +102,12 @@ export interface AgentConfigView {
    */
   quietSlot: boolean | null;
   /**
+   * The X accounts the creator asked the agent to follow (watchlist.ts): handles without the `@`, lower-case, at most
+   * `MAX_WATCHED_ACCOUNTS`; empty when the creator named none (the operator may still have set a list for the coin,
+   * `COIN_WATCHLISTS`, which this does not show). Null for the platform account, whose list is the deployment's.
+   */
+  watchedAccounts: string[] | null;
+  /**
    * The on-chain rules of the installed session key against the ones the powers in force imply (session-rules.ts):
    * `current` is what the key allows today, `wanted` what the config asks for, and `reinstallNeeded` says the tick's
    * rotation scan will rotate the key (at most once a day) so a power switched on here reaches the chain without
@@ -176,7 +182,20 @@ export async function xHoldOf(ctx: Pick<SupervisorContext, 'db' | 'now'>, agentI
 }
 
 /** The field names an update can touch (stored in the `config_updated` action and shown in the activity tape). */
-export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel' | 'comments' | 'reply audience' | 'quiet slot';
+export type ConfigField = 'instructions' | 'model' | 'powers' | 'cadence' | 'postsPerDay' | 'jobLines' | 'requireApproval' | 'imageModel' | 'imageStyle' | 'routing' | 'services' | 'bounties' | 'treasuryTurn' | 'judgeModel' | 'comments' | 'reply audience' | 'quiet slot' | 'watched accounts';
+
+const WATCH_HANDLE = /^[a-z0-9_]{1,15}$/;
+
+/** The stored `watchedAccounts`: well-formed handles only, lower-case, no repeats, at most `MAX_WATCHED_ACCOUNTS`. */
+export function watchedAccountsOf(config: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const raw of Array.isArray(config.watchedAccounts) ? config.watchedAccounts : []) {
+    const handle = typeof raw === 'string' ? raw.toLowerCase() : '';
+    if (WATCH_HANDLE.test(handle) && !out.includes(handle)) out.push(handle);
+    if (out.length >= MAX_WATCHED_ACCOUNTS) break;
+  }
+  return out;
+}
 
 /** The stored `comments` switch: on unless it is exactly false. */
 export function commentsOf(config: Record<string, unknown>): boolean {
@@ -265,6 +284,7 @@ export function configView(agent: AgentRow, xHold: XHoldView | null = null, xCon
     replyAudience: replyAudienceOf(config, replies.audience),
     openReplies: { questionsFromAnyone: replies.questionsFromAnyone, perDay: replies.perDay },
     quietSlot: config.platform === true ? null : quietSlotOf(config),
+    watchedAccounts: config.platform === true ? null : watchedAccountsOf(config),
     sessionRules: sessionRulesStatus(agent, config),
     revision: typeof config.revision === 'number' ? config.revision : 0,
     updatedAt: agent.updatedAt.toISOString(),
@@ -307,6 +327,8 @@ export interface ConfigUpdateBody {
   replyAudience?: unknown;
   /** The quiet slot, on or off (boolean): off posts at every slot whether or not anything is new. */
   quietSlot?: unknown;
+  /** The accounts the agent follows, all of them each time: at most `MAX_WATCHED_ACCOUNTS` X handles, with or without the `@`; an empty list follows nobody. */
+  watchedAccounts?: unknown;
 }
 
 /** One line of plain text for the style notes: controls and runs of whitespace collapsed. */
@@ -556,6 +578,25 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (body.quietSlot !== quietSlotOf(before)) {
       config.quietSlot = body.quietSlot;
       fields.push('quiet slot');
+    }
+  }
+
+  // Watched accounts: the whole list each time. Handles are taken with or without the `@` and stored lower-case without
+  // it; one that is not an X handle refuses the update, so a typo is seen and not silently dropped. An empty list
+  // removes the key, so a coin that follows nobody is stored exactly as a coin from before the field.
+  if (body.watchedAccounts !== undefined) {
+    if (before.platform === true) return reject(400, 'watched_accounts_not_offered', "the platform account's list is the deployment's (PLATFORM_WATCHLIST)");
+    if (!Array.isArray(body.watchedAccounts) || body.watchedAccounts.length > MAX_WATCHED_ACCOUNTS) return reject(400, 'invalid_watched_accounts', `watchedAccounts must be a list of at most ${MAX_WATCHED_ACCOUNTS} X handles`);
+    const handles: string[] = [];
+    for (const raw of body.watchedAccounts) {
+      const handle = typeof raw === 'string' ? raw.trim().replace(/^@/, '').toLowerCase() : '';
+      if (!WATCH_HANDLE.test(handle)) return reject(400, 'invalid_watched_accounts', 'each watched account is an X handle: letters, digits and underscores, at most 15 characters');
+      if (!handles.includes(handle)) handles.push(handle);
+    }
+    if (JSON.stringify(handles) !== JSON.stringify(watchedAccountsOf(before))) {
+      if (handles.length) config.watchedAccounts = handles;
+      else delete config.watchedAccounts;
+      fields.push('watched accounts');
     }
   }
 

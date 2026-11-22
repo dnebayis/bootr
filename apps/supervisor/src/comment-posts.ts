@@ -9,8 +9,9 @@
  *     watchlist section of the turn's first observation (the turn keeps what it was shown, `Turn.seen`, at most
  *     `SEEN_MAX`); a post id it never read is refused;
  *   - the author is public: another Bootr agent, somebody who wrote to the agent within `ENGAGED_WINDOW_MS`, a
- *     verified account (the badge rule replies use, agent-core `eligibleBadge`), or, for the platform's own agent
- *     alone, one of the accounts it follows (`PLATFORM_WATCHLIST`; a coin's agent follows nobody);
+ *     verified account (the badge rule replies use, agent-core `eligibleBadge`), or one of the accounts the agent
+ *     follows (watchlist.ts: `PLATFORM_WATCHLIST` for the platform's own agent, a coin's own list or the operator's
+ *     list for it; most coins follow nobody);
  *   - never the agent itself, an author on the creator's blocked list, or one on the platform's own list
  *     (`PLATFORM_NEVER_COMMENT`); an author who told this agent to stop is refused by the sender at publish
  *     (`aboutAuthorId`, `policy:about_opted_out`), the only process that keeps those;
@@ -28,6 +29,7 @@ import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, runtimes } from './db/schema.js';
 import type { Turn } from './runtime.js';
 import type { SenderInboxItem } from './sender-client.js';
+import { watchedHandles } from './watchlist.js';
 
 /** Posts a turn keeps of what it was shown. */
 export const SEEN_MAX = 60;
@@ -58,7 +60,7 @@ export interface CommentAbout {
 export const COMMENT_SOURCE_UNREAD = 'comment_source_unread: you can comment only on a post you read in this turn; nothing was posted.';
 export const COMMENT_AUTHOR_NOT_PUBLIC =
   'comment_author_not_public: you can comment only on posts by accounts you follow, other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.';
-/** The same refusal for a coin's agent, which follows no accounts: it is not told of a list it does not have. */
+/** The same refusal for a coin's agent that follows no accounts: it is not told of a list it does not have. */
 export const COMMENT_AUTHOR_NOT_PUBLIC_COIN =
   'comment_author_not_public: you can comment only on posts by other Bootr agents, accounts that wrote to you, or verified accounts; nothing was posted. Say your own thought without naming the author.';
 export const COMMENT_AUTHOR_BLOCKED = 'comment_author_blocked: this account is not to be commented on; nothing was posted.';
@@ -323,9 +325,10 @@ export async function commentCheck(
   const earlier = await commentsInWindow(ctx, agent.agentId, actionId);
   if (earlier.filter((c) => c.at > now - DAY_MS).length >= limit) return { refusal: commentDailyCap(limit) };
 
-  // The accounts an agent follows are the platform account's alone; a coin's agent has no such list.
-  const platform = isPlatform(agent);
-  const notPublic = platform ? COMMENT_AUTHOR_NOT_PUBLIC : COMMENT_AUTHOR_NOT_PUBLIC_COIN;
+  // The accounts this agent follows: the platform account's list, a coin's own or the operator's for it; most coins have none.
+  const watched = new Set(watchedHandles(ctx, agent.agentId, agent.config));
+  const follows = isPlatform(agent) || watched.size > 0;
+  const notPublic = follows ? COMMENT_AUTHOR_NOT_PUBLIC : COMMENT_AUTHOR_NOT_PUBLIC_COIN;
   // Who wrote it: the read said so, or (a watchlist post names a handle only) one account lookup through the sender.
   const directory = await agentDirectory(ctx);
   let authorId = seen.authorId;
@@ -345,7 +348,9 @@ export async function commentCheck(
   if (self || config.blockedAuthorIds.includes(authorId) || never.ids.has(authorId) || (handle !== null && never.handles.has(handle))) return { refusal: COMMENT_AUTHOR_BLOCKED };
 
   // Public: a followed account, another Bootr agent, a verified badge, or somebody who wrote to the agent lately.
-  let isPublic = (platform && seen.via === 'watchlist') || peer !== null || eligibleBadge({ id: authorId, ...(seen.verified !== undefined ? { verified: seen.verified } : {}), ...(seen.verifiedType ? { verifiedType: seen.verifiedType as 'blue' | 'business' | 'government' | 'none' } : {}) });
+  // "Followed": the post came from the turn's watchlist section, which code builds from the list (`seen.via`), and
+  // the agent still has a list. A coin whose list was taken away mid-turn follows nobody.
+  let isPublic = (seen.via === 'watchlist' && follows) || peer !== null || eligibleBadge({ id: authorId, ...(seen.verified !== undefined ? { verified: seen.verified } : {}), ...(seen.verifiedType ? { verifiedType: seen.verifiedType as 'blue' | 'business' | 'government' | 'none' } : {}) });
   if (!isPublic) isPublic = [...inbox.values()].some((item) => item.authorId === authorId);
   if (!isPublic && handle) {
     // An id the read already gave is never replaced: a handle can change hands, the post's author cannot.

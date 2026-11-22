@@ -29,18 +29,16 @@
  * written but the runtime's state. A read that fails keeps the slot.
  */
 import type { AgentConfig } from '@bootr/agent-core';
-import { inArray } from 'drizzle-orm';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { openRequests } from './creator-requests.js';
 import type { ServedRecord } from './dataset/serve.js';
 import { servedLately } from './dataset/served.js';
-import { cursors } from './db/schema.js';
 import { numbersDue, parseNumbersAt } from './platform-numbers.js';
 import { pendingUpdate } from './platform-updates.js';
 import { quietCeilingMs, quietTooLong, settledMark, type QuietOutcome, type QuietReason, type QuietSignals, type QuietState } from './quiet-slot.js';
 import { recordsInBeat, recordsOn } from './records-turn.js';
 import type { AgentState } from './runtime.js';
-import { parseWatchlist, WATCHLIST_READ_INTERVAL_MS } from './watchlist.js';
+import { parseWatchlist, watchlistNews } from './watchlist.js';
 import { digestDue, parseDigestAt } from './weekly-digest.js';
 
 const DAY_MS = 86_400_000;
@@ -72,23 +70,8 @@ export function platformPostDue(ctx: { config?: { PLATFORM_NUMBERS_AT?: unknown;
  */
 export async function watchlistHasNews(ctx: Ctx, config: Pick<AgentConfig, 'capabilities'>, since: number | null): Promise<boolean> {
   if (!config.capabilities.xRead) return false;
-  const handles = parseWatchlist(ctx.config.PLATFORM_WATCHLIST);
-  if (!handles.length) return false;
-  const now = ctx.now();
-  const rows = await ctx.db.select({ name: cursors.name, value: cursors.value }).from(cursors).where(inArray(cursors.name, handles.map((h) => `watchlist:${h}`)));
-  if (rows.length < handles.length) return true;
-  for (const row of rows) {
-    let entry: { at?: unknown; posts?: unknown } | null = null;
-    try {
-      entry = JSON.parse(row.value) as { at?: unknown; posts?: unknown };
-    } catch {
-      return true;
-    }
-    if (!entry || typeof entry.at !== 'number' || now - entry.at >= WATCHLIST_READ_INTERVAL_MS || now < entry.at) return true;
-    const times = (Array.isArray(entry.posts) ? (entry.posts as { at?: unknown }[]) : []).map((p) => (typeof p?.at === 'string' ? Date.parse(p.at) : NaN)).filter(Number.isFinite);
-    if (times.some((t) => since === null || t > since)) return true;
-  }
-  return false;
+  // The read itself is the one a coin's quiet slot makes for its own list (watchlist.ts `watchlistNews`).
+  return watchlistNews(ctx, parseWatchlist(ctx.config.PLATFORM_WATCHLIST), since);
 }
 
 /** What the platform account's quiet slot decided; `records`: what the seam found, for the turn the slot buys. */

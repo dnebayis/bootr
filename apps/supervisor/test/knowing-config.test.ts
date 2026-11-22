@@ -4,11 +4,11 @@
  * again by the owner, and a stored config that still has it is read with the field ignored. And the proof that every
  * limit of the knowing workstream at 0 leaves a Bootr agent's turn as it was before the round.
  */
-import { REPLY_AUDIENCES, agentConfigSchema, parseAgentConfig } from '@bootr/agent-core';
+import { MAX_WATCHED_ACCOUNTS, REPLY_AUDIENCES, agentConfigSchema, parseAgentConfig } from '@bootr/agent-core';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agentActivity } from '../src/activity.js';
-import { commentsOf, replyAudienceOf } from '../src/agent-config.js';
+import { commentsOf, replyAudienceOf, watchedAccountsOf } from '../src/agent-config.js';
 import { createApp } from '../src/api.js';
 import { agents, memories, postMetrics, runtimes, whatWorks } from '../src/db/schema.js';
 import { signRequest } from '../src/hmac.js';
@@ -153,6 +153,83 @@ describe('PUT /internal/agents/:id/config for comments and the reply audience', 
       await world.close();
       world = null;
     }
+  });
+});
+
+describe('PUT /internal/agents/:id/config for the accounts a coin follows', () => {
+  let world: TestWorld | null = null;
+  afterEach(async () => {
+    await world?.close();
+    world = null;
+  });
+  type Watching = { watchedAccounts: string[] | null; revision: number };
+  const stored = async (w: TestWorld) => (await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!;
+
+  it('a coin follows nobody by default, and its stored config carries no such key', async () => {
+    world = await makeWorld();
+    const seeded = await seedAgent(world);
+    expect('watchedAccounts' in seeded.config).toBe(false);
+    expect(watchedAccountsOf(seeded.config)).toEqual([]);
+    expect(((await (await api(world).get(PATH)).json()) as Watching).watchedAccounts).toEqual([]);
+    // the on-chain commitment and the parsed config are what they were before the field
+    expect('watchedAccounts' in agentConfigOf(seeded)!).toBe(false);
+  });
+
+  it('stores the list the creator sends, lower-case without the @, counts the revision, names it on the tape, and removes the key again for an empty list', async () => {
+    world = await makeWorld();
+    const seeded = await seedAgent(world);
+    const hashBefore = seeded.config.workerHash;
+    const before = (await (await api(world).get(PATH)).json()) as Watching;
+    const res = await api(world).put(PATH, { by: CREATOR, watchedAccounts: ['@Brian_Armstrong', 'base', 'BASE'] });
+    expect(res.status).toBe(200);
+    const after = (await res.json()) as Watching;
+    expect(after).toMatchObject({ watchedAccounts: ['brian_armstrong', 'base'], revision: before.revision + 1 });
+    let agent = await stored(world);
+    expect(agent.config.watchedAccounts).toEqual(['brian_armstrong', 'base']);
+    expect(agentConfigOf(agent)).toMatchObject({ watchedAccounts: ['brian_armstrong', 'base'] });
+    // nothing else moved: the worker commitment above all
+    expect(agent.config.workerHash).toBe(hashBefore);
+    expect(Object.keys(agent.config).filter((k) => !(k in seeded.config))).toEqual(['watchedAccounts']);
+    const runtime = (await world.db.query.runtimes.findFirst({ where: eq(runtimes.agentId, AGENT_ID) }))!;
+    expect((await agentActivity(world.ctx, agent, runtime)).find((i) => i.kind === 'config')?.summary).toBe('Config updated: watched accounts');
+    // the same list again is no change
+    expect((await api(world).put(PATH, { by: CREATOR, watchedAccounts: ['brian_armstrong', 'base'] })).status).toBe(409);
+    // an empty list follows nobody, and the stored config is again the one of a coin from before the field
+    const cleared = await api(world).put(PATH, { by: CREATOR, watchedAccounts: [] });
+    expect(((await cleared.json()) as Watching).watchedAccounts).toEqual([]);
+    agent = await stored(world);
+    expect('watchedAccounts' in agent.config).toBe(false);
+    const withoutRevision = (config: Record<string, unknown>) => Object.fromEntries(Object.entries(config).filter(([key]) => key !== 'revision'));
+    expect(withoutRevision(agent.config)).toEqual(withoutRevision(seeded.config));
+  });
+
+  it('refuses what is not a list of at most three X handles, anyone but the creator, and the platform account', async () => {
+    world = await makeWorld();
+    await seedAgent(world);
+    expect(MAX_WATCHED_ACCOUNTS).toBe(3);
+    for (const bad of ['brian_armstrong', ['a', 'b', 'c', 'd'], ['not a handle'], ['way_too_long_for_a_handle'], [7], [''], { 0: 'a' }]) {
+      const res = await api(world).put(PATH, { by: CREATOR, watchedAccounts: bad });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe('invalid_watched_accounts');
+    }
+    expect((await api(world).put(PATH, { by: '0x9999999999999999999999999999999999999999', watchedAccounts: ['base'] })).status).toBe(403);
+    expect('watchedAccounts' in (await stored(world)).config).toBe(false);
+    await world.close();
+    world = await makeWorld();
+    await seedAgent(world, { config: { platform: true } });
+    expect(((await (await api(world).get(PATH)).json()) as Watching).watchedAccounts).toBeNull();
+    const res = await api(world).put(PATH, { by: CREATOR, watchedAccounts: ['base'] });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('watched_accounts_not_offered');
+  });
+
+  it('a stored value that is not such a list is shown as none and never stops the agent', async () => {
+    world = await makeWorld();
+    const seeded = await seedAgent(world, { config: { watchedAccounts: ['a', 'b', 'c', 'd', 'e'] } });
+    expect(agentConfigOf(seeded)).not.toBeNull();
+    expect(agentConfigOf(seeded)!.watchedAccounts).toBeUndefined();
+    // the view reads what it can, cut at three
+    expect(((await (await api(world).get(PATH)).json()) as Watching).watchedAccounts).toEqual(['a', 'b', 'c']);
   });
 });
 

@@ -13,6 +13,10 @@
  *         fees and price, so with none of them since, the other figures only changed because a day-old trade left
  *         the 24-hour window);
  *       a milestone of the coin reached after that slot (the kinds `coinToday` names);
+ *   - an account it follows has something (a coin with a list only, watchlist.ts): a handle that was never read or is
+ *     due for a read (the reads happen in a turn, so skipping would also stop them), or a watched post newer than the
+ *     last slot. A coin with a list therefore gets a turn about every six hours at the least, which is what its list
+ *     is for: something to write about while its own numbers stand still;
  *   - a mention is waiting that may wake the agent;
  *   - the creator asked for something in the private chat that no turn has closed, or changed the agent's settings;
  *   - an X hold just ended (quota, credits, a refused account): the slot it held back is the agent's to use;
@@ -48,6 +52,7 @@ import type { AgentRow, SupervisorContext } from './context.js';
 import { openRequests } from './creator-requests.js';
 import { cachedPlatformFeedData, type PlatformFeedData } from './platform-feed.js';
 import type { AgentState } from './runtime.js';
+import { watchedHandles, watchlistNews } from './watchlist.js';
 
 /** The count must move by this share of itself, and by one holder at least. */
 export const QUIET_HOLDERS_SHARE = 0.01;
@@ -156,12 +161,13 @@ export type QuietReason =
   | 'holders_changed'
   | 'new_trade'
   | 'new_milestone'
+  // an account the agent follows has something (a coin with a list, and the platform account)
+  | 'watchlist'
   // the platform account's (platform-quiet.ts)
   | 'numbers_due'
   | 'digest_due'
   | 'records_unserved'
   | 'new_record'
-  | 'watchlist'
   | 'check_failed';
 
 export interface QuietInput {
@@ -252,6 +258,8 @@ export async function quietSlot(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'tok
     // The feed is asked last, and only when nothing else is new: the tick caches it, so this is seldom a read of its own.
     if (!reasons.length) reasons = whatIsNew({ mark, coin, milestoneAt: lastMilestoneAt(await cachedPlatformFeedData(ctx).catch(() => null), agent, now) });
     if (reasons.length) return { skipped: false, reasons, market };
+    // The accounts it follows, asked last of all: one read of `sv_cursors`, and none for a coin without a list.
+    if (await watchedNews(ctx, agent, mark?.at ?? null)) return { skipped: false, reasons: ['watchlist'], market };
     state.lastSlotSkippedAt = now;
     // A record of a turn that never used its slot is not what the agent was last shown: it goes with the slot.
     state.quietSeen = null;
@@ -262,6 +270,12 @@ export async function quietSlot(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'tok
     ctx.log.warn({ agentId: agent.agentId, err: err instanceof Error ? err.message : String(err) }, 'quiet slot: the check failed; the slot is kept');
     return { skipped: false, reasons: ['coin_unknown'] };
   }
+}
+
+/** Whether a coin's own list has something for a turn (`watchlistNews`); false for a coin that follows nobody or cannot read X. */
+async function watchedNews(ctx: Ctx, agent: Pick<AgentRow, 'agentId' | 'config'>, since: number | null): Promise<boolean> {
+  if ((agent.config.capabilities as { xRead?: unknown } | undefined)?.xRead !== true) return false;
+  return watchlistNews(ctx, watchedHandles(ctx, agent.agentId, agent.config), since, agent.agentId);
 }
 
 /**

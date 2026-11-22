@@ -347,6 +347,13 @@ export const configSchema = z
      * agent as a `watchlist` section. Empty = the default list (`bootrfun,base,jessepollak,clanker_world`).
      */
     PLATFORM_WATCHLIST: z.preprocess((v) => (v === '' || v === undefined ? 'bootrfun,base,jessepollak,clanker_world' : v), z.string().max(2000)),
+    /**
+     * X accounts a coin's agent follows when its creator named none in the console (watchlist.ts `parseCoinWatchlists`):
+     * `agentId:handle|handle|handle`, entries comma-separated, `@` optional, at most three handles each, for example
+     * `1170231:brian_armstrong|base,123:foo`. Used only while the agent's own config has no list (`watchedAccounts`):
+     * a creator's list always wins. Empty = no agent gets a list from here.
+     */
+    COIN_WATCHLISTS: z.preprocess((v) => (v === undefined ? '' : v), z.string().max(8000)),
     MAX_TOOL_STEPS: int(8, 1),
     /**
      * Scheduled posts (scheduled.ts; docs/design/agent-tools-2.md sections 5 and 13): the agent decides a post now and
