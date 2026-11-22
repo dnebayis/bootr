@@ -23,6 +23,22 @@ describe('agentConfigSchema', () => {
     expect(agentConfigSchema.safeParse({ ...baseConfig, imageStyle: { notes: 'x'.repeat(201) } }).success).toBe(false);
   });
 
+  it('takes an optional list of watched accounts, and a config without one parses to the object it always did', () => {
+    const plain = parseAgentConfig(baseConfig);
+    // Absent stays absent: no key is added, so whatever is built from a stored config (a prompt, a digest) does not move.
+    expect('watchedAccounts' in plain).toBe(false);
+    expect(JSON.stringify(parseAgentConfig({ ...baseConfig, watchedAccounts: undefined }))).toBe(JSON.stringify(plain));
+    expect(parseAgentConfig({ ...baseConfig, watchedAccounts: ['brian_armstrong', 'base'] }).watchedAccounts).toEqual(['brian_armstrong', 'base']);
+    // A stored value that is not such a list reads as none and never stops the config from parsing.
+    for (const bad of [['a', 'b', 'c', 'd'], ['@Brian'], 'base', [7], null]) {
+      const parsed = agentConfigSchema.safeParse({ ...baseConfig, watchedAccounts: bad });
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data.watchedAccounts).toBeUndefined();
+    }
+    // The key a coin could store until 2026-11-13 stays ignored.
+    expect('watchlist' in parseAgentConfig({ ...baseConfig, watchlist: ['base'] })).toBe(false);
+  });
+
   it('rejects duplicate owner rule ids and bad handles', () => {
     expect(() =>
       parseAgentConfig({ ...baseConfig, ownerRules: [{ id: 'a', text: 'x', enabled: true }, { id: 'a', text: 'y', enabled: true }] }),

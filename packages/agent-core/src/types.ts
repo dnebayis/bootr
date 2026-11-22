@@ -163,6 +163,8 @@ export type ImageStyle = z.infer<typeof imageStyleSchema>;
 /** Who gets a reply (`agentConfigSchema.replyAudience`). */
 export const REPLY_AUDIENCES = ['verified', 'own_threads'] as const;
 export type ReplyAudience = (typeof REPLY_AUDIENCES)[number];
+/** The most X accounts a coin's agent follows (`agentConfigSchema.watchedAccounts`, and the operator's `COIN_WATCHLISTS`). */
+export const MAX_WATCHED_ACCOUNTS = 3;
 
 export const agentConfigSchema = z
   .object({
@@ -230,6 +232,15 @@ export const agentConfigSchema = z
      * Absent = the deployment's default (`REPLY_AUDIENCE_DEFAULT`).
      */
     replyAudience: z.enum(REPLY_AUDIENCES).optional(),
+    /**
+     * X accounts a coin's agent follows: handles without the `@`, lower-case, at most `MAX_WATCHED_ACCOUNTS`. Their
+     * latest posts reach the agent as the `watchlist` observation section (apps/supervisor/src/watchlist.ts), so it
+     * has something to write about beside its own coin's numbers. Absent = none, and a stored config without the
+     * field reads exactly as it did before the field existed. A stored value that is not such a list reads as none
+     * too (`catch`): a config must never stop parsing, and with it the agent, over a list of accounts to read.
+     * Not the `watchlist` key a coin could store until 2026-11-13: a config that still carries that one keeps it ignored.
+     */
+    watchedAccounts: z.array(z.string().regex(/^[a-z0-9_]{1,15}$/, 'expected a lower-case X handle without @')).max(MAX_WATCHED_ACCOUNTS).optional().catch(undefined),
     /** Bumped by the control plane whenever anything above changes. */
     revision: z.number().int().min(0).default(0),
   })
