@@ -190,7 +190,18 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    pulls the treasury turn forward. The picture section reaches the decide model, `suggested` is an instruction,
    `draft_intent` can plan a picture, and only strangers' picture asks are refused. With Bounties on, the bounties
    section suggests a job after 2 days without one, and the treasury turn's own wake is capped at two intervals. Watch
-   after deploy: pictures per day against the cap, jobs posted, and requests closed versus expired.
+   after deploy: pictures per day against the cap, jobs posted, and requests closed versus expired. **Bounties fixes,
+   built 2026-11-23** (not deployed; migration `0019_bounty_judge_retry`, three nullable columns on `sv_bounty_jobs`;
+   apps/supervisor/README.md "Bounties", design note 3.3 "Changed 2026-11-23"): the first job with entries on
+   production (seven, all eligible) closed as "nothing paid" because the judge's answer was refused as
+   `malformed_answer`. Now the judge has 2000 output tokens and a tolerant parser, is asked once more under a second
+   key when its answer is no ruling (two thoughts a job at most), and when both fail the creator picks an entry in the
+   review queue (`bounty_pick`) instead of the job closing in public; a job that closed that way in the last seven days
+   is judged once more by the sweep; a paid job is also announced in a template post of the agent's own; and
+   `bounty_post` refuses a web page, a site, an app or an article as the work, a `link` job that names no data, a vague
+   task or criterion, and a repeat of a job from the last 30 days. Watch after deploy: the sweep's `rejudged` count and
+   the proposal it leaves for the fee-split job, `judge_raw` on any job that needed its second thought, and whether the
+   treasury turn's next jobs are specific.
 4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
 5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
    (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator

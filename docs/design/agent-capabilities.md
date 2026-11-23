@@ -342,7 +342,9 @@ job's numbered criteria as written at post time and the entries as artefacts. Ou
 `perCriterion[entry][criterion] = pass | fail | insufficient_evidence` (Claus's three-valued verdict, V,
 https://claus.si/docs/jobs), `reason` of at most 200 characters describing the winning artefact. Code checks the
 answer: the winner is in range, every criterion is `pass` for it, the reason passes the publish gate (no address, no
-cashtag, no link). Any failure means no winner and the job closes unpaid; the judge is never asked twice for one job.
+cashtag, no link). A ruling refused for what it rules means no winner and the job closes unpaid. An answer that is
+no ruling at all (it cannot be read as the schema, or the thought failed) is asked for once more under a second key,
+two paid thoughts a job at most; when both fail the creator picks by hand (see "Changed 2026-11-23" below).
 
 **The injection surface, channel by channel.**
 
@@ -423,6 +425,32 @@ cancelled, expired or failed; the 48 h pay grace runs from the proposal and with
 MB is not considered (no re-encoding library without a new dependency: the bytes are sniffed as PNG, JPEG or WEBP
 instead); the `bounties` power asks nothing of the session key until stage B registers its provider. The web side (the
 console switch and caps, the job card, the payout item with a tx-hash field) follows.
+
+**Changed 2026-11-23, after the first jobs on production (apps/supervisor/README.md "Bounties").** What happened: the
+platform agent's fee-split picture job drew seven eligible entries, the judge's one thought came back, code refused the
+answer as `malformed_answer`, and the job closed in public with "No entry met the job; nothing paid.", which was not
+true. The answer was kept nowhere a reader could find it; the likeliest cause is the 700-token output budget, which a
+model that writes about seven pictures before its JSON runs past. And the treasury turn had asked for the same picture
+three times and for "a public web page that explains ..." at 0.30 USDC three times, each with no entry. What changed:
+
+- **The judge**: 2000 output tokens; a parser that reads a fenced or prefaced object and loosely spelled entry keys
+  and marks without loosening who may win; a second thought under a second key when the first gave no usable answer
+  (never a third); the refused answer kept on the job row.
+- **No false public close**: when both thoughts fail, the job goes to the creator's queue as a pick (the entries with
+  their links and addresses; the creator pays one by hand and records the transaction and the entry's number, or pays
+  none). This keeps the property the section rests on: the judge names an entry and code takes the payee from the entry
+  record; here the creator names the entry, and code still takes the payee from the record.
+- **A second ruling** for a job that closed that way in the last seven days and has had one thought, from its stored
+  entries, once, with no second "nothing paid" in public.
+- **The payment is said twice**: the template reply under the winning entry, as before, and one template post of the
+  agent's own with the job, the amount and the transaction link. It names nobody and links the winning entry, which
+  the job post asked leave to repost.
+- **What a job may ask for**: a picture, or data that exists or is quick to put together and comes as a link (a CSV, a
+  gist, a sheet, a query, an onchain fact with its source). Not a web page, a site, an app or an article: nobody builds
+  one for a dollar. A task has to name its subject and its output, criteria have to be checkable from the artefact, and
+  a job in substantially the words of one from the last 30 days is refused with the earlier job's outcome. The
+  deliverable kinds stay `image` and `link`; `link` now means a link to data. The treasury turn is shown which of its
+  jobs drew no entries.
 
 **Session rules** (`session-rules.ts`, provider `bounties`, three rules). `BootrCallPolicy` v2 with 14 rules is
 required: the always-on set is 6, Trade's set is 8 (it replaces `swap`'s two), so Bounties lands at 9 alone or 11 with

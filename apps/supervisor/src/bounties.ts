@@ -71,7 +71,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-
 import { encodeAbiParameters, formatUnits, getAddress, isAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
-import { JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, JUDGE_MAX_THOUGHTS, JUDGE_RETRY_CODES, judgeJob, type JudgeEntry, type JudgeInvalidCode, type JudgeThought, type JudgeVerdict } from './judge.js';
+import { JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, JUDGE_MAX_THOUGHTS, JUDGE_RETRY_CODES, judgeJob, type JudgeEntry, type JudgeThought, type JudgeVerdict } from './judge.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { isOwn, OWN_AGENT_MARK, ownSetting } from './own/registry.js';
@@ -1433,7 +1433,10 @@ export async function decideBountyApproval(ctx: SupervisorContext, agent: AgentR
     if (!picked) return { ok: false, status: 400, error: 'entry_required', message: 'approving this item needs entry, the number of the entry you paid (one of the entries listed)' };
     const [entryRow] = await ctx.db.select().from(bountyEntries).where(and(eq(bountyEntries.jobId, job.id), eq(bountyEntries.considered, true), eq(bountyEntries.n, n))).limit(1);
     if (!entryRow?.payee || entryRow.payee !== picked.payee) return { ok: false, status: 409, error: 'bounty_payee_mismatch', message: 'the item and the entry record disagree on the payee' };
-    const { invalid, manualPick: _asked, ...kept } = (job.verdict ?? {}) as Record<string, unknown>;
+    const kept = { ...((job.verdict ?? {}) as Record<string, unknown>) };
+    const invalid = kept.invalid;
+    delete kept.invalid;
+    delete kept.manualPick;
     paidPatch = { payee: entryRow.payee, verdict: { ...kept, winner: n, pickedBy: 'creator', ...(typeof invalid === 'string' ? { judgeInvalid: invalid } : {}) } };
     replyId = entryRow.replyId;
     reason = '';

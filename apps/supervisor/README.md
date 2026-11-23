@@ -578,10 +578,25 @@ the agent's own model, or on `config.judgeModel` when the console pinned a cheap
 criteria and the entries as artefacts (a picture as an `image_url` part, a page as a bounded excerpt) and nothing of
 the agent's persona or situation. The answer is one JSON object checked in code: the winner is an entry, every
 criterion is `pass` for it, the reason is at most 200 characters and passes the publish gate with no address, cashtag,
-link or handle; anything else is `winner: null` with an `invalid` code and the job closes unpaid. The thought's
-idempotency key is derived from the job id (`judge:<agentId>:<digest>`), so a second call for the same job replays
-the stored answer through `relayRequest` and never pays again; it is logged as a `thought` with `role: 'judge'`.
-`src/bounties.ts` calls it once per closed job.
+link or handle; anything else is `winner: null` with an `invalid` code. The output budget is 2000 tokens
+(`JUDGE_MAX_OUTPUT_TOKENS`; it was 700 until a seven-entry job ended as `malformed_answer`). The parser is tolerant
+about the wrapping and the spelling and strict about the ruling: it reads the object out of a code fence or from after
+a line of prose, entry keys written `3`, `"3"`, `"Entry 3"` or `"#3"`, marks in any case (`"PASS"`, `"Insufficient
+evidence"`), a winner written `"Entry 3"`; every entry must still be marked for every criterion with one of the three
+marks, and the winner must still be an entry with `pass` on every criterion.
+
+**Two thoughts at most per job, ever.** The idempotency key is derived from the job id and the attempt
+(`judgeKey(agentId, jobId, attempt)`: `judge:<agentId>:<digest>`; attempt 1 is the key every earlier job was paid
+under), so a second call for the same job replays the stored answers through `relayRequest` and never pays again. A
+second thought is bought only when the first gave no usable answer (`malformed_answer`: the text was no verdict;
+`thought_failed`: the relay gave none), and under its own key, because the relay replays what it stored for the first.
+A ruling refused for what it rules (`winner_out_of_range`, `winner_not_passing`, a bad reason) is an answer and is
+final after one thought; a thought whose outcome is unknown (`thought_pending`) is never replaced. Each thought is
+logged as `thought` with `role: 'judge'` and its `attempt`. What the model wrote when code refused it comes back in
+`refused` (cut to 4000 characters, with the provider's finish reason and output token count; `length` means the budget
+ran out) and `src/bounties.ts` keeps it on the job row as `judge_raw`; it is model output and is never logged or shown
+on a read route. No reasoning parameter is sent: the relay's request schema would drop it, and a model's own reasoning
+tokens are covered by the larger budget.
 
 ## Bounties (stage A, `src/bounties.ts`)
 
@@ -600,7 +615,17 @@ turn on) with the policy block `config.bounties = { dailyCapMicroUsdc (default 5
 checks, in code and in order: the power, the amount, the window, the day's headroom (a fixed UTC-day grid; every job
 not cancelled, expired or failed since midnight counts), the open-job cap, then the task and criteria (none of buy,
 post, tweet, promote, shill, follow, like, retweet and their inflections; no address; no cashtag but the agent's own)
-and the whole post through the publish gate and the account's post length. The row is written (`draft`; the
+and what a job may ask for (`taskRuleProblem`): never something to build, design, write or publish (a web page, a
+site, an app, an article, a dashboard, a thread: `bounty_asks_to_build`), a `link` job only for data that exists or is
+quick to put together (a CSV, a gist, a sheet, a table or a list, a Dune or similar query, an onchain fact with its
+source: `bounty_link_needs_data`), a task of at least six words that names its subject and its output
+(`bounty_task_too_vague`) and criteria a judge can check (`bounty_criterion_not_checkable` for "good", "creative",
+"high quality" and the like); then the whole post through the publish gate and the account's post length; then
+`repeatedJobProblem`: a task in substantially the words of one of the agent's jobs of the last 30 days that reached
+the public or still waits to (half of the words in common, or three quarters of the shorter task inside the longer;
+format words such as "image", "square", "csv" are not counted) is refused as `bounty_repeats_earlier_job`, naming the
+earlier job, its date and how it ended. `deliverable` stays `image | link`: a `link` is now a link to data, and old
+rows read as they did. The row is written (`draft`; the
 reservation starts here); with `review` on the job text goes to the approval queue as a `bounty_job` item and waits;
 otherwise the job post goes out through the sender as one of the agent's original posts (the platform rhythm and the X
 quota apply: a closed slot or a used-up quota keeps the job a `draft` with `publishNotBefore`, the sweep posts it later
@@ -611,7 +636,10 @@ link>", where the link is `<SITE_URL>/token/<coin>#bounty-<shortId>` and `shortI
 characters of the job id (`keccak256(kernel, nonce, taskHash)`): the gate refuses any 32-byte hex in a post as secret
 material, so no post carries the full id. **`bounty_cancel({jobId})`** closes a draft or an open job ("Cancelled by the
 agent." under the job post) and releases its reservation. **`bounty_list({})`** (both turns) lists the agent's jobs
-with status, counts and verdicts, never an entry. Replies in an open job's conversation are entries, not mentions:
+with status, counts, an `outcome` in words and verdicts, never an entry, and `drewNoEntries`: the jobs of the last 30
+days that were posted and got no reply, with a line telling the turn not to ask them again. The treasury observation's
+`bounties` section carries the same list, and its suggestion shows three specific jobs (a CSV, a labelled square
+image, a Dune query) instead of "a page that explains". Replies in an open job's conversation are entries, not mentions:
 `inboxViews` marks them ineligible as `bounty_entry`, `closeBountyEntries` closes them at the sender before a social
 turn starts, the tick buys no wake for them, and the social observation carries a `bountyEntries` section (the agent
 never names a winner or answers an entry; the social prompt is unchanged).
@@ -623,14 +651,46 @@ the creator, an account at least 30 days old, one entry per author, a shared add
 creator and the spender are never paid, a payee inside the cooldown is not; then the first 12 eligible by time whose
 artefact reads are `considered`: a picture of at most 2 MB that sniffs as PNG, JPEG or WEBP, fetched from X's media URL
 with no redirects, or a page excerpt of at most 6000 characters under the `public-fetch` rules; a repeated picture, an
-unreadable artefact or a redirect is marked and the next eligible entry takes the place), asks `judgeJob` once (its key
-is the job id), stores the verdict with `deliveryHash` (sha256 of the numbered bundle) and `reasonHash`, and either
-closes the job `no_winner` ("No entry met the job; nothing paid." under the job post) or moves it to `proposed` with a
-`bounty_payout` item in the approval queue carrying the job, the amount, the payee (from the entry row, never from the
-judge's text), the reason and the entry's link. Approving the item needs `txHash` in the body (the creator's own paying
-transaction, checked as 32-byte hex): the job becomes `paid` and the template reply goes under the winning entry
-("Paid <amount> USDC for this entry. Why: <reason>. <Basescan tx link>"); rejecting closes it `no_winner` with "Nothing
-paid." in public. A proposal nobody acts on in 48 hours expires (`expired`, the item withdrawn, "Nothing paid."). A
+unreadable artefact or a redirect is marked and the next eligible entry takes the place), asks `judgeJob` (two
+thoughts at most, see above), stores the verdict with `deliveryHash` (sha256 of the numbered bundle), `reasonHash` and
+`thoughts` (every paid thought the job had), and either closes the job `no_winner` ("No entry met the job; nothing
+paid." under the job post) or moves it to `proposed` with a `bounty_payout` item in the approval queue carrying the
+job, the amount, the payee (from the entry row, never from the judge's text), the reason and the entry's link.
+Approving the item needs `txHash` in the body (the creator's own paying transaction, checked as 32-byte hex): the job
+becomes `paid`, the template reply goes under the winning entry ("Paid <amount> USDC for this entry. Why: <reason>.
+<Basescan tx link>") and the payment is announced in a post of the agent's own (below); rejecting closes it
+`no_winner` with "Nothing paid." in public.
+
+**When the judge gives no ruling** (both thoughts ended `malformed_answer` or `thought_failed`), the job is not closed
+in public as if no entry had met it. It becomes `proposed` with no payee and a **`bounty_pick`** item in the queue
+(`bounty.kind: 'pick'`, `candidates: [{n, payee, entryUrl, artefactUrl}]`, `why`, `txHashRequired`, `entryRequired`),
+its verdict marked `manualPick: true` and the refused answers in `judge_raw`. The creator looks at the entries, pays one
+by hand and approves with `{txHash, entry: <n>}`: the payee is read from that entry's row, the verdict gets
+`winner: n, pickedBy: 'creator'` (the judge's code moves to `judgeInvalid`), and the job runs on as a paid payout does.
+Rejecting closes it `no_winner` with "Nothing paid."; unanswered for 48 hours it expires like any proposal.
+
+**The second ruling** (`rejudgeJob`, sweep step 2c, one job per sweep). A job that is `no_winner` with
+`verdict.invalid` `malformed_answer` or `thought_failed`, closed inside the last seven days (`REJUDGE_WINDOW_MS`), with
+fewer than two thoughts on record (a verdict from before `thoughts` existed counts as one), entries considered, not an
+own coin's and not yet marked `rejudged`, is judged once more from its stored entry rows: X is not read again, each
+considered entry's artefact is fetched under the same rules as at the close, and a picture whose bytes are no longer
+the ones pinned on the row is left out. When the bundle is the one the first ruling was given on (same
+`deliveryHash`), the first thought is replayed for free (its stored answer may hold under today's parser, and is kept
+in `judge_raw` if it does not) before the second is bought; when it is not, only the second key is asked. A winner
+becomes a normal `bounty_payout` proposal; two thoughts with no usable answer become the creator's pick; anything else
+leaves the job `no_winner`. The verdict is marked `rejudged: {at, outcome}` either way, so it happens once. The
+"nothing paid" reply already under the job post stays and is never sent a second time: `closeReply` skips a job that
+carries `closeReplyId`, whatever closes it later (a decline, an expiry).
+
+**The payout post** (`publishPayoutPost`, `payoutPostText`). Besides the reply under the winning entry, a paid job is
+announced in one original post of the agent's own, written by code: "Bounty paid: <amount> USDC to the winning entry.
+The job: <task>. Payment: <Basescan tx link> Entry: <link to the winning reply>". It names nobody (an entry row keeps
+an author id, no handle, and a mention needs a source credit); the entry link is what the job post asked leave for.
+On an account limited to 280 characters the entry link is dropped first, then the task is cut. It is keyed
+`bounty:<jobId>:payout` at the sender and recorded as `payout_post_id`, so it goes out once; it passes the publish
+gate (the platform rules for the platform agent) and waits for a posting slot, quiet hours or the X quota like any
+original post: the sweep (step 4) tries again until 48 hours after the payment (`PAYOUT_POST_WINDOW_MS`). A text the
+gate refuses or the sender rejects is recorded in `payout_post_error` and not tried again. A proposal nobody acts on in 48 hours expires (`expired`, the item withdrawn, "Nothing paid."). A
 collection that fails is tried again next tick, five times, then the job fails and closes unpaid. The reply text is
 read for the address and discarded: no row and no model ever holds it. Every step logs `module: 'bounties'`, `jobId`,
 `status` and counts, never a text or an address.
@@ -640,11 +700,16 @@ read for the address and discarded: no row and no model ever holds it. Every ste
 criteria, deliverable, amountUsdc, amountMicroUsdc, createdAt, postedAt, closesAt, postUrl, pageUrl, pageText,
 entries: {received, eligible, considered, ineligible: {<reason>: n}}, verdict: {winner, winningEntryUrl, perCriterion,
 reason, invalid, deliveryHash, reasonHash, judgedAt} | null, payment: {status: 'proposed' | 'paid', payee, amountUsdc,
-txHash, txUrl, replyUrl, paidAt} | null, closedAt, closeReplyUrl}`; never an author id, a reply's text or an ineligible
-entry's address. Statuses: `draft`, `open`, `judging`, `proposed`, `paid`, `no_winner`, `cancelled`, `expired`,
+txHash, txUrl, replyUrl, paidAt, postUrl?} | null, closedAt, closeReplyUrl}`; never an author id, a reply's text, an
+ineligible entry's address or `judge_raw`. Statuses: `draft`, `open`, `judging`, `proposed`, `paid`, `no_winner`, `cancelled`, `expired`,
 `failed`. The activity tape shows one `bounty` row per job event (posted, judged, paid, no winner, cancelled, expired)
-in plain words with no address. Approval items of the two bounty kinds carry a `bounty` block (`kind`, `jobId`, `task`,
-`amountUsdc`; for a payout `payee`, `reason`, `entryUrl`, `txHashRequired: true`).
+in plain words with no address. Approval items of the three bounty kinds carry a `bounty` block (`kind`, `jobId`,
+`task`, `amountUsdc`; for a payout `payee`, `reason`, `entryUrl`, `txHashRequired: true`; for a pick `candidates`,
+`why`, `txHashRequired: true`, `entryRequired: true`).
+
+Migration `0019_bounty_judge_retry` adds three nullable columns to `sv_bounty_jobs`: `judge_raw`, `payout_post_id`,
+`payout_post_error`. To read why a ruling failed: `select judge_raw from sv_bounty_jobs where id = '<jobId>'`; the
+whole response of the first thought is also in `sv_inference.response` under `judgeKey(agentId, jobId)`.
 
 ## X holds and the post length
 

@@ -766,7 +766,11 @@ describe('a judge that gives no usable answer: the second thought, the creator\'
    */
   async function asClosedByOldCode(w: TestWorld, jobId: string, over: { closedAt?: number; keepThoughts?: boolean } = {}) {
     const [row] = await w.db.select().from(bountyJobs).where(eq(bountyJobs.id, jobId));
-    const { thoughts, manualPick: _pick, rejudged: _again, ...rest } = row!.verdict as Record<string, unknown> & { thoughts?: { key: string }[] };
+    const rest = { ...(row!.verdict as Record<string, unknown> & { thoughts?: { key: string }[] }) };
+    const thoughts = rest.thoughts;
+    delete rest.thoughts;
+    delete rest.manualPick;
+    delete rest.rejudged;
     await w.db.delete(approvals).where(eq(approvals.id, pickApprovalId(jobId)));
     if (!over.keepThoughts) await w.db.delete(inferenceTable).where(eq(inferenceTable.idempotencyKey, judgeKey(AGENT_ID, jobId, 2)));
     const at = new Date(over.closedAt ?? w.ctx.now());
