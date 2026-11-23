@@ -1485,11 +1485,11 @@ function buildBounties(t: Token): BountyJob[] {
   return [
     job({ id: openId, status: 'open', task: `A picture of an owl reading a ledger, in the style of the $${t.symbol} coin image.`, criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No words on the picture'], deliverable: 'image', micro: '500000', createdAt: at(2 * H + 120), postedAt: at(2 * H), closesAt: at(-4 * H), postUrl: postUrl(21) }),
     // Written while the creator's review switch is on; shown, and its text queued, only then (`agentBounties`, `agentApprovals`).
-    job({ id: draftId, status: 'draft', task: 'A short public page that lists this coin’s milestones from its launch to today, with dates.', criteria: ['Every milestone carries a date', 'Nothing about price', 'Links the coin page as its source'], deliverable: 'link', micro: '300000', createdAt: at(900), postedAt: null, closesAt: at(-6 * H), postUrl: null }),
+    job({ id: draftId, status: 'draft', task: 'A sheet of this coin’s milestones from its launch to today, one row per milestone with its date and its source.', criteria: ['Every milestone carries a date', 'Nothing about price', 'Links the coin page as its source'], deliverable: 'link', micro: '300000', createdAt: at(900), postedAt: null, closesAt: at(-6 * H), postUrl: null }),
     job({
       id: proposedId,
       status: 'proposed',
-      task: 'A public page, in your own words, that explains how this coin’s swap fee is split and who can claim each share.',
+      task: 'A table of how this coin’s swap fee is split: one row per share, with who can claim it and the source.',
       criteria: ['Names all four shares', 'Says the split is locked at launch', 'Links the coin page or Basescan as its source'],
       deliverable: 'link',
       micro: '400000',

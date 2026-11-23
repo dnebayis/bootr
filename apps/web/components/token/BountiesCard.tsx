@@ -115,6 +115,7 @@ function Job({ job, now, token }: { job: BountyCardJob; now: number; token: Pick
           </XLink>
         ) : null}
         {job.payment?.replyUrl ? <XLink href={job.payment.replyUrl}>Payment reply</XLink> : null}
+        {job.payment?.postUrl ? <XLink href={job.payment.postUrl}>Payment post</XLink> : null}
         {job.closeReplyUrl && !job.payment?.replyUrl ? <XLink href={job.closeReplyUrl}>Closing reply</XLink> : null}
         {job.verdict?.judgedAt && !unjudged ? (
           <span className="font-mono text-mute tabular" title={job.verdict.deliveryHash ? `What the judge saw: ${job.verdict.deliveryHash}` : undefined}>

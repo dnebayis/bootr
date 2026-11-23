@@ -443,6 +443,36 @@ describe('sanitizeBounties', () => {
     expect(sanitizeApproval({ id: 'apr_p', kind: 'post', text: 'hello', status: 'pending_approval', createdAt: base.createdAt })!.bounty).toBeNull();
   });
 
+  it('reads a bounty pick (the judge gave no ruling) with the entries the creator chooses from, and sends the entry number with the hash', () => {
+    const base = { id: `bounty-pick-${JOB.slice(2, 34)}`, kind: 'bounty_pick', text: 'The judge gave no usable ruling', status: 'pending_approval', createdAt: '2026-11-09T16:05:00.000Z', expiresAt: '2026-11-11T16:05:00.000Z' };
+    const entry = (n: number) => ({ n, payee: PAYEE, entryUrl: `https://x.com/i/status/185000000000000000${n}`, artefactUrl: `https://pbs.twimg.com/media/${n}.png`, authorId: 'nope' });
+    const pick = { kind: 'pick', jobId: JOB, task: job.task, amountUsdc: '0.5', why: 'malformed_answer', txHashRequired: true, entryRequired: true, candidates: [entry(1), { ...entry(2), artefactUrl: 'javascript:alert(1)' }, { ...entry(3), payee: 'nope' }, { ...entry(4), entryUrl: 'https://evil.example/x' }, entry(1)] };
+    const item = sanitizeApproval({ ...base, bounty: pick })!;
+    expect(item.kind).toBe('bounty_pick');
+    expect(item.bounty).toEqual({
+      kind: 'pick',
+      jobId: JOB,
+      task: job.task,
+      amountUsdc: '0.5',
+      payee: null,
+      reason: null,
+      entryUrl: null,
+      txHashRequired: true,
+      candidates: [
+        { n: 1, payee: PAYEE, entryUrl: 'https://x.com/i/status/1850000000000000001', artefactUrl: 'https://pbs.twimg.com/media/1.png' },
+        { n: 2, payee: PAYEE, entryUrl: 'https://x.com/i/status/1850000000000000002', artefactUrl: null },
+      ],
+    });
+    // nothing to choose from, or a block of another kind: the item is dropped
+    expect(sanitizeApproval({ ...base, bounty: { ...pick, candidates: [] } })).toBeNull();
+    expect(sanitizeApproval({ ...base, bounty: { ...pick, kind: 'payout' } })).toBeNull();
+    const hash = `0x${'ab'.repeat(32)}`;
+    expect(approvalDecisionBody({ decision: 'approve', by: PAYEE, txHash: hash, entry: 2 })).toEqual({ decision: 'approve', by: PAYEE, txHash: hash, entry: 2 });
+    expect(approvalDecisionBody({ decision: 'approve', by: PAYEE, txHash: hash })).toEqual({ decision: 'approve', by: PAYEE, txHash: hash });
+    expect(() => approvalDecisionBody({ decision: 'approve', by: PAYEE, txHash: hash, entry: 0 })).toThrow();
+    expect(() => approvalDecisionBody({ decision: 'approve', by: PAYEE, txHash: hash, entry: 1.5 })).toThrow();
+  });
+
   it('builds the decision body with the paying transaction hash only on an approval, and refuses a bad hash', () => {
     const by = CREATOR as `0x${string}`;
     expect(approvalDecisionBody({ decision: 'approve', by })).toEqual({ decision: 'approve', by });

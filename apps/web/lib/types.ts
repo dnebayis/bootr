@@ -613,6 +613,8 @@ export interface BountyJob {
     txUrl: string | null;
     /** The reply on X that announces the payment. */
     replyUrl: string | null;
+    /** The agent's own post that announced the payment; absent until it went out. */
+    postUrl?: string | null;
     paidAt: string | null;
   } | null;
   closedAt: string | null;
@@ -650,13 +652,26 @@ export interface AgentFuel {
 export type ApprovalStatus = 'pending_approval' | 'approved' | 'rejected' | 'failed';
 export type ApprovalDecision = 'approve' | 'reject';
 
+/** One entry the creator may pay when the judge gave no ruling (a `bounty_pick` item): its number, its address and where to look at it. */
+export interface BountyPickCandidate {
+  n: number;
+  payee: Address;
+  /** The entry's reply on X. */
+  entryUrl: string;
+  /** The picture or the linked data itself; null when the service gave none. */
+  artefactUrl: string | null;
+}
+
 /**
- * The `bounty` block of a `bounty_job` or `bounty_payout` approval (the agent service's `bountyApprovalView`): the job
- * and its task and amount; for a payout also the payee the creator pays from their own wallet, the judge's reason and
- * the winning entry, with `txHashRequired` saying the approval needs the paying transaction's hash.
+ * The `bounty` block of a `bounty_job`, `bounty_payout` or `bounty_pick` approval (the agent service's
+ * `bountyApprovalView`): the job and its task and amount; for a payout also the payee the creator pays from their own
+ * wallet, the judge's reason and the winning entry, with `txHashRequired` saying the approval needs the paying
+ * transaction's hash; for a pick (the judge gave no usable ruling) `candidates`, the entries the creator chooses from.
  */
 export interface BountyApprovalInfo {
-  kind: 'job' | 'payout';
+  kind: 'job' | 'payout' | 'pick';
+  /** A pick only: the entries the creator may pay, in the judge's numbering. */
+  candidates?: BountyPickCandidate[];
   jobId: string;
   task: string;
   /** USDC as a decimal string ("0.4"); null when the service did not say. */
@@ -669,12 +684,13 @@ export interface BountyApprovalInfo {
   txHashRequired: boolean;
 }
 
-export type ApprovalKind = 'post' | 'reply' | 'bounty_job' | 'bounty_payout';
+export type ApprovalKind = 'post' | 'reply' | 'bounty_job' | 'bounty_payout' | 'bounty_pick';
 
 /**
  * One post or reply the agent wants to send, or one bounty item: a job text waiting to be posted (`bounty_job`, while the
- * creator's review switch is on; approve posts it, reject cancels the job) or a payout the judge proposed
- * (`bounty_payout`; approve takes the creator's paying transaction hash, reject closes the job unpaid). `text` is the
+ * creator's review switch is on; approve posts it, reject cancels the job), a payout the judge proposed
+ * (`bounty_payout`; approve takes the creator's paying transaction hash, reject closes the job unpaid) or a job the
+ * judge could not rule on (`bounty_pick`; approve takes the hash and the number of the entry paid). `text` is the
  * post or the job text; `bounty` carries the job and the payment and is null for a post or reply.
  */
 export interface AgentApproval {

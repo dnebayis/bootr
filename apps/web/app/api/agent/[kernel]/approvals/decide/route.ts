@@ -7,15 +7,16 @@ import { authorizeReview, fail, ok, readBody, relay } from '../review';
 const NOTE_MAX = 500;
 
 /**
- * POST /api/agent/:kernel/approvals/decide {message, signature | token, approvalId, decision, note?, txHash?} -> AgentApproval
+ * POST /api/agent/:kernel/approvals/decide {message, signature | token, approvalId, decision, note?, txHash?, entry?} -> AgentApproval
  * Approve sends the post through the agent's X account now (same path as a direct post, image included); reject
  * marks it and the note reaches the agent on its next turn. A bounty payment is approved with `txHash`, the creator's
- * own transaction that paid the winner (the page never sends that transaction; it only takes the hash). Same
- * signature rules as `/approvals/list`.
+ * own transaction that paid the winner (the page never sends that transaction; it only takes the hash); a job the
+ * judge could not rule on also takes `entry`, the number of the entry the creator paid. Same signature rules as
+ * `/approvals/list`.
  */
 export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kernel]/approvals/decide'>) {
   const { kernel } = await ctx.params;
-  const body = await readBody<{ message?: unknown; signature?: unknown; token?: unknown; approvalId?: unknown; decision?: unknown; note?: unknown; txHash?: unknown }>(req);
+  const body = await readBody<{ message?: unknown; signature?: unknown; token?: unknown; approvalId?: unknown; decision?: unknown; note?: unknown; txHash?: unknown; entry?: unknown }>(req);
   if (body instanceof Response) return body;
   const approvalId = typeof body.approvalId === 'string' && /^[\w:-]{1,120}$/.test(body.approvalId) ? body.approvalId : null;
   if (!approvalId) return fail(400, 'invalid_request', 'approvalId is required');
@@ -31,6 +32,11 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kern
     if (!h) return fail(400, 'invalid_request', 'txHash must be a transaction hash: 0x followed by 64 hex characters.');
     txHash = h;
   }
+  let entry: number | undefined;
+  if (body.entry !== undefined && body.entry !== null && body.entry !== '') {
+    if (typeof body.entry !== 'number' || !Number.isInteger(body.entry) || body.entry < 1 || body.entry > 99) return fail(400, 'invalid_request', 'entry must be the number of one of the listed entries.');
+    entry = body.entry;
+  }
   const auth = await authorizeReview(req, kernel, body);
   if (!auth.ok) return auth.response;
   if (env.useMock) {
@@ -39,7 +45,7 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/agent/[kern
     return ok(r.approval);
   }
   try {
-    return ok(await decideAgentApproval(auth.agentId, approvalId, { decision: body.decision, by: auth.address, ...(note ? { note } : {}), ...(txHash ? { txHash } : {}) }));
+    return ok(await decideAgentApproval(auth.agentId, approvalId, { decision: body.decision, by: auth.address, ...(note ? { note } : {}), ...(txHash ? { txHash } : {}), ...(entry !== undefined ? { entry } : {}) }));
   } catch (err) {
     return relay(err);
   }

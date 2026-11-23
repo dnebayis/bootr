@@ -504,8 +504,8 @@ export function fetchApprovals(kernel: string, auth: ReviewAuth, status: 'pendin
  * Approve (sends the post now) or reject (with an optional note the agent reads) one queued item. A bounty payment is
  * approved with `txHash`, the creator's own paying transaction.
  */
-export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: string, decision: ApprovalDecision, extra: { note?: string; txHash?: string } = {}): Promise<AgentApproval> {
-  return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(extra.note ? { note: extra.note } : {}), ...(extra.txHash ? { txHash: extra.txHash } : {}) });
+export function decideApproval(kernel: string, auth: ReviewAuth, approvalId: string, decision: ApprovalDecision, extra: { note?: string; txHash?: string; entry?: number } = {}): Promise<AgentApproval> {
+  return reviewCall<AgentApproval>(kernel, 'decide', { ...auth, approvalId, decision, ...(extra.note ? { note: extra.note } : {}), ...(extra.txHash ? { txHash: extra.txHash } : {}), ...(extra.entry !== undefined ? { entry: extra.entry } : {}) });
 }
 
 /** The creator's inbox badge: how many notifications are open. */

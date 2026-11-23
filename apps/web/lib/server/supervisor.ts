@@ -10,7 +10,7 @@ import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/ag
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
-import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHED_ACCOUNTS_MAX, X_HANDLE_RE, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentLedger, LEDGER_ASSETS, LEDGER_DIRECTIONS, LEDGER_KINDS, LEDGER_ROLES, LEDGER_STATUSES, type LedgerAmount, type LedgerDay, type LedgerDayLine, type LedgerParty, type LedgerRow, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
+import { BOUNTIES_BOUNDS, BOUNTIES_DEFAULTS, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_DEFAULTS, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHED_ACCOUNTS_MAX, X_HANDLE_RE, type ReplyAudience, type AgentActivity, type AgentActivityItem, type AgentLedger, LEDGER_ASSETS, LEDGER_DIRECTIONS, LEDGER_KINDS, LEDGER_ROLES, LEDGER_STATUSES, type LedgerAmount, type LedgerDay, type LedgerDayLine, type LedgerParty, type LedgerRow, type AgentApproval, type AgentApprovals, type AgentBounties, type AgentBountiesPolicy, type AgentChat, type AgentChatMessage, type AgentNotification, type AgentNotifications, type AgentConfig, type AgentConfigChanges, type AgentFuel, type AgentImageStyle, type AgentServicesPolicy, type AgentWorkerConfig, type AgentXConnection, type AgentXHold, type ApprovalDecision, type ApprovalKind, type BountyApprovalInfo, type BountyJob, type BountyPickCandidate, type BountyStatus, type CriterionMark, type WorkerKind } from '@/lib/types';
 import { aboutHref } from '@/lib/posting-views';
 import { pictureRoute, supervisorEnv } from './env';
 import { signSenderRequest } from './sender';
@@ -444,7 +444,28 @@ function microUsdcString(v: unknown): string | null {
 const REASON_MAX = 200;
 /** USDC as the service writes amounts in its views: a decimal string such as "0.5". */
 const USDC_RE = /^\d{1,9}(\.\d{1,6})?$/;
-const APPROVAL_KINDS: readonly ApprovalKind[] = ['post', 'reply', 'bounty_job', 'bounty_payout'];
+const APPROVAL_KINDS: readonly ApprovalKind[] = ['post', 'reply', 'bounty_job', 'bounty_payout', 'bounty_pick'];
+const BOUNTY_KINDS: readonly ApprovalKind[] = ['bounty_job', 'bounty_payout', 'bounty_pick'];
+/** Entries a judge sees at most (the agent service's `BOUNTY_MAX_CONSIDERED`). */
+const PICK_MAX_CANDIDATES = 12;
+
+/**
+ * The entries of a `bounty_pick` item: number, address, the reply on X and the artefact's own https address. An entry
+ * that is not fully there is left out; the creator must never be offered a payment the console cannot describe.
+ */
+function pickCandidates(raw: unknown): BountyPickCandidate[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BountyPickCandidate[] = [];
+  for (const item of raw.slice(0, PICK_MAX_CANDIDATES)) {
+    const c = (item ?? {}) as Record<string, unknown>;
+    if (typeof c.n !== 'number' || !Number.isInteger(c.n) || c.n < 1 || c.n > 99 || out.some((o) => o.n === c.n)) continue;
+    if (typeof c.payee !== 'string' || !ADDRESS_RE.test(c.payee)) continue;
+    if (typeof c.entryUrl !== 'string' || !X_URL_RE.test(c.entryUrl)) continue;
+    const artefactUrl = typeof c.artefactUrl === 'string' && /^https:\/\/[^\s<>"']{1,2000}$/.test(c.artefactUrl) ? c.artefactUrl : null;
+    out.push({ n: c.n, payee: c.payee as Address, entryUrl: c.entryUrl, artefactUrl });
+  }
+  return out;
+}
 
 /**
  * The `bounty` block of a `bounty_job` or `bounty_payout` approval (the agent service's `bountyApprovalView`). Null when
@@ -454,9 +475,11 @@ const APPROVAL_KINDS: readonly ApprovalKind[] = ['post', 'reply', 'bounty_job', 
 function bountyInfo(kind: ApprovalKind, o: Record<string, unknown>): BountyApprovalInfo | null {
   const b = (o.bounty && typeof o.bounty === 'object' ? o.bounty : null) as Record<string, unknown> | null;
   if (!b) return null;
-  const want = kind === 'bounty_job' ? 'job' : 'payout';
+  const want = kind === 'bounty_job' ? 'job' : kind === 'bounty_pick' ? 'pick' : 'payout';
   const jobId = typeof b.jobId === 'string' && HASH_RE.test(b.jobId) ? b.jobId.toLowerCase() : null;
   if (b.kind !== want || !jobId) return null;
+  const candidates = want === 'pick' ? pickCandidates(b.candidates) : [];
+  if (want === 'pick' && !candidates.length) return null;
   const payee = typeof b.payee === 'string' && ADDRESS_RE.test(b.payee) ? (b.payee as Address) : null;
   if (want === 'payout' && !payee) return null;
   const amount = typeof b.amountUsdc === 'string' && USDC_RE.test(b.amountUsdc) ? b.amountUsdc : null;
@@ -468,7 +491,8 @@ function bountyInfo(kind: ApprovalKind, o: Record<string, unknown>): BountyAppro
     payee: want === 'payout' ? payee : null,
     reason: want === 'payout' ? (str(b.reason, REASON_MAX) ?? null) : null,
     entryUrl: want === 'payout' && typeof b.entryUrl === 'string' && X_URL_RE.test(b.entryUrl) ? b.entryUrl : null,
-    txHashRequired: want === 'payout' && b.txHashRequired !== false,
+    txHashRequired: want !== 'job' && b.txHashRequired !== false,
+    ...(want === 'pick' ? { candidates } : {}),
   };
 }
 
@@ -508,8 +532,8 @@ export function sanitizeApproval(raw: unknown): AgentApproval | null {
   const status = APPROVAL_STATUSES.includes(o.status as AgentApproval['status']) ? (o.status as AgentApproval['status']) : null;
   const createdAt = iso(o.createdAt);
   if (!id || !kind || text === null || !status || !createdAt) return null;
-  const bounty = kind === 'bounty_job' || kind === 'bounty_payout' ? bountyInfo(kind, o) : null;
-  if ((kind === 'bounty_job' || kind === 'bounty_payout') && !bounty) return null;
+  const bounty = BOUNTY_KINDS.includes(kind) ? bountyInfo(kind, o) : null;
+  if (BOUNTY_KINDS.includes(kind) && !bounty) return null;
   let image: AgentApproval['image'] = null;
   if (o.image && typeof o.image === 'object') {
     const im = o.image as { alt?: unknown; mime?: unknown; data?: unknown };
@@ -638,6 +662,7 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
         txUrl: txHash && typeof p.txUrl === 'string' && /^https:\/\/(sepolia\.)?basescan\.org\/tx\/0x[0-9a-fA-F]{64}$/.test(p.txUrl) ? p.txUrl : null,
         replyUrl: xUrlOrNull(p.replyUrl),
         paidAt: iso(p.paidAt),
+        ...(xUrlOrNull(p.postUrl) ? { postUrl: xUrlOrNull(p.postUrl) } : {}),
       };
     }
   }
@@ -702,12 +727,14 @@ export function txHashOf(v: unknown): Hex | null {
  * `{decision: 'reject', by, note?}`. A bounty payment is approved with the creator's paying transaction hash, which the
  * console never sends itself; a post approval has no hash. A note goes with a rejection only; a malformed hash is refused.
  */
-export function approvalDecisionBody(input: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string }): { decision: ApprovalDecision; by: Address; note?: string; txHash?: Hex } {
+export function approvalDecisionBody(input: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string; entry?: number }): { decision: ApprovalDecision; by: Address; note?: string; txHash?: Hex; entry?: number } {
   if (input.decision === 'approve') {
     if (input.txHash === undefined) return { decision: 'approve', by: input.by };
     const txHash = txHashOf(input.txHash);
     if (!txHash) throw new SupervisorError(400, 'invalid_request', 'The transaction hash is 0x followed by 64 hex characters.');
-    return { decision: 'approve', by: input.by, txHash };
+    // A pick (the judge gave no ruling) names the entry that was paid beside the hash.
+    if (input.entry !== undefined && !(Number.isInteger(input.entry) && input.entry >= 1 && input.entry <= 99)) throw new SupervisorError(400, 'invalid_request', 'The entry is the number of one of the listed entries.');
+    return { decision: 'approve', by: input.by, txHash, ...(input.entry !== undefined ? { entry: input.entry } : {}) };
   }
   return { decision: 'reject', by: input.by, ...(input.note ? { note: input.note } : {}) };
 }
@@ -805,7 +832,7 @@ export async function getAgentApprovals(agentId: string, status: 'pending' | 'al
  * `POST /internal/agents/:id/approvals/:approvalId {decision, by, note?} | {decision: 'approve', by, txHash}`; the decided
  * item, or a SupervisorError (400/403/404/409/503). `txHash` is the creator's paying transaction for a bounty payment.
  */
-export async function decideAgentApproval(agentId: string, approvalId: string, body: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string }): Promise<AgentApproval> {
+export async function decideAgentApproval(agentId: string, approvalId: string, body: { decision: ApprovalDecision; by: Address; note?: string; txHash?: string; entry?: number }): Promise<AgentApproval> {
   const res = await call('POST', `/internal/agents/${encodeURIComponent(agentId)}/approvals/${encodeURIComponent(approvalId)}`, approvalDecisionBody(body));
   if (!res.ok) throw await errorOf(res);
   const item = sanitizeApproval(await res.json());

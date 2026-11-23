@@ -117,7 +117,7 @@ test('the console switches Bounties on with its bounds, and the Inbox shows the 
   await expect(item).toHaveCount(1);
   await expect(item).toContainText('Bounty payment');
   await expect(item.getByTestId('bounty-amount')).toHaveText('0.40 USDC');
-  await expect(item).toContainText('A public page, in your own words');
+  await expect(item).toContainText('A table of how this coin’s swap fee is split');
   await expect(item.getByTestId('bounty-payee')).toContainText('0x7a1e4c3b9d2f8e6a5c4b3a2918f7e6d5c4b3a291');
   await expect(item.getByTestId('bounty-payee').getByRole('link')).toHaveAttribute('href', /basescan\.org\/address\/0x7a1e4c3b9d2f8e6a5c4b3a2918f7e6d5c4b3a291$/);
   await expect(item.getByRole('button', { name: 'Copy the payee address' })).toBeVisible();

@@ -9,7 +9,7 @@ import { ago } from '@/lib/format';
 import { useNow } from '@/lib/hooks';
 import { scheduledNote } from '@/lib/posting-views';
 import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
-import type { AgentApproval, AgentApprovals, ApprovalDecision, BountyApprovalInfo, Token } from '@/lib/types';
+import type { AgentApproval, AgentApprovals, ApprovalDecision, BountyApprovalInfo, BountyPickCandidate, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { CopyButton } from '@/components/ui/CopyButton';
@@ -29,8 +29,8 @@ export function expiresLabel(expiresAt: string, now = Date.now()): string {
 
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 
-/** What the creator decides with: a note on a rejection, the paying transaction's hash on a bounty payout. */
-export type Decision = { note?: string; txHash?: string };
+/** What the creator decides with: a note on a rejection, the paying transaction's hash on a bounty payout, and on a pick the number of the entry paid. */
+export type Decision = { note?: string; txHash?: string; entry?: number };
 
 function Stamp({ item }: { item: AgentApproval }) {
   // A post the agent wrote ahead runs out at its own time, which the line under it says; the queue's own limit is not its deadline.
@@ -214,8 +214,89 @@ function PayoutItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bou
   );
 }
 
+/**
+ * A job the judge could not rule on (two thoughts, no usable answer): every entry that could be paid, with its reply on
+ * X, the picture or data itself and the address. The creator looks, picks one, pays it from their own wallet and pastes
+ * the transaction hash; the page never sends that transaction. "Pay none" closes the job unpaid.
+ */
+function PickItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bounty: BountyApprovalInfo & { candidates: BountyPickCandidate[] }; busy: boolean; onDecide: (decision: ApprovalDecision, extra: Decision) => void }) {
+  const [picked, setPicked] = useState<number | null>(null);
+  const [txHash, setTxHash] = useState('');
+  const [note, setNote] = useState('');
+  const hashOk = TX_HASH_RE.test(txHash.trim());
+  const amount = usdcLabel(bounty.amountUsdc);
+  const choice = bounty.candidates.find((c) => c.n === picked) ?? null;
+  return (
+    <li data-testid="approval-item" data-approval-id={item.id} data-kind="bounty_pick" className="flex flex-col gap-2 py-3">
+      <div className="flex items-center gap-2">
+        <Badge tone="ink">Bounty: your pick</Badge>
+        <span className="font-mono text-sm text-ink tabular" data-testid="bounty-amount">
+          {amount}
+        </span>
+        <Stamp item={item} />
+      </div>
+      {bounty.task ? <p className="break-words text-sm text-ink">{bounty.task}</p> : null}
+      <p className="text-caption text-body">The judge gave no usable ruling on this job, so nothing was decided and nothing was said in public. Look at the entries and pick the one to pay, or pay none.</p>
+      <ul className="flex flex-col gap-1" data-testid="bounty-candidates">
+        {bounty.candidates.map((c) => (
+          <li key={c.n}>
+            <label className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption">
+              <input type="radio" name={`pick-${item.id}`} checked={picked === c.n} onChange={() => setPicked(c.n)} disabled={busy} aria-label={`Entry ${c.n}`} />
+              <span className="font-mono text-ink tabular">Entry {c.n}</span>
+              <ExternalLink href={c.entryUrl} className="text-link hover:underline">
+                Reply on X
+              </ExternalLink>
+              {c.artefactUrl ? (
+                <ExternalLink href={c.artefactUrl} className="text-link hover:underline">
+                  What was handed in
+                </ExternalLink>
+              ) : null}
+              <span className="break-all font-mono text-mute">{c.payee}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      {choice ? (
+        <p className="flex min-w-0 flex-wrap items-center gap-1 text-caption text-body" data-testid="bounty-instructions">
+          Send {amount} from your wallet to
+          <a href={explorer.address(choice.payee)} target="_blank" rel="noopener noreferrer" className="break-all font-mono text-ink hover:text-link" title="View on Basescan" data-testid="bounty-payee">
+            {choice.payee}
+          </a>
+          <CopyButton value={choice.payee} label="Copy the payee address" />, then paste the transaction hash.
+        </p>
+      ) : null}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input
+          value={txHash}
+          onChange={(e) => setTxHash(e.target.value)}
+          maxLength={66}
+          placeholder="0x… the transaction hash"
+          aria-label="Transaction hash"
+          aria-invalid={txHash.trim() !== '' && !hashOk}
+          mono
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1"
+          disabled={busy || !choice}
+          data-testid="bounty-tx-hash"
+        />
+        <Button type="button" variant="ink" size="sm" className="shrink-0" disabled={busy || !hashOk || !choice} onClick={() => choice && onDecide('approve', { txHash: txHash.trim(), entry: choice.n })} data-testid="bounty-paid">
+          I paid this entry
+        </Button>
+      </div>
+      {txHash.trim() !== '' && !hashOk ? <p className="text-micro text-danger">A transaction hash is 0x followed by 64 hex characters.</p> : null}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Why not (optional, kept with the decision)" aria-label="Note for the agent" className="min-w-0 flex-1" disabled={busy} />
+        <Button type="button" variant="secondary" size="sm" className="shrink-0" disabled={busy} onClick={() => onDecide('reject', { note })} data-testid="bounty-reject">
+          Pay none
+        </Button>
+      </div>
+    </li>
+  );
+}
+
 function toastFor(item: AgentApproval, decided: AgentApproval): string {
-  if (item.kind === 'bounty_payout') return decided.status === 'approved' ? 'Recorded. The payment is on the coin page.' : 'Declined. The job closes unpaid.';
+  if (item.kind === 'bounty_payout' || item.kind === 'bounty_pick') return decided.status === 'approved' ? 'Recorded. The payment is on the coin page.' : 'Declined. The job closes unpaid.';
   if (item.kind === 'bounty_job') return decided.status === 'approved' ? 'Approved: the job goes out on X.' : 'Cancelled. The job is closed.';
   if (decided.status !== 'approved') return item.scheduledFor ? 'Rejected. The post will not go out, and the agent will see your note on its next turn.' : 'Rejected. The agent will see your note on its next turn.';
   if (decided.url) return 'Approved and posted on X.';
@@ -228,9 +309,10 @@ function toastFor(item: AgentApproval, decided: AgentApproval): string {
 /**
  * The creator's review queue inside the console: posts and replies the agent wants to send while "Review posts
  * before they go out" is on, the job texts it wrote while "Review every job text first" is on, and the bounty payouts
- * the judge proposes. The console's one wallet signature opens the queue (console-session.ts); Approve sends the post
- * (or posts the job) now, Reject tells the agent why on its next turn (or cancels the job); a payout is approved with
- * the creator's paying transaction hash. In mock mode the signature is skipped.
+ * the judge proposes (or, when the judge gave no usable ruling, the entries the creator picks from). The console's one
+ * wallet signature opens the queue (console-session.ts); Approve sends the post (or posts the job) now, Reject tells
+ * the agent why on its next turn (or cancels the job); a payout is approved with the creator's paying transaction
+ * hash, a pick with the hash and the entry paid. In mock mode the signature is skipped.
  */
 export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: boolean }) {
   const session = useConsoleSession(token);
@@ -269,7 +351,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
     try {
       const auth = await session.auth();
       if (!auth) return;
-      const decided = await decideApproval(token.kernel, auth, item.id, decision, { note: extra.note?.trim() || undefined, txHash: extra.txHash });
+      const decided = await decideApproval(token.kernel, auth, item.id, decision, { note: extra.note?.trim() || undefined, txHash: extra.txHash, entry: extra.entry });
       setList((prev) => (prev ? { ...prev, items: prev.items.filter((i) => i.id !== item.id), pending: Math.max(0, prev.pending - 1) } : prev));
       queryClient.setQueryData(qk.approvalCount(token.kernel), (c: { pending: number } | undefined) => ({ pending: Math.max(0, (c?.pending ?? 1) - 1) }));
       void queryClient.invalidateQueries({ queryKey: qk.agentActivity(token.kernel) });
@@ -322,6 +404,7 @@ export function ApprovalQueue({ token, reviewing }: { token: Token; reviewing: b
           {list.items.map((item) => {
             const decide_ = (d: ApprovalDecision, extra: Decision) => void decide(item, d, extra);
             if (item.kind === 'bounty_payout' && item.bounty?.payee) return <PayoutItem key={item.id} item={item} bounty={{ ...item.bounty, payee: item.bounty.payee }} busy={busy === item.id} onDecide={decide_} />;
+            if (item.kind === 'bounty_pick' && item.bounty?.candidates?.length) return <PickItem key={item.id} item={item} bounty={{ ...item.bounty, candidates: item.bounty.candidates }} busy={busy === item.id} onDecide={decide_} />;
             if (item.kind === 'bounty_job' && item.bounty) return <JobItem key={item.id} item={item} bounty={item.bounty} busy={busy === item.id} onDecide={decide_} />;
             return <Item key={item.id} item={item} now={now} busy={busy === item.id} onDecide={decide_} />;
           })}
