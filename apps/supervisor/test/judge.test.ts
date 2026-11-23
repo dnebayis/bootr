@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { JUDGE_ROLE_TEXT, parseAgentConfig } from '@bootr/agent-core';
 import { inference as inferenceTable } from '../src/db/schema.js';
-import { judgeJob, judgeKey, judgeModelFor, judgeRequest, normalizeJudgeInput, parseVerdict, reasonProblem, type JudgeInput } from '../src/judge.js';
+import { JUDGE_MAX_OUTPUT_TOKENS, JUDGE_MAX_RAW_CHARS, judgeJob, judgeKey, judgeModelFor, judgeRequest, normalizeJudgeInput, parseVerdict, reasonProblem, type JudgeInput } from '../src/judge.js';
 import { AGENT_ID, agentConfig, makeWorld, seedAgent, type TestWorld } from './helpers.js';
 
 const T0 = Date.parse('2026-10-24T12:00:00Z');
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 
 /** A plain-text model answer (no tool call), with a receipt like the relay's. */
-function answer(body: unknown): Response {
+function answer(body: unknown, finishReason = 'stop'): Response {
   const content = typeof body === 'string' ? body : JSON.stringify(body);
-  return new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 60 } }), {
+  return new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content }, finish_reason: finishReason }], usage: { prompt_tokens: 900, completion_tokens: 60 } }), {
     status: 200,
     headers: { 'content-type': 'application/json', 'x-bootr-receipt': JSON.stringify({ requestId: 'r', quoteMicroUsdc: '9000', chargedMicroUsdc: '7000', paymentTxOrId: '0xtx', network: 'eip155:84532', usage: null }) },
   });
@@ -52,7 +52,11 @@ describe('the judge', () => {
       const [request] = posts(w);
       expect(request!.body.model).toBe('openai/gpt-4.1-mini');
       expect(request!.body.tools).toBeUndefined();
-      expect(request!.body.max_tokens).toBe(700);
+      // room for twelve entries by four criteria and a few lines before the object
+      expect(request!.body.max_tokens).toBe(JUDGE_MAX_OUTPUT_TOKENS);
+      expect(JUDGE_MAX_OUTPUT_TOKENS).toBeGreaterThanOrEqual(2000);
+      expect(verdict.thoughts).toHaveLength(1);
+      expect(verdict.refused).toBeUndefined();
       const [system, user] = request!.body.messages;
       expect(system!.content).toBe(`${JUDGE_ROLE_TEXT}\n\nJUDGE RULES\n` + (system!.content as string).split('JUDGE RULES\n')[1]);
       expect(system!.content).not.toContain('You are a test agent');
@@ -133,24 +137,110 @@ describe('the judge', () => {
     }
   });
 
-  it('refuses a malformed answer: prose, a missing entry, an unknown mark, or a tool call', async () => {
-    const { w, agent, config } = await world([answer('Entry 1 is clearly the best, I pick it.')]);
+  it('refuses a malformed answer: prose, a missing entry, an unknown mark; what may win is never loosened', async () => {
+    expect(parseVerdict('Entry 1 is clearly the best, I pick it.', job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(null, job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(JSON.stringify({ winner: 1, perCriterion: { '1': ['pass', 'pass', 'pass'] }, reason: 'ok' }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, '2': ['pass', 'maybe', 'pass'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, '2': ['pass', 'pass'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(JSON.stringify({ ...clean, winner: 'the first one' }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    expect(parseVerdict(JSON.stringify({ ...clean, winner: 1.5 }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    // an entry marked twice under two spellings is no answer
+    expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, 'Entry 1': ['fail', 'fail', 'fail'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    // an answer cut off mid-object (the output budget ran out) is no answer
+    expect(parseVerdict(JSON.stringify(clean).slice(0, 60), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+    // text around the object is tolerated; a null winner with full marks stands as "nothing met the job"
+    expect(parseVerdict(`Here you go:\n${JSON.stringify({ ...clean, winner: null })}\nDone.`, job)).toMatchObject({ ok: true, verdict: { winner: null } });
+  });
+
+  it('reads an answer in a code fence, with entry keys written "Entry 3", marks in capitals and a winner written as text; the rules on the winner still hold', () => {
+    const fenced = '```json\n' + JSON.stringify(clean, null, 2) + '\n```';
+    expect(parseVerdict(fenced, job)).toMatchObject({ ok: true, verdict: { winner: 1, perCriterion: clean.perCriterion, reason: clean.reason } });
+    expect(parseVerdict('Looking at each entry {roughly}:\n\n' + fenced + '\n\nThat is my ruling.', job)).toMatchObject({ ok: true, verdict: { winner: 1 } });
+    const spelled = { winner: 'Entry 1', perCriterion: { 'Entry 1': ['PASS', 'Pass', 'pass'], 'entry_2': ['pass', 'pass', 'Insufficient Evidence'], '#4': ['FAIL', 'fail', 'pass'] }, reason: clean.reason };
+    expect(parseVerdict(JSON.stringify(spelled), job)).toMatchObject({ ok: true, verdict: { winner: 1, perCriterion: clean.perCriterion } });
+    // numbers as keys' values, marks keyed by criterion number, entries as a list
+    const listed = { winner: '1', perCriterion: [{ entry: 1, marks: { '1': 'pass', '2': 'pass', '3': 'pass' } }, { entry: 2, marks: ['pass', 'pass', 'insufficient-evidence'] }, { n: 4, marks: ['fail', 'fail', 'pass'] }], reason: clean.reason };
+    expect(parseVerdict(JSON.stringify(listed), job)).toMatchObject({ ok: true, verdict: { winner: 1, perCriterion: clean.perCriterion } });
+    // a note before the object that itself holds braces: the object that carries the verdict is the one read
+    expect(parseVerdict(`{"note": "entry 1 looks right"}\n${JSON.stringify(clean)}`, job)).toMatchObject({ ok: true, verdict: { winner: 1 } });
+    // tolerant about the spelling, never about who may win
+    expect(parseVerdict(JSON.stringify({ ...spelled, winner: 'Entry 2' }), job)).toMatchObject({ ok: false, invalid: 'winner_not_passing' });
+    expect(parseVerdict(JSON.stringify({ ...spelled, winner: 'Entry 3' }), job)).toMatchObject({ ok: false, invalid: 'winner_out_of_range' });
+    expect(parseVerdict('```json\n' + JSON.stringify({ ...clean, reason: 'Send it to 0x1111111111111111111111111111111111111111' }) + '\n```', job)).toMatchObject({ ok: false, invalid: 'reason_forbidden' });
+    expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, '1': ['PASSED', 'pass', 'pass'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
+  });
+
+  it('asks once more under a new key when the first answer is no verdict, keeps what the model wrote, and never asks a third time', async () => {
+    const prose = 'Entry 1 is clearly the best, I pick it. ' + 'x'.repeat(JUDGE_MAX_RAW_CHARS);
+    const { w, agent, config } = await world([answer(prose, 'length'), answer(clean), answer({ ...clean, winner: 4 })]);
     try {
       const verdict = await judgeJob(w.ctx, agent, config, job);
-      expect(verdict).toMatchObject({ winner: null, invalid: 'malformed_answer', perCriterion: {}, reason: '' });
-      expect(parseVerdict(JSON.stringify({ winner: 1, perCriterion: { '1': ['pass', 'pass', 'pass'] }, reason: 'ok' }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
-      expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, '2': ['pass', 'maybe', 'pass'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
-      expect(parseVerdict(JSON.stringify({ ...clean, perCriterion: { ...clean.perCriterion, '2': ['pass', 'pass'] } }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
-      expect(parseVerdict(JSON.stringify({ ...clean, winner: '1' }), job)).toMatchObject({ ok: false, invalid: 'malformed_answer' });
-      // text around the object is tolerated; a null winner with full marks stands as "nothing met the job"
-      expect(parseVerdict(`Here you go:\n${JSON.stringify({ ...clean, winner: null })}\nDone.`, job)).toMatchObject({ ok: true, verdict: { winner: null } });
+      expect(verdict).toMatchObject({ winner: 1, reason: clean.reason });
+      expect(verdict.invalid).toBeUndefined();
+      // two thoughts, two keys: the relay would have replayed the bad answer for the first
+      expect(verdict.thoughts!.map((t) => t.key)).toEqual([judgeKey(AGENT_ID, 'job-0001'), judgeKey(AGENT_ID, 'job-0001', 2)]);
+      expect(judgeKey(AGENT_ID, 'job-0001', 2)).not.toBe(judgeKey(AGENT_ID, 'job-0001'));
+      expect(judgeKey(AGENT_ID, 'job-0001', 1)).toBe(judgeKey(AGENT_ID, 'job-0001'));
+      expect(verdict.thought.key).toBe(judgeKey(AGENT_ID, 'job-0001', 2));
+      expect(posts(w)).toHaveLength(2);
+      // the refused answer is handed back, cut, with how it ended
+      expect(verdict.refused).toHaveLength(1);
+      expect(verdict.refused![0]).toMatchObject({ attempt: 1, invalid: 'malformed_answer', finishReason: 'length', completionTokens: 60 });
+      expect(verdict.refused![0]!.raw).toHaveLength(JUDGE_MAX_RAW_CHARS);
+      expect(verdict.refused![0]!.raw.startsWith('Entry 1 is clearly')).toBe(true);
+      // asked again: both thoughts replay, nothing is bought, the ruling is the same
+      const again = await judgeJob(w.ctx, agent, config, job);
+      expect(again.winner).toBe(1);
+      expect(again.thoughts!.map((t) => t.replayed)).toEqual([true, true]);
+      expect(posts(w)).toHaveLength(2);
+      expect(await w.db.select().from(inferenceTable)).toHaveLength(2);
     } finally {
       await w.close();
     }
   });
 
-  it('is never asked twice for one job: the second call replays the stored thought and pays nothing', async () => {
-    const { w, agent, config } = await world([answer(clean), answer({ ...clean, winner: 4 })]);
+  it('two answers that are no verdict end the ruling: two paid thoughts at most, ever, and a tool call counts as no answer', async () => {
+    const toolCall = new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 't', type: 'function', function: { name: 'finish', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const { w, agent, config } = await world([answer('not json at all'), toolCall, answer(clean)]);
+    try {
+      const verdict = await judgeJob(w.ctx, agent, config, job);
+      expect(verdict).toMatchObject({ winner: null, invalid: 'malformed_answer', perCriterion: {}, reason: '' });
+      expect(verdict.thoughts).toHaveLength(2);
+      expect(verdict.refused!.map((r) => [r.attempt, r.invalid, r.raw])).toEqual([
+        [1, 'malformed_answer', 'not json at all'],
+        [2, 'malformed_answer', ''],
+      ]);
+      const again = await judgeJob(w.ctx, agent, config, job);
+      expect(again.invalid).toBe('malformed_answer');
+      expect(posts(w)).toHaveLength(2);
+      // another job has its own keys and its own first thought
+      const other = await judgeJob(w.ctx, agent, config, { ...job, jobId: 'job-0003' });
+      expect(other.winner).toBe(1);
+      expect(posts(w)).toHaveLength(3);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a ruling the code refuses for its content is final after one thought; fromAttempt 2 skips the first key', async () => {
+    const { w, agent, config } = await world([answer({ ...clean, winner: 2 }), answer(clean)]);
+    try {
+      const refusedRuling = await judgeJob(w.ctx, agent, config, job);
+      expect(refusedRuling).toMatchObject({ winner: null, invalid: 'winner_not_passing' });
+      expect(refusedRuling.thoughts).toHaveLength(1);
+      expect(posts(w)).toHaveLength(1);
+      const second = await judgeJob(w.ctx, agent, config, job, { fromAttempt: 2 });
+      expect(second.winner).toBe(1);
+      expect(second.thoughts!.map((t) => t.key)).toEqual([judgeKey(AGENT_ID, 'job-0001', 2)]);
+      expect(posts(w)).toHaveLength(2);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('is never asked twice for an answer it gave: the second call replays the stored thought and pays nothing', async () => {
+    const { w, agent, config } = await world([answer(clean), answer({ ...clean, winner: 4 }), answer({ ...clean, winner: 4 })]);
     try {
       const first = await judgeJob(w.ctx, agent, config, job);
       const second = await judgeJob(w.ctx, agent, config, { ...job, entries: [...job.entries].reverse() });
@@ -163,11 +253,17 @@ describe('the judge', () => {
       const other = await judgeJob(w.ctx, agent, config, { ...job, jobId: 'job-0002' });
       expect(other.thought.key).not.toBe(first.thought.key);
       expect(posts(w)).toHaveLength(2);
-      // a thought that failed stays failed for that job: no new payment
+      // a thought that failed is asked for once more under the job's second key, and only once
       await w.db.update(inferenceTable).set({ status: 'failed', error: 'upstream_rejected' }).where(eq(inferenceTable.idempotencyKey, other.thought.key));
       const again = await judgeJob(w.ctx, agent, config, { ...job, jobId: 'job-0002' });
-      expect(again).toMatchObject({ winner: null, invalid: 'thought_failed' });
-      expect(posts(w)).toHaveLength(2);
+      expect(again).toMatchObject({ winner: null, invalid: 'winner_not_passing' });
+      expect(again.thoughts!.map((t) => t.outcome)).toEqual(['failed', 'ok']);
+      expect(posts(w)).toHaveLength(3);
+      await w.db.update(inferenceTable).set({ status: 'failed', error: 'upstream_rejected' }).where(eq(inferenceTable.idempotencyKey, judgeKey(AGENT_ID, 'job-0002', 2)));
+      const third = await judgeJob(w.ctx, agent, config, { ...job, jobId: 'job-0002' });
+      expect(third).toMatchObject({ winner: null, invalid: 'thought_failed' });
+      expect(third.thoughts).toHaveLength(2);
+      expect(posts(w)).toHaveLength(3);
     } finally {
       await w.close();
     }
