@@ -291,8 +291,10 @@ export const serviceCalls = pgTable(
  * `post` and `reply` are the agent's publishes under post approval mode; `bounty_job` is a bounty job text waiting for
  * the creator before it is posted (the `review` switch of the bounties policy) and `bounty_payout` the proposal that
  * a job's winner be paid, which the creator settles by hand from their own wallet (bounties.ts; stage A pays nothing).
+ * `bounty_pick` is a job whose judge gave no usable ruling in two thoughts: the creator picks the entry to pay from the
+ * considered ones (and pays it by hand, like a payout), or declines.
  */
-export const approvalKinds = ['post', 'reply', 'bounty_job', 'bounty_payout'] as const;
+export const approvalKinds = ['post', 'reply', 'bounty_job', 'bounty_payout', 'bounty_pick'] as const;
 export type ApprovalKind = (typeof approvalKinds)[number];
 export const approvalStatuses = ['pending_approval', 'approved', 'rejected', 'failed'] as const;
 export type ApprovalStatus = (typeof approvalStatuses)[number];
@@ -593,8 +595,18 @@ export const bountyJobs = pgTable(
     conversationId: text('conversation_id'),
     /** The job as the coin page shows it (the full template text). */
     pageText: text('page_text').notNull(),
-    /** `{winner, perCriterion, reason, invalid?, deliveryHash, reasonHash, judgedAt, thought}`. */
+    /**
+     * `{winner, perCriterion, reason, invalid?, deliveryHash, reasonHash, judgedAt, thought, thoughts?}`; `thoughts` is
+     * every paid thought the job had (two at most). `manualPick: true` while the creator is asked to pick (the judge
+     * gave no usable ruling), `pickedBy: 'creator'` once they did, `rejudged: {at, outcome}` on a job the sweep judged
+     * a second time after it had closed on a failed ruling.
+     */
     verdict: jsonb('verdict').$type<Record<string, unknown> | null>(),
+    /**
+     * What the judge wrote when code refused its answer as no verdict (`malformed_answer`), cut to 4000 characters per
+     * answer, with how each answer ended: kept so the failure can be read. Model output: never logged, never public.
+     */
+    judgeRaw: text('judge_raw'),
     judgedAt: ts('judged_at'),
     /** The approval row of the job text (review) or of the payout proposal. */
     approvalId: text('approval_id'),
@@ -604,6 +616,9 @@ export const bountyJobs = pgTable(
     txHash: text('tx_hash'),
     paidAt: ts('paid_at'),
     paidReplyId: text('paid_reply_id'),
+    /** The agent's own post that announces the paid job (a fixed template), and why there is none when it was refused for good. */
+    payoutPostId: text('payout_post_id'),
+    payoutPostError: text('payout_post_error'),
     /** The template reply that closed the job in public (no winner, cancelled). */
     closeReplyId: text('close_reply_id'),
     entriesReceived: integer('entries_received').notNull().default(0),

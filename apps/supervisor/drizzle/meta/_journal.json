@@ -134,6 +134,13 @@
       "when": 1794728010705,
       "tag": "0018_records_served",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795417139501,
+      "tag": "0019_bounty_judge_retry",
+      "breakpoints": true
     }
   ]
 }

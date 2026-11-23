@@ -7,6 +7,7 @@
  */
 import { BOUNTY_MAX_CONSIDERED, DEFAULT_BOUNTIES_POLICY, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
 import { and, eq } from 'drizzle-orm';
+import { postFinding } from '@bootr/agent-core';
 import { describe, expect, it } from 'vitest';
 import { agentActivity } from '../src/activity.js';
 import { createApp } from '../src/api.js';
@@ -17,6 +18,7 @@ import {
   bountyBudget,
   bountyConversationIds,
   bountyJobId,
+  BOUNTY_GOOD_JOBS,
   CANCELLED_TEXT,
   coinPageLink,
   collectAndJudge,
@@ -27,15 +29,21 @@ import {
   NOTHING_PAID_TEXT,
   paidReplyText,
   payoutApprovalId,
+  payoutPostText,
+  pickApprovalId,
+  publishPayoutPost,
+  sameJob,
   shortJobId,
   sniffImage,
   sweepBounties,
+  taskRuleProblem,
   usdc,
   utcDayStart,
   type EligibilityContext,
 } from '../src/bounties.js';
 import { executeAction, inboxViews, resolvePending, type BrokerEnv } from '../src/broker/index.js';
-import { approvals, bountyEntries, bountyJobs, runtimes } from '../src/db/schema.js';
+import { approvals, bountyEntries, bountyJobs, inference as inferenceTable, runtimes } from '../src/db/schema.js';
+import { judgeKey } from '../src/judge.js';
 import { signRequest } from '../src/hmac.js';
 import { closeBountyEntries } from '../src/mention-close.js';
 import { bountyJobClosed, treasuryTurnDue } from '../src/roles.js';
@@ -68,6 +76,10 @@ const configOf = (raw: Record<string, unknown>) => parseAgentConfig(raw);
 /** The treasury clock parked, so a tick in these tests never buys a treasury thought on its own. */
 const restingRuntime = { state: { ...initialState(), lastPostAt: T0 - 60_000, treasuryNextAt: T0 + 24 * H, lastTreasuryTurnAt: T0 - 60_000 } as unknown as Record<string, unknown>, nextAt: new Date(T0 + 24 * H), lastDecisionAt: new Date(T0 - 60_000) };
 
+/** Other jobs of the same agent: different work each, since a job in the words of an earlier one is refused. */
+const TASK2 = 'A round picture of a cat asleep on a ledger, pencil sketch';
+const TASK3 = 'A wide picture of three boats on a green lake at dawn';
+const TASK4 = 'A tall picture of a lighthouse made of stacked coins, in ink';
 const JOB_INPUT = { task: 'A square picture of a dot wearing a tiny hat, flat colours', criteria: ['It shows a single dot', 'The dot wears a hat'], deliverable: 'image' as const, amountUsdc: 0.5 };
 
 /** The job post of the seeded agent for `JOB_INPUT`, as the template renders it at `now`. */
@@ -89,9 +101,9 @@ function api(world: TestWorld) {
 }
 
 /** A plain-text model answer (the judge's), with a receipt like the relay's. */
-function judgeAnswer(body: unknown): Response {
+function judgeAnswer(body: unknown, finishReason = 'stop'): Response {
   const content = typeof body === 'string' ? body : JSON.stringify(body);
-  return new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 60 } }), {
+  return new Response(JSON.stringify({ id: 'cmpl', choices: [{ message: { role: 'assistant', content }, finish_reason: finishReason }], usage: { prompt_tokens: 900, completion_tokens: 60 } }), {
     status: 200,
     headers: { 'content-type': 'application/json', 'x-bootr-receipt': JSON.stringify({ requestId: 'r', quoteMicroUsdc: '9000', chargedMicroUsdc: '7000', paymentTxOrId: '0xtx', network: 'eip155:84532', usage: null }) },
   });
@@ -177,7 +189,7 @@ describe('the templates and the task rules', () => {
     const config = configOf(agentConfig(T0));
     const check = (task: string, criteria: string[] = ['It is a dot'], premium: boolean | null = null) => {
       const text = jobPostText({ task, amountMicroUsdc: 500_000n, deliverable: 'image', closesAt: T0 + 6 * H, handle: config.xHandle, link: 'https://bootr.fun/token/x#bounty-0x1' });
-      return jobTextProblem({ task, criteria, text, attributions: [{ username: config.xHandle, sourceUrl: 'https://bootr.fun/token/x#bounty-0x1' }], config, premium });
+      return jobTextProblem({ task, criteria, deliverable: 'image', text, attributions: [{ username: config.xHandle, sourceUrl: 'https://bootr.fun/token/x#bounty-0x1' }], config, premium });
     };
     expect(check('A square picture of a dot wearing a tiny hat')).toBeNull();
     for (const word of ['buy', 'post', 'tweet', 'promote', 'shill', 'follow', 'like', 'retweet', 'Retweets', 'posting', 'promotion', 'bought', 'reposts']) expect(check(`Please ${word} something about the dot`), word).toMatch(/^bounty_asks_for_promotion/);
@@ -190,10 +202,10 @@ describe('the templates and the task rules', () => {
     // the gate itself: a 32-byte hex reads as secret material for everyone, a foreign link is refused for the platform agent
     expect(check(`A dot with the number ${'ab'.repeat(32)}`)).toMatch(/^social_secret_material_forbidden: the job post does not pass the publish gate/);
     const platform = configOf({ ...agentConfig(T0), platform: true });
-    const platformText = jobPostText({ task: 'A dot. Visit https://bootr-claim.com/x now', amountMicroUsdc: 500_000n, deliverable: 'image', closesAt: T0 + 6 * H, handle: platform.xHandle, link: 'https://bootr.fun/token/x#bounty-0x1' });
-    expect(jobTextProblem({ task: 'A dot. Visit https://bootr-claim.com/x now', criteria: ['It is a dot'], text: platformText, attributions: [{ username: platform.xHandle, sourceUrl: 'https://bootr.fun/token/x#bounty-0x1' }], config: platform, premium: null })).toMatch(/^platform_link_forbidden/);
-    expect(check('x'.repeat(200), ['It is a dot'], false)).toMatch(/^bounty_post_too_long/);
-    expect(check('x'.repeat(200), ['It is a dot'], true)).toBeNull();
+    const platformText = jobPostText({ task: 'A square picture of a dot. Visit https://bootr-claim.com/x now', amountMicroUsdc: 500_000n, deliverable: 'image', closesAt: T0 + 6 * H, handle: platform.xHandle, link: 'https://bootr.fun/token/x#bounty-0x1' });
+    expect(jobTextProblem({ task: 'A square picture of a dot. Visit https://bootr-claim.com/x now', criteria: ['It is a dot'], deliverable: 'image', text: platformText, attributions: [{ username: platform.xHandle, sourceUrl: 'https://bootr.fun/token/x#bounty-0x1' }], config: platform, premium: null })).toMatch(/^platform_link_forbidden/);
+    expect(check(`A square picture of a dot ${'x'.repeat(180)}`, ['It is a dot'], false)).toMatch(/^bounty_post_too_long/);
+    expect(check(`A square picture of a dot ${'x'.repeat(180)}`, ['It is a dot'], true)).toBeNull();
   });
 
   it('the public link and the page anchor carry the 16-hex prefix of the job id, never the 32-byte id the gate refuses', () => {
@@ -271,7 +283,7 @@ describe('bounty_post', () => {
       expect(await resolvePending(w.ctx, agent, { ...pending('act-post-1', 'bounty_post', JOB_INPUT), status: 'sent' } as never)).toMatchObject({ resolved: true, outcome: { kind: 'completed', result: { jobId: job!.id } }, receipt: { postId: '9001' } });
       expect(await resolvePending(w.ctx, agent, { ...pending('act-none', 'bounty_post', JOB_INPUT), status: 'sent' } as never)).toMatchObject({ resolved: true, outcome: { kind: 'failed' } });
       // the custom window and the list
-      const two = await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: 'A link to a page comparing two Base pools', deliverable: 'link', amountUsdc: 0.2, hoursOpen: 24 });
+      const two = await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: 'A CSV of the ten largest Base pools by volume with name and volume', deliverable: 'link', amountUsdc: 0.2, hoursOpen: 24 });
       expect(two).toMatchObject({ kind: 'completed', result: { status: 'open', closesAt: new Date(T0 + 24 * H).toISOString() } });
       const list = (await executeAction(w.ctx, agent, configOf(raw), pending('act-list', 'bounty_list', {}), env())) as { kind: string; result: { jobs: Record<string, unknown>[]; budget: Record<string, unknown> } };
       expect(list.kind).toBe('completed');
@@ -280,7 +292,7 @@ describe('bounty_post', () => {
       expect(JSON.stringify(list.result)).not.toContain('authorId');
       // the tape and the treasury observation know the job
       const items = await agentActivity(w.ctx, agent, null);
-      expect(items.filter((i) => i.kind === 'bounty').map((i) => i.summary).sort()).toEqual([`Posted a bounty for 0.2 USDC: A link to a page comparing two Base pools`, `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`].sort());
+      expect(items.filter((i) => i.kind === 'bounty').map((i) => i.summary).sort()).toEqual([`Posted a bounty for 0.2 USDC: A CSV of the ten largest Base pools by volume with name and volume`, `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`].sort());
       const section = (await bountiesSection(w.ctx, agent, configOf(raw))) as { bounties: Record<string, unknown> };
       expect(section.bounties).toMatchObject({ headroom: { openJobs: 2 }, policy: { dailyCapUsdc: '5', maxOpen: 2, cooldownDays: 7, review: false } });
       expect((section.bounties.openJobs as unknown[]).length).toBe(2);
@@ -315,7 +327,7 @@ describe('bounty_post', () => {
       // a draft that outlives its day fails without a post
       w.setNow(T0);
       w.sender.quotaExceeded = new Date(T0 + 30 * H).toISOString();
-      await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: 'Another dot picture' });
+      await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
       w.setNow(T0 + 30 * H + 1);
       expect(await sweepBounties(w.ctx)).toMatchObject({ failed: 1 });
       const stale = (await jobsOf(w)).find((j) => j.actionId === 'act-post-2')!;
@@ -324,7 +336,7 @@ describe('bounty_post', () => {
       w.setNow(T0);
       w.sender.quotaExceeded = null;
       w.sender.publishError = 'http_403(403): You are not permitted to perform this action';
-      const bad = await postJob(w, agent, raw, 'act-post-3', { ...JOB_INPUT, task: 'A third dot picture' });
+      const bad = await postJob(w, agent, raw, 'act-post-3', { ...JOB_INPUT, task: TASK3 });
       expect(bad).toMatchObject({ kind: 'failed', error: expect.stringMatching(/bounty_post_failed: sender_rejected:http_403/) });
       expect((await jobsOf(w)).find((j) => j.actionId === 'act-post-3')).toMatchObject({ status: 'failed' });
       // failed and expired jobs hold no reservation
@@ -355,7 +367,7 @@ describe('bounty_post', () => {
       expect((await jobsOf(w))[0]).toMatchObject({ status: 'open', postId: '9001' });
       expect(published(w)).toHaveLength(1);
       // a second job declined
-      await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: 'A second dot picture' });
+      await postJob(w, agent, raw, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
       const rejected = await post(`/internal/agents/${AGENT_ID}/approvals/act-post-2`, { decision: 'reject', by: CREATOR, note: 'not now' });
       expect(rejected.status).toBe(200);
       expect((await jobsOf(w)).find((j) => j.actionId === 'act-post-2')).toMatchObject({ status: 'cancelled', error: 'declined by the creator' });
@@ -544,10 +556,19 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(done).toMatchObject({ status: 'paid', txHash: TX, paidReplyId: '9002', payee: ADDR_A });
       const [, paidReply] = published(w);
       expect(paidReply).toMatchObject({ actionId: `bounty:${job.id}:paid`, replyTo: '7003', text: `Paid 0.5 USDC for this entry. Why: A single round dot in a small red hat on a plain background. https://sepolia.basescan.org/tx/${TX}` });
-      // once only
+      // the payment is also a post of the agent's own, from the template: the job, the amount, the transaction, the entry; nobody named
+      const [, , payoutPost] = published(w);
+      expect(payoutPost).toMatchObject({ actionId: `bounty:${job.id}:payout`, text: `Bounty paid: 0.5 USDC to the winning entry. The job: ${JOB_INPUT.task}. Payment: https://sepolia.basescan.org/tx/${TX} Entry: https://x.com/i/status/7003` });
+      expect(payoutPost!.replyTo).toBeUndefined();
+      expect(payoutPost!.text).not.toContain('@');
+      expect(payoutPost!.text).not.toContain(ADDR_A);
+      expect(done.payoutPostId).toBe('9003');
+      // once only: a second approval is refused, a second ask and the sweep post nothing more
       const again = await post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job.id)}`, { decision: 'approve', by: CREATOR, txHash: TX });
       expect(again.status).toBe(409);
-      expect(published(w)).toHaveLength(2);
+      expect((await publishPayoutPost(w.ctx, agent, configOf(agent.config), (await jobsOf(w))[0]!)).payoutPostId).toBe('9003');
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('announced');
+      expect(published(w)).toHaveLength(3);
       // the tape and the read routes: public fields only
       const tape = (await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty');
       expect(tape.map((i) => i.summary)).toEqual(['Paid 0.5 USDC for a bounty entry', 'Judged a bounty: entry 2 of 2 won', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);
@@ -571,7 +592,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
         pageUrl: `https://bootr.fun/token/${TOKEN.toLowerCase()}#bounty-${shortJobId(job.id)}`,
         entries: { received: 4, eligible: 2, considered: 2, ineligible: { no_artefact: 1, artefact_unreadable: 1 } },
         verdict: { winner: 2, winningEntryUrl: 'https://x.com/i/status/7003', perCriterion: { '1': ['pass', 'fail'], '2': ['pass', 'pass'] }, reason: expect.stringMatching(/red hat/), invalid: null },
-        payment: { status: 'paid', payee: ADDR_A, amountUsdc: '0.5', txHash: TX, txUrl: `https://sepolia.basescan.org/tx/${TX}`, replyUrl: 'https://x.com/i/status/9002' },
+        payment: { status: 'paid', payee: ADDR_A, amountUsdc: '0.5', txHash: TX, txUrl: `https://sepolia.basescan.org/tx/${TX}`, replyUrl: 'https://x.com/i/status/9002', postUrl: 'https://x.com/i/status/9003' },
       });
       const text = JSON.stringify(list);
       expect(text).not.toContain(ADDR_B); // the other eligible entry's address stays off the page
@@ -590,7 +611,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
   });
 
   it('closes a job without a winner in public when nothing met it, when the verdict is refused in code, and when no entry was eligible; the creator may decline a proposal', async () => {
-    const w = await makeWorld({ script: [judgeAnswer(verdict(null, 1)), judgeAnswer('not json at all'), judgeAnswer(verdict(1, 1))] });
+    const w = await makeWorld({ script: [judgeAnswer(verdict(null, 1)), judgeAnswer({ winner: 1, perCriterion: { '1': ['pass', 'fail'] }, reason: 'A dot.' }), judgeAnswer(verdict(1, 1))] });
     try {
       const { agent, job } = await closedJob(w, [reply('7001', '31')], png('7001'));
       await sweepBounties(w.ctx);
@@ -600,9 +621,9 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(published(w)[1]).toMatchObject({ actionId: `bounty:${job.id}:close`, replyTo: '9001', text: NO_WINNER_TEXT });
       expect(await w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID))).toHaveLength(0);
       expect((await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty')[0]!.summary).toBe('Bounty closed: no entry met the job (1 reply), nothing paid');
-      // an invalid verdict (malformed answer): no winner, nothing proposed
+      // a ruling refused in code for what it rules (a winner that fails a criterion): no winner, nothing proposed, no second thought
       w.setNow(T0 + 7 * H);
-      const second = await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: 'Another dot picture' });
+      const second = await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
       expect(second.kind).toBe('completed');
       serveReplies(w, [reply('7101', '41', { createdAt: new Date(T0 + 8 * H).toISOString() })]);
       serveArtefacts(w, png('7101'));
@@ -610,10 +631,11 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       await sweepBounties(w.ctx);
       after = (await jobsOf(w)).find((j) => j.actionId === 'act-post-2')!;
       expect(after).toMatchObject({ status: 'no_winner' });
-      expect(after.verdict).toMatchObject({ winner: null, invalid: 'malformed_answer' });
+      expect(after.verdict).toMatchObject({ winner: null, invalid: 'winner_not_passing' });
+      expect((after.verdict as { thoughts: unknown[] }).thoughts).toHaveLength(1);
       // no eligible entry at all: closed without a thought
       w.setNow(T0 + 14 * H);
-      await postJob(w, agent, agent.config, 'act-post-3', { ...JOB_INPUT, task: 'A third dot picture' });
+      await postJob(w, agent, agent.config, 'act-post-3', { ...JOB_INPUT, task: TASK3 });
       serveReplies(w, [reply('7201', '51', { media: [] })]);
       w.setNow(T0 + 20 * H + 1);
       const thoughtsBefore = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
@@ -624,7 +646,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(thoughtsBefore);
       // a proposal the creator declines closes with "Nothing paid."
       w.setNow(T0 + 21 * H);
-      await postJob(w, agent, agent.config, 'act-post-4', { ...JOB_INPUT, task: 'A fourth dot picture' });
+      await postJob(w, agent, agent.config, 'act-post-4', { ...JOB_INPUT, task: TASK4 });
       serveReplies(w, [reply('7301', '61', { createdAt: new Date(T0 + 22 * H).toISOString() })]);
       serveArtefacts(w, png('7301'));
       w.setNow(T0 + 27 * H + 1);
@@ -689,7 +711,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(Object.fromEntries(entries.map((e) => [e.replyId, e.ineligibleReason]))).toEqual({ '7001': null, '7002': 'duplicate_media', '7003': 'link_redirect' });
       // a job that never collects fails after MAX_COLLECT_ATTEMPTS, closed unpaid in public
       w.setNow(T0 + 30 * H);
-      await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: 'Another dot picture' });
+      await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
       (w.sender.client as unknown as { readReplies: () => Promise<unknown> }).readReplies = async () => {
         throw new Error('fetch failed');
       };
@@ -716,6 +738,425 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(again.job.status).toBe('proposed');
       expect(w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))).toHaveLength(1);
       expect(await w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID))).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('a judge that gives no usable answer: the second thought, the creator\'s pick, the second ruling', () => {
+  const png = (id: string, body: Buffer = PNG) => ({ [`https://pbs.twimg.com/media/${id}.png`]: { body, type: 'image/png' } });
+  const good = (winner: number | null, n: number, reason = 'A single round dot in a small red hat on a plain background.') => ({ winner, perCriterion: Object.fromEntries([...Array(n)].map((_, i) => [String(i + 1), winner === i + 1 ? ['pass', 'pass'] : ['pass', 'fail']])), reason });
+  const thoughtCalls = (w: TestWorld) => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+
+  /** An open image job whose window closed with two eligible entries: 7001 pays ADDR_A, 7002 pays ADDR_B. */
+  async function closedJobWithTwo(w: TestWorld) {
+    const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+    await postJob(w, agent, agent.config);
+    const [job] = await jobsOf(w);
+    serveReplies(w, [reply('7001', '31'), reply('7002', '32', { text: `entry two ${ADDR_B}` })]);
+    serveArtefacts(w, { ...png('7001'), ...png('7002', PNG2) });
+    w.setNow(T0 + 6 * H + 1);
+    return { agent, job: job! };
+  }
+
+  /**
+   * Rewrites a job the judge failed on to what the code before the second thought left behind: closed `no_winner` on
+   * the refused answer, one thought on record, "No entry met the job; nothing paid." already said in public.
+   */
+  async function asClosedByOldCode(w: TestWorld, jobId: string, over: { closedAt?: number; keepThoughts?: boolean } = {}) {
+    const [row] = await w.db.select().from(bountyJobs).where(eq(bountyJobs.id, jobId));
+    const { thoughts, manualPick: _pick, rejudged: _again, ...rest } = row!.verdict as Record<string, unknown> & { thoughts?: { key: string }[] };
+    await w.db.delete(approvals).where(eq(approvals.id, pickApprovalId(jobId)));
+    if (!over.keepThoughts) await w.db.delete(inferenceTable).where(eq(inferenceTable.idempotencyKey, judgeKey(AGENT_ID, jobId, 2)));
+    const at = new Date(over.closedAt ?? w.ctx.now());
+    await w.db
+      .update(bountyJobs)
+      .set({ status: 'no_winner', verdict: { ...rest, winner: null, invalid: 'malformed_answer', thought: thoughts?.[0] ?? rest.thought, ...(over.keepThoughts ? { thoughts } : {}) }, approvalId: null, judgeRaw: null, closeReplyId: '9990', closedAt: at, updatedAt: at })
+      .where(eq(bountyJobs.id, jobId));
+  }
+
+  it('an answer that is no verdict buys one more thought under a new key; the refused text is kept on the row and stays off every public read', async () => {
+    const w = await makeWorld({ script: [judgeAnswer('Entry 2 has the hat, entry 1 does not. I would pick the second one.'), judgeAnswer('```json\n' + JSON.stringify(good(2, 2)) + '\n```')] });
+    try {
+      const { agent, job } = await closedJobWithTwo(w);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ judged: 1 });
+      const after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', payee: ADDR_B, approvalId: payoutApprovalId(job.id) });
+      const stored = after.verdict as { winner: number; thoughts: { key: string; outcome: string }[]; thought: { key: string } };
+      expect(stored.winner).toBe(2);
+      expect(stored.thoughts.map((t) => t.key)).toEqual([judgeKey(AGENT_ID, job.id), judgeKey(AGENT_ID, job.id, 2)]);
+      expect(stored.thought.key).toBe(judgeKey(AGENT_ID, job.id, 2));
+      expect(thoughtCalls(w)).toBe(2);
+      expect(after.judgeRaw).toMatch(/^\[attempt 1: malformed_answer; finish stop; 60 output tokens\]\nEntry 2 has the hat/);
+      // nothing was said in public about a failed ruling, and the model's text is on no read route
+      expect(published(w)).toHaveLength(1);
+      const read = JSON.stringify(await (await api(w).get(`/internal/agents/${AGENT_ID}/bounties`)).json()) + JSON.stringify(await (await api(w).get(`/internal/agents/${AGENT_ID}/approvals`)).json()) + JSON.stringify(await agentActivity(w.ctx, agent, null));
+      expect(read).not.toContain('Entry 2 has the hat');
+      expect(read).not.toContain('judgeRaw');
+      // resumed or swept again: both thoughts replay, nothing more is bought
+      await collectAndJudge(w.ctx, agent, configOf(agent.config), { ...after, status: 'judging' });
+      expect(thoughtCalls(w)).toBe(2);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('two answers that are no verdict do not close the job in public: the creator picks an entry and pays it, with the tx hash and the entry number', async () => {
+    const w = await makeWorld({ script: [judgeAnswer('I looked at both pictures.'), judgeAnswer('{"winner": 2, "perCriterion": {"1": ["pass", "pa', 'length'), judgeAnswer(good(1, 2))] });
+    try {
+      const { agent, job } = await closedJobWithTwo(w);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ judged: 1 });
+      let after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', payee: null, approvalId: pickApprovalId(job.id), closeReplyId: null, entriesConsidered: 2 });
+      expect(after.verdict).toMatchObject({ winner: null, invalid: 'malformed_answer', manualPick: true });
+      expect((after.verdict as { thoughts: unknown[] }).thoughts).toHaveLength(2);
+      expect(after.judgeRaw).toContain('[attempt 1: malformed_answer; finish stop;');
+      expect(after.judgeRaw).toContain('[attempt 2: malformed_answer; finish length;');
+      expect(after.judgeRaw).toContain('I looked at both pictures.');
+      // two thoughts, never a third; no "No entry met the job" under the job post
+      expect(thoughtCalls(w)).toBe(2);
+      await sweepBounties(w.ctx);
+      expect(thoughtCalls(w)).toBe(2);
+      expect(published(w)).toHaveLength(1);
+      expect(published(w).some((p) => p.text === NO_WINNER_TEXT)).toBe(false);
+      // the queue item: every considered entry with its links and its address, for the creator's eyes
+      const { get, post } = api(w);
+      const queue = (await (await get(`/internal/agents/${AGENT_ID}/approvals`)).json()) as { items: Record<string, unknown>[] };
+      expect(queue.items).toHaveLength(1);
+      expect(queue.items[0]).toMatchObject({
+        id: pickApprovalId(job.id),
+        kind: 'bounty_pick',
+        bounty: {
+          kind: 'pick',
+          jobId: job.id,
+          amountUsdc: '0.5',
+          why: 'malformed_answer',
+          txHashRequired: true,
+          entryRequired: true,
+          candidates: [
+            { n: 1, payee: ADDR_A, entryUrl: 'https://x.com/i/status/7001', artefactUrl: 'https://pbs.twimg.com/media/7001.png' },
+            { n: 2, payee: ADDR_B, entryUrl: 'https://x.com/i/status/7002', artefactUrl: 'https://pbs.twimg.com/media/7002.png' },
+          ],
+        },
+      });
+      // the tape says where it stands, with no address; the public job view shows no payment yet
+      const waiting = (await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty').map((i) => i.summary);
+      expect(waiting[0]).toBe("Bounty: the judge gave no ruling, 2 entries wait for the creator's pick");
+      const view = ((await (await get(`/internal/agents/${AGENT_ID}/bounties`)).json()) as { jobs: { payment: unknown; status: string }[] }).jobs[0]!;
+      expect(view).toMatchObject({ status: 'proposed', payment: null });
+      // approving needs the hash and the number of one of the listed entries
+      const url = `/internal/agents/${AGENT_ID}/approvals/${pickApprovalId(job.id)}`;
+      expect(((await (await post(url, { decision: 'approve', by: CREATOR, entry: 2 })).json()) as { error: string }).error).toBe('tx_hash_required');
+      expect(((await (await post(url, { decision: 'approve', by: CREATOR, txHash: TX })).json()) as { error: string }).error).toBe('entry_required');
+      expect(((await (await post(url, { decision: 'approve', by: CREATOR, txHash: TX, entry: 5 })).json()) as { error: string }).error).toBe('entry_required');
+      expect((await jobsOf(w))[0]!.status).toBe('proposed');
+      w.setNow(w.ctx.now() + 60_000);
+      const paid = await post(url, { decision: 'approve', by: CREATOR, txHash: TX, entry: 2 });
+      expect(paid.status).toBe(200);
+      after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'paid', payee: ADDR_B, txHash: TX, paidReplyId: '9002', payoutPostId: '9003' });
+      expect(after.verdict).toMatchObject({ winner: 2, pickedBy: 'creator', judgeInvalid: 'malformed_answer' });
+      expect(after.verdict).not.toHaveProperty('invalid');
+      expect(after.verdict).not.toHaveProperty('manualPick');
+      expect(published(w)[1]).toMatchObject({ actionId: `bounty:${job.id}:paid`, replyTo: '7002', text: `Paid 0.5 USDC for this entry. https://sepolia.basescan.org/tx/${TX}` });
+      expect(published(w)[2]).toMatchObject({ actionId: `bounty:${job.id}:payout`, text: `Bounty paid: 0.5 USDC to the winning entry. The job: ${JOB_INPUT.task}. Payment: https://sepolia.basescan.org/tx/${TX} Entry: https://x.com/i/status/7002` });
+      expect((await post(url, { decision: 'approve', by: CREATOR, txHash: TX, entry: 1 })).status).toBe(409);
+      const tape = (await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty').map((i) => i.summary);
+      expect(tape).toEqual(['Paid 0.5 USDC for a bounty entry', 'Bounty: the judge gave no ruling, the creator picked entry 2 of 2', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);
+      expect(JSON.stringify(tape)).not.toContain(ADDR_B);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a pick the creator declines closes the job as a declined payout does; a failed thought counts like a refused answer', async () => {
+    const w = await makeWorld({ script: [judgeAnswer('no ruling here'), new Response(JSON.stringify({ error: { code: 'upstream_rejected' } }), { status: 502, headers: { 'content-type': 'application/json' } })] });
+    try {
+      const { job } = await closedJobWithTwo(w);
+      await sweepBounties(w.ctx);
+      let after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', approvalId: pickApprovalId(job.id) });
+      expect(after.verdict).toMatchObject({ invalid: 'thought_failed', manualPick: true });
+      const declined = await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${pickApprovalId(job.id)}`, { decision: 'reject', by: CREATOR, note: 'none of them' });
+      expect(declined.status).toBe(200);
+      after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'no_winner', error: 'declined by the creator', payee: null, closeReplyId: '9002' });
+      expect(published(w).at(-1)).toMatchObject({ actionId: `bounty:${job.id}:close`, text: NOTHING_PAID_TEXT });
+      // declined is final: the sweep does not judge it again
+      w.setNow(w.ctx.now() + 20 * 60_000);
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a job that closed on a refused answer in the last seven days is judged once more by the sweep; a winner becomes a normal proposal and nothing is said in public twice', async () => {
+    const script = [judgeAnswer('I looked at both pictures.'), judgeAnswer('Still thinking about it.')];
+    const w = await makeWorld({ script });
+    try {
+      const { agent, job } = await closedJobWithTwo(w);
+      await sweepBounties(w.ctx);
+      await asClosedByOldCode(w, job.id);
+      expect((await jobsOf(w))[0]).toMatchObject({ status: 'no_winner', closeReplyId: '9990', approvalId: null });
+      expect((await jobsOf(w))[0]!.verdict).not.toHaveProperty('thoughts');
+      // spaced from the last touch of the row, then judged from the stored entry rows: X is not read again
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+      const asked = serveReplies(w, []);
+      w.setNow(w.ctx.now() + 16 * 60_000);
+      script.push(judgeAnswer(good(2, 2)));
+      expect(await sweepBounties(w.ctx)).toMatchObject({ rejudged: 1 });
+      expect(asked).toEqual([]);
+      const after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', payee: ADDR_B, approvalId: payoutApprovalId(job.id), closeReplyId: '9990', error: null });
+      expect(after.verdict).toMatchObject({ winner: 2, rejudged: { outcome: 'proposed' } });
+      expect(after.verdict).not.toHaveProperty('invalid');
+      // the first thought was replayed (its answer is still no verdict, and is now kept), the second was bought: three calls in all, two for the job's two keys
+      expect((after.verdict as { thoughts: { key: string }[] }).thoughts.map((t) => t.key)).toEqual([judgeKey(AGENT_ID, job.id), judgeKey(AGENT_ID, job.id, 2)]);
+      expect(thoughtCalls(w)).toBe(3);
+      expect(after.judgeRaw).toContain('I looked at both pictures.');
+      const queue = (await (await api(w).get(`/internal/agents/${AGENT_ID}/approvals`)).json()) as { items: Record<string, unknown>[] };
+      expect(queue.items[0]).toMatchObject({ id: payoutApprovalId(job.id), kind: 'bounty_payout', bounty: { kind: 'payout', payee: ADDR_B, entryUrl: 'https://x.com/i/status/7002' } });
+      // only the job post is in public: no second "nothing paid", and none when the creator declines either
+      expect(published(w)).toHaveLength(1);
+      w.setNow(w.ctx.now() + 16 * 60_000);
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+      expect(thoughtCalls(w)).toBe(3);
+      expect((await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job.id)}`, { decision: 'reject', by: CREATOR })).status).toBe(200);
+      expect((await jobsOf(w))[0]).toMatchObject({ status: 'no_winner', closeReplyId: '9990' });
+      expect(published(w)).toHaveLength(1);
+      // the creator can still pay it: approve path of another run is covered above; here the treasury clock saw the proposal
+      expect(await bountyJobClosed(w.ctx, agent, { ...initialState(), lastTreasuryTurnAt: T0 }, w.ctx.now())).toBe(true);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('not judged again: a job that closed more than seven days ago, and one that already had two thoughts; a stored answer today\'s parser can read costs nothing', async () => {
+    const script = [judgeAnswer('I looked at both pictures.'), judgeAnswer('Still thinking about it.')];
+    const w = await makeWorld({ script });
+    try {
+      const { job } = await closedJobWithTwo(w);
+      await sweepBounties(w.ctx);
+      const closedAt = w.ctx.now();
+      // (a) two thoughts already: never a third
+      await asClosedByOldCode(w, job.id, { keepThoughts: true });
+      w.setNow(closedAt + 20 * 60_000);
+      script.push(judgeAnswer(good(1, 2)));
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+      expect((await jobsOf(w))[0]!.status).toBe('no_winner');
+      // (b) one thought, but closed eight days ago
+      await asClosedByOldCode(w, job.id, { closedAt: w.ctx.now() - 8 * 24 * H });
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+      expect((await jobsOf(w))[0]!.status).toBe('no_winner');
+      expect(thoughtCalls(w)).toBe(2);
+      // (c) one thought, closed an hour ago, and its stored answer was a verdict in a code fence the old parser refused
+      await asClosedByOldCode(w, job.id, { closedAt: w.ctx.now() - H });
+      await w.db
+        .update(inferenceTable)
+        .set({ response: { id: 'cmpl', choices: [{ message: { role: 'assistant', content: 'Here is my ruling:\n```json\n' + JSON.stringify(good(1, 2)) + '\n```' }, finish_reason: 'stop' }] } })
+        .where(eq(inferenceTable.idempotencyKey, judgeKey(AGENT_ID, job.id)));
+      expect(await sweepBounties(w.ctx)).toMatchObject({ rejudged: 1 });
+      const after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', payee: ADDR_A, approvalId: payoutApprovalId(job.id) });
+      expect(after.verdict).toMatchObject({ winner: 1, rejudged: { outcome: 'proposed' } });
+      expect(thoughtCalls(w)).toBe(2);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a second ruling without a winner leaves the job closed and silent; a second failure asks the creator to pick', async () => {
+    const script = [judgeAnswer('I looked at both pictures.'), judgeAnswer('Still thinking about it.')];
+    const w = await makeWorld({ script });
+    try {
+      const { job } = await closedJobWithTwo(w);
+      await sweepBounties(w.ctx);
+      await asClosedByOldCode(w, job.id);
+      w.setNow(w.ctx.now() + 16 * 60_000);
+      script.push(judgeAnswer(good(null, 2)));
+      expect(await sweepBounties(w.ctx)).toMatchObject({ rejudged: 1 });
+      let after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'no_winner', closeReplyId: '9990', approvalId: null, payee: null });
+      expect(after.verdict).toMatchObject({ winner: null, rejudged: { outcome: 'no_winner' } });
+      expect(after.verdict).not.toHaveProperty('invalid');
+      expect(published(w)).toHaveLength(1);
+      expect(await w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID))).toHaveLength(0);
+      w.setNow(w.ctx.now() + 16 * 60_000);
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('rejudged');
+      expect(thoughtCalls(w)).toBe(3);
+      // the same job, had its second thought failed too: the creator's pick, not a second silent close
+      await asClosedByOldCode(w, job.id);
+      script.push(judgeAnswer('And again no JSON.'));
+      w.setNow(w.ctx.now() + 16 * 60_000);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ rejudged: 1 });
+      after = (await jobsOf(w))[0]!;
+      expect(after).toMatchObject({ status: 'proposed', approvalId: pickApprovalId(job.id), payee: null });
+      expect(after.verdict).toMatchObject({ manualPick: true, invalid: 'malformed_answer', rejudged: { outcome: 'manual_pick' } });
+      expect(published(w)).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('the payout post', () => {
+  it('is the fixed template, fits a 280-character account by dropping the entry link and then cutting the task, and passes the platform agent\'s gate', () => {
+    const txUrl = `https://basescan.org/tx/${TX}`;
+    const entryUrl = 'https://x.com/i/status/1990000000000000001';
+    const text = payoutPostText({ task: 'A square image showing how a trade fee is split, with the labels creator, agent and platform', amountMicroUsdc: 500_000n, txUrl, entryUrl, limit: 4000 });
+    expect(text).toBe(`Bounty paid: 0.5 USDC to the winning entry. The job: A square image showing how a trade fee is split, with the labels creator, agent and platform. Payment: ${txUrl} Entry: ${entryUrl}`);
+    // a task that ends its own sentence gets no second full stop; no entry on record, no entry link
+    expect(payoutPostText({ task: 'Compare two pools.', amountMicroUsdc: '1000000', txUrl, limit: 4000 })).toBe(`Bounty paid: 1 USDC to the winning entry. The job: Compare two pools. Payment: ${txUrl}`);
+    const short = payoutPostText({ task: 'A square image showing how a trade fee is split, with the labels creator, agent and platform', amountMicroUsdc: 500_000n, txUrl, entryUrl, limit: 280 });
+    expect([...short].length).toBeLessThanOrEqual(280);
+    expect(short).toBe(`Bounty paid: 0.5 USDC to the winning entry. The job: A square image showing how a trade fee is split, with the labels creator, agent and platform. Payment: ${txUrl}`);
+    const cut = payoutPostText({ task: `A square image showing ${'many things and '.repeat(12)}a dot`, amountMicroUsdc: 500_000n, txUrl, entryUrl, limit: 280 });
+    expect([...cut].length).toBeLessThanOrEqual(280);
+    expect(cut).toMatch(/^Bounty paid: 0\.5 USDC to the winning entry\. The job: A square image showing many things .*… Payment: https:\/\/basescan\.org\/tx\/0x[0-9a-f]{64}$/);
+    // the launchpad's own account: the amount, the explorer link and the entry link are all allowed, nobody is named
+    for (const t of [text, short, cut]) {
+      expect(postFinding(t, [], 'original', false, { platform: true, publicAddresses: [TOKEN, KERNEL] })).toBeNull();
+      expect(t).not.toContain('@');
+    }
+  });
+
+  it('waits for the sweep when the agent cannot post at the moment of the approval, goes out once, and a refused post is final', async () => {
+    const verdict = { winner: 1, perCriterion: { '1': ['pass', 'pass'] }, reason: 'A single round dot in a small red hat.' };
+    const w = await makeWorld({ script: [judgeAnswer(verdict), judgeAnswer(verdict)] });
+    try {
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      await postJob(w, agent, agent.config);
+      const [job] = await jobsOf(w);
+      serveReplies(w, [reply('7001', '31')]);
+      serveArtefacts(w, { 'https://pbs.twimg.com/media/7001.png': { body: PNG, type: 'image/png' } });
+      w.setNow(T0 + 6 * H + 1);
+      await sweepBounties(w.ctx);
+      // the day's X quota is used up when the creator approves: the payment is recorded, the post is owed
+      w.sender.quotaExceeded = new Date(w.ctx.now() + H).toISOString();
+      const paid = await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job!.id)}`, { decision: 'approve', by: CREATOR, txHash: TX });
+      expect(paid.status).toBe(200);
+      expect((await jobsOf(w))[0]).toMatchObject({ status: 'paid', txHash: TX, payoutPostId: null, payoutPostError: null });
+      expect(published(w)).toHaveLength(1);
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('announced');
+      w.sender.quotaExceeded = null;
+      expect(await sweepBounties(w.ctx)).toMatchObject({ announced: 1 });
+      const done = (await jobsOf(w))[0]!;
+      expect(done.payoutPostId).toBe('9002');
+      expect(published(w).at(-1)).toMatchObject({ actionId: `bounty:${job!.id}:payout`, text: `Bounty paid: 0.5 USDC to the winning entry. The job: ${JOB_INPUT.task}. Payment: https://sepolia.basescan.org/tx/${TX} Entry: https://x.com/i/status/7001` });
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('announced');
+      expect(published(w)).toHaveLength(2);
+      // a post the sender refuses is not tried again, and one older than the window is never made
+      w.setNow(T0 + 7 * H);
+      await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
+      const second = (await jobsOf(w)).find((j) => j.actionId === 'act-post-2')!;
+      serveReplies(w, [reply('7101', '41', { text: `another entry ${ADDR_B}`, createdAt: new Date(T0 + 8 * H).toISOString() })]);
+      serveArtefacts(w, { 'https://pbs.twimg.com/media/7101.png': { body: PNG2, type: 'image/png' } });
+      w.setNow(T0 + 13 * H + 1);
+      await sweepBounties(w.ctx);
+      w.sender.publishError = 'http_403(403): You are not permitted to perform this action';
+      expect((await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(second.id)}`, { decision: 'approve', by: CREATOR, txHash: TX })).status).toBe(200);
+      expect((await jobsOf(w)).find((j) => j.id === second.id)).toMatchObject({ status: 'paid', payoutPostId: null, payoutPostError: expect.stringMatching(/^sender_rejected:http_403/) });
+      w.sender.publishError = null;
+      const before = published(w).length;
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('announced');
+      await w.db.update(bountyJobs).set({ payoutPostError: null, paidAt: new Date(w.ctx.now() - 49 * H) }).where(eq(bountyJobs.id, second.id));
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('announced');
+      expect(published(w)).toHaveLength(before);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('what a job may ask for', () => {
+  const image = (task: string, criteria: string[] = ['It is square', 'The three labels are in it']) => taskRuleProblem({ task, criteria, deliverable: 'image' });
+  const link = (task: string, criteria: string[] = ['It has 20 rows', 'Every row has the three columns']) => taskRuleProblem({ task, criteria, deliverable: 'link' });
+
+  it('refuses a web page, a site, an app or an article as the work, for either deliverable', () => {
+    // the three jobs the platform agent posted at 0.30 USDC, each with zero entries
+    expect(link('A public web page that explains how fee splits work on Base')).toMatch(/^bounty_asks_to_build: the task asks for "web page" as the thing to hand in; a job never asks a stranger to build, design, write or publish a web page, a site, an app or an article/);
+    expect(link('A short public page that lists this coin\'s milestones from its launch to today, with dates')).toMatch(/^bounty_asks_to_build/);
+    expect(link('A simple website about agent coins on Base')).toMatch(/^bounty_asks_to_build/);
+    expect(link('An article on how session keys bound an agent, with sources and data')).toMatch(/^bounty_asks_to_build/);
+    expect(link('Build a small dashboard of Base token launches with a table')).toMatch(/^bounty_asks_to_build: the task says "Build a small dashboard"/);
+    expect(image('Design a landing page for the coin and send a screenshot of it')).toMatch(/^bounty_asks_to_build: the task says "Design a landing page"/);
+    expect(image('Write a short article about Base fees and screenshot it as one image')).toMatch(/^bounty_asks_to_build: the task says "Write a short article"/);
+    expect(image('A square image of a dot in a hat', ['It is square', 'You also publish a thread about it'])).toMatch(/^bounty_asks_to_build: the criterion 2 says "publish a thread"/);
+    // a link job has to name data
+    expect(link('Something useful about Base that we can cite later on')).toMatch(/^bounty_link_needs_data/);
+  });
+
+  it('accepts a picture and data that exists or is quick to put together', () => {
+    expect(link('A CSV of the 20 largest Base token launches this week with name, address and launch block')).toBeNull();
+    expect(link('A Dune query that returns the number of new Base tokens per day for the last 30 days')).toBeNull();
+    expect(link('A gist with the list of Base apps that take x402 payments and the source for each')).toBeNull();
+    expect(link('The transaction in which the first Clanker v5 coin was launched on Base, with its source')).toBeNull();
+    expect(link('A sheet of the ten largest Base pools by volume with name and volume')).toBeNull();
+    expect(image('A square image showing how a trade fee is split, with the labels creator, agent and platform')).toBeNull();
+    // a picture may show a page or an app: it is not asked to build one
+    expect(image('A square diagram showing how the app sends a fee to the agent wallet')).toBeNull();
+    expect(image('A hand-drawn map of how a fee becomes a burn')).toBeNull();
+    // every example the treasury turn is shown passes the rules it is shown them for
+    for (const example of BOUNTY_GOOD_JOBS) {
+      const task = /"([^"]+)"/.exec(example)![1]!;
+      expect(taskRuleProblem({ task, criteria: ['It has 20 rows'], deliverable: example.includes('deliverable link') ? 'link' : 'image' }), task).toBeNull();
+    }
+  });
+
+  it('wants a task that names its subject and criteria a judge can check', () => {
+    expect(image('A cool picture')).toMatch(/^bounty_task_too_vague: the task is 3 words/);
+    expect(image('A square image of a dot in a hat', ['It looks good'])).toMatch(/^bounty_criterion_not_checkable: criterion 1 says "good"/);
+    expect(image('A square image of a dot in a hat', ['It is square', 'High quality and creative'])).toMatch(/^bounty_criterion_not_checkable: criterion 2 says "High quality"/);
+    expect(image('A square image of a dot in a hat', ['It is square', 'The hat is red'])).toBeNull();
+  });
+
+  it('knows a reworded job from a different one', () => {
+    expect(sameJob('A square image showing how a trade fee is split, with the labels creator, agent and platform', 'An image that explains how the trade fee is split between creator, agent and platform')).toBe(true);
+    expect(sameJob('A public web page that explains how Base fees are set', 'A page explaining how fees on Base are set')).toBe(true);
+    expect(sameJob('A square picture of a dot wearing a tiny hat, flat colours', 'A square picture of a dot that wears a tiny hat, flat colours please')).toBe(true);
+    expect(sameJob('A square picture of a dot wearing a tiny hat, flat colours', TASK2)).toBe(false);
+    expect(sameJob('A CSV of the 20 largest Base token launches this week with name, address and launch block', 'A Dune query that returns the number of new Base tokens per day for the last 30 days')).toBe(false);
+  });
+
+  it('bounty_post refuses a web page job and a job the agent asked in the last 30 days, naming the earlier one and how it ended; the lists show what drew no entries', async () => {
+    const w = await makeWorld();
+    try {
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      const raw = agent.config;
+      const page = await postJob(w, agent, raw, 'a-page', { task: 'A public web page that explains how fee splits work on Base', criteria: ['It names the three parties'], deliverable: 'link', amountUsdc: 0.3 });
+      expect(page).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^bounty_asks_to_build/) });
+      expect(published(w)).toHaveLength(0);
+      expect(await jobsOf(w)).toHaveLength(0);
+      expect(await postJob(w, agent, raw)).toMatchObject({ kind: 'completed', result: { status: 'open' } });
+      const [first] = await jobsOf(w);
+      // the same work in other words, while the first is open
+      const reworded = { ...JOB_INPUT, task: 'A square picture of a dot that wears a tiny hat, flat colours please' };
+      const repeat = (await postJob(w, agent, raw, 'a-rep', reworded)) as { kind: string; error: string };
+      expect(repeat.kind).toBe('failed');
+      expect(repeat.error).toBe(`bounty_repeats_earlier_job: this is substantially the job ${shortJobId(first!.id)} you posted on 2026-10-24 ("${JOB_INPUT.task}"), which is open now. A job is not asked twice inside 30 days, reworded or not: ask for different work, or post nothing`);
+      expect(await jobsOf(w)).toHaveLength(1);
+      // nobody enters; the job closes with no entries, and asking it again is refused with that outcome
+      serveReplies(w, []);
+      w.setNow(T0 + 6 * H + 1);
+      await sweepBounties(w.ctx);
+      expect((await jobsOf(w))[0]).toMatchObject({ status: 'no_winner', entriesReceived: 0 });
+      expect(await postJob(w, agent, raw, 'a-rep-2', reworded)).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^bounty_repeats_earlier_job: .* which drew no entries\. /) });
+      // both turns are shown what drew nothing
+      const list = (await executeAction(w.ctx, agent, configOf(raw), pending('act-list', 'bounty_list', {}), env())) as { result: { jobs: Record<string, unknown>[]; drewNoEntries: { meaning: string; jobs: Record<string, unknown>[] } } };
+      expect(list.result.jobs[0]).toMatchObject({ jobId: first!.id, outcome: 'drew no entries' });
+      expect(list.result.drewNoEntries.jobs).toEqual([{ jobId: first!.id, task: JOB_INPUT.task, amountUsdc: '0.5', deliverable: 'image', postedAt: new Date(T0).toISOString() }]);
+      expect(list.result.drewNoEntries.meaning).toMatch(/Do not ask for any of them again/);
+      const section = (await bountiesSection(w.ctx, agent, configOf(raw))) as { bounties: { drewNoEntries: { jobs: { jobId: string }[] }; lastVerdicts: { outcome: string }[] } };
+      expect(section.bounties.drewNoEntries.jobs.map((j) => j.jobId)).toEqual([first!.id]);
+      expect(section.bounties.lastVerdicts[0]!.outcome).toBe('drew no entries');
+      // different work is fine; a draft that never reached the public does not block its task
+      expect(await postJob(w, agent, raw, 'a-other', { ...JOB_INPUT, task: TASK2 })).toMatchObject({ kind: 'completed', result: { status: 'open' } });
+      // 31 days on the first task may be asked again, and the list of unanswered jobs no longer names it
+      w.setNow(T0 + 31 * 24 * H);
+      expect(await postJob(w, agent, raw, 'a-later', reworded)).toMatchObject({ kind: 'completed' });
+      const later = (await executeAction(w.ctx, agent, configOf(raw), pending('act-list-2', 'bounty_list', {}), env())) as { result: Record<string, unknown> };
+      expect(later.result).not.toHaveProperty('drewNoEntries');
     } finally {
       await w.close();
     }

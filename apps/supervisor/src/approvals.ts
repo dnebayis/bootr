@@ -80,9 +80,11 @@ export interface ApprovalView {
   decidedAt: string | null;
   expiresAt: string;
   /**
-   * For `bounty_job` and `bounty_payout` items (bounties.ts): the job id, its task and amount, and for a payout the
-   * payee, the judge's reason, the winning entry's link and `txHashRequired: true` (approving needs the creator's
-   * paying transaction hash in the body). Null for a post or reply.
+   * For `bounty_job`, `bounty_payout` and `bounty_pick` items (bounties.ts): the job id, its task and amount; for a
+   * payout the payee, the judge's reason, the winning entry's link and `txHashRequired: true` (approving needs the
+   * creator's paying transaction hash in the body); for a pick (the judge gave no usable ruling) `candidates`, the
+   * entries the creator may pay with their links and addresses, and `entryRequired: true` (approving needs `entry`,
+   * the number of the one paid, beside the hash). Null for a post or reply.
    */
   bounty: Record<string, unknown> | null;
   /** A thread: the texts of the parts after `text`, in order, so the creator reads all of what approving sends. Absent for a single post. */
@@ -386,8 +388,10 @@ export interface DecisionBody {
   decision?: unknown;
   by?: unknown;
   note?: unknown;
-  /** Approving a `bounty_payout`: the hash of the creator's own transaction that paid the winner (32-byte hex). */
+  /** Approving a `bounty_payout` or a `bounty_pick`: the hash of the creator's own transaction that paid the winner (32-byte hex). */
   txHash?: unknown;
+  /** Approving a `bounty_pick`: the number of the entry the creator paid, one of the item's candidates. */
+  entry?: unknown;
 }
 
 export type DecisionResult = { ok: true; approval: ApprovalView } | { ok: false; status: 400 | 403 | 404 | 409 | 503; error: string; message: string };
@@ -425,8 +429,8 @@ export async function decideApproval(ctx: SupervisorContext, agent: AgentRow, ap
 
   // A bounty item (a job text under review, a payout proposal) is settled by bounties.ts: it posts the job, or records
   // the creator's payment and replies under the winning entry; the row here only carries the decision.
-  if (row.kind === 'bounty_job' || row.kind === 'bounty_payout') {
-    const result = await decideBountyApproval(ctx, agent, row, decision, by, note, body.txHash);
+  if (row.kind === 'bounty_job' || row.kind === 'bounty_payout' || row.kind === 'bounty_pick') {
+    const result = await decideBountyApproval(ctx, agent, row, decision, by, note, { txHash: body.txHash, entry: body.entry });
     if (!result.ok) {
       if (result.status === 409 && result.error === 'publish_failed') await ctx.db.update(approvals).set({ status: 'failed', decision: 'approve', decidedBy: by, note: result.message.slice(0, MAX_NOTE_CHARS), decidedAt: now }).where(eq(approvals.id, row.id));
       return reject(result.status, result.error, result.message);
@@ -570,13 +574,13 @@ export async function approvalActivity(ctx: SupervisorContext, agent: AgentRow, 
   // A list that came back full may hold more rows at or before its oldest (activity.ts `cutActivityPage`).
   if (pendingRows.length === limit) onFull?.(pendingRows[pendingRows.length - 1]!.createdAt.getTime());
   if (decidedRows.length === limit) onFull?.(decidedRows[decidedRows.length - 1]!.decidedAt!.getTime());
-  const noun = (r: ApprovalRow) => (r.kind === 'reply' ? 'reply' : r.kind === 'bounty_job' ? 'bounty job' : r.kind === 'bounty_payout' ? 'bounty payout' : 'post');
+  const noun = (r: ApprovalRow) => (r.kind === 'reply' ? 'reply' : r.kind === 'bounty_job' ? 'bounty job' : r.kind === 'bounty_payout' ? 'bounty payout' : r.kind === 'bounty_pick' ? 'bounty pick' : 'post');
   const items: { at: string; kind: 'approval_pending' | 'approval_approved' | 'approval_rejected'; summary: string; url?: string }[] = [];
   for (const r of pendingRows) items.push({ at: r.createdAt.toISOString(), kind: 'approval_pending', summary: `A ${noun(r)} is waiting for the creator's review` });
   for (const r of decidedRows) {
     const at = (r.decidedAt ?? r.createdAt).toISOString();
     // Bounty items have their own tape rows (bounties.ts `bountyActivity`: posted, paid, declined), so the queue stays quiet about them.
-    if (r.kind === 'bounty_job' || r.kind === 'bounty_payout') continue;
+    if (r.kind === 'bounty_job' || r.kind === 'bounty_payout' || r.kind === 'bounty_pick') continue;
     if (r.status === 'approved') {
       const url = postUrl(agent, r.postId);
       items.push({ at, kind: 'approval_approved', summary: `${r.kind === 'reply' ? 'Reply' : 'Post'} approved by the creator`, ...(url ? { url } : {}) });

@@ -39,7 +39,7 @@ const pending = (id: string, tool: string, input: Record<string, unknown>) => ({
 const env = (): BrokerEnv => ({ inbox: new Map(), eligibility: new Map() });
 const restingRuntime = { state: { ...initialState(), lastPostAt: T0 - 60_000, treasuryNextAt: T0 + 24 * H, lastTreasuryTurnAt: T0 - 60_000 } as unknown as Record<string, unknown>, nextAt: new Date(T0 + 24 * H), lastDecisionAt: new Date(T0 - 60_000) };
 const JOB_INPUT = { task: 'A square picture of a dot wearing a tiny hat, flat colours', criteria: ['It shows a single dot', 'The dot wears a hat'], deliverable: 'image' as const, amountUsdc: 0.5 };
-const LINK_JOB = { task: 'A public page that explains how Base fees are set', criteria: ['It explains the base fee', 'It names its sources'], deliverable: 'link' as const, amountUsdc: 0.5 };
+const LINK_JOB = { task: 'A table of the Base fee in each of the last ten blocks, with its source', criteria: ['It explains the base fee', 'It names its sources'], deliverable: 'link' as const, amountUsdc: 0.5 };
 
 function withBounties(over: { bounties?: Partial<AgentConfig['bounties']>; own?: boolean } = {}): Record<string, unknown> {
   const base = agentConfig(T0);
@@ -359,7 +359,9 @@ describe('the judge turn of an own agent', () => {
       const paid = await post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job.id)}`, { decision: 'approve', by: CREATOR, txHash: TX });
       expect(paid.status).toBe(200);
       expect(await jobOf(w)).toMatchObject({ status: 'paid', txHash: TX, payee: ADDR_A });
-      expect(published(w).at(-1)).toMatchObject({ actionId: `bounty:${job.id}:paid`, replyTo: '7003' });
+      expect(published(w).at(-2)).toMatchObject({ actionId: `bounty:${job.id}:paid`, replyTo: '7003' });
+      // the payment is also announced in a post of the coin's own, from the fixed template
+      expect(published(w).at(-1)).toMatchObject({ actionId: `bounty:${job.id}:payout` });
       const tape = (await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty');
       // the ruling was the client's, and its row says so; the job was posted while Bootr ran the agent, and the payment is the creator's
       expect(tape.map((i) => i.summary)).toEqual(['Paid 0.5 USDC for a bounty entry', 'Judged a bounty: entry 2 of 2 won · own agent', `Posted a bounty for 0.5 USDC: ${JOB_INPUT.task}`]);

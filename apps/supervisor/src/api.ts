@@ -305,9 +305,10 @@ export function createApp(ctx: SupervisorContext, nowSec: () => number = () => M
   });
 
   /**
-   * Body `{decision: 'approve'|'reject', by, note?, txHash?}`; approve sends the post now, reject tells the agent next
-   * turn. A `bounty_payout` item needs `txHash` (the creator's paying transaction) to be approved; a `bounty_job` item
-   * is posted on approval (bounties.ts).
+   * Body `{decision: 'approve'|'reject', by, note?, txHash?, entry?}`; approve sends the post now, reject tells the
+   * agent next turn. A `bounty_payout` item needs `txHash` (the creator's paying transaction) to be approved, a
+   * `bounty_pick` item `txHash` and `entry` (the number of the entry the creator paid); a `bounty_job` item is posted
+   * on approval (bounties.ts).
    */
   app.post('/internal/agents/:id/approvals/:approvalId', async (c) => {
     const agent = await ctx.db.query.agents.findFirst({ where: eq(agents.agentId, c.req.param('id')) });

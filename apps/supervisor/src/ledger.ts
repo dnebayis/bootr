@@ -388,7 +388,8 @@ async function bountyRows(ctx: Ctx, agent: AgentRow, cursor: LedgerCursor | null
   };
   const lists = await Promise.all([
     event('posted', bountyJobs.openedAt, undefined, (job) => ({ kind: 'bounty_posted', direction: 'none', status: 'confirmed', amount: usdcAmount(job.amountMicroUsdc), reason: `Offered a bounty: ${shortTask(job.task)}`, ...postLink(job) })),
-    event('judged', bountyJobs.judgedAt, ne(bountyJobs.status, 'no_winner'), (job) => {
+    // A job the judge gave no ruling on (it waits for the creator's pick) has `judgedAt` and no winner: no "judged" line for it.
+    event('judged', bountyJobs.judgedAt, and(ne(bountyJobs.status, 'no_winner'), sql`jsonb_typeof(${bountyJobs.verdict}->'winner') = 'number'`), (job) => {
       const winner = (job.verdict as { winner?: unknown } | null)?.winner;
       return { kind: 'bounty_judged', direction: 'none', status: 'confirmed', reason: `Judged its bounty: entry ${typeof winner === 'number' ? winner : '?'} of ${job.entriesConsidered} won`, ...postLink(job) };
     }),
