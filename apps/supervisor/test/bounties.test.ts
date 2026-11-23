@@ -18,6 +18,7 @@ import {
   bountyBudget,
   bountyConversationIds,
   bountyJobId,
+  bountyJobViews,
   BOUNTY_GOOD_JOBS,
   CANCELLED_TEXT,
   coinPageLink,
@@ -32,6 +33,9 @@ import {
   payoutPostText,
   pickApprovalId,
   publishPayoutPost,
+  requiredOfJob,
+  reruleJob,
+  RERULE_WINDOW_MS,
   sameJob,
   shortJobId,
   sniffImage,
@@ -43,7 +47,7 @@ import {
 } from '../src/bounties.js';
 import { executeAction, inboxViews, resolvePending, type BrokerEnv } from '../src/broker/index.js';
 import { approvals, bountyEntries, bountyJobs, inference as inferenceTable, runtimes } from '../src/db/schema.js';
-import { judgeKey } from '../src/judge.js';
+import { judgeKey, reasonProblem } from '../src/judge.js';
 import { signRequest } from '../src/hmac.js';
 import { closeBountyEntries } from '../src/mention-close.js';
 import { bountyJobClosed, treasuryTurnDue } from '../src/roles.js';
@@ -84,6 +88,7 @@ const JOB_INPUT = { task: 'A square picture of a dot wearing a tiny hat, flat co
 
 /** The job post of the seeded agent for `JOB_INPUT`, as the template renders it at `now`. */
 const jobsOf = async (w: TestWorld) => w.db.select().from(bountyJobs).where(eq(bountyJobs.agentId, AGENT_ID));
+const bountyJobViewsOf = async (w: TestWorld) => bountyJobViews(w.ctx, (await w.db.query.agents.findFirst({ where: (t, { eq: eqf }) => eqf(t.agentId, AGENT_ID) }))!);
 const published = (w: TestWorld) => w.sender.published as { actionId: string; text: string; replyTo?: string; attributions?: unknown[] }[];
 
 function api(world: TestWorld) {
@@ -610,8 +615,8 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
     }
   });
 
-  it('closes a job without a winner in public when nothing met it, when the verdict is refused in code, and when no entry was eligible; the creator may decline a proposal', async () => {
-    const w = await makeWorld({ script: [judgeAnswer(verdict(null, 1)), judgeAnswer({ winner: 1, perCriterion: { '1': ['pass', 'fail'] }, reason: 'A dot.' }), judgeAnswer(verdict(1, 1))] });
+  it('closes a job without a winner in public when no entry passed the required criterion and when no entry was eligible; an entry that fails only a scored criterion is proposed; the creator may decline a proposal', async () => {
+    const w = await makeWorld({ script: [judgeAnswer({ winner: null, perCriterion: { '1': ['fail', 'pass'] }, reason: 'It shows two dots, not one.' }), judgeAnswer({ winner: 1, perCriterion: { '1': ['pass', 'fail'] }, reason: 'A dot.' }), judgeAnswer(verdict(1, 1))] });
     try {
       const { agent, job } = await closedJob(w, [reply('7001', '31')], png('7001'));
       await sweepBounties(w.ctx);
@@ -621,7 +626,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect(published(w)[1]).toMatchObject({ actionId: `bounty:${job.id}:close`, replyTo: '9001', text: NO_WINNER_TEXT });
       expect(await w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID))).toHaveLength(0);
       expect((await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty')[0]!.summary).toBe('Bounty closed: no entry met the job (1 reply), nothing paid');
-      // a ruling refused in code for what it rules (a winner that fails a criterion): no winner, nothing proposed, no second thought
+      // an entry that passes the required criterion (the first) and fails the scored one wins: proposed, with the judge's reason, on one thought
       w.setNow(T0 + 7 * H);
       const second = await postJob(w, agent, agent.config, 'act-post-2', { ...JOB_INPUT, task: TASK2 });
       expect(second.kind).toBe('completed');
@@ -630,8 +635,9 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       w.setNow(T0 + 13 * H + 1);
       await sweepBounties(w.ctx);
       after = (await jobsOf(w)).find((j) => j.actionId === 'act-post-2')!;
-      expect(after).toMatchObject({ status: 'no_winner' });
-      expect(after.verdict).toMatchObject({ winner: null, invalid: 'winner_not_passing' });
+      expect(after).toMatchObject({ status: 'proposed', payee: ADDR_A, approvalId: payoutApprovalId(after.id) });
+      expect(after.verdict).toMatchObject({ winner: 1, modelWinner: 1, required: [1], reason: 'A dot.', reasonBy: 'judge', perCriterion: { '1': ['pass', 'fail'] } });
+      expect(after.verdict).not.toHaveProperty('invalid');
       expect((after.verdict as { thoughts: unknown[] }).thoughts).toHaveLength(1);
       // no eligible entry at all: closed without a thought
       w.setNow(T0 + 14 * H);
@@ -978,7 +984,7 @@ describe('a judge that gives no usable answer: the second thought, the creator\'
       await sweepBounties(w.ctx);
       await asClosedByOldCode(w, job.id);
       w.setNow(w.ctx.now() + 16 * 60_000);
-      script.push(judgeAnswer(good(null, 2)));
+      script.push(judgeAnswer({ winner: null, perCriterion: { '1': ['fail', 'pass'], '2': ['fail', 'fail'] }, reason: 'Neither shows a single dot.' }));
       expect(await sweepBounties(w.ctx)).toMatchObject({ rejudged: 1 });
       let after = (await jobsOf(w))[0]!;
       expect(after).toMatchObject({ status: 'no_winner', closeReplyId: '9990', approvalId: null, payee: null });
@@ -998,6 +1004,368 @@ describe('a judge that gives no usable answer: the second thought, the creator\'
       expect(after).toMatchObject({ status: 'proposed', approvalId: pickApprovalId(job.id), payee: null });
       expect(after.verdict).toMatchObject({ manualPick: true, invalid: 'malformed_answer', rejudged: { outcome: 'manual_pick' } });
       expect(published(w)).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('required and scored criteria: code picks the winner', () => {
+  const png = (id: string, body: Buffer = PNG) => ({ [`https://pbs.twimg.com/media/${id}.png`]: { body, type: 'image/png' } });
+  const JOB3 = { task: 'A square image showing how a trade fee is split among its four recipients', criteria: ['Shows exactly four recipients with the right shares', 'Square image, flat style, readable text', 'Flows from one trade to the four recipients, no other brands'], deliverable: 'image' as const, amountUsdc: 0.5 };
+  const thoughtCalls = (w: TestWorld) => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+
+  it('bounty_post stores required: [1] when left out, one or two numbers when given, and refuses a number past the criteria, a repeat, none and three', async () => {
+    const w = await makeWorld();
+    try {
+      const agent = await seedAgent(w, { config: withBounties({ maxOpen: 5 }), runtime: restingRuntime });
+      const raw = agent.config;
+      expect((await postJob(w, agent, raw, 'act-1', JOB3)).kind).toBe('completed');
+      expect((await postJob(w, agent, raw, 'act-2', { ...JOB3, task: TASK2, required: [3, 1] })).kind).toBe('completed');
+      expect((await postJob(w, agent, raw, 'act-3', { ...JOB_INPUT, task: TASK3, required: [2] })).kind).toBe('completed');
+      const jobs = await jobsOf(w);
+      const byAction = (id: string) => jobs.find((j) => j.actionId === id)!;
+      expect(byAction('act-1').required).toEqual([1]);
+      expect(byAction('act-2').required).toEqual([1, 3]);
+      expect(byAction('act-3').required).toEqual([2]);
+      // out of range for this job (two criteria), a repeat: refused by code with the reason; nothing drafted
+      const past = await postJob(w, agent, raw, 'act-4', { ...JOB_INPUT, task: TASK4, required: [3] });
+      expect(past).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^bounty_required_out_of_range: .*from 1 to 2 for this job/) });
+      const twice = await postJob(w, agent, raw, 'act-5', { ...JOB_INPUT, task: TASK4, required: [1, 1] });
+      expect(twice).toMatchObject({ kind: 'failed', error: expect.stringMatching(/^bounty_required_out_of_range/) });
+      // not a list of one or two whole numbers from 1 to 4: refused as an invalid call before any check
+      for (const [i, required] of [[], [1, 2, 3], [0], [5], [1.5], 'first'].entries()) {
+        const bad = await postJob(w, agent, raw, `act-bad-${i}`, { ...JOB_INPUT, task: TASK4, required });
+        expect(bad.kind, JSON.stringify(required)).toBe('failed');
+      }
+      expect(await jobsOf(w)).toHaveLength(3);
+      // the public view, the agent's own list and the judge's input all read the stored numbers
+      const views = await bountyJobViewsOf(w);
+      expect(views.find((v) => v.id === byAction('act-2').id)).toMatchObject({ required: [1, 3], criteria: JOB3.criteria });
+      const list = (await executeAction(w.ctx, agent, configOf(raw), pending('act-list', 'bounty_list', {}), env())) as { result: { jobs: { jobId: string; required: number[] }[] } };
+      expect(list.result.jobs.find((j) => j.jobId === byAction('act-3').id)!.required).toEqual([2]);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a job that stored no required criteria (every job from before the split) reads as [1], on the row, the page and the judge\'s input', async () => {
+    const w = await makeWorld({ script: [judgeAnswer({ winner: null, perCriterion: { '1': ['fail', 'pass', 'pass'] }, reason: 'Three recipients, not four.' })] });
+    try {
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      await postJob(w, agent, agent.config, 'act-1', { ...JOB3, required: [2, 3] });
+      const [job] = await jobsOf(w);
+      await w.db.update(bountyJobs).set({ required: null }).where(eq(bountyJobs.id, job!.id));
+      const [old] = await jobsOf(w);
+      expect(old!.required).toBeNull();
+      expect(requiredOfJob(old!)).toEqual([1]);
+      expect((await bountyJobViewsOf(w))[0]).toMatchObject({ required: [1] });
+      // malformed stored values read as [1] too
+      for (const bad of [[], [4], [1, 2, 3], [0]]) expect(requiredOfJob({ required: bad, criteria: JOB3.criteria })).toEqual([1]);
+      serveReplies(w, [reply('7001', '31')]);
+      serveArtefacts(w, png('7001'));
+      w.setNow(T0 + 6 * H + 1);
+      await sweepBounties(w.ctx);
+      const asked = w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions'))[0] as unknown as { body: { messages: { content: { text?: string }[] }[] } };
+      const data = JSON.parse(asked.body.messages[1]!.content[0]!.text!) as { requiredCriteria: number[]; criteria: { kind: string }[] };
+      expect(data.requiredCriteria).toEqual([1]);
+      expect(data.criteria.map((c) => c.kind)).toEqual(['required', 'scored', 'scored']);
+      // entry 1 fails the required criterion: no winner, though it passes the two scored ones
+      expect((await jobsOf(w))[0]).toMatchObject({ status: 'no_winner' });
+      expect((await jobsOf(w))[0]!.verdict).toMatchObject({ winner: null, required: [1], reason: 'Three recipients, not four.', reasonBy: 'judge' });
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('the judge marks, code picks: the model names nobody, the marks give the earlier of two tied entries, and the proposal carries a reason written by code', async () => {
+    // entry 1 fails the required criterion; 2 and 3 pass it and tie on two passes; the model, reading the old way, names nobody
+    const marks = { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'pass', 'fail'] };
+    const w = await makeWorld({ script: [judgeAnswer({ winner: null, perCriterion: marks, reason: 'No entry met every criterion.' })] });
+    try {
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      await postJob(w, agent, agent.config, 'act-1', JOB3);
+      serveReplies(w, [reply('7001', '31'), reply('7002', '32', { text: `entry two ${ADDR_B}` }), reply('7003', '33', { text: `entry three ${ADDR_C}` })]);
+      serveArtefacts(w, { ...png('7001'), ...png('7002', PNG2), ...png('7003', Buffer.concat([PNG, Buffer.from([3])])) });
+      w.setNow(T0 + 6 * H + 1);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ judged: 1 });
+      const [job] = await jobsOf(w);
+      expect(job).toMatchObject({ status: 'proposed', payee: ADDR_B, approvalId: payoutApprovalId(job!.id) });
+      expect(job!.verdict).toMatchObject({ winner: 2, modelWinner: null, required: [1], reasonBy: 'code', reason: 'Entry 2 met the required criterion and 2 of 3 overall.', perCriterion: marks });
+      expect(thoughtCalls(w)).toBe(1);
+      // nothing closed the job in public; the creator's item shows the criteria, which are required, and the winner's marks
+      expect(published(w)).toHaveLength(1);
+      const queue = (await (await api(w).get(`/internal/agents/${AGENT_ID}/approvals`)).json()) as { items: Record<string, unknown>[] };
+      expect(queue.items[0]).toMatchObject({ kind: 'bounty_payout', bounty: { kind: 'payout', payee: ADDR_B, reason: 'Entry 2 met the required criterion and 2 of 3 overall.', criteria: JOB3.criteria, required: [1], winner: 2, marks: ['pass', 'fail', 'pass'], entryUrl: 'https://x.com/i/status/7002' } });
+      expect(JSON.stringify(queue.items[0])).not.toContain('No entry met every criterion');
+      // the creator pays: the reply under entry 2 carries code's reason, which passes the publish gate
+      const paid = await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job!.id)}`, { decision: 'approve', by: CREATOR, txHash: TX });
+      expect(paid.status).toBe(200);
+      const said = published(w).find((p) => p.actionId === `bounty:${job!.id}:paid`)!;
+      expect(said).toMatchObject({ replyTo: '7002' });
+      expect(said.text).toContain('Why: Entry 2 met the required criterion and 2 of 3 overall.');
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('with two required criteria an entry must pass both; the review item of a job text shows which are required', async () => {
+    const marks = { '1': ['pass', 'fail', 'pass'], '2': ['pass', 'pass', 'fail'] };
+    const w = await makeWorld({ script: [judgeAnswer({ winner: 1, perCriterion: marks, reason: 'The right shares and a clean flow.' })] });
+    try {
+      const agent = await seedAgent(w, { runtime: restingRuntime });
+      const raw = withBounties({ review: true });
+      await postJob(w, agent, raw, 'act-1', { ...JOB3, required: [1, 2] });
+      const { get, post } = api(w);
+      const queue = (await (await get(`/internal/agents/${AGENT_ID}/approvals`)).json()) as { items: Record<string, unknown>[] };
+      expect(queue.items[0]).toMatchObject({ kind: 'bounty_job', bounty: { kind: 'job', criteria: JOB3.criteria, required: [1, 2] } });
+      expect((await post(`/internal/agents/${AGENT_ID}/approvals/act-1`, { decision: 'approve', by: CREATOR })).status).toBe(200);
+      serveReplies(w, [reply('7001', '31'), reply('7002', '32', { text: `entry two ${ADDR_B}` })]);
+      serveArtefacts(w, { ...png('7001'), ...png('7002', PNG2) });
+      w.setNow(T0 + 6 * H + 1);
+      await sweepBounties(w.ctx);
+      const [job] = await jobsOf(w);
+      // the model named entry 1, which fails required criterion 2; entry 2 passes both
+      expect(job).toMatchObject({ status: 'proposed', payee: ADDR_B });
+      expect(job!.verdict).toMatchObject({ winner: 2, modelWinner: 1, required: [1, 2], reasonBy: 'code', reason: 'Entry 2 met the required criteria and 2 of 3 overall.' });
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('a job that closed with no winner under the every-criterion rule is ruled again from its stored marks', () => {
+  /** The platform agent's fee-split job as production holds it: seven entries, a ruling that stood, nobody passing all three. */
+  const PROD_JOB = '0x42996a0622a79ed5409bb252214cf2688e33e4c53fce96412984226f722934e0';
+  const PROD_MARKS = { '1': ['fail', 'fail', 'pass'], '2': ['pass', 'fail', 'pass'], '3': ['pass', 'fail', 'pass'], '4': ['fail', 'fail', 'fail'], '5': ['fail', 'fail', 'fail'], '6': ['fail', 'fail', 'fail'], '7': ['fail', 'fail', 'fail'] };
+  const CRITERIA = ['Shows exactly four recipients with the right shares', 'Square image, flat or hand-drawn style, readable text', 'Flows from one trade to the four recipients, no other brands'];
+  const JUDGED = Date.parse('2026-11-23T07:32:00Z');
+  const NOW = Date.parse('2026-11-23T17:00:00Z');
+  const payeeOf = (n: number) => `0x${String(n).repeat(40)}`;
+  const thoughtCalls = (w: TestWorld) => w.inference.calls.filter((c) => c.url.includes('/v1/chat/completions')).length;
+  const fetches = (w: TestWorld) => w.inference.calls.length;
+
+  /** A closed job written straight to the rows, as the code before the split left it: `no_winner`, its close already said in public. */
+  async function closedJob(w: TestWorld, over: { id?: string; marks?: Record<string, string[]>; verdict?: Record<string, unknown>; closedAt?: number; error?: string | null; entries?: number; payees?: Record<number, string | null>; required?: number[] | null; closeReplyId?: string | null } = {}) {
+    const id = over.id ?? PROD_JOB;
+    const closedAt = new Date(over.closedAt ?? JUDGED);
+    const marks = over.marks ?? PROD_MARKS;
+    const n = over.entries ?? 7;
+    await w.db.insert(bountyJobs).values({
+      id,
+      agentId: AGENT_ID,
+      actionId: `act-${id.slice(2, 10)}`,
+      nonce: 1,
+      task: 'A square image that shows how one trade fee is split among its four recipients',
+      criteria: CRITERIA,
+      required: over.required ?? null,
+      deliverable: 'image',
+      amountMicroUsdc: '500000',
+      status: 'no_winner',
+      createdAt: new Date(closedAt.getTime() - 7 * H),
+      openedAt: new Date(closedAt.getTime() - 7 * H),
+      closesAt: new Date(closedAt.getTime() - H),
+      postId: '9001',
+      conversationId: '9001',
+      pageText: 'Bounty: ...',
+      verdict: { winner: null, perCriterion: marks, reason: 'No entry met every criterion.', deliveryHash: 'ab'.repeat(32), reasonHash: 'cd'.repeat(32), judgedAt: closedAt.toISOString(), thought: { key: judgeKey(AGENT_ID, id), model: 'openai/gpt-4.1-mini', outcome: 'ok', replayed: false, chargedMicroUsdc: '7000' }, ...over.verdict },
+      judgedAt: closedAt,
+      closeReplyId: over.closeReplyId === undefined ? '9990' : over.closeReplyId,
+      entriesReceived: n,
+      entriesEligible: n,
+      entriesConsidered: n,
+      closedAt,
+      error: over.error ?? null,
+      updatedAt: closedAt,
+    });
+    await w.db.insert(bountyEntries).values(
+      [...Array(n)].map((_, i) => ({
+        id: `${id}:${7001 + i}`,
+        jobId: id,
+        agentId: AGENT_ID,
+        replyId: String(7001 + i),
+        authorId: String(31 + i),
+        receivedAt: new Date(closedAt.getTime() - 6 * H + i * 60_000),
+        kind: 'image' as const,
+        artefact: { url: `https://pbs.twimg.com/media/${7001 + i}.png`, sha256: String(i + 1).repeat(64) },
+        payee: over.payees && i + 1 in over.payees ? over.payees[i + 1]! : payeeOf(i + 1),
+        eligible: true,
+        considered: true,
+        n: i + 1,
+        createdAt: closedAt,
+      })),
+    );
+    return id;
+  }
+  const jobOf = async (w: TestWorld, id: string) => (await w.db.select().from(bountyJobs).where(eq(bountyJobs.id, id)))[0]!;
+  const queueOf = async (w: TestWorld) => w.db.select().from(approvals).where(eq(approvals.agentId, AGENT_ID));
+
+  it('job 0x42996a06 of production (marks as stored, judged 2026-11-23 07:32 UTC) becomes a payout proposal for entry 2, from the marks alone: no thought, no fetch, no public reply, once', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      const id = await closedJob(w);
+      w.setNow(NOW);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ reruled: 1 });
+      const job = await jobOf(w, id);
+      // entries 2 and 3 pass the required criterion (the first) with two passes each; entry 2 came in first
+      expect(job).toMatchObject({ status: 'proposed', payee: payeeOf(2), approvalId: payoutApprovalId(id), error: null, closeReplyId: '9990' });
+      expect(job.closedAt!.getTime()).toBe(NOW);
+      expect(job.judgedAt!.getTime()).toBe(JUDGED);
+      expect(job.verdict).toMatchObject({
+        winner: 2,
+        perCriterion: PROD_MARKS,
+        reason: 'Entry 2 met the required criterion and 2 of 3 overall.',
+        reasonBy: 'code',
+        required: [1],
+        deliveryHash: 'ab'.repeat(32),
+        rerule: { at: new Date(NOW).toISOString(), outcome: 'proposed', required: [1], was: { winner: null, reason: 'No entry met every criterion.', reasonHash: 'cd'.repeat(32) } },
+      });
+      expect(job.verdict).not.toHaveProperty('invalid');
+      expect(reasonProblem((job.verdict as { reason: string }).reason)).toBeNull();
+      // the proposal is an ordinary payout item: the payee is entry 2's own row's, the reason is code's
+      const queue = await queueOf(w);
+      expect(queue).toHaveLength(1);
+      expect(queue[0]).toMatchObject({ id: payoutApprovalId(id), kind: 'bounty_payout', status: 'pending_approval', meta: { bounty: 'payout', jobId: id, payee: payeeOf(2), replyId: '7002', entryUrl: 'https://x.com/i/status/7002', winner: 2, marks: ['pass', 'fail', 'pass'], criteria: CRITERIA, required: [1], reason: 'Entry 2 met the required criterion and 2 of 3 overall.' } });
+      // nothing was asked of any model, nothing was fetched, nothing was said in public
+      expect(thoughtCalls(w)).toBe(0);
+      expect(fetches(w)).toBe(0);
+      expect(published(w)).toHaveLength(0);
+      // once: the next sweeps change nothing and make no second item
+      const stamp = job.updatedAt.getTime();
+      w.setNow(NOW + 20 * 60_000);
+      expect(await sweepBounties(w.ctx)).not.toHaveProperty('reruled');
+      expect((await jobOf(w, id)).updatedAt.getTime()).toBe(stamp);
+      expect(await reruleJob(w.ctx, (await w.db.query.agents.findFirst())!, await jobOf(w, id))).toBeNull();
+      expect(await queueOf(w)).toHaveLength(1);
+      // the page shows a proposed payment to entry 2
+      const [view] = await bountyJobViewsOf(w);
+      expect(view).toMatchObject({ status: 'proposed', required: [1], verdict: { winner: 2, winningEntryUrl: 'https://x.com/i/status/7002', invalid: null }, payment: { status: 'proposed', payee: payeeOf(2) } });
+      // the creator pays by hand: the paid reply goes under entry 2 with code's reason, and the job is paid
+      const paid = await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(id)}`, { decision: 'approve', by: CREATOR, txHash: TX });
+      expect(paid.status).toBe(200);
+      expect(await jobOf(w, id)).toMatchObject({ status: 'paid', txHash: TX, payee: payeeOf(2) });
+      const said = published(w).find((p) => p.actionId === `bounty:${id}:paid`)!;
+      expect(said).toMatchObject({ replyTo: '7002' });
+      expect(said.text).toContain('Why: Entry 2 met the required criterion and 2 of 3 overall.');
+      expect(thoughtCalls(w)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('a job closed long before the proposal gets its full 48 hours from the re-rule, expires like any proposal, and a decline closes it without a second public close; neither is ruled again', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w, { config: withBounties({ maxOpen: 5 }), runtime: restingRuntime });
+      // closed six days ago: far past the 48 hours a proposal has, inside the seven days of the re-rule
+      const a = await closedJob(w, { closedAt: NOW - 6 * 24 * H });
+      const b = await closedJob(w, { id: `0x${'b'.repeat(64)}`, closedAt: NOW - 6 * 24 * H });
+      w.setNow(NOW);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ reruled: 2, expired: 0 });
+      expect(await jobOf(w, a)).toMatchObject({ status: 'proposed' });
+      // declined: closed unpaid as a declined payout is; the close already said in public is not said again
+      const declined = await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(a)}`, { decision: 'reject', by: CREATOR, note: 'no' });
+      expect(declined.status).toBe(200);
+      expect(await jobOf(w, a)).toMatchObject({ status: 'no_winner', error: 'declined by the creator', closeReplyId: '9990' });
+      expect(published(w)).toHaveLength(0);
+      w.setNow(NOW + 47 * H);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ expired: 0 });
+      expect(await jobOf(w, b)).toMatchObject({ status: 'proposed' });
+      w.setNow(NOW + 48 * H + 1);
+      const report = await sweepBounties(w.ctx);
+      expect(report).toMatchObject({ expired: 1 });
+      expect(report).not.toHaveProperty('reruled');
+      expect(await jobOf(w, b)).toMatchObject({ status: 'expired', closeReplyId: '9990' });
+      expect((await queueOf(w)).map((r) => r.status).sort()).toEqual(['rejected', 'rejected']);
+      expect(await jobOf(w, a)).toMatchObject({ status: 'no_winner', error: 'declined by the creator' });
+      expect(published(w)).toHaveLength(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('is left alone: a job closed more than seven days ago, a verdict that did not stand, a payout the creator declined, a job with no entries', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      const hex = (c: string) => `0x${c.repeat(64)}`;
+      const old = await closedJob(w, { id: hex('1'), closedAt: NOW - RERULE_WINDOW_MS - 60_000 });
+      // refused in code (both thoughts used, so it is not judged again either), judged by nobody, a winner with no address
+      const malformed = await closedJob(w, { id: hex('2'), verdict: { invalid: 'malformed_answer', thoughts: [{ key: 'a' }, { key: 'b' }] } });
+      const absent = await closedJob(w, { id: hex('3'), verdict: { invalid: 'judge_absent', perCriterion: {} } });
+      const oldRule = await closedJob(w, { id: hex('4'), verdict: { invalid: 'winner_not_passing' } });
+      // a payout the creator declined keeps its winner and says why it closed
+      const declined = await closedJob(w, { id: hex('5'), verdict: { winner: 2 }, error: 'declined by the creator' });
+      const before = await Promise.all([old, malformed, absent, oldRule, declined].map((id) => jobOf(w, id)));
+      w.setNow(NOW);
+      const report = await sweepBounties(w.ctx);
+      expect(report).not.toHaveProperty('reruled');
+      expect(report).not.toHaveProperty('rejudged');
+      for (const row of before) {
+        const after = await jobOf(w, row.id);
+        expect(after.status, row.id).toBe('no_winner');
+        expect(after.verdict, row.id).toEqual(row.verdict);
+        expect(after.updatedAt.getTime(), row.id).toBe(row.updatedAt.getTime());
+      }
+      expect(await queueOf(w)).toHaveLength(0);
+      expect(thoughtCalls(w)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('marks, once, a job its marks still give no winner, one whose marks are not whole and one whose winner has no address; none is proposed and none is asked again', async () => {
+    const w = await makeWorld();
+    try {
+      const agent = await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      const hex = (c: string) => `0x${c.repeat(64)}`;
+      // nobody passes the required criterion
+      const none = await closedJob(w, { id: hex('1'), entries: 2, marks: { '1': ['fail', 'pass', 'pass'], '2': ['insufficient_evidence', 'pass', 'pass'] } });
+      // a row of marks short of a criterion, marks for an entry the job does not have, a mark that is no mark
+      const short = await closedJob(w, { id: hex('2'), entries: 2, marks: { '1': ['pass', 'pass'], '2': ['pass', 'pass', 'pass'] } });
+      const stray = await closedJob(w, { id: hex('3'), entries: 2, marks: { '1': ['pass', 'fail', 'fail'], '9': ['pass', 'pass', 'pass'] } });
+      const word = await closedJob(w, { id: hex('4'), entries: 2, marks: { '1': ['pass', 'yes', 'fail'], '2': ['fail', 'fail', 'fail'] } });
+      // the entry the marks pick left no address on its row
+      const noPayee = await closedJob(w, { id: hex('5'), entries: 2, marks: { '1': ['pass', 'pass', 'fail'], '2': ['pass', 'fail', 'fail'] }, payees: { 1: null } });
+      // the job stored its own required criteria: entry 2 passes criterion 1 but not the required 2
+      const stored = await closedJob(w, { id: hex('6'), entries: 2, required: [2], marks: { '1': ['fail', 'fail', 'pass'], '2': ['pass', 'fail', 'pass'] } });
+      w.setNow(NOW);
+      for (let i = 0; i < 3; i++) expect(await sweepBounties(w.ctx)).not.toHaveProperty('reruled');
+      const outcome = async (id: string) => ((await jobOf(w, id)).verdict as { rerule?: { outcome: string; at: string } }).rerule;
+      expect(await outcome(none)).toMatchObject({ outcome: 'no_winner', at: new Date(NOW).toISOString() });
+      expect(await outcome(short)).toMatchObject({ outcome: 'marks_incomplete' });
+      expect(await outcome(stray)).toMatchObject({ outcome: 'marks_incomplete' });
+      expect(await outcome(word)).toMatchObject({ outcome: 'marks_incomplete' });
+      expect(await outcome(noPayee)).toMatchObject({ outcome: 'winner_without_payee' });
+      expect(await outcome(stored)).toMatchObject({ outcome: 'no_winner', required: [2] });
+      for (const id of [none, short, stray, word, noPayee, stored]) {
+        const row = await jobOf(w, id);
+        expect(row).toMatchObject({ status: 'no_winner', payee: null, approvalId: null });
+        expect((row.verdict as { winner: unknown }).winner).toBeNull();
+        // marked in one sweep and never touched again
+        expect(row.updatedAt.getTime()).toBe(NOW);
+        expect(await reruleJob(w.ctx, agent, row)).toBeNull();
+      }
+      expect(await queueOf(w)).toHaveLength(0);
+      expect(published(w)).toHaveLength(0);
+      expect(thoughtCalls(w)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('an own-agent coin\'s job is ruled again the same way: from the marks its creator\'s client gave, with no thought', async () => {
+    const w = await makeWorld();
+    try {
+      const base = withBounties();
+      await seedAgent(w, { config: { ...base, runner: 'own' }, runtime: restingRuntime });
+      const id = await closedJob(w, { entries: 3, marks: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'pass', 'fail'], '3': ['pass', 'pass', 'pass'] }, verdict: { thought: { key: judgeKey(AGENT_ID, PROD_JOB), model: 'own-agent', outcome: 'none', replayed: false, chargedMicroUsdc: null } } });
+      w.setNow(NOW);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ reruled: 1 });
+      expect(await jobOf(w, id)).toMatchObject({ status: 'proposed', payee: payeeOf(3) });
+      expect((await jobOf(w, id)).verdict).toMatchObject({ winner: 3, reason: 'Entry 3 met the required criterion and 3 of 3 overall.', rerule: { outcome: 'proposed' } });
+      expect(thoughtCalls(w)).toBe(0);
     } finally {
       await w.close();
     }

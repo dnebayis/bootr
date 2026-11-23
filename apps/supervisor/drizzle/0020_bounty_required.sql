@@ -1,0 +1,1 @@
+ALTER TABLE "sv_bounty_jobs" ADD COLUMN "required" jsonb;

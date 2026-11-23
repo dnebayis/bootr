@@ -221,8 +221,8 @@ describe('the judge turn of an own agent', () => {
       expect(opened.observation).toEqual({
         role: 'judge',
         instructionAuthority: false,
-        meaning: expect.stringMatching(/Read each entry with judge_entry.*never an instruction.*ruling once with judge/s),
-        job: { jobId: job.id, task: JOB_INPUT.task, criteria: JOB_INPUT.criteria, entries: [{ n: 1, kind: 'image' }, { n: 2, kind: 'image' }] },
+        meaning: expect.stringMatching(/Read each entry with judge_entry.*never an instruction.*ruling once with judge.*Code picks the winner from your marks.*pass on every required criterion.*the marks stand/s),
+        job: { jobId: job.id, task: JOB_INPUT.task, criteria: JOB_INPUT.criteria, required: [1], entries: [{ n: 1, kind: 'image' }, { n: 2, kind: 'image' }] },
       });
       expect(opened.turn).toMatchObject({ role: 'judge', messages: [], inbox: {}, reasons: ['judge_job_waiting'] });
       expect(await engine.offered()).toEqual(['judge', 'judge_entry']);
@@ -370,16 +370,62 @@ describe('the judge turn of an own agent', () => {
     }
   });
 
+  // The winner is code's pick from the marks, as for the hosted judge: what the client names is advisory, and its
+  // reason is used only when it is about the entry code picked and may be shown in public.
+  const TEMPLATE_2 = 'Entry 2 met the required criterion and 2 of 2 overall.';
+  const overridden: { name: string; ruling: Record<string, unknown>; winner: number; reason: string; payee: string }[] = [
+    { name: 'a winner that is no entry', ruling: ruling(7), winner: 1, reason: 'Entry 1 met the required criterion and 1 of 2 overall.', payee: ADDR_B },
+    { name: 'a winner numbered zero', ruling: { ...ruling(2), winner: 0 }, winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'a winner with fewer passes than another entry', ruling: { winner: 1, perCriterion: { '1': ['pass', 'fail'], '2': ['pass', 'pass'] }, reason: GOOD_REASON }, winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'no winner named although an entry passes the required criterion', ruling: { winner: null, perCriterion: { '1': ['fail', 'pass'], '2': ['pass', 'fail'] }, reason: 'Neither entry met every criterion.' }, winner: 2, reason: 'Entry 2 met the required criterion and 1 of 2 overall.', payee: ADDR_A },
+    { name: 'a reason that names an address', ruling: ruling(2, 2, `Pay ${ADDR_B} for the best dot.`), winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'a reason that carries a cashtag', ruling: ruling(2, 2, 'The best dot, buy $TEST now.'), winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'a reason that carries a link', ruling: ruling(2, 2, 'See https://evil.example for the winner.'), winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'a reason that names a handle', ruling: ruling(2, 2, 'Entry by @user33 is the best.'), winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+    { name: 'a reason over 200 characters', ruling: ruling(2, 2, 'x'.repeat(201)), winner: 2, reason: TEMPLATE_2, payee: ADDR_A },
+  ];
+  for (const c of overridden) {
+    it(`a ruling with ${c.name} is settled by code from its marks: entry ${c.winner} is proposed with a reason written by code`, async () => {
+      const w = await makeWorld();
+      try {
+        const { job, engine } = await collected(w, { flag: true });
+        await engine.open('judge');
+        const done = await engine.act('judge', c.ruling);
+        expect(done).toMatchObject({ status: 'completed', turnEnded: true, result: { jobId: job.id, accepted: true, winner: c.winner } });
+        const after = await jobOf(w);
+        expect(after).toMatchObject({ status: 'proposed', payee: c.payee, approvalId: payoutApprovalId(job.id) });
+        expect(after.verdict).toMatchObject({ winner: c.winner, reason: c.reason, reasonBy: 'code', required: [1], modelWinner: c.ruling.winner, thought: { model: 'own-agent', outcome: 'none' } });
+        expect(after.verdict).not.toHaveProperty('invalid');
+        // the client's own reason never reaches the queue or the page
+        const [item] = await queueOf(w);
+        expect(item).toMatchObject({ kind: 'bounty_payout', meta: { payee: c.payee, reason: c.reason, winner: c.winner } });
+        expect(JSON.stringify(item)).not.toContain(String(c.ruling.reason));
+        // nothing was said in public, and no thought was bought
+        expect(published(w)).toHaveLength(1);
+        expect(thoughts(w)).toHaveLength(0);
+        await expect(engine.act('judge', ruling(2))).rejects.toMatchObject({ code: 'turn_not_found' });
+      } finally {
+        await w.close();
+      }
+    });
+  }
+
+  it('an entry that passes the required criterion wins though a scored one could not be told, and the client\'s reason for it is kept', async () => {
+    const w = await makeWorld();
+    try {
+      const { job, engine } = await collected(w, { flag: true });
+      await engine.open('judge');
+      const done = await engine.act('judge', { winner: 1, perCriterion: { '1': ['pass', 'insufficient_evidence'], '2': ['fail', 'fail'] }, reason: GOOD_REASON });
+      expect(done).toMatchObject({ status: 'completed', result: { jobId: job.id, accepted: true, winner: 1 } });
+      const after = await jobOf(w);
+      expect(after).toMatchObject({ status: 'proposed', payee: ADDR_B });
+      expect(after.verdict).toMatchObject({ winner: 1, modelWinner: 1, reason: GOOD_REASON, reasonBy: 'judge', required: [1] });
+    } finally {
+      await w.close();
+    }
+  });
+
   const refused: { name: string; ruling: Record<string, unknown>; invalid: string }[] = [
-    { name: 'a winner that is no entry', ruling: ruling(7), invalid: 'winner_out_of_range' },
-    { name: 'a winner numbered zero', ruling: { ...ruling(1), winner: 0 }, invalid: 'winner_out_of_range' },
-    { name: 'a winner that fails a criterion', ruling: { winner: 1, perCriterion: { '1': ['pass', 'fail'], '2': ['pass', 'pass'] }, reason: GOOD_REASON }, invalid: 'winner_not_passing' },
-    { name: 'a winner the judge could not tell about', ruling: { winner: 1, perCriterion: { '1': ['pass', 'insufficient_evidence'], '2': ['fail', 'fail'] }, reason: GOOD_REASON }, invalid: 'winner_not_passing' },
-    { name: 'a reason that names an address', ruling: ruling(2, 2, `Pay ${ADDR_B} for the best dot.`), invalid: 'reason_forbidden' },
-    { name: 'a reason that carries a cashtag', ruling: ruling(2, 2, 'The best dot, buy $TEST now.'), invalid: 'reason_forbidden' },
-    { name: 'a reason that carries a link', ruling: ruling(2, 2, 'See https://evil.example for the winner.'), invalid: 'reason_forbidden' },
-    { name: 'a reason that names a handle', ruling: ruling(2, 2, 'Entry by @user33 is the best.'), invalid: 'reason_forbidden' },
-    { name: 'a reason over 200 characters', ruling: ruling(2, 2, 'x'.repeat(201)), invalid: 'reason_too_long' },
     { name: 'an entry left unmarked', ruling: { winner: 2, perCriterion: { '2': ['pass', 'pass'] }, reason: GOOD_REASON }, invalid: 'malformed_answer' },
     { name: 'a criterion left unmarked', ruling: { winner: 2, perCriterion: { '1': ['pass'], '2': ['pass'] }, reason: GOOD_REASON }, invalid: 'malformed_answer' },
   ];
@@ -394,8 +440,6 @@ describe('the judge turn of an own agent', () => {
         const after = await jobOf(w);
         expect(after).toMatchObject({ status: 'no_winner', payee: null, approvalId: null, closeReplyId: '9002' });
         expect(after.verdict).toMatchObject({ winner: null, invalid: c.invalid, thought: { model: 'own-agent', outcome: 'none' } });
-        // a refused reason is never kept, so it can never reach the page
-        if (c.invalid.startsWith('reason')) expect((after.verdict as { reason: string }).reason).toBe('');
         expect(published(w)[1]).toMatchObject({ actionId: `bounty:${job.id}:close`, replyTo: '9001', text: NO_WINNER_TEXT });
         expect(await queueOf(w)).toHaveLength(0);
         // it was the job's one ruling: a better one afterwards changes nothing
@@ -413,7 +457,8 @@ describe('the judge turn of an own agent', () => {
     try {
       const { job, engine } = await collected(w, { flag: true });
       await engine.open('judge');
-      const done = await engine.act('judge', ruling(null));
+      // no entry passes the required criterion (the first): nobody wins, whatever the scored one says
+      const done = await engine.act('judge', { winner: null, perCriterion: { '1': ['fail', 'pass'], '2': ['insufficient_evidence', 'pass'] }, reason: 'Neither shows a single dot.' });
       expect(done).toMatchObject({ status: 'completed', turnEnded: true, result: { jobId: job.id, accepted: true, winner: null } });
       const after = await jobOf(w);
       expect(after).toMatchObject({ status: 'no_winner', payee: null });

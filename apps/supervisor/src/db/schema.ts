@@ -578,6 +578,11 @@ export const bountyJobs = pgTable(
     nonce: integer('nonce').notNull(),
     task: text('task').notNull(),
     criteria: jsonb('criteria').$type<string[]>().notNull(),
+    /**
+     * The required criteria as 1-based numbers into `criteria` (one or two): an entry must pass each of them to win, the
+     * other criteria are scored. Null on every job from before the split, which reads as `[1]` (judge.ts `requiredOf`).
+     */
+    required: jsonb('required').$type<number[] | null>(),
     deliverable: text('deliverable', { enum: bountyDeliverables }).notNull(),
     amountMicroUsdc: text('amount_micro_usdc').notNull(),
     status: text('status', { enum: bountyJobStatuses }).notNull().default('draft'),
@@ -599,7 +604,9 @@ export const bountyJobs = pgTable(
      * `{winner, perCriterion, reason, invalid?, deliveryHash, reasonHash, judgedAt, thought, thoughts?}`; `thoughts` is
      * every paid thought the job had (two at most). `manualPick: true` while the creator is asked to pick (the judge
      * gave no usable ruling), `pickedBy: 'creator'` once they did, `rejudged: {at, outcome}` on a job the sweep judged
-     * a second time after it had closed on a failed ruling.
+     * a second time after it had closed on a failed ruling. `required`, `modelWinner` and `reasonBy` say how the winner
+     * was picked (code, from the marks; judge.ts `pickWinner`), `rerule: {at, outcome, ...}` marks a job that had closed
+     * with no winner under the every-criterion rule and was ruled once more from its stored marks.
      */
     verdict: jsonb('verdict').$type<Record<string, unknown> | null>(),
     /**

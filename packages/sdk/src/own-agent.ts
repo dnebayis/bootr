@@ -471,7 +471,12 @@ export type JudgeMark = 'pass' | 'fail' | 'insufficient_evidence';
 export interface JudgeObservation {
   role: 'judge';
   meaning: string;
-  job: { jobId: string; task: string; criteria: string[]; entries: { n: number; kind: 'image' | 'link' }[] };
+  /**
+   * `required`: the required criteria as 1-based numbers into `criteria` (one or two); the others are scored. An entry
+   * wins only with `pass` on every required one, then by the most passes, a tie to the lower entry number. Absent from
+   * a server older than the split, where every criterion was required.
+   */
+  job: { jobId: string; task: string; criteria: string[]; required?: number[]; entries: { n: number; kind: 'image' | 'link' }[] };
 }
 
 /** Input of the special tool `judge_entry`. */
@@ -489,7 +494,7 @@ export interface JudgeEntryView {
 
 /** Input of the special tool `judge`. */
 export interface JudgeRulingInput {
-  /** The winning entry's number, or null when none meets every criterion. */
+  /** The entry your marks make the winner (pass on every required criterion, then the most passes, a tie to the lower number), or null. Advisory: the server picks from `perCriterion`. */
   winner: number | null;
   /** Entry number (as a string key) to one mark per criterion, in the criteria's order. */
   perCriterion: Record<string, JudgeMark[]>;
@@ -502,6 +507,7 @@ export interface JudgeOutcome {
   jobId: string;
   /** False when code refused the ruling; the job then closes with no winner. */
   accepted: boolean;
+  /** The winner the server picked from the ruling's marks; it may differ from the `winner` that was sent. */
   winner: number | null;
   /** The judge.ts `JudgeInvalidCode` when `accepted` is false. */
   invalid?: string;

@@ -11,7 +11,9 @@
  *    the judgment, the proposal) is code;
  *  - the **social turn** sees replies to a job post as `bounty_entry`, never as mentions to answer (`inboxViews` with
  *    `bountyConversationIds`); `bounty_list` is its only bounty tool;
- *  - the **judge** (judge.ts) sees the criteria and the artefacts, nothing else, and names an entry, never a payment;
+ *  - the **judge** (judge.ts) sees the criteria and the artefacts, nothing else, and marks every criterion for every
+ *    entry; **code** picks the winner from those marks (`pickWinner`): pass on every required criterion of the job
+ *    (`required`, one or two; `[1]` for a job that stored none), then the most passes, a tie to the earlier entry;
  *  - the **creator** approves the proposal with the paying transaction hash, or declines it.
  *
  * The entry rules (section 3.3 "How a delivery is read") are `evaluateEntries`, a pure function over what the sender
@@ -25,6 +27,10 @@
  * it goes to the creator's queue as a `bounty_pick` item, where the creator picks the entry to pay from the considered
  * ones (and pays it by hand, like any payout) or declines. What the judge wrote is kept on the row (`judgeRaw`). A job
  * that closed `no_winner` on such a failure before this existed is judged once more by the sweep (`rejudgeJob`).
+ *
+ * A job that closed with no winner under the earlier rule (every criterion had to pass) and whose stored marks give a
+ * winner under this one is ruled once more by the sweep, from the marks alone and with no thought bought (`reruleJob`):
+ * it becomes an ordinary payout proposal, with nothing new said in public.
  *
  * A paid job is said twice in public, both from fixed templates: the reply under the winning entry, and one original
  * post of the agent's own (`payoutPostText`) with the job, the amount and the transaction link.
@@ -48,6 +54,7 @@ import {
   BOUNTY_MAX_AMOUNT_MICRO_USDC,
   BOUNTY_MAX_CONSIDERED,
   BOUNTY_MAX_HOURS_OPEN,
+  BOUNTY_MAX_REQUIRED,
   BOUNTY_MIN_AMOUNT_MICRO_USDC,
   BOUNTY_MIN_HOURS_OPEN,
   BOUNTY_PAY_GRACE_MS,
@@ -67,11 +74,11 @@ import {
 import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { encodeAbiParameters, formatUnits, getAddress, isAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
-import { JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, JUDGE_MAX_THOUGHTS, JUDGE_RETRY_CODES, judgeJob, type JudgeEntry, type JudgeThought, type JudgeVerdict } from './judge.js';
+import { JUDGE_MARKS, JUDGE_MAX_EXCERPT_CHARS, JUDGE_MAX_IMAGE_BYTES, JUDGE_MAX_THOUGHTS, JUDGE_RETRY_CODES, judgeJob, pickWinner, requiredOf, templateReason, type JudgeEntry, type JudgeMark, type JudgeThought, type JudgeVerdict } from './judge.js';
 import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { isOwn, OWN_AGENT_MARK, ownSetting } from './own/registry.js';
@@ -115,6 +122,8 @@ const TEMPLATE_REPLY_REASON = 'bounty_template';
 export const REJUDGE_WINDOW_MS = 7 * 24 * 3_600_000;
 /** A paid job is announced by the agent's own post inside this long of the payment; after it the post is not made. */
 export const PAYOUT_POST_WINDOW_MS = 48 * 3_600_000;
+/** A job that closed with no winner under the every-criterion rule is ruled again from its stored marks when it closed inside this long. */
+export const RERULE_WINDOW_MS = 7 * 24 * 3_600_000;
 /** A new job may not repeat one of the agent's jobs from this many days back. */
 export const BOUNTY_REPEAT_DAYS = 30;
 /** Two tasks are one job when this share of their words is common (words in both over words in either)... */
@@ -479,6 +488,11 @@ export async function jobClosedSince(ctx: Pick<SupervisorContext, 'db'>, agentId
 // The approval queue: a job text under review, a payout proposal
 // ---------------------------------------------------------------------------
 
+/** The required criteria of a job, as 1-based numbers: what the row stores, or `[1]` for a job from before the split. */
+export function requiredOfJob(job: Pick<BountyJobRow, 'required' | 'criteria'>): number[] {
+  return requiredOf(job.required, job.criteria.length);
+}
+
 export const reviewApprovalId = (actionId: string) => actionId;
 export const payoutApprovalId = (jobId: string) => `bounty-pay-${jobId.slice(2, 34)}`;
 export const pickApprovalId = (jobId: string) => `bounty-pick-${jobId.slice(2, 34)}`;
@@ -497,6 +511,12 @@ export interface BountyApprovalMeta {
   jobId: string;
   task: string;
   amountMicroUsdc: string;
+  /** The job's criteria and which of them are required (1-based numbers); absent on an item from before the split. */
+  criteria?: string[];
+  required?: number[];
+  /** `payout` only: the winning entry's number and its marks, one per criterion. */
+  winner?: number;
+  marks?: string[];
   payee?: string;
   reason?: string;
   replyId?: string;
@@ -516,7 +536,10 @@ export function bountyApprovalView(meta: Record<string, unknown> | null | undefi
     jobId: m.jobId,
     task: typeof m.task === 'string' ? m.task : '',
     amountUsdc: typeof m.amountMicroUsdc === 'string' ? usdc(m.amountMicroUsdc) : null,
-    ...(m.bounty === 'payout' ? { payee: m.payee ?? null, reason: m.reason ?? null, entryUrl: m.entryUrl ?? null, txHashRequired: true } : {}),
+    ...(Array.isArray(m.criteria) && m.criteria.length ? { criteria: m.criteria, required: requiredOf(m.required, m.criteria.length) } : {}),
+    ...(m.bounty === 'payout'
+      ? { payee: m.payee ?? null, reason: m.reason ?? null, entryUrl: m.entryUrl ?? null, txHashRequired: true, ...(typeof m.winner === 'number' ? { winner: m.winner } : {}), ...(Array.isArray(m.marks) ? { marks: m.marks } : {}) }
+      : {}),
     ...(m.bounty === 'pick'
       ? { candidates: (Array.isArray(m.candidates) ? m.candidates : []).map((c) => ({ n: c.n, payee: c.payee, entryUrl: c.entryUrl, artefactUrl: c.artefactUrl ?? null })), why: m.why ?? null, txHashRequired: true, entryRequired: true }
       : {}),
@@ -544,6 +567,7 @@ function postResult(job: BountyJobRow, extra: Record<string, unknown> = {}): Rec
     task: job.task,
     amountUsdc: usdc(job.amountMicroUsdc),
     deliverable: job.deliverable,
+    required: requiredOfJob(job),
     closesAt: job.closesAt.toISOString(),
     ...(job.postId ? { postId: job.postId, postUrl: replyLink(job.postId) } : {}),
     ...extra,
@@ -576,6 +600,10 @@ export async function bountyPost(ctx: SupervisorContext, agent: AgentRow, config
   const nonce = Number(count?.n ?? 0) + 1;
   const task = input.task.trim();
   const criteria = input.criteria.map((c) => c.trim());
+  const required = input.required ? [...input.required].sort((a, b) => a - b) : requiredOf(null, criteria.length);
+  if (required.length < 1 || required.length > BOUNTY_MAX_REQUIRED || new Set(required).size !== required.length || required.some((n) => !Number.isInteger(n) || n < 1 || n > criteria.length)) {
+    return failed(`bounty_required_out_of_range: required names one or two of your criteria by number, each once, from 1 to ${criteria.length} for this job (you wrote ${criteria.length} ${criteria.length === 1 ? 'criterion' : 'criteria'}); leave it out and criterion 1 is the required one`);
+  }
   const jobId = bountyJobId(agent.kernel as Address, nonce, task);
   const link = coinPageLink(ctx.config.SITE_URL, agent.token, jobId);
   const closesAt = now + hours * 3_600_000;
@@ -588,15 +616,15 @@ export async function bountyPost(ctx: SupervisorContext, agent: AgentRow, config
 
   const [job] = await ctx.db
     .insert(bountyJobs)
-    .values({ id: jobId, agentId: agent.agentId, actionId, nonce, task, criteria, deliverable: input.deliverable, amountMicroUsdc: amount.toString(), status: 'draft', createdAt: new Date(now), closesAt: new Date(closesAt), pageText: text, updatedAt: new Date(now) })
+    .values({ id: jobId, agentId: agent.agentId, actionId, nonce, task, criteria, required, deliverable: input.deliverable, amountMicroUsdc: amount.toString(), status: 'draft', createdAt: new Date(now), closesAt: new Date(closesAt), pageText: text, updatedAt: new Date(now) })
     .onConflictDoNothing()
     .returning();
   if (!job) return outcomeOfJob((await ctx.db.query.bountyJobs.findFirst({ where: eq(bountyJobs.actionId, actionId) }))!);
-  log(ctx, agent.agentId, job, { amountMicroUsdc: amount.toString(), hours, deliverable: input.deliverable, review: policy.review }, 'bounty job drafted');
+  log(ctx, agent.agentId, job, { amountMicroUsdc: amount.toString(), hours, deliverable: input.deliverable, criteria: criteria.length, required, review: policy.review }, 'bounty job drafted');
 
   if (policy.review) {
     const approvalId = reviewApprovalId(actionId);
-    const meta: BountyApprovalMeta = { bounty: 'job', jobId, task, amountMicroUsdc: amount.toString() };
+    const meta: BountyApprovalMeta = { bounty: 'job', jobId, task, amountMicroUsdc: amount.toString(), criteria, required };
     await ctx.db
       .insert(approvals)
       .values({ id: approvalId, agentId: agent.agentId, kind: 'bounty_job', text, textHash: sha256Hex(text.replace(/\s+/g, ' ').trim().toLowerCase()), meta: meta as unknown as Record<string, unknown>, status: 'pending_approval', createdAt: new Date(now) })
@@ -1130,7 +1158,7 @@ export async function collectAndJudge(ctx: SupervisorContext, agent: AgentRow, c
   }
 
   const entries: JudgeEntry[] = considered.map((c) => (c.fetched.kind === 'image' ? { n: c.n, kind: 'image', image: { mime: c.fetched.mime, bytes: c.fetched.bytes } } : { n: c.n, kind: 'link', excerpt: c.fetched.excerpt }));
-  const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries });
+  const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries, required: requiredOfJob(job) });
   if (verdict.invalid === 'thought_pending') {
     log(ctx, agent.agentId, { id: job.id, status: 'judging' }, { key: verdict.thought.key }, 'judge thought pending; the job stays judging');
     return { job: await jobByIdOrThrow(ctx, job.id), verdict };
@@ -1159,13 +1187,15 @@ function thoughtsOf(earlier: unknown, verdict: JudgeVerdict): JudgeThought[] {
 }
 
 /**
- * The verdict as the job row keeps it: the ruling, the hash of the bundle it was given on and of its reason, and the
- * thoughts behind it (`thought` is the last one; `thoughts` every one the job has had, an earlier ruling's included).
+ * The verdict as the job row keeps it: the ruling (the winner is code's pick from the marks; `required` is what it was
+ * picked under, `modelWinner` what the judge itself named, `reasonBy` who wrote the reason), the hash of the bundle it
+ * was given on and of its reason, and the thoughts behind it (`thought` is the last one; `thoughts` every one the job has had, an earlier ruling's included).
  */
 function storedVerdict(ctx: Pick<SupervisorContext, 'now'>, verdict: JudgeVerdict, considered: readonly JudgedEntryRef[], earlier?: unknown): Record<string, unknown> & { deliveryHash: string } {
   const deliveryHash = deliveryHashOf(considered.map((c) => ({ n: c.n, kind: c.kind, sha256: c.sha256 })));
   const thoughts = thoughtsOf(earlier, verdict);
-  return { winner: verdict.winner, perCriterion: verdict.perCriterion, reason: verdict.reason, ...(verdict.invalid ? { invalid: verdict.invalid } : {}), deliveryHash, reasonHash: sha256Hex(verdict.reason), judgedAt: new Date(ctx.now()).toISOString(), thought: verdict.thought, ...(thoughts.length ? { thoughts } : {}) };
+  const picked = { ...(verdict.required ? { required: verdict.required } : {}), ...(verdict.modelWinner !== undefined ? { modelWinner: verdict.modelWinner } : {}), ...(verdict.reasonBy ? { reasonBy: verdict.reasonBy } : {}) };
+  return { winner: verdict.winner, perCriterion: verdict.perCriterion, reason: verdict.reason, ...picked, ...(verdict.invalid ? { invalid: verdict.invalid } : {}), deliveryHash, reasonHash: sha256Hex(verdict.reason), judgedAt: new Date(ctx.now()).toISOString(), thought: verdict.thought, ...(thoughts.length ? { thoughts } : {}) };
 }
 
 /**
@@ -1183,8 +1213,9 @@ function judgeGaveNoRuling(verdict: JudgeVerdict): boolean {
 }
 
 /**
- * What a verdict does to its job, the same for the hosted judge's and an own agent's: a ruling with no winner, or one
- * refused in code for what it ruled, closes the job unpaid in public; a winner becomes a payout proposal in the
+ * What a verdict does to its job, the same for the hosted judge's and an own agent's. `verdict.winner` is already
+ * code's pick from the marks (`parseVerdict`), never the judge's own word. A ruling with no winner, or one refused in
+ * code, closes the job unpaid in public; a winner becomes a payout proposal in the
  * creator's queue, with the payee taken from the entry record, never from the judge's text. When the hosted judge gave
  * no usable answer in both of its thoughts, nothing is said in public: the creator is asked to pick (`proposePick`).
  *
@@ -1210,18 +1241,35 @@ async function settleVerdict(ctx: SupervisorContext, agent: AgentRow, config: Ag
     return closeUnpaid(ctx, agent, config, job, { ...stored, invalid: 'winner_without_payee' }, NO_WINNER_TEXT, raw);
   }
 
-  // The proposal: the payee from the entry record, never from the judge's text.
+  return (await proposePayout(ctx, agent, job, { n: winner.n, replyId: winner.replyId, payee: winner.payee }, verdict.reason, { ...stored, ...mark('proposed') }, { judgedAt: new Date(ctx.now()), ...raw }, verdict.perCriterion[String(winner.n)]))!;
+}
+
+/**
+ * A winner becomes a payout proposal in the creator's queue: the approval row (its id is the job's, so it is made
+ * once), then the job `proposed` with the payee, taken from the entry record and never from the judge's text. The
+ * creator pays by hand or declines; nothing here moves money. `closedAt` is stamped now, so the 48 hours the creator
+ * has run from this moment, also for a job that had closed before (a second ruling, `reruleJob`). With `onlyWhile`
+ * the job is moved only while that condition still holds (the approval row, whose id is the job's, is written first
+ * and is the same row whoever wins the write); null when it no longer did.
+ */
+async function proposePayout(ctx: SupervisorContext, agent: AgentRow, job: BountyJobRow, winner: { n: number; replyId: string; payee: string }, reason: string, verdict: Record<string, unknown>, patch: Partial<typeof bountyJobs.$inferInsert>, marks?: readonly string[], onlyWhile?: SQL): Promise<BountyJobRow | null> {
   const approvalId = payoutApprovalId(job.id);
   const entryUrl = replyLink(winner.replyId);
-  const meta: BountyApprovalMeta = { bounty: 'payout', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, payee: winner.payee, reason: verdict.reason, replyId: winner.replyId, entryUrl };
-  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.payee} for entry ${entryUrl} of job ${shortJobId(job.id)}. Why: ${verdict.reason}`;
+  const meta: BountyApprovalMeta = { bounty: 'payout', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, criteria: job.criteria, required: requiredOfJob(job), winner: winner.n, ...(marks ? { marks: [...marks] } : {}), payee: winner.payee, reason, replyId: winner.replyId, entryUrl };
+  const text = `Pay ${usdc(job.amountMicroUsdc)} USDC to ${winner.payee} for entry ${entryUrl} of job ${shortJobId(job.id)}. Why: ${reason}`;
   await ctx.db
     .insert(approvals)
     .values({ id: approvalId, agentId: agent.agentId, kind: 'bounty_payout', text, textHash: sha256Hex(text), meta: meta as unknown as Record<string, unknown>, status: 'pending_approval', createdAt: new Date(ctx.now()) })
     .onConflictDoNothing();
-  const proposed = await closeJob(ctx, job.id, 'proposed', { verdict: { ...stored, ...mark('proposed') }, judgedAt: new Date(ctx.now()), payee: winner.payee, approvalId, error: null, ...raw });
+  const now = new Date(ctx.now());
+  const [proposed] = await ctx.db
+    .update(bountyJobs)
+    .set({ ...patch, verdict, payee: winner.payee, approvalId, error: null, status: 'proposed', closedAt: now, updatedAt: now })
+    .where(onlyWhile ? and(eq(bountyJobs.id, job.id), onlyWhile) : eq(bountyJobs.id, job.id))
+    .returning();
+  if (!proposed) return null;
   await notifyReview(ctx, agent.agentId);
-  log(ctx, agent.agentId, proposed, { approvalId, winner: verdict.winner }, 'bounty payout proposed to the creator');
+  log(ctx, agent.agentId, proposed, { approvalId, winner: winner.n }, 'bounty payout proposed to the creator');
   return proposed;
 }
 
@@ -1235,7 +1283,7 @@ async function proposePick(ctx: SupervisorContext, agent: AgentRow, job: BountyJ
   const approvalId = pickApprovalId(job.id);
   const candidates: BountyPickCandidate[] = considered.filter((c): c is JudgedEntryRef & { payee: string } => !!c.payee).map((c) => ({ n: c.n, payee: c.payee, replyId: c.replyId, entryUrl: replyLink(c.replyId), ...(c.url ? { artefactUrl: c.url } : {}) }));
   const why = typeof stored.invalid === 'string' ? stored.invalid : 'malformed_answer';
-  const meta: BountyApprovalMeta = { bounty: 'pick', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, candidates, why };
+  const meta: BountyApprovalMeta = { bounty: 'pick', jobId: job.id, task: job.task, amountMicroUsdc: job.amountMicroUsdc, criteria: job.criteria, required: requiredOfJob(job), candidates, why };
   const text = `The judge gave no usable ruling on job ${shortJobId(job.id)} (${candidates.length} ${candidates.length === 1 ? 'entry' : 'entries'}). Pick the entry to pay ${usdc(job.amountMicroUsdc)} USDC, or decline and nothing is paid.`;
   await ctx.db
     .insert(approvals)
@@ -1329,13 +1377,16 @@ export async function settleOwnRuling(ctx: SupervisorContext, agent: AgentRow, c
 
 /** The ruling an own agent gave and the row kept (`settleOwnRuling`), or null when the job's verdict is not one. */
 function ownRulingOf(job: BountyJobRow): JudgeVerdict | null {
-  const v = job.verdict as { winner?: unknown; perCriterion?: unknown; reason?: unknown; invalid?: unknown; thought?: { model?: unknown } } | null;
+  const v = job.verdict as { winner?: unknown; perCriterion?: unknown; reason?: unknown; invalid?: unknown; required?: unknown; modelWinner?: unknown; reasonBy?: unknown; thought?: { model?: unknown } } | null;
   if (!v || v.thought?.model !== OWN_AGENT_MODEL_ID) return null;
   return {
     jobId: job.id,
     winner: typeof v.winner === 'number' ? v.winner : null,
     perCriterion: (v.perCriterion && typeof v.perCriterion === 'object' ? v.perCriterion : {}) as JudgeVerdict['perCriterion'],
     reason: typeof v.reason === 'string' ? v.reason : '',
+    ...(Array.isArray(v.required) ? { required: requiredOf(v.required, job.criteria.length) } : {}),
+    ...(typeof v.modelWinner === 'number' || v.modelWinner === null ? { modelWinner: v.modelWinner } : {}),
+    ...(v.reasonBy === 'judge' || v.reasonBy === 'code' ? { reasonBy: v.reasonBy } : {}),
     ...(typeof v.invalid === 'string' ? { invalid: v.invalid as NonNullable<JudgeVerdict['invalid']> } : {}),
     thought: v.thought as JudgeVerdict['thought'],
   };
@@ -1574,9 +1625,103 @@ export async function rejudgeJob(ctx: SupervisorContext, agent: AgentRow, config
   }
   const sameBundle = deliveryHashOf(refs) === earlier?.deliveryHash;
   log(ctx, agent.agentId, job, { entries: entries.length, considered: rows.length, sameBundle }, 'bounty judged again after a failed ruling');
-  const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries }, { fromAttempt: sameBundle ? 1 : 2 });
+  const verdict = await judgeJob(ctx, agent, config, { jobId: job.id, task: job.task, criteria: job.criteria, entries, required: requiredOfJob(job) }, { fromAttempt: sameBundle ? 1 : 2 });
   if (verdict.invalid === 'thought_pending') return null;
   return settleVerdict(ctx, agent, config, job, verdict, refs, { earlier: job.verdict });
+}
+
+// ---------------------------------------------------------------------------
+// A second ruling, from the stored marks, for a job that closed with no winner under the every-criterion rule
+// ---------------------------------------------------------------------------
+
+/**
+ * A job to rule once more from its stored marks: closed `no_winner` inside `RERULE_WINDOW_MS` on a ruling that stood
+ * (no `invalid`, marks on record) and named no winner, never declined by its creator (a declined payout keeps its
+ * winner and carries `error`), and not ruled this way before (`verdict.rerule`). A hosted coin's job or an own coin's:
+ * nothing is asked of any judge here.
+ */
+const reruleDue = (now: number) =>
+  and(
+    eq(bountyJobs.status, 'no_winner'),
+    sql`(${bountyJobs.verdict}->>'invalid') is null`,
+    sql`(${bountyJobs.verdict}->>'winner') is null`,
+    sql`jsonb_typeof(${bountyJobs.verdict}->'perCriterion') = 'object'`,
+    sql`(${bountyJobs.verdict}->'rerule') is null`,
+    isNull(bountyJobs.error),
+    gte(bountyJobs.closedAt, new Date(now - RERULE_WINDOW_MS)),
+    sql`${bountyJobs.entriesConsidered} > 0`,
+  );
+
+/** Still closed with no winner and not ruled from its marks before: the condition every write of `reruleJob` carries, so it happens once. */
+const UNRULED = sql`(${bountyJobs.status} = 'no_winner' and (${bountyJobs.verdict}->'rerule') is null)`;
+
+/** The stored marks of a verdict by entry number, when every one is a full row of marks for `criteria` criteria; else null. */
+function storedMarks(verdict: unknown, criteria: number): Map<number, JudgeMark[]> | null {
+  const per = (verdict as { perCriterion?: unknown } | null)?.perCriterion;
+  if (!per || typeof per !== 'object' || Array.isArray(per)) return null;
+  const out = new Map<number, JudgeMark[]>();
+  for (const [key, marks] of Object.entries(per as Record<string, unknown>)) {
+    if (!/^[1-9]\d{0,2}$/.test(key) || !Array.isArray(marks) || marks.length !== criteria) return null;
+    if (!marks.every((m): m is JudgeMark => (JUDGE_MARKS as readonly unknown[]).includes(m))) return null;
+    out.set(Number(key), marks);
+  }
+  return out.size ? out : null;
+}
+
+/**
+ * Rules a closed job once more under today's winner rule, from the marks its judge already gave: no artefact is
+ * fetched, no thought is bought, no judge is asked. The marks must be whole (one row per ruled entry, each entry one of
+ * the job's considered rows) or nothing happens. A winner (`pickWinner` over the job's required criteria) with an
+ * address on its entry row becomes an ordinary payout proposal, with a reason written by code; nothing is said in
+ * public here (the paid reply and the payout post follow when the creator pays). Whatever comes of it, the verdict is
+ * marked `rerule` in the one conditional write that moves or marks the job (`UNRULED`), so it happens once. Returns
+ * the job when it was proposed, else null.
+ */
+export async function reruleJob(ctx: SupervisorContext, agent: AgentRow, job: BountyJobRow): Promise<BountyJobRow | null> {
+  const before = (job.verdict ?? {}) as Record<string, unknown>;
+  const at = new Date(ctx.now()).toISOString();
+  const required = requiredOfJob(job);
+  /** The mark alone: written only while the job is still closed with no winner and unmarked. */
+  const claim = async (verdict: Record<string, unknown>): Promise<BountyJobRow | null> => {
+    const [row] = await ctx.db
+      .update(bountyJobs)
+      .set({ verdict, updatedAt: new Date(ctx.now()) })
+      .where(and(eq(bountyJobs.id, job.id), UNRULED))
+      .returning();
+    return row ?? null;
+  };
+  const leave = async (outcome: string): Promise<null> => {
+    const marked = await claim({ ...before, rerule: { at, outcome, required } });
+    if (marked) log(ctx, agent.agentId, marked, { outcome, required }, 'bounty ruled again from its stored marks; the job stays closed');
+    return null;
+  };
+
+  const marks = storedMarks(before, job.criteria.length);
+  const rows = (await consideredRows(ctx, job.id)).filter((row) => row.n !== null);
+  if (!marks || !rows.length || [...marks.keys()].some((n) => !rows.some((row) => row.n === n))) return leave('marks_incomplete');
+  const perCriterion = Object.fromEntries([...marks].map(([n, m]) => [String(n), m]));
+  const pick = pickWinner(perCriterion, [...marks.keys()], required);
+  if (pick.winner === null) return leave('no_winner');
+  const winner = rows.find((row) => row.n === pick.winner);
+  if (!winner?.payee) return leave('winner_without_payee');
+  // A payout item for this job that was already decided (there should be none for a job that never had a winner) is not reopened.
+  const earlier = await ctx.db.query.approvals.findFirst({ where: eq(approvals.id, payoutApprovalId(job.id)) });
+  if (earlier && earlier.status !== 'pending_approval') return leave('approval_exists');
+
+  const reason = templateReason({ winner: pick.winner, passes: pick.passes, criteria: job.criteria.length, required: required.length });
+  const verdict = {
+    ...before,
+    winner: pick.winner,
+    reason,
+    reasonHash: sha256Hex(reason),
+    required,
+    reasonBy: 'code',
+    rerule: { at, outcome: 'proposed', required, was: { winner: null, reason: typeof before.reason === 'string' ? before.reason : '', reasonHash: typeof before.reasonHash === 'string' ? before.reasonHash : null } },
+  };
+  const proposed = await proposePayout(ctx, agent, job, { n: pick.winner, replyId: winner.replyId, payee: winner.payee }, reason, verdict, {}, marks.get(pick.winner), UNRULED);
+  if (!proposed) return null;
+  log(ctx, agent.agentId, proposed, { winner: pick.winner, passes: pick.passes, required, qualified: pick.qualified.length }, 'bounty ruled again from its stored marks: the best entry is proposed to the creator; no thought bought');
+  return proposed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,6 +1735,8 @@ export interface BountySweepReport {
   failed: number;
   /** Jobs that had closed on a failed ruling and were judged once more; absent when none. */
   rejudged?: number;
+  /** Jobs that had closed with no winner under the every-criterion rule and became a payout proposal from their stored marks; absent when none. */
+  reruled?: number;
   /** Paid jobs announced in a post of the agent's own this sweep; absent when none. */
   announced?: number;
   /** Own coins' jobs closed with no winner because their agent gave no ruling in time (`judge_absent`); absent when none. */
@@ -1599,7 +1746,8 @@ export interface BountySweepReport {
 /**
  * Every tick: drafts whose wait is over are posted (or fail after DRAFT_TTL_MS), open jobs past their close time are
  * collected and judged (a `judging` job left by a crash is resumed), a job that closed on a failed ruling in the last
- * seven days is judged once more (`rejudgeJob`), proposals nobody acted on in 48 hours expire with their approval
+ * seven days is judged once more (`rejudgeJob`), a job that closed in the last seven days with no winner on marks that
+ * give one under today's rule is proposed from those marks (`reruleJob`; no thought), proposals nobody acted on in 48 hours expire with their approval
  * withdrawn, and a paid job whose own post is still owed gets it (`publishPayoutPost`). At most MAX_JOBS_PER_SWEEP jobs
  * move per tick; an error on one job is logged and counted against its attempts, never thrown.
  *
@@ -1743,6 +1891,19 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
     }
   }
 
+  // 2d. A job that closed with no winner while every criterion had to pass, whose stored marks give a winner under
+  //     today's rule: proposed to the creator from those marks. No network and no thought, so it takes no sweep slot.
+  const unruled = await ctx.db.select().from(bountyJobs).where(reruleDue(now)).orderBy(asc(bountyJobs.closedAt)).limit(MAX_JOBS_PER_SWEEP);
+  for (const job of unruled) {
+    try {
+      const agent = await agentFor(job.agentId);
+      if (!agent) continue;
+      if (await reruleJob(ctx, agent, job)) report.reruled = (report.reruled ?? 0) + 1;
+    } catch (err) {
+      ctx.log.warn({ ...MODULE, agentId: job.agentId, jobId: job.id, err }, 'bounty re-rule from stored marks failed for one job; tried again next tick');
+    }
+  }
+
   // 3. Proposals nobody acted on: withdrawn after the grace, the job expires unpaid.
   const stale = await ctx.db
     .select()
@@ -1779,7 +1940,7 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
       ctx.log.warn({ ...MODULE, agentId: job.agentId, jobId: job.id, err }, 'bounty payout post failed for one job');
     }
   }
-  if (report.posted || report.judged || report.expired || report.failed || report.unjudged || report.rejudged || report.announced) ctx.log.info({ ...MODULE, ...report }, 'bounty sweep');
+  if (report.posted || report.judged || report.expired || report.failed || report.unjudged || report.rejudged || report.reruled || report.announced) ctx.log.info({ ...MODULE, ...report }, 'bounty sweep');
   return report;
 }
 
@@ -1794,6 +1955,8 @@ export interface BountyJobView {
   status: BountyJobStatus;
   task: string;
   criteria: string[];
+  /** The required criteria as 1-based numbers into `criteria`; the others are scored. `[1]` for a job from before the split. */
+  required: number[];
   deliverable: BountyDeliverable;
   amountUsdc: string;
   amountMicroUsdc: string;
@@ -1841,6 +2004,7 @@ export async function bountyJobViews(ctx: SupervisorContext, agent: AgentRow, op
       status: job.status,
       task: job.task,
       criteria: job.criteria,
+      required: requiredOfJob(job),
       deliverable: job.deliverable,
       amountUsdc: usdc(job.amountMicroUsdc),
       amountMicroUsdc: job.amountMicroUsdc,

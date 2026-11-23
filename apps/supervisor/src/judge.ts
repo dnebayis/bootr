@@ -5,9 +5,15 @@
  * docs/STATUS.md section 3 item 3; none exists yet) strips those before it gets here, and nothing in this module reads
  * X, the inbox or the memories.
  *
- * The answer is a strict JSON object checked in code: the winner in range, every criterion `pass` for it, a reason of at
- * most 200 characters that passes the publish gate (no address, no cashtag, no link, no handle). Any failure is
- * `winner: null` with an `invalid` code, and the job closes unpaid; the judge names a winner, never a payment.
+ * The answer is a strict JSON object checked in code, and code, not the model, picks the winner from its marks
+ * (`pickWinner`): a job's criteria are split into required ones (one or two, the substance; `requiredOf`) and scored
+ * ones; among the entries with `pass` on every required criterion the one with the most `pass` marks wins, a tie goes
+ * to the lower entry number (the entry that came in first), and no entry passing every required one is no winner. The
+ * model's own `winner` is read and kept as advisory (`modelWinner`); a disagreement is logged and the marks stand. The
+ * public reason is the model's only when it named the same entry and the text passes the publish gate (at most 200
+ * characters, no address, no cashtag, no link, no handle); otherwise it is a template written here (`templateReason`).
+ * An answer without a full set of marks is `winner: null` with an `invalid` code, and the job closes unpaid; the judge
+ * names an entry, never a payment.
  *
  * At most two paid thoughts per job, ever: the idempotency key of each is derived from the job id and the attempt's
  * number, so a second call for the same job replays the stored answers (or reconciles an unknown one) through
@@ -22,7 +28,7 @@
  * here: its creator's client rules (own/judge.ts) through `parseVerdict`, the same check. Should anything ask
  * `judgeJob` for such a coin all the same, it answers `thought_pending` and buys nothing.
  */
-import { buildSystemPrompt, countCashtags, digest, linkedHosts, maxQuoteFor, mentionedHandles, postValidation, type AgentConfig } from '@bootr/agent-core';
+import { BOUNTY_DEFAULT_REQUIRED, BOUNTY_MAX_REQUIRED, buildSystemPrompt, countCashtags, digest, linkedHosts, maxQuoteFor, mentionedHandles, postValidation, type AgentConfig } from '@bootr/agent-core';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { assistantText, parseAssistant, relayRequest, type RelayResult } from './inference.js';
 import { isOwn } from './own/registry.js';
@@ -47,6 +53,8 @@ export interface JudgeInput {
   criteria: string[];
   /** 1 to 12 eligible entries (the design's cap). */
   entries: JudgeEntry[];
+  /** The required criteria as their 1-based numbers (`requiredOf` reads anything else, absent included, as `[1]`). */
+  required?: readonly number[];
 }
 
 export type JudgeInvalidCode =
@@ -55,6 +63,8 @@ export type JudgeInvalidCode =
   | 'thought_failed'
   | 'thought_pending'
   | 'malformed_answer'
+  // The four below were given while the model's own winner and reason were binding; `parseVerdict` gives none of them
+  // since code picks the winner from the marks. They stay for the verdicts already stored with them.
   | 'winner_out_of_range'
   | 'winner_not_passing'
   | 'reason_too_long'
@@ -66,6 +76,12 @@ export interface JudgeVerdict {
   /** Entry number (as a string key) to one mark per criterion, in the criteria's order. */
   perCriterion: Record<string, JudgeMark[]>;
   reason: string;
+  /** The required criteria the winner was picked under (1-based numbers). Absent on a verdict from before the split, which demanded every criterion. */
+  required?: number[];
+  /** The winner the model itself named (advisory; code's pick from the marks is `winner`). Absent when it named none readable. */
+  modelWinner?: number | null;
+  /** Who wrote `reason`: the judge, or code from a template because the judge's was about another entry, missing or not publishable. */
+  reasonBy?: 'judge' | 'code';
   /** Why there is no winner although the model may have named one; absent when the verdict stands as answered. */
   invalid?: JudgeInvalidCode;
   /** The thought behind it (the last one asked): `none` when nothing was asked (invalid input), else the relay result's kind. */
@@ -177,7 +193,7 @@ export function normalizeJudgeInput(input: JudgeInput): { ok: true; input: Judge
       entries.push({ n: entry.n, kind: 'link', excerpt });
     } else return bad;
   }
-  return { ok: true, input: { jobId: input.jobId.trim(), task: plain(input.task, JUDGE_MAX_TASK_CHARS), criteria, entries: entries.sort((a, b) => a.n - b.n) } };
+  return { ok: true, input: { jobId: input.jobId.trim(), task: plain(input.task, JUDGE_MAX_TASK_CHARS), criteria, entries: entries.sort((a, b) => a.n - b.n), required: requiredOf(input.required, criteria.length) } };
 }
 
 /**
@@ -185,12 +201,15 @@ export function normalizeJudgeInput(input: JudgeInput): { ok: true; input: Judge
  * numbered, the entries numbered, a text part per link and an image part per picture. No tools, no economy mode.
  */
 export function judgeRequest(config: AgentConfig, input: JudgeInput): Record<string, unknown> {
+  const required = requiredOf(input.required, input.criteria.length);
   const job = {
     instructionAuthority: false,
-    meaning: 'The job this agent posted and the entries that came in. Mark every criterion for every entry, then name the best entry that passes them all, or null. Your whole answer is the one JSON object described under answer: no notes about the entries before it, no code fence around it, nothing after it.',
+    meaning:
+      'The job this agent posted and the entries that came in. Mark every criterion for every entry, each on its own and as strictly as it is written. Code then picks the winner from your marks: an entry needs pass on every required criterion (requiredCriteria); among those the one with the most pass marks wins, and a tie goes to the lower entry number. Name the entry that rule gives as winner, or null when no entry passes every required criterion. Your whole answer is the one JSON object described under answer: no notes about the entries before it, no code fence around it, nothing after it.',
     jobId: input.jobId,
     task: input.task,
-    criteria: input.criteria.map((text, i) => ({ n: i + 1, text })),
+    criteria: input.criteria.map((text, i) => ({ n: i + 1, text, kind: required.includes(i + 1) ? 'required' : 'scored' })),
+    requiredCriteria: required,
     entries: input.entries.map((e) => (e.kind === 'link' ? { n: e.n, kind: 'link', excerpt: e.excerpt } : { n: e.n, kind: 'image', note: `the picture follows below as "Entry ${e.n}"` })),
     answer: `{"winner": <entry number or null>, "perCriterion": {"<entry number>": [${input.criteria.map(() => '"pass" | "fail" | "insufficient_evidence"').join(', ')}]}, "reason": "<at most ${JUDGE_MAX_REASON_CHARS} characters>"}`,
   };
@@ -212,6 +231,57 @@ export function judgeRequest(config: AgentConfig, input: JudgeInput): Record<str
 }
 
 /**
+ * The required criteria of a job as 1-based numbers, ascending: what was stored when it is one or two distinct whole
+ * numbers inside the job's criteria, else `[1]`. A job from before the split stored nothing and reads as `[1]`.
+ */
+export function requiredOf(stored: unknown, criteria: number): number[] {
+  const fallback = [...BOUNTY_DEFAULT_REQUIRED];
+  if (!Array.isArray(stored) || stored.length < 1 || stored.length > BOUNTY_MAX_REQUIRED) return fallback;
+  if (!stored.every((n): n is number => Number.isInteger(n) && n >= 1 && n <= criteria)) return fallback;
+  if (new Set(stored).size !== stored.length) return fallback;
+  return [...stored].sort((a, b) => a - b);
+}
+
+export interface WinnerPick {
+  /** The winning entry's number, or null when no entry passes every required criterion. */
+  winner: number | null;
+  /** The winner's `pass` marks over all criteria; 0 without a winner. */
+  passes: number;
+  /** The entries that pass every required criterion, by number. */
+  qualified: number[];
+}
+
+/**
+ * The winner, from the marks alone. Among the entries with `pass` on every required criterion, the one with the most
+ * `pass` marks over all criteria; a tie goes to the lowest entry number, which is the earliest entry (bounties.ts
+ * numbers the considered entries in arrival order). No such entry: no winner. An entry without marks cannot win.
+ */
+export function pickWinner(perCriterion: Readonly<Record<string, readonly JudgeMark[]>>, entries: readonly number[], required: readonly number[]): WinnerPick {
+  let winner: number | null = null;
+  let best = -1;
+  const qualified: number[] = [];
+  for (const n of [...entries].sort((a, b) => a - b)) {
+    const marks = perCriterion[String(n)];
+    if (!marks || !required.every((c) => marks[c - 1] === 'pass')) continue;
+    qualified.push(n);
+    const passes = marks.filter((m) => m === 'pass').length;
+    if (passes > best) {
+      best = passes;
+      winner = n;
+    }
+  }
+  return { winner, passes: winner === null ? 0 : best, qualified };
+}
+
+/** The public reason code writes for its pick: "Entry 2 met the required criterion and 2 of 3 overall." */
+export function templateReason(p: { winner: number; passes: number; criteria: number; required: number }): string {
+  return `Entry ${p.winner} met the required ${p.required === 1 ? 'criterion' : 'criteria'} and ${p.passes} of ${p.criteria} overall.`;
+}
+
+/** The reason of a ruling whose marks give no winner while the model named one. */
+export const NO_WINNER_REASON = 'No entry met the required criteria.';
+
+/**
  * The reason as public text: at most 200 characters, through the publish gate with no address allowed at all, and
  * without a cashtag, a link or a handle. Returns the code when it fails.
  */
@@ -225,7 +295,7 @@ export function reasonProblem(reason: unknown): 'reason_too_long' | 'reason_forb
   return null;
 }
 
-type Parsed = { winner: number | null; perCriterion: Record<string, JudgeMark[]>; reason: string };
+type Parsed = { winner: number | null; perCriterion: Record<string, JudgeMark[]>; reason: string; required: number[]; modelWinner?: number | null; reasonBy: 'judge' | 'code' };
 
 /** Every balanced `{...}` of a text that is not inside another one, in order (strings and escapes respected). */
 function topLevelObjects(text: string): string[] {
@@ -341,20 +411,24 @@ function marksByEntry(value: unknown): Map<number, unknown> | null {
 
 /**
  * The model's text as a verdict, or the code that makes it no verdict. Tolerant about the wrapping and the spelling (a
- * code fence, a line before the object, entry keys written "Entry 3", marks in capitals), strict about the ruling:
- * every entry marked for every criterion with one of the three marks, the winner one of the entries and `pass` on
- * every criterion, the reason through `reasonProblem`.
+ * code fence, a line before the object, entry keys written "Entry 3", marks in capitals), strict about the marks: every
+ * entry marked for every criterion with one of the three marks, or the answer is `malformed_answer`.
+ *
+ * The winner is code's (`pickWinner` over the marks and the job's required criteria), never the model's: the model's
+ * `winner` is read with the same tolerance and handed back as `modelWinner` (absent when it is missing or unreadable;
+ * out of range or not passing is a disagreement, no longer a refusal). The reason is the model's when it named the
+ * entry code picked (or, like code, none) and its text passes `reasonProblem` and is not empty for a winner; otherwise
+ * it is `templateReason` for a winner and `NO_WINNER_REASON` or nothing for none.
  */
 export function parseVerdict(text: string | null, input: JudgeInput): { ok: true; verdict: Parsed } | { ok: false; invalid: JudgeInvalidCode; partial?: Partial<Parsed> } {
   if (!text) return { ok: false, invalid: 'malformed_answer' };
   const o = verdictObject(text) as { winner?: unknown; perCriterion?: unknown; reason?: unknown } | null;
   if (!o) return { ok: false, invalid: 'malformed_answer' };
-  let winner: number | null;
-  if (o.winner === null || (typeof o.winner === 'string' && /^\s*(?:null|none)\s*$/i.test(o.winner))) winner = null;
+  let modelWinner: number | null | undefined;
+  if (o.winner === null || (typeof o.winner === 'string' && /^\s*(?:null|none)\s*$/i.test(o.winner))) modelWinner = null;
   else {
     const n = typeof o.winner === 'number' ? (Number.isInteger(o.winner) ? o.winner : null) : entryNumberOf(o.winner);
-    if (n === null) return { ok: false, invalid: 'malformed_answer' };
-    winner = n;
+    modelWinner = n === null ? undefined : n;
   }
   const byEntry = marksByEntry(o.perCriterion);
   if (!byEntry) return { ok: false, invalid: 'malformed_answer' };
@@ -364,13 +438,25 @@ export function parseVerdict(text: string | null, input: JudgeInput): { ok: true
     if (!marks) return { ok: false, invalid: 'malformed_answer' };
     perCriterion[String(entry.n)] = marks;
   }
-  const reasonCode = reasonProblem(o.reason);
-  const reason = typeof o.reason === 'string' ? o.reason.trim() : '';
-  if (reasonCode === 'malformed_answer') return { ok: false, invalid: reasonCode, partial: { winner, perCriterion } };
-  if (winner !== null && !input.entries.some((e) => e.n === winner)) return { ok: false, invalid: 'winner_out_of_range', partial: { perCriterion, reason: reasonCode ? '' : reason } };
-  if (winner !== null && !perCriterion[String(winner)]!.every((m) => m === 'pass')) return { ok: false, invalid: 'winner_not_passing', partial: { perCriterion, reason: reasonCode ? '' : reason } };
-  if (reasonCode) return { ok: false, invalid: reasonCode, partial: { perCriterion, reason: '' } };
-  return { ok: true, verdict: { winner, perCriterion, reason } };
+  const required = requiredOf(input.required, input.criteria.length);
+  const pick = pickWinner(perCriterion, input.entries.map((e) => e.n), required);
+  const modelReason = typeof o.reason === 'string' && reasonProblem(o.reason) === null ? o.reason.trim() : null;
+  const agreed = modelWinner !== undefined && modelWinner === pick.winner;
+  let reason: string;
+  let reasonBy: 'judge' | 'code';
+  if (pick.winner !== null) {
+    const own = agreed && modelReason ? modelReason : null;
+    reason = own ?? templateReason({ winner: pick.winner, passes: pick.passes, criteria: input.criteria.length, required: required.length });
+    reasonBy = own ? 'judge' : 'code';
+  } else if (agreed && modelReason !== null) {
+    reason = modelReason;
+    reasonBy = 'judge';
+  } else {
+    // The model named an entry the marks do not carry (or none readable): its reason is about that entry, so it is dropped.
+    reason = typeof modelWinner === 'number' ? NO_WINNER_REASON : (modelReason ?? '');
+    reasonBy = typeof modelWinner === 'number' || modelReason === null ? 'code' : 'judge';
+  }
+  return { ok: true, verdict: { winner: pick.winner, perCriterion, reason, required, ...(modelWinner !== undefined ? { modelWinner } : {}), reasonBy } };
 }
 
 function thoughtOf(key: string, model: string, res: RelayResult | null): JudgeThought {
@@ -465,6 +551,10 @@ async function judgeOnce(ctx: SupervisorContext, agent: AgentRow, model: string,
       verdict: { jobId: input.jobId, winner: null, perCriterion: parsed.partial?.perCriterion ?? {}, reason: parsed.partial?.reason ?? '', invalid: parsed.invalid, thought },
       refused: { attempt, invalid: parsed.invalid, finishReason, completionTokens: typeof completion === 'number' ? completion : null, raw: (text ?? '').slice(0, JUDGE_MAX_RAW_CHARS) },
     };
+  }
+  const { modelWinner } = parsed.verdict;
+  if (modelWinner !== parsed.verdict.winner) {
+    ctx.log.info({ agentId: agent.agentId, role: 'judge', jobId: input.jobId, attempt, winner: parsed.verdict.winner, modelWinner: modelWinner ?? null, modelNamedOne: modelWinner !== undefined, required: parsed.verdict.required }, "judge named another winner than its marks give; code's pick from the marks stands");
   }
   return { verdict: { jobId: input.jobId, ...parsed.verdict, thought } };
 }
