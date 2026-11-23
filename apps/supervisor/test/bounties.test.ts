@@ -1254,6 +1254,21 @@ describe('a job that closed with no winner under the every-criterion rule is rul
     }
   });
 
+  it('is ruled all the same when the row still carries the error of a collection tried again (job 0x42996a06 kept sender:x_http_402), and the proposal clears it', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w, { config: withBounties(), runtime: restingRuntime });
+      const id = await closedJob(w, { error: 'sender:x_http_402', verdict: { rejudged: { at: '2026-11-23T07:32:18.323Z', outcome: 'no_winner' } } });
+      w.setNow(NOW);
+      expect(await sweepBounties(w.ctx)).toMatchObject({ reruled: 1 });
+      expect(await jobOf(w, id)).toMatchObject({ status: 'proposed', payee: payeeOf(2), error: null });
+      expect(await queueOf(w)).toHaveLength(1);
+      expect(thoughtCalls(w)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
   it('a job closed long before the proposal gets its full 48 hours from the re-rule, expires like any proposal, and a decline closes it without a second public close; neither is ruled again', async () => {
     const w = await makeWorld();
     try {

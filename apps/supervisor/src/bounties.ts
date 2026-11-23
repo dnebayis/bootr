@@ -74,7 +74,7 @@ import {
 import { OWN_AGENT_MODEL_ID } from '@bootr/shared/own-agent';
 import { IDENTITY_ENCODING, readBodyCapped } from '@bootr/shared/public-fetch';
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { encodeAbiParameters, formatUnits, getAddress, isAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { AgentRow, SupervisorContext } from './context.js';
 import { actions, agents, approvals, bountyEntries, bountyJobs, type BountyDeliverable, type BountyJobStatus } from './db/schema.js';
@@ -124,6 +124,8 @@ export const REJUDGE_WINDOW_MS = 7 * 24 * 3_600_000;
 export const PAYOUT_POST_WINDOW_MS = 48 * 3_600_000;
 /** A job that closed with no winner under the every-criterion rule is ruled again from its stored marks when it closed inside this long. */
 export const RERULE_WINDOW_MS = 7 * 24 * 3_600_000;
+/** The `error` a job carries once its creator declined it (the job text or the payout): such a job is never ruled again. */
+export const DECLINED_ERROR = 'declined by the creator';
 /** A new job may not repeat one of the agent's jobs from this many days back. */
 export const BOUNTY_REPEAT_DAYS = 30;
 /** Two tasks are one job when this share of their words is common (words in both over words in either)... */
@@ -1453,7 +1455,7 @@ export async function decideBountyApproval(ctx: SupervisorContext, agent: AgentR
   if (row.kind === 'bounty_job') {
     if (job.status !== 'draft') return { ok: false, status: 409, error: 'bounty_not_draft', message: `the job is ${job.status}` };
     if (decision === 'reject') {
-      const cancelled = await closeJob(ctx, job.id, 'cancelled', { error: 'declined by the creator' });
+      const cancelled = await closeJob(ctx, job.id, 'cancelled', { error: DECLINED_ERROR });
       log(ctx, agent.agentId, cancelled, { by }, 'bounty job text declined by the creator');
       return { ok: true, patch: { status: 'rejected', decision: 'reject', decidedBy: by, note, decidedAt: now } };
     }
@@ -1467,7 +1469,7 @@ export async function decideBountyApproval(ctx: SupervisorContext, agent: AgentR
   if (job.status !== 'proposed') return { ok: false, status: 409, error: 'bounty_not_proposed', message: `the job is ${job.status}` };
   if (decision === 'reject') {
     const closeReplyId = await closeReply(ctx, agent, config, job, NOTHING_PAID_TEXT);
-    const closed = await closeJob(ctx, job.id, 'no_winner', { error: 'declined by the creator', ...(closeReplyId ? { closeReplyId } : {}) });
+    const closed = await closeJob(ctx, job.id, 'no_winner', { error: DECLINED_ERROR, ...(closeReplyId ? { closeReplyId } : {}) });
     log(ctx, agent.agentId, closed, { by, closeReplyId, pick: row.kind === 'bounty_pick' }, 'bounty payout declined by the creator');
     return { ok: true, patch: { status: 'rejected', decision: 'reject', decidedBy: by, note, decidedAt: now } };
   }
@@ -1636,9 +1638,11 @@ export async function rejudgeJob(ctx: SupervisorContext, agent: AgentRow, config
 
 /**
  * A job to rule once more from its stored marks: closed `no_winner` inside `RERULE_WINDOW_MS` on a ruling that stood
- * (no `invalid`, marks on record) and named no winner, never declined by its creator (a declined payout keeps its
- * winner and carries `error`), and not ruled this way before (`verdict.rerule`). A hosted coin's job or an own coin's:
- * nothing is asked of any judge here.
+ * (no `invalid`, marks on record) and named no winner, never declined by its creator (`error` is DECLINED_ERROR), and not
+ * ruled this way before (`verdict.rerule`). A hosted coin's job or an own coin's: nothing is asked of any judge here.
+ * Any other `error` does not keep a job out: a collection that failed and was tried again leaves its last error on the
+ * row (job 0x42996a06 kept `sender:x_http_402` from the two collections tried while the X credit was used up on
+ * 2026-11-23), and such a job was ruled all the same.
  */
 const reruleDue = (now: number) =>
   and(
@@ -1647,7 +1651,7 @@ const reruleDue = (now: number) =>
     sql`(${bountyJobs.verdict}->>'winner') is null`,
     sql`jsonb_typeof(${bountyJobs.verdict}->'perCriterion') = 'object'`,
     sql`(${bountyJobs.verdict}->'rerule') is null`,
-    isNull(bountyJobs.error),
+    or(isNull(bountyJobs.error), ne(bountyJobs.error, DECLINED_ERROR)),
     gte(bountyJobs.closedAt, new Date(now - RERULE_WINDOW_MS)),
     sql`${bountyJobs.entriesConsidered} > 0`,
   );
