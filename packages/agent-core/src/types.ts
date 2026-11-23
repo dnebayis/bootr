@@ -118,6 +118,10 @@ export const BOUNTY_MAX_CONSIDERED = 12;
 /** A proposed verdict the creator does not act on within this long expires unpaid. */
 export const BOUNTY_PAY_GRACE_MS = 48 * 3_600_000;
 export const BOUNTY_MAX_CRITERIA = 4;
+/** How many of a job's criteria may be required (the substance an entry must meet to win at all); the rest are scored. */
+export const BOUNTY_MAX_REQUIRED = 2;
+/** The required criteria of a job that names none: its first. Also what every job from before the split reads as. */
+export const BOUNTY_DEFAULT_REQUIRED: readonly number[] = [1];
 export const BOUNTY_MAX_TASK_CHARS = 300;
 export const BOUNTY_MAX_CRITERION_CHARS = 300;
 /** Words a job text may not carry: a job asks for work, never for promotion (decision 15 of section 9). */
@@ -489,6 +493,12 @@ export const toolInputSchemas = {
       task: text(BOUNTY_MAX_TASK_CHARS),
       /** 1 to 4 acceptance criteria the judge marks pass or fail, as written here. */
       criteria: z.array(text(BOUNTY_MAX_CRITERION_CHARS)).min(1).max(BOUNTY_MAX_CRITERIA),
+      /**
+       * Which criteria are required, as their 1-based numbers: one or two of them, the substance of the job. An entry
+       * that fails a required criterion cannot win; the others are scored (the winner is the entry with the most passes
+       * among those that pass every required one). `[1]` when absent.
+       */
+      required: z.array(z.number().int().min(1).max(BOUNTY_MAX_CRITERIA)).min(1).max(BOUNTY_MAX_REQUIRED).optional(),
       /**
        * `image`: a picture attached to the reply. `link`: a link to data that already exists or is quick to put together
        * (a CSV, a gist, a sheet, a Dune or similar query, an onchain fact with its source), never to a page, a site, an

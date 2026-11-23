@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DRAFT_INTENT_TOOL, PUBLISHING_TOOLS, TOOLS, TOOL_LIST, publishPostDescription, toFunctionDefinitions, toolEnabled, toolsFor, parseToolInput, publicChannelBlocked } from './tools.js';
-import { MAX_RESOLVE_BATCH, TOOL_NAMES, type AgentConfig } from './types.js';
+import { BOUNTY_DEFAULT_REQUIRED, BOUNTY_MAX_REQUIRED, MAX_RESOLVE_BATCH, TOOL_NAMES, toolInputSchemas, type AgentConfig } from './types.js';
 
 const caps = (on: string[]): Pick<AgentConfig, 'capabilities' | 'ownerRules'> => ({
   capabilities: { xRead: false, xReply: false, xPublish: false, research: false, memory: false, treasury: false, images: false, services: false, bounties: false, ...Object.fromEntries(on.map((k) => [k, true])) },
@@ -153,5 +153,38 @@ describe('tool catalog', () => {
     expect(() => parseToolInput('read_coin', { symbolOrAddress: '' })).toThrow();
     expect(() => parseToolInput('read_coin', { symbolOrAddress: 'x'.repeat(65) })).toThrow();
     expect(() => parseToolInput('read_coin', { symbolOrAddress: 'OWL', extra: 1 })).toThrow();
+  });
+});
+
+describe('bounty_post: required criteria', () => {
+  const job = { task: 'A square image showing how a trade fee is split', criteria: ['Shows four recipients', 'Square image', 'No other brands'], deliverable: 'image', amountUsdc: 0.5 };
+  const parse = (required?: unknown) => toolInputSchemas.bounty_post.safeParse(required === undefined ? job : { ...job, required });
+
+  it('is optional, and one or two 1-based criterion numbers when given', () => {
+    expect(BOUNTY_DEFAULT_REQUIRED).toEqual([1]);
+    expect(BOUNTY_MAX_REQUIRED).toBe(2);
+    const absent = parse();
+    expect(absent.success).toBe(true);
+    expect(absent.success && absent.data.required).toBeUndefined();
+    expect(parse([1]).success).toBe(true);
+    expect(parse([1, 3]).success).toBe(true);
+  });
+
+  it('refuses none, three, a number below 1 or above the criteria cap, and a fraction', () => {
+    expect(parse([]).success).toBe(false);
+    expect(parse([1, 2, 3]).success).toBe(false);
+    expect(parse([0]).success).toBe(false);
+    expect(parse([5]).success).toBe(false);
+    expect(parse([1.5]).success).toBe(false);
+    expect(parse('1').success).toBe(false);
+  });
+
+  it('is in the tool the model sees, with what required means', () => {
+    const def = toFunctionDefinitions([TOOLS.bounty_post]).find((d) => d.function.name === 'bounty_post');
+    const params = def?.function.parameters as { properties: Record<string, unknown>; required: string[] };
+    expect(Object.keys(params.properties)).toContain('required');
+    expect(params.required).not.toContain('required');
+    expect(TOOLS.bounty_post.description).toMatch(/an entry failing one of them cannot win/);
+    expect(TOOLS.bounty_post.description).toMatch(/the entry with the most passes among those that pass every required one wins/);
   });
 });
