@@ -58,7 +58,7 @@ guardian owner key used only to approve session-key installs.
 | `src/runtime.ts` | leases, observation assembly, the turn loop (one tool per step, `finish` checkpoint, step cap), bounded state |
 | `src/tick.ts` | the tick: onboarding, lease, reconcile, guardian pause, sleep rule, fee policy, `wakeDecision`, turn (social, or the treasury turn when the social wake said no and its own clock is due), social stats to the indexer |
 | `src/roles.ts` | the three roles of the capabilities design (section 3.4): which tools each role gets (the social turn loses the money tools while the treasury turn is on for the agent), the switch (`trade` or `bounties` power, or the config's `treasuryTurn` override), the treasury clock in `sv_runtimes.state`, and the treasury turn's observation (numbers, caps, ops, its own notes; never a mention or a page), see "Three roles" |
-| `src/judge.ts` | the judge role: one paid thought with no tools on the agent's model (or `config.judgeModel`) that rules on a bounty job's entries from the criteria and the artefacts alone, checked in code (winner in range and passing every criterion, a 200-character reason through the publish gate); one thought per job by its idempotency key; called by `src/bounties.ts` |
+| `src/judge.ts` | the judge role: one paid thought with no tools on the agent's model (or `config.judgeModel`) that rules on a bounty job's entries from the criteria and the artefacts alone, with every entry marked for every criterion; code picks the winner from the marks (`pickWinner`: pass on every required criterion, then the most passes, a tie to the earlier entry) and writes the reason when the model's is about another entry; two thoughts per job at most, by idempotency key; called by `src/bounties.ts` |
 | `src/bounties.ts` | Bounties stage A (the `bounties` power): `bounty_post` / `bounty_cancel` (treasury turn) and `bounty_list`, the job post from the fixed template after the caps and the task rules, drafts under review or waiting for a slot, the sweep that collects a closed job's replies through the sender, applies the entry rules, fetches bounded artefacts, asks the judge once and proposes the winner in the approval queue (the creator pays by hand and reports the tx), the public job views, the tape rows; see "Bounties" |
 | `src/api.ts` | Hono admin API (HMAC), including the fleet-wide `panic-revoke` |
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
@@ -576,22 +576,35 @@ model-prepared operations show as today through `sv_treasury_ops`).
 The **judge** (`judgeJob(ctx, agent, config, {jobId, task, criteria, entries})`) is one paid thought with no tools on
 the agent's own model, or on `config.judgeModel` when the console pinned a cheaper one, with the job's numbered
 criteria and the entries as artefacts (a picture as an `image_url` part, a page as a bounded excerpt) and nothing of
-the agent's persona or situation. The answer is one JSON object checked in code: the winner is an entry, every
-criterion is `pass` for it, the reason is at most 200 characters and passes the publish gate with no address, cashtag,
-link or handle; anything else is `winner: null` with an `invalid` code. The output budget is 2000 tokens
+the agent's persona or situation. The answer is one JSON object: a mark for every criterion of every entry, the
+model's own winner and a reason. An answer that does not mark every entry for every criterion is `winner: null` with
+`invalid: malformed_answer`; from a whole set of marks **code picks the winner** (next paragraph). The output budget is 2000 tokens
 (`JUDGE_MAX_OUTPUT_TOKENS`; it was 700 until a seven-entry job ended as `malformed_answer`). The parser is tolerant
 about the wrapping and the spelling and strict about the ruling: it reads the object out of a code fence or from after
 a line of prose, entry keys written `3`, `"3"`, `"Entry 3"` or `"#3"`, marks in any case (`"PASS"`, `"Insufficient
 evidence"`), a winner written `"Entry 3"`; every entry must still be marked for every criterion with one of the three
-marks, and the winner must still be an entry with `pass` on every criterion.
+marks.
+
+**The winner rule** (`pickWinner`, `requiredOf`, `templateReason`). A job's criteria are split into required ones (one
+or two, by 1-based number: `sv_bounty_jobs.required`, set by `bounty_post`'s `required`; null, which every job from
+before 2026-11-23 has, reads as `[1]`) and scored ones (the rest). The winner is, among the entries with `pass` on
+every required criterion, the one with the most `pass` marks over all criteria; a tie goes to the lowest entry number
+(`collectAndJudge` numbers the considered entries in arrival order, so that is the earliest entry); when no entry
+passes every required criterion there is no winner. The model's `winner` is advisory: it is kept on the verdict as
+`modelWinner`, a disagreement is logged ("judge named another winner than its marks give") and the marks stand. The
+public reason is the model's only when it named the entry code picked and the text passes `reasonProblem` (at most 200
+characters, no address, cashtag, link or handle); otherwise it is code's template, "Entry 2 met the required criterion
+and 2 of 3 overall." (`reasonBy: 'judge' | 'code'` on the verdict). The request tells the model which criteria are
+required (`criteria[].kind`, `requiredCriteria`) and how the pick works.
 
 **Two thoughts at most per job, ever.** The idempotency key is derived from the job id and the attempt
 (`judgeKey(agentId, jobId, attempt)`: `judge:<agentId>:<digest>`; attempt 1 is the key every earlier job was paid
 under), so a second call for the same job replays the stored answers through `relayRequest` and never pays again. A
 second thought is bought only when the first gave no usable answer (`malformed_answer`: the text was no verdict;
 `thought_failed`: the relay gave none), and under its own key, because the relay replays what it stored for the first.
-A ruling refused for what it rules (`winner_out_of_range`, `winner_not_passing`, a bad reason) is an answer and is
-final after one thought; a thought whose outcome is unknown (`thought_pending`) is never replaced. Each thought is
+An answer with whole marks is a ruling after one thought, whatever winner or reason it carries (the codes
+`winner_out_of_range`, `winner_not_passing`, `reason_too_long` and `reason_forbidden` are no longer given; verdicts
+stored with them keep them); a thought whose outcome is unknown (`thought_pending`) is never replaced. Each thought is
 logged as `thought` with `role: 'judge'` and its `attempt`. What the model wrote when code refused it comes back in
 `refused` (cut to 4000 characters, with the provider's finish reason and output token count; `length` means the budget
 ran out) and `src/bounties.ts` keeps it on the job row as `judge_raw`; it is model output and is never logged or shown
@@ -682,6 +695,19 @@ leaves the job `no_winner`. The verdict is marked `rejudged: {at, outcome}` eith
 "nothing paid" reply already under the job post stays and is never sent a second time: `closeReply` skips a job that
 carries `closeReplyId`, whatever closes it later (a decline, an expiry).
 
+**A second ruling from the stored marks** (`reruleJob`, sweep step 2d, up to three jobs per sweep; it reads no
+network and buys nothing, so it takes no sweep slot). A job that is `no_winner` with a ruling that stood (no
+`verdict.invalid`, a `perCriterion` whose every row is whole and belongs to a considered entry, `winner` null), no
+`error` (a payout the creator declined carries one), closed in the last seven days (`RERULE_WINDOW_MS`) and not marked
+`rerule`, is ruled under the winner rule above from the marks its judge already gave. A winner whose entry row has an
+address becomes a normal `bounty_payout` proposal (the same approval id, the payee from the row, code's template
+reason, `closedAt` stamped now so the creator has the full 48 hours); the earlier winner and reason are kept under
+`verdict.rerule.was`. No winner, marks that are not whole, or a winner without an address leave the job closed. Either
+way the verdict is marked `rerule: {at, outcome, required}` in the one conditional write that moves or marks the job,
+so it happens once. Nothing is said in public: the reply under the entry and the payout post follow a payment, and a
+decline or an expiry adds no second closing reply. An own coin's job is ruled the same way (no thought is involved).
+The sweep counts these as `reruled`.
+
 **The payout post** (`publishPayoutPost`, `payoutPostText`). Besides the reply under the winning entry, a paid job is
 announced in one original post of the agent's own, written by code: "Bounty paid: <amount> USDC to the winning entry.
 The job: <task>. Payment: <Basescan tx link> Entry: <link to the winning reply>". It names nobody (an entry row keeps
@@ -697,18 +723,20 @@ read for the address and discarded: no row and no model ever holds it. Every ste
 
 **Reads for the coin page**: `GET /internal/agents/:id/bounties?limit=20` → `{jobs: [...]}` and
 `GET /internal/agents/:id/bounties/:jobId` (full id or `shortId`) → `{job}`, each job `{id, shortId, status, task,
-criteria, deliverable, amountUsdc, amountMicroUsdc, createdAt, postedAt, closesAt, postUrl, pageUrl, pageText,
+criteria, required, deliverable, amountUsdc, amountMicroUsdc, createdAt, postedAt, closesAt, postUrl, pageUrl, pageText,
 entries: {received, eligible, considered, ineligible: {<reason>: n}}, verdict: {winner, winningEntryUrl, perCriterion,
 reason, invalid, deliveryHash, reasonHash, judgedAt} | null, payment: {status: 'proposed' | 'paid', payee, amountUsdc,
 txHash, txUrl, replyUrl, paidAt, postUrl?} | null, closedAt, closeReplyUrl}`; never an author id, a reply's text, an
 ineligible entry's address or `judge_raw`. Statuses: `draft`, `open`, `judging`, `proposed`, `paid`, `no_winner`, `cancelled`, `expired`,
 `failed`. The activity tape shows one `bounty` row per job event (posted, judged, paid, no winner, cancelled, expired)
 in plain words with no address. Approval items of the three bounty kinds carry a `bounty` block (`kind`, `jobId`,
-`task`, `amountUsdc`; for a payout `payee`, `reason`, `entryUrl`, `txHashRequired: true`; for a pick `candidates`,
+`task`, `amountUsdc`, and `criteria` with `required` on items made since 2026-11-23; for a payout `payee`, `reason`,
+`entryUrl`, `txHashRequired: true` and the winner's number and `marks`; for a pick `candidates`,
 `why`, `txHashRequired: true`, `entryRequired: true`).
 
 Migration `0019_bounty_judge_retry` adds three nullable columns to `sv_bounty_jobs`: `judge_raw`, `payout_post_id`,
-`payout_post_error`. To read why a ruling failed: `select judge_raw from sv_bounty_jobs where id = '<jobId>'`; the
+`payout_post_error`. Migration `0020_bounty_required` adds one more, `required` (jsonb, the required criteria's
+numbers; null reads as `[1]`). To read why a ruling failed: `select judge_raw from sv_bounty_jobs where id = '<jobId>'`; the
 whole response of the first thought is also in `sv_inference.response` under `judgeKey(agentId, jobId)`.
 
 ## X holds and the post length

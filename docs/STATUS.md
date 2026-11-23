@@ -201,7 +201,17 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
    `bounty_post` refuses a web page, a site, an app or an article as the work, a `link` job that names no data, a vague
    task or criterion, and a repeat of a job from the last 30 days. Watch after deploy: the sweep's `rejudged` count and
    the proposal it leaves for the fee-split job, `judge_raw` on any job that needed its second thought, and whether the
-   treasury turn's next jobs are specific.
+   treasury turn's next jobs are specific. **The winner rule, built 2026-11-23** (not deployed; branch
+   `feat/bounty-winner-rule`, migration `0020_bounty_required`, one nullable column; design note 3.3 "the winner
+   rule"): the fee-split job's second ruling stood and paid nobody, because two entries with the substance right failed
+   a style criterion and every criterion had to pass. Now a job's criteria are required (one or two, `bounty_post`'s
+   `required`, `[1]` by default and for every older job) or scored, code picks the winner from the judge's marks (pass
+   on every required one, then the most passes, a tie to the earlier entry) and writes the public reason when the
+   model's is about another entry, an own agent's ruling goes through the same pick, and the sweep turns a job that
+   closed with no winner in the last seven days on a valid ruling into a payout proposal from its stored marks, with no
+   thought bought and nothing said in public. Watch after deploy: the sweep's `reruled` count (job `0x42996a06...`
+   should become a proposal for entry 2 if it deploys within seven days of its close), and "judge named another winner
+   than its marks give" in the logs.
 4. **`BootrCallPolicy` v2** (contracts, two days): 14 rules; Bounties alone needs 9, with Trade 11.
 5. **`BootrBounties` + the Bounties power** (contracts and all tiers, about a week): UUPS proxy, immutable ceilings
    (0.1 to 1 USDC a job, 20 USDC a day, 5 open jobs), per-job approve + pay in one batch, per-payee cooldown, creator
