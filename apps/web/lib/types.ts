@@ -571,6 +571,12 @@ export interface BountyJob {
   task: string;
   /** Numbered as written at post time; the judge marks each one. */
   criteria: string[];
+  /**
+   * The required criteria as 1-based numbers into `criteria` (one or two): an entry must meet each of them to win. The
+   * others are scored: among the entries that meet every required one, the one that meets the most criteria wins, the
+   * earlier entry on a tie. `[1]` for a job from before the split.
+   */
+  required: number[];
   deliverable: 'image' | 'link';
   /** USDC as a decimal string ("0.5"), and the same in micro-USDC. */
   amountUsdc: string;
@@ -591,7 +597,7 @@ export interface BountyJob {
    */
   ownJudge?: { ruleBy: string } | null;
   verdict: {
-    /** 1-based number of the winning entry among those considered; null when nothing met the job. */
+    /** 1-based number of the winning entry among those considered, picked by code from the judge's marks; null when no entry met the required criteria. */
     winner: number | null;
     winningEntryUrl: string | null;
     /** Entry number (as a string key) to its marks, one per criterion. */
@@ -674,6 +680,12 @@ export interface BountyApprovalInfo {
   candidates?: BountyPickCandidate[];
   jobId: string;
   task: string;
+  /** The job's criteria as written and which of them are required (1-based numbers); absent on an item from before the split. */
+  criteria?: string[];
+  required?: number[];
+  /** A payout only: the winning entry's number and its marks, one per criterion. */
+  winner?: number;
+  marks?: CriterionMark[];
   /** USDC as a decimal string ("0.4"); null when the service did not say. */
   amountUsdc: string | null;
   payee: Address | null;

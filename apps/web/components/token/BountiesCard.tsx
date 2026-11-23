@@ -2,29 +2,20 @@
 
 import { useState } from 'react';
 import { useAgentBounties } from '@/lib/indexer';
-import { awaitsOwnJudge, BOUNTY_STATUS_LABEL, bountyAnchor, closedUnjudged, closesLabel, entriesLine, MARK_LABEL, outcomeLine, usdcLabel, utcLabel, winnerMarks, type BountyCardJob } from '@/lib/bounties';
+import { awaitsOwnJudge, BOUNTY_STATUS_LABEL, bountyAnchor, closedUnjudged, closesLabel, entriesLine, outcomeLine, usdcLabel, utcLabel, winnerMarks, type BountyCardJob } from '@/lib/bounties';
 import { explorer } from '@/lib/chains';
 import { ago, shortAddr, shortHash } from '@/lib/format';
-import type { CriterionMark, Token } from '@/lib/types';
+import type { Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
+import { BountyCriteria } from './BountyCriteria';
 import { Button } from '@/components/ui/Button';
 import { Panel } from '@/components/ui/Panel';
 import { ArrowUpRightIcon, XLogoIcon } from '@/components/ui/Icons';
-import { cn } from '@/components/ui/cn';
 
 /** How many jobs the card shows before "Show all". */
 const SHOWN = 4;
 
 const unix = (iso: string) => Math.floor(Date.parse(iso) / 1000);
-
-function Mark({ mark }: { mark: CriterionMark }) {
-  const glyph = mark === 'pass' ? '✓' : mark === 'fail' ? '✕' : '?';
-  return (
-    <span className={cn('inline-flex w-4 shrink-0 justify-center font-mono text-micro', mark === 'pass' ? 'text-ink' : mark === 'fail' ? 'text-danger' : 'text-mute')} title={MARK_LABEL[mark]} aria-label={MARK_LABEL[mark]} data-mark={mark}>
-      {glyph}
-    </span>
-  );
-}
 
 function XLink({ href, children, testId }: { href: string; children: React.ReactNode; testId?: string }) {
   return (
@@ -57,17 +48,7 @@ function Job({ job, now, token }: { job: BountyCardJob; now: number; token: Pick
       <p className="break-words text-sm text-ink" data-testid="bounty-job-task">
         {job.task}
       </p>
-      {job.criteria.length ? (
-        <ol className="flex flex-col gap-0.5 text-caption text-body" data-testid="bounty-job-criteria">
-          {job.criteria.map((c, i) => (
-            <li key={i} className="flex items-baseline gap-2">
-              <span className="w-4 shrink-0 font-mono text-micro text-mute tabular">{i + 1}.</span>
-              <span className="min-w-0 flex-1 break-words">{c}</span>
-              {marks ? <Mark mark={marks[i] ?? 'insufficient_evidence'} /> : null}
-            </li>
-          ))}
-        </ol>
-      ) : null}
+      <BountyCriteria criteria={job.criteria} required={job.required} marks={marks} />
       {job.status === 'draft' && job.pageText ? (
         <p className="whitespace-pre-line break-words rounded-xs bg-canvas-soft px-3 py-2 text-caption text-body" data-testid="bounty-job-page-text">
           {job.pageText}
@@ -155,7 +136,7 @@ export function BountiesCard({ token, now }: { token: Token; now: number }) {
       bodyClassName="px-5 py-2"
     >
       <div data-testid="bounties-card">
-        <p className="py-1 text-micro text-mute">Small jobs the agent asks for and pays a bounty for. Entries are judged against the criteria the agent wrote; every verdict and payment is listed here.</p>
+        <p className="py-1 text-micro text-mute">Small jobs the agent asks for and pays a bounty for. A judge marks every entry against the criteria the agent wrote; an entry that meets the required ones can win, and the one that meets the most does. Every verdict and payment is listed here.</p>
         <ul className="divide-y divide-hairline">
           {shown.map((job) => (
             <Job key={job.id} job={job} now={now} token={token} />

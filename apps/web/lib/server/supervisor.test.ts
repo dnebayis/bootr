@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalDecisionBody, BOUNTY_JOB_ID_RE, sanitizeAbout, sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeBounties, sanitizeBountyJob, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, sortBounties, txHashOf, validateChanges } from './supervisor';
+import { approvalDecisionBody, BOUNTY_JOB_ID_RE, requiredOf, sanitizeAbout, sanitizeActivity, sanitizeApproval, sanitizeApprovals, sanitizeBounties, sanitizeBountyJob, sanitizeChat, sanitizeChatMessage, sanitizeConfig, sanitizeFuel, sanitizeNotification, sanitizeNotifications, sanitizeXConnection, sanitizeXHold, sortBounties, txHashOf, validateChanges } from './supervisor';
 
 const KERNEL = '0x1111111111111111111111111111111111111111';
 const CREATOR = '0x2222222222222222222222222222222222222222';
@@ -357,6 +357,7 @@ describe('sanitizeBounties', () => {
     status: 'paid',
     task: 'A picture of an owl reading a ledger.',
     criteria: ['An owl is in the picture', 'It reads a ledger or a book', 'No text on the picture'],
+    required: [1],
     deliverable: 'image',
     amountUsdc: '0.5',
     amountMicroUsdc: '500000',
@@ -426,6 +427,30 @@ describe('sanitizeBounties', () => {
     const draft = { ...job, id: '0x' + '33'.repeat(32), shortId: '0x' + '33'.repeat(8), createdAt: '2026-11-07T10:00:00.000Z', status: 'draft', payment: null };
     const newest = { ...job, id: '0x' + '22'.repeat(32), shortId: '0x' + '22'.repeat(8), createdAt: '2026-11-10T10:00:00.000Z', status: 'no_winner', payment: null };
     expect(sortBounties(sanitizeBounties({ jobs: [job, newest, older, draft] }).jobs).map((j) => j.status)).toEqual(['open', 'draft', 'no_winner', 'paid']);
+  });
+
+  it('reads which criteria are required: the service\'s numbers when they fit the job, [1] for a job from before the split or a malformed list', () => {
+    expect(sanitizeBountyJob({ ...job, required: undefined })!.required).toEqual([1]);
+    expect(sanitizeBountyJob({ ...job, required: [2] })!.required).toEqual([2]);
+    expect(sanitizeBountyJob({ ...job, required: [3, 1] })!.required).toEqual([1, 3]);
+    for (const bad of [null, [], [4], [0], [1, 2, 3], [1, 1], ['1'], '1', [1.5]]) expect(sanitizeBountyJob({ ...job, required: bad })!.required, JSON.stringify(bad)).toEqual([1]);
+    expect(sanitizeBountyJob({ ...job, criteria: [], required: [1] })!.required).toEqual([]);
+    expect(requiredOf([2, 1], 2)).toEqual([1, 2]);
+  });
+
+  it('a bounty item carries the job\'s criteria and which are required; a payout also the winner and its marks, dropped when they do not fit', () => {
+    const base = { id: `bounty-pay-${JOB.slice(2)}`, kind: 'bounty_payout', text: `Pay 0.4 USDC to ${PAYEE}`, status: 'pending_approval', createdAt: '2026-11-09T16:05:00.000Z', expiresAt: '2026-11-11T16:05:00.000Z' };
+    const payout = { kind: 'payout', jobId: JOB, task: job.task, amountUsdc: '0.4', payee: PAYEE, reason: 'Entry 2 met the required criterion and 2 of 3 overall.', entryUrl: 'https://x.com/i/status/1850000000000000002', txHashRequired: true, criteria: job.criteria, required: [1], winner: 2, marks: ['pass', 'fail', 'pass'] };
+    expect(sanitizeApproval({ ...base, bounty: payout })!.bounty).toMatchObject({ criteria: job.criteria, required: [1], winner: 2, marks: ['pass', 'fail', 'pass'], reason: 'Entry 2 met the required criterion and 2 of 3 overall.' });
+    const loose = sanitizeApproval({ ...base, bounty: { ...payout, required: [9], winner: 99, marks: ['pass', 'maybe', 'pass'] } })!.bounty!;
+    expect(loose.required).toEqual([1]);
+    expect(loose).not.toHaveProperty('winner');
+    expect(loose).not.toHaveProperty('marks');
+    expect(sanitizeApproval({ ...base, bounty: { ...payout, marks: ['pass', 'pass'] } })!.bounty).not.toHaveProperty('marks');
+    const jobItem = sanitizeApproval({ ...base, id: 'act_1', kind: 'bounty_job', text: job.pageText, bounty: { kind: 'job', jobId: JOB, task: job.task, amountUsdc: '0.5', criteria: job.criteria, required: [1, 2], winner: 2, marks: ['pass', 'pass', 'pass'] } })!.bounty!;
+    expect(jobItem).toMatchObject({ kind: 'job', criteria: job.criteria, required: [1, 2] });
+    expect(jobItem).not.toHaveProperty('winner');
+    expect(jobItem).not.toHaveProperty('marks');
   });
 
   it('reads a bounty payout and a bounty job approval, and drops one it cannot describe', () => {

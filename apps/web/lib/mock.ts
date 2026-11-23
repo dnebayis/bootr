@@ -1465,6 +1465,7 @@ function buildBounties(t: Token): BountyJob[] {
     status: p.status,
     task: p.task,
     criteria: p.criteria,
+    required: [1],
     deliverable: p.deliverable,
     amountUsdc: usdc(p.micro),
     amountMicroUsdc: p.micro,

@@ -62,8 +62,9 @@ export function outcomeLine(job: Pick<BountyJob, 'status'> & { verdict?: BountyJ
     case 'draft':
       return 'Written by the agent; it goes out on X once the creator has read it or a posting slot is free.';
     case 'proposed':
-      return 'The judge picked a winner; the creator pays from their own wallet. Nothing is paid until they say yes.';
+      return 'A winner was picked from the judge’s marks; the creator pays from their own wallet. Nothing is paid until they say yes.';
     case 'no_winner':
+      // The words of the reply that closed the job on X; the card's criteria show which ones an entry had to meet.
       return 'No entry met the job; nothing paid.';
     case 'cancelled':
       return 'Cancelled; nothing paid.';
@@ -149,6 +150,19 @@ export function winnerMarks(job: Pick<BountyJob, 'verdict' | 'criteria'>): Crite
   if (!v || v.winner === null) return null;
   const marks = v.perCriterion[String(v.winner)];
   return marks ? job.criteria.map((_, i) => marks[i] ?? 'insufficient_evidence') : null;
+}
+
+/** Whether criterion `n` (1-based) is one an entry must meet to win; a job that names none has its first as the required one. */
+export function isRequired(required: readonly number[] | null | undefined, n: number): boolean {
+  return (required && required.length ? required : [1]).includes(n);
+}
+
+/** How the winner is picked, in one line for the card and the console; null for a job whose every criterion is required (nothing is scored). */
+export function winnerRuleLine(criteria: number, required: readonly number[] | null | undefined): string | null {
+  const needed = [...Array(criteria)].filter((_, i) => isRequired(required, i + 1)).length;
+  if (criteria < 1) return null;
+  if (needed >= criteria) return criteria === 1 ? null : 'An entry must meet every criterion to win; the earlier entry wins a tie.';
+  return `An entry must meet the required ${needed === 1 ? 'criterion' : 'criteria'} to win. Among those that do, the one that meets the most criteria wins; the earlier entry wins a tie.`;
 }
 
 /** The element id a job post on X links to: `#bounty-<shortId>` (the 16-hex prefix; a post cannot carry the full id). */

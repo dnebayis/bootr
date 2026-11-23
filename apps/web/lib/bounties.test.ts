@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOUNTY_STATUS_LABEL, bountyAnchor, closesLabel, entriesLine, ineligibleLabel, outcomeLine, usdcLabel, utcLabel, winnerMarks } from './bounties';
+import { BOUNTY_STATUS_LABEL, bountyAnchor, closesLabel, entriesLine, ineligibleLabel, isRequired, outcomeLine, usdcLabel, utcLabel, winnerMarks, winnerRuleLine } from './bounties';
 
 describe('bounties copy', () => {
   it('says where a job stands in plain words, and nothing while it takes entries or is paid', () => {
@@ -42,5 +42,23 @@ describe('bounties copy', () => {
     expect(winnerMarks({ criteria, verdict: { ...verdict, perCriterion: { '1': ['fail', 'pass', 'pass'], '2': ['pass', 'pass'] } } })).toEqual(['pass', 'pass', 'insufficient_evidence']);
     expect(winnerMarks({ criteria, verdict: { ...verdict, winner: null, perCriterion: {} } })).toBeNull();
     expect(winnerMarks({ criteria, verdict: null })).toBeNull();
+  });
+});
+
+describe('required and scored criteria', () => {
+  it('knows the required ones by number; a job that names none has its first', () => {
+    expect([1, 2, 3].map((n) => isRequired([1], n))).toEqual([true, false, false]);
+    expect([1, 2, 3].map((n) => isRequired([1, 3], n))).toEqual([true, false, true]);
+    expect([1, 2].map((n) => isRequired(undefined, n))).toEqual([true, false]);
+    expect([1, 2].map((n) => isRequired([], n))).toEqual([true, false]);
+  });
+
+  it('says in one line how the winner is picked', () => {
+    expect(winnerRuleLine(3, [1])).toBe('An entry must meet the required criterion to win. Among those that do, the one that meets the most criteria wins; the earlier entry wins a tie.');
+    expect(winnerRuleLine(4, [1, 2])).toMatch(/^An entry must meet the required criteria to win\./);
+    expect(winnerRuleLine(2, [1, 2])).toBe('An entry must meet every criterion to win; the earlier entry wins a tie.');
+    expect(winnerRuleLine(1, [1])).toBeNull();
+    expect(winnerRuleLine(0, [1])).toBeNull();
+    expect(outcomeLine({ status: 'proposed' })).toBe('A winner was picked from the judge’s marks; the creator pays from their own wallet. Nothing is paid until they say yes.');
   });
 });

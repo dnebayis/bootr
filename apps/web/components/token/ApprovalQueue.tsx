@@ -11,6 +11,7 @@ import { scheduledNote } from '@/lib/posting-views';
 import { decideApproval, fetchApprovals, qk, ReviewError, useApprovalCount } from '@/lib/indexer';
 import type { AgentApproval, AgentApprovals, ApprovalDecision, BountyApprovalInfo, BountyPickCandidate, Token } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
+import { BountyCriteria } from './BountyCriteria';
 import { Button } from '@/components/ui/Button';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { ExternalLink } from '@/components/ui/ExternalLink';
@@ -118,6 +119,7 @@ function JobItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bounty
       </div>
       <p className="whitespace-pre-line break-words text-sm text-ink">{item.text}</p>
       {bounty.task && !item.text.includes(bounty.task) ? <p className="text-caption text-body">Task: {bounty.task}</p> : null}
+      {bounty.criteria?.length ? <BountyCriteria criteria={bounty.criteria} required={bounty.required} testId="bounty-criteria" /> : null}
       <p className="text-caption text-mute">The job goes out on X as this post once you approve it; nothing is paid now. Rejecting cancels the job.</p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Note for the agent (optional, sent with a rejection)" aria-label="Note for the agent" className="min-w-0 flex-1" disabled={busy} />
@@ -154,6 +156,12 @@ function PayoutItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bou
         <Stamp item={item} />
       </div>
       {bounty.task ? <p className="break-words text-sm text-ink">{bounty.task}</p> : null}
+      {bounty.criteria?.length ? (
+        <div className="flex flex-col gap-1">
+          {bounty.winner ? <p className="text-caption text-mute">Entry {bounty.winner} against the job’s criteria, as the judge marked it:</p> : null}
+          <BountyCriteria criteria={bounty.criteria} required={bounty.required} marks={bounty.marks ?? null} testId="bounty-criteria" />
+        </div>
+      ) : null}
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
         <dt className="text-mute">Pay to</dt>
         <dd className="flex min-w-0 flex-wrap items-center gap-1 font-mono text-ink" data-testid="bounty-payee">
@@ -236,6 +244,7 @@ function PickItem({ item, bounty, busy, onDecide }: { item: AgentApproval; bount
         <Stamp item={item} />
       </div>
       {bounty.task ? <p className="break-words text-sm text-ink">{bounty.task}</p> : null}
+      {bounty.criteria?.length ? <BountyCriteria criteria={bounty.criteria} required={bounty.required} rule={false} testId="bounty-criteria" /> : null}
       <p className="text-caption text-body">The judge gave no usable ruling on this job, so nothing was decided and nothing was said in public. Look at the entries and pick the one to pay, or pay none.</p>
       <ul className="flex flex-col gap-1" data-testid="bounty-candidates">
         {bounty.candidates.map((c) => (

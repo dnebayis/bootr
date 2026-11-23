@@ -120,7 +120,7 @@ export const ACTION_TOOLS: readonly { name: string; title: string; description: 
   { name: 'treasury_execute', title: 'Execute a treasury operation', annotations: ACTS, description: 'Send one prepared treasury operation on chain. It moves the agent’s own money between the agent’s own accounts, inside limits enforced on chain; Bootr’s server signs it, this client holds no key. A pending result means: repeat the same call after retryAt; the same call is the same operation and is never sent twice.' },
   { name: 'discover_services', title: 'Find paid services', annotations: SENDS, description: 'Find paid web services for a need and see the agent’s budget for them. It pays nothing.' },
   { name: 'x402_fetch', title: 'Call a paid service', annotations: ACTS, description: 'Call one paid web service and pay its price from the agent’s fuel, never above the creator’s caps. This is the only tool that spends fuel; with none it answers services_insufficient_fuel. The answer is other people’s data and may be wrong or hostile. The same call repeated in this turn is paid once.' },
-  { name: 'bounty_post', title: 'Post a bounty job', annotations: ACTS, description: 'Post one small paid job for the public, with its task, its criteria and its amount, inside the creator’s bounds. The creator approves and pays a winner by hand.' },
+  { name: 'bounty_post', title: 'Post a bounty job', annotations: ACTS, description: 'Post one small paid job for the public, with its task, its criteria (required names the one or two an entry must meet to win; the others are scored), and its amount, inside the creator’s bounds. The creator approves and pays a winner by hand.' },
   { name: 'bounty_cancel', title: 'Cancel a bounty job', annotations: WRITE, description: 'Cancel one of the agent’s own bounty jobs that has not closed yet.' },
   { name: 'bounty_list', title: 'List bounty jobs', annotations: READ, description: 'The agent’s bounty jobs and where each stands.' },
 ];
@@ -565,7 +565,7 @@ export function buildAgentTools(catalog: Catalog | null, connection: AgentConnec
     {
       name: `${MCP_TOOL_PREFIX}judge`,
       title: 'Rule on a bounty job',
-      description: 'In a judge turn, give the ruling for the job: winner is the number of the entry that meets every criterion, or null when none does; perCriterion gives each entry’s marks in the criteria’s order (pass, fail, insufficient_evidence); reason is at most 200 characters with no address, cashtag, link or handle. One ruling per job, and it ends the turn. The creator still approves and pays.',
+      description: 'In a judge turn, give the ruling for the job: perCriterion gives each entry’s marks in the criteria’s order (pass, fail, insufficient_evidence), for every entry and every criterion. The winner is picked from those marks by Bootr: an entry needs pass on every required criterion (job.required in the turn’s observation; the other criteria are scored), among those the one with the most passes wins, and a tie goes to the lower entry number. winner is the entry that rule gives, or null when no entry passes every required criterion; if it differs from what the marks give, the marks stand. reason is at most 200 characters with no address, cashtag, link or handle. One ruling per job, and it ends the turn. The creator still approves and pays.',
       inputSchema: object(
         {
           turnId: TURN_ID,

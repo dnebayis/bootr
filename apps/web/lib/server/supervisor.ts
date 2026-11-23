@@ -467,6 +467,23 @@ function pickCandidates(raw: unknown): BountyPickCandidate[] {
   return out;
 }
 
+/** A job's criteria as the service sends them: texts within its own bounds, at most as many as a job may carry. */
+function criteriaOf(raw: unknown): string[] {
+  return (Array.isArray(raw) ? raw : []).map((c) => str(c, BOUNTIES_BOUNDS.maxCriterionChars)).filter((c): c is string => !!c).slice(0, BOUNTIES_BOUNDS.maxCriteria);
+}
+
+/**
+ * The required criteria of a job as 1-based numbers (the agent service's `requiredOf`, judge.ts): one or two distinct
+ * whole numbers inside the job's criteria, ascending; anything else, a job from before the split included, is `[1]`.
+ * A job with no criteria has none.
+ */
+export function requiredOf(raw: unknown, criteria: number): number[] {
+  if (criteria < 1) return [];
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 2) return [1];
+  if (!raw.every((n): n is number => Number.isInteger(n) && n >= 1 && n <= criteria) || new Set(raw).size !== raw.length) return [1];
+  return [...raw].sort((a, b) => a - b);
+}
+
 /**
  * The `bounty` block of a `bounty_job` or `bounty_payout` approval (the agent service's `bountyApprovalView`). Null when
  * the block is missing or does not name a job, and for a payout also when the payee is not an address: the console
@@ -483,10 +500,16 @@ function bountyInfo(kind: ApprovalKind, o: Record<string, unknown>): BountyAppro
   const payee = typeof b.payee === 'string' && ADDRESS_RE.test(b.payee) ? (b.payee as Address) : null;
   if (want === 'payout' && !payee) return null;
   const amount = typeof b.amountUsdc === 'string' && USDC_RE.test(b.amountUsdc) ? b.amountUsdc : null;
+  const criteria = criteriaOf(b.criteria);
+  const marks = want === 'payout' && Array.isArray(b.marks) && criteria.length && b.marks.length === criteria.length && b.marks.every((m) => CRITERION_MARKS.includes(m as CriterionMark)) ? (b.marks as CriterionMark[]) : null;
+  const winner = want === 'payout' && Number.isInteger(b.winner) && (b.winner as number) >= 1 && (b.winner as number) <= BOUNTIES_BOUNDS.maxConsidered ? (b.winner as number) : null;
   return {
     kind: want,
     jobId,
     task: str(b.task, BOUNTIES_BOUNDS.maxTaskChars) ?? '',
+    ...(criteria.length ? { criteria, required: requiredOf(b.required, criteria.length) } : {}),
+    ...(winner !== null ? { winner } : {}),
+    ...(marks ? { marks } : {}),
     amountUsdc: amount,
     payee: want === 'payout' ? payee : null,
     reason: want === 'payout' ? (str(b.reason, REASON_MAX) ?? null) : null,
@@ -618,7 +641,7 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
   const ownJudge = ownJudgeOf(o.ownJudge);
   const shortId = typeof o.shortId === 'string' && SHORT_ID_RE.test(o.shortId) && id.startsWith(o.shortId.toLowerCase()) ? o.shortId.toLowerCase() : id.slice(0, 18);
   const amountUsdc = typeof o.amountUsdc === 'string' && USDC_RE.test(o.amountUsdc) ? o.amountUsdc : String(Number(amountMicroUsdc) / 1_000_000);
-  const criteria = (Array.isArray(o.criteria) ? o.criteria : []).map((c) => str(c, BOUNTIES_BOUNDS.maxCriterionChars)).filter((c): c is string => !!c).slice(0, BOUNTIES_BOUNDS.maxCriteria);
+  const criteria = criteriaOf(o.criteria);
   const e = (o.entries && typeof o.entries === 'object' ? o.entries : {}) as Record<string, unknown>;
   const ineligible: Record<string, number> = {};
   for (const [reason, n] of Object.entries((e.ineligible && typeof e.ineligible === 'object' ? e.ineligible : {}) as Record<string, unknown>).slice(0, INELIGIBLE_REASONS_MAX)) {
@@ -673,6 +696,7 @@ export function sanitizeBountyJob(raw: unknown): BountyJob | null {
     status,
     task,
     criteria,
+    required: requiredOf(o.required, criteria.length),
     deliverable,
     amountUsdc,
     amountMicroUsdc,
