@@ -489,6 +489,11 @@ export const toolInputSchemas = {
       task: text(BOUNTY_MAX_TASK_CHARS),
       /** 1 to 4 acceptance criteria the judge marks pass or fail, as written here. */
       criteria: z.array(text(BOUNTY_MAX_CRITERION_CHARS)).min(1).max(BOUNTY_MAX_CRITERIA),
+      /**
+       * `image`: a picture attached to the reply. `link`: a link to data that already exists or is quick to put together
+       * (a CSV, a gist, a sheet, a Dune or similar query, an onchain fact with its source), never to a page, a site, an
+       * app or an article someone would have to build or write (apps/supervisor/src/bounties.ts `taskRuleProblem`).
+       */
       deliverable: z.enum(['image', 'link']),
       /** 0.1 to 1 USDC, at most two decimals. */
       amountUsdc: z.number().min(0.1).max(1),
