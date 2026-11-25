@@ -1053,6 +1053,11 @@ are editable for `custom` workers only (`400 job_lines_fixed` otherwise). On suc
 view is returned. A `config_updated` row with `by: 'platform'` is the model migration's (`src/model-migration.ts`); it carries
 `changes` and its own `summary`, which the activity tape shows as is. `routing.decideModel` is economy mode (src/routing.ts): the cheaper model a turn starts on, validated
 like `model` (non-empty, inside `allowedModels` when given); `null` switches the mode off.
+The decide model has to be cheaper than the writer: strictly below it on the catalog's input rate and output rate
+(`decideModelIsCheaper` in agent-core). An update that changes `model` or `routing` and leaves a pair that is not is
+refused with `400 decide_model_not_cheaper`; a stored pair that is not (an older config, a model migration) is kept
+and treated as off at run time, in the config view and in the chat, with one `economy mode ignored` warn line per
+agent per process. A pair the catalog cannot price (an allow-listed id outside it) is left alone.
 `postsPerDay` (`POSTS_PER_DAY` in `@bootr/shared/workers`: 2..48, default 24) is the one pacing control of the console:
 it is written to the sender's quota first (`POST /internal/quota/:agentId`, `setQuota`; `503 sender_unavailable` and
 nothing stored when the sender cannot be reached), then stored, and the cadence follows it:
@@ -1063,7 +1068,7 @@ what went out in the last 24 h, what is left) so the model paces itself; the sen
 `x_quota` hold (src/rhythm.ts) still applies when it refuses. The platform agent's 6 h cadence is untouched until the
 owner edits its budget.
 Errors: `400 invalid_by | invalid_instructions | invalid_model | model_not_allowed | invalid_worker | job_lines_fixed |
-invalid_posts_per_day | invalid_require_approval | invalid_routing`,
+invalid_posts_per_day | invalid_require_approval | invalid_routing | decide_model_not_cheaper`,
 `403 not_creator`, `404 not_found`, `409 unchanged` (nothing differed), `503 sender_unavailable`. The running agent is not touched: the tick
 reads `sv_agents.config` on every pass and the revision bump makes the wake decision fire `config_changed`, so the
 next tick starts a turn with the new system prompt, tools and cadence (a turn already persisted keeps its old

@@ -7,7 +7,7 @@ import type { Address } from 'viem';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITIES, CAPABILITY_KEYS, type CapabilityKey, POSTS_PER_DAY, WORKER_BOUNDS } from '@bootr/shared/workers';
 import { qk } from '@/lib/indexer';
 import { fetchImageModels, fetchModels, fetchPlatformFlags } from '@/lib/launch';
-import { cheapestModel, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
+import { cheapestModel, decidePairPricier, DEFAULT_IMAGE_MODEL, FALLBACK_MODELS, formatMicroUsdc, formatThoughtPrice, groupByProvider, modelKey, modelLabel, type ModelOption } from '@/lib/models';
 import { BOUNTIES_BOUNDS, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, WATCHED_ACCOUNTS_MAX, X_HANDLE_RE, type Agent, type AgentBountiesPolicy, type AgentConfig, type AgentConfigChanges, type ReplyAudience, type Token } from '@/lib/types';
 import { formatGas, gasStatus } from '@/lib/gas';
 import { cadenceLabel, measuredThoughtCost, postBudgetNote, shownInterval } from '@/lib/post-budget';
@@ -354,7 +354,9 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
   const bd = draft ? bountiesDraft(draft) : null;
   const bountiesOk = !bd || (bd.dailyCapMicroUsdc !== null && bd.maxOpen !== null && bd.cooldownSeconds !== null && bd.defaultHoursOpen !== null);
   const watchedOk = !draft || cfg?.watchedAccounts == null || watchedAccountsDraft(draft.watchedAccounts) !== null;
-  const valid = instructionsOk && styleOk && servicesOk && bountiesOk && watchedOk;
+  // Economy mode on a deciding model that is not cheaper than the writer costs more than no economy mode: not saved.
+  const pairPricier = decidePairPricier(draft?.decideModel, draft?.model);
+  const valid = instructionsOk && styleOk && servicesOk && bountiesOk && watchedOk && !pairPricier;
 
   const modelList = models.data?.models ?? FALLBACK_MODELS;
   const modelGroups = useMemo(() => pickerGroups(modelList, draft?.model), [modelList, draft?.model]);
@@ -608,6 +610,11 @@ export function CreatorConsole({ token, agent, section, onSectionChange }: { tok
                         ))}
                       </Select>
                       {draft.decideModel === draft.model ? <p className="mt-1 text-micro text-danger">Pick a model other than the writer, or the mode does nothing.</p> : null}
+                      {pairPricier ? (
+                        <p className="mt-1 text-micro text-danger" data-testid="economy-pricier">
+                          {modelLabel(draft.decideModel!)} is not cheaper than {modelLabel(draft.model)}. Pick a cheaper deciding model, or switch economy mode off.
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                 </Box>

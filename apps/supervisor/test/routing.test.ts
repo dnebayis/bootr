@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { Logger } from 'pino';
 import { eq } from 'drizzle-orm';
 import { parseAgentConfig, ROUTING_RULES, TOOL_LIST } from '@bootr/agent-core';
 import { agentActivity } from '../src/activity.js';
@@ -8,7 +9,7 @@ import { signRequest } from '../src/hmac.js';
 import { DEFAULT_COIN_IMAGE_MODEL } from '../src/images.js';
 import { thoughtsByModel } from '../src/inference.js';
 import { agentConfigOf } from '../src/onboarding.js';
-import { decideModelOf, handleIntent, modelFor, startRouting, toolsForPhase, type RoutedTurn } from '../src/routing.js';
+import { decideModelOf, handleIntent, modelFor, resetRoutingReports, startRouting, toolsForPhase, type RoutedTurn } from '../src/routing.js';
 import { tick } from '../src/tick.js';
 import { AGENT_ID, agentConfig, CREATOR, finishResponse, makeWorld, seedAgent, SUPERVISOR_KEY, toolCallResponse, type TestWorld } from './helpers.js';
 
@@ -254,6 +255,59 @@ describe('economy mode turns', () => {
       expect(toolNames(calls[0]!)).not.toContain('draft_intent');
       expect(calls[0]!.body.messages[0]!.content).not.toContain('ECONOMY MODE');
       expect(w.sender.published).toHaveLength(1);
+    } finally {
+      await w.close();
+    }
+  });
+});
+
+describe('economy mode on a deciding model that is not cheaper', () => {
+  const pair = (model: string, decideModel: string) => parseAgentConfig(agentConfig(Date.now(), { model, routing: { decideModel } }));
+
+  it('is off at run time, reported once per agent, and on again for a cheaper or an unpriced deciding model', () => {
+    resetRoutingReports();
+    const warn = vi.fn();
+    const log = { warn } as unknown as Logger;
+    // the platform agent's pair of 2026-11-25: Sonnet 4.5 ($3/$15) deciding for Sonnet 5.5 ($2/$10)
+    const pricier = pair('anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-4.5');
+    expect(decideModelOf(pricier)).toBeNull();
+    expect(startRouting(pricier, { log, agentId: '7' })).toBeNull();
+    expect(startRouting(pricier, { log, agentId: '7' })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toEqual({ agentId: '7', decideModel: 'anthropic/claude-sonnet-4.5', model: 'anthropic/claude-sonnet-5.5' });
+    expect(modelFor(pricier, startRouting(pricier))).toBe('anthropic/claude-sonnet-5.5');
+    // another agent with the same pair gets its own line
+    startRouting(pricier, { log, agentId: '8' });
+    expect(warn).toHaveBeenCalledTimes(2);
+    // the same price on both rates is not cheaper
+    expect(decideModelOf(pair('anthropic/claude-sonnet-4.5', 'anthropic/claude-sonnet-4.6'))).toBeNull();
+    // a cheaper pair, and a pair the catalog cannot price, keep the mode; neither is reported
+    expect(startRouting(pair('anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-4.5'), { log, agentId: '7' })?.decideModel).toBe('anthropic/claude-haiku-4.5');
+    expect(startRouting(pair('anthropic/claude-sonnet-5.5', 'vendor/unlisted'), { log, agentId: '7' })?.decideModel).toBe('vendor/unlisted');
+    // the writer as its own decider is plain off, not a report
+    expect(startRouting(pair(WRITER, WRITER), { log, agentId: '7' })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('is refused by the config update whichever of the two models the update changes', async () => {
+    const w = await makeWorld();
+    try {
+      await seedAgent(w, { config: { model: 'anthropic/claude-sonnet-5.5' } });
+      const { put } = api(w);
+      const path = `/internal/agents/${AGENT_ID}/config`;
+      const pricier = await put(path, { by: CREATOR, routing: { decideModel: 'anthropic/claude-sonnet-4.5' } });
+      expect([pricier.status, ((await pricier.json()) as { error: string }).error]).toEqual([400, 'decide_model_not_cheaper']);
+      expect((await put(path, { by: CREATOR, routing: { decideModel: 'anthropic/claude-haiku-4.5' } })).status).toBe(200);
+      // a writer cheaper than the stored deciding model is refused until the pair is fixed in the same update
+      const writer = await put(path, { by: CREATOR, model: 'deepseek/deepseek-chat' });
+      expect([writer.status, ((await writer.json()) as { error: string }).error]).toEqual([400, 'decide_model_not_cheaper']);
+      expect(agentConfigOf((await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!)!.model).toBe('anthropic/claude-sonnet-5.5');
+      expect((await put(path, { by: CREATOR, model: 'deepseek/deepseek-chat', routing: { decideModel: null } })).status).toBe(200);
+      // a stored pricier pair does not block an unrelated change
+      await w.db.update(agents).set({ config: { ...(await w.db.query.agents.findFirst({ where: eq(agents.agentId, AGENT_ID) }))!.config, routing: { decideModel: 'anthropic/claude-sonnet-4.5' } } }).where(eq(agents.agentId, AGENT_ID));
+      const other = await put(path, { by: CREATOR, requireApproval: true });
+      expect(other.status).toBe(200);
+      expect(((await other.json()) as { routing: unknown }).routing).toEqual({ decideModel: null });
     } finally {
       await w.close();
     }

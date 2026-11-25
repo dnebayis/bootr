@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MODEL_CATALOG, mindModels } from '@bootr/agent-core';
-import { CATALOG_IMAGE_MODELS, CATALOG_MODELS, cheapestModel, filterAllowedModels, formatThoughtPrice, groupByProvider, imagePriceUsd, modelLabel, RECOMMENDED_MODEL, thoughtPriceUsd } from './models';
+import { CATALOG_IMAGE_MODELS, CATALOG_MODELS, cheapestModel, decidePairPricier, filterAllowedModels, formatThoughtPrice, groupByProvider, imagePriceUsd, modelLabel, RECOMMENDED_MODEL, thoughtPriceUsd } from './models';
 
 describe('the priced lists', () => {
   it('price every mind per thought the way BlockRun quotes one, with its fee', () => {
@@ -58,5 +58,12 @@ describe('groupByProvider', () => {
     const images = groupByProvider(CATALOG_IMAGE_MODELS);
     expect(images.map((g) => g.provider)).toEqual(['OpenAI', 'Google']);
     expect(images[1]!.models.map((m) => m.id)).toEqual(['google/nano-banana', 'google/nano-banana-2', 'google/nano-banana-pro']);
+  });
+  it('calls a pair pricier only when a second, priced deciding model is not below the writer on both rates', () => {
+    expect(decidePairPricier('anthropic/claude-sonnet-4.5', 'anthropic/claude-sonnet-5.5')).toBe(true);
+    expect(decidePairPricier('anthropic/claude-haiku-4.5', 'anthropic/claude-sonnet-5.5')).toBe(false);
+    expect(decidePairPricier('anthropic/claude-sonnet-5.5', 'anthropic/claude-sonnet-5.5')).toBe(false);
+    expect(decidePairPricier(null, 'anthropic/claude-sonnet-5.5')).toBe(false);
+    expect(decidePairPricier('vendor/unlisted', 'anthropic/claude-sonnet-5.5')).toBe(false);
   });
 });

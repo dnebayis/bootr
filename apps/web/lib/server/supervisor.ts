@@ -6,7 +6,7 @@
  *
  * Web Crypto only (route handlers). Shapes are the contract in docs/design/agent-launch-v2.md.
  */
-import { isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/agent-core';
+import { decideModelIsCheaper, isImageModel, THREAD_MAX_PARTS, THREAD_PART_MAX_CHARS } from '@bootr/agent-core';
 import { OWN_ERRORS, RUNNERS, runnerOf, type OwnErrorCode, type Runner, type RunnerSwitchRequest, type RunnerSwitchResponse, type RunnerView } from '@bootr/shared/own-agent';
 import { ALWAYS_ON_CAPABILITIES, CAPABILITY_KEYS, POSTS_PER_DAY, WORKER_BOUNDS, type CapabilityKey } from '@bootr/shared/workers';
 import type { Address, Hex } from 'viem';
@@ -1170,6 +1170,10 @@ export function validateChanges(input: unknown): { ok: true; changes: AgentConfi
   if (o.model !== undefined) {
     if (typeof o.model !== 'string' || !MODEL_ID_RE.test(o.model)) return { ok: false, field: 'model', message: 'model must be a model id from GET /api/models.' };
     changes.model = o.model;
+  }
+  // Both models in one save: the pair is checked here; a save of one of them is checked by the supervisor, which knows the other.
+  if (changes.model && changes.routing?.decideModel && changes.routing.decideModel !== changes.model && decideModelIsCheaper(changes.routing.decideModel, changes.model) === false) {
+    return { ok: false, field: 'routing.decideModel', message: 'Economy mode needs a deciding model that costs less than the writer. Pick a cheaper one, or switch economy mode off.' };
   }
   if (o.worker !== undefined) {
     if (!o.worker || typeof o.worker !== 'object') return { ok: false, field: 'worker', message: 'worker must be an object' };

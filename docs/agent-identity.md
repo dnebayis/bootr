@@ -88,7 +88,8 @@ agent-core: prompt/system-prompt.ts                      identity, then OWNER RU
    decide model calls it, the supervisor answers the call with the intent restated ("you decided to write this; now
    write it"), swaps the system prompt's ECONOMY MODE line to the writer's, restores the publishing tools, drops
    `draft_intent`, and runs the rest of the turn on `model`. A turn that never calls `draft_intent` stays on the
-   cheap model; `MAX_TOOL_STEPS` counts both phases. Every `sv_inference` row names the model its request ran on
+   cheap model; `MAX_TOOL_STEPS` counts both phases. The mode is off, whatever is stored, when the decide model is
+   not strictly cheaper than the writer on both catalog rates (the console refuses to save such a pair). Every `sv_inference` row names the model its request ran on
    (`GET /internal/agents/:id/fuel` sums them per model for the coin page); the turn log has one `thought` line per
    step with `model` and `phase`.
 5. **System prompt** (`packages/agent-core/src/prompt/system-prompt.ts`). `identityText` opens the prompt.

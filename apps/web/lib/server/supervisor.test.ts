@@ -76,6 +76,10 @@ describe('validateChanges', () => {
     expect(validateChanges({ routing: { decideModel: 'deepseek/deepseek-v3.2' } })).toEqual({ ok: true, changes: { routing: { decideModel: 'deepseek/deepseek-v3.2' } } });
     expect(validateChanges({ routing: { decideModel: null } })).toEqual({ ok: true, changes: { routing: { decideModel: null } } });
     expect(validateChanges({ routing: { decideModel: '' } })).toMatchObject({ ok: false });
+    // both models in one save: a deciding model that is not cheaper than the writer is refused, a cheaper or unpriced one passes
+    expect(validateChanges({ model: 'anthropic/claude-sonnet-5.5', routing: { decideModel: 'anthropic/claude-sonnet-4.5' } })).toMatchObject({ ok: false, field: 'routing.decideModel' });
+    expect(validateChanges({ model: 'anthropic/claude-sonnet-5.5', routing: { decideModel: 'anthropic/claude-haiku-4.5' } })).toMatchObject({ ok: true });
+    expect(validateChanges({ model: 'anthropic/claude-sonnet-5.5', routing: { decideModel: 'vendor/unlisted' } })).toMatchObject({ ok: true });
     expect(validateChanges({ routing: { decideModel: 'not a model id!' } })).toMatchObject({ ok: false });
     expect(validateChanges({ routing: {} })).toMatchObject({ ok: false });
     expect(validateChanges({ routing: 'deepseek' })).toMatchObject({ ok: false });

@@ -4,6 +4,7 @@ import {
   BLOCKRUN_MIN_QUOTE_MICRO_USDC,
   catalogGaps,
   catalogModel,
+  decideModelIsCheaper,
   DEFAULT_COIN_IMAGE_MODEL,
   DEFAULT_MIND_MODEL,
   DEFAULT_PLATFORM_IMAGE_MODEL,
@@ -110,5 +111,18 @@ describe('the model catalog', () => {
       { id: 'anthropic/claude-haiku-4.5', kind: 'price', detail: expect.stringContaining('2000/5000') },
       { id: 'google/nano-banana', kind: 'unavailable', detail: expect.any(String) },
     ]);
+  });
+  it('calls a decide model cheaper only when both its rates are strictly below the writer, and has no answer for an unpriced id', () => {
+    expect(decideModelIsCheaper('anthropic/claude-haiku-4.5', 'anthropic/claude-sonnet-5.5')).toBe(true);
+    // the platform agent's pair of 2026-11-25: Sonnet 4.5 ($3/$15) deciding for Sonnet 5.5 ($2/$10)
+    expect(decideModelIsCheaper('anthropic/claude-sonnet-4.5', 'anthropic/claude-sonnet-5.5')).toBe(false);
+    // the same price is not cheaper, and a lower input rate with a higher output rate is not either
+    expect(decideModelIsCheaper('anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-4.5')).toBe(false);
+    expect(decideModelIsCheaper('openai/gpt-5.6-terra', 'moonshot/kimi-k3.1-pro')).toBe(false);
+    expect(decideModelIsCheaper('xai/grok-4.3', 'xai/grok-4.7')).toBe(true);
+    // a retired id is priced as its stand-in
+    expect(decideModelIsCheaper('deepseek/deepseek-v3.2', 'openai/gpt-4.1-mini')).toBe(true);
+    expect(decideModelIsCheaper('vendor/unknown', 'anthropic/claude-sonnet-5.5')).toBeNull();
+    expect(decideModelIsCheaper('anthropic/claude-haiku-4.5', 'google/nano-banana')).toBeNull();
   });
 });

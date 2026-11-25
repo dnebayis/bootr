@@ -13,6 +13,7 @@ import {
   DRAFT_INTENT_TOOL_NAME,
   PUBLISHING_TOOLS,
   buildSystemPrompt,
+  decideModelIsCheaper,
   draftIntentInputSchema,
   postLimitsFor,
   type AgentConfig,
@@ -40,15 +41,41 @@ export interface RoutingState {
 /** Tools only the writer gets: the publishing tools, the picture that goes with a post, and a post written now to go out later. */
 const WRITER_ONLY: readonly string[] = [...PUBLISHING_TOOLS, 'generate_image', 'schedule_post'];
 
-/** The decide model in force, or null when economy mode is off (unset, null, or the same model as the writer). */
+/**
+ * The decide model in force, or null when economy mode is off: unset, null, the same model as the writer, or a model
+ * whose catalog price is not strictly below the writer's on both rates (`decideModelIsCheaper`). The last case is a
+ * pair the console no longer saves (agent-config.ts) but an older config, a model migration or a later change of the
+ * writer can still leave behind; the stored value is kept, so the mode comes back when the pair is cheaper again. A
+ * pair the catalog cannot price (an allow-listed id outside it) stays on: there is nothing to compare.
+ */
 export function decideModelOf(config: Pick<AgentConfig, 'model' | 'routing'>): string | null {
   const m = config.routing?.decideModel ?? null;
-  return m && m !== config.model ? m : null;
+  if (!m || m === config.model) return null;
+  return decideModelIsCheaper(m, config.model) === false ? null : m;
 }
 
-/** The routing state a fresh turn starts with; null when economy mode is off. */
-export function startRouting(config: Pick<AgentConfig, 'model' | 'routing'>): RoutingState | null {
+/** The pairs already reported by `startRouting`, so the log says it once per agent and pair, not once per turn. */
+const reportedPricierPairs = new Set<string>();
+
+/** Test hook: forget which pairs were reported. */
+export function resetRoutingReports(): void {
+  reportedPricierPairs.clear();
+}
+
+/**
+ * The routing state a fresh turn starts with; null when economy mode is off. With `report`, a stored decide model
+ * that is ignored because it is not cheaper than the writer is logged once per agent (and pair) per process.
+ */
+export function startRouting(config: Pick<AgentConfig, 'model' | 'routing'>, report?: { log: Logger; agentId: string }): RoutingState | null {
   const decideModel = decideModelOf(config);
+  const stored = config.routing?.decideModel ?? null;
+  if (report && !decideModel && stored && stored !== config.model) {
+    const key = `${report.agentId}:${stored}:${config.model}`;
+    if (!reportedPricierPairs.has(key)) {
+      reportedPricierPairs.add(key);
+      report.log.warn({ agentId: report.agentId, decideModel: stored, model: config.model }, 'economy mode ignored: the deciding model is not cheaper than the writer; turns run on the writer alone');
+    }
+  }
   return decideModel ? { phase: 'decide', decideModel, intent: null, steps: { decide: 0, write: 0 } } : null;
 }
 

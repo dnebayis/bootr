@@ -577,7 +577,7 @@ function compactMessages(messages: ChatMessage[]): boolean {
 
 export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
-  const routing = startRouting(config);
+  const routing = startRouting(config, { log: ctx.log, agentId: agent.agentId });
   // The account's post limit for this turn: the sender's `premium` (one internal read; it also keeps the sender's flag fresh).
   const premium = config.capabilities.xPublish ? await accountPremium(ctx, agent.agentId) : null;
   // The dataset's records for this turn: none unless the dataset is on and this is the platform account with a slot to write from (records-turn.ts).

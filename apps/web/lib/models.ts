@@ -7,6 +7,7 @@ import {
   BLOCKRUN_CALL_FEE_MICRO_USDC,
   BLOCKRUN_MIN_QUOTE_MICRO_USDC,
   catalogModel,
+  decideModelIsCheaper,
   DEFAULT_MIND_MODEL,
   DEFAULT_PLATFORM_IMAGE_MODEL,
   imageModels,
@@ -195,6 +196,15 @@ export function cheapestModel(models: readonly ModelOption[], exclude?: string |
     if (!best || m.pricePerThoughtUsd < best.pricePerThoughtUsd! || (m.pricePerThoughtUsd === best.pricePerThoughtUsd && m.id < best.id)) best = m;
   }
   return best;
+}
+
+/**
+ * Whether economy mode would cost more than it saves on this pair: the deciding model is another model than the
+ * writer and its price is not below the writer's on both rates. False when the catalog cannot price one of them.
+ */
+export function decidePairPricier(decideModel: string | null | undefined, writerModel: string | null | undefined): boolean {
+  if (!decideModel || !writerModel || decideModel === writerModel) return false;
+  return decideModelIsCheaper(decideModel, writerModel) === false;
 }
 
 /** Micro-USDC totals as money: `$0.14`, tiny sums with four decimals, `$0` for nothing. */

@@ -6,7 +6,7 @@
  * agent reads its config from the `sv_agents` row on every tick (`agentConfigOf` in tick.ts), so an update is
  * live on the next tick; nothing is cached.
  */
-import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, MAX_WATCHED_ACCOUNTS, normalizeCreatorIdentity, relayModelId, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ReplyAudience, type ServicesPolicy } from '@bootr/agent-core';
+import { BOUNTY_DAILY_MAX_MICRO_USDC, BOUNTY_MAX_HOURS_OPEN, BOUNTY_MAX_OPEN_CEILING, BOUNTY_MIN_HOURS_OPEN, bountiesPolicySchema, catalogModel, decideModelIsCheaper, DEFAULT_SERVICES_POLICY, imageStyleSchema, MAX_CREATOR_IDENTITY_CHARS, MAX_IMAGE_STYLE_NOTES_CHARS, MAX_WATCHED_ACCOUNTS, modelDisplayName, normalizeCreatorIdentity, relayModelId, REPLY_AUDIENCES, SERVICES_DAILY_MAX_MICRO_USDC, SERVICES_PER_CALL_MAX_MICRO_USDC, servicesPolicySchema, type BountiesPolicy, type ImageStyle, type ReplyAudience, type ServicesPolicy } from '@bootr/agent-core';
 import { runnerOf, type Runner, type RunnerView } from '@bootr/shared/own-agent';
 import { CAPABILITY_KEYS, CUSTOM_WORKER_ID, normalizeWorkerPreset, POSTS_PER_DAY, postIntervalForPostsPerDay, type WorkerPreset } from '@bootr/shared/workers';
 import { and, eq, sql } from 'drizzle-orm';
@@ -439,6 +439,7 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
 
   // Economy mode: the decide model is validated like `model`; null switches the mode off. Stored as given: a decide
   // model equal to the writer is kept and simply behaves as off (routing.ts), so a later model change can re-enable it.
+  // A pair whose decide model is not cheaper than the writer is refused below, once both fields are read.
   if (body.routing !== undefined) {
     if (!body.routing || typeof body.routing !== 'object' || Array.isArray(body.routing)) return reject(400, 'invalid_routing', 'routing must be an object {decideModel}');
     const raw = (body.routing as { decideModel?: unknown }).decideModel;
@@ -452,6 +453,16 @@ export async function updateAgentConfig(ctx: SupervisorContext, agent: AgentRow,
     if (decideModel !== routingOf(before).decideModel) {
       config.routing = { decideModel };
       fields.push('routing');
+    }
+  }
+
+  // The pair this update leaves: a decide model that is not strictly cheaper than the writer on both rates would make
+  // every turn cost more than with the mode off, so an update that changes either model may not leave such a pair.
+  if (fields.includes('routing') || fields.includes('model')) {
+    const writer = typeof config.model === 'string' ? config.model : '';
+    const decide = routingOf(config).decideModel;
+    if (decide && decide !== writer && decideModelIsCheaper(decide, writer) === false) {
+      return reject(400, 'decide_model_not_cheaper', `economy mode needs a deciding model cheaper than the writer: ${modelDisplayName(decide)} is not cheaper than ${modelDisplayName(writer)}; pick a cheaper deciding model or switch economy mode off (routing.decideModel null)`);
     }
   }
 

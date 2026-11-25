@@ -159,6 +159,19 @@ export function directModelId(id: string): string | null {
   return catalogModel(id)?.id ?? null;
 }
 
+/**
+ * Whether economy mode saves money on this pair: the decide model's catalog price is strictly below the writer's on
+ * both the input and the output rate. False for a pair that costs the same or more on either rate (a turn would
+ * decide on the pricier model and pay a second prompt-cache write on the switch). Null when either id has no token
+ * price in the catalog (an id only the admin allow-list knows): nothing to compare, so the caller leaves the pair alone.
+ */
+export function decideModelIsCheaper(decideModel: string, writerModel: string): boolean | null {
+  const d = catalogModel(decideModel)?.price;
+  const w = catalogModel(writerModel)?.price;
+  if (!d || !w || !('inputMicroUsdcPerKTokens' in d) || !('inputMicroUsdcPerKTokens' in w)) return null;
+  return d.inputMicroUsdcPerKTokens < w.inputMicroUsdcPerKTokens && d.outputMicroUsdcPerKTokens < w.outputMicroUsdcPerKTokens;
+}
+
 /** The id the relay (OpenRouter) knows the catalog model by, when it is the same model under another name; else the id itself. */
 export function relayModelId(id: string): string {
   const m = byId.get(id);
