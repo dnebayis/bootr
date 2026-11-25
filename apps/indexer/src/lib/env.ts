@@ -234,7 +234,7 @@ export type IndexerEnv = {
   clankerStartBlock: number | 'latest';
   /** Start block of the Clanker v5 sources: the same, never before the v5 factory's creation. */
   clankerV5StartBlock: number | 'latest';
-  /** Start block of the sources shared by both paths (coins, PoolManager, guardian, reputation, snapshot). */
+  /** Start block of the sources shared by both paths (coins, guardian, reputation, snapshot). */
   anyStartBlock: number | 'latest';
   ethUsdFeed: Address;
   /** Blocks between snapshots at today's block time, 300 = 60 s (`INDEXER_SNAPSHOT_INTERVAL`); `snapshotSources` covers the era before Denim. */
@@ -357,7 +357,8 @@ export function snapshotBlockSources(env: IndexerEnv = indexerEnv()) {
  * Which Ponder sources are registered (handlers check the same flags). The Bootr path needs a Bootr launcher and
  * the RWAGMI v3 stack it launches through; the Clanker path a Clanker launcher and the Clanker v4 stack (the v5
  * hook and escrow sources join it when the chain has the v5 stack: one launcher list serves both versions). The
- * sources both paths share (coins, PoolManager, guardian, reputation) run when either path is on.
+ * sources both paths share (coins, guardian, reputation) run when either path is on. There is no PoolManager source:
+ * swaps are read from the receipts of the coins' own transfers (`BootrToken`, lib/swaps.ts).
  */
 export function enabledSources(env: IndexerEnv = indexerEnv()) {
   const launcher = env.launchers.length > 0 && !!env.rwagmi;
@@ -376,7 +377,6 @@ export function enabledSources(env: IndexerEnv = indexerEnv()) {
     ClankerV5Hook: clankerV5,
     ClankerV5FeeEscrow: clankerV5,
     BootrToken: any,
-    PoolManager: any,
     AgentGuardian: any && !!env.guardian,
     ReputationRegistry: any && !!env.addresses.erc8004.reputationRegistry,
   };

@@ -12,6 +12,7 @@ import { fetchAdminConfig } from './lib/admin-config';
 import { decodeAgentBalances, type AgentBalances } from './lib/balances';
 import { snapshotSpacingSec } from './lib/blocks';
 import { indexerEnv, snapshotBlockSources } from './lib/env';
+import { changedFields } from './lib/patch';
 import { decodeLiquidity, decodeSlot0, poolLiquiditySlot, poolStateSlot } from './lib/pool';
 import { toUnits, usd } from './lib/price';
 import { rpcClient } from './lib/rpc';
@@ -50,7 +51,7 @@ const KERNELS_PER_GETLOGS = 100;
 const usdcTransfer = getAbiItem({ abi: Erc20Abi, name: 'Transfer' });
 
 /** `spenders`: kernel -> x402 spender EOA (null / missing = none known). */
-async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow[], spenders: Map<string, string | null>) {
+async function readChainState(blockNumber: bigint, tokens: TokenRow[], agents: AgentRow[], spenders: Map<string, string | null>) {
   const env = indexerEnv();
   const pm = env.addresses.uniswap.poolManager;
   const calls = [
@@ -81,11 +82,16 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
   ];
   const pools = new Map<string, { sqrtPriceX96: bigint; tick: number; liquidity: bigint }>();
   if (calls.length === 0) return { pools, balances: new Map<string, AgentBalances>() };
-  const res = await context.client.multicall({
+  // Through the indexer's own client, not `context.client`: Ponder stores every `context.client` call in
+  // `ponder_sync.rpc_request_results` (one row per call of the multicall), and a live snapshot's reads describe one
+  // block near the tip that no later run asks for again (a backfill skips them). The cache stays on for the chain:
+  // `cacheRpcRequests: false` would also stop Ponder from keeping logs, blocks and the factories' child addresses.
+  const res = await rpcClient().multicall({
     contracts: calls as never,
     multicallAddress: MULTICALL3_ADDRESS,
     allowFailure: true,
     batchSize: 16_384,
+    blockNumber,
   });
   tokens.forEach((t, i) => {
     const r = res[i] as { status: string; result?: readonly Hex[] };
@@ -205,7 +211,7 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
     // spender address: the supervisor's latest push, else the last mirrored value
     const spenders = new Map(agents.map((a) => [a.id, social?.has(a.id) ? social.get(a.id)!.spender : a.spender] as const));
     try {
-      ({ pools, balances } = await readChainState(context, tokens, agents, spenders));
+      ({ pools, balances } = await readChainState(bn, tokens, agents, spenders));
     } catch (err) {
       console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${safeMessage(err)}`);
     }
@@ -246,8 +252,10 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
       // the model the creator switched to after launch (social-store `model`); the launch-time value stays until then
       ...(s?.model && s.model !== t.model ? { model: s.model } : {}),
     };
-    const updated = await context.db.update(schema.token, { id: t.id }).set(next);
-    tokenById.set(t.id, updated);
+    // Every field is recomputed; the row is written only when one of them moved (lib/patch.ts). The windows roll
+    // over by themselves: an hour leaving the last 24 changes `volume24hUsd`, and that change is the write.
+    const moved = changedFields(t0, next);
+    tokenById.set(t.id, Object.keys(moved).length ? await context.db.update(schema.token, { id: t.id }).set(moved) : t0);
   }
 
   // ---- agents
@@ -292,12 +300,19 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
       supervisorHint: merged.supervisorStatus,
     });
     statuses.set(a.id, status);
-    await context.db.update(schema.agent, { id: a.id }).set({
-      ...patch,
-      status,
-      dormantSince: dormantSince(now, merged.lastActivityAt, merged.dormancyPeriod),
-      ...(status !== a.status ? { statusChangedAt: now } : {}),
-    });
+    // Written only when something moved. `balancesUpdatedAt` alone is no reason to write: it then keeps the time of
+    // the last snapshot that found a balance, the status or the supervisor's figures changed.
+    const moved = changedFields(
+      a,
+      {
+        ...patch,
+        status,
+        dormantSince: dormantSince(now, merged.lastActivityAt, merged.dormancyPeriod),
+        ...(status !== a.status ? { statusChangedAt: now } : {}),
+      },
+      ['balancesUpdatedAt'],
+    );
+    if (Object.keys(moved).length) await context.db.update(schema.agent, { id: a.id }).set(moved);
     if (t && t.agentStatus !== status) {
       tokenById.set(t.id, await context.db.update(schema.token, { id: t.id }).set({ agentStatus: status }));
     }

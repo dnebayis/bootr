@@ -262,7 +262,7 @@ the receipt carries. Sources added: `ClankerV5Hook` (`CreatorTaxCredited`, `Burn
 | `ClankerV5Hook.CreatorTaxCredited(poolId, recipient, currency, amount)` | `feeAccrual` + `feeCredit`, `feeBalance.accrued = settled` (claimable at once), per-kind rollups; the kind from the `feeSlot` row of that recipient |
 | `ClankerV5Hook.BurnTaxCredited(poolId, token, sink, amount)` | the burn slot's accrual in the coin (`asset = token`, recipient `0xdEaD`) |
 | `ClankerV5FeeEscrow.Claimed(recipient, currency, destination, amount)` | `recordClaim(…, source 'clanker-v5')`: split over the recipient's `feeBalance` rows of v5 coins only; a dead-address claim of the coin is a `burn` row and `token.burnedTotal` |
-| `PoolManager.Swap` | unchanged; `swapFeePips('clanker-v5', fee, lpFeeBps)` = the tax (pool fee is 0, nothing on top); the gross fee is booked per trade as on v4 |
+| `PoolManager.Swap` (since 2026-11-25 from the receipts of the coin's transfers at the PoolManager; a v5 hook credit applies the swap before it first) | unchanged; `swapFeePips('clanker-v5', fee, lpFeeBps)` = the tax (pool fee is 0, nothing on top); the gross fee is booked per trade as on v4 |
 
 `assetUsd` learns `address(0)` (native ETH at ETH/USD) and USDC (6 decimals, $1); `/treasury/:kernel` reads
 `FeeEscrow.owed(recipient, address(0))` for v5 coins (the burn slot `owed(0xdEaD, coin)`), `pending` 0, `symbol`

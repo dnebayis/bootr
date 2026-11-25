@@ -11,10 +11,11 @@ import { secondsBetweenBlocks } from './blocks';
 import { indexerEnv } from './env';
 import { classifyRecipient, DEAD_ADDRESS as DEAD, parseLaunchSource, type LaunchSource, type RecipientKind } from './fees';
 import { chainlinkToUsd, toUnits, usd } from './price';
+import { rpcClient } from './rpc';
 import { marketFields } from './quote';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
-import { addPoolMove, addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
+import { addPoolMove, addTrade, windowFields, type Bucket } from './windows';
 
 export type Ctx = Context;
 export type TokenRow = typeof schema.token.$inferSelect;
@@ -41,11 +42,11 @@ export async function getEthUsd(context: Ctx, blockNumber: bigint, force = false
   }
   const feed = env.ethUsdFeed;
   try {
-    const [, answer, , updatedAt] = await context.client.readContract({
-      abi: ChainlinkAggregatorAbi,
-      address: feed,
-      functionName: 'latestRoundData',
-    });
+    // A forced read is the live snapshot's, once a minute at the tip: it goes through the indexer's own client so it
+    // is not stored in Ponder's RPC cache, where no later run would ask for that block again. The handlers' own reads
+    // (at most one per 10 minutes of chain time) stay cached: a backfill repeats them.
+    const call = { abi: ChainlinkAggregatorAbi, address: feed, functionName: 'latestRoundData' } as const;
+    const [, answer, , updatedAt] = force ? await rpcClient().readContract({ ...call, blockNumber }) : await context.client.readContract(call);
     const priceUsd = usd(chainlinkToUsd(answer, 8));
     if (priceUsd > 0) {
       await context.db
@@ -270,18 +271,8 @@ export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind 
 /** Recompute price-derived fields of a token from its pool state (lib/quote.ts `marketFields`). */
 export { marketFields };
 
-/** Rolling-window fields from the token's hourly buckets. */
-export function windowFields(buckets: Bucket[], now: number, priceUsd: number) {
-  const d1 = sumWindow(buckets, now, DAY);
-  const d7 = sumWindow(buckets, now, 7 * DAY);
-  return {
-    volume24hUsd: usd(d1.volume),
-    volume7dUsd: usd(d7.volume),
-    fees24hUsd: usd(d1.fees),
-    trades24h: d1.trades,
-    change24hPct: change24hPct(buckets, now, priceUsd),
-  };
-}
+/** Rolling-window fields from the token's hourly buckets (lib/windows.ts `windowFields`). */
+export { windowFields };
 
 export function graduationFields(t: TokenRow, marketCapUsd: number, threshold: number, now: number) {
   if (t.graduated) return {};

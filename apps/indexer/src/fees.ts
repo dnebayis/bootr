@@ -8,6 +8,7 @@ import { enabledSources } from './lib/env';
 import { claimParts, parseLaunchSource, type LaunchSource } from './lib/fees';
 import { applyClankerCollection, applyClankerV5HookCredit, applyFeeTaken } from './lib/ledger';
 import { toUnits, usd } from './lib/price';
+import { swapsAfter, swapsBefore, syncAt } from './lib/swap-sync';
 import { assetUsd, bumpDaily, bumpPlatform, bumpSource, getEthUsd, getPlatformConfig, lc, recipientKindOf, sourceOf, type Ctx, type TokenRow } from './lib/store';
 
 /**
@@ -107,6 +108,7 @@ if (enabledSources().RwagmiLpLockerV3) {
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
       blockNumber: event.block.number,
+      blockHash: event.block.hash,
     });
   });
 }
@@ -118,17 +120,24 @@ if (enabledSources().ClankerLpLocker) {
    * slot `i`'s share in currency0 / currency1 after conversion. Only coins in the `token` table are ours.
    */
   ponder.on('ClankerLpLocker:ClaimedRewards', async ({ event, context }) => {
-    const t = await context.db.find(schema.token, { id: lc(event.args.token) });
-    if (!t || sourceOf(t) !== 'clanker') return;
+    const coin = await context.db.find(schema.token, { id: lc(event.args.token) });
+    if (!coin || sourceOf(coin) !== 'clanker') return;
+    // A sync point (lib/swaps.ts): the burn slot's share is in the coin and valued at its price, so the swaps before
+    // this log (the locker's own conversion among them) are applied first and the coin's row is read after them.
+    const at = syncAt(event);
+    await swapsBefore(context, at);
+    const t = (await context.db.find(schema.token, { id: coin.id })) ?? coin;
     const p = await context.db.find(schema.pool, { id: t.poolId });
-    if (!p) return;
-    await applyClankerCollection(
-      context,
-      t,
-      { id: p.id, currency0: p.currency0, currency1: p.currency1 },
-      { rewards0: event.args.rewards0, rewards1: event.args.rewards1 },
-      { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
-    );
+    if (p) {
+      await applyClankerCollection(
+        context,
+        t,
+        { id: p.id, currency0: p.currency0, currency1: p.currency1 },
+        { rewards0: event.args.rewards0, rewards1: event.args.rewards1 },
+        { txHash: event.transaction.hash, logIndex: event.log.logIndex, blockNumber: event.block.number, timestamp: Number(event.block.timestamp) },
+      );
+    }
+    await swapsAfter(context, at);
   });
 }
 
@@ -140,6 +149,7 @@ if (enabledSources().ClankerFeeLocker) {
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
       blockNumber: event.block.number,
+      blockHash: event.block.hash,
     });
   });
 
@@ -149,6 +159,7 @@ if (enabledSources().ClankerFeeLocker) {
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
       blockNumber: event.block.number,
+      blockHash: event.block.hash,
     });
   });
 }
@@ -161,18 +172,24 @@ if (enabledSources().ClankerV5Hook) {
    */
   const onCredit = async (
     eventName: string,
-    { event, context }: { event: { args: Record<string, unknown>; transaction: { hash: Hex }; log: { logIndex: number }; block: { number: bigint; timestamp: bigint } }; context: Ctx },
+    { event, context }: { event: { args: Record<string, unknown>; transaction: { hash: Hex }; log: { logIndex: number }; block: { number: bigint; hash: Hex; timestamp: bigint } }; context: Ctx },
   ) => {
     const credit = decodeV5HookCredit(eventName, event.args);
     if (!credit) return;
-    const t = await v5Coin(context, credit.poolId, event.transaction.hash);
-    if (!t) return;
+    const coin = await v5Coin(context, credit.poolId, event.transaction.hash);
+    if (!coin) return;
+    // A sync point (lib/swaps.ts): the burn credit is in the coin and valued at its price, so the swap this credit
+    // belongs to is applied first when no coin transfer came between them, and the coin's row is read after it.
+    const at = syncAt(event);
+    await swapsBefore(context, at);
+    const t = (await context.db.find(schema.token, { id: coin.id })) ?? coin;
     await applyClankerV5HookCredit(context, t, credit, {
       txHash: event.transaction.hash,
       logIndex: event.log.logIndex,
       blockNumber: event.block.number,
       timestamp: Number(event.block.timestamp),
     });
+    await swapsAfter(context, at);
   };
   ponder.on('ClankerV5Hook:CreatorTaxCredited', (x) => onCredit('CreatorTaxCredited', x));
   ponder.on('ClankerV5Hook:BurnTaxCredited', (x) => onCredit('BurnTaxCredited', x));
@@ -239,6 +256,7 @@ if (enabledSources().ClankerV5FeeEscrow) {
       logIndex: event.log.logIndex,
       ts: Number(event.block.timestamp),
       blockNumber: event.block.number,
+      blockHash: event.block.hash,
     });
   });
 }
@@ -255,7 +273,7 @@ async function recordClaim(
   recipient: Address,
   asset: Address,
   amount: bigint,
-  meta: { txHash: Hex; logIndex: number; ts: number; blockNumber: bigint },
+  meta: { txHash: Hex; logIndex: number; ts: number; blockNumber: bigint; blockHash: Hex },
 ) {
   if (amount === 0n) return;
   if (!(await context.db.find(schema.feeRecipient, { id: lc(recipient) }))) return;
@@ -273,6 +291,10 @@ async function recordClaim(
   const ethUsd = await getEthUsd(context, meta.blockNumber);
   for (const { row, part } of parts) {
     if (part === 0n) continue;
+    // A claim of the coin itself (a burn slot's) is valued at the coin's price: the transaction's earlier swaps first.
+    if (lc(asset) === row.token) {
+      await swapsBefore(context, { txHash: meta.txHash, logIndex: meta.logIndex, blockNumber: meta.blockNumber, blockHash: meta.blockHash, timestamp: meta.ts });
+    }
     const t = await context.db.find(schema.token, { id: row.token });
     if (!t) continue;
     const amountUsd = assetUsd(asset, part, t, ethUsd);
@@ -348,6 +370,8 @@ if (enabledSources().BuybackBurner) {
     const id = lc(event.log.address);
     const b = await context.db.find(schema.burner, { id });
     if (!b) return;
+    // The burn is valued at the coin's price: the buyback's swap is applied first if no coin transfer did it yet.
+    await swapsBefore(context, syncAt(event));
     const t = await context.db.find(schema.token, { id: b.token });
     if (!t) return;
     const ts = Number(event.block.timestamp);

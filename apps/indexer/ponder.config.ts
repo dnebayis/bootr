@@ -10,7 +10,6 @@ import { B20TokenAbi } from './abis/B20Token';
 import { ClankerFeeLockerAbi } from './abis/ClankerFeeLocker';
 import { ClankerLpLockerFeeConversionAbi } from './abis/ClankerLpLockerFeeConversion';
 import { ClankerV5FeeEscrowAbi, ClankerV5HookAbi } from './abis/ClankerV5';
-import { PoolManagerAbi } from './abis/PoolManager';
 import { ReputationRegistryAbi } from './abis/ReputationRegistry';
 import { RwagmiHookV3Abi } from './abis/RwagmiHookV3';
 import { RwagmiLauncherV3Abi } from './abis/RwagmiLauncherV3';
@@ -36,6 +35,10 @@ import { enabledSources, indexerEnv, snapshotBlockSources } from './src/lib/env'
  *   The lockers, the hook and the escrow are single public contracts: Ponder's log filter cannot take a dynamic
  *   token set, so the handlers drop events of coins that are not ours (as the Bootr path does for the RWAGMI
  *   hook / locker). docs/design/clanker-launch.md (v4), docs/design/clanker-v5-migration.md (v5).
+ *
+ * Swaps: the Uniswap v4 PoolManager is not a source. Its `Swap` has the pool id as an event argument, Ponder 0.18
+ * filters arguments by static values only (`factory()` works for `address` alone), and unfiltered it is every v4
+ * swap on Base. The coins' own `Transfer` (`BootrToken`) carries the signal instead; see src/lib/swaps.ts.
  *
  * When neither path is configured every launch-derived source is skipped with a warning and only the periodic
  * snapshot block handler runs (ETH/USD + platform rollups), so `ponder dev` still boots.
@@ -135,7 +138,13 @@ const allContracts = {
     address: clankerLaunchers,
     startBlock: clankerStartBlock,
   },
-  /** Coins of both paths (`Transfer` for balances / holders); B20 and Clanker tokens share the ERC-20 surface. */
+  /**
+   * Coins of both paths (`Transfer` for balances / holders); B20 and Clanker tokens share the ERC-20 surface. Also the
+   * only signal of a swap: there is no `PoolManager` source (Ponder cannot filter `Swap` by a growing pool id list),
+   * so a transfer to or from the PoolManager has its handler read the pool's `Swap` logs from the receipt
+   * (src/lib/swaps.ts). The factory therefore has to list every launcher whose coins have pools, which it does: a
+   * `token` row and its `pool` row are only ever written by an `AgentLaunched` handler of a launcher on these lists.
+   */
   BootrToken: {
     abi: B20TokenAbi,
     chain,
@@ -202,13 +211,6 @@ const allContracts = {
     chain,
     address: env.clankerV5?.feeEscrow ?? ZERO,
     startBlock: clankerV5StartBlock,
-  },
-  /** Every v4 swap; the handler keeps the pool ids of both paths' coins. */
-  PoolManager: {
-    abi: PoolManagerAbi,
-    chain,
-    address: env.addresses.uniswap.poolManager,
-    startBlock: anyStartBlock,
   },
   AgentGuardian: {
     abi: AgentGuardianAbi,
