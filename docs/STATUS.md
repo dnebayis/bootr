@@ -145,6 +145,21 @@ SQL
 The rest of the first-hour queries (paid failures, `direct_unavailable` runs, spender USDC to BlockRun) are in
 [`deploy/blockrun-rollout.md`](./deploy/blockrun-rollout.md) section 5.
 
+**Wasted work removed, built 2026-11-25** (not deployed; no migration; the Postgres part restarts Postgres, see
+[`deploy/coolify.md`](./deploy/coolify.md) section 7 "Postgres settings"). From a day of production logs: model spend
+$11.50 a day ($10.87 the platform agent), 26,884 RPC requests a day from the supervisor, about 10 GB of WAL a day.
+Economy mode is off (and refused by the console) when the deciding model is not cheaper than the writer, which it was
+not on the platform agent; an X 402 holds every X call at the sender (30 minutes, doubling to 4 hours) and the tick
+buys no turn for an agent that uses X meanwhile; a turn out of steps is continued at the next tick, inside the prompt
+cache; the treasury turn's own wake stands with Bounties on, and it is brought forward by something new instead of a
+cap; an onboarding agent with no gas is read on a thinning schedule; the coin page's status line is sent when it
+changed; new launches are polled every three minutes; the log sums quiet ticks and RPC use every ten minutes; and
+Postgres checkpoints every 15 minutes with lz4 page images. New settings, all optional: sender `X_CREDITS_HOLD_SEC`
+(1800), `X_CREDITS_HOLD_MAX_SEC` (14400); supervisor `LAUNCH_POLL_INTERVAL_MS` (180000), `LOG_SUMMARY_INTERVAL_MS`
+(600000), `TREASURY_BALANCE_WAKE_USD` (5). Watch after deploy: the `economy mode ignored` line for agent 1153600 and
+its `thought` lines on one model; treasury turns a day (twelve before); `rpc usage` totals (26,884 a day before);
+`select * from pg_stat_checkpointer` and `pg_stat_wal` a day apart.
+
 ## 3. What comes next, in order
 
 Sizes are the estimates of [`design/agent-capabilities.md`](./design/agent-capabilities.md) section 8, revised on
