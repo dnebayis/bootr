@@ -7,6 +7,7 @@ import { startCatalogChecks } from './model-check.js';
 import { notifierPass } from './notify-health.js';
 import { createContext } from './service.js';
 import { runTelegramLoop } from './telegram.js';
+import { createTickLog } from './tick-log.js';
 import { tick } from './tick.js';
 
 async function main(): Promise<void> {
@@ -19,13 +20,15 @@ async function main(): Promise<void> {
 
   let running = false;
   let stopped = false;
+  const tickLog = createTickLog(config.LOG_SUMMARY_INTERVAL_MS, Date.now());
   const runTick = async () => {
     if (running || stopped) return;
     running = true;
     const started = Date.now();
     try {
       const report = await tick(ctx);
-      logger.info({ ...report, ms: Date.now() - started }, 'tick');
+      // A tick that ran a turn, registered an agent or had an error is written; the quiet ones are summed (tick-log.ts).
+      for (const line of tickLog.note(report, Date.now() - started, Date.now())) logger.info(line.fields, line.msg);
     } catch (err) {
       logger.error({ err }, 'tick failed');
     } finally {
@@ -48,12 +51,14 @@ async function main(): Promise<void> {
     }
   };
   const notifyTimer = setInterval(() => void runNotifier(), config.NOTIFY_SWEEP_MS);
-  // What the tick, the notifier and the API together sent to the RPC in the last minute, by method, with its cost in CDP
-  // billing units (rpc-retry.ts): the line to read when the key is near its limit.
+  // What the tick, the notifier and the API together sent to the RPC since the last line, by method, with its cost in
+  // CDP billing units (rpc-retry.ts): the line to read when the key is near its limit. One line per
+  // `LOG_SUMMARY_INTERVAL_MS` (ten minutes; never more often than the tick), summed over it.
+  const rpcEveryMs = Math.max(config.LOG_SUMMARY_INTERVAL_MS, config.SUPERVISOR_TICK_MS);
   const rpcTimer = setInterval(() => {
     const rpc = ctx.chain.rpc?.drain();
-    if (rpc?.total) logger.info({ rpc }, 'rpc usage');
-  }, config.SUPERVISOR_TICK_MS);
+    if (rpc?.total) logger.info({ rpc, windowMs: rpcEveryMs }, 'rpc usage');
+  }, rpcEveryMs);
   const telegramStop = new AbortController();
   if (ctx.telegram) void runTelegramLoop(ctx, telegramStop.signal);
   // Direct mode: the model catalog is held against BlockRun's live list at start and every few hours (model-check.ts).

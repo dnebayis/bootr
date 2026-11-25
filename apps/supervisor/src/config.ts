@@ -162,6 +162,11 @@ export const configSchema = z
      * wake alone buys nothing. The treasury turn keeps its own clock either way.
      */
     WAKE_MODE: z.preprocess((v) => (v === '' || v === undefined ? 'loop' : v), z.enum(['loop', 'ping'])),
+    /**
+     * How often the service log sums up what it does not write line by line (index.ts, tick-log.ts): the ticks that ran
+     * nothing, and the RPC requests by method. 0 = a `tick` line every tick and an `rpc usage` line every tick, as before.
+     */
+    LOG_SUMMARY_INTERVAL_MS: int(600_000, 0),
     /** Awake runtimes (waiting, held, running) processed per tick, ordered by `nextAt`. */
     MAX_AGENTS_PER_TICK: int(10, 1),
     /**

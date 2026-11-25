@@ -203,6 +203,7 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `COIN_BRIEF_MAX_CHARS` | no | `900` | the `coinToday` section (`coin-today.ts`); `0` drops it |
 | `LAUNCHER_START_BLOCK` | no | `0` | first block scanned when no cursor exists; mainnet: `53433988`, the current launcher's deploy block |
 | `LAUNCH_LOG_CHUNK_BLOCKS` | no | `2000` | block range per `eth_getLogs` call; public Base RPCs cap it at 200 |
+| `LOG_SUMMARY_INTERVAL_MS` | no | `600000` | how often the log sums up the ticks that ran nothing (one `ticks` line) and the RPC requests by method (one `rpc usage` line); a tick that ran a turn, registered an agent or had an error is always written as `tick`. `0` = one `tick` and one `rpc usage` line per tick |
 | `LAUNCH_POLL_INTERVAL_MS` | no | `180000` | how often the launchers' logs are read for new agents (`pollLaunchesWhenDue`); `0` = every tick. A new agent is registered up to this long after its launch; the block cursor is the same, so nothing is skipped |
 | `SENDER_URL`, `SENDER_SERVICE_KEY` | yes | | apps/sender internal API (key: 32+ characters) |
 | `SUPERVISOR_SERVICE_KEY` | yes | | HMAC key for this service's `/internal/*`; 32+ characters and different from the sender and indexer keys (no fallback: every holder of those keys would otherwise be a supervisor admin) |
@@ -768,6 +769,12 @@ a day from the supervisor, and a `tick` and an `rpc usage` line every minute).
 - **New launches** (`pollLaunchesWhenDue` in `src/onboarding.ts`): the launchers' logs are read every
   `LAUNCH_POLL_INTERVAL_MS` (three minutes) instead of every tick, from the same block cursor, so every block is still
   read once. A failed poll is tried again at the next tick. That is 480 polls a day instead of 1,440.
+
+- **The log** (`src/index.ts`, `src/tick-log.ts`): a `tick` line is written for a tick that ran a turn, registered an
+  agent or had an error. The quiet ticks in between are summed into one `ticks` line every `LOG_SUMMARY_INTERVAL_MS`
+  (ten minutes: `quietTicks`, `avgMs`, `maxMs`, `processed`), and `rpc usage` is one line on the same interval with the
+  requests of the whole window (`windowMs`). To find a single agent's activity grep for its `agentId` as before; the
+  per-agent lines (`waking`, `thought`, `turn ended`) are unchanged.
 
 ## X holds and the post length
 
