@@ -67,6 +67,8 @@ WORKDIR /app
 COPY --from=build --chown=node:node /repo/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /repo/apps/web/.next/static apps/web/.next/static
 COPY --from=build --chown=node:node /repo/apps/web/public apps/web/public
+# `node healthcheck.mjs`: the health check below, and the command for Coolify's health check when the web runs as its own app.
+COPY --chown=node:node apps/web/healthcheck.mjs apps/web/healthcheck.mjs
 # Admin config store (lib/server/admin-config.ts) and launch drafts (lib/server/launch-drafts.ts).
 # Mount a persistent volume here in production.
 RUN mkdir -p /data && chown node:node /data
@@ -74,5 +76,5 @@ WORKDIR /app/apps/web
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  CMD ["node", "healthcheck.mjs"]
 CMD ["node", "server.js"]

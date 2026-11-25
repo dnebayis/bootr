@@ -16,6 +16,7 @@
 //
 // Ponder's live-query trigger on the views schema (its SQL-over-HTTP client's change feed) is not created here: the
 // indexer does not mount that client (src/api/index.ts).
+/* global process, console, setTimeout */
 import pg from 'pg';
 
 export const DEFAULT_LIVE_SCHEMA = 'bootr_live';
