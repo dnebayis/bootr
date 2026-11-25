@@ -386,8 +386,10 @@ describe('a turn the runtime ended waits for its nextAt', () => {
         if (sim.signed > before) started.push(t * 30);
         before = sim.signed;
       }
+      // a turn out of steps goes on at the next tick (the prompt cache is warm), and the one after that waits ten
+      // minutes: two turns per ten and a half minutes, the same 96 thoughts an hour as one turn per five
       expect(sim.signed).toBe(96);
-      expect(started).toEqual(Array.from({ length: 12 }, (_, i) => i * 300));
+      expect(started).toEqual(Array.from({ length: 6 }, (_, i) => [i * 630, i * 630 + 30]).flat());
       const rt = await runtimeRow(w);
       expect(stateOf(rt).continuation?.progress).toContain('step cap reached');
     } finally {
@@ -403,29 +405,40 @@ describe('a turn the runtime ended waits for its nextAt', () => {
       await setState(w, { lastPostAt: w.ctx.now() - 60_000 }); // no post due in the first turn
       await tick(w.ctx);
       expect(sim.signed).toBe(8);
+      expect(stateOf(await runtimeRow(w)).quickContinuation).toBe(true);
 
+      // out of steps: the turn goes on at the next tick
       await minutes(w, 1);
-      expect(sim.signed).toBe(8);
+      expect(sim.signed).toBe(16);
+      expect(stateOf(await runtimeRow(w)).quickContinuation).toBe(false);
+      // that one ran out of steps too and waits its ten minutes: what it had in front of it buys nothing
+      await minutes(w, 2);
+      expect(sim.signed).toBe(16);
 
       w.sender.items = [mention('1001'), mention('1002')];
       w.setNow(w.ctx.now() + MINUTE);
       const woken = await processAgent(w.ctx, agent, await runtimeRow(w));
       expect(woken?.ran).toBe(true);
       expect(woken?.reasons).toEqual(['continuation', 'pending_mention']);
-      expect(sim.signed).toBe(16);
+      expect(sim.signed).toBe(24);
+      // out of steps after a long wait: continued at the next tick again, then the long wait
       await minutes(w, 1);
-      expect(sim.signed).toBe(16);
+      expect(sim.signed).toBe(32);
+      await minutes(w, 1);
+      expect(sim.signed).toBe(32);
 
       await setState(w, { lastPostAt: w.ctx.now() - 3 * 3_600_000 }); // the post came due after that turn began
       w.setNow(w.ctx.now() + MINUTE);
       const due = await processAgent(w.ctx, agent, await runtimeRow(w));
       expect(due?.reasons).toContain('original_post_due');
-      expect(sim.signed).toBe(24);
-      // that turn had the post in front of it: it does not buy itself again before its nextAt
-      await minutes(w, 4);
-      expect(sim.signed).toBe(24);
+      expect(sim.signed).toBe(40);
+      // that turn had the post in front of it: it goes on once at the next tick and then does not buy itself again before its nextAt
       await minutes(w, 1);
-      expect(sim.signed).toBe(32);
+      expect(sim.signed).toBe(48);
+      await minutes(w, 9);
+      expect(sim.signed).toBe(48);
+      await minutes(w, 1);
+      expect(sim.signed).toBe(56);
     } finally {
       await w.close();
     }

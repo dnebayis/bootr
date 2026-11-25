@@ -96,6 +96,8 @@ export interface AgentState {
    * what it already had in front of it (these mentions, a due post) is no reason to buy it again before `until` (tick.ts).
    */
   runtimeEnded?: { until: number; postIds: string[]; postDue: boolean } | null;
+  /** The turn that last ran out of steps was continued at the next tick (`STEP_CAP_CONTINUE_MS`): the one after it, if it runs out too, waits the long wait. */
+  quickContinuation?: boolean | null;
   lastPostAt?: number | null;
   /** When a turn that woke for a due original post finished without one: the slot is consumed, not kept (rhythm). */
   lastSlotSkippedAt?: number | null;
@@ -576,6 +578,19 @@ function compactMessages(messages: ChatMessage[]): boolean {
   return true;
 }
 
+const STEP_CAP_REACHED = 'step cap reached';
+/**
+ * How long a turn the runtime ended waits before it is continued. Out of steps: `STEP_CAP_CONTINUE_MS`, which is past
+ * the tick that ended it and before the next one (the tick runs every `SUPERVISOR_TICK_MS`, a minute), so the
+ * continuation finds the prompt cache warm; until 2026-11-25 it waited five minutes, just past the cache's five, and
+ * every continuation's first step paid a full cache write (about $0.14, eleven times a day on the platform agent).
+ * A second turn in a row out of steps waits `RUNTIME_ENDED_LONG_WAIT_MS`: two turns per ten and a half minutes is no
+ * more than the one per five it replaces. Any other end (no tool call, context too large) waits five minutes as before.
+ */
+export const STEP_CAP_CONTINUE_MS = 10_000;
+export const RUNTIME_ENDED_WAIT_MS = 5 * 60_000;
+export const RUNTIME_ENDED_LONG_WAIT_MS = 10 * 60_000;
+
 export async function startTurn(ctx: SupervisorContext, agent: AgentRow, runtime: RuntimeRow, config: AgentConfig, inputs: TurnInputs, lease: string): Promise<TurnResult> {
   const state = runtime.state as unknown as AgentState;
   const routing = startRouting(config, { log: ctx.log, agentId: agent.agentId });
@@ -779,7 +794,13 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     settleWeeklyDigest(state, turn);
     settlePlatformNumbers(state, turn);
     state.continuation = { progress: `Turn ended by the runtime (${why}). Continue from the agenda.`, recentSteps: turn.recentSteps.slice(-6) };
-    const next = ctx.now() + 5 * 60_000;
+    // A turn that ran out of steps goes on at the next tick, while the provider still holds its prompt in the cache
+    // (five minutes): the continuation's first step then reads the cache instead of writing it again. One such quick
+    // continuation only: if that turn runs out of steps too, the next one waits `RUNTIME_ENDED_LONG_WAIT_MS`, so a
+    // turn that never finishes buys no more turns an hour than it did when every continuation waited five minutes.
+    const quick = why === STEP_CAP_REACHED && !state.quickContinuation;
+    state.quickContinuation = quick;
+    const next = ctx.now() + (quick ? STEP_CAP_CONTINUE_MS : why === STEP_CAP_REACHED ? RUNTIME_ENDED_LONG_WAIT_MS : RUNTIME_ENDED_WAIT_MS);
     state.runtimeEnded = { until: next, postIds: Object.keys(turn.inbox).slice(-100), postDue: !!turn.postDue };
     return endTurn('step_cap', { status: 'waiting', nextAt: new Date(next) });
   };
@@ -884,7 +905,7 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
 
   while (true) {
     // A carried response is already paid for: it is used even on the last step.
-    if (!carried && turn.steps >= ctx.config.MAX_TOOL_STEPS) return forceFinish('step cap reached');
+    if (!carried && turn.steps >= ctx.config.MAX_TOOL_STEPS) return forceFinish(STEP_CAP_REACHED);
     await renewLease(ctx, agent.agentId, lease);
 
     let inf: InferenceResult;
@@ -1082,6 +1103,7 @@ export function socialCheckpoint(config: AgentConfig, state: AgentState, turn: T
   state.lastCheckpointAt = now;
   state.continuation = null;
   state.runtimeEnded = null;
+  state.quickContinuation = null;
   state.lastResults = [];
   state.phase = 'social';
   // A due slot the agent passed on is spent: it is not asked again every tick until the next slot.
