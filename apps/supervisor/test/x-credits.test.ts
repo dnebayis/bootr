@@ -31,7 +31,7 @@ function capture(w: TestWorld) {
 }
 
 describe('the app-wide X credits hold', () => {
-  it('while the sender holds: no mention read, no turn for a due post, a mention or an open turn, and one warn line', async () => {
+  it('while the sender holds: no mention read, no turn for a due post or a mention, and one warn line', async () => {
     const w = await makeWorld({ script: [POST, finishResponse(T0 + 10 * H)] });
     try {
       const now = w.ctx.now();
@@ -101,7 +101,7 @@ describe('the app-wide X credits hold', () => {
     }
   });
 
-  it('a mention read answered 402 starts the hold with one line and no stack, and an open turn is not continued under it', async () => {
+  it('a mention read answered 402 starts the hold with one line and no stack', async () => {
     const w = await makeWorld({ script: [finishResponse(T0 + 10 * H)] });
     try {
       const now = w.ctx.now();
@@ -122,6 +122,28 @@ describe('the app-wide X credits hold', () => {
       expect(lines.credits()[0]![0]).not.toHaveProperty('err');
       expect(lines.mentionFailed()).toHaveLength(0);
       expect(thoughts(w)).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('holds the continuation of a turn that ran out of steps, and resumes a turn stored half-way', async () => {
+    const w = await makeWorld({ script: [finishResponse(T0 + 10 * H)] });
+    try {
+      const now = w.ctx.now();
+      await seedAgent(w, { config: { socialStartedAt: iso(now - 10 * H) } });
+      const row = await runtimeRow(w);
+      // a turn the runtime ended at the step cap: its continuation is a new turn, and it is due
+      await w.db.update(runtimes).set({ state: { ...(row.state as Record<string, unknown>), lastPostAt: now - MIN, continuation: { progress: 'Turn ended by the runtime (step cap reached). Continue from the agenda.', recentSteps: [] } }, nextAt: new Date(now - 1000) }).where(eq(runtimes.agentId, AGENT_ID));
+      w.sender.xCredits = { state: 'held', since: iso(now - MIN), until: iso(now + 29 * MIN) };
+      expect((await tick(w.ctx)).ran).toEqual([]);
+      expect(thoughts(w)).toBe(0);
+      // a turn stored half-way (here: its first thought not asked yet) is resumed under the hold
+      const turn = { role: 'social', startedAt: now, steps: 0, nudged: false, reasons: ['scheduled'], premium: null, messages: [{ role: 'system', content: 'You are a test agent.' }, { role: 'user', content: '{}' }], inbox: {}, eligibility: {}, recentSteps: [], routing: null };
+      await w.db.update(runtimes).set({ turn: turn as unknown as Record<string, unknown>, status: 'running' }).where(eq(runtimes.agentId, AGENT_ID));
+      w.setNow(now + MIN);
+      expect((await tick(w.ctx)).ran).toEqual([AGENT_ID]);
+      expect(thoughts(w)).toBe(1);
     } finally {
       await w.close();
     }

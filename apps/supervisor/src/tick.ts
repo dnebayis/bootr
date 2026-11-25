@@ -342,10 +342,12 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       return { ran: false, reasons: ['inference_backoff'] };
     }
 
-    // The X app is out of credits (x-credits.ts): an agent that posts or reads on X buys nothing while the hold stands,
-    // whatever would have woken it (a mention, a due post, a continued turn, a config change, the treasury clock): its
-    // posts and reads would all be refused. The turn it was in the middle of stays stored and goes on afterwards.
-    const usesX = config.capabilities.xRead || config.capabilities.xPublish;
+    // The X app is out of credits (x-credits.ts): no new turn is started for an agent that posts or reads on X while
+    // the hold stands, whatever would have woken it (a mention, a due post, the continuation of a turn that ran out of
+    // steps, a config change, the treasury clock): its posts and reads would all be refused. A turn that is stored
+    // half-way (an action or a thought whose outcome is still open) is not held: it is resumed and closed as always,
+    // since what it waits for was already paid and may not be there to collect hours later.
+    const usesX = (config.capabilities.xRead || config.capabilities.xPublish) && !runtime.turn;
     const heldForCredits = async (): Promise<ProcessResult> => {
       // The awake queue is ordered by `nextAt`: a waiting row is moved one tick on, so held agents do not keep its head.
       if (runtime.status === 'waiting' && !runtime.turn && runtime.nextAt.getTime() <= now) await saveRuntime(ctx, agent.agentId, { nextAt: new Date(now + ctx.config.SUPERVISOR_TICK_MS) });

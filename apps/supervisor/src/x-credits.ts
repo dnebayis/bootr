@@ -9,8 +9,8 @@
  *
  * The sender now holds every X call itself after a 402 (apps/sender/src/x-client.ts: 30 minutes, doubling to 4 hours
  * while X keeps refusing, cleared by the first success) and says so at `GET /internal/x-credits`. This module reads
- * that once per tick (`refreshXCredits`) and answers one question for the tick: may a turn be bought for an agent
- * that uses X (`xCreditsGate`)?
+ * that once per tick (`refreshXCredits`) and answers one question for the tick: may a new turn be started for an
+ * agent that uses X (`xCreditsGate`)? A turn stored half-way is resumed whatever the answer (tick.ts).
  *
  * - `clear`: yes.
  * - `held`: no. The mention read is not made either (the sender would answer it without asking X).

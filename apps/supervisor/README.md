@@ -784,8 +784,9 @@ agent is neither woken for a post nor for a mention until the sender's `retryAt`
 app's credits are depleted); the model is told so for `X_CREDITS_RETRY_MS`, and the hold that decides is app-wide
 (`src/x-credits.ts`): the X app and its credits are shared by every agent, so the sender holds every X call after a
 402 (30 minutes, doubling to 4 hours while X keeps refusing, cleared by the first success; the sender's "X credits
-hold") and the tick reads that hold once (`GET /internal/x-credits`). While it stands, an agent that reads or posts
-on X is given no turn (social, continued or treasury; reason `x_credits_hold`), its mentions are not read, post
+hold") and the tick reads that hold once (`GET /internal/x-credits`). While it stands, no new turn is started for an
+agent that reads or posts on X (a social turn, the continuation of one that ran out of steps, a treasury turn; reason
+`x_credits_hold`; a turn stored half-way with an open action or thought is still resumed), its mentions are not read, post
 metrics are not swept and closed bounty jobs are not collected (no attempt is counted). Once the sender's hold has
 run out, the agent's own mention read is the question put to X: a turn is bought only after the sender reports
 `clear`, or, if no read settles it within ten minutes (`PROBE_GRACE_MS`), one turn is let through to ask. The log
