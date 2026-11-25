@@ -7,7 +7,7 @@ import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { pino } from 'pino';
 import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
 import { clankerDetailsOf, clankerLockersFor } from '../src/launch-source.js';
-import { agentConfigOf, buildLaunchConfig, completeOnboarding, gasCheckIntervalMs, decodeClankerLaunch, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, sessionPolicyFor, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
+import { agentConfigOf, buildLaunchConfig, completeOnboarding, gasCheckIntervalMs, LAUNCH_CURSOR, pollLaunchesWhenDue, decodeClankerLaunch, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, sessionPolicyFor, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
 import { agentConfig, CLANKER_FEE_LOCKER, CLANKER_LAUNCHER, CLANKER_LP_LOCKER, CLANKER_POOL_ID, CREATOR, KERNEL, LAUNCHER, makeWorld, RWAGMI_LP_LOCKER, testConfig, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
@@ -116,6 +116,63 @@ describe('onboarding from AgentLaunched', () => {
       const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') });
       expect(agent!.status).toBe('onboarding');
       expect(agent!.permissionId).toBeNull();
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('the launch poll on its own clock', () => {
+  it('reads the logs every three minutes instead of every tick, from the same cursor, and tries a failed poll again at the next tick', async () => {
+    const world = await makeWorld({ chain: { logs: [], blockNumber: 50n } });
+    try {
+      const MIN = 60_000;
+      const t0 = world.ctx.now();
+      let blockReads = 0;
+      let fail = false;
+      const client = world.ctx.chain.publicClient as unknown as { getBlockNumber: () => Promise<bigint> };
+      const getBlockNumber = client.getBlockNumber.bind(client);
+      client.getBlockNumber = async () => {
+        blockReads += 1;
+        if (fail) throw new Error('rpc is away');
+        return getBlockNumber();
+      };
+      const cursor = async () => (await world.db.query.cursors.findFirst({ where: eq(cursors.name, LAUNCH_CURSOR) }))?.value ?? null;
+      expect(world.ctx.config.LAUNCH_POLL_INTERVAL_MS).toBe(3 * MIN);
+      // the first tick of a process polls
+      expect(await pollLaunchesWhenDue(world.ctx)).toBe(0);
+      expect(blockReads).toBe(1);
+      const first = await cursor();
+      // a launch in a block the next poll reads
+      world.state.logs.push(fakeLaunchLog(8n));
+      world.state.blockNumber = 60n;
+      for (const m of [1, 2]) {
+        world.setNow(t0 + m * MIN);
+        expect(await pollLaunchesWhenDue(world.ctx)).toBe(0);
+      }
+      expect(blockReads).toBe(1);
+      expect(await cursor()).toBe(first);
+      // three minutes: the poll runs, finds the launch and moves the cursor to the head
+      world.setNow(t0 + 3 * MIN);
+      expect(await pollLaunchesWhenDue(world.ctx)).toBe(1);
+      expect(blockReads).toBe(2);
+      expect(await cursor()).toBe('60');
+      // a poll that fails is not counted as done: the next tick asks again
+      fail = true;
+      world.setNow(t0 + 6 * MIN);
+      await expect(pollLaunchesWhenDue(world.ctx)).rejects.toThrow('rpc is away');
+      fail = false;
+      world.setNow(t0 + 7 * MIN);
+      expect(await pollLaunchesWhenDue(world.ctx)).toBe(0);
+      expect(blockReads).toBe(4);
+      world.setNow(t0 + 8 * MIN);
+      await pollLaunchesWhenDue(world.ctx);
+      expect(blockReads).toBe(4);
+      // 0 = every tick
+      world.ctx.config = { ...world.ctx.config, LAUNCH_POLL_INTERVAL_MS: 0 };
+      world.setNow(t0 + 8 * MIN + 1000);
+      await pollLaunchesWhenDue(world.ctx);
+      expect(blockReads).toBe(5);
     } finally {
       await world.close();
     }

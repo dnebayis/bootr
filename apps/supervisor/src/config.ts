@@ -101,6 +101,11 @@ export const configSchema = z
     LAUNCHER_START_BLOCK: int(0),
     /** Max block range per eth_getLogs call when scanning AgentLaunched (public Base RPCs allow 200; archive RPCs 2000+). */
     LAUNCH_LOG_CHUNK_BLOCKS: int(2000, 1),
+    /**
+     * How often the launchers' logs are read for new agents (onboarding.ts `pollLaunchesWhenDue`): one `eth_blockNumber`
+     * and one `eth_getLogs` per chunk each time. 0 = every tick. A new agent is registered up to this long after its launch.
+     */
+    LAUNCH_POLL_INTERVAL_MS: int(180_000, 0),
     SENDER_URL: z.string().url(),
     /** HMAC key of apps/sender's internal API (the sender requires 32+ characters). */
     SENDER_SERVICE_KEY: z.string().min(32, 'SENDER_SERVICE_KEY must be at least 32 characters'),

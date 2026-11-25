@@ -731,6 +731,25 @@ export async function pollLaunches(ctx: SupervisorContext): Promise<number> {
   return registered;
 }
 
+/** When this process last read the launchers' logs to the end (ms), per database (one per process; one per world in the tests). */
+const lastLaunchPoll = new WeakMap<object, number>();
+
+/**
+ * `pollLaunches` on its own clock: once every `LAUNCH_POLL_INTERVAL_MS` (three minutes) instead of every tick, since
+ * each poll is an `eth_blockNumber` and at least one `eth_getLogs` and a launch is a rare event. The cursor is the
+ * same and nothing is skipped: a poll reads every block since the last one, in the same chunks. A poll that fails is
+ * tried again at the next tick; the first tick of a process always polls. Returns the agents registered, 0 when the
+ * poll was not due. A new agent is registered up to one interval after its launch, plus the tick.
+ */
+export async function pollLaunchesWhenDue(ctx: SupervisorContext): Promise<number> {
+  const now = ctx.now();
+  const last = lastLaunchPoll.get(ctx.db);
+  if (last !== undefined && now >= last && now - last < ctx.config.LAUNCH_POLL_INTERVAL_MS) return 0;
+  const registered = await pollLaunches(ctx);
+  lastLaunchPoll.set(ctx.db, now);
+  return registered;
+}
+
 // ---------------------------------------------------------------------------
 // Session keys
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import type { AgentRow, RuntimeRow, SupervisorContext } from './context.js';
 import { actions, agents, runtimes } from './db/schema.js';
 import { SLEEP_USDC } from './fuel.js';
 import { rpcErrorText } from './log.js';
-import { agentConfigOf, completeOnboarding, pollLaunches, rotateExpiringSessionKeys } from './onboarding.js';
+import { agentConfigOf, completeOnboarding, pollLaunchesWhenDue, rotateExpiringSessionKeys } from './onboarding.js';
 import { sweepImages } from './image-retention.js';
 import { sweepPostMetrics } from './post-performance.js';
 import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsError, quotaHold } from './rhythm.js';
@@ -60,7 +60,8 @@ export const REVOKE_CHECK_GRACE_MS = 10 * 60_000;
 export async function tick(ctx: SupervisorContext): Promise<TickReport> {
   const report: TickReport = { registered: 0, processed: [], ran: [], errors: [] };
   try {
-    report.registered = await pollLaunches(ctx);
+    // New launches, on their own clock (`LAUNCH_POLL_INTERVAL_MS`): not every tick asks the chain for logs.
+    report.registered = await pollLaunchesWhenDue(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'launch poll failed');
   }
