@@ -305,12 +305,38 @@ n=$(docker logs --since 15m "$c" 2>&1 | grep -c 'Status: 429')
   512 MB, inference 512 MB: 5.5 GB together, leaving about 2 GB for the OS, Docker, Coolify's proxy and Hermes
   (~330 MB). The dataset process (the `dataset` service, the supervisor's image run with `node dist/dataset.js`,
   `apps/supervisor/README.md`) adds 384 MB to that, 5.9 GB in all and about 1.7 GB left; it idles while
-  `DATASET_ENABLED` is not `true`. A container that passes its limit is killed by the kernel and comes back through `restart:
+  `DATASET_ENABLED` is not `true`. Since 2026-11-25 postgres has 1,536 MB (see "Postgres settings" below): the seven
+  limits are 6,528 MB together (6.4 GB), which leaves about 1.2 GB for the OS, Docker, Coolify's proxy, Hermes and the
+  other project on the box. The limits are ceilings, not reservations, and the services idle far below them, but this
+  is the least headroom the box has had: if `free -m` shows the box swapping or the kernel's OOM killer acting outside a
+  container, take postgres back to `1g` (its settings fit there too) before anything else. A container that passes its limit is killed by the kernel and comes back through `restart:
   unless-stopped`; the others are untouched, which is the point: a hostile response, a leak or a runaway query costs
   one service a restart, not the box. `docker stats` shows the use against the limits; an OOM kill shows as
   `OOMKilled: true` in `docker inspect <container>` and as a restart in the Coolify logs. Raise a limit in the compose
   file (and redeploy) rather than removing it; the bomb tests in `apps/supervisor/test/response-bomb.test.ts` and
   `apps/web/lib/server/image-fetch.test.ts` show what the services themselves cap, so the limit is the second line.
+- Postgres settings (since 2026-11-25, the `command:` of the `postgres` service in `docker-compose.coolify.yml`).
+  Measured on the image's defaults on 2026-11-25: about 10 GB of WAL a day, 26 % of it full-page images, and 288
+  checkpoints a day, every one started by the 5 minute timer and none by WAL volume. The settings:
+  `shared_buffers=256MB` (default 128 MB), `effective_cache_size=1GB` (a planner hint, no memory is taken),
+  `checkpoint_timeout=15min` (default 5: a third as many checkpoints, so a third as many first writes of a page that
+  must carry the whole page), `max_wal_size=2GB` (default 1 GB: about 105 MB of WAL is written in 15 minutes, so the
+  timer still starts every checkpoint; `pg_wal` may hold up to 2 GB on disk), `checkpoint_completion_target=0.9` (the
+  default since 14, written out so it is visible) and `wal_compression=lz4` (compresses the full-page images that
+  remain; the `postgres:17-bookworm` image is built with lz4). `shm_size: 256mb` gives parallel workers more than
+  Docker's 64 MB of `/dev/shm`, and the memory limit goes from 1 GB to 1,536 MB to hold the larger buffer pool with the
+  connections of five services. A crash now replays up to 15 minutes of WAL instead of 5, which at this volume is
+  seconds.
+  **Deploying this restarts Postgres.** Compose recreates the container when its `command` changes, and every
+  service (sender, inference, indexer, web, supervisor, dataset) loses its connections for the few seconds that takes:
+  requests in that window fail or wait, the supervisor's tick logs an error and runs again a minute later, and Ponder
+  reconnects. Deploy it when no on-chain operation is pending, as for any supervisor deploy. After the deploy check
+  that the settings are in force:
+  `docker exec <postgres container> psql -U bootr -d bootr -c "select name, setting, unit from pg_settings where name in ('shared_buffers','checkpoint_timeout','max_wal_size','wal_compression','checkpoint_completion_target','effective_cache_size')"`.
+  If Postgres does not start and its log says `invalid value for parameter "wal_compression": "lz4"`, the image was
+  built without lz4: change that one line to `wal_compression=on` (pglz, slower but always there) and redeploy; the
+  data is untouched either way. To watch the effect, compare `select * from pg_stat_checkpointer` (`num_timed`,
+  `num_requested`) and `select wal_bytes, wal_fpi from pg_stat_wal` a day apart.
 - The supervisor and the indexer share one CDP RPC key, whose limit is 7,500 billing units per 5 s. Since the Denim fork
   (2026-11-05 18:00 UTC) Base has 5 blocks a second, and following them takes about half of that, and the supervisor
   retries a rate-limited read for up to 8 s. A restart must fetch Ponder's 180 s reorg window again, now about 1,000 blocks.

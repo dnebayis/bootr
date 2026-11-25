@@ -24,15 +24,36 @@ x-restart: &restart
   restart: unless-stopped
 
 # Memory ceilings per container (docs/deploy/coolify.md section 7). The CX33 has 7.6 GB usable; the seven containers may
-# take 5.9 GB together (the dataset process adds 384 MB to the 5.5 GB of the other six), which leaves about 1.7 GB for
-# the OS, Docker, Coolify's proxy and Hermes. A container that passes
+# take 6.4 GB together (postgres 1536 MB since 2026-11-25, indexer 1536, web 1024, supervisor 1024, sender 512,
+# inference 512, dataset 384: 6,528 MB), which leaves about 1.2 GB for the OS, Docker, Coolify's proxy, Hermes and the
+# other project on the box. These are ceilings, not reservations. A container that passes
 # its limit is killed and restarted by its `restart` policy instead of taking the box down with it; a hostile response
 # or a leak costs one service a restart, nothing else.
 services:
   postgres:
     <<: *restart
-    mem_limit: 1g
+    mem_limit: 1536m
+    # /dev/shm for parallel query workers (Docker's default is 64 MB); it counts against mem_limit.
+    shm_size: 256mb
     image: postgres:17-bookworm
+    # Settings (docs/deploy/coolify.md section 7, "Postgres settings"). Measured 2026-11-25 on the image's defaults: about
+    # 10 GB of WAL a day, 26 % of it full-page images, and 288 checkpoints a day, every one on the 5 minute timer. A
+    # checkpoint every 15 minutes means a third as many first-touch page images; lz4 shrinks the ones that remain.
+    # Changing this block restarts Postgres: every service waits for it for a few seconds.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_compression=lz4
     environment:
       POSTGRES_USER: bootr
       POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
