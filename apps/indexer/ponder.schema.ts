@@ -191,7 +191,7 @@ export const agent = onchainTable(
     spender: t.hex(),
     /** extra: USDC float held by `spender` (base units, 6 dp); not part of `treasuryUsdc` (kernel only). */
     spenderUsdc: t.bigint().notNull(),
-    /** extra: block timestamp of the last balance refresh. */
+    /** extra: block timestamp of the last balance refresh that changed the row (a snapshot that finds nothing moved does not write). */
     balancesUpdatedAt: t.integer(),
     fuelReceivedUsdc: t.bigint().notNull(),
     feesClaimedUsd: t.doublePrecision().notNull(),

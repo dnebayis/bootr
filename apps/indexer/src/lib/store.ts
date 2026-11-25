@@ -14,7 +14,7 @@ import { chainlinkToUsd, toUnits, usd } from './price';
 import { marketFields } from './quote';
 import { deriveStatus, dormantSince } from './status';
 import { dayId, dayStart } from './time';
-import { addPoolMove, addTrade, change24hPct, DAY, sumWindow, type Bucket } from './windows';
+import { addPoolMove, addTrade, windowFields, type Bucket } from './windows';
 
 export type Ctx = Context;
 export type TokenRow = typeof schema.token.$inferSelect;
@@ -270,18 +270,8 @@ export function recipientKindOf(recipient: Address, t: TokenRow): RecipientKind 
 /** Recompute price-derived fields of a token from its pool state (lib/quote.ts `marketFields`). */
 export { marketFields };
 
-/** Rolling-window fields from the token's hourly buckets. */
-export function windowFields(buckets: Bucket[], now: number, priceUsd: number) {
-  const d1 = sumWindow(buckets, now, DAY);
-  const d7 = sumWindow(buckets, now, 7 * DAY);
-  return {
-    volume24hUsd: usd(d1.volume),
-    volume7dUsd: usd(d7.volume),
-    fees24hUsd: usd(d1.fees),
-    trades24h: d1.trades,
-    change24hPct: change24hPct(buckets, now, priceUsd),
-  };
-}
+/** Rolling-window fields from the token's hourly buckets (lib/windows.ts `windowFields`). */
+export { windowFields };
 
 export function graduationFields(t: TokenRow, marketCapUsd: number, threshold: number, now: number) {
   if (t.graduated) return {};

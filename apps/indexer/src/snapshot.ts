@@ -12,6 +12,7 @@ import { fetchAdminConfig } from './lib/admin-config';
 import { decodeAgentBalances, type AgentBalances } from './lib/balances';
 import { snapshotSpacingSec } from './lib/blocks';
 import { indexerEnv, snapshotBlockSources } from './lib/env';
+import { changedFields } from './lib/patch';
 import { decodeLiquidity, decodeSlot0, poolLiquiditySlot, poolStateSlot } from './lib/pool';
 import { toUnits, usd } from './lib/price';
 import { rpcClient } from './lib/rpc';
@@ -246,8 +247,10 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
       // the model the creator switched to after launch (social-store `model`); the launch-time value stays until then
       ...(s?.model && s.model !== t.model ? { model: s.model } : {}),
     };
-    const updated = await context.db.update(schema.token, { id: t.id }).set(next);
-    tokenById.set(t.id, updated);
+    // Every field is recomputed; the row is written only when one of them moved (lib/patch.ts). The windows roll
+    // over by themselves: an hour leaving the last 24 changes `volume24hUsd`, and that change is the write.
+    const moved = changedFields(t0, next);
+    tokenById.set(t.id, Object.keys(moved).length ? await context.db.update(schema.token, { id: t.id }).set(moved) : t0);
   }
 
   // ---- agents
@@ -292,12 +295,19 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
       supervisorHint: merged.supervisorStatus,
     });
     statuses.set(a.id, status);
-    await context.db.update(schema.agent, { id: a.id }).set({
-      ...patch,
-      status,
-      dormantSince: dormantSince(now, merged.lastActivityAt, merged.dormancyPeriod),
-      ...(status !== a.status ? { statusChangedAt: now } : {}),
-    });
+    // Written only when something moved. `balancesUpdatedAt` alone is no reason to write: it then keeps the time of
+    // the last snapshot that found a balance, the status or the supervisor's figures changed.
+    const moved = changedFields(
+      a,
+      {
+        ...patch,
+        status,
+        dormantSince: dormantSince(now, merged.lastActivityAt, merged.dormancyPeriod),
+        ...(status !== a.status ? { statusChangedAt: now } : {}),
+      },
+      ['balancesUpdatedAt'],
+    );
+    if (Object.keys(moved).length) await context.db.update(schema.agent, { id: a.id }).set(moved);
     if (t && t.agentStatus !== status) {
       tokenById.set(t.id, await context.db.update(schema.token, { id: t.id }).set({ agentStatus: status }));
     }

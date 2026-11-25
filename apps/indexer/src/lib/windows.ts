@@ -2,6 +2,8 @@
  * Rolling windows over hourly buckets. Each token keeps at most `MAX_BUCKETS` hours
  * (7 days + 1 hour so a "24h ago" close is always available inside the 7d window).
  */
+import { usd } from './price';
+
 export const HOUR = 3600;
 export const DAY = 86_400;
 export const MAX_BUCKETS = 7 * 24 + 1;
@@ -94,4 +96,17 @@ export function change24hPct(buckets: readonly Bucket[], nowTs: number, currentP
   for (const b of buckets) if (b.h <= refH && (!ref || b.h > ref.h)) ref = b;
   if (!ref || !(ref.p > 0) || !(currentPrice > 0)) return null;
   return Math.round(((currentPrice / ref.p - 1) * 100) * 1e4) / 1e4;
+}
+
+/** Rolling-window fields of a coin from its hourly buckets, as of `now`. */
+export function windowFields(buckets: readonly Bucket[], now: number, priceUsd: number) {
+  const d1 = sumWindow(buckets, now, DAY);
+  const d7 = sumWindow(buckets, now, 7 * DAY);
+  return {
+    volume24hUsd: usd(d1.volume),
+    volume7dUsd: usd(d7.volume),
+    fees24hUsd: usd(d1.fees),
+    trades24h: d1.trades,
+    change24hPct: change24hPct(buckets, now, priceUsd),
+  };
 }
