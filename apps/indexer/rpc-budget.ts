@@ -118,7 +118,7 @@ function parseUrl(url: string): URL {
     return new URL(url);
   } catch {
     // Node's own error carries the input, which holds the key.
-    throw new Error('An RPC url in BASE_RPC_URL, BASE_SEPOLIA_RPC_URL, BASE_RPC_FALLBACK_URL or INDEXER_BLOCKS_RPC_URL is not a valid url');
+    throw new Error('An RPC url in BASE_RPC_URL, BASE_SEPOLIA_RPC_URL, BASE_RPC_FALLBACK_URL, INDEXER_BLOCKS_RPC_URL or INDEXER_LOGS_RPC_URLS is not a valid url');
   }
 }
 
@@ -139,20 +139,62 @@ export interface BudgetedTransportOptions {
   /** viem's own retries of a failed request (5xx, a dropped connection), which Ponder does not need: it retries by itself. */
   httpRetries?: number;
   /**
-   * A url for the block reads alone (`BLOCK_READ_METHODS`), which spend nothing from the budget. Following 200 ms blocks
-   * costs one `eth_getBlockByNumber` and one `eth_getLogs` per block, and the public Base endpoint serves the first
-   * (measured 2026-11-08: 180 of 180 full blocks answered at 3 a second) but refuses the second (180 of 180 `eth_getLogs`
-   * answered 429), so this url takes half the load off the keyed one. A failed read goes to the primary as if there were
-   * no such url, and the url is left alone for `BLOCKS_URL_REST_MS` so a dead endpoint costs one failure, not one per block.
+   * Urls for the block reads alone (`BLOCK_READ_METHODS`), tried in order, which spend nothing from the budget. Following
+   * 200 ms blocks costs one `eth_getBlockByNumber` and one `eth_getLogs` per block, and the public Base endpoint serves the
+   * first (measured 2026-11-08: 180 of 180 full blocks answered at 3 a second) but refuses the second (180 of 180
+   * `eth_getLogs` answered 429). One url alone failed 80 times in an hour on 2026-11-25, each time putting 10 s of block
+   * reads on the keyed url, hence a list. See `askSides` for the failover.
    */
-  blocksUrl?: string;
+  blocksUrl?: string | readonly string[];
+  /**
+   * Urls for `eth_getLogs` by `blockHash` alone, tried in order, outside the budget: the other half of following the head.
+   * Range queries (`fromBlock`/`toBlock`, the backfill) stay on the primary, since public endpoints cap ranges and may
+   * prune. Only list an endpoint that answers an ERROR for a block hash it does not know: one that answers `[]` for a
+   * block it has not seen yet would drop that block's trades without a trace. Checked by hand on 2026-11-25:
+   * base.drpc.org, 1rpc.io/base and base-rpc.publicnode.com answer an error.
+   */
+  logsUrls?: readonly string[];
+  /** The longest a listed url may take to answer before the next one is asked, capped by the client's own timeout. */
+  sideTimeoutMs?: number;
   now?: () => number;
 }
 
 /** The methods `blocksUrl` serves: the block tail and the finality search, never logs or state. */
 export const BLOCK_READ_METHODS: ReadonlySet<string> = new Set(['eth_getBlockByNumber', 'eth_getBlockByHash', 'eth_blockNumber']);
-/** How long the blocks url is left alone after a failed read. */
+/** How long a listed url is left alone after its first failure; doubles with each failure in a row, up to `SIDE_URL_MAX_REST_MS`. */
 export const BLOCKS_URL_REST_MS = 10_000;
+export const SIDE_URL_MAX_REST_MS = 300_000;
+/** A listed url answers the head in well under a second; past this the next url is quicker than waiting. */
+export const SIDE_URL_TIMEOUT_MS = 4_000;
+
+/** The rest after the nth failure in a row: 10 s, 20 s, 40 s, ... 5 min. */
+export function restAfter(failuresInARow: number): number {
+  return Math.min(SIDE_URL_MAX_REST_MS, BLOCKS_URL_REST_MS * 2 ** Math.min(Math.max(failuresInARow, 1) - 1, 16));
+}
+
+/** Whether this is the `eth_getLogs` of one block (`blockHash`), the form Ponder follows the head with. */
+export function isLogsByBlockHash(args: { method: string; params?: unknown }): boolean {
+  if (args.method !== 'eth_getLogs' || !Array.isArray(args.params)) return false;
+  const filter = args.params[0] as { blockHash?: unknown } | null | undefined;
+  return typeof filter?.blockHash === 'string' && filter.blockHash.length > 0;
+}
+
+/** Comma-separated urls of an env value, in order, without blanks or repeats. */
+export function parseUrlList(raw: string | undefined): string[] {
+  return [...new Set((raw ?? '').split(',').map((u) => u.trim()).filter(Boolean))];
+}
+
+type HttpTransport = ReturnType<ReturnType<typeof http>>;
+
+/** A listed url with its state: failures in a row set the rest, the totals go into the log lines. */
+interface Side {
+  origin: string;
+  transport: HttpTransport;
+  failures: number;
+  restUntil: number;
+  served: number;
+  failed: number;
+}
 
 export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
   const budget = opts.budget ?? createBudget(opts.buPerSecond);
@@ -161,8 +203,17 @@ export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
     const connect = (url: string) => http(url, { retryCount: opts.httpRetries ?? 0 })({ chain, retryCount: 0, timeout });
     const primary = connect(opts.url);
     const spare = opts.fallbackUrl ? connect(opts.fallbackUrl) : null;
-    const blocks = opts.blocksUrl ? connect(opts.blocksUrl) : null;
-    let blocksRestUntil = 0;
+    const sideTimeout = Math.min(timeout ?? 10_000, opts.sideTimeoutMs ?? SIDE_URL_TIMEOUT_MS);
+    const side = (url: string): Side => ({
+      origin: parseUrl(url).origin,
+      transport: http(url, { retryCount: 0 })({ chain, retryCount: 0, timeout: sideTimeout }),
+      failures: 0,
+      restUntil: 0,
+      served: 0,
+      failed: 0,
+    });
+    const blocks = (typeof opts.blocksUrl === 'string' ? [opts.blocksUrl] : [...(opts.blocksUrl ?? [])]).map(side);
+    const logs = (opts.logsUrls ?? []).map(side);
     const send = async (transport: typeof primary, url: string, args: { method: string; params?: unknown }) => {
       try {
         return await transport.request(args as never);
@@ -170,14 +221,51 @@ export function budgetedTransport(opts: BudgetedTransportOptions): Transport {
         throw isRateLimited(err) ? rateLimitedError(url, args) : scrubError(err);
       }
     };
-    const request = async (args: { method: string; params?: unknown }) => {
-      if (blocks && BLOCK_READ_METHODS.has(args.method) && now() >= blocksRestUntil) {
+    /**
+     * Asks the listed urls in order and gives the first real answer. Anything else moves on to the next url: a failed
+     * connection, a timeout, an HTTP error, a JSON-RPC error, or a result that is not an answer (`null`, missing, or for
+     * logs not an array). An empty array is an answer: most blocks hold none of our logs. A failure is never turned into
+     * one, so nothing here can make a block look empty. A url that failed rests (`restAfter`) and one success clears its
+     * count. `undefined` = no listed url answered and the caller goes to the primary.
+     */
+    const askSides = async (sides: Side[], what: string, args: { method: string; params?: unknown }, isAnswer: (result: unknown) => boolean): Promise<{ result: unknown } | undefined> => {
+      for (const s of sides) {
+        if (now() < s.restUntil) continue;
+        let reason: string;
         try {
-          return await send(blocks, opts.blocksUrl!, args);
+          const result: unknown = await s.transport.request(args as never);
+          if (isAnswer(result)) {
+            s.served++;
+            if (s.failures > 0) {
+              console.warn(`[indexer] ${what} url ${s.origin} answers again after ${s.failures} failure(s) in a row (${s.served} served, ${s.failed} failed since start)`);
+              s.failures = 0;
+            }
+            return { result };
+          }
+          reason = `${args.method} answered without a usable result`;
         } catch (err) {
-          blocksRestUntil = now() + BLOCKS_URL_REST_MS;
-          console.warn(`[indexer] block read failed on the blocks url (${parseUrl(opts.blocksUrl!).origin}); using the primary for ${BLOCKS_URL_REST_MS / 1000} s: ${safeMessage(err)}`);
+          reason = safeMessage(err).replace(/\s+/g, ' ').slice(0, 300);
         }
+        s.failed++;
+        // Requests already in flight when the url started its rest fail too: one log line and one step of the backoff for all of them.
+        if (now() < s.restUntil) continue;
+        s.failures++;
+        const rest = restAfter(s.failures);
+        s.restUntil = now() + rest;
+        const next = sides.find((o) => now() >= o.restUntil);
+        console.warn(
+          `[indexer] ${what} failed on ${s.origin} (failure ${s.failures} in a row; ${s.served} served, ${s.failed} failed since start); resting it for ${rest / 1000} s, using ${next ? next.origin : 'the primary'} meanwhile: ${reason}`,
+        );
+      }
+      return undefined;
+    };
+    const request = async (args: { method: string; params?: unknown }) => {
+      if (blocks.length > 0 && BLOCK_READ_METHODS.has(args.method)) {
+        const answer = await askSides(blocks, 'block read', args, (r) => r !== null && r !== undefined);
+        if (answer) return answer.result;
+      } else if (logs.length > 0 && isLogsByBlockHash(args)) {
+        const answer = await askSides(logs, 'block logs read', args, Array.isArray);
+        if (answer) return answer.result;
       }
       const cost = costOf(args.method);
       if (!spare) {
@@ -201,8 +289,14 @@ export interface IndexerRpcArgs {
   /** `INDEXER_RPC_BU_PER_SEC`: unset = the CDP default on a CDP url and no budget elsewhere (other providers count differently), 0 = no budget. */
   budget?: string;
   fallbackUrl?: string;
-  /** `INDEXER_BLOCKS_RPC_URL`: where the block reads go (`budgetedTransport`); empty = the primary, as before. */
+  /** `INDEXER_BLOCKS_RPC_URL`: where the block reads go (`budgetedTransport`), one url or several separated by commas; empty = the primary. */
   blocksUrl?: string;
+  /**
+   * `INDEXER_LOGS_RPC_URLS`: where `eth_getLogs` by block hash goes, separated by commas; empty = the primary. Left out,
+   * it is read from the environment here, because `src/lib/rpc.ts` builds its own transport and src/ is in Ponder's build id.
+   * No url is built in: without the variable nothing leaves the primary.
+   */
+  logsUrls?: string;
 }
 
 function budgetOf(args: IndexerRpcArgs): number {
@@ -213,6 +307,8 @@ function budgetOf(args: IndexerRpcArgs): number {
   if (!Number.isFinite(parsed) || parsed < 0) throw new Error('INDEXER_RPC_BU_PER_SEC must be a number of billing units per second, 0 for no budget');
   return parsed;
 }
+
+const logsUrlsOf = (args: IndexerRpcArgs): string[] => parseUrlList(args.logsUrls ?? process.env.INDEXER_LOGS_RPC_URLS);
 
 const SHARED_BUDGETS = Symbol.for('bootr.indexer.rpc-budgets');
 
@@ -237,14 +333,16 @@ export function indexerTransport(args: IndexerRpcArgs & { httpRetries?: number }
   const buPerSecond = budgetOf(args);
   const [url, listed] = args.urls;
   const fallbackUrl = args.fallbackUrl?.trim() || listed;
-  const blocksUrl = args.blocksUrl?.trim();
-  if (blocksUrl) parseUrl(blocksUrl);
+  const blocksUrls = parseUrlList(args.blocksUrl);
+  const logsUrls = logsUrlsOf(args);
+  for (const u of [...blocksUrls, ...logsUrls]) parseUrl(u);
   return budgetedTransport({
     url: url!,
     buPerSecond,
     budget: buPerSecond > 0 ? sharedBudget(buPerSecond) : NO_BUDGET,
     ...(fallbackUrl ? { fallbackUrl } : {}),
-    ...(blocksUrl ? { blocksUrl } : {}),
+    ...(blocksUrls.length > 0 ? { blocksUrl: blocksUrls } : {}),
+    ...(logsUrls.length > 0 ? { logsUrls } : {}),
     ...(args.httpRetries !== undefined ? { httpRetries: args.httpRetries } : {}),
   });
 }
@@ -264,8 +362,8 @@ export function indexerRpc(args: IndexerRpcArgs): string | string[] | Transport 
   const buPerSecond = budgetOf(args);
   const fallbackUrl = args.fallbackUrl?.trim() || args.urls[1];
   const all = [...args.urls, ...(fallbackUrl ? [fallbackUrl] : [])];
-  // A blocks url is a routing rule, which only the transport applies.
-  if (buPerSecond > 0 || args.blocksUrl?.trim() || all.some(holdsSecret)) return indexerTransport(args);
+  // A blocks or logs url is a routing rule, which only the transport applies.
+  if (buPerSecond > 0 || parseUrlList(args.blocksUrl).length > 0 || logsUrlsOf(args).length > 0 || all.some(holdsSecret)) return indexerTransport(args);
   if (fallbackUrl) return [args.urls[0]!, fallbackUrl];
   return args.urls[0]!;
 }

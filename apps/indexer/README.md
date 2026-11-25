@@ -68,14 +68,54 @@ source; `pollingInterval` changes nothing, since every block between two polls i
 would save the header only, and the body is fetched again as soon as the bloom matches. `INDEXER_RPC_BU_PER_SEC` is what
 Ponder may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional
 second RPC for what the budget cannot cover and for what the first one answers 429 to. `INDEXER_BLOCKS_RPC_URL` is an
-optional url for the block reads alone (`eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_blockNumber`), which spend
-nothing from the budget: the public `https://mainnet.base.org` served 12 full blocks a second for a minute without a
-refusal in a probe from one IP, and refused every `eth_getLogs` (429), which is why only the block reads go there; a
-failed block read goes to the primary and the url is left alone for 10 s. With it the keyed url carries about 500 BU/s
-for the tail instead of 1,000. The public endpoint publishes no rate limit ("not suitable for production apps"), so
-watch the indexer lag line for a while after turning it on. All three live in `chains` and `rpc-budget.ts`, outside Ponder's
-build id, so changing them needs no new `DATABASE_SCHEMA`. The USDC fuel scan and the REST API's live reads (`src/lib/rpc.ts`)
-spend from the same budget and wait out a 429 for about 8 s.
+optional list of urls for the block reads alone (`eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_blockNumber`), which
+spend nothing from the budget: the public `https://mainnet.base.org` served 12 full blocks a second for a minute without
+a refusal in a probe from one IP, and refused every `eth_getLogs` (429), which is why only the block reads go there.
+With it the keyed url carries about 500 BU/s for the tail instead of 1,000. The public endpoint publishes no rate limit
+("not suitable for production apps"), so watch the indexer lag line for a while after turning it on. All of these live
+in `chains` and `rpc-budget.ts`, outside Ponder's build id, so changing them needs no new `DATABASE_SCHEMA`. The USDC
+fuel scan and the REST API's live reads (`src/lib/rpc.ts`) spend from the same budget and wait out a 429 for about 8 s.
+
+Listed urls for the head (2026-11-25). `INDEXER_LOGS_RPC_URLS` is an optional list of urls for the other half of the
+tail: `eth_getLogs` that carries a `blockHash`, one per block. Only that form goes there; a range query
+(`fromBlock`/`toBlock`, the backfill and the fuel scan) stays on the primary, because public endpoints cap ranges and
+may prune. `INDEXER_BLOCKS_RPC_URL` takes a list the same way (one url works as before). Both are comma-separated and
+tried in order, and neither has a built-in value: unset, every request goes to the primary as before. Routing in
+`rpc-budget.ts`:
+
+| Request | Goes to | Then |
+| --- | --- | --- |
+| `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_blockNumber` | `INDEXER_BLOCKS_RPC_URL`, in order, no budget | the primary under the budget, then `BASE_RPC_FALLBACK_URL` |
+| `eth_getLogs` with `blockHash` | `INDEXER_LOGS_RPC_URLS`, in order, no budget | the same |
+| `eth_getLogs` with a range, and everything else | the primary under the budget | `BASE_RPC_FALLBACK_URL` for what the budget cannot cover or the primary answers 429 to |
+
+A listed url is passed over for the next one on a failed connection, a timeout (4 s for a listed url), an HTTP error, a
+JSON-RPC error, and a result that is not an answer (`null` or missing; for logs anything but a list). An empty list is
+an answer, since most blocks hold none of our logs; an error is never turned into one. A url that failed rests 10 s,
+then 20 s, 40 s and so on up to 5 minutes while it keeps failing, and one answer clears that. The log has one line per
+rest (`block logs read failed on https://… (failure 2 in a row; 4810 served, 2 failed since start); resting it for 20 s,
+using https://… meanwhile`) and one when the url answers again, never a line per request. The blocks list and the logs
+list rest their urls separately, so an endpoint that refuses blocks still serves logs.
+
+Before adding an endpoint to `INDEXER_LOGS_RPC_URLS`, check that it answers an ERROR for a block hash it does not know:
+
+```sh
+curl -s <url> -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000deadbeef"}]}'
+```
+
+An endpoint that answers `"result":[]` there would do the same for a block its node has not seen yet, and that block's
+trades would be dropped without any error. Checked by hand on 2026-11-25: `https://base.drpc.org`, `https://1rpc.io/base`
+and `https://base-rpc.publicnode.com` answer an error; `base.llamarpc.com` and `base.meowrpc.com` did not answer at all.
+Production values:
+
+```
+INDEXER_LOGS_RPC_URLS=https://base.drpc.org,https://1rpc.io/base,https://base-rpc.publicnode.com
+INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org,https://base.drpc.org,https://1rpc.io/base
+```
+
+With both set the keyed url carries only what the lists fail to serve, plus the backfill and the state reads. The one
+blocks url alone failed 80 times in an hour on 2026-11-25, each time putting 10 s of block reads on the key.
 
 Keys in logs: viem names the full url in its errors and Ponder logs an error whole, so a url string in Ponder's chain config
 would print the key on any failed request. `rpc-budget.ts` therefore gives Ponder a transport that scrubs every error for any
@@ -141,6 +181,10 @@ Base mainnet fork (`base-anvil`, see [`docs/deploy/coolify.md`](../../docs/deplo
 | `BOOT_TOKEN_ADDRESS` | no | Platform BOOT coin (fallback when admin config has no `bootToken`). |
 | `INDEXER_CORS_ORIGIN` | no | Comma-separated CORS origins for browser reads. Empty = `https://bootr.fun`; outside `NODE_ENV=production` any `localhost` / `127.0.0.1` origin is accepted too; `*` = any origin. `NEXT_PUBLIC_WEB_ORIGIN` (older name) is used when this is empty. Ponder answers preflights itself with `*`, so the policy is enforced on the actual response (`src/lib/cors.ts`). |
 | `CHAINLINK_ETH_USD_FEED` | no | Override the ETH/USD aggregator. |
+| `INDEXER_RPC_BU_PER_SEC` | no | Billing units a second Ponder may spend on the primary RPC. Empty = 1300 on a CDP url, no budget elsewhere; `0` = no budget ("RPC rate" above). Outside the build id. |
+| `BASE_RPC_FALLBACK_URL` | no | Second RPC for what the budget cannot cover and what the primary answers 429 to. Outside the build id. |
+| `INDEXER_BLOCKS_RPC_URL` | no | Comma-separated urls, tried in order, for the block reads alone (`eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_blockNumber`), outside the budget; a failing url rests 10 s to 5 min and the primary comes last. One url works as before. Empty = the primary. Production: `https://mainnet.base.org,https://base.drpc.org,https://1rpc.io/base`. Outside the build id. |
+| `INDEXER_LOGS_RPC_URLS` | no | Comma-separated urls, tried in order, for `eth_getLogs` by `blockHash` alone (range queries stay on the primary), outside the budget; same failover, the primary last. Only endpoints that answer an error for an unknown block hash ("RPC rate" above). Empty = the primary; nothing is built in. Production: `https://base.drpc.org,https://1rpc.io/base,https://base-rpc.publicnode.com`. Outside the build id. |
 | `FUEL_SCAN_MAX_RANGE` | no | eth_getLogs block range for the USDC fuel scan (default 5000). |
 
 PoolManager, USDC, WETH and ERC-8004 addresses come from `@bootr/shared` `getAddresses(chainId)`;

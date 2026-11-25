@@ -83,7 +83,19 @@ BU/s. A writer at the head spends about 500 BU/s with `INDEXER_BLOCKS_RPC_URL` s
 | each writer | `800` | the one at the head uses about 500 of it; two writers stay near 1,300 |
 | reader | `100` | its routes read the chain only for treasury and market pages |
 
-Both writers keep `INDEXER_BLOCKS_RPC_URL`. With 800 a writer has about 300 BU/s spare while it replays the reorg
+Both writers and the reader carry the two lists of public urls for the head (`apps/indexer/README.md`, "RPC rate";
+outside the build id, so no new schema):
+
+```
+INDEXER_LOGS_RPC_URLS=https://base.drpc.org,https://1rpc.io/base,https://base-rpc.publicnode.com
+INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org,https://base.drpc.org,https://1rpc.io/base
+```
+
+The first takes `eth_getLogs` by block hash off the key, the second the block reads; each url is tried in order, a
+failing one rests 10 s to 5 minutes, and the key comes last. With both set a writer at the head spends little of its
+budget while the lists answer; the budgets below stay as they are, because they are what a writer may spend when the
+lists fail or while it replays the reorg window. The reader needs them only to keep its variables the same as the
+writers': it follows no blocks. With 800 a writer has about 300 BU/s spare while it replays the reorg
 window, so catching up takes about 5 minutes instead of 2; `BASE_RPC_FALLBACK_URL` (a public endpoint that serves
 `eth_getLogs`, for example `https://base-rpc.publicnode.com`, which answered one on 2026-11-25) takes the overflow.
 These are estimates from the README's measurements, not a measured overlap: watch the 429 count during the first one.
@@ -187,7 +199,11 @@ New resource → Docker Image → `ghcr.io/dnebayis/bootr-indexer:main`, destina
   ```
   Use every line it prints (the compose file's `environment` block is not the whole list: Coolify also hands the
   container the stack's shared variables, `BOOTR_CLANKER_LAUNCHERS` among them). Then add or replace:
-  `INDEXER_ROLE=reader`, `PORT=42069`, `INDEXER_RPC_BU_PER_SEC=100`. `DATABASE_SCHEMA` is not needed.
+  `INDEXER_ROLE=reader`, `PORT=42069`, `INDEXER_RPC_BU_PER_SEC=100`,
+  `INDEXER_LOGS_RPC_URLS=https://base.drpc.org,https://1rpc.io/base,https://base-rpc.publicnode.com`,
+  `INDEXER_BLOCKS_RPC_URL=https://mainnet.base.org,https://base.drpc.org,https://1rpc.io/base`
+  (section 3, RPC; the grep above prints the old single-url `INDEXER_BLOCKS_RPC_URL`, replace it). `DATABASE_SCHEMA` is
+  not needed.
   `INDEXER_DATABASE_URL` keeps the host `postgres` (plan A) or becomes `postgres-ko7sx54pwakworrqogccvbfc` (plan B).
 
 Deploy. Check from the stack: `docker exec <supervisor container> node -e "fetch('http://indexer-reader:42069/status').then(r=>r.text()).then(console.log)"`
@@ -218,7 +234,8 @@ New resource → Docker Image → `ghcr.io/dnebayis/bootr-indexer:main`, same de
   replacement starts).
 - Health check: enabled, type command, `node scripts/healthcheck.mjs`, interval 10, timeout 5, retries 12, start period 30.
 - Resource limits: memory `1536m` (or `1024m` for the overlap, section 3).
-- Variables: the reader's list, with `INDEXER_ROLE=writer`, `DATABASE_SCHEMA=bootr_v11`, `INDEXER_RPC_BU_PER_SEC=800`.
+- Variables: the reader's list (`INDEXER_LOGS_RPC_URLS` and the `INDEXER_BLOCKS_RPC_URL` list included: the writer is
+  the one that uses them), with `INDEXER_ROLE=writer`, `DATABASE_SCHEMA=bootr_v11`, `INDEXER_RPC_BU_PER_SEC=800`.
   The values that shape the index (`BOOTR_LAUNCHERS`, `BOOTR_CLANKER_LAUNCHERS`, the addresses, the start blocks,
   `INDEXER_SNAPSHOT_INTERVAL`) must be exactly the stack's: they are part of what is indexed.
 

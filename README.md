@@ -194,7 +194,7 @@ Names only; see `.env.example` (and `.env.mainnet.example` for the mainnet value
 - Inference and powers (supervisor): `BLOCKRUN_DIRECT_MODE` (`all` in production), `BLOCKRUN_RELAY_FALLBACK`,
   `BLOCKRUN_IMAGE_ROUTE` (`relay`; the web reads it too) and the other `BLOCKRUN_*` settings, `X402_DISCOVERY_URL`,
   `SERVICES_TIMEOUT_MS`, `TOOL_TIMEOUT_MS`, `TOOL_READ_TIMEOUT_MS`; indexer: `BOOTR_LAUNCHERS`,
-  `BOOTR_CLANKER_LAUNCHERS`, `DATABASE_SCHEMA`, `INDEXER_RPC_BU_PER_SEC`, `INDEXER_BLOCKS_RPC_URL`
+  `BOOTR_CLANKER_LAUNCHERS`, `DATABASE_SCHEMA`, `INDEXER_RPC_BU_PER_SEC`, `INDEXER_BLOCKS_RPC_URL`, `INDEXER_LOGS_RPC_URLS`
 
 ## Addresses
 

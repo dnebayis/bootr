@@ -169,9 +169,13 @@ services:
       INDEXER_RPC_BU_PER_SEC: ${INDEXER_RPC_BU_PER_SEC:-}
       # Optional second RPC for what the budget cannot cover and for what the first one answers 429 to. Indexer only.
       BASE_RPC_FALLBACK_URL: ${BASE_RPC_FALLBACK_URL:-}
-      # Optional url for the block reads alone (eth_getBlockByNumber/ByHash, eth_blockNumber), outside the budget: the public
-      # https://mainnet.base.org serves them and refuses eth_getLogs, so only blocks go there. Halves the keyed url's tail load.
+      # Optional urls (comma-separated, tried in order) for the block reads alone (eth_getBlockByNumber/ByHash,
+      # eth_blockNumber), outside the budget: the public https://mainnet.base.org serves them and refuses eth_getLogs, so only
+      # blocks go there. A failing url rests 10 s to 5 min and the primary comes last. Halves the keyed url's tail load.
       INDEXER_BLOCKS_RPC_URL: ${INDEXER_BLOCKS_RPC_URL:-}
+      # Optional urls (comma-separated, tried in order) for eth_getLogs by blockHash alone, outside the budget; range queries
+      # stay on the primary. Only endpoints that answer an error for an unknown block hash (apps/indexer/README.md).
+      INDEXER_LOGS_RPC_URLS: ${INDEXER_LOGS_RPC_URLS:-}
 
   web:
     <<: *restart
