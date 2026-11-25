@@ -170,6 +170,11 @@ export const configSchema = z
      */
     TREASURY_TURN_INTERVAL_MS: int(3_600_000, 60_000),
     /**
+     * The treasury turn is brought forward when the treasury is worth at least this many USD more than at the last
+     * treasury turn, and at least a quarter more (roles.ts `treasuryGrew`). 0 = a change of balance never wakes it.
+     */
+    TREASURY_BALANCE_WAKE_USD: num(5, 0),
+    /**
      * Sleeping runtimes checked per tick, in their own sweep (tick.ts): one treasury read each, least recently checked
      * first, so refuelling is noticed without sleeping coins ever taking an awake agent's slot. Empty = MAX_AGENTS_PER_TICK.
      */

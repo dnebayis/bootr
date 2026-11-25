@@ -444,7 +444,7 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       // The treasury turn (roles.ts) is asked only once the social wake said no: when both are due in one tick the
       // social turn runs and the treasury waits for the next tick. Same gates as above, its own clock, no post slot,
       // no quota, and `lastDecisionAt` untouched so a config change still wakes the social turn once.
-      const treasuryWake = await treasuryTurnDue(ctx, agent, runtime, state, now).catch((err) => {
+      const treasuryWake = await treasuryTurnDue(ctx, agent, runtime, state, now, treasury).catch((err) => {
         log.warn({ err }, 'treasury clock read failed');
         return null;
       });

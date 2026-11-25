@@ -3,9 +3,9 @@ import { eq } from 'drizzle-orm';
 import { actionId, cycleKey } from '@bootr/agent-core';
 import { bountySuggestion, BOUNTY_SUGGEST_AFTER_MS } from '../src/bounties.js';
 import { closeRequest, CREATOR_REQUEST_TTL_MS, fileRequest, openRequests, recentRequests } from '../src/creator-requests.js';
-import { actions, memories, runtimes } from '../src/db/schema.js';
+import { actions, bountyJobs, memories, runtimes } from '../src/db/schema.js';
 import { REQUESTED_MESSAGE } from '../src/image-rules.js';
-import { treasuryTurnDue, treasuryWakeCapMs } from '../src/roles.js';
+import { treasuryGrew, treasuryTurnDue, treasuryWorthUsd } from '../src/roles.js';
 import { initialState, type AgentState } from '../src/runtime.js';
 import type { SenderInboxItem } from '../src/sender-client.js';
 import { processAgent, tick } from '../src/tick.js';
@@ -200,7 +200,7 @@ describe('creator requests and bounties in the treasury turn', () => {
     return seedAgent(w, { config: { socialStartedAt: new Date(T0 - H).toISOString(), ...config }, runtime: { nextAt: new Date(T0 + H), lastDecisionAt: new Date(T0 - H), state: { ...initialState(), lastPostAt: T0 - H, lastTreasuryTurnAt: T0 - 20 * MIN, treasuryNextAt: T0 + 40 * MIN, lastTreasuryNoteSeenAt: T0 - 20 * MIN } as unknown as Record<string, unknown> } });
   }
 
-  it('a new request pulls the turn forward (after a quarter interval), is shown with the bounty suggestion, is answered, and the far wake is capped', async () => {
+  it('a new request pulls the turn forward (after a quarter interval), is shown with the bounty suggestion, is answered, and the far wake the turn asked for stands', async () => {
     const script = [toolCallResponse('answer_request', { requestId: 'req_bounty', outcome: 'not_done', reason: 'I cannot name work I would use today' }), finishResponse(T0 + 6 * H)];
     const w = await makeWorld({ script });
     try {
@@ -225,11 +225,56 @@ describe('creator requests and bounties in the treasury turn', () => {
       expect(toolNames(first)).toEqual(expect.arrayContaining(['answer_request', 'bounty_post', 'bounty_list']));
       expect(first.body.messages[0]!.content).toContain('When the bounties section carries a suggestion');
       expect(await openRequests(w.ctx, AGENT_ID, 'treasury')).toEqual([]);
-      // the model asked for six hours; with bounties on the next treasury turn is two intervals away at most
+      // the model asked for six hours and gets them, with bounties on as without: until 2026-11-25 this was cut to two
+      // intervals, which bought twelve turns a day that each ended with one finish
       const after = (await runtimeRow(w)).state as unknown as AgentState;
-      expect(after.treasuryNextAt).toBe(T0 + 2 * H);
+      expect(after.treasuryNextAt).toBe(T0 + 6 * H);
       // the request was shown: it does not pull the next turn forward again
       expect(await treasuryTurnDue(w.ctx, agent, await runtimeRow(w), after, T0 + 30 * MIN)).toBeNull();
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('with bounties on, a far wake is cut short only by something new: a job suggestion that came due, a closed job, a treasury that grew', async () => {
+    const w = await makeWorld();
+    try {
+      const D = 24 * H;
+      const agent = await restingAgent(w, { capabilities: BOUNTY_CAPS });
+      const runtime = await runtimeRow(w);
+      // the last treasury turn was two hours ago and asked for a day
+      const state: AgentState = { ...(runtime.state as unknown as AgentState), lastTreasuryTurnAt: T0 - 2 * H, lastTreasuryNoteSeenAt: T0 - 2 * H, treasuryNextAt: T0 + 22 * H, treasurySeenUsd: 40 };
+      const job = (createdAt: number, status: 'paid' | 'no_winner', closedAt: number) => ({ id: `0x${createdAt.toString(16).padStart(64, '0')}`, agentId: AGENT_ID, actionId: `act-${createdAt}`, nonce: createdAt % 1000, task: 'A square image of a dot', criteria: ['a dot'], deliverable: 'image' as const, amountMicroUsdc: '100000', pageText: 'A square image of a dot', status, closesAt: new Date(createdAt + 6 * H), createdAt: new Date(createdAt), updatedAt: new Date(closedAt), closedAt: new Date(closedAt) });
+      // never a job: the suggestion stood at the last turn too, so nothing is new and the day the turn asked for stands
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, state, T0)).toBeNull();
+      // the last job was created a day and 23 hours ago and closed before the last turn: no suggestion yet
+      await w.db.insert(bountyJobs).values(job(T0 - 2 * D + H, 'paid', T0 - D));
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, state, T0)).toBeNull();
+      // an hour later it is two days old: the bounties section now carries a suggestion the last turn did not have
+      expect((await treasuryTurnDue(w.ctx, agent, runtime, state, T0 + H + MIN))?.reasons).toEqual(['treasury_bounty_suggestion']);
+      // a turn that started after that moment has seen it: its own wake stands again
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, { ...state, lastTreasuryTurnAt: T0 + H + 2 * MIN }, T0 + 3 * H)).toBeNull();
+      // a job that closed since the last turn brings it forward, as before
+      await w.db.insert(bountyJobs).values(job(T0 - 3 * H, 'no_winner', T0 - H));
+      expect((await treasuryTurnDue(w.ctx, agent, runtime, state, T0))?.reasons).toEqual(['treasury_job_closed']);
+      await w.db.delete(bountyJobs);
+
+      // the treasury is worth clearly more than the last turn saw: 5 USD and a quarter at the least, and only upwards
+      const worth = (usdc: number, ethUsd: number | null = 3000) => ({ ethUsd, usd: { usdc, spenderUsdc: 5, weth: 3, claimableWeth: 2 } });
+      expect(treasuryWorthUsd(worth(30))).toBe(40);
+      expect(treasuryWorthUsd(worth(30, null))).toBeNull();
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, state, T0, worth(30))).toBeNull();
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, state, T0, worth(39))).toBeNull(); // +9 is under a quarter of 40
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, state, T0, worth(10))).toBeNull(); // spent, not earned
+      expect((await treasuryTurnDue(w.ctx, agent, runtime, state, T0, worth(40)))?.reasons).toEqual(['treasury_balance']);
+      // never closer than a quarter of the interval to the last turn
+      expect(await treasuryTurnDue(w.ctx, agent, runtime, { ...state, lastTreasuryTurnAt: T0 - 5 * MIN }, T0, worth(40))).toBeNull();
+      // a small treasury needs the 5 USD, an unknown price or an unseen balance asks nothing, and 0 switches it off
+      expect(treasuryGrew(w.ctx.config, { treasurySeenUsd: 4 }, worth(-2))).toBe(false); // 8 now: +4
+      expect(treasuryGrew(w.ctx.config, { treasurySeenUsd: 4 }, worth(0))).toBe(true); // 10 now: +6
+      expect(treasuryGrew(w.ctx.config, { treasurySeenUsd: 4 }, worth(100, null))).toBe(false);
+      expect(treasuryGrew(w.ctx.config, { treasurySeenUsd: null }, worth(100))).toBe(false);
+      expect(treasuryGrew({ TREASURY_BALANCE_WAKE_USD: 0 }, { treasurySeenUsd: 4 }, worth(100))).toBe(false);
     } finally {
       await w.close();
     }
@@ -243,8 +288,6 @@ describe('creator requests and bounties in the treasury turn', () => {
       const result = await processAgent(w.ctx, agent, await runtimeRow(w));
       expect(result).toMatchObject({ ran: true, role: 'treasury' });
       expect(((await runtimeRow(w)).state as unknown as AgentState).treasuryNextAt).toBe(T0 + 6 * H);
-      expect(treasuryWakeCapMs(w.ctx.config, { capabilities: { bounties: false } as never })).toBeNull();
-      expect(treasuryWakeCapMs(w.ctx.config, { capabilities: { bounties: true } as never })).toBe(2 * w.ctx.config.TREASURY_TURN_INTERVAL_MS);
     } finally {
       await w.close();
     }

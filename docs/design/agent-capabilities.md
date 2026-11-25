@@ -553,8 +553,10 @@ config block, or the per-agent `treasuryTurn: true` override settable through `P
 owner's way to trial the turn on the platform agent before Bounties exists), the tools per role (`roleTools`; the
 social turn loses `treasury_prepare` and `treasury_execute` while the turn is on, the treasury turn holds
 `treasury_read`, `treasury_prepare`, `treasury_execute`, `remember`, `finish`, and `trade_quote`, `bounty_post`,
-`bounty_cancel` as named seams), the clock (`treasuryTurnDue`: every `TREASURY_TURN_INTERVAL_MS`, earlier on a
-treasury note or a closed job but never closer than a quarter of the interval to the last turn; state in
+`bounty_cancel` as named seams), the clock (`treasuryTurnDue`: every `TREASURY_TURN_INTERVAL_MS` or at the later time
+the turn's own `finish` asked for, earlier on a treasury note, a closed job, a creator request, a bounty suggestion
+that came due or a treasury that grew, but never closer than a quarter of the interval to the last turn; the cap of two
+intervals that Bounties put on the turn's own wake was removed on 2026-11-25, see the supervisor README; state in
 `sv_runtimes.state`, no migration) and the observation (`buildTreasuryObservation`). The turn itself is
 `startTreasuryTurn` in `apps/supervisor/src/runtime.ts`, with `Turn.role` so `continueTurn` resumes it as what it
 was; it runs on `config.model` with no economy mode, never touches the post slot, the quota, the social checkpoint or

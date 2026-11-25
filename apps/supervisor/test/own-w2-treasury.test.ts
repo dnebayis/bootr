@@ -321,7 +321,7 @@ describe('treasuryFinish is the hosted finish branch', () => {
   const cases: { name: string; config: Record<string, unknown>; input: { memory: string; agenda: string; summary: string; nextAt: string } }[] = [
     { name: 'a wake before the interval is lifted to it', config: { treasuryTurn: true }, input: { memory: 'm', agenda: 'a', summary: 's', nextAt: new Date(T0 + 10 * MIN).toISOString() } },
     { name: 'a far wake stands without bounties', config: { treasuryTurn: true }, input: { memory: 'fuel is fine', agenda: 'look at gas', summary: 'nothing moved', nextAt: new Date(T0 + 6 * H).toISOString() } },
-    { name: 'a far wake is brought forward to two intervals with bounties on', config: { capabilities: { ...CAPS, bounties: true } }, input: { memory: 'a job is open', agenda: 'wait for the verdict', summary: 'posted one job', nextAt: new Date(T0 + 6 * H).toISOString() } },
+    { name: 'a far wake stands with bounties on too', config: { capabilities: { ...CAPS, bounties: true } }, input: { memory: 'a job is open', agenda: 'wait for the verdict', summary: 'posted one job', nextAt: new Date(T0 + 6 * H).toISOString() } },
     { name: 'a wake past a day is cut to a day', config: { treasuryTurn: true }, input: { memory: 'm', agenda: 'a', summary: 's', nextAt: new Date(T0 + 72 * H).toISOString() } },
     { name: 'a wake in the past counts as now', config: { capabilities: { ...CAPS, bounties: true } }, input: { memory: 'm', agenda: 'a', summary: 's', nextAt: new Date(T0 - 5 * H).toISOString() } },
     { name: 'a long checkpoint is cut to the treasury slot, not refused', config: { treasuryTurn: true }, input: { memory: long(3000), agenda: long(1500), summary: long(800), nextAt: new Date(T0 + 2 * H).toISOString() } },

@@ -19,10 +19,13 @@
  *
  * The clock lives in `sv_runtimes.state` (`treasuryNextAt`, `lastTreasuryTurnAt`, `lastTreasuryNoteSeenAt`,
  * `treasuryCheckpoint`; runtime.ts `AgentState`): no migration. A turn is due every `TREASURY_TURN_INTERVAL_MS`
- * (default an hour), or earlier when a treasury note is pending (a `remember` from the social turn tagged `treasury`
- * that no treasury turn has seen) or a bounty job has closed (`bountyJobClosed`: a job of the agent reached a closing
- * status since the last turn), but never closer than a quarter of the interval to the last treasury turn, so a
- * social turn that leaves a note every wake cannot buy a treasury thought every wake. The tick (tick.ts
+ * (default an hour) unless its own `finish` asked for later (up to a day), or earlier when something happened that it
+ * has not seen: a treasury note is pending (a `remember` from the social turn tagged `treasury`), a bounty job has
+ * closed (`bountyJobClosed`: a job of the agent reached a closing status since the last turn), the creator filed a
+ * request for it, the bounties section has a job suggestion it did not have at the last turn (`bountySuggestionCameDue`),
+ * or the treasury is worth clearly more than it was at the last turn (`treasuryGrew`). None of these comes closer than
+ * a quarter of the interval to the last treasury turn, so a social turn that leaves a note every wake cannot buy a
+ * treasury thought every wake. The tick (tick.ts
  * `processAgent`) asks only after the social wake decision said no: when both are due in one tick the social turn
  * runs and the treasury turn waits for the next tick, since mentions are the time-sensitive side and the treasury
  * turn is an hourly one anyway.
@@ -31,7 +34,7 @@ import { DEFAULT_OBSERVATION_BYTES, buildObservation, checkpoint, type AgentConf
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { formatUnits } from 'viem';
 import { SWAP_MAX_SLIPPAGE_BPS } from './abi.js';
-import { bountiesSection, jobClosedSince } from './bounties.js';
+import { bountiesSection, bountySuggestionCameDue, jobClosedSince } from './bounties.js';
 import { availableTools } from './broker/index.js';
 import { coinFeesSection } from './coin-fees.js';
 import { creatorRequestsSection, openRequests, type CreatorRequest } from './creator-requests.js';
@@ -111,15 +114,31 @@ export const TREASURY_NOTES_MAX = 20;
 /** A note or a closed job may pull the next treasury turn forward, but never closer than the interval over this to the last one. */
 export const TREASURY_EARLY_GAP_DIVISOR = 4;
 
-/** While the Bounties power is on, the treasury turn's own `finish` may put the next one at most this many intervals away. */
-export const TREASURY_WAKE_CAP_INTERVALS = 2;
+/**
+ * How much more the treasury must be worth than at the last treasury turn to bring the next one forward
+ * (`treasury_balance`): at least `TREASURY_BALANCE_WAKE_USD` (the supervisor's setting, 0 = never) and at least this
+ * share of what it was. Only growth counts: income is a decision for the turn (fees came in, somebody sent money);
+ * a balance that went down was spent by the agent itself or by the fuel policy, which is code.
+ */
+export const TREASURY_BALANCE_WAKE_SHARE = 0.25;
 
-/** The farthest a treasury turn's own wake may reach, in ms from its `finish`; null when the model's choice stands (bounties off). */
-export function treasuryWakeCapMs(cfg: Pick<SupervisorContext['config'], 'TREASURY_TURN_INTERVAL_MS'>, config: Pick<AgentConfig, 'capabilities'>): number | null {
-  return config.capabilities.bounties === true ? TREASURY_WAKE_CAP_INTERVALS * cfg.TREASURY_TURN_INTERVAL_MS : null;
+/** What the treasury is worth in USD (kernel USDC and WETH, the spender's USDC, claimable fees); null without an ETH price. */
+export function treasuryWorthUsd(t: Pick<TreasurySnapshot, 'usd' | 'ethUsd'> | null | undefined): number | null {
+  if (!t || t.ethUsd === null) return null;
+  const total = t.usd.usdc + t.usd.spenderUsdc + t.usd.weth + t.usd.claimableWeth;
+  return Number.isFinite(total) ? total : null;
 }
 
-export type TreasuryWakeReason = 'treasury_interval' | 'treasury_note' | 'treasury_job_closed' | 'treasury_request';
+/** Whether the treasury is worth clearly more now than the last treasury turn saw (`AgentState.treasurySeenUsd`). */
+export function treasuryGrew(cfg: Pick<SupervisorContext['config'], 'TREASURY_BALANCE_WAKE_USD'>, state: Pick<AgentState, 'treasurySeenUsd'>, treasury: Pick<TreasurySnapshot, 'usd' | 'ethUsd'> | null | undefined): boolean {
+  const min = cfg.TREASURY_BALANCE_WAKE_USD;
+  const seen = state.treasurySeenUsd;
+  const worth = treasuryWorthUsd(treasury);
+  if (!(min > 0) || seen === null || seen === undefined || worth === null) return false;
+  return worth - seen >= Math.max(min, seen * TREASURY_BALANCE_WAKE_SHARE);
+}
+
+export type TreasuryWakeReason = 'treasury_interval' | 'treasury_note' | 'treasury_job_closed' | 'treasury_request' | 'treasury_bounty_suggestion' | 'treasury_balance';
 
 export interface TreasuryWake {
   reasons: TreasuryWakeReason[];
@@ -152,10 +171,12 @@ export async function bountyJobClosed(ctx: Pick<SupervisorContext, 'db'>, agent:
  * Whether a treasury turn is due for this agent now, and why; null when not. Asked by the tick after the social wake
  * decision said no, under the same gates (lease, config, pauses, keys, sleep, inference backoff) and two of its own:
  * the runtime is `waiting` with no persisted turn and no open action (a persisted turn, of either role, is resumed by
- * the social path first). X holds do not stop it: the turn posts nothing. The interval is due on its own; a note or a
- * closed job counts only once `TREASURY_TURN_INTERVAL_MS / TREASURY_EARLY_GAP_DIVISOR` has passed since the last turn.
+ * the social path first). The agent's own X holds do not stop it; the app-wide X credits hold does, in the tick. The
+ * clock (`treasuryNextAt`: the interval, or the later time the turn's own `finish` asked for) is due on its own; every
+ * other reason counts only once `TREASURY_TURN_INTERVAL_MS / TREASURY_EARLY_GAP_DIVISOR` has passed since the last
+ * turn. `treasury` is this tick's snapshot when the caller has one (the hosted tick); without it the balance is not asked.
  */
-export async function treasuryTurnDue(ctx: SupervisorContext, agent: AgentRow, runtime: Pick<RuntimeRow, 'status' | 'turn' | 'pending'>, state: AgentState, now: number): Promise<TreasuryWake | null> {
+export async function treasuryTurnDue(ctx: SupervisorContext, agent: AgentRow, runtime: Pick<RuntimeRow, 'status' | 'turn' | 'pending'>, state: AgentState, now: number, treasury: Pick<TreasurySnapshot, 'usd' | 'ethUsd'> | null = null): Promise<TreasuryWake | null> {
   if (agent.status !== 'active' || !treasuryTurnOn(agent.config)) return null;
   if (runtime.status !== 'waiting' || runtime.turn) return null;
   const pendingStatus = (runtime.pending as { status?: unknown } | null)?.status;
@@ -163,12 +184,18 @@ export async function treasuryTurnDue(ctx: SupervisorContext, agent: AgentRow, r
   const reasons: TreasuryWakeReason[] = [];
   if (now >= (state.treasuryNextAt ?? 0)) reasons.push('treasury_interval');
   const earlyAllowed = now - (state.lastTreasuryTurnAt ?? 0) >= ctx.config.TREASURY_TURN_INTERVAL_MS / TREASURY_EARLY_GAP_DIVISOR;
+  // Neither the clock nor anything that may come before it: nothing is read for this tick.
+  if (!reasons.length && !earlyAllowed) return null;
   const notes = await pendingTreasuryNotes(ctx, agent.agentId, state.lastTreasuryNoteSeenAt ?? 0);
   if (notes.length && earlyAllowed) reasons.push('treasury_note');
   if (earlyAllowed && (await bountyJobClosed(ctx, agent, state, now))) reasons.push('treasury_job_closed');
   // A creator request no treasury turn has been shown yet pulls the turn forward like a note; an open one already shown waits for the clock.
   const requests = await openRequests(ctx, agent.agentId, 'treasury');
   if (earlyAllowed && requests.some((r) => Date.parse(r.createdAt) > (state.lastTreasuryNoteSeenAt ?? 0))) reasons.push('treasury_request');
+  // A job suggestion the last turn did not have in front of it (the last job turned two days old since): bounties.ts.
+  if (earlyAllowed && !reasons.length && (agent.config.capabilities as { bounties?: unknown } | undefined)?.bounties === true && (await bountySuggestionCameDue(ctx, agent, state.lastTreasuryTurnAt ?? 0, now).catch(() => false))) reasons.push('treasury_bounty_suggestion');
+  // Income since the last turn: the treasury is worth clearly more than that turn saw.
+  if (earlyAllowed && treasuryGrew(ctx.config, state, treasury)) reasons.push('treasury_balance');
   return reasons.length ? { reasons, notes, requests } : null;
 }
 
@@ -266,10 +293,8 @@ export const TREASURY_CHECKPOINT_CHARS = { memory: 2000, agenda: 1000, summary: 
 export interface TreasuryFinish {
   /** What the `finish` call is answered with. */
   result: Record<string, unknown>;
-  /** When the next treasury turn is due (epoch ms), after the floor and the bounties cap. */
+  /** When the next treasury turn is due (epoch ms): the time the model asked for, inside the checkpoint's bounds (an interval at the least, a day at the most). */
   nextAtMs: number;
-  /** The time the model asked for, clamped by the checkpoint's own bounds, before the bounties cap (epoch ms). */
-  requestedAtMs: number;
 }
 
 /**
@@ -278,8 +303,13 @@ export interface TreasuryFinish {
  * faithful copy of the hosted branch and proven equal to it by test/own-w2-treasury.test.ts before the hosted branch
  * was folded onto it; test/roles.test.ts pins the hosted values. The checkpoint is checked with the interval as its
  * floor (a bad one throws, as `checkpoint` does, and nothing is written), cut to `TREASURY_CHECKPOINT_CHARS` and kept
- * in the treasury's own slot of `state`; the wake the model asked for is brought forward to `treasuryWakeCapMs` while
- * the Bounties power is on and becomes `state.treasuryNextAt`. The social memory, agenda, summary, post slot and wake
+ * in the treasury's own slot of `state`; the wake the model asked for becomes `state.treasuryNextAt` as it is, with
+ * the Bounties power on or off. From 2026-11-17 to 2026-11-25 a turn with Bounties on could not put the next one more
+ * than two intervals away, because the platform agent had asked for 4 to 6 hours and opened no job in 31 hours. The
+ * cap did not get a job opened: it bought twelve turns a day that each ended with one `finish` ($0.054 a turn). What
+ * the bounties design needs from this clock is that a turn runs when there is something new to decide, and that is
+ * what `treasuryTurnDue` brings it forward for: a closed job, a note, a creator request, a job suggestion that came
+ * due, a treasury that grew. The social memory, agenda, summary, post slot and wake
  * are not touched. Mutates `state`; the caller persists it and ends the turn (the hosted loop's `treasuryEnd` then holds
  * the clock at least one interval from that moment, which this value already is whenever the interval fits in the
  * checkpoint's own ceiling). `ctx.log` is the service's logger, not a child of it: the one line written here names the
@@ -289,14 +319,6 @@ export function treasuryFinish(ctx: Pick<SupervisorContext, 'config' | 'log'>, a
   // The treasury's own checkpoint: its slot in the state, cut to size. The model's wake request is honoured only beyond the interval (and within a day).
   const cp = checkpoint(input, now, { floorMs: ctx.config.TREASURY_TURN_INTERVAL_MS });
   state.treasuryCheckpoint = { memory: cp.memory.slice(0, TREASURY_CHECKPOINT_CHARS.memory), agenda: cp.agenda.slice(0, TREASURY_CHECKPOINT_CHARS.agenda), summary: cp.summary.slice(0, TREASURY_CHECKPOINT_CHARS.summary), at: now };
-  // While the Bounties power is on, the turn's own wake may not push the next one past a few intervals (`treasuryWakeCapMs`).
-  const cap = treasuryWakeCapMs(ctx.config, config);
-  const nextAtMs = cap !== null ? Math.min(cp.nextAtMs, now + cap) : cp.nextAtMs;
-  state.treasuryNextAt = nextAtMs;
-  if (nextAtMs < cp.nextAtMs) ctx.log.info({ agentId: agent.agentId, role: 'treasury', requestedAt: cp.nextAt, nextAt: new Date(nextAtMs).toISOString() }, 'treasury wake brought forward to the bounties cap');
-  return {
-    result: { checkpointed: true, nextTreasuryTurnAt: new Date(nextAtMs).toISOString(), ...(nextAtMs < cp.nextAtMs ? { note: 'with bounties on, your next treasury turn is never more than two intervals away' } : {}) },
-    nextAtMs,
-    requestedAtMs: cp.nextAtMs,
-  };
+  state.treasuryNextAt = cp.nextAtMs;
+  return { result: { checkpointed: true, nextTreasuryTurnAt: new Date(cp.nextAtMs).toISOString() }, nextAtMs: cp.nextAtMs };
 }

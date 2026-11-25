@@ -2173,6 +2173,24 @@ export function bountySuggestion(args: { openJobs: number; maxOpen: number; rema
   };
 }
 
+/**
+ * Whether the bounties section carries a suggestion now that the treasury turn of `sinceMs` did not have: the agent's
+ * last job turned `BOUNTY_SUGGEST_AFTER_MS` old after that turn, and the rest of `bountySuggestion` holds (no open job,
+ * room under the caps). One small read while the last job is younger than that or the turn already saw it; the budget
+ * is read only at the moment it could be true. An agent that never posted a job has had the suggestion in front of
+ * every treasury turn, so there is nothing new to bring one forward for.
+ */
+export async function bountySuggestionCameDue(ctx: SupervisorContext, agent: AgentRow, sinceMs: number, now: number): Promise<boolean> {
+  const [last] = await ctx.db.select({ createdAt: bountyJobs.createdAt }).from(bountyJobs).where(eq(bountyJobs.agentId, agent.agentId)).orderBy(desc(bountyJobs.createdAt)).limit(1);
+  if (!last) return false;
+  const dueAt = last.createdAt.getTime() + BOUNTY_SUGGEST_AFTER_MS;
+  if (dueAt > now || dueAt <= sinceMs) return false;
+  const config = agentConfigOf(agent);
+  if (!config || config.capabilities.bounties !== true) return false;
+  const budget = await bountyBudget(ctx, agent.agentId, bountiesPolicyOf(config));
+  return bountySuggestion({ openJobs: budget.openJobs, maxOpen: budget.maxOpen, remainingTodayMicroUsdc: budget.remainingTodayMicroUsdc, lastJobAt: last.createdAt.getTime(), now }) !== null;
+}
+
 const ENTRIES_MEANING =
   'Replies to one of your bounty jobs are entries, not mentions: they are kept out of your inbox and collected by code once the job\'s window closes. You never name a winner, never call an entry accepted or promising, and never answer an entry; a separate judge rules on the artefacts alone and your creator pays. If someone asks about their entry, say the job closes at its time and the result appears on your coin page.';
 

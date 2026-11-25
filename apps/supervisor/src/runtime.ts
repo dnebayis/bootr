@@ -32,7 +32,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { agentDirectory, bootrAgentsSection, type AgentDirectory } from './agent-directory.js';
 import { executeAction, inboxViews, jsonSafe, openRepliesNote, resolvePending, type BrokerEnv, type InboxView, type PendingResolution } from './broker/index.js';
-import { buildTreasuryObservation, roleTools, treasuryFinish, treasuryTurnSection, type TreasuryTurnInputs } from './roles.js';
+import { buildTreasuryObservation, roleTools, treasuryFinish, treasuryTurnSection, treasuryWorthUsd, type TreasuryTurnInputs } from './roles.js';
 import { rpcErrorText, type Logger } from './log.js';
 import { expireApprovals, pendingCount, queueForApproval, queuedOutcomeFor, requiresApproval, takeFeedback } from './approvals.js';
 import { bootrTodaySection, type AgentRow, type RuntimeRow, type SupervisorContext } from './context.js';
@@ -142,6 +142,8 @@ export interface AgentState {
   treasuryNextAt?: number | null;
   lastTreasuryTurnAt?: number | null;
   lastTreasuryNoteSeenAt?: number | null;
+  /** What the treasury was worth in USD when the last treasury turn started (roles.ts `treasuryWorthUsd`); null when it had no balances or no ETH price. */
+  treasurySeenUsd?: number | null;
   /** The treasury turn's own `finish` checkpoint, bounded by `TREASURY_CHECKPOINT_CHARS`; the social checkpoint above is never touched by it. */
   treasuryCheckpoint?: { memory: string; agenda: string; summary: string; at: number } | null;
   /**
@@ -690,6 +692,8 @@ export async function startTreasuryTurn(ctx: SupervisorContext, agent: AgentRow,
   state.lastTreasuryTurnAt = now;
   state.treasuryNextAt = now + ctx.config.TREASURY_TURN_INTERVAL_MS;
   state.lastTreasuryNoteSeenAt = now;
+  // What the treasury is worth as this turn sees it: growth past it brings the next turn forward (roles.ts `treasuryGrew`).
+  state.treasurySeenUsd = treasuryWorthUsd(inputs.treasury);
   const turn: Turn = {
     role: 'treasury',
     startedAt: now,
@@ -1015,9 +1019,8 @@ async function runLoop(ctx: SupervisorContext, agent: AgentRow, runtime: Runtime
     if (action.tool === 'finish' && role === 'treasury') {
       // The treasury's own checkpoint (roles.ts `treasuryFinish`, the same function an own agent's treasury turn closes
       // with): its slot in the state, cut to size; the social memory, agenda, summary, post slot and wake are not
-      // touched. The model's wake request is honoured only beyond the interval (and within a day), and while the
-      // Bounties power is on it may not push the next turn past a few intervals (roles.ts `treasuryWakeCapMs`): the
-      // agent kept asking for 4 to 6 hours and so looked at a job 6 times in 31 hours.
+      // touched. The model's wake request is honoured beyond the interval and within a day, with Bounties on or off:
+      // what brings a treasury turn forward is something new to decide (roles.ts `treasuryTurnDue`), not a cap.
       let done;
       try {
         done = treasuryFinish(ctx, agent, config, state, action.input as unknown as Record<string, unknown>, now);

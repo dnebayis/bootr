@@ -223,7 +223,8 @@ Names live in the root `.env.example`. Empty strings are treated as unset.
 | `X402_DISCOVERY_URL` | no | `https://api.cdp.coinbase.com/platform/v2/x402/discovery` | the x402 Bazaar that `discover_services` reads (cached ten minutes) |
 | `SERVICES_TIMEOUT_MS` | no | `30000` | one paid service call (`x402_fetch`), request and answer |
 | `REST_CHECK_MS` | no | `300000` | least time between treasury reads of a sleeping or paused agent |
-| `TREASURY_TURN_INTERVAL_MS` | no | `3600000` | how often an agent with the treasury turn on gets one (`src/roles.ts`); a pending treasury note or a closed bounty job may bring it forward, never closer than a quarter of this to the last one |
+| `TREASURY_TURN_INTERVAL_MS` | no | `3600000` | the soonest an agent with the treasury turn on gets its next one (`src/roles.ts`); the turn's own `finish` may ask for later, up to a day. A pending treasury note, a closed bounty job, a creator request, a bounty suggestion that came due or a treasury that grew may bring it forward, never closer than a quarter of this to the last one |
+| `TREASURY_BALANCE_WAKE_USD` | no | `5` | the treasury turn is brought forward when the treasury is worth at least this many USD more than at the last treasury turn, and at least a quarter more (`treasuryGrew`); only growth counts. `0` = a change of balance never wakes it |
 | `NOTIFY_SWEEP_MS`, `NOTIFY_CHECK_MS` | no | `60000`, `300000` | the notifier's pass interval and the least time between checks of one agent (see "Creator notifications") |
 
 ## BlockRun live check
@@ -1008,8 +1009,13 @@ turn (`image-rules.ts`).
 Bounty initiative while the `bounties` power is on: the `bounties` section no longer calls "no job" a normal hour, and
 carries a `suggestion` (what a good job looks like: a picture for the next post, a source to cite, an explainer
 diagram; work, never promotion) when no job is open, the day has headroom for the smallest amount and no job was
-created for `BOUNTY_SUGGEST_AFTER_MS` (2 days). The treasury turn's own `finish` may put the next treasury turn at most
-`TREASURY_WAKE_CAP_INTERVALS` (2) intervals away (`treasuryWakeCapMs`).
+created for `BOUNTY_SUGGEST_AFTER_MS` (2 days). The treasury turn's own `finish` sets the next treasury turn, an
+interval away at the least and a day at the most, with Bounties on or off. (From 2026-11-17 to 2026-11-25 a turn with
+Bounties on could not put the next one more than two intervals away; on production that bought twelve treasury turns
+a day that each ended with one `finish`, $0.054 a turn, and opened no job.) What brings a treasury turn forward is
+something it has not seen (`treasuryTurnDue`): a treasury note, a closed bounty job, a creator request, a job
+suggestion that came due since its last turn (`treasury_bounty_suggestion`: the last job turned two days old), or a
+treasury worth clearly more than at its last turn (`treasury_balance`, `TREASURY_BALANCE_WAKE_USD`).
 
 A message is refused (409 `chat_*`, 429 `chat_rate_limited`) when the agent is paused, asleep or not running, while an
 answer is out, over 20 messages an hour or 60 a day, when the balances cannot be read, or when paying could leave the agent

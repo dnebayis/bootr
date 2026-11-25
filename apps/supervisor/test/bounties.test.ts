@@ -699,7 +699,7 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
   it('leaves a closed job as it is while the X app is out of credits: nothing read, no attempt counted, collected once the credits are back', async () => {
     const w = await makeWorld({ script: [judgeAnswer(verdict(1, 1))] });
     try {
-      const { job } = await closedJob(w, [reply('7001', '31')]);
+      const { job } = await closedJob(w, [reply('7001', '31')], png('7001'));
       const before = (await jobsOf(w))[0]!;
       let reads = 0;
       const readReplies = (w.sender.client as unknown as { readReplies: (...a: unknown[]) => Promise<unknown> }).readReplies;
