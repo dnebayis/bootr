@@ -60,7 +60,7 @@ COPY tsconfig.base.json ./
 COPY --chown=node:node apps/indexer/abis apps/indexer/abis
 COPY --chown=node:node apps/indexer/src apps/indexer/src
 COPY --chown=node:node apps/indexer/ponder.config.ts apps/indexer/rpc-budget.ts apps/indexer/ponder.schema.ts apps/indexer/ponder-env.d.ts apps/indexer/tsconfig.json apps/indexer/
-COPY --chown=node:node apps/indexer/scripts/start.sh apps/indexer/scripts/schema-janitor.mjs apps/indexer/scripts/
+COPY --chown=node:node apps/indexer/scripts/start.sh apps/indexer/scripts/schema-janitor.mjs apps/indexer/scripts/live-switch.mjs apps/indexer/scripts/healthcheck.mjs apps/indexer/scripts/
 RUN chown node:node apps/indexer
 # The commit this image was built from (CI passes it); `DATABASE_SCHEMA=auto` names the schema after it.
 ARG GIT_SHA=dev
@@ -68,7 +68,7 @@ ENV IMAGE_REVISION=$GIT_SHA
 WORKDIR /app/apps/indexer
 USER node
 EXPOSE 42069
-# /health = process up; /ready = backfill complete.
+# /health = process up; /ready = backfill complete (503 while it runs). INDEXER_ROLE (scripts/start.sh): all, writer or reader.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||42069)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  CMD ["node", "scripts/healthcheck.mjs"]
 CMD ["sh", "scripts/start.sh"]

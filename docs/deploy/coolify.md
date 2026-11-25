@@ -32,6 +32,10 @@ Public endpoints: `bootr.fun` (web: the app, `/api/*`, agent cards at `/agents/<
 
 ## 2. How a deploy works
 
+A compose deploy restarts every service, and a new `DATABASE_SCHEMA` is read half-filled while it backfills. The way
+out (reader and writer apps, the web as its own app) is designed and tested locally but not applied:
+[`live-switch.md`](./live-switch.md).
+
 1. Push to `main`. Coolify does not pull on its own unless a GitHub webhook is configured (application →
    Webhooks); until then deploy from the panel (**Deploy** / **Redeploy**) or from the server:
    ```sh

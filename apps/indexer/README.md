@@ -36,6 +36,13 @@ yourself: any line means a new `DATABASE_SCHEMA` in Coolify and a backfill from 
 `rpc-budget.ts`, the RPC urls and the `INDEXER_*` budget settings live outside the build id. See
 [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 2.
 
+Roles: `INDEXER_ROLE` in `scripts/start.sh` is `all` by default (the above). `writer` indexes with no public domain and
+points the views of `bootr_live` at its schema once it is ready and has caught up with the schema being served
+(`scripts/live-switch.mjs`); `reader` runs `ponder serve` on those views. With them an indexing change is deployed
+beside the running index and takes over in one step. Design, sizes and the move:
+[`docs/deploy/live-switch.md`](../../docs/deploy/live-switch.md); the local test:
+[`docs/dev/indexer-live-switch-test.md`](../../docs/dev/indexer-live-switch-test.md). Production still runs `all`.
+
 Ponder only auto-loads `apps/indexer/.env.local`; export the variables (or use your usual env
 loader) to point it at the root `.env`. When sourcing the root `.env`, override `PORT` (it holds the
 sender's port there; Ponder reads `PORT` too): `PORT=42069 pnpm --filter indexer dev`. Without

@@ -240,7 +240,9 @@ services:
       DATABASE_URL: postgres://bootr:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/bootr
       SENDER_URL: http://sender:3002
       INFERENCE_PROVIDER_URL: http://inference:3003
-      INDEXER_URL: http://indexer:42069
+      # The compose indexer unless Coolify sets INDEXER_INTERNAL_URL (a new variable, empty today): the reader app's
+      # address once the live switch is in use (docs/deploy/live-switch.md). The dataset service below follows it too.
+      INDEXER_URL: ${INDEXER_INTERNAL_URL:-http://indexer:42069}
       CHAIN_ID: ${CHAIN_ID:-8453}
       BASE_RPC_URL: ${BASE_RPC_URL}
       BUNDLER_URL: ${BUNDLER_URL}
@@ -376,7 +378,7 @@ services:
       DATASET_PORT: "3005"
       DATABASE_URL: postgres://bootr:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/bootr
       # The indexer's public reads only (REST and GraphQL); its service key is not given to this process.
-      INDEXER_URL: http://indexer:42069
+      INDEXER_URL: ${INDEXER_INTERNAL_URL:-http://indexer:42069}
       # New records kept per UTC day (400 when empty), open sources read per pass (12), and the two clocks in
       # milliseconds: a pass (60000) and the chain read (600000). Not secrets.
       DATASET_RECORDS_PER_DAY: ${DATASET_RECORDS_PER_DAY:-}
