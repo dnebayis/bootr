@@ -30,8 +30,8 @@ describe('the dataset service', () => {
     expect(dataset).not.toContain('migrate');
     const url = /DATABASE_URL: (.+)/;
     expect(url.exec(dataset)![1]).toBe(url.exec(service('supervisor'))![1]);
-    // the indexer reader once INDEXER_INTERNAL_URL is set (docs/deploy/live-switch.md), the compose indexer until then
-    expect(dataset).toContain('INDEXER_URL: ${INDEXER_INTERNAL_URL:-http://indexer:42069}');
+    // the indexer reader app (alias indexer-reader, docs/deploy/live-switch.md) unless INDEXER_INTERNAL_URL overrides it
+    expect(dataset).toContain("INDEXER_URL: ${INDEXER_INTERNAL_URL:-http://indexer-reader:42069}");
     expect(/INDEXER_URL: (.+)/.exec(dataset)![1]).toBe(/INDEXER_URL: (.+)/.exec(service('supervisor'))![1]);
     expect(dataset).toMatch(/mem_limit: \d+m/);
     expect(dataset).toContain('restart');
@@ -43,7 +43,7 @@ describe('the dataset service', () => {
   it('is off unless the owner sets the flag: the default is empty, in its own block and in the supervisor', () => {
     expect(dataset).toContain('DATASET_ENABLED: ${DATASET_ENABLED:-}');
     expect(service('supervisor')).toContain('DATASET_ENABLED: ${DATASET_ENABLED:-}');
-    for (const other of ['web', 'inference', 'indexer']) expect(declared(service(other)).filter((name) => name.startsWith('DATASET_'))).toEqual([]);
+    for (const other of ['web', 'inference']) expect(declared(service(other)).filter((name) => name.startsWith('DATASET_'))).toEqual([]);
     // The sender holds layer c's cap, its key and the account that reads; all three empty by default, so X is off.
     expect(declared(service('sender')).filter((name) => name.startsWith('DATASET_')).sort()).toEqual(['DATASET_SENDER_KEY', 'DATASET_X_POSTS_PER_DAY', 'DATASET_X_READER_AGENT_ID']);
     for (const name of ['DATASET_SENDER_KEY', 'DATASET_X_POSTS_PER_DAY', 'DATASET_X_READER_AGENT_ID']) expect(service('sender')).toContain(`${name}: \${${name}:-}`);
@@ -52,12 +52,12 @@ describe('the dataset service', () => {
 
   it("gives the dataset's sender key to the sender and the dataset alone, and strips it from every other service", () => {
     for (const name of ['sender', 'dataset']) expect(stripped(service(name))).not.toContain('DATASET_SENDER_KEY');
-    for (const name of ['inference', 'indexer', 'web', 'supervisor']) expect(stripped(service(name)), name).toContain('DATASET_SENDER_KEY');
+    for (const name of ['inference', 'web', 'supervisor']) expect(stripped(service(name)), name).toContain('DATASET_SENDER_KEY');
     expect(dataset).toContain('SENDER_URL: http://sender:3002');
   });
 
   it('holds no secret but its sender key: every other secret any service strips is stripped from it', () => {
-    const everySecret = new Set(['postgres', 'sender', 'inference', 'indexer', 'web', 'supervisor'].flatMap((name) => stripped(service(name))));
+    const everySecret = new Set(['postgres', 'sender', 'inference', 'web', 'supervisor'].flatMap((name) => stripped(service(name))));
     expect(everySecret.size).toBeGreaterThan(20);
     const mine = new Set(stripped(dataset));
     // Its one key opens the sender's dataset reads and nothing else (the case above).
