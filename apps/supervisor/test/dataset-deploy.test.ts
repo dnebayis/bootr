@@ -30,7 +30,9 @@ describe('the dataset service', () => {
     expect(dataset).not.toContain('migrate');
     const url = /DATABASE_URL: (.+)/;
     expect(url.exec(dataset)![1]).toBe(url.exec(service('supervisor'))![1]);
-    expect(dataset).toContain('INDEXER_URL: http://indexer:42069');
+    // the indexer reader once INDEXER_INTERNAL_URL is set (docs/deploy/live-switch.md), the compose indexer until then
+    expect(dataset).toContain('INDEXER_URL: ${INDEXER_INTERNAL_URL:-http://indexer:42069}');
+    expect(/INDEXER_URL: (.+)/.exec(dataset)![1]).toBe(/INDEXER_URL: (.+)/.exec(service('supervisor'))![1]);
     expect(dataset).toMatch(/mem_limit: \d+m/);
     expect(dataset).toContain('restart');
     // its own health check, on its own port
