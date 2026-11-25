@@ -757,6 +757,13 @@ a day from the supervisor, and a `tick` and an `rpc usage` line every minute).
   launches used to cost 11,480 RPC requests and 5,740 warn lines a day. A creator who adds gas to a day-old agent
   waits up to an hour for its session key. The schedule is kept in memory: a restart reads once and logs once.
 
+- **The coin page's status line** (`postSocial` in `src/tick.ts`, the indexer's `POST /internal/agent/:kernel/social`):
+  sent when it differs from the last line the indexer took, and once an hour as a heartbeat (`SOCIAL_HEARTBEAT_MS`;
+  the indexer drops a post count whose report is older than a day). The agent's posts of the last 24 hours are counted
+  when it posted and otherwise every five minutes (`SOCIAL_RECOUNT_MS`), and its first post is asked for until there is
+  one. It used to be two `sv_actions` queries and a signed POST per agent per tick. The memo is in memory: a restart
+  sends every line once.
+
 ## X holds and the post length
 
 `src/rhythm.ts` keeps three per-agent holds beside the platform rhythm. `x_quota`: the sender refused a publish with

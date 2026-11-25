@@ -603,20 +603,70 @@ export async function firstPostAt(ctx: SupervisorContext, agentId: string): Prom
   return row ? row.createdAt.getTime() : null;
 }
 
+/** How often an agent's posts of the last 24 hours are counted again when it has not posted (a post counts at once). */
+export const SOCIAL_RECOUNT_MS = 5 * 60_000;
+/**
+ * The coin page's line is sent again after this long even when nothing changed: the indexer drops a post count whose
+ * report is older than a day (apps/indexer/src/api/lists.ts `POST_COUNT_MAX_AGE_S`), and an hourly line also heals an
+ * indexer that lost one.
+ */
+export const SOCIAL_HEARTBEAT_MS = 3_600_000;
+
+interface SocialMemo {
+  /** The last payload the indexer accepted, as text. */
+  sent: string | null;
+  sentAt: number;
+  countedAt: number;
+  count: number;
+  lastPostAt: number | null;
+  /** `state.lastPostAt` when the posts were last counted: a new post counts again at once. */
+  statePostAt: number | null;
+  /** Once known it never changes (the first post stays the first), so it is asked once. */
+  firstPostAt: number | null;
+}
+
+/** One memo per agent per indexer client (one per process; one per world in the tests). In memory: a restart sends every line once. */
+const socialMemos = new WeakMap<object, Map<string, SocialMemo>>();
+
+/**
+ * The agent's line on its coin page (the indexer's off-chain social store): handle, last and first post, posts in the
+ * last 24 hours, status, spender, model. Called at the end of every agent's tick. Until 2026-11-25 every call made two
+ * `sv_actions` queries and a signed POST, a minute apart, for a line that changes a few times a day. Now the posts are
+ * counted when the agent posted or every `SOCIAL_RECOUNT_MS`, the first post is asked for until there is one, and the
+ * line is sent when it differs from the last one the indexer took, or after `SOCIAL_HEARTBEAT_MS`.
+ */
 async function postSocial(ctx: SupervisorContext, agent: AgentRow, config: { xHandle: string; model?: string }, runtime: RuntimeRow, status: 'awake' | 'sleeping' | 'paused'): Promise<void> {
   try {
-    const [{ count, lastPostAt }, first] = await Promise.all([postsLast24h(ctx, agent.agentId), firstPostAt(ctx, agent.agentId)]);
+    let memos = socialMemos.get(ctx.indexer);
+    if (!memos) socialMemos.set(ctx.indexer, (memos = new Map()));
+    const now = ctx.now();
     const state = runtime.state as unknown as AgentState;
-    await ctx.indexer.postSocial(agent.kernel, {
+    const statePostAt = state.lastPostAt ?? null;
+    let memo = memos.get(agent.agentId);
+    if (!memo || now - memo.countedAt >= SOCIAL_RECOUNT_MS || memo.statePostAt !== statePostAt) {
+      const [{ count, lastPostAt }, first] = await Promise.all([postsLast24h(ctx, agent.agentId), memo?.firstPostAt ? Promise.resolve(memo.firstPostAt) : firstPostAt(ctx, agent.agentId)]);
+      memo = { sent: memo?.sent ?? null, sentAt: memo?.sentAt ?? 0, countedAt: now, count, lastPostAt, statePostAt, firstPostAt: first };
+      memos.set(agent.agentId, memo);
+    }
+    const stats = {
       xHandle: config.xHandle,
-      lastPostAt: state.lastPostAt ? Math.floor(state.lastPostAt / 1000) : lastPostAt ? Math.floor(lastPostAt / 1000) : null,
+      lastPostAt: state.lastPostAt ? Math.floor(state.lastPostAt / 1000) : memo.lastPostAt ? Math.floor(memo.lastPostAt / 1000) : null,
       // The indexer keeps the earliest value it ever saw, so pruned actions never move it later.
-      firstPostAt: first ? Math.floor(first / 1000) : null,
-      postsCount24h: count,
-      status: runtime.status === 'paused' ? 'paused' : runtime.status === 'sleeping' ? 'sleeping' : status,
+      firstPostAt: memo.firstPostAt ? Math.floor(memo.firstPostAt / 1000) : null,
+      postsCount24h: memo.count,
+      status: runtime.status === 'paused' ? ('paused' as const) : runtime.status === 'sleeping' ? ('sleeping' as const) : status,
       spender: agent.spender ?? null,
       ...(config.model ? { model: config.model } : {}),
-    });
+    };
+    const line = JSON.stringify(stats);
+    if (memo.sent === line && now - memo.sentAt < SOCIAL_HEARTBEAT_MS) return;
+    // A line the indexer did not take is sent again at the next tick.
+    if (await ctx.indexer.postSocial(agent.kernel, stats)) {
+      memo.sent = line;
+      memo.sentAt = now;
+    } else {
+      memo.sent = null;
+    }
   } catch (err) {
     ctx.log.warn({ agentId: agent.agentId, err }, 'social stats post failed');
   }
