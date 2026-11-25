@@ -6,13 +6,15 @@
 import * as schema from 'ponder:schema';
 import type { Address, Hex } from 'viem';
 
-import { swapFeeUsd, v5SideTaxPips } from './fees';
 import { bookGrossFee } from './ledger';
 import { indexerEnv } from './env';
-import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, marketFields, recordPoolMoveBucket, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
+import { getEthUsd, getPlatformConfig, bumpDaily, bumpPlatform, bumpSource, DEAD_ADDRESS, graduationFields, lc, recordPoolMoveBucket, recordTradeBucket, sourceOf, windowFields, ZERO_ADDRESS, type Ctx, type TokenRow } from './store';
 import { holderMilestones, milestoneId, swapMilestones, type MilestoneEvent } from './milestones';
-import { interpretSwap, usd } from './price';
-import { marketCapUsd, quoteValueUsd } from './quote';
+import { usd } from './price';
+import { marketCapUsd } from './quote';
+import { isFeeConversionSwap, swapFigures, tradeRow, type SwapFigures } from './swaps';
+
+export { isFeeConversionSwap };
 
 export type SwapArgs = {
   amount0: bigint;
@@ -52,54 +54,21 @@ export async function recordMilestones(
   return written;
 }
 
-/**
- * Whether a PoolManager swap is Clanker v4's fee conversion rather than a trade. On a Clanker v4 coin the hook has
- * `ClankerLpLockerFeeConversion` collect the pool's LP fees before every swap (anyone may also call it), and the
- * locker converts each slot's share to its preferred asset by swapping in the same pool, in the same transaction
- * (tx 0x454d41e8…68110: one $BOOTR buy and two locker swaps before it). `Swap.sender` is then the locker itself,
- * a router never is.
- */
-export function isFeeConversionSwap(sender: string, locker: string | null | undefined): boolean {
-  return !!locker && sender.toLowerCase() === locker.toLowerCase();
-}
-
 export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMeta) {
   const id = `${m.txHash}-${m.logIndex}`;
   if (await context.db.find(schema.trade, { id })) return;
 
   const ethUsd = await getEthUsd(context, m.blockNumber);
-  const view = interpretSwap(s.amount0, s.amount1, t.coinIsToken0);
-  const next: TokenRow = { ...t, sqrtPriceX96: s.sqrtPriceX96, poolLiquidity: s.liquidity, tick: s.tick };
-  const market = marketFields(next, ethUsd);
-  // The paired side in its own decimals and USD (WETH / ETH at ETH/USD, USDC at $1: lib/quote.ts).
-  const valueUsd = quoteValueUsd(t, view.amountPaired, ethUsd);
-  // What the trader paid, from `Swap.fee` and the coin's own `lpFeeBps` (lib/fees.ts `swapFeePips`): bootr
-  // native fee (0) + hook fee; clanker the LP fee × 1.2 (Clanker's share on top); clanker-v5 the tax of the trade's
-  // side as is (the token settings' buy and sell tax may differ).
+  // Side, amounts, price, value and fee come from lib/swaps.ts, which the parity script runs against production rows.
+  const figures = swapFigures(t, s, ethUsd);
+  const { market, valueUsd, feeUsd } = figures;
   const source = sourceOf(t);
-  const feePips = source === 'clanker-v5' ? v5SideTaxPips(t, view.side) : t.lpFeeBps;
-  const feeUsd = usd(swapFeeUsd(source, valueUsd, s.fee, feePips));
   if (isFeeConversionSwap(s.sender, indexerEnv().clanker?.locker)) {
     await applyFeeConversionSwap(context, t, s, m, market, feeUsd);
     return;
   }
 
-  await context.db.insert(schema.trade).values({
-    id,
-    token: t.id,
-    trader: lc(m.from),
-    sender: lc(s.sender),
-    side: view.side,
-    amountToken: view.amountToken,
-    amountPaired: view.amountPaired,
-    priceUsd: market.priceUsd,
-    valueUsd,
-    feeUsd,
-    timestamp: m.timestamp,
-    blockNumber: m.blockNumber,
-    logIndex: m.logIndex,
-    txHash: m.txHash,
-  });
+  await context.db.insert(schema.trade).values(tradeRow(t.id, s, m, figures));
 
   const buckets = await recordTradeBucket(context, t.id, m.timestamp, valueUsd, feeUsd, market.priceUsd);
   const cfg = await getPlatformConfig(context);
@@ -139,7 +108,7 @@ export async function applySwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMe
  * top), and that LP fee reaches the slots at the next collection (`ClaimedRewards`), so its gross fee is booked as
  * on a trade, the coin's fee totals and the hour's fee alike, keeping the gross fee at least the slots' accruals.
  */
-async function applyFeeConversionSwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMeta, market: ReturnType<typeof marketFields>, feeUsd: number) {
+async function applyFeeConversionSwap(context: Ctx, t: TokenRow, s: SwapArgs, m: LogMeta, market: SwapFigures['market'], feeUsd: number) {
   const buckets = await recordPoolMoveBucket(context, t.id, m.timestamp, feeUsd, market.priceUsd);
   const cfg = await getPlatformConfig(context);
   const updated = await context.db.update(schema.token, { id: t.id }).set((row) => ({

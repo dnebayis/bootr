@@ -95,16 +95,18 @@ describe('resolveClankerLaunchers (BOOTR_CLANKER_LAUNCHERS) and enabledSources',
     const none = enabledSources({ ...base, launchers: [], clankerLaunchers: [], rwagmi, clanker, clankerV5 });
     expect(Object.values(none).every((v) => v === false)).toBe(true);
     const onlyClanker = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker, clankerV5: null });
-    expect(onlyClanker).toMatchObject({ BootrLauncher: false, RwagmiHookV3: false, BuybackBurner: false, BootrClankerLauncher: true, ClankerLpLocker: true, ClankerFeeLocker: true, ClankerV5Hook: false, ClankerV5FeeEscrow: false, BootrToken: true, PoolManager: true, AgentGuardian: true, ReputationRegistry: true });
+    // Swaps come from the receipts of the coins' transfers: no PoolManager source on any path.
+    expect(onlyClanker).not.toHaveProperty('PoolManager');
+    expect(onlyClanker).toMatchObject({ BootrLauncher: false, RwagmiHookV3: false, BuybackBurner: false, BootrClankerLauncher: true, ClankerLpLocker: true, ClankerFeeLocker: true, ClankerV5Hook: false, ClankerV5FeeEscrow: false, BootrToken: true, AgentGuardian: true, ReputationRegistry: true });
     // One launcher list serves both Clanker versions: the v5 hook and escrow join when the chain has the v5 stack,
     // and a chain with only the v5 stack still follows the launchers (the v4 lockers stay off).
     const onlyV5 = enabledSources({ ...base, launchers: [], clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null, clankerV5 });
-    expect(onlyV5).toMatchObject({ BootrClankerLauncher: true, ClankerLpLocker: false, ClankerFeeLocker: false, ClankerV5Hook: true, ClankerV5FeeEscrow: true, BootrToken: true, PoolManager: true });
+    expect(onlyV5).toMatchObject({ BootrClankerLauncher: true, ClankerLpLocker: false, ClankerFeeLocker: false, ClankerV5Hook: true, ClankerV5FeeEscrow: true, BootrToken: true });
     const both = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker, clankerV5 });
     expect(Object.values(both).every((v) => v === true)).toBe(true);
     // No Clanker stack on the chain: the Clanker path stays off even with a launcher listed.
     const noStack = enabledSources({ ...base, launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }], rwagmi, clanker: null, clankerV5: null });
-    expect(noStack).toMatchObject({ BootrLauncher: true, BootrClankerLauncher: false, ClankerLpLocker: false, ClankerV5Hook: false, PoolManager: true });
+    expect(noStack).toMatchObject({ BootrLauncher: true, BootrClankerLauncher: false, ClankerLpLocker: false, ClankerV5Hook: false, BootrToken: true });
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [{ address: CLANKER_LAUNCHER, startBlock: 1 }] }, CLANKER_LAUNCHER.toLowerCase())).toBe('clanker');
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, OLD)).toBe('bootr');
     expect(launchSourceOf({ launchers: bootr, clankerLaunchers: [] }, CLANKER_LAUNCHER)).toBeNull();

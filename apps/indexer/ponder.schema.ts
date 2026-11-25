@@ -212,8 +212,8 @@ export const agent = onchainTable(
 
 /**
  * extra: Uniswap v4 pools of Bootr coins of both paths, from `RwagmiLauncherV3.LaunchPoolCreatedV3` (bootr) or
- * `BootrClankerLauncher.ClankerLaunched` + the locker's `TokenRewardAdded` (clanker). `PoolManager.Swap` of any
- * other pool is ignored. One pool per coin, paired with WETH.
+ * `BootrClankerLauncher.ClankerLaunched` + the locker's `TokenRewardAdded` (clanker). A `Swap` of any
+ * other pool in a receipt is ignored. One pool per coin, paired with WETH.
  */
 export const pool = onchainTable(
   'pool',
@@ -419,6 +419,19 @@ export const trade = onchainTable(
 );
 
 /** extra: hourly buckets backing the rolling 24h/7d windows (see src/lib/windows.ts). */
+/**
+ * extra, internal: how far a transaction's swaps of Bootr pools have been applied. Swaps come from the receipt of a
+ * transaction in which a coin moved to or from the PoolManager (src/lib/swaps.ts), and a transaction has several
+ * such transfers and other sync points: `through` is the log index of the last `Swap` applied, so each is applied
+ * once and in log order. One row per transaction with at least one swap of a Bootr pool.
+ */
+export const swapSync = onchainTable('swap_sync', (t) => ({
+  /** Transaction hash. */
+  id: t.hex().primaryKey(),
+  through: t.integer().notNull(),
+  blockNumber: t.bigint().notNull(),
+}));
+
 export const tokenWindow = onchainTable('token_window', (t) => ({
   id: t.hex().primaryKey(),
   buckets: t.json().notNull(),

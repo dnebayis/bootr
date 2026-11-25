@@ -8,7 +8,8 @@
  *                  BootrClankerLauncher.AgentLaunched when the receipt carries ClankerV5Launched (+ FeeSlotCreated,
  *                  LaunchTaxConfigured, Launched, Initialize / ModifyLiquidity, launch-tx replay incl. the dev buy's
  *                  tax credits)
- *   market.ts      PoolManager.Swap (pools of both paths), coin ERC-20 Transfer (balances / holders)
+ *   market.ts      coin ERC-20 Transfer (balances / holders) and, when the PoolManager is on one side of it, the
+ *                  swaps of Bootr pools from that transaction's receipt (lib/swaps.ts, lib/swap-sync.ts)
  *   fees.ts        Bootr: RwagmiHookV3.PoolFeeTakenV3, RwagmiLpLockerV3.PoolFeesSettledV3 / QuoteRewardsClaimedV3,
  *                  BuybackBurner. Clanker: ClankerLpLockerFeeConversion.ClaimedRewards, ClankerFeeLocker.ClaimTokens.
  *                  Clanker v5: TaxLaunchHook CreatorTaxCredited / BurnTaxCredited, FeeEscrow.Claimed
