@@ -20,9 +20,11 @@
  * 4. X quota (per agent): when the sender refuses a publish with `quota_exceeded`, the runtime keeps its
  *    `retryAt` (`AgentState.postQuotaUntil`) and the tick neither wakes the agent for a post nor for a mention
  *    until then (`quotaHold` / `applyQuotaHold`), so no model turn is bought for a post that cannot go out.
- * 5. X credits (the X app's pay-per-use credits): when X answers 402 `credits depleted` to a publish or to a
- *    mention read, the same hold applies with reason `x_credits` (`creditsHold`). There is no `retryAt`: a publish
- *    holds for `X_CREDITS_RETRY_MS`, and a mention read that still answers 402 holds the current tick.
+ * 5. X credits (the X app's pay-per-use credits): when X answers 402 `credits depleted` to a publish, the same hold
+ *    applies with reason `x_credits` (`creditsHold`) for `X_CREDITS_RETRY_MS`, which is what the model is told. The
+ *    credits belong to the one X app every agent uses, so a 402 on a publish or on a mention read also starts the
+ *    app-wide hold (x-credits.ts, kept by the sender: 30 minutes, doubling to 4 hours): while it stands the tick
+ *    buys no turn for any agent that uses X.
  * 6. X forbids the account (403 "not permitted", not a duplicate): the account is locked, restricted or its token
  *    lost write access, which no retry fixes. The same hold applies with reason `x_forbidden` for hours
  *    (`forbiddenHoldMs`, doubling on each repeat up to a day), the creator is told (`x_forbidden` notification), and

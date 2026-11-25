@@ -83,6 +83,7 @@ import { raiseNotification } from './notifications.js';
 import { agentConfigOf } from './onboarding.js';
 import { isOwn, OWN_AGENT_MARK, ownSetting } from './own/registry.js';
 import { originalPostGate } from './rhythm.js';
+import { xCreditsGate } from './x-credits.js';
 import { wordOverlap, wordsOf } from './said.js';
 import { SenderError, type SenderConversationReply } from './sender-client.js';
 import { assertPublicHost, htmlToText } from './web-reader.js';
@@ -1815,7 +1816,11 @@ export async function sweepBounties(ctx: SupervisorContext): Promise<BountySweep
     .where(and(or(eq(bountyJobs.status, 'judging'), and(eq(bountyJobs.status, 'open'), lte(bountyJobs.closesAt, new Date(now)))), sql`not ${AWAITS_OWN_RULING}`))
     .orderBy(asc(bountyJobs.closesAt))
     .limit(MAX_JOBS_PER_SWEEP);
+  // While X refuses every read for lack of credits (x-credits.ts) no entry can be collected: the jobs wait as they are,
+  // and no attempt is counted against them (a job is closed unpaid after `MAX_COLLECT_ATTEMPTS`).
+  const xHeld = xCreditsGate(ctx, now).state === 'held';
   for (const job of due) {
+    if (xHeld) break;
     if (moved >= MAX_JOBS_PER_SWEEP) break;
     if (job.status === 'judging' && job.attempts > 0 && now - job.updatedAt.getTime() < RETRY_AFTER_MS) continue;
     moved += 1;

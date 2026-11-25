@@ -353,6 +353,10 @@ export interface MockSender {
   publishError: string | null;
   /** When set, `readMentions` throws this. */
   readMentionsError: Error | null;
+  /** The sender's app-wide X credits hold as `GET /internal/x-credits` answers it; null = clear. */
+  xCredits: { state: 'held' | 'probing'; since: string; until: string } | null;
+  /** How many times `readMentions` was called. */
+  mentionReads: number;
   /** When set, `readMentions` answers throttled with this `nextReadAt` (the sender's mention-read interval), items from `items`. */
   nextReadAt: string | null;
   /** Handles the sender considers opted out of @mentions (`policy:mention_opted_out`). */
@@ -375,7 +379,7 @@ export interface MockSender {
 }
 
 export function mockSender(): MockSender {
-  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, nextReadAt: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], quotaWrites: [], quotaError: null, client: null as unknown as SenderClient };
+  const m: MockSender = { accounts: null, accountReads: {}, rebinds: [], items: [], published: [], publishStatus: 'sent', consentLookupFails: null, quotaExceeded: null, publishError: null, readMentionsError: null, xCredits: null, mentionReads: 0, nextReadAt: null, optedOutHandles: new Set(), receipts: {}, timelines: {}, timelineReads: [], metrics: {}, metricsError: null, metricsReads: [], quotaWrites: [], quotaError: null, client: null as unknown as SenderClient };
   let n = 9000;
   m.client = {
     /** Mirrors apps/sender/src/publish.ts: reply eligibility is required, opt-outs are enforced, consent lookups can fail transiently. */
@@ -400,7 +404,11 @@ export function mockSender(): MockSender {
       if (!r) throw Object.assign(new Error('not found'), { status: 404, code: 'not_found', name: 'SenderError' });
       return { actionId, agentId: 'a', kind: 'post', ...r };
     },
+    async xCredits() {
+      return m.xCredits ? { ...m.xCredits, windowMs: Date.parse(m.xCredits.until) - Date.parse(m.xCredits.since), refused: 0 } : { state: 'clear' as const, since: null, until: null, windowMs: null, refused: 0 };
+    },
     async readMentions() {
+      m.mentionReads += 1;
       if (m.readMentionsError) throw m.readMentionsError;
       return { throttled: !!m.nextReadAt, ...(m.nextReadAt ? { nextReadAt: m.nextReadAt } : {}), items: m.items };
     },

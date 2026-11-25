@@ -8,7 +8,14 @@
  *   `held`, never to a resend.
  * - 429 responses honour `x-rate-limit-reset`: the endpoint is cooled down until reset and, for
  *   reads only, retried once if the wait is short.
+ * - 402 (the X app's pay-per-use credits are used up) holds EVERY call of every agent: the app is one X app, so
+ *   the credits are shared. While the hold stands each call is answered here with the same 402 and X is not asked.
+ *   The first hold lasts `creditsHoldMs` (30 min); when it runs out the calls go to X again (`probing`), and the
+ *   next 402 doubles the hold up to `creditsHoldMaxMs` (4 h) while the first success clears it. The state lives in
+ *   this process (a restart starts clear and learns it again from the first 402) and is read by the supervisor
+ *   through `GET /internal/x-credits` (`creditsStatus`).
  */
+import { log } from './log.js';
 
 export interface XError {
   definite: boolean;
@@ -98,7 +105,31 @@ export const REPLY_TWEET_FIELDS = 'author_id,conversation_id,created_at,entities
 export const REPLY_USER_FIELDS = 'username,created_at,verified,verified_type';
 export const REPLY_MEDIA_FIELDS = 'media_key,type,url,preview_image_url';
 
+/** The first hold after X answers 402, and the longest one (each 402 that follows a hold doubles it). */
+export const X_CREDITS_HOLD_MS = 30 * 60_000;
+export const X_CREDITS_HOLD_MAX_MS = 4 * 60 * 60_000;
+
+/**
+ * The app-wide X credits hold. `clear`: no 402 since the last success. `held`: X answered 402 and is not asked until
+ * `until`. `probing`: the hold ran out and no call has succeeded since; the calls reach X, and the next answer
+ * settles it (402 holds again for twice as long, a success clears).
+ */
+export interface XCreditsStatus {
+  state: 'clear' | 'held' | 'probing';
+  /** Epoch ms of the first 402 of this run of holds; null when clear. */
+  since: number | null;
+  /** Epoch ms the current (or last) hold ends; null when clear. */
+  until: number | null;
+  /** Length of the current (or last) hold; null when clear. */
+  windowMs: number | null;
+  /** Calls answered here without asking X since `since`. */
+  refused: number;
+}
+
 export interface XClientOptions {
+  /** The first credits hold and its ceiling; defaults `X_CREDITS_HOLD_MS` and `X_CREDITS_HOLD_MAX_MS`. */
+  creditsHoldMs?: number;
+  creditsHoldMaxMs?: number;
   baseUrl?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
@@ -119,6 +150,10 @@ export class XClient {
   private readonly sleep: (ms: number) => Promise<void>;
   /** endpoint key -> epoch ms until which we do not call it again. */
   private readonly cooldown = new Map<string, number>();
+  private readonly creditsHoldMs: number;
+  private readonly creditsHoldMaxMs: number;
+  /** The X credits hold in force or running out; null when clear. */
+  private credits: { since: number; until: number; windowMs: number; refused: number } | null = null;
 
   constructor(opts: XClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? 'https://api.x.com').replace(/\/$/, '');
@@ -127,6 +162,34 @@ export class XClient {
     this.maxWait = opts.maxRateLimitWaitMs ?? 5_000;
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.creditsHoldMs = opts.creditsHoldMs ?? X_CREDITS_HOLD_MS;
+    this.creditsHoldMaxMs = Math.max(this.creditsHoldMs, opts.creditsHoldMaxMs ?? X_CREDITS_HOLD_MAX_MS);
+  }
+
+  /** The app-wide X credits hold as it stands now. */
+  creditsStatus(): XCreditsStatus {
+    const c = this.credits;
+    if (!c) return { state: 'clear', since: null, until: null, windowMs: null, refused: 0 };
+    return { state: c.until > this.now() ? 'held' : 'probing', since: c.since, until: c.until, windowMs: c.windowMs, refused: c.refused };
+  }
+
+  /** X answered 402: start a hold, or double the one that just ran out. A 402 that lands while a hold stands (a call already on its way) changes nothing. */
+  private creditsRefused(): number {
+    const now = this.now();
+    const c = this.credits;
+    if (c && c.until > now) return c.until;
+    const windowMs = c ? Math.min(this.creditsHoldMaxMs, c.windowMs * 2) : this.creditsHoldMs;
+    this.credits = { since: c?.since ?? now, until: now + windowMs, windowMs, refused: c?.refused ?? 0 };
+    log.warn('X credits used up (402); every X call is held', { until: new Date(now + windowMs).toISOString(), holdMinutes: Math.round(windowMs / 60_000), since: new Date(this.credits.since).toISOString(), refusedSoFar: this.credits.refused });
+    return this.credits.until;
+  }
+
+  /** A call succeeded: the credits are back. */
+  private creditsOk(): void {
+    const c = this.credits;
+    if (!c) return;
+    this.credits = null;
+    log.info('X credits are back; the hold is lifted', { since: new Date(c.since).toISOString(), heldMinutes: Math.round((this.now() - c.since) / 60_000), refused: c.refused });
   }
 
   createPost(
@@ -320,6 +383,11 @@ export class XClient {
     path: string,
     opts: { query?: Query; body?: unknown; form?: FormData; write?: boolean; rateKey?: string } = {},
   ): Promise<XResult<T>> {
+    // The credits hold comes first: nothing is sent while it stands, whatever the call and whoever the agent.
+    if (this.credits && this.credits.until > this.now()) {
+      this.credits.refused += 1;
+      return { ok: false, error: creditsDepleted(this.credits.until, 'X credits are used up; X is not asked again until then') };
+    }
     const rateKey = `${opts.rateKey ?? path}:${tokenFingerprint(token)}`;
     const blockedUntil = this.cooldown.get(rateKey);
     if (blockedUntil !== undefined && blockedUntil > this.now()) {
@@ -380,7 +448,13 @@ export class XClient {
         json = undefined;
       }
 
+      if (res.status === 402) {
+        const until = this.creditsRefused();
+        return { ok: false, error: creditsDepleted(until, providerMessage(json) ?? 'X responded 402') };
+      }
+
       if (res.ok) {
+        this.creditsOk();
         if (json === undefined) {
           return {
             ok: false,
@@ -418,6 +492,11 @@ function rateLimited(retryAt: number): XError {
     message: 'X rate limit reached',
     retryAt,
   };
+}
+
+/** X's 402, or this process's own answer while the hold stands: the same error either way, with the hold's end as `retryAt`. */
+function creditsDepleted(until: number, message: string): XError {
+  return { definite: true, status: 402, code: 'http_402', message, retryAt: until };
 }
 
 /** Non-reversible short id for cooldown keys; the token itself is never stored in maps. */

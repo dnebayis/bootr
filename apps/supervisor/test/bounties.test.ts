@@ -6,6 +6,7 @@
  * routes never carry (an author id, reply text, an ineligible entry's address).
  */
 import { BOUNTY_MAX_CONSIDERED, DEFAULT_BOUNTIES_POLICY, parseAgentConfig, type AgentConfig } from '@bootr/agent-core';
+import { refreshXCredits } from '../src/x-credits.js';
 import { and, eq } from 'drizzle-orm';
 import { postFinding } from '@bootr/agent-core';
 import { describe, expect, it } from 'vitest';
@@ -690,6 +691,34 @@ describe('the sweep: collection, judgment, proposal, payment', () => {
       expect((await api(w).post(`/internal/agents/${AGENT_ID}/approvals/${payoutApprovalId(job.id)}`, { decision: 'approve', by: CREATOR, txHash: TX })).status).toBe(409);
       expect((await agentActivity(w.ctx, agent, null)).filter((i) => i.kind === 'bounty')[0]!.summary).toBe('Bounty proposal expired unpaid');
       expect((await bountyBudget(w.ctx, AGENT_ID, DEFAULT_BOUNTIES_POLICY)).openJobs).toBe(0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  it('leaves a closed job as it is while the X app is out of credits: nothing read, no attempt counted, collected once the credits are back', async () => {
+    const w = await makeWorld({ script: [judgeAnswer(verdict(1, 1))] });
+    try {
+      const { job } = await closedJob(w, [reply('7001', '31')]);
+      const before = (await jobsOf(w))[0]!;
+      let reads = 0;
+      const readReplies = (w.sender.client as unknown as { readReplies: (...a: unknown[]) => Promise<unknown> }).readReplies;
+      (w.sender.client as unknown as { readReplies: (...a: unknown[]) => Promise<unknown> }).readReplies = async (...a) => (reads++, readReplies(...a));
+      w.sender.xCredits = { state: 'held', since: new Date(w.ctx.now()).toISOString(), until: new Date(w.ctx.now() + 4 * H).toISOString() };
+      await refreshXCredits(w.ctx);
+      // more sweeps than a job has attempts
+      for (let i = 0; i < 7; i++) {
+        await sweepBounties(w.ctx);
+        w.setNow(w.ctx.now() + 16 * 60_000);
+      }
+      expect(reads).toBe(0);
+      expect((await jobsOf(w))[0]).toMatchObject({ id: job.id, status: before.status, attempts: before.attempts, error: before.error });
+      w.sender.xCredits = null;
+      await refreshXCredits(w.ctx);
+      await sweepBounties(w.ctx);
+      expect(reads).toBe(1);
+      // collected and ruled on: the job has left the state it waited in
+      expect((await jobsOf(w))[0]!.status).not.toBe(before.status);
     } finally {
       await w.close();
     }

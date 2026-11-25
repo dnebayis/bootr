@@ -78,6 +78,8 @@ with other services without clashing with their drizzle journals.
 | `X_API_BASE_URL`                      | no       | `https://api.x.com`                | token endpoint is `<base>/2/oauth2/token`                                |
 | `X_AUTHORIZE_URL`                     | no       | `https://x.com/i/oauth2/authorize` |                                                                          |
 | `X_TIMEOUT_MS`                        | no       | `15000`                            | per X request; a timed-out publish becomes `held`                        |
+| `X_CREDITS_HOLD_SEC`                  | no       | `1800`                             | the first app-wide hold after X answers 402 (the X app's credits are used up), see "X credits hold" |
+| `X_CREDITS_HOLD_MAX_SEC`              | no       | `14400`                            | the longest such hold; each 402 that follows a hold doubles it up to this |
 | `SENDER_PUBLIC_RATE_LIMIT_PER_MIN`    | no       | `120`                              | requests per minute per client IP on `/public/*`; `0` disables. In production the web app's `/api/agents/:id/posts` proxy is the main caller (one IP, cached 60 s per agent) |
 | `SENDER_TRUST_PROXY`                  | no       | `0`                                | `1`: key the rate limit on the right-most `X-Forwarded-For` entry (exactly one trusted proxy in front). Otherwise the socket address is used and forwarding headers are ignored |
 | `DATASET_X_POSTS_PER_DAY`             | no       | `0` (off)                          | the dataset's X reads a UTC day, in units of one post read (a post returned or checked 1, a user read 2; a unit is 0.005 USD). `0`, empty or anything that is not a whole number = off: nothing is read. Never above 700, whatever is set (see "The dataset's X reads") |
@@ -174,6 +176,7 @@ service (H-1) are the boundary rather than an audience string.
 | GET    | `/internal/metering/:agentId?month=YYYY-MM`          | HMAC                    | post and read counts for charge-back                                    |
 | GET    | `/internal/account/:agentId`                         | HMAC                    | `{agentId, connected, revoked, handle, xUserId, scopes, expiresAt, connectedAt, verifiedType, premium}`; refreshes `verifiedType` from `users/me` when it is unread or a day old (see "Post length") |
 | POST   | `/internal/account/:agentId/rebind`                  | HMAC                    | `{to, connectedBefore?}`: move a draft-id account to the real agent id  |
+| GET    | `/internal/x-credits`                                | HMAC                    | the app-wide X credits hold: `{state: clear \| held \| probing, since, until, windowMs, refused}` |
 | GET    | `/internal/quota/:agentId`                           | HMAC                    | effective rate budget                                                   |
 | POST   | `/internal/quota/:agentId`                           | HMAC                    | `{postsPerDay?, mentionReadIntervalSec?}`; `null` resets to the default |
 | GET    | `/dataset/x/budget`                                  | HMAC, the dataset's key | the dataset's X reads of the day: `{day, limit, units, remaining, posts, userReads, checks, usd}` |
@@ -447,6 +450,18 @@ four reads and nothing else, and the internal key does not open them. Without th
 - **`POST /dataset/x/check`** reads `GET /2/tweets?ids=` with X's default fields: an id that does not come back is
   `gone` (deleted, protected, withheld). The dataset checks every post it read once, 20 hours on, and removes a
   gone post's sighting and everything it gave its record (`apps/supervisor/src/dataset/x-text.ts`).
+
+### X credits hold
+
+The X app pays X per call from one balance of credits, shared by every agent. When X answers 402 to any call
+(`src/x-client.ts`), every X call of every agent is answered by the sender itself with the same error
+(`http_402`, `retryAt` = the end of the hold; a publish is `rejected` with `http_402(402): ...`, a read answers
+`502 x_http_402`) and X is not asked. The first hold lasts `X_CREDITS_HOLD_SEC` (30 minutes). When it runs out
+the calls reach X again (`probing`): a 402 holds again for twice as long, up to `X_CREDITS_HOLD_MAX_SEC`
+(4 hours), and the first call that succeeds clears the hold. `GET /internal/x-credits` reports it; the
+supervisor reads it every tick and buys no turn for an agent that uses X while it stands
+(`apps/supervisor/src/x-credits.ts`). The state is in memory: a restart starts clear and learns it again from
+the first 402. One `warn` line is written per hold and one `info` line when the credits are back.
 
 ### Rate budget
 

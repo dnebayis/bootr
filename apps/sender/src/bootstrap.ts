@@ -13,7 +13,7 @@ export function buildContext(config: Config = loadConfig()): {
   const encryptionKey = parseKey(config.SENDER_ENCRYPTION_KEY);
   const ctx: SenderContext = {
     db,
-    x: new XClient({ baseUrl: config.X_API_BASE_URL, timeoutMs: config.X_TIMEOUT_MS }),
+    x: new XClient({ baseUrl: config.X_API_BASE_URL, timeoutMs: config.X_TIMEOUT_MS, creditsHoldMs: config.X_CREDITS_HOLD_SEC * 1000, creditsHoldMaxMs: config.X_CREDITS_HOLD_MAX_SEC * 1000 }),
     oauth: {
       clientId: config.X_CLIENT_ID,
       clientSecret: config.X_CLIENT_SECRET,

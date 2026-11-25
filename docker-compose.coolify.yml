@@ -71,6 +71,9 @@ services:
       SENDER_DEFAULT_MENTION_INTERVAL_SEC: ${SENDER_DEFAULT_MENTION_INTERVAL_SEC:-}
       # X reads per agent per UTC day (apps/sender/src/read-budget.ts); empty = 400, 0 = no budget.
       SENDER_DEFAULT_READS_PER_DAY: ${SENDER_DEFAULT_READS_PER_DAY:-}
+      # The app-wide hold after X answers 402 (credits used up; apps/sender/src/x-client.ts); empty = 1800 and 14400.
+      X_CREDITS_HOLD_SEC: ${X_CREDITS_HOLD_SEC:-}
+      X_CREDITS_HOLD_MAX_SEC: ${X_CREDITS_HOLD_MAX_SEC:-}
       SENDER_SITE_URL: ${SENDER_SITE_URL:-}
       # Bootr's own dataset reads these X accounts through here (apps/sender/src/dataset-x.ts; the owner pays X 0.005 USD
       # a post and 0.01 USD a user read). DATASET_X_POSTS_PER_DAY is the day's cap in units of one post read: empty or 0 =

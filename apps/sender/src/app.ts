@@ -481,6 +481,17 @@ export function createApp(ctx: SenderContext): Hono {
     return c.json({ agentId, revoked: true, alreadyRevoked: res.alreadyRevoked });
   });
 
+  /**
+   * GET /internal/x-credits
+   * The app-wide X credits hold (src/x-client.ts): `clear`, `held` until `until` (X answered 402; no call reaches X),
+   * or `probing` (the hold ran out, the next answer from X settles it). The supervisor reads it before it buys a turn.
+   */
+  internal.get('/x-credits', (c) => {
+    const s = ctx.x.creditsStatus();
+    const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+    return c.json({ state: s.state, since: iso(s.since), until: iso(s.until), windowMs: s.windowMs, refused: s.refused });
+  });
+
   internal.get('/quota/:agentId', async (c) => {
     const q = await getQuota(ctx, c.req.param('agentId'));
     // What is used of both budgets right now, so the caller can say what is left (the supervisor's agent status).

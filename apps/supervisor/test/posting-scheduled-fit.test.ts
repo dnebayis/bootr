@@ -299,6 +299,8 @@ describe('what sendOriginal answers the scheduler', () => {
       w.x.ctx.defaults.linkPostsPerDay = 1;
       await w.x.db.delete(senderActions);
       acceptPosts(w.x.fake, w.x.clock);
+      // the 402 above holds every X call at the sender for 30 minutes (its app-wide credits hold); past it the next post asks X again
+      w.x.clock.advance(31 * 60_000);
       await send('sch_aaaaaaaaaaaaaaa6', 'A link: https://bootr.fun/a/1');
       const link = await errorOf('sch_aaaaaaaaaaaaaaa7', 'Another link: https://bootr.fun/a/2');
       expect(link).toBe('link_quota: at most 1 posts with a link per 24 hours; nothing was posted. Post it without the link.');

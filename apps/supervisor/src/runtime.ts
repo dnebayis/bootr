@@ -51,6 +51,7 @@ import { noteInferenceFailure, noteInferenceSuccess, providerHold } from './prov
 import { fuelSection } from './fuel.js';
 import { pictureSection } from './picture-hint.js';
 import { answerRequest, closeRequest, creatorRequestsSection, forgetTurnRequest, openRequests, requestTools, type CreatorRequest, type TurnRequest } from './creator-requests.js';
+import { noteXCredits402 } from './x-credits.js';
 import { handleIntent, logThought, modelFor, phaseOf, startRouting, toolsForPhase, type RoutingState } from './routing.js';
 import { autoCloseMentions, closeBountyEntries } from './mention-close.js';
 import { bountyConversationIds, bountyEntriesSection } from './bounties.js';
@@ -1148,7 +1149,9 @@ export async function afterSettledAction(ctx: SupervisorContext, agent: Pick<Age
     state.postCreditsUntil = until;
     noteHoldSet(state, 'x_credits', until);
     if (action.tool === 'publish_post') turn.postHeld = true;
-    log.warn({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
+    log.info({ tool: action.tool, until: new Date(until).toISOString() }, 'x credits depleted; posts held');
+    // ...and for every other agent from this moment: the X app is one, the credits are shared (x-credits.ts, which writes the one warn line).
+    noteXCredits402(ctx);
   }
   if ((action.tool === 'publish_post' || action.tool === 'publish_reply') && result.status === 'completed') {
     state.postQuotaUntil = null;

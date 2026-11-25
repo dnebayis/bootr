@@ -64,6 +64,7 @@ guardian owner key used only to approve session-key installs.
 | `src/web-reader.ts` | `read_url` / `search_web` with private-address protection and a 4000-char cap |
 | `src/services.ts` | the Paid services power (`discover_services`, `x402_fetch`): the spender pays any public https x402 endpoint `exact` USDC under the creator's per-call and daily caps and host lists; one signature per action id, the chain closes a lost answer (`sv_service_calls`); the day's total in `/fuel`, every call on the activity tape |
 | `src/rhythm.ts` | posting rhythm (jitter, platform slots, quiet hours) and the X holds: `x_quota`, `x_credits`, `x_forbidden` (6 / 12 / 24 h after a 403 on a publish) and the one-time `x_hold_ended` observation line, see "X holds and the post length" |
+| `src/x-credits.ts` | the app-wide X credits hold: the sender's `GET /internal/x-credits` read once per tick; no turn, mention read, metrics sweep or bounty collection for an agent that uses X while X answers 402 |
 | `src/post-budget.ts` | the `postBudget` section of the observation: the creator's posts per day, what went out in the last 24 h, what is left |
 | `src/memories.ts` | `remember` / `recall` keyword search |
 | `src/post-performance.ts` | engagement of the agent's own posts, read once 24 to 72 h after posting (sender `POST /internal/read/metrics`, at most 5 agents per tick, at most 20 posts a read, one X read unit per post returned), stored with what each post was (`features`: a post, a thread, a comment or a reply; picture; length; hour; scheduled; the agent's `topic` word). The first observation's `whatWorks` section carries the seven-day digest line (capped at 600 chars), the facts code computes over the last `LEARN_WINDOW_DAYS` (medians, a sample floor, "no clear difference") and the agent's own note. No note is written into memory per batch any more: the facts replace it. With `LEARN_WINDOW_DAYS=0` the section is the `postPerformance` of before and the per-batch memory note is written as before |
@@ -744,7 +745,15 @@ whole response of the first thought is also in `sv_inference.response` under `ju
 `src/rhythm.ts` keeps three per-agent holds beside the platform rhythm. `x_quota`: the sender refused a publish with
 `quota_exceeded` (24 posts per rolling 24 h by default; the console's posts-per-day slider sets it per agent), and the
 agent is neither woken for a post nor for a mention until the sender's `retryAt`. `x_credits`: X answered 402 (the X
-app's credits are depleted). `x_forbidden`: X answered a publish with 403 "You are not permitted to perform this
+app's credits are depleted); the model is told so for `X_CREDITS_RETRY_MS`, and the hold that decides is app-wide
+(`src/x-credits.ts`): the X app and its credits are shared by every agent, so the sender holds every X call after a
+402 (30 minutes, doubling to 4 hours while X keeps refusing, cleared by the first success; the sender's "X credits
+hold") and the tick reads that hold once (`GET /internal/x-credits`). While it stands, an agent that reads or posts
+on X is given no turn (social, continued or treasury; reason `x_credits_hold`), its mentions are not read, post
+metrics are not swept and closed bounty jobs are not collected (no attempt is counted). Once the sender's hold has
+run out, the agent's own mention read is the question put to X: a turn is bought only after the sender reports
+`clear`, or, if no read settles it within ten minutes (`PROBE_GRACE_MS`), one turn is let through to ask. The log
+has one warn line per hold and one info line when it is over. `x_forbidden`: X answered a publish with 403 "You are not permitted to perform this
 action", read as the account being locked, restricted or stripped of write access: posting is held for 6 h, then 12 h,
 then a day on each repeat (`forbiddenHoldMs`), the creator gets an `x_forbidden` notice (inbox and Telegram, with a
 Connect X button in the inbox) and the coin page shows a red panel; a reconnect of the X account lifts the hold at

@@ -44,6 +44,12 @@ export const configSchema = z.object({
     z.string().url().default('https://x.com/i/oauth2/authorize'),
   ),
   X_TIMEOUT_MS: num(z.coerce.number().int().positive(), 15_000),
+  /**
+   * The app-wide hold after X answers 402 (the X app's credits are used up; src/x-client.ts): the first hold and the
+   * longest one, in seconds. Every 402 that follows a hold doubles it up to the maximum; the first success clears it.
+   */
+  X_CREDITS_HOLD_SEC: num(z.coerce.number().int().positive(), 1800),
+  X_CREDITS_HOLD_MAX_SEC: num(z.coerce.number().int().positive(), 14_400),
   SENDER_DEFAULT_POSTS_PER_DAY: num(z.coerce.number().int().nonnegative(), 24),
   SENDER_DEFAULT_MENTION_INTERVAL_SEC: num(z.coerce.number().int().nonnegative(), 60),
   /**

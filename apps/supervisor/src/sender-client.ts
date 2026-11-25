@@ -175,6 +175,14 @@ export interface SenderQuota {
   linkPostsDefaultPlatform?: number;
 }
 
+export interface SenderXCredits {
+  state: 'clear' | 'held' | 'probing';
+  since: string | null;
+  until: string | null;
+  windowMs: number | null;
+  refused: number;
+}
+
 export class SenderError extends Error {
   constructor(
     readonly status: number,
@@ -325,6 +333,14 @@ export class SenderClient {
    */
   setQuota(agentId: string, patch: { postsPerDay?: number | null; mentionReadIntervalSec?: number | null; readsPerDay?: number | null; linkPostsPerDay?: number | null }) {
     return this.call<SenderQuota>('POST', `/internal/quota/${encodeURIComponent(agentId)}`, patch);
+  }
+
+  /**
+   * `GET /internal/x-credits`: the sender's app-wide X credits hold (apps/sender/src/x-client.ts). `held`: X answered
+   * 402 and no call reaches it until `until`; `probing`: the hold ran out and the next answer from X settles it.
+   */
+  xCredits() {
+    return this.call<SenderXCredits>('GET', '/internal/x-credits');
   }
 
   metering(agentId: string, month: string) {

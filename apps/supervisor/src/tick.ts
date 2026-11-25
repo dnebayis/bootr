@@ -29,6 +29,7 @@ import { applyQuotaHold, applyRhythm, creditsHold, forbiddenHold, isXCreditsErro
 import { treasuryTurnDue } from './roles.js';
 import { LEASE_MS, acquireLease, continueTurn, liftForbiddenHoldOnReconnect, releaseLease, renewLease, saveRuntime, scheduleFor, startTreasuryTurn, startTurn, trackHoldEnd, type AgentState, type TurnResult } from './runtime.js';
 import { validationId } from './session-key.js';
+import { noteXCredits402, refreshXCredits, xCreditsGate } from './x-credits.js';
 import { platformNumbersWake } from './platform-numbers.js';
 import { weeklyDigestWake } from './weekly-digest.js';
 import { SenderError, type SenderInboxItem } from './sender-client.js';
@@ -69,9 +70,11 @@ export async function tick(ctx: SupervisorContext): Promise<TickReport> {
   } catch (err) {
     ctx.log.error({ err }, 'onboarding pass failed');
   }
-  // Engagement of posts that went out a day ago, a few agents per tick (post-performance.ts).
+  // The X app's credits (x-credits.ts): the sender's hold is read once, before anything that would ask X or buy a turn.
+  const xCredits = await refreshXCredits(ctx);
+  // Engagement of posts that went out a day ago, a few agents per tick (post-performance.ts). Not while X refuses every read.
   try {
-    await sweepPostMetrics(ctx);
+    if (xCredits.state !== 'held') await sweepPostMetrics(ctx);
   } catch (err) {
     ctx.log.error({ err }, 'post metrics sweep failed');
   }
@@ -338,20 +341,35 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
       return { ran: false, reasons: ['inference_backoff'] };
     }
 
+    // The X app is out of credits (x-credits.ts): an agent that posts or reads on X buys nothing while the hold stands,
+    // whatever would have woken it (a mention, a due post, a continued turn, a config change, the treasury clock): its
+    // posts and reads would all be refused. The turn it was in the middle of stays stored and goes on afterwards.
+    const usesX = config.capabilities.xRead || config.capabilities.xPublish;
+    const heldForCredits = async (): Promise<ProcessResult> => {
+      // The awake queue is ordered by `nextAt`: a waiting row is moved one tick on, so held agents do not keep its head.
+      if (runtime.status === 'waiting' && !runtime.turn && runtime.nextAt.getTime() <= now) await saveRuntime(ctx, agent.agentId, { nextAt: new Date(now + ctx.config.SUPERVISOR_TICK_MS) });
+      await postSocial(ctx, agent, config, runtime, 'awake');
+      return { ran: false, reasons: ['x_credits_hold'], skipped: 'x_credits_hold' };
+    };
+    const creditsBefore = usesX ? xCreditsGate(ctx, now) : null;
+    if (creditsBefore?.state === 'held') return await heldForCredits();
+
     // 3. Inputs for the wake decision.
     let inbox: SenderInboxItem[] = [];
-    /** X answered 402 to the mention read: the X app is out of credits right now, so this tick buys no turn. */
-    let readOutOfCredits = false;
     if (config.capabilities.xRead) {
       try {
         inbox = (await ctx.sender.readMentions(agent.agentId)).items;
       } catch (err) {
-        readOutOfCredits = err instanceof SenderError && isXCreditsError(err.code);
+        // X answered 402 to the mention read: the hold is on from here, for every agent (one log line, in x-credits.ts).
+        if (err instanceof SenderError && isXCreditsError(err.code)) noteXCredits402(ctx, err.retryAt);
         // The agent's own X read budget for the day is spent (sender read-budget.ts): expected, once a tick until midnight UTC.
-        if (err instanceof SenderError && err.code === 'read_budget_exhausted') log.info({ retryAt: err.retryAt }, 'mention read skipped: X read budget used up for today');
+        else if (err instanceof SenderError && err.code === 'read_budget_exhausted') log.info({ retryAt: err.retryAt }, 'mention read skipped: X read budget used up for today');
         else log.warn({ err }, 'mention read failed');
       }
     }
+    // A hold that had run out: the read above was the question put to X, and the sender knows the answer.
+    if (creditsBefore?.state === 'probing') await refreshXCredits(ctx);
+    if (usesX && xCreditsGate(ctx, now).held) return await heldForCredits();
     // Other Bootr agents (one read per tick) mark their mentions; the platform rhythm may hold a due post (rhythm.ts).
     const directory = await agentDirectory(ctx);
     // Replies to the agent's open bounty jobs are entries, not mentions (bounties.ts): no wake is bought for them.
@@ -364,13 +382,12 @@ export async function processAgent(ctx: SupervisorContext, agent: AgentRow, _run
     const wakeable = wakeViews(views, directory, agent.agentId, state.peerWakes, now, openWakeBound(ctx, state)).filter((v) => !ended0(state, now)?.postIds.includes(v.postId));
     // The agent's own X quota used up (sender quota_exceeded): no post, no mention reply and no scheduled wake buys a
     // model turn until it opens; mentions stay in the inbox for then (rhythm.ts, `quotaHold`).
-    // X out of credits (402 on a publish, or on this tick's mention read): the same hold, reason `x_credits`.
+    // X out of credits (402 on a publish): the same hold, reason `x_credits`; the app-wide hold above comes before it.
     // X forbids the account (403 on a publish): the same hold for hours, reason `x_forbidden` (rhythm.ts `forbiddenHold`).
     const stateHold = quotaHold(state.postQuotaUntil, now) ?? creditsHold(state.postCreditsUntil, now) ?? forbiddenHold(state.postForbiddenUntil, now);
-    const quota = readOutOfCredits ? (quotaHold(state.postQuotaUntil, now) ?? creditsHold(now + ctx.config.SUPERVISOR_TICK_MS, now)) : stateHold;
+    const quota = stateHold;
     // A hold the model was told about that is no longer on the state (ran out, cleared, or lifted above) is marked ended:
-    // the next turn's first observation says so once (runtime.ts `trackHoldEnd`, rhythm.ts `holdEndedMessage`). The
-    // one-tick credits hold of a 402 mention read is not on the state and never reaches the model, so it is not tracked.
+    // the next turn's first observation says so once (runtime.ts `trackHoldEnd`, rhythm.ts `holdEndedMessage`).
     if (trackHoldEnd(state, stateHold, now)) await saveRuntime(ctx, agent.agentId, { state: state as unknown as Record<string, unknown> });
     // A slot that a scheduled post covers is not due either (scheduled.ts `applyScheduled`): no thought is bought for it.
     const slot = async () => applyQuotaHold(await applyScheduled(ctx, agent.agentId, await applyRhythm(ctx, scheduleFor(config, state, now), now), now), quota);
