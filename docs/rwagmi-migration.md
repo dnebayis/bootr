@@ -90,7 +90,7 @@ and USDC funding rules are unchanged.
 | --- | --- |
 | launch | `BootrLauncher.AgentLaunched` (unchanged) + `RwagmiB20LauncherV3.B20LaunchCreatedV3(creator, token, …, primaryPoolId, poolCount, …)` |
 | pool key / id | `RwagmiB20LauncherV3.LaunchPoolCreatedV3(token, poolId, poolIndex, key{currency0, currency1, fee, tickSpacing, hooks}, …, startingTick, fee)` |
-| swaps, price, volume | Uniswap v4 `PoolManager.Swap` by `poolId` (unchanged) |
+| swaps, price, volume | Uniswap v4 `PoolManager.Swap` by `poolId` (unchanged; since 2026-11-25 read from the receipts of the coin's transfers at the PoolManager, not from a PoolManager source) |
 | fee taken per swap | `RwagmiHookV3.PoolFeeTakenV3(poolId, quote, amount, swapCase, rate)` |
 | fee credited per recipient | `RwagmiLpLockerV3.PoolFeesSettledV3(poolId, currency, slot, recipient, amount)` |
 | claims | `RwagmiLpLockerV3.QuoteRewardsClaimedV3(recipient, currency, to, amount)` |

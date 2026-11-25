@@ -113,7 +113,7 @@ Chain: Base mainnet (8453). Coins come through two launch paths, told apart by `
 ## Events the indexer consumes (ABIs vendored in `apps/indexer/abis`: Bootr from `packages/contracts/out`, RWAGMI v3 from `@rwagmi/token-launcher-sdk` 0.3.0)
 - `BootrLauncher.AgentLaunched(token, kernel, creator, burner, agentId, defaults..., workerHash, model, agentURI, supervisorSessionKey)`
 - `RwagmiB20LauncherV3.B20LaunchCreatedV3` (filtered to `creator == BootrLauncher`) and `LaunchPoolCreatedV3` (pool key and id, starting tick); both precede `AgentLaunched` in the launch transaction
-- Uniswap v4 `PoolManager.Swap(id, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee)` for our pool ids
+- Uniswap v4 `PoolManager.Swap(id, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee)` for our pool ids, read from the receipt of a transaction in which a coin moved to or from the PoolManager (the PoolManager is not a Ponder source; `apps/indexer/README.md` "Swaps from receipts")
 - `RwagmiHookV3.PoolFeeTakenV3` (gross fee taken per swap), `RwagmiLpLockerV3.PoolFeesSettledV3` (credits per reward slot) and `QuoteRewardsClaimedV3` (claims); `RwagmiLpLockerV3.launchInfo(token)` read at launch for the locked slots
 - `AgentGuardian.Activity(kernel, timestamp)`, `AgentPaused/Unpaused`, `DormantClaimed`, session-key events
 - `BuybackBurner.Swapped`, `Burned`

@@ -350,8 +350,10 @@ section 9 of that file; the owner accepted all eighteen as recommended on 2026-1
 
 - Indexer reads every Uniswap v4 swap on Base (noted 2026-11-11): the `PoolManager` source has no filter, because Ponder
   cannot filter by pool ids unknown before each launch, so a full re-read (the `bootr_v9` backfill took ~40 min) walks
-  all of Base's v4 swaps. Fix: listen to the RWAGMI, Clanker v4 and Clanker v5 hooks instead, after checking that price
-  and volume come out the same as from `Swap`; ships as `bootr_v10` with the next indexer change. Since 2026-11-13
+  all of Base's v4 swaps. **Built 2026-11-25, not merged or deployed:** the source is removed and swaps are read from
+  the receipts of the coins' own transfers at the PoolManager (the hooks could not replace `Swap`: fee amounts only, and
+  Clanker's v4 hook does not emit on every swap); `apps/indexer/README.md` "Swaps from receipts". Needs
+  `DATABASE_SCHEMA=bootr_v11` and a backfill; the 24 GB sync cache shrinks only when the stored `Swap` logs are deleted. Since 2026-11-13
   it is a prerequisite of item 10: Robinhood Chain has about 7 Uniswap v4 swaps a second, so its indexer cannot use
   the unfiltered read at all.
 

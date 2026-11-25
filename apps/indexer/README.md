@@ -25,8 +25,9 @@ docker run --rm --env-file .env -e PORT=42069 -e DATABASE_SCHEMA=bootr_mainnet_v
 
 The image runs `scripts/start.sh` (`ponder start --schema $DATABASE_SCHEMA`; without `DATABASE_SCHEMA` it falls
 back to `RAILWAY_DEPLOYMENT_ID`, a leftover of the Railway era; `DATABASE_SCHEMA=auto`, a name derived from the
-image's commit, is implemented there but production does not use it). Production runs a fixed name, `bootr_v8` since
-2026-11-08 (the next is `bootr_v9`). Ponder refuses to reuse a schema that was built by different indexing code
+image's commit, is implemented there but production does not use it). Production runs a fixed name, `bootr_v10` on
+2026-11-25; reading swaps from receipts (below) changes the sources, the schema and the indexing code, so it goes out
+as `bootr_v11`. Ponder refuses to reuse a schema that was built by different indexing code
 ("previously used by a different Ponder app"; the container crash-loops until the name changes), and the build id
 hashes `src/**` except `src/api`, `ponder.schema.ts` and the config's contracts, accounts, blocks and ordering. Before
 every deploy run
@@ -51,8 +52,8 @@ RPC rate: CDP limits billing units, not requests (7,500 BU per 5 s per project, 
 `eth_getBlockByNumber` plus one `eth_getLogs` for every one of them: measured on 2026-11-08 over 60 s of production
 (`ponder_rpc_request_duration_count` at `:42069/metrics`), 300 blocks took 304 `eth_getBlockByNumber` and 301
 `eth_getLogs`, about 1,000 BU/s. The bloom check never skips a block because `BootrToken` is a factory source (Ponder
-matches a factory's children on the `Transfer` topic alone, which every block has) and `PoolManager:Swap` is in nearly every
-block too; `pollingInterval` changes nothing, since every block between two polls is fetched one by one; a `ws` newHeads url
+matches a factory's children on the `Transfer` topic alone, which every block has), with or without a PoolManager
+source; `pollingInterval` changes nothing, since every block between two polls is fetched one by one; a `ws` newHeads url
 would save the header only, and the body is fetched again as soon as the bloom matches. `INDEXER_RPC_BU_PER_SEC` is what
 Ponder may spend: empty = 1300 on a CDP url and no budget elsewhere, 0 = no budget. `BASE_RPC_FALLBACK_URL` is an optional
 second RPC for what the budget cannot cover and for what the first one answers 429 to. `INDEXER_BLOCKS_RPC_URL` is an
@@ -178,9 +179,9 @@ first one).
 | `RwagmiLauncherV3` | `B20LaunchCreatedV3` (filtered: `creator == BootrLauncher`), `LaunchPoolCreatedV3` | Stage the launch (`rwagmiLaunch`: name, symbol, supply, primary pool) and its pool (`pool`: id, v4 key, hook fee mode / static fee, starting tick). Pools of launches not staged (non-Bootr) are dropped. Both precede `AgentLaunched` in the launch tx. |
 | `BootrLauncher` | `AgentLaunched` | Creates token/agent rows from the staged launch + pool. Reads the locked reward split from `RwagmiLpLockerV3.launchInfo(token).rewards` (`feeSlot`, `token.*Bps`). Replays the launch tx receipt for `LiquidityPlacedV3` (exact position range + liquidity), the dev buy (`PoolFeeTakenV3` + `Swap`), initial coin `Transfer`s and the USDC fuel transfer, since they precede `AgentLaunched`. Image / metadata from the `launch()` calldata, else the B20 `contractURI()`. |
 | `BootrClankerLauncher` (every Clanker wrapper, v4 and v5; v4 ABI plus `ClankerV5Launched` and the v5 metadata events) | `ClankerLaunched`, `AgentLaunched`, `ImageUpdated`, `MetadataUpdated`, `MetadataLocked` | Clanker path. `ClankerLaunched` stages `clankerPool` (pool id, hook, locker, MEV module, starting tick, the LP fee actually used). `AgentLaunched` reads the receipt for Clanker's `TokenCreated` (name, symbol, image, metadata, context, extensions supply) and the locker's `TokenRewardAdded` (pool key, reward slots, position range), falling back to the token's views and `tokenRewards(token)`; writes the `pool` row (dynamic-fee key), token / agent / `feeSlot` rows (`source: 'clanker'`, four slots summing to 10000, the burn slot's recipient `0x…dEaD`, `protocolBps` 2000 = Clanker's 20% on top), and replays the dev-buy swap, coin transfers and the USDC fuel. **Clanker v5**: when the receipt carries the wrapper's `ClankerV5Launched` (pool id, hook, escrow, quote, tick spacing, tax, anti-snipe), the handler reads the hook's `FeeSlotCreated` (else `poolFeeSlots(poolId)`, else the preset's weights), the factory's `LaunchTaxConfigured` (the admitted protocol policy and the burn share) and `Launched` (supply, 1 B), the PoolManager's `Initialize` (opening tick) and `ModifyLiquidity` (the seeded band); writes `clankerPool` (`version 5`, `locker` = the escrow, `antiSnipe`), the `pool` row (native ETH `0x0` is currency0, fee 0) and token / agent / `feeSlot` rows (`source: 'clanker-v5'`, `lpFeeBps` = the tax, `protocolBps` = Clanker's share of it, 3333 at 1.5%, the three paid slots plus a synthetic burn slot `0x…dEaD` on the buyback preset summing to `10000 - protocolBps`), and replays the dev buy's swap and tax credits, transfers and fuel. **Token settings** (section "Clanker v5 token settings" below): the settings shape of `ClankerV5Launched` adds each side's tax, burn, dividends and the editable switch; the slots are classified by recipient and admin, the token row carries the settings, the paired asset may be USDC, and the image and metadata come from the coin's genesis `ExtraMetadataUpdated`. `ImageUpdated` / `MetadataUpdated` / `MetadataLocked` (the coin's creator, through the launcher) update `token.image` / `token.metadata` / `metadataLocked` and `metadataUpdatedAt`. |
-| `BootrToken` (factory: `AgentLaunched.token` of both launcher lists) | `Transfer` | `balance` table, `token.holders` (non-zero balances, excluding 0x0 and 0x…dEaD). |
+| `BootrToken` (factory: `AgentLaunched.token` of both launcher lists) | `Transfer` | `balance` table, `token.holders` (non-zero balances, excluding 0x0 and 0x…dEaD). A transfer to or from the PoolManager is also the signal of a swap: see "Swaps from receipts". |
 | `BuybackBurner` (factory: `AgentLaunched.burner`, Bootr launchers only) | `Swapped`, `Burned` | `burn` rows, `token.burnedTotal`, BOOT burn stats. |
-| `PoolManager` | `Swap` | All swaps are delivered; only pool ids in the `pool` table are kept (RWAGMI and Clanker pools alike; a Clanker pool's id comes from `ClankerLaunched`). On Base mainnet this means fetching every v4 swap log (Ponder cannot filter on a dynamic pool-id set). `trade.feeUsd` uses the coin's own `lpFeeBps`: bootr `Swap.fee + lpFeeBps`, clanker `lpFee × 1.2`, clanker-v5 the tax of the trade's side (`buyTaxBps` / `sellTaxBps`). The paired side is valued in its own decimals (USDC at $1, `lib/quote.ts`). |
+| no source: PoolManager `Swap` logs in the receipts of coin transfers at the PoolManager | `Swap` | Only pool ids in the `pool` table are kept (RWAGMI and Clanker pools alike; a Clanker pool's id comes from `ClankerLaunched`); each is applied once, in log order (`swap_sync`). See "Swaps from receipts". `trade.feeUsd` uses the coin's own `lpFeeBps`: bootr `Swap.fee + lpFeeBps`, clanker `lpFee × 1.2`, clanker-v5 the tax of the trade's side (`buyTaxBps` / `sellTaxBps`). The paired side is valued in its own decimals (USDC at $1, `lib/quote.ts`). |
 | `ClankerLpLocker` (`ClankerLpLockerFeeConversion`) | `ClaimedRewards` | A coin's collected LP fees per reward slot, after fee-preference conversion (WETH for agent / creator / platform, the coin for the burn slot): `feeAccrual` + `feeCredit`, `feeBalance.accrued = settled`, per-kind daily / per-source rollups. The locker is public: events of coins that are not ours are dropped (a dynamic token filter is not possible, as with the RWAGMI locker). |
 | `ClankerFeeLocker` | `ClaimTokens`, `ClaimTokensPermissioned` | A fee owner's whole stored balance of an asset is paid out: `feeClaim` split across its coins by `settled - claimed` (same `recordClaim` as the RWAGMI claims). The burn slot's claim of the coin (owner `0x…dEaD`) is also a `burn` row and `token.burnedTotal`. |
 | `ClankerV5Hook` (`TaxLaunchHook`) | `CreatorTaxCredited`, `BurnTaxCredited`, `DividendTaxCredited`, `DividendTaxRedirected`, `FeeSlotRecipientUpdated`, `FeeSlotAdminUpdated` | Clanker v5, per swap: a paid slot's exact share of the tax in the quote (native ETH, asset `0x0`), and the burn share in the coin for `0x…dEaD`: `feeAccrual` + `feeCredit` (with `feeCredit.slot`), `feeBalance.accrued = settled`, per-kind rollups. The event names the recipient, not the slot: a wallet holding two slots of one coin takes them in turn (`pickV5Slot`). The hook is shared by every v5 pool: events of pools that are not ours are dropped. The gross fee is booked per trade from `Swap`. The dividend share of a trade is a `dividendCredit` row (to the coin's tracker, or `redirected` to Clanker while no holder qualifies) and `token.dividendsTotalUsd` / `dividendsRedirectedUsd`. A slot admin's recipient or admin change moves the `feeSlot` row (logged in `feeSlotUpdate`), so later credits follow the new recipient. The four credits share one decoder (`decodeV5HookCredit`) with the launch replay. |
@@ -190,6 +191,69 @@ first one).
 | `AgentGuardian` | `Activity`, `AgentPaused`, `DormantClaimed`, `SessionKeyApproved`, `SessionKeyApprovalRevoked`, `SessionKeyUninstalled`, `SessionNonceInvalidated` | Agent status inputs, `dormantClaim`, `sessionKey`. |
 | ERC-8004 `ReputationRegistry` | `NewFeedback`, `FeedbackRevoked` | `agent.reputationScore` = mean of `value / 10^valueDecimals` over non-revoked feedback. Registry address from `@bootr/shared` (mainnet `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`). |
 | `BootrSnapshot` and `BootrSnapshotPreDenim` block handlers | every 60 s of chain time | See below. |
+
+### Swaps from receipts
+
+The Uniswap v4 PoolManager is not a source. Its `Swap` carries the pool id as an event argument, Ponder 0.18 filters
+arguments by static values only (`factory()` works for `address` alone), and without a filter the source is every v4 swap
+on Base: on 2026-11-25 production's sync cache held 8,973,021 `Swap` logs of 79,001 pools, 35,944 of them (0.4%) in
+Bootr's 16 pools, in a cache of 24 GB that grew about 1 GB a day. The hooks cannot stand in for it: their events carry
+fee amounts only, and Clanker's v4 hook does not emit on every swap.
+
+A swap in a coin's pool moves the coin into or out of the PoolManager (`0x498581fF718922c3f8e6A244956aF099B2652b2b`),
+and the coin's `Transfer` is already followed. So the `BootrToken:Transfer` handler, when `from` or `to` is the
+PoolManager, reads the transaction's receipt (`context.client.getTransactionReceipt`: Ponder stores
+`eth_getTransactionReceipt` in its RPC cache, which it does not do for `eth_getLogs`), decodes every PoolManager `Swap`
+in it whose pool id is in the `pool` table, and runs `applySwap` for each: the same function the old
+`PoolManager:Swap` handler ran, with the fee conversion rule unchanged (a `Swap` whose sender is Clanker's
+`ClankerLpLockerFeeConversion` is no trade but moves price, fee and buckets). `src/lib/swaps.ts` holds the decoding and
+the rules, `src/lib/swap-sync.ts` the part that reads and writes rows.
+
+* **Once each.** A transaction has several such transfers (a $BOOTR trade has four to six: the hook's collection, the
+  locker's conversion swaps, the trade). `swap_sync` has one row per transaction, `through` = the log index of the last
+  `Swap` applied; swaps are applied in log order, so the applied ones are always a prefix and a later transfer of the
+  same transaction finds nothing left. The receipt and what was decoded from it are remembered for the last
+  transaction, so its sync points cost one receipt read together.
+* **In the old order.** The old handler ran a swap at its own log index. Now a swap is applied by the next *sync point*
+  of its transaction: a coin `Transfer` at the PoolManager, a `ClaimedRewards` of a Clanker v4 coin, or a v5 hook credit
+  of a v5 coin (the last two value an amount of the coin at the coin's price). Before its own work a sync point applies
+  the pending swaps below its log index; after it, when the receipt has no later sync point, it applies the rest. So
+  each of these handlers sees the pool exactly as before, and a swap with no transfer after it is not left behind (a
+  sell that pays the PoolManager first: tx `0x7e97633e…b999`, where the hook's `ClaimedRewards` at log 47 is the last
+  sync point and the seller's `Swap` is log 48). `BuybackBurner:Burned` and a claim of the coin itself also apply the
+  swaps below them first. What is left of a difference: a transfer of the coin between two wallets that sits between a
+  `Swap` and the next sync point is applied before that swap; it touches balances and holders only, and the market cap
+  it writes on a burn is rewritten by the swap.
+* **Every pool is covered.** A `token` row and its `pool` row are only written by an `AgentLaunched` handler, of a
+  launcher on `BOOTR_LAUNCHERS` (RWAGMI) or `BOOTR_CLANKER_LAUNCHERS` (Clanker v4 and v5 wrappers), and the
+  `BootrToken` factory lists exactly those launchers, so a coin with a pool always has its transfers followed. The
+  launch transaction itself is replayed by the launch handler from its own receipt, as before.
+* **What it cannot see.** A swap that moves no coin to or from the PoolManager and has no other sync point in its
+  transaction: one settled wholly inside the PoolManager (a buy and a sell of the same amount in one unlock, or
+  ERC-6909 claims instead of the token). None was found in the 1,493 production transactions walked on 2026-11-25 (`scripts/swap-parity.ts`); the whole history is compared in SQL, old schema against new, after the backfill. Such a
+  swap would get no `trade` row; the price would follow at the next applied swap or live snapshot, which reads the
+  pool's state from the PoolManager.
+* **RPC.** One `eth_getTransactionReceipt` (100 BU on CDP) per transaction in which a coin enters or leaves the
+  PoolManager, once: a later backfill reads it from Ponder's cache. Following the tip costs what it did (`BootrToken`
+  is a factory source, so every block is fetched anyway).
+* **The sync cache does not shrink by itself.** Removing the source stops new `Swap` logs from being stored; the 9
+  million already in `ponder_sync` stay until they are deleted there (the PoolManager's rows in `logs` and the
+  blocks and transactions only they refer to, then a `VACUUM FULL`), or until `ponder_sync` is dropped and the chain
+  is read again. Neither was tried here.
+* **Parity.** `pnpm --filter indexer exec tsx scripts/swap-parity.ts` walks receipts from a public RPC the way the
+  handlers do and compares the trade rows it builds with a running indexer's, field by field (not in CI: it needs the
+  network). `src/lib/swap-sync.test.ts` runs the real handlers on four receipts saved in `test/fixtures`.
+
+`ClankerLpLocker` (`ClaimedRewards`) stays a source of its own. It is the same kind of public contract (every Clanker
+v4 coin on Base collects through it) and its `token` argument cannot be filtered by a growing list either, so it could
+be read from receipts too: the handler already runs inside the transactions the coin transfers point at, and on a coin
+with a burn slot a collection nearly always moves the coin (the burn share is paid in the coin, converted through the
+pool when the fees came in as WETH). But "nearly" is not enough for this one: a `collectRewards` called on its own
+whose fees are WETH only and whose coin-side share is zero moves no coin, would not be seen, and what would go missing
+is not a trade row but the slots' `feeAccrual` and `feeCredit`, the figures claims are checked against. Before moving
+it, count how many of the locker's logs in `ponder_sync` are not ours (the saving), find a signal that every collection
+has (the WETH `Transfer` into the fee locker is not followed today, and following WETH is the PoolManager problem
+again), and compare every historical `feeCredit` row against a receipt walk the way `swap-parity.ts` does for trades.
 
 ### Snapshots across Denim
 
@@ -376,7 +440,9 @@ abis/            ABIs as `const` (Bootr from packages/contracts/out, RWAGMI v3 l
 ponder.config.ts single-chain config, skips undeployed sources
 ponder.schema.ts tables + relations
 src/*.ts         indexing functions (launcher, market, fees, guardian, reputation, snapshot)
-src/lib/         pure helpers (+ tests) and indexing helpers
+src/lib/         pure helpers (+ tests) and indexing helpers (swaps.ts: swaps from receipts; swap-sync.ts applies them)
 src/api/         Hono app: GraphQL, REST, SSE
 scripts/smoke.ts GraphQL smoke test
+scripts/swap-parity.ts  receipt walk against a running indexer's trade rows (needs the network, not in CI)
+test/            receipts saved from Base mainnet and the stand-ins for Ponder's modules used by handler tests
 ```
