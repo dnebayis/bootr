@@ -51,7 +51,7 @@ const KERNELS_PER_GETLOGS = 100;
 const usdcTransfer = getAbiItem({ abi: Erc20Abi, name: 'Transfer' });
 
 /** `spenders`: kernel -> x402 spender EOA (null / missing = none known). */
-async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow[], spenders: Map<string, string | null>) {
+async function readChainState(blockNumber: bigint, tokens: TokenRow[], agents: AgentRow[], spenders: Map<string, string | null>) {
   const env = indexerEnv();
   const pm = env.addresses.uniswap.poolManager;
   const calls = [
@@ -82,11 +82,16 @@ async function readChainState(context: Ctx, tokens: TokenRow[], agents: AgentRow
   ];
   const pools = new Map<string, { sqrtPriceX96: bigint; tick: number; liquidity: bigint }>();
   if (calls.length === 0) return { pools, balances: new Map<string, AgentBalances>() };
-  const res = await context.client.multicall({
+  // Through the indexer's own client, not `context.client`: Ponder stores every `context.client` call in
+  // `ponder_sync.rpc_request_results` (one row per call of the multicall), and a live snapshot's reads describe one
+  // block near the tip that no later run asks for again (a backfill skips them). The cache stays on for the chain:
+  // `cacheRpcRequests: false` would also stop Ponder from keeping logs, blocks and the factories' child addresses.
+  const res = await rpcClient().multicall({
     contracts: calls as never,
     multicallAddress: MULTICALL3_ADDRESS,
     allowFailure: true,
     batchSize: 16_384,
+    blockNumber,
   });
   tokens.forEach((t, i) => {
     const r = res[i] as { status: string; result?: readonly Hex[] };
@@ -206,7 +211,7 @@ async function snapshot({ event, context }: { event: { block: { timestamp: bigin
     // spender address: the supervisor's latest push, else the last mirrored value
     const spenders = new Map(agents.map((a) => [a.id, social?.has(a.id) ? social.get(a.id)!.spender : a.spender] as const));
     try {
-      ({ pools, balances } = await readChainState(context, tokens, agents, spenders));
+      ({ pools, balances } = await readChainState(bn, tokens, agents, spenders));
     } catch (err) {
       console.warn(`[indexer] snapshot multicall failed at block ${bn}: ${safeMessage(err)}`);
     }
