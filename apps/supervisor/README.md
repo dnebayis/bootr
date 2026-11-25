@@ -745,6 +745,18 @@ Migration `0019_bounty_judge_retry` adds three nullable columns to `sv_bounty_jo
 numbers; null reads as `[1]`). To read why a ruling failed: `select judge_raw from sv_bounty_jobs where id = '<jobId>'`; the
 whole response of the first thought is also in `sv_inference.response` under `judgeKey(agentId, jobId)`.
 
+## What the tick does not do every minute
+
+The tick runs every `SUPERVISOR_TICK_MS` (a minute). Work that changes far more slowly than that is spaced out, and
+what it writes to the log is written when something changes (measured on production on 2026-11-25: 26,884 RPC requests
+a day from the supervisor, and a `tick` and an `rpc usage` line every minute).
+
+- **An onboarding agent with no gas** (`completeOnboarding` in `src/onboarding.ts`): its kernel's EntryPoint deposit
+  and balance are read every tick in the agent's first hour, every 15 minutes in its first day and hourly after that
+  (`gasCheckIntervalMs`), with one warn line when the wait starts and one info line when gas arrives. Four abandoned
+  launches used to cost 11,480 RPC requests and 5,740 warn lines a day. A creator who adds gas to a day-old agent
+  waits up to an hour for its session key. The schedule is kept in memory: a restart reads once and logs once.
+
 ## X holds and the post length
 
 `src/rhythm.ts` keeps three per-agent holds beside the platform rhythm. `x_quota`: the sender refused a publish with

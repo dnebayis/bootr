@@ -7,7 +7,7 @@ import { agents, cursors, runtimes } from '../src/db/schema.js';
 import { pino } from 'pino';
 import { DEFAULT_WORKER_TEMPLATE, LEGACY_WORKER_HASHES, customWorker, normalizeWorkerPreset, workerTemplateById } from '@bootr/shared/workers';
 import { clankerDetailsOf, clankerLockersFor } from '../src/launch-source.js';
-import { agentConfigOf, buildLaunchConfig, completeOnboarding, decodeClankerLaunch, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, sessionPolicyFor, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
+import { agentConfigOf, buildLaunchConfig, completeOnboarding, gasCheckIntervalMs, decodeClankerLaunch, decodeDraftId, decodeLaunchLogs, defaultIdentity, draftIdFromContext, pollLaunches, sessionPolicyFor, withCreatorIdentity, type LaunchEvent } from '../src/onboarding.js';
 import { agentConfig, CLANKER_FEE_LOCKER, CLANKER_LAUNCHER, CLANKER_LP_LOCKER, CLANKER_POOL_ID, CREATOR, KERNEL, LAUNCHER, makeWorld, RWAGMI_LP_LOCKER, testConfig, TOKEN, type TestWorld, mockAdminSigner } from './helpers.js';
 
 const CARD_URI = 'https://bootr.fun/agents/7.json';
@@ -116,6 +116,50 @@ describe('onboarding from AgentLaunched', () => {
       const agent = await world.db.query.agents.findFirst({ where: eq(agents.agentId, '8') });
       expect(agent!.status).toBe('onboarding');
       expect(agent!.permissionId).toBeNull();
+    } finally {
+      await world.close();
+    }
+  });
+});
+
+describe('an agent in onboarding whose kernel has no gas', () => {
+  it('has its gas read every tick for an hour, then every 15 minutes, then hourly, and the wait is logged when it starts and when it ends', async () => {
+    const world = await makeWorld({ chain: { deposit: 0n, eth: 0n } });
+    try {
+      const MIN = 60_000;
+      const t0 = world.ctx.now();
+      world.ctx.adminSigner = mockAdminSigner().signer;
+      const lines: { level: string; msg: string }[] = [];
+      const log = { warn: (_o: unknown, msg?: string) => void lines.push({ level: 'warn', msg: String(msg ?? _o) }), info: (_o: unknown, msg?: string) => void lines.push({ level: 'info', msg: String(msg ?? _o) }), error: (_o: unknown, msg?: string) => void lines.push({ level: 'error', msg: String(msg ?? _o) }), debug: () => undefined, child: () => log };
+      world.ctx.log = log as unknown as typeof world.ctx.log;
+      await world.db.insert(agents).values({ agentId: '9', token: TOKEN, kernel: KERNEL, creator: CREATOR, config: agentConfig(t0, { agentId: '9', xHandle: null, xUserId: null }), launchBlock: 42, status: 'onboarding', createdAt: new Date(t0) });
+      const gasReads = () => world.state.calls.filter((c) => c.fn === 'balanceOf').length;
+      const run = async (fromMin: number, toMin: number) => {
+        const before = gasReads();
+        for (let m = fromMin; m < toMin; m++) {
+          world.setNow(t0 + m * MIN);
+          await completeOnboarding(world.ctx);
+        }
+        return gasReads() - before;
+      };
+      // the first hour: the creator is at the form, every tick reads
+      expect(await run(0, 60)).toBe(60);
+      // the rest of the first day: one read per 15 minutes
+      expect(await run(60, 24 * 60)).toBe(23 * 4);
+      // after a day: one read an hour
+      expect(await run(24 * 60, 48 * 60)).toBe(24);
+      // 2,880 ticks, one line
+      expect(lines.filter((l) => /kernel has no gas/.test(l.msg))).toHaveLength(1);
+      expect(lines.filter((l) => l.level === 'warn')).toHaveLength(1);
+
+      // gas arrives: the next scheduled read sees it, says so once and goes on to the install
+      world.state.deposit = 1_000_000_000_000_000n;
+      await run(48 * 60, 49 * 60 + 1);
+      expect(lines.filter((l) => /kernel has gas now/.test(l.msg))).toHaveLength(1);
+      expect(lines.filter((l) => /kernel has no gas/.test(l.msg))).toHaveLength(1);
+      expect(gasCheckIntervalMs(59 * MIN)).toBe(0);
+      expect(gasCheckIntervalMs(60 * MIN)).toBe(15 * MIN);
+      expect(gasCheckIntervalMs(24 * 60 * MIN)).toBe(60 * MIN);
     } finally {
       await world.close();
     }

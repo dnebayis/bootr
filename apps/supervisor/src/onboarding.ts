@@ -949,6 +949,31 @@ export async function backfillSpenders(ctx: SupervisorContext): Promise<number> 
   return rows.length;
 }
 
+/**
+ * How often the gas of an agent stuck in onboarding without any is read, by the agent's age: every tick in its first
+ * hour (the creator is at the launch form and tops up now), every 15 minutes in its first day, hourly after that.
+ * Until 2026-11-25 it was every tick for as long as the agent existed: four abandoned launches made 11,480 RPC
+ * requests a day (43 % of everything the supervisor asked the chain) and 5,740 warn lines. A creator who adds gas
+ * to a day-old agent now waits up to an hour for its session key.
+ */
+export const GAS_WAIT_EVERY_TICK_MS = 3_600_000;
+export const GAS_WAIT_FIRST_DAY_MS = 86_400_000;
+export const GAS_WAIT_FIRST_DAY_INTERVAL_MS = 15 * 60_000;
+export const GAS_WAIT_LATER_INTERVAL_MS = 3_600_000;
+
+export function gasCheckIntervalMs(ageMs: number): number {
+  if (ageMs < GAS_WAIT_EVERY_TICK_MS) return 0;
+  return ageMs < GAS_WAIT_FIRST_DAY_MS ? GAS_WAIT_FIRST_DAY_INTERVAL_MS : GAS_WAIT_LATER_INTERVAL_MS;
+}
+
+/** agentId -> when its gas was last read and found empty, and since when it waits. In memory: a restart reads once and logs once. */
+const gasWaitsByDb = new WeakMap<object, Map<string, { checkedAt: number; since: number }>>();
+function gasWaits(ctx: Pick<SupervisorContext, 'db'>): Map<string, { checkedAt: number; since: number }> {
+  let m = gasWaitsByDb.get(ctx.db);
+  if (!m) gasWaitsByDb.set(ctx.db, (m = new Map()));
+  return m;
+}
+
 export async function completeOnboarding(ctx: SupervisorContext): Promise<void> {
   await backfillSpenders(ctx);
   const pending = await ctx.db.select().from(agents).where(eq(agents.status, 'onboarding'));
@@ -958,6 +983,9 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
   await backfillClankerDetails(ctx, pending);
   // Creator identities (and custom workers) whose agent card was unreachable at registration, before any agent goes active below.
   await backfillFromAgentCard(ctx, pending);
+  // An agent that left onboarding (or the table) waits for nothing.
+  const waiting = gasWaits(ctx);
+  for (const id of waiting.keys()) if (!pending.some((a) => a.agentId === id)) waiting.delete(id);
   for (const agent of pending) {
     const log = ctx.log.child({ agentId: agent.agentId });
     if (!agent.sessionKeyInstalledAt) {
@@ -966,11 +994,21 @@ export async function completeOnboarding(ctx: SupervisorContext): Promise<void> 
         continue;
       }
       // A self-funded kernel pays the install's prefund itself: with no gas at all the EntryPoint answers AA21 every
-      // time, so wait for a top-up (the coin page's "Add gas") instead of failing once a minute.
+      // time, so wait for a top-up (the coin page's "Add gas") instead of failing once a minute. The gas is read on a
+      // schedule that thins out with the agent's age, and the wait is logged when it starts and when it ends.
+      const waits = gasWaits(ctx);
+      const wait = waits.get(agent.agentId);
+      const now = ctx.now();
+      if (wait && now - wait.checkedAt < gasCheckIntervalMs(now - agent.createdAt.getTime())) continue;
       const gas = await readGas(ctx, agent.kernel as Address).catch(() => null);
       if (gas && gas.status === 'empty') {
-        log.warn({ kernel: agent.kernel, deposit: gas.deposit.toString() }, 'kernel has no gas; the session key install waits for a top-up');
+        if (!wait) log.warn({ kernel: agent.kernel, deposit: gas.deposit.toString(), nextCheckInMs: gasCheckIntervalMs(now - agent.createdAt.getTime()) }, 'kernel has no gas; the session key install waits for a top-up');
+        waits.set(agent.agentId, { checkedAt: now, since: wait?.since ?? now });
         continue;
+      }
+      if (wait && gas) {
+        log.info({ kernel: agent.kernel, deposit: gas.deposit.toString(), waitedMs: now - wait.since }, 'kernel has gas now; installing the session key');
+        waits.delete(agent.agentId);
       }
       try {
         await installSessionKey(ctx, agent, agent.permissionId && !agent.sessionKeyInstalledAt ? { permissionId: agent.permissionId as Hex } : {});
