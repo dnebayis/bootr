@@ -70,9 +70,8 @@ reader could reach 94 next to the supervisor (10), the sender (10), the dataset 
 opened in the local test: a writer 2 to 7, the reader 5 under 15 requests a second, 14 in all with three writers. The
 pools are lazy and close idle connections after 10 s, so the overlap fits in practice, but the ceiling is not safe.
 The fix is one line in `ponder.config.ts` (`database.poolConfig.max` from an `INDEXER_DB_POOL_MAX` variable: 14 for a
-writer, 12 for the reader, 46 at most for all three), which is outside the build id. That file is being changed on
-another branch, so it is not in this one; until it lands, keep an eye on
-`select count(*) from pg_stat_activity` during the first overlap.
+writer, 12 for the reader, 46 at most for all three), which is outside the build id. It is in: set
+`INDEXER_DB_POOL_MAX=14` on each writer app and `12` on the reader (2 to 30; unset keeps Ponder's 30).
 
 **RPC.** Each process has its own budget (`INDEXER_RPC_BU_PER_SEC`), so the budgets add up against the key's 1,500
 BU/s. A writer at the head spends about 500 BU/s with `INDEXER_BLOCKS_RPC_URL` set (production has it since

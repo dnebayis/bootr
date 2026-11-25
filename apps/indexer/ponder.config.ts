@@ -226,13 +226,22 @@ const allContracts = {
 
 const snapshots = snapshotBlockSources(env);
 
+/** INDEXER_DB_POOL_MAX as a whole number from 2 to 30, else undefined (Ponder's own default). */
+function poolMax(): number | undefined {
+  const n = Number(process.env.INDEXER_DB_POOL_MAX);
+  return Number.isInteger(n) && n >= 2 && n <= 30 ? n : undefined;
+}
+
 const contracts = Object.fromEntries(
   Object.entries(allContracts).filter(([name]) => enabled[name as keyof typeof enabled]),
 ) as unknown as typeof allContracts;
 
 export default createConfig({
+  // INDEXER_DB_POOL_MAX caps this process's Postgres pool (Ponder's default is 30): with the live switch, two writers
+  // and a reader can run at once beside the supervisor, sender and dataset under max_connections 100
+  // (docs/deploy/live-switch.md). `database` is not part of Ponder's build id, so changing it needs no new schema.
   database: env.databaseUrl
-    ? { kind: 'postgres', connectionString: env.databaseUrl }
+    ? { kind: 'postgres', connectionString: env.databaseUrl, ...(poolMax() ? { poolConfig: { max: poolMax() } } : {}) }
     : { kind: 'pglite', directory: '.ponder/pglite' },
   ordering: 'multichain',
   // Only the selected chain is configured at runtime; both names exist for the static types.
