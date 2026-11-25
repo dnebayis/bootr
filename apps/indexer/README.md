@@ -34,6 +34,10 @@ every deploy run
 `git diff <live commit>..HEAD --name-only -- apps/indexer/src apps/indexer/ponder.schema.ts apps/indexer/ponder.config.ts | grep -v src/api`
 yourself: any line means a new `DATABASE_SCHEMA` in Coolify and a backfill from the earliest listed launcher block
 (about 13 minutes on 2026-11-08 with Ponder's RPC cache warm; the site shows stale or partial data meanwhile).
+Old named schemas are not dropped by anything automatic: `INDEXER_DATABASE_URL=... node scripts/schema-janitor.mjs bootr_v11` lists
+(dry run) every `bootr_v<N>` except the one given and the one before it, and drops them with `--drop`; it never lists
+a newer one, a schema a views schema (`DATABASE_VIEWS_SCHEMA`) reads from, the views schema itself, `ponder_sync`,
+`ponder_rpc_cache_*`, `bootr_offchain`, `public` or `drizzle`.
 `rpc-budget.ts`, the RPC urls and the `INDEXER_*` budget settings live outside the build id. See
 [`docs/deploy/coolify.md`](../../docs/deploy/coolify.md) section 2.
 
